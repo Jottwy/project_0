@@ -14,7 +14,23 @@ pub mod server;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const IPC_ADDR: &str = "127.0.0.1:7777";
+pub const DEFAULT_IPC_ADDR: &str = "127.0.0.1:7777";
+
+pub fn resolve_ipc_addr() -> String {
+    if let Ok(addr) = std::env::var("IPC_ADDR") {
+        if !addr.trim().is_empty() {
+            return addr;
+        }
+    }
+
+    if let Ok(port) = std::env::var("IPC_PORT") {
+        if !port.trim().is_empty() {
+            return format!("127.0.0.1:{}", port.trim());
+        }
+    }
+
+    DEFAULT_IPC_ADDR.to_string()
+}
 
 // ───────────────────────── Unity → Rust ─────────────────────────
 

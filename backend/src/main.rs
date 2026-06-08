@@ -50,6 +50,19 @@ async fn main() {
         .unwrap_or(42);
     let connect_to = std::env::var("CONNECT_TO").ok();
     let is_host = connect_to.is_none();
+    let ipc_addr_env = std::env::var("IPC_ADDR").ok();
+    let ipc_port_env = std::env::var("IPC_PORT").ok();
+    let ipc_addr = ipc::resolve_ipc_addr();
+
+    info!(
+        "Config: IPC_ADDR={}, IPC_ADDR_ENV={}, IPC_PORT={}, NET_PORT={}, NET_ID={}, role={}",
+        ipc_addr,
+        ipc_addr_env.as_deref().unwrap_or("<unset>"),
+        ipc_port_env.as_deref().unwrap_or("<unset>"),
+        net_port,
+        net_id,
+        if is_host { "host" } else { "joiner" }
+    );
 
     // Unity → game loop (input / actions).
     let (to_game_tx, to_game_rx) = mpsc::channel::<ipc::ClientMessage>(1024);
@@ -60,7 +73,7 @@ async fn main() {
     // IPC server task (Unity ↔ Rust on localhost:7777).
     let ipc_state_tx = state_tx.clone();
     let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc::server::run(to_game_tx, ipc_state_tx).await {
+        if let Err(e) = ipc::server::run(to_game_tx, ipc_state_tx, ipc_addr).await {
             error!("IPC server terminated: {e}");
         }
     });
@@ -76,7 +89,7 @@ async fn main() {
     net.local_name = net_name;
 
     info!(
-        "Networking: port={}, id={}, host={}, seed={}",
+        "Networking: NET_PORT={}, NET_ID={}, host={}, seed={}",
         net_port, net_id, is_host, world_seed
     );
 

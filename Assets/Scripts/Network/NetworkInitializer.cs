@@ -20,6 +20,9 @@ namespace BackroomsSurvival.Net
         [Header("Connection")]
         public int ipcPort = 7777;
         public int netPort = 7778;
+        public int hostNetId = 1;
+        public int joinerNetId = 2;
+        public int joinerNetPortOffset = 1;
         public float startupTimeout = 10f;
 
         public Role CurrentRole { get; private set; } = Role.None;
@@ -42,21 +45,32 @@ namespace BackroomsSurvival.Net
             }
             _instance = this;
             DontDestroyOnLoad(gameObject);
+
+            ipcPort = ReadIntEnv("IPC_PORT", ipcPort);
+            netPort = ReadIntEnv("NET_PORT", netPort);
         }
 
         public void StartAsHost(string playerName, int worldSeed = 42)
         {
             CurrentRole = Role.Host;
             StatusMessage = "Starting backend...";
+            ResolveIpcEndpoint(ipcPort, out string localIpcAddress, out int localIpcPort);
+            int localNetPort = ReadIntEnv("NET_PORT", netPort);
+            int localNetId = ReadIntEnv("NET_ID", hostNetId);
+            ConfigureIpcClient(localIpcAddress, localIpcPort);
 
             var env = new Dictionary<string, string>
             {
-                ["NET_PORT"] = netPort.ToString(),
-                ["NET_ID"] = "1",
+                ["IPC_PORT"] = localIpcPort.ToString(),
+                ["NET_PORT"] = localNetPort.ToString(),
+                ["NET_ID"] = localNetId.ToString(),
                 ["NET_NAME"] = playerName,
                 ["WORLD_SEED"] = worldSeed.ToString(),
                 ["RUST_LOG"] = "info",
             };
+            AddIpcAddressEnvIfSet(env);
+
+            LogLaunchConfig(Role.Host, localIpcAddress, localIpcPort, localNetPort, localNetId, null);
 
             if (!LaunchBackendProcess(env))
                 return;
@@ -70,16 +84,23 @@ namespace BackroomsSurvival.Net
             CurrentRole = Role.Joiner;
             StatusMessage = "Starting backend (joiner)...";
 
-            int localNetPort = netPort + 1;
+            ResolveIpcEndpoint(ipcPort + joinerNetPortOffset, out string localIpcAddress, out int localIpcPort);
+            int localNetPort = ReadIntEnv("NET_PORT", netPort + joinerNetPortOffset);
+            int localNetId = ReadIntEnv("NET_ID", joinerNetId);
+            ConfigureIpcClient(localIpcAddress, localIpcPort);
 
             var env = new Dictionary<string, string>
             {
+                ["IPC_PORT"] = localIpcPort.ToString(),
                 ["NET_PORT"] = localNetPort.ToString(),
-                ["NET_ID"] = "2",
+                ["NET_ID"] = localNetId.ToString(),
                 ["NET_NAME"] = playerName,
                 ["CONNECT_TO"] = $"{serverIP}:{serverNetPort}",
                 ["RUST_LOG"] = "info",
             };
+            AddIpcAddressEnvIfSet(env);
+
+            LogLaunchConfig(Role.Joiner, localIpcAddress, localIpcPort, localNetPort, localNetId, $"{serverIP}:{serverNetPort}");
 
             if (!LaunchBackendProcess(env))
                 return;
@@ -209,6 +230,53 @@ namespace BackroomsSurvival.Net
             }
 
             return null;
+        }
+
+        private static int ReadIntEnv(string name, int fallback)
+        {
+            string value = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(value, out int parsed) ? parsed : fallback;
+        }
+
+        private static void ResolveIpcEndpoint(int fallbackPort, out string address, out int port)
+        {
+            address = "127.0.0.1";
+            port = ReadIntEnv("IPC_PORT", fallbackPort);
+
+            string ipcAddr = Environment.GetEnvironmentVariable("IPC_ADDR");
+            if (string.IsNullOrWhiteSpace(ipcAddr)) return;
+
+            int colon = ipcAddr.LastIndexOf(':');
+            if (colon <= 0 || colon >= ipcAddr.Length - 1) return;
+
+            string parsedAddress = ipcAddr.Substring(0, colon);
+            string parsedPort = ipcAddr.Substring(colon + 1);
+            if (!int.TryParse(parsedPort, out int parsedPortNumber)) return;
+
+            address = parsedAddress;
+            port = parsedPortNumber;
+        }
+
+        private static void AddIpcAddressEnvIfSet(Dictionary<string, string> env)
+        {
+            string ipcAddr = Environment.GetEnvironmentVariable("IPC_ADDR");
+            if (!string.IsNullOrWhiteSpace(ipcAddr))
+                env["IPC_ADDR"] = ipcAddr;
+        }
+
+        private static void ConfigureIpcClient(string address, int localIpcPort)
+        {
+            IPCClient.Instance.ConfigureEndpoint(address, localIpcPort);
+        }
+
+        private static void LogLaunchConfig(Role role, string localIpcAddress, int localIpcPort, int localNetPort, int localNetId, string connectTo)
+        {
+            string roleName = role == Role.Host ? "host" : "joiner";
+            string target = string.IsNullOrEmpty(connectTo) ? "<none>" : connectTo;
+            Debug.Log(
+                $"[NetworkInitializer] Launch config: IPC_ADDR={localIpcAddress}:{localIpcPort}, " +
+                $"IPC_PORT={localIpcPort}, NET_PORT={localNetPort}, NET_ID={localNetId}, " +
+                $"role={roleName}, CONNECT_TO={target}");
         }
 
         private void OnBackendExited(object sender, EventArgs e)

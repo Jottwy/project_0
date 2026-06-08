@@ -8,7 +8,7 @@ using UnityEngine;
 namespace BackroomsSurvival.Net
 {
     /// <summary>
-    /// Local IPC bridge to the Rust backend (TCP 127.0.0.1:7777).
+    /// Local IPC bridge to the Rust backend (TCP 127.0.0.1:7777 by default).
     ///
     /// Wire format: 4-byte big-endian length prefix + MessagePack body, matching
     /// backend/src/ipc/server.rs. A background thread owns the socket: it connects,
@@ -85,6 +85,25 @@ namespace BackroomsSurvival.Net
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
 
+        public void ConfigureEndpoint(string address, int ipcPort)
+        {
+            if (string.IsNullOrWhiteSpace(address)) address = "127.0.0.1";
+            bool changed = serverAddress != address || port != ipcPort;
+
+            serverAddress = address;
+            port = ipcPort;
+
+            if (!changed) return;
+
+            Debug.Log($"[IPCClient] Configured IPC endpoint {serverAddress}:{port}");
+            lock (_sendLock)
+            {
+                try { _stream?.Close(); } catch { }
+                try { _client?.Close(); } catch { }
+                _stream = null;
+            }
+        }
+
         private void Awake()
         {
             if (_instance != null && _instance != this)
@@ -95,9 +114,31 @@ namespace BackroomsSurvival.Net
             _instance = this;
             DontDestroyOnLoad(gameObject);
 
+            ApplyEnvironmentEndpoint();
+
             _running = true;
             _netThread = new Thread(NetworkLoop) { IsBackground = true, Name = "IPCClient" };
             _netThread.Start();
+        }
+
+        private void ApplyEnvironmentEndpoint()
+        {
+            string ipcAddr = Environment.GetEnvironmentVariable("IPC_ADDR");
+            if (!string.IsNullOrWhiteSpace(ipcAddr))
+            {
+                int colon = ipcAddr.LastIndexOf(':');
+                if (colon > 0 && colon < ipcAddr.Length - 1 &&
+                    int.TryParse(ipcAddr.Substring(colon + 1), out int parsedPort))
+                {
+                    serverAddress = ipcAddr.Substring(0, colon);
+                    port = parsedPort;
+                    return;
+                }
+            }
+
+            string ipcPort = Environment.GetEnvironmentVariable("IPC_PORT");
+            if (int.TryParse(ipcPort, out int parsedIpcPort))
+                port = parsedIpcPort;
         }
 
         private readonly ConcurrentQueue<GameEventMsg> _pendingNotify = new ConcurrentQueue<GameEventMsg>();

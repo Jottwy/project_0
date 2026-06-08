@@ -14,7 +14,7 @@ use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpListener;
 use tokio::sync::{broadcast, mpsc};
 
-use super::{decode, encode, ClientMessage, ServerMessage, IPC_ADDR};
+use super::{decode, encode, ClientMessage, ServerMessage};
 
 /// Reject absurd frame sizes (protects against a malformed length prefix).
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -26,9 +26,10 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 pub async fn run(
     to_game: mpsc::Sender<ClientMessage>,
     state_tx: broadcast::Sender<ServerMessage>,
+    ipc_addr: String,
 ) -> std::io::Result<()> {
-    let listener = TcpListener::bind(IPC_ADDR).await?;
-    info!("IPC server listening on {IPC_ADDR}");
+    let listener = TcpListener::bind(&ipc_addr).await?;
+    info!("IPC server listening on {ipc_addr}");
 
     loop {
         let (stream, peer) = listener.accept().await?;
