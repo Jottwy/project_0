@@ -72,6 +72,20 @@ namespace BackroomsSurvival.Net
         public bool mirrored;
         public string state = "random";
         public bool hasWorkbench;
+        public int layoutGridSize = 10;
+        public float layoutCellSize = 5f;
+        public ushort[] layoutCells = new ushort[0];
+        public int edgeOpenings;
+        public uint macroId;
+        public int zoneKind;
+        public int[] macroLocal = new int[2];
+        public int[] macroSize = new int[] { 1, 1 };
+        public int floorLevel;
+        public int floorProfile;
+        public int ceilingProfile;
+        public int lightProfile;
+        public int anomalyFlags;
+        public int verticalFlags;
 
         public static ChunkViewMsg Parse(object o)
         {
@@ -84,6 +98,23 @@ namespace BackroomsSurvival.Net
             c.mirrored = IPCParse.B(d, "mirrored");
             c.state = IPCParse.S(d, "state");
             c.hasWorkbench = IPCParse.B(d, "has_workbench");
+            c.layoutGridSize = Mathf.Max(1, (int)IPCParse.L(d, "layout_grid_size"));
+            c.layoutCellSize = IPCParse.F(d, "layout_cell_size");
+            if (c.layoutCellSize <= 0f) c.layoutCellSize = 5f;
+            c.layoutCells = IPCParse.UShortArray(IPCParse.Get(d, "layout_cells"));
+            c.edgeOpenings = (int)IPCParse.L(d, "edge_openings");
+            c.macroId = (uint)IPCParse.L(d, "macro_id");
+            c.zoneKind = (int)IPCParse.L(d, "zone_kind");
+            c.macroLocal = IPCParse.IntArray2(IPCParse.Get(d, "macro_local"));
+            c.macroSize = IPCParse.IntArray2(IPCParse.Get(d, "macro_size"));
+            if (c.macroSize[0] <= 0) c.macroSize[0] = 1;
+            if (c.macroSize[1] <= 0) c.macroSize[1] = 1;
+            c.floorLevel = (int)IPCParse.L(d, "floor_level");
+            c.floorProfile = (int)IPCParse.L(d, "floor_profile");
+            c.ceilingProfile = (int)IPCParse.L(d, "ceiling_profile");
+            c.lightProfile = (int)IPCParse.L(d, "light_profile");
+            c.anomalyFlags = (int)IPCParse.L(d, "anomaly_flags");
+            c.verticalFlags = (int)IPCParse.L(d, "vertical_flags");
             return c;
         }
     }
@@ -135,6 +166,8 @@ namespace BackroomsSurvival.Net
     public class WorldStateMsg
     {
         public long tick;
+        public long worldSeed;
+        public long worldRevision;
         public LocalPlayerMsg localPlayer = new LocalPlayerMsg();
         public List<RemotePlayerMsg> remotePlayers = new List<RemotePlayerMsg>();
         public List<ChunkViewMsg> visibleChunks = new List<ChunkViewMsg>();
@@ -146,6 +179,8 @@ namespace BackroomsSurvival.Net
             var ws = new WorldStateMsg();
             if (d == null) return ws;
             ws.tick = IPCParse.L(d, "tick");
+            ws.worldSeed = IPCParse.L(d, "world_seed");
+            ws.worldRevision = IPCParse.L(d, "world_revision");
             ws.localPlayer = LocalPlayerMsg.Parse(IPCParse.Get(d, "local_player"));
 
             if (IPCParse.Get(d, "remote_players") is object[] rp)
@@ -217,6 +252,23 @@ namespace BackroomsSurvival.Net
             if (v is object[] a && a.Length >= 2)
                 return new[] { (int)ToLong(a[0]), (int)ToLong(a[1]) };
             return new[] { 0, 0 };
+        }
+
+        public static ushort[] UShortArray(object v)
+        {
+            if (v is object[] a)
+            {
+                var values = new ushort[a.Length];
+                for (int i = 0; i < a.Length; i++)
+                {
+                    long value = ToLong(a[i]);
+                    if (value < 0) value = 0;
+                    if (value > ushort.MaxValue) value = ushort.MaxValue;
+                    values[i] = (ushort)value;
+                }
+                return values;
+            }
+            return new ushort[0];
         }
     }
 }

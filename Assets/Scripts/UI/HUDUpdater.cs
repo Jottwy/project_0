@@ -96,6 +96,7 @@ namespace BackroomsSurvival.UI
 
                 _infoText.text =
                     $"tick {state.tick}   " +
+                    $"seed {state.worldSeed} rev {state.worldRevision}   " +
                     $"pos ({lp.position.x:0.0}, {lp.position.y:0.0}, {lp.position.z:0.0})   " +
                     $"chunks {state.visibleChunks.Count}  entities {state.visibleEntities.Count}  items {state.visibleItems.Count}   " +
                     $"RemotePlayers {state.remotePlayers.Count}";

@@ -58,6 +58,10 @@ namespace BackroomsSurvival.Gameplay
             {
                 if (!alive.Contains(kv.Key))
                 {
+                    var netObj = kv.Value != null ? kv.Value.GetComponent<NetworkWorldObject>() : null;
+                    if (netObj != null)
+                        netObj.active = false;
+                    Debug.Log($"MPTRACE step=AK event=unity_world_object_hidden target_id={kv.Key} kind=item revision={state.worldRevision}");
                     Destroy(kv.Value);
                     stale.Add(kv.Key);
                 }
@@ -71,7 +75,14 @@ namespace BackroomsSurvival.Gameplay
             go.name = $"Item_{iv.id}_{iv.itemType}";
             go.transform.localScale = new Vector3(0.3f, 0.3f, 0.3f);
             go.transform.position = iv.position + Vector3.up * 0.4f;
-            Destroy(go.GetComponent<Collider>());
+            var collider = go.GetComponent<Collider>();
+            if (collider != null)
+                collider.isTrigger = true;
+
+            var netObj = go.AddComponent<NetworkWorldObject>();
+            netObj.id = iv.id;
+            netObj.kind = "item";
+            netObj.active = true;
 
             if (_mats.TryGetValue(iv.itemType, out var mat))
                 go.GetComponent<Renderer>().sharedMaterial = mat;

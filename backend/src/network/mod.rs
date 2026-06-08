@@ -19,7 +19,7 @@ use tokio::sync::mpsc;
 
 use peer::PeerConnection;
 use protocol::{
-    encode_packet, decode_packet, ChunkSyncData, PacketHeader, PacketPayload, PeerInfo,
+    decode_packet, encode_packet, ChunkSyncData, PacketHeader, PacketPayload, PeerInfo,
     SessionConfig, HEADER_SIZE,
 };
 use reliability::is_reliable;
@@ -44,7 +44,17 @@ pub enum NetworkEvent {
         rotation: f32,
         animation: String,
     },
+    WorldInteractRequest {
+        requester_id: PeerId,
+        request_id: u64,
+        target_id: u32,
+        target_kind: String,
+        interaction_type: String,
+        player_position: [f32; 3],
+    },
     WorldSyncReceived {
+        world_seed: u64,
+        world_revision: u64,
         chunks: Vec<ChunkSyncData>,
     },
     ChunkTransferReceived {
@@ -99,6 +109,8 @@ pub struct NetworkManager {
     pending_connect_addr: Option<SocketAddr>,
     last_handshake_sent_at: Option<Instant>,
     handshake_attempts: u32,
+    last_keepalive_trace_at: HashMap<PeerId, Instant>,
+    last_transform_trace_at: HashMap<PeerId, Instant>,
 }
 
 impl NetworkManager {
@@ -113,6 +125,12 @@ impl NetworkManager {
         let socket = Arc::new(UdpSocket::bind(addr).await?);
         let local_addr = socket.local_addr()?;
         info!("UDP bound on {local_addr}");
+        info!(
+            "MPTRACE step=P event=network_state_init reason=bind self_id_before=<none> self_id_after={} peer_count_before=0 peer_count_after=0 endpoint={} role={}",
+            local_id,
+            local_addr,
+            if is_host { "host" } else { "joiner" }
+        );
 
         let (tx, rx) = mpsc::channel::<IncomingPacket>(512);
         let recv_socket = socket.clone();
@@ -132,11 +150,15 @@ impl NetworkManager {
             pending_connect_addr: None,
             last_handshake_sent_at: None,
             handshake_attempts: 0,
+            last_keepalive_trace_at: HashMap::new(),
+            last_transform_trace_at: HashMap::new(),
         })
     }
 
     pub fn local_addr(&self) -> SocketAddr {
-        self.socket.local_addr().unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap())
+        self.socket
+            .local_addr()
+            .unwrap_or_else(|_| "0.0.0.0:0".parse().unwrap())
     }
 
     fn timestamp(&self) -> u32 {
@@ -161,6 +183,14 @@ impl NetworkManager {
         info!(
             "Sending handshake to {addr} sender_id={} attempt={}",
             self.local_id, self.handshake_attempts
+        );
+        info!(
+            "MPTRACE step=A event=joiner_send_handshake self_id={} sender_id={} assigned_id=<none> peer_id=<none> endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids=[] attempt={}",
+            self.local_id,
+            self.local_id,
+            addr,
+            self.peers.len(),
+            self.handshake_attempts
         );
         let payload = PacketPayload::Handshake {
             player_name: self.local_name.clone(),
@@ -213,6 +243,8 @@ impl NetworkManager {
     /// Check for timed-out peers. Returns disconnect events.
     pub fn check_timeouts(&mut self) -> Vec<NetworkEvent> {
         let mut events = Vec::new();
+        let peer_count_before = self.peers.len();
+        let ids_before = self.peer_ids();
         let timed_out: Vec<PeerId> = self
             .peers
             .values()
@@ -220,14 +252,43 @@ impl NetworkManager {
             .map(|p| p.id)
             .collect();
 
+        if !timed_out.is_empty() || peer_count_before > 0 {
+            info!(
+                "MPTRACE step=O event=peer_cleanup_scan self_id={} peer_count_before={} peer_count_after=<pending> removed_ids={:?} threshold_ms=5000 peer_ids_before={:?}",
+                self.local_id,
+                peer_count_before,
+                timed_out,
+                ids_before
+            );
+        }
+
         for id in timed_out {
             if let Some(peer) = self.peers.remove(&id) {
                 info!("Peer {} ({}) timed out", peer.name, peer.addr);
+                info!(
+                    "MPTRACE step=L event=peer_removed reason=heartbeat_timeout self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} remote_players_ids={:?}",
+                    self.local_id,
+                    id,
+                    peer.addr,
+                    peer_count_before,
+                    self.peers.len(),
+                    self.peer_ids()
+                );
                 events.push(NetworkEvent::PeerDisconnected {
                     id,
                     reason: "heartbeat timeout".into(),
                 });
             }
+        }
+
+        if peer_count_before > 0 {
+            info!(
+                "MPTRACE step=M event=peer_registry_snapshot source=check_timeouts self_id={} peer_count={} peer_ids={:?} endpoints={:?}",
+                self.local_id,
+                self.peers.len(),
+                self.peer_ids(),
+                self.peer_endpoints()
+            );
         }
         events
     }
@@ -235,13 +296,14 @@ impl NetworkManager {
     /// Retransmit reliable packets that haven't been ACKed.
     pub async fn process_retransmits(&mut self) {
         let peer_ids: Vec<PeerId> = self.peers.keys().copied().collect();
-        let mut dead_peers = Vec::new();
+        let peer_count_before = self.peers.len();
+        let mut failed_reliable_peers = Vec::new();
 
         for pid in peer_ids {
             if let Some(peer) = self.peers.get_mut(&pid) {
                 let (retransmits, peer_dead) = peer.collect_retransmits();
                 if peer_dead {
-                    dead_peers.push(pid);
+                    failed_reliable_peers.push(pid);
                     continue;
                 }
                 for data in retransmits {
@@ -252,11 +314,26 @@ impl NetworkManager {
             }
         }
 
-        for pid in dead_peers {
-            if let Some(peer) = self.peers.remove(&pid) {
+        for pid in failed_reliable_peers {
+            let self_id = self.local_id;
+            let ids_after = self.peer_ids();
+            if let Some(peer) = self.peers.get_mut(&pid) {
+                let endpoint = peer.addr;
+                let queued = peer.reliable_queue.len();
+                peer.reliable_queue.clear();
                 warn!(
-                    "Peer {} ({}) dropped: too many retransmit failures",
-                    peer.name, peer.addr
+                    "Peer {} ({}) reliable queue dropped after too many retransmit failures; peer retained",
+                    peer.name, endpoint
+                );
+                info!(
+                    "MPTRACE step=L event=peer_reliable_queue_dropped reason=reliable_retransmit_exhausted_peer_retained self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} queued_reliable_before={} remote_players_ids={:?}",
+                    self_id,
+                    pid,
+                    endpoint,
+                    peer_count_before,
+                    peer_count_before,
+                    queued,
+                    ids_after
                 );
             }
         }
@@ -268,7 +345,8 @@ impl NetworkManager {
     pub async fn send_unreliable_to(&self, peer_id: PeerId, payload: &PacketPayload) {
         if let Some(peer) = self.peers.get(&peer_id) {
             let seq = 0; // unreliable packets don't need meaningful sequence
-            let header = PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
+            let header =
+                PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
             let data = encode_packet(&header, payload);
             let _ = self.socket.send_to(&data, peer.addr).await;
         }
@@ -335,9 +413,30 @@ impl NetworkManager {
         }
 
         // Update heartbeat for known peers by logical peer id. The socket address is transport only.
+        let mut log_last_seen_update = false;
         if let Some(peer) = self.peers.get_mut(&sender_id) {
             peer.addr = pkt.addr;
             peer.record_heartbeat();
+            let should_log = self
+                .last_keepalive_trace_at
+                .get(&sender_id)
+                .map(|last| last.elapsed() >= Duration::from_secs(1))
+                .unwrap_or(true);
+            if should_log {
+                self.last_keepalive_trace_at
+                    .insert(sender_id, Instant::now());
+                log_last_seen_update = true;
+            }
+        }
+        if log_last_seen_update {
+            info!(
+                "MPTRACE step=N event=peer_last_seen_update reason=packet_received self_id={} peer_id={} endpoint={} last_seen_ms=0 peer_count={} remote_players_ids={:?}",
+                self.local_id,
+                sender_id,
+                pkt.addr,
+                self.peers.len(),
+                self.peer_ids()
+            );
         }
 
         match pkt.payload {
@@ -349,7 +448,16 @@ impl NetworkManager {
                     "Received handshake from addr={} sender_id={} name={}",
                     pkt.addr, sender_id, player_name
                 );
-                self.handle_handshake(pkt.addr, sender_id, player_name, version).await
+                info!(
+                    "MPTRACE step=B event=host_receive_handshake self_id={} sender_id={} assigned_id=<pending> peer_id=<pending> endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+                    self.local_id,
+                    sender_id,
+                    pkt.addr,
+                    self.peers.len(),
+                    self.peer_ids()
+                );
+                self.handle_handshake(pkt.addr, sender_id, player_name, version)
+                    .await
             }
 
             PacketPayload::HandshakeAck {
@@ -369,7 +477,18 @@ impl NetworkManager {
             PacketPayload::Disconnect { reason } => {
                 let mut events = Vec::new();
                 if let Some(peer) = self.peers.remove(&sender_id) {
-                    info!("Peer {} ({}) disconnected: {}", peer.name, peer.addr, reason);
+                    info!(
+                        "Peer {} ({}) disconnected: {}",
+                        peer.name, peer.addr, reason
+                    );
+                    info!(
+                        "MPTRACE step=L event=peer_removed reason=disconnect_packet self_id={} peer_id={} endpoint={} peer_count_before=<unknown> peer_count_after={} remote_players_ids={:?}",
+                        self.local_id,
+                        sender_id,
+                        peer.addr,
+                        self.peers.len(),
+                        self.peer_ids()
+                    );
                     events.push(NetworkEvent::PeerDisconnected {
                         id: sender_id,
                         reason,
@@ -395,6 +514,27 @@ impl NetworkManager {
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.update_player_state(position, rotation, animation.clone());
                 }
+                let should_log = self
+                    .last_transform_trace_at
+                    .get(&sender_id)
+                    .map(|last| last.elapsed() >= Duration::from_secs(1))
+                    .unwrap_or(true);
+                if should_log {
+                    self.last_transform_trace_at
+                        .insert(sender_id, Instant::now());
+                    info!(
+                        "MPTRACE step=S event=receive_player_update self_id={} peer_id={} sender_id={} endpoint={} peer_count={} pos=({:.2},{:.2},{:.2}) rot={:.2}",
+                        self.local_id,
+                        sender_id,
+                        sender_id,
+                        pkt.addr,
+                        self.peers.len(),
+                        position[0],
+                        position[1],
+                        position[2],
+                        rotation
+                    );
+                }
                 vec![NetworkEvent::RemotePlayerUpdate {
                     id: sender_id,
                     position,
@@ -403,8 +543,25 @@ impl NetworkManager {
                 }]
             }
 
-            PacketPayload::WorldSync { chunks } => {
-                vec![NetworkEvent::WorldSyncReceived { chunks }]
+            PacketPayload::WorldSync {
+                world_seed,
+                world_revision,
+                chunks,
+            } => {
+                info!(
+                    "MPTRACE step=Y event=receive_world_snapshot self_id={} from_peer={} revision={} chunks={} entities={} items={}",
+                    self.local_id,
+                    sender_id,
+                    world_revision,
+                    chunks.len(),
+                    chunks.iter().map(|c| c.entities.len()).sum::<usize>(),
+                    chunks.iter().map(|c| c.items.len()).sum::<usize>()
+                );
+                vec![NetworkEvent::WorldSyncReceived {
+                    world_seed,
+                    world_revision,
+                    chunks,
+                }]
             }
 
             PacketPayload::ChunkState { data } => {
@@ -466,7 +623,9 @@ impl NetworkManager {
                 vec![]
             }
 
-            PacketPayload::Nack { requested_sequence: _ } => {
+            PacketPayload::Nack {
+                requested_sequence: _,
+            } => {
                 // Future: retransmit the requested packet.
                 vec![]
             }
@@ -479,8 +638,34 @@ impl NetworkManager {
             }
 
             // Action packets — forward to game loop as-is.
-            PacketPayload::Interact { .. }
-            | PacketPayload::Attack { .. }
+            PacketPayload::Interact {
+                requester_id,
+                request_id,
+                target_id,
+                target_kind,
+                interaction_type,
+                player_position,
+            } => {
+                info!(
+                    "MPTRACE step=AE event=host_receive_interact_request self_id={} requester_id={} target_id={} request_id={} kind={} type={}",
+                    self.local_id,
+                    requester_id,
+                    target_id,
+                    request_id,
+                    target_kind,
+                    interaction_type
+                );
+                vec![NetworkEvent::WorldInteractRequest {
+                    requester_id,
+                    request_id,
+                    target_id,
+                    target_kind,
+                    interaction_type,
+                    player_position,
+                }]
+            }
+
+            PacketPayload::Attack { .. }
             | PacketPayload::Pickup { .. }
             | PacketPayload::Drop { .. }
             | PacketPayload::Craft { .. }
@@ -506,10 +691,20 @@ impl NetworkManager {
             return vec![];
         }
 
-        if let Some(existing) = self.peers.values().find(|p| p.addr == from_addr) {
+        if let Some(existing) = self.peers.get(&sender_id) {
             info!(
-                "Duplicate handshake from addr={} sender_id={} already assigned id={}",
+                "Duplicate handshake from addr={} sender_id={} peer_id={}",
                 from_addr, sender_id, existing.id
+            );
+            info!(
+                "MPTRACE step=C event=host_peer_already_registered self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+                self.local_id,
+                sender_id,
+                existing.id,
+                existing.id,
+                from_addr,
+                self.peers.len(),
+                self.peer_ids()
             );
             let ack_payload = PacketPayload::HandshakeAck {
                 assigned_id: existing.id,
@@ -528,13 +723,75 @@ impl NetworkManager {
                 anchors: vec![],
                 stabilizers: vec![],
             };
-            info!("Sending handshake ACK to {} assigned_id={}", from_addr, existing.id);
+            info!(
+                "Sending handshake ACK to {} assigned_id={}",
+                from_addr, existing.id
+            );
+            info!(
+                "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+                self.local_id,
+                sender_id,
+                existing.id,
+                existing.id,
+                from_addr,
+                self.peers.len(),
+                self.peer_ids()
+            );
             self.send_raw_to(from_addr, &ack_payload).await;
             return vec![];
         }
 
-        let assigned_id = self.next_peer_id;
-        self.next_peer_id += 1;
+        if let Some(existing) = self.peers.values().find(|p| p.addr == from_addr) {
+            info!(
+                "Duplicate handshake from addr={} sender_id={} already assigned id={}",
+                from_addr, sender_id, existing.id
+            );
+            info!(
+                "MPTRACE step=C event=host_peer_already_registered_by_endpoint self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+                self.local_id,
+                sender_id,
+                existing.id,
+                existing.id,
+                from_addr,
+                self.peers.len(),
+                self.peer_ids()
+            );
+            let ack_payload = PacketPayload::HandshakeAck {
+                assigned_id: existing.id,
+                world_seed: self.world_seed,
+                config: SessionConfig::default(),
+                peers: self
+                    .peers
+                    .values()
+                    .map(|p| PeerInfo {
+                        id: p.id,
+                        name: p.name.clone(),
+                        addr: p.addr.to_string(),
+                        position: p.position,
+                    })
+                    .collect(),
+                anchors: vec![],
+                stabilizers: vec![],
+            };
+            info!(
+                "Sending handshake ACK to {} assigned_id={}",
+                from_addr, existing.id
+            );
+            info!(
+                "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+                self.local_id,
+                sender_id,
+                existing.id,
+                existing.id,
+                from_addr,
+                self.peers.len(),
+                self.peer_ids()
+            );
+            self.send_raw_to(from_addr, &ack_payload).await;
+            return vec![];
+        }
+
+        let assigned_id = self.allocate_peer_id(sender_id);
 
         info!(
             "New peer connecting sender_id={} name={} from {} -> assigned id {}",
@@ -544,6 +801,16 @@ impl NetworkManager {
         // Add the peer.
         let peer = PeerConnection::new(assigned_id, player_name.clone(), from_addr);
         self.peers.insert(assigned_id, peer);
+        info!(
+            "MPTRACE step=C event=host_register_peer self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+            self.local_id,
+            sender_id,
+            assigned_id,
+            assigned_id,
+            from_addr,
+            self.peers.len(),
+            self.peer_ids()
+        );
 
         // Send HandshakeAck with world info.
         let ack_payload = PacketPayload::HandshakeAck {
@@ -563,7 +830,20 @@ impl NetworkManager {
             anchors: vec![],
             stabilizers: vec![],
         };
-        info!("Sending handshake ACK to {} assigned_id={}", from_addr, assigned_id);
+        info!(
+            "Sending handshake ACK to {} assigned_id={}",
+            from_addr, assigned_id
+        );
+        info!(
+            "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+            self.local_id,
+            sender_id,
+            assigned_id,
+            assigned_id,
+            from_addr,
+            self.peers.len(),
+            self.peer_ids()
+        );
         self.send_raw_to(from_addr, &ack_payload).await;
 
         vec![NetworkEvent::PeerConnected {
@@ -592,6 +872,16 @@ impl NetworkManager {
             world_seed,
             peers.len()
         );
+        info!(
+            "MPTRACE step=E event=joiner_receive_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+            self.local_id,
+            sender_id,
+            assigned_id,
+            sender_id,
+            from_addr,
+            self.peers.len(),
+            self.peer_ids()
+        );
 
         // Update our local ID to the one assigned by the host.
         self.local_id = assigned_id;
@@ -601,6 +891,16 @@ impl NetworkManager {
         // Add the host as a peer.
         let host_peer = PeerConnection::new(sender_id, format!("Host"), from_addr);
         self.peers.insert(sender_id, host_peer);
+        info!(
+            "MPTRACE step=F event=joiner_register_host self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+            self.local_id,
+            sender_id,
+            assigned_id,
+            sender_id,
+            from_addr,
+            self.peers.len(),
+            self.peer_ids()
+        );
 
         vec![NetworkEvent::PeerConnected {
             id: sender_id,
@@ -610,6 +910,48 @@ impl NetworkManager {
 
     pub fn peer_count(&self) -> usize {
         self.peers.len()
+    }
+
+    pub fn peer_ids(&self) -> Vec<PeerId> {
+        let mut ids: Vec<PeerId> = self.peers.keys().copied().collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    pub fn peer_endpoints(&self) -> Vec<String> {
+        let mut endpoints: Vec<String> = self
+            .peers
+            .values()
+            .map(|p| format!("{}={}", p.id, p.addr))
+            .collect();
+        endpoints.sort();
+        endpoints
+    }
+
+    fn allocate_peer_id(&mut self, requested_id: PeerId) -> PeerId {
+        if requested_id != 0
+            && requested_id != self.local_id
+            && !self.peers.contains_key(&requested_id)
+        {
+            return requested_id;
+        }
+
+        while self.next_peer_id == 0
+            || self.next_peer_id == self.local_id
+            || self.peers.contains_key(&self.next_peer_id)
+        {
+            self.next_peer_id = self.next_peer_id.wrapping_add(1);
+            if self.next_peer_id < 2 {
+                self.next_peer_id = 2;
+            }
+        }
+
+        let assigned_id = self.next_peer_id;
+        self.next_peer_id = self.next_peer_id.wrapping_add(1);
+        if self.next_peer_id < 2 {
+            self.next_peer_id = 2;
+        }
+        assigned_id
     }
 }
 
@@ -698,6 +1040,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn host_honors_requested_peer_id_when_available() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+
+        let mut joiner = NetworkManager::bind(0, 4876, 0, false).await.unwrap();
+        joiner.initiate_connection(host_addr).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        host.process_incoming().await;
+        assert!(
+            host.peers.contains_key(&4876),
+            "host should register the joiner by requested NET_ID"
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        joiner.process_incoming().await;
+        assert_eq!(joiner.local_id, 4876);
+    }
+
+    #[tokio::test]
+    async fn host_assigns_fallback_id_on_requested_id_conflict() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+
+        let mut joiner = NetworkManager::bind(0, 1, 0, false).await.unwrap();
+        joiner.initiate_connection(host_addr).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        host.process_incoming().await;
+        let assigned_id = host
+            .peers
+            .keys()
+            .next()
+            .copied()
+            .expect("host should register a peer");
+        assert_ne!(assigned_id, 1);
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        joiner.process_incoming().await;
+        assert_eq!(joiner.local_id, assigned_id);
+    }
+
+    #[tokio::test]
     async fn player_update_round_trip() {
         let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let host_addr = loopback_addr(&host);
@@ -721,11 +1106,12 @@ mod tests {
         let update = events
             .iter()
             .find(|e| matches!(e, NetworkEvent::RemotePlayerUpdate { .. }));
-        assert!(update.is_some(), "joiner should see player update, got: {events:?}");
+        assert!(
+            update.is_some(),
+            "joiner should see player update, got: {events:?}"
+        );
         if let Some(NetworkEvent::RemotePlayerUpdate {
-            position,
-            rotation,
-            ..
+            position, rotation, ..
         }) = update
         {
             assert_eq!(*position, [10.0, 1.8, 20.0]);
@@ -767,6 +1153,36 @@ mod tests {
             Some(0),
             "reliable queue should be empty after ACK"
         );
+    }
+
+    #[tokio::test]
+    async fn reliable_retransmit_failure_does_not_remove_peer() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let peer_id = 2;
+        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        host.peers
+            .insert(peer_id, PeerConnection::new(peer_id, "Joiner".into(), addr));
+
+        let payload = PacketPayload::Disconnect {
+            reason: "test reliable packet".into(),
+        };
+        host.send_reliable(peer_id, &payload).await;
+
+        {
+            let peer = host.peers.get_mut(&peer_id).unwrap();
+            for packet in peer.reliable_queue.iter_mut() {
+                packet.retries = reliability::MAX_RETRIES;
+                packet.next_retry_at = Instant::now() - Duration::from_millis(1);
+            }
+        }
+
+        host.process_retransmits().await;
+
+        assert!(
+            host.peers.contains_key(&peer_id),
+            "reliable retransmit exhaustion must not remove a connected peer"
+        );
+        assert_eq!(host.peers[&peer_id].reliable_queue.len(), 0);
     }
 
     #[tokio::test]

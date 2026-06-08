@@ -84,6 +84,8 @@ pub enum ServerMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorldState {
     pub tick: u64,
+    pub world_seed: u64,
+    pub world_revision: u64,
     pub local_player: LocalPlayerState,
     pub remote_players: Vec<RemotePlayerState>,
     pub visible_chunks: Vec<ChunkView>,
@@ -125,6 +127,20 @@ pub struct ChunkView {
     pub mirrored: bool,
     pub state: String,
     pub has_workbench: bool,
+    pub layout_grid_size: u8,
+    pub layout_cell_size: f32,
+    pub layout_cells: Vec<u16>,
+    pub edge_openings: u8,
+    pub macro_id: u32,
+    pub zone_kind: u8,
+    pub macro_local: [u8; 2],
+    pub macro_size: [u8; 2],
+    pub floor_level: i8,
+    pub floor_profile: u8,
+    pub ceiling_profile: u8,
+    pub light_profile: u8,
+    pub anomaly_flags: u16,
+    pub vertical_flags: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -184,10 +200,17 @@ mod tests {
     fn server_message_round_trips() {
         let msg = ServerMessage::WorldState(WorldState {
             tick: 42,
+            world_seed: 42,
+            world_revision: 1,
             local_player: LocalPlayerState {
                 position: [1.0, 1.8, 2.0],
                 rotation: 90.0,
-                stats: StatsView { health: 100.0, hunger: 60.0, thirst: 45.0, sanity: 70.0 },
+                stats: StatsView {
+                    health: 100.0,
+                    hunger: 60.0,
+                    thirst: 45.0,
+                    sanity: 70.0,
+                },
                 speed_modifier: 1.0,
                 inventory_changed: false,
             },
@@ -209,10 +232,17 @@ mod tests {
     fn world_state_with_chunks_and_entities_round_trips() {
         let msg = ServerMessage::WorldState(WorldState {
             tick: 100,
+            world_seed: 42,
+            world_revision: 7,
             local_player: LocalPlayerState {
                 position: [10.0, 1.8, 20.0],
                 rotation: 45.0,
-                stats: StatsView { health: 80.0, hunger: 50.0, thirst: 40.0, sanity: 30.0 },
+                stats: StatsView {
+                    health: 80.0,
+                    hunger: 50.0,
+                    thirst: 40.0,
+                    sanity: 30.0,
+                },
                 speed_modifier: 0.7,
                 inventory_changed: true,
             },
@@ -224,6 +254,23 @@ mod tests {
                 mirrored: true,
                 state: "random".into(),
                 has_workbench: true,
+                layout_grid_size: crate::world::chunk::LAYOUT_GRID_SIZE,
+                layout_cell_size: crate::world::chunk::LAYOUT_CELL_SIZE,
+                layout_cells: vec![crate::world::chunk::CELL_WALKABLE; 100],
+                edge_openings: crate::world::chunk::EDGE_NORTH
+                    | crate::world::chunk::EDGE_EAST
+                    | crate::world::chunk::EDGE_SOUTH
+                    | crate::world::chunk::EDGE_WEST,
+                macro_id: 0,
+                zone_kind: crate::world::chunk::ZONE_NORMAL,
+                macro_local: [0, 0],
+                macro_size: [1, 1],
+                floor_level: 0,
+                floor_profile: crate::world::chunk::FLOOR_FLAT,
+                ceiling_profile: crate::world::chunk::CEILING_NORMAL,
+                light_profile: crate::world::chunk::LIGHT_NORMAL,
+                anomaly_flags: 0,
+                vertical_flags: 0,
             }],
             visible_entities: vec![EntityView {
                 id: 1,
@@ -245,6 +292,8 @@ mod tests {
         match decoded {
             ServerMessage::WorldState(ws) => {
                 assert_eq!(ws.tick, 100);
+                assert_eq!(ws.world_seed, 42);
+                assert_eq!(ws.world_revision, 7);
                 assert_eq!(ws.visible_chunks.len(), 1);
                 assert_eq!(ws.visible_chunks[0].template_id, 3);
                 assert_eq!(ws.visible_entities.len(), 1);

@@ -30,12 +30,20 @@ namespace BackroomsSurvival.Gameplay
         [Tooltip("How quickly the body eases toward the backend's authoritative position.")]
         public float positionSmoothing = 18f;
 
+        [Header("Collision Proxy V0")]
+        public bool enableClientCollision = true;
+        public LayerMask worldCollisionMask = Physics.DefaultRaycastLayers;
+        public float collisionRadius = 0.35f;
+        public float collisionHeight = 1.75f;
+        public float collisionProbeDistance = 0.70f;
+
         private IPCClient _ipc;
         private Transform _camera;
         private float _yaw;
         private float _pitch;
         private bool _hasSpawned;
         private bool _cursorLocked = true;
+        private float _nextTransformSentLogTime;
         private readonly List<string> _queuedActions = new List<string>(4);
 
         private void Awake()
@@ -92,10 +100,17 @@ namespace BackroomsSurvival.Gameplay
             HandleCursorToggle(keyboard);
             HandleLook(mouse, out Vector2 lookDelta);
             Vector3 movement = ReadMovement(keyboard, out bool sprint);
+            movement = FilterMovementForCollision(movement);
             CollectActions(keyboard, mouse);
 
             // Send input to the authoritative backend.
             _ipc.SendInput(movement, lookDelta, sprint, _queuedActions);
+            if (Time.unscaledTime >= _nextTransformSentLogTime)
+            {
+                int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+                Debug.Log($"MPTRACE step=V event=local_transform_sent self_id={selfId} pos=({transform.position.x:F2},{transform.position.y:F2},{transform.position.z:F2}) rot={_yaw:F2} movement=({movement.x:F2},{movement.y:F2},{movement.z:F2})");
+                _nextTransformSentLogTime = Time.unscaledTime + 1f;
+            }
             // Discrete actions go on their own channel too (backend handles them separately).
             for (int i = 0; i < _queuedActions.Count; i++) _ipc.SendAction(_queuedActions[i]);
             _queuedActions.Clear();
@@ -134,6 +149,41 @@ namespace BackroomsSurvival.Gameplay
             dir.y = 0f;
             if (dir.sqrMagnitude > 1f) dir.Normalize();
             return dir;
+        }
+
+        private Vector3 FilterMovementForCollision(Vector3 movement)
+        {
+            if (!enableClientCollision || !_hasSpawned || movement.sqrMagnitude < 0.0001f)
+                return movement;
+
+            Vector3 desired = movement.normalized;
+            if (!CapsuleBlocked(desired, out RaycastHit hit))
+                return movement;
+
+            Vector3 slide = Vector3.ProjectOnPlane(movement, hit.normal);
+            slide.y = 0f;
+            if (slide.sqrMagnitude < 0.0001f)
+                return Vector3.zero;
+
+            slide.Normalize();
+            return CapsuleBlocked(slide, out _) ? Vector3.zero : slide;
+        }
+
+        private bool CapsuleBlocked(Vector3 direction, out RaycastHit hit)
+        {
+            Vector3 p = transform.position;
+            Vector3 bottom = new Vector3(p.x, collisionRadius + 0.05f, p.z);
+            Vector3 top = new Vector3(p.x, Mathf.Max(collisionHeight - collisionRadius, bottom.y + 0.1f), p.z);
+
+            return Physics.CapsuleCast(
+                bottom,
+                top,
+                collisionRadius,
+                direction,
+                out hit,
+                collisionProbeDistance,
+                worldCollisionMask,
+                QueryTriggerInteraction.Ignore);
         }
 
         private void CollectActions(Keyboard keyboard, Mouse mouse)

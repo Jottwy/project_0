@@ -84,8 +84,7 @@ async fn main() {
         .expect("Failed to bind P2P UDP socket");
 
     // Set player name.
-    let net_name = std::env::var("NET_NAME")
-        .unwrap_or_else(|_| format!("Player{net_id}"));
+    let net_name = std::env::var("NET_NAME").unwrap_or_else(|_| format!("Player{net_id}"));
     net.local_name = net_name;
 
     info!(

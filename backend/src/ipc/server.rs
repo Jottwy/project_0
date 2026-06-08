@@ -97,6 +97,29 @@ async fn write_loop(mut writer: OwnedWriteHalf, mut state_rx: broadcast::Receive
         match state_rx.recv().await {
             Ok(msg) => match encode(&msg) {
                 Ok(frame) => {
+                    if let ServerMessage::WorldState(ws) = &msg {
+                        let remote_ids: Vec<u16> = ws.remote_players.iter().map(|p| p.id).collect();
+                        info!(
+                            "MPTRACE step=I event=ipc_serialize_world_state self_id=<unknown> sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=ipc peer_count=<unknown> remote_players_count={} remote_players_ids={:?} seed={} revision={} chunks={} entities={} items={}",
+                            ws.remote_players.len(),
+                            remote_ids,
+                            ws.world_seed,
+                            ws.world_revision,
+                            ws.visible_chunks.len(),
+                            ws.visible_entities.len(),
+                            ws.visible_items.len()
+                        );
+                        let layout_chunks = ws
+                            .visible_chunks
+                            .iter()
+                            .filter(|chunk| chunk.layout_cells.len() == 100)
+                            .count();
+                        info!(
+                            "MPTRACE step=CC event=chunk_layout_sync chunks={} layout_chunks={} fields=edge_openings,macro_id,zone_kind,floor_profile,layout_cells",
+                            ws.visible_chunks.len(),
+                            layout_chunks
+                        );
+                    }
                     if writer.write_all(&frame).await.is_err() {
                         break;
                     }

@@ -11,14 +11,22 @@ pub struct Vec3 {
 }
 
 impl Vec3 {
-    pub const ZERO: Vec3 = Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+    pub const ZERO: Vec3 = Vec3 {
+        x: 0.0,
+        y: 0.0,
+        z: 0.0,
+    };
 
     pub fn new(x: f32, y: f32, z: f32) -> Self {
         Self { x, y, z }
     }
 
     pub fn from_array(a: [f32; 3]) -> Self {
-        Self { x: a[0], y: a[1], z: a[2] }
+        Self {
+            x: a[0],
+            y: a[1],
+            z: a[2],
+        }
     }
 
     pub fn to_array(self) -> [f32; 3] {

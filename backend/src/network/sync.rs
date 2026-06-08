@@ -34,6 +34,7 @@ pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
         rotation: chunk.rotation,
         mirrored: chunk.mirrored,
         has_workbench: chunk.has_workbench,
+        layout: chunk.layout.clone(),
         stabilized,
         anchored,
         teleport_timer: chunk.teleport_timer,
@@ -114,6 +115,17 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         player.position.y,
         player.position.z
     );
+    if net.session_start.elapsed().as_millis() % 1000 < 120 {
+        info!(
+            "MPTRACE step=R event=send_player_update self_id={} peer_count={} pos=({:.2},{:.2},{:.2}) rot={:.2}",
+            net.local_id,
+            net.peers.len(),
+            player.position.x,
+            player.position.y,
+            player.position.z,
+            player.rotation
+        );
+    }
     net.broadcast_unreliable(&payload).await;
 }
 
@@ -147,14 +159,46 @@ pub async fn send_world_sync(
     player: &Player,
 ) {
     let chunks: Vec<ChunkSyncData> = world.chunks.values().map(chunk_to_sync_data).collect();
+    let entity_count: usize = chunks.iter().map(|c| c.entities.len()).sum();
+    let item_count: usize = chunks.iter().map(|c| c.items.len()).sum();
 
-    let payload = PacketPayload::WorldSync { chunks };
+    info!(
+        "MPTRACE step=W event=host_world_snapshot_created self_id={} seed={} revision={} chunks={} entities={} items={}",
+        net.local_id,
+        world.seed,
+        world.revision,
+        chunks.len(),
+        entity_count,
+        item_count
+    );
+    info!(
+        "MPTRACE step=X event=send_world_snapshot self_id={} peer_id={} revision={} chunks={} entities={} items={}",
+        net.local_id,
+        peer_id,
+        world.revision,
+        chunks.len(),
+        entity_count,
+        item_count
+    );
+
+    let payload = PacketPayload::WorldSync {
+        world_seed: world.seed,
+        world_revision: world.revision,
+        chunks,
+    };
     net.send_reliable(peer_id, &payload).await;
 
     let peer_list_payload = PacketPayload::PeerList {
         peers: build_peer_list(net, player),
     };
     net.broadcast_unreliable(&peer_list_payload).await;
+}
+
+pub async fn broadcast_world_sync(net: &mut NetworkManager, world: &World, player: &Player) {
+    let peer_ids: Vec<PeerId> = net.peers.keys().copied().collect();
+    for peer_id in peer_ids {
+        send_world_sync(net, peer_id, world, player).await;
+    }
 }
 
 /// Send a chunk transfer to a specific peer (ownership handoff).

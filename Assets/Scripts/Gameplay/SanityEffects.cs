@@ -6,6 +6,8 @@ namespace BackroomsSurvival.Gameplay
 {
     public sealed class SanityEffects : MonoBehaviour
     {
+        public bool enableDevFreezeSurvival;
+
         private Canvas _canvas;
         private Image _vignetteImage;
         private Image _distortionImage;
@@ -16,6 +18,10 @@ namespace BackroomsSurvival.Gameplay
 
         private void Start()
         {
+            enableDevFreezeSurvival = EnvFlagEnabled("DEV_FREEZE_SURVIVAL");
+            if (enableDevFreezeSurvival)
+                Debug.Log("DEV_FREEZE_SURVIVAL active: sanity visual effects disabled");
+
             _cam = Camera.main;
             if (_cam != null) _baseFov = _cam.fieldOfView;
 
@@ -53,15 +59,19 @@ namespace BackroomsSurvival.Gameplay
             var state = ipc.LatestState;
             if (state == null || state.localPlayer == null) return;
 
+            if (enableDevFreezeSurvival)
+            {
+                ClearEffects();
+                return;
+            }
+
             float sanity = state.localPlayer.stats.sanity;
             _pulsePhase += Time.deltaTime;
 
             if (sanity >= 50f)
             {
                 // Normal — no effects.
-                _vignetteImage.color = new Color(0f, 0f, 0f, 0f);
-                _distortionImage.color = new Color(0.3f, 0f, 0.2f, 0f);
-                ResetFov();
+                ClearEffects();
                 return;
             }
 
@@ -98,6 +108,27 @@ namespace BackroomsSurvival.Gameplay
         {
             if (_cam != null && Mathf.Abs(_cam.fieldOfView - _baseFov) > 0.01f)
                 _cam.fieldOfView = _baseFov;
+        }
+
+        private void ClearEffects()
+        {
+            if (_vignetteImage != null)
+                _vignetteImage.color = new Color(0f, 0f, 0f, 0f);
+            if (_distortionImage != null)
+                _distortionImage.color = new Color(0.3f, 0f, 0.2f, 0f);
+            ResetFov();
+        }
+
+        private static bool EnvFlagEnabled(string name)
+        {
+            string value = System.Environment.GetEnvironmentVariable(name);
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            return value == "1" ||
+                   value.Equals("true", System.StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("yes", System.StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("on", System.StringComparison.OrdinalIgnoreCase);
         }
 
         private void OnDestroy()

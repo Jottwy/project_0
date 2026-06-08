@@ -287,7 +287,11 @@ namespace BackroomsSurvival.Net
                     var ws = WorldStateMsg.Parse(root);
                     if (Environment.TickCount >= _nextRemotePlayersLogTick)
                     {
-                        Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count}");
+                        var ids = ws.remotePlayers.ConvertAll(r => r.id.ToString());
+                        Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count} ids=[{string.Join(",", ids)}]");
+                        int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+                        Debug.Log($"MPTRACE step=J event=unity_parse_world_state self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint={serverAddress}:{port} peer_count=<unknown> remote_players_count={ws.remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
+                        Debug.Log($"MPTRACE step=AA event=unity_parse_world_snapshot seed={ws.worldSeed} revision={ws.worldRevision} chunks={ws.visibleChunks.Count} entities={ws.visibleEntities.Count} items={ws.visibleItems.Count}");
                         _nextRemotePlayersLogTick = Environment.TickCount + 2000;
                     }
                     _latestState = ws;
@@ -360,6 +364,22 @@ namespace BackroomsSurvival.Net
             w.WriteString("type"); w.WriteString("action");
             w.WriteString("action_type"); w.WriteString(actionType);
             w.WriteString("data"); w.WriteNil();
+            SendFrame(w.ToArray());
+        }
+
+        public void SendWorldInteractRequest(long requestId, uint targetId, string targetKind, string interactionType, Vector3 playerPosition)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("world_interact");
+            w.WriteString("data"); w.WriteMapHeader(5);
+            w.WriteString("request_id"); w.WriteInt(requestId);
+            w.WriteString("target_id"); w.WriteInt(targetId);
+            w.WriteString("target_kind"); w.WriteString(targetKind);
+            w.WriteString("interaction_type"); w.WriteString(interactionType);
+            w.WriteString("player_position"); w.WriteArrayHeader(3);
+            w.WriteFloat(playerPosition.x); w.WriteFloat(playerPosition.y); w.WriteFloat(playerPosition.z);
             SendFrame(w.ToArray());
         }
 

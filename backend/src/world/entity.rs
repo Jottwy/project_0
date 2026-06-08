@@ -181,7 +181,10 @@ impl Entity {
             EntityState::Dead { mut despawn_timer } => {
                 despawn_timer -= dt;
                 if despawn_timer <= 0.0 {
-                    return (EntityState::Dead { despawn_timer: 0.0 }, EntityEvent::Despawned);
+                    return (
+                        EntityState::Dead { despawn_timer: 0.0 },
+                        EntityEvent::Despawned,
+                    );
                 }
                 (EntityState::Dead { despawn_timer }, EntityEvent::None)
             }
@@ -189,17 +192,38 @@ impl Entity {
                 self.tick_wander(dt, chunk_pos, rng);
                 let dist = self.position.distance_xz(player_pos);
                 if dist < AGGRO_RANGE {
-                    (EntityState::Aggro { target: player_id, attack_cooldown: 0.0 }, EntityEvent::None)
+                    (
+                        EntityState::Aggro {
+                            target: player_id,
+                            attack_cooldown: 0.0,
+                        },
+                        EntityEvent::None,
+                    )
                 } else if dist < ALERT_RANGE {
-                    (EntityState::Alert { last_known_pos: player_pos, search_timer: SEARCH_TIME }, EntityEvent::None)
+                    (
+                        EntityState::Alert {
+                            last_known_pos: player_pos,
+                            search_timer: SEARCH_TIME,
+                        },
+                        EntityEvent::None,
+                    )
                 } else {
                     (EntityState::Idle, EntityEvent::None)
                 }
             }
-            EntityState::Alert { mut last_known_pos, mut search_timer } => {
+            EntityState::Alert {
+                mut last_known_pos,
+                mut search_timer,
+            } => {
                 let dist_to_player = self.position.distance_xz(player_pos);
                 if dist_to_player < AGGRO_RANGE {
-                    return (EntityState::Aggro { target: player_id, attack_cooldown: 0.0 }, EntityEvent::None);
+                    return (
+                        EntityState::Aggro {
+                            target: player_id,
+                            attack_cooldown: 0.0,
+                        },
+                        EntityEvent::None,
+                    );
                 }
                 if dist_to_player < ALERT_RANGE {
                     last_known_pos = player_pos;
@@ -214,10 +238,19 @@ impl Entity {
                 if search_timer <= 0.0 {
                     (EntityState::Idle, EntityEvent::None)
                 } else {
-                    (EntityState::Alert { last_known_pos, search_timer }, EntityEvent::None)
+                    (
+                        EntityState::Alert {
+                            last_known_pos,
+                            search_timer,
+                        },
+                        EntityEvent::None,
+                    )
                 }
             }
-            EntityState::Aggro { target, mut attack_cooldown } => {
+            EntityState::Aggro {
+                target,
+                mut attack_cooldown,
+            } => {
                 let dist = self.position.distance_xz(player_pos);
                 if dist > DISENGAGE_RANGE {
                     return (EntityState::Idle, EntityEvent::None);
@@ -232,9 +265,24 @@ impl Entity {
                 attack_cooldown -= dt;
                 if dist <= ATTACK_RANGE && attack_cooldown <= 0.0 {
                     attack_cooldown = ATTACK_COOLDOWN;
-                    (EntityState::Aggro { target, attack_cooldown }, EntityEvent::AttackPlayer { target: player_id, damage: ATTACK_DAMAGE })
+                    (
+                        EntityState::Aggro {
+                            target,
+                            attack_cooldown,
+                        },
+                        EntityEvent::AttackPlayer {
+                            target: player_id,
+                            damage: ATTACK_DAMAGE,
+                        },
+                    )
                 } else {
-                    (EntityState::Aggro { target, attack_cooldown }, EntityEvent::None)
+                    (
+                        EntityState::Aggro {
+                            target,
+                            attack_cooldown,
+                        },
+                        EntityEvent::None,
+                    )
                 }
             }
         }
@@ -305,7 +353,10 @@ mod tests {
     #[test]
     fn aggro_entity_attacks_at_close_range() {
         let mut e = make_entity(Vec3::new(25.0, 0.0, 25.0));
-        e.state = EntityState::Aggro { target: 1, attack_cooldown: 0.0 };
+        e.state = EntityState::Aggro {
+            target: 1,
+            attack_cooldown: 0.0,
+        };
         let mut rng = StdRng::seed_from_u64(0);
         let player = Vec3::new(26.0, 0.0, 25.0); // 1 unit — within ATTACK_RANGE(2)
         let event = e.update(0.1, player, 1, (0, 0), &mut rng);
@@ -315,7 +366,10 @@ mod tests {
     #[test]
     fn entity_disengages_when_player_far() {
         let mut e = make_entity(Vec3::new(25.0, 0.0, 25.0));
-        e.state = EntityState::Aggro { target: 1, attack_cooldown: 0.0 };
+        e.state = EntityState::Aggro {
+            target: 1,
+            attack_cooldown: 0.0,
+        };
         let mut rng = StdRng::seed_from_u64(0);
         let player = Vec3::new(60.0, 0.0, 25.0); // 35 units — > DISENGAGE_RANGE(25)
         e.update(0.1, player, 1, (0, 0), &mut rng);

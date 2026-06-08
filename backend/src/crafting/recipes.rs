@@ -28,7 +28,11 @@ pub struct Recipe {
 }
 
 fn ing(item: Item, quantity: u16) -> Ingredient {
-    Ingredient { item, quantity, consumed: true }
+    Ingredient {
+        item,
+        quantity,
+        consumed: true,
+    }
 }
 
 /// All craftable recipes (ARCHITECTURE_V1.md / Task 1.7).
@@ -38,7 +42,11 @@ pub fn all_recipes() -> Vec<Recipe> {
             id: "stabilizer_t1",
             output: Item::Stabilizer(StabilizerTier::T1),
             output_quantity: 1,
-            ingredients: vec![ing(Item::Metal, 10), ing(Item::Circuit, 5), ing(Item::Battery, 1)],
+            ingredients: vec![
+                ing(Item::Metal, 10),
+                ing(Item::Circuit, 5),
+                ing(Item::Battery, 1),
+            ],
             craft_time_secs: 0.0,
             requires_workbench: true,
         },
@@ -74,7 +82,11 @@ pub fn all_recipes() -> Vec<Recipe> {
             output_quantity: 1,
             ingredients: vec![
                 ing(Item::Cable, 50),
-                Ingredient { item: Item::Tool, quantity: 1, consumed: false },
+                Ingredient {
+                    item: Item::Tool,
+                    quantity: 1,
+                    consumed: false,
+                },
             ],
             craft_time_secs: 25.0 * 60.0,
             requires_workbench: true,

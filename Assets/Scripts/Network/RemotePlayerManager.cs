@@ -21,6 +21,8 @@ namespace BackroomsSurvival.Net
 
         [Header("Default Avatar")]
         public Color defaultAvatarColor = new Color(0.3f, 0.6f, 1f, 1f);
+        public Color remoteMarkerColor = new Color(0.1f, 0.95f, 1f, 1f);
+        [Min(0f)] public float missingRemoteGraceSeconds = 3f;
 
         private readonly Dictionary<int, RemotePlayerView> _active = new Dictionary<int, RemotePlayerView>();
         private readonly Queue<RemotePlayerView> _pool = new Queue<RemotePlayerView>();
@@ -67,9 +69,13 @@ namespace BackroomsSurvival.Net
             if (remotePlayers == null)
                 return;
 
-            if (remotePlayers.Count > 0 && Time.unscaledTime >= _nextReceiveLogTime)
+            int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            var ids = remotePlayers.ConvertAll(r => r.id.ToString());
+
+            if (Time.unscaledTime >= _nextReceiveLogTime)
             {
                 Debug.Log($"[RemotePlayerManager] remote count={remotePlayers.Count}");
+                Debug.Log($"MPTRACE step=K event=remote_player_manager_receive self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
                 _nextReceiveLogTime = Time.unscaledTime + 2f;
             }
 
@@ -80,37 +86,55 @@ namespace BackroomsSurvival.Net
                 if (rp == null)
                     continue;
 
+                if (selfId > 0 && rp.id == selfId)
+                {
+                    Debug.Log($"[RemotePlayerManager] ignored local id={rp.id}");
+                    continue;
+                }
+
                 _idsThisFrame.Add(rp.id);
 
                 if (!_active.TryGetValue(rp.id, out var view))
                 {
                     view = Acquire(rp.id, rp.name);
                     _active[rp.id] = view;
+                    if (view.root != null)
+                    {
+                        view.root.position = rp.position;
+                        view.root.rotation = Quaternion.Euler(0f, rp.rotation, 0f);
+                    }
                     Debug.Log(
                         $"[RemotePlayerManager] spawned id={rp.id}, name={rp.name}, " +
                         $"pos={rp.position}");
+                    Debug.Log($"MPTRACE step=K event=remote_player_manager_spawn self_id={selfId} sender_id=<none> assigned_id=<none> peer_id={rp.id} endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
                 }
 
                 view.targetPosition = rp.position;
                 view.targetRotation = rp.rotation;
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
+                view.lastSeenTime = Time.unscaledTime;
 
-                if (view.nameTag != null && view.nameTag.text != rp.name)
-                    view.nameTag.text = string.IsNullOrWhiteSpace(rp.name) ? $"Player {rp.id}" : rp.name;
+                string nameTagText = FormatNameTag(rp.id, rp.name);
+                if (view.nameTag != null && view.nameTag.text != nameTagText)
+                    view.nameTag.text = nameTagText;
             }
 
             _toRemove.Clear();
 
             foreach (var kvp in _active)
             {
-                if (!_idsThisFrame.Contains(kvp.Key))
+                if (!_idsThisFrame.Contains(kvp.Key) &&
+                    Time.unscaledTime - kvp.Value.lastSeenTime >= missingRemoteGraceSeconds)
                     _toRemove.Add(kvp.Key);
             }
 
             foreach (var id in _toRemove)
             {
                 if (_active.TryGetValue(id, out var view))
+                {
+                    Debug.Log($"[RemotePlayerManager] despawned id={id} reason=missing_grace_elapsed");
                     Release(view);
+                }
 
                 _active.Remove(id);
             }
@@ -146,7 +170,11 @@ namespace BackroomsSurvival.Net
                 {
                     var view = kvp.Value;
                     if (view != null)
+                    {
                         Debug.Log($"[RemotePlayerManager] updated id={kvp.Key} pos={view.targetPosition}");
+                        int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+                        Debug.Log($"MPTRACE step=U event=remote_transform_apply self_id={selfId} remote_id={kvp.Key} pos=({view.targetPosition.x:F2},{view.targetPosition.y:F2},{view.targetPosition.z:F2})");
+                    }
                 }
                 _nextUpdateLogTime = Time.unscaledTime + 2f;
             }
@@ -174,11 +202,12 @@ namespace BackroomsSurvival.Net
             view.targetPosition = view.root != null ? view.root.position : Vector3.zero;
             view.targetRotation = view.root != null ? view.root.eulerAngles.y : 0f;
             view.animationState = "idle";
+            view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
                 view.root.name = $"RemotePlayer_{id}";
 
-            ConfigureNameText(view.nameTag, string.IsNullOrWhiteSpace(playerName) ? $"Player {id}" : playerName);
+            ConfigureNameText(view.nameTag, FormatNameTag(id, playerName));
 
             return view;
         }
@@ -211,6 +240,7 @@ namespace BackroomsSurvival.Net
             else
                 go = CreateDefaultAvatar();
 
+            DisableLocalOnlyComponents(go);
             go.transform.SetParent(transform, false);
 
             var view = new RemotePlayerView
@@ -249,6 +279,50 @@ namespace BackroomsSurvival.Net
             return root;
         }
 
+        private GameObject CreateRemoteMarker(Transform parent)
+        {
+            var marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            marker.name = "RemoteMarker";
+            marker.transform.SetParent(parent, false);
+            marker.transform.localPosition = new Vector3(0f, nameTagHeight + 0.35f, 0f);
+            marker.transform.localScale = Vector3.one * 0.18f;
+
+            var col = marker.GetComponent<Collider>();
+            if (col != null)
+                SafeDestroy(col);
+
+            var renderer = marker.GetComponent<Renderer>();
+            if (renderer != null)
+                renderer.sharedMaterial = MaterialHelper.MakeLit(remoteMarkerColor);
+
+            return marker;
+        }
+
+        private static void DisableLocalOnlyComponents(GameObject root)
+        {
+            if (root == null)
+                return;
+
+            foreach (var controller in root.GetComponentsInChildren<PlayerController>(true))
+                controller.enabled = false;
+
+            foreach (var camera in root.GetComponentsInChildren<Camera>(true))
+                camera.enabled = false;
+
+            foreach (var listener in root.GetComponentsInChildren<AudioListener>(true))
+                listener.enabled = false;
+
+            foreach (var behaviour in root.GetComponentsInChildren<Behaviour>(true))
+            {
+                if (behaviour == null)
+                    continue;
+
+                string typeName = behaviour.GetType().Name;
+                if (typeName == "PlayerInput")
+                    behaviour.enabled = false;
+            }
+        }
+
         private TextMeshPro CreateNameTag(Transform parent)
         {
             var tagGo = new GameObject("NameTag");
@@ -263,6 +337,7 @@ namespace BackroomsSurvival.Net
                 rectTransform.sizeDelta = new Vector2(4f, 1f);
 
             tagGo.AddComponent<BillboardNameTag>();
+            CreateRemoteMarker(parent);
 
             return tmp;
         }
@@ -275,7 +350,9 @@ namespace BackroomsSurvival.Net
             text.text = displayName;
             text.fontSize = nameTagFontSize;
             text.alignment = TextAlignmentOptions.Center;
-            text.color = Color.white;
+            text.color = new Color(0.85f, 1f, 1f, 1f);
+            text.outlineColor = Color.black;
+            text.outlineWidth = 0.18f;
 
             // Sustituye TMP_Text.enableWordWrapping obsoleto.
             text.textWrappingMode = TextWrappingModes.NoWrap;
@@ -286,6 +363,12 @@ namespace BackroomsSurvival.Net
 
             if (text is TextMeshPro textMeshPro)
                 textMeshPro.sortingOrder = 100;
+        }
+
+        private static string FormatNameTag(int id, string playerName)
+        {
+            string displayName = string.IsNullOrWhiteSpace(playerName) ? $"Player {id}" : playerName;
+            return $"{displayName}\nID {id}";
         }
 
         private static void ApplyAnimation(RemotePlayerView view)
@@ -360,6 +443,7 @@ namespace BackroomsSurvival.Net
         public Vector3 targetPosition;
         public float targetRotation;
         public string animationState = "idle";
+        public float lastSeenTime;
     }
 
     public sealed class BillboardNameTag : MonoBehaviour

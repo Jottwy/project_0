@@ -11,6 +11,7 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<ChunkRenderer>();
             EnsureComponent<EntityRenderer>();
             EnsureComponent<ItemRenderer>();
+            EnsureComponent<WorldInteractor>();
             EnsureComponent<SanityEffects>();
             EnsureComponent<TeleportationVFX>();
             EnsureComponent<MinimapRenderer>();

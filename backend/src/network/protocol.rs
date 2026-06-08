@@ -3,6 +3,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::world::chunk::ChunkLayoutV1;
+
 pub const HEADER_SIZE: usize = 12;
 pub const MAX_PACKET_SIZE: usize = 65535;
 
@@ -181,6 +183,8 @@ pub struct ChunkSyncData {
     pub rotation: u16,
     pub mirrored: bool,
     pub has_workbench: bool,
+    #[serde(default)]
+    pub layout: ChunkLayoutV1,
     pub stabilized: bool,
     pub anchored: bool,
     pub teleport_timer: f32,
@@ -225,6 +229,8 @@ pub enum PacketPayload {
         stabilizers: Vec<StabilizerInfo>,
     },
     WorldSync {
+        world_seed: u64,
+        world_revision: u64,
         chunks: Vec<ChunkSyncData>,
     },
     Heartbeat,
@@ -256,7 +262,12 @@ pub enum PacketPayload {
 
     // Actions
     Interact {
-        target_pos: [f32; 3],
+        requester_id: u16,
+        request_id: u64,
+        target_id: u32,
+        target_kind: String,
+        interaction_type: String,
+        player_position: [f32; 3],
     },
     Attack {
         target_entity_id: Option<u32>,
@@ -360,8 +371,8 @@ pub fn encode_packet(header: &PacketHeader, payload: &PacketPayload) -> Vec<u8> 
 pub fn decode_packet(data: &[u8]) -> Result<(PacketHeader, PacketPayload), String> {
     let header =
         PacketHeader::from_bytes(data).ok_or_else(|| "packet too short for header".to_string())?;
-    let payload: PacketPayload = rmp_serde::from_slice(&data[HEADER_SIZE..])
-        .map_err(|e| format!("payload decode: {e}"))?;
+    let payload: PacketPayload =
+        rmp_serde::from_slice(&data[HEADER_SIZE..]).map_err(|e| format!("payload decode: {e}"))?;
     Ok((header, payload))
 }
 
@@ -488,6 +499,7 @@ mod tests {
                 rotation: 90,
                 mirrored: true,
                 has_workbench: false,
+                layout: ChunkLayoutV1::default(),
                 stabilized: false,
                 anchored: false,
                 teleport_timer: 300.0,
@@ -521,10 +533,78 @@ mod tests {
     }
 
     #[test]
-    fn ack_round_trip() {
-        let payload = PacketPayload::Ack {
-            acked_sequence: 42,
+    fn world_sync_round_trip_includes_seed_revision_and_counts() {
+        let payload = PacketPayload::WorldSync {
+            world_seed: 1234,
+            world_revision: 7,
+            chunks: vec![ChunkSyncData {
+                pos: [0, 0],
+                seed: 1234,
+                template_id: 1,
+                rotation: 0,
+                mirrored: false,
+                has_workbench: true,
+                layout: ChunkLayoutV1::default(),
+                stabilized: false,
+                anchored: false,
+                teleport_timer: 300.0,
+                entities: vec![],
+                items: vec![],
+            }],
         };
+        let header = PacketHeader::new(payload.type_code(), 1, 300, 10000);
+        let data = encode_packet(&header, &payload);
+        let (_, p2) = decode_packet(&data).unwrap();
+        match p2 {
+            PacketPayload::WorldSync {
+                world_seed,
+                world_revision,
+                chunks,
+            } => {
+                assert_eq!(world_seed, 1234);
+                assert_eq!(world_revision, 7);
+                assert_eq!(chunks.len(), 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn interact_request_round_trip_includes_stable_ids() {
+        let payload = PacketPayload::Interact {
+            requester_id: 7,
+            request_id: 7001,
+            target_id: 42,
+            target_kind: "item".into(),
+            interaction_type: "pickup".into(),
+            player_position: [1.0, 2.0, 3.0],
+        };
+        let header = PacketHeader::new(payload.type_code(), 7, 301, 10000);
+        let data = encode_packet(&header, &payload);
+        let (_, p2) = decode_packet(&data).unwrap();
+        match p2 {
+            PacketPayload::Interact {
+                requester_id,
+                request_id,
+                target_id,
+                target_kind,
+                interaction_type,
+                player_position,
+            } => {
+                assert_eq!(requester_id, 7);
+                assert_eq!(request_id, 7001);
+                assert_eq!(target_id, 42);
+                assert_eq!(target_kind, "item");
+                assert_eq!(interaction_type, "pickup");
+                assert_eq!(player_position, [1.0, 2.0, 3.0]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn ack_round_trip() {
+        let payload = PacketPayload::Ack { acked_sequence: 42 };
         let header = PacketHeader::new(payload.type_code(), 2, 0, 100);
         let data = encode_packet(&header, &payload);
         let (_, p2) = decode_packet(&data).unwrap();
@@ -542,9 +622,7 @@ mod tests {
         };
         assert_eq!(p.type_code(), PacketType::Handshake as u16);
 
-        let p = PacketPayload::Ack {
-            acked_sequence: 0,
-        };
+        let p = PacketPayload::Ack { acked_sequence: 0 };
         assert_eq!(p.type_code(), PacketType::Ack as u16);
     }
 }
