@@ -32,6 +32,9 @@ namespace BackroomsSurvival.Net
         public int LastSelectedIpcPort { get; private set; }
         public int LastSelectedNetPort { get; private set; }
         public int LastSelectedNetId { get; private set; }
+        public string LastSelectedIpcAddress { get; private set; } = "127.0.0.1";
+        public string LastEffectiveRole { get; private set; } = "none";
+        public string LastConnectTo { get; private set; } = "<none>";
 
         private Process _backendProcess;
         private float _startupTimer;
@@ -56,14 +59,42 @@ namespace BackroomsSurvival.Net
 
         public void StartAsHost(string playerName, int worldSeed = 42)
         {
+            StartAsHost(playerName, worldSeed, false);
+        }
+
+        public void StartAsHost(string playerName, int hostListenPort, int worldSeed = 42)
+        {
+            StartAsHost(playerName, worldSeed, false, hostListenPort);
+        }
+
+        public void StartAsAutoSolo(string playerName, int worldSeed = 42)
+        {
+            StartAsHost(playerName, worldSeed, true, null);
+        }
+
+        private void StartAsHost(string playerName, int worldSeed, bool autoSolo)
+        {
+            StartAsHost(playerName, worldSeed, autoSolo, null);
+        }
+
+        private void StartAsHost(string playerName, int worldSeed, bool autoSolo, int? requestedHostListenPort)
+        {
             CurrentRole = Role.Host;
             StatusMessage = "Starting backend...";
             string sessionMode = ReadSessionMode();
             if (sessionMode != null && sessionMode.Equals("join", StringComparison.OrdinalIgnoreCase))
                 Debug.LogWarning("[NetworkInitializer] SESSION_MODE=join is set, but manual Host was requested; effective role=host");
-            bool autoSolo = IsAutoSoloEnvironment(sessionMode);
-            var config = SelectLaunchConfig(autoSolo ? "autosolo" : "host", ipcPort, netPort, hostNetId);
+            int requestedNetPort = requestedHostListenPort.GetValueOrDefault(netPort);
+            Debug.Log($"[NetworkInitializer] user input hostListenPort={requestedNetPort}");
+            var config = SelectLaunchConfig(
+                autoSolo ? "autosolo" : "host",
+                ipcPort,
+                requestedNetPort,
+                hostNetId,
+                requestedHostListenPort);
             StoreSelectedConfig(config);
+            LastEffectiveRole = autoSolo ? "autosolo" : "host";
+            LastConnectTo = "<none>";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
 
             var env = new Dictionary<string, string>
@@ -101,10 +132,13 @@ namespace BackroomsSurvival.Net
         {
             CurrentRole = Role.Joiner;
             StatusMessage = "Starting backend (joiner)...";
+            Debug.Log($"[NetworkInitializer] user input hostIp={serverIP}, hostPort={serverNetPort}");
 
             string sessionMode = ReadSessionMode();
             var config = SelectLaunchConfig("joiner", ipcPort + joinerNetPortOffset, netPort + joinerNetPortOffset, joinerNetId);
             StoreSelectedConfig(config);
+            LastEffectiveRole = "joiner";
+            LastConnectTo = $"{serverIP}:{serverNetPort}";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
 
             var env = new Dictionary<string, string>
@@ -358,6 +392,11 @@ namespace BackroomsSurvival.Net
 
         private static LaunchConfig SelectLaunchConfig(string roleName, int fallbackIpcPort, int fallbackNetPort, int fallbackNetId)
         {
+            return SelectLaunchConfig(roleName, fallbackIpcPort, fallbackNetPort, fallbackNetId, null);
+        }
+
+        private static LaunchConfig SelectLaunchConfig(string roleName, int fallbackIpcPort, int fallbackNetPort, int fallbackNetId, int? forcedNetPort)
+        {
             ResolveIpcEndpoint(fallbackIpcPort, out string ipcAddress, out int requestedIpcPort);
 
             bool defaultIpcOccupied = !PortUtility.IsTcpPortAvailable(7777);
@@ -374,7 +413,9 @@ namespace BackroomsSurvival.Net
                 selectedIpcPort = free;
             }
 
-            int requestedNetPort = ReadIntEnv("NET_PORT", fallbackNetPort);
+            int requestedNetPort = forcedNetPort ?? ReadIntEnv("NET_PORT", fallbackNetPort);
+            if (forcedNetPort.HasValue && netFromEnv)
+                Debug.LogWarning($"[NetworkInitializer] NET_PORT env is set, but manual host port {forcedNetPort.Value} takes priority");
             int selectedNetPort = requestedNetPort;
             if (selectedNetPort == selectedIpcPort || !PortUtility.IsUdpPortAvailable(selectedNetPort))
             {
@@ -451,9 +492,13 @@ namespace BackroomsSurvival.Net
 
         private void StoreSelectedConfig(LaunchConfig config)
         {
+            LastSelectedIpcAddress = config.IpcAddress;
             LastSelectedIpcPort = config.IpcPort;
             LastSelectedNetPort = config.NetPort;
             LastSelectedNetId = config.NetId;
+            Debug.Log($"[NetworkInitializer] selected IPC_PORT={LastSelectedIpcPort}");
+            Debug.Log($"[NetworkInitializer] selected local NET_PORT={LastSelectedNetPort}");
+            Debug.Log($"[NetworkInitializer] selected NET_ID={LastSelectedNetId}");
         }
 
         private static void LogLaunchConfig(
@@ -473,7 +518,7 @@ namespace BackroomsSurvival.Net
                 $"[NetworkInitializer] Launch config: SESSION_MODE={FormatNone(sessionMode)}, " +
                 $"IPC_ADDR={localIpcAddress}:{localIpcPort}, " +
                 $"IPC_PORT={localIpcPort}, NET_PORT={localNetPort}, NET_ID={localNetId}, " +
-                $"NET_NAME={netName}, role={roleName}, autoHost={autoHost}, " +
+                $"NET_NAME={netName}, role={roleName}, effective role={roleName}, autoHost={autoHost}, " +
                 $"default IPC occupied={defaultIpcOccupied}, CONNECT_TO={target}");
         }
 

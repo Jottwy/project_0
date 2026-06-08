@@ -69,7 +69,7 @@ namespace BackroomsSurvival.Net
 
             if (remotePlayers.Count > 0 && Time.unscaledTime >= _nextReceiveLogTime)
             {
-                Debug.Log($"[RemotePlayerManager] Remote player received: count={remotePlayers.Count}");
+                Debug.Log($"[RemotePlayerManager] remote count={remotePlayers.Count}");
                 _nextReceiveLogTime = Time.unscaledTime + 2f;
             }
 
@@ -87,7 +87,7 @@ namespace BackroomsSurvival.Net
                     view = Acquire(rp.id, rp.name);
                     _active[rp.id] = view;
                     Debug.Log(
-                        $"[RemotePlayerManager] Remote player spawned: id={rp.id}, name={rp.name}, " +
+                        $"[RemotePlayerManager] spawned id={rp.id}, name={rp.name}, " +
                         $"pos={rp.position}");
                 }
 
@@ -142,7 +142,12 @@ namespace BackroomsSurvival.Net
 
             if (_active.Count > 0 && Time.unscaledTime >= _nextUpdateLogTime)
             {
-                Debug.Log($"[RemotePlayerManager] Remote player updated: active={_active.Count}");
+                foreach (var kvp in _active)
+                {
+                    var view = kvp.Value;
+                    if (view != null)
+                        Debug.Log($"[RemotePlayerManager] updated id={kvp.Key} pos={view.targetPosition}");
+                }
                 _nextUpdateLogTime = Time.unscaledTime + 2f;
             }
         }

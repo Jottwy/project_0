@@ -110,6 +110,7 @@ namespace BackroomsSurvival.Net
         private TcpClient _client;
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
+        private int _nextRemotePlayersLogTick;
 
         public void ConfigureEndpoint(string address, int ipcPort)
         {
@@ -284,6 +285,11 @@ namespace BackroomsSurvival.Net
             {
                 case "world_state":
                     var ws = WorldStateMsg.Parse(root);
+                    if (Environment.TickCount >= _nextRemotePlayersLogTick)
+                    {
+                        Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count}");
+                        _nextRemotePlayersLogTick = Environment.TickCount + 2000;
+                    }
                     _latestState = ws;
                     _pendingStateNotify.Enqueue(ws);
                     break;

@@ -7,6 +7,8 @@ use crate::utils::{world_to_chunk, Vec3};
 use crate::world::chunk::{Chunk, ChunkState};
 use crate::world::World;
 
+use log::info;
+
 use super::protocol::{
     AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketPayload, PeerInfo,
     SessionConfig, StabilizerInfo,
@@ -104,6 +106,14 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         rotation: player.rotation,
         animation: animation.into(),
     };
+    info!(
+        "Sending player update to peers={} local_id={} pos=({:.2}, {:.2}, {:.2})",
+        net.peers.len(),
+        net.local_id,
+        player.position.x,
+        player.position.y,
+        player.position.z
+    );
     net.broadcast_unreliable(&payload).await;
 }
 

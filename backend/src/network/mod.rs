@@ -11,7 +11,7 @@ pub mod sync;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use log::{debug, info, warn};
 use tokio::net::UdpSocket;
@@ -96,6 +96,9 @@ pub struct NetworkManager {
     pub world_seed: u64,
     global_sequence: u32,
     pub local_name: String,
+    pending_connect_addr: Option<SocketAddr>,
+    last_handshake_sent_at: Option<Instant>,
+    handshake_attempts: u32,
 }
 
 impl NetworkManager {
@@ -109,7 +112,7 @@ impl NetworkManager {
         let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
         let socket = Arc::new(UdpSocket::bind(addr).await?);
         let local_addr = socket.local_addr()?;
-        info!("P2P UDP socket bound on {local_addr}");
+        info!("UDP bound on {local_addr}");
 
         let (tx, rx) = mpsc::channel::<IncomingPacket>(512);
         let recv_socket = socket.clone();
@@ -126,6 +129,9 @@ impl NetworkManager {
             world_seed,
             global_sequence: 0,
             local_name: format!("Player{local_id}"),
+            pending_connect_addr: None,
+            last_handshake_sent_at: None,
+            handshake_attempts: 0,
         })
     }
 
@@ -143,8 +149,19 @@ impl NetworkManager {
     }
 
     /// Initiate a connection to a remote peer (joiner → host).
-    pub async fn initiate_connection(&self, addr: SocketAddr) {
-        info!("Initiating connection to {addr}");
+    pub async fn initiate_connection(&mut self, addr: SocketAddr) {
+        self.pending_connect_addr = Some(addr);
+        self.handshake_attempts = 0;
+        self.send_handshake(addr).await;
+    }
+
+    async fn send_handshake(&mut self, addr: SocketAddr) {
+        self.handshake_attempts = self.handshake_attempts.saturating_add(1);
+        self.last_handshake_sent_at = Some(Instant::now());
+        info!(
+            "Sending handshake to {addr} sender_id={} attempt={}",
+            self.local_id, self.handshake_attempts
+        );
         let payload = PacketPayload::Handshake {
             player_name: self.local_name.clone(),
             version: "0.1.0".into(),
@@ -152,6 +169,25 @@ impl NetworkManager {
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
         let data = encode_packet(&header, &payload);
         let _ = self.socket.send_to(&data, addr).await;
+    }
+
+    pub async fn retry_pending_connection(&mut self) {
+        if self.is_host || !self.peers.is_empty() {
+            return;
+        }
+
+        let Some(addr) = self.pending_connect_addr else {
+            return;
+        };
+
+        let should_retry = self
+            .last_handshake_sent_at
+            .map(|sent| sent.elapsed() >= Duration::from_secs(1))
+            .unwrap_or(true);
+
+        if should_retry {
+            self.send_handshake(addr).await;
+        }
     }
 
     /// Process all incoming packets and return game-level events.
@@ -308,7 +344,13 @@ impl NetworkManager {
             PacketPayload::Handshake {
                 player_name,
                 version,
-            } => self.handle_handshake(pkt.addr, player_name, version).await,
+            } => {
+                info!(
+                    "Received handshake from addr={} sender_id={} name={}",
+                    pkt.addr, sender_id, player_name
+                );
+                self.handle_handshake(pkt.addr, sender_id, player_name, version).await
+            }
 
             PacketPayload::HandshakeAck {
                 assigned_id,
@@ -346,6 +388,10 @@ impl NetworkManager {
                 rotation,
                 animation,
             } => {
+                info!(
+                    "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
+                    sender_id, position[0], position[1], position[2]
+                );
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.update_player_state(position, rotation, animation.clone());
                 }
@@ -451,6 +497,7 @@ impl NetworkManager {
     async fn handle_handshake(
         &mut self,
         from_addr: SocketAddr,
+        sender_id: PeerId,
         player_name: String,
         _version: String,
     ) -> Vec<NetworkEvent> {
@@ -459,12 +506,39 @@ impl NetworkManager {
             return vec![];
         }
 
+        if let Some(existing) = self.peers.values().find(|p| p.addr == from_addr) {
+            info!(
+                "Duplicate handshake from addr={} sender_id={} already assigned id={}",
+                from_addr, sender_id, existing.id
+            );
+            let ack_payload = PacketPayload::HandshakeAck {
+                assigned_id: existing.id,
+                world_seed: self.world_seed,
+                config: SessionConfig::default(),
+                peers: self
+                    .peers
+                    .values()
+                    .map(|p| PeerInfo {
+                        id: p.id,
+                        name: p.name.clone(),
+                        addr: p.addr.to_string(),
+                        position: p.position,
+                    })
+                    .collect(),
+                anchors: vec![],
+                stabilizers: vec![],
+            };
+            info!("Sending handshake ACK to {} assigned_id={}", from_addr, existing.id);
+            self.send_raw_to(from_addr, &ack_payload).await;
+            return vec![];
+        }
+
         let assigned_id = self.next_peer_id;
         self.next_peer_id += 1;
 
         info!(
-            "New peer connecting: {} from {} → assigned id {}",
-            player_name, from_addr, assigned_id
+            "New peer connecting sender_id={} name={} from {} -> assigned id {}",
+            sender_id, player_name, from_addr, assigned_id
         );
 
         // Add the peer.
@@ -489,6 +563,7 @@ impl NetworkManager {
             anchors: vec![],
             stabilizers: vec![],
         };
+        info!("Sending handshake ACK to {} assigned_id={}", from_addr, assigned_id);
         self.send_raw_to(from_addr, &ack_payload).await;
 
         vec![NetworkEvent::PeerConnected {
@@ -510,7 +585,9 @@ impl NetworkManager {
         }
 
         info!(
-            "Handshake ACK received: assigned_id={}, world_seed={}, {} peers",
+            "Handshake ACK received from {} sender_id={} assigned_id={}, world_seed={}, {} peers",
+            from_addr,
+            sender_id,
             assigned_id,
             world_seed,
             peers.len()
@@ -519,6 +596,7 @@ impl NetworkManager {
         // Update our local ID to the one assigned by the host.
         self.local_id = assigned_id;
         self.world_seed = world_seed;
+        self.pending_connect_addr = None;
 
         // Add the host as a peer.
         let host_peer = PeerConnection::new(sender_id, format!("Host"), from_addr);

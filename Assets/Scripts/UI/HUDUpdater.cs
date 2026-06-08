@@ -78,10 +78,16 @@ namespace BackroomsSurvival.UI
                 return;
             }
 
-            // Connection.
+            var init = NetworkInitializer.Instance;
+            string role = init != null ? init.LastEffectiveRole : "none";
+            string connectTo = init != null ? init.LastConnectTo : "<none>";
+            int localUdp = init != null ? init.LastSelectedNetPort : 0;
+            int netId = init != null ? init.LastSelectedNetId : 0;
+
+            // Connection. This endpoint is IPC (Unity -> local backend), not the remote host.
             _connectionText.text = ipc.IsConnected
-                ? $"<color=#66FF66>●</color>  Connected  {ipc.serverAddress}:{ipc.port}"
-                : $"<color=#FFCC55>○</color>  Connecting to {ipc.serverAddress}:{ipc.port}...";
+                ? $"<color=#66FF66>●</color>  IPC Connected {ipc.serverAddress}:{ipc.port}   Role={role}   Local UDP={localUdp}   NET_ID={netId}   CONNECT_TO={connectTo}"
+                : $"<color=#FFCC55>○</color>  IPC Connecting {ipc.serverAddress}:{ipc.port}   Role={role}   Local UDP={localUdp}   NET_ID={netId}   CONNECT_TO={connectTo}";
 
             var state = ipc.LatestState;
             if (state != null && state.localPlayer != null)
@@ -91,7 +97,8 @@ namespace BackroomsSurvival.UI
                 _infoText.text =
                     $"tick {state.tick}   " +
                     $"pos ({lp.position.x:0.0}, {lp.position.y:0.0}, {lp.position.z:0.0})   " +
-                    $"chunks {state.visibleChunks.Count}  entities {state.visibleEntities.Count}  items {state.visibleItems.Count}";
+                    $"chunks {state.visibleChunks.Count}  entities {state.visibleEntities.Count}  items {state.visibleItems.Count}   " +
+                    $"RemotePlayers {state.remotePlayers.Count}";
 
                 UpdateBar(_healthFill, _healthLabel, "Health", lp.stats.health);
                 UpdateBar(_hungerFill, _hungerLabel, "Hunger", lp.stats.hunger);
@@ -124,7 +131,7 @@ namespace BackroomsSurvival.UI
         {
             _connectionText = CreateText("Connection",
                 new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, 1f),
-                new Vector2(14f, -12f), new Vector2(500f, 22f), 13, TextAnchor.UpperLeft);
+                new Vector2(14f, -12f), new Vector2(1200f, 22f), 13, TextAnchor.UpperLeft);
         }
 
         private void BuildInfoLine()

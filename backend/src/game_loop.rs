@@ -168,6 +168,7 @@ pub async fn run(
 
         // Heartbeat every 1s.
         if tick % HEARTBEAT_EVERY == 0 {
+            net.retry_pending_connection().await;
             net.send_heartbeats().await;
 
             // Check timeouts.
@@ -201,7 +202,7 @@ async fn handle_network_event(
 ) {
     match event {
         NetworkEvent::PeerConnected { id, name } => {
-            info!("Peer connected: {} (id={})", name, id);
+            info!("Peer connected id={} name={}", id, name);
             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                 event_type: "player_joined".into(),
                 data: serde_json::json!({ "player_id": id, "name": name }),
@@ -391,13 +392,13 @@ fn build_world_state(
         })
         .collect();
 
-    if tick % 60 == 0 && !remote_players.is_empty() {
-        debug!(
-            "WorldState remote_players={}: {:?}",
+    if tick % 60 == 0 {
+        info!(
+            "WorldState remote_players={} ids={:?}",
             remote_players.len(),
             remote_players
                 .iter()
-                .map(|p| (p.id, p.name.as_str()))
+                .map(|p| p.id)
                 .collect::<Vec<_>>()
         );
     }

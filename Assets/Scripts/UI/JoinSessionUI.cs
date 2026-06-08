@@ -14,8 +14,8 @@ namespace BackroomsSurvival.UI
     {
         public enum PanelState { Idle, ManualEditing, StartingHost, Joining, Connected, Disconnected }
 
-        public bool autoHostIfNoSession = true;
-        public float autoHostDelaySeconds = 0.25f;
+        public bool enableAutoSolo = false;
+        public float autoSoloDelaySeconds = 0.25f;
 
         private Canvas _canvas;
         private GameObject _panel;
@@ -79,6 +79,22 @@ namespace BackroomsSurvival.UI
                 return;
             }
 
+            string sessionMode = Environment.GetEnvironmentVariable("SESSION_MODE");
+            bool autoSoloEnabled = IsAutoSoloEnabled();
+            string startupMode = DetermineStartupMode(sessionMode, autoSoloEnabled);
+            Debug.Log($"[JoinSessionUI] Session startup mode: {startupMode}");
+            Debug.Log($"[JoinSessionUI] AutoSolo enabled={autoSoloEnabled}");
+
+            if (IsSessionMode(sessionMode, "host"))
+            {
+                SetState(PanelState.StartingHost, "Starting host...");
+                ShowMenu("Starting host...");
+                SetUiInteractable(false);
+                string playerName = Environment.GetEnvironmentVariable("NET_NAME");
+                EnsureInitializer().StartAsHost(string.IsNullOrWhiteSpace(playerName) ? PlayerName : playerName);
+                return;
+            }
+
             if (TryGetConnectTo(out string connectIp, out int connectPort))
             {
                 SetState(PanelState.Joining, "Joining...");
@@ -88,16 +104,17 @@ namespace BackroomsSurvival.UI
                 return;
             }
 
-            if (ShouldAutoHost())
+            if (autoSoloEnabled && ShouldAutoSolo())
             {
                 SetState(PanelState.Idle, "Starting local host...");
                 ShowMenu("Starting local host...");
-                _autoHostCoroutine = StartCoroutine(AutoHostRoutine());
+                _autoHostCoroutine = StartCoroutine(AutoSoloRoutine());
             }
             else
             {
-                SetState(PanelState.Idle, "");
-                ShowMenu("");
+                Debug.Log("[JoinSessionUI] No auto-host: waiting for user action");
+                SetState(PanelState.Idle, "Choose Host or Join");
+                ShowMenu("Choose Host or Join");
             }
         }
 
@@ -146,13 +163,17 @@ namespace BackroomsSurvival.UI
         private void OnHostClicked()
         {
             Debug.Log("[JoinSessionUI] Host clicked");
+            Debug.Log("[JoinSessionUI] role efectivo=host");
+            Debug.Log("[JoinSessionUI] CONNECT_TO=<none>");
             CancelAutoHostBecauseUserInteracted();
             var init = EnsureInitializer();
             string playerName = string.IsNullOrWhiteSpace(_nameField.text) ? "Host" : _nameField.text;
+            int hostListenPort = ParseHostPortFromUi(7778);
+            Debug.Log($"[JoinSessionUI] Host listen port input={hostListenPort}");
             SetState(PanelState.StartingHost, "Starting host...");
             ShowMenu("Starting host...");
             SetUiInteractable(false);
-            init.StartAsHost(playerName);
+            init.StartAsHost(playerName, hostListenPort);
             ApplySelectedLocalConfigToUi(init, updateServerPort: true);
         }
 
@@ -162,10 +183,10 @@ namespace BackroomsSurvival.UI
             CancelAutoHostBecauseUserInteracted();
             var init = EnsureInitializer();
             string ip = string.IsNullOrWhiteSpace(_ipField.text) ? "127.0.0.1" : _ipField.text;
-            int port = 7778;
-            if (!string.IsNullOrWhiteSpace(_portField.text))
-                int.TryParse(_portField.text, out port);
+            int port = ParseHostPortFromUi(7778);
             string playerName = string.IsNullOrWhiteSpace(_nameField.text) ? "Player" : _nameField.text;
+            Debug.Log("[JoinSessionUI] role efectivo=joiner");
+            Debug.Log($"[JoinSessionUI] CONNECT_TO={ip}:{port}");
 
             SetState(PanelState.Joining, "Joining...");
             ShowMenu("Joining...");
@@ -194,12 +215,12 @@ namespace BackroomsSurvival.UI
             return init;
         }
 
-        private IEnumerator AutoHostRoutine()
+        private IEnumerator AutoSoloRoutine()
         {
             _autoHostRequested = true;
-            Debug.Log("[JoinSessionUI] Auto-host requested");
+            Debug.Log("[JoinSessionUI] AutoSolo requested");
 
-            yield return new WaitForSeconds(autoHostDelaySeconds);
+            yield return new WaitForSeconds(autoSoloDelaySeconds);
 
             if (_state == PanelState.ManualEditing) yield break;
             if (_state != PanelState.Idle) yield break;
@@ -219,13 +240,15 @@ namespace BackroomsSurvival.UI
 
             SetState(PanelState.StartingHost, "Starting local host...");
             SetUiInteractable(false);
-            init.StartAsHost("Host");
+            Debug.Log("[JoinSessionUI] role efectivo=autosolo");
+            Debug.Log("[JoinSessionUI] CONNECT_TO=<none>");
+            init.StartAsAutoSolo("Host");
             ApplySelectedLocalConfigToUi(init, updateServerPort: true);
         }
 
-        private bool ShouldAutoHost()
+        private bool ShouldAutoSolo()
         {
-            if (!autoHostIfNoSession) return false;
+            if (!IsAutoSoloEnabled()) return false;
             if (_autoHostRequested) return false;
             if (HasExplicitJoinEnvironment()) return false;
 
@@ -244,6 +267,36 @@ namespace BackroomsSurvival.UI
             string role = Environment.GetEnvironmentVariable("SESSION_MODE");
             return !string.IsNullOrWhiteSpace(role) &&
                    role.Equals("join", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsAutoSoloEnabled()
+        {
+            string value = Environment.GetEnvironmentVariable("AUTO_SOLO");
+            return enableAutoSolo || value == "1" || IsTruthy(value);
+        }
+
+        private static bool IsTruthy(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return false;
+            return value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("yes", StringComparison.OrdinalIgnoreCase) ||
+                   value.Equals("on", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsSessionMode(string sessionMode, string expected)
+        {
+            return !string.IsNullOrWhiteSpace(sessionMode) &&
+                   sessionMode.Equals(expected, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string DetermineStartupMode(string sessionMode, bool autoSoloEnabled)
+        {
+            if (autoSoloEnabled) return "autosolo";
+            if (IsSessionMode(sessionMode, "host")) return "env-host";
+            if (IsSessionMode(sessionMode, "join"))
+                return string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CONNECT_TO")) ? "menu/manual" : "env-join";
+            if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CONNECT_TO"))) return "env-join";
+            return "menu/manual";
         }
 
         private static bool TryGetConnectTo(out string ip, out int port)
@@ -468,8 +521,8 @@ namespace BackroomsSurvival.UI
 
             // Input fields (300x40)
             _nameField = CreateInputField(_panel.transform, "NameField", "Player Name", "Player");
-            _ipField = CreateInputField(_panel.transform, "IPField", "Server IP", "127.0.0.1");
-            _portField = CreateInputField(_panel.transform, "PortField", "Port", "7778");
+            _ipField = CreateInputField(_panel.transform, "IPField", "Host IP / Join IP", "127.0.0.1");
+            _portField = CreateInputField(_panel.transform, "PortField", "Host Port / Join Port", "7778");
             RegisterInputCallbacks(_nameField, "Player Name");
             RegisterInputCallbacks(_ipField, "IP");
             RegisterInputCallbacks(_portField, "Port");
@@ -546,6 +599,14 @@ namespace BackroomsSurvival.UI
 
             if (updateServerPort && _portField != null && init.LastSelectedNetPort > 0)
                 _portField.SetTextWithoutNotify(init.LastSelectedNetPort.ToString());
+        }
+
+        private int ParseHostPortFromUi(int fallback)
+        {
+            if (_portField == null || string.IsNullOrWhiteSpace(_portField.text))
+                return fallback;
+
+            return int.TryParse(_portField.text, out int parsed) ? parsed : fallback;
         }
 
         public static void EnsureEventSystem()
