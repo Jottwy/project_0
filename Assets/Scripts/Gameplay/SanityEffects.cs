@@ -47,7 +47,10 @@ namespace BackroomsSurvival.Gameplay
 
         private void Update()
         {
-            var state = IPCClient.Instance.LatestState;
+            if (!IPCClient.TryGetInstance(out var ipc))
+                return;
+
+            var state = ipc.LatestState;
             if (state == null || state.localPlayer == null) return;
 
             float sanity = state.localPlayer.stats.sanity;

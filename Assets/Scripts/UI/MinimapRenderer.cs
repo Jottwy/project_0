@@ -88,7 +88,10 @@ namespace BackroomsSurvival.UI
 
         private void LateUpdate()
         {
-            var state = IPCClient.Instance.LatestState;
+            if (!IPCClient.TryGetInstance(out var ipc))
+                return;
+
+            var state = ipc.LatestState;
             if (state == null || state.localPlayer == null) return;
 
             var playerPos = state.localPlayer.position;

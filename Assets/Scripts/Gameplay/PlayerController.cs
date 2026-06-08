@@ -1,7 +1,10 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Net;
+using BackroomsSurvival.UI;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.InputSystem; // New Input System (project uses activeInputHandler = 1)
+using UnityEngine.UI;
 
 namespace BackroomsSurvival.Gameplay
 {
@@ -14,7 +17,7 @@ namespace BackroomsSurvival.Gameplay
     /// Look (yaw/pitch) is handled locally so the camera stays responsive.
     ///
     /// Drop this on an empty GameObject. It reuses the scene's Main Camera (or
-    /// creates one) as a child eye, and ensures an <see cref="IPCClient"/> exists.
+    /// creates one) as a child eye.
     /// </summary>
     public sealed class PlayerController : MonoBehaviour
     {
@@ -37,8 +40,6 @@ namespace BackroomsSurvival.Gameplay
 
         private void Awake()
         {
-            _ipc = IPCClient.Instance; // ensures the client exists and starts connecting
-
             // Reuse an existing camera (child or scene Main Camera), else create one.
             var childCam = GetComponentInChildren<Camera>();
             if (childCam != null)
@@ -67,13 +68,26 @@ namespace BackroomsSurvival.Gameplay
 
         private void Start()
         {
-            SetCursorLocked(true);
+            IPCClient.TryGetInstance(out _ipc);
+            SetCursorLocked(!JoinSessionUI.IsAnyMenuVisible);
         }
 
         private void Update()
         {
             var keyboard = Keyboard.current;
             var mouse = Mouse.current;
+
+            if (_ipc == null)
+                IPCClient.TryGetInstance(out _ipc);
+            if (_ipc == null)
+                return;
+
+            if (ShouldIgnoreGameplayInput())
+            {
+                _queuedActions.Clear();
+                ApplyAuthoritativePosition();
+                return;
+            }
 
             HandleCursorToggle(keyboard);
             HandleLook(mouse, out Vector2 lookDelta);
@@ -161,6 +175,21 @@ namespace BackroomsSurvival.Gameplay
             _cursorLocked = locked;
             Cursor.lockState = locked ? CursorLockMode.Locked : CursorLockMode.None;
             Cursor.visible = !locked;
+        }
+
+        private bool ShouldIgnoreGameplayInput()
+        {
+            if (JoinSessionUI.IsAnyMenuVisible)
+                return true;
+
+            if (Cursor.lockState != CursorLockMode.Locked)
+                return true;
+
+            if (JoinSessionUI.IsUserEditingInput())
+                return true;
+
+            var selected = EventSystem.current != null ? EventSystem.current.currentSelectedGameObject : null;
+            return selected != null && selected.GetComponent<InputField>() != null;
         }
     }
 }

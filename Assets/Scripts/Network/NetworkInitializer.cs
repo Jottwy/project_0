@@ -27,7 +27,11 @@ namespace BackroomsSurvival.Net
 
         public Role CurrentRole { get; private set; } = Role.None;
         public bool IsBackendReady { get; private set; }
+        public bool HasBackendProcess => _backendProcess != null && !_backendProcess.HasExited;
         public string StatusMessage { get; private set; } = "";
+        public int LastSelectedIpcPort { get; private set; }
+        public int LastSelectedNetPort { get; private set; }
+        public int LastSelectedNetId { get; private set; }
 
         private Process _backendProcess;
         private float _startupTimer;
@@ -54,27 +58,41 @@ namespace BackroomsSurvival.Net
         {
             CurrentRole = Role.Host;
             StatusMessage = "Starting backend...";
-            ResolveIpcEndpoint(ipcPort, out string localIpcAddress, out int localIpcPort);
-            int localNetPort = ReadIntEnv("NET_PORT", netPort);
-            int localNetId = ReadIntEnv("NET_ID", hostNetId);
-            ConfigureIpcClient(localIpcAddress, localIpcPort);
+            string sessionMode = ReadSessionMode();
+            if (sessionMode != null && sessionMode.Equals("join", StringComparison.OrdinalIgnoreCase))
+                Debug.LogWarning("[NetworkInitializer] SESSION_MODE=join is set, but manual Host was requested; effective role=host");
+            bool autoSolo = IsAutoSoloEnvironment(sessionMode);
+            var config = SelectLaunchConfig(autoSolo ? "autosolo" : "host", ipcPort, netPort, hostNetId);
+            StoreSelectedConfig(config);
+            ConfigureIpcClient(config.IpcAddress, config.IpcPort);
 
             var env = new Dictionary<string, string>
             {
-                ["IPC_PORT"] = localIpcPort.ToString(),
-                ["NET_PORT"] = localNetPort.ToString(),
-                ["NET_ID"] = localNetId.ToString(),
+                ["IPC_PORT"] = config.IpcPort.ToString(),
+                ["NET_PORT"] = config.NetPort.ToString(),
+                ["NET_ID"] = config.NetId.ToString(),
                 ["NET_NAME"] = playerName,
                 ["WORLD_SEED"] = worldSeed.ToString(),
                 ["RUST_LOG"] = "info",
             };
-            AddIpcAddressEnvIfSet(env);
+            AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
 
-            LogLaunchConfig(Role.Host, localIpcAddress, localIpcPort, localNetPort, localNetId, null);
+            LogLaunchConfig(
+                sessionMode,
+                config.IpcAddress,
+                config.IpcPort,
+                config.NetPort,
+                config.NetId,
+                playerName,
+                autoSolo ? "autosolo" : "host",
+                true,
+                config.DefaultIpcOccupied,
+                null);
 
             if (!LaunchBackendProcess(env))
                 return;
 
+            IPCClient.Instance?.StartClient();
             _waitingForBackend = true;
             _startupTimer = 0f;
         }
@@ -84,27 +102,38 @@ namespace BackroomsSurvival.Net
             CurrentRole = Role.Joiner;
             StatusMessage = "Starting backend (joiner)...";
 
-            ResolveIpcEndpoint(ipcPort + joinerNetPortOffset, out string localIpcAddress, out int localIpcPort);
-            int localNetPort = ReadIntEnv("NET_PORT", netPort + joinerNetPortOffset);
-            int localNetId = ReadIntEnv("NET_ID", joinerNetId);
-            ConfigureIpcClient(localIpcAddress, localIpcPort);
+            string sessionMode = ReadSessionMode();
+            var config = SelectLaunchConfig("joiner", ipcPort + joinerNetPortOffset, netPort + joinerNetPortOffset, joinerNetId);
+            StoreSelectedConfig(config);
+            ConfigureIpcClient(config.IpcAddress, config.IpcPort);
 
             var env = new Dictionary<string, string>
             {
-                ["IPC_PORT"] = localIpcPort.ToString(),
-                ["NET_PORT"] = localNetPort.ToString(),
-                ["NET_ID"] = localNetId.ToString(),
+                ["IPC_PORT"] = config.IpcPort.ToString(),
+                ["NET_PORT"] = config.NetPort.ToString(),
+                ["NET_ID"] = config.NetId.ToString(),
                 ["NET_NAME"] = playerName,
                 ["CONNECT_TO"] = $"{serverIP}:{serverNetPort}",
                 ["RUST_LOG"] = "info",
             };
-            AddIpcAddressEnvIfSet(env);
+            AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
 
-            LogLaunchConfig(Role.Joiner, localIpcAddress, localIpcPort, localNetPort, localNetId, $"{serverIP}:{serverNetPort}");
+            LogLaunchConfig(
+                sessionMode,
+                config.IpcAddress,
+                config.IpcPort,
+                config.NetPort,
+                config.NetId,
+                playerName,
+                "joiner",
+                false,
+                config.DefaultIpcOccupied,
+                $"{serverIP}:{serverNetPort}");
 
             if (!LaunchBackendProcess(env))
                 return;
 
+            IPCClient.Instance?.StartClient();
             _waitingForBackend = true;
             _startupTimer = 0f;
         }
@@ -114,10 +143,8 @@ namespace BackroomsSurvival.Net
             string exePath = ResolveBackendPath();
             if (exePath == null)
             {
-                StatusMessage = "Error: backend executable not found";
-                Debug.LogError(
-                    $"[NetworkInitializer] Backend not found at {backendPath}, " +
-                    $"{fallbackBackendPath}, or on PATH ({executableName})");
+                StatusMessage = "Error: Backend executable not found. Build or copy backrooms_server.exe.";
+                Debug.LogError("[NetworkInitializer] Backend executable not found. Build or copy backrooms_server.exe.");
                 return false;
             }
 
@@ -144,23 +171,25 @@ namespace BackroomsSurvival.Net
                 _backendProcess.OutputDataReceived += (s, e) =>
                 {
                     if (!string.IsNullOrEmpty(e.Data))
-                        Debug.Log($"[Backend] {e.Data}");
+                        LogBackendLine(e.Data, false);
                 };
                 _backendProcess.ErrorDataReceived += (s, e) =>
                 {
                     if (!string.IsNullOrEmpty(e.Data))
-                        Debug.LogWarning($"[Backend ERR] {e.Data}");
+                        LogBackendLine(e.Data, true);
                 };
 
                 _backendProcess.BeginOutputReadLine();
                 _backendProcess.BeginErrorReadLine();
 
                 Debug.Log($"[NetworkInitializer] Launched backend PID={_backendProcess.Id} from {exePath}");
+                Debug.Log("[NetworkInitializer] backend launch succeeded");
                 return true;
             }
             catch (Exception e)
             {
                 StatusMessage = $"Error: {e.Message}";
+                Debug.LogError("[NetworkInitializer] backend launch failed");
                 Debug.LogError($"[NetworkInitializer] Failed to start backend: {e}");
                 return false;
             }
@@ -172,7 +201,7 @@ namespace BackroomsSurvival.Net
 
             _startupTimer += Time.unscaledDeltaTime;
 
-            if (IPCClient.Instance.IsConnected)
+            if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
                 _waitingForBackend = false;
                 IsBackendReady = true;
@@ -203,21 +232,56 @@ namespace BackroomsSurvival.Net
 
         private string ResolveBackendPath()
         {
-            string projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+            string dataPath = Application.dataPath;
+            string streamingAssetsPath = Application.streamingAssetsPath;
+            string currentDirectory = Directory.GetCurrentDirectory();
+            string appBaseDirectory = AppDomain.CurrentDomain.BaseDirectory;
+            string buildFolder = ResolveBuildFolder(dataPath, appBaseDirectory);
+            string projectRoot = ResolveProjectRoot(dataPath);
 
-            // 1. Check release build relative to project root.
-            string primary = Path.IsPathRooted(backendPath)
-                ? backendPath
-                : Path.Combine(projectRoot, backendPath);
-            if (File.Exists(primary)) return Path.GetFullPath(primary);
+            Debug.Log($"[NetworkInitializer] Application.dataPath={dataPath}");
+            Debug.Log($"[NetworkInitializer] Application.streamingAssetsPath={streamingAssetsPath}");
+            Debug.Log($"[NetworkInitializer] Directory.GetCurrentDirectory()={currentDirectory}");
+            Debug.Log($"[NetworkInitializer] AppDomain.CurrentDomain.BaseDirectory={appBaseDirectory}");
+            Debug.Log($"[NetworkInitializer] backend build folder={buildFolder}");
+            Debug.Log($"[NetworkInitializer] backend project root={projectRoot}");
 
-            // 2. Check debug build relative to project root.
-            string fallback = Path.IsPathRooted(fallbackBackendPath)
-                ? fallbackBackendPath
-                : Path.Combine(projectRoot, fallbackBackendPath);
-            if (File.Exists(fallback)) return Path.GetFullPath(fallback);
+            string explicitExe = Environment.GetEnvironmentVariable("BACKROOMS_BACKEND_EXE");
+            if (!string.IsNullOrWhiteSpace(explicitExe))
+            {
+                string selected = CheckBackendCandidate(explicitExe, "BACKROOMS_BACKEND_EXE");
+                if (selected != null) return selected;
+            }
 
-            // 3. Search PATH environment variable.
+            var candidates = new List<string>();
+            if (Application.isEditor)
+            {
+                candidates.Add(Path.Combine(buildFolder, executableName));
+                candidates.Add(Path.Combine(buildFolder, "Backend", executableName));
+            }
+            else
+            {
+                candidates.Add(Path.Combine(buildFolder, "Backend", executableName));
+                candidates.Add(Path.Combine(buildFolder, executableName));
+            }
+
+            candidates.Add(Path.Combine(buildFolder, "backend", "target", "release", executableName));
+            candidates.Add(Path.Combine(streamingAssetsPath, "Backend", executableName));
+            candidates.Add(Path.Combine(streamingAssetsPath, executableName));
+            candidates.Add(Path.IsPathRooted(backendPath) ? backendPath : Path.Combine(projectRoot, backendPath));
+            candidates.Add(Path.IsPathRooted(fallbackBackendPath) ? fallbackBackendPath : Path.Combine(projectRoot, fallbackBackendPath));
+
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (string candidate in candidates)
+            {
+                if (string.IsNullOrWhiteSpace(candidate)) continue;
+                string fullPath = Path.GetFullPath(candidate);
+                if (!seen.Add(fullPath)) continue;
+
+                string selected = CheckBackendCandidate(fullPath, "candidate");
+                if (selected != null) return selected;
+            }
+
             string pathEnv = Environment.GetEnvironmentVariable("PATH");
             if (!string.IsNullOrEmpty(pathEnv))
             {
@@ -225,17 +289,133 @@ namespace BackroomsSurvival.Net
                 {
                     if (string.IsNullOrWhiteSpace(dir)) continue;
                     string candidate = Path.Combine(dir.Trim(), executableName);
-                    if (File.Exists(candidate)) return Path.GetFullPath(candidate);
+                    string selected = CheckBackendCandidate(candidate, "PATH");
+                    if (selected != null) return selected;
                 }
             }
 
             return null;
         }
 
+        private static string CheckBackendCandidate(string candidate, string source)
+        {
+            string fullPath;
+            try
+            {
+                fullPath = Path.GetFullPath(candidate);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[NetworkInitializer] backend search candidate path={candidate}, source={source}, invalid={e.Message}");
+                return null;
+            }
+
+            bool exists = File.Exists(fullPath);
+            Debug.Log($"[NetworkInitializer] backend search candidate path={fullPath}, source={source}, exists={exists}");
+
+            if (!exists) return null;
+
+            Debug.Log($"[NetworkInitializer] selected backend path={fullPath}");
+            return fullPath;
+        }
+
+        private static string ResolveBuildFolder(string dataPath, string appBaseDirectory)
+        {
+            if (!Application.isEditor)
+            {
+                string normalizedDataPath = Path.GetFullPath(dataPath);
+                if (normalizedDataPath.EndsWith("_Data", StringComparison.OrdinalIgnoreCase))
+                {
+                    string parent = Directory.GetParent(normalizedDataPath)?.FullName;
+                    if (!string.IsNullOrWhiteSpace(parent))
+                        return parent;
+                }
+
+                if (!string.IsNullOrWhiteSpace(appBaseDirectory))
+                    return Path.GetFullPath(appBaseDirectory);
+            }
+
+            return ResolveProjectRoot(dataPath);
+        }
+
+        private static string ResolveProjectRoot(string dataPath)
+        {
+            string normalizedDataPath = Path.GetFullPath(dataPath);
+            if (string.Equals(Path.GetFileName(normalizedDataPath), "Assets", StringComparison.OrdinalIgnoreCase))
+                return Directory.GetParent(normalizedDataPath)?.FullName ?? normalizedDataPath;
+
+            if (normalizedDataPath.EndsWith("_Data", StringComparison.OrdinalIgnoreCase))
+                return Directory.GetParent(normalizedDataPath)?.FullName ?? normalizedDataPath;
+
+            return Path.GetFullPath(Path.Combine(normalizedDataPath, ".."));
+        }
+
         private static int ReadIntEnv(string name, int fallback)
         {
             string value = Environment.GetEnvironmentVariable(name);
             return int.TryParse(value, out int parsed) ? parsed : fallback;
+        }
+
+        private static LaunchConfig SelectLaunchConfig(string roleName, int fallbackIpcPort, int fallbackNetPort, int fallbackNetId)
+        {
+            ResolveIpcEndpoint(fallbackIpcPort, out string ipcAddress, out int requestedIpcPort);
+
+            bool defaultIpcOccupied = !PortUtility.IsTcpPortAvailable(7777);
+            bool ipcFromEnv = HasEnv("IPC_PORT") || HasEnv("IPC_ADDR");
+            bool netFromEnv = HasEnv("NET_PORT");
+            bool idFromEnv = HasEnv("NET_ID");
+
+            int selectedIpcPort = requestedIpcPort;
+            if (!PortUtility.IsTcpPortAvailable(selectedIpcPort))
+            {
+                int free = PortUtility.FindFreeTcpPort(selectedIpcPort + 1);
+                Debug.LogWarning(
+                    $"[NetworkInitializer] Port busy, selected free port {free} for IPC_PORT");
+                selectedIpcPort = free;
+            }
+
+            int requestedNetPort = ReadIntEnv("NET_PORT", fallbackNetPort);
+            int selectedNetPort = requestedNetPort;
+            if (selectedNetPort == selectedIpcPort || !PortUtility.IsUdpPortAvailable(selectedNetPort))
+            {
+                int start = selectedNetPort == selectedIpcPort ? selectedNetPort + 1 : selectedNetPort + 1;
+                int free = PortUtility.FindFreeUdpPort(start);
+                while (free == selectedIpcPort)
+                    free = PortUtility.FindFreeUdpPort(free + 1);
+                Debug.LogWarning(
+                    $"[NetworkInitializer] Port busy, selected free port {free} for NET_PORT");
+                selectedNetPort = free;
+            }
+
+            int selectedNetId;
+            if (idFromEnv)
+                selectedNetId = ReadIntEnv("NET_ID", fallbackNetId);
+            else if (roleName == "autosolo" && (selectedIpcPort != 7777 || selectedNetPort != 7778))
+                selectedNetId = GenerateDebugNetId();
+            else if (roleName == "joiner")
+                selectedNetId = GenerateDebugNetId();
+            else
+                selectedNetId = fallbackNetId;
+
+            if (!idFromEnv && selectedNetId != fallbackNetId)
+                Debug.LogWarning($"[NetworkInitializer] NET_ID conflict, selected NET_ID {selectedNetId}");
+
+            if (!ipcFromEnv && roleName == "autosolo" && defaultIpcOccupied)
+                Debug.LogWarning("[NetworkInitializer] Default IPC_PORT=7777 occupied; autosolo will launch an isolated backend");
+
+            Debug.Log(
+                $"[NetworkInitializer] Selected IPC_PORT={selectedIpcPort} (tcp), " +
+                $"Selected NET_PORT={selectedNetPort} (udp), Selected NET_ID={selectedNetId}, " +
+                $"ipcFromEnv={ipcFromEnv}, netFromEnv={netFromEnv}, idFromEnv={idFromEnv}");
+
+            return new LaunchConfig
+            {
+                IpcAddress = ipcAddress,
+                IpcPort = selectedIpcPort,
+                NetPort = selectedNetPort,
+                NetId = selectedNetId,
+                DefaultIpcOccupied = defaultIpcOccupied,
+            };
         }
 
         private static void ResolveIpcEndpoint(int fallbackPort, out string address, out int port)
@@ -257,26 +437,92 @@ namespace BackroomsSurvival.Net
             port = parsedPortNumber;
         }
 
-        private static void AddIpcAddressEnvIfSet(Dictionary<string, string> env)
+        private static void AddIpcAddressEnv(Dictionary<string, string> env, string address, int port)
         {
-            string ipcAddr = Environment.GetEnvironmentVariable("IPC_ADDR");
-            if (!string.IsNullOrWhiteSpace(ipcAddr))
-                env["IPC_ADDR"] = ipcAddr;
+            env["IPC_ADDR"] = $"{address}:{port}";
         }
 
         private static void ConfigureIpcClient(string address, int localIpcPort)
         {
-            IPCClient.Instance.ConfigureEndpoint(address, localIpcPort);
+            var ipc = IPCClient.Instance;
+            if (ipc != null)
+                ipc.ConfigureEndpoint(address, localIpcPort);
         }
 
-        private static void LogLaunchConfig(Role role, string localIpcAddress, int localIpcPort, int localNetPort, int localNetId, string connectTo)
+        private void StoreSelectedConfig(LaunchConfig config)
         {
-            string roleName = role == Role.Host ? "host" : "joiner";
+            LastSelectedIpcPort = config.IpcPort;
+            LastSelectedNetPort = config.NetPort;
+            LastSelectedNetId = config.NetId;
+        }
+
+        private static void LogLaunchConfig(
+            string sessionMode,
+            string localIpcAddress,
+            int localIpcPort,
+            int localNetPort,
+            int localNetId,
+            string netName,
+            string roleName,
+            bool autoHost,
+            bool defaultIpcOccupied,
+            string connectTo)
+        {
             string target = string.IsNullOrEmpty(connectTo) ? "<none>" : connectTo;
             Debug.Log(
-                $"[NetworkInitializer] Launch config: IPC_ADDR={localIpcAddress}:{localIpcPort}, " +
+                $"[NetworkInitializer] Launch config: SESSION_MODE={FormatNone(sessionMode)}, " +
+                $"IPC_ADDR={localIpcAddress}:{localIpcPort}, " +
                 $"IPC_PORT={localIpcPort}, NET_PORT={localNetPort}, NET_ID={localNetId}, " +
-                $"role={roleName}, CONNECT_TO={target}");
+                $"NET_NAME={netName}, role={roleName}, autoHost={autoHost}, " +
+                $"default IPC occupied={defaultIpcOccupied}, CONNECT_TO={target}");
+        }
+
+        private static string ReadSessionMode() => Environment.GetEnvironmentVariable("SESSION_MODE");
+
+        private static bool IsAutoSoloEnvironment(string sessionMode)
+        {
+            return string.IsNullOrWhiteSpace(sessionMode) &&
+                   string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CONNECT_TO"));
+        }
+
+        private static bool HasEnv(string name) => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name));
+
+        private static int GenerateDebugNetId()
+        {
+            int pid = Process.GetCurrentProcess().Id;
+            return 1000 + (pid % 60000);
+        }
+
+        private static string FormatNone(string value) => string.IsNullOrWhiteSpace(value) ? "<none>" : value;
+
+        private struct LaunchConfig
+        {
+            public string IpcAddress;
+            public int IpcPort;
+            public int NetPort;
+            public int NetId;
+            public bool DefaultIpcOccupied;
+        }
+
+        private static void LogBackendLine(string line, bool fromStdErr)
+        {
+            if (!fromStdErr)
+            {
+                Debug.Log($"[Backend] {line}");
+                return;
+            }
+
+            if (ContainsLogLevel(line, "ERROR"))
+                Debug.LogError($"[Backend] {line}");
+            else if (ContainsLogLevel(line, "WARN"))
+                Debug.LogWarning($"[Backend] {line}");
+            else
+                Debug.Log($"[Backend] {line}");
+        }
+
+        private static bool ContainsLogLevel(string line, string level)
+        {
+            return line.IndexOf(level, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
         private void OnBackendExited(object sender, EventArgs e)
@@ -334,6 +580,10 @@ namespace BackroomsSurvival.Net
             if (_instance == this) _instance = null;
         }
 
-        private void OnApplicationQuit() => Shutdown();
+        private void OnApplicationQuit()
+        {
+            IPCClient.MarkQuitting();
+            Shutdown();
+        }
     }
 }

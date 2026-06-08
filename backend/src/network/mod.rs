@@ -298,8 +298,9 @@ impl NetworkManager {
             self.send_raw_to(pkt.addr, &ack).await;
         }
 
-        // Update heartbeat for known peers.
-        if let Some(peer) = self.peer_by_addr_mut(pkt.addr) {
+        // Update heartbeat for known peers by logical peer id. The socket address is transport only.
+        if let Some(peer) = self.peers.get_mut(&sender_id) {
+            peer.addr = pkt.addr;
             peer.record_heartbeat();
         }
 
@@ -458,12 +459,6 @@ impl NetworkManager {
             return vec![];
         }
 
-        // Check if this peer is already connected.
-        if self.peers.values().any(|p| p.addr == from_addr) {
-            debug!("Duplicate handshake from {from_addr}, ignoring");
-            return vec![];
-        }
-
         let assigned_id = self.next_peer_id;
         self.next_peer_id += 1;
 
@@ -533,10 +528,6 @@ impl NetworkManager {
             id: sender_id,
             name: "Host".into(),
         }]
-    }
-
-    fn peer_by_addr_mut(&mut self, addr: SocketAddr) -> Option<&mut PeerConnection> {
-        self.peers.values_mut().find(|p| p.addr == addr)
     }
 
     pub fn peer_count(&self) -> usize {

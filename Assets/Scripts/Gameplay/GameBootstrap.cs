@@ -18,16 +18,6 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<NetworkInitializer>();
             EnsureComponent<RemotePlayerManager>();
             EnsureComponent<JoinSessionUI>();
-
-            var rpm = FindFirstObjectByType<RemotePlayerManager>();
-            if (rpm != null)
-            {
-                IPCClient.Instance.AddStateListener(state =>
-                {
-                    if (rpm != null)
-                        rpm.UpdateFromWorldState(state.remotePlayers);
-                });
-            }
         }
 
         private void EnsureComponent<T>() where T : Component

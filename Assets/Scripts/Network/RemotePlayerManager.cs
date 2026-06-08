@@ -26,6 +26,9 @@ namespace BackroomsSurvival.Net
         private readonly Queue<RemotePlayerView> _pool = new Queue<RemotePlayerView>();
         private readonly HashSet<int> _idsThisFrame = new HashSet<int>();
         private readonly List<int> _toRemove = new List<int>();
+        private float _nextReceiveLogTime;
+        private float _nextUpdateLogTime;
+        private IPCClient _ipc;
 
         private static readonly int AnimIdle = Animator.StringToHash("Idle");
         private static readonly int AnimWalk = Animator.StringToHash("Walk");
@@ -36,10 +39,39 @@ namespace BackroomsSurvival.Net
         public int ActiveCount => _active.Count;
         public int PoolCount => _pool.Count;
 
+        private void OnDisable()
+        {
+            if (_ipc != null)
+                _ipc.RemoveStateListener(OnWorldState);
+
+            _ipc = null;
+        }
+
+        private void TrySubscribe()
+        {
+            if (_ipc != null || !IPCClient.TryGetInstance(out var ipc))
+                return;
+
+            _ipc = ipc;
+            _ipc.AddStateListener(OnWorldState);
+        }
+
+        private void OnWorldState(WorldStateMsg state)
+        {
+            if (state != null)
+                UpdateFromWorldState(state.remotePlayers);
+        }
+
         public void UpdateFromWorldState(List<RemotePlayerMsg> remotePlayers)
         {
             if (remotePlayers == null)
                 return;
+
+            if (remotePlayers.Count > 0 && Time.unscaledTime >= _nextReceiveLogTime)
+            {
+                Debug.Log($"[RemotePlayerManager] Remote player received: count={remotePlayers.Count}");
+                _nextReceiveLogTime = Time.unscaledTime + 2f;
+            }
 
             _idsThisFrame.Clear();
 
@@ -54,6 +86,9 @@ namespace BackroomsSurvival.Net
                 {
                     view = Acquire(rp.id, rp.name);
                     _active[rp.id] = view;
+                    Debug.Log(
+                        $"[RemotePlayerManager] Remote player spawned: id={rp.id}, name={rp.name}, " +
+                        $"pos={rp.position}");
                 }
 
                 view.targetPosition = rp.position;
@@ -83,6 +118,8 @@ namespace BackroomsSurvival.Net
 
         private void Update()
         {
+            TrySubscribe();
+
             float dt = Time.deltaTime;
 
             foreach (var kvp in _active)
@@ -101,6 +138,12 @@ namespace BackroomsSurvival.Net
                 view.root.rotation = Quaternion.Euler(0f, newY, 0f);
 
                 ApplyAnimation(view);
+            }
+
+            if (_active.Count > 0 && Time.unscaledTime >= _nextUpdateLogTime)
+            {
+                Debug.Log($"[RemotePlayerManager] Remote player updated: active={_active.Count}");
+                _nextUpdateLogTime = Time.unscaledTime + 2f;
             }
         }
 
@@ -267,6 +310,8 @@ namespace BackroomsSurvival.Net
 
         private void OnDestroy()
         {
+            OnDisable();
+
             foreach (var kvp in _active)
             {
                 var view = kvp.Value;

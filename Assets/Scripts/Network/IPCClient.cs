@@ -16,7 +16,7 @@ namespace BackroomsSurvival.Net
     /// atomically for the main thread; events are queued. Outbound input is written
     /// from the main thread under a lock.
     ///
-    /// Singleton: access via <see cref="Instance"/>; it self-creates if needed.
+    /// Singleton: NetworkInitializer owns creation and startup. Readers should use TryGetInstance.
     /// </summary>
     public sealed class IPCClient : MonoBehaviour
     {
@@ -25,12 +25,30 @@ namespace BackroomsSurvival.Net
         public int port = 7777;
         [Tooltip("Seconds between reconnect attempts.")]
         public float reconnectDelay = 1f;
-
         private static IPCClient _instance;
+        private static bool _isQuitting;
+
+        public static bool HasInstance => _instance != null;
+        public static bool IsQuitting => _isQuitting;
+
+        public static bool TryGetInstance(out IPCClient client)
+        {
+            client = _instance;
+            return client != null;
+        }
+
+        public static void MarkQuitting()
+        {
+            _isQuitting = true;
+        }
+
         public static IPCClient Instance
         {
             get
             {
+                if (_isQuitting)
+                    return null;
+
                 if (_instance == null)
                 {
                     _instance = FindFirstObjectByType<IPCClient>();
@@ -42,6 +60,13 @@ namespace BackroomsSurvival.Net
                 }
                 return _instance;
             }
+        }
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics()
+        {
+            _instance = null;
+            _isQuitting = false;
         }
 
         // ─── Published state (read from the main thread) ───
@@ -81,6 +106,7 @@ namespace BackroomsSurvival.Net
         // ─── Networking internals ───
         private Thread _netThread;
         private volatile bool _running;
+        private volatile bool _hasConnectedOnce;
         private TcpClient _client;
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
@@ -115,10 +141,20 @@ namespace BackroomsSurvival.Net
             DontDestroyOnLoad(gameObject);
 
             ApplyEnvironmentEndpoint();
+        }
+
+        public void StartClient()
+        {
+            Debug.Log($"[IPCClient] StartClient requested endpoint={serverAddress}:{port}");
+
+            if (_isQuitting) return;
+            if (_netThread != null && _netThread.IsAlive) return;
 
             _running = true;
+            _hasConnectedOnce = false;
             _netThread = new Thread(NetworkLoop) { IsBackground = true, Name = "IPCClient" };
             _netThread.Start();
+            Debug.Log($"[IPCClient] Starting IPC client endpoint={serverAddress}:{port}");
         }
 
         private void ApplyEnvironmentEndpoint()
@@ -154,7 +190,11 @@ namespace BackroomsSurvival.Net
         }
 
         private void OnDestroy() => Shutdown();
-        private void OnApplicationQuit() => Shutdown();
+        private void OnApplicationQuit()
+        {
+            _isQuitting = true;
+            Shutdown();
+        }
 
         private void Shutdown()
         {
@@ -186,6 +226,7 @@ namespace BackroomsSurvival.Net
                         _stream = client.GetStream();
                     }
                     _connected = true;
+                    _hasConnectedOnce = true;
                     Debug.Log($"[IPCClient] Connected to {serverAddress}:{port}");
 
                     ReadFrames(_stream);
@@ -193,8 +234,18 @@ namespace BackroomsSurvival.Net
                 catch (ThreadAbortException) { return; }
                 catch (Exception e)
                 {
-                    if (_running) Debug.LogWarning($"[IPCClient] Connection error: {e.Message}");
+                    if (_running)
+                    {
+                        string message = $"[IPCClient] Connection error: {e.Message}";
+                        if (_hasConnectedOnce)
+                            Debug.LogWarning(message);
+                        else
+                            Debug.Log(message);
+                    }
                 }
+
+                if (_running && _hasConnectedOnce && _connected)
+                    Debug.LogWarning($"[IPCClient] Disconnected from {serverAddress}:{port}");
 
                 _connected = false;
                 lock (_sendLock) { _stream = null; }

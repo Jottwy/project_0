@@ -226,7 +226,16 @@ async fn handle_network_event(
             }));
         }
 
-        NetworkEvent::RemotePlayerUpdate { .. } => {
+        NetworkEvent::RemotePlayerUpdate {
+            id,
+            position,
+            rotation,
+            animation,
+        } => {
+            debug!(
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}",
+                id, position[0], position[1], position[2], rotation, animation
+            );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
 
@@ -381,6 +390,17 @@ fn build_world_state(
             animation: p.animation.clone(),
         })
         .collect();
+
+    if tick % 60 == 0 && !remote_players.is_empty() {
+        debug!(
+            "WorldState remote_players={}: {:?}",
+            remote_players.len(),
+            remote_players
+                .iter()
+                .map(|p| (p.id, p.name.as_str()))
+                .collect::<Vec<_>>()
+        );
+    }
 
     WorldState {
         tick,

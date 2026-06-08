@@ -53,13 +53,14 @@ namespace BackroomsSurvival.UI
 
         private void OnEnable()
         {
-            IPCClient.Instance.AddEventListener(OnGameEvent);
+            if (IPCClient.TryGetInstance(out var ipc))
+                ipc.AddEventListener(OnGameEvent);
         }
 
         private void OnDisable()
         {
-            if (IPCClient.Instance != null)
-                IPCClient.Instance.RemoveEventListener(OnGameEvent);
+            if (IPCClient.TryGetInstance(out var ipc))
+                ipc.RemoveEventListener(OnGameEvent);
         }
 
         private void OnGameEvent(GameEventMsg ev)
@@ -70,8 +71,12 @@ namespace BackroomsSurvival.UI
 
         private void Update()
         {
-
-            var ipc = IPCClient.Instance;
+            if (!IPCClient.TryGetInstance(out var ipc))
+            {
+                _connectionText.text = "IPC not started";
+                _infoText.text = "Waiting for backend...";
+                return;
+            }
 
             // Connection.
             _connectionText.text = ipc.IsConnected

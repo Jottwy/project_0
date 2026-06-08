@@ -24,9 +24,9 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void InitialStateIsVisible()
+        public void InitialStateIsIdle()
         {
-            Assert.AreEqual(JoinSessionUI.PanelState.Visible, _ui.State);
+            Assert.AreEqual(JoinSessionUI.PanelState.Idle, _ui.State);
         }
 
         [Test]

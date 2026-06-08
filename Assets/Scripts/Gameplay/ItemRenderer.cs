@@ -28,7 +28,10 @@ namespace BackroomsSurvival.Gameplay
 
         private void LateUpdate()
         {
-            var state = IPCClient.Instance.LatestState;
+            if (!IPCClient.TryGetInstance(out var ipc))
+                return;
+
+            var state = ipc.LatestState;
             if (state == null) return;
 
             var alive = new HashSet<uint>();

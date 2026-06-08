@@ -22,16 +22,13 @@ namespace BackroomsSurvival.UI
         private readonly List<string> _eventFeed = new List<string>();
         private const int MaxFeed = 6;
 
-        private void Awake()
-        {
-            // Touch the singleton so the backend connection starts even without a player.
-            _ = IPCClient.Instance;
-        }
-
         private void Update()
         {
             // Drain events on the main thread (don't touch the queue inside OnGUI).
-            while (IPCClient.Instance.Events.TryDequeue(out var ev))
+            if (!IPCClient.TryGetInstance(out var ipc))
+                return;
+
+            while (ipc.Events.TryDequeue(out var ev))
             {
                 _eventFeed.Add($"• {ev.eventType}");
                 if (_eventFeed.Count > MaxFeed) _eventFeed.RemoveAt(0);
@@ -42,7 +39,14 @@ namespace BackroomsSurvival.UI
         {
             EnsureResources();
 
-            var ipc = IPCClient.Instance;
+            if (!IPCClient.TryGetInstance(out var ipc))
+            {
+                GUI.color = new Color(1f, 0.8f, 0.3f);
+                GUI.Label(new Rect(12, 10, 500, 22), "IPC not started", _label);
+                GUI.color = Color.white;
+                DrawCrosshair();
+                return;
+            }
 
             // Connection status.
             GUI.color = ipc.IsConnected ? new Color(0.4f, 1f, 0.4f) : new Color(1f, 0.8f, 0.3f);
