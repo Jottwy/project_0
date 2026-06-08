@@ -1,0 +1,48 @@
+﻿# Unity generated
+Library/
+Temp/
+Obj/
+obj/
+Build/
+Builds/
+Logs/
+UserSettings/
+MemoryCaptures/
+Recordings/
+
+# Visual Studio / Rider / IDE
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+
+# Unity cache / generated
+*.apk
+*.aab
+*.unitypackage
+*.app
+*.exe
+*.pdb
+*.mdb
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Rust generated
+backend/target/
+
+# Rust local env
+backend/.env
+
+# Temporary
+*.tmp
+*.bak
+*.log

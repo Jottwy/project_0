@@ -1,0 +1,12 @@
+# Pin the Rust toolchain for the backend to the GNU host.
+#
+# Why: this machine's MSVC install (Visual Studio Community 2022) does not
+# include the C++ build tools (no VC\Tools\MSVC, no link.exe), so the default
+# x86_64-pc-windows-msvc toolchain cannot link. The GNU toolchain ships its own
+# mingw linker and builds without Visual Studio's C++ workload.
+#
+# This is scoped to backend/ only and does not change your global default
+# toolchain. If you later install the "Desktop development with C++" workload,
+# you can delete this file to switch the backend back to MSVC.
+[toolchain]
+channel = "stable-x86_64-pc-windows-gnu"

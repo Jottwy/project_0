@@ -1,0 +1,17 @@
+# Cargo configuration for the Backrooms Survival backend.
+#
+# TOOLCHAIN NOTE (windows-gnu):
+# This machine has no MSVC C++ build tools (VS Community 2022 is installed but
+# without the C++ workload — no link.exe), so the backend is pinned to the GNU
+# toolchain via ../rust-toolchain.toml.
+#
+# Building for x86_64-pc-windows-gnu needs an import-library generator
+# (`dlltool`) plus the GNU assembler (`as`) for crates that use raw-dylib
+# (windows-sys, getrandom, parking_lot_core — pulled in by tokio/uuid/rand).
+# rustup's bundled mingw ships only a partial set, so real binutils `as.exe` and
+# `dlltool.exe` (from a portable WinLibs mingw-w64) plus their runtime DLLs were
+# copied into ~/.cargo/bin (which is on PATH). With those present, cargo uses the
+# default `dlltool` from PATH and the build "just works" — no rustflags needed.
+#
+# If you later install the VS "Desktop development with C++" workload, you can
+# delete ../rust-toolchain.toml to switch the backend back to the MSVC toolchain.

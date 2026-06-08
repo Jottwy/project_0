@@ -1,0 +1,30 @@
+[package]
+name = "backrooms_server"
+version = "0.1.0"
+edition = "2021"
+description = "Backrooms Survival — distributed P2P co-op survival horror backend (Rust)"
+authors = ["Backrooms Survival Team"]
+
+[dependencies]
+# ─── Async runtime ───
+tokio = { version = "1", features = ["full"] }
+
+# ─── Serialization ───
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"          # JSON save files (human readable)
+rmp-serde = "1.3"         # MessagePack for IPC + network (compact, fast)
+
+# ─── Logging ───
+log = "0.4"
+env_logger = "0.11"
+
+# ─── Misc ───
+rand = "0.8"                                          # Procedural generation, teleport rolls
+uuid = { version = "1", features = ["v4", "serde"] }  # Player UUIDs
+chrono = { version = "0.4", features = ["serde"] }    # Timestamps for saves
+
+# P2P networking uses tokio::net::UdpSocket (included in tokio "full").
+
+[profile.release]
+opt-level = 3
+lto = true
