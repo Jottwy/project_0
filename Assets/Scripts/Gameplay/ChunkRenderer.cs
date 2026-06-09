@@ -70,8 +70,11 @@ namespace BackroomsSurvival.Gameplay
     {
         [Header("Visuals")]
         public float chunkSize = 50f;
-        public float wallHeight = 3.1f;
-        public float ceilingHeight = 3.2f;
+        // Phase 2.7B: wall top meets the ceiling panel cleanly (panel center at
+        // ceilingHeight, 0.08 thick → underside 3.26). wallHeight == ceilingHeight
+        // tucks the wall top just into the panel with no gap.
+        public float wallHeight = 3.3f;
+        public float ceilingHeight = 3.3f;
 
         [Header("Level 0 Backend-Driven Visuals")]
         public bool enableBackroomsDressing = true;
@@ -82,6 +85,11 @@ namespace BackroomsSurvival.Gameplay
         public bool showLayoutDebug = false;
         public bool showCellDebug = false;
         public bool showCollisionDebug = false;
+        // Phase 2.9B/C toggles.
+        public bool enableChunkMeshBatching = true;
+        public bool enableProceduralMaterialTiling = true;
+        public bool enableCrossChunkZFightNudge = true;
+        public bool showBatchDebug = false;
         public int maxLightsPerChunk = 8;
         public string worldCollisionLayerName = "WorldCollision";
 
@@ -104,6 +112,7 @@ namespace BackroomsSurvival.Gameplay
         private Material _panelMat;
         private Material _baseboardMat;
         private Material _seamMat;
+        private Material _ceilingSeamMat;
         private Material _overlitMat;
         private Material _darkWallMat;
         private Material _humidWallMat;
@@ -115,64 +124,160 @@ namespace BackroomsSurvival.Gameplay
         private float _nextSnapshotLogTime;
         private long _worldSeed;
 
+        // Procedural tiling textures — generated once, shared by every chunk.
+        private static Texture2D _wallpaperTex;
+        private static Texture2D _carpetTex;
+        private static Texture2D _ceilingTex;
+        private const float PerimeterInset = 0.02f; // visual-only cross-chunk z-fight nudge
+
         private const float CellSize = 5f;
         private const int GridCells = 10;
         private const float WallThickness = 0.16f;
         private const float CorridorWidth = 5.2f;
         private const float DoorOpening = 3.0f;
         private const float FloorPanelSize = CellSize * 2f;
+        // Phase 2.7B edge-architecture dimensions.
+        private const float LowWallHeight = 1.0f;   // 0.9–1.1m
+        private const float HalfWallHeight = 1.6f;  // 1.4–1.8m
+        private const float PartitionThickness = 0.12f;
+        private const float DoorPostWidth = 1.0f;   // each side post; leaves DoorOpening in a 5m cell
+        private const float DoorPostHeight = 2.25f;
+        private const float ArchPostHeight = 2.65f;
+        private const float PillarWidth = 1.2f;     // 0.9–1.4m
+        private const float BrokenWallHeight = 1.35f;
+        private const float FalseDoorPanelInset = 0.04f;
+        private const float LayerHeight = 7f;
         private const ushort CellWalkable = 1 << 0;
         private const ushort CellWall = 1 << 1;
         private const ushort CellPillar = 1 << 2;
         private const ushort CellBlocked = 1 << 3;
         private const ushort CellRamp = 1 << 5;
         private const ushort CellPit = 1 << 6;
+        private const ushort CellShallowFluid = 1 << 7;
         private const ushort CellDoor = 1 << 10;
         private const ushort CellArch = 1 << 11;
         private const ushort CellLowWall = 1 << 12;
         private const ushort CellHalfWall = 1 << 13;
         private const ushort CellThinPartition = 1 << 14;
         private const ushort CellFalseDoor = 1 << 15;
+        private const int FloorConnectorUp = 8;
+        private const int FloorConnectorDown = 9;
+        private const int V30AStackedCorridor = 1 << 8;
+        private const int V30ALowerServiceBranch = 1 << 9;
+        private const int V30AUpperOfficeBranch = 1 << 10;
+        private const int V30AAtriumVoidRoom = 1 << 11;
+        private const int V30ADeepPrecipicePlaceholder = 1 << 12;
+        private const int V30AGiantPillarHall = 1 << 13;
+        private const int V30AConnector = 1 << 14;
+        private const int V30ABlockedVerticalShaft = 1 << 15;
         private const int EdgeNorth = 1 << 0;
         private const int EdgeEast = 1 << 1;
         private const int EdgeSouth = 1 << 2;
         private const int EdgeWest = 1 << 3;
 
-        private static long Key(int x, int z) => ((long)x << 32) | (uint)z;
+        private static long Key(int x, int layer, int z)
+        {
+            unchecked
+            {
+                long h = 1469598103934665603L;
+                h = (h ^ x) * 1099511628211L;
+                h = (h ^ layer) * 1099511628211L;
+                h = (h ^ z) * 1099511628211L;
+                return h;
+            }
+        }
+
+        private static bool IsSpawnChunk(ChunkViewMsg cv) => cv.layer == 0 && cv.pos[0] == 0 && cv.pos[1] == 0;
+        private static bool HasV30AFlag(ChunkViewMsg cv, int flag) => (cv.verticalFlags & flag) != 0;
+
+        // Small deterministic hash for cheap, seed-stable visual variation.
+        private static uint Hash2(int a, int b, long seed)
+        {
+            unchecked
+            {
+                uint h = (uint)seed ^ 0x9E3779B9u;
+                h = (h ^ (uint)a) * 0x85EBCA77u;
+                h ^= h >> 13;
+                h = (h ^ (uint)b) * 0xC2B2AE3Du;
+                h ^= h >> 16;
+                return h;
+            }
+        }
 
         private void Start()
         {
-            _floorMat = MaterialHelper.MakeLit(new Color(0.72f, 0.68f, 0.55f));
-            _ceilingMat = MaterialHelper.MakeLit(new Color(0.88f, 0.86f, 0.80f));
-            _workbenchMat = MaterialHelper.MakeLit(new Color(0.45f, 0.30f, 0.18f));
+            EnsureProceduralTextures();
+            _floorMat = Lit(new Color(0.72f, 0.68f, 0.55f));
+            _ceilingMat = Lit(new Color(0.88f, 0.86f, 0.80f));
+            _workbenchMat = Lit(new Color(0.45f, 0.30f, 0.18f));
 
-            _storageMat = MaterialHelper.MakeLit(new Color(0.42f, 0.41f, 0.33f));
-            _safeMat = MaterialHelper.MakeLit(new Color(0.66f, 0.66f, 0.49f));
-            _dangerMat = MaterialHelper.MakeLit(new Color(0.30f, 0.21f, 0.17f));
-            _trimMat = MaterialHelper.MakeLit(new Color(0.28f, 0.25f, 0.18f));
-            _pillarMat = MaterialHelper.MakeLit(new Color(0.58f, 0.54f, 0.41f));
-            _stainMat = MaterialHelper.MakeLit(new Color(0.42f, 0.36f, 0.25f));
-            _darkStainMat = MaterialHelper.MakeLit(new Color(0.20f, 0.18f, 0.13f));
-            _wetMat = MaterialHelper.MakeLit(new Color(0.30f, 0.29f, 0.22f));
-            _blackMoldMat = MaterialHelper.MakeLit(new Color(0.09f, 0.085f, 0.07f));
-            _boxMat = MaterialHelper.MakeLit(new Color(0.38f, 0.31f, 0.21f));
-            _arrowMat = MaterialHelper.MakeLit(new Color(0.18f, 0.14f, 0.09f));
-            _panelMat = MaterialHelper.MakeLit(new Color(0.70f, 0.67f, 0.50f));
-            _baseboardMat = MaterialHelper.MakeLit(new Color(0.38f, 0.33f, 0.22f));
-            _seamMat = MaterialHelper.MakeLit(new Color(0.58f, 0.54f, 0.40f));
-            _overlitMat = MaterialHelper.MakeLit(new Color(0.90f, 0.86f, 0.60f));
-            _darkWallMat = MaterialHelper.MakeLit(new Color(0.36f, 0.32f, 0.22f));
-            _humidWallMat = MaterialHelper.MakeLit(new Color(0.56f, 0.53f, 0.38f));
-            _redRoomMat = MaterialHelper.MakeLit(new Color(0.42f, 0.13f, 0.10f));
-            _manilaMat = MaterialHelper.MakeLit(new Color(0.72f, 0.61f, 0.38f));
-            _cleaningMat = MaterialHelper.MakeLit(new Color(0.50f, 0.54f, 0.42f));
-            _warningMat = MaterialHelper.MakeLit(new Color(0.16f, 0.10f, 0.07f));
+            _storageMat = Lit(new Color(0.42f, 0.41f, 0.33f));
+            _safeMat = Lit(new Color(0.66f, 0.66f, 0.49f));
+            _dangerMat = Lit(new Color(0.30f, 0.21f, 0.17f));
+            _trimMat = Lit(new Color(0.28f, 0.25f, 0.18f));
+            _pillarMat = Lit(new Color(0.58f, 0.54f, 0.41f));
+            // Stains are translucent decals so they read as soft marks on the
+            // carpet/wall, not opaque black "debug rectangles". 2.9A: softer
+            // (lower alpha) and lifted off pure black.
+            _stainMat = Stain(new Color(0.36f, 0.30f, 0.22f), 0.40f);
+            _darkStainMat = Stain(new Color(0.20f, 0.18f, 0.15f), 0.40f);
+            _wetMat = Stain(new Color(0.30f, 0.29f, 0.26f), 0.34f);
+            _blackMoldMat = Stain(new Color(0.16f, 0.16f, 0.14f), 0.42f);
+            _boxMat = Lit(new Color(0.38f, 0.31f, 0.21f));
+            _arrowMat = Lit(new Color(0.18f, 0.14f, 0.09f));
+            _panelMat = Lit(new Color(0.70f, 0.67f, 0.50f));
+            _baseboardMat = Lit(new Color(0.38f, 0.33f, 0.22f));
+            // 2.9A: low-contrast carpet grout (close to floor tone) + muted
+            // near-ceiling drop-tile T-bar, so neither reads as a debug grid.
+            _seamMat = Lit(new Color(0.66f, 0.62f, 0.48f));
+            _ceilingSeamMat = Lit(new Color(0.80f, 0.78f, 0.70f));
+            _overlitMat = Lit(new Color(0.90f, 0.86f, 0.60f));
+            _darkWallMat = Lit(new Color(0.36f, 0.32f, 0.22f));
+            _humidWallMat = Lit(new Color(0.56f, 0.53f, 0.38f));
+            _redRoomMat = Lit(new Color(0.42f, 0.13f, 0.10f));
+            _manilaMat = Lit(new Color(0.72f, 0.61f, 0.38f));
+            _cleaningMat = Lit(new Color(0.50f, 0.54f, 0.42f));
+            _warningMat = Lit(new Color(0.16f, 0.10f, 0.07f));
 
             if (Camera.main != null)
             {
                 Camera.main.clearFlags = CameraClearFlags.SolidColor;
                 Camera.main.backgroundColor = new Color(0.030f, 0.030f, 0.038f);
             }
+
+            // A low, slightly warm ambient floor so areas between fluorescent
+            // fixtures stay readable without losing the oppressive feel.
+            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.17f, 0.16f, 0.13f);
+            RenderSettings.fog = false;
+        }
+
+        // Backrooms surfaces are matte drywall / carpet / acoustic tile. The
+        // default Lit smoothness gives a plastic "made of cubes" sheen, so flatten
+        // it. Keeps the existing MaterialHelper pipeline (URP Lit or Standard).
+        private static Material Lit(Color color)
+        {
+            Material m = MaterialHelper.MakeLit(color);
+            if (m == null)
+                return m;
+            if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0.04f);
+            if (m.HasProperty("_Glossiness")) m.SetFloat("_Glossiness", 0.04f);
+            if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+            if (m.HasProperty("_SpecularHighlights")) m.SetFloat("_SpecularHighlights", 0f);
+            if (m.HasProperty("_GlossyReflections")) m.SetFloat("_GlossyReflections", 0f);
+            return m;
+        }
+
+        // Translucent decal material for stains / grime / wet patches.
+        private static Material Stain(Color color, float alpha)
+        {
+            color.a = Mathf.Clamp01(alpha);
+            Material m = MaterialHelper.MakeTransparent(color);
+            if (m == null)
+                return m;
+            if (m.HasProperty("_Smoothness")) m.SetFloat("_Smoothness", 0.05f);
+            if (m.HasProperty("_Metallic")) m.SetFloat("_Metallic", 0f);
+            return m;
         }
 
         private void LateUpdate()
@@ -206,7 +311,7 @@ namespace BackroomsSurvival.Gameplay
 
             foreach (var cv in state.visibleChunks)
             {
-                long key = Key(cv.pos[0], cv.pos[1]);
+                long key = Key(cv.pos[0], cv.layer, cv.pos[1]);
                 alive.Add(key);
 
                 if (!_pool.ContainsKey(key))
@@ -229,26 +334,46 @@ namespace BackroomsSurvival.Gameplay
 
         private GameObject BuildChunk(ChunkViewMsg cv)
         {
-            var root = new GameObject($"Chunk_{cv.pos[0]}_{cv.pos[1]}");
-            root.transform.position = new Vector3(cv.pos[0] * chunkSize, 0f, cv.pos[1] * chunkSize);
+            float layerY = Mathf.Abs(cv.layerY) > 0.001f ? cv.layerY : cv.layer * LayerHeight;
+            var root = new GameObject($"Chunk_{cv.pos[0]}_{cv.layer}_{cv.pos[1]}");
+            root.transform.position = new Vector3(cv.pos[0] * chunkSize, layerY, cv.pos[1] * chunkSize);
 
-            Debug.Log($"MPTRACE step=AQ event=unity_chunk_template_applied chunk_id={Key(cv.pos[0], cv.pos[1])} template_id={cv.templateId} coord=({cv.pos[0]},{cv.pos[1]}) rotation={cv.rotation}");
+            Debug.Log($"MPTRACE step=AQ event=unity_chunk_template_applied chunk_id={Key(cv.pos[0], cv.layer, cv.pos[1])} template_id={cv.templateId} coord=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rotation={cv.rotation}");
 
             var profile = Level0Profile.FromSeedAndPos(_worldSeed, cv.pos[0], cv.pos[1]);
+            Material wallMat = WallMaterialFor(cv.templateId, profile);
+            if (enableProceduralMaterialTiling)
+                ApplyTex(wallMat, _wallpaperTex, 2.5f);
+            bool edgeLayout = useBackendLayout && cv.HasEdgeLayout;
+            var edgeCounts = new EdgeRenderCounts();
 
             CreateModularSurfaces(root.transform, cv, profile);
             CreateCeilingDetails(root.transform, cv.templateId, profile);
-            CreateTemplateWalls(root.transform, cv, WallMaterialFor(cv.templateId, profile));
-            CreateInteriorLayout(root.transform, cv, profile, WallMaterialFor(cv.templateId, profile));
+
+            if (edgeLayout)
+            {
+                // Phase 2.7B: architecture comes from backend cell edges. No
+                // center-cell doors/arches, no blocked-cell full walls.
+                edgeCounts = CreateEdgeArchitecture(root.transform, cv, wallMat);
+                CreateBackendLayoutPillars(root.transform, cv, _pillarMat);
+                CreateBackendCellDetails(root.transform, cv);
+            }
+            else
+            {
+                CreateTemplateWalls(root.transform, cv, wallMat);
+                CreateInteriorLayout(root.transform, cv, profile, wallMat);
+            }
+
             CreateWallGrime(root.transform, cv.templateId, profile);
 
             if (enableBackroomsDressing)
-                CreateBackroomsDressing(root.transform, cv, profile);
+                CreateBackroomsDressing(root.transform, cv, profile, edgeLayout);
 
-            if (enableTemplateProps && !(useBackendLayout && HasBackendLayout(cv) && (cv.templateId == 9 || cv.templateId == 10)))
+            if (enableTemplateProps && !edgeLayout &&
+                !(useBackendLayout && HasBackendLayout(cv) && (cv.templateId == 9 || cv.templateId == 10)))
                 CreateTemplateProps(root.transform, cv, profile);
 
-            CreateLighting(root.transform, cv.templateId, profile);
+            CreateLighting(root.transform, cv, profile);
 
             if (enableWorldCollision)
                 CreateCollisionProxy(root.transform, cv, profile);
@@ -261,14 +386,55 @@ namespace BackroomsSurvival.Gameplay
                     _workbenchMat);
             }
 
+            // Batch static visual slabs into per-material combined meshes BEFORE
+            // tint, so the (rare) anchored/stabilized tint applies to the combined
+            // renderers. Lights, collision proxy and dynamic objects are excluded.
+            if (enableChunkMeshBatching)
+                CombineChunkVisuals(root, cv);
+
             if (cv.state == "anchored")
                 TintChunk(root, new Color(0.6f, 0.8f, 1f, 1f));
             else if (cv.state == "stabilized")
                 TintChunk(root, new Color(0.8f, 1f, 0.8f, 1f));
 
             LogChunkRenderSummary(cv);
+            LogEdgeChunkRenderSummary(cv, edgeLayout, edgeCounts);
+            if (IsSpawnChunk(cv))
+                LogSpawnChunkRendered(cv, edgeLayout, edgeCounts);
+
+            // Phase 2.10: verticality is rendered from backend metadata only
+            // (FloorOffsetFor raises/sinks the whole chunk floor; ramp/stair/pit
+            // use cell markers). Log once per vertical chunk build.
+            if (cv.floorProfile != 0 || cv.verticalFlags != 0)
+            {
+                int fp = cv.floorProfile;
+                Debug.Log($"MPTRACE step=V210 event=unity_vertical_chunk_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) profile={fp} flags={cv.verticalFlags} raised={(fp == 2)} sunken={(fp == 1)} ramps={(fp == 3 || fp == 4 || fp == FloorConnectorUp || fp == FloorConnectorDown)} stairs={(fp == 6 || fp == 7)} pits={(fp == 5)} batched={enableChunkMeshBatching}");
+            }
+
+            if (cv.layer != 0 || (cv.verticalFlags & (V30AStackedCorridor | V30AAtriumVoidRoom | V30ADeepPrecipicePlaceholder | V30AGiantPillarHall | V30AConnector)) != 0)
+            {
+                Debug.Log($"MPTRACE step=V30A event=unity_multilayer_chunk_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) kind={V30AKind(cv)} layer_y={layerY:F2} batched={enableChunkMeshBatching}");
+            }
+            if (HasV30AFlag(cv, V30AConnector))
+            {
+                int targetLayer = cv.floorProfile == FloorConnectorUp ? cv.layer + 1 : cv.layer - 1;
+                string kind = cv.floorProfile == FloorConnectorUp ? "broad_stairwell" : "service_ramp";
+                Debug.Log($"MPTRACE step=V30A event=unity_connector_rendered from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to=({cv.pos[0]},{targetLayer},{cv.pos[1]}) kind={kind}");
+            }
 
             return root;
+        }
+
+        private static string V30AKind(ChunkViewMsg cv)
+        {
+            if (HasV30AFlag(cv, V30AConnector)) return cv.floorProfile == FloorConnectorUp ? "broad_stairwell" : "service_ramp";
+            if (HasV30AFlag(cv, V30AGiantPillarHall)) return "giant_pillar_hall";
+            if (HasV30AFlag(cv, V30ADeepPrecipicePlaceholder)) return "deep_precipice_placeholder";
+            if (HasV30AFlag(cv, V30AAtriumVoidRoom)) return "atrium_void_room";
+            if (HasV30AFlag(cv, V30ALowerServiceBranch)) return "lower_service_branch";
+            if (HasV30AFlag(cv, V30AUpperOfficeBranch)) return "upper_office_branch";
+            if (HasV30AFlag(cv, V30AStackedCorridor)) return "stacked_corridor";
+            return "layered_chunk";
         }
 
         private void LogChunkRenderSummary(ChunkViewMsg cv)
@@ -299,8 +465,8 @@ namespace BackroomsSurvival.Gameplay
                 }
             }
 
-            bool spawnChunk = cv.pos[0] == 0 && cv.pos[1] == 0;
-            Debug.Log($"MPTRACE step=V26 event=unity_chunk_render_summary chunk=({cv.pos[0]},{cv.pos[1]}) backend_layout={backendLayout} walls={walls} doors={doors} arches={arches} lowwalls={lowWalls} halfwalls={halfWalls} pillars={pillars} false_doors={falseDoors} lights={Mathf.Max(1, maxLightsPerChunk)} vertical={vertical} fallback={!backendLayout} spawn_chunk={spawnChunk}");
+            bool spawnChunk = IsSpawnChunk(cv);
+            Debug.Log($"MPTRACE step=V26 event=unity_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) backend_layout={backendLayout} walls={walls} doors={doors} arches={arches} lowwalls={lowWalls} halfwalls={halfWalls} pillars={pillars} false_doors={falseDoors} lights={Mathf.Max(1, maxLightsPerChunk)} vertical={vertical} fallback={!backendLayout} spawn_chunk={spawnChunk}");
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -313,21 +479,21 @@ namespace BackroomsSurvival.Gameplay
             {
                 case 4: return _storageMat;
                 case 5: return _safeMat;
-                case 6: return MaterialHelper.MakeLit(new Color(0.28f, 0.25f, 0.16f));
-                case 7: return MaterialHelper.MakeLit(new Color(0.22f, 0.18f, 0.14f));
+                case 6: return Lit(new Color(0.28f, 0.25f, 0.16f));
+                case 7: return Lit(new Color(0.22f, 0.18f, 0.14f));
                 case 9:
-                case 10: return MaterialHelper.MakeLit(new Color(0.58f, 0.54f, 0.42f));
-                case 11: return MaterialHelper.MakeLit(new Color(0.64f, 0.59f, 0.41f));
-                case 12: return MaterialHelper.MakeLit(new Color(0.43f, 0.45f, 0.34f));
-                case 13: return MaterialHelper.MakeLit(new Color(0.40f, 0.38f, 0.28f));
-                case 14: return MaterialHelper.MakeLit(new Color(0.18f, 0.16f, 0.11f));
+                case 10: return Lit(new Color(0.58f, 0.54f, 0.42f));
+                case 11: return Lit(new Color(0.64f, 0.59f, 0.41f));
+                case 12: return Lit(new Color(0.43f, 0.45f, 0.34f));
+                case 13: return Lit(new Color(0.40f, 0.38f, 0.28f));
+                case 14: return Lit(new Color(0.18f, 0.16f, 0.11f));
                 case 15: return _manilaMat;
                 case 16: return _redRoomMat;
-                case 17: return MaterialHelper.MakeLit(new Color(0.39f, 0.35f, 0.25f));
+                case 17: return Lit(new Color(0.39f, 0.35f, 0.25f));
                 default:
                     float h = profile.humidity;
                     float g = profile.grime;
-                    return MaterialHelper.MakeLit(new Color(
+                    return Lit(new Color(
                         Mathf.Clamp01(0.72f - h * 0.16f - g * 0.05f),
                         Mathf.Clamp01(0.68f - h * 0.12f - g * 0.04f),
                         Mathf.Clamp01(0.55f - h * 0.09f - g * 0.03f)
@@ -337,39 +503,44 @@ namespace BackroomsSurvival.Gameplay
 
         private Material WallMaterialFor(int templateId, Level0Profile profile)
         {
-            if (templateId == 6) return MaterialHelper.MakeLit(new Color(0.48f, 0.44f, 0.28f));
+            if (templateId == 6) return Lit(new Color(0.48f, 0.44f, 0.28f));
             if (templateId == 7 || templateId == 14) return _darkWallMat;
-            if (templateId == 5) return MaterialHelper.MakeLit(new Color(0.78f, 0.76f, 0.58f));
-            if (templateId == 9 || templateId == 10) return MaterialHelper.MakeLit(new Color(0.66f, 0.62f, 0.46f));
-            if (templateId == 11) return MaterialHelper.MakeLit(new Color(0.70f, 0.65f, 0.46f));
-            if (templateId == 12) return MaterialHelper.MakeLit(new Color(0.54f, 0.57f, 0.43f));
+            if (templateId == 5) return Lit(new Color(0.78f, 0.76f, 0.58f));
+            if (templateId == 9 || templateId == 10) return Lit(new Color(0.66f, 0.62f, 0.46f));
+            if (templateId == 11) return Lit(new Color(0.70f, 0.65f, 0.46f));
+            if (templateId == 12) return Lit(new Color(0.54f, 0.57f, 0.43f));
             if (templateId == 13) return _humidWallMat;
-            if (templateId == 15) return MaterialHelper.MakeLit(new Color(0.78f, 0.65f, 0.40f));
-            if (templateId == 16) return MaterialHelper.MakeLit(new Color(0.34f, 0.10f, 0.08f));
-            if (templateId == 17) return MaterialHelper.MakeLit(new Color(0.52f, 0.48f, 0.34f));
+            if (templateId == 15) return Lit(new Color(0.78f, 0.65f, 0.40f));
+            if (templateId == 16) return Lit(new Color(0.34f, 0.10f, 0.08f));
+            if (templateId == 17) return Lit(new Color(0.52f, 0.48f, 0.34f));
 
+            // Sickly mono-yellow Backrooms wallpaper: high R/G, low B, gentle
+            // per-chunk variation, and only mild darkening so walls never go muddy.
+            // 2.9A: a touch more deterministic per-chunk variance so adjacent
+            // chunks aren't a perfectly uniform yellow, while staying mono-yellow.
             float shift = profile.wallToneShift;
-            float h = profile.humidity * 0.45f;
-            float g = profile.grime * 0.20f;
+            float v = (profile.propVariant - 3.5f) * 0.010f; // ±~0.035, seed-stable
+            float h = profile.humidity * 0.28f;
+            float g = profile.grime * 0.14f;
 
-            return MaterialHelper.MakeLit(new Color(
-                Mathf.Clamp01(0.82f + shift - h * 0.55f - g),
-                Mathf.Clamp01(0.80f + shift * 0.5f - h * 0.40f - g * 0.8f),
-                Mathf.Clamp01(0.72f - h * 0.30f - g * 0.5f)
+            return Lit(new Color(
+                Mathf.Clamp01(0.86f + shift + v - h * 0.35f - g),
+                Mathf.Clamp01(0.80f + shift * 0.5f + v * 0.7f - h * 0.30f - g),
+                Mathf.Clamp01(0.52f - v * 0.5f - h * 0.18f - g * 0.6f)
             ));
         }
 
         private Material CeilingMaterialFor(int templateId, Level0Profile profile)
         {
             if (templateId == 6 || templateId == 7 || templateId == 14)
-                return MaterialHelper.MakeLit(new Color(0.42f, 0.39f, 0.28f));
+                return Lit(new Color(0.42f, 0.39f, 0.28f));
             if (templateId == 16)
-                return MaterialHelper.MakeLit(new Color(0.33f, 0.12f, 0.09f));
+                return Lit(new Color(0.33f, 0.12f, 0.09f));
             if (templateId == 15)
-                return MaterialHelper.MakeLit(new Color(0.72f, 0.62f, 0.40f));
+                return Lit(new Color(0.72f, 0.62f, 0.40f));
 
             float h = profile.humidity * 0.15f;
-            return MaterialHelper.MakeLit(new Color(0.88f - h, 0.86f - h, 0.80f - h));
+            return Lit(new Color(0.88f - h, 0.86f - h, 0.80f - h));
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -381,7 +552,49 @@ namespace BackroomsSurvival.Gameplay
             int templateId = cv.templateId;
             Material floorMat = FloorMaterialFor(templateId, profile);
             Material ceilingMat = CeilingMaterialFor(templateId, profile);
+            if (enableProceduralMaterialTiling)
+            {
+                ApplyTex(floorMat, _carpetTex, 4f);
+                ApplyTex(ceilingMat, _ceilingTex, 4f);
+            }
             float floorOffset = FloorOffsetFor(cv);
+            int floorProfile = cv.floorProfile;
+            // Ramp (3/4) and stairs (6/7) need a sloped/stepped floor surface;
+            // raised (2)/sunken (1) already shift the whole-chunk floorOffset.
+            bool slopedFloor = floorProfile == 3 || floorProfile == 4 || floorProfile == 6 || floorProfile == 7 ||
+                                floorProfile == FloorConnectorUp || floorProfile == FloorConnectorDown;
+            bool floorOpening = HasFloorOpening(cv);
+            bool ceilingOpening = HasCeilingOpening(cv);
+
+            // Solid base planes behind the tile panels so the dark void never
+            // shows through the seams as a "black grid". The panels sit slightly
+            // proud, leaving a subtle recessed grout line instead of a gap.
+            if (floorOpening)
+            {
+                CreateRingSurface(parent, "FloorBase", floorOffset - 0.085f, 0.10f, floorMat);
+            }
+            else
+            {
+                CreateSlab(parent, "FloorBase",
+                    new Vector3(chunkSize * 0.5f, floorOffset - 0.085f, chunkSize * 0.5f),
+                    new Vector3(chunkSize, 0.10f, chunkSize),
+                    floorMat);
+            }
+
+            if (ceilingOpening)
+            {
+                CreateRingSurface(parent, "CeilingBase", ceilingHeight + 0.05f, 0.08f, ceilingMat);
+            }
+            else
+            {
+                CreateSlab(parent, "CeilingBase",
+                    new Vector3(chunkSize * 0.5f, ceilingHeight + 0.05f, chunkSize * 0.5f),
+                    new Vector3(chunkSize, 0.08f, chunkSize),
+                    ceilingMat);
+            }
+
+            if (floorOpening)
+                CreateAtriumVolume(parent, cv, floorOffset);
 
             for (int x = 0; x < GridCells; x += 2)
             {
@@ -390,44 +603,297 @@ namespace BackroomsSurvival.Gameplay
                     float cx = (x + 1f) * CellSize;
                     float cz = (z + 1f) * CellSize;
 
-                    CreateSlab(parent, "FloorPanel",
-                        new Vector3(cx, floorOffset - 0.045f, cz),
-                        new Vector3(FloorPanelSize - 0.05f, 0.09f, FloorPanelSize - 0.05f),
-                        floorMat);
+                    bool floorInOpening = floorOpening && IsOpeningPanel(x, z);
+                    bool ceilingInOpening = ceilingOpening && IsOpeningPanel(x, z);
+                    if (!slopedFloor && !floorInOpening)
+                        CreateSlab(parent, "FloorPanel",
+                            new Vector3(cx, floorOffset - 0.045f, cz),
+                            new Vector3(FloorPanelSize - 0.05f, 0.09f, FloorPanelSize - 0.05f),
+                            floorMat);
 
-                    CreateSlab(parent, "CeilingPanel",
-                        new Vector3(cx, ceilingHeight, cz),
-                        new Vector3(FloorPanelSize - 0.08f, 0.08f, FloorPanelSize - 0.08f),
-                        ceilingMat);
+                    // 2.9C2: rare deterministic missing/damaged ceiling tile —
+                    // a darker recessed panel into the plenum (over the base plane).
+                    bool missingTile = (Hash2(x + cv.pos[0] * 31, z + cv.pos[1] * 17, _worldSeed) % 23u) == 0u;
+                    if (!ceilingInOpening)
+                    {
+                        CreateSlab(parent, missingTile ? "CeilingTileMissing" : "CeilingPanel",
+                            new Vector3(cx, missingTile ? ceilingHeight + 0.045f : ceilingHeight, cz),
+                            new Vector3(FloorPanelSize - 0.08f, 0.08f, FloorPanelSize - 0.08f),
+                            missingTile ? _darkStainMat : ceilingMat);
+                    }
                 }
             }
 
             if (enableCeilingGrid)
             {
-                Material gridMat = profile.grime > 0.55f || templateId == 12 || templateId == 13 || templateId == 14 ? _stainMat : _panelMat;
                 for (int i = 1; i < GridCells; i++)
                 {
                     float p = i * CellSize;
-                    CreateSlab(parent, "FloorSeam_X",
-                        new Vector3(p, 0.016f, chunkSize * 0.5f),
-                        new Vector3(0.018f, 0.010f, chunkSize),
-                        _seamMat);
-                    CreateSlab(parent, "FloorSeam_Z",
-                        new Vector3(chunkSize * 0.5f, 0.017f, p),
-                        new Vector3(chunkSize, 0.010f, 0.018f),
-                        _seamMat);
+
+                    // Carpet grout only on the 10m panel boundaries (i = 2,4,6,8),
+                    // low-contrast + thin → continuous carpet, not a board grid.
+                    // Skipped on vertical chunks where a flat seam would be misplaced.
+                    if (i % 2 == 0 && floorProfile == 0)
+                    {
+                        CreateSlab(parent, "FloorSeam_X",
+                            new Vector3(p, 0.014f, chunkSize * 0.5f),
+                            new Vector3(0.014f, 0.008f, chunkSize),
+                            _seamMat);
+                        CreateSlab(parent, "FloorSeam_Z",
+                            new Vector3(chunkSize * 0.5f, 0.015f, p),
+                            new Vector3(chunkSize, 0.008f, 0.014f),
+                            _seamMat);
+                    }
+
+                    // Ceiling tile rhythm kept on every cell but muted (near-ceiling
+                    // tone) + thin so it reads as a drop ceiling, not a debug grid.
                     CreateSlab(parent, "CeilingGrid_X",
-                        new Vector3(p, ceilingHeight - 0.100f, chunkSize * 0.5f),
-                        new Vector3(0.030f, 0.018f, chunkSize),
-                        gridMat);
+                        new Vector3(p, ceilingHeight - 0.090f, chunkSize * 0.5f),
+                        new Vector3(0.022f, 0.014f, chunkSize),
+                        _ceilingSeamMat);
                     CreateSlab(parent, "CeilingGrid_Z",
-                        new Vector3(chunkSize * 0.5f, ceilingHeight - 0.101f, p),
-                        new Vector3(chunkSize, 0.018f, 0.030f),
-                        gridMat);
+                        new Vector3(chunkSize * 0.5f, ceilingHeight - 0.091f, p),
+                        new Vector3(chunkSize, 0.014f, 0.022f),
+                        _ceilingSeamMat);
                 }
             }
 
+            // Phase 2.10B: build the visible vertical floor surface.
+            if (slopedFloor)
+                BuildSlopedFloor(parent, floorProfile, floorOffset, floorMat);
+            if (floorProfile == FloorConnectorUp || floorProfile == FloorConnectorDown)
+                CreateConnectorVolume(parent, cv, floorOffset);
+            if (floorProfile == 1 || floorProfile == 2)
+                BuildFloorRim(parent, floorOffset);
+            CreateV30AMacroVisuals(parent, cv, floorOffset);
+
+            if (floorProfile != 0 || cv.verticalFlags != 0)
+            {
+                Debug.Log($"MPTRACE step=V210B event=unity_vertical_geometry_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) profile={floorProfile} raised={(floorProfile == 2)} sunken={(floorProfile == 1)} ramps={(floorProfile == 3 || floorProfile == 4 || floorProfile == FloorConnectorUp || floorProfile == FloorConnectorDown)} stairs={(floorProfile == 6 || floorProfile == 7)} pits={(floorProfile == 5)} batched={enableChunkMeshBatching}");
+            }
+
             CreateFloorStains(parent, templateId, profile);
+        }
+
+        // Broad stepped/sloped floor matching backend floor_player_y:
+        //   ramp:  base + (local/CHUNK)*0.5   (10 broad steps, ~0.05m each)
+        //   stairs: base + floor(local/10)/5 * 0.6  (5 shallow steps of 0.12m)
+        // Built as full-width slabs of floorMat so mesh batching still groups them.
+        private void BuildSlopedFloor(Transform parent, int floorProfile, float baseOffset, Material floorMat)
+        {
+            bool connector = floorProfile == FloorConnectorUp || floorProfile == FloorConnectorDown;
+            bool ns = floorProfile == 3 || floorProfile == 6 || connector;   // varies along Z
+            bool stairs = floorProfile == 6 || floorProfile == 7;
+            int segments = stairs ? 5 : GridCells;
+            float segLen = chunkSize / segments;
+
+            for (int s = 0; s < segments; s++)
+            {
+                float center = (s + 0.5f) * segLen;
+                float t = center / chunkSize;
+                float surfY = stairs
+                    ? baseOffset + (s / 5f) * 0.6f
+                    : connector
+                        ? baseOffset + (floorProfile == FloorConnectorUp ? t * LayerHeight : -t * LayerHeight)
+                        : baseOffset + t * 0.5f;
+                Vector3 pos = ns
+                    ? new Vector3(chunkSize * 0.5f, surfY - 0.045f, center)
+                    : new Vector3(center, surfY - 0.045f, chunkSize * 0.5f);
+                Vector3 scale = ns
+                    ? new Vector3(chunkSize, 0.09f, segLen)
+                    : new Vector3(segLen, 0.09f, chunkSize);
+                CreateSlab(parent, connector ? "LayerConnectorStep" : "VerticalFloorStep", pos, scale, floorMat);
+            }
+        }
+
+        private void CreateConnectorVolume(Transform parent, ChunkViewMsg cv, float baseOffset)
+        {
+            bool up = cv.floorProfile == FloorConnectorUp;
+            int targetLayer = up ? cv.layer + 1 : cv.layer - 1;
+            string kind = up ? "broad_stairwell" : "service_ramp";
+            float y0 = baseOffset;
+            float y1 = baseOffset + (up ? LayerHeight : -LayerHeight);
+            const int steps = GridCells;
+            float segLen = chunkSize / steps;
+            float railInset = CellSize * 1.15f;
+            Material railMat = up ? _baseboardMat : _darkWallMat;
+            Material riserMat = up ? _trimMat : _humidWallMat;
+
+            CreateSlab(parent, "ConnectorLanding_Start",
+                new Vector3(chunkSize * 0.5f, y0 + 0.02f, segLen * 0.45f),
+                new Vector3(chunkSize - railInset * 2f, 0.14f, segLen * 0.90f),
+                up ? _floorMat : _darkStainMat);
+            CreateSlab(parent, "ConnectorLanding_End",
+                new Vector3(chunkSize * 0.5f, y1 + 0.02f, chunkSize - segLen * 0.45f),
+                new Vector3(chunkSize - railInset * 2f, 0.14f, segLen * 0.90f),
+                up ? _floorMat : _darkStainMat);
+
+            for (int s = 0; s < steps; s++)
+            {
+                float z = (s + 0.5f) * segLen;
+                float t = z / chunkSize;
+                float y = baseOffset + (up ? t * LayerHeight : -t * LayerHeight);
+                float railY = y + 0.65f;
+                CreateSlab(parent, "ConnectorRail_L",
+                    new Vector3(railInset, railY, z),
+                    new Vector3(0.28f, 1.25f, segLen * 0.92f),
+                    railMat);
+                CreateSlab(parent, "ConnectorRail_R",
+                    new Vector3(chunkSize - railInset, railY, z),
+                    new Vector3(0.28f, 1.25f, segLen * 0.92f),
+                    railMat);
+
+                if (s > 0)
+                {
+                    float previousT = (s * segLen) / chunkSize;
+                    float previousY = baseOffset + (up ? previousT * LayerHeight : -previousT * LayerHeight);
+                    float riserY = (previousY + y) * 0.5f;
+                    float riserHeight = Mathf.Max(0.16f, Mathf.Abs(y - previousY));
+                    CreateSlab(parent, "ConnectorStepRiser",
+                        new Vector3(chunkSize * 0.5f, riserY, s * segLen),
+                        new Vector3(chunkSize - railInset * 2f, riserHeight, 0.16f),
+                        riserMat);
+                }
+            }
+
+            CreateSlab(parent, "ConnectorOverheadCue",
+                new Vector3(chunkSize * 0.5f, Mathf.Max(y0, y1) + 0.55f, chunkSize * 0.5f),
+                new Vector3(chunkSize - railInset * 2.2f, 0.12f, 0.34f),
+                _ceilingSeamMat);
+
+            Debug.Log($"MPTRACE step=V30AFIX event=connector_volume_built from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to_layer={targetLayer} kind={kind} y0={y0:F1} y1={y1:F1} steps={steps}");
+        }
+
+        // Thin perimeter rim so a raised/sunken room reads as a deliberate
+        // platform/pit edge rather than a floating floor.
+        private void BuildFloorRim(Transform parent, float floorOffset)
+        {
+            float y = floorOffset + 0.02f;
+            float half = chunkSize * 0.5f;
+            const float t = 0.18f, h = 0.10f;
+            CreateSlab(parent, "FloorRim_N", new Vector3(half, y, 0.12f), new Vector3(chunkSize, h, t), _trimMat);
+            CreateSlab(parent, "FloorRim_S", new Vector3(half, y, chunkSize - 0.12f), new Vector3(chunkSize, h, t), _trimMat);
+            CreateSlab(parent, "FloorRim_W", new Vector3(0.12f, y, half), new Vector3(t, h, chunkSize), _trimMat);
+            CreateSlab(parent, "FloorRim_E", new Vector3(chunkSize - 0.12f, y, half), new Vector3(t, h, chunkSize), _trimMat);
+        }
+
+        private static bool HasVerticalOpening(ChunkViewMsg cv) =>
+            HasV30AFlag(cv, V30AAtriumVoidRoom) ||
+            HasV30AFlag(cv, V30ADeepPrecipicePlaceholder) ||
+            HasV30AFlag(cv, V30ABlockedVerticalShaft);
+
+        private static bool HasFloorOpening(ChunkViewMsg cv) => HasVerticalOpening(cv);
+
+        private static bool HasCeilingOpening(ChunkViewMsg cv) =>
+            HasVerticalOpening(cv) ||
+            (cv.layer < 0 && HasV30AFlag(cv, V30AGiantPillarHall));
+
+        private static float LayerRootY(ChunkViewMsg cv) =>
+            Mathf.Abs(cv.layerY) > 0.001f ? cv.layerY : cv.layer * LayerHeight;
+
+        private static bool IsOpeningPanel(int x, int z) => x >= 2 && x <= 6 && z >= 2 && z <= 6;
+
+        private void CreateRingSurface(Transform parent, string name, float y, float height, Material mat)
+        {
+            float side = CellSize * 3f;
+            float opening = chunkSize - side * 2f;
+            float half = chunkSize * 0.5f;
+            CreateSlab(parent, name + "_N", new Vector3(half, y, side * 0.5f), new Vector3(chunkSize, height, side), mat);
+            CreateSlab(parent, name + "_S", new Vector3(half, y, chunkSize - side * 0.5f), new Vector3(chunkSize, height, side), mat);
+            CreateSlab(parent, name + "_W", new Vector3(side * 0.5f, y, half), new Vector3(side, height, opening), mat);
+            CreateSlab(parent, name + "_E", new Vector3(chunkSize - side * 0.5f, y, half), new Vector3(side, height, opening), mat);
+        }
+
+        private void CreateAtriumVolume(Transform parent, ChunkViewMsg cv, float floorOffset)
+        {
+            float min = CellSize * 3f;
+            float max = CellSize * 7f;
+            float center = (min + max) * 0.5f;
+            float span = max - min;
+            float shaftHeight = LayerHeight;
+            float shaftCenterY = cv.layer >= 0 ? floorOffset - shaftHeight * 0.5f : floorOffset + shaftHeight * 0.5f;
+            float rimY = floorOffset + 0.04f;
+            float railY = floorOffset + 0.58f;
+            float depthY = cv.layer >= 0 ? floorOffset - shaftHeight + 0.08f : floorOffset + shaftHeight - 0.08f;
+            Material shaftMat = HasV30AFlag(cv, V30ADeepPrecipicePlaceholder) ? _darkWallMat : _humidWallMat;
+
+            CreateSlab(parent, "AtriumShaftWall_N", new Vector3(center, shaftCenterY, min), new Vector3(span + 0.2f, shaftHeight, 0.24f), shaftMat);
+            CreateSlab(parent, "AtriumShaftWall_S", new Vector3(center, shaftCenterY, max), new Vector3(span + 0.2f, shaftHeight, 0.24f), shaftMat);
+            CreateSlab(parent, "AtriumShaftWall_W", new Vector3(min, shaftCenterY, center), new Vector3(0.24f, shaftHeight, span + 0.2f), shaftMat);
+            CreateSlab(parent, "AtriumShaftWall_E", new Vector3(max, shaftCenterY, center), new Vector3(0.24f, shaftHeight, span + 0.2f), shaftMat);
+
+            CreateSlab(parent, "AtriumRim_N", new Vector3(center, rimY, min - 0.18f), new Vector3(span + 0.8f, 0.12f, 0.36f), _baseboardMat);
+            CreateSlab(parent, "AtriumRim_S", new Vector3(center, rimY, max + 0.18f), new Vector3(span + 0.8f, 0.12f, 0.36f), _baseboardMat);
+            CreateSlab(parent, "AtriumRim_W", new Vector3(min - 0.18f, rimY, center), new Vector3(0.36f, 0.12f, span + 0.8f), _baseboardMat);
+            CreateSlab(parent, "AtriumRim_E", new Vector3(max + 0.18f, rimY, center), new Vector3(0.36f, 0.12f, span + 0.8f), _baseboardMat);
+
+            CreateSlab(parent, "AtriumRail_N", new Vector3(center, railY, min - 0.35f), new Vector3(span + 0.5f, 1.16f, 0.24f), _trimMat);
+            CreateSlab(parent, "AtriumRail_S", new Vector3(center, railY, max + 0.35f), new Vector3(span + 0.5f, 1.16f, 0.24f), _trimMat);
+            CreateSlab(parent, "AtriumRail_W", new Vector3(min - 0.35f, railY, center), new Vector3(0.24f, 1.16f, span + 0.5f), _trimMat);
+            CreateSlab(parent, "AtriumRail_E", new Vector3(max + 0.35f, railY, center), new Vector3(0.24f, 1.16f, span + 0.5f), _trimMat);
+
+            CreateSlab(parent, "AtriumDepthGlow", new Vector3(center, depthY, center), new Vector3(span - 1.2f, 0.06f, span - 1.2f), _darkStainMat);
+            CreateSlab(parent, "AtriumDepthPatch", new Vector3(center - 2.6f, depthY + 0.08f, center + 2.2f), new Vector3(span * 0.45f, 0.035f, span * 0.32f), _stainMat);
+
+            bool lowerVisible = cv.layer >= 0 && !HasV30AFlag(cv, V30ABlockedVerticalShaft);
+            Debug.Log($"MPTRACE step=V30AFIX event=atrium_volume_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) opening=({span:F0},{span:F0}) shaft_height={shaftHeight:F1} rails=4 lower_visible={lowerVisible}");
+        }
+
+        private void CreateV30AMacroVisuals(Transform parent, ChunkViewMsg cv, float floorOffset)
+        {
+            if (HasV30AFlag(cv, V30AGiantPillarHall))
+            {
+                float h = LayerHeight + ceilingHeight;
+                int pillarCount = 0;
+                foreach (var p in new[] { new Vector2(0.25f, 0.25f), new Vector2(0.75f, 0.25f), new Vector2(0.25f, 0.75f), new Vector2(0.75f, 0.75f) })
+                {
+                    Vector3 basePos = new Vector3(chunkSize * p.x, floorOffset + 0.08f, chunkSize * p.y);
+                    Vector3 topPos = new Vector3(chunkSize * p.x, floorOffset + h - 0.08f, chunkSize * p.y);
+                    CreateSlab(parent, "GiantPillar",
+                        new Vector3(chunkSize * p.x, floorOffset + h * 0.5f, chunkSize * p.y),
+                        new Vector3(2.4f, h, 2.4f),
+                        _pillarMat);
+                    CreateSlab(parent, "GiantPillarBase", basePos, new Vector3(3.6f, 0.28f, 3.6f), _baseboardMat);
+                    CreateSlab(parent, "GiantPillarCap", topPos, new Vector3(3.8f, 0.30f, 3.8f), _baseboardMat);
+                    pillarCount++;
+                }
+                Debug.Log($"MPTRACE step=V30AFIX event=giant_pillars_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) count={pillarCount} height={h:F1}");
+            }
+
+            string branchType = null;
+            if (HasV30AFlag(cv, V30ALowerServiceBranch))
+            {
+                branchType = "lower_service_branch";
+                CreateSlab(parent, "LowerServiceFloorGrime", new Vector3(chunkSize * 0.5f, floorOffset + 0.018f, chunkSize * 0.5f), new Vector3(chunkSize * 0.82f, 0.035f, chunkSize * 0.72f), _darkStainMat);
+                CreateSlab(parent, "LowerServiceLowCeiling_A", new Vector3(chunkSize * 0.5f, ceilingHeight - 0.34f, chunkSize * 0.28f), new Vector3(chunkSize * 0.78f, 0.20f, 0.34f), _darkWallMat);
+                CreateSlab(parent, "LowerServiceLowCeiling_B", new Vector3(chunkSize * 0.5f, ceilingHeight - 0.38f, chunkSize * 0.72f), new Vector3(chunkSize * 0.68f, 0.18f, 0.30f), _darkWallMat);
+                CreateSlab(parent, "ServicePipe_A", new Vector3(chunkSize * 0.5f, ceilingHeight - 0.65f, chunkSize * 0.22f), new Vector3(chunkSize * 0.70f, 0.18f, 0.18f), _trimMat);
+                CreateSlab(parent, "ServicePipe_B", new Vector3(chunkSize * 0.35f, ceilingHeight - 0.95f, chunkSize * 0.72f), new Vector3(0.18f, 0.18f, chunkSize * 0.55f), _trimMat);
+                CreateSlab(parent, "ServicePipe_C", new Vector3(chunkSize * 0.70f, ceilingHeight - 1.15f, chunkSize * 0.55f), new Vector3(0.16f, 0.16f, chunkSize * 0.40f), _humidWallMat);
+                CreateSlab(parent, "LowerServicePanel", new Vector3(chunkSize - 0.16f, wallHeight * 0.46f, chunkSize * 0.48f), new Vector3(0.10f, 1.8f, 5.8f), _darkWallMat);
+            }
+
+            if (HasV30AFlag(cv, V30AUpperOfficeBranch))
+            {
+                branchType = "upper_office_branch";
+                CreateSlab(parent, "UpperBranchCleanFloor", new Vector3(chunkSize * 0.5f, floorOffset + 0.018f, chunkSize * 0.5f), new Vector3(chunkSize * 0.76f, 0.035f, chunkSize * 0.68f), _manilaMat);
+                CreateSlab(parent, "UpperBranchRail", new Vector3(chunkSize * 0.5f, floorOffset + 0.68f, chunkSize - 0.28f), new Vector3(chunkSize * 0.70f, 1.25f, 0.24f), _trimMat);
+                CreateSlab(parent, "UpperBranchOverlookTrim", new Vector3(chunkSize * 0.5f, floorOffset + 0.08f, chunkSize - 0.80f), new Vector3(chunkSize * 0.72f, 0.16f, 0.36f), _baseboardMat);
+                CreateSlab(parent, "UpperOfficeWindowBand", new Vector3(0.18f, wallHeight * 0.60f, chunkSize * 0.5f), new Vector3(0.10f, 0.85f, chunkSize * 0.55f), _ceilingMat);
+            }
+
+            if (HasV30AFlag(cv, V30AStackedCorridor))
+            {
+                branchType = branchType ?? "stacked_corridor";
+                CreateSlab(parent, "StackedCorridorShadowTrim_L", new Vector3(CellSize * 1.05f, floorOffset + 0.06f, chunkSize * 0.5f), new Vector3(0.32f, 0.12f, chunkSize * 0.78f), _baseboardMat);
+                CreateSlab(parent, "StackedCorridorShadowTrim_R", new Vector3(chunkSize - CellSize * 1.05f, floorOffset + 0.06f, chunkSize * 0.5f), new Vector3(0.32f, 0.12f, chunkSize * 0.78f), _baseboardMat);
+                CreateSlab(parent, "StackedCorridorCableTray", new Vector3(chunkSize * 0.5f, ceilingHeight - 0.52f, chunkSize * 0.5f), new Vector3(chunkSize * 0.62f, 0.16f, 0.28f), _trimMat);
+            }
+
+            if (branchType != null)
+            {
+                Debug.Log($"MPTRACE step=V30AFIX event=branch_layer_style_applied chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) branch_type={branchType} layer_y={LayerRootY(cv):F2}");
+            }
         }
 
         private void CreateFloorStains(Transform parent, int templateId, Level0Profile profile)
@@ -451,9 +917,10 @@ namespace BackroomsSurvival.Gameplay
 
             if (templateId == 7 || templateId == 14)
             {
+                // Smaller, soft damp pool instead of a big near-black square plane.
                 CreateSlab(parent, "DarkPool",
                     new Vector3(chunkSize * 0.5f, 0.030f, chunkSize * 0.5f),
-                    new Vector3(14f, 0.012f, 14f),
+                    new Vector3(8.5f, 0.012f, 7f),
                     _darkStainMat);
             }
 
@@ -511,34 +978,63 @@ namespace BackroomsSurvival.Gameplay
         // Lighting
         // ─────────────────────────────────────────────────────────────
 
-        private void CreateLighting(Transform parent, int templateId, Level0Profile profile)
+        private void CreateLighting(Transform parent, ChunkViewMsg cv, Level0Profile profile)
         {
+            int templateId = cv.templateId;
+            int cap = Mathf.Clamp(maxLightsPerChunk, 1, 10);
+            // Only skip cells when the backend layout tells us they're not floor;
+            // fallback chunks light the whole grid as before.
+            bool walkAware = cv.HasBackendLayout;
+            float lightY = ceilingHeight - 0.20f; // hangs below the ceiling tile, no clip
+
+            // Fixtures snap to cell centres on a sparse rhythm aligned to the
+            // ceiling tile grid (≈15m spacing, range 16 → readable overlap).
+            // 2.9A: stagger the grid per chunk so lighting never reads as one
+            // perfect repeating pattern across the level.
+            int stagger = (int)(Hash2(cv.pos[0], cv.pos[1], _worldSeed) & 1u);
+            int[] coords = stagger == 0 ? new[] { 1, 4, 7 } : new[] { 2, 5, 8 };
             int placed = 0;
-            for (int row = 0; row < 6; row++)
+            int idx = 0;
+            foreach (int cellX in coords)
             {
-                for (int col = 0; col < 6; col++)
+                foreach (int cellZ in coords)
                 {
-                    if (placed >= Mathf.Max(1, maxLightsPerChunk))
+                    if (placed >= cap)
                         break;
-                    float lx = 4f + row * (chunkSize - 8f) / 5f;
-                    float lz = 4f + col * (chunkSize - 8f) / 5f;
-                    int lightIdx = row * 6 + col;
-                    bool affected = IsLightAffected(lightIdx, profile, templateId);
-                    bool unpoweredFixture = (row + col) % 2 != 0 && templateId != 15 && templateId != 16;
-                    CreateLight(parent, new Vector3(lx, ceilingHeight - 0.24f, lz), profile, affected, templateId, unpoweredFixture);
+                    if (walkAware && !IsCellWalkable(cv.GetCell(cellX, cellZ)))
+                    {
+                        idx++;
+                        continue;
+                    }
+                    float lx = (cellX + 0.5f) * CellSize;
+                    float lz = (cellZ + 0.5f) * CellSize;
+                    bool affected = IsLightAffected(idx, profile, templateId);
+                    // Deterministic irregular dead fixtures (~25%) instead of a
+                    // regular checkerboard. Manila/red keep all fixtures lit.
+                    uint hc = Hash2(cellX * 7 + cv.pos[0], cellZ * 11 + cv.pos[1], _worldSeed);
+                    bool unpoweredFixture = templateId != 15 && templateId != 16 && (hc % 4u == 0u);
+                    CreateLight(parent, new Vector3(lx, lightY, lz), profile, affected, templateId, unpoweredFixture);
                     placed++;
+                    idx++;
                 }
-                if (placed >= Mathf.Max(1, maxLightsPerChunk))
+                if (placed >= cap)
                     break;
+            }
+
+            // Never leave a walkable chunk pitch black (e.g. all candidate cells blocked).
+            if (placed == 0)
+            {
+                CreateLight(parent, new Vector3(chunkSize * 0.5f, lightY, chunkSize * 0.5f), profile, false, templateId, false);
+                placed++;
             }
 
             bool wantsLongFixture = templateId == 0 || templateId == 3 || templateId == 9 ||
                                     templateId == 10 || templateId == 11 || templateId == 15 ||
                                     templateId == 17;
-            if (placed < Mathf.Max(1, maxLightsPerChunk) && wantsLongFixture)
+            if (placed < cap && wantsLongFixture)
             {
                 CreateLongFluorescent(parent,
-                    new Vector3(chunkSize * 0.5f, ceilingHeight - 0.12f, chunkSize * 0.5f),
+                    new Vector3(chunkSize * 0.5f, ceilingHeight - 0.14f, chunkSize * 0.5f),
                     templateId == 15 ? 0.55f : 0.9f,
                     templateId == 15 ? new Color(1f, 0.72f, 0.34f) : new Color(1f, 0.95f, 0.64f));
             }
@@ -601,7 +1097,9 @@ namespace BackroomsSurvival.Gameplay
                     : templateId == 16
                         ? new Color(0.95f, 0.20f, 0.14f)
                     : new Color(1f, 0.95f, 0.66f);
-                fixtureEmission = templateId == 15 ? 0.65f : templateId == 16 ? 0.9f : 1.0f;
+                // Lower self-emission so the fixture reads as a fluorescent tube,
+                // not a blown-out white block.
+                fixtureEmission = templateId == 15 ? 0.42f : templateId == 16 ? 0.5f : 0.55f;
             }
 
             var fixture = GameObject.CreatePrimitive(PrimitiveType.Cube);
@@ -610,7 +1108,7 @@ namespace BackroomsSurvival.Gameplay
             fixture.GetComponent<Renderer>().sharedMaterial =
                 fixtureEmission > 0f
                     ? MaterialHelper.MakeEmissive(fixtureColor, fixtureEmission)
-                    : MaterialHelper.MakeLit(fixtureColor);
+                    : Lit(fixtureColor);
             Destroy(fixture.GetComponent<Collider>());
 
             if (!isOff)
@@ -632,8 +1130,8 @@ namespace BackroomsSurvival.Gameplay
                         : templateId == 16
                             ? new Color(1f, 0.12f, 0.08f)
                             : new Color(1f, 0.90f, 0.55f);
-                    light.intensity = templateId == 15 ? 0.55f : templateId == 16 ? 0.80f : 0.95f;
-                    light.range = templateId == 15 ? 11f : templateId == 16 ? 9f : 14f;
+                    light.intensity = templateId == 15 ? 0.60f : templateId == 16 ? 0.80f : 1.0f;
+                    light.range = templateId == 15 ? 12f : templateId == 16 ? 10f : 16f;
                 }
             }
         }
@@ -918,6 +1416,17 @@ namespace BackroomsSurvival.Gameplay
                 new Vector3(chunkSize * 0.5f, -0.08f, chunkSize * 0.5f),
                 new Vector3(chunkSize, 0.16f, chunkSize),
                 layer);
+
+            // Phase 2.7B: collision proxy mirrors the backend edge model exactly,
+            // so the client proxy never blocks where the authoritative backend
+            // would allow movement (and vice versa).
+            if (useBackendLayout && cv.HasEdgeLayout)
+            {
+                CreateEdgeArchitectureCollision(proxy.transform, cv, layer);
+                CreateBackendLayoutPillarCollision(proxy.transform, cv, layer);
+                CreateBackendCellCollision(proxy.transform, cv, layer);
+                return;
+            }
 
             CreateCollisionTemplateWalls(proxy.transform, cv, layer);
             CreateCollisionInteriorLayout(proxy.transform, cv, profile, layer);
@@ -1489,28 +1998,69 @@ namespace BackroomsSurvival.Gameplay
                 _trimMat);
         }
 
-        private void CreateBackroomsDressing(Transform parent, ChunkViewMsg cv, Level0Profile profile)
+        private void CreateBackroomsDressing(Transform parent, ChunkViewMsg cv, Level0Profile profile, bool edgeLayout)
         {
-            CreateBaseboards(parent);
+            CreatePerimeterTrim(parent, cv);
 
             if (profile.propVariant == 0 || cv.templateId == 8 || cv.templateId == 11 || cv.templateId == 16)
                 CreateArrowMarks(parent);
 
-            if (profile.propVariant == 4 || cv.templateId == 11)
+            // Edge layouts get their false doors from real boundary edges; skip the
+            // legacy perimeter-attached fake panel to avoid duplicates.
+            if (!edgeLayout && (profile.propVariant == 4 || cv.templateId == 11))
                 CreateFalseDoorPanel(parent);
         }
 
-        private void CreateBaseboards(Transform parent)
+        /// <summary>
+        /// Continuous baseboard + crown trim around the chunk perimeter (the most
+        /// visible room edge). Baseboards split around the centred boundary opening
+        /// so they never float across a doorway; crown runs full span under the
+        /// ceiling. Merged into a few slabs to stay within the per-chunk budget.
+        /// </summary>
+        private void CreatePerimeterTrim(Transform parent, ChunkViewMsg cv)
         {
-            CreateSlab(parent, "Baseboard_N",
-                new Vector3(chunkSize * 0.5f, 0.32f, 0.13f),
-                new Vector3(chunkSize * 0.92f, 0.20f, 0.055f),
-                _baseboardMat);
+            var op = OpeningsFor(cv);
+            float gapA = (GridCells * 0.5f - 1f) * CellSize; // 20
+            float gapB = (GridCells * 0.5f + 1f) * CellSize; // 30
+            const float baseY = 0.16f, baseH = 0.32f, t = 0.06f;
+            float crownY = ceilingHeight - 0.16f;
+            const float crownH = 0.14f;
+            float half = chunkSize * 0.5f;
 
-            CreateSlab(parent, "Baseboard_E",
-                new Vector3(chunkSize - 0.13f, 0.32f, chunkSize * 0.5f),
-                new Vector3(0.055f, 0.20f, chunkSize * 0.92f),
-                _baseboardMat);
+            AddPerimeterBaseboard(parent, "Baseboard_N", true, 0.10f, op.north, gapA, gapB, baseY, baseH, t);
+            AddPerimeterBaseboard(parent, "Baseboard_S", true, chunkSize - 0.10f, op.south, gapA, gapB, baseY, baseH, t);
+            AddPerimeterBaseboard(parent, "Baseboard_W", false, 0.10f, op.west, gapA, gapB, baseY, baseH, t);
+            AddPerimeterBaseboard(parent, "Baseboard_E", false, chunkSize - 0.10f, op.east, gapA, gapB, baseY, baseH, t);
+
+            CreateSlab(parent, "Crown_N", new Vector3(half, crownY, 0.10f), new Vector3(chunkSize, crownH, t), _trimMat);
+            CreateSlab(parent, "Crown_S", new Vector3(half, crownY, chunkSize - 0.10f), new Vector3(chunkSize, crownH, t), _trimMat);
+            CreateSlab(parent, "Crown_W", new Vector3(0.10f, crownY, half), new Vector3(t, crownH, chunkSize), _trimMat);
+            CreateSlab(parent, "Crown_E", new Vector3(chunkSize - 0.10f, crownY, half), new Vector3(t, crownH, chunkSize), _trimMat);
+        }
+
+        private void AddPerimeterBaseboard(Transform parent, string name, bool alongX, float fixedCoord, bool open,
+            float gapA, float gapB, float y, float h, float t)
+        {
+            if (!open)
+            {
+                Vector3 pos = alongX ? new Vector3(chunkSize * 0.5f, y, fixedCoord) : new Vector3(fixedCoord, y, chunkSize * 0.5f);
+                Vector3 scale = alongX ? new Vector3(chunkSize, h, t) : new Vector3(t, h, chunkSize);
+                CreateSlab(parent, name, pos, scale, _baseboardMat);
+                return;
+            }
+
+            float lenA = gapA;                 // 0 .. gapA
+            float lenB = chunkSize - gapB;     // gapB .. chunkSize
+            if (alongX)
+            {
+                CreateSlab(parent, name + "A", new Vector3(gapA * 0.5f, y, fixedCoord), new Vector3(lenA, h, t), _baseboardMat);
+                CreateSlab(parent, name + "B", new Vector3(gapB + lenB * 0.5f, y, fixedCoord), new Vector3(lenB, h, t), _baseboardMat);
+            }
+            else
+            {
+                CreateSlab(parent, name + "A", new Vector3(fixedCoord, y, gapA * 0.5f), new Vector3(t, h, lenA), _baseboardMat);
+                CreateSlab(parent, name + "B", new Vector3(fixedCoord, y, gapB + lenB * 0.5f), new Vector3(t, h, lenB), _baseboardMat);
+            }
         }
 
         private void CreateArrowMarks(Transform parent)
@@ -1544,6 +2094,331 @@ namespace BackroomsSurvival.Gameplay
                 new Vector3(0.165f, wallHeight * 0.45f, chunkSize * 0.63f),
                 new Vector3(0.06f, 0.18f, 0.18f),
                 _trimMat);
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Phase 2.7B — edge-wall architecture (backend edge arrays)
+        // ─────────────────────────────────────────────────────────────
+
+        private struct EdgeRenderCounts
+        {
+            public int walls, doors, arches, lowWalls, halfWalls, partitions, falseDoors, broken;
+        }
+
+        // Spawn-core cells / interior edges on chunk (0,0). The backend already
+        // clears these (reserve_starter_spawn_area); these guards are a visual
+        // safety net so nothing ever crosses the spawn capsule.
+        private static bool IsSpawnCoreCell(int x, int z) => x >= 3 && x <= 6 && z >= 3 && z <= 6;
+        private static bool IsSpawnCoreVerticalEdge(int bx, int z) => bx >= 4 && bx <= 6 && z >= 3 && z <= 6;
+        private static bool IsSpawnCoreHorizontalEdge(int x, int bz) => bz >= 4 && bz <= 6 && x >= 3 && x <= 6;
+
+        /// <summary>
+        /// Render walls/doors/arches/low+half walls/partitions/false doors from
+        /// the backend's cell-edge arrays. Vertical edges run along Z (local
+        /// x = bx*CellSize); horizontal edges run along X (local z = bz*CellSize).
+        /// Perimeter edges are included, so chunk-boundary openings match the
+        /// backend exactly. Each edge is drawn once — no double walls.
+        /// </summary>
+        private EdgeRenderCounts CreateEdgeArchitecture(Transform parent, ChunkViewMsg cv, Material wallMat)
+        {
+            var counts = new EdgeRenderCounts();
+            int g = cv.layoutGridSize;
+            bool spawnChunk = IsSpawnChunk(cv);
+
+            for (int z = 0; z < g; z++)
+            {
+                for (int bx = 0; bx <= g; bx++)
+                {
+                    byte kind = cv.GetVEdge(bx, z);
+                    if (EdgeKinds.EdgeIsOpen(kind))
+                        continue;
+                    if (spawnChunk && IsSpawnCoreVerticalEdge(bx, z) && EdgeKinds.EdgeBlocksMovement(kind))
+                        continue;
+                    Vector3 center = new Vector3(bx * CellSize, 0f, (z + 0.5f) * CellSize);
+                    // Nudge perimeter solid walls inward a hair so two neighbours'
+                    // coincident boundary slabs aren't coplanar (kills z-fight).
+                    // Collision is NOT nudged (it must match the backend boundary).
+                    if (enableCrossChunkZFightNudge && EdgeKinds.EdgeBlocksMovement(kind))
+                    {
+                        if (bx == 0) center.x += PerimeterInset;
+                        else if (bx == g) center.x -= PerimeterInset;
+                    }
+                    RenderEdge(parent, center, true, kind, wallMat, ref counts);
+                }
+            }
+
+            for (int bz = 0; bz <= g; bz++)
+            {
+                for (int x = 0; x < g; x++)
+                {
+                    byte kind = cv.GetHEdge(x, bz);
+                    if (EdgeKinds.EdgeIsOpen(kind))
+                        continue;
+                    if (spawnChunk && IsSpawnCoreHorizontalEdge(x, bz) && EdgeKinds.EdgeBlocksMovement(kind))
+                        continue;
+                    Vector3 center = new Vector3((x + 0.5f) * CellSize, 0f, bz * CellSize);
+                    if (enableCrossChunkZFightNudge && EdgeKinds.EdgeBlocksMovement(kind))
+                    {
+                        if (bz == 0) center.z += PerimeterInset;
+                        else if (bz == g) center.z -= PerimeterInset;
+                    }
+                    RenderEdge(parent, center, false, kind, wallMat, ref counts);
+                }
+            }
+
+            return counts;
+        }
+
+        private void RenderEdge(Transform parent, Vector3 center, bool runsAlongZ, byte kind, Material wallMat, ref EdgeRenderCounts counts)
+        {
+            if (EdgeKinds.EdgeIsDoor(kind))
+            {
+                CreateEdgeDoorFrame(parent, center, runsAlongZ, false, wallMat);
+                counts.doors++;
+            }
+            else if (EdgeKinds.EdgeIsArch(kind))
+            {
+                CreateEdgeDoorFrame(parent, center, runsAlongZ, true, wallMat);
+                counts.arches++;
+            }
+            else if (EdgeKinds.EdgeIsLowWall(kind))
+            {
+                CreateEdgeWallSlab(parent, "EdgeLowWall", center, runsAlongZ, LowWallHeight, WallThickness, _panelMat);
+                CreateEdgeCap(parent, center, runsAlongZ, LowWallHeight);
+                counts.lowWalls++;
+            }
+            else if (EdgeKinds.EdgeIsHalfWall(kind))
+            {
+                CreateEdgeWallSlab(parent, "EdgeHalfWall", center, runsAlongZ, HalfWallHeight, WallThickness, _panelMat);
+                CreateEdgeCap(parent, center, runsAlongZ, HalfWallHeight);
+                counts.halfWalls++;
+            }
+            else if (EdgeKinds.EdgeIsPartition(kind))
+            {
+                // Office cubicle partition: thinner + a slightly different (paler) tint.
+                CreateEdgeWallSlab(parent, "EdgePartition", center, runsAlongZ, wallHeight, PartitionThickness, _panelMat);
+                counts.partitions++;
+            }
+            else if (EdgeKinds.EdgeIsFalseDoor(kind))
+            {
+                CreateEdgeFalseDoor(parent, center, runsAlongZ, wallMat);
+                counts.falseDoors++;
+            }
+            else if (EdgeKinds.EdgeIsBrokenWall(kind))
+            {
+                // Backend treats broken walls as passable: render a low stub only.
+                CreateEdgeWallSlab(parent, "EdgeBrokenWall", center, runsAlongZ, BrokenWallHeight, WallThickness, wallMat);
+                counts.broken++;
+            }
+            else
+            {
+                CreateEdgeWallSlab(parent, "EdgeWall", center, runsAlongZ, wallHeight, WallThickness, wallMat);
+                counts.walls++;
+            }
+        }
+
+        private void CreateEdgeWallSlab(Transform parent, string name, Vector3 center, bool runsAlongZ, float height, float thickness, Material mat)
+        {
+            Vector3 scale = runsAlongZ
+                ? new Vector3(thickness, height, CellSize)
+                : new Vector3(CellSize, height, thickness);
+            CreateSlab(parent, name, new Vector3(center.x, height * 0.5f, center.z), scale, mat);
+        }
+
+        // A thin slightly-wider cap strip on top of a low/half wall so it reads as
+        // an intentional divider rather than a clipped wall.
+        private void CreateEdgeCap(Transform parent, Vector3 center, bool runsAlongZ, float height)
+        {
+            const float capT = WallThickness * 1.7f;
+            const float capH = 0.07f;
+            Vector3 scale = runsAlongZ
+                ? new Vector3(capT, capH, CellSize)
+                : new Vector3(CellSize, capH, capT);
+            CreateSlab(parent, "EdgeWallCap", new Vector3(center.x, height + capH * 0.5f, center.z), scale, _trimMat);
+        }
+
+        private void CreateEdgeDoorFrame(Transform parent, Vector3 center, bool runsAlongZ, bool arch, Material mat)
+        {
+            float postHeight = arch ? ArchPostHeight : DoorPostHeight;
+            float postOffset = (CellSize - DoorPostWidth) * 0.5f;
+            Material frameMat = arch ? _trimMat : mat;
+
+            for (int s = -1; s <= 1; s += 2)
+            {
+                Vector3 postPos = runsAlongZ
+                    ? new Vector3(center.x, postHeight * 0.5f, center.z + s * postOffset)
+                    : new Vector3(center.x + s * postOffset, postHeight * 0.5f, center.z);
+                Vector3 postScale = runsAlongZ
+                    ? new Vector3(WallThickness, postHeight, DoorPostWidth)
+                    : new Vector3(DoorPostWidth, postHeight, WallThickness);
+                CreateSlab(parent, arch ? "EdgeArchPost" : "EdgeDoorPost", postPos, postScale, frameMat);
+            }
+
+            // Header fills from post height up to the ceiling so the opening reads
+            // as a hole in a wall (no gap above), but the passage itself is clear.
+            float headerHeight = Mathf.Max(0.1f, wallHeight - postHeight);
+            Vector3 headerScale = runsAlongZ
+                ? new Vector3(WallThickness, headerHeight, CellSize)
+                : new Vector3(CellSize, headerHeight, WallThickness);
+            CreateSlab(parent, arch ? "EdgeArchHeader" : "EdgeDoorHeader",
+                new Vector3(center.x, postHeight + headerHeight * 0.5f, center.z),
+                headerScale, mat);
+
+            Vector3 threshScale = runsAlongZ
+                ? new Vector3(0.18f, 0.05f, DoorOpening)
+                : new Vector3(DoorOpening, 0.05f, 0.18f);
+            CreateSlab(parent, "EdgeThreshold", new Vector3(center.x, 0.03f, center.z), threshScale, _trimMat);
+        }
+
+        private void CreateEdgeFalseDoor(Transform parent, Vector3 center, bool runsAlongZ, Material mat)
+        {
+            // Full wall behind it (false doors block in the backend).
+            CreateEdgeWallSlab(parent, "EdgeFalseDoorWall", center, runsAlongZ, wallHeight, WallThickness, mat);
+
+            // A door-shaped panel flush on one wall face so it reads as a (fake) door.
+            float panelH = 2.15f;
+            float faceOffset = WallThickness * 0.5f + FalseDoorPanelInset;
+            Vector3 panelPos = runsAlongZ
+                ? new Vector3(center.x + faceOffset, panelH * 0.5f, center.z)
+                : new Vector3(center.x, panelH * 0.5f, center.z + faceOffset);
+            Vector3 panelScale = runsAlongZ
+                ? new Vector3(0.06f, panelH, DoorOpening - 0.4f)
+                : new Vector3(DoorOpening - 0.4f, panelH, 0.06f);
+            CreateSlab(parent, "EdgeFalseDoorPanel", panelPos, panelScale, _panelMat);
+
+            // Small handle so it reads as a (sealed) door, not a blank panel.
+            const float hOff = 0.62f; // toward one side of the panel
+            Vector3 handlePos = runsAlongZ
+                ? new Vector3(center.x + faceOffset + 0.05f, panelH * 0.46f, center.z + hOff)
+                : new Vector3(center.x + hOff, panelH * 0.46f, center.z + faceOffset + 0.05f);
+            CreateSlab(parent, "EdgeFalseDoorHandle", handlePos, new Vector3(0.12f, 0.12f, 0.12f), _trimMat);
+        }
+
+        /// <summary>Cell-center detail only: blocked stacks, pits, ramps, fluid film.</summary>
+        private void CreateBackendCellDetails(Transform parent, ChunkViewMsg cv)
+        {
+            int g = cv.layoutGridSize;
+            bool spawnChunk = IsSpawnChunk(cv);
+            for (int z = 0; z < g; z++)
+            {
+                for (int x = 0; x < g; x++)
+                {
+                    ushort flags = cv.GetCell(x, z);
+                    if (flags == 0)
+                        continue;
+                    Vector3 center = new Vector3((x + 0.5f) * CellSize, 0f, (z + 0.5f) * CellSize);
+
+                    if ((flags & CellBlocked) != 0 && (flags & CellWalkable) == 0)
+                    {
+                        CreateSlab(parent, "BackendBlockedCell",
+                            new Vector3(center.x, wallHeight * 0.5f, center.z),
+                            new Vector3(CellSize - 0.2f, wallHeight, CellSize - 0.2f),
+                            _trimMat);
+                    }
+                    if ((flags & CellPit) != 0)
+                        CreatePitMarker(parent, center);
+                    if ((flags & CellRamp) != 0)
+                        CreateRampMarker(parent, center, cv.floorProfile);
+                    if ((flags & CellShallowFluid) != 0 && !spawnChunk)
+                    {
+                        CreateSlab(parent, "BackendFluidFilm",
+                            new Vector3(center.x, 0.02f, center.z),
+                            new Vector3(CellSize - 0.3f, 0.03f, CellSize - 0.3f),
+                            _wetMat);
+                    }
+                }
+            }
+        }
+
+        private void CreateEdgeArchitectureCollision(Transform parent, ChunkViewMsg cv, int layer)
+        {
+            int g = cv.layoutGridSize;
+            bool spawnChunk = IsSpawnChunk(cv);
+
+            for (int z = 0; z < g; z++)
+            {
+                for (int bx = 0; bx <= g; bx++)
+                {
+                    byte kind = cv.GetVEdge(bx, z);
+                    if (!EdgeKinds.EdgeBlocksMovement(kind))
+                        continue;
+                    if (spawnChunk && IsSpawnCoreVerticalEdge(bx, z))
+                        continue;
+                    AddEdgeCollision(parent, new Vector3(bx * CellSize, 0f, (z + 0.5f) * CellSize), true, kind, layer);
+                }
+            }
+
+            for (int bz = 0; bz <= g; bz++)
+            {
+                for (int x = 0; x < g; x++)
+                {
+                    byte kind = cv.GetHEdge(x, bz);
+                    if (!EdgeKinds.EdgeBlocksMovement(kind))
+                        continue;
+                    if (spawnChunk && IsSpawnCoreHorizontalEdge(x, bz))
+                        continue;
+                    AddEdgeCollision(parent, new Vector3((x + 0.5f) * CellSize, 0f, bz * CellSize), false, kind, layer);
+                }
+            }
+        }
+
+        private void AddEdgeCollision(Transform parent, Vector3 center, bool runsAlongZ, byte kind, int layer)
+        {
+            float height = wallHeight;
+            float thickness = WallThickness;
+            if (EdgeKinds.EdgeIsLowWall(kind))
+                height = LowWallHeight;
+            else if (EdgeKinds.EdgeIsHalfWall(kind))
+                height = HalfWallHeight;
+            else if (EdgeKinds.EdgeIsPartition(kind))
+                thickness = PartitionThickness;
+
+            Vector3 scale = runsAlongZ
+                ? new Vector3(thickness, height, CellSize)
+                : new Vector3(CellSize, height, thickness);
+            CreateCollisionBox(parent, "EdgeCollider", new Vector3(center.x, height * 0.5f, center.z), scale, layer);
+        }
+
+        private void CreateBackendCellCollision(Transform parent, ChunkViewMsg cv, int layer)
+        {
+            int g = cv.layoutGridSize;
+            for (int z = 0; z < g; z++)
+            {
+                for (int x = 0; x < g; x++)
+                {
+                    ushort flags = cv.GetCell(x, z);
+                    if ((flags & CellBlocked) != 0 && (flags & CellWalkable) == 0)
+                    {
+                        CreateCollisionBox(parent, "BackendBlockedCellCollider",
+                            new Vector3((x + 0.5f) * CellSize, wallHeight * 0.5f, (z + 0.5f) * CellSize),
+                            new Vector3(CellSize - 0.2f, wallHeight, CellSize - 0.2f),
+                            layer);
+                    }
+                }
+            }
+        }
+
+        private static int CountCellFlag(ChunkViewMsg cv, ushort flag)
+        {
+            int n = 0;
+            if (cv.cellFlags == null)
+                return 0;
+            for (int i = 0; i < cv.cellFlags.Length; i++)
+                if ((cv.cellFlags[i] & flag) != 0)
+                    n++;
+            return n;
+        }
+
+        private void LogEdgeChunkRenderSummary(ChunkViewMsg cv, bool edgeLayout, EdgeRenderCounts c)
+        {
+            int pillars = CountCellFlag(cv, CellPillar);
+            Debug.Log($"MPTRACE step=V27 event=unity_edge_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) template={cv.templateId} backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} cells={cv.cellFlags.Length} v_edges={cv.verticalEdges.Length} h_edges={cv.horizontalEdges.Length} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} partitions={c.partitions} false_doors={c.falseDoors} pillars={pillars} fallback={!edgeLayout}");
+        }
+
+        private void LogSpawnChunkRendered(ChunkViewMsg cv, bool edgeLayout, EdgeRenderCounts c)
+        {
+            int pillars = CountCellFlag(cv, CellPillar);
+            Debug.Log($"MPTRACE step=V27 event=unity_spawn_chunk_rendered backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} pillars={pillars} fallback={!edgeLayout}");
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -1589,6 +2464,7 @@ namespace BackroomsSurvival.Gameplay
             if (!HasBackendLayout(cv))
                 return;
 
+            bool spawnChunk = IsSpawnChunk(cv);
             int grid = Mathf.Min(GridCells, cv.layoutGridSize);
             for (int x = 0; x < grid; x++)
             {
@@ -1597,11 +2473,22 @@ namespace BackroomsSurvival.Gameplay
                     int idx = z * cv.layoutGridSize + x;
                     if (idx >= cv.layoutCells.Length || (cv.layoutCells[idx] & CellPillar) == 0)
                         continue;
+                    // Never plant a column in the reserved spawn core.
+                    if (spawnChunk && IsSpawnCoreCell(x, z))
+                        continue;
 
+                    float cx = (x + 0.5f) * CellSize;
+                    float cz = (z + 0.5f) * CellSize;
+                    // Square office column with base + cap trim (no cartoon capsule).
                     CreateSlab(parent, "BackendPillar",
-                        new Vector3((x + 0.5f) * CellSize, wallHeight * 0.5f, (z + 0.5f) * CellSize),
-                        new Vector3(1.8f, wallHeight, 1.8f),
+                        new Vector3(cx, wallHeight * 0.5f, cz),
+                        new Vector3(PillarWidth, wallHeight, PillarWidth),
                         mat);
+                    float trimW = PillarWidth + 0.18f;
+                    CreateSlab(parent, "BackendPillarBase",
+                        new Vector3(cx, 0.10f, cz), new Vector3(trimW, 0.20f, trimW), _trimMat);
+                    CreateSlab(parent, "BackendPillarCap",
+                        new Vector3(cx, wallHeight - 0.12f, cz), new Vector3(trimW, 0.16f, trimW), _trimMat);
                 }
             }
         }
@@ -1714,6 +2601,7 @@ namespace BackroomsSurvival.Gameplay
             if (!HasBackendLayout(cv))
                 return;
 
+            bool spawnChunk = IsSpawnChunk(cv);
             int grid = Mathf.Min(GridCells, cv.layoutGridSize);
             for (int x = 0; x < grid; x++)
             {
@@ -1722,10 +2610,12 @@ namespace BackroomsSurvival.Gameplay
                     int idx = z * cv.layoutGridSize + x;
                     if (idx >= cv.layoutCells.Length || (cv.layoutCells[idx] & CellPillar) == 0)
                         continue;
+                    if (spawnChunk && IsSpawnCoreCell(x, z))
+                        continue;
 
                     CreateCollisionBox(parent, "BackendPillarCollider",
                         new Vector3((x + 0.5f) * CellSize, wallHeight * 0.5f, (z + 0.5f) * CellSize),
-                        new Vector3(1.8f, wallHeight, 1.8f),
+                        new Vector3(PillarWidth, wallHeight, PillarWidth),
                         layer);
                 }
             }
@@ -1900,6 +2790,133 @@ namespace BackroomsSurvival.Gameplay
             Destroy(go.GetComponent<Collider>());
         }
 
+        // ── Phase 2.9B: chunk-local static mesh batching ──
+        // Combine direct-child static slabs by material into one mesh each. Lights
+        // (their fixture cubes live under a Light object) and the collision proxy
+        // (no MeshRenderer) are excluded automatically; dynamic items/entities are
+        // separate renderers, never children of this root.
+        private void CombineChunkVisuals(GameObject root, ChunkViewMsg cv)
+        {
+            var cleanup = root.AddComponent<ChunkRenderCleanup>();
+            var buckets = new Dictionary<Material, List<MeshFilter>>();
+            int sourceVisuals = 0;
+
+            foreach (Transform child in root.transform)
+            {
+                if (child.GetComponent<Light>() != null)
+                    continue;
+                var mf = child.GetComponent<MeshFilter>();
+                var mr = child.GetComponent<MeshRenderer>();
+                if (mf == null || mr == null || mf.sharedMesh == null || mr.sharedMaterial == null)
+                    continue;
+                var mat = mr.sharedMaterial;
+                if (!buckets.TryGetValue(mat, out var list))
+                {
+                    list = new List<MeshFilter>();
+                    buckets[mat] = list;
+                }
+                list.Add(mf);
+                sourceVisuals++;
+            }
+
+            int combinedMeshes = 0;
+            long verts = 0, indices = 0;
+            var toDestroy = new List<GameObject>();
+            foreach (var kv in buckets)
+            {
+                var list = kv.Value;
+                var ci = new CombineInstance[list.Count];
+                for (int i = 0; i < list.Count; i++)
+                {
+                    ci[i].mesh = list[i].sharedMesh;
+                    ci[i].transform = root.transform.worldToLocalMatrix * list[i].transform.localToWorldMatrix;
+                    toDestroy.Add(list[i].gameObject);
+                }
+                var mesh = new Mesh { name = "ChunkBatch", indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
+                mesh.CombineMeshes(ci, true, true);
+                mesh.RecalculateBounds();
+                cleanup.Meshes.Add(mesh);
+
+                var go = new GameObject("Batch");
+                go.transform.SetParent(root.transform, false);
+                go.AddComponent<MeshFilter>().sharedMesh = mesh;
+                go.AddComponent<MeshRenderer>().sharedMaterial = kv.Key;
+                combinedMeshes++;
+                verts += mesh.vertexCount;
+                indices += mesh.GetIndexCount(0);
+            }
+            for (int i = 0; i < toDestroy.Count; i++)
+                Destroy(toDestroy[i]);
+
+            Debug.Log($"MPTRACE step=V29 event=chunk_batch_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) batching={enableChunkMeshBatching} source_visuals={sourceVisuals} combined_meshes={combinedMeshes} material_buckets={buckets.Count} combined_vertices={verts} combined_indices={indices} generated_meshes_tracked={cleanup.Meshes.Count}");
+        }
+
+        // ── Phase 2.9C: procedural tiling textures (generated once, shared) ──
+        private static void EnsureProceduralTextures()
+        {
+            if (_wallpaperTex != null && _carpetTex != null && _ceilingTex != null)
+                return;
+            _wallpaperTex = BuildModulationTex(11, 0.06f, 8, 0.90f);   // faint vertical wallpaper stripe
+            _carpetTex = BuildModulationTex(23, 0.14f, 0, 1f);         // fibrous carpet noise
+            _ceilingTex = BuildModulationTex(37, 0.05f, 0, 1f, true);  // speckled acoustic tile
+        }
+
+        private static uint TexNoise(int x, int y, int salt)
+        {
+            unchecked
+            {
+                uint h = (uint)(x * 374761393 + y * 668265263 + salt * (int)0x9E3779B9);
+                h = (h ^ (h >> 13)) * 1274126177u;
+                return h ^ (h >> 16);
+            }
+        }
+
+        // Near-white grayscale modulation map (texture * material color keeps it
+        // subtle, low-contrast, never glossy). Optional vertical stripe + speckle.
+        private static Texture2D BuildModulationTex(int salt, float noiseAmp, int stripeEvery, float stripeMul, bool speckle = false)
+        {
+            const int N = 64;
+            var t = new Texture2D(N, N, TextureFormat.RGB24, true)
+            {
+                wrapMode = TextureWrapMode.Repeat,
+                filterMode = FilterMode.Bilinear
+            };
+            var px = new Color32[N * N];
+            for (int y = 0; y < N; y++)
+            {
+                for (int x = 0; x < N; x++)
+                {
+                    float n = (1f - noiseAmp) + (TexNoise(x, y, salt) & 0xFFFF) / 65535f * noiseAmp;
+                    float v = n;
+                    if (stripeEvery > 0 && (x % stripeEvery) == 0)
+                        v *= stripeMul;
+                    if (speckle && (TexNoise(x, y, salt + 7) & 0xFFFF) / 65535f > 0.93f)
+                        v *= 0.85f;
+                    byte b = (byte)(Mathf.Clamp01(v) * 255f);
+                    px[y * N + x] = new Color32(b, b, b, 255);
+                }
+            }
+            t.SetPixels32(px);
+            t.Apply(true);
+            return t;
+        }
+
+        private static void ApplyTex(Material m, Texture2D tex, float tiling)
+        {
+            if (m == null || tex == null)
+                return;
+            var scale = new Vector2(tiling, tiling);
+            if (m.HasProperty("_BaseMap"))
+            {
+                m.SetTexture("_BaseMap", tex);
+                m.SetTextureScale("_BaseMap", scale);
+            }
+            if (m.HasProperty("_MainTex"))
+                m.SetTexture("_MainTex", tex);
+            m.mainTexture = tex;
+            m.mainTextureScale = scale;
+        }
+
         private static void TintChunk(GameObject root, Color tint)
         {
             foreach (var r in root.GetComponentsInChildren<Renderer>())
@@ -1919,6 +2936,25 @@ namespace BackroomsSurvival.Gameplay
             }
 
             _pool.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Holds the runtime-combined meshes for a chunk and destroys them when the
+    /// chunk GameObject is unloaded, so batching does not leak Mesh instances.
+    /// </summary>
+    internal sealed class ChunkRenderCleanup : MonoBehaviour
+    {
+        public readonly List<Mesh> Meshes = new List<Mesh>();
+
+        private void OnDestroy()
+        {
+            for (int i = 0; i < Meshes.Count; i++)
+            {
+                if (Meshes[i] != null)
+                    Destroy(Meshes[i]);
+            }
+            Meshes.Clear();
         }
     }
 }

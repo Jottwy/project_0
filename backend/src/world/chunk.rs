@@ -10,6 +10,9 @@ use crate::network::PeerId;
 use crate::utils::ChunkPos;
 use crate::world::entity::Entity;
 
+pub type ChunkLayer = i8;
+pub type LayeredChunkPos = (i32, ChunkLayer, i32);
+
 pub const LAYOUT_GRID_SIZE: u8 = 10;
 pub const LAYOUT_CELL_SIZE: f32 = 5.0;
 
@@ -56,6 +59,32 @@ pub const FLOOR_RAMP_EAST_WEST: u8 = 4;
 pub const FLOOR_PIT_PLACEHOLDER: u8 = 5;
 pub const FLOOR_STAIRS_NORTH_SOUTH: u8 = 6;
 pub const FLOOR_STAIRS_EAST_WEST: u8 = 7;
+// Phase 3.0A — layer connectors. These span a full `LAYER_HEIGHT` along +Z so a
+// player walks the whole vertical distance between two stacked layers without
+// any free fall. UP rises toward the north (z+) edge, DOWN descends toward it.
+pub const FLOOR_CONNECTOR_UP: u8 = 8;
+pub const FLOOR_CONNECTOR_DOWN: u8 = 9;
+
+/// Phase 3.0A — vertical separation between adjacent macro layers, in metres.
+/// `chunk_root_y = layer * LAYER_HEIGHT`. Layer 0 is normal Level 0 ground.
+pub const LAYER_HEIGHT: f32 = 7.0;
+
+pub const V30A_STACKED_CORRIDOR: u16 = 1 << 8;
+pub const V30A_LOWER_SERVICE_BRANCH: u16 = 1 << 9;
+pub const V30A_UPPER_OFFICE_BRANCH: u16 = 1 << 10;
+pub const V30A_ATRIUM_VOID_ROOM: u16 = 1 << 11;
+pub const V30A_DEEP_PRECIPICE_PLACEHOLDER: u16 = 1 << 12;
+pub const V30A_GIANT_PILLAR_HALL: u16 = 1 << 13;
+pub const V30A_CONNECTOR: u16 = 1 << 14;
+pub const V30A_BLOCKED_VERTICAL_SHAFT: u16 = 1 << 15;
+
+pub fn layered_chunk_pos(pos: ChunkPos, layer: ChunkLayer) -> LayeredChunkPos {
+    (pos.0, layer, pos.1)
+}
+
+pub fn layer_y(layer: ChunkLayer) -> f32 {
+    layer as f32 * LAYER_HEIGHT
+}
 
 pub const CEILING_NORMAL: u8 = 0;
 pub const CEILING_LOW_SERVICE: u8 = 1;
@@ -104,7 +133,10 @@ pub fn edge_blocks_movement(kind: u8) -> bool {
 
 /// Whether an edge kind is rendered as a full-height solid wall face.
 pub fn edge_is_full_wall(kind: u8) -> bool {
-    matches!(kind, EDGE_KIND_WALL | EDGE_KIND_PARTITION | EDGE_KIND_FALSE_DOOR)
+    matches!(
+        kind,
+        EDGE_KIND_WALL | EDGE_KIND_PARTITION | EDGE_KIND_FALSE_DOOR
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -259,6 +291,82 @@ impl ChunkLayoutV1 {
             _ => self.edge_v(x, z),
         }
     }
+
+    // ─── Edge-architecture metrics (Phase 2.7) ───
+    //
+    // In the edge-wall model walls/doors/arches live on cell *edges*, not in
+    // cell centres, so layout "density" and "special architecture" counts must
+    // read the edge arrays, not the cell flags.
+
+    /// Total number of edge slots (vertical + horizontal), including the
+    /// perimeter boundary edges.
+    pub fn total_edge_count(&self) -> usize {
+        self.edges_v.len() + self.edges_h.len()
+    }
+
+    /// Count every edge (vertical + horizontal) whose kind satisfies `pred`.
+    pub fn count_edge_kinds<F: Fn(u8) -> bool>(&self, pred: F) -> usize {
+        self.edges_v
+            .iter()
+            .chain(self.edges_h.iter())
+            .filter(|&&k| pred(k))
+            .count()
+    }
+
+    /// Solid, movement-blocking wall faces: full walls, partitions, low/half
+    /// walls and false doors. (Doors and arches are passable transitions.)
+    pub fn solid_edge_count(&self) -> usize {
+        self.count_edge_kinds(|k| {
+            matches!(
+                k,
+                EDGE_KIND_WALL
+                    | EDGE_KIND_PARTITION
+                    | EDGE_KIND_LOW_WALL
+                    | EDGE_KIND_HALF_WALL
+                    | EDGE_KIND_FALSE_DOOR
+            )
+        })
+    }
+
+    /// Passable architectural transitions: doors and arches.
+    pub fn transition_edge_count(&self) -> usize {
+        self.count_edge_kinds(|k| matches!(k, EDGE_KIND_DOOR | EDGE_KIND_ARCH))
+    }
+
+    /// Special (non-plain-wall, non-open) architectural edges: doors, arches,
+    /// low/half walls, partitions, false doors and broken walls.
+    pub fn special_edge_count(&self) -> usize {
+        self.count_edge_kinds(|k| {
+            matches!(
+                k,
+                EDGE_KIND_DOOR
+                    | EDGE_KIND_ARCH
+                    | EDGE_KIND_LOW_WALL
+                    | EDGE_KIND_HALF_WALL
+                    | EDGE_KIND_PARTITION
+                    | EDGE_KIND_FALSE_DOOR
+                    | EDGE_KIND_BROKEN
+            )
+        })
+    }
+
+    /// Cells carrying a centre blocker (pillar, pit or explicit block).
+    pub fn blocked_cell_count(&self) -> usize {
+        self.cells
+            .iter()
+            .filter(|&&f| f & (CELL_PILLAR | CELL_PIT | CELL_BLOCKED) != 0)
+            .count()
+    }
+
+    /// Combined architectural density: solid + transition edges plus blocked
+    /// cells, over the total number of edges and cells. Meaningful for the
+    /// edge-wall model where most architecture lives on edges, not cells.
+    pub fn edge_architecture_density(&self) -> f32 {
+        let arch =
+            self.solid_edge_count() + self.transition_edge_count() + self.blocked_cell_count();
+        let denom = (self.total_edge_count() + self.cells.len()).max(1);
+        arch as f32 / denom as f32
+    }
 }
 
 impl Default for ChunkLayoutV1 {
@@ -307,6 +415,8 @@ pub struct DroppedItem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
     pub pos: ChunkPos,
+    #[serde(default)]
+    pub layer: ChunkLayer,
     pub state: ChunkState,
     pub seed: u64,
     pub owner: Option<PeerId>,
@@ -323,5 +433,9 @@ pub struct Chunk {
 impl Chunk {
     pub fn is_active(&self) -> bool {
         matches!(self.state, ChunkState::Active { .. })
+    }
+
+    pub fn key(&self) -> LayeredChunkPos {
+        layered_chunk_pos(self.pos, self.layer)
     }
 }

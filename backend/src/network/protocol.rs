@@ -178,6 +178,8 @@ pub struct StabilizerInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkSyncData {
     pub pos: [i32; 2],
+    #[serde(default)]
+    pub layer: i8,
     pub seed: u64,
     pub template_id: u8,
     pub rotation: u16,
@@ -494,6 +496,7 @@ mod tests {
         let payload = PacketPayload::ChunkTransfer {
             data: ChunkSyncData {
                 pos: [3, 2],
+                layer: 0,
                 seed: 12345,
                 template_id: 4,
                 rotation: 90,
@@ -539,6 +542,7 @@ mod tests {
             world_revision: 7,
             chunks: vec![ChunkSyncData {
                 pos: [0, 0],
+                layer: 0,
                 seed: 1234,
                 template_id: 1,
                 rotation: 0,

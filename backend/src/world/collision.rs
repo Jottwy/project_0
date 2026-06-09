@@ -12,9 +12,10 @@ use log::info;
 
 use crate::utils::{world_to_chunk, Vec3, CHUNK_SIZE};
 use crate::world::chunk::{
-    edge_blocks_movement, ChunkLayoutV1, CELL_ANOMALY, CELL_BLOCKED, CELL_HAZARD, CELL_PILLAR,
-    CELL_PIT, CELL_RAMP, CELL_SAFE, CELL_WALKABLE, CELL_WALL, EDGE_KIND_FALSE_DOOR,
-    EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL, EDGE_KIND_OPEN, EDGE_KIND_PARTITION, FLOOR_FLAT,
+    edge_blocks_movement, layer_y, layered_chunk_pos, ChunkLayer, ChunkLayoutV1, LayeredChunkPos,
+    CELL_ANOMALY, CELL_BLOCKED, CELL_HAZARD, CELL_PILLAR, CELL_PIT, CELL_RAMP, CELL_SAFE,
+    CELL_WALKABLE, CELL_WALL, EDGE_KIND_FALSE_DOOR, EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL,
+    EDGE_KIND_OPEN, EDGE_KIND_PARTITION, FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP, FLOOR_FLAT,
 };
 use crate::world::World;
 
@@ -160,6 +161,17 @@ fn log_spawn_resolved(res: &SpawnResolution) {
     );
 }
 
+fn layer_from_player_y(y: f32) -> ChunkLayer {
+    ((y - PLAYER_BASE_Y) / crate::world::chunk::LAYER_HEIGHT)
+        .round()
+        .clamp(-8.0, 8.0) as ChunkLayer
+}
+
+fn chunk_key_at(pos: Vec3) -> LayeredChunkPos {
+    let xz = world_to_chunk(pos);
+    layered_chunk_pos(xz, layer_from_player_y(pos.y))
+}
+
 /// Immutable search for the nearest safe spawn cell within the search radius.
 fn find_safe_spawn(world: &World, preferred: Vec3) -> Option<SpawnResolution> {
     let pref_chunk = world_to_chunk(preferred);
@@ -170,7 +182,7 @@ fn find_safe_spawn(world: &World, preferred: Vec3) -> Option<SpawnResolution> {
     for dz in -SPAWN_SEARCH_CHUNK_RADIUS..=SPAWN_SEARCH_CHUNK_RADIUS {
         for dx in -SPAWN_SEARCH_CHUNK_RADIUS..=SPAWN_SEARCH_CHUNK_RADIUS {
             let chunk_pos = (pref_chunk.0 + dx, pref_chunk.1 + dz);
-            let Some(chunk) = world.chunks.get(&chunk_pos) else {
+            let Some(chunk) = world.chunks.get(&layered_chunk_pos(chunk_pos, 0)) else {
                 continue;
             };
             // Spawn only on flat ground — verticality must never sit under spawn.
@@ -277,7 +289,12 @@ fn is_safe_spawn_cell(layout: &ChunkLayoutV1, x: usize, z: usize) -> bool {
     let flags = layout.cell_flags(x, z);
     flags & CELL_WALKABLE != 0
         && flags
-            & (CELL_WALL | CELL_BLOCKED | CELL_PILLAR | CELL_PIT | CELL_HAZARD | CELL_RAMP
+            & (CELL_WALL
+                | CELL_BLOCKED
+                | CELL_PILLAR
+                | CELL_PIT
+                | CELL_HAZARD
+                | CELL_RAMP
                 | CELL_ANOMALY)
             == 0
 }
@@ -311,23 +328,25 @@ pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
     let samples = capsule_samples(pos, radius);
     // 1. Cell-centre blockers (pillars, pits, storage) + unloaded chunks.
     for &(x, z) in &samples {
-        if sample_cell_blocks(world, x, z) {
+        if sample_cell_blocks(world, pos.y, x, z) {
             return true;
         }
     }
     // 2. Edge walls within the capsule radius. Check the chunk of `pos` and any
     //    chunk a sample lands in, so boundary walls are covered.
-    let mut seen: [(i32, i32); 9] = [(i32::MIN, i32::MIN); 9];
+    let mut seen: [LayeredChunkPos; 9] = [(i32::MIN, i8::MIN, i32::MIN); 9];
     let mut n = 0usize;
     for &(x, z) in &samples {
-        let cp = world_to_chunk(Vec3::new(x, 0.0, z));
+        let xz = world_to_chunk(Vec3::new(x, 0.0, z));
+        let cp = layered_chunk_pos(xz, layer_from_player_y(pos.y));
         if seen[..n].contains(&cp) {
             continue;
         }
         seen[n] = cp;
         n += 1;
         if let Some(chunk) = world.chunks.get(&cp) {
-            if chunk.layout.has_edges() && first_blocking_edge(&chunk.layout, cp, pos, radius).is_some()
+            if chunk.layout.has_edges()
+                && first_blocking_edge(&chunk.layout, chunk.pos, pos, radius).is_some()
             {
                 return true;
             }
@@ -352,9 +371,10 @@ fn capsule_samples(pos: Vec3, radius: f32) -> [(f32, f32); 9] {
 
 /// A cell that blocks regardless of edges: a centre prop (pillar/pit), explicit
 /// storage block, an unloaded chunk, or a legacy non-walkable wall cell.
-fn sample_cell_blocks(world: &World, x: f32, z: f32) -> bool {
+fn sample_cell_blocks(world: &World, y: f32, x: f32, z: f32) -> bool {
     let chunk_pos = world_to_chunk(Vec3::new(x, 0.0, z));
-    let Some(chunk) = world.chunks.get(&chunk_pos) else {
+    let key = layered_chunk_pos(chunk_pos, layer_from_player_y(y));
+    let Some(chunk) = world.chunks.get(&key) else {
         return true;
     };
     let (cell_x, cell_z) = cell_for_pos(&chunk.layout, chunk_pos, x, z);
@@ -421,7 +441,8 @@ fn describe_block(
 ) -> ((i32, i32), (usize, usize), u16, &'static str) {
     for (x, z) in capsule_samples(pos, radius) {
         let chunk_pos = world_to_chunk(Vec3::new(x, 0.0, z));
-        let Some(chunk) = world.chunks.get(&chunk_pos) else {
+        let key = layered_chunk_pos(chunk_pos, layer_from_player_y(pos.y));
+        let Some(chunk) = world.chunks.get(&key) else {
             return (chunk_pos, (0, 0), 0, "unloaded_chunk");
         };
         let cell = cell_for_pos(&chunk.layout, chunk_pos, x, z);
@@ -435,10 +456,10 @@ fn describe_block(
     let chunk_pos = world_to_chunk(pos);
     let cell = world
         .chunks
-        .get(&chunk_pos)
+        .get(&chunk_key_at(pos))
         .map(|c| cell_for_pos(&c.layout, chunk_pos, pos.x, pos.z))
         .unwrap_or((0, 0));
-    if let Some(chunk) = world.chunks.get(&chunk_pos) {
+    if let Some(chunk) = world.chunks.get(&chunk_key_at(pos)) {
         if let Some(kind) = first_blocking_edge(&chunk.layout, chunk_pos, pos, radius) {
             return (chunk_pos, cell, kind as u16, edge_block_reason(kind));
         }
@@ -482,7 +503,7 @@ fn resolve_with_y(
     let chunk_pos = world_to_chunk(position);
     let (cell, flags) = world
         .chunks
-        .get(&chunk_pos)
+        .get(&chunk_key_at(position))
         .map(|chunk| {
             let cell = cell_for_pos(&chunk.layout, chunk_pos, position.x, position.z);
             (cell, chunk.layout.cell_flags(cell.0, cell.1))
@@ -500,14 +521,28 @@ fn resolve_with_y(
 
 fn floor_player_y(world: &World, pos: Vec3) -> f32 {
     let chunk_pos = world_to_chunk(pos);
-    let Some(chunk) = world.chunks.get(&chunk_pos) else {
-        return pos.y;
+    let key = chunk_key_at(pos);
+    let Some(chunk) = world
+        .chunks
+        .get(&key)
+        .or_else(|| world.chunks.get(&layered_chunk_pos(chunk_pos, 0)))
+    else {
+        return pos.y.max(PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT);
     };
 
-    let base = PLAYER_BASE_Y + chunk.layout.floor_level as f32 * FLOOR_LEVEL_HEIGHT;
+    let base =
+        PLAYER_BASE_Y + layer_y(chunk.layer) + chunk.layout.floor_level as f32 * FLOOR_LEVEL_HEIGHT;
     match chunk.layout.floor_profile {
         crate::world::chunk::FLOOR_SUNKEN => base - 0.25,
         crate::world::chunk::FLOOR_RAISED => base + 0.35,
+        FLOOR_CONNECTOR_UP => {
+            let local_z = (pos.z - chunk_pos.1 as f32 * CHUNK_SIZE).clamp(0.0, CHUNK_SIZE);
+            base + (local_z / CHUNK_SIZE) * crate::world::chunk::LAYER_HEIGHT
+        }
+        FLOOR_CONNECTOR_DOWN => {
+            let local_z = (pos.z - chunk_pos.1 as f32 * CHUNK_SIZE).clamp(0.0, CHUNK_SIZE);
+            base - (local_z / CHUNK_SIZE) * crate::world::chunk::LAYER_HEIGHT
+        }
         crate::world::chunk::FLOOR_RAMP_NORTH_SOUTH => {
             let local_z = (pos.z - chunk_pos.1 as f32 * CHUNK_SIZE).clamp(0.0, CHUNK_SIZE);
             base + (local_z / CHUNK_SIZE) * 0.5
@@ -548,29 +583,37 @@ mod tests {
     use super::*;
     use crate::utils::chunk_center;
     use crate::world::chunk::{
-        edge_blocks_movement as ebm, EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_WALL, FLOOR_RAMP_NORTH_SOUTH,
-        LAYOUT_GRID_SIZE,
+        edge_blocks_movement as ebm, EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_WALL,
+        FLOOR_RAMP_NORTH_SOUTH, LAYOUT_GRID_SIZE,
     };
     use crate::world::generator::{build_chunk_layout, generate_chunk, TEMPLATE_ROOM_BASIC};
     use crate::world::World;
 
+    fn key(pos: (i32, i32)) -> LayeredChunkPos {
+        layered_chunk_pos(pos, 0)
+    }
+
     /// A single all-floor chunk with every edge open (no walls). Tests then add
     /// the specific edge walls / cell blockers they care about.
     fn clean_world(pos: (i32, i32)) -> World {
+        clean_world_layer(pos, 0)
+    }
+
+    fn clean_world_layer(pos: (i32, i32), layer: ChunkLayer) -> World {
         let mut world = World::new(1);
-        let mut chunk = generate_chunk(1, pos);
+        let mut chunk = crate::world::generator::generate_chunk_layer(1, pos, layer);
         let g = LAYOUT_GRID_SIZE as usize;
         chunk.layout.cells = vec![CELL_WALKABLE; g * g];
         chunk.layout.edges_v = vec![EDGE_KIND_OPEN; (g + 1) * g];
         chunk.layout.edges_h = vec![EDGE_KIND_OPEN; g * (g + 1)];
         chunk.layout.floor_profile = FLOOR_FLAT;
         chunk.layout.vertical_flags = 0;
-        world.chunks.insert(pos, chunk);
+        world.chunks.insert(layered_chunk_pos(pos, layer), chunk);
         world
     }
 
     fn set_cell(world: &mut World, pos: (i32, i32), x: usize, z: usize, flags: u16) {
-        let chunk = world.chunks.get_mut(&pos).unwrap();
+        let chunk = world.chunks.get_mut(&key(pos)).unwrap();
         if let Some(idx) = chunk.layout.cell_index(x, z) {
             chunk.layout.cells[idx] = flags;
         }
@@ -579,7 +622,7 @@ mod tests {
     fn set_v_edge(world: &mut World, pos: (i32, i32), bx: usize, z: usize, kind: u8) {
         world
             .chunks
-            .get_mut(&pos)
+            .get_mut(&key(pos))
             .unwrap()
             .layout
             .set_edge_v(bx, z, kind);
@@ -590,7 +633,11 @@ mod tests {
     #[test]
     fn open_floor_is_not_blocked() {
         let world = clean_world((0, 0));
-        assert!(!is_blocked_at(&world, Vec3::new(27.5, 1.8, 27.5), PLAYER_RADIUS));
+        assert!(!is_blocked_at(
+            &world,
+            Vec3::new(27.5, 1.8, 27.5),
+            PLAYER_RADIUS
+        ));
     }
 
     fn assert_edge_blocks(kind: u8) {
@@ -646,31 +693,51 @@ mod tests {
             set_v_edge(&mut world, (0, 0), 6, z, EDGE_KIND_WALL);
         }
         set_v_edge(&mut world, (0, 0), 6, 5, EDGE_KIND_DOOR); // door at row 5
-        // At the door row (z≈27.5) the boundary is passable.
-        assert!(!is_blocked_at(&world, Vec3::new(30.0, 1.8, 27.5), PLAYER_RADIUS));
+                                                              // At the door row (z≈27.5) the boundary is passable.
+        assert!(!is_blocked_at(
+            &world,
+            Vec3::new(30.0, 1.8, 27.5),
+            PLAYER_RADIUS
+        ));
         // At a walled row (z≈12.5) it is blocked.
-        assert!(is_blocked_at(&world, Vec3::new(30.0, 1.8, 12.5), PLAYER_RADIUS));
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(30.0, 1.8, 12.5),
+            PLAYER_RADIUS
+        ));
     }
 
     #[test]
     fn pillar_cell_blocks() {
         let mut world = clean_world((0, 0));
         set_cell(&mut world, (0, 0), 5, 5, CELL_WALKABLE | CELL_PILLAR);
-        assert!(is_blocked_at(&world, Vec3::new(27.5, 1.8, 27.5), PLAYER_RADIUS));
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(27.5, 1.8, 27.5),
+            PLAYER_RADIUS
+        ));
     }
 
     #[test]
     fn pit_cell_blocks() {
         let mut world = clean_world((0, 0));
         set_cell(&mut world, (0, 0), 5, 5, CELL_WALKABLE | CELL_PIT);
-        assert!(is_blocked_at(&world, Vec3::new(27.5, 1.8, 27.5), PLAYER_RADIUS));
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(27.5, 1.8, 27.5),
+            PLAYER_RADIUS
+        ));
     }
 
     #[test]
     fn blocked_cell_blocks() {
         let mut world = clean_world((0, 0));
         set_cell(&mut world, (0, 0), 5, 5, CELL_BLOCKED);
-        assert!(is_blocked_at(&world, Vec3::new(27.5, 1.8, 27.5), PLAYER_RADIUS));
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(27.5, 1.8, 27.5),
+            PLAYER_RADIUS
+        ));
     }
 
     #[test]
@@ -685,7 +752,10 @@ mod tests {
         let desired = Vec3::new(29.9, 1.8, 28.0);
         let result = Level0Collision::resolve_move(&world, from, desired);
         assert_eq!(result.kind, CollisionResultKind::SlidZ);
-        assert!((result.position.x - from.x).abs() < 0.001, "x should be held");
+        assert!(
+            (result.position.x - from.x).abs() < 0.001,
+            "x should be held"
+        );
         assert!(result.position.z > from.z, "z should advance");
     }
 
@@ -697,13 +767,21 @@ mod tests {
         a.layout = build_chunk_layout(TEMPLATE_ROOM_BASIC, 0);
         let mut b = generate_chunk(1, (1, 0));
         b.layout = build_chunk_layout(TEMPLATE_ROOM_BASIC, 0);
-        world.chunks.insert((0, 0), a);
-        world.chunks.insert((1, 0), b);
+        world.chunks.insert(key((0, 0)), a);
+        world.chunks.insert(key((1, 0)), b);
 
         // The boundary gap is at rows 4–5 (world z 20–30); z≈27.5 is open.
-        assert!(!is_blocked_at(&world, Vec3::new(50.0, 1.8, 27.5), PLAYER_RADIUS));
+        assert!(!is_blocked_at(
+            &world,
+            Vec3::new(50.0, 1.8, 27.5),
+            PLAYER_RADIUS
+        ));
         // A non-gap boundary cell (z≈12.5) is a wall.
-        assert!(is_blocked_at(&world, Vec3::new(50.0, 1.8, 12.5), PLAYER_RADIUS));
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(50.0, 1.8, 12.5),
+            PLAYER_RADIUS
+        ));
     }
 
     // ── Spawn resolver (Phase 2.6/2.7) ──
@@ -757,9 +835,9 @@ mod tests {
         let mut world = clean_world((0, 0));
         let g = LAYOUT_GRID_SIZE as usize;
         for i in 0..g * g {
-            world.chunks.get_mut(&(0, 0)).unwrap().layout.cells[i] = CELL_BLOCKED;
+            world.chunks.get_mut(&key((0, 0))).unwrap().layout.cells[i] = CELL_BLOCKED;
         }
-        world.chunks.retain(|pos, _| *pos == (0, 0));
+        world.chunks.retain(|pos, _| *pos == key((0, 0)));
         let res = resolve_safe_spawn(&mut world, Vec3::new(25.0, 1.8, 25.0));
         assert_eq!(res.method, SpawnMethod::Repaired);
         assert!(!is_blocked_at(
@@ -772,13 +850,13 @@ mod tests {
     #[test]
     fn spawn_resolver_avoids_vertical_floor_chunk() {
         let mut world = clean_world((0, 0));
-        if let Some(chunk) = world.chunks.get_mut(&(0, 0)) {
+        if let Some(chunk) = world.chunks.get_mut(&key((0, 0))) {
             chunk.layout.floor_profile = FLOOR_RAMP_NORTH_SOUTH;
             chunk.layout.vertical_flags = 1;
         }
         let mut flat = clean_world((1, 0));
-        let flat_chunk = flat.chunks.remove(&(1, 0)).unwrap();
-        world.chunks.insert((1, 0), flat_chunk);
+        let flat_chunk = flat.chunks.remove(&key((1, 0))).unwrap();
+        world.chunks.insert(key((1, 0)), flat_chunk);
 
         let res = resolve_safe_spawn(&mut world, Vec3::new(25.0, 1.8, 25.0));
         assert_eq!(res.chunk, (1, 0), "spawn must avoid the ramp chunk");
@@ -801,8 +879,11 @@ mod tests {
         assert!(res.chunk.0.abs() <= SPAWN_SEARCH_CHUNK_RADIUS);
         assert!(res.chunk.1.abs() <= SPAWN_SEARCH_CHUNK_RADIUS);
         // Spawn chunk has at least one exit opening.
-        let starter = world.chunks.get(&res.chunk).unwrap();
-        assert!(starter.layout.edge_openings != 0, "spawn chunk has no exits");
+        let starter = world.chunks.get(&key(res.chunk)).unwrap();
+        assert!(
+            starter.layout.edge_openings != 0,
+            "spawn chunk has no exits"
+        );
     }
 
     #[test]
@@ -813,6 +894,144 @@ mod tests {
         let local_z = res.position.z - res.chunk.1 as f32 * CHUNK_SIZE;
         assert!(local_x > PLAYER_RADIUS && local_x < CHUNK_SIZE - PLAYER_RADIUS);
         assert!(local_z > PLAYER_RADIUS && local_z < CHUNK_SIZE - PLAYER_RADIUS);
+    }
+
+    #[test]
+    fn floor_player_y_vertical_is_deterministic_and_pit_is_safe() {
+        use crate::world::chunk::{FLOOR_PIT_PLACEHOLDER, FLOOR_RAISED, FLOOR_SUNKEN};
+        let mut raised = clean_world((5, 5));
+        raised
+            .chunks
+            .get_mut(&key((5, 5)))
+            .unwrap()
+            .layout
+            .floor_profile = FLOOR_RAISED;
+        let cr = chunk_center((5, 5));
+        let yr = floor_player_y(&raised, Vec3::new(cr.x, 1.8, cr.z));
+        assert!((yr - (PLAYER_BASE_Y + 0.35)).abs() < 0.001);
+        assert_eq!(yr, floor_player_y(&raised, Vec3::new(cr.x, 1.8, cr.z))); // deterministic
+
+        let mut sunken = clean_world((6, 6));
+        sunken
+            .chunks
+            .get_mut(&key((6, 6)))
+            .unwrap()
+            .layout
+            .floor_profile = FLOOR_SUNKEN;
+        let cs = chunk_center((6, 6));
+        let ys = floor_player_y(&sunken, Vec3::new(cs.x, 1.8, cs.z));
+        assert!((ys - (PLAYER_BASE_Y - 0.25)).abs() < 0.001);
+
+        // Pit placeholder must never drop the player below normal floor (no fall).
+        let mut pit = clean_world((7, 7));
+        pit.chunks
+            .get_mut(&key((7, 7)))
+            .unwrap()
+            .layout
+            .floor_profile = FLOOR_PIT_PLACEHOLDER;
+        let cp = chunk_center((7, 7));
+        let yp = floor_player_y(&pit, Vec3::new(cp.x, 1.8, cp.z));
+        assert!(yp >= PLAYER_BASE_Y - 0.001, "pit lowered the player: {yp}");
+    }
+
+    #[test]
+    fn floor_player_y_accounts_for_true_layers() {
+        let upper = clean_world_layer((2, 2), 1);
+        let cu = chunk_center((2, 2));
+        let yu = floor_player_y(
+            &upper,
+            Vec3::new(
+                cu.x,
+                PLAYER_BASE_Y + crate::world::chunk::LAYER_HEIGHT,
+                cu.z,
+            ),
+        );
+        assert!((yu - (PLAYER_BASE_Y + crate::world::chunk::LAYER_HEIGHT)).abs() < 0.001);
+
+        let lower = clean_world_layer((3, 3), -1);
+        let cl = chunk_center((3, 3));
+        let yl = floor_player_y(
+            &lower,
+            Vec3::new(
+                cl.x,
+                PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT,
+                cl.z,
+            ),
+        );
+        assert!((yl - (PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT)).abs() < 0.001);
+    }
+
+    #[test]
+    fn connector_floor_y_is_deterministic_and_safe() {
+        let mut world = clean_world((4, 4));
+        let chunk = world.chunks.get_mut(&key((4, 4))).unwrap();
+        chunk.layout.floor_profile = FLOOR_CONNECTOR_DOWN;
+        chunk.layout.vertical_flags = crate::world::chunk::V30A_CONNECTOR;
+
+        let base_x = 4f32 * CHUNK_SIZE + 25.0;
+        let south = Vec3::new(base_x, PLAYER_BASE_Y, 4f32 * CHUNK_SIZE + 2.0);
+        let north = Vec3::new(base_x, PLAYER_BASE_Y, 4f32 * CHUNK_SIZE + CHUNK_SIZE - 2.0);
+        let ys = floor_player_y(&world, south);
+        let yn = floor_player_y(&world, north);
+        assert!(ys <= PLAYER_BASE_Y + 0.01);
+        assert!(yn < PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT * 0.8);
+        assert_eq!(yn, floor_player_y(&world, north));
+    }
+
+    #[test]
+    fn walls_and_doors_work_on_upper_layer() {
+        let mut world = clean_world_layer((5, 5), 1);
+        for z in 0..LAYOUT_GRID_SIZE as usize {
+            let chunk = world.chunks.get_mut(&layered_chunk_pos((5, 5), 1)).unwrap();
+            chunk.layout.set_edge_v(6, z, EDGE_KIND_WALL);
+        }
+        world
+            .chunks
+            .get_mut(&layered_chunk_pos((5, 5), 1))
+            .unwrap()
+            .layout
+            .set_edge_v(6, 5, EDGE_KIND_DOOR);
+
+        let base = 5f32 * CHUNK_SIZE;
+        let y = PLAYER_BASE_Y + crate::world::chunk::LAYER_HEIGHT;
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(base + 30.0, y, base + 12.5),
+            PLAYER_RADIUS
+        ));
+        assert!(!is_blocked_at(
+            &world,
+            Vec3::new(base + 30.0, y, base + 27.5),
+            PLAYER_RADIUS
+        ));
+    }
+
+    #[test]
+    fn vertical_chunk_wall_blocks_and_door_passes() {
+        let mut world = clean_world((4, 4));
+        world
+            .chunks
+            .get_mut(&key((4, 4)))
+            .unwrap()
+            .layout
+            .floor_profile = crate::world::chunk::FLOOR_RAISED;
+        for z in 0..LAYOUT_GRID_SIZE as usize {
+            set_v_edge(&mut world, (4, 4), 6, z, EDGE_KIND_WALL);
+        }
+        set_v_edge(&mut world, (4, 4), 6, 5, EDGE_KIND_DOOR);
+        let base = 4f32 * CHUNK_SIZE;
+        // Walled row blocks; height profile does not let the player cross.
+        assert!(is_blocked_at(
+            &world,
+            Vec3::new(base + 30.0, 1.8, base + 12.5),
+            PLAYER_RADIUS
+        ));
+        // Door row still passes on a vertical chunk.
+        assert!(!is_blocked_at(
+            &world,
+            Vec3::new(base + 30.0, 1.8, base + 27.5),
+            PLAYER_RADIUS
+        ));
     }
 
     #[test]

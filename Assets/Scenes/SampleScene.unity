@@ -462,6 +462,13 @@ MonoBehaviour:
   lookSensitivity: 0.1
   maxPitch: 89
   positionSmoothing: 18
+  enableClientCollision: 1
+  worldCollisionMask:
+    serializedVersion: 2
+    m_Bits: 51
+  collisionRadius: 0.35
+  collisionHeight: 1.75
+  collisionProbeDistance: 0.7
 --- !u!65 &1248016655
 BoxCollider:
   m_ObjectHideFlags: 0

@@ -13,15 +13,19 @@ use rand::{Rng, SeedableRng};
 use crate::player::inventory::Item;
 use crate::utils::{ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::chunk::{
-    Chunk, ChunkLayoutV1, ChunkState, DroppedItem, CEILING_DAMAGED, CEILING_LOW_SERVICE,
-    CEILING_NORMAL, CEILING_TALL_HALL, CELL_ANOMALY, CELL_ARCH, CELL_BLOCKED, CELL_DOOR,
-    CELL_FALSE_DOOR, CELL_HALF_WALL, CELL_HAZARD, CELL_LOW_WALL, CELL_PILLAR, CELL_PIT, CELL_RAMP,
-    CELL_SAFE, CELL_SHALLOW_FLUID, CELL_THIN_PARTITION, CELL_WALKABLE, CELL_WALL, EDGE_EAST,
-    EDGE_NORTH, EDGE_SOUTH, EDGE_WEST, FLOOR_FLAT, FLOOR_PIT_PLACEHOLDER, FLOOR_RAISED,
-    FLOOR_RAMP_EAST_WEST, FLOOR_RAMP_NORTH_SOUTH, FLOOR_STAIRS_EAST_WEST, FLOOR_STAIRS_NORTH_SOUTH,
-    FLOOR_SUNKEN, LAYOUT_CELL_SIZE, LAYOUT_GRID_SIZE, LIGHT_BLACKOUT, LIGHT_DIM, LIGHT_NORMAL,
-    LIGHT_RED, LIGHT_WARM, ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER, ZONE_HUMID, ZONE_MANILA,
-    ZONE_NORMAL, ZONE_OPEN_HALL, ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED, ZONE_SAFE, ZONE_STORAGE,
+    Chunk, ChunkLayer, ChunkLayoutV1, ChunkState, DroppedItem, CEILING_DAMAGED,
+    CEILING_LOW_SERVICE, CEILING_NORMAL, CEILING_TALL_HALL, CELL_ANOMALY, CELL_ARCH, CELL_BLOCKED,
+    CELL_DOOR, CELL_FALSE_DOOR, CELL_HALF_WALL, CELL_HAZARD, CELL_LOW_WALL, CELL_PILLAR, CELL_PIT,
+    CELL_RAMP, CELL_SAFE, CELL_SHALLOW_FLUID, CELL_THIN_PARTITION, CELL_WALKABLE, CELL_WALL,
+    EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST, FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP,
+    FLOOR_FLAT, FLOOR_PIT_PLACEHOLDER, FLOOR_RAISED, FLOOR_RAMP_EAST_WEST, FLOOR_RAMP_NORTH_SOUTH,
+    FLOOR_STAIRS_EAST_WEST, FLOOR_STAIRS_NORTH_SOUTH, FLOOR_SUNKEN, LAYOUT_CELL_SIZE,
+    LAYOUT_GRID_SIZE, LIGHT_BLACKOUT, LIGHT_DIM, LIGHT_NORMAL, LIGHT_RED, LIGHT_WARM,
+    V30A_ATRIUM_VOID_ROOM, V30A_BLOCKED_VERTICAL_SHAFT, V30A_CONNECTOR,
+    V30A_DEEP_PRECIPICE_PLACEHOLDER, V30A_GIANT_PILLAR_HALL, V30A_LOWER_SERVICE_BRANCH,
+    V30A_STACKED_CORRIDOR, V30A_UPPER_OFFICE_BRANCH, ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER,
+    ZONE_HUMID, ZONE_MANILA, ZONE_NORMAL, ZONE_OPEN_HALL, ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED,
+    ZONE_SAFE, ZONE_STORAGE,
 };
 use crate::world::chunk::{
     EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_FALSE_DOOR, EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL,
@@ -83,6 +87,12 @@ pub enum StructureType {
     ManilaRoom,
     CleaningArea,
     PitRoom,
+    StackedCorridor,
+    LowerServiceBranch,
+    UpperOfficeBranch,
+    AtriumVoidRoom,
+    DeepPrecipicePlaceholder,
+    GiantPillarHall,
 }
 
 impl StructureType {
@@ -106,6 +116,12 @@ impl StructureType {
             StructureType::ManilaRoom => "manila_room",
             StructureType::CleaningArea => "cleaning_area",
             StructureType::PitRoom => "pit_room_placeholder",
+            StructureType::StackedCorridor => "stacked_corridor",
+            StructureType::LowerServiceBranch => "lower_service_branch",
+            StructureType::UpperOfficeBranch => "upper_office_branch",
+            StructureType::AtriumVoidRoom => "atrium_void_room",
+            StructureType::DeepPrecipicePlaceholder => "deep_precipice_placeholder",
+            StructureType::GiantPillarHall => "giant_pillar_hall",
         }
     }
 }
@@ -115,12 +131,20 @@ pub struct StructureV0 {
     pub id: u32,
     pub structure_type: StructureType,
     pub origin: ChunkPos,
+    pub origin_layer: ChunkLayer,
     pub size: [u8; 2],
     pub seed: u64,
     pub chunks: Vec<ChunkPos>,
+    pub layers: Vec<ChunkLayer>,
     pub tags: Vec<&'static str>,
     /// Per-chunk (template_id, rotation) overrides. Same order as `chunks`.
     pub chunk_overrides: Vec<(u8, u16)>,
+}
+
+impl StructureV0 {
+    fn chunk_layer(&self, index: usize) -> ChunkLayer {
+        self.layers.get(index).copied().unwrap_or(0)
+    }
 }
 
 // ─── ID generation ───
@@ -141,6 +165,16 @@ pub fn chunk_seed(world_seed: u64, pos: ChunkPos) -> u64 {
     h ^= h >> 33;
     h = h.wrapping_add((pos.1 as u64).wrapping_mul(0xC4CE_B9FE_1A85_EC53));
     h ^= h >> 29;
+    h
+}
+
+pub fn chunk_seed_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u64 {
+    if layer == 0 {
+        return chunk_seed(world_seed, pos);
+    }
+    let mut h = chunk_seed(world_seed, pos);
+    h ^= ((layer as i64 as u64).wrapping_mul(0xD6E8_FD9D_AA28_2219)).rotate_left(17);
+    h ^= h >> 31;
     h
 }
 
@@ -584,7 +618,12 @@ fn g_pit_field(layout: &mut ChunkLayoutV1) {
     or_all_cells(layout, CELL_HAZARD);
     for x in [2usize, 4, 6] {
         for z in [2usize, 4, 6] {
-            block_cell(&mut layout.cells, x, z, CELL_PIT | CELL_HAZARD | CELL_ANOMALY);
+            block_cell(
+                &mut layout.cells,
+                x,
+                z,
+                CELL_PIT | CELL_HAZARD | CELL_ANOMALY,
+            );
         }
     }
     wall_h(layout, 1, 8, 1, EDGE_KIND_LOW_WALL);
@@ -902,7 +941,20 @@ impl Level0Builder {
         overrides: Vec<(u8, u16)>,
         tags: Vec<&'static str>,
     ) {
+        let layers = vec![0; chunks.len()];
+        self.push_layered_structure(stype, chunks, layers, overrides, tags);
+    }
+
+    fn push_layered_structure(
+        &mut self,
+        stype: StructureType,
+        chunks: Vec<ChunkPos>,
+        layers: Vec<ChunkLayer>,
+        overrides: Vec<(u8, u16)>,
+        tags: Vec<&'static str>,
+    ) {
         let origin = chunks[0];
+        let origin_layer = layers.first().copied().unwrap_or(0);
         let (min_x, min_z, max_x, max_z) = structure_bounds(&chunks);
         let size = [
             (max_x - min_x + 1).clamp(1, u8::MAX as i32) as u8,
@@ -920,10 +972,11 @@ impl Level0Builder {
         }
         let depth = origin.0.abs() + origin.1.abs();
         info!(
-            "MPTRACE step=DA event=level0_macro_pattern_created id={} kind={} origin=({},{}) size=({},{}) chunks={} exits={} depth={} stability={}",
+            "MPTRACE step=DA event=level0_macro_pattern_created id={} kind={} origin=({},{},{}) size=({},{}) chunks={} exits={} depth={} stability={}",
             structure_id(self.world_seed, self.sid),
             stype.as_str(),
             origin.0,
+            origin_layer,
             origin.1,
             size[0],
             size[1],
@@ -936,9 +989,11 @@ impl Level0Builder {
             id: structure_id(self.world_seed, self.sid),
             structure_type: stype,
             origin,
+            origin_layer,
             size,
-            seed: chunk_seed(self.world_seed, origin),
+            seed: chunk_seed_layer(self.world_seed, origin, origin_layer),
             chunks,
+            layers,
             tags,
             chunk_overrides: overrides,
         });
@@ -951,6 +1006,8 @@ impl Level0Builder {
         self.build_secondary_branches(&junctions);
         self.build_macro_spaces();
         self.build_loop_connections();
+        self.place_vertical_showcase();
+        self.place_multilayer_showcase();
 
         info!(
             "MPTRACE step=AS event=level0_generation_started seed={} structures={} total_chunks={}",
@@ -1746,6 +1803,151 @@ impl Level0Builder {
         false
     }
 
+    // Phase 2.10B: guarantee one reachable, connected vertical "showcase" chunk
+    // at Chebyshev distance 4–8 from spawn so verticality is always easy to find.
+    // Deterministic (no RNG), placed adjacent to the existing graph → connected,
+    // and well outside the radius-2 flat spawn region.
+    fn place_vertical_showcase(&mut self) {
+        let kinds: [(StructureType, u8, &'static str); 5] = [
+            (StructureType::ManilaRoom, TEMPLATE_MANILA_ROOM, "raised"),
+            (StructureType::ArchRoom, TEMPLATE_ARCH_ROOM, "ramp"),
+            (
+                StructureType::CleaningArea,
+                TEMPLATE_CLEANING_AREA,
+                "stairs",
+            ),
+            (StructureType::HumidZone, TEMPLATE_HUMID_ZONE, "sunken"),
+            (StructureType::PitRoom, TEMPLATE_PIT_ROOM_PLACEHOLDER, "pit"),
+        ];
+        let (stype, template, kind) = kinds[(self.world_seed % 5) as usize];
+
+        let mut occ: Vec<ChunkPos> = self.occupied.iter().copied().collect();
+        occ.sort_by_key(|p| (p.0.abs().max(p.1.abs()), p.0, p.1));
+        let dirs = [(1, 0), (-1, 0), (0, 1), (0, -1)];
+
+        for o in occ {
+            for d in dirs {
+                let c = (o.0 + d.0, o.1 + d.1);
+                let dist = c.0.abs().max(c.1.abs());
+                if self.is_free(c) && (4..=8).contains(&dist) {
+                    self.occupied.insert(c);
+                    self.push_structure(
+                        stype,
+                        vec![c],
+                        vec![(template, 0)],
+                        vec!["macro", "vertical_showcase"],
+                    );
+                    info!(
+                        "MPTRACE step=V210B event=vertical_showcase_created seed={} origin=({},{}) kind={} distance={} connected=true",
+                        self.world_seed, c.0, c.1, kind, dist
+                    );
+                    return;
+                }
+            }
+        }
+        info!(
+            "MPTRACE step=V210B event=vertical_showcase_created seed={} origin=(0,0) kind={} distance=0 connected=false",
+            self.world_seed, kind
+        );
+    }
+
+    fn place_multilayer_showcase(&mut self) {
+        let target_layer: ChunkLayer = if self.world_seed % 2 == 0 { -1 } else { 1 };
+        let connector_kind = if target_layer > 0 {
+            "broad_stairwell"
+        } else {
+            "service_ramp"
+        };
+        let branch_type = if target_layer > 0 {
+            StructureType::UpperOfficeBranch
+        } else {
+            StructureType::LowerServiceBranch
+        };
+        let branch_template = if target_layer > 0 {
+            TEMPLATE_ARCH_ROOM
+        } else {
+            TEMPLATE_CLEANING_AREA
+        };
+
+        let mut occ: Vec<ChunkPos> = self.occupied.iter().copied().collect();
+        occ.sort_by_key(|p| (p.0.abs().max(p.1.abs()), p.0, p.1));
+        let dirs: [(i32, i32, u16); 4] = [(1, 0, 90), (-1, 0, 90), (0, 1, 0), (0, -1, 0)];
+
+        for anchor in occ {
+            for (dx, dz, rot) in dirs {
+                let connector = (anchor.0 + dx, anchor.1 + dz);
+                let atrium = (connector.0 + dx, connector.1 + dz);
+                let dist = connector.0.abs().max(connector.1.abs());
+                if !(4..=8).contains(&dist) || !self.is_free(connector) || !self.is_free(atrium) {
+                    continue;
+                }
+
+                self.occupied.insert(connector);
+                self.occupied.insert(atrium);
+
+                let chunks = vec![connector, connector, atrium, atrium];
+                let layers = vec![0, target_layer, 0, target_layer];
+                let overrides = vec![
+                    (TEMPLATE_OPEN_HALL, rot),
+                    (branch_template, rot),
+                    (TEMPLATE_OPEN_HALL, 0),
+                    (TEMPLATE_PILLAR_ROOM, 0),
+                ];
+
+                self.push_layered_structure(
+                    StructureType::StackedCorridor,
+                    chunks,
+                    layers,
+                    overrides,
+                    vec![
+                        "macro",
+                        "v30a_multilayer_showcase",
+                        "connector",
+                        "atrium",
+                        "pillar_hall",
+                        "precipice",
+                    ],
+                );
+
+                info!(
+                    "MPTRACE step=V30A event=multilayer_showcase_created seed={} origin=({},{},{}) target_layer={} kind={} connected=true",
+                    self.world_seed,
+                    connector.0,
+                    0,
+                    connector.1,
+                    target_layer,
+                    connector_kind
+                );
+                info!(
+                    "MPTRACE step=V30AFIX event=showcase_world_target connector_chunk=({},{},{}) world_center=({:.0},{:.0},{:.0}) target_layer={}",
+                    connector.0,
+                    0,
+                    connector.1,
+                    connector.0 as f32 * CHUNK_SIZE + CHUNK_SIZE * 0.5,
+                    0.0,
+                    connector.1 as f32 * CHUNK_SIZE + CHUNK_SIZE * 0.5,
+                    target_layer
+                );
+
+                info!(
+                    "MPTRACE step=V30A event=multilayer_branch_created seed={} origin=({},{},{}) target_layer={} kind={} connected=true",
+                    self.world_seed,
+                    atrium.0,
+                    target_layer,
+                    atrium.1,
+                    target_layer,
+                    branch_type.as_str()
+                );
+                return;
+            }
+        }
+
+        info!(
+            "MPTRACE step=V30A event=multilayer_showcase_created seed={} origin=(0,0,0) target_layer={} kind={} connected=false",
+            self.world_seed, target_layer, connector_kind
+        );
+    }
+
     fn build_loop_connections(&mut self) {
         // Sort positions for deterministic iteration (HashSet order is random)
         let mut all_positions: Vec<ChunkPos> = self.occupied.iter().copied().collect();
@@ -1789,7 +1991,11 @@ impl Level0Builder {
 /// Generate a chunk deterministically from the world seed and grid position.
 /// Used for chunks outside the initial structures (ownership expansion, teleport).
 pub fn generate_chunk(world_seed: u64, pos: ChunkPos) -> Chunk {
-    let seed = chunk_seed(world_seed, pos);
+    generate_chunk_layer(world_seed, pos, 0)
+}
+
+pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> Chunk {
+    let seed = chunk_seed_layer(world_seed, pos, layer);
     let mut rng = StdRng::seed_from_u64(seed);
 
     // Bias template distribution towards corridors and large liminal spaces.
@@ -1828,12 +2034,21 @@ pub fn generate_chunk(world_seed: u64, pos: ChunkPos) -> Chunk {
     let has_workbench = rng.gen_bool(0.2);
     let teleport_timer = rng.gen_range(120.0..600.0);
 
-    let entities = spawn_entities(world_seed, pos, &mut rng);
-    let items = spawn_resources(world_seed, pos, &mut rng);
+    let entities = if layer == 0 {
+        spawn_entities(world_seed, pos, &mut rng)
+    } else {
+        Vec::new()
+    };
+    let items = if layer == 0 {
+        spawn_resources(world_seed, pos, &mut rng)
+    } else {
+        Vec::new()
+    };
     let layout = build_chunk_layout(template_id, rotation);
 
     let mut chunk = Chunk {
         pos,
+        layer,
         state: ChunkState::Active {
             stabilized: false,
             anchored: false,
@@ -1866,7 +2081,9 @@ pub fn generate_initial_structure_chunks(world_seed: u64) -> Vec<(StructureV0, C
     for structure in generate_initial_structures(world_seed) {
         let (min_x, min_z, max_x, max_z) = structure_bounds(&structure.chunks);
         for (index, pos) in structure.chunks.iter().copied().enumerate() {
-            let mut chunk = generate_structure_chunk(world_seed, pos, &structure, index as u32);
+            let layer = structure.chunk_layer(index);
+            let mut chunk =
+                generate_structure_chunk(world_seed, pos, layer, &structure, index as u32);
             chunk.layout.macro_id = structure.id;
             chunk.layout.zone_kind =
                 structure_zone_kind(structure.structure_type, chunk.template_id);
@@ -1883,6 +2100,7 @@ pub fn generate_initial_structure_chunks(world_seed: u64) -> Vec<(StructureV0, C
     }
     apply_reciprocal_layout_openings(&mut out);
     reserve_starter_spawn_area(&mut out);
+    finalize_level0_edges(&mut out);
     out
 }
 
@@ -1913,6 +2131,12 @@ fn structure_zone_kind(structure_type: StructureType, template_id: u8) -> u8 {
         StructureType::CleaningArea => ZONE_CLEANING,
         StructureType::RedRoom => ZONE_RED,
         StructureType::PitRoom => ZONE_PIT,
+        StructureType::StackedCorridor => ZONE_NORMAL,
+        StructureType::LowerServiceBranch => ZONE_CLEANING,
+        StructureType::UpperOfficeBranch => ZONE_MANILA,
+        StructureType::AtriumVoidRoom => ZONE_OPEN_HALL,
+        StructureType::DeepPrecipicePlaceholder => ZONE_PIT,
+        StructureType::GiantPillarHall => ZONE_PILLAR_HALL,
         _ => template_zone_kind(template_id),
     }
 }
@@ -1927,13 +2151,68 @@ fn apply_reciprocal_layout_openings(chunks: &mut [(StructureV0, Chunk)]) {
     }
 }
 
+/// Phase 2.7A — final layout sanitation for the initial generated world.
+///
+/// `open_boundary_gaps` opens a centred gap on *every* chunk boundary so any
+/// two existing neighbours connect reciprocally by construction. That leaves
+/// one real bug: a boundary facing a chunk that was never generated still
+/// reads as open — an open edge into the void. This pass walls off every such
+/// boundary so no chunk opens toward a missing neighbour, while leaving the
+/// boundary between two existing chunks untouched (still reciprocal).
+fn finalize_level0_edges(chunks: &mut [(StructureV0, Chunk)]) {
+    let present: HashSet<(i32, ChunkLayer, i32)> = chunks.iter().map(|(_, c)| c.key()).collect();
+    let g = LAYOUT_GRID_SIZE as usize;
+    let mut sealed_boundaries = 0u32;
+
+    for (_, chunk) in chunks.iter_mut() {
+        let pos = chunk.pos;
+        let layer = chunk.layer;
+        // For each boundary, wall it off completely when the neighbour on the
+        // far side does not exist. Setting every boundary edge to a full wall
+        // also removes any doorway/arch gap that faced the missing neighbour.
+        if !present.contains(&(pos.0, layer, pos.1 - 1)) {
+            for x in 0..g {
+                chunk.layout.set_edge_h(x, 0, EDGE_KIND_WALL);
+            }
+            sealed_boundaries += 1;
+        }
+        if !present.contains(&(pos.0, layer, pos.1 + 1)) {
+            for x in 0..g {
+                chunk.layout.set_edge_h(x, g, EDGE_KIND_WALL);
+            }
+            sealed_boundaries += 1;
+        }
+        if !present.contains(&(pos.0 + 1, layer, pos.1)) {
+            for z in 0..g {
+                chunk.layout.set_edge_v(g, z, EDGE_KIND_WALL);
+            }
+            sealed_boundaries += 1;
+        }
+        if !present.contains(&(pos.0 - 1, layer, pos.1)) {
+            for z in 0..g {
+                chunk.layout.set_edge_v(0, z, EDGE_KIND_WALL);
+            }
+            sealed_boundaries += 1;
+        }
+
+        chunk.layout.edge_openings = perimeter_openings(&chunk.layout);
+    }
+
+    info!(
+        "MPTRACE step=V27 event=level0_edges_finalized chunks={} sealed_boundaries={}",
+        chunks.len(),
+        sealed_boundaries
+    );
+}
+
 fn generate_structure_chunk(
     world_seed: u64,
     pos: ChunkPos,
+    layer: ChunkLayer,
     structure: &StructureV0,
     chunk_index: u32,
 ) -> Chunk {
-    let mut chunk = generate_chunk(world_seed, pos);
+    let mut chunk = generate_chunk_layer(world_seed, pos, layer);
     chunk.mirrored = false;
     chunk.has_workbench = false;
 
@@ -1943,6 +2222,8 @@ fn generate_structure_chunk(
         chunk.rotation = rotation;
         chunk.layout = build_chunk_layout(template_id, rotation);
     }
+
+    apply_v30a_layout(world_seed, &mut chunk, structure, chunk_index);
 
     let depth = (pos.0.abs() + pos.1.abs()) as f32;
 
@@ -2070,6 +2351,15 @@ fn generate_structure_chunk(
             chunk.entities.truncate(if depth < 7.0 { 0 } else { 1 });
             chunk.items.truncate(1);
         }
+        StructureType::StackedCorridor
+        | StructureType::LowerServiceBranch
+        | StructureType::UpperOfficeBranch
+        | StructureType::AtriumVoidRoom
+        | StructureType::DeepPrecipicePlaceholder
+        | StructureType::GiantPillarHall => {
+            chunk.entities.clear();
+            chunk.items.clear();
+        }
     }
 
     // Phase 2.6: structure items/entities use fixed local coordinates that can
@@ -2077,6 +2367,144 @@ fn generate_structure_chunk(
     // cells against the chunk's final layout.
     relocate_contents_to_safe_cells(&mut chunk, true);
     chunk
+}
+
+fn apply_v30a_layout(
+    world_seed: u64,
+    chunk: &mut Chunk,
+    structure: &StructureV0,
+    chunk_index: u32,
+) {
+    if !structure.tags.contains(&"v30a_multilayer_showcase") {
+        return;
+    }
+
+    let target_layer = structure
+        .layers
+        .iter()
+        .copied()
+        .find(|layer| *layer != 0)
+        .unwrap_or(if world_seed % 2 == 0 { -1 } else { 1 });
+    let branch_flag = if target_layer > 0 {
+        V30A_UPPER_OFFICE_BRANCH
+    } else {
+        V30A_LOWER_SERVICE_BRANCH
+    };
+
+    chunk.entities.clear();
+    chunk.items.clear();
+    chunk.teleport_timer = f32::MAX;
+
+    match chunk_index {
+        0 => {
+            chunk.layout = connector_layout(target_layer);
+            chunk.template_id = TEMPLATE_OPEN_HALL;
+            chunk.rotation = 0;
+            chunk.layout.floor_profile = if target_layer > 0 {
+                FLOOR_CONNECTOR_UP
+            } else {
+                FLOOR_CONNECTOR_DOWN
+            };
+            chunk.layout.ceiling_profile = CEILING_TALL_HALL;
+            chunk.layout.light_profile = LIGHT_WARM;
+            chunk.layout.vertical_flags |= V30A_CONNECTOR | branch_flag | V30A_STACKED_CORRIDOR;
+        }
+        1 => {
+            chunk.layout.vertical_flags |= V30A_STACKED_CORRIDOR | branch_flag;
+            chunk.layout.floor_profile = FLOOR_FLAT;
+            chunk.layout.floor_level = 0;
+            chunk.layout.ceiling_profile = if target_layer > 0 {
+                CEILING_NORMAL
+            } else {
+                CEILING_LOW_SERVICE
+            };
+            chunk.layout.light_profile = if target_layer > 0 {
+                LIGHT_WARM
+            } else {
+                LIGHT_DIM
+            };
+        }
+        2 => {
+            chunk.template_id = TEMPLATE_OPEN_HALL;
+            chunk.layout = build_chunk_layout(TEMPLATE_OPEN_HALL, 0);
+            mark_railed_vertical_opening(&mut chunk.layout, true);
+            chunk.layout.ceiling_profile = CEILING_TALL_HALL;
+            chunk.layout.vertical_flags |= V30A_ATRIUM_VOID_ROOM
+                | V30A_DEEP_PRECIPICE_PLACEHOLDER
+                | V30A_BLOCKED_VERTICAL_SHAFT;
+        }
+        _ => {
+            chunk.template_id = TEMPLATE_PILLAR_ROOM;
+            chunk.layout = build_chunk_layout(TEMPLATE_PILLAR_ROOM, 0);
+            mark_giant_pillars(&mut chunk.layout);
+            chunk.layout.ceiling_profile = CEILING_TALL_HALL;
+            chunk.layout.vertical_flags |=
+                V30A_GIANT_PILLAR_HALL | V30A_STACKED_CORRIDOR | branch_flag;
+        }
+    }
+}
+
+fn connector_layout(target_layer: ChunkLayer) -> ChunkLayoutV1 {
+    let size = LAYOUT_GRID_SIZE as usize;
+    let mut layout = ChunkLayoutV1::new(vec![CELL_WALKABLE; size * size], 0, ZONE_OPEN_HALL);
+    layout.ceiling_profile = CEILING_TALL_HALL;
+    layout.light_profile = LIGHT_WARM;
+
+    for z in 0..size {
+        layout.set_edge_v(2, z, EDGE_KIND_LOW_WALL);
+        layout.set_edge_v(size - 2, z, EDGE_KIND_LOW_WALL);
+    }
+    for x in 3..=6 {
+        layout.set_edge_h(x, 0, EDGE_KIND_OPEN);
+        layout.set_edge_h(x, size, EDGE_KIND_OPEN);
+    }
+
+    layout.floor_profile = if target_layer > 0 {
+        FLOOR_CONNECTOR_UP
+    } else {
+        FLOOR_CONNECTOR_DOWN
+    };
+    layout.vertical_flags = V30A_CONNECTOR | V30A_STACKED_CORRIDOR;
+    layout.edge_openings = perimeter_openings(&layout);
+    layout
+}
+
+fn mark_railed_vertical_opening(layout: &mut ChunkLayoutV1, deep_precipice: bool) {
+    let g = layout.grid_size as usize;
+    let start = 3usize;
+    let end = (g - 3).max(start + 1);
+    for z in start..end {
+        for x in start..end {
+            if let Some(idx) = layout.cell_index(x, z) {
+                layout.cells[idx] = CELL_WALKABLE | CELL_PIT | CELL_HAZARD;
+            }
+        }
+    }
+    for z in start..end {
+        layout.set_edge_v(start, z, EDGE_KIND_LOW_WALL);
+        layout.set_edge_v(end, z, EDGE_KIND_LOW_WALL);
+    }
+    for x in start..end {
+        layout.set_edge_h(x, start, EDGE_KIND_LOW_WALL);
+        layout.set_edge_h(x, end, EDGE_KIND_LOW_WALL);
+    }
+    layout.floor_profile = FLOOR_FLAT;
+    layout.vertical_flags |= V30A_ATRIUM_VOID_ROOM | V30A_BLOCKED_VERTICAL_SHAFT;
+    if deep_precipice {
+        layout.vertical_flags |= V30A_DEEP_PRECIPICE_PLACEHOLDER;
+        layout.anomaly_flags |= 1 << 4;
+    }
+}
+
+fn mark_giant_pillars(layout: &mut ChunkLayoutV1) {
+    let positions = [(2usize, 2usize), (7, 2), (2, 7), (7, 7)];
+    for (x, z) in positions {
+        if let Some(idx) = layout.cell_index(x, z) {
+            layout.cells[idx] = CELL_WALKABLE | CELL_PILLAR;
+        }
+    }
+    layout.floor_profile = FLOOR_FLAT;
+    layout.vertical_flags |= V30A_GIANT_PILLAR_HALL;
 }
 
 // ─── Position helpers ───
@@ -2553,6 +2981,58 @@ mod tests {
     use super::*;
     use std::collections::{HashSet, VecDeque};
 
+    fn lkey(chunk: &Chunk) -> (i32, ChunkLayer, i32) {
+        chunk.key()
+    }
+
+    fn is_v30a_connector(chunk: &Chunk) -> bool {
+        chunk.layout.vertical_flags & V30A_CONNECTOR != 0
+            || matches!(
+                chunk.layout.floor_profile,
+                FLOOR_CONNECTOR_UP | FLOOR_CONNECTOR_DOWN
+            )
+    }
+
+    fn layered_neighbors(
+        key: (i32, ChunkLayer, i32),
+        chunks: &std::collections::HashMap<(i32, ChunkLayer, i32), &Chunk>,
+    ) -> Vec<(i32, ChunkLayer, i32)> {
+        let mut out = Vec::new();
+        for next in [
+            (key.0 + 1, key.1, key.2),
+            (key.0 - 1, key.1, key.2),
+            (key.0, key.1, key.2 + 1),
+            (key.0, key.1, key.2 - 1),
+        ] {
+            if chunks.contains_key(&next) {
+                out.push(next);
+            }
+        }
+        if chunks
+            .get(&key)
+            .map(|c| is_v30a_connector(c))
+            .unwrap_or(false)
+        {
+            for layer in [key.1 - 1, key.1 + 1] {
+                let vertical = (key.0, layer, key.2);
+                if chunks.contains_key(&vertical) {
+                    out.push(vertical);
+                }
+            }
+        }
+        for layer in [key.1 - 1, key.1 + 1] {
+            let vertical = (key.0, layer, key.2);
+            if chunks
+                .get(&vertical)
+                .map(|c| is_v30a_connector(c))
+                .unwrap_or(false)
+            {
+                out.push(vertical);
+            }
+        }
+        out
+    }
+
     #[test]
     fn chunk_generation_is_deterministic() {
         let c1 = generate_chunk(42, (3, 7));
@@ -2653,12 +3133,13 @@ mod tests {
             let structures = generate_initial_structures(seed);
             let mut seen = HashSet::new();
             for structure in &structures {
-                for &pos in &structure.chunks {
+                for (idx, &pos) in structure.chunks.iter().enumerate() {
+                    let key = (pos.0, structure.chunk_layer(idx), pos.1);
                     assert!(
-                        seen.insert(pos),
+                        seen.insert(key),
                         "seed {} duplicate chunk {:?} in structure {:?}",
                         seed,
-                        pos,
+                        key,
                         structure.structure_type
                     );
                 }
@@ -2871,30 +3352,155 @@ mod tests {
         }
     }
 
+    /// Walkable cells along the boundary opening on `edge` (cells whose
+    /// boundary edge there is passable). Empty when that side has no opening.
+    fn boundary_opening_cells(layout: &ChunkLayoutV1, edge: u8) -> Vec<(usize, usize)> {
+        let g = layout.grid_size as usize;
+        let mut out = Vec::new();
+        match edge {
+            EDGE_NORTH => {
+                for x in 0..g {
+                    if edge_is_opening(layout.edge_h(x, 0)) && layout.is_cell_walkable(x, 0) {
+                        out.push((x, 0));
+                    }
+                }
+            }
+            EDGE_SOUTH => {
+                for x in 0..g {
+                    if edge_is_opening(layout.edge_h(x, g)) && layout.is_cell_walkable(x, g - 1) {
+                        out.push((x, g - 1));
+                    }
+                }
+            }
+            EDGE_EAST => {
+                for z in 0..g {
+                    if edge_is_opening(layout.edge_v(g, z)) && layout.is_cell_walkable(g - 1, z) {
+                        out.push((g - 1, z));
+                    }
+                }
+            }
+            EDGE_WEST => {
+                for z in 0..g {
+                    if edge_is_opening(layout.edge_v(0, z)) && layout.is_cell_walkable(0, z) {
+                        out.push((0, z));
+                    }
+                }
+            }
+            _ => {}
+        }
+        out
+    }
+
+    /// Whether a player can walk from the `from` boundary opening to the `to`
+    /// boundary opening, crossing only passable edges and walkable cells. This
+    /// validates the edge architecture itself (not just the opening bitmask).
+    fn edges_connect(layout: &ChunkLayoutV1, from: u8, to: u8) -> bool {
+        let g = layout.grid_size as usize;
+        let targets: HashSet<(usize, usize)> =
+            boundary_opening_cells(layout, to).into_iter().collect();
+        if targets.is_empty() {
+            return false;
+        }
+        let mut visited = vec![false; g * g];
+        let mut queue = VecDeque::new();
+        for (x, z) in boundary_opening_cells(layout, from) {
+            if !visited[z * g + x] {
+                visited[z * g + x] = true;
+                queue.push_back((x, z));
+            }
+        }
+        while let Some((x, z)) = queue.pop_front() {
+            if targets.contains(&(x, z)) {
+                return true;
+            }
+            for side in 0..4u8 {
+                if crate::world::chunk::edge_blocks_movement(layout.cell_side_edge(x, z, side)) {
+                    continue;
+                }
+                let next = match side {
+                    0 if z > 0 => (x, z - 1),
+                    1 if x + 1 < g => (x + 1, z),
+                    2 if z + 1 < g => (x, z + 1),
+                    3 if x > 0 => (x - 1, z),
+                    _ => continue,
+                };
+                if layout.is_cell_walkable(next.0, next.1) && !visited[next.1 * g + next.0] {
+                    visited[next.1 * g + next.0] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+        false
+    }
+
     #[test]
     fn corridor_layouts_connect_expected_edges() {
+        // Edge-wall model: a freshly built layout opens a centred gap on *every*
+        // boundary (uniform reciprocal gaps), so directionality is not expressed
+        // by the standalone opening bitmask — it emerges in the generated world
+        // once `finalize_level0_edges` walls off boundaries facing missing
+        // neighbours. Here we assert each template *contains* its expected axis
+        // openings and that the interior is genuinely traversable between them.
         let straight_ns = build_chunk_layout(TEMPLATE_HALLWAY_STRAIGHT, 0);
-        assert!(straight_ns.edge_openings & EDGE_NORTH != 0);
-        assert!(straight_ns.edge_openings & EDGE_SOUTH != 0);
-        assert_eq!(straight_ns.edge_openings & (EDGE_EAST | EDGE_WEST), 0);
+        assert_eq!(
+            straight_ns.edge_openings & (EDGE_NORTH | EDGE_SOUTH),
+            EDGE_NORTH | EDGE_SOUTH,
+            "N/S corridor missing axis openings"
+        );
+        assert!(
+            edges_connect(&straight_ns, EDGE_NORTH, EDGE_SOUTH),
+            "N/S corridor not traversable north<->south"
+        );
 
         let straight_ew = build_chunk_layout(TEMPLATE_HALLWAY_STRAIGHT, 90);
-        assert!(straight_ew.edge_openings & EDGE_EAST != 0);
-        assert!(straight_ew.edge_openings & EDGE_WEST != 0);
+        assert_eq!(
+            straight_ew.edge_openings & (EDGE_EAST | EDGE_WEST),
+            EDGE_EAST | EDGE_WEST,
+            "E/W corridor missing axis openings"
+        );
+        assert!(
+            edges_connect(&straight_ew, EDGE_EAST, EDGE_WEST),
+            "E/W corridor not traversable east<->west"
+        );
 
         let intersection = build_chunk_layout(TEMPLATE_INTERSECTION, 0);
         assert_eq!(
             intersection.edge_openings & (EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST),
-            EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST
+            EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST,
+            "intersection missing a 4-way opening"
         );
+        assert!(edges_connect(&intersection, EDGE_NORTH, EDGE_SOUTH));
+        assert!(edges_connect(&intersection, EDGE_EAST, EDGE_WEST));
+
+        // In the generated world, finalize seals every boundary facing a missing
+        // neighbour, so a straight corridor only keeps openings toward chunks
+        // that actually exist (it becomes directional in practice).
+        let generated = generate_initial_structure_chunks(42);
+        let present: HashSet<ChunkPos> = generated.iter().map(|(_, c)| c.pos).collect();
+        for (_, chunk) in &generated {
+            if chunk.template_id != TEMPLATE_HALLWAY_STRAIGHT {
+                continue;
+            }
+            for edge in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
+                if chunk.layout.edge_openings & edge != 0 {
+                    let d = edge_delta(edge);
+                    let neighbor = (chunk.pos.0 + d.0, chunk.pos.1 + d.1);
+                    assert!(
+                        present.contains(&neighbor),
+                        "corridor {:?} opens edge {edge} into missing {neighbor:?}",
+                        chunk.pos
+                    );
+                }
+            }
+        }
     }
 
     #[test]
     fn generated_layout_openings_are_reciprocal() {
         let chunks = generate_initial_structure_chunks(42);
-        let by_pos: std::collections::HashMap<ChunkPos, u8> = chunks
+        let by_pos: std::collections::HashMap<(i32, ChunkLayer, i32), u8> = chunks
             .iter()
-            .map(|(_, chunk)| (chunk.pos, chunk.layout.edge_openings))
+            .map(|(_, chunk)| (chunk.key(), chunk.layout.edge_openings))
             .collect();
 
         for (_, chunk) in &chunks {
@@ -2903,16 +3509,96 @@ mod tests {
                     continue;
                 }
                 let delta = edge_delta(edge);
-                let neighbor = (chunk.pos.0 + delta.0, chunk.pos.1 + delta.1);
+                let neighbor = (chunk.pos.0 + delta.0, chunk.layer, chunk.pos.1 + delta.1);
                 let neighbor_openings = by_pos.get(&neighbor).unwrap_or_else(|| {
-                    panic!("open edge from {:?} to missing {:?}", chunk.pos, neighbor)
+                    panic!("open edge from {:?} to missing {:?}", chunk.key(), neighbor)
                 });
                 assert!(
                     neighbor_openings & opposite_edge(edge) != 0,
                     "edge {:?} from {:?} not reciprocal",
                     edge,
-                    chunk.pos
+                    chunk.key()
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn level0_no_open_edge_points_to_missing_chunk() {
+        // Part 2.7A: finalize_level0_edges must seal every boundary facing a
+        // chunk that was never generated.
+        for seed in [42u64, 43, 99, 1234, 7777, 7778] {
+            let chunks = generate_initial_structure_chunks(seed);
+            let present: HashSet<ChunkPos> = chunks.iter().map(|(_, c)| c.pos).collect();
+            for (_, chunk) in &chunks {
+                for edge in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
+                    if chunk.layout.edge_openings & edge == 0 {
+                        continue;
+                    }
+                    let d = edge_delta(edge);
+                    let neighbor = (chunk.pos.0 + d.0, chunk.pos.1 + d.1);
+                    assert!(
+                        present.contains(&neighbor),
+                        "seed {seed} chunk {:?} opens edge {edge} into missing {neighbor:?}",
+                        chunk.pos
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn level0_boundaries_facing_void_are_walls() {
+        // Every boundary facing a missing neighbour must be a solid wall along
+        // its whole length — no passable doorway/arch leaking into the void.
+        let g = LAYOUT_GRID_SIZE as usize;
+        let chunks = generate_initial_structure_chunks(7778);
+        let present: HashSet<ChunkPos> = chunks.iter().map(|(_, c)| c.pos).collect();
+        for (_, chunk) in &chunks {
+            let l = &chunk.layout;
+            let p = chunk.pos;
+            if !present.contains(&(p.0, p.1 - 1)) {
+                assert!(
+                    (0..g).all(|x| !edge_is_opening(l.edge_h(x, 0))),
+                    "chunk {p:?} north boundary leaks into void"
+                );
+            }
+            if !present.contains(&(p.0, p.1 + 1)) {
+                assert!((0..g).all(|x| !edge_is_opening(l.edge_h(x, g))));
+            }
+            if !present.contains(&(p.0 + 1, p.1)) {
+                assert!((0..g).all(|z| !edge_is_opening(l.edge_v(g, z))));
+            }
+            if !present.contains(&(p.0 - 1, p.1)) {
+                assert!((0..g).all(|z| !edge_is_opening(l.edge_v(0, z))));
+            }
+        }
+    }
+
+    #[test]
+    fn spawn_chunk_has_no_opening_to_missing_neighbor() {
+        // The starter chunk must stay reachable: it keeps at least one exit, and
+        // every exit it keeps points to a chunk that exists (no sealed-in spawn,
+        // no opening into the void beside spawn).
+        for seed in [42u64, 7777, 7778, 1234] {
+            let chunks = generate_initial_structure_chunks(seed);
+            let present: HashSet<ChunkPos> = chunks.iter().map(|(_, c)| c.pos).collect();
+            let (_, spawn) = chunks
+                .iter()
+                .find(|(_, c)| c.pos == (0, 0))
+                .expect("starter chunk at origin");
+            assert!(
+                spawn.layout.edge_openings != 0,
+                "seed {seed}: spawn chunk sealed in (no exits)"
+            );
+            for edge in [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST] {
+                if spawn.layout.edge_openings & edge != 0 {
+                    let d = edge_delta(edge);
+                    assert!(
+                        present.contains(&(d.0, d.1)),
+                        "seed {seed}: spawn opens edge {edge} into missing neighbour"
+                    );
+                }
             }
         }
     }
@@ -2960,40 +3646,73 @@ mod tests {
 
     #[test]
     fn layout_grammar_adds_architectural_transition_cells() {
+        // Edge-wall model: doors / arches / low+half walls / partitions / false
+        // doors live on cell *edges*, not as centre-cell flags. Count the
+        // special architectural edge kinds the grammars place.
         let chunks = generate_initial_structure_chunks(42);
-        let mut special_count = 0usize;
-        for (_, chunk) in chunks {
-            special_count += chunk
-                .layout
-                .cells
-                .iter()
-                .filter(|flags| {
-                    **flags
-                        & (CELL_DOOR | CELL_ARCH | CELL_LOW_WALL | CELL_HALF_WALL | CELL_FALSE_DOOR)
-                        != 0
-                })
-                .count();
+        let mut special_edges = 0usize;
+        let mut doors = 0usize;
+        let mut arches = 0usize;
+        for (_, chunk) in &chunks {
+            special_edges += chunk.layout.special_edge_count();
+            doors += chunk.layout.count_edge_kinds(|k| k == EDGE_KIND_DOOR);
+            arches += chunk.layout.count_edge_kinds(|k| k == EDGE_KIND_ARCH);
         }
-        assert!(special_count >= 20, "only {special_count} special cells");
+        assert!(special_edges >= 50, "only {special_edges} special edges");
+        // ArchTransition / hub / arch-room grammars place arch edges; room/maze
+        // grammars place door edges. Both kinds must actually appear.
+        assert!(doors > 0, "no door edges in generated layouts");
+        assert!(arches > 0, "no arch edges in generated layouts");
+
+        // The old centre-cell special flags must no longer be the model: the
+        // grammars place architecture on edges, leaving these flags unused.
+        let centre_special: usize = chunks
+            .iter()
+            .flat_map(|(_, c)| c.layout.cells.iter())
+            .filter(|f| {
+                **f & (CELL_DOOR | CELL_ARCH | CELL_LOW_WALL | CELL_HALF_WALL | CELL_FALSE_DOOR)
+                    != 0
+            })
+            .count();
+        assert!(
+            special_edges > centre_special,
+            "architecture should live on edges ({special_edges}), not cell centres ({centre_special})"
+        );
     }
 
     #[test]
     fn layout_density_is_not_linear_corridor_only() {
+        // Edge-wall model: walls live on edges, so density must read edge
+        // architecture (+ cell blockers like pillars/pits), not CELL_WALL flags.
         let chunks = generate_initial_structure_chunks(42);
-        let mut wall = 0usize;
-        let mut total = 0usize;
-        for (_, chunk) in chunks {
-            for flags in chunk.layout.cells {
-                total += 1;
-                if flags & (CELL_BLOCKED | CELL_WALL | CELL_PILLAR | CELL_LOW_WALL | CELL_HALF_WALL)
-                    != 0
-                {
-                    wall += 1;
-                }
-            }
+        let mut arch = 0usize;
+        let mut denom = 0usize;
+        let mut solid_edges = 0usize;
+        let mut cell_walls = 0usize;
+        for (_, chunk) in &chunks {
+            arch += chunk.layout.solid_edge_count()
+                + chunk.layout.transition_edge_count()
+                + chunk.layout.blocked_cell_count();
+            denom += chunk.layout.total_edge_count() + chunk.layout.cells.len();
+            solid_edges += chunk.layout.solid_edge_count();
+            cell_walls += chunk
+                .layout
+                .cells
+                .iter()
+                .filter(|f| **f & (CELL_WALL | CELL_BLOCKED) != 0)
+                .count();
         }
-        let pct = wall as f32 / total.max(1) as f32;
-        assert!(pct > 0.18 && pct < 0.72, "wall density {pct}");
+        let pct = arch as f32 / denom.max(1) as f32;
+        assert!(
+            pct > 0.12 && pct < 0.70,
+            "combined edge/cell architecture density {pct}"
+        );
+        // Prove the layout is real architecture on edges, not empty corridors
+        // with the odd cell-wall flag: edge walls must dominate cell-wall flags.
+        assert!(
+            solid_edges > cell_walls.saturating_mul(4).max(50),
+            "edge walls {solid_edges} should dominate cell-wall flags {cell_walls}"
+        );
     }
 
     #[test]
@@ -3119,6 +3838,234 @@ mod tests {
                     "chunk ({x},{z}) is vertical template {}",
                     chunk.template_id
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn level0_vertical_nodes_are_controlled() {
+        use crate::world::chunk::FLOOR_FLAT;
+        for seed in [42u64, 7777, 7778, 1234] {
+            let chunks = generate_initial_structure_chunks(seed);
+            let mut vertical = 0usize;
+            for (_, c) in &chunks {
+                if c.layout.floor_profile == FLOOR_FLAT {
+                    continue;
+                }
+                vertical += 1;
+                // Never within Chebyshev radius 2 of origin (spawn region flat).
+                assert!(
+                    c.pos.0.abs() > 2 || c.pos.1.abs() > 2,
+                    "seed {seed} vertical chunk {:?} too close to spawn",
+                    c.pos
+                );
+                // Vertical nodes must stay navigable.
+                assert!(
+                    c.layout.cells.iter().any(|f| f & CELL_WALKABLE != 0),
+                    "seed {seed} vertical chunk {:?} has no walkable cells",
+                    c.pos
+                );
+            }
+            // Rare/controlled, never vertical spam (incl. the 2.10B showcase).
+            assert!(
+                vertical <= 16,
+                "seed {seed} has excessive vertical chunks: {vertical} of {}",
+                chunks.len()
+            );
+        }
+        // Seed 7778 should still contain at least one controlled vertical node.
+        let v7778 = generate_initial_structure_chunks(7778)
+            .iter()
+            .filter(|(_, c)| c.layout.floor_profile != FLOOR_FLAT)
+            .count();
+        assert!(v7778 >= 1, "seed 7778 has no vertical nodes");
+    }
+
+    #[test]
+    fn seed_7778_has_reachable_vertical_showcase() {
+        use crate::world::chunk::FLOOR_FLAT;
+        let chunks = generate_initial_structure_chunks(7778);
+        let positions: HashSet<ChunkPos> = chunks.iter().map(|(_, c)| c.pos).collect();
+
+        // No verticality within Chebyshev radius 2 of origin.
+        for (_, c) in &chunks {
+            if c.layout.floor_profile != FLOOR_FLAT {
+                assert!(
+                    c.pos.0.abs() > 2 || c.pos.1.abs() > 2,
+                    "vertical chunk within radius 2 at {:?}",
+                    c.pos
+                );
+            }
+        }
+
+        // A reachable vertical showcase between Chebyshev radius 3 and 10.
+        let showcase = chunks.iter().find(|(_, c)| {
+            let r = c.pos.0.abs().max(c.pos.1.abs());
+            c.layout.floor_profile != FLOOR_FLAT && (3..=10).contains(&r)
+        });
+        let (_, sc) =
+            showcase.expect("seed 7778 has a reachable vertical showcase in radius 3..=10");
+        assert!(
+            sc.layout.cells.iter().any(|f| f & CELL_WALKABLE != 0),
+            "showcase has no walkable cells"
+        );
+
+        // Connected to spawn (0,0) via chunk-adjacency BFS.
+        let mut visited = HashSet::new();
+        let mut q = VecDeque::from([(0i32, 0i32)]);
+        while let Some(p) = q.pop_front() {
+            if !visited.insert(p) {
+                continue;
+            }
+            for n in [
+                (p.0 + 1, p.1),
+                (p.0 - 1, p.1),
+                (p.0, p.1 + 1),
+                (p.0, p.1 - 1),
+            ] {
+                if positions.contains(&n) && !visited.contains(&n) {
+                    q.push_back(n);
+                }
+            }
+        }
+        assert!(
+            visited.contains(&sc.pos),
+            "showcase {:?} not connected to spawn",
+            sc.pos
+        );
+    }
+
+    #[test]
+    fn v30a_chunk_seed_includes_layer_identity() {
+        let pos = (4, -2);
+        assert_eq!(chunk_seed(7778, pos), chunk_seed_layer(7778, pos, 0));
+        assert_ne!(
+            chunk_seed_layer(7778, pos, 0),
+            chunk_seed_layer(7778, pos, 1)
+        );
+        assert_ne!(
+            chunk_seed_layer(7778, pos, 0),
+            chunk_seed_layer(7778, pos, -1)
+        );
+        assert_ne!(
+            chunk_seed_layer(7778, pos, 1),
+            chunk_seed_layer(7778, pos, -1)
+        );
+    }
+
+    #[test]
+    fn seed_7778_has_reachable_v30a_multilayer_showcase() {
+        let chunks = generate_initial_structure_chunks(7778);
+        let by_key: std::collections::HashMap<(i32, ChunkLayer, i32), &Chunk> =
+            chunks.iter().map(|(_, c)| (lkey(c), c)).collect();
+        assert_eq!(
+            by_key.len(),
+            chunks.len(),
+            "duplicate layered chunk identity"
+        );
+
+        let connector = chunks
+            .iter()
+            .map(|(_, c)| c)
+            .find(|c| c.layer == 0 && c.layout.vertical_flags & V30A_CONNECTOR != 0)
+            .expect("seed 7778 must have a layer-0 V30A connector");
+        let dist = connector.pos.0.abs().max(connector.pos.1.abs());
+        assert!((4..=8).contains(&dist), "connector at distance {dist}");
+        assert_eq!(
+            connector.layout.floor_profile, FLOOR_CONNECTOR_DOWN,
+            "seed 7778 should showcase a lower service branch"
+        );
+        assert!(by_key.contains_key(&(connector.pos.0, -1, connector.pos.1)));
+
+        assert!(chunks.iter().any(|(_, c)| c.layer == -1));
+        assert!(chunks
+            .iter()
+            .any(|(_, c)| c.layout.vertical_flags & V30A_STACKED_CORRIDOR != 0));
+        assert!(chunks
+            .iter()
+            .any(|(_, c)| c.layout.vertical_flags & V30A_LOWER_SERVICE_BRANCH != 0));
+        assert!(chunks
+            .iter()
+            .any(|(_, c)| c.layout.vertical_flags & V30A_ATRIUM_VOID_ROOM != 0));
+        assert!(chunks
+            .iter()
+            .any(|(_, c)| c.layout.vertical_flags & V30A_DEEP_PRECIPICE_PLACEHOLDER != 0));
+        assert!(chunks
+            .iter()
+            .any(|(_, c)| c.layout.vertical_flags & V30A_GIANT_PILLAR_HALL != 0));
+
+        for (_, c) in &chunks {
+            let r = c.pos.0.abs().max(c.pos.1.abs());
+            let is_multilayer = c.layer != 0
+                || c.layout.vertical_flags
+                    & (V30A_CONNECTOR
+                        | V30A_STACKED_CORRIDOR
+                        | V30A_LOWER_SERVICE_BRANCH
+                        | V30A_UPPER_OFFICE_BRANCH
+                        | V30A_ATRIUM_VOID_ROOM
+                        | V30A_DEEP_PRECIPICE_PLACEHOLDER
+                        | V30A_GIANT_PILLAR_HALL
+                        | V30A_BLOCKED_VERTICAL_SHAFT)
+                    != 0;
+            assert!(
+                !is_multilayer || r > 2,
+                "V30A chunk too close to spawn: {:?}",
+                c.key()
+            );
+        }
+
+        let layered_count = chunks.iter().filter(|(_, c)| c.layer != 0).count();
+        assert!(
+            (1..=5).contains(&layered_count),
+            "unexpected V30A layer count {layered_count}"
+        );
+
+        let mut visited = HashSet::new();
+        let mut q = VecDeque::from([(0i32, 0i8, 0i32)]);
+        while let Some(key) = q.pop_front() {
+            if !visited.insert(key) {
+                continue;
+            }
+            for next in layered_neighbors(key, &by_key) {
+                if !visited.contains(&next) {
+                    q.push_back(next);
+                }
+            }
+        }
+        for (_, c) in &chunks {
+            if c.layer != 0 {
+                assert!(
+                    visited.contains(&c.key()),
+                    "orphan layer chunk {:?}",
+                    c.key()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn v30a_items_and_entities_stay_off_layered_or_void_chunks() {
+        for seed in [42u64, 7778, 1234] {
+            for (_, c) in generate_initial_structure_chunks(seed) {
+                let v30a_blocked = c.layer != 0
+                    || c.layout.vertical_flags
+                        & (V30A_CONNECTOR
+                            | V30A_ATRIUM_VOID_ROOM
+                            | V30A_DEEP_PRECIPICE_PLACEHOLDER
+                            | V30A_BLOCKED_VERTICAL_SHAFT)
+                        != 0;
+                if v30a_blocked {
+                    assert!(
+                        c.items.is_empty(),
+                        "seed {seed} item in V30A chunk {:?}",
+                        c.key()
+                    );
+                    assert!(
+                        c.entities.is_empty(),
+                        "seed {seed} entity in V30A chunk {:?}",
+                        c.key()
+                    );
+                }
             }
         }
     }

@@ -121,7 +121,11 @@ pub struct RemotePlayerState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChunkView {
+    pub chunk_schema: u8,
     pub pos: [i32; 2],
+    #[serde(default)]
+    pub layer: i8,
+    pub layer_y: f32,
     pub template_id: u8,
     pub rotation: u16,
     pub mirrored: bool,
@@ -248,7 +252,10 @@ mod tests {
             },
             remote_players: vec![],
             visible_chunks: vec![ChunkView {
+                chunk_schema: 2,
                 pos: [0, 0],
+                layer: 0,
+                layer_y: 0.0,
                 template_id: 3,
                 rotation: 90,
                 mirrored: true,

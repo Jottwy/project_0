@@ -16,7 +16,7 @@ use crate::ipc::{ChunkView, EntityView, GameEvent, ItemView};
 use crate::network::PeerId;
 use crate::player::stats::StatContext;
 use crate::utils::{chunks_in_radius, world_to_chunk, ChunkPos, Vec3};
-use chunk::{Chunk, ChunkState};
+use chunk::{layer_y, layered_chunk_pos, Chunk, ChunkLayer, ChunkState, LayeredChunkPos};
 use entity::EntityEvent;
 
 /// Tunable world parameters (ARCHITECTURE_V1.md §11.1).
@@ -48,13 +48,82 @@ pub struct WorldTickResult {
     pub stat_context: StatContext,
 }
 
+fn chunk_has_layer_connector(chunk: &Chunk) -> bool {
+    chunk.layout.vertical_flags & chunk::V30A_CONNECTOR != 0
+        || matches!(
+            chunk.layout.floor_profile,
+            chunk::FLOOR_CONNECTOR_UP | chunk::FLOOR_CONNECTOR_DOWN
+        )
+}
+
+fn chunk_is_v30a(chunk: &Chunk) -> bool {
+    chunk.layer != 0
+        || chunk.layout.vertical_flags
+            & (chunk::V30A_CONNECTOR
+                | chunk::V30A_STACKED_CORRIDOR
+                | chunk::V30A_LOWER_SERVICE_BRANCH
+                | chunk::V30A_UPPER_OFFICE_BRANCH
+                | chunk::V30A_ATRIUM_VOID_ROOM
+                | chunk::V30A_DEEP_PRECIPICE_PLACEHOLDER
+                | chunk::V30A_GIANT_PILLAR_HALL
+                | chunk::V30A_BLOCKED_VERTICAL_SHAFT)
+            != 0
+}
+
+fn player_layer_from_y(y: f32) -> ChunkLayer {
+    ((y - 1.8) / chunk::LAYER_HEIGHT).round().clamp(-8.0, 8.0) as ChunkLayer
+}
+
+fn chunk_key_for_player_pos(pos: Vec3) -> LayeredChunkPos {
+    let xz = world_to_chunk(pos);
+    layered_chunk_pos(xz, player_layer_from_y(pos.y))
+}
+
+fn layered_graph_neighbors(
+    pos: LayeredChunkPos,
+    chunks: &HashMap<LayeredChunkPos, Chunk>,
+) -> Vec<LayeredChunkPos> {
+    let mut out = Vec::with_capacity(6);
+    for next in [
+        (pos.0 + 1, pos.1, pos.2),
+        (pos.0 - 1, pos.1, pos.2),
+        (pos.0, pos.1, pos.2 + 1),
+        (pos.0, pos.1, pos.2 - 1),
+    ] {
+        if chunks.contains_key(&next) {
+            out.push(next);
+        }
+    }
+
+    if let Some(chunk) = chunks.get(&pos) {
+        if chunk_has_layer_connector(chunk) {
+            for layer in [pos.1 - 1, pos.1 + 1] {
+                let vertical = (pos.0, layer, pos.2);
+                if chunks.contains_key(&vertical) {
+                    out.push(vertical);
+                }
+            }
+        }
+    }
+
+    for layer in [pos.1 - 1, pos.1 + 1] {
+        let vertical = (pos.0, layer, pos.2);
+        if let Some(chunk) = chunks.get(&vertical) {
+            if chunk_has_layer_connector(chunk) {
+                out.push(vertical);
+            }
+        }
+    }
+    out
+}
+
 /// The active world state owned by this peer.
 #[derive(Debug, Clone)]
 pub struct World {
     pub seed: u64,
     pub revision: u64,
     pub config: WorldConfig,
-    pub chunks: HashMap<ChunkPos, Chunk>,
+    pub chunks: HashMap<LayeredChunkPos, Chunk>,
     pub rng: StdRng,
     /// Entities that died and need respawn timers (entity_id, chunk_pos, timer).
     pub respawn_queue: Vec<(u32, ChunkPos, f32)>,
@@ -74,10 +143,14 @@ impl World {
 
     /// Ensure a chunk exists at `pos`, generating it deterministically if needed.
     pub fn ensure_chunk(&mut self, pos: ChunkPos) -> &mut Chunk {
+        self.ensure_chunk_layer(pos, 0)
+    }
+
+    pub fn ensure_chunk_layer(&mut self, pos: ChunkPos, layer: ChunkLayer) -> &mut Chunk {
         let seed = self.seed;
         self.chunks
-            .entry(pos)
-            .or_insert_with(|| generator::generate_chunk(seed, pos))
+            .entry(layered_chunk_pos(pos, layer))
+            .or_insert_with(|| generator::generate_chunk_layer(seed, pos, layer))
     }
 
     pub fn reset_for_remote_world(&mut self, world_seed: u64, world_revision: u64) {
@@ -98,10 +171,11 @@ impl World {
         for (structure, mut chunk) in generated {
             if logged_structures.insert(structure.id) {
                 info!(
-                    "MPTRACE step=AM event=structure_created id={} type={} origin=({},{}) size=({},{}) chunks={} seed={} tags={:?}",
+                    "MPTRACE step=AM event=structure_created id={} type={} origin=({},{},{}) size=({},{}) chunks={} seed={} tags={:?}",
                     structure.id,
                     structure.structure_type.as_str(),
                     structure.origin.0,
+                    structure.origin_layer,
                     structure.origin.1,
                     structure.size[0],
                     structure.size[1],
@@ -115,10 +189,11 @@ impl World {
             item_count += chunk.items.len();
             entity_count += chunk.entities.len();
             info!(
-                "MPTRACE step=AN event=chunk_from_structure structure_id={} chunk_id={} coord=({},{}) template_id={} rotation={}",
+                "MPTRACE step=AN event=chunk_from_structure structure_id={} chunk_id={} coord=({},{},{}) template_id={} rotation={}",
                 structure.id,
                 chunk.seed,
                 chunk.pos.0,
+                chunk.layer,
                 chunk.pos.1,
                 chunk.template_id,
                 chunk.rotation
@@ -134,7 +209,7 @@ impl World {
                     item.position.z
                 );
             }
-            self.chunks.entry(chunk.pos).or_insert(chunk);
+            self.chunks.entry(chunk.key()).or_insert(chunk);
         }
 
         // Template distribution stats
@@ -168,19 +243,14 @@ impl World {
         );
 
         // Connectivity check (BFS from origin)
-        let positions: HashSet<ChunkPos> = self.chunks.keys().copied().collect();
+        let positions: HashSet<LayeredChunkPos> = self.chunks.keys().copied().collect();
         let mut visited = HashSet::new();
-        let mut queue = std::collections::VecDeque::from([(0i32, 0i32)]);
+        let mut queue = std::collections::VecDeque::from([(0i32, 0i8, 0i32)]);
         while let Some(pos) = queue.pop_front() {
             if !visited.insert(pos) {
                 continue;
             }
-            for next in [
-                (pos.0 + 1, pos.1),
-                (pos.0 - 1, pos.1),
-                (pos.0, pos.1 + 1),
-                (pos.0, pos.1 - 1),
-            ] {
+            for next in layered_graph_neighbors(pos, &self.chunks) {
                 if positions.contains(&next) && !visited.contains(&next) {
                     queue.push_back(next);
                 }
@@ -286,6 +356,46 @@ impl World {
             "MPTRACE step=DC event=level0_vertical_stats seed={} vertical_chunks={} ramp_chunks={} stair_chunks={} raised={} sunken={}",
             self.seed, vertical_chunks, ramp_chunks, stair_chunks, raised, sunken
         );
+
+        // Phase 2.10 — controlled verticality distribution audit.
+        {
+            use chunk::{
+                FLOOR_FLAT, FLOOR_PIT_PLACEHOLDER, FLOOR_RAISED, FLOOR_RAMP_EAST_WEST,
+                FLOOR_RAMP_NORTH_SOUTH, FLOOR_STAIRS_EAST_WEST, FLOOR_STAIRS_NORTH_SOUTH,
+                FLOOR_SUNKEN,
+            };
+            let (
+                mut v_total,
+                mut v_raised,
+                mut v_sunken,
+                mut v_ramps,
+                mut v_stairs,
+                mut v_pits,
+                mut near,
+            ) = (0u32, 0u32, 0u32, 0u32, 0u32, 0u32, 0u32);
+            for c in self.chunks.values() {
+                let p = c.layout.floor_profile;
+                if p == FLOOR_FLAT {
+                    continue;
+                }
+                v_total += 1;
+                match p {
+                    FLOOR_RAISED => v_raised += 1,
+                    FLOOR_SUNKEN => v_sunken += 1,
+                    FLOOR_RAMP_NORTH_SOUTH | FLOOR_RAMP_EAST_WEST => v_ramps += 1,
+                    FLOOR_STAIRS_NORTH_SOUTH | FLOOR_STAIRS_EAST_WEST => v_stairs += 1,
+                    FLOOR_PIT_PLACEHOLDER => v_pits += 1,
+                    _ => {}
+                }
+                if c.pos.0.abs() <= 2 && c.pos.1.abs() <= 2 {
+                    near += 1;
+                }
+            }
+            info!(
+                "MPTRACE step=V210 event=vertical_distribution seed={} vertical_chunks={} raised={} sunken={} ramps={} stairs={} pits={} near_spawn_vertical={}",
+                self.seed, v_total, v_raised, v_sunken, v_ramps, v_stairs, v_pits, near
+            );
+        }
         info!(
             "MPTRACE step=DD event=level0_opening_stats seed={} reciprocal_ok={} total_openings={} doorframes={} arches={} lowwalls={}",
             self.seed, connected, total_openings, doorframes, arches, lowwalls
@@ -420,31 +530,66 @@ impl World {
     pub fn update_ownership(&mut self, player_pos: Vec3, player_id: PeerId) {
         let player_chunk = world_to_chunk(player_pos);
         let radius = self.config.ownership_radius;
-        let needed: HashSet<ChunkPos> =
+        let needed_xz: HashSet<ChunkPos> =
             chunks_in_radius(player_chunk, radius).into_iter().collect();
 
-        // Unload chunks outside radius.
-        let to_remove: Vec<ChunkPos> = self
+        // Unload chunks outside X/Z radius; preserve every loaded layer inside it.
+        let to_remove: Vec<LayeredChunkPos> = self
             .chunks
             .keys()
-            .filter(|pos| !needed.contains(pos))
+            .filter(|pos| !needed_xz.contains(&(pos.0, pos.2)))
             .copied()
             .collect();
         for pos in to_remove {
             self.chunks.remove(&pos);
         }
 
-        // Generate any missing chunks in radius.
         let seed = self.seed;
-        for pos in &needed {
+        // Restore deliberate V30A multi-layer showcase chunks that come back
+        // into XZ range. This does not ambient-generate arbitrary upper/lower
+        // layers; it only reloads preauthored structure chunks.
+        for (_, mut chunk) in generator::generate_initial_structure_chunks(seed) {
+            if !chunk_is_v30a(&chunk) || !needed_xz.contains(&chunk.pos) {
+                continue;
+            }
+            chunk.owner = Some(player_id);
+            let key = chunk.key();
+            if self
+                .chunks
+                .get(&key)
+                .map(|existing| !chunk_is_v30a(existing))
+                .unwrap_or(true)
+            {
+                self.chunks.insert(key, chunk);
+            }
+        }
+
+        // Generate missing layer-0 chunks only. Upper/lower ambient layers are
+        // intentionally not generated in 3.0A.
+        for pos in &needed_xz {
             self.chunks
-                .entry(*pos)
+                .entry(layered_chunk_pos(*pos, 0))
                 .or_insert_with(|| {
                     let mut c = generator::generate_chunk(seed, *pos);
                     c.owner = Some(player_id);
                     c
                 })
                 .owner = Some(player_id);
+        }
+
+        let layer0 = self.chunks.values().filter(|c| c.layer == 0).count();
+        let lower = self.chunks.values().filter(|c| c.layer < 0).count();
+        let upper = self.chunks.values().filter(|c| c.layer > 0).count();
+        let v30a = self.chunks.values().filter(|c| chunk_is_v30a(c)).count();
+        if v30a > 0 {
+            info!(
+                "MPTRACE step=V30AFIX event=visible_layer_chunks layer0={} lower={} upper={} v30a={} total={}",
+                layer0,
+                lower,
+                upper,
+                v30a,
+                self.chunks.len()
+            );
         }
     }
 
@@ -453,13 +598,16 @@ impl World {
         let mut events = Vec::new();
         let (t_min, t_max) = self.config.teleport_interval;
 
-        let chunk_positions: Vec<ChunkPos> = self.chunks.keys().copied().collect();
-        for pos in chunk_positions {
+        let chunk_positions: Vec<LayeredChunkPos> = self.chunks.keys().copied().collect();
+        for key in chunk_positions {
             let should_teleport = {
-                let chunk = match self.chunks.get_mut(&pos) {
+                let chunk = match self.chunks.get_mut(&key) {
                     Some(c) => c,
                     None => continue,
                 };
+                if chunk.layer != 0 || chunk.layout.vertical_flags & chunk::V30A_CONNECTOR != 0 {
+                    continue;
+                }
                 match chunk.state {
                     ChunkState::Active {
                         stabilized: false,
@@ -491,17 +639,18 @@ impl World {
             };
 
             if should_teleport {
-                let old_pos = pos;
+                let old_key = key;
+                let old_pos = (old_key.0, old_key.2);
                 let new_offset_x = self.rng.gen_range(-30..=30i32);
                 let new_offset_z = self.rng.gen_range(-30..=30i32);
                 let new_seed = self.rng.gen::<u64>();
 
                 // Regenerate in-place with a new random seed.
-                if let Some(chunk) = self.chunks.get_mut(&pos) {
+                if let Some(chunk) = self.chunks.get_mut(&key) {
                     chunk.seed = new_seed;
                     chunk.teleport_timer = self.rng.gen_range(t_min..t_max);
                     // Regenerate entities and items (old ones are lost).
-                    let gen = generator::generate_chunk(new_seed, pos);
+                    let gen = generator::generate_chunk(new_seed, old_pos);
                     chunk.entities = gen.entities;
                     chunk.items = gen.items;
                     chunk.template_id = gen.template_id;
@@ -534,12 +683,13 @@ impl World {
         let mut total_damage = 0.0f32;
         let mut events = Vec::new();
 
-        let chunk_positions: Vec<ChunkPos> = self.chunks.keys().copied().collect();
-        for pos in chunk_positions {
-            let chunk = match self.chunks.get_mut(&pos) {
+        let chunk_positions: Vec<LayeredChunkPos> = self.chunks.keys().copied().collect();
+        for key in chunk_positions {
+            let chunk = match self.chunks.get_mut(&key) {
                 Some(c) if c.is_active() => c,
                 _ => continue,
             };
+            let pos = chunk.pos;
 
             let mut despawned_ids = Vec::new();
             for entity in chunk.entities.iter_mut() {
@@ -579,7 +729,7 @@ impl World {
         for (id, chunk_pos, mut timer) in self.respawn_queue.drain(..) {
             timer -= dt;
             if timer <= 0.0 {
-                if let Some(chunk) = self.chunks.get_mut(&chunk_pos) {
+                if let Some(chunk) = self.chunks.get_mut(&layered_chunk_pos(chunk_pos, 0)) {
                     let spawn_pos = crate::utils::chunk_center(chunk_pos);
                     let etype = match self.rng.gen_range(0..3) {
                         0 => entity::EntityType::Lurker,
@@ -601,7 +751,7 @@ impl World {
 
     /// Build the stat context from actual world state around the player.
     pub fn stat_context_for(&self, player_pos: Vec3, nearby_players: u32) -> StatContext {
-        let player_chunk = world_to_chunk(player_pos);
+        let player_chunk = chunk_key_for_player_pos(player_pos);
         let mut entities_visible = 0u32;
         let mut chunk_stabilized = false;
 
@@ -666,11 +816,13 @@ impl World {
         owner_id: crate::network::PeerId,
     ) {
         let pos: ChunkPos = (data.pos[0], data.pos[1]);
+        let layer = data.layer;
         let chunk = self
             .chunks
-            .entry(pos)
-            .or_insert_with(|| generator::generate_chunk(self.seed, pos));
+            .entry(layered_chunk_pos(pos, layer))
+            .or_insert_with(|| generator::generate_chunk_layer(self.seed, pos, layer));
 
+        chunk.layer = layer;
         chunk.seed = data.seed;
         chunk.template_id = data.template_id;
         chunk.rotation = data.rotation;
@@ -728,7 +880,7 @@ impl World {
     /// Apply a remote chunk teleport event.
     pub fn apply_remote_teleport(&mut self, old_pos: [i32; 2], new_seed: u64) {
         let pos: ChunkPos = (old_pos[0], old_pos[1]);
-        if let Some(chunk) = self.chunks.get_mut(&pos) {
+        if let Some(chunk) = self.chunks.get_mut(&layered_chunk_pos(pos, 0)) {
             chunk.seed = new_seed;
             let gen = generator::generate_chunk(new_seed, pos);
             chunk.entities = gen.entities;
@@ -771,7 +923,7 @@ impl World {
     /// Set a chunk as anchored (from an AnchorBroadcast).
     pub fn set_chunk_anchored(&mut self, chunk_pos: [i32; 2]) {
         let pos: ChunkPos = (chunk_pos[0], chunk_pos[1]);
-        if let Some(chunk) = self.chunks.get_mut(&pos) {
+        if let Some(chunk) = self.chunks.get_mut(&layered_chunk_pos(pos, 0)) {
             chunk.state = ChunkState::Active {
                 stabilized: true,
                 anchored: true,
@@ -782,7 +934,7 @@ impl World {
     /// Set a chunk as stabilized (from a StabilizerBroadcast).
     pub fn set_chunk_stabilized(&mut self, chunk_pos: [i32; 2]) {
         let pos: ChunkPos = (chunk_pos[0], chunk_pos[1]);
-        if let Some(chunk) = self.chunks.get_mut(&pos) {
+        if let Some(chunk) = self.chunks.get_mut(&layered_chunk_pos(pos, 0)) {
             if let ChunkState::Active { anchored, .. } = chunk.state {
                 chunk.state = ChunkState::Active {
                     stabilized: true,
@@ -809,7 +961,10 @@ impl World {
         self.chunks
             .values()
             .map(|c| ChunkView {
+                chunk_schema: 2,
                 pos: [c.pos.0, c.pos.1],
+                layer: c.layer,
+                layer_y: layer_y(c.layer),
                 template_id: c.template_id,
                 rotation: c.rotation,
                 mirrored: c.mirrored,
@@ -871,6 +1026,10 @@ mod tests {
     use super::*;
     use std::collections::{HashSet, VecDeque};
 
+    fn key(pos: ChunkPos) -> LayeredChunkPos {
+        layered_chunk_pos(pos, 0)
+    }
+
     #[test]
     fn ownership_loads_chunks_around_player() {
         let mut world = World::new(42);
@@ -878,20 +1037,22 @@ mod tests {
         world.update_ownership(player_pos, 1);
         let radius = world.config.ownership_radius; // 5
         let expected = ((radius * 2 + 1) * (radius * 2 + 1)) as usize; // 11x11 = 121
-        assert_eq!(world.chunks.len(), expected);
-        assert!(world.chunks.contains_key(&(0, 0)));
-        assert!(world.chunks.contains_key(&(5, 5)));
-        assert!(world.chunks.contains_key(&(-5, -5)));
+        let layer0 = world.chunks.values().filter(|c| c.layer == 0).count();
+        assert_eq!(layer0, expected);
+        assert!(world.chunks.len() >= expected);
+        assert!(world.chunks.contains_key(&key((0, 0))));
+        assert!(world.chunks.contains_key(&key((5, 5))));
+        assert!(world.chunks.contains_key(&key((-5, -5))));
     }
 
     #[test]
     fn ownership_unloads_distant_chunks() {
         let mut world = World::new(42);
         world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
-        assert!(world.chunks.contains_key(&(0, 0)));
+        assert!(world.chunks.contains_key(&key((0, 0))));
         // Move far away.
         world.update_ownership(Vec3::new(1000.0, 0.0, 1000.0), 1);
-        assert!(!world.chunks.contains_key(&(0, 0)));
+        assert!(!world.chunks.contains_key(&key((0, 0))));
     }
 
     #[test]
@@ -932,22 +1093,17 @@ mod tests {
         world.generate_initial_structures(1);
 
         assert!(!world.chunks.is_empty());
-        assert!(world.chunks.contains_key(&(0, 0)));
+        assert!(world.chunks.contains_key(&key((0, 0))));
 
-        let start = (0, 0);
+        let start = key((0, 0));
         let mut visited = HashSet::new();
         let mut queue = VecDeque::from([start]);
         while let Some(pos) = queue.pop_front() {
             if !visited.insert(pos) {
                 continue;
             }
-            for next in [
-                (pos.0 + 1, pos.1),
-                (pos.0 - 1, pos.1),
-                (pos.0, pos.1 + 1),
-                (pos.0, pos.1 - 1),
-            ] {
-                if world.chunks.contains_key(&next) && !visited.contains(&next) {
+            for next in layered_graph_neighbors(pos, &world.chunks) {
+                if !visited.contains(&next) {
                     queue.push_back(next);
                 }
             }
@@ -976,7 +1132,14 @@ mod tests {
             .any(|c| c.template_id == generator::TEMPLATE_INTERSECTION));
         assert!(sync_chunks
             .iter()
-            .all(|c| !c.items.is_empty() || c.template_id == generator::TEMPLATE_SAFE_ROOM));
+            .filter(|c| c.layer == 0)
+            .all(|c| !c.items.is_empty()
+                || c.template_id == generator::TEMPLATE_SAFE_ROOM
+                || c.layout.vertical_flags
+                    & (chunk::V30A_CONNECTOR
+                        | chunk::V30A_ATRIUM_VOID_ROOM
+                        | chunk::V30A_DEEP_PRECIPICE_PLACEHOLDER)
+                    != 0));
     }
 
     #[test]
@@ -1098,13 +1261,13 @@ mod tests {
         let mut world = World::new(42);
         world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
         // Force a chunk to teleport.
-        if let Some(chunk) = world.chunks.get_mut(&(0, 0)) {
+        if let Some(chunk) = world.chunks.get_mut(&key((0, 0))) {
             chunk.teleport_timer = 0.5; // Will expire on next 1hz tick.
         }
-        let old_seed = world.chunks[&(0, 0)].seed;
+        let old_seed = world.chunks[&key((0, 0))].seed;
         let events = world.tick_teleportation();
         // The chunk at (0,0) should have teleported.
-        let new_seed = world.chunks[&(0, 0)].seed;
+        let new_seed = world.chunks[&key((0, 0))].seed;
         assert_ne!(
             old_seed, new_seed,
             "chunk seed should change after teleport"
@@ -1118,7 +1281,7 @@ mod tests {
         let mut world = World::new(42);
         world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
         // Place an entity right on top of the player in aggro state.
-        let chunk = world.chunks.get_mut(&(0, 0)).unwrap();
+        let chunk = world.chunks.get_mut(&key((0, 0))).unwrap();
         chunk.entities.clear();
         let mut e =
             entity::Entity::new(9999, entity::EntityType::Lurker, Vec3::new(25.0, 0.0, 25.0));

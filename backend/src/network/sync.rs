@@ -29,6 +29,7 @@ pub fn chunk_to_sync_data(chunk: &Chunk) -> ChunkSyncData {
 
     ChunkSyncData {
         pos: [chunk.pos.0, chunk.pos.1],
+        layer: chunk.layer,
         seed: chunk.seed,
         template_id: chunk.template_id,
         rotation: chunk.rotation,
@@ -135,13 +136,13 @@ pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
-    for (pos, chunk) in &world.chunks {
+    for (_key, chunk) in &world.chunks {
         if chunk.owner != Some(net.local_id) {
             continue;
         }
         // Only broadcast chunks near the player (within 3 chunks).
-        let dx = (pos.0 - player_chunk.0).abs();
-        let dz = (pos.1 - player_chunk.1).abs();
+        let dx = (chunk.pos.0 - player_chunk.0).abs();
+        let dz = (chunk.pos.1 - player_chunk.1).abs();
         if dx > 3 || dz > 3 {
             continue;
         }
