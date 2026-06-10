@@ -1,11 +1,16 @@
 //! World domain: chunks, procedural generation, entities.
 
+pub mod architecture;
 pub mod chunk;
 pub mod collision;
 pub mod entity;
 pub mod generator;
+pub mod graph;
+pub mod levels;
+pub mod volumetric_grid;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use log::info;
 use rand::rngs::StdRng;
@@ -18,6 +23,11 @@ use crate::player::stats::StatContext;
 use crate::utils::{chunks_in_radius, world_to_chunk, ChunkPos, Vec3};
 use chunk::{layer_y, layered_chunk_pos, Chunk, ChunkLayer, ChunkState, LayeredChunkPos};
 use entity::EntityEvent;
+
+static V30A2_VISFIX_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
+static UNIFIED_VOLUMETRIC_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
+
+const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = false;
 
 /// Tunable world parameters (ARCHITECTURE_V1.md §11.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -524,6 +534,18 @@ impl World {
             self.chunks.len(),
             connected
         );
+
+        // Volumetric "Rubik grid" showcase (replaces the decorative VISFIX
+        // overlay, which is gated off by default in the generator).
+        if self.seed == volumetric_grid::SHOWCASE_SEED {
+            volumetric_grid::log_showcase_once(true);
+        }
+
+        // Phase 3.0C-FIX — audit the Level 0 → volumetric adapter output.
+        // Aggregate counts only, so unordered chunk iteration cannot affect
+        // the logged values.
+        let layer0: Vec<&Chunk> = self.chunks.values().filter(|c| c.layer == 0).collect();
+        volumetric_grid::log_level0_adapter_fix_once(self.seed, &layer0);
     }
 
     /// Load all chunks within the ownership radius of the player and unload distant ones.
@@ -589,6 +611,29 @@ impl World {
                 upper,
                 v30a,
                 self.chunks.len()
+            );
+        }
+        if self.seed == 7778 {
+            let volume_chunks = self
+                .chunks
+                .values()
+                .filter(|c| !c.layout.inter_layer_volumes.is_empty())
+                .count();
+            let volume_count: usize = self
+                .chunks
+                .values()
+                .map(|c| c.layout.inter_layer_volumes.len())
+                .sum();
+            let validation_loaded = self.chunks.contains_key(&(1, 0, 3));
+            let original_loaded = self.chunks.contains_key(&(-5, 0, -1));
+            info!(
+                "MPTRACE step=V30A2 event=v30a2_visfix_backend_visible_radius_check loaded_chunks={} volume_chunks={} volumes={} validation_loaded={} original_loaded={} ownership_radius={}",
+                self.chunks.len(),
+                volume_chunks,
+                volume_count,
+                validation_loaded,
+                original_loaded,
+                radius
             );
         }
     }
@@ -956,9 +1001,31 @@ impl World {
         out
     }
 
+    /// Attach the backend-authored unified volumetric column to layer-0 chunks.
+    /// Render-only: it does not touch chunk layout / collision authority.
+    const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = false;
+
+    fn volumetric_grid_view_for(
+        &self,
+        chunk: &Chunk,
+    ) -> Option<volumetric_grid::VolumetricGridViewV0> {
+        if chunk.layer != 0 {
+            return None;
+        }
+
+        let is_showcase = self.seed == volumetric_grid::SHOWCASE_SEED
+            && volumetric_grid::is_showcase_chunk_pos(chunk.pos);
+
+        if is_showcase || chunk_is_v30a(chunk) || ENABLE_LEVEL0_VOLUMETRIC_COLUMNS {
+            return volumetric_grid::unified_column_view(self.seed, chunk);
+        }
+
+        None
+    }
     /// Build visible chunk views for the WorldState IPC message.
     pub fn visible_chunk_views(&self) -> Vec<ChunkView> {
-        self.chunks
+        let mut views: Vec<ChunkView> = self
+            .chunks
             .values()
             .map(|c| ChunkView {
                 chunk_schema: 2,
@@ -984,8 +1051,133 @@ impl World {
                 light_profile: c.layout.light_profile,
                 anomaly_flags: c.layout.anomaly_flags,
                 vertical_flags: c.layout.vertical_flags,
+                inter_layer_volumes: c.layout.inter_layer_volumes.clone(),
+                volumetric_grid: self.volumetric_grid_view_for(c),
             })
-            .collect()
+            .collect();
+        views.sort_by_key(|c| (c.pos[0], c.layer, c.pos[1]));
+        self.log_unified_volumetric_views(&views);
+        self.log_v30a2_visfix_ipc_views(&views);
+        views
+    }
+
+    fn log_unified_volumetric_views(&self, views: &[ChunkView]) {
+        let column_count = views.iter().filter(|c| c.volumetric_grid.is_some()).count();
+        if column_count == 0 {
+            return;
+        }
+        if UNIFIED_VOLUMETRIC_IPC_LAST_REVISION
+            .compare_exchange(0, self.revision, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        let layer_band_count: usize = views
+            .iter()
+            .filter_map(|c| c.volumetric_grid.as_ref())
+            .map(|g| g.layer_bands.len())
+            .sum();
+        let cell_count: usize = views
+            .iter()
+            .filter_map(|c| c.volumetric_grid.as_ref())
+            .map(|g| g.cells.len())
+            .sum();
+        let face_count: usize = views
+            .iter()
+            .filter_map(|c| c.volumetric_grid.as_ref())
+            .map(|g| g.faces.len())
+            .sum();
+        let vertical_access_count: usize = views
+            .iter()
+            .filter_map(|c| c.volumetric_grid.as_ref())
+            .map(|g| g.vertical_access.len())
+            .sum();
+        let spawn_column = views.iter().find(|c| c.pos == [0, 0] && c.layer == 0);
+        let rubik_columns = views
+            .iter()
+            .filter_map(|c| c.volumetric_grid.as_ref())
+            .filter(|g| g.source == volumetric_grid::UNIFIED_COLUMN_SOURCE_RUBIKGRID)
+            .count();
+
+        info!("MPTRACE step=V30C event=unified_volumetric_world_enabled=true");
+        info!(
+            "MPTRACE step=V30C event=unified_volumetric_seed seed={}",
+            self.seed
+        );
+        if let Some(chunk) = spawn_column {
+            info!(
+                "MPTRACE step=V30C event=unified_volumetric_spawn_column chunk=({},{},{}) has_column={}",
+                chunk.pos[0],
+                chunk.layer,
+                chunk.pos[1],
+                chunk.volumetric_grid.is_some()
+            );
+        }
+        info!("MPTRACE step=V30C event=unified_volumetric_column_count columns={column_count}");
+        info!(
+            "MPTRACE step=V30C event=unified_volumetric_layer_band_count layer_bands={layer_band_count}"
+        );
+        info!("MPTRACE step=V30C event=unified_volumetric_cell_count cells={cell_count}");
+        info!("MPTRACE step=V30C event=unified_volumetric_face_count faces={face_count}");
+        info!(
+            "MPTRACE step=V30C event=unified_volumetric_vertical_access_count vertical_access={vertical_access_count}"
+        );
+        info!("MPTRACE step=V30C event=unified_volumetric_legacy_flat_adapter_enabled fallback_only=true");
+        info!(
+            "MPTRACE step=V30C event=unified_volumetric_rubikgrid_integrated=true rubik_columns={rubik_columns}"
+        );
+        info!("MPTRACE step=V30C event=unified_volumetric_world_ready");
+    }
+
+    fn log_v30a2_visfix_ipc_views(&self, views: &[ChunkView]) {
+        if self.seed != 7778 {
+            return;
+        }
+        let total_volumes: usize = views.iter().map(|c| c.inter_layer_volumes.len()).sum();
+        if total_volumes == 0 {
+            return;
+        }
+        if V30A2_VISFIX_IPC_LAST_REVISION
+            .compare_exchange(0, self.revision, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+
+        info!(
+            "MPTRACE step=V30A2 event=v30a2_visfix_ipc_chunk_volume_count total_visible_chunks={} total_volumes={}",
+            views.len(),
+            total_volumes
+        );
+        for chunk in views.iter().filter(|c| !c.inter_layer_volumes.is_empty()) {
+            info!(
+                "MPTRACE step=V30A2 event=v30a2_visfix_ipc_chunk_volume_count chunk=({},{},{}) volume_count={} kinds={:?}",
+                chunk.pos[0],
+                chunk.layer,
+                chunk.pos[1],
+                chunk.inter_layer_volumes.len(),
+                chunk
+                    .inter_layer_volumes
+                    .iter()
+                    .map(|v| v.kind.as_str())
+                    .collect::<Vec<_>>()
+            );
+            info!(
+                "MPTRACE step=V30A2 event=v30a2_visfix_ipc_layer_y_sent chunk=({},{},{}) layer_y={:.2}",
+                chunk.pos[0],
+                chunk.layer,
+                chunk.pos[1],
+                chunk.layer_y
+            );
+            info!(
+                "MPTRACE step=V30A2 event=v30a2_visfix_ipc_schema_2_confirmed chunk=({},{},{}) chunk_schema={}",
+                chunk.pos[0],
+                chunk.layer,
+                chunk.pos[1],
+                chunk.chunk_schema
+            );
+        }
     }
 
     /// Build visible entity views for the WorldState IPC message.
@@ -1085,6 +1277,108 @@ mod tests {
         assert!(!chunks.is_empty());
         let items = world.visible_item_views();
         assert!(!items.is_empty());
+    }
+
+    #[test]
+    fn visible_chunk_views_are_sorted_for_stable_serialization() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+        let views = world.visible_chunk_views();
+        let keys: Vec<_> = views
+            .iter()
+            .map(|c| (c.pos[0], c.layer, c.pos[1]))
+            .collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted);
+    }
+
+    #[test]
+    fn seed_7778_multichunk_views_carry_volumetric_showcase() {
+        let mut world = World::new(7778);
+        world.generate_initial_structures(1);
+
+        let views = world.visible_chunk_views();
+        assert!(views.iter().all(|c| c.chunk_schema == 2));
+        assert!(views
+            .iter()
+            .all(|c| (c.layer_y - chunk::layer_y(c.layer)).abs() < f32::EPSILON));
+
+        // Runtime-safe mode: not every layer-0 chunk carries a volumetric column.
+        // Only the RubikGrid showcase chunks and explicit V30A chunks may carry one;
+        // ordinary Level 0 chunks fall back to the normal renderer unless the global
+        // Level0 volumetric rollout flag is enabled.
+        let with_grid: Vec<_> = views
+            .iter()
+            .filter(|c| c.volumetric_grid.is_some())
+            .collect();
+
+        assert!(
+            !with_grid.is_empty(),
+            "seed 7778 should expose at least the RubikGrid showcase columns"
+        );
+
+        assert!(views
+            .iter()
+            .filter(|c| c.layer != 0)
+            .all(|c| c.volumetric_grid.is_none()));
+
+        let rubik: Vec<_> = with_grid
+            .iter()
+            .filter(|c| {
+                c.volumetric_grid
+                    .as_ref()
+                    .map(|g| g.source == volumetric_grid::UNIFIED_COLUMN_SOURCE_RUBIKGRID)
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
+        assert_eq!(rubik.len(), 4, "four RubikGrid adapter columns");
+        let mut positions: Vec<[i32; 2]> = rubik.iter().map(|c| c.pos).collect();
+        positions.sort();
+        assert_eq!(positions, vec![[0, 0], [0, 1], [1, 0], [1, 1]]);
+        assert!(rubik.iter().all(|c| c.layer == 0));
+
+        for host in &with_grid {
+            let grid = host.volumetric_grid.as_ref().unwrap();
+            assert!(grid.active);
+            assert_eq!(grid.dims, [10, 3, 10]);
+            assert_eq!(grid.layer_bands.len(), 3);
+            assert!(!grid.faces.is_empty());
+        }
+        assert!(rubik
+            .iter()
+            .all(|host| host.volumetric_grid.as_ref().unwrap().atrium_span));
+
+        // The VISFIX validation overlay (its (1,3)/(1,4) volume chunks) is gone.
+        assert!(
+            !views
+                .iter()
+                .any(|c| (c.pos == [1, 3] || c.pos == [1, 4]) && !c.inter_layer_volumes.is_empty()),
+            "VISFIX overlay volume chunks must be gone by default"
+        );
+
+        let total_faces: usize = with_grid
+            .iter()
+            .map(|c| c.volumetric_grid.as_ref().unwrap().faces.len())
+            .sum();
+        let total_layers: usize = with_grid
+            .iter()
+            .map(|c| c.volumetric_grid.as_ref().unwrap().layer_bands.len())
+            .sum();
+        let total_cells: usize = with_grid
+            .iter()
+            .map(|c| c.volumetric_grid.as_ref().unwrap().cells.len())
+            .sum();
+        let total_access: usize = with_grid
+            .iter()
+            .map(|c| c.volumetric_grid.as_ref().unwrap().vertical_access.len())
+            .sum();
+        println!(
+            "unified_volumetric_v0_ipc columns={} rubik_columns={} total_layers={total_layers} total_cells={total_cells} total_faces={total_faces} total_access={total_access}",
+            with_grid.len(),
+            rubik.len()
+        );
     }
 
     #[test]
