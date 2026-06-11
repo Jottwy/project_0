@@ -20,7 +20,19 @@ impl LevelGraph {
         self.regions.push(region);
     }
 
+    pub fn primary_region(&self) -> Option<&RegionGraph> {
+        self.regions.first()
+    }
+
     pub fn region_count(&self) -> usize {
         self.regions.len()
+    }
+
+    pub fn node_count(&self) -> usize {
+        self.regions.iter().map(RegionGraph::node_count).sum()
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.regions.iter().map(RegionGraph::edge_count).sum()
     }
 }

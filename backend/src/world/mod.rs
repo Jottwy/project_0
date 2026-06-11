@@ -23,6 +23,12 @@ use crate::player::stats::StatContext;
 use crate::utils::{chunks_in_radius, world_to_chunk, ChunkPos, Vec3};
 use chunk::{layer_y, layered_chunk_pos, Chunk, ChunkLayer, ChunkState, LayeredChunkPos};
 use entity::EntityEvent;
+use graph::verticality::{export_vertical_debug_markers, VerticalDebugMarkerV0};
+use graph::world_graph::WorldGraph;
+use levels::level_0::region_graph_builder::{
+    audit_level0_region_graph, build_level0_region_graph_from_generated, reachable_from,
+    starter_node_id,
+};
 
 static V30A2_VISFIX_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
 static UNIFIED_VOLUMETRIC_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
@@ -37,6 +43,15 @@ pub struct WorldConfig {
     pub entity_scaling: f32,
     pub chunk_size: f32,
     pub ownership_radius: i32,
+    /// Chunks are unloaded only beyond this radius (>= ownership_radius).
+    /// The gap between load and unload radius is hysteresis: crossing a chunk
+    /// boundary back and forth no longer destroys and regenerates a whole row.
+    #[serde(default = "default_unload_radius")]
+    pub unload_radius: i32,
+}
+
+fn default_unload_radius() -> i32 {
+    4
 }
 
 impl Default for WorldConfig {
@@ -46,7 +61,8 @@ impl Default for WorldConfig {
             teleport_interval: (120.0, 600.0),
             entity_scaling: 1.0,
             chunk_size: crate::utils::CHUNK_SIZE,
-            ownership_radius: 5,
+            ownership_radius: 3,
+            unload_radius: default_unload_radius(),
         }
     }
 }
@@ -135,8 +151,10 @@ pub struct World {
     pub config: WorldConfig,
     pub chunks: HashMap<LayeredChunkPos, Chunk>,
     pub rng: StdRng,
-    /// Entities that died and need respawn timers (entity_id, chunk_pos, timer).
     pub respawn_queue: Vec<(u32, ChunkPos, f32)>,
+    v30a_chunk_cache: Option<Vec<Chunk>>,
+    view_cache: Option<(u64, usize, Vec<ChunkView>)>,
+    pub world_graph: Option<WorldGraph>,
 }
 
 impl World {
@@ -148,6 +166,9 @@ impl World {
             chunks: HashMap::new(),
             rng: StdRng::seed_from_u64(seed.wrapping_add(0xDEAD)),
             respawn_queue: Vec::new(),
+            v30a_chunk_cache: None,
+            view_cache: None,
+            world_graph: None,
         }
     }
 
@@ -169,14 +190,33 @@ impl World {
         self.chunks.clear();
         self.respawn_queue.clear();
         self.rng = StdRng::seed_from_u64(world_seed.wrapping_add(0xDEAD));
+        self.v30a_chunk_cache = None;
+        self.view_cache = None;
+        self.world_graph = None; // NUEVO
     }
 
     pub fn generate_initial_structures(&mut self, owner_id: PeerId) {
         let generated = generator::generate_initial_structure_chunks(self.seed);
-        let structure_count = generator::generate_initial_structures(self.seed).len();
+        // Derive structure count from already-generated data; avoids a second Level0Builder run.
+        let structure_count = {
+            let mut ids: Vec<u32> = generated.iter().map(|(s, _)| s.id).collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids.len()
+        };
+        // Build RegionGraph before the loop consumes `generated`; no second generation needed.
+
+        let rg = build_level0_region_graph_from_generated(self.seed, &generated);
+        info!(
+            "MPTRACE step=GRAPH event=level0_vertical_debug_render_exported count={}",
+            rg.virtual_vertical_node_count()
+        );
+        self.world_graph = Some(WorldGraph::from_level0_region_graph(self.seed, rg));
+
         let mut logged_structures = HashSet::new();
         let mut item_count = 0usize;
         let mut entity_count = 0usize;
+        let mut v30a_cache: Vec<Chunk> = Vec::new();
 
         for (structure, mut chunk) in generated {
             if logged_structures.insert(structure.id) {
@@ -219,8 +259,13 @@ impl World {
                     item.position.z
                 );
             }
+            if chunk_is_v30a(&chunk) {
+                v30a_cache.push(chunk.clone());
+            }
             self.chunks.entry(chunk.key()).or_insert(chunk);
         }
+        self.v30a_chunk_cache = Some(v30a_cache);
+        self.view_cache = None;
 
         // Template distribution stats
         let mut template_counts = [0u32; 18];
@@ -546,57 +591,156 @@ impl World {
         // the logged values.
         let layer0: Vec<&Chunk> = self.chunks.values().filter(|c| c.layer == 0).collect();
         volumetric_grid::log_level0_adapter_fix_once(self.seed, &layer0);
+
+        let rg = self
+            .world_graph
+            .as_ref()
+            .and_then(|wg| wg.level0_region_graph());
+
+        info!(
+            "MPTRACE step=RG0 event=level0_region_graph_built seed={} nodes={} edges={}",
+            self.seed,
+            rg.map_or(0, |g| g.node_count()),
+            rg.map_or(0, |g| g.edge_count()),
+        );
+
+        if let Some(graph) = rg {
+            let a = audit_level0_region_graph(graph);
+            info!(
+                "MPTRACE step=RG1 event=region_graph_audit seed={} nodes={} edges={} accessible={} visual_only={} traversable={} dangling={} manila={} danger={} blocked={} sealed={} underfloor={}",
+                self.seed,
+                a.node_count,
+                a.edge_count,
+                a.accessible_node_count,
+                a.visual_only_edge_count,
+                a.traversable_edge_count,
+                a.dangling_edge_count,
+                a.manila_room_count,
+                a.danger_pocket_count,
+                a.blocked_portal_count,
+                a.sealed_upper_count,
+                a.underfloor_count,
+            );
+
+            // Phase 3.1G — resolve starter node from graph data rather than hardcoded id 0.
+            // Purely diagnostic; does not gate gameplay, spawning, collision, or IPC.
+            if let Some(starter_id) = starter_node_id(graph) {
+                let reachable = reachable_from(graph, starter_id);
+                let total = graph.node_count();
+                let graph_connected = reachable.len() == total;
+                info!(
+                    "MPTRACE step=RG2 event=region_graph_connectivity seed={} starter_id={} reachable_structures={} total_structures={} graph_connected={}",
+                    self.seed,
+                    starter_id,
+                    reachable.len(),
+                    total,
+                    graph_connected,
+                );
+                // Phase 3.1H — parity between chunk-level BFS (`connected`) and
+                // structure-level RegionGraph connectivity (`graph_connected`).
+                // Diagnostic only; never gates generation or gameplay.
+                info!(
+                    "MPTRACE step=RG3 event=connectivity_parity seed={} chunk_connected={} graph_connected={} parity={} reachable_structures={} total_structures={}",
+                    self.seed,
+                    connected,
+                    graph_connected,
+                    connected == graph_connected,
+                    reachable.len(),
+                    total,
+                );
+            } else {
+                info!(
+                    "MPTRACE step=RG2 event=region_graph_connectivity seed={} starter_node_missing=true",
+                    self.seed,
+                );
+                info!(
+                    "MPTRACE step=RG3 event=connectivity_parity seed={} chunk_connected={} graph_connected=unknown parity=false starter_node_missing=true",
+                    self.seed,
+                    connected,
+                );
+            }
+        }
     }
 
-    /// Load all chunks within the ownership radius of the player and unload distant ones.
+    /// Load all chunks within the ownership radius of the player and unload
+    /// chunks beyond the (larger) unload radius.
     pub fn update_ownership(&mut self, player_pos: Vec3, player_id: PeerId) {
         let player_chunk = world_to_chunk(player_pos);
         let radius = self.config.ownership_radius;
+        let unload_radius = self.config.unload_radius.max(radius);
         let needed_xz: HashSet<ChunkPos> =
             chunks_in_radius(player_chunk, radius).into_iter().collect();
+        let keep_xz: HashSet<ChunkPos> = chunks_in_radius(player_chunk, unload_radius)
+            .into_iter()
+            .collect();
+        let mut changed = false;
 
-        // Unload chunks outside X/Z radius; preserve every loaded layer inside it.
+        // Unload chunks outside the unload radius; preserve every loaded layer
+        // inside it. The load/unload gap is hysteresis against boundary thrash.
         let to_remove: Vec<LayeredChunkPos> = self
             .chunks
             .keys()
-            .filter(|pos| !needed_xz.contains(&(pos.0, pos.2)))
+            .filter(|pos| !keep_xz.contains(&(pos.0, pos.2)))
             .copied()
             .collect();
         for pos in to_remove {
             self.chunks.remove(&pos);
+            changed = true;
         }
 
         let seed = self.seed;
         // Restore deliberate V30A multi-layer showcase chunks that come back
-        // into XZ range. This does not ambient-generate arbitrary upper/lower
-        // layers; it only reloads preauthored structure chunks.
-        for (_, mut chunk) in generator::generate_initial_structure_chunks(seed) {
-            if !chunk_is_v30a(&chunk) || !needed_xz.contains(&chunk.pos) {
+        // into XZ range, from the pristine per-seed cache. The cache is built
+        // at most once per seed — never re-run the full Level 0 generation
+        // pipeline from here (that regen was the main streaming stall).
+        if self.v30a_chunk_cache.is_none() {
+            self.v30a_chunk_cache = Some(
+                generator::generate_initial_structure_chunks(seed)
+                    .into_iter()
+                    .map(|(_, chunk)| chunk)
+                    .filter(chunk_is_v30a)
+                    .collect(),
+            );
+        }
+        let v30a_cache = self.v30a_chunk_cache.take().unwrap_or_default();
+        for cached in &v30a_cache {
+            if !needed_xz.contains(&cached.pos) {
                 continue;
             }
-            chunk.owner = Some(player_id);
-            let key = chunk.key();
+            let key = cached.key();
             if self
                 .chunks
                 .get(&key)
                 .map(|existing| !chunk_is_v30a(existing))
                 .unwrap_or(true)
             {
+                let mut chunk = cached.clone();
+                chunk.owner = Some(player_id);
                 self.chunks.insert(key, chunk);
+                changed = true;
             }
         }
+        self.v30a_chunk_cache = Some(v30a_cache);
 
         // Generate missing layer-0 chunks only. Upper/lower ambient layers are
         // intentionally not generated in 3.0A.
         for pos in &needed_xz {
-            self.chunks
-                .entry(layered_chunk_pos(*pos, 0))
-                .or_insert_with(|| {
-                    let mut c = generator::generate_chunk(seed, *pos);
-                    c.owner = Some(player_id);
-                    c
-                })
-                .owner = Some(player_id);
+            let key = layered_chunk_pos(*pos, 0);
+            if let Some(existing) = self.chunks.get_mut(&key) {
+                existing.owner = Some(player_id);
+            } else {
+                let mut c = generator::generate_chunk(seed, *pos);
+                c.owner = Some(player_id);
+                self.chunks.insert(key, c);
+                changed = true;
+            }
+        }
+
+        // Loading/unloading changes what Unity must render: move the revision
+        // and drop the cached views so the next WorldState rebuilds them.
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+            self.view_cache = None;
         }
 
         let layer0 = self.chunks.values().filter(|c| c.layer == 0).count();
@@ -832,6 +976,9 @@ impl World {
         self.seed = world_seed;
         self.revision = world_revision;
         self.chunks.clear();
+        self.v30a_chunk_cache = None;
+        self.view_cache = None;
+        self.world_graph = None;
         for data in chunks {
             self.apply_chunk_sync(data, local_id);
         }
@@ -860,6 +1007,7 @@ impl World {
         data: &crate::network::protocol::ChunkSyncData,
         owner_id: crate::network::PeerId,
     ) {
+        self.view_cache = None;
         let pos: ChunkPos = (data.pos[0], data.pos[1]);
         let layer = data.layer;
         let chunk = self
@@ -973,6 +1121,7 @@ impl World {
                 stabilized: true,
                 anchored: true,
             };
+            self.view_cache = None;
         }
     }
 
@@ -985,6 +1134,7 @@ impl World {
                     stabilized: true,
                     anchored,
                 };
+                self.view_cache = None;
             }
         }
     }
@@ -1023,7 +1173,41 @@ impl World {
         None
     }
     /// Build visible chunk views for the WorldState IPC message.
-    pub fn visible_chunk_views(&self) -> Vec<ChunkView> {
+    ///
+    /// The result is cached per (revision, chunk_count): the 10hz WorldState
+    /// send reuses the cached views until the world actually changes, instead
+    /// of repacking every layout and rebuilding volumetric grids each send.
+    pub fn visible_chunk_views(&mut self) -> Vec<ChunkView> {
+        if let Some((rev, count, views)) = &self.view_cache {
+            if *rev == self.revision && *count == self.chunks.len() {
+                return views.clone();
+            }
+        }
+        let views = self.build_chunk_views();
+        self.view_cache = Some((self.revision, self.chunks.len(), views.clone()));
+        views
+    }
+
+    /// Debug-only world-space markers for the parallel verticality layer
+    /// (Phase 6.6). Derived deterministically from
+    /// `RegionGraph.virtual_vertical_nodes`; no collision, no traversal.
+    pub fn vertical_debug_marker_views(&self) -> Vec<VerticalDebugMarkerV0> {
+        let Some(rg) = self
+            .world_graph
+            .as_ref()
+            .and_then(|wg| wg.level0_region_graph())
+        else {
+            return Vec::new();
+        };
+        export_vertical_debug_markers(
+            &rg.virtual_vertical_nodes,
+            chunk::LAYOUT_CELL_SIZE,
+            chunk::LAYOUT_GRID_SIZE,
+            chunk::LAYER_HEIGHT,
+        )
+    }
+
+    fn build_chunk_views(&self) -> Vec<ChunkView> {
         let mut views: Vec<ChunkView> = self
             .chunks
             .values()
@@ -1233,8 +1417,8 @@ mod tests {
         assert_eq!(layer0, expected);
         assert!(world.chunks.len() >= expected);
         assert!(world.chunks.contains_key(&key((0, 0))));
-        assert!(world.chunks.contains_key(&key((5, 5))));
-        assert!(world.chunks.contains_key(&key((-5, -5))));
+        assert!(world.chunks.contains_key(&key((3, 3))));
+        assert!(world.chunks.contains_key(&key((-3, -3))));
     }
 
     #[test]
@@ -1245,6 +1429,43 @@ mod tests {
         // Move far away.
         world.update_ownership(Vec3::new(1000.0, 0.0, 1000.0), 1);
         assert!(!world.chunks.contains_key(&key((0, 0))));
+    }
+
+    #[test]
+    fn ownership_hysteresis_keeps_trailing_edge_chunks() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1); // chunk (0,0)
+        let radius = world.config.ownership_radius;
+        assert!(world.config.unload_radius >= radius);
+        let trailing = key((-radius, 0)); // at the load-radius edge
+        assert!(world.chunks.contains_key(&trailing));
+
+        // Cross one chunk forward: the trailing chunk is outside the load
+        // radius but inside the unload radius — hysteresis keeps it loaded.
+        world.update_ownership(Vec3::new(75.0, 0.0, 25.0), 1); // chunk (1,0)
+        assert!(world.chunks.contains_key(&trailing));
+
+        // Move past the unload radius: now it is removed.
+        world.update_ownership(Vec3::new(125.0, 0.0, 25.0), 1); // chunk (2,0)
+        assert!(!world.chunks.contains_key(&trailing));
+    }
+
+    #[test]
+    fn chunk_views_are_cached_until_world_changes() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+        let first = world.visible_chunk_views();
+        let second = world.visible_chunk_views();
+        assert_eq!(first.len(), second.len());
+        assert!(world.view_cache.is_some(), "views should be cached");
+
+        // An ownership change that loads/unloads chunks must invalidate the
+        // cache (revision moves) and produce a different chunk set.
+        world.update_ownership(Vec3::new(225.0, 0.0, 25.0), 1);
+        let third = world.visible_chunk_views();
+        let first_keys: Vec<_> = first.iter().map(|c| c.pos).collect();
+        let third_keys: Vec<_> = third.iter().map(|c| c.pos).collect();
+        assert_ne!(first_keys, third_keys);
     }
 
     #[test]
@@ -1587,5 +1808,150 @@ mod tests {
         let (damage, events) = world.tick_entities(0.1, Vec3::new(25.5, 0.0, 25.0), 1);
         assert!(damage > 0.0, "entity should deal damage");
         assert!(!events.is_empty());
+    }
+
+    #[test]
+    fn world_stores_world_graph_after_generate() {
+        let mut world = World::new(42);
+
+        assert!(
+            world.world_graph.is_none(),
+            "world_graph must be None before generate_initial_structures"
+        );
+
+        world.generate_initial_structures(1);
+
+        let graph = world
+            .world_graph
+            .as_ref()
+            .and_then(|wg| wg.level0_region_graph())
+            .expect("world_graph must contain level0 region graph");
+
+        assert!(graph.node_count() > 0);
+    }
+
+    #[test]
+    fn world_graph_level0_region_graph_validates() {
+        use levels::level_0::validation::validate_level0_region_graph;
+
+        let mut world = World::new(0);
+        world.generate_initial_structures(1);
+
+        let graph = world
+            .world_graph
+            .as_ref()
+            .and_then(|wg| wg.level0_region_graph())
+            .expect("world_graph must contain level0 region graph");
+
+        assert!(
+            validate_level0_region_graph(graph),
+            "stored graph must pass validation"
+        );
+
+        assert!(
+            graph.accessible_node_count() > 0,
+            "graph must have accessible nodes"
+        );
+    }
+
+    fn assert_region_graph_connectivity_parity(seed: u64) {
+        let mut world = World::new(seed);
+        world.generate_initial_structures(1);
+
+        let graph = world
+            .world_graph
+            .as_ref()
+            .and_then(|wg| wg.level0_region_graph())
+            .expect("world_graph must contain level0 region graph");
+
+        let starter_id = starter_node_id(graph)
+            .unwrap_or_else(|| panic!("seed {seed}: starter_node_id must resolve"));
+        let reachable = reachable_from(graph, starter_id);
+        assert_eq!(
+            reachable.len(),
+            graph.node_count(),
+            "seed {seed}: all structures must be reachable from starter"
+        );
+
+        // Chunk-level BFS parity: the world must also be fully connected at
+        // chunk granularity using the existing layered_graph_neighbors helper.
+        let start = (0i32, 0i8, 0i32);
+        let mut visited = HashSet::new();
+        let mut queue = VecDeque::from([start]);
+        while let Some(pos) = queue.pop_front() {
+            if !visited.insert(pos) {
+                continue;
+            }
+            for next in layered_graph_neighbors(pos, &world.chunks) {
+                if !visited.contains(&next) {
+                    queue.push_back(next);
+                }
+            }
+        }
+        assert_eq!(
+            visited.len(),
+            world.chunks.len(),
+            "seed {seed}: chunk-level BFS must be fully connected"
+        );
+    }
+
+    #[test]
+    fn world_region_graph_connectivity_parity_seed_0() {
+        assert_region_graph_connectivity_parity(0);
+    }
+
+    #[test]
+    fn world_region_graph_connectivity_parity_seed_42() {
+        assert_region_graph_connectivity_parity(42);
+    }
+
+    #[test]
+    fn world_region_graph_connectivity_parity_seed_7778() {
+        assert_region_graph_connectivity_parity(7778);
+    }
+
+    #[test]
+    fn world_region_graph_reachable_output_is_deterministic() {
+        let mut world = World::new(42);
+        world.generate_initial_structures(1);
+
+        let graph = world
+            .world_graph
+            .as_ref()
+            .and_then(|wg| wg.level0_region_graph())
+            .expect("world_graph must contain level0 region graph");
+        let starter_id = starter_node_id(graph).expect("seed 42 must have a starter node");
+
+        let reachable_a = reachable_from(graph, starter_id);
+        let reachable_b = reachable_from(graph, starter_id);
+        assert_eq!(
+            reachable_a, reachable_b,
+            "reachable_from must produce identical output on repeated calls"
+        );
+        assert!(!reachable_a.is_empty());
+
+        // Phase 3.1E contract: output must be sorted.
+        let mut sorted = reachable_a.clone();
+        sorted.sort_unstable();
+        assert_eq!(reachable_a, sorted, "reachable_from output must be sorted");
+    }
+    #[test]
+    fn world_graph_has_valid_level0_region_graph() {
+        let mut world = World::new(42);
+        world.generate_initial_structures(1);
+
+        let wg = world
+            .world_graph
+            .as_ref()
+            .expect("world_graph debe existir");
+        let rg = wg
+            .level0_region_graph()
+            .expect("level0 region graph debe existir");
+
+        assert!(rg.node_count() > 0);
+        assert!(rg.edge_count() > 0);
+        assert_eq!(wg.world_seed, 42);
+        assert!(wg.level0().is_some());
+        assert_eq!(wg.level0().unwrap().region_count(), 1);
     }
 }

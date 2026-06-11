@@ -12,7 +12,9 @@ use crate::world::graph::{
     region_graph::RegionGraph,
 };
 
-use crate::world::graph::verticality::build_basic_vertical_connections;
+use crate::world::graph::verticality::{
+    build_basic_vertical_connections, materialize_virtual_vertical_nodes,
+};
 use crate::world::levels::level_0::structure::{StructureType, StructureV0};
 
 /// Thin wrapper: generates Level 0 chunk data then delegates to
@@ -88,6 +90,8 @@ pub(crate) fn build_level0_region_graph_from_generated(
     for connection in build_basic_vertical_connections(&graph.nodes, &mut next_node_id) {
         graph.add_vertical_connection(connection);
     }
+    graph.virtual_vertical_nodes =
+        materialize_virtual_vertical_nodes(&graph.nodes, &graph.vertical_connections);
 
     // Collect adjacent structure pairs via chunk-boundary touch (horizontal + vertical).
     const H_DELTAS: [(i32, i32); 4] = [(1, 0), (-1, 0), (0, 1), (0, -1)];
@@ -1329,6 +1333,166 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ─── 6.5b: virtual vertical node materialization ───
+
+    #[test]
+    fn level0_virtual_vertical_nodes_are_deterministic() {
+        let a = build_level0_region_graph(42);
+        let b = build_level0_region_graph(42);
+        assert_eq!(a.virtual_vertical_nodes, b.virtual_vertical_nodes);
+    }
+
+    #[test]
+    fn level0_every_virtual_id_has_a_materialized_node() {
+        for seed in [0u64, 42, 7778] {
+            let graph = build_level0_region_graph(seed);
+            for vc in &graph.vertical_connections {
+                assert!(
+                    graph.find_virtual_vertical_node(vc.to).is_some(),
+                    "seed {seed}: vc.to {} has no VirtualVerticalNode",
+                    vc.to
+                );
+                assert!(
+                    graph.find_virtual_vertical_node(vc.connector).is_some(),
+                    "seed {seed}: vc.connector {} has no VirtualVerticalNode",
+                    vc.connector
+                );
+            }
+            assert_eq!(
+                graph.virtual_vertical_node_count(),
+                graph.vertical_connection_count() * 2,
+                "seed {seed}: expected exactly 2 virtual nodes per connection"
+            );
+        }
+    }
+
+    #[test]
+    fn level0_virtual_vertical_nodes_never_appear_in_legacy_nodes() {
+        for seed in [0u64, 42, 7778] {
+            let graph = build_level0_region_graph(seed);
+            let legacy_ids: HashSet<u32> = graph.nodes.iter().map(|n| n.id).collect();
+            for v in &graph.virtual_vertical_nodes {
+                assert!(
+                    !legacy_ids.contains(&v.id),
+                    "seed {seed}: virtual node {} collides with legacy node",
+                    v.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn level0_virtual_vertical_nodes_preserve_legacy_counts_and_audit() {
+        for seed in [0u64, 42, 7778] {
+            let g1 = build_level0_region_graph(seed);
+            let g2 = build_level0_region_graph(seed);
+            assert_eq!(g1.node_count(), g2.node_count(), "seed {seed}");
+            assert_eq!(g1.edge_count(), g2.edge_count(), "seed {seed}");
+            assert_eq!(
+                audit_level0_region_graph(&g1),
+                audit_level0_region_graph(&g2),
+                "seed {seed}: legacy audit must be unaffected"
+            );
+        }
+    }
+
+    #[test]
+    fn level0_virtual_vertical_nodes_are_inaccessible_with_valid_bounds() {
+        for seed in [0u64, 42, 7778] {
+            let graph = build_level0_region_graph(seed);
+            for v in &graph.virtual_vertical_nodes {
+                assert!(
+                    !v.accessible,
+                    "seed {seed}: virtual node {} must not be accessible",
+                    v.id
+                );
+                assert!(
+                    v.perceptible,
+                    "seed {seed}: virtual node {} must be perceptible",
+                    v.id
+                );
+                assert!(
+                    v.local_min[0] < v.local_max[0]
+                        && v.local_min[1] < v.local_max[1]
+                        && v.local_min[2] < v.local_max[2],
+                    "seed {seed}: virtual node {} has invalid bounds",
+                    v.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn level0_vertical_layer_is_consistent() {
+        for seed in [0u64, 42, 7778] {
+            let graph = build_level0_region_graph(seed);
+            assert!(
+                graph.vertical_layer_is_consistent(),
+                "seed {seed}: vertical layer audit failed"
+            );
+        }
+    }
+
+    // ─── 6.6: vertical debug marker export ───
+
+    #[test]
+    fn level0_vertical_debug_export_count_matches_virtual_nodes() {
+        use crate::world::chunk::{LAYER_HEIGHT, LAYOUT_CELL_SIZE};
+        use crate::world::graph::verticality::export_vertical_debug_markers;
+        for seed in [0u64, 42, 7778] {
+            let graph = build_level0_region_graph(seed);
+            let markers = export_vertical_debug_markers(
+                &graph.virtual_vertical_nodes,
+                LAYOUT_CELL_SIZE,
+                LAYOUT_GRID_SIZE,
+                LAYER_HEIGHT,
+            );
+            assert_eq!(
+                markers.len(),
+                graph.virtual_vertical_nodes.len(),
+                "seed {seed}: marker count must equal virtual node count"
+            );
+        }
+    }
+
+    #[test]
+    fn level0_vertical_debug_export_is_deterministic() {
+        use crate::world::chunk::{LAYER_HEIGHT, LAYOUT_CELL_SIZE};
+        use crate::world::graph::verticality::export_vertical_debug_markers;
+        let g1 = build_level0_region_graph(42);
+        let g2 = build_level0_region_graph(42);
+        let m1 = export_vertical_debug_markers(
+            &g1.virtual_vertical_nodes,
+            LAYOUT_CELL_SIZE,
+            LAYOUT_GRID_SIZE,
+            LAYER_HEIGHT,
+        );
+        let m2 = export_vertical_debug_markers(
+            &g2.virtual_vertical_nodes,
+            LAYOUT_CELL_SIZE,
+            LAYOUT_GRID_SIZE,
+            LAYER_HEIGHT,
+        );
+        assert_eq!(m1, m2);
+    }
+
+    #[test]
+    fn level0_vertical_debug_export_does_not_change_legacy_counts() {
+        use crate::world::chunk::{LAYER_HEIGHT, LAYOUT_CELL_SIZE};
+        use crate::world::graph::verticality::export_vertical_debug_markers;
+        let graph = build_level0_region_graph(42);
+        let nodes_before = graph.node_count();
+        let edges_before = graph.edge_count();
+        let _ = export_vertical_debug_markers(
+            &graph.virtual_vertical_nodes,
+            LAYOUT_CELL_SIZE,
+            LAYOUT_GRID_SIZE,
+            LAYER_HEIGHT,
+        );
+        assert_eq!(graph.node_count(), nodes_before);
+        assert_eq!(graph.edge_count(), edges_before);
     }
 
     #[test]

@@ -78,6 +78,17 @@ pub const V30A_GIANT_PILLAR_HALL: u16 = 1 << 13;
 pub const V30A_CONNECTOR: u16 = 1 << 14;
 pub const V30A_BLOCKED_VERTICAL_SHAFT: u16 = 1 << 15;
 
+pub const VOLUME_VIS_ATRIUM_WALLS: u32 = 1 << 0;
+pub const VOLUME_VIS_LOWER_ROOM_VISIBLE: u32 = 1 << 1;
+pub const VOLUME_VIS_SHAFT_WALLS: u32 = 1 << 2;
+pub const VOLUME_VIS_RAILINGS: u32 = 1 << 3;
+pub const VOLUME_VIS_RIM_TRIMS: u32 = 1 << 4;
+pub const VOLUME_VIS_PILLAR_SPANS: u32 = 1 << 5;
+pub const VOLUME_VIS_CEILING_HINTS: u32 = 1 << 6;
+pub const VOLUME_VIS_UNDERFLOOR_HINTS: u32 = 1 << 7;
+pub const VOLUME_VIS_STACKED_ALIGNMENT: u32 = 1 << 8;
+pub const VOLUME_VIS_DEPTH_CUES: u32 = 1 << 9;
+
 pub fn layered_chunk_pos(pos: ChunkPos, layer: ChunkLayer) -> LayeredChunkPos {
     (pos.0, layer, pos.1)
 }
@@ -96,6 +107,47 @@ pub const LIGHT_DIM: u8 = 1;
 pub const LIGHT_BLACKOUT: u8 = 2;
 pub const LIGHT_RED: u8 = 3;
 pub const LIGHT_WARM: u8 = 4;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum InterLayerVolumeKindV0 {
+    AtriumStack,
+    ServiceShaft,
+    StackedCorridorPair,
+    OverlookRoom,
+    GiantPillarSpan,
+    CeilingActivityZone,
+    UnderfloorServiceZone,
+}
+
+impl InterLayerVolumeKindV0 {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AtriumStack => "ATRIUM_STACK",
+            Self::ServiceShaft => "SERVICE_SHAFT",
+            Self::StackedCorridorPair => "STACKED_CORRIDOR_PAIR",
+            Self::OverlookRoom => "OVERLOOK_ROOM",
+            Self::GiantPillarSpan => "GIANT_PILLAR_SPAN",
+            Self::CeilingActivityZone => "CEILING_ACTIVITY_ZONE",
+            Self::UnderfloorServiceZone => "UNDERFLOOR_SERVICE_ZONE",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InterLayerVolumeV0 {
+    pub volume_id: u32,
+    pub kind: InterLayerVolumeKindV0,
+    pub base_chunk: [i32; 2],
+    pub involved_layers: Vec<ChunkLayer>,
+    pub footprint_cell_min: [u8; 2],
+    pub footprint_cell_max: [u8; 2],
+    pub safety_type: String,
+    pub future_audio_hint: String,
+    pub visual_flags: u32,
+    #[serde(default)]
+    pub visual_hints: Vec<String>,
+}
 
 // ─── Edge-wall model (Phase 2.7) ───
 //
@@ -156,6 +208,10 @@ pub struct ChunkLayoutV1 {
     pub light_profile: u8,
     pub anomaly_flags: u16,
     pub vertical_flags: u16,
+    /// Backend-authored cross-layer architectural volumes. These are render
+    /// metadata only; movement/collision authority remains in the backend.
+    #[serde(default)]
+    pub inter_layer_volumes: Vec<InterLayerVolumeV0>,
     /// Vertical wall edges (run N–S, separate E–W neighbours).
     /// Indexed `z * (grid_size + 1) + bx`, `bx` in `0..=grid`, `z` in `0..grid`.
     /// `bx == 0` and `bx == grid` are the west/east chunk-boundary walls.
@@ -185,6 +241,7 @@ impl ChunkLayoutV1 {
             light_profile: LIGHT_NORMAL,
             anomaly_flags: 0,
             vertical_flags: 0,
+            inter_layer_volumes: Vec::new(),
             edges_v: Vec::new(),
             edges_h: Vec::new(),
         };

@@ -4,7 +4,7 @@ use super::{
     coords::RegionCoord,
     edges::ConnectionEdge,
     nodes::{SpatialNode, SpatialNodeId},
-    verticality::VerticalConnection,
+    verticality::{VerticalConnection, VirtualVerticalNode},
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +17,11 @@ pub struct RegionGraph {
     /// Parallel verticality layer (Phase 6.5). Never feeds legacy traversal:
     /// `nodes`/`edges` and proven_connections are unaffected by this field.
     pub vertical_connections: Vec<VerticalConnection>,
+
+    /// Audit-only materialization of the virtual IDs referenced by
+    /// `vertical_connections`. Parallel layer: never merged into `nodes`,
+    /// never traversal, no collision/render geometry.
+    pub virtual_vertical_nodes: Vec<VirtualVerticalNode>,
 }
 
 impl RegionGraph {
@@ -26,6 +31,7 @@ impl RegionGraph {
             nodes: Vec::new(),
             edges: Vec::new(),
             vertical_connections: Vec::new(),
+            virtual_vertical_nodes: Vec::new(),
         }
     }
 
@@ -61,6 +67,30 @@ impl RegionGraph {
 
     pub fn vertical_connection_count(&self) -> usize {
         self.vertical_connections.len()
+    }
+
+    pub fn virtual_vertical_node_count(&self) -> usize {
+        self.virtual_vertical_nodes.len()
+    }
+
+    pub fn find_virtual_vertical_node(&self, id: SpatialNodeId) -> Option<&VirtualVerticalNode> {
+        self.virtual_vertical_nodes.iter().find(|v| v.id == id)
+    }
+
+    /// Audits the parallel verticality layer:
+    /// - every `vertical_connections` `from` is a legacy node;
+    /// - every `to`/`connector` is materialized as a virtual node;
+    /// - no virtual node ID collides with a legacy node ID;
+    /// - no virtual node is accessible (traversal promotion not proven yet).
+    pub fn vertical_layer_is_consistent(&self) -> bool {
+        self.vertical_connections.iter().all(|vc| {
+            self.find_node(vc.from).is_some()
+                && self.find_virtual_vertical_node(vc.to).is_some()
+                && self.find_virtual_vertical_node(vc.connector).is_some()
+        }) && self
+            .virtual_vertical_nodes
+            .iter()
+            .all(|v| self.find_node(v.id).is_none() && !v.accessible)
     }
 
     pub fn find_node(&self, id: SpatialNodeId) -> Option<&SpatialNode> {
