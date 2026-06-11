@@ -4,6 +4,7 @@ use super::{
     coords::RegionCoord,
     edges::ConnectionEdge,
     nodes::{SpatialNode, SpatialNodeId},
+    verticality::VerticalConnection,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -12,6 +13,10 @@ pub struct RegionGraph {
 
     pub nodes: Vec<SpatialNode>,
     pub edges: Vec<ConnectionEdge>,
+
+    /// Parallel verticality layer (Phase 6.5). Never feeds legacy traversal:
+    /// `nodes`/`edges` and proven_connections are unaffected by this field.
+    pub vertical_connections: Vec<VerticalConnection>,
 }
 
 impl RegionGraph {
@@ -20,6 +25,7 @@ impl RegionGraph {
             coord,
             nodes: Vec::new(),
             edges: Vec::new(),
+            vertical_connections: Vec::new(),
         }
     }
 
@@ -47,6 +53,14 @@ impl RegionGraph {
 
     pub fn edge_count(&self) -> usize {
         self.edges.len()
+    }
+
+    pub fn add_vertical_connection(&mut self, connection: VerticalConnection) {
+        self.vertical_connections.push(connection);
+    }
+
+    pub fn vertical_connection_count(&self) -> usize {
+        self.vertical_connections.len()
     }
 
     pub fn find_node(&self, id: SpatialNodeId) -> Option<&SpatialNode> {
