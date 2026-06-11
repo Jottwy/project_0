@@ -1,3 +1,12 @@
+//! Level 0 RegionGraph construction.
+//!
+//! Contract (MIG-2): the `RegionGraph` is *derived* from already-generated chunk
+//! data — it must be built immediately after `Level0Builder::build()` (i.e. from
+//! the `Vec<(StructureV0, Chunk)>` that generation produced), never the other way
+//! around. It is a read-only spatial/navigation view: it does **not** participate
+//! in chunk generation, collision resolution, or safe-spawn. Changing this module
+//! must not alter generation output, collision, or spawn semantics.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::world::chunk::{Chunk, LAYOUT_GRID_SIZE};

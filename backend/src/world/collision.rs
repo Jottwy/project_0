@@ -582,11 +582,12 @@ fn cell_for_pos(
 mod tests {
     use super::*;
     use crate::utils::chunk_center;
+    use crate::world::architecture::{build_chunk_layout, TEMPLATE_ROOM_BASIC};
     use crate::world::chunk::{
         edge_blocks_movement as ebm, EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_WALL,
         FLOOR_RAMP_NORTH_SOUTH, LAYOUT_GRID_SIZE,
     };
-    use crate::world::generator::{build_chunk_layout, generate_chunk, TEMPLATE_ROOM_BASIC};
+    use crate::world::generator::generate_chunk;
     use crate::world::World;
 
     fn key(pos: (i32, i32)) -> LayeredChunkPos {

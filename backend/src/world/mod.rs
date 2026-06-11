@@ -1641,15 +1641,15 @@ mod tests {
         assert_eq!(sync_chunks.len(), world.chunks.len());
         assert!(sync_chunks
             .iter()
-            .any(|c| c.template_id == generator::TEMPLATE_STORAGE_ROOM));
+            .any(|c| c.template_id == architecture::TEMPLATE_STORAGE_ROOM));
         assert!(sync_chunks
             .iter()
-            .any(|c| c.template_id == generator::TEMPLATE_INTERSECTION));
+            .any(|c| c.template_id == architecture::TEMPLATE_INTERSECTION));
         assert!(sync_chunks
             .iter()
             .filter(|c| c.layer == 0)
             .all(|c| !c.items.is_empty()
-                || c.template_id == generator::TEMPLATE_SAFE_ROOM
+                || c.template_id == architecture::TEMPLATE_SAFE_ROOM
                 || c.layout.vertical_flags
                     & (chunk::V30A_CONNECTOR
                         | chunk::V30A_ATRIUM_VOID_ROOM

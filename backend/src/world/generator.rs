@@ -50,14 +50,16 @@ use crate::world::architecture::surface_builder::{
 
 use crate::world::levels::level_0::builder::Level0Builder;
 
-// MIG-5: template constants moved to architecture::layout_grammars
-pub use crate::world::architecture::layout_grammars::{
-    TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_CLEANING_AREA, TEMPLATE_DANGER_ROOM,
-    TEMPLATE_DEAD_END, TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T,
-    TEMPLATE_HUMID_ZONE, TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL,
-    TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_POI_ANOMALY,
-    TEMPLATE_POI_DANGER_POCKET, TEMPLATE_POI_LANDMARK, TEMPLATE_POI_SAFE_POCKET,
-    TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC, TEMPLATE_SAFE_ROOM, TEMPLATE_STORAGE_ROOM,
+// MIG-5: template constants live in architecture::layout_grammars.
+// MIG-2: generator imports only the templates it uses internally; external
+// callers reach templates via the architecture facade (see architecture/mod.rs),
+// not through generator.
+use crate::world::architecture::layout_grammars::{
+    TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_CLEANING_AREA, TEMPLATE_DEAD_END,
+    TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
+    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM,
+    TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC,
+    TEMPLATE_STORAGE_ROOM,
 };
 
 const V30A2_VISFIX_SEED: u64 = 7778;
@@ -69,8 +71,12 @@ pub use crate::world::levels::level_0::structure::{StructureType, StructureV0};
 
 // ─── ID generation ───
 pub use crate::world::architecture::chunk_generator::{
-    build_chunk_layout, chunk_seed, chunk_seed_layer, next_entity_id_pub,
+    chunk_seed, chunk_seed_layer, next_entity_id_pub,
 };
+// MIG-2: build_chunk_layout is re-exported from the architecture facade
+// (architecture/mod.rs); generator consumes it through that canonical path and no
+// longer re-exports it itself.
+use crate::world::architecture::build_chunk_layout;
 
 fn stable_u32(world_seed: u64, pos: ChunkPos, salt: u64, index: u32) -> u32 {
     let mut h = chunk_seed(world_seed ^ salt, pos);

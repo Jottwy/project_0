@@ -13,10 +13,13 @@ use crate::world::chunk::{
     CELL_HAZARD, CELL_LOW_WALL, CELL_PILLAR, CELL_PIT, CELL_SAFE, CELL_THIN_PARTITION,
     CELL_WALKABLE, CELL_WALL, EDGE_KIND_OPEN, FLOOR_FLAT,
 };
-use crate::world::generator::{
-    StructureV0, TEMPLATE_ARCH_ROOM, TEMPLATE_CLEANING_AREA, TEMPLATE_HUMID_ZONE,
-    TEMPLATE_MANILA_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER,
+// MIG-2: template ids come from the sibling layout_grammars module, not through
+// generator (which only re-exported them, inverting the layering).
+use super::layout_grammars::{
+    TEMPLATE_ARCH_ROOM, TEMPLATE_CLEANING_AREA, TEMPLATE_HUMID_ZONE, TEMPLATE_MANILA_ROOM,
+    TEMPLATE_PIT_ROOM_PLACEHOLDER,
 };
+use crate::world::generator::StructureV0;
 
 /// Templates whose layout/profile introduces verticality (sunken, raised,
 /// ramps, stairs, pits). Kept out of the immediate spawn region.
