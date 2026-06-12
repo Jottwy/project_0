@@ -91,7 +91,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             int[] wallHeights = WallGreedyMesher.ComputeWallHeights(cells, Size);
             byte[] wallInsets = WallGreedyMesher.ComputeWallInsets(cells, Size);
-            BuildWalls(prefabs, root.transform, wallHeights, wallInsets);
+            BuildWalls(cells, prefabs, root.transform, wallHeights, wallInsets);
 
             for (int z = 0; z < Size; z++)
             {
@@ -159,17 +159,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return root;
         }
 
-        private static void BuildWalls(GridPrefabSet prefabs, Transform parent,
-            int[] heights, byte[] insets)
+        private static void BuildWalls(GridCell[] cells, GridPrefabSet prefabs,
+            Transform parent, int[] heights, byte[] insets)
         {
-            List<WallRect> rects = WallGreedyMesher.GreedyRects(heights, insets, Size);
-            if (rects.Count == 0)
+            var mesh = WallGreedyMesher.BuildChunkMesh(cells, Size, heights, insets);
+            if (mesh.vertexCount == 0)
+            {
+                UnityEngine.Object.Destroy(mesh);
                 return;
+            }
 
             var go = new GameObject("Walls");
             go.transform.SetParent(parent, false);
             go.isStatic = true;
-            go.AddComponent<MeshFilter>().sharedMesh = WallGreedyMesher.BuildMesh(rects, Cs);
+            go.AddComponent<MeshFilter>().sharedMesh = mesh;
             // Submesh 0 = side faces (wall material, double-sided); submesh 1 =
             // top caps painted with the ceiling material so they read as part of
             // the ceiling and the coplanar seam with FloorCeiling panels vanishes.

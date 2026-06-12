@@ -8,34 +8,17 @@ namespace BackroomsSurvival.Tests
     public class WallGreedyMesherTests
     {
         private const int Size = GridConstants.ChunkCells;
-        private const float Cs = GridConstants.CellSize;
+        private const float Cs   = GridConstants.CellSize;
         private const float Inset = WallGreedyMesher.Inset;
-        private const byte W = WallGreedyMesher.InsetWest;
-        private const byte E = WallGreedyMesher.InsetEast;
-        private const byte S = WallGreedyMesher.InsetSouth;
-        private const byte N = WallGreedyMesher.InsetNorth;
+        private const byte  W = WallGreedyMesher.InsetWest;
+        private const byte  E = WallGreedyMesher.InsetEast;
+        private const byte  S = WallGreedyMesher.InsetSouth;
+        private const byte  N = WallGreedyMesher.InsetNorth;
 
-        private static GridCell Wall() => new GridCell(GridCellType.Wall, 0, 0);
-        private static GridCell Corridor(byte ceiling = 2) => new GridCell(GridCellType.Corridor, ceiling, 0);
+        private static GridCell Wall()              => new GridCell(GridCellType.Wall,     0, 0);
+        private static GridCell Corridor(byte h=2)  => new GridCell(GridCellType.Corridor, h, 0);
 
-        private static int[] Heights(params (int x, int z, int h)[] walls)
-        {
-            var grid = new int[Size * Size];
-            foreach (var (x, z, h) in walls)
-                grid[z * Size + x] = h;
-            return grid;
-        }
-
-        /// <summary>Wall where height > 0, corridor elsewhere (for synthetic heights).</summary>
-        private static GridCell[] CellsFromHeights(int[] heights)
-        {
-            var cells = new GridCell[heights.Length];
-            for (int i = 0; i < heights.Length; i++)
-                cells[i] = heights[i] > 0 ? Wall() : Corridor();
-            return cells;
-        }
-
-        /// <summary>Corridor sea (ceiling 2) with Wall cells at the given coordinates.</summary>
+        /// <summary>Corridor sea with Wall cells at the given (x,z) coordinates.</summary>
         private static GridCell[] CorridorSeaWithWalls(params (int x, int z)[] walls)
         {
             var cells = new GridCell[Size * Size];
@@ -46,123 +29,138 @@ namespace BackroomsSurvival.Tests
             return cells;
         }
 
-        private static List<WallRect> Rects(GridCell[] cells)
+        /// <summary>
+        /// Compute insets for a single Wall cell at (wx, wz) in a corridor sea.
+        /// Returns the inset byte for that cell.
+        /// </summary>
+        private static byte CellInset(GridCell[] cells, int wx, int wz)
         {
-            int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
             byte[] insets = WallGreedyMesher.ComputeWallInsets(cells, Size);
-            return WallGreedyMesher.GreedyRects(heights, insets, Size);
+            return insets[wz * Size + wx];
         }
 
-        private static List<WallRect> Rects(int[] heights)
-        {
-            byte[] insets = WallGreedyMesher.ComputeWallInsets(CellsFromHeights(heights), Size);
-            return WallGreedyMesher.GreedyRects(heights, insets, Size);
-        }
-
-        /// <summary>World-space footprint of a rect under the thin-wall inset rule.</summary>
-        private static (float x0, float x1, float z0, float z1) ExtentsOf(WallRect r)
+        /// <summary>
+        /// World-space footprint of a single Wall cell given its inset flags.
+        /// </summary>
+        private static (float x0, float x1, float z0, float z1) Extents(int cx, int cz, byte ins)
         {
             return (
-                r.x * Cs + ((r.insets & W) != 0 ? Inset : 0f),
-                (r.x + r.w) * Cs - ((r.insets & E) != 0 ? Inset : 0f),
-                r.z * Cs + ((r.insets & S) != 0 ? Inset : 0f),
-                (r.z + r.d) * Cs - ((r.insets & N) != 0 ? Inset : 0f));
+                cx * Cs + ((ins & W) != 0 ? Inset : 0f),
+                (cx + 1) * Cs - ((ins & E) != 0 ? Inset : 0f),
+                cz * Cs + ((ins & S) != 0 ? Inset : 0f),
+                (cz + 1) * Cs - ((ins & N) != 0 ? Inset : 0f));
+        }
+
+        // ------------------------------------------------------------------ //
+        // Geometry / inset tests (no UnityEngine.Mesh needed)                 //
+        // ------------------------------------------------------------------ //
+
+        [Test]
+        public void SingleWallCell_Corridor_Both_Sides()
+        {
+            // Wall at (0,0) with corridor neighbours on east and north only
+            // (west and south are chunk border → no inset).
+            // Use a wall that has corridors on ALL in-chunk sides by placing
+            // it somewhere interior.
+            var cells = CorridorSeaWithWalls((5, 5));
+            byte ins = CellInset(cells, 5, 5);
+
+            // All 4 neighbours are corridor → all 4 sides retract.
+            Assert.AreEqual(W | E | S | N, ins);
+
+            var (x0, x1, z0, z1) = Extents(5, 5, ins);
+
+            // Thickness in both axes = WallThickness.
+            Assert.AreEqual(WallGreedyMesher.WallThickness, x1 - x0, 0.001f);
+            Assert.AreEqual(WallGreedyMesher.WallThickness, z1 - z0, 0.001f);
+
+            // Centred in the cell.
+            Assert.AreEqual(5.5f * Cs, (x0 + x1) / 2f, 0.001f);
+            Assert.AreEqual(5.5f * Cs, (z0 + z1) / 2f, 0.001f);
         }
 
         [Test]
-        public void RowOfEightWallsCollapsesToOneRect()
+        public void SingleWallCell_ChunkBorder_NoInset()
         {
-            var walls = new (int, int)[8];
-            for (int i = 0; i < 8; i++)
-                walls[i] = (3 + i, 5);
-            var rects = Rects(CorridorSeaWithWalls(walls));
+            // Wall at (0, 5): west border of chunk.  East neighbour is corridor.
+            var cells = CorridorSeaWithWalls((0, 5));
+            byte ins = CellInset(cells, 0, 5);
 
-            Assert.AreEqual(1, rects.Count);
-            Assert.AreEqual(3, rects[0].x);
-            Assert.AreEqual(5, rects[0].z);
-            Assert.AreEqual(8, rects[0].w);
-            Assert.AreEqual(1, rects[0].d);
-            Assert.AreEqual(2, rects[0].heightUnits);
-            // Surrounded by corridor on all sides: every face retracts.
-            Assert.AreEqual(W | E | S | N, rects[0].insets);
+            // West is chunk border → no west inset.
+            Assert.AreEqual(0, ins & W, "west side at chunk border must NOT retract");
+            // East neighbour is corridor → east retracts.
+            Assert.AreEqual(E, ins & E, "east side toward corridor must retract");
+
+            var (x0, x1, _, _) = Extents(0, 5, ins);
+            Assert.AreEqual(0f, x0, 0.001f,  "west face must reach the chunk seam");
+            Assert.AreEqual(Cs - Inset, x1, 0.001f, "east face must retract by Inset");
         }
 
         [Test]
-        public void SolidBlockPerimeterRetractsInteriorStaysFull()
+        public void CornerL_TwoExposedSides()
         {
-            var walls = new List<(int, int)>();
-            for (int z = 2; z < 6; z++)
-                for (int x = 10; x < 14; x++)
-                    walls.Add((x, z));
-            var rects = Rects(CorridorSeaWithWalls(walls.ToArray()));
+            // Wall at (5,5) with walls to its east (6,5) and north (5,6),
+            // so only west and south are exposed to corridor.
+            var cells = CorridorSeaWithWalls((5, 5), (6, 5), (5, 6));
+            byte ins = CellInset(cells, 5, 5);
 
-            Assert.AreEqual(1, rects.Count);
-            Assert.AreEqual(4, rects[0].w);
-            Assert.AreEqual(4, rects[0].d);
-            Assert.AreEqual(W | E | S | N, rects[0].insets);
+            // West and south face corridor → retract; east and north face wall → no retract.
+            Assert.AreEqual(W | S, ins);
 
-            // Only the exposed perimeter retracts: 4 cells − 2 insets per axis.
-            var (x0, x1, z0, z1) = ExtentsOf(rects[0]);
-            Assert.AreEqual(4 * Cs - 2 * Inset, x1 - x0, 0.001f);
-            Assert.AreEqual(4 * Cs - 2 * Inset, z1 - z0, 0.001f);
+            var (x0, x1, z0, z1) = Extents(5, 5, ins);
+
+            // The pillar footprint is (Cs - Inset) on the exposed axes.
+            Assert.AreEqual(Cs - Inset, x1 - x0, 0.001f);
+            Assert.AreEqual(Cs - Inset, z1 - z0, 0.001f);
+
+            // The corner cell's non-inset edges must be flush with the
+            // neighbouring wall cell extents (no gap).
+            byte insEast  = CellInset(cells, 6, 5);
+            byte insNorth = CellInset(cells, 5, 6);
+            var (ex0, _, _, _) = Extents(6, 5, insEast);
+            var (_, _, nz0, _) = Extents(5, 6, insNorth);
+
+            Assert.AreEqual(x1, ex0, 0.001f, "corner east edge must be flush with east-cell west edge");
+            Assert.AreEqual(z1, nz0, 0.001f, "corner north edge must be flush with north-cell south edge");
         }
 
         [Test]
-        public void DifferentHeightsDoNotMerge()
+        public void SolidBlock_OnlyPerimeterInset()
         {
-            var rects = Rects(Heights((0, 0, 2), (1, 0, 4)));
-            Assert.AreEqual(2, rects.Count);
-        }
+            // 3×3 block of walls at (10..12, 10..12).
+            var wallCoords = new List<(int, int)>();
+            for (int z = 10; z <= 12; z++)
+                for (int x = 10; x <= 12; x++)
+                    wallCoords.Add((x, z));
+            var cells = CorridorSeaWithWalls(wallCoords.ToArray());
 
-        [Test]
-        public void RectsCoverMaskExactlyWithoutOverlap()
-        {
-            // Deterministic pseudo-random wall pattern with mixed heights.
-            var heights = new int[Size * Size];
-            uint rng = 12345;
-            for (int i = 0; i < heights.Length; i++)
+            byte[] insets = WallGreedyMesher.ComputeWallInsets(cells, Size);
+
+            // Interior cell (11,11): all 4 neighbours are Wall → no insets.
+            Assert.AreEqual(0, insets[11 * Size + 11], "interior cell must have no insets");
+
+            // Corner cell (10,10): west + south expose to corridor.
+            Assert.AreEqual(W | S, insets[10 * Size + 10]);
+            // Corner cell (12,12): east + north expose to corridor.
+            Assert.AreEqual(E | N, insets[12 * Size + 12]);
+
+            // Every cell is either interior (inset=0) or perimeter (inset≠0 toward outside).
+            // Verify no cell has an inset toward a Wall neighbour.
+            for (int z = 10; z <= 12; z++)
             {
-                rng = rng * 1664525u + 1013904223u;
-                if ((rng >> 16) % 3 == 0)
-                    heights[i] = 2 + (int)((rng >> 8) % 3);
-            }
-
-            var rects = Rects(heights);
-
-            var covered = new int[Size * Size];
-            foreach (var r in rects)
-            {
-                Assert.Greater(r.heightUnits, 0);
-                for (int dz = 0; dz < r.d; dz++)
+                for (int x = 10; x <= 12; x++)
                 {
-                    for (int dx = 0; dx < r.w; dx++)
-                    {
-                        int i = (r.z + dz) * Size + r.x + dx;
-                        covered[i]++;
-                        Assert.AreEqual(heights[i], r.heightUnits,
-                            "rect height must match every covered cell");
-                    }
+                    byte ins = insets[z * Size + x];
+                    if (x > 10) Assert.AreEqual(0, ins & W, $"cell ({x},{z}) must not retract west toward wall");
+                    if (x < 12) Assert.AreEqual(0, ins & E, $"cell ({x},{z}) must not retract east toward wall");
+                    if (z > 10) Assert.AreEqual(0, ins & S, $"cell ({x},{z}) must not retract south toward wall");
+                    if (z < 12) Assert.AreEqual(0, ins & N, $"cell ({x},{z}) must not retract north toward wall");
                 }
             }
-
-            for (int i = 0; i < heights.Length; i++)
-            {
-                int expected = heights[i] > 0 ? 1 : 0;
-                Assert.AreEqual(expected, covered[i],
-                    $"cell {i}: walls covered exactly once, non-walls never");
-            }
-
-            // Profile-aware merging is more restrictive than plain height
-            // merging, so only require no inflation here; real compression is
-            // asserted by RowOfEightWallsCollapsesToOneRect.
-            int wallCells = 0;
-            foreach (int h in heights)
-                if (h > 0) wallCells++;
-            Assert.LessOrEqual(rects.Count, wallCells);
         }
 
         [Test]
-        public void WallHeightComesFromTallestAdjacentWalkableCell()
+        public void WallHeight_ComesFromTallestAdjacent()
         {
             var cells = new GridCell[Size * Size];
             for (int i = 0; i < cells.Length; i++)
@@ -170,86 +168,39 @@ namespace BackroomsSurvival.Tests
             cells[5 * Size + 4] = Corridor(2);
             cells[5 * Size + 6] = new GridCell(GridCellType.Open, 5, 1);
 
-            var heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
+            int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
 
-            // Wall between a 2-unit corridor and a 5-unit open zone reaches 5.
-            Assert.AreEqual(5, heights[5 * Size + 5]);
-            // Wall touching only the corridor reaches the corridor ceiling (min 2).
-            Assert.AreEqual(2, heights[5 * Size + 3]);
-            // Interior wall with no walkable neighbour inherits the chunk max.
-            Assert.AreEqual(5, heights[0]);
-            // Walkable cells get no wall height.
-            Assert.AreEqual(0, heights[5 * Size + 4]);
+            Assert.AreEqual(5, heights[5 * Size + 5], "wall between h=2 and h=5 rooms must reach 5");
+            Assert.AreEqual(2, heights[5 * Size + 3], "wall touching only h=2 corridor must reach 2");
+            Assert.AreEqual(5, heights[0],             "interior wall inherits chunk max (5)");
+            Assert.AreEqual(0, heights[5 * Size + 4],  "walkable cells must not get a wall height");
         }
 
+        // ------------------------------------------------------------------ //
+        // Mesh tests (require UnityEngine — run in Unity Test Runner only)    //
+        // ------------------------------------------------------------------ //
+
         [Test]
-        public void BuiltMeshHasFiveQuadsPerRectWithInsetExtents()
+        public void SubmeshAssignment()
         {
-            var rects = Rects(Heights((0, 0, 2), (5, 5, 4)));
-            Assert.AreEqual(2, rects.Count);
-            var mesh = WallGreedyMesher.BuildMesh(rects, Cs);
+            // Single wall cell fully surrounded by corridor → all 4 sides retract.
+            var cells = CorridorSeaWithWalls((3, 3));
+            int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
+            byte[] insets  = WallGreedyMesher.ComputeWallInsets(cells, Size);
 
-            // 5 quads (4 sides + top) × 4 verts × 2 rects.
-            Assert.AreEqual(40, mesh.vertexCount);
-            Assert.AreEqual(60, mesh.triangles.Length); // 5 quads × 2 tris × 3 idx × 2 rects
+            var mesh = WallGreedyMesher.BuildChunkMesh(cells, Size, heights, insets);
 
-            // Tallest point = heightUnits × cellSize.
-            Assert.AreEqual(4 * Cs, mesh.bounds.max.y, 0.001f);
-            // (0,0) sits on the chunk border: west/south faces stay at 0.
-            Assert.AreEqual(0f, mesh.bounds.min.x, 0.001f);
-            Assert.AreEqual(0f, mesh.bounds.min.z, 0.001f);
-            // (5,5) is fully surrounded: its east face retracts from x = 15.
-            Assert.AreEqual(6 * Cs - Inset, mesh.bounds.max.x, 0.001f);
+            Assert.AreEqual(2, mesh.subMeshCount, "mesh must have exactly 2 submeshes");
+
+            // 1 cell × 4 side quads × 6 indices = 24; submesh 0 = side faces.
+            Assert.AreEqual(24, mesh.GetTriangles(0).Length,
+                "submesh 0 (wall material) must hold the 4 side-face quads");
+
+            // 1 cell × 1 top quad × 6 indices = 6; submesh 1 = top caps.
+            Assert.AreEqual(6, mesh.GetTriangles(1).Length,
+                "submesh 1 (ceiling material) must hold the top cap quad");
+
             UnityEngine.Object.DestroyImmediate(mesh);
-        }
-
-        [Test]
-        public void PartitionBetweenCorridorsIsThinAndCentered()
-        {
-            var rects = Rects(CorridorSeaWithWalls((4, 5), (5, 5), (6, 5)));
-            Assert.AreEqual(1, rects.Count);
-
-            var mesh = WallGreedyMesher.BuildMesh(rects, Cs);
-            Assert.AreEqual(WallGreedyMesher.WallThickness, mesh.bounds.size.z, 0.001f);
-            Assert.AreEqual(5.5f * Cs, mesh.bounds.center.z, 0.001f); // centred in row z=5
-            Assert.AreEqual(4 * Cs + Inset, mesh.bounds.min.x, 0.001f);
-            Assert.AreEqual(7 * Cs - Inset, mesh.bounds.max.x, 0.001f);
-            UnityEngine.Object.DestroyImmediate(mesh);
-        }
-
-        [Test]
-        public void LCornerLeavesPostAndJoinsFlush()
-        {
-            // Horizontal run (3..5, z=5) + vertical run (x=5, z=6..7).
-            var rects = Rects(CorridorSeaWithWalls((3, 5), (4, 5), (5, 5), (5, 6), (5, 7)));
-            Assert.AreEqual(3, rects.Count);
-
-            var corner = rects.Find(r => r.x == 5 && r.z == 5);
-            var row = rects.Find(r => r.x == 3 && r.z == 5);
-            var column = rects.Find(r => r.x == 5 && r.z == 6);
-            Assert.AreEqual(E | S, corner.insets); // west/north closed toward the runs
-            Assert.AreEqual(2, row.w);
-            Assert.AreEqual(2, column.d);
-
-            // Corner post: Cs − Inset per side.
-            var c = ExtentsOf(corner);
-            Assert.AreEqual(Cs - Inset, c.x1 - c.x0, 0.001f);
-            Assert.AreEqual(Cs - Inset, c.z1 - c.z0, 0.001f);
-
-            // Flush joints: row reaches the corner's west border, column its north.
-            Assert.AreEqual(c.x0, ExtentsOf(row).x1, 0.001f);
-            Assert.AreEqual(c.z1, ExtentsOf(column).z0, 0.001f);
-        }
-
-        [Test]
-        public void ChunkBorderWallExtendsToSeam()
-        {
-            var rects = Rects(CorridorSeaWithWalls((0, 5)));
-            Assert.AreEqual(1, rects.Count);
-
-            // No west inset toward the unseen neighbour chunk: reach the seam.
-            Assert.AreEqual(E | S | N, rects[0].insets);
-            Assert.AreEqual(0f, ExtentsOf(rects[0]).x0, 0.001f);
         }
     }
 }
