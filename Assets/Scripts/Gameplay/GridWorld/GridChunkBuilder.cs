@@ -181,9 +181,27 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return new TileClass(TileKind.Open, 0, hasPillar, hasAnomaly);
         }
 
-        /// <summary>Build the whole chunk under one root placed at <paramref name="origin"/>.</summary>
+        /// <summary>True if any cell of tile (tileX, tileZ)'s 2×2 block is a Pit.</summary>
+        private static bool TileHasPit(GridCell[] cells, int tileX, int tileZ)
+        {
+            int cx = tileX * 2;
+            int cz = tileZ * 2;
+            return cells[cz * Size + cx].Kind == GridCellType.Pit
+                || cells[cz * Size + cx + 1].Kind == GridCellType.Pit
+                || cells[(cz + 1) * Size + cx].Kind == GridCellType.Pit
+                || cells[(cz + 1) * Size + cx + 1].Kind == GridCellType.Pit;
+        }
+
+        /// <summary>
+        /// Build the whole chunk under one root placed at <paramref name="origin"/>.
+        /// <paramref name="layerAbove"/> (optional): cells of the same chunk one
+        /// layer up. A Pit up there is a real vertical transition whose mouth is
+        /// this tile's ceiling plane — skip the ceiling panel so the shaft
+        /// connects. Void-only Hollow tiles above do NOT open the ceiling: they
+        /// are not transitions and the cell below them is not guaranteed walkable.
+        /// </summary>
         public static GameObject Build(GridCell[] cells, GridPrefabSet prefabs,
-            Vector3 origin, string name)
+            Vector3 origin, string name, GridCell[] layerAbove = null)
         {
             var root = new GameObject(name);
             root.transform.position = origin;
@@ -199,6 +217,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 for (int tx = 0; tx < Tiles; tx++)
                 {
                     var tile = grid[tz * Tiles + tx];
+                    bool pitAbove = layerAbove != null && TileHasPit(layerAbove, tx, tz);
                     switch (tile.Kind)
                     {
                         case TileKind.Solid:
@@ -207,14 +226,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
                         case TileKind.Open:
                             PlaceFloor(prefabs, root.transform, tx, tz);
-                            PlaceCeiling(prefabs, root.transform, tx, tz);
+                            if (!pitAbove) PlaceCeiling(prefabs, root.transform, tx, tz);
                             if (tile.HasPillar) PlacePillar(prefabs, root.transform, tx, tz);
                             if (tile.HasAnomaly) PlaceAnomalyMarker(root.transform, tx, tz);
                             break;
 
                         case TileKind.Border:
                             PlaceFloor(prefabs, root.transform, tx, tz);
-                            PlaceCeiling(prefabs, root.transform, tx, tz);
+                            if (!pitAbove) PlaceCeiling(prefabs, root.transform, tx, tz);
                             PlaceWalls(prefabs, root.transform, tile.WallEdges, tx, tz);
                             if (tile.HasAnomaly) PlaceAnomalyMarker(root.transform, tx, tz);
                             break;

@@ -33,36 +33,44 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             int built = 0;
             int missing = 0;
 
-            for (int layer = 0; layer < layerCount; layer++)
+            for (int cz = -chunkRadius; cz <= chunkRadius; cz++)
             {
-                if (onlyLayer >= 0 && layer != onlyLayer)
-                    continue;
-
-                for (int cz = -chunkRadius; cz <= chunkRadius; cz++)
+                for (int cx = -chunkRadius; cx <= chunkRadius; cx++)
                 {
-                    for (int cx = -chunkRadius; cx <= chunkRadius; cx++)
+                    // Load every layer of this chunk up front: layer N's build
+                    // needs layer N+1's cells to open ceilings under Hollow
+                    // tiles (vertical shaft connection), even when onlyLayer
+                    // filters what gets built.
+                    var layers = new GridCell[layerCount][];
+                    for (int layer = 0; layer < layerCount; layer++)
                     {
                         string path = Path.Combine(dir,
                             $"seed{seed}_layer{layer}_chunk{cx}_{cz}.bytes");
-                        if (!File.Exists(path))
+                        if (File.Exists(path))
+                            layers[layer] = GridChunkData.FromBytes(File.ReadAllBytes(path));
+                    }
+
+                    for (int layer = 0; layer < layerCount; layer++)
+                    {
+                        if (onlyLayer >= 0 && layer != onlyLayer)
+                            continue;
+                        if (layers[layer] == null)
                         {
                             missing++;
                             continue;
                         }
 
-                        var cells = GridChunkData.FromBytes(File.ReadAllBytes(path));
                         float side = GridConstants.ChunkCells * GridConstants.CellSize;
-                        // Stack layers LayerHeight (15 m) apart. Rooms are a fixed
-                        // 4 m tall (ADR-001 tile system), well under the 15 m
-                        // pitch, so layers never overlap in Y — the historical
-                        // overlap was the old variable ceiling height (up to
-                        // 6 units × 2.5 m = 15 m) reaching the layer above.
+                        // Stack layers LayerHeight (4 m, ADR-007) apart, flush
+                        // with the fixed 4 m room height: layer N's ceiling
+                        // plane IS layer N+1's floor plane.
                         var origin = new Vector3(
                             cx * side,
                             layer * GridConstants.LayerHeight,
                             cz * side);
-                        var go = GridChunkBuilder.Build(cells, prefabs, origin,
-                            $"GridChunk_L{layer}_{cx}_{cz}");
+                        var layerAbove = layer + 1 < layerCount ? layers[layer + 1] : null;
+                        var go = GridChunkBuilder.Build(layers[layer], prefabs, origin,
+                            $"GridChunk_L{layer}_{cx}_{cz}", layerAbove);
                         go.transform.SetParent(transform, true);
                         built++;
                     }
