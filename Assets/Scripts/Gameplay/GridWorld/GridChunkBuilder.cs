@@ -145,7 +145,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static void BuildWalls(GridCell[] cells, GridPrefabSet prefabs, Transform parent)
         {
             int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
-            List<WallRect> rects = WallGreedyMesher.GreedyRects(heights, Size);
+            byte[] insets = WallGreedyMesher.ComputeWallInsets(cells, Size);
+            List<WallRect> rects = WallGreedyMesher.GreedyRects(heights, insets, Size);
             if (rects.Count == 0)
                 return;
 
