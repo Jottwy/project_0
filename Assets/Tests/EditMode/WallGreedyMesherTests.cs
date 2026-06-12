@@ -170,9 +170,9 @@ namespace BackroomsSurvival.Tests
 
             int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
 
-            Assert.AreEqual(5, heights[5 * Size + 5], "wall between h=2 and h=5 rooms must reach 5");
+            Assert.AreEqual(2, heights[5 * Size + 5], "every wall cell is a fixed 2 units");
             Assert.AreEqual(2, heights[5 * Size + 3], "wall touching only h=2 corridor must reach 2");
-            Assert.AreEqual(5, heights[0],             "interior wall inherits chunk max (5)");
+            Assert.AreEqual(2, heights[0],             "interior wall is also a fixed 2 units");
             Assert.AreEqual(0, heights[5 * Size + 4],  "walkable cells must not get a wall height");
         }
 

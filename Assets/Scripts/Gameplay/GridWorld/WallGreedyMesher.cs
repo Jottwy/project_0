@@ -28,55 +28,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public const byte InsetNorth = 8;  // +z
 
         /// <summary>
-        /// Render height (in 2.5 m units) for every Wall cell of a chunk:
-        /// the max ceiling of adjacent walkable cells, so walls always reach
-        /// the ceiling of the tallest space they bound. Interior solid walls
-        /// (no walkable neighbour) inherit the chunk's max ceiling so no gap
-        /// is visible over a wall from a tall room. Non-wall cells get 0.
-        /// Index layout matches Rust: cells[z * size + x].
+        /// Render height (in ceiling units) for every Wall cell of a chunk:
+        /// a fixed 2 units (4 m with CellHeight), ignoring Rust ceiling data.
+        /// Non-wall cells get 0.
         /// </summary>
         public static int[] ComputeWallHeights(GridCell[] cells, int size)
         {
             var heights = new int[cells.Length];
-            int chunkMin = int.MaxValue;
-
             for (int i = 0; i < cells.Length; i++)
-            {
-                if (cells[i].IsWalkable && cells[i].ceilingHeight > 0
-                    && cells[i].ceilingHeight < chunkMin)
-                    chunkMin = cells[i].ceilingHeight;
-            }
-            if (chunkMin == int.MaxValue) chunkMin = 2;
-
-            for (int z = 0; z < size; z++)
-            {
-                for (int x = 0; x < size; x++)
-                {
-                    int i = z * size + x;
-                    if (cells[i].Kind != GridCellType.Wall)
-                        continue;
-
-                    int h = 0;
-                    h = MaxWalkableCeiling(cells, size, x - 1, z, h);
-                    h = MaxWalkableCeiling(cells, size, x + 1, z, h);
-                    h = MaxWalkableCeiling(cells, size, x, z - 1, h);
-                    h = MaxWalkableCeiling(cells, size, x, z + 1, h);
-
-                    heights[i] = h > 0 ? Mathf.Max(h, 2) : chunkMin;
-                }
-            }
-
+                heights[i] = cells[i].Kind == GridCellType.Wall ? 2 : 0;
             return heights;
-        }
-
-        private static int MaxWalkableCeiling(GridCell[] cells, int size, int x, int z, int current)
-        {
-            if (x < 0 || z < 0 || x >= size || z >= size)
-                return current;
-            var c = cells[z * size + x];
-            if (c.IsWalkable && c.ceilingHeight > current)
-                return c.ceilingHeight;
-            return current;
         }
 
         /// <summary>
