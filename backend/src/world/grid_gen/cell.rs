@@ -6,12 +6,14 @@ pub const CELL_SIZE_M: f32 = 2.5;
 /// Cells per side in one chunk (20 × 20 = 400 cells = 50 m per side).
 pub const CHUNK_CELLS: usize = 20;
 
-/// Vertical separation between adjacent macro layers (6 × CELL_SIZE_M).
-/// Every ceiling_height value must stay within this bound so no cell
-/// overflows into the layer above.
-pub const LAYER_HEIGHT_M: f32 = 15.0;
+/// Vertical separation between adjacent macro layers, matching the fixed Unity
+/// room height (ADR-007). Decoupled from ceiling_height: Unity ignores
+/// ceiling_height and renders a uniform room height (ADR-001), so layers stack
+/// flush at this pitch. Mirrored by GridConstants.LayerHeight in C#.
+pub const LAYER_HEIGHT_M: f32 = 4.0;
 
-/// Hard ceiling on ceiling_height field (6 units × 2.5 m = 15 m = LAYER_HEIGHT_M).
+/// Hard ceiling on ceiling_height field (6 units × 2.5 m = 15 m). Part of the
+/// IPC contract; no longer tied to LAYER_HEIGHT_M (decoupled in ADR-007).
 pub const MAX_CEILING_UNITS: u8 = 6;
 
 /// Cell type discriminant.
@@ -134,12 +136,10 @@ mod tests {
         assert_eq!(height_units(10.0), 4);
         assert_eq!(height_units(15.0), 6);
 
-        // LAYER_HEIGHT_M == MAX_CEILING_UNITS × CELL_SIZE_M
-        assert_eq!(
-            LAYER_HEIGHT_M,
-            MAX_CEILING_UNITS as f32 * CELL_SIZE_M,
-            "LAYER_HEIGHT_M debe ser exactamente MAX_CEILING_UNITS pasos de CELL_SIZE_M"
-        );
+        // ADR-007: LAYER_HEIGHT_M is now the fixed Unity room pitch (4 m),
+        // decoupled from MAX_CEILING_UNITS × CELL_SIZE_M. Mirror of the C#
+        // GridConstants.LayerHeight assertion.
+        assert_eq!(LAYER_HEIGHT_M, 4.0);
 
         // Cell::kind() es inverso de CellType as u8
         assert_eq!(Cell::new(CellType::Corridor, 2, 0).kind(), CellType::Corridor);

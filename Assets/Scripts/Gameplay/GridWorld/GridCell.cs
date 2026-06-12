@@ -83,8 +83,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Cells per side in one chunk (CHUNK_CELLS): 20 × 20 = 50 m per side.</summary>
         public const int ChunkCells = 20;
 
-        /// <summary>Vertical separation between macro layers in metres (LAYER_HEIGHT_M).</summary>
-        public const float LayerHeight = 15f;
+        /// <summary>Vertical separation between macro layers in metres (LAYER_HEIGHT_M). ADR-007: 4 m, flush with the fixed room height.</summary>
+        public const float LayerHeight = 4f;
 
         /// <summary>Hard ceiling on ceilingHeight (MAX_CEILING_UNITS): 6 × 2.5 m = 15 m.</summary>
         public const byte MaxCeilingUnits = 6;

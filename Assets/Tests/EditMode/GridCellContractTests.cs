@@ -30,11 +30,10 @@ namespace BackroomsSurvival.Tests
         {
             Assert.AreEqual(2.5f, GridConstants.CellSize);
             Assert.AreEqual(20, GridConstants.ChunkCells);
-            Assert.AreEqual(15f, GridConstants.LayerHeight);
+            Assert.AreEqual(4f, GridConstants.LayerHeight);
             Assert.AreEqual(6, GridConstants.MaxCeilingUnits);
-            // LAYER_HEIGHT_M == MAX_CEILING_UNITS × CELL_SIZE_M (same invariant as Rust).
-            Assert.AreEqual(GridConstants.LayerHeight,
-                GridConstants.MaxCeilingUnits * GridConstants.CellSize);
+            // ADR-007: LayerHeight (4 m) is decoupled from ceiling_height; the old
+            // MAX_CEILING_UNITS × CELL_SIZE_M invariant no longer holds.
         }
 
         [Test]
