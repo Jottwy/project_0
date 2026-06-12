@@ -81,12 +81,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                             break;
 
                         case GridCellType.Pillar:
-                            PlaceFloorCeiling(prefabs, root.transform, x, z, cell.ceilingHeight);
-                            PlacePillar(prefabs, root.transform, x, z, cell.ceilingHeight);
+                            // The column stores ceiling_height 0 (solid cell); roof it
+                            // at the surrounding room height so the open-zone ceiling
+                            // stays continuous over every pillar.
+                            byte pillarCeil = NeighbourCeiling(cells, x, z);
+                            PlaceFloorCeiling(prefabs, root.transform, x, z, pillarCeil);
+                            PlacePillar(prefabs, root.transform, x, z, pillarCeil);
                             break;
 
                         case GridCellType.Stair:
-                            // Stair body replaces the floor; open to the layer above.
+                            // Stair body replaces the floor; roof the cell at room
+                            // height so the ceiling closes over it (the proper
+                            // hole-to-layer-above is post-Fase-3 art work).
+                            PlaceCeilingOnly(prefabs, root.transform, x, z,
+                                NeighbourCeiling(cells, x, z));
                             Instantiate(prefabs.stair, root.transform, CellCenter(x, z), 0f);
                             break;
 
@@ -130,6 +138,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static Vector3 CellCenter(int x, int z) =>
             new Vector3((x + 0.5f) * Cs, 0f, (z + 0.5f) * Cs);
+
+        /// <summary>
+        /// Ceiling height (units) of the room around an unroofed cell: the tallest
+        /// walkable orthogonal neighbour, so a column or stair is roofed by the same
+        /// ceiling as the space it stands in. Falls back to 2 (5 m) if isolated.
+        /// Mirrors WallGreedyMesher.ComputeWallHeights so walls and these inner
+        /// cells agree on the ceiling they meet.
+        /// </summary>
+        private static byte NeighbourCeiling(GridCell[] cells, int x, int z)
+        {
+            int h = 0;
+            foreach (var (dx, dz, _) in Directions)
+            {
+                int nx = x + dx;
+                int nz = z + dz;
+                if (nx < 0 || nz < 0 || nx >= Size || nz >= Size)
+                    continue;
+                var n = cells[nz * Size + nx];
+                if (n.IsWalkable && n.ceilingHeight > h)
+                    h = n.ceilingHeight;
+            }
+            return (byte)Mathf.Max(h, 2);
+        }
 
         private static GameObject Instantiate(GameObject prefab, Transform parent,
             Vector3 localPos, float yaw)
