@@ -17,6 +17,21 @@ Acción: sesión de auditoría con modelo de máximo nivel ANTES de escribir có
 ## ADR-004 — Formato de chunk y seams procedurales
 Estado: pendiente. Decidir: tamaño de chunk, determinismo de seed, contrato de bordes entre chunks/regiones, versionado del formato serializado.
 
+## ADR-005 — IPC cliente↔servidor (grid_gen → Unity)
+Estado: propuesta, pendiente de validar.
+Contexto: el render de tiles ya existe; falta el transporte real Rust→Unity (hoy se cargan chunks binarios desde StreamingAssets vía GridTestWorld, sin IPC).
+Decidir: protocolo y framing de mensajes, tick rate de envío de chunks/estado, y reparto de autoridad (qué valida el backend vs. el cliente). Reemplaza el camino StreamingAssets de Fase 3.
+
+## ADR-006 — Colisión Rust de celdas Wall (slab fino)
+Estado: propuesta, pendiente de validar.
+Contexto: el render de muros es un slab fino de 0.2 m (WallThickness) en el borde/centro del tile; la colisión Rust sigue tratando la celda Wall como sólida completa.
+Decidir: modelar la colisión de celdas Wall como slab fino de 0.2 m para casar con el render. Hoy no hay desfase porque el render de tiles no añade colliders; bloquea Fase 4 (colisión).
+
+## ADR-007 — Parámetros de generación configurables
+Estado: propuesta, pendiente de validar.
+Contexto: grid_gen tiene perfiles por capa hardcodeados (densidad de muros, zonas, voids) y LayerHeight fijo a 15 m.
+Decidir: exponer densidad de muros por capa, % de conexiones entre capas y LayerHeight revisable. REQUIERE decidir evolución incremental vs. reescritura del backend Rust (grid_gen) antes de tocar código.
+
 (plantilla)
 ## ADR-NNN — Título
 Estado: propuesta
