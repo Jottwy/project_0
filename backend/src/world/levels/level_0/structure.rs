@@ -1,5 +1,9 @@
 use crate::utils::ChunkPos;
 use crate::world::chunk::ChunkLayer;
+use crate::world::chunk::{
+    ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER, ZONE_HUMID, ZONE_MANILA, ZONE_NORMAL,
+    ZONE_OPEN_HALL, ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED, ZONE_SAFE, ZONE_STORAGE,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StructureType {
@@ -85,5 +89,48 @@ pub struct StructureV0 {
 impl StructureV0 {
     pub fn chunk_layer(&self, index: usize) -> ChunkLayer {
         self.layers.get(index).copied().unwrap_or(0)
+    }
+}
+
+// ─── MIG-5c: structure helpers (moved from generator.rs) ───
+
+pub(crate) fn structure_bounds(chunks: &[ChunkPos]) -> (i32, i32, i32, i32) {
+    let mut min_x = chunks[0].0;
+    let mut min_z = chunks[0].1;
+    let mut max_x = chunks[0].0;
+    let mut max_z = chunks[0].1;
+    for &(x, z) in chunks {
+        min_x = min_x.min(x);
+        min_z = min_z.min(z);
+        max_x = max_x.max(x);
+        max_z = max_z.max(z);
+    }
+    (min_x, min_z, max_x, max_z)
+}
+
+pub(crate) fn structure_zone_kind(structure_type: StructureType, template_id: u8) -> u8 {
+    match structure_type {
+        StructureType::StorageRoom => ZONE_STORAGE,
+        StructureType::SafeRoom | StructureType::StarterCluster => ZONE_SAFE,
+        StructureType::DangerRoom => ZONE_DANGER,
+        StructureType::OpenHall => ZONE_OPEN_HALL,
+        StructureType::PillarRoom | StructureType::PillarHall => ZONE_PILLAR_HALL,
+        StructureType::HumidZone => ZONE_HUMID,
+        StructureType::BlackoutZone => ZONE_BLACKOUT,
+        StructureType::ManilaRoom => ZONE_MANILA,
+        StructureType::CleaningArea => ZONE_CLEANING,
+        StructureType::RedRoom => ZONE_RED,
+        StructureType::PitRoom => ZONE_PIT,
+        StructureType::StackedCorridor => ZONE_NORMAL,
+        StructureType::LowerServiceBranch => ZONE_CLEANING,
+        StructureType::UpperOfficeBranch => ZONE_MANILA,
+        StructureType::AtriumVoidRoom => ZONE_OPEN_HALL,
+        StructureType::DeepPrecipicePlaceholder => ZONE_PIT,
+        StructureType::GiantPillarHall => ZONE_PILLAR_HALL,
+        StructureType::PoiLandmark => ZONE_OPEN_HALL,
+        StructureType::PoiAnomalyCluster => ZONE_NORMAL,
+        StructureType::PoiDangerPocket => ZONE_DANGER,
+        StructureType::PoiSafePocket => ZONE_MANILA,
+        _ => crate::world::architecture::layout_grammars::template_zone_kind(template_id),
     }
 }

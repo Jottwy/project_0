@@ -153,6 +153,9 @@ namespace BackroomsSurvival.Gameplay
 
         private Vector3 FilterMovementForCollision(Vector3 movement)
         {
+            // Phase 3.2E: god traversal bypasses all collision so walls are passable.
+            if (GodTraversalMode.IsEnabled)
+                return movement;
             if (!enableClientCollision || !_hasSpawned || movement.sqrMagnitude < 0.0001f)
                 return movement;
 

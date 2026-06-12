@@ -59,7 +59,7 @@ namespace BackroomsSurvival.Gameplay
             var state = ipc.LatestState;
             if (state == null || state.localPlayer == null) return;
 
-            if (enableDevFreezeSurvival)
+            if (enableDevFreezeSurvival || GodTraversalMode.IsEnabled)
             {
                 ClearEffects();
                 return;

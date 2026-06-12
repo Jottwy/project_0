@@ -1,0 +1,16 @@
+pub const CELL_WALKABLE: u16 = 1 << 0;
+pub const CELL_WALL: u16 = 1 << 1;
+pub const CELL_PILLAR: u16 = 1 << 2;
+pub const CELL_BLOCKED: u16 = 1 << 3;
+pub const CELL_HAZARD: u16 = 1 << 4;
+pub const CELL_RAMP: u16 = 1 << 5;
+pub const CELL_PIT: u16 = 1 << 6;
+pub const CELL_SHALLOW_FLUID: u16 = 1 << 7;
+pub const CELL_SAFE: u16 = 1 << 8;
+pub const CELL_ANOMALY: u16 = 1 << 9;
+pub const CELL_DOOR: u16 = 1 << 10;
+pub const CELL_ARCH: u16 = 1 << 11;
+pub const CELL_LOW_WALL: u16 = 1 << 12;
+pub const CELL_HALF_WALL: u16 = 1 << 13;
+pub const CELL_THIN_PARTITION: u16 = 1 << 14;
+pub const CELL_FALSE_DOOR: u16 = 1 << 15;

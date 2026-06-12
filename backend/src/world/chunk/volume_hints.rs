@@ -1,0 +1,10 @@
+pub const VOLUME_VIS_ATRIUM_WALLS: u32 = 1 << 0;
+pub const VOLUME_VIS_LOWER_ROOM_VISIBLE: u32 = 1 << 1;
+pub const VOLUME_VIS_SHAFT_WALLS: u32 = 1 << 2;
+pub const VOLUME_VIS_RAILINGS: u32 = 1 << 3;
+pub const VOLUME_VIS_RIM_TRIMS: u32 = 1 << 4;
+pub const VOLUME_VIS_PILLAR_SPANS: u32 = 1 << 5;
+pub const VOLUME_VIS_CEILING_HINTS: u32 = 1 << 6;
+pub const VOLUME_VIS_UNDERFLOOR_HINTS: u32 = 1 << 7;
+pub const VOLUME_VIS_STACKED_ALIGNMENT: u32 = 1 << 8;
+pub const VOLUME_VIS_DEPTH_CUES: u32 = 1 << 9;

@@ -14,6 +14,10 @@ pub mod server;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::world::chunk::InterLayerVolumeV0;
+use crate::world::graph::verticality::VerticalDebugMarkerV0;
+use crate::world::volumetric_grid::VolumetricGridViewV0;
+
 pub const DEFAULT_IPC_ADDR: &str = "127.0.0.1:7777";
 
 pub fn resolve_ipc_addr() -> String {
@@ -91,6 +95,11 @@ pub struct WorldState {
     pub visible_chunks: Vec<ChunkView>,
     pub visible_entities: Vec<EntityView>,
     pub visible_items: Vec<ItemView>,
+    /// Debug placeholders for the parallel verticality layer (Phase 6.6).
+    /// Optional and omitted when empty so the wire stays backward compatible.
+    /// Render-as-debug only: no collision, no traversal, no gameplay authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vertical_debug_markers: Vec<VerticalDebugMarkerV0>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +154,13 @@ pub struct ChunkView {
     pub light_profile: u8,
     pub anomaly_flags: u16,
     pub vertical_flags: u16,
+    #[serde(default)]
+    pub inter_layer_volumes: Vec<InterLayerVolumeV0>,
+    /// Backend-authored volumetric "Rubik grid" architecture (Volumetric V0).
+    /// Present only on the near-spawn showcase host chunk; omitted otherwise so
+    /// the wire stays backward compatible and unchanged for normal chunks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub volumetric_grid: Option<VolumetricGridViewV0>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -222,6 +238,7 @@ mod tests {
             visible_chunks: vec![],
             visible_entities: vec![],
             visible_items: vec![],
+            vertical_debug_markers: vec![],
         });
         let frame = encode(&msg).unwrap();
         // Strip the 4-byte length prefix before decoding the body.
@@ -278,6 +295,8 @@ mod tests {
                 light_profile: crate::world::chunk::LIGHT_NORMAL,
                 anomaly_flags: 0,
                 vertical_flags: 0,
+                inter_layer_volumes: vec![],
+                volumetric_grid: None,
             }],
             visible_entities: vec![EntityView {
                 id: 1,
@@ -293,6 +312,12 @@ mod tests {
                 position: [15.0, 0.0, 18.0],
                 quantity: 1,
             }],
+            vertical_debug_markers: vec![VerticalDebugMarkerV0 {
+                id: 9001,
+                kind: "stair".into(),
+                world_min: [30.0, 0.0, 30.0],
+                world_max: [50.0, 20.0, 50.0],
+            }],
         });
         let frame = encode(&msg).unwrap();
         let decoded: ServerMessage = decode(&frame[4..]).unwrap();
@@ -307,6 +332,9 @@ mod tests {
                 assert_eq!(ws.visible_entities[0].entity_type, "lurker");
                 assert_eq!(ws.visible_items.len(), 1);
                 assert_eq!(ws.visible_items[0].item_type, "metal");
+                assert_eq!(ws.vertical_debug_markers.len(), 1);
+                assert_eq!(ws.vertical_debug_markers[0].id, 9001);
+                assert_eq!(ws.vertical_debug_markers[0].kind, "stair");
             }
             _ => panic!("wrong variant"),
         }
@@ -329,5 +357,14 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    #[test]
+    fn inter_layer_volume_kind_encodes_as_string_for_unity() {
+        let body =
+            rmp_serde::to_vec_named(&crate::world::chunk::InterLayerVolumeKindV0::ServiceShaft)
+                .unwrap();
+        let decoded: serde_json::Value = rmp_serde::from_slice(&body).unwrap();
+        assert_eq!(decoded, serde_json::json!("SERVICE_SHAFT"));
     }
 }

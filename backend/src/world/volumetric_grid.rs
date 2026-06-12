@@ -25,13 +25,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::utils::{ChunkPos, CHUNK_SIZE};
 use crate::world::chunk::{
-    edge_is_full_wall, Chunk, ChunkLayer, ChunkLayoutV1, CELL_ANOMALY, CELL_BLOCKED, CELL_HAZARD,
-    CELL_PILLAR, CELL_PIT, CELL_SAFE, CELL_WALKABLE, EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL,
+    Chunk, ChunkLayer, ChunkLayoutV1, CELL_ANOMALY, CELL_BLOCKED, CELL_HAZARD, CELL_PILLAR,
+    CELL_PIT, CELL_SAFE, CELL_WALKABLE, EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL,
     FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP, FLOOR_PIT_PLACEHOLDER, LAYER_HEIGHT,
     LAYOUT_CELL_SIZE, LAYOUT_GRID_SIZE, V30A_CONNECTOR, ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER,
     ZONE_HUMID, ZONE_MANILA, ZONE_OPEN_HALL, ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED, ZONE_SAFE,
     ZONE_STORAGE,
 };
+use crate::world::collision::edge_is_full_wall;
 
 /// World seed that gets the guaranteed near-spawn volumetric showcase.
 pub const SHOWCASE_SEED: u64 = 7778;
@@ -960,6 +961,7 @@ impl VolumetricGridV0 {
             atrium_span: self.has_atrium_span(),
             layer_bands: Vec::new(),
             vertical_access: Vec::new(),
+            height_bands: Vec::new(),
         }
     }
 }
@@ -1255,7 +1257,7 @@ const V30D_RAMP_RARITY: u64 = 17;
 const V30D_BROKEN_RARITY: u64 = 19;
 
 const V30E_MACRO_SALT: u64 = 0x30e0_0000_0000_0001;
-const V30E_MACROSTRUCTURES_ENABLED: bool = false;
+const V30E_MACROSTRUCTURES_ENABLED: bool = true;
 const V30E_SAFE_RADIUS_CHUNKS: i32 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1268,26 +1270,87 @@ enum VerticalMacrostructureV0 {
     EndlessColumnVoid,
 }
 
-fn vertical_macrostructure_for(world_seed: u64, chunk: &Chunk) -> VerticalMacrostructureV0 {
+/// Macrostructure lookup by position only — does not require a `&Chunk`.
+/// Use this to query neighbour columns deterministically.
+fn macrostructure_for_pos(world_seed: u64, pos: ChunkPos) -> VerticalMacrostructureV0 {
     if !V30E_MACROSTRUCTURES_ENABLED {
         return VerticalMacrostructureV0::Normal;
     }
 
-    let dist = chunk_chebyshev_from_origin(chunk.pos);
+    let dist = chunk_chebyshev_from_origin(pos);
 
     if dist <= V30E_SAFE_RADIUS_CHUNKS {
         return VerticalMacrostructureV0::Normal;
     }
 
     if world_seed == SHOWCASE_SEED {
-        return match chunk.pos {
+        return match pos {
             (-4, 7) => VerticalMacrostructureV0::TallPillarHall,
             (6, -5) => VerticalMacrostructureV0::VoidGrateRoom,
             _ => VerticalMacrostructureV0::Normal,
         };
     }
 
-    VerticalMacrostructureV0::Normal
+    let h = column_hash(world_seed, pos, V30E_MACRO_SALT);
+    match h % 40 {
+        0 => VerticalMacrostructureV0::TallPillarHall,
+        1 => VerticalMacrostructureV0::VoidGrateRoom,
+        2 | 3 => VerticalMacrostructureV0::StackedAtrium,
+        4 => VerticalMacrostructureV0::ServiceShaftDeep,
+        5 => VerticalMacrostructureV0::EndlessColumnVoid,
+        _ => VerticalMacrostructureV0::Normal,
+    }
+}
+
+fn vertical_macrostructure_for(world_seed: u64, chunk: &Chunk) -> VerticalMacrostructureV0 {
+    macrostructure_for_pos(world_seed, chunk.pos)
+}
+
+fn macro_room_height(m: VerticalMacrostructureV0) -> f32 {
+    match m {
+        VerticalMacrostructureV0::TallPillarHall => 6.6,
+        _ => 3.3,
+    }
+}
+
+/// Compute the three-band height contract for the column at `pos`.
+pub(crate) fn compute_height_bands(world_seed: u64, pos: ChunkPos) -> [BandHeightSpec; 3] {
+    let own_m = macrostructure_for_pos(world_seed, pos);
+    let own_h = macro_room_height(own_m);
+
+    let neighbor_max_h = [
+        (pos.0 - 1, pos.1),
+        (pos.0 + 1, pos.1),
+        (pos.0, pos.1 - 1),
+        (pos.0, pos.1 + 1),
+    ]
+    .iter()
+    .map(|&n| macro_room_height(macrostructure_for_pos(world_seed, n)))
+    .fold(own_h, f32::max);
+
+    [
+        BandHeightSpec {
+            band_index: 0,
+            layer: -1,
+            room_height: 2.1,
+            total_height: LAYER_HEIGHT,
+            neighbor_max_room_height: 0.0,
+        },
+        BandHeightSpec {
+            band_index: 1,
+            layer: 0,
+            room_height: own_h,
+            total_height: LAYER_HEIGHT,
+            neighbor_max_room_height: neighbor_max_h,
+        },
+        BandHeightSpec {
+            band_index: 2,
+            layer: 1,
+            room_height: 2.5,
+            total_height: LAYER_HEIGHT,
+            neighbor_max_room_height: 0.0,
+        },
+    ]
 }
 
 fn chunk_chebyshev_from_origin(pos: ChunkPos) -> i32 {
@@ -2011,6 +2074,7 @@ pub fn level0_column_view(world_seed: u64, chunk: &Chunk) -> VolumetricGridViewV
     view.layer_bands = column.bands.iter().map(band_view).collect();
     view.vertical_access = column.vertical_access.iter().map(access_view).collect();
     view.faces.extend(layout_edge_faces(&chunk.layout));
+    view.height_bands = compute_height_bands(world_seed, chunk.pos).to_vec();
     view
 }
 
@@ -2332,6 +2396,7 @@ pub fn showcase_chunk_view(pos: ChunkPos) -> Option<VolumetricGridViewV0> {
         atrium_span: true,
         layer_bands: rubikgrid_layer_band_views(pos),
         vertical_access: rubikgrid_access_views(pos),
+        height_bands: Vec::new(),
     })
 }
 
@@ -2662,6 +2727,23 @@ pub struct VerticalAccessNodeViewV0 {
     pub explicit: bool,
 }
 
+/// Per-band height contract shipped to Unity so it can render each Y-band at
+/// the correct room height without hard-coding the 3.3 m fallback.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BandHeightSpec {
+    /// Zero-based index into the local Y axis (0 = lower, 1 = main, 2 = upper).
+    pub band_index: u8,
+    /// World macro layer this band occupies.
+    pub layer: i8,
+    /// Walkable room height in metres for this band.
+    pub room_height: f32,
+    /// Total reserved vertical slice height (always `LAYER_HEIGHT`).
+    pub total_height: f32,
+    /// Maximum room_height among the four cardinal neighbours' same band.
+    /// Zero for bands other than band_index 1 (not needed there).
+    pub neighbor_max_room_height: f32,
+}
+
 /// Backend-authored volumetric grid shipped to Unity for rendering. Attached to
 /// a single near-spawn host chunk; render-only (no movement/collision meaning).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2697,6 +2779,10 @@ pub struct VolumetricGridViewV0 {
     pub layer_bands: Vec<LayerBandViewV0>,
     #[serde(default)]
     pub vertical_access: Vec<VerticalAccessNodeViewV0>,
+    /// Per-band height contract. Populated for Level 0 columns; empty otherwise.
+    /// Unity reads `height_bands[1].room_height` to drive wall/ceiling scale.
+    #[serde(default)]
+    pub height_bands: Vec<BandHeightSpec>,
 }
 
 /// Phase 3.0C-FIX — once-per-process audit of the Level 0 → volumetric adapter.
@@ -2911,28 +2997,26 @@ mod tests {
     }
 
     #[test]
-    fn v30e_disabled_selects_only_normal_macrostructures() {
-        let seed = SHOWCASE_SEED;
+    fn v30e_safe_radius_always_normal_far_chunks_may_have_macrostructure() {
+        // Chunks within V30E_SAFE_RADIUS_CHUNKS of the origin must always be
+        // Normal — the starter zone must never contain double/triple-height
+        // disruptions that could disorient the player at spawn.
+        let seed = 42u64;
         let chunks = crate::world::generator::generate_initial_structure_chunks(seed);
+        let layer0: Vec<_> = chunks.iter().filter(|(_, c)| c.layer == 0).collect();
 
-        let mut checked = 0usize;
+        assert!(!layer0.is_empty(), "expected level-0 chunks");
 
-        for (_, chunk) in chunks.iter().filter(|(_, c)| c.layer == 0) {
-            let macrostructure = vertical_macrostructure_for(seed, chunk);
-
-            assert_eq!(
-                macrostructure,
-                VerticalMacrostructureV0::Normal,
-                "V30E kill switch is disabled, so every chunk must stay Normal"
-            );
-
-            checked += 1;
+        for (_, chunk) in &layer0 {
+            if chunk_chebyshev_from_origin(chunk.pos) <= V30E_SAFE_RADIUS_CHUNKS {
+                assert_eq!(
+                    vertical_macrostructure_for(seed, chunk),
+                    VerticalMacrostructureV0::Normal,
+                    "spawn-adjacent chunk {:?} must stay Normal",
+                    chunk.pos
+                );
+            }
         }
-
-        assert!(
-            checked > 0,
-            "expected at least one level 0 chunk to validate"
-        );
     }
 
     #[test]
@@ -3474,5 +3558,137 @@ mod tests {
         ];
         assert_eq!(access.len(), 12);
         assert!(access.iter().all(|a| !a.as_str().is_empty()));
+    }
+
+    // ─── Phase 6 V0: world-authority tests ───
+
+    #[test]
+    fn all_layer0_chunks_get_volumetric_view() {
+        // Every layer-0 chunk must now produce a volumetric grid — the
+        // LEVEL0_ADAPTER path covers all seeds, not only the showcase.
+        let seed = 42u64;
+        let chunks = crate::world::generator::generate_initial_structure_chunks(seed);
+        let layer0: Vec<_> = chunks.iter().filter(|(_, c)| c.layer == 0).collect();
+        assert!(!layer0.is_empty(), "expected level-0 chunks");
+        for (_, chunk) in &layer0 {
+            let view = unified_column_view(seed, chunk);
+            assert!(
+                view.is_some(),
+                "chunk {:?} should have a volumetric view",
+                chunk.pos
+            );
+        }
+    }
+
+    #[test]
+    fn level0_columns_have_three_populated_bands() {
+        // Each column must expose 3 layer bands AND have at least one open cell
+        // in the main band (Y=1), so the world isn't a solid mass.
+        let seed = 0u64;
+        let chunks = crate::world::generator::generate_initial_structure_chunks(seed);
+        for (_, chunk) in chunks.iter().filter(|(_, c)| c.layer == 0) {
+            let col = build_level0_column(seed, chunk);
+            assert_eq!(
+                col.bands.len(),
+                3,
+                "chunk {:?} must have 3 bands",
+                chunk.pos
+            );
+            assert_eq!(
+                col.grid.ny, 3,
+                "chunk {:?} grid must have 3 Y layers",
+                chunk.pos
+            );
+            let main_open = (0..col.grid.nx)
+                .flat_map(|x| (0..col.grid.nz).map(move |z| (x, z)))
+                .any(|(x, z)| col.grid.cell(x, 1, z).is_open());
+            assert!(
+                main_open,
+                "chunk {:?} main band must have open cells",
+                chunk.pos
+            );
+        }
+    }
+
+    #[test]
+    fn macrostructures_appear_beyond_safe_radius_for_any_seed() {
+        // With V30E enabled, at least one chunk beyond the safe radius in a
+        // 21×21 sweep must receive a non-Normal macrostructure.
+        let seed = 12345u64;
+        let mut found = false;
+        'outer: for cx in -10i32..=10 {
+            for cz in -10i32..=10 {
+                if chunk_chebyshev_from_origin((cx, cz)) <= V30E_SAFE_RADIUS_CHUNKS {
+                    continue;
+                }
+                let chunk = crate::world::generator::generate_chunk(seed, (cx, cz));
+                if vertical_macrostructure_for(seed, &chunk) != VerticalMacrostructureV0::Normal {
+                    found = true;
+                    break 'outer;
+                }
+            }
+        }
+        assert!(
+            found,
+            "no macrostructure found in 21×21 sweep — V30E hash dispatch broken"
+        );
+    }
+
+    #[test]
+    fn level0_column_view_is_deterministic_across_calls() {
+        // Identical inputs must always produce identical volumetric views.
+        let seed = 7u64;
+        let chunk = crate::world::generator::generate_chunk(seed, (4, -2));
+        let a = level0_column_view(seed, &chunk);
+        let b = level0_column_view(seed, &chunk);
+        assert_eq!(a.cells, b.cells, "cells must be deterministic");
+        assert_eq!(
+            a.faces.len(),
+            b.faces.len(),
+            "face count must be deterministic"
+        );
+        assert_eq!(
+            a.layer_bands, b.layer_bands,
+            "band profiles must be deterministic"
+        );
+    }
+
+    #[test]
+    fn height_bands_populated_for_level0_columns() {
+        let seed = 42u64;
+        let chunk = crate::world::generator::generate_chunk(seed, (0, 0));
+        let view = level0_column_view(seed, &chunk);
+        assert_eq!(
+            view.height_bands.len(),
+            3,
+            "level0 columns must ship 3 BandHeightSpec entries"
+        );
+        assert_eq!(view.height_bands[0].band_index, 0);
+        assert_eq!(view.height_bands[1].band_index, 1);
+        assert_eq!(view.height_bands[2].band_index, 2);
+    }
+
+    #[test]
+    fn tall_pillar_hall_main_band_height_is_6_6() {
+        // The showcase seed places TallPillarHall at (-4, 7).
+        let seed = SHOWCASE_SEED;
+        let bands = compute_height_bands(seed, (-4, 7));
+        assert!(
+            (bands[1].room_height - 6.6).abs() < 1e-4,
+            "TallPillarHall main band must be 6.6 m, got {}",
+            bands[1].room_height
+        );
+    }
+
+    #[test]
+    fn normal_column_main_band_height_is_backrooms_scale() {
+        // Spawn-adjacent chunks are always Normal (safe radius).
+        let seed = 0u64;
+        let bands = compute_height_bands(seed, (0, 0));
+        assert!(
+            (bands[1].room_height - 3.3).abs() < 1e-4,
+            "Normal main band must be 3.3 m, got {}",
+            bands[1].room_height
+        );
     }
 }

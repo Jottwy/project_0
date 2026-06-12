@@ -64,6 +64,230 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    public class InterLayerVolumeMsg
+    {
+        public uint volumeId;
+        public string kind = "";
+        public int[] baseChunk = new int[2];
+        public int[] involvedLayers = new int[0];
+        public int[] footprintCellMin = new int[2];
+        public int[] footprintCellMax = new int[2];
+        public string safetyType = "";
+        public string futureAudioHint = "";
+        public int visualFlags;
+        public string[] visualHints = new string[0];
+
+        public static InterLayerVolumeMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var v = new InterLayerVolumeMsg();
+            if (d == null) return v;
+            v.volumeId = (uint)IPCParse.L(d, "volume_id");
+            v.kind = IPCParse.S(d, "kind");
+            v.baseChunk = IPCParse.IntArray2(IPCParse.Get(d, "base_chunk"));
+            v.involvedLayers = IPCParse.IntArray(IPCParse.Get(d, "involved_layers"));
+            v.footprintCellMin = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_min"));
+            v.footprintCellMax = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_max"));
+            v.safetyType = IPCParse.S(d, "safety_type");
+            v.futureAudioHint = IPCParse.S(d, "future_audio_hint");
+            v.visualFlags = (int)IPCParse.L(d, "visual_flags");
+            v.visualHints = IPCParse.StringArray(IPCParse.Get(d, "visual_hints"));
+            return v;
+        }
+    }
+
+    /// <summary>
+    /// One renderable face of the backend-authored volumetric grid.
+    /// dir: 0=N(+Z) 1=S(-Z) 2=E(+X) 3=W(-X) 4=Up(+Y) 5=Down(-Y).
+    /// kind: 0=Wall 1=ShaftWall 2=Floor 3=Ceiling 4=Railing 5=SupportColumn.
+    /// </summary>
+    public class VolumetricFaceMsg
+    {
+        public int x, y, z;
+        public byte dir;
+        public byte kind;
+
+        public static VolumetricFaceMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var f = new VolumetricFaceMsg();
+            if (d == null) return f;
+            var cell = IPCParse.IntArray(IPCParse.Get(d, "cell"));
+            if (cell.Length >= 3) { f.x = cell[0]; f.y = cell[1]; f.z = cell[2]; }
+            f.dir = (byte)IPCParse.L(d, "dir");
+            f.kind = (byte)IPCParse.L(d, "kind");
+            return f;
+        }
+    }
+
+    public class LayerBandMsg
+    {
+        public uint bandId;
+        public int layer;
+        public string profile = "";
+        public int profileCode;
+        public bool accessible;
+        public string dangerProfile = "";
+        public string resourceProfile = "";
+        public string anomalyProfile = "";
+
+        public static LayerBandMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var b = new LayerBandMsg();
+            if (d == null) return b;
+            b.bandId = (uint)IPCParse.L(d, "band_id");
+            b.layer = (int)IPCParse.L(d, "layer");
+            b.profile = IPCParse.S(d, "profile");
+            b.profileCode = (int)IPCParse.L(d, "profile_code");
+            b.accessible = IPCParse.B(d, "accessible");
+            b.dangerProfile = IPCParse.S(d, "danger_profile");
+            b.resourceProfile = IPCParse.S(d, "resource_profile");
+            b.anomalyProfile = IPCParse.S(d, "anomaly_profile");
+            return b;
+        }
+    }
+
+    public class VerticalAccessNodeMsg
+    {
+        public uint accessId;
+        public string accessType = "";
+        public int accessTypeCode;
+        public int fromLayer;
+        public int toLayer;
+        public int[] footprintCellMin = new int[2];
+        public int[] footprintCellMax = new int[2];
+        public bool explicitAccess;
+
+        public static VerticalAccessNodeMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var n = new VerticalAccessNodeMsg();
+            if (d == null) return n;
+            n.accessId = (uint)IPCParse.L(d, "access_id");
+            n.accessType = IPCParse.S(d, "access_type");
+            n.accessTypeCode = (int)IPCParse.L(d, "access_type_code");
+            n.fromLayer = (int)IPCParse.L(d, "from_layer");
+            n.toLayer = (int)IPCParse.L(d, "to_layer");
+            n.footprintCellMin = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_min"));
+            n.footprintCellMax = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_max"));
+            n.explicitAccess = IPCParse.B(d, "explicit");
+            return n;
+        }
+    }
+
+    public class BandHeightSpecMsg
+    {
+        public int bandIndex;
+        public int layer;
+        public float roomHeight;
+        public float totalHeight;
+        public float neighborMaxRoomHeight;
+
+        public static BandHeightSpecMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var b = new BandHeightSpecMsg();
+            if (d == null) return b;
+            b.bandIndex = (int)IPCParse.L(d, "band_index");
+            b.layer = (int)IPCParse.L(d, "layer");
+            b.roomHeight = IPCParse.F(d, "room_height");
+            b.totalHeight = IPCParse.F(d, "total_height");
+            b.neighborMaxRoomHeight = IPCParse.F(d, "neighbor_max_room_height");
+            return b;
+        }
+    }
+
+    /// <summary>
+    /// Backend-authored volumetric "Rubik grid" architecture (Volumetric V0),
+    /// attached render-only to the near-spawn host chunk. The renderer derives
+    /// floors/ceilings/walls/railings/shaft-walls/support columns from faces;
+    /// occupancy codes mirror backend CellOccupancy.
+    /// </summary>
+    public class VolumetricGridMsg
+    {
+        public const byte OccSolid = 0;
+        public const byte OccRoom = 1;
+        public const byte OccCorridor = 2;
+        public const byte OccAtriumVoid = 3;
+        public const byte OccShaft = 4;
+        public const byte OccServiceSpace = 5;
+        public const byte OccSupportCore = 6;
+        public const byte OccBlocked = 7;
+        public const byte OccSealedRoom = 8;
+        public const byte OccFalseSpace = 9;
+        public const byte OccCeilingVoid = 10;
+        public const byte OccUnderfloorService = 11;
+        public const byte OccTransition = 12;
+        public const byte OccAnomaly = 13;
+        public const byte OccDangerZone = 14;
+        public const byte OccSafeNode = 15;
+
+        public const byte DirNorth = 0, DirSouth = 1, DirEast = 2, DirWest = 3, DirUp = 4, DirDown = 5;
+        public const byte FaceWall = 0, FaceShaftWall = 1, FaceFloor = 2, FaceCeiling = 3, FaceRailing = 4, FaceSupportColumn = 5, FaceRim = 6;
+
+        public bool active;
+        public ulong columnId;
+        public int[] columnCoord = new int[2];
+        public string source = "";
+        public int nx, ny, nz;
+        public float cellSizeXZ = 5f;
+        public float layerHeight = 7f;
+        public Vector3 originWorld;
+        public int baseLayer;
+        public byte[] cells = new byte[0];
+        public List<VolumetricFaceMsg> faces = new List<VolumetricFaceMsg>();
+        public int openCellCount;
+        public int solidCellCount;
+        public int verticalConnectionCount;
+        public int validVerticalOpeningCount;
+        public bool atriumSpan;
+        public List<LayerBandMsg> layerBands = new List<LayerBandMsg>();
+        public List<VerticalAccessNodeMsg> verticalAccess = new List<VerticalAccessNodeMsg>();
+        public List<BandHeightSpecMsg> heightBands = new List<BandHeightSpecMsg>();
+
+        public static VolumetricGridMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            if (d == null) return null;
+            var g = new VolumetricGridMsg();
+            g.active = IPCParse.B(d, "active");
+            g.columnId = (ulong)IPCParse.L(d, "column_id");
+            g.columnCoord = IPCParse.IntArray2(IPCParse.Get(d, "column_coord"));
+            g.source = IPCParse.S(d, "source");
+            var dims = IPCParse.IntArray(IPCParse.Get(d, "dims"));
+            if (dims.Length >= 3) { g.nx = dims[0]; g.ny = dims[1]; g.nz = dims[2]; }
+            g.cellSizeXZ = IPCParse.F(d, "cell_size_xz");
+            if (g.cellSizeXZ <= 0f) g.cellSizeXZ = 5f;
+            g.layerHeight = IPCParse.F(d, "layer_height");
+            if (g.layerHeight <= 0f) g.layerHeight = 7f;
+            g.originWorld = IPCParse.Vec3(IPCParse.Get(d, "origin_world"));
+            g.baseLayer = (int)IPCParse.L(d, "base_layer");
+            g.cells = IPCParse.ByteArray(IPCParse.Get(d, "cells"));
+            if (IPCParse.Get(d, "faces") is object[] fs)
+                foreach (var item in fs) g.faces.Add(VolumetricFaceMsg.Parse(item));
+            g.openCellCount = (int)IPCParse.L(d, "open_cell_count");
+            g.solidCellCount = (int)IPCParse.L(d, "solid_cell_count");
+            g.verticalConnectionCount = (int)IPCParse.L(d, "vertical_connection_count");
+            g.validVerticalOpeningCount = (int)IPCParse.L(d, "valid_vertical_opening_count");
+            g.atriumSpan = IPCParse.B(d, "atrium_span");
+            if (IPCParse.Get(d, "layer_bands") is object[] bands)
+                foreach (var item in bands) g.layerBands.Add(LayerBandMsg.Parse(item));
+            if (IPCParse.Get(d, "vertical_access") is object[] access)
+                foreach (var item in access) g.verticalAccess.Add(VerticalAccessNodeMsg.Parse(item));
+            if (IPCParse.Get(d, "height_bands") is object[] hbands)
+                foreach (var item in hbands) g.heightBands.Add(BandHeightSpecMsg.Parse(item));
+            return g;
+        }
+
+        public byte CellAt(int x, int y, int z)
+        {
+            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return OccSolid;
+            int idx = (y * nz + z) * nx + x;
+            return (idx >= 0 && idx < cells.Length) ? cells[idx] : OccSolid;
+        }
+    }
+
     public class ChunkViewMsg
     {
         public int chunkSchema = 1;
@@ -89,6 +313,11 @@ namespace BackroomsSurvival.Net
         public int lightProfile;
         public int anomalyFlags;
         public int verticalFlags;
+        public List<InterLayerVolumeMsg> interLayerVolumes = new List<InterLayerVolumeMsg>();
+
+        // Volumetric "Rubik grid" V0 — present only on the near-spawn host chunk.
+        public VolumetricGridMsg volumetricGrid;
+        public bool HasVolumetricGrid => volumetricGrid != null && volumetricGrid.active;
 
         // Phase 2.7B — split views of the packed layout_cells array.
         // Packing (gridSize g): [cells (g*g)] [edges_v ((g+1)*g)] [edges_h (g*(g+1))].
@@ -104,6 +333,7 @@ namespace BackroomsSurvival.Net
         public bool HasBackendLayout => hasBackendLayout;
 
         private static readonly HashSet<int> _loggedInvalidLayouts = new HashSet<int>();
+        private static readonly HashSet<string> _loggedVolumeParseChunks = new HashSet<string>();
 
         public static ChunkViewMsg Parse(object o)
         {
@@ -137,8 +367,29 @@ namespace BackroomsSurvival.Net
             c.lightProfile = (int)IPCParse.L(d, "light_profile");
             c.anomalyFlags = (int)IPCParse.L(d, "anomaly_flags");
             c.verticalFlags = (int)IPCParse.L(d, "vertical_flags");
+            if (IPCParse.Get(d, "inter_layer_volumes") is object[] volumes)
+                foreach (var volume in volumes) c.interLayerVolumes.Add(InterLayerVolumeMsg.Parse(volume));
+            if (c.interLayerVolumes.Count > 0)
+                LogVolumeParseOnce(c);
+            if (IPCParse.Get(d, "volumetric_grid") != null)
+                c.volumetricGrid = VolumetricGridMsg.Parse(IPCParse.Get(d, "volumetric_grid"));
             c.SplitPackedLayout();
             return c;
+        }
+
+        private static void LogVolumeParseOnce(ChunkViewMsg c)
+        {
+            string key = $"{c.pos[0]}:{c.layer}:{c.pos[1]}:{c.interLayerVolumes.Count}";
+            if (!_loggedVolumeParseChunks.Add(key))
+                return;
+
+            Debug.Log($"MPTRACE step=V30A2 event=v30a2_visfix_unity_volume_count_received chunk=({c.pos[0]},{c.layer},{c.pos[1]}) volume_count={c.interLayerVolumes.Count}");
+            Debug.Log($"MPTRACE step=V30A2 event=v30a2_visfix_unity_layer_y_received chunk=({c.pos[0]},{c.layer},{c.pos[1]}) layer_y={c.layerY:F2} chunk_schema={c.chunkSchema}");
+            for (int i = 0; i < c.interLayerVolumes.Count; i++)
+            {
+                var volume = c.interLayerVolumes[i];
+                Debug.Log($"MPTRACE step=V30A2 event=v30a2_visfix_unity_volume_kind_received chunk=({c.pos[0]},{c.layer},{c.pos[1]}) index={i} volume_id={volume.volumeId} kind={volume.kind} flags={volume.visualFlags}");
+            }
         }
 
         /// <summary>
@@ -283,6 +534,31 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// Phase 6.6/6.7 — debug placeholder for one backend virtual vertical node.
+    /// World-space AABB; render-as-debug only (no collision, no traversal).
+    /// kind: "stair" | "ramp" | "shaft" | "atrium" | "sealed_upper" | "other".
+    /// </summary>
+    public class VerticalDebugMarkerMsg
+    {
+        public uint id;
+        public string kind = "";
+        public Vector3 worldMin;
+        public Vector3 worldMax;
+
+        public static VerticalDebugMarkerMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var m = new VerticalDebugMarkerMsg();
+            if (d == null) return m;
+            m.id = (uint)IPCParse.L(d, "id");
+            m.kind = IPCParse.S(d, "kind");
+            m.worldMin = IPCParse.Vec3(IPCParse.Get(d, "world_min"));
+            m.worldMax = IPCParse.Vec3(IPCParse.Get(d, "world_max"));
+            return m;
+        }
+    }
+
     public class WorldStateMsg
     {
         public long tick;
@@ -293,6 +569,8 @@ namespace BackroomsSurvival.Net
         public List<ChunkViewMsg> visibleChunks = new List<ChunkViewMsg>();
         public List<EntityViewMsg> visibleEntities = new List<EntityViewMsg>();
         public List<ItemViewMsg> visibleItems = new List<ItemViewMsg>();
+        // Optional on the wire (omitted when empty) — stays an empty list then.
+        public List<VerticalDebugMarkerMsg> verticalDebugMarkers = new List<VerticalDebugMarkerMsg>();
 
         public static WorldStateMsg Parse(Dictionary<string, object> d)
         {
@@ -314,6 +592,9 @@ namespace BackroomsSurvival.Net
 
             if (IPCParse.Get(d, "visible_items") is object[] vi)
                 foreach (var item in vi) ws.visibleItems.Add(ItemViewMsg.Parse(item));
+
+            if (IPCParse.Get(d, "vertical_debug_markers") is object[] vm)
+                foreach (var item in vm) ws.verticalDebugMarkers.Add(VerticalDebugMarkerMsg.Parse(item));
 
             return ws;
         }
@@ -372,6 +653,47 @@ namespace BackroomsSurvival.Net
             if (v is object[] a && a.Length >= 2)
                 return new[] { (int)ToLong(a[0]), (int)ToLong(a[1]) };
             return new[] { 0, 0 };
+        }
+
+        public static int[] IntArray(object v)
+        {
+            if (v is object[] a)
+            {
+                var values = new int[a.Length];
+                for (int i = 0; i < a.Length; i++)
+                    values[i] = (int)ToLong(a[i]);
+                return values;
+            }
+            return new int[0];
+        }
+
+        public static string[] StringArray(object v)
+        {
+            if (v is object[] a)
+            {
+                var values = new string[a.Length];
+                for (int i = 0; i < a.Length; i++)
+                    values[i] = a[i] as string ?? "";
+                return values;
+            }
+            return new string[0];
+        }
+
+        public static byte[] ByteArray(object v)
+        {
+            if (v is object[] a)
+            {
+                var values = new byte[a.Length];
+                for (int i = 0; i < a.Length; i++)
+                {
+                    long value = ToLong(a[i]);
+                    if (value < 0) value = 0;
+                    if (value > byte.MaxValue) value = byte.MaxValue;
+                    values[i] = (byte)value;
+                }
+                return values;
+            }
+            return new byte[0];
         }
 
         public static ushort[] UShortArray(object v)

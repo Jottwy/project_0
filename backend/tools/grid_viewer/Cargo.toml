@@ -1,0 +1,13 @@
+[package]
+name = "grid_viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Fase 2 — visualizador 2D del grid real de grid_gen. Solo lectura/export."
+
+# Crate independiente: NO forma parte del build de backrooms_server.
+# Incluye el código fuente real de grid_gen vía #[path] (mismos .rs del disco).
+
+[dependencies]
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+image = "0.25"

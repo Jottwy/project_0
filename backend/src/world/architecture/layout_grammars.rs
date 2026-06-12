@@ -7,6 +7,7 @@
 //! grammar generation in the caller (typically `build_chunk_layout` in generator.rs).
 //! This keeps layout grammars purely about layout topology, not geometric transformations.
 
+use crate::utils::ChunkPos;
 use crate::world::chunk::{
     ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER, ZONE_HUMID, ZONE_MANILA, ZONE_OPEN_HALL,
     ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED, ZONE_SAFE, ZONE_STORAGE,
@@ -604,6 +605,56 @@ pub(crate) fn open_boundary_gaps(layout: &mut ChunkLayoutV1) {
 
     layout.set_edge_v(g, a, EDGE_KIND_OPEN);
     layout.set_edge_v(g, b, EDGE_KIND_OPEN);
+}
+
+// ─── MIG-5b: direction/rotation helpers (moved from generator.rs) ───
+
+pub(crate) fn dir_delta(dir: u8) -> ChunkPos {
+    match dir % 4 {
+        0 => (1, 0),
+        1 => (0, 1),
+        2 => (-1, 0),
+        _ => (0, -1),
+    }
+}
+
+/// Rotation for hallway_straight: 0 = N/S open, 90 = E/W open.
+pub(crate) fn straight_rotation(dir: u8) -> u16 {
+    if dir % 2 == 0 {
+        90
+    } else {
+        0
+    }
+}
+
+/// Rotation for hallway_corner connecting entry_wall and exit_wall.
+/// Walls: 0=E, 1=N, 2=W, 3=S. Entry wall = opposite of walking dir.
+pub(crate) fn corner_rotation(from_dir: u8, to_dir: u8) -> u16 {
+    let entry_wall = (from_dir + 2) % 4;
+    let exit_wall = to_dir;
+    let (a, b) = if entry_wall < exit_wall {
+        (entry_wall, exit_wall)
+    } else {
+        (exit_wall, entry_wall)
+    };
+    match (a, b) {
+        (0, 1) => 0,   // {E, N}
+        (0, 3) => 90,  // {E, S}
+        (2, 3) => 180, // {W, S}
+        (1, 2) => 270, // {N, W}
+        _ => 0,
+    }
+}
+
+/// Rotation for hallway_t: determines which wall is closed.
+/// Base (rot 0) = W closed. rot 90 = N closed. rot 180 = E closed. rot 270 = S closed.
+pub(crate) fn t_junction_rotation(closed_wall: u8) -> u16 {
+    match closed_wall % 4 {
+        0 => 180,
+        1 => 90,
+        2 => 0,
+        _ => 270,
+    }
 }
 
 #[cfg(test)]

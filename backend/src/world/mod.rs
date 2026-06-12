@@ -6,6 +6,7 @@ pub mod collision;
 pub mod entity;
 pub mod generator;
 pub mod graph;
+pub mod grid_gen;
 pub mod levels;
 pub mod volumetric_grid;
 
@@ -33,7 +34,7 @@ use levels::level_0::region_graph_builder::{
 static V30A2_VISFIX_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
 static UNIFIED_VOLUMETRIC_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
 
-const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = false;
+const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = true;
 
 /// Tunable world parameters (ARCHITECTURE_V1.md §11.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -491,9 +492,10 @@ impl World {
         // Phase 2.7 architecture + edge-wall audit.
         {
             use crate::world::chunk::{
-                edge_is_full_wall, EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_FALSE_DOOR,
-                EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL, EDGE_KIND_PARTITION, EDGE_KIND_WALL,
+                EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_FALSE_DOOR, EDGE_KIND_HALF_WALL,
+                EDGE_KIND_LOW_WALL, EDGE_KIND_PARTITION, EDGE_KIND_WALL,
             };
+            use crate::world::collision::edge_is_full_wall;
             let mut full_walls = 0u32;
             let mut e_doors = 0u32;
             let mut e_arches = 0u32;
@@ -1153,7 +1155,7 @@ impl World {
 
     /// Attach the backend-authored unified volumetric column to layer-0 chunks.
     /// Render-only: it does not touch chunk layout / collision authority.
-    const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = false;
+    const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = true;
 
     fn volumetric_grid_view_for(
         &self,

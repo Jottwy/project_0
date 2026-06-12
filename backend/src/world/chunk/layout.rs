@@ -1,112 +1,13 @@
-//! Chunk state, ownership, and teleportation.
-//! See ARCHITECTURE_V1.md §3 and §7.2.
-//!
-//! Phase 1 scaffolding: full data model is present; simulation (teleport timer,
-//! ownership transfer) lands in Phase 2.
-
 use serde::{Deserialize, Serialize};
 
-use crate::network::PeerId;
-use crate::utils::ChunkPos;
-use crate::world::entity::Entity;
-
-pub type ChunkLayer = i8;
-pub type LayeredChunkPos = (i32, ChunkLayer, i32);
-
-pub const LAYOUT_GRID_SIZE: u8 = 10;
-pub const LAYOUT_CELL_SIZE: f32 = 5.0;
-
-pub const EDGE_NORTH: u8 = 1 << 0;
-pub const EDGE_EAST: u8 = 1 << 1;
-pub const EDGE_SOUTH: u8 = 1 << 2;
-pub const EDGE_WEST: u8 = 1 << 3;
-
-pub const CELL_WALKABLE: u16 = 1 << 0;
-pub const CELL_WALL: u16 = 1 << 1;
-pub const CELL_PILLAR: u16 = 1 << 2;
-pub const CELL_BLOCKED: u16 = 1 << 3;
-pub const CELL_HAZARD: u16 = 1 << 4;
-pub const CELL_RAMP: u16 = 1 << 5;
-pub const CELL_PIT: u16 = 1 << 6;
-pub const CELL_SHALLOW_FLUID: u16 = 1 << 7;
-pub const CELL_SAFE: u16 = 1 << 8;
-pub const CELL_ANOMALY: u16 = 1 << 9;
-pub const CELL_DOOR: u16 = 1 << 10;
-pub const CELL_ARCH: u16 = 1 << 11;
-pub const CELL_LOW_WALL: u16 = 1 << 12;
-pub const CELL_HALF_WALL: u16 = 1 << 13;
-pub const CELL_THIN_PARTITION: u16 = 1 << 14;
-pub const CELL_FALSE_DOOR: u16 = 1 << 15;
-
-pub const ZONE_NORMAL: u8 = 0;
-pub const ZONE_STORAGE: u8 = 1;
-pub const ZONE_SAFE: u8 = 2;
-pub const ZONE_DANGER: u8 = 3;
-pub const ZONE_OPEN_HALL: u8 = 4;
-pub const ZONE_PILLAR_HALL: u8 = 5;
-pub const ZONE_HUMID: u8 = 6;
-pub const ZONE_BLACKOUT: u8 = 7;
-pub const ZONE_MANILA: u8 = 8;
-pub const ZONE_CLEANING: u8 = 9;
-pub const ZONE_RED: u8 = 10;
-pub const ZONE_PIT: u8 = 11;
-
-pub const FLOOR_FLAT: u8 = 0;
-pub const FLOOR_SUNKEN: u8 = 1;
-pub const FLOOR_RAISED: u8 = 2;
-pub const FLOOR_RAMP_NORTH_SOUTH: u8 = 3;
-pub const FLOOR_RAMP_EAST_WEST: u8 = 4;
-pub const FLOOR_PIT_PLACEHOLDER: u8 = 5;
-pub const FLOOR_STAIRS_NORTH_SOUTH: u8 = 6;
-pub const FLOOR_STAIRS_EAST_WEST: u8 = 7;
-// Phase 3.0A — layer connectors. These span a full `LAYER_HEIGHT` along +Z so a
-// player walks the whole vertical distance between two stacked layers without
-// any free fall. UP rises toward the north (z+) edge, DOWN descends toward it.
-pub const FLOOR_CONNECTOR_UP: u8 = 8;
-pub const FLOOR_CONNECTOR_DOWN: u8 = 9;
-
-/// Phase 3.0A — vertical separation between adjacent macro layers, in metres.
-/// `chunk_root_y = layer * LAYER_HEIGHT`. Layer 0 is normal Level 0 ground.
-pub const LAYER_HEIGHT: f32 = 7.0;
-
-pub const V30A_STACKED_CORRIDOR: u16 = 1 << 8;
-pub const V30A_LOWER_SERVICE_BRANCH: u16 = 1 << 9;
-pub const V30A_UPPER_OFFICE_BRANCH: u16 = 1 << 10;
-pub const V30A_ATRIUM_VOID_ROOM: u16 = 1 << 11;
-pub const V30A_DEEP_PRECIPICE_PLACEHOLDER: u16 = 1 << 12;
-pub const V30A_GIANT_PILLAR_HALL: u16 = 1 << 13;
-pub const V30A_CONNECTOR: u16 = 1 << 14;
-pub const V30A_BLOCKED_VERTICAL_SHAFT: u16 = 1 << 15;
-
-pub const VOLUME_VIS_ATRIUM_WALLS: u32 = 1 << 0;
-pub const VOLUME_VIS_LOWER_ROOM_VISIBLE: u32 = 1 << 1;
-pub const VOLUME_VIS_SHAFT_WALLS: u32 = 1 << 2;
-pub const VOLUME_VIS_RAILINGS: u32 = 1 << 3;
-pub const VOLUME_VIS_RIM_TRIMS: u32 = 1 << 4;
-pub const VOLUME_VIS_PILLAR_SPANS: u32 = 1 << 5;
-pub const VOLUME_VIS_CEILING_HINTS: u32 = 1 << 6;
-pub const VOLUME_VIS_UNDERFLOOR_HINTS: u32 = 1 << 7;
-pub const VOLUME_VIS_STACKED_ALIGNMENT: u32 = 1 << 8;
-pub const VOLUME_VIS_DEPTH_CUES: u32 = 1 << 9;
-
-pub fn layered_chunk_pos(pos: ChunkPos, layer: ChunkLayer) -> LayeredChunkPos {
-    (pos.0, layer, pos.1)
-}
-
-pub fn layer_y(layer: ChunkLayer) -> f32 {
-    layer as f32 * LAYER_HEIGHT
-}
-
-pub const CEILING_NORMAL: u8 = 0;
-pub const CEILING_LOW_SERVICE: u8 = 1;
-pub const CEILING_TALL_HALL: u8 = 2;
-pub const CEILING_DAMAGED: u8 = 3;
-
-pub const LIGHT_NORMAL: u8 = 0;
-pub const LIGHT_DIM: u8 = 1;
-pub const LIGHT_BLACKOUT: u8 = 2;
-pub const LIGHT_RED: u8 = 3;
-pub const LIGHT_WARM: u8 = 4;
+use super::cell_flags::{CELL_BLOCKED, CELL_PILLAR, CELL_PIT, CELL_WALKABLE, CELL_WALL};
+use super::coords::{ChunkLayer, LAYOUT_CELL_SIZE, LAYOUT_GRID_SIZE};
+use super::edge_kinds::{
+    EDGE_EAST, EDGE_KIND_ARCH, EDGE_KIND_BROKEN, EDGE_KIND_DOOR, EDGE_KIND_FALSE_DOOR,
+    EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL, EDGE_KIND_OPEN, EDGE_KIND_PARTITION, EDGE_KIND_WALL,
+    EDGE_NORTH, EDGE_SOUTH, EDGE_WEST, SIDE_EAST, SIDE_NORTH, SIDE_SOUTH,
+};
+use super::surface_profiles::{CEILING_NORMAL, FLOOR_FLAT, LIGHT_NORMAL, ZONE_NORMAL};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -147,48 +48,6 @@ pub struct InterLayerVolumeV0 {
     pub visual_flags: u32,
     #[serde(default)]
     pub visual_hints: Vec<String>,
-}
-
-// ─── Edge-wall model (Phase 2.7) ───
-//
-// Walls, doors, arches and partitions live on the *boundary* between two cells,
-// not as whole blocked cells. This removes 5m-thick "wall cells", double walls,
-// and doorframes floating in cell centres. Cells themselves stay floor modules
-// (walkable, or carrying a centre prop like a pillar/pit).
-pub const EDGE_KIND_OPEN: u8 = 0;
-pub const EDGE_KIND_WALL: u8 = 1;
-pub const EDGE_KIND_DOOR: u8 = 2;
-pub const EDGE_KIND_ARCH: u8 = 3;
-pub const EDGE_KIND_LOW_WALL: u8 = 4;
-pub const EDGE_KIND_HALF_WALL: u8 = 5;
-pub const EDGE_KIND_PARTITION: u8 = 6;
-pub const EDGE_KIND_FALSE_DOOR: u8 = 7;
-pub const EDGE_KIND_BROKEN: u8 = 8;
-
-/// Cell side indices used by `cell_side_edge`.
-pub const SIDE_NORTH: u8 = 0;
-pub const SIDE_EAST: u8 = 1;
-pub const SIDE_SOUTH: u8 = 2;
-pub const SIDE_WEST: u8 = 3;
-
-/// Whether an edge kind blocks player movement across the boundary.
-pub fn edge_blocks_movement(kind: u8) -> bool {
-    matches!(
-        kind,
-        EDGE_KIND_WALL
-            | EDGE_KIND_LOW_WALL
-            | EDGE_KIND_HALF_WALL
-            | EDGE_KIND_PARTITION
-            | EDGE_KIND_FALSE_DOOR
-    )
-}
-
-/// Whether an edge kind is rendered as a full-height solid wall face.
-pub fn edge_is_full_wall(kind: u8) -> bool {
-    matches!(
-        kind,
-        EDGE_KIND_WALL | EDGE_KIND_PARTITION | EDGE_KIND_FALSE_DOOR
-    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -434,65 +293,5 @@ impl Default for ChunkLayoutV1 {
             EDGE_NORTH | EDGE_EAST | EDGE_SOUTH | EDGE_WEST,
             ZONE_NORMAL,
         )
-    }
-}
-
-/// Lifecycle of a chunk in the distributed world (ARCHITECTURE_V1.md §3.4).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChunkState {
-    Unloaded,
-    Dormant { cached_by: Vec<PeerId> },
-    Active { stabilized: bool, anchored: bool },
-}
-
-impl ChunkState {
-    /// String id reported to Unity (`random` / `stabilized` / `anchored`).
-    pub fn render_name(&self) -> &'static str {
-        match self {
-            ChunkState::Active { anchored: true, .. } => "anchored",
-            ChunkState::Active {
-                stabilized: true, ..
-            } => "stabilized",
-            ChunkState::Active { .. } => "random",
-            _ => "random",
-        }
-    }
-}
-
-/// A dropped item lying in the world (lost if the chunk teleports).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DroppedItem {
-    pub id: u32,
-    pub item: crate::player::inventory::Item,
-    pub quantity: u16,
-    pub position: crate::utils::Vec3,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Chunk {
-    pub pos: ChunkPos,
-    #[serde(default)]
-    pub layer: ChunkLayer,
-    pub state: ChunkState,
-    pub seed: u64,
-    pub owner: Option<PeerId>,
-    pub entities: Vec<Entity>,
-    pub items: Vec<DroppedItem>,
-    pub teleport_timer: f32,
-    pub template_id: u8,
-    pub rotation: u16, // 0, 90, 180, 270
-    pub mirrored: bool,
-    pub has_workbench: bool,
-    pub layout: ChunkLayoutV1,
-}
-
-impl Chunk {
-    pub fn is_active(&self) -> bool {
-        matches!(self.state, ChunkState::Active { .. })
-    }
-
-    pub fn key(&self) -> LayeredChunkPos {
-        layered_chunk_pos(self.pos, self.layer)
     }
 }

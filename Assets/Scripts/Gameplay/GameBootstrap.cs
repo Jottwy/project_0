@@ -16,6 +16,8 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<TeleportationVFX>();
             EnsureComponent<MinimapRenderer>();
             EnsureComponent<HUDUpdater>();
+            EnsureComponent<PoiDebugHud>();
+            EnsureComponent<VerticalDebugMarkerRenderer>();
             EnsureComponent<NetworkInitializer>();
             EnsureComponent<RemotePlayerManager>();
             EnsureComponent<JoinSessionUI>();

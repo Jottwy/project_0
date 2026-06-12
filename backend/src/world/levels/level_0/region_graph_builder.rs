@@ -9,10 +9,9 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::world::chunk::{Chunk, LAYOUT_GRID_SIZE};
-use crate::world::generator::{
-    generate_initial_structure_chunks, level0_proven_structure_connections_from_generated,
-};
+use crate::world::architecture::surface_builder::edge_delta;
+use crate::world::chunk::{Chunk, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST, LAYOUT_GRID_SIZE};
+use crate::world::generator::generate_initial_structure_chunks;
 
 use crate::world::graph::{
     coords::{Chunk3DCoord, RegionCoord},
@@ -452,6 +451,63 @@ fn stable_edge_id(world_seed: u64, from: u32, to: u32) -> u32 {
     h ^= h >> 33;
     h ^= h >> 17;
     ((h & 0x7FFF_FFFF) as u32).max(1)
+}
+
+// ─── MIG-5d: graph topology queries (moved from generator.rs) ───
+
+/// Core logic: derives proven structure connections from already-generated
+/// chunk data without calling any generator function.
+///
+/// For each chunk, any `edge_openings` bit pointing to a same-layer neighbor
+/// with a different `macro_id` becomes a proven inter-structure connection.
+/// Returns `(min_id, max_id)` pairs, sorted and deduplicated.
+pub(crate) fn level0_proven_structure_connections_from_generated(
+    generated: &[(StructureV0, Chunk)],
+) -> Vec<(u32, u32)> {
+    let mut pos_to_macro: HashMap<(i32, i8, i32), u32> = HashMap::with_capacity(generated.len());
+    for (_, chunk) in generated {
+        pos_to_macro.insert(chunk.key(), chunk.layout.macro_id);
+    }
+
+    const EDGES: [u8; 4] = [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST];
+
+    let mut connections: Vec<(u32, u32)> = Vec::new();
+    for (_, chunk) in generated {
+        let sa = chunk.layout.macro_id;
+        let (cx, cl, cz) = chunk.key();
+        for &edge in &EDGES {
+            if chunk.layout.edge_openings & edge == 0 {
+                continue;
+            }
+            let (dx, dz) = edge_delta(edge);
+            let nbr = (cx + dx, cl, cz + dz);
+            if let Some(&sb) = pos_to_macro.get(&nbr) {
+                if sb != sa {
+                    connections.push((sa.min(sb), sa.max(sb)));
+                }
+            }
+        }
+    }
+
+    connections.sort_unstable();
+    connections.dedup();
+    connections
+}
+
+/// Returns structure-pair connections proven by finalized chunk-boundary
+/// edge openings.  Only horizontal same-layer connections are included;
+/// vertical/inter-layer connections are out of scope for this query.
+///
+/// For each chunk in the finalized Level 0 world, any `edge_openings` bit
+/// pointing to a present same-layer neighbor with a different `macro_id`
+/// becomes a proven inter-structure connection.  Pairs are returned as
+/// `(min_id, max_id)`, sorted and deduplicated.
+///
+/// Wrapper: generates chunk data then delegates to
+/// [`level0_proven_structure_connections_from_generated`].
+pub(crate) fn level0_proven_structure_connections(world_seed: u64) -> Vec<(u32, u32)> {
+    let generated = generate_initial_structure_chunks(world_seed);
+    level0_proven_structure_connections_from_generated(&generated)
 }
 
 #[cfg(test)]

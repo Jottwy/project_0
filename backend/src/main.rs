@@ -26,6 +26,42 @@ use tokio::sync::{broadcast, mpsc};
 
 use network::NetworkManager;
 
+/// Emit unambiguous runtime build/identity telemetry at startup so logs prove
+/// exactly which backend binary is running (kills "stale backend" ambiguity).
+fn log_runtime_identity(world_seed: u64) {
+    let build_name = std::env::var("BACKROOMS_SERVER_BUILD_NAME")
+        .unwrap_or_else(|_| format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
+    let exe_path = std::env::current_exe()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "<unresolved>".to_string());
+
+    info!(
+        "MPTRACE step=RUNTIME event=runtime_build_identity build_name={} name={} version={} git={} built_unix={}",
+        build_name,
+        env!("CARGO_PKG_NAME"),
+        env!("CARGO_PKG_VERSION"),
+        option_env!("BACKROOMS_GIT_HASH").unwrap_or("unknown"),
+        option_env!("BACKROOMS_BUILD_TIMESTAMP").unwrap_or("unknown"),
+    );
+    if exe_path == "<unresolved>" {
+        error!("MPTRACE step=RUNTIME event=runtime_backend_exe_identity exe=<unresolved> reason=current_exe_failed");
+    } else {
+        info!("MPTRACE step=RUNTIME event=runtime_backend_exe_identity exe={exe_path}");
+    }
+    info!("MPTRACE step=RUNTIME event=runtime_world_seed_confirmed world_seed={world_seed}");
+
+    let rubik_enabled = world_seed == world::volumetric_grid::SHOWCASE_SEED;
+    info!("MPTRACE step=RUNTIME event=runtime_rubik_grid_enabled enabled={rubik_enabled} showcase_seed={}", world::volumetric_grid::SHOWCASE_SEED);
+    info!("MPTRACE step=RUNTIME event=runtime_legacy_visfix_disabled disabled=true");
+    info!("MPTRACE step=RUNTIME event=runtime_legacy_interlayer_render_disabled disabled=true");
+
+    // For the showcase seed, surface the RubikGrid counts up-front so the
+    // identity block and the grid metrics appear together at startup.
+    if rubik_enabled {
+        world::volumetric_grid::log_showcase_once(true);
+    }
+}
+
 #[tokio::main]
 async fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -48,6 +84,8 @@ async fn main() {
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(42);
+
+    log_runtime_identity(world_seed);
     let connect_to = std::env::var("CONNECT_TO").ok();
     let is_host = connect_to.is_none();
     let ipc_addr_env = std::env::var("IPC_ADDR").ok();

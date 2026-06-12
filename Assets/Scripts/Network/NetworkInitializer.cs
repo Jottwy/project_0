@@ -174,13 +174,19 @@ namespace BackroomsSurvival.Net
 
         private bool LaunchBackendProcess(Dictionary<string, string> env)
         {
+            WarnIfExistingBackend();
+
             string exePath = ResolveBackendPath();
             if (exePath == null)
             {
                 StatusMessage = "Error: Backend executable not found. Build or copy backrooms_server.exe.";
+                // Fail loudly: never silently continue with an unverifiable backend.
+                Debug.LogError("[NetworkInitializer] MPTRACE step=RUBIK event=unity_backend_exe_path path=UNRESOLVED status=fail_loud");
                 Debug.LogError("[NetworkInitializer] Backend executable not found. Build or copy backrooms_server.exe.");
                 return false;
             }
+
+            Debug.Log($"[NetworkInitializer] MPTRACE step=RUBIK event=unity_backend_exe_path path={exePath}");
 
             var psi = new ProcessStartInfo
             {
@@ -218,6 +224,9 @@ namespace BackroomsSurvival.Net
 
                 Debug.Log($"[NetworkInitializer] Launched backend PID={_backendProcess.Id} from {exePath}");
                 Debug.Log("[NetworkInitializer] backend launch succeeded");
+                // This initializer ALWAYS spawns a fresh backend (on a free IPC
+                // port if 7777 is busy) and connects to it — never to a stale one.
+                Debug.Log($"[NetworkInitializer] MPTRACE step=RUBIK event=unity_backend_launch_mode mode=launched_new_backend pid={_backendProcess.Id} exe={exePath} ipc_port={LastSelectedIpcPort}");
                 return true;
             }
             catch (Exception e)
@@ -226,6 +235,34 @@ namespace BackroomsSurvival.Net
                 Debug.LogError("[NetworkInitializer] backend launch failed");
                 Debug.LogError($"[NetworkInitializer] Failed to start backend: {e}");
                 return false;
+            }
+        }
+
+        // Detect (but do not connect to) a backend already holding IPC port 7777.
+        // We always launch a fresh isolated backend; this just makes the stale
+        // process visible in logs (with PID) so identity is never ambiguous.
+        private void WarnIfExistingBackend()
+        {
+            bool occupied = !PortUtility.IsTcpPortAvailable(7777);
+            if (!occupied)
+            {
+                Debug.Log("[NetworkInitializer] MPTRACE step=RUBIK event=unity_existing_backend_detected ipc_port=7777 occupied=false");
+                return;
+            }
+
+            Debug.LogWarning("[NetworkInitializer] MPTRACE step=RUBIK event=unity_existing_backend_detected ipc_port=7777 occupied=true note=launching_fresh_isolated_backend");
+            try
+            {
+                foreach (var p in Process.GetProcessesByName("backrooms_server"))
+                {
+                    try { Debug.LogWarning($"[NetworkInitializer] existing backrooms_server detected PID={p.Id}"); }
+                    catch { }
+                    finally { try { p.Dispose(); } catch { } }
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[NetworkInitializer] could not enumerate backend processes: {e.Message}");
             }
         }
 
@@ -241,6 +278,7 @@ namespace BackroomsSurvival.Net
                 IsBackendReady = true;
                 StatusMessage = "Connected";
                 Debug.Log("[NetworkInitializer] Backend is ready, IPC connected");
+                Debug.Log($"[NetworkInitializer] MPTRACE step=RUBIK event=unity_ipc_port_connected ipc_address={LastSelectedIpcAddress} ipc_port={LastSelectedIpcPort} launch_mode=launched_new_backend");
                 return;
             }
 
@@ -288,6 +326,11 @@ namespace BackroomsSurvival.Net
             }
 
             var candidates = new List<string>();
+            // Canonical packaged location (matches the validation copy step):
+            // <projectRoot>/Builds/Backend/backrooms_server.exe. Preferred so the
+            // runtime always uses the build that was validated/copied, removing
+            // "which backend is running?" ambiguity.
+            candidates.Add(Path.Combine(projectRoot, "Builds", "Backend", executableName));
             if (Application.isEditor)
             {
                 candidates.Add(Path.Combine(buildFolder, executableName));

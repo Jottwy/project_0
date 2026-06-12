@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Net;
 using UnityEngine;
 using UnityEngine.UI;
@@ -21,6 +22,9 @@ namespace BackroomsSurvival.UI
 
         // Crosshair
         private Image _crosshair;
+
+        // God Traversal Mode indicator
+        private Text _godModeText;
 
         // Event feed
         private readonly List<Text> _feedTexts = new List<Text>();
@@ -49,6 +53,7 @@ namespace BackroomsSurvival.UI
             BuildStatBars();
             BuildCrosshair();
             BuildEventFeed();
+            BuildGodModeIndicator();
         }
 
         private void OnEnable()
@@ -101,15 +106,20 @@ namespace BackroomsSurvival.UI
                     $"chunks {state.visibleChunks.Count}  entities {state.visibleEntities.Count}  items {state.visibleItems.Count}   " +
                     $"RemotePlayers {state.remotePlayers.Count}";
 
-                UpdateBar(_healthFill, _healthLabel, "Health", lp.stats.health);
-                UpdateBar(_hungerFill, _hungerLabel, "Hunger", lp.stats.hunger);
-                UpdateBar(_thirstFill, _thirstLabel, "Thirst", lp.stats.thirst);
-                UpdateBar(_sanityFill, _sanityLabel, "Sanity", lp.stats.sanity);
+                // Phase 3.2E: freeze bar display at 100 in god traversal mode.
+                bool god = GodTraversalMode.IsEnabled;
+                UpdateBar(_healthFill, _healthLabel, "Health", god ? 100f : lp.stats.health);
+                UpdateBar(_hungerFill, _hungerLabel, "Hunger", god ? 100f : lp.stats.hunger);
+                UpdateBar(_thirstFill, _thirstLabel, "Thirst", god ? 100f : lp.stats.thirst);
+                UpdateBar(_sanityFill, _sanityLabel, "Sanity", god ? 100f : lp.stats.sanity);
             }
             else
             {
                 _infoText.text = "Waiting for world state...";
             }
+
+            if (_godModeText != null)
+                _godModeText.gameObject.SetActive(GodTraversalMode.IsEnabled);
 
             // Event feed.
             for (int i = 0; i < _feedTexts.Count; i++)
@@ -209,6 +219,30 @@ namespace BackroomsSurvival.UI
             _crosshair = go.AddComponent<Image>();
             _crosshair.color = new Color(1f, 1f, 1f, 0.7f);
             _crosshair.raycastTarget = false;
+        }
+
+        private void BuildGodModeIndicator()
+        {
+            var go = new GameObject("GodModeIndicator");
+            go.transform.SetParent(_canvas.transform, false);
+            var rt = go.AddComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0.5f, 1f);
+            rt.anchorMax = new Vector2(0.5f, 1f);
+            rt.pivot = new Vector2(0.5f, 1f);
+            rt.anchoredPosition = new Vector2(0f, -58f);
+            rt.sizeDelta = new Vector2(560f, 26f);
+            _godModeText = go.AddComponent<Text>();
+            _godModeText.font = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            _godModeText.fontSize = 15;
+            _godModeText.color = new Color(1f, 0.65f, 0.1f, 0.95f);
+            _godModeText.alignment = TextAnchor.UpperCenter;
+            _godModeText.raycastTarget = false;
+            _godModeText.supportRichText = false;
+            _godModeText.text = "GOD TRAVERSAL MODE ENABLED";
+            var shadow = go.AddComponent<Shadow>();
+            shadow.effectColor = new Color(0f, 0f, 0f, 0.9f);
+            shadow.effectDistance = new Vector2(1f, -1f);
+            go.SetActive(false);
         }
 
         private void BuildEventFeed()

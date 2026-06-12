@@ -1,3 +1,6 @@
+use rand::rngs::StdRng;
+use rand::Rng;
+
 use crate::utils::ChunkPos;
 use crate::world::architecture::layout_grammars::{
     generate_layout_from_template, open_boundary_gaps, TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE,
@@ -138,4 +141,49 @@ pub fn build_chunk_layout(template_id: u8, rotation: u16) -> ChunkLayoutV1 {
     layout.cell_size = LAYOUT_CELL_SIZE;
     layout.grid_size = LAYOUT_GRID_SIZE;
     layout
+}
+
+// ─── MIG-5a: deterministic ID helpers (moved from generator.rs) ───
+
+fn stable_u32(world_seed: u64, pos: ChunkPos, salt: u64, index: u32) -> u32 {
+    let mut h = chunk_seed(world_seed ^ salt, pos);
+    h ^= (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    h ^= h >> 32;
+    ((h & 0x7FFF_FFFF) as u32).max(1)
+}
+
+pub(crate) fn stable_entity_id(world_seed: u64, pos: ChunkPos, index: u32) -> u32 {
+    stable_u32(world_seed, pos, 0xE17E_0001, index)
+}
+
+pub(crate) fn stable_item_id(world_seed: u64, pos: ChunkPos, index: u32) -> u32 {
+    stable_u32(world_seed, pos, 0x17E0_0002, index)
+}
+
+pub(crate) fn stable_volume_id(
+    world_seed: u64,
+    pos: ChunkPos,
+    layer: crate::world::chunk::ChunkLayer,
+    index: u32,
+) -> u32 {
+    let layer_salt = (layer as i64 as u64)
+        .wrapping_mul(0xA30A_2001_5EED_0001)
+        .rotate_left(11);
+    stable_u32(world_seed, pos, 0xA30A_2002 ^ layer_salt, index)
+}
+
+pub(crate) fn structure_id(world_seed: u64, index: u32) -> u32 {
+    stable_u32(
+        world_seed,
+        (index as i32, -(index as i32)),
+        0x57A7_C700,
+        index,
+    )
+}
+
+pub(crate) fn fisher_yates(slice: &mut [usize], rng: &mut StdRng) {
+    for i in (1..slice.len()).rev() {
+        let j = rng.gen_range(0..=i);
+        slice.swap(i, j);
+    }
 }

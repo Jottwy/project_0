@@ -16,7 +16,7 @@ use crate::ipc::{
 use crate::network::sync;
 use crate::network::{NetworkEvent, NetworkManager};
 use crate::player::Player;
-use crate::utils::{Vec3, CHUNK_SIZE};
+use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::collision::{resolve_safe_spawn, CollisionResultKind, Level0Collision};
 use crate::world::World;
 
@@ -38,6 +38,11 @@ const CHUNK_BROADCAST_EVERY: u64 = 12;
 const BASE_SPEED: f32 = 5.0;
 const SPRINT_MULT: f32 = 1.5;
 
+/// TEMP DIAGNOSTIC — forces the god-traversal collision bypass on,
+/// independent of the DEV_GOD_TRAVERSAL environment variable.
+/// MUST be reverted to `false` (or removed) after validation.
+const DEV_GOD_TRAVERSAL_HARDCODED: bool = true;
+
 pub async fn run(
     mut from_clients: mpsc::Receiver<ClientMessage>,
     to_clients: broadcast::Sender<ServerMessage>,
@@ -48,6 +53,7 @@ pub async fn run(
     let dt = 1.0 / TICK_HZ as f32;
     let entity_dt = dt * ENTITY_TICK_EVERY as f32;
     let dev_freeze_survival = env_flag_enabled("DEV_FREEZE_SURVIVAL");
+    let dev_god_traversal = DEV_GOD_TRAVERSAL_HARDCODED || env_flag_enabled("DEV_GOD_TRAVERSAL");
 
     let mut ticker = interval(TICK_DURATION);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -55,6 +61,9 @@ pub async fn run(
     let mut tick: u64 = 0;
     let mut last_input = PlayerInput::default();
     let mut processed_interactions: HashSet<(u16, u64)> = HashSet::new();
+    // Track the last chunk position used for ownership so we only call
+    // update_ownership when the player crosses a chunk boundary, not every tick.
+    let mut last_ownership_chunk: Option<ChunkPos> = None;
 
     // Bootstrap: host/solo creates the authoritative initial structure before
     // loading the surrounding ownership radius. Joiners wait for host WorldSync.
@@ -86,6 +95,21 @@ pub async fn run(
             "DEV_FREEZE_SURVIVAL active: hunger/thirst/sanity decay and player damage are disabled"
         );
     }
+    if dev_god_traversal {
+        info!(
+            "DEV_GOD_TRAVERSAL active: collision resolution and survival death/respawn are disabled"
+        );
+    }
+    // TEMP god-traversal audit trace: always log exe path + raw env value +
+    // effective bypass state so "which backend / which env" is provable.
+    info!(
+        "MPTRACE step=GODT event=god_traversal_audit exe={} env_value={:?} collision_bypass_enabled={}",
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "<unknown>".into()),
+        std::env::var("DEV_GOD_TRAVERSAL").ok(),
+        dev_god_traversal
+    );
 
     loop {
         ticker.tick().await;
@@ -135,7 +159,34 @@ pub async fn run(
         }
 
         // ─── PHASE 2: SIMULATE ───
-        apply_movement(&mut player, &last_input, dt, &world, tick);
+        apply_movement(
+            &mut player,
+            &last_input,
+            dt,
+            &world,
+            tick,
+            dev_god_traversal,
+        );
+        // Only refresh chunk ownership when the player crosses a chunk boundary.
+        // Calling update_ownership every tick caused ~2 FPS churn from constant
+        // chunk rebuild. Startup fires because last_ownership_chunk starts as None.
+        {
+            let current_chunk = world_to_chunk(player.position);
+            if last_ownership_chunk != Some(current_chunk) {
+                let reason = if last_ownership_chunk.is_none() {
+                    "startup"
+                } else {
+                    "chunk_changed"
+                };
+                world.update_ownership(player.position, player.id);
+                let loaded_chunks = world.chunks.len();
+                info!(
+                    "MPTRACE step=STREAM event=ownership_refresh player_chunk=({},{}) loaded_chunks={} reason={}",
+                    current_chunk.0, current_chunk.1, loaded_chunks, reason
+                );
+                last_ownership_chunk = Some(current_chunk);
+            }
+        }
         if tick % 60 == 0 {
             info!(
                 "MPTRACE step=Q event=local_transform_from_ipc self_id={} pos=({:.2},{:.2},{:.2}) rot={:.2}",
@@ -162,9 +213,9 @@ pub async fn run(
             world.tick_respawns(entity_dt);
         }
 
-        // Ownership + teleportation at 1hz.
+        // Ownership is now handled per-chunk-boundary above; only teleportation
+        // and other slow-tick work runs here.
         if tick % SLOW_TICK_EVERY == 0 && (net.is_host || net.peer_count() == 0) {
-            world.update_ownership(player.position, player.id);
             let events = world.tick_teleportation();
             for ev in &events {
                 let _ = to_clients.send(ServerMessage::Event(ev.clone()));
@@ -202,7 +253,9 @@ pub async fn run(
         }
 
         // Death → respawn on a validated safe cell (never the unsafe origin).
-        if player.stats.is_dead() {
+        // DEV_GOD_TRAVERSAL: survival death and the resulting respawn are
+        // skipped so debug traversal is never interrupted.
+        if !dev_god_traversal && player.stats.is_dead() {
             info!("Player died — respawning");
             player.stats = crate::player::stats::PlayerStats::on_respawn();
             let res = resolve_safe_spawn(&mut world, preferred_spawn());
@@ -258,7 +311,7 @@ pub async fn run(
 
         // ─── PHASE 4: SEND — WorldState to Unity at 10hz ───
         if tick % WORLD_STATE_EVERY == 0 {
-            let snapshot = build_world_state(tick, &player, &world, &net);
+            let snapshot = build_world_state(tick, &player, &mut world, &net);
             let _ = to_clients.send(ServerMessage::WorldState(snapshot));
         }
 
@@ -437,13 +490,34 @@ fn preferred_spawn() -> Vec3 {
     Vec3::new(CHUNK_SIZE * 0.5, 1.8, CHUNK_SIZE * 0.5)
 }
 
-fn apply_movement(player: &mut Player, input: &PlayerInput, dt: f32, world: &World, tick: u64) {
+fn apply_movement(
+    player: &mut Player,
+    input: &PlayerInput,
+    dt: f32,
+    world: &World,
+    tick: u64,
+    god_traversal: bool,
+) {
     player.rotation = (player.rotation + input.look_delta[0]).rem_euclid(360.0);
     let dir = Vec3::from_array(input.movement).normalized();
     let sprint = if input.sprint { SPRINT_MULT } else { 1.0 };
     let speed = BASE_SPEED * player.stats.speed_modifier * sprint;
     let from = player.position;
     let desired = player.position.add(dir.scale(speed * dt));
+    // DEV_GOD_TRAVERSAL: debug-only bypass — accept the desired position
+    // without collision resolution. Movement stays on the XZ plane (dir has
+    // no Y component), so the player keeps their current height.
+    if god_traversal {
+        // TEMP god-traversal audit trace: desired == applied (resolver skipped).
+        if tick % 60 == 0 && dir.length() > 0.001 {
+            info!(
+                "MPTRACE step=GODT event=god_traversal_move desired=({:.2},{:.2},{:.2}) resolved=({:.2},{:.2},{:.2}) resolver=skipped",
+                desired.x, desired.y, desired.z, desired.x, desired.y, desired.z
+            );
+        }
+        player.position = desired;
+        return;
+    }
     let resolved = Level0Collision::resolve_move(world, from, desired);
     // Throttled collision trace (Phase 2.6 V26).
     if tick % 30 == 0 {
@@ -674,7 +748,7 @@ fn emit_stat_warnings(player: &Player, to_clients: &broadcast::Sender<ServerMess
 fn build_world_state(
     tick: u64,
     player: &Player,
-    world: &World,
+    world: &mut World,
     net: &NetworkManager,
 ) -> WorldState {
     let remote_players: Vec<RemotePlayerState> = net
@@ -689,7 +763,7 @@ fn build_world_state(
         })
         .collect();
 
-    if tick % 60 == 0 {
+    if tick % 30 == 0 {
         let remote_ids: Vec<u16> = remote_players.iter().map(|p| p.id).collect();
         info!(
             "WorldState remote_players={} ids={:?}",
@@ -736,5 +810,6 @@ fn build_world_state(
         visible_chunks: world.visible_chunk_views(),
         visible_entities: world.visible_entity_views(),
         visible_items: world.visible_item_views(),
+        vertical_debug_markers: world.vertical_debug_marker_views(),
     }
 }

@@ -78,22 +78,45 @@ namespace BackroomsSurvival.Gameplay
 
         [Header("Level 0 Backend-Driven Visuals")]
         public bool enableBackroomsDressing = true;
-        public bool enableTemplateProps = true;
-        public bool enableCeilingGrid = true;
+        public bool enableTemplateProps = false;
+        public bool enableCeilingGrid = false;
         public bool useBackendLayout = true;
-        public bool enableWorldCollision = true;
+        public bool enableWorldCollision = false;
         public bool showLayoutDebug = false;
         public bool showCellDebug = false;
         public bool showCollisionDebug = false;
+        // Volumetric "Rubik grid" V0 — render backend-authored 3D architecture.
+        public bool enableVolumetricGrid = true;
+        // Legacy decorative VISFIX inter-layer volumes / validation showcase /
+        // debug markers. OFF by default — superseded by the volumetric model.
+        public bool enableLegacyInterLayerVolumes = false;
         // Phase 2.9B/C toggles.
         public bool enableChunkMeshBatching = true;
         public bool enableProceduralMaterialTiling = true;
         public bool enableCrossChunkZFightNudge = true;
         public bool showBatchDebug = false;
-        public int maxLightsPerChunk = 8;
+        public bool enableRuntimeMptraceLogs = false;
+        // Realtime point lights are a major URP forward cost when ~49 chunks
+        // are loaded; 2/chunk keeps the fixture rhythm at half the light count.
+        public int maxLightsPerChunk = 2;
         public string worldCollisionLayerName = "WorldCollision";
+        public bool renderOnlyMainVolumetricBand = false;
 
-        private readonly Dictionary<long, GameObject> _pool = new Dictionary<long, GameObject>();
+        [Header("Volumetric Performance")]
+        public bool enableVolumetricLights = false;
+
+        [Header("Streaming Performance")]
+        // Per-frame budgets that amortize chunk build/destroy bursts. Building
+        // a chunk is the expensive op (CreatePrimitive storm + CombineMeshes);
+        // spawn (~49 chunks) and boundary crossings (~7-13) queue instead of
+        // freezing one frame. Visuals appear progressively, nearest first.
+        public int maxChunkBuildsPerFrame = 2;
+        public int maxChunkDestroysPerFrame = 4;
+
+        // Build/rebuild/destroy policy lives in ChunkVisualLifecycle; this
+        // renderer only orchestrates snapshots and builds chunk visuals.
+        private readonly ChunkVisualLifecycle _lifecycle = new ChunkVisualLifecycle();
+        private long _lastProcessedTick = -1;
 
         private Material _floorMat;
         private Material _ceilingMat;
@@ -120,9 +143,14 @@ namespace BackroomsSurvival.Gameplay
         private Material _manilaMat;
         private Material _cleaningMat;
         private Material _warningMat;
+        private Material _v30a2DebugBoundaryMat;
+        private Material _v30a2DebugSpanMat;
+        private Material _v30a2DebugAnchorMat;
+        private Material _v30a2DebugDirectionMat;
 
         private float _nextSnapshotLogTime;
         private long _worldSeed;
+        private bool _worldSeedLogged;
 
         // Procedural tiling textures — generated once, shared by every chunk.
         private static Texture2D _wallpaperTex;
@@ -170,10 +198,30 @@ namespace BackroomsSurvival.Gameplay
         private const int V30AGiantPillarHall = 1 << 13;
         private const int V30AConnector = 1 << 14;
         private const int V30ABlockedVerticalShaft = 1 << 15;
+        private const int VolumeVisAtriumWalls = 1 << 0;
+        private const int VolumeVisLowerRoomVisible = 1 << 1;
+        private const int VolumeVisShaftWalls = 1 << 2;
+        private const int VolumeVisRailings = 1 << 3;
+        private const int VolumeVisRimTrims = 1 << 4;
+        private const int VolumeVisPillarSpans = 1 << 5;
+        private const int VolumeVisCeilingHints = 1 << 6;
+        private const int VolumeVisUnderfloorHints = 1 << 7;
+        private const int VolumeVisStackedAlignment = 1 << 8;
+        private const int VolumeVisDepthCues = 1 << 9;
+        private const long V30A2VisfixSeed = 7778;
+        // Disabled by default: oversized seed-7778 validation markers were the
+        // "cyan strips / yellow pillars / debug props" clutter. Replaced by the
+        // backend-authored volumetric grid showcase.
+        private const bool V30A2VisfixDebugMarkersEnabled = false;
+        private const int V30A2VisfixConnectorX = 1;
+        private const int V30A2VisfixConnectorZ = 3;
+        private const int V30A2VisfixAtriumZ = 4;
         private const int EdgeNorth = 1 << 0;
         private const int EdgeEast = 1 << 1;
         private const int EdgeSouth = 1 << 2;
         private const int EdgeWest = 1 << 3;
+
+        
 
         private static long Key(int x, int layer, int z)
         {
@@ -204,8 +252,15 @@ namespace BackroomsSurvival.Gameplay
             }
         }
 
+        private void Trace(string message)
+        {
+            if (enableRuntimeMptraceLogs)
+                Debug.Log(message);
+        }
+
         private void Start()
         {
+
             EnsureProceduralTextures();
             _floorMat = Lit(new Color(0.72f, 0.68f, 0.55f));
             _ceilingMat = Lit(new Color(0.88f, 0.86f, 0.80f));
@@ -238,6 +293,10 @@ namespace BackroomsSurvival.Gameplay
             _manilaMat = Lit(new Color(0.72f, 0.61f, 0.38f));
             _cleaningMat = Lit(new Color(0.50f, 0.54f, 0.42f));
             _warningMat = Lit(new Color(0.16f, 0.10f, 0.07f));
+            _v30a2DebugBoundaryMat = MaterialHelper.MakeEmissive(new Color(0.02f, 0.80f, 1.00f), 0.75f);
+            _v30a2DebugSpanMat = MaterialHelper.MakeEmissive(new Color(1.00f, 0.65f, 0.05f), 0.85f);
+            _v30a2DebugAnchorMat = MaterialHelper.MakeEmissive(new Color(0.15f, 1.00f, 0.30f), 0.85f);
+            _v30a2DebugDirectionMat = MaterialHelper.MakeEmissive(new Color(1.00f, 0.10f, 0.70f), 0.80f);
 
             if (Camera.main != null)
             {
@@ -250,6 +309,16 @@ namespace BackroomsSurvival.Gameplay
             RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.17f, 0.16f, 0.13f);
             RenderSettings.fog = false;
+
+            // Decorative VISFIX debug/validation visuals are off by default; the
+            // real architecture is the backend-authored volumetric grid.
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_debug_visuals_disabled_by_default legacy_inter_layer_volumes={enableLegacyInterLayerVolumes} visfix_debug_markers={V30A2VisfixDebugMarkersEnabled} volumetric_grid={enableVolumetricGrid}");
+            Trace($"MPTRACE step=RUBIK event=unity_legacy_visfix_render_disabled disabled={(!enableLegacyInterLayerVolumes && !V30A2VisfixDebugMarkersEnabled)}");
+            Trace($"MPTRACE step=RUBIK event=unity_legacy_interlayer_render_disabled disabled={!enableLegacyInterLayerVolumes}");
+            Trace($"MPTRACE step=V30C event=unity_unified_volumetric_renderer_active enabled={enableVolumetricGrid}");
+            Trace($"MPTRACE step=V30C event=unity_visfix_disabled_confirmed disabled={(!enableLegacyInterLayerVolumes && !V30A2VisfixDebugMarkersEnabled)}");
+            Trace($"MPTRACE step=V30C event=unity_interlayer_legacy_disabled_confirmed disabled={!enableLegacyInterLayerVolumes}");
+
         }
 
         // Backrooms surfaces are matte drywall / carpet / acoustic tile. The
@@ -290,47 +359,41 @@ namespace BackroomsSurvival.Gameplay
                 return;
 
             _worldSeed = state.worldSeed;
+            if (!_worldSeedLogged && state.worldSeed != 0)
+            {
+                _worldSeedLogged = true;
+                Trace($"MPTRACE step=RUBIK event=unity_world_seed_received world_seed={state.worldSeed} world_revision={state.worldRevision}");
+            }
+
+            // Snapshots arrive at 10hz; reconcile (data-level diff + queueing)
+            // only when a new one lands. No chunk is built or destroyed here.
+            if (state.tick != _lastProcessedTick)
+            {
+                _lastProcessedTick = state.tick;
+                int playerChunkX = Mathf.FloorToInt(transform.position.x / chunkSize);
+                int playerChunkZ = Mathf.FloorToInt(transform.position.z / chunkSize);
+                _lifecycle.Reconcile(state.visibleChunks, playerChunkX, playerChunkZ);
+            }
+
+            // Execute queued build/destroy work under the per-frame budget so
+            // spawn/boundary bursts amortize across frames instead of stalling.
+            _lifecycle.ProcessQueues(
+                Mathf.Max(1, maxChunkBuildsPerFrame),
+                Mathf.Max(1, maxChunkDestroysPerFrame),
+                BuildChunk);
 
             if (Time.unscaledTime >= _nextSnapshotLogTime)
             {
-                int backendLayoutChunks = 0;
-                int fallbackChunks = 0;
-                foreach (var cv in state.visibleChunks)
-                {
-                    if (useBackendLayout && HasBackendLayout(cv)) backendLayoutChunks++;
-                    else fallbackChunks++;
-                }
-
-                Debug.Log($"MPTRACE step=AB event=unity_apply_world_snapshot revision={state.worldRevision} chunks={state.visibleChunks.Count} entities={state.visibleEntities.Count} items={state.visibleItems.Count} seed={state.worldSeed}");
-                Debug.Log($"MPTRACE step=AR event=unity_structure_visual_counts chunks={_pool.Count} items={state.visibleItems.Count} entities={state.visibleEntities.Count}");
-                Debug.Log($"MPTRACE step=V26 event=unity_level0_renderer_active backend_layout_chunks={backendLayoutChunks} fallback_chunks={fallbackChunks}");
                 _nextSnapshotLogTime = Time.unscaledTime + 1f;
-            }
-
-            var alive = new HashSet<long>();
-
-            foreach (var cv in state.visibleChunks)
-            {
-                long key = Key(cv.pos[0], cv.layer, cv.pos[1]);
-                alive.Add(key);
-
-                if (!_pool.ContainsKey(key))
-                    _pool[key] = BuildChunk(cv);
-            }
-
-            var stale = new List<long>();
-            foreach (var kv in _pool)
-            {
-                if (!alive.Contains(kv.Key))
+                if (enableRuntimeMptraceLogs)
                 {
-                    Destroy(kv.Value);
-                    stale.Add(kv.Key);
+                    Debug.Log($"MPTRACE step=STREAMU event=chunk_lifecycle visible={state.visibleChunks.Count} pool={_lifecycle.PoolCount} pendingBuilds={_lifecycle.PendingBuilds} pendingDestroys={_lifecycle.PendingDestroys} built={_lifecycle.Built} rebuilt={_lifecycle.Rebuilt} destroyed={_lifecycle.Destroyed} builtThisFrame={_lifecycle.BuiltThisFrame} rebuiltThisFrame={_lifecycle.RebuiltThisFrame} destroyedThisFrame={_lifecycle.DestroyedThisFrame}");
                 }
+                _lifecycle.ResetCounters();
             }
-
-            foreach (long k in stale)
-                _pool.Remove(k);
         }
+
+
 
         private GameObject BuildChunk(ChunkViewMsg cv)
         {
@@ -338,7 +401,23 @@ namespace BackroomsSurvival.Gameplay
             var root = new GameObject($"Chunk_{cv.pos[0]}_{cv.layer}_{cv.pos[1]}");
             root.transform.position = new Vector3(cv.pos[0] * chunkSize, layerY, cv.pos[1] * chunkSize);
 
-            Debug.Log($"MPTRACE step=AQ event=unity_chunk_template_applied chunk_id={Key(cv.pos[0], cv.layer, cv.pos[1])} template_id={cv.templateId} coord=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rotation={cv.rotation}");
+            // Volumetric "Rubik grid" host chunk: render the backend-authored 3D
+            // architecture from cell/face data and skip the normal per-chunk
+            // surface pipeline (the grid supplies every floor/ceiling/wall).
+            if (enableVolumetricGrid && cv.HasVolumetricGrid)
+            {
+                Trace($"MPTRACE step=V30C event=unity_legacy_flat_renderer_bypassed_for_volumetric=true chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) source={cv.volumetricGrid.source}");
+                BuildVolumetricChunk(root, cv);
+                if (cv.state == "anchored")
+                    TintChunk(root, new Color(0.6f, 0.8f, 1f, 1f));
+                else if (cv.state == "stabilized")
+                    TintChunk(root, new Color(0.8f, 1f, 0.8f, 1f));
+                //PoiVisualDecorator.Decorate(root.transform, cv, _worldSeed, chunkSize, ceilingHeight, showLayoutDebug);
+                return root;
+            }
+
+            Trace($"MPTRACE step=V30C event=unity_legacy_flat_renderer_fallback_used chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) has_volumetric={cv.HasVolumetricGrid}");
+            Trace($"MPTRACE step=AQ event=unity_chunk_template_applied chunk_id={Key(cv.pos[0], cv.layer, cv.pos[1])} template_id={cv.templateId} coord=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rotation={cv.rotation}");
 
             var profile = Level0Profile.FromSeedAndPos(_worldSeed, cv.pos[0], cv.pos[1]);
             Material wallMat = WallMaterialFor(cv.templateId, profile);
@@ -408,21 +487,442 @@ namespace BackroomsSurvival.Gameplay
             if (cv.floorProfile != 0 || cv.verticalFlags != 0)
             {
                 int fp = cv.floorProfile;
-                Debug.Log($"MPTRACE step=V210 event=unity_vertical_chunk_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) profile={fp} flags={cv.verticalFlags} raised={(fp == 2)} sunken={(fp == 1)} ramps={(fp == 3 || fp == 4 || fp == FloorConnectorUp || fp == FloorConnectorDown)} stairs={(fp == 6 || fp == 7)} pits={(fp == 5)} batched={enableChunkMeshBatching}");
+                Trace($"MPTRACE step=V210 event=unity_vertical_chunk_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) profile={fp} flags={cv.verticalFlags} raised={(fp == 2)} sunken={(fp == 1)} ramps={(fp == 3 || fp == 4 || fp == FloorConnectorUp || fp == FloorConnectorDown)} stairs={(fp == 6 || fp == 7)} pits={(fp == 5)} batched={enableChunkMeshBatching}");
             }
 
             if (cv.layer != 0 || (cv.verticalFlags & (V30AStackedCorridor | V30AAtriumVoidRoom | V30ADeepPrecipicePlaceholder | V30AGiantPillarHall | V30AConnector)) != 0)
             {
-                Debug.Log($"MPTRACE step=V30A event=unity_multilayer_chunk_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) kind={V30AKind(cv)} layer_y={layerY:F2} batched={enableChunkMeshBatching}");
+                Trace($"MPTRACE step=V30A event=unity_multilayer_chunk_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) kind={V30AKind(cv)} layer_y={layerY:F2} batched={enableChunkMeshBatching}");
             }
             if (HasV30AFlag(cv, V30AConnector))
             {
                 int targetLayer = cv.floorProfile == FloorConnectorUp ? cv.layer + 1 : cv.layer - 1;
                 string kind = cv.floorProfile == FloorConnectorUp ? "broad_stairwell" : "service_ramp";
-                Debug.Log($"MPTRACE step=V30A event=unity_connector_rendered from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to=({cv.pos[0]},{targetLayer},{cv.pos[1]}) kind={kind}");
+                Trace($"MPTRACE step=V30A event=unity_connector_rendered from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to=({cv.pos[0]},{targetLayer},{cv.pos[1]}) kind={kind}");
             }
 
+            // Phase 3.2D: POI visual identity from backend template_id (18–21).
+            // Added after batching/tint so the visuals stay independent objects.
+            //PoiVisualDecorator.Decorate(root.transform, cv, _worldSeed, chunkSize, ceilingHeight, showLayoutDebug);
+
             return root;
+        }
+
+        // ─────────────────────────────────────────────────────────────
+        // Volumetric "Rubik grid" V0 — backend-authored 3D architecture
+        // ─────────────────────────────────────────────────────────────
+        //
+        // Renders real structural surfaces (floors, ceilings, walls, continuous
+        // shaft walls, railings around vertical openings, and structural support
+        // columns) derived from backend cell/face data. No decorative props, no
+        // debug markers — the architecture IS the geometry.
+        private void BuildVolumetricChunk(GameObject rootGo, ChunkViewMsg cv)
+        {
+            var grid = cv.volumetricGrid;
+            Transform root = rootGo.transform;
+            Vector3 rootPos = root.position;
+
+            var profile = Level0Profile.FromSeedAndPos(_worldSeed, cv.pos[0], cv.pos[1]);
+            Material wallMat = WallMaterialFor(cv.templateId, profile);
+            Material floorMat = FloorMaterialFor(cv.templateId, profile);
+            Material ceilingMat = CeilingMaterialFor(cv.templateId, profile);
+            if (enableProceduralMaterialTiling)
+            {
+                ApplyTex(wallMat, _wallpaperTex, 2.5f);
+                ApplyTex(floorMat, _carpetTex, 4f);
+                ApplyTex(ceilingMat, _ceilingTex, 4f);
+            }
+
+            float cs = grid.cellSizeXZ;
+            float lh = grid.layerHeight;
+            Vector3 origin = grid.originWorld;
+            // Floor sits a hair above the level, ceiling a hair below the next
+            // level — so a room's floor and the room-below's ceiling never share
+            // a plane (no z-fight, no black flicker faces).
+            const float floorT = 0.10f, floorLift = 0.06f, ceilT = 0.10f, ceilDrop = 0.08f;
+            // Thicker, readable rim kerb + guard rail around true openings.
+            const float railH = 1.18f, railT = 0.20f, rimH = 0.40f, rimT = 0.52f, colW = 1.9f;
+
+            // Phase 3.0C-FIX: normal Level 0 columns render their main band at
+            // Backrooms scale (low drop ceiling), not the full 7 m band height.
+            // RubikGrid showcase keeps the tall volumetric language.
+            // BandHeightSpec (V30E): use backend-supplied room height when available
+            // so TallPillarHall chunks render at 6.6 m instead of the 3.3 m fallback.
+            bool level0Fix = grid.source != "RUBIKGRID_ADAPTER";
+            float mainH = level0Fix
+                ? (grid.heightBands.Count > 1
+                    ? Mathf.Clamp(grid.heightBands[1].roomHeight, 2.5f, lh)
+                    : Mathf.Min(ceilingHeight, lh))
+                : lh;
+
+            int floors = 0, ceilings = 0, walls = 0, shaftWalls = 0, railings = 0, rims = 0, pillars = 0;
+            int strayBandFaces = 0;
+
+            Trace($"MPTRACE step=V30C event=unity_unified_volumetric_renderer_active chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) source={grid.source} column_id={grid.columnId} column=({grid.columnCoord[0]},{grid.columnCoord[1]})");
+            Trace($"MPTRACE step=V30C event=unity_unified_volumetric_layers_received chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) layers={grid.layerBands.Count} vertical_access={grid.verticalAccess.Count}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_unity_cells_received chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) cells={grid.cells.Length} dims=({grid.nx},{grid.ny},{grid.nz}) base_layer={grid.baseLayer} origin=({origin.x:F1},{origin.y:F1},{origin.z:F1})");
+
+            // Coplanar floor/ceiling faces are merged into row runs (one slab
+            // per contiguous same-material run) so large rooms/corridors read
+            // as continuous surfaces instead of a per-cell checkerboard.
+            var slabRuns = new Dictionary<(int y, byte kind, Material mat), List<(int x, int z)>>();
+
+            foreach (var f in grid.faces)
+            {
+                if (renderOnlyMainVolumetricBand && level0Fix && f.y != 1)
+                    continue;
+                float cx0 = origin.x + f.x * cs;
+                float cy0 = origin.y + f.y * lh;
+                float cz0 = origin.z + f.z * cs;
+                float ccx = cx0 + cs * 0.5f;
+                float ccy = cy0 + lh * 0.5f;
+                float ccz = cz0 + cs * 0.5f;
+
+                // Owning cell occupancy drives the architectural material grammar
+                // (room vs corridor vs atrium vs shaft vs service vs support).
+                byte occ = grid.CellAt(f.x, f.y, f.z);
+
+                if (level0Fix && f.y != 1)
+                    strayBandFaces++;
+
+                Vector3 wpos;
+                Vector3 scale;
+                string name;
+
+                switch (f.kind)
+                {
+                    case VolumetricGridMsg.FaceFloor:
+                    case VolumetricGridMsg.FaceCeiling:
+                    {
+                        // Defer to the merged-run pass below.
+                        if (f.kind == VolumetricGridMsg.FaceFloor) floors++; else ceilings++;
+                        Material hmat = VolumetricMaterialFor(occ, f.kind, floorMat, ceilingMat, wallMat);
+                        var key = (f.y, f.kind, hmat);
+                        if (!slabRuns.TryGetValue(key, out var list))
+                            slabRuns[key] = list = new List<(int x, int z)>();
+                        list.Add((f.x, f.z));
+                        continue;
+                    }
+                    case VolumetricGridMsg.FaceWall:
+                    case VolumetricGridMsg.FaceShaftWall:
+                        bool isShaft = f.kind == VolumetricGridMsg.FaceShaftWall;
+                        name = isShaft ? "VolShaftWall" : "VolWall";
+                        if (isShaft) shaftWalls++; else walls++;
+                        VolumetricWallTransform(f.dir, cx0, cy0, cz0, ccx, ccy, ccz, cs, lh, out wpos, out scale);
+                        // Backrooms-scale walls in the main band; shaft/atrium
+                        // walls keep the full band height (vertical continuity).
+                        if (level0Fix && f.y == 1 && !isShaft)
+                        {
+                            scale.y = mainH;
+                            wpos.y = cy0 + mainH * 0.5f;
+                        }
+                        break;
+                    case VolumetricGridMsg.FaceRim:
+                        name = "VolRim"; rims++;
+                        VolumetricEdgeTransform(f.dir, cx0, cy0, cz0, ccx, ccz, cs,
+                            rimH, rimT, cy0 + floorLift + 0.02f, out wpos, out scale);
+                        break;
+                    case VolumetricGridMsg.FaceRailing:
+                        name = "VolRailing"; railings++;
+                        VolumetricEdgeTransform(f.dir, cx0, cy0, cz0, ccx, ccz, cs,
+                            railH, railT, cy0 + floorLift + rimH, out wpos, out scale);
+                        break;
+                    case VolumetricGridMsg.FaceSupportColumn:
+                        wpos = new Vector3(ccx, ccy, ccz);
+                        scale = new Vector3(colW, lh + 0.02f, colW);
+                        if (level0Fix && f.y == 1)
+                        {
+                            // Pillars span floor → visible (low) ceiling only.
+                            scale.y = mainH + 0.02f;
+                            wpos.y = cy0 + mainH * 0.5f;
+                        }
+                        name = "VolSupportColumn"; pillars++;
+                        break;
+                    default:
+                        continue;
+                }
+
+                Material mat = VolumetricMaterialFor(occ, f.kind, floorMat, ceilingMat, wallMat);
+                CreateSlab(root, name, wpos - rootPos, scale, mat);
+            }
+
+            // Merged-run pass: one slab per contiguous same-row run.
+            int mergedSlabs = 0;
+            foreach (var kv in slabRuns)
+            {
+                var cells = kv.Value;
+                cells.Sort((a, b) => a.z != b.z ? a.z - b.z : a.x - b.x);
+                int i = 0;
+                while (i < cells.Count)
+                {
+                    int z = cells[i].z;
+                    int startX = cells[i].x;
+                    int endX = startX;
+                    int j = i + 1;
+                    while (j < cells.Count && cells[j].z == z && cells[j].x == endX + 1)
+                    {
+                        endX = cells[j].x;
+                        j++;
+                    }
+                    int runLen = endX - startX + 1;
+                    bool isFloor = kv.Key.kind == VolumetricGridMsg.FaceFloor;
+                    float bandY0 = origin.y + kv.Key.y * lh;
+                    float visH = (level0Fix && kv.Key.y == 1) ? mainH : lh;
+                    float y = isFloor ? bandY0 + floorLift : bandY0 + visH - ceilDrop;
+                    var wpos = new Vector3(
+                        origin.x + startX * cs + runLen * cs * 0.5f,
+                        y,
+                        origin.z + z * cs + cs * 0.5f);
+                    var scale = new Vector3(runLen * cs, isFloor ? floorT : ceilT, cs);
+                    CreateSlab(root, isFloor ? "VolFloor" : "VolCeiling", wpos - rootPos, scale, kv.Key.mat);
+                    mergedSlabs++;
+                    i = j;
+                }
+            }
+            int internalFacesSuppressed = (floors + ceilings) - mergedSlabs;
+
+            // Visual-grammar census from the cell window (rooms/corridors/etc.).
+            int roomCells = 0, corridorCells = 0, atriumCells = 0, shaftCells = 0,
+                serviceCells = 0, supportCells = 0, sealedCells = 0, falseCells = 0,
+                ceilingVoidCells = 0, underfloorCells = 0, transitionCellsTotal = 0,
+                anomalyCells = 0, dangerCells = 0, safeCells = 0;
+            foreach (byte c in grid.cells)
+            {
+                switch (c)
+                {
+                    case VolumetricGridMsg.OccRoom: roomCells++; break;
+                    case VolumetricGridMsg.OccCorridor: corridorCells++; break;
+                    case VolumetricGridMsg.OccAtriumVoid: atriumCells++; break;
+                    case VolumetricGridMsg.OccShaft: shaftCells++; break;
+                    case VolumetricGridMsg.OccServiceSpace: serviceCells++; break;
+                    case VolumetricGridMsg.OccSupportCore: supportCells++; break;
+                    case VolumetricGridMsg.OccSealedRoom: sealedCells++; break;
+                    case VolumetricGridMsg.OccFalseSpace: falseCells++; break;
+                    case VolumetricGridMsg.OccCeilingVoid: ceilingVoidCells++; break;
+                    case VolumetricGridMsg.OccUnderfloorService: underfloorCells++; break;
+                    case VolumetricGridMsg.OccTransition: transitionCellsTotal++; break;
+                    case VolumetricGridMsg.OccAnomaly: anomalyCells++; break;
+                    case VolumetricGridMsg.OccDangerZone: dangerCells++; break;
+                    case VolumetricGridMsg.OccSafeNode: safeCells++; break;
+                }
+            }
+            // Transition edges: walkable window-boundary cells with an open
+            // outward face (a seam to an adjacent showcase chunk or a doorway).
+            int transitionCells = VolumetricTransitionCells(grid);
+
+            int rendered = floors + ceilings + walls + shaftWalls + railings + rims + pillars;
+            Trace($"MPTRACE step=V30C event=unity_unified_volumetric_faces_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rendered={rendered} faces={grid.faces.Count} floors={floors} ceilings={ceilings} walls={walls + shaftWalls} railings={railings} rims={rims} pillars={pillars}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_unity_faces_generated chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) faces={grid.faces.Count} floors={floors} ceilings={ceilings} walls={walls} shaft_walls={shaftWalls} railings={railings} rims={rims} pillars={pillars}");
+            Trace($"MPTRACE step=RUBIK event=unity_rubik_grid_faces_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rendered={rendered} of_faces={grid.faces.Count}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_unity_vertical_openings_generated chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) railed_openings={railings} valid_vertical_openings={grid.validVerticalOpeningCount} vertical_connections={grid.verticalConnectionCount}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_unity_atrium_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) atrium_span={grid.atriumSpan} shaft_walls={shaftWalls}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_unity_structural_pillars_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) pillars={pillars}");
+
+            // ── Phase 3.0B2 visual grammar telemetry ──
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_faces_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rendered={rendered}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_rooms_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rooms={roomCells} service={serviceCells} support={supportCells}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_corridors_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) corridors={corridorCells}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_atrium_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) atrium_cells={atriumCells} shaft_cells={shaftCells}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_transitions_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) transition_cells={transitionCells}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_debug_visuals_disabled legacy_visfix={!enableLegacyInterLayerVolumes} legacy_interlayer={!enableLegacyInterLayerVolumes}");
+
+            if (enableVolumetricLights)
+                VolumetricLights(rootGo, grid, rootPos, level0Fix, mainH);
+
+            if (enableChunkMeshBatching)
+                CombineChunkVisuals(rootGo, cv);
+
+            // ── Phase 3.0C-FIX telemetry ──
+            if (level0Fix)
+            {
+                // Faces outside the main band are only legitimate when explicit
+                // vertical access opened the hint bands.
+                bool artifactCheckPassed = strayBandFaces == 0 || grid.verticalAccess.Count > 0;
+                Trace($"MPTRACE step=V30CFIX event=unity_level0_volumetric_visual_fix_active active=true chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) main_band_height={mainH:F1} source={grid.source}");
+                Trace($"MPTRACE step=V30CFIX event=unity_level0_volumetric_faces_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rendered={rendered} merged_slabs={mergedSlabs}");
+                Trace($"MPTRACE step=V30CFIX event=unity_level0_volumetric_internal_faces_suppressed chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) suppressed={internalFacesSuppressed}");
+                Trace($"MPTRACE step=V30CFIX event=unity_level0_volumetric_grid_artifact_check_passed chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) passed={artifactCheckPassed} stray_band_faces={strayBandFaces} vertical_access={grid.verticalAccess.Count}");
+                if (IsSpawnChunk(cv))
+                    Trace($"MPTRACE step=V30CFIX event=unity_level0_volumetric_spawn_visible_ready ready=true chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+            }
+
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_unity_showcase_visible_ready chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) total_faces={grid.faces.Count} open_cells={grid.openCellCount} solid_cells={grid.solidCellCount} world_seed={_worldSeed}");
+            Trace($"MPTRACE step=RUBIK event=rubik_grid_v0_b2_showcase_visible_ready chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rooms={roomCells} corridors={corridorCells} atrium={atriumCells} service={serviceCells} support={supportCells} transitions={transitionCells}");
+            // Coherence summary: floors+ceilings enclose closed cells; holes only
+            // at the backend-declared valid vertical openings.
+            Trace($"MPTRACE step=RUBIK event=unity_showcase_surface_coherence_ready chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) floors={floors} ceilings={ceilings} walls={walls + shaftWalls} valid_vertical_openings={grid.validVerticalOpeningCount} legacy_visfix_render_disabled={!enableLegacyInterLayerVolumes} legacy_interlayer_render_disabled={!enableLegacyInterLayerVolumes}");
+            Trace($"MPTRACE step=V30C event=unity_unified_volumetric_world_visible_ready chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) source={grid.source} rooms={roomCells} corridors={corridorCells} sealed={sealedCells} false_spaces={falseCells} ceiling_voids={ceilingVoidCells} underfloor={underfloorCells} transitions={transitionCellsTotal} anomalies={anomalyCells} dangers={dangerCells} safe_nodes={safeCells}");
+        }
+
+        // Vertical wall slab placed on a cell boundary in the given direction.
+        private void VolumetricWallTransform(byte dir, float cx0, float cy0, float cz0,
+            float ccx, float ccy, float ccz, float cs, float lh, out Vector3 wpos, out Vector3 scale)
+        {
+            switch (dir)
+            {
+                case VolumetricGridMsg.DirNorth: // +Z
+                    wpos = new Vector3(ccx, ccy, cz0 + cs);
+                    scale = new Vector3(cs, lh, WallThickness);
+                    break;
+                case VolumetricGridMsg.DirSouth: // -Z
+                    wpos = new Vector3(ccx, ccy, cz0);
+                    scale = new Vector3(cs, lh, WallThickness);
+                    break;
+                case VolumetricGridMsg.DirEast: // +X
+                    wpos = new Vector3(cx0 + cs, ccy, ccz);
+                    scale = new Vector3(WallThickness, lh, cs);
+                    break;
+                default: // West, -X
+                    wpos = new Vector3(cx0, ccy, ccz);
+                    scale = new Vector3(WallThickness, lh, cs);
+                    break;
+            }
+        }
+
+        // Warm fluorescent fill so each stacked layer is legible.
+        // Level0-fix columns keep the main band low-ceiling, while upper/lower
+        // bands use their full layer height for visibility during 3.0D validation.
+        private void VolumetricLights(GameObject rootGo, VolumetricGridMsg grid, Vector3 rootPos,
+            bool level0Fix, float mainH)
+        {
+            float cs = grid.cellSizeXZ;
+            float lh = grid.layerHeight;
+            Vector3 origin = grid.originWorld;
+            var warm = new Color(0.78f, 0.72f, 0.52f);
+            int yStart = 0;
+            int yEnd = grid.ny;
+            for (int y = yStart; y < yEnd; y++)
+            {
+                float layerVisibleHeight = (level0Fix && y == 1) ? mainH : lh;
+                float ly = origin.y + y * lh + layerVisibleHeight - 0.55f;
+                AddVolumetricLight(rootGo.transform,
+                    new Vector3(origin.x + 5f * cs, ly, origin.z + 6.5f * cs) - rootPos, 1.05f, 20f, warm);
+                AddVolumetricLight(rootGo.transform,
+                    new Vector3(origin.x + 2.5f * cs, ly, origin.z + 3f * cs) - rootPos, 0.9f, 17f, warm);
+                AddVolumetricLight(rootGo.transform,
+                    new Vector3(origin.x + 7.5f * cs, ly, origin.z + 3f * cs) - rootPos, 0.9f, 17f, warm);
+            }
+        }
+
+        private void AddVolumetricLight(Transform parent, Vector3 localPos, float intensity, float range, Color color)
+        {
+            var go = new GameObject("VolLight");
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = localPos;
+            var l = go.AddComponent<Light>();
+            l.type = LightType.Point;
+            l.color = color;
+            l.intensity = intensity;
+            l.range = range;
+            l.shadows = LightShadows.None;
+        }
+
+        // Architectural material grammar: pick a material from the owning cell's
+        // occupancy + the face kind. Service spaces read dark/technical; the
+        // enclosed shaft uses a darker lining than the open atrium; support
+        // cores are structural pillars. Reuses existing materials only.
+        private Material VolumetricMaterialFor(byte occ, byte kind, Material floorMat, Material ceilingMat, Material wallMat)
+        {
+            bool service = occ == VolumetricGridMsg.OccServiceSpace || occ == VolumetricGridMsg.OccUnderfloorService;
+            bool shaft = occ == VolumetricGridMsg.OccShaft;
+            bool danger = occ == VolumetricGridMsg.OccDangerZone || occ == VolumetricGridMsg.OccAnomaly;
+            bool safe = occ == VolumetricGridMsg.OccSafeNode;
+            bool falseSpace = occ == VolumetricGridMsg.OccFalseSpace || occ == VolumetricGridMsg.OccCeilingVoid;
+            bool sealedSpace = occ == VolumetricGridMsg.OccSealedRoom;
+            switch (kind)
+            {
+                case VolumetricGridMsg.FaceFloor:
+                    return danger ? _redRoomMat : safe ? _manilaMat : (service || shaft) ? _darkWallMat : floorMat;
+                case VolumetricGridMsg.FaceCeiling:
+                    return danger ? _redRoomMat
+                        : shaft ? _darkWallMat
+                        : service ? _humidWallMat
+                        : falseSpace ? _ceilingSeamMat
+                        : sealedSpace ? _humidWallMat
+                        : ceilingMat;
+
+                case VolumetricGridMsg.FaceWall:
+                    return danger ? _redRoomMat
+                        : safe ? _manilaMat
+                        : shaft ? _darkWallMat
+                        : service ? _humidWallMat
+                        : falseSpace ? _ceilingSeamMat
+                        : sealedSpace ? _humidWallMat
+                        : wallMat;
+                case VolumetricGridMsg.FaceShaftWall:
+                    // Enclosed service shaft = darker lining; open atrium = lighter.
+                    return shaft ? _darkWallMat : _humidWallMat;
+                case VolumetricGridMsg.FaceRim:
+                    return _baseboardMat;
+                case VolumetricGridMsg.FaceRailing:
+                    return _trimMat;
+                case VolumetricGridMsg.FaceSupportColumn:
+                    return _pillarMat;
+                default:
+                    return wallMat;
+            }
+        }
+
+        // Count walkable window-boundary cells whose outward face is open — i.e.
+        // a clean seam to an adjacent showcase chunk or a perimeter doorway into
+        // normal Level 0. (Informational; the boundary is otherwise walled.)
+        private int VolumetricTransitionCells(VolumetricGridMsg grid)
+        {
+            var walls = new HashSet<int>();
+            foreach (var f in grid.faces)
+                if (f.kind == VolumetricGridMsg.FaceWall || f.kind == VolumetricGridMsg.FaceShaftWall)
+                    walls.Add(WallKey(f.x, f.y, f.z, f.dir));
+
+            int count = 0;
+            for (int y = 0; y < grid.ny; y++)
+                for (int z = 0; z < grid.nz; z++)
+                    for (int x = 0; x < grid.nx; x++)
+                    {
+                        byte occ = grid.CellAt(x, y, z);
+                        bool walkable = occ == VolumetricGridMsg.OccRoom
+                            || occ == VolumetricGridMsg.OccCorridor
+                            || occ == VolumetricGridMsg.OccServiceSpace
+                            || occ == VolumetricGridMsg.OccTransition
+                            || occ == VolumetricGridMsg.OccDangerZone
+                            || occ == VolumetricGridMsg.OccSafeNode;
+                        if (!walkable) continue;
+                        if (x == 0 && !walls.Contains(WallKey(x, y, z, VolumetricGridMsg.DirWest))) count++;
+                        if (x == grid.nx - 1 && !walls.Contains(WallKey(x, y, z, VolumetricGridMsg.DirEast))) count++;
+                        if (z == 0 && !walls.Contains(WallKey(x, y, z, VolumetricGridMsg.DirSouth))) count++;
+                        if (z == grid.nz - 1 && !walls.Contains(WallKey(x, y, z, VolumetricGridMsg.DirNorth))) count++;
+                    }
+            return count;
+        }
+
+        private static int WallKey(int x, int y, int z, int dir) => ((x * 16 + y) * 16 + z) * 8 + dir;
+
+        // Edge element (rim kerb / guard rail) on the walkable cell's boundary
+        // facing a vertical void. `baseY` is the element's bottom; it is centred
+        // at baseY + height/2 and runs along the shared boundary.
+        private void VolumetricEdgeTransform(byte dir, float cx0, float cy0, float cz0,
+            float ccx, float ccz, float cs, float height, float thickness, float baseY,
+            out Vector3 wpos, out Vector3 scale)
+        {
+            float cy = baseY + height * 0.5f;
+            switch (dir)
+            {
+                case VolumetricGridMsg.DirNorth:
+                    wpos = new Vector3(ccx, cy, cz0 + cs);
+                    scale = new Vector3(cs, height, thickness);
+                    break;
+                case VolumetricGridMsg.DirSouth:
+                    wpos = new Vector3(ccx, cy, cz0);
+                    scale = new Vector3(cs, height, thickness);
+                    break;
+                case VolumetricGridMsg.DirEast:
+                    wpos = new Vector3(cx0 + cs, cy, ccz);
+                    scale = new Vector3(thickness, height, cs);
+                    break;
+                default: // West
+                    wpos = new Vector3(cx0, cy, ccz);
+                    scale = new Vector3(thickness, height, cs);
+                    break;
+            }
         }
 
         private static string V30AKind(ChunkViewMsg cv)
@@ -466,7 +966,7 @@ namespace BackroomsSurvival.Gameplay
             }
 
             bool spawnChunk = IsSpawnChunk(cv);
-            Debug.Log($"MPTRACE step=V26 event=unity_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) backend_layout={backendLayout} walls={walls} doors={doors} arches={arches} lowwalls={lowWalls} halfwalls={halfWalls} pillars={pillars} false_doors={falseDoors} lights={Mathf.Max(1, maxLightsPerChunk)} vertical={vertical} fallback={!backendLayout} spawn_chunk={spawnChunk}");
+            Trace($"MPTRACE step=V26 event=unity_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) backend_layout={backendLayout} walls={walls} doors={doors} arches={arches} lowwalls={lowWalls} halfwalls={halfWalls} pillars={pillars} false_doors={falseDoors} lights={Mathf.Max(1, maxLightsPerChunk)} vertical={vertical} fallback={!backendLayout} spawn_chunk={spawnChunk}");
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -666,10 +1166,11 @@ namespace BackroomsSurvival.Gameplay
             if (floorProfile == 1 || floorProfile == 2)
                 BuildFloorRim(parent, floorOffset);
             CreateV30AMacroVisuals(parent, cv, floorOffset);
+            CreateInterLayerVolumes(parent, cv, floorOffset);
 
             if (floorProfile != 0 || cv.verticalFlags != 0)
             {
-                Debug.Log($"MPTRACE step=V210B event=unity_vertical_geometry_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) profile={floorProfile} raised={(floorProfile == 2)} sunken={(floorProfile == 1)} ramps={(floorProfile == 3 || floorProfile == 4 || floorProfile == FloorConnectorUp || floorProfile == FloorConnectorDown)} stairs={(floorProfile == 6 || floorProfile == 7)} pits={(floorProfile == 5)} batched={enableChunkMeshBatching}");
+                Trace($"MPTRACE step=V210B event=unity_vertical_geometry_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) profile={floorProfile} raised={(floorProfile == 2)} sunken={(floorProfile == 1)} ramps={(floorProfile == 3 || floorProfile == 4 || floorProfile == FloorConnectorUp || floorProfile == FloorConnectorDown)} stairs={(floorProfile == 6 || floorProfile == 7)} pits={(floorProfile == 5)} batched={enableChunkMeshBatching}");
             }
 
             CreateFloorStains(parent, templateId, profile);
@@ -761,7 +1262,7 @@ namespace BackroomsSurvival.Gameplay
                 new Vector3(chunkSize - railInset * 2.2f, 0.12f, 0.34f),
                 _ceilingSeamMat);
 
-            Debug.Log($"MPTRACE step=V30AFIX event=connector_volume_built from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to_layer={targetLayer} kind={kind} y0={y0:F1} y1={y1:F1} steps={steps}");
+            Trace($"MPTRACE step=V30AFIX event=connector_volume_built from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to_layer={targetLayer} kind={kind} y0={y0:F1} y1={y1:F1} steps={steps}");
         }
 
         // Thin perimeter rim so a raised/sunken room reads as a deliberate
@@ -782,10 +1283,26 @@ namespace BackroomsSurvival.Gameplay
             HasV30AFlag(cv, V30ADeepPrecipicePlaceholder) ||
             HasV30AFlag(cv, V30ABlockedVerticalShaft);
 
-        private static bool HasFloorOpening(ChunkViewMsg cv) => HasVerticalOpening(cv);
+        private static bool HasInterLayerOpening(ChunkViewMsg cv)
+        {
+            if (cv.interLayerVolumes == null)
+                return false;
+
+            foreach (var volume in cv.interLayerVolumes)
+            {
+                if (volume == null)
+                    continue;
+                if (volume.kind == "ATRIUM_STACK" || volume.kind == "SERVICE_SHAFT" || volume.kind == "OVERLOOK_ROOM")
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool HasFloorOpening(ChunkViewMsg cv) => HasVerticalOpening(cv) || (cv.layer >= 0 && HasInterLayerOpening(cv));
 
         private static bool HasCeilingOpening(ChunkViewMsg cv) =>
             HasVerticalOpening(cv) ||
+            (cv.layer < 0 && HasInterLayerOpening(cv)) ||
             (cv.layer < 0 && HasV30AFlag(cv, V30AGiantPillarHall));
 
         private static float LayerRootY(ChunkViewMsg cv) =>
@@ -836,7 +1353,7 @@ namespace BackroomsSurvival.Gameplay
             CreateSlab(parent, "AtriumDepthPatch", new Vector3(center - 2.6f, depthY + 0.08f, center + 2.2f), new Vector3(span * 0.45f, 0.035f, span * 0.32f), _stainMat);
 
             bool lowerVisible = cv.layer >= 0 && !HasV30AFlag(cv, V30ABlockedVerticalShaft);
-            Debug.Log($"MPTRACE step=V30AFIX event=atrium_volume_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) opening=({span:F0},{span:F0}) shaft_height={shaftHeight:F1} rails=4 lower_visible={lowerVisible}");
+            Trace($"MPTRACE step=V30AFIX event=atrium_volume_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) opening=({span:F0},{span:F0}) shaft_height={shaftHeight:F1} rails=4 lower_visible={lowerVisible}");
         }
 
         private void CreateV30AMacroVisuals(Transform parent, ChunkViewMsg cv, float floorOffset)
@@ -857,7 +1374,7 @@ namespace BackroomsSurvival.Gameplay
                     CreateSlab(parent, "GiantPillarCap", topPos, new Vector3(3.8f, 0.30f, 3.8f), _baseboardMat);
                     pillarCount++;
                 }
-                Debug.Log($"MPTRACE step=V30AFIX event=giant_pillars_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) count={pillarCount} height={h:F1}");
+                Trace($"MPTRACE step=V30AFIX event=giant_pillars_built chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) count={pillarCount} height={h:F1}");
             }
 
             string branchType = null;
@@ -892,8 +1409,451 @@ namespace BackroomsSurvival.Gameplay
 
             if (branchType != null)
             {
-                Debug.Log($"MPTRACE step=V30AFIX event=branch_layer_style_applied chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) branch_type={branchType} layer_y={LayerRootY(cv):F2}");
+                Trace($"MPTRACE step=V30AFIX event=branch_layer_style_applied chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) branch_type={branchType} layer_y={LayerRootY(cv):F2}");
             }
+        }
+
+        private void CreateInterLayerVolumes(Transform parent, ChunkViewMsg cv, float floorOffset)
+        {
+            // Legacy decorative VISFIX path. Disabled by default — the real 3D
+            // architecture now comes from the backend volumetric grid, rendered
+            // by BuildVolumetricChunk. Kept behind a flag for debugging only.
+            if (!enableLegacyInterLayerVolumes)
+                return;
+            if (cv.interLayerVolumes == null || cv.interLayerVolumes.Count == 0)
+                return;
+
+            int renderersBefore = CountMeshRenderers(parent);
+            int rendered = 0;
+            int debugMarkers = 0;
+            bool visfixShowcase = IsV30A2VisfixShowcaseChunk(cv);
+            bool materialValid = _floorMat != null && _ceilingMat != null && _trimMat != null &&
+                                 _pillarMat != null && _baseboardMat != null && _darkWallMat != null &&
+                                 _humidWallMat != null;
+            Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_material_valid chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) material_valid={materialValid} floor={(_floorMat != null)} trim={(_trimMat != null)} pillar={(_pillarMat != null)} wall={(_humidWallMat != null)}");
+
+            if (visfixShowcase)
+            {
+                int validationObjects = CreateV30A2VisfixShowcaseArchitecture(parent, cv, floorOffset);
+                Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_showcase_visible_ready chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) validation_scale_objects={validationObjects} world_seed={_worldSeed}");
+            }
+
+            foreach (var volume in cv.interLayerVolumes)
+            {
+                if (volume == null || string.IsNullOrEmpty(volume.kind))
+                    continue;
+
+                VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+                Vector3 worldPos = parent.TransformPoint(new Vector3((minX + maxX) * 0.5f, floorOffset, (minZ + maxZ) * 0.5f));
+                Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_volume_render_start volume_id={volume.volumeId} kind={volume.kind} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) flags={volume.visualFlags}");
+                Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_volume_world_position volume_id={volume.volumeId} kind={volume.kind} world=({worldPos.x:F1},{worldPos.y:F1},{worldPos.z:F1}) footprint=({minX:F1},{minZ:F1})..({maxX:F1},{maxZ:F1})");
+                Trace($"MPTRACE step=V30A2 event=vertical_volume_kind volume_id={volume.volumeId} kind={volume.kind} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+                Trace($"MPTRACE step=V30A2 event=vertical_volume_layers volume_id={volume.volumeId} layers=[{VolumeLayersLabel(volume)}] chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+                if (!string.IsNullOrEmpty(volume.futureAudioHint))
+                    Trace($"MPTRACE step=V30A2 event=future_audio_hint_registered volume_id={volume.volumeId} hint={volume.futureAudioHint} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+
+                switch (volume.kind)
+                {
+                    case "ATRIUM_STACK":
+                        CreateVolumeAtriumStack(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                    case "SERVICE_SHAFT":
+                        CreateVolumeServiceShaft(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                    case "STACKED_CORRIDOR_PAIR":
+                        CreateVolumeStackedCorridorPair(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                    case "OVERLOOK_ROOM":
+                        CreateVolumeOverlookRoom(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                    case "GIANT_PILLAR_SPAN":
+                        CreateVolumeGiantPillarSpan(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                    case "CEILING_ACTIVITY_ZONE":
+                        CreateVolumeCeilingActivityZone(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                    case "UNDERFLOOR_SERVICE_ZONE":
+                        CreateVolumeUnderfloorServiceZone(parent, cv, volume, floorOffset);
+                        rendered++;
+                        break;
+                }
+
+                if (IsV30A2VisfixDebugEnabled(cv))
+                    debugMarkers += CreateV30A2VisfixDebugMarkers(parent, cv, volume, floorOffset, minX, minZ, maxX, maxZ);
+            }
+
+            if (rendered > 0)
+            {
+                int rendererObjectsCreated = CountMeshRenderers(parent) - renderersBefore;
+                Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_objects_created chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) volumes_rendered={rendered} renderer_objects_created={rendererObjectsCreated} debug_markers={debugMarkers}");
+                Trace($"MPTRACE step=V30A2 event=unity_inter_layer_volumes_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) count={rendered}");
+            }
+        }
+
+        private static int CountMeshRenderers(Transform root)
+        {
+            return root.GetComponentsInChildren<MeshRenderer>(true).Length;
+        }
+
+        private bool IsV30A2VisfixDebugEnabled(ChunkViewMsg cv)
+        {
+            return V30A2VisfixDebugMarkersEnabled &&
+                   _worldSeed == V30A2VisfixSeed &&
+                   cv.interLayerVolumes != null &&
+                   cv.interLayerVolumes.Count > 0;
+        }
+
+        private bool IsV30A2VisfixShowcaseChunk(ChunkViewMsg cv)
+        {
+            return _worldSeed == V30A2VisfixSeed &&
+                   cv.pos[0] == V30A2VisfixConnectorX &&
+                   (cv.pos[1] == V30A2VisfixConnectorZ || cv.pos[1] == V30A2VisfixAtriumZ) &&
+                   (cv.layer == 0 || cv.layer == -1) &&
+                   cv.interLayerVolumes != null &&
+                   cv.interLayerVolumes.Count > 0;
+        }
+
+        private int CreateV30A2VisfixShowcaseArchitecture(Transform parent, ChunkViewMsg cv, float floorOffset)
+        {
+            int before = CountMeshRenderers(parent);
+            bool atrium = cv.pos[1] == V30A2VisfixAtriumZ;
+            float minX = atrium ? 6.0f : 10.0f;
+            float maxX = atrium ? 44.0f : 40.0f;
+            float minZ = atrium ? 6.0f : 3.5f;
+            float maxZ = atrium ? 44.0f : 46.5f;
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+            float shaftCenterY = cv.layer >= 0 ? floorOffset - LayerHeight * 0.5f : floorOffset + LayerHeight * 0.5f;
+            float lowerFloorY = cv.layer >= 0 ? floorOffset - LayerHeight + 0.08f : floorOffset + 0.06f;
+            float ceilingHintY = cv.layer >= 0 ? ceilingHeight - 0.24f : LayerHeight + ceilingHeight - 0.24f;
+
+            CreateSlab(parent, "V30A2_ShowcaseShaftWall_N", new Vector3(centerX, shaftCenterY, minZ), new Vector3(spanX + 1.6f, LayerHeight, 0.72f), _humidWallMat);
+            CreateSlab(parent, "V30A2_ShowcaseShaftWall_S", new Vector3(centerX, shaftCenterY, maxZ), new Vector3(spanX + 1.6f, LayerHeight, 0.72f), _humidWallMat);
+            CreateSlab(parent, "V30A2_ShowcaseShaftWall_W", new Vector3(minX, shaftCenterY, centerZ), new Vector3(0.72f, LayerHeight, spanZ + 1.6f), _humidWallMat);
+            CreateSlab(parent, "V30A2_ShowcaseShaftWall_E", new Vector3(maxX, shaftCenterY, centerZ), new Vector3(0.72f, LayerHeight, spanZ + 1.6f), _humidWallMat);
+
+            CreateSlab(parent, "V30A2_ShowcaseRim_N", new Vector3(centerX, floorOffset + 0.16f, minZ - 0.54f), new Vector3(spanX + 2.4f, 0.30f, 1.08f), _baseboardMat);
+            CreateSlab(parent, "V30A2_ShowcaseRim_S", new Vector3(centerX, floorOffset + 0.16f, maxZ + 0.54f), new Vector3(spanX + 2.4f, 0.30f, 1.08f), _baseboardMat);
+            CreateSlab(parent, "V30A2_ShowcaseRim_W", new Vector3(minX - 0.54f, floorOffset + 0.16f, centerZ), new Vector3(1.08f, 0.30f, spanZ + 2.4f), _baseboardMat);
+            CreateSlab(parent, "V30A2_ShowcaseRim_E", new Vector3(maxX + 0.54f, floorOffset + 0.16f, centerZ), new Vector3(1.08f, 0.30f, spanZ + 2.4f), _baseboardMat);
+
+            if (cv.layer >= 0)
+            {
+                CreateSlab(parent, "V30A2_ShowcaseRail_N", new Vector3(centerX, floorOffset + 0.82f, minZ - 0.88f), new Vector3(spanX + 1.6f, 1.38f, 0.34f), _trimMat);
+                CreateSlab(parent, "V30A2_ShowcaseRail_S", new Vector3(centerX, floorOffset + 0.82f, maxZ + 0.88f), new Vector3(spanX + 1.6f, 1.38f, 0.34f), _trimMat);
+                CreateSlab(parent, "V30A2_ShowcaseRail_W", new Vector3(minX - 0.88f, floorOffset + 0.82f, centerZ), new Vector3(0.34f, 1.38f, spanZ + 1.6f), _trimMat);
+                CreateSlab(parent, "V30A2_ShowcaseRail_E", new Vector3(maxX + 0.88f, floorOffset + 0.82f, centerZ), new Vector3(0.34f, 1.38f, spanZ + 1.6f), _trimMat);
+            }
+
+            foreach (var p in new[] { new Vector2(0.10f, 0.10f), new Vector2(0.90f, 0.10f), new Vector2(0.10f, 0.90f), new Vector2(0.90f, 0.90f) })
+            {
+                float x = Mathf.Lerp(minX, maxX, p.x);
+                float z = Mathf.Lerp(minZ, maxZ, p.y);
+                CreateSlab(parent, "V30A2_ShowcaseLayerSpanPillar", new Vector3(x, shaftCenterY, z), new Vector3(3.2f, LayerHeight + 0.6f, 3.2f), _pillarMat);
+                CreateSlab(parent, "V30A2_ShowcasePillarCapUpper", new Vector3(x, floorOffset + 0.18f, z), new Vector3(4.4f, 0.36f, 4.4f), _baseboardMat);
+                CreateSlab(parent, "V30A2_ShowcasePillarCapLower", new Vector3(x, lowerFloorY + 0.14f, z), new Vector3(4.2f, 0.28f, 4.2f), _baseboardMat);
+            }
+
+            CreateSlab(parent, "V30A2_ShowcaseLowerRoomFloor", new Vector3(centerX, lowerFloorY, centerZ), new Vector3(spanX * 0.82f, 0.10f, spanZ * 0.82f), _darkStainMat);
+            CreateSlab(parent, "V30A2_ShowcaseLowerRoomBackWall", new Vector3(centerX, lowerFloorY + wallHeight * 0.48f, maxZ - 0.65f), new Vector3(spanX * 0.74f, wallHeight * 0.96f, 0.48f), _darkWallMat);
+            CreateSlab(parent, "V30A2_ShowcaseLowerRoomSideWall", new Vector3(minX + 0.65f, lowerFloorY + wallHeight * 0.42f, centerZ), new Vector3(0.44f, wallHeight * 0.84f, spanZ * 0.62f), _darkWallMat);
+            CreateSlab(parent, "V30A2_ShowcaseDepthLightCue", new Vector3(centerX + spanX * 0.18f, lowerFloorY + 0.16f, centerZ - spanZ * 0.20f), new Vector3(spanX * 0.26f, 0.06f, 0.64f), _overlitMat);
+
+            CreateSlab(parent, "V30A2_ShowcaseCeilingActivity_X", new Vector3(centerX, ceilingHintY, centerZ), new Vector3(spanX * 0.88f, 0.20f, 0.42f), _ceilingSeamMat);
+            CreateSlab(parent, "V30A2_ShowcaseCeilingActivity_Z", new Vector3(centerX, ceilingHintY - 0.18f, centerZ), new Vector3(0.42f, 0.18f, spanZ * 0.88f), _ceilingSeamMat);
+            CreateSlab(parent, "V30A2_ShowcaseUnderfloorServiceTray", new Vector3(centerX, cv.layer >= 0 ? floorOffset - 0.55f : ceilingHeight + 0.34f, centerZ), new Vector3(spanX * 0.68f, 0.22f, 0.42f), _darkWallMat);
+            CreateSlab(parent, "V30A2_ShowcaseUnderfloorPipe", new Vector3(centerX - spanX * 0.28f, cv.layer >= 0 ? floorOffset - 0.86f : ceilingHeight + 0.06f, centerZ + spanZ * 0.18f), new Vector3(0.28f, 0.28f, spanZ * 0.56f), _humidWallMat);
+
+            if (!atrium)
+            {
+                CreateSlab(parent, "V30A2_ShowcaseStackedCorridorCue_L", new Vector3(minX + 1.8f, floorOffset + 0.10f, centerZ), new Vector3(0.56f, 0.20f, spanZ * 0.94f), _baseboardMat);
+                CreateSlab(parent, "V30A2_ShowcaseStackedCorridorCue_R", new Vector3(maxX - 1.8f, floorOffset + 0.10f, centerZ), new Vector3(0.56f, 0.20f, spanZ * 0.94f), _baseboardMat);
+                CreateSlab(parent, "V30A2_ShowcaseStackedCorridorOverhead", new Vector3(centerX, ceilingHintY - 0.38f, centerZ), new Vector3(spanX * 0.72f, 0.18f, 0.58f), _trimMat);
+            }
+
+            return CountMeshRenderers(parent) - before;
+        }
+
+        private int CreateV30A2VisfixDebugMarkers(
+            Transform parent,
+            ChunkViewMsg cv,
+            InterLayerVolumeMsg volume,
+            float floorOffset,
+            float minX,
+            float minZ,
+            float maxX,
+            float maxZ)
+        {
+            var root = new GameObject($"V30A2_DebugVolume_{volume.volumeId}_{volume.kind}");
+            root.transform.SetParent(parent, false);
+            root.transform.localPosition = Vector3.zero;
+
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+            float y = floorOffset + 0.32f;
+            float shaftCenterY = cv.layer >= 0 ? floorOffset - LayerHeight * 0.5f : floorOffset + LayerHeight * 0.5f;
+            int count = 0;
+
+            count += CreateMarkerSlab(root.transform, "Footprint_N", new Vector3(centerX, y, minZ), new Vector3(spanX, 0.12f, 0.16f), _v30a2DebugBoundaryMat);
+            count += CreateMarkerSlab(root.transform, "Footprint_S", new Vector3(centerX, y, maxZ), new Vector3(spanX, 0.12f, 0.16f), _v30a2DebugBoundaryMat);
+            count += CreateMarkerSlab(root.transform, "Footprint_W", new Vector3(minX, y, centerZ), new Vector3(0.16f, 0.12f, spanZ), _v30a2DebugBoundaryMat);
+            count += CreateMarkerSlab(root.transform, "Footprint_E", new Vector3(maxX, y, centerZ), new Vector3(0.16f, 0.12f, spanZ), _v30a2DebugBoundaryMat);
+            count += CreateMarkerSlab(root.transform, "VerticalSpan_Center", new Vector3(centerX, shaftCenterY, centerZ), new Vector3(0.38f, LayerHeight, 0.38f), _v30a2DebugSpanMat);
+
+            foreach (var p in new[] { new Vector2(minX, minZ), new Vector2(maxX, minZ), new Vector2(minX, maxZ), new Vector2(maxX, maxZ) })
+                count += CreateMarkerSlab(root.transform, "VerticalSpan_Corner", new Vector3(p.x, shaftCenterY, p.y), new Vector3(0.24f, LayerHeight, 0.24f), _v30a2DebugSpanMat);
+
+            count += CreateMarkerSlab(root.transform, "AnchorChunk", new Vector3(centerX, floorOffset + 1.80f, centerZ), new Vector3(1.6f, 1.6f, 1.6f), _v30a2DebugAnchorMat);
+            count += CreateMarkerSlab(root.transform, "ConnectionHint", new Vector3(centerX, floorOffset + 2.55f, Mathf.Min(chunkSize - 2.0f, centerZ + spanZ * 0.33f)), new Vector3(0.50f, 0.38f, Mathf.Max(3.0f, spanZ * 0.45f)), _v30a2DebugDirectionMat);
+
+            Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_debug_marker_created chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) volume_id={volume.volumeId} kind={volume.kind} marker_count={count}");
+            return count;
+        }
+
+        private int CreateMarkerSlab(Transform parent, string name, Vector3 pos, Vector3 scale, Material mat)
+        {
+            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            go.name = name;
+            go.transform.SetParent(parent, false);
+            go.transform.localPosition = pos;
+            go.transform.localScale = scale;
+            go.GetComponent<Renderer>().sharedMaterial = mat != null ? mat : _warningMat;
+            Destroy(go.GetComponent<Collider>());
+            return 1;
+        }
+
+        private void CreateVolumeAtriumStack(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+            float shaftHeight = LayerHeight;
+            float shaftY = cv.layer >= 0 ? floorOffset - shaftHeight * 0.5f : floorOffset + shaftHeight * 0.5f;
+
+            if (HasVolumeFlag(volume, VolumeVisAtriumWalls))
+            {
+                CreateSlab(parent, "VolumeAtriumWall_N", new Vector3(centerX, shaftY, minZ), new Vector3(spanX + 0.35f, shaftHeight, 0.30f), _humidWallMat);
+                CreateSlab(parent, "VolumeAtriumWall_S", new Vector3(centerX, shaftY, maxZ), new Vector3(spanX + 0.35f, shaftHeight, 0.30f), _humidWallMat);
+                CreateSlab(parent, "VolumeAtriumWall_W", new Vector3(minX, shaftY, centerZ), new Vector3(0.30f, shaftHeight, spanZ + 0.35f), _humidWallMat);
+                CreateSlab(parent, "VolumeAtriumWall_E", new Vector3(maxX, shaftY, centerZ), new Vector3(0.30f, shaftHeight, spanZ + 0.35f), _humidWallMat);
+                CreateSlab(parent, "VolumeAtriumCornerPost_NW", new Vector3(minX, shaftY, minZ), new Vector3(0.55f, shaftHeight, 0.55f), _pillarMat);
+                CreateSlab(parent, "VolumeAtriumCornerPost_SE", new Vector3(maxX, shaftY, maxZ), new Vector3(0.55f, shaftHeight, 0.55f), _pillarMat);
+            }
+
+            if (HasVolumeFlag(volume, VolumeVisRimTrims))
+                CreateVolumeRim(parent, minX, minZ, maxX, maxZ, floorOffset + 0.065f, _baseboardMat);
+            if (HasVolumeFlag(volume, VolumeVisRailings) && cv.layer >= 0)
+                CreateVolumeRail(parent, minX, minZ, maxX, maxZ, floorOffset + 0.72f, _trimMat);
+            if (HasVolumeFlag(volume, VolumeVisLowerRoomVisible) && cv.layer >= 0)
+                CreateLowerRoomDepthCue(parent, centerX, centerZ, spanX, spanZ, floorOffset - LayerHeight + 0.08f);
+            if (HasVolumeFlag(volume, VolumeVisCeilingHints) && cv.layer < 0)
+                CreateVolumeCeilingTrace(parent, centerX, centerZ, spanX, spanZ, ceilingHeight + 0.08f);
+
+            Trace($"MPTRACE step=V30A2 event=shared_opening_built source=unity volume_id={volume.volumeId} kind={volume.kind} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) footprint=({minX:F1},{minZ:F1})..({maxX:F1},{maxZ:F1})");
+            if (HasVolumeFlag(volume, VolumeVisLowerRoomVisible))
+                Trace($"MPTRACE step=V30A2 event=lower_room_visible_from_above source=unity volume_id={volume.volumeId} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) visible_from_layer={(cv.layer >= 0)}");
+        }
+
+        private void CreateVolumeServiceShaft(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+            float shaftHeight = LayerHeight;
+            float shaftY = cv.layer >= 0 ? floorOffset - shaftHeight * 0.5f : floorOffset + shaftHeight * 0.5f;
+
+            if (HasVolumeFlag(volume, VolumeVisShaftWalls))
+            {
+                CreateSlab(parent, "VolumeShaftWall_L", new Vector3(minX, shaftY, centerZ), new Vector3(0.34f, shaftHeight, spanZ), _darkWallMat);
+                CreateSlab(parent, "VolumeShaftWall_R", new Vector3(maxX, shaftY, centerZ), new Vector3(0.34f, shaftHeight, spanZ), _darkWallMat);
+                CreateSlab(parent, "VolumeShaftEndFrame_A", new Vector3(centerX, shaftY, minZ + 0.10f), new Vector3(spanX, shaftHeight, 0.24f), _humidWallMat);
+                CreateSlab(parent, "VolumeShaftEndFrame_B", new Vector3(centerX, shaftY, maxZ - 0.10f), new Vector3(spanX, shaftHeight, 0.24f), _humidWallMat);
+            }
+            if (HasVolumeFlag(volume, VolumeVisRailings))
+            {
+                CreateSlab(parent, "VolumeShaftRail_L", new Vector3(minX + 0.48f, floorOffset + 0.70f, centerZ), new Vector3(0.22f, 1.22f, spanZ * 0.94f), _trimMat);
+                CreateSlab(parent, "VolumeShaftRail_R", new Vector3(maxX - 0.48f, floorOffset + 0.70f, centerZ), new Vector3(0.22f, 1.22f, spanZ * 0.94f), _trimMat);
+            }
+            if (HasVolumeFlag(volume, VolumeVisRimTrims))
+            {
+                CreateSlab(parent, "VolumeShaftRim_A", new Vector3(centerX, floorOffset + 0.07f, minZ + 0.22f), new Vector3(spanX, 0.14f, 0.34f), _baseboardMat);
+                CreateSlab(parent, "VolumeShaftRim_B", new Vector3(centerX, floorOffset + 0.07f, maxZ - 0.22f), new Vector3(spanX, 0.14f, 0.34f), _baseboardMat);
+            }
+            if (HasVolumeFlag(volume, VolumeVisDepthCues))
+                CreateSlab(parent, "VolumeShaftDepthPlane", new Vector3(centerX, cv.layer >= 0 ? floorOffset - LayerHeight + 0.06f : floorOffset + LayerHeight - 0.06f, centerZ), new Vector3(spanX * 0.78f, 0.06f, spanZ * 0.80f), _darkStainMat);
+
+            Trace($"MPTRACE step=V30A2 event=shared_opening_built source=unity volume_id={volume.volumeId} kind={volume.kind} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+        }
+
+        private void CreateVolumeStackedCorridorPair(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanZ = maxZ - minZ;
+
+            if (HasVolumeFlag(volume, VolumeVisStackedAlignment))
+            {
+                CreateSlab(parent, "VolumeStackedAlignment_L", new Vector3(minX + 0.35f, floorOffset + 0.055f, centerZ), new Vector3(0.28f, 0.11f, spanZ * 0.92f), _baseboardMat);
+                CreateSlab(parent, "VolumeStackedAlignment_R", new Vector3(maxX - 0.35f, floorOffset + 0.055f, centerZ), new Vector3(0.28f, 0.11f, spanZ * 0.92f), _baseboardMat);
+                CreateSlab(parent, "VolumeStackedCeilingTrack", new Vector3(centerX, ceilingHeight - 0.45f, centerZ), new Vector3((maxX - minX) * 0.68f, 0.14f, 0.26f), _trimMat);
+            }
+            if (HasVolumeFlag(volume, VolumeVisCeilingHints))
+                CreateVolumeCeilingTrace(parent, centerX, centerZ, maxX - minX, spanZ, ceilingHeight - 0.14f);
+
+            Trace($"MPTRACE step=V30A2 event=stacked_corridor_pair_built source=unity volume_id={volume.volumeId} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+        }
+
+        private void CreateVolumeOverlookRoom(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+
+            if (HasVolumeFlag(volume, VolumeVisLowerRoomVisible) && cv.layer >= 0)
+            {
+                CreateLowerRoomDepthCue(parent, centerX, centerZ, spanX, spanZ, floorOffset - LayerHeight + 0.10f);
+                CreateSlab(parent, "VolumeLowerRoomBackWall", new Vector3(centerX, floorOffset - LayerHeight + wallHeight * 0.45f, maxZ - 0.20f), new Vector3(spanX * 0.82f, wallHeight * 0.9f, 0.20f), _humidWallMat);
+            }
+            if (HasVolumeFlag(volume, VolumeVisRailings) && cv.layer >= 0)
+                CreateVolumeRail(parent, minX, minZ, maxX, maxZ, floorOffset + 0.68f, _trimMat);
+            if (HasVolumeFlag(volume, VolumeVisRimTrims))
+                CreateVolumeRim(parent, minX, minZ, maxX, maxZ, floorOffset + 0.075f, _baseboardMat);
+
+            Trace($"MPTRACE step=V30A2 event=lower_room_visible_from_above source=unity volume_id={volume.volumeId} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+        }
+
+        private void CreateVolumeGiantPillarSpan(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float spanHeight = LayerHeight + ceilingHeight;
+            float centerY = cv.layer >= 0 ? floorOffset - LayerHeight * 0.5f : floorOffset + spanHeight * 0.5f;
+            int count = 0;
+            foreach (var p in new[] { new Vector2(0.18f, 0.18f), new Vector2(0.82f, 0.18f), new Vector2(0.18f, 0.82f), new Vector2(0.82f, 0.82f) })
+            {
+                float x = Mathf.Lerp(minX, maxX, p.x);
+                float z = Mathf.Lerp(minZ, maxZ, p.y);
+                CreateSlab(parent, "VolumePillarSpan", new Vector3(x, centerY, z), new Vector3(2.1f, spanHeight, 2.1f), _pillarMat);
+                CreateSlab(parent, "VolumePillarSpanCap", new Vector3(x, floorOffset + 0.10f, z), new Vector3(3.0f, 0.20f, 3.0f), _baseboardMat);
+                count++;
+            }
+            Trace($"MPTRACE step=V30A2 event=pillar_span_built source=unity volume_id={volume.volumeId} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) count={count}");
+        }
+
+        private void CreateVolumeCeilingActivityZone(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+
+            if (HasVolumeFlag(volume, VolumeVisCeilingHints))
+            {
+                CreateVolumeCeilingTrace(parent, centerX, centerZ, spanX, spanZ, ceilingHeight - 0.20f);
+                CreateSlab(parent, "VolumeCeilingActivityPanel_A", new Vector3(centerX - spanX * 0.18f, ceilingHeight - 0.42f, centerZ), new Vector3(spanX * 0.32f, 0.12f, 0.32f), _overlitMat);
+                CreateSlab(parent, "VolumeCeilingActivityPanel_B", new Vector3(centerX + spanX * 0.18f, ceilingHeight - 0.58f, centerZ + spanZ * 0.20f), new Vector3(spanX * 0.28f, 0.10f, 0.28f), _darkWallMat);
+            }
+            Trace($"MPTRACE step=V30A2 event=ceiling_activity_hint_built source=unity volume_id={volume.volumeId} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+        }
+
+        private void CreateVolumeUnderfloorServiceZone(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
+        {
+            VolumeFootprint(volume, out float minX, out float minZ, out float maxX, out float maxZ);
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+
+            if (HasVolumeFlag(volume, VolumeVisUnderfloorHints))
+            {
+                float y = cv.layer >= 0 ? floorOffset - 0.20f : ceilingHeight + 0.18f;
+                CreateSlab(parent, "VolumeUnderfloorGrate_A", new Vector3(centerX - spanX * 0.22f, floorOffset + 0.025f, centerZ), new Vector3(spanX * 0.18f, 0.05f, spanZ * 0.72f), _trimMat);
+                CreateSlab(parent, "VolumeUnderfloorGrate_B", new Vector3(centerX + spanX * 0.22f, floorOffset + 0.026f, centerZ), new Vector3(spanX * 0.18f, 0.05f, spanZ * 0.72f), _trimMat);
+                CreateSlab(parent, "VolumeUnderfloorCableTray", new Vector3(centerX, y, centerZ), new Vector3(spanX * 0.70f, 0.12f, 0.22f), _darkWallMat);
+                CreateSlab(parent, "VolumeUnderfloorPipe", new Vector3(centerX - spanX * 0.18f, y - 0.22f, centerZ + spanZ * 0.24f), new Vector3(0.18f, 0.18f, spanZ * 0.50f), _humidWallMat);
+            }
+            Trace($"MPTRACE step=V30A2 event=underfloor_service_hint_built source=unity volume_id={volume.volumeId} chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]})");
+        }
+
+        private static bool HasVolumeFlag(InterLayerVolumeMsg volume, int flag) => (volume.visualFlags & flag) != 0;
+
+        private static string VolumeLayersLabel(InterLayerVolumeMsg volume)
+        {
+            if (volume.involvedLayers == null || volume.involvedLayers.Length == 0)
+                return "";
+            return string.Join(",", volume.involvedLayers);
+        }
+
+        private static int ArrayAt(int[] values, int index, int fallback)
+        {
+            return values != null && index >= 0 && index < values.Length ? values[index] : fallback;
+        }
+
+        private static void VolumeFootprint(InterLayerVolumeMsg volume, out float minX, out float minZ, out float maxX, out float maxZ)
+        {
+            int minCellX = Mathf.Clamp(ArrayAt(volume.footprintCellMin, 0, 3), 0, GridCells - 1);
+            int minCellZ = Mathf.Clamp(ArrayAt(volume.footprintCellMin, 1, 3), 0, GridCells - 1);
+            int maxCellX = Mathf.Clamp(ArrayAt(volume.footprintCellMax, 0, 7), minCellX + 1, GridCells);
+            int maxCellZ = Mathf.Clamp(ArrayAt(volume.footprintCellMax, 1, 7), minCellZ + 1, GridCells);
+            minX = minCellX * CellSize;
+            minZ = minCellZ * CellSize;
+            maxX = maxCellX * CellSize;
+            maxZ = maxCellZ * CellSize;
+        }
+
+        private void CreateVolumeRim(Transform parent, float minX, float minZ, float maxX, float maxZ, float y, Material mat)
+        {
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+            CreateSlab(parent, "VolumeRim_N", new Vector3(centerX, y, minZ - 0.16f), new Vector3(spanX + 0.60f, 0.14f, 0.32f), mat);
+            CreateSlab(parent, "VolumeRim_S", new Vector3(centerX, y, maxZ + 0.16f), new Vector3(spanX + 0.60f, 0.14f, 0.32f), mat);
+            CreateSlab(parent, "VolumeRim_W", new Vector3(minX - 0.16f, y, centerZ), new Vector3(0.32f, 0.14f, spanZ + 0.60f), mat);
+            CreateSlab(parent, "VolumeRim_E", new Vector3(maxX + 0.16f, y, centerZ), new Vector3(0.32f, 0.14f, spanZ + 0.60f), mat);
+        }
+
+        private void CreateVolumeRail(Transform parent, float minX, float minZ, float maxX, float maxZ, float y, Material mat)
+        {
+            float centerX = (minX + maxX) * 0.5f;
+            float centerZ = (minZ + maxZ) * 0.5f;
+            float spanX = maxX - minX;
+            float spanZ = maxZ - minZ;
+            CreateSlab(parent, "VolumeRail_N", new Vector3(centerX, y, minZ - 0.36f), new Vector3(spanX + 0.30f, 1.12f, 0.22f), mat);
+            CreateSlab(parent, "VolumeRail_S", new Vector3(centerX, y, maxZ + 0.36f), new Vector3(spanX + 0.30f, 1.12f, 0.22f), mat);
+            CreateSlab(parent, "VolumeRail_W", new Vector3(minX - 0.36f, y, centerZ), new Vector3(0.22f, 1.12f, spanZ + 0.30f), mat);
+            CreateSlab(parent, "VolumeRail_E", new Vector3(maxX + 0.36f, y, centerZ), new Vector3(0.22f, 1.12f, spanZ + 0.30f), mat);
+        }
+
+        private void CreateLowerRoomDepthCue(Transform parent, float centerX, float centerZ, float spanX, float spanZ, float y)
+        {
+            CreateSlab(parent, "VolumeLowerRoomFloorVisible", new Vector3(centerX, y, centerZ), new Vector3(spanX * 0.82f, 0.06f, spanZ * 0.82f), _darkStainMat);
+            CreateSlab(parent, "VolumeLowerRoomFloorPatch", new Vector3(centerX - spanX * 0.15f, y + 0.07f, centerZ + spanZ * 0.18f), new Vector3(spanX * 0.36f, 0.04f, spanZ * 0.26f), _stainMat);
+            CreateSlab(parent, "VolumeLowerRoomLightCue", new Vector3(centerX + spanX * 0.20f, y + 0.10f, centerZ - spanZ * 0.20f), new Vector3(spanX * 0.22f, 0.035f, 0.28f), _overlitMat);
+        }
+
+        private void CreateVolumeCeilingTrace(Transform parent, float centerX, float centerZ, float spanX, float spanZ, float y)
+        {
+            CreateSlab(parent, "VolumeCeilingTrace_X", new Vector3(centerX, y, centerZ), new Vector3(spanX * 0.82f, 0.10f, 0.18f), _ceilingSeamMat);
+            CreateSlab(parent, "VolumeCeilingTrace_Z", new Vector3(centerX, y - 0.12f, centerZ), new Vector3(0.18f, 0.10f, spanZ * 0.82f), _ceilingSeamMat);
+            CreateSlab(parent, "VolumeCeilingPipe", new Vector3(centerX - spanX * 0.22f, y - 0.28f, centerZ), new Vector3(0.14f, 0.14f, spanZ * 0.62f), _trimMat);
         }
 
         private void CreateFloorStains(Transform parent, int templateId, Level0Profile profile)
@@ -2412,13 +3372,13 @@ namespace BackroomsSurvival.Gameplay
         private void LogEdgeChunkRenderSummary(ChunkViewMsg cv, bool edgeLayout, EdgeRenderCounts c)
         {
             int pillars = CountCellFlag(cv, CellPillar);
-            Debug.Log($"MPTRACE step=V27 event=unity_edge_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) template={cv.templateId} backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} cells={cv.cellFlags.Length} v_edges={cv.verticalEdges.Length} h_edges={cv.horizontalEdges.Length} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} partitions={c.partitions} false_doors={c.falseDoors} pillars={pillars} fallback={!edgeLayout}");
+            Trace($"MPTRACE step=V27 event=unity_edge_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) template={cv.templateId} backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} cells={cv.cellFlags.Length} v_edges={cv.verticalEdges.Length} h_edges={cv.horizontalEdges.Length} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} partitions={c.partitions} false_doors={c.falseDoors} pillars={pillars} fallback={!edgeLayout}");
         }
 
         private void LogSpawnChunkRendered(ChunkViewMsg cv, bool edgeLayout, EdgeRenderCounts c)
         {
             int pillars = CountCellFlag(cv, CellPillar);
-            Debug.Log($"MPTRACE step=V27 event=unity_spawn_chunk_rendered backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} pillars={pillars} fallback={!edgeLayout}");
+            Trace($"MPTRACE step=V27 event=unity_spawn_chunk_rendered backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} pillars={pillars} fallback={!edgeLayout}");
         }
 
         // ─────────────────────────────────────────────────────────────
@@ -2848,7 +3808,7 @@ namespace BackroomsSurvival.Gameplay
             for (int i = 0; i < toDestroy.Count; i++)
                 Destroy(toDestroy[i]);
 
-            Debug.Log($"MPTRACE step=V29 event=chunk_batch_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) batching={enableChunkMeshBatching} source_visuals={sourceVisuals} combined_meshes={combinedMeshes} material_buckets={buckets.Count} combined_vertices={verts} combined_indices={indices} generated_meshes_tracked={cleanup.Meshes.Count}");
+            Trace($"MPTRACE step=V29 event=chunk_batch_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) batching={enableChunkMeshBatching} source_visuals={sourceVisuals} combined_meshes={combinedMeshes} material_buckets={buckets.Count} combined_vertices={verts} combined_indices={indices} generated_meshes_tracked={cleanup.Meshes.Count}");
         }
 
         // ── Phase 2.9C: procedural tiling textures (generated once, shared) ──
@@ -2929,13 +3889,7 @@ namespace BackroomsSurvival.Gameplay
 
         private void OnDestroy()
         {
-            foreach (var go in _pool.Values)
-            {
-                if (go != null)
-                    Destroy(go);
-            }
-
-            _pool.Clear();
+            _lifecycle.DestroyAll();
         }
     }
 

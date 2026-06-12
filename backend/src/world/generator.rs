@@ -4,41 +4,28 @@
 //! Level 0 layout: corridor-based, connected graph, Backrooms-style.
 //! All generation is deterministic from world_seed.
 
-use std::collections::HashMap;
-
-use log::info;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use crate::player::inventory::Item;
-use crate::utils::{ChunkPos, Vec3, CHUNK_SIZE};
-use crate::world::chunk::{
-    Chunk, ChunkLayer, ChunkLayoutV1, ChunkState, DroppedItem, InterLayerVolumeKindV0,
-    InterLayerVolumeV0, CEILING_LOW_SERVICE, CEILING_NORMAL, CEILING_TALL_HALL, CELL_BLOCKED,
-    CELL_HAZARD, CELL_PILLAR, CELL_PIT, CELL_WALKABLE, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH,
-    EDGE_WEST, FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP, FLOOR_FLAT, LAYOUT_GRID_SIZE, LIGHT_DIM,
-    LIGHT_WARM, V30A_ATRIUM_VOID_ROOM, V30A_BLOCKED_VERTICAL_SHAFT, V30A_CONNECTOR,
-    V30A_DEEP_PRECIPICE_PLACEHOLDER, V30A_GIANT_PILLAR_HALL, V30A_LOWER_SERVICE_BRANCH,
-    V30A_STACKED_CORRIDOR, V30A_UPPER_OFFICE_BRANCH, VOLUME_VIS_ATRIUM_WALLS,
-    VOLUME_VIS_CEILING_HINTS, VOLUME_VIS_DEPTH_CUES, VOLUME_VIS_LOWER_ROOM_VISIBLE,
-    VOLUME_VIS_PILLAR_SPANS, VOLUME_VIS_RAILINGS, VOLUME_VIS_RIM_TRIMS, VOLUME_VIS_SHAFT_WALLS,
-    VOLUME_VIS_STACKED_ALIGNMENT, VOLUME_VIS_UNDERFLOOR_HINTS, ZONE_BLACKOUT, ZONE_CLEANING,
-    ZONE_DANGER, ZONE_HUMID, ZONE_MANILA, ZONE_NORMAL, ZONE_OPEN_HALL, ZONE_PILLAR_HALL, ZONE_PIT,
-    ZONE_RED, ZONE_SAFE, ZONE_STORAGE,
-};
+use crate::utils::ChunkPos;
+use crate::world::chunk::{Chunk, ChunkLayer, ChunkState};
 #[cfg(test)]
-use crate::world::chunk::{CELL_FALSE_DOOR, CELL_HALF_WALL, CELL_LOW_WALL};
-use crate::world::chunk::{EDGE_KIND_LOW_WALL, EDGE_KIND_OPEN};
+use crate::world::chunk::{
+    ChunkLayoutV1, InterLayerVolumeKindV0, InterLayerVolumeV0, CELL_BLOCKED, CELL_FALSE_DOOR,
+    CELL_HALF_WALL, CELL_LOW_WALL, CELL_WALKABLE, EDGE_EAST, EDGE_NORTH, EDGE_SOUTH, EDGE_WEST,
+    FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP, FLOOR_FLAT, LAYOUT_GRID_SIZE, V30A_ATRIUM_VOID_ROOM,
+    V30A_BLOCKED_VERTICAL_SHAFT, V30A_CONNECTOR, V30A_DEEP_PRECIPICE_PLACEHOLDER,
+    V30A_GIANT_PILLAR_HALL, V30A_LOWER_SERVICE_BRANCH, V30A_STACKED_CORRIDOR,
+    V30A_UPPER_OFFICE_BRANCH, VOLUME_VIS_LOWER_ROOM_VISIBLE, VOLUME_VIS_PILLAR_SPANS,
+    VOLUME_VIS_RAILINGS, VOLUME_VIS_RIM_TRIMS, VOLUME_VIS_SHAFT_WALLS,
+};
 
 use crate::world::architecture::collision_builder::{
     relocate_contents_to_safe_cells, reserve_starter_spawn_area, template_is_vertical,
 };
-use crate::world::architecture::surface_builder::{
-    edge_delta, finalize_level0_edges, perimeter_openings,
-};
+use crate::world::architecture::surface_builder::finalize_level0_edges;
 #[cfg(test)]
 use crate::world::chunk::{EDGE_KIND_ARCH, EDGE_KIND_DOOR};
-use crate::world::entity::{Entity, EntityType};
 
 #[cfg(test)]
 use crate::world::architecture::collision_builder::{item_cell_blocked, world_to_cell};
@@ -55,116 +42,30 @@ use crate::world::levels::level_0::builder::Level0Builder;
 // callers reach templates via the architecture facade (see architecture/mod.rs),
 // not through generator.
 use crate::world::architecture::layout_grammars::{
-    TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_CLEANING_AREA, TEMPLATE_DEAD_END,
-    TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
-    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM,
-    TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC,
-    TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_DEAD_END, TEMPLATE_HALLWAY_CORNER,
+    TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE, TEMPLATE_INTERSECTION,
+    TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER,
+    TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
 };
 
-const V30A2_VISFIX_SEED: u64 = 7778;
-const V30A2_VISFIX_CONNECTOR: ChunkPos = (1, 3);
-const V30A2_VISFIX_ATRIUM: ChunkPos = (1, 4);
-const V30A2_VISFIX_TARGET_LAYER: ChunkLayer = -1;
-
-pub use crate::world::levels::level_0::structure::{StructureType, StructureV0};
+pub use crate::world::levels::level_0::structure::StructureV0;
 
 // ─── ID generation ───
-pub use crate::world::architecture::chunk_generator::{
-    chunk_seed, chunk_seed_layer, next_entity_id_pub,
-};
+pub use crate::world::architecture::chunk_generator::{chunk_seed_layer, next_entity_id_pub};
 // MIG-2: build_chunk_layout is re-exported from the architecture facade
 // (architecture/mod.rs); generator consumes it through that canonical path and no
 // longer re-exports it itself.
 use crate::world::architecture::build_chunk_layout;
 
-fn stable_u32(world_seed: u64, pos: ChunkPos, salt: u64, index: u32) -> u32 {
-    let mut h = chunk_seed(world_seed ^ salt, pos);
-    h ^= (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    h ^= h >> 32;
-    ((h & 0x7FFF_FFFF) as u32).max(1)
-}
+// MIG-5a: ID helpers moved to architecture/chunk_generator.rs. (MIG-5f moved
+// stable_volume_id's only consumer to levels/level_0/v30a_showcase.rs, which
+// now imports it from its canonical home.)
+pub(crate) use crate::world::architecture::chunk_generator::{fisher_yates, structure_id};
 
-pub(crate) fn stable_entity_id(world_seed: u64, pos: ChunkPos, index: u32) -> u32 {
-    stable_u32(world_seed, pos, 0xE17E_0001, index)
-}
-
-pub(crate) fn stable_item_id(world_seed: u64, pos: ChunkPos, index: u32) -> u32 {
-    stable_u32(world_seed, pos, 0x17E0_0002, index)
-}
-
-fn stable_volume_id(world_seed: u64, pos: ChunkPos, layer: ChunkLayer, index: u32) -> u32 {
-    let layer_salt = (layer as i64 as u64)
-        .wrapping_mul(0xA30A_2001_5EED_0001)
-        .rotate_left(11);
-    stable_u32(world_seed, pos, 0xA30A_2002 ^ layer_salt, index)
-}
-
-pub(crate) fn structure_id(world_seed: u64, index: u32) -> u32 {
-    stable_u32(
-        world_seed,
-        (index as i32, -(index as i32)),
-        0x57A7_C700,
-        index,
-    )
-}
-
-// ─── Direction helpers (0=E, 1=N, 2=W, 3=S) ───
-
-pub(crate) fn dir_delta(dir: u8) -> ChunkPos {
-    match dir % 4 {
-        0 => (1, 0),
-        1 => (0, 1),
-        2 => (-1, 0),
-        _ => (0, -1),
-    }
-}
-
-/// Rotation for hallway_straight: 0 = N/S open, 90 = E/W open.
-pub(crate) fn straight_rotation(dir: u8) -> u16 {
-    if dir % 2 == 0 {
-        90
-    } else {
-        0
-    }
-}
-
-/// Rotation for hallway_corner connecting entry_wall and exit_wall.
-/// Walls: 0=E, 1=N, 2=W, 3=S. Entry wall = opposite of walking dir.
-pub(crate) fn corner_rotation(from_dir: u8, to_dir: u8) -> u16 {
-    let entry_wall = (from_dir + 2) % 4;
-    let exit_wall = to_dir;
-    let (a, b) = if entry_wall < exit_wall {
-        (entry_wall, exit_wall)
-    } else {
-        (exit_wall, entry_wall)
-    };
-    match (a, b) {
-        (0, 1) => 0,   // {E, N}
-        (0, 3) => 90,  // {E, S}
-        (2, 3) => 180, // {W, S}
-        (1, 2) => 270, // {N, W}
-        _ => 0,
-    }
-}
-
-/// Rotation for hallway_t: determines which wall is closed.
-/// Base (rot 0) = W closed. rot 90 = N closed. rot 180 = E closed. rot 270 = S closed.
-pub(crate) fn t_junction_rotation(closed_wall: u8) -> u16 {
-    match closed_wall % 4 {
-        0 => 180,
-        1 => 90,
-        2 => 0,
-        _ => 270,
-    }
-}
-
-pub(crate) fn fisher_yates(slice: &mut [usize], rng: &mut StdRng) {
-    for i in (1..slice.len()).rev() {
-        let j = rng.gen_range(0..=i);
-        slice.swap(i, j);
-    }
-}
+// MIG-5b: direction/rotation helpers moved to architecture/layout_grammars.rs.
+pub(crate) use crate::world::architecture::layout_grammars::{
+    corner_rotation, dir_delta, straight_rotation, t_junction_rotation,
+};
 
 // ─── Structure generation (Level 0 V1) ───
 
@@ -306,220 +207,19 @@ fn generate_initial_structure_chunks_inner(
     out
 }
 
-pub(crate) fn structure_bounds(chunks: &[ChunkPos]) -> (i32, i32, i32, i32) {
-    let mut min_x = chunks[0].0;
-    let mut min_z = chunks[0].1;
-    let mut max_x = chunks[0].0;
-    let mut max_z = chunks[0].1;
-    for &(x, z) in chunks {
-        min_x = min_x.min(x);
-        min_z = min_z.min(z);
-        max_x = max_x.max(x);
-        max_z = max_z.max(z);
-    }
-    (min_x, min_z, max_x, max_z)
-}
+// MIG-5c: structure helpers moved to levels/level_0/structure.rs.
+pub(crate) use crate::world::levels::level_0::structure::{structure_bounds, structure_zone_kind};
 
-fn structure_zone_kind(structure_type: StructureType, template_id: u8) -> u8 {
-    match structure_type {
-        StructureType::StorageRoom => ZONE_STORAGE,
-        StructureType::SafeRoom | StructureType::StarterCluster => ZONE_SAFE,
-        StructureType::DangerRoom => ZONE_DANGER,
-        StructureType::OpenHall => ZONE_OPEN_HALL,
-        StructureType::PillarRoom | StructureType::PillarHall => ZONE_PILLAR_HALL,
-        StructureType::HumidZone => ZONE_HUMID,
-        StructureType::BlackoutZone => ZONE_BLACKOUT,
-        StructureType::ManilaRoom => ZONE_MANILA,
-        StructureType::CleaningArea => ZONE_CLEANING,
-        StructureType::RedRoom => ZONE_RED,
-        StructureType::PitRoom => ZONE_PIT,
-        StructureType::StackedCorridor => ZONE_NORMAL,
-        StructureType::LowerServiceBranch => ZONE_CLEANING,
-        StructureType::UpperOfficeBranch => ZONE_MANILA,
-        StructureType::AtriumVoidRoom => ZONE_OPEN_HALL,
-        StructureType::DeepPrecipicePlaceholder => ZONE_PIT,
-        StructureType::GiantPillarHall => ZONE_PILLAR_HALL,
-        StructureType::PoiLandmark => ZONE_OPEN_HALL,
-        StructureType::PoiAnomalyCluster => ZONE_NORMAL,
-        StructureType::PoiDangerPocket => ZONE_DANGER,
-        StructureType::PoiSafePocket => ZONE_MANILA,
-        _ => crate::world::architecture::layout_grammars::template_zone_kind(template_id),
-    }
-}
+// MIG-5g: seed-7778 VISFIX overlay (constants, structure builder, upsert and
+// MPTRACE logging) moved to levels/level_0/visfix_7778.rs. The overlay entry
+// points keep their exact call sites in generate_initial_structure_chunks_inner.
+use crate::world::levels::level_0::visfix_7778::{
+    apply_seed_7778_visfix_overlay, log_seed_7778_visfix_generation,
+};
 
-fn seed_7778_visfix_structure(world_seed: u64) -> StructureV0 {
-    let chunks = vec![
-        V30A2_VISFIX_CONNECTOR,
-        V30A2_VISFIX_CONNECTOR,
-        V30A2_VISFIX_ATRIUM,
-        V30A2_VISFIX_ATRIUM,
-    ];
-    let layers = vec![0, V30A2_VISFIX_TARGET_LAYER, 0, V30A2_VISFIX_TARGET_LAYER];
-    let (min_x, min_z, max_x, max_z) = structure_bounds(&chunks);
-    StructureV0 {
-        id: structure_id(world_seed, 30_020),
-        structure_type: StructureType::StackedCorridor,
-        origin: V30A2_VISFIX_CONNECTOR,
-        origin_layer: 0,
-        size: [
-            (max_x - min_x + 1).clamp(1, u8::MAX as i32) as u8,
-            (max_z - min_z + 1).clamp(1, u8::MAX as i32) as u8,
-        ],
-        seed: chunk_seed_layer(world_seed, V30A2_VISFIX_CONNECTOR, 0),
-        chunks,
-        layers,
-        tags: vec![
-            "macro",
-            "v30a_multilayer_showcase",
-            "v30a2_visfix_showcase",
-            "seed_7778_validation",
-        ],
-        chunk_overrides: vec![
-            (TEMPLATE_OPEN_HALL, 0),
-            (TEMPLATE_CLEANING_AREA, 0),
-            (TEMPLATE_OPEN_HALL, 0),
-            (TEMPLATE_PILLAR_ROOM, 0),
-        ],
-    }
-}
-
-fn apply_structure_metadata(structure: &StructureV0, chunk: &mut Chunk, index: usize) {
-    let (min_x, min_z, max_x, max_z) = structure_bounds(&structure.chunks);
-    chunk.layout.macro_id = structure.id;
-    chunk.layout.zone_kind = structure_zone_kind(structure.structure_type, chunk.template_id);
-    chunk.layout.macro_local = [
-        (chunk.pos.0 - min_x).clamp(0, u8::MAX as i32) as u8,
-        (chunk.pos.1 - min_z).clamp(0, u8::MAX as i32) as u8,
-    ];
-    chunk.layout.macro_size = [
-        (max_x - min_x + 1).clamp(1, u8::MAX as i32) as u8,
-        (max_z - min_z + 1).clamp(1, u8::MAX as i32) as u8,
-    ];
-    if structure.tags.contains(&"v30a2_visfix_showcase") {
-        chunk.teleport_timer = f32::MAX;
-        chunk.entities.clear();
-        chunk.items.clear();
-        info!(
-            "MPTRACE step=V30A2 event=v30a2_visfix_backend_volume_chunk chunk=({},{},{}) structure_id={} chunk_index={} macro_local=({},{})",
-            chunk.pos.0,
-            chunk.layer,
-            chunk.pos.1,
-            structure.id,
-            index,
-            chunk.layout.macro_local[0],
-            chunk.layout.macro_local[1]
-        );
-    }
-}
-
-fn upsert_seed_7778_visfix_chunk(
-    out: &mut Vec<(StructureV0, Chunk)>,
-    structure: &StructureV0,
-    index: usize,
-    world_seed: u64,
-) {
-    let pos = structure.chunks[index];
-    let layer = structure.chunk_layer(index);
-    let mut chunk = generate_structure_chunk(world_seed, pos, layer, structure, index as u32);
-    apply_structure_metadata(structure, &mut chunk, index);
-
-    if let Some((existing_structure, existing_chunk)) = out
-        .iter_mut()
-        .find(|(_, c)| c.pos == pos && c.layer == layer)
-    {
-        *existing_structure = structure.clone();
-        *existing_chunk = chunk;
-    } else {
-        out.push((structure.clone(), chunk));
-    }
-}
-
-fn apply_seed_7778_visfix_overlay(world_seed: u64, out: &mut Vec<(StructureV0, Chunk)>) {
-    if world_seed != V30A2_VISFIX_SEED {
-        return;
-    }
-
-    info!(
-        "MPTRACE step=V30A2 event=v30a2_visfix_backend_seed_7778_active mode=validation_overlay connector=({},{},{}) atrium=({},{},{})",
-        V30A2_VISFIX_CONNECTOR.0,
-        0,
-        V30A2_VISFIX_CONNECTOR.1,
-        V30A2_VISFIX_ATRIUM.0,
-        V30A2_VISFIX_TARGET_LAYER,
-        V30A2_VISFIX_ATRIUM.1
-    );
-
-    let structure = seed_7778_visfix_structure(world_seed);
-    for index in 0..structure.chunks.len() {
-        upsert_seed_7778_visfix_chunk(out, &structure, index, world_seed);
-    }
-}
-
-fn log_seed_7778_visfix_generation(world_seed: u64, chunks: &[(StructureV0, Chunk)]) {
-    if world_seed != V30A2_VISFIX_SEED {
-        return;
-    }
-
-    let volume_count: usize = chunks
-        .iter()
-        .map(|(_, c)| c.layout.inter_layer_volumes.len())
-        .sum();
-    let volume_chunks = chunks
-        .iter()
-        .filter(|(_, c)| !c.layout.inter_layer_volumes.is_empty())
-        .count();
-    info!(
-        "MPTRACE step=V30A2 event=v30a2_visfix_backend_volume_count seed={} volumes={} volume_chunks={} generated_chunks={}",
-        world_seed,
-        volume_count,
-        volume_chunks,
-        chunks.len()
-    );
-
-    for (_, chunk) in chunks
-        .iter()
-        .filter(|(_, c)| !c.layout.inter_layer_volumes.is_empty())
-    {
-        let dist_from_spawn = chunk.pos.0.abs().max(chunk.pos.1.abs());
-        info!(
-            "MPTRACE step=V30A2 event=v30a2_visfix_backend_volume_chunk chunk=({},{},{}) volumes={} layer_y={:.2} visible_radius_5={}",
-            chunk.pos.0,
-            chunk.layer,
-            chunk.pos.1,
-            chunk.layout.inter_layer_volumes.len(),
-            crate::world::chunk::layer_y(chunk.layer),
-            dist_from_spawn <= 5
-        );
-    }
-
-    for pos in [V30A2_VISFIX_CONNECTOR, (-5, -1)] {
-        let dist_from_spawn = pos.0.abs().max(pos.1.abs());
-        info!(
-            "MPTRACE step=V30A2 event=v30a2_visfix_backend_visible_radius_check chunk=({},{}) dist_from_spawn={} ownership_radius=5 visible={}",
-            pos.0,
-            pos.1,
-            dist_from_spawn,
-            dist_from_spawn <= 5
-        );
-    }
-
-    let connector_world = crate::utils::chunk_center(V30A2_VISFIX_CONNECTOR);
-    let original_world = crate::utils::chunk_center((-5, -1));
-    info!(
-        "MPTRACE step=V30A2 event=v30a2_visfix_backend_showcase_world_position validation_chunk=({},{},{}) validation_world=({:.1},{:.1},{:.1}) original_chunk=(-5,0,-1) original_world=({:.1},{:.1},{:.1}) spawn_world=(25.0,1.8,25.0)",
-        V30A2_VISFIX_CONNECTOR.0,
-        0,
-        V30A2_VISFIX_CONNECTOR.1,
-        connector_world.x,
-        0.0,
-        connector_world.z,
-        original_world.x,
-        0.0,
-        original_world.z
-    );
-}
-
-fn generate_structure_chunk(
+// MIG-5g: pub(crate) so the VISFIX upsert (its only external caller, in
+// levels/level_0/visfix_7778.rs) can keep building structure chunks.
+pub(crate) fn generate_structure_chunk(
     world_seed: u64,
     pos: ChunkPos,
     layer: ChunkLayer,
@@ -539,193 +239,8 @@ fn generate_structure_chunk(
 
     apply_v30a_layout(world_seed, &mut chunk, structure, chunk_index);
 
-    let depth = (pos.0.abs() + pos.1.abs()) as f32;
-
-    // Apply structure-type-specific content (items, entities)
-    match structure.structure_type {
-        StructureType::StarterCluster => {
-            chunk.entities.clear();
-            if pos == (0, 0) {
-                chunk.items = vec![
-                    dropped_item(world_seed, pos, 0, Item::Food, 1, 18.0, 18.0),
-                    dropped_item(world_seed, pos, 1, Item::Water, 1, 32.0, 30.0),
-                ];
-            } else {
-                chunk.items = vec![dropped_item(world_seed, pos, 0, Item::Food, 1, 20.0, 20.0)];
-            }
-        }
-        StructureType::HallwayChain | StructureType::HallwayT => {
-            if depth < 3.0 {
-                chunk.entities.clear();
-                chunk.items.truncate(1);
-            } else if depth < 7.0 {
-                chunk.entities.truncate(1);
-                chunk.items.truncate(1);
-            } else {
-                chunk.entities.truncate(2);
-                chunk.items.truncate(1);
-            }
-        }
-        StructureType::Intersection => {
-            chunk.entities.truncate(1);
-            chunk.items.truncate(2);
-        }
-        StructureType::StorageRoom => {
-            chunk.has_workbench = true;
-            chunk.entities.clear();
-            chunk.items = vec![
-                dropped_item(world_seed, pos, 0, Item::Metal, 2, 12.0, 12.0),
-                dropped_item(world_seed, pos, 1, Item::Circuit, 1, 18.0, 34.0),
-                dropped_item(world_seed, pos, 2, Item::Battery, 1, 35.0, 18.0),
-                dropped_item(world_seed, pos, 3, Item::Tool, 1, 37.0, 37.0),
-            ];
-        }
-        StructureType::SafeRoom => {
-            chunk.has_workbench = true;
-            chunk.entities.clear();
-            chunk.items = vec![
-                dropped_item(world_seed, pos, 0, Item::Food, 2, 16.0, 16.0),
-                dropped_item(world_seed, pos, 1, Item::Medicine, 1, 31.0, 31.0),
-            ];
-        }
-        StructureType::DeadEnd => {
-            chunk.entities.truncate(1);
-            chunk.items = vec![dropped_item(world_seed, pos, 0, Item::Cable, 2, 25.0, 34.0)];
-        }
-        StructureType::DangerRoom => {
-            chunk.entities = vec![
-                Entity::new(
-                    stable_entity_id(world_seed, pos, 0),
-                    EntityType::Shadow,
-                    local_pos_in_chunk(pos, 25.0, 25.0),
-                ),
-                Entity::new(
-                    stable_entity_id(world_seed, pos, 1),
-                    EntityType::Crawler,
-                    local_pos_in_chunk(pos, 35.0, 20.0),
-                ),
-            ];
-            chunk.items = vec![dropped_item(
-                world_seed,
-                pos,
-                0,
-                Item::Battery,
-                1,
-                14.0,
-                36.0,
-            )];
-        }
-        StructureType::PillarRoom | StructureType::PillarHall | StructureType::OpenHall => {
-            if depth < 5.0 {
-                chunk.entities.clear();
-            } else {
-                chunk.entities.truncate(1);
-            }
-            chunk.items.truncate(2);
-        }
-        StructureType::HumidZone => {
-            chunk.entities.truncate(if depth < 6.0 { 0 } else { 1 });
-            chunk.items = vec![
-                dropped_item(world_seed, pos, 0, Item::Cable, 1, 18.0, 22.0),
-                dropped_item(world_seed, pos, 1, Item::Water, 1, 33.0, 28.0),
-            ];
-        }
-        StructureType::ArchRoom => {
-            chunk.entities.clear();
-            chunk.items.truncate(1);
-        }
-        StructureType::BlackoutZone => {
-            chunk.entities.truncate(2);
-            if chunk.entities.is_empty() && depth >= 6.0 {
-                chunk.entities = vec![Entity::new(
-                    stable_entity_id(world_seed, pos, 0),
-                    EntityType::Lurker,
-                    local_pos_in_chunk(pos, 30.0, 30.0),
-                )];
-            }
-            chunk.items.truncate(1);
-        }
-        StructureType::RedRoom => {
-            chunk.entities.truncate(if depth < 10.0 { 0 } else { 1 });
-            chunk.items.truncate(1);
-        }
-        StructureType::ManilaRoom => {
-            chunk.entities.clear();
-            chunk.items.truncate(1);
-        }
-        StructureType::CleaningArea => {
-            chunk.entities.clear();
-            chunk.items = vec![
-                dropped_item(world_seed, pos, 0, Item::Water, 1, 16.0, 18.0),
-                dropped_item(world_seed, pos, 1, Item::Tool, 1, 34.0, 31.0),
-                dropped_item(world_seed, pos, 2, Item::Cable, 1, 28.0, 38.0),
-            ];
-        }
-        StructureType::PitRoom => {
-            chunk.entities.truncate(if depth < 7.0 { 0 } else { 1 });
-            chunk.items.truncate(1);
-        }
-        StructureType::StackedCorridor
-        | StructureType::LowerServiceBranch
-        | StructureType::UpperOfficeBranch
-        | StructureType::AtriumVoidRoom
-        | StructureType::DeepPrecipicePlaceholder
-        | StructureType::GiantPillarHall => {
-            chunk.entities.clear();
-            chunk.items.clear();
-        }
-        StructureType::PoiLandmark => {
-            // Memorable landmark room: no entities, one battery as a remnant.
-            chunk.entities.clear();
-            chunk.items = vec![dropped_item(
-                world_seed,
-                pos,
-                0,
-                Item::Battery,
-                1,
-                22.0,
-                32.0,
-            )];
-        }
-        StructureType::PoiAnomalyCluster => {
-            // Disorienting cluster: shadowy presence at depth, sparse loot.
-            if depth >= 5.0 {
-                chunk.entities = vec![Entity::new(
-                    stable_entity_id(world_seed, pos, 0),
-                    EntityType::Shadow,
-                    local_pos_in_chunk(pos, 28.0, 28.0),
-                )];
-            } else {
-                chunk.entities.clear();
-            }
-            chunk.items.truncate(1);
-        }
-        StructureType::PoiDangerPocket => {
-            // Danger pocket: hostile entity + hazard loot (deep only).
-            chunk.entities = vec![Entity::new(
-                stable_entity_id(world_seed, pos, 0),
-                EntityType::Crawler,
-                local_pos_in_chunk(pos, 20.0, 20.0),
-            )];
-            chunk.items = vec![dropped_item(
-                world_seed,
-                pos,
-                0,
-                Item::Medicine,
-                1,
-                38.0,
-                38.0,
-            )];
-        }
-        StructureType::PoiSafePocket => {
-            // Safe pocket: clear of entities, has food/water.
-            chunk.entities.clear();
-            chunk.items = vec![
-                dropped_item(world_seed, pos, 0, Item::Food, 1, 18.0, 25.0),
-                dropped_item(world_seed, pos, 1, Item::Water, 1, 34.0, 25.0),
-            ];
-        }
-    }
+    // MIG-5e: per-structure-type content match moved to levels/level_0/content.rs.
+    apply_structure_content(world_seed, pos, &mut chunk, structure);
 
     // Phase 2.6: structure items/entities use fixed local coordinates that can
     // land inside walls once the grammar layout is applied. Snap them onto safe
@@ -734,553 +249,46 @@ fn generate_structure_chunk(
     chunk
 }
 
-fn inter_layer_layers(target_layer: ChunkLayer) -> Vec<ChunkLayer> {
-    vec![0, target_layer]
-}
+// MIG-5e: content-spawn helpers and match block moved to
+// levels/level_0/content.rs.
+use crate::world::levels::level_0::content::{
+    apply_structure_content, spawn_entities, spawn_resources,
+};
 
-fn inter_layer_volume(
-    world_seed: u64,
-    base_chunk: ChunkPos,
-    target_layer: ChunkLayer,
-    index: u32,
-    kind: InterLayerVolumeKindV0,
-    footprint_cell_min: [u8; 2],
-    footprint_cell_max: [u8; 2],
-    safety_type: &str,
-    future_audio_hint: &str,
-    visual_flags: u32,
-    visual_hints: &[&str],
-) -> InterLayerVolumeV0 {
-    InterLayerVolumeV0 {
-        volume_id: stable_volume_id(world_seed, base_chunk, 0, index),
-        kind,
-        base_chunk: [base_chunk.0, base_chunk.1],
-        involved_layers: inter_layer_layers(target_layer),
-        footprint_cell_min,
-        footprint_cell_max,
-        safety_type: safety_type.into(),
-        future_audio_hint: future_audio_hint.into(),
-        visual_flags,
-        visual_hints: visual_hints.iter().map(|hint| (*hint).into()).collect(),
-    }
-}
-
-fn push_inter_layer_volume(layout: &mut ChunkLayoutV1, volume: InterLayerVolumeV0) {
-    info!(
-        "MPTRACE step=V30A2 event=inter_layer_volume_created volume_id={} kind={} base_chunk=({},{}) footprint_cells=({},{})..({},{}) safety_type={} visual_flags={}",
-        volume.volume_id,
-        volume.kind.as_str(),
-        volume.base_chunk[0],
-        volume.base_chunk[1],
-        volume.footprint_cell_min[0],
-        volume.footprint_cell_min[1],
-        volume.footprint_cell_max[0],
-        volume.footprint_cell_max[1],
-        volume.safety_type,
-        volume.visual_flags
-    );
-    info!(
-        "MPTRACE step=V30A2 event=vertical_volume_kind volume_id={} kind={}",
-        volume.volume_id,
-        volume.kind.as_str()
-    );
-    info!(
-        "MPTRACE step=V30A2 event=vertical_volume_layers volume_id={} layers={:?}",
-        volume.volume_id, volume.involved_layers
-    );
-    if !volume.future_audio_hint.is_empty() {
-        info!(
-            "MPTRACE step=V30A2 event=future_audio_hint_registered volume_id={} hint={}",
-            volume.volume_id, volume.future_audio_hint
-        );
-    }
-
-    match volume.kind {
-        InterLayerVolumeKindV0::AtriumStack | InterLayerVolumeKindV0::ServiceShaft => {
-            info!(
-                "MPTRACE step=V30A2 event=shared_opening_built volume_id={} kind={} base_chunk=({},{}) layers={:?}",
-                volume.volume_id,
-                volume.kind.as_str(),
-                volume.base_chunk[0],
-                volume.base_chunk[1],
-                volume.involved_layers
-            );
-        }
-        InterLayerVolumeKindV0::StackedCorridorPair => {
-            info!(
-                "MPTRACE step=V30A2 event=stacked_corridor_pair_built volume_id={} base_chunk=({},{}) layers={:?}",
-                volume.volume_id,
-                volume.base_chunk[0],
-                volume.base_chunk[1],
-                volume.involved_layers
-            );
-        }
-        InterLayerVolumeKindV0::OverlookRoom => {
-            info!(
-                "MPTRACE step=V30A2 event=lower_room_visible_from_above volume_id={} base_chunk=({},{}) layers={:?}",
-                volume.volume_id,
-                volume.base_chunk[0],
-                volume.base_chunk[1],
-                volume.involved_layers
-            );
-        }
-        InterLayerVolumeKindV0::GiantPillarSpan => {
-            info!(
-                "MPTRACE step=V30A2 event=pillar_span_built volume_id={} base_chunk=({},{}) layers={:?}",
-                volume.volume_id,
-                volume.base_chunk[0],
-                volume.base_chunk[1],
-                volume.involved_layers
-            );
-        }
-        InterLayerVolumeKindV0::CeilingActivityZone => {
-            info!(
-                "MPTRACE step=V30A2 event=ceiling_activity_hint_built volume_id={} base_chunk=({},{}) layers={:?}",
-                volume.volume_id,
-                volume.base_chunk[0],
-                volume.base_chunk[1],
-                volume.involved_layers
-            );
-        }
-        InterLayerVolumeKindV0::UnderfloorServiceZone => {
-            info!(
-                "MPTRACE step=V30A2 event=underfloor_service_hint_built volume_id={} base_chunk=({},{}) layers={:?}",
-                volume.volume_id,
-                volume.base_chunk[0],
-                volume.base_chunk[1],
-                volume.involved_layers
-            );
-        }
-    }
-
-    layout.inter_layer_volumes.push(volume);
-}
-
-fn add_connector_inter_layer_volumes(world_seed: u64, chunk: &mut Chunk, target_layer: ChunkLayer) {
-    let base = chunk.pos;
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            0,
-            InterLayerVolumeKindV0::ServiceShaft,
-            [2, 0],
-            [8, 10],
-            "BACKEND_AUTHORED_VISUAL_NO_FALL",
-            "service_shaft_hum_from_lower_layer",
-            VOLUME_VIS_SHAFT_WALLS
-                | VOLUME_VIS_RAILINGS
-                | VOLUME_VIS_RIM_TRIMS
-                | VOLUME_VIS_DEPTH_CUES,
-            &["shaft_walls", "railing_runs", "matched_receiving_space"],
-        ),
-    );
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            1,
-            InterLayerVolumeKindV0::StackedCorridorPair,
-            [2, 0],
-            [8, 10],
-            "BACKEND_AUTHORED_ALIGNMENT",
-            "stacked_corridor_air_path",
-            VOLUME_VIS_STACKED_ALIGNMENT | VOLUME_VIS_RIM_TRIMS | VOLUME_VIS_CEILING_HINTS,
-            &["matching_corridor_axis", "ceiling_floor_alignment"],
-        ),
-    );
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            2,
-            InterLayerVolumeKindV0::UnderfloorServiceZone,
-            [1, 1],
-            [9, 9],
-            "VISUAL_HINT_ONLY",
-            "underfloor_service_void",
-            VOLUME_VIS_UNDERFLOOR_HINTS | VOLUME_VIS_DEPTH_CUES,
-            &["open_floor_service_grates", "subfloor_cable_trays"],
-        ),
-    );
-}
-
-fn add_atrium_inter_layer_volumes(world_seed: u64, chunk: &mut Chunk, target_layer: ChunkLayer) {
-    let base = chunk.pos;
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            10,
-            InterLayerVolumeKindV0::AtriumStack,
-            [3, 3],
-            [7, 7],
-            "BACKEND_AUTHORED_BLOCKED_SHAFT_NO_FALL",
-            "atrium_vertical_reverb",
-            VOLUME_VIS_ATRIUM_WALLS
-                | VOLUME_VIS_LOWER_ROOM_VISIBLE
-                | VOLUME_VIS_RAILINGS
-                | VOLUME_VIS_RIM_TRIMS
-                | VOLUME_VIS_DEPTH_CUES,
-            &["shared_opening", "shaft_wall_panels", "lower_room_cues"],
-        ),
-    );
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            11,
-            InterLayerVolumeKindV0::OverlookRoom,
-            [2, 2],
-            [8, 8],
-            "VISUAL_OVERLOOK_WITH_RAILING",
-            "lower_room_floor_reflection",
-            VOLUME_VIS_LOWER_ROOM_VISIBLE
-                | VOLUME_VIS_RAILINGS
-                | VOLUME_VIS_RIM_TRIMS
-                | VOLUME_VIS_DEPTH_CUES,
-            &[
-                "visible_lower_room",
-                "overlook_railings",
-                "depth_floor_patch",
-            ],
-        ),
-    );
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            12,
-            InterLayerVolumeKindV0::GiantPillarSpan,
-            [1, 1],
-            [9, 9],
-            "STRUCTURAL_VISUAL_SUPPORT",
-            "pillar_span_occlusion",
-            VOLUME_VIS_PILLAR_SPANS | VOLUME_VIS_DEPTH_CUES,
-            &[
-                "layer_spanning_pillars",
-                "pillar_caps_visible_across_layers",
-            ],
-        ),
-    );
-    push_inter_layer_volume(
-        &mut chunk.layout,
-        inter_layer_volume(
-            world_seed,
-            base,
-            target_layer,
-            13,
-            InterLayerVolumeKindV0::CeilingActivityZone,
-            [1, 1],
-            [9, 9],
-            "VISUAL_HINT_ONLY",
-            "muffled_ceiling_activity",
-            VOLUME_VIS_CEILING_HINTS | VOLUME_VIS_STACKED_ALIGNMENT,
-            &["ceiling_service_panels", "upper_layer_activity_hint"],
-        ),
-    );
-}
-
-fn apply_v30a_layout(
-    world_seed: u64,
-    chunk: &mut Chunk,
-    structure: &StructureV0,
-    chunk_index: u32,
-) {
-    if !structure.tags.contains(&"v30a_multilayer_showcase") {
-        return;
-    }
-
-    let target_layer = structure
-        .layers
-        .iter()
-        .copied()
-        .find(|layer| *layer != 0)
-        .unwrap_or(if world_seed % 2 == 0 { -1 } else { 1 });
-    let branch_flag = if target_layer > 0 {
-        V30A_UPPER_OFFICE_BRANCH
-    } else {
-        V30A_LOWER_SERVICE_BRANCH
-    };
-
-    chunk.entities.clear();
-    chunk.items.clear();
-    chunk.teleport_timer = f32::MAX;
-
-    match chunk_index {
-        0 => {
-            chunk.layout = connector_layout(target_layer);
-            chunk.template_id = TEMPLATE_OPEN_HALL;
-            chunk.rotation = 0;
-            chunk.layout.floor_profile = if target_layer > 0 {
-                FLOOR_CONNECTOR_UP
-            } else {
-                FLOOR_CONNECTOR_DOWN
-            };
-            chunk.layout.ceiling_profile = CEILING_TALL_HALL;
-            chunk.layout.light_profile = LIGHT_WARM;
-            chunk.layout.vertical_flags |= V30A_CONNECTOR | branch_flag | V30A_STACKED_CORRIDOR;
-            add_connector_inter_layer_volumes(world_seed, chunk, target_layer);
-        }
-        1 => {
-            chunk.layout.vertical_flags |= V30A_STACKED_CORRIDOR | branch_flag;
-            chunk.layout.floor_profile = FLOOR_FLAT;
-            chunk.layout.floor_level = 0;
-            chunk.layout.ceiling_profile = if target_layer > 0 {
-                CEILING_NORMAL
-            } else {
-                CEILING_LOW_SERVICE
-            };
-            chunk.layout.light_profile = if target_layer > 0 {
-                LIGHT_WARM
-            } else {
-                LIGHT_DIM
-            };
-            add_connector_inter_layer_volumes(world_seed, chunk, target_layer);
-        }
-        2 => {
-            chunk.template_id = TEMPLATE_OPEN_HALL;
-            chunk.layout = build_chunk_layout(TEMPLATE_OPEN_HALL, 0);
-            mark_railed_vertical_opening(&mut chunk.layout, true);
-            chunk.layout.ceiling_profile = CEILING_TALL_HALL;
-            chunk.layout.vertical_flags |= V30A_ATRIUM_VOID_ROOM
-                | V30A_DEEP_PRECIPICE_PLACEHOLDER
-                | V30A_BLOCKED_VERTICAL_SHAFT;
-            add_atrium_inter_layer_volumes(world_seed, chunk, target_layer);
-        }
-        _ => {
-            chunk.template_id = TEMPLATE_PILLAR_ROOM;
-            chunk.layout = build_chunk_layout(TEMPLATE_PILLAR_ROOM, 0);
-            mark_giant_pillars(&mut chunk.layout);
-            chunk.layout.ceiling_profile = CEILING_TALL_HALL;
-            chunk.layout.vertical_flags |=
-                V30A_GIANT_PILLAR_HALL | V30A_STACKED_CORRIDOR | branch_flag;
-            add_atrium_inter_layer_volumes(world_seed, chunk, target_layer);
-        }
-    }
-}
-
-fn connector_layout(target_layer: ChunkLayer) -> ChunkLayoutV1 {
-    let size = LAYOUT_GRID_SIZE as usize;
-    let mut layout = ChunkLayoutV1::new(vec![CELL_WALKABLE; size * size], 0, ZONE_OPEN_HALL);
-    layout.ceiling_profile = CEILING_TALL_HALL;
-    layout.light_profile = LIGHT_WARM;
-
-    for z in 0..size {
-        layout.set_edge_v(2, z, EDGE_KIND_LOW_WALL);
-        layout.set_edge_v(size - 2, z, EDGE_KIND_LOW_WALL);
-    }
-    for x in 3..=6 {
-        layout.set_edge_h(x, 0, EDGE_KIND_OPEN);
-        layout.set_edge_h(x, size, EDGE_KIND_OPEN);
-    }
-
-    layout.floor_profile = if target_layer > 0 {
-        FLOOR_CONNECTOR_UP
-    } else {
-        FLOOR_CONNECTOR_DOWN
-    };
-    layout.vertical_flags = V30A_CONNECTOR | V30A_STACKED_CORRIDOR;
-    layout.edge_openings = perimeter_openings(&layout);
-    layout
-}
-
-fn mark_railed_vertical_opening(layout: &mut ChunkLayoutV1, deep_precipice: bool) {
-    let g = layout.grid_size as usize;
-    let start = 3usize;
-    let end = (g - 3).max(start + 1);
-    for z in start..end {
-        for x in start..end {
-            if let Some(idx) = layout.cell_index(x, z) {
-                layout.cells[idx] = CELL_WALKABLE | CELL_PIT | CELL_HAZARD;
-            }
-        }
-    }
-    for z in start..end {
-        layout.set_edge_v(start, z, EDGE_KIND_LOW_WALL);
-        layout.set_edge_v(end, z, EDGE_KIND_LOW_WALL);
-    }
-    for x in start..end {
-        layout.set_edge_h(x, start, EDGE_KIND_LOW_WALL);
-        layout.set_edge_h(x, end, EDGE_KIND_LOW_WALL);
-    }
-    layout.floor_profile = FLOOR_FLAT;
-    layout.vertical_flags |= V30A_ATRIUM_VOID_ROOM | V30A_BLOCKED_VERTICAL_SHAFT;
-    if deep_precipice {
-        layout.vertical_flags |= V30A_DEEP_PRECIPICE_PLACEHOLDER;
-        layout.anomaly_flags |= 1 << 4;
-    }
-}
-
-fn mark_giant_pillars(layout: &mut ChunkLayoutV1) {
-    let positions = [(2usize, 2usize), (7, 2), (2, 7), (7, 7)];
-    for (x, z) in positions {
-        if let Some(idx) = layout.cell_index(x, z) {
-            layout.cells[idx] = CELL_WALKABLE | CELL_PILLAR;
-        }
-    }
-    layout.floor_profile = FLOOR_FLAT;
-    layout.vertical_flags |= V30A_GIANT_PILLAR_HALL;
-}
-
-fn dropped_item(
-    world_seed: u64,
-    pos: ChunkPos,
-    index: u32,
-    item: Item,
-    count: u16,
-    local_x: f32,
-    local_z: f32,
-) -> DroppedItem {
-    DroppedItem {
-        id: stable_item_id(world_seed, pos, index),
-        item,
-        quantity: count,
-        position: local_pos_in_chunk(pos, local_x, local_z),
-    }
-}
-fn random_pos_in_chunk(pos: ChunkPos, rng: &mut StdRng) -> Vec3 {
-    let base_x = pos.0 as f32 * CHUNK_SIZE;
-    let base_z = pos.1 as f32 * CHUNK_SIZE;
-
-    Vec3::new(
-        rng.gen_range(base_x + 2.0..base_x + CHUNK_SIZE - 2.0),
-        0.0,
-        rng.gen_range(base_z + 2.0..base_z + CHUNK_SIZE - 2.0),
-    )
-}
-
-fn local_pos_in_chunk(pos: ChunkPos, local_x: f32, local_z: f32) -> Vec3 {
-    Vec3::new(
-        pos.0 as f32 * CHUNK_SIZE + local_x,
-        0.0,
-        pos.1 as f32 * CHUNK_SIZE + local_z,
-    )
-}
-
-fn spawn_resources(world_seed: u64, pos: ChunkPos, rng: &mut StdRng) -> Vec<DroppedItem> {
-    let mut items = Vec::new();
-    let mut next_index = 0u32;
-
-    let mut place = |items: &mut Vec<DroppedItem>, item: Item, count: u16, item_pos: Vec3| {
-        items.push(DroppedItem {
-            id: stable_item_id(world_seed, pos, next_index),
-            item,
-            quantity: count,
-            position: item_pos,
-        });
-        next_index += 1;
-    };
-
-    for _ in 0..rng.gen_range(1..=5) {
-        place(&mut items, Item::Metal, 1, random_pos_in_chunk(pos, rng));
-    }
-    for _ in 0..rng.gen_range(1..=3) {
-        place(&mut items, Item::Circuit, 1, random_pos_in_chunk(pos, rng));
-    }
-    for _ in 0..rng.gen_range(1..=2) {
-        place(&mut items, Item::Battery, 1, random_pos_in_chunk(pos, rng));
-    }
-    for _ in 0..rng.gen_range(1..=3) {
-        place(&mut items, Item::Food, 1, random_pos_in_chunk(pos, rng));
-    }
-    for _ in 0..rng.gen_range(1..=3) {
-        place(&mut items, Item::Water, 1, random_pos_in_chunk(pos, rng));
-    }
-
-    items
-}
+// MIG-5f: V30A showcase layout + inter-layer volume builders moved to
+// levels/level_0/v30a_showcase.rs.
+use crate::world::levels::level_0::v30a_showcase::apply_v30a_layout;
 
 #[cfg(test)]
 pub use crate::world::levels::level_0::ascii_export::export_level0_ascii;
 
-fn spawn_entities(world_seed: u64, pos: ChunkPos, rng: &mut StdRng) -> Vec<Entity> {
-    let count = rng.gen_range(3..=5);
-    let mut entities = Vec::with_capacity(count);
-    for index in 0..count {
-        let etype = match rng.gen_range(0..10) {
-            0..=4 => EntityType::Lurker,
-            5..=7 => EntityType::Crawler,
-            _ => EntityType::Shadow,
-        };
-        let spawn_pos = random_pos_in_chunk(pos, rng);
-        entities.push(Entity::new(
-            stable_entity_id(world_seed, pos, index as u32),
-            etype,
-            spawn_pos,
-        ));
-    }
-    entities
-}
-
 // ─── Graph topology query ───
 
-/// Core logic: derives proven structure connections from already-generated
-/// chunk data without calling any generator function.
-///
-/// For each chunk, any `edge_openings` bit pointing to a same-layer neighbor
-/// with a different `macro_id` becomes a proven inter-structure connection.
-/// Returns `(min_id, max_id)` pairs, sorted and deduplicated.
-pub(crate) fn level0_proven_structure_connections_from_generated(
-    generated: &[(StructureV0, Chunk)],
-) -> Vec<(u32, u32)> {
-    let mut pos_to_macro: HashMap<(i32, i8, i32), u32> = HashMap::with_capacity(generated.len());
-    for (_, chunk) in generated {
-        pos_to_macro.insert(chunk.key(), chunk.layout.macro_id);
-    }
+// MIG-5d: graph topology queries moved to levels/level_0/region_graph_builder.rs.
+// Re-exported for tests in region_graph_builder.rs that import from generator.
+#[cfg(test)]
+pub(crate) use crate::world::levels::level_0::region_graph_builder::{
+    level0_proven_structure_connections, level0_proven_structure_connections_from_generated,
+};
 
-    const EDGES: [u8; 4] = [EDGE_NORTH, EDGE_EAST, EDGE_SOUTH, EDGE_WEST];
+// ─── Test-only re-exports (needed by `use super::*` in mod tests) ───
 
-    let mut connections: Vec<(u32, u32)> = Vec::new();
-    for (_, chunk) in generated {
-        let sa = chunk.layout.macro_id;
-        let (cx, cl, cz) = chunk.key();
-        for &edge in &EDGES {
-            if chunk.layout.edge_openings & edge == 0 {
-                continue;
-            }
-            let (dx, dz) = edge_delta(edge);
-            let nbr = (cx + dx, cl, cz + dz);
-            if let Some(&sb) = pos_to_macro.get(&nbr) {
-                if sb != sa {
-                    connections.push((sa.min(sb), sa.max(sb)));
-                }
-            }
-        }
-    }
-
-    connections.sort_unstable();
-    connections.dedup();
-    connections
-}
-
-/// Returns structure-pair connections proven by finalized chunk-boundary
-/// edge openings.  Only horizontal same-layer connections are included;
-/// vertical/inter-layer connections are out of scope for this query.
-///
-/// For each chunk in the finalized Level 0 world, any `edge_openings` bit
-/// pointing to a present same-layer neighbor with a different `macro_id`
-/// becomes a proven inter-structure connection.  Pairs are returned as
-/// `(min_id, max_id)`, sorted and deduplicated.
-///
-/// Wrapper: generates chunk data then delegates to
-/// [`level0_proven_structure_connections_from_generated`].
-pub(crate) fn level0_proven_structure_connections(world_seed: u64) -> Vec<(u32, u32)> {
-    let generated = generate_initial_structure_chunks(world_seed);
-    level0_proven_structure_connections_from_generated(&generated)
-}
+#[cfg(test)]
+use crate::player::inventory::Item;
+#[cfg(test)]
+use crate::utils::{Vec3, CHUNK_SIZE};
+#[cfg(test)]
+pub(crate) use crate::world::architecture::chunk_generator::{
+    chunk_seed, stable_entity_id, stable_item_id,
+};
+#[cfg(test)]
+use crate::world::architecture::surface_builder::edge_delta;
+#[cfg(test)]
+use crate::world::chunk::DroppedItem;
+#[cfg(test)]
+use crate::world::entity::{Entity, EntityType};
+#[cfg(test)]
+pub use crate::world::levels::level_0::structure::StructureType;
 
 // ─── Tests ───
 
@@ -1644,7 +652,8 @@ mod tests {
                 return true;
             }
             for side in 0..4u8 {
-                if crate::world::chunk::edge_blocks_movement(layout.cell_side_edge(x, z, side)) {
+                if crate::world::collision::edge_blocks_movement(layout.cell_side_edge(x, z, side))
+                {
                     continue;
                 }
                 let next = match side {

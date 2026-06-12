@@ -12,16 +12,36 @@ use log::info;
 
 use crate::utils::{world_to_chunk, Vec3, CHUNK_SIZE};
 use crate::world::chunk::{
-    edge_blocks_movement, layer_y, layered_chunk_pos, ChunkLayer, ChunkLayoutV1, LayeredChunkPos,
-    CELL_ANOMALY, CELL_BLOCKED, CELL_HAZARD, CELL_PILLAR, CELL_PIT, CELL_RAMP, CELL_SAFE,
-    CELL_WALKABLE, CELL_WALL, EDGE_KIND_FALSE_DOOR, EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL,
-    EDGE_KIND_OPEN, EDGE_KIND_PARTITION, FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP, FLOOR_FLAT,
+    layer_y, layered_chunk_pos, ChunkLayer, ChunkLayoutV1, LayeredChunkPos, CELL_ANOMALY,
+    CELL_BLOCKED, CELL_HAZARD, CELL_PILLAR, CELL_PIT, CELL_RAMP, CELL_SAFE, CELL_WALKABLE,
+    CELL_WALL, EDGE_KIND_FALSE_DOOR, EDGE_KIND_HALF_WALL, EDGE_KIND_LOW_WALL, EDGE_KIND_OPEN,
+    EDGE_KIND_PARTITION, EDGE_KIND_WALL, FLOOR_CONNECTOR_DOWN, FLOOR_CONNECTOR_UP, FLOOR_FLAT,
 };
 use crate::world::World;
 
 pub const PLAYER_RADIUS: f32 = 0.35;
 const PLAYER_BASE_Y: f32 = 1.8;
 const FLOOR_LEVEL_HEIGHT: f32 = 1.5;
+
+/// Whether an edge kind blocks player movement across the boundary.
+pub fn edge_blocks_movement(kind: u8) -> bool {
+    matches!(
+        kind,
+        EDGE_KIND_WALL
+            | EDGE_KIND_LOW_WALL
+            | EDGE_KIND_HALF_WALL
+            | EDGE_KIND_PARTITION
+            | EDGE_KIND_FALSE_DOOR
+    )
+}
+
+/// Whether an edge kind is rendered as a full-height solid wall face.
+pub fn edge_is_full_wall(kind: u8) -> bool {
+    matches!(
+        kind,
+        EDGE_KIND_WALL | EDGE_KIND_PARTITION | EDGE_KIND_FALSE_DOOR
+    )
+}
 
 /// Extra clearance required around a spawn capsule beyond the player radius.
 pub const SPAWN_CLEARANCE_MARGIN: f32 = 0.20;
@@ -580,12 +600,12 @@ fn cell_for_pos(
 
 #[cfg(test)]
 mod tests {
+    use super::edge_blocks_movement as ebm;
     use super::*;
     use crate::utils::chunk_center;
     use crate::world::architecture::{build_chunk_layout, TEMPLATE_ROOM_BASIC};
     use crate::world::chunk::{
-        edge_blocks_movement as ebm, EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_WALL,
-        FLOOR_RAMP_NORTH_SOUTH, LAYOUT_GRID_SIZE,
+        EDGE_KIND_ARCH, EDGE_KIND_DOOR, EDGE_KIND_WALL, FLOOR_RAMP_NORTH_SOUTH, LAYOUT_GRID_SIZE,
     };
     use crate::world::generator::generate_chunk;
     use crate::world::World;
