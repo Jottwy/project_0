@@ -52,6 +52,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
                         var cells = GridChunkData.FromBytes(File.ReadAllBytes(path));
                         float side = GridConstants.ChunkCells * GridConstants.CellSize;
+                        // Stack layers LayerHeight (15 m) apart. Rooms are a fixed
+                        // 4 m tall (ADR-001 tile system), well under the 15 m
+                        // pitch, so layers never overlap in Y — the historical
+                        // overlap was the old variable ceiling height (up to
+                        // 6 units × 2.5 m = 15 m) reaching the layer above.
                         var origin = new Vector3(
                             cx * side,
                             layer * GridConstants.LayerHeight,
