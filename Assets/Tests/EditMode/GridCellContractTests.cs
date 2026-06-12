@@ -57,5 +57,33 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(GridCellType.Wall, cell.Kind);
             Assert.IsTrue(cell.IsSolid);
         }
+
+        [Test]
+        public void ChunkBytesParseLittleEndianZoneIds()
+        {
+            var data = new byte[GridChunkData.ChunkByteSize];
+            // Cell 0: Open, ceiling 4, zone 0x0102 (LE: 02 01).
+            data[0] = 2;
+            data[1] = 4;
+            data[2] = 0x02;
+            data[3] = 0x01;
+
+            var cells = GridChunkData.FromBytes(data);
+            Assert.AreEqual(GridConstants.ChunkCells * GridConstants.ChunkCells, cells.Length);
+            Assert.AreEqual(GridCellType.Open, cells[0].Kind);
+            Assert.AreEqual(4, cells[0].ceilingHeight);
+            Assert.AreEqual(0x0102, cells[0].zoneId);
+            // Untouched bytes are Wall(0,0,0).
+            Assert.AreEqual(GridCellType.Wall, cells[1].Kind);
+        }
+
+        [Test]
+        public void ChunkBytesRejectWrongPayloadSize()
+        {
+            Assert.Throws<System.ArgumentException>(
+                () => GridChunkData.FromBytes(new byte[10]));
+            Assert.Throws<System.ArgumentException>(
+                () => GridChunkData.FromBytes(null));
+        }
     }
 }

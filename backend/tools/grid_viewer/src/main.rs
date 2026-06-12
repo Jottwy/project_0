@@ -13,7 +13,8 @@
 //!   --scale    píxeles por celda (default: 10)
 //!   --out      directorio de salida (default: viz_out junto al CWD)
 //!   --mode     single = un chunk; layers = 4 capas lado a lado;
-//!              mosaic = 3×3 chunks fusionados; all = layers + mosaics (default)
+//!              mosaic = 3×3 chunks fusionados; all = layers + mosaics (default);
+//!              export = bytes binarios por chunk (3×3 × 4 capas) para Unity Fase 3
 
 // Código fuente REAL del motor — mismos archivos .rs que compila backrooms_server.
 #[path = "../../../src/world/grid_gen/mod.rs"]
@@ -136,6 +137,25 @@ fn render_mosaic(seed: u64, center: (i32, i32), layer: i32, scale: u32) -> RgbIm
     img
 }
 
+/// Vista (d): export binario por chunk para la escena de prueba Unity (Fase 3).
+///
+/// Formato (contrato con GridChunkData.FromBytes en C#):
+///   400 celdas row-major (z * CHUNK_CELLS + x), 4 bytes por celda:
+///   cell_type u8, ceiling_height u8, zone_id u16 little-endian. Sin cabecera.
+fn export_chunk_bytes(seed: u64, chunk: (i32, i32), layer: i32, path: &str) {
+    let grid = chunk_grid(seed, chunk, layer);
+    let mut bytes = Vec::with_capacity(CHUNK_CELLS * CHUNK_CELLS * 4);
+    for z in 0..CHUNK_CELLS {
+        for x in 0..CHUNK_CELLS {
+            let c = grid.get(x, z);
+            bytes.push(c.cell_type);
+            bytes.push(c.ceiling_height);
+            bytes.extend_from_slice(&c.zone_id.to_le_bytes());
+        }
+    }
+    std::fs::write(path, bytes).unwrap();
+}
+
 fn main() {
     let args = parse_args();
     std::fs::create_dir_all(&args.out).expect("no se pudo crear el directorio de salida");
@@ -174,6 +194,21 @@ fn main() {
                     let path = format!("{}/seed{seed}_mosaic3x3_layer{layer}.png", args.out);
                     render_mosaic(seed, args.chunk, layer, args.scale).save(&path).unwrap();
                     written.push(path);
+                }
+            }
+            "export" => {
+                for layer in 0..LAYER_PROFILES.len() as i32 {
+                    for dz in -1..=1i32 {
+                        for dx in -1..=1i32 {
+                            let chunk = (cx + dx, cz + dz);
+                            let path = format!(
+                                "{}/seed{seed}_layer{layer}_chunk{}_{}.bytes",
+                                args.out, chunk.0, chunk.1
+                            );
+                            export_chunk_bytes(seed, chunk, layer, &path);
+                            written.push(path);
+                        }
+                    }
                 }
             }
             m => panic!("modo desconocido: {m}"),
