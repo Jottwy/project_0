@@ -4,6 +4,9 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.GridWorld
 {
     /// <summary>
+    /// DEPRECATED: replaced by tile-based prefab placement in GridChunkBuilder
+    /// (ADR-001 tile system). Kept for reference until Phase 5.
+    ///
     /// Wall meshing for Wall cells (§6 of BACKROOMS_GRID_SYSTEM.md).
     ///
     /// Pairs of x-adjacent Wall cells with matching north/south insets fuse

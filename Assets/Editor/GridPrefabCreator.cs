@@ -55,32 +55,31 @@ namespace BackroomsSurvival.EditorTools
 
         // ---- prefab builders -------------------------------------------------
 
-        /// <summary>Floor panel covering one cell, top face at y = 0.</summary>
+        /// <summary>Floor panel covering one 5 m tile, top face at y = 0.</summary>
         private static GameObject BuildFloor(Material mat)
         {
-            float cs = GridConstants.CellSize;
             var root = new GameObject("Floor");
             var floor = Box("Floor", root, mat,
-                new Vector3(0, -0.04f, 0), new Vector3(cs, 0.08f, cs));
+                new Vector3(0, -0.04f, 0),
+                new Vector3(GridVisualConstants.TileSize, 0.08f, GridVisualConstants.TileSize));
             floor.isStatic = true;
             return root;
         }
 
-        /// <summary>Ceiling panel covering one cell at the fixed 4 m room height.</summary>
+        /// <summary>Ceiling panel covering one 5 m tile at the fixed 4 m room height.</summary>
         private static GameObject BuildCeiling(Material mat)
         {
-            float cs = GridConstants.CellSize;
             var root = new GameObject("Ceiling");
             var ceiling = Box("Ceiling", root, mat,
                 new Vector3(0, 2f * GridVisualConstants.CellHeight + 0.04f, 0),
-                new Vector3(cs, 0.08f, cs));
+                new Vector3(GridVisualConstants.TileSize, 0.08f, GridVisualConstants.TileSize));
             ceiling.isStatic = true;
             return root;
         }
 
         /// <summary>
-        /// Reference wall cube (material/visual reference only — real walls
-        /// come out of WallGreedyMesher as one mesh per chunk).
+        /// Wall tile piece (5×4×0.2 m). GridChunkBuilder instantiates one per
+        /// tile edge that needs a wall — no procedural mesh.
         /// </summary>
         private static GameObject BuildWall(Material mat)
         {
@@ -91,26 +90,26 @@ namespace BackroomsSurvival.EditorTools
             return root;
         }
 
-        /// <summary>Column. Child "Shaft" is scaled by the builder to reach the cell ceiling.</summary>
+        /// <summary>Column 0.7 m thick, authored at the uniform 4 m room height.</summary>
         private static GameObject BuildPillar(Material mat)
         {
-            float cs = GridConstants.CellSize;
             var root = new GameObject("Pillar");
             Box("Shaft", root, mat,
-                new Vector3(0, cs, 0), new Vector3(0.7f, 2 * cs, 0.7f));
+                new Vector3(0, GridVisualConstants.CellHeight, 0),
+                new Vector3(0.7f, 2f * GridVisualConstants.CellHeight, 0.7f));
             return root;
         }
 
         /// <summary>
-        /// Lip along one cell edge bordering a Void. Authored on the +z edge;
-        /// the builder rotates it to the actual border side.
+        /// Lip along one tile edge bordering a hole (5 m long). Authored on the
+        /// +z edge; the builder rotates it to the actual border side.
         /// </summary>
         private static GameObject BuildVoidEdge(Material mat)
         {
-            float cs = GridConstants.CellSize;
             var root = new GameObject("VoidEdge");
             Box("Lip", root, mat,
-                new Vector3(0, 0.1f, cs / 2f - 0.125f), new Vector3(cs, 0.2f, 0.25f));
+                new Vector3(0, 0.1f, GridVisualConstants.TileSize / 2f - 0.125f),
+                new Vector3(GridVisualConstants.TileSize, 0.2f, 0.25f));
             return root;
         }
 
