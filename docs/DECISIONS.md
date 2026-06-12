@@ -31,6 +31,7 @@ Decidir: modelar la colisión de celdas Wall como slab fino de 0.2 m para casar 
 Estado: propuesta, pendiente de validar.
 Contexto: grid_gen tiene perfiles por capa hardcodeados (densidad de muros, zonas, voids) y LayerHeight fijo a 15 m.
 Decidir: exponer densidad de muros por capa, % de conexiones entre capas y LayerHeight revisable. REQUIERE decidir evolución incremental vs. reescritura del backend Rust (grid_gen) antes de tocar código.
+Resolución (2026-06-12, commits c1301f6 + bb94833): aprobada (implementada — plumbing completo, cableado al algoritmo diferido). LayerRules serializable + JSON defaults en StreamingAssets; LAYER_HEIGHT_M y GridConstants.LayerHeight = 4 m (invariante con MAX_CEILING_UNITS retirado; MAX_CEILING_UNITS sigue 6, Cell struct/IPC intactos). Campos inter_layer_*/wall_density/corridor_ratio presentes pero sin cablear a generate_layer; load_profiles sin conectar end-to-end (bloqueado por ADR-005 IPC).
 
 (plantilla)
 ## ADR-NNN — Título
