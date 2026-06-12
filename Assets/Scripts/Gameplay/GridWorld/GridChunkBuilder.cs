@@ -73,6 +73,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     public static class GridChunkBuilder
     {
         private const float Cs = GridConstants.CellSize;
+        private const float Ch = GridVisualConstants.CellHeight;
         private const int Size = GridConstants.ChunkCells;
 
         // Direction table shared by lips and ceiling steps:
@@ -223,7 +224,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (ceiling != null && ceilingUnits > 0)
             {
                 var p = ceiling.localPosition;
-                ceiling.localPosition = new Vector3(p.x, ceilingUnits * Cs + 0.04f, p.z);
+                ceiling.localPosition = new Vector3(p.x, ceilingUnits * Ch + 0.04f, p.z);
             }
         }
 
@@ -238,7 +239,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (ceiling != null && ceilingUnits > 0)
             {
                 var p = ceiling.localPosition;
-                ceiling.localPosition = new Vector3(p.x, ceilingUnits * Cs + 0.04f, p.z);
+                ceiling.localPosition = new Vector3(p.x, ceilingUnits * Ch + 0.04f, p.z);
             }
         }
 
@@ -249,7 +250,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var shaft = go.transform.Find("Shaft");
             if (shaft != null)
             {
-                float h = Mathf.Max(ceilingUnits, 2) * Cs;
+                float h = Mathf.Max(ceilingUnits, 2) * Ch;
                 var s = shaft.localScale;
                 shaft.localScale = new Vector3(s.x, h, s.z);
                 shaft.localPosition = new Vector3(0f, h / 2f, 0f);
@@ -295,7 +296,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int gap = Mathf.Abs(cell.ceilingHeight - n.ceilingHeight);
 
                 var go = Instantiate(prefabs.ceilingStep, parent,
-                    CellCenter(x, z) + new Vector3(0f, high * Cs, 0f), yaw);
+                    CellCenter(x, z) + new Vector3(0f, high * Ch, 0f), yaw);
                 // Fascia is authored 1 cell tall hanging from local y=0:
                 // scaling Y by gap/1 makes it close exactly the height gap.
                 go.transform.localScale = new Vector3(1f, gap, 1f);

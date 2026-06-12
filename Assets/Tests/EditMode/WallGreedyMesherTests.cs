@@ -9,7 +9,7 @@ namespace BackroomsSurvival.Tests
     {
         private const int Size = GridConstants.ChunkCells;
         private const float Cs   = GridConstants.CellSize;
-        private const float Inset = WallGreedyMesher.Inset;
+        private const float Inset = GridVisualConstants.WallInset;
         private const byte  W = WallGreedyMesher.InsetWest;
         private const byte  E = WallGreedyMesher.InsetEast;
         private const byte  S = WallGreedyMesher.InsetSouth;
@@ -71,8 +71,8 @@ namespace BackroomsSurvival.Tests
             var (x0, x1, z0, z1) = Extents(5, 5, ins);
 
             // Thickness in both axes = WallThickness.
-            Assert.AreEqual(WallGreedyMesher.WallThickness, x1 - x0, 0.001f);
-            Assert.AreEqual(WallGreedyMesher.WallThickness, z1 - z0, 0.001f);
+            Assert.AreEqual(GridVisualConstants.WallThickness, x1 - x0, 0.001f);
+            Assert.AreEqual(GridVisualConstants.WallThickness, z1 - z0, 0.001f);
 
             // Centred in the cell.
             Assert.AreEqual(5.5f * Cs, (x0 + x1) / 2f, 0.001f);

@@ -16,14 +16,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// </summary>
     public static class WallGreedyMesher
     {
-        // Render-only thin-partition constants (mini-fase Paredes Finas).
-        // NOT part of the Rust contract (GridConstants mirrors that): the cell
-        // grid and backend collision still treat the whole Wall cell as solid;
-        // Fase 4 must model wall collision as this thin slab (pending ADR).
-        public const float WallThickness = 0.2f;
-
-        /// <summary>How far an exposed wall face retracts from the cell border.</summary>
-        public const float Inset = (GridConstants.CellSize - WallThickness) / 2f;
+        // WallThickness and the wall inset now live in GridVisualConstants
+        // (ADR-001). NOT part of the Rust contract: the cell grid and backend
+        // collision still treat the whole Wall cell as solid; Fase 4 must model
+        // wall collision as this thin slab (pending ADR).
 
         // Per-side inset flags for ComputeWallInsets results.
         public const byte InsetWest  = 1;  // -x
@@ -140,11 +136,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         continue;
 
                     byte ins = insets[i];
-                    float x0 = x * cellSize + ((ins & InsetWest)  != 0 ? Inset : 0f);
-                    float z0 = z * cellSize + ((ins & InsetSouth) != 0 ? Inset : 0f);
-                    float x1 = (x + 1) * cellSize - ((ins & InsetEast)  != 0 ? Inset : 0f);
-                    float z1 = (z + 1) * cellSize - ((ins & InsetNorth) != 0 ? Inset : 0f);
-                    float y1 = heights[i] * cellSize;
+                    float x0 = x * cellSize + ((ins & InsetWest)  != 0 ? GridVisualConstants.WallInset : 0f);
+                    float z0 = z * cellSize + ((ins & InsetSouth) != 0 ? GridVisualConstants.WallInset : 0f);
+                    float x1 = (x + 1) * cellSize - ((ins & InsetEast)  != 0 ? GridVisualConstants.WallInset : 0f);
+                    float z1 = (z + 1) * cellSize - ((ins & InsetNorth) != 0 ? GridVisualConstants.WallInset : 0f);
+                    float y1 = heights[i] * GridVisualConstants.CellHeight;
 
                     // South (-z), north (+z), west (-x), east (+x).
                     AddQuad(vertices, normals, uvs, sideTris,
