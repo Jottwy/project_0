@@ -26,7 +26,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private void Start()
         {
             var prefabs = GridPrefabSet.LoadFromResources();
-            if (prefabs.floorCeiling == null)
+            if (prefabs.floor == null)
                 return;
 
             string dir = Path.Combine(Application.streamingAssetsPath, folder);

@@ -4,16 +4,15 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.GridWorld
 {
     /// <summary>
-    /// The 6 primitive prefabs (§6) plus the wall material, loaded from
+    /// The 5 primitive prefabs (§6) plus the wall material, loaded from
     /// Resources/GridPrefabs as created by Backrooms/Create Grid Prefabs.
     /// </summary>
     public sealed class GridPrefabSet
     {
-        public GameObject floorCeiling;
+        public GameObject floor;
+        public GameObject ceiling;
         public GameObject pillar;
-        public GameObject stair;
         public GameObject voidEdge;
-        public GameObject ceilingStep;
         public Material wallMaterial;
         public Material ceilingMaterial;
 
@@ -21,15 +20,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             var set = new GridPrefabSet
             {
-                floorCeiling = Resources.Load<GameObject>("GridPrefabs/FloorCeiling"),
+                floor = Resources.Load<GameObject>("GridPrefabs/Floor"),
+                ceiling = Resources.Load<GameObject>("GridPrefabs/Ceiling"),
                 pillar = Resources.Load<GameObject>("GridPrefabs/Pillar"),
-                stair = Resources.Load<GameObject>("GridPrefabs/Stair"),
                 voidEdge = Resources.Load<GameObject>("GridPrefabs/VoidEdge"),
-                ceilingStep = Resources.Load<GameObject>("GridPrefabs/CeilingStep"),
                 wallMaterial = Resources.Load<Material>("GridMaterials/GridWall"),
                 ceilingMaterial = Resources.Load<Material>("GridMaterials/GridCeiling"),
             };
-            if (set.floorCeiling == null)
+            if (set.floor == null)
                 Debug.LogError("[GridPrefabSet] GridPrefabs not found in Resources. " +
                                "Run Backrooms/Create Grid Prefabs first.");
 
@@ -40,7 +38,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // (and any ceiling panel) close the roof seen from below in open
             // zones. Idempotent — works without re-running Create Grid Prefabs.
             // The double-sided wall side faces become coplanar with the
-            // FloorCeiling panel edges; the offset shader makes them lose depth
+            // floor/ceiling panel edges; the offset shader makes them lose depth
             // ties so that seam stops z-fighting. Swap it in at load too, so the
             // fix is live on Play even before Create Grid Prefabs is re-run.
             var offsetShader = Shader.Find("Backrooms/GridWallOffset");
@@ -64,9 +62,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
     /// <summary>
     /// Per-cell visual construction for one chunk of grid cells (§6 of
-    /// BACKROOMS_GRID_SYSTEM.md). Walkable cells get FloorCeiling tiles;
-    /// Wall cells collapse into ONE greedy mesh; Pillar/Stair/VoidEdge/
-    /// CeilingStep are prefab instances aligned to the 2.5 m grid.
+    /// BACKROOMS_GRID_SYSTEM.md). Walkable cells get Floor + Ceiling panels
+    /// at the fixed 4 m room height; Wall cells collapse into ONE greedy
+    /// mesh; Pillar/VoidEdge are prefab instances aligned to the 2.5 m grid.
     ///
     /// Render only — Rust owns collision; nothing here adds colliders.
     /// </summary>
@@ -76,7 +74,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const float Ch = GridVisualConstants.CellHeight;
         private const int Size = GridConstants.ChunkCells;
 
-        // Direction table shared by lips and ceiling steps:
+        // Direction table for edge lips:
         // (dx, dz, yaw°) with prefabs authored on the +z edge.
         private static readonly (int dx, int dz, float yaw)[] Directions =
         {
@@ -103,36 +101,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     {
                         case GridCellType.Corridor:
                         case GridCellType.Open:
-                            PlaceFloorCeiling(prefabs, root.transform, x, z, cell.ceilingHeight);
+                        // Stair body removed for now (uniform 4 m rooms);
+                        // the cell still reads as plain walkable floor.
+                        case GridCellType.Stair:
+                            PlaceFloor(prefabs, root.transform, x, z);
+                            PlaceCeiling(prefabs, root.transform, x, z);
                             break;
 
                         case GridCellType.Anomaly:
-                            PlaceFloorCeiling(prefabs, root.transform, x, z, cell.ceilingHeight);
+                            PlaceFloor(prefabs, root.transform, x, z);
+                            PlaceCeiling(prefabs, root.transform, x, z);
                             PlaceAnomalyMarker(root.transform, x, z);
                             break;
 
                         case GridCellType.Pillar:
-                            // The column stores ceiling_height 0 (solid cell); roof it
-                            // at the surrounding room height so the open-zone ceiling
-                            // stays continuous over every pillar.
-                            byte pillarCeil = NeighbourCeiling(cells, x, z);
-                            PlaceFloorCeiling(prefabs, root.transform, x, z, pillarCeil);
-                            PlacePillar(prefabs, root.transform, x, z, pillarCeil);
-                            break;
-
-                        case GridCellType.Stair:
-                            // Stair body replaces the floor; roof the cell at room
-                            // height so the ceiling closes over it (the proper
-                            // hole-to-layer-above is post-Fase-3 art work).
-                            PlaceCeilingOnly(prefabs, root.transform, x, z,
-                                NeighbourCeiling(cells, x, z));
-                            Instantiate(prefabs.stair, root.transform, CellCenter(x, z), 0f);
+                            PlaceFloor(prefabs, root.transform, x, z);
+                            PlaceCeiling(prefabs, root.transform, x, z);
+                            PlacePillar(prefabs, root.transform, x, z);
                             break;
 
                         case GridCellType.Pit:
                             // Hole down to layer N-1: ceiling but no floor, lip on
                             // every edge shared with a standing-walkable neighbour.
-                            PlaceCeilingOnly(prefabs, root.transform, x, z, cell.ceilingHeight);
+                            PlaceCeiling(prefabs, root.transform, x, z);
                             PlaceEdgeLips(cells, prefabs, root.transform, x, z);
                             break;
 
@@ -142,18 +133,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                             break;
 
                         case GridCellType.Wall:
-                            // The thin partition leaves a 1.15 m strip of the cell
-                            // open toward the room; floor + ceiling close it at the
-                            // wall's render height. Fully enclosed wall cells need
-                            // nothing (the greedy mesh is their only surface).
+                            // The thin partition leaves a strip of the cell open
+                            // toward the room; floor + ceiling close it. Fully
+                            // enclosed wall cells need nothing (the greedy mesh
+                            // is their only surface).
                             if (wallInsets[z * Size + x] != 0)
-                                PlaceFloorCeiling(prefabs, root.transform, x, z,
-                                    (byte)wallHeights[z * Size + x]);
+                            {
+                                PlaceFloor(prefabs, root.transform, x, z);
+                                PlaceCeiling(prefabs, root.transform, x, z);
+                            }
                             break;
                     }
-
-                    if (cell.IsWalkable)
-                        PlaceCeilingSteps(cells, prefabs, root.transform, x, z, cell);
                 }
             }
 
@@ -184,29 +174,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static Vector3 CellCenter(int x, int z) =>
             new Vector3((x + 0.5f) * Cs, 0f, (z + 0.5f) * Cs);
 
-        /// <summary>
-        /// Ceiling height (units) of the room around an unroofed cell: the tallest
-        /// walkable orthogonal neighbour, so a column or stair is roofed by the same
-        /// ceiling as the space it stands in. Falls back to 2 (5 m) if isolated.
-        /// Mirrors WallGreedyMesher.ComputeWallHeights so walls and these inner
-        /// cells agree on the ceiling they meet.
-        /// </summary>
-        private static byte NeighbourCeiling(GridCell[] cells, int x, int z)
-        {
-            int h = 0;
-            foreach (var (dx, dz, _) in Directions)
-            {
-                int nx = x + dx;
-                int nz = z + dz;
-                if (nx < 0 || nz < 0 || nx >= Size || nz >= Size)
-                    continue;
-                var n = cells[nz * Size + nx];
-                if (n.IsWalkable && n.ceilingHeight > h)
-                    h = n.ceilingHeight;
-            }
-            return (byte)Mathf.Max(h, 2);
-        }
-
         private static GameObject Instantiate(GameObject prefab, Transform parent,
             Vector3 localPos, float yaw)
         {
@@ -216,41 +183,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return go;
         }
 
-        private static void PlaceFloorCeiling(GridPrefabSet prefabs, Transform parent,
-            int x, int z, byte ceilingUnits)
+        private static void PlaceFloor(GridPrefabSet prefabs, Transform parent, int x, int z)
         {
-            var go = Instantiate(prefabs.floorCeiling, parent, CellCenter(x, z), 0f);
-            var ceiling = go.transform.Find("Ceiling");
-            if (ceiling != null && ceilingUnits > 0)
-            {
-                var p = ceiling.localPosition;
-                ceiling.localPosition = new Vector3(p.x, ceilingUnits * Ch + 0.04f, p.z);
-            }
+            Instantiate(prefabs.floor, parent, CellCenter(x, z), 0f);
         }
 
-        private static void PlaceCeilingOnly(GridPrefabSet prefabs, Transform parent,
-            int x, int z, byte ceilingUnits)
+        /// <summary>Ceiling panel at the fixed 4 m room height (baked into the prefab).</summary>
+        private static void PlaceCeiling(GridPrefabSet prefabs, Transform parent, int x, int z)
         {
-            var go = Instantiate(prefabs.floorCeiling, parent, CellCenter(x, z), 0f);
-            var floor = go.transform.Find("Floor");
-            if (floor != null)
-                Object.Destroy(floor.gameObject);
-            var ceiling = go.transform.Find("Ceiling");
-            if (ceiling != null && ceilingUnits > 0)
-            {
-                var p = ceiling.localPosition;
-                ceiling.localPosition = new Vector3(p.x, ceilingUnits * Ch + 0.04f, p.z);
-            }
+            Instantiate(prefabs.ceiling, parent, CellCenter(x, z), 0f);
         }
 
-        private static void PlacePillar(GridPrefabSet prefabs, Transform parent,
-            int x, int z, byte ceilingUnits)
+        private static void PlacePillar(GridPrefabSet prefabs, Transform parent, int x, int z)
         {
             var go = Instantiate(prefabs.pillar, parent, CellCenter(x, z), 0f);
             var shaft = go.transform.Find("Shaft");
             if (shaft != null)
             {
-                float h = Mathf.Max(ceilingUnits, 2) * Ch;
+                float h = 2f * Ch; // uniform 4 m room height
                 var s = shaft.localScale;
                 shaft.localScale = new Vector3(s.x, h, s.z);
                 shaft.localPosition = new Vector3(0f, h / 2f, 0f);
@@ -271,35 +221,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 // Only edges toward cells the player can stand on need a lip.
                 if (n.IsWalkable && n.Kind != GridCellType.Pit && n.Kind != GridCellType.Void)
                     Instantiate(prefabs.voidEdge, parent, CellCenter(x, z), yaw);
-            }
-        }
-
-        /// <summary>
-        /// Fascia between two walkable neighbours with different ceilings (§1).
-        /// Only +x/+z are checked so each shared edge is handled exactly once.
-        /// </summary>
-        private static void PlaceCeilingSteps(GridCell[] cells, GridPrefabSet prefabs,
-            Transform parent, int x, int z, GridCell cell)
-        {
-            for (int d = 0; d < 2; d++)
-            {
-                var (dx, dz, yaw) = Directions[d]; // (0,1,0°) and (1,0,90°)
-                int nx = x + dx;
-                int nz = z + dz;
-                if (nx >= Size || nz >= Size)
-                    continue;
-                var n = cells[nz * Size + nx];
-                if (!n.IsWalkable || n.ceilingHeight == cell.ceilingHeight)
-                    continue;
-
-                int high = Mathf.Max(cell.ceilingHeight, n.ceilingHeight);
-                int gap = Mathf.Abs(cell.ceilingHeight - n.ceilingHeight);
-
-                var go = Instantiate(prefabs.ceilingStep, parent,
-                    CellCenter(x, z) + new Vector3(0f, high * Ch, 0f), yaw);
-                // Fascia is authored 1 cell tall hanging from local y=0:
-                // scaling Y by gap/1 makes it close exactly the height gap.
-                go.transform.localScale = new Vector3(1f, gap, 1f);
             }
         }
 

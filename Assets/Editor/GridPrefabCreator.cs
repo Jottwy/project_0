@@ -6,7 +6,7 @@ using BackroomsSurvival.Gameplay.GridWorld;
 namespace BackroomsSurvival.EditorTools
 {
     /// <summary>
-    /// Creates the 6 primitive grid prefabs (§6 of BACKROOMS_GRID_SYSTEM.md)
+    /// Creates the 5 primitive grid prefabs (§6 of BACKROOMS_GRID_SYSTEM.md)
     /// as placeholder boxes, plus their material assets. Saved under
     /// Resources/GridPrefabs so GridChunkBuilder can load them without scene
     /// wiring. All placeholders are art-swappable later; only the names and
@@ -34,7 +34,7 @@ namespace BackroomsSurvival.EditorTools
             EnsureFolder(MaterialFolder);
 
             // Wall uses a custom shader with polygon Offset so its double-sided
-            // side faces lose depth ties to the coplanar FloorCeiling panel edges
+            // side faces lose depth ties to the coplanar floor/ceiling panel edges
             // (URP/Lit has no offset property). Other surfaces stay on URP/Lit.
             Material wall = CreateMaterial("GridWall", WallYellow, "Backrooms/GridWallOffset");
             Material floor = CreateMaterial("GridFloor", FloorCarpet);
@@ -42,38 +42,39 @@ namespace BackroomsSurvival.EditorTools
             Material pillar = CreateMaterial("GridPillar", PillarTone);
             Material voidEdge = CreateMaterial("GridVoidEdge", VoidDark);
 
-            SavePrefab(BuildFloorCeiling(floor, ceiling), "FloorCeiling");
+            SavePrefab(BuildFloor(floor), "Floor");
+            SavePrefab(BuildCeiling(ceiling), "Ceiling");
             SavePrefab(BuildWall(wall), "Wall");
             SavePrefab(BuildPillar(pillar), "Pillar");
-            SavePrefab(BuildStair(floor), "Stair");
             SavePrefab(BuildVoidEdge(voidEdge), "VoidEdge");
-            SavePrefab(BuildCeilingStep(ceiling), "CeilingStep");
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"[GridPrefabCreator] 6 grid prefabs saved to {PrefabFolder}");
+            Debug.Log($"[GridPrefabCreator] 5 grid prefabs saved to {PrefabFolder}");
         }
 
         // ---- prefab builders -------------------------------------------------
 
-        /// <summary>
-        /// Floor + ceiling tile. Child "Ceiling" sits at the default corridor
-        /// height (2 units); GridChunkBuilder repositions it per cell to
-        /// ceilingHeight × CellSize.
-        /// </summary>
-        private static GameObject BuildFloorCeiling(Material floorMat, Material ceilingMat)
+        /// <summary>Floor panel covering one cell, top face at y = 0.</summary>
+        private static GameObject BuildFloor(Material mat)
         {
             float cs = GridConstants.CellSize;
-            var root = new GameObject("FloorCeiling");
-
-            var floor = Box("Floor", root, floorMat,
+            var root = new GameObject("Floor");
+            var floor = Box("Floor", root, mat,
                 new Vector3(0, -0.04f, 0), new Vector3(cs, 0.08f, cs));
             floor.isStatic = true;
+            return root;
+        }
 
-            var ceiling = Box("Ceiling", root, ceilingMat,
-                new Vector3(0, 2 * GridVisualConstants.CellHeight + 0.04f, 0), new Vector3(cs, 0.08f, cs));
+        /// <summary>Ceiling panel covering one cell at the fixed 4 m room height.</summary>
+        private static GameObject BuildCeiling(Material mat)
+        {
+            float cs = GridConstants.CellSize;
+            var root = new GameObject("Ceiling");
+            var ceiling = Box("Ceiling", root, mat,
+                new Vector3(0, 2f * GridVisualConstants.CellHeight + 0.04f, 0),
+                new Vector3(cs, 0.08f, cs));
             ceiling.isStatic = true;
-
             return root;
         }
 
@@ -101,29 +102,6 @@ namespace BackroomsSurvival.EditorTools
         }
 
         /// <summary>
-        /// Stair climbing one full layer (LayerHeight) inside one cell —
-        /// steep placeholder; final art may span 2 cells.
-        /// </summary>
-        private static GameObject BuildStair(Material mat)
-        {
-            float cs = GridConstants.CellSize;
-            float rise = GridConstants.LayerHeight;
-            const int steps = 6;
-            float stepDepth = cs / steps;
-            float stepRise = rise / steps;
-
-            var root = new GameObject("Stair");
-            for (int i = 0; i < steps; i++)
-            {
-                float h = (i + 1) * stepRise;
-                Box($"Step{i}", root, mat,
-                    new Vector3(0, h / 2f, -cs / 2f + (i + 0.5f) * stepDepth),
-                    new Vector3(cs, h, stepDepth));
-            }
-            return root;
-        }
-
-        /// <summary>
         /// Lip along one cell edge bordering a Void. Authored on the +z edge;
         /// the builder rotates it to the actual border side.
         /// </summary>
@@ -133,20 +111,6 @@ namespace BackroomsSurvival.EditorTools
             var root = new GameObject("VoidEdge");
             Box("Lip", root, mat,
                 new Vector3(0, 0.1f, cs / 2f - 0.125f), new Vector3(cs, 0.2f, 0.25f));
-            return root;
-        }
-
-        /// <summary>
-        /// Fascia closing the gap between two ceiling heights. Authored 1 unit
-        /// tall on the +z edge; the builder scales it to the actual gap and
-        /// rotates it to the boundary side.
-        /// </summary>
-        private static GameObject BuildCeilingStep(Material mat)
-        {
-            float cs = GridConstants.CellSize;
-            var root = new GameObject("CeilingStep");
-            Box("Fascia", root, mat,
-                new Vector3(0, -cs / 2f, cs / 2f - 0.075f), new Vector3(cs, cs, 0.15f));
             return root;
         }
 
