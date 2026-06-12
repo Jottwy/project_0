@@ -134,13 +134,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// Build one mesh for all wall rects of a chunk: 4 side quads + top
         /// quad per rect, local origin at the chunk's min corner. UVs are in
         /// metres so wall materials tile at constant world density.
+        ///
+        /// Two submeshes share one vertex buffer: submesh 0 = side faces (wall
+        /// material), submesh 1 = top caps. The caps go in their own submesh so
+        /// the builder can paint them with the CEILING material — the caps are
+        /// coplanar with the FloorCeiling panels along every wall↔room edge, and
+        /// matching their shading makes that seam invisible instead of a flicker.
         /// </summary>
         public static Mesh BuildMesh(List<WallRect> rects, float cellSize)
         {
             var vertices = new List<Vector3>(rects.Count * 20);
             var normals = new List<Vector3>(rects.Count * 20);
             var uvs = new List<Vector2>(rects.Count * 20);
-            var triangles = new List<int>(rects.Count * 30);
+            var sideTris = new List<int>(rects.Count * 24);
+            var topTris = new List<int>(rects.Count * 6);
 
             foreach (var r in rects)
             {
@@ -151,23 +158,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 float y1 = r.heightUnits * cellSize;
 
                 // South (-z), north (+z), west (-x), east (+x), top (+y).
-                AddQuad(vertices, normals, uvs, triangles,
+                AddQuad(vertices, normals, uvs, sideTris,
                     new Vector3(x0, 0, z0), new Vector3(x1, 0, z0),
                     new Vector3(x1, y1, z0), new Vector3(x0, y1, z0),
                     Vector3.back, x0, x1, y1);
-                AddQuad(vertices, normals, uvs, triangles,
+                AddQuad(vertices, normals, uvs, sideTris,
                     new Vector3(x1, 0, z1), new Vector3(x0, 0, z1),
                     new Vector3(x0, y1, z1), new Vector3(x1, y1, z1),
                     Vector3.forward, x0, x1, y1);
-                AddQuad(vertices, normals, uvs, triangles,
+                AddQuad(vertices, normals, uvs, sideTris,
                     new Vector3(x0, 0, z1), new Vector3(x0, 0, z0),
                     new Vector3(x0, y1, z0), new Vector3(x0, y1, z1),
                     Vector3.left, z0, z1, y1);
-                AddQuad(vertices, normals, uvs, triangles,
+                AddQuad(vertices, normals, uvs, sideTris,
                     new Vector3(x1, 0, z0), new Vector3(x1, 0, z1),
                     new Vector3(x1, y1, z1), new Vector3(x1, y1, z0),
                     Vector3.right, z0, z1, y1);
-                AddTopQuad(vertices, normals, uvs, triangles, x0, z0, x1, z1, y1);
+                AddTopQuad(vertices, normals, uvs, topTris, x0, z0, x1, z1, y1);
             }
 
             var mesh = new Mesh
@@ -180,7 +187,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             mesh.SetVertices(vertices);
             mesh.SetNormals(normals);
             mesh.SetUVs(0, uvs);
-            mesh.SetTriangles(triangles, 0);
+            mesh.subMeshCount = 2;
+            mesh.SetTriangles(sideTris, 0);
+            mesh.SetTriangles(topTris, 1);
             mesh.RecalculateBounds();
             return mesh;
         }

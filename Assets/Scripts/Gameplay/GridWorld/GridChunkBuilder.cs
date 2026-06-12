@@ -15,6 +15,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public GameObject voidEdge;
         public GameObject ceilingStep;
         public Material wallMaterial;
+        public Material ceilingMaterial;
 
         public static GridPrefabSet LoadFromResources()
         {
@@ -26,22 +27,30 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 voidEdge = Resources.Load<GameObject>("GridPrefabs/VoidEdge"),
                 ceilingStep = Resources.Load<GameObject>("GridPrefabs/CeilingStep"),
                 wallMaterial = Resources.Load<Material>("GridMaterials/GridWall"),
+                ceilingMaterial = Resources.Load<Material>("GridMaterials/GridCeiling"),
             };
             if (set.floorCeiling == null)
                 Debug.LogError("[GridPrefabSet] GridPrefabs not found in Resources. " +
                                "Run Backrooms/Create Grid Prefabs first.");
 
-            // The greedy wall mesh is single-sided geometry (one quad per face);
-            // make its material render both faces so wall backs and wall tops
-            // never cull to transparency when the camera is behind/under them.
-            // Cube prefabs are closed boxes and don't need this. Idempotent, so
-            // it also works without re-running Create Grid Prefabs.
-            if (set.wallMaterial != null && set.wallMaterial.HasProperty("_Cull"))
-            {
-                set.wallMaterial.SetFloat("_Cull", 0f); // CullMode.Off → both faces
-                set.wallMaterial.doubleSidedGI = true;
-            }
+            // Wall side faces are single-sided geometry, and the wall top caps
+            // are single quads painted with the ceiling material. Both materials
+            // must render both faces: walls so backs/tops never cull to
+            // transparency from behind/under; the ceiling so the top-cap quads
+            // (and any ceiling panel) close the roof seen from below in open
+            // zones. Idempotent — works without re-running Create Grid Prefabs.
+            MakeDoubleSided(set.wallMaterial);
+            MakeDoubleSided(set.ceilingMaterial);
             return set;
+        }
+
+        private static void MakeDoubleSided(Material mat)
+        {
+            if (mat != null && mat.HasProperty("_Cull"))
+            {
+                mat.SetFloat("_Cull", 0f); // CullMode.Off → both faces
+                mat.doubleSidedGI = true;
+            }
         }
     }
 
@@ -144,7 +153,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             go.transform.SetParent(parent, false);
             go.isStatic = true;
             go.AddComponent<MeshFilter>().sharedMesh = WallGreedyMesher.BuildMesh(rects, Cs);
-            go.AddComponent<MeshRenderer>().sharedMaterial = prefabs.wallMaterial;
+            // Submesh 0 = side faces (wall material, double-sided); submesh 1 =
+            // top caps painted with the ceiling material so they read as part of
+            // the ceiling and the coplanar seam with FloorCeiling panels vanishes.
+            go.AddComponent<MeshRenderer>().sharedMaterials =
+                new[] { prefabs.wallMaterial, prefabs.ceilingMaterial };
         }
 
         private static Vector3 CellCenter(int x, int z) =>
