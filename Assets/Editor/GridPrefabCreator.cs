@@ -33,7 +33,10 @@ namespace BackroomsSurvival.EditorTools
             EnsureFolder(PrefabFolder);
             EnsureFolder(MaterialFolder);
 
-            Material wall = CreateMaterial("GridWall", WallYellow);
+            // Wall uses a custom shader with polygon Offset so its double-sided
+            // side faces lose depth ties to the coplanar FloorCeiling panel edges
+            // (URP/Lit has no offset property). Other surfaces stay on URP/Lit.
+            Material wall = CreateMaterial("GridWall", WallYellow, "Backrooms/GridWallOffset");
             Material floor = CreateMaterial("GridFloor", FloorCarpet);
             Material ceiling = CreateMaterial("GridCeiling", CeilingPanel);
             Material pillar = CreateMaterial("GridPillar", PillarTone);
@@ -166,22 +169,25 @@ namespace BackroomsSurvival.EditorTools
             return go;
         }
 
-        private static Material CreateMaterial(string name, Color color)
+        private static Material CreateMaterial(string name, Color color,
+            string shaderName = "Universal Render Pipeline/Lit")
         {
             string path = $"{MaterialFolder}/{name}.mat";
-            var existing = AssetDatabase.LoadAssetAtPath<Material>(path);
-            if (existing != null)
+            Shader shader = Shader.Find(shaderName)
+                ?? Shader.Find("Universal Render Pipeline/Lit")
+                ?? Shader.Find("Standard");
+
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+            if (mat != null)
             {
-                ApplyColor(existing, color);
-                EditorUtility.SetDirty(existing);
-                return existing;
+                if (shader != null && mat.shader != shader)
+                    mat.shader = shader; // re-run upgrades the wall to the offset shader
+                ApplyColor(mat, color);
+                EditorUtility.SetDirty(mat);
+                return mat;
             }
 
-            Shader shader = Shader.Find("Universal Render Pipeline/Lit");
-            if (shader == null)
-                shader = Shader.Find("Standard");
-
-            var mat = new Material(shader) { name = name };
+            mat = new Material(shader) { name = name };
             ApplyColor(mat, color);
             AssetDatabase.CreateAsset(mat, path);
             return mat;

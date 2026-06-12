@@ -39,6 +39,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // transparency from behind/under; the ceiling so the top-cap quads
             // (and any ceiling panel) close the roof seen from below in open
             // zones. Idempotent — works without re-running Create Grid Prefabs.
+            // The double-sided wall side faces become coplanar with the
+            // FloorCeiling panel edges; the offset shader makes them lose depth
+            // ties so that seam stops z-fighting. Swap it in at load too, so the
+            // fix is live on Play even before Create Grid Prefabs is re-run.
+            var offsetShader = Shader.Find("Backrooms/GridWallOffset");
+            if (set.wallMaterial != null && offsetShader != null
+                && set.wallMaterial.shader != offsetShader)
+                set.wallMaterial.shader = offsetShader;
             MakeDoubleSided(set.wallMaterial);
             MakeDoubleSided(set.ceilingMaterial);
             return set;
