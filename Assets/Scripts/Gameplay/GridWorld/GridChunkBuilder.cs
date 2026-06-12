@@ -81,7 +81,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var root = new GameObject(name);
             root.transform.position = origin;
 
-            BuildWalls(cells, prefabs, root.transform);
+            int[] wallHeights = WallGreedyMesher.ComputeWallHeights(cells, Size);
+            byte[] wallInsets = WallGreedyMesher.ComputeWallInsets(cells, Size);
+            BuildWalls(prefabs, root.transform, wallHeights, wallInsets);
 
             for (int z = 0; z < Size; z++)
             {
@@ -131,7 +133,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                             break;
 
                         case GridCellType.Wall:
-                            break; // greedy mesh handles every wall cell
+                            // The thin partition leaves a 1.15 m strip of the cell
+                            // open toward the room; floor + ceiling close it at the
+                            // wall's render height. Fully enclosed wall cells need
+                            // nothing (the greedy mesh is their only surface).
+                            if (wallInsets[z * Size + x] != 0)
+                                PlaceFloorCeiling(prefabs, root.transform, x, z,
+                                    (byte)wallHeights[z * Size + x]);
+                            break;
                     }
 
                     if (cell.IsWalkable)
@@ -142,10 +151,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return root;
         }
 
-        private static void BuildWalls(GridCell[] cells, GridPrefabSet prefabs, Transform parent)
+        private static void BuildWalls(GridPrefabSet prefabs, Transform parent,
+            int[] heights, byte[] insets)
         {
-            int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
-            byte[] insets = WallGreedyMesher.ComputeWallInsets(cells, Size);
             List<WallRect> rects = WallGreedyMesher.GreedyRects(heights, insets, Size);
             if (rects.Count == 0)
                 return;
