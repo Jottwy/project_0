@@ -30,6 +30,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (set.floorCeiling == null)
                 Debug.LogError("[GridPrefabSet] GridPrefabs not found in Resources. " +
                                "Run Backrooms/Create Grid Prefabs first.");
+
+            // The greedy wall mesh is single-sided geometry (one quad per face);
+            // make its material render both faces so wall backs and wall tops
+            // never cull to transparency when the camera is behind/under them.
+            // Cube prefabs are closed boxes and don't need this. Idempotent, so
+            // it also works without re-running Create Grid Prefabs.
+            if (set.wallMaterial != null && set.wallMaterial.HasProperty("_Cull"))
+            {
+                set.wallMaterial.SetFloat("_Cull", 0f); // CullMode.Off → both faces
+                set.wallMaterial.doubleSidedGI = true;
+            }
             return set;
         }
     }

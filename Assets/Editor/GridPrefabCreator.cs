@@ -198,6 +198,12 @@ namespace BackroomsSurvival.EditorTools
                 mat.SetFloat("_Smoothness", 0.08f);
             if (mat.HasProperty("_Glossiness"))
                 mat.SetFloat("_Glossiness", 0.08f);
+            // Render both faces: grid surfaces (ceilings, wall tops, void edges)
+            // are viewed from both sides; single-sided culling makes them
+            // transparent from the reverse side.
+            if (mat.HasProperty("_Cull"))
+                mat.SetFloat("_Cull", 0f); // CullMode.Off
+            mat.doubleSidedGI = true;
         }
 
         private static void SavePrefab(GameObject root, string name)
