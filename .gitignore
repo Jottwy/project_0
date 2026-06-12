@@ -38,6 +38,7 @@ desktop.ini
 
 # Rust generated
 backend/target/
+backend/tools/grid_viewer/target/
 
 # Rust local env
 backend/.env
