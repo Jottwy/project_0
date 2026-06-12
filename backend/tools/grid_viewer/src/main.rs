@@ -98,9 +98,27 @@ fn blit_grid(img: &mut RgbImage, grid: &LayerGrid, ox: u32, oy: u32, scale: u32)
     }
 }
 
+/// Las capas de un chunk encadenadas de arriba hacia abajo: los
+/// `require_walkable_below` de la capa N entran como `forced_walkable` de la
+/// capa N−1, de modo que la celda bajo cada Pit es transitable (§5) y los
+/// huecos verticales conectan entre capas. `require_walkable_above` (escaleras
+/// hacia arriba) necesitaría un segundo pase ascendente y queda fuera de este
+/// encadenado.
+fn chunk_layers(seed: u64, chunk: (i32, i32)) -> Vec<LayerGrid> {
+    let n = LAYER_PROFILES.len();
+    let mut grids: Vec<Option<LayerGrid>> = (0..n).map(|_| None).collect();
+    let mut forced: Vec<(u8, u8)> = Vec::new();
+    for layer in (0..n).rev() {
+        let out = generate_chunk_layer(&LAYER_PROFILES[layer], seed, chunk, layer as i32, &forced);
+        forced = out.require_walkable_below;
+        grids[layer] = Some(out.grid);
+    }
+    grids.into_iter().map(|g| g.unwrap()).collect()
+}
+
 fn chunk_grid(seed: u64, chunk: (i32, i32), layer: i32) -> LayerGrid {
-    let rules = &LAYER_PROFILES[layer as usize % LAYER_PROFILES.len()];
-    generate_chunk_layer(rules, seed, chunk, layer, &[]).grid
+    let idx = layer as usize % LAYER_PROFILES.len();
+    chunk_layers(seed, chunk).into_iter().nth(idx).unwrap()
 }
 
 /// Vista (a): un chunk individual.
@@ -142,8 +160,7 @@ fn render_mosaic(seed: u64, center: (i32, i32), layer: i32, scale: u32) -> RgbIm
 /// Formato (contrato con GridChunkData.FromBytes en C#):
 ///   400 celdas row-major (z * CHUNK_CELLS + x), 4 bytes por celda:
 ///   cell_type u8, ceiling_height u8, zone_id u16 little-endian. Sin cabecera.
-fn export_chunk_bytes(seed: u64, chunk: (i32, i32), layer: i32, path: &str) {
-    let grid = chunk_grid(seed, chunk, layer);
+fn export_chunk_bytes(grid: &LayerGrid, path: &str) {
     let mut bytes = Vec::with_capacity(CHUNK_CELLS * CHUNK_CELLS * 4);
     for z in 0..CHUNK_CELLS {
         for x in 0..CHUNK_CELLS {
@@ -197,15 +214,15 @@ fn main() {
                 }
             }
             "export" => {
-                for layer in 0..LAYER_PROFILES.len() as i32 {
-                    for dz in -1..=1i32 {
-                        for dx in -1..=1i32 {
-                            let chunk = (cx + dx, cz + dz);
+                for dz in -1..=1i32 {
+                    for dx in -1..=1i32 {
+                        let chunk = (cx + dx, cz + dz);
+                        for (layer, grid) in chunk_layers(seed, chunk).iter().enumerate() {
                             let path = format!(
                                 "{}/seed{seed}_layer{layer}_chunk{}_{}.bytes",
                                 args.out, chunk.0, chunk.1
                             );
-                            export_chunk_bytes(seed, chunk, layer, &path);
+                            export_chunk_bytes(grid, &path);
                             written.push(path);
                         }
                     }
