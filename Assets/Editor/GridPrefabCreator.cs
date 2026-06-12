@@ -71,7 +71,7 @@ namespace BackroomsSurvival.EditorTools
             floor.isStatic = true;
 
             var ceiling = Box("Ceiling", root, ceilingMat,
-                new Vector3(0, 2 * cs + 0.04f, 0), new Vector3(cs, 0.08f, cs));
+                new Vector3(0, 2 * GridVisualConstants.CellHeight + 0.04f, 0), new Vector3(cs, 0.08f, cs));
             ceiling.isStatic = true;
 
             return root;
@@ -83,9 +83,10 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         private static GameObject BuildWall(Material mat)
         {
-            float cs = GridConstants.CellSize;
             var root = new GameObject("Wall");
-            Box("Cube", root, mat, new Vector3(0, cs / 2f, 0), new Vector3(cs, cs, cs));
+            Box("Cube", root, mat,
+                new Vector3(0, GridVisualConstants.CellHeight, 0),
+                new Vector3(GridVisualConstants.TileSize, 2f * GridVisualConstants.CellHeight, GridVisualConstants.WallThickness));
             return root;
         }
 
