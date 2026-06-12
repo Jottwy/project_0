@@ -33,6 +33,13 @@ Contexto: grid_gen tiene perfiles por capa hardcodeados (densidad de muros, zona
 Decidir: exponer densidad de muros por capa, % de conexiones entre capas y LayerHeight revisable. REQUIERE decidir evolución incremental vs. reescritura del backend Rust (grid_gen) antes de tocar código.
 Resolución (2026-06-12, commits c1301f6 + bb94833): aprobada (implementada — plumbing completo, cableado al algoritmo diferido). LayerRules serializable + JSON defaults en StreamingAssets; LAYER_HEIGHT_M y GridConstants.LayerHeight = 4 m (invariante con MAX_CEILING_UNITS retirado; MAX_CEILING_UNITS sigue 6, Cell struct/IPC intactos). Campos inter_layer_*/wall_density/corridor_ratio presentes pero sin cablear a generate_layer; load_profiles sin conectar end-to-end (bloqueado por ADR-005 IPC).
 
+## ADR-008 — Render de celdas Pit como hueco vertical (Hollow)
+Estado: propuesta
+Contexto: el render de tiles agrupa 2×2 celdas; las celdas Pit se clasificaban como tile Open (Floor + Ceiling), tapando el hueco. El backend Rust emite Pit como celdas aisladas de 2.5 m; medición sobre seed 42 (36 chunks): 54 Pit, siempre 1 por tile (nunca en bloque 2×2), 28 en tiles sin Wall.
+Decisión: cualquier celda Pit en un tile sin Wall clasifica el tile como Hollow (solo VoidEdge, sin Floor ni Ceiling), abriéndolo en vertical. Wall mantiene prioridad (Pit+Wall → Border); Stair sigue como Open.
+Consecuencias / qué prohíbe: a granularidad de tile (5 m) un Pit aislado abre el tile completo → el hueco se ve 4× el Pit real (2.5 m) y borra el suelo de 3 celdas walkable que la colisión Rust sí sostiene. Sin desfase hoy (render-only, sin colliders); en Fase 4+ (colisión) exige render sub-tile del Pit o que el worldgen Rust alinee los Pit a bloques 2×2 de tile. Sustituye el comportamiento "Pit cuenta como Open" del tile system.
+Resolución (2026-06-13): aprobada e implementada en GridChunkBuilder.ClassifyTile (umbral pitCount >= 1, reutiliza la rama Hollow) + GridChunkBuilderTests.
+
 (plantilla)
 ## ADR-NNN — Título
 Estado: propuesta

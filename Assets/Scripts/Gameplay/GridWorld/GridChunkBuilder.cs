@@ -124,9 +124,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         ///  · 4 Wall cells    → Solid (no floor/ceiling; perimeter walls only).
         ///  · ≥1 Wall (mixed) → Border (floor + ceiling + a wall on every tile
         ///    side whose BOTH cells are Wall).
-        ///  · 0 Wall, ≥2 Void → Hollow (no floor; void edges toward floor tiles).
+        ///  · 0 Wall, ≥2 Void
+        ///    or ≥1 Pit       → Hollow (no floor/ceiling; void edges toward floor
+        ///    tiles) — open vertical shaft (ADR-008).
         ///  · otherwise       → Open (floor + ceiling; +pillar/+anomaly if any
-        ///    cell is one). Pit/Stair count as Open; a single Void is floored.
+        ///    cell is one). Stair counts as Open; a single Void is floored.
         /// </summary>
         public static TileClass ClassifyTile(GridCell[] cells, int tileX, int tileZ)
         {
@@ -149,6 +151,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (nw == GridCellType.Void) voidCount++;
             if (ne == GridCellType.Void) voidCount++;
 
+            int pitCount = 0;
+            if (sw == GridCellType.Pit) pitCount++;
+            if (se == GridCellType.Pit) pitCount++;
+            if (nw == GridCellType.Pit) pitCount++;
+            if (ne == GridCellType.Pit) pitCount++;
+
             bool hasPillar = sw == GridCellType.Pillar || se == GridCellType.Pillar
                           || nw == GridCellType.Pillar || ne == GridCellType.Pillar;
             bool hasAnomaly = sw == GridCellType.Anomaly || se == GridCellType.Anomaly
@@ -167,7 +175,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 return new TileClass(TileKind.Border, edges, false, hasAnomaly);
             }
 
-            if (voidCount >= 2)
+            if (voidCount >= 2 || pitCount >= 1)
                 return new TileClass(TileKind.Hollow, 0, false, false);
 
             return new TileClass(TileKind.Open, 0, hasPillar, hasAnomaly);

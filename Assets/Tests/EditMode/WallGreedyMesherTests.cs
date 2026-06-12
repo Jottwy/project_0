@@ -18,6 +18,8 @@ namespace BackroomsSurvival.Tests
         private const GridCellType OPEN = GridCellType.Open;
         private const GridCellType VOID = GridCellType.Void;
         private const GridCellType PILL = GridCellType.Pillar;
+        private const GridCellType PIT  = GridCellType.Pit;
+        private const GridCellType STAIR = GridCellType.Stair;
 
         private static GridCell Cell(GridCellType t) =>
             new GridCell(t, t == GridCellType.Wall ? (byte)0 : (byte)2, 0);
@@ -81,6 +83,30 @@ namespace BackroomsSurvival.Tests
             var tc = GridChunkBuilder.ClassifyTile(cells, 3, 3);
             Assert.AreEqual(TileKind.Open, tc.Kind);
             Assert.IsTrue(tc.HasPillar, "a pillar cell in an open tile adds a pillar");
+        }
+
+        [Test]
+        public void OnePitCell_HollowTile()
+        {
+            // ADR-008: any Pit cell in a wall-free tile opens it (vertical shaft).
+            var cells = ChunkWithTile(3, 3, PIT, COR, COR, COR);
+            Assert.AreEqual(TileKind.Hollow, GridChunkBuilder.ClassifyTile(cells, 3, 3).Kind);
+        }
+
+        [Test]
+        public void PitWithWall_StaysBorder()
+        {
+            // Wall keeps priority over Pit: a mixed Wall+Pit tile is still Border.
+            var cells = ChunkWithTile(3, 3, WALL, PIT, COR, COR);
+            Assert.AreEqual(TileKind.Border, GridChunkBuilder.ClassifyTile(cells, 3, 3).Kind);
+        }
+
+        [Test]
+        public void StairCell_StaysOpen()
+        {
+            // ADR-008 changes Pit only; Stair still counts as Open (no regression).
+            var cells = ChunkWithTile(3, 3, STAIR, COR, COR, COR);
+            Assert.AreEqual(TileKind.Open, GridChunkBuilder.ClassifyTile(cells, 3, 3).Kind);
         }
     }
 }
