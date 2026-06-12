@@ -181,6 +181,42 @@ namespace BackroomsSurvival.Tests
         // ------------------------------------------------------------------ //
 
         [Test]
+        public void TwoAdjacentWalls_FuseIntoFiveMeters()
+        {
+            // Run of 6 walls along x at z=5: pairs (4,5) (6,7) (8,9) fuse.
+            var cells = CorridorSeaWithWalls((4, 5), (5, 5), (6, 5), (7, 5), (8, 5), (9, 5));
+            int[] heights = WallGreedyMesher.ComputeWallHeights(cells, Size);
+            byte[] insets  = WallGreedyMesher.ComputeWallInsets(cells, Size);
+
+            var mesh = WallGreedyMesher.BuildChunkMesh(cells, Size, heights, insets);
+
+            // 6 cells → 3 fused boxes: half the quads of per-cell meshing.
+            Assert.AreEqual(3 * 24, mesh.GetTriangles(0).Length,
+                "6 fused wall cells must emit 3 boxes of side quads");
+            Assert.AreEqual(3 * 6, mesh.GetTriangles(1).Length,
+                "6 fused wall cells must emit 3 top caps");
+
+            // Middle box = vertices 20..39 (20 per box, emitted in x order).
+            // Both its x ends are flush to neighbour walls → exactly 5 m.
+            var verts = mesh.vertices;
+            float minX = float.MaxValue, maxX = float.MinValue, maxY = 0f;
+            for (int v = 20; v < 40; v++)
+            {
+                if (verts[v].x < minX) minX = verts[v].x;
+                if (verts[v].x > maxX) maxX = verts[v].x;
+                if (verts[v].y > maxY) maxY = verts[v].y;
+            }
+            Assert.AreEqual(6 * Cs, minX, 0.001f, "middle box must start at cell 6");
+            Assert.AreEqual(8 * Cs, maxX, 0.001f, "middle box must end at cell 8");
+            Assert.AreEqual(GridVisualConstants.TileSize, maxX - minX, 0.001f,
+                "fused pair must span one 5 m tile");
+            Assert.AreEqual(2f * GridVisualConstants.CellHeight, maxY, 0.001f,
+                "fused wall must keep the uniform 4 m height");
+
+            UnityEngine.Object.DestroyImmediate(mesh);
+        }
+
+        [Test]
         public void SubmeshAssignment()
         {
             // Single wall cell fully surrounded by corridor → all 4 sides retract.

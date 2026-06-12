@@ -4,13 +4,15 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.GridWorld
 {
     /// <summary>
-    /// Per-cell wall meshing for Wall cells (§6 of BACKROOMS_GRID_SYSTEM.md).
+    /// Wall meshing for Wall cells (§6 of BACKROOMS_GRID_SYSTEM.md).
     ///
-    /// Each Wall cell emits exactly one box: 4 side quads + top cap, all
-    /// accumulated into ONE mesh per chunk (1 MeshRenderer, 2 submeshes).
-    /// Exposed sides retract Inset metres inward (thin partition); sides toward
-    /// other Wall cells or the chunk border extend to the cell edge so seams
-    /// between adjacent walls and with neighbouring chunks stay closed.
+    /// Pairs of x-adjacent Wall cells with matching north/south insets fuse
+    /// into one 5 m box (TileSize); leftover cells emit one 2.5 m box each.
+    /// Every box is 4 side quads + top cap, all accumulated into ONE mesh
+    /// per chunk (1 MeshRenderer, 2 submeshes).
+    /// Exposed sides retract WallInset metres inward (thin partition); sides
+    /// toward other Wall cells or the chunk border extend to the cell edge so
+    /// seams between adjacent walls and with neighbouring chunks stay closed.
     ///
     /// Pure and allocation-light: no scene access, fully testable in EditMode.
     /// </summary>
@@ -71,10 +73,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
-        /// Build one mesh for all Wall cells of a chunk: each cell contributes
-        /// 4 side quads + 1 top cap, all in a single vertex buffer.
+        /// Build one mesh for all Wall cells of a chunk: pairs of x-adjacent
+        /// Wall cells with matching north/south insets fuse into one box
+        /// (5 m = TileSize); leftovers of odd runs and isolated cells emit
+        /// per-cell boxes. Each box is 4 side quads + 1 top cap, all in a
+        /// single vertex buffer.
         /// Submesh 0 = side faces (wall material).
-        /// Submesh 1 = top caps (ceiling material, coplanar with FloorCeiling
+        /// Submesh 1 = top caps (ceiling material, coplanar with Ceiling
         /// panels so the seam shades identically and never flickers).
         /// UVs are in metres so materials tile at constant world density.
         /// </summary>
@@ -97,9 +102,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         continue;
 
                     byte ins = insets[i];
+                    int span = 1;
+
+                    // Fuse with the +x neighbour when it is a Wall of the same
+                    // height whose north/south insets match: the pair renders
+                    // as one 5 m tile. The shared boundary carries no east/west
+                    // inset by construction (its neighbour is a Wall).
+                    if (x + 1 < size
+                        && cells[i + 1].Kind == GridCellType.Wall
+                        && heights[i + 1] == heights[i]
+                        && (insets[i + 1] & (InsetSouth | InsetNorth))
+                           == (ins & (InsetSouth | InsetNorth)))
+                        span = 2;
+
+                    byte insEnd = insets[i + span - 1];
                     float x0 = x * cellSize + ((ins & InsetWest)  != 0 ? GridVisualConstants.WallInset : 0f);
                     float z0 = z * cellSize + ((ins & InsetSouth) != 0 ? GridVisualConstants.WallInset : 0f);
-                    float x1 = (x + 1) * cellSize - ((ins & InsetEast)  != 0 ? GridVisualConstants.WallInset : 0f);
+                    float x1 = (x + span) * cellSize - ((insEnd & InsetEast)  != 0 ? GridVisualConstants.WallInset : 0f);
                     float z1 = (z + 1) * cellSize - ((ins & InsetNorth) != 0 ? GridVisualConstants.WallInset : 0f);
                     float y1 = heights[i] * GridVisualConstants.CellHeight;
 
@@ -121,6 +140,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         new Vector3(x1, y1, z1), new Vector3(x1, y1, z0),
                         Vector3.right, z0, z1, y1);
                     AddTopQuad(vertices, normals, uvs, topTris, x0, z0, x1, z1, y1);
+
+                    x += span - 1; // skip the cell consumed by the fusion
                 }
             }
 
