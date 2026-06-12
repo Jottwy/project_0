@@ -89,4 +89,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Hard ceiling on ceilingHeight (MAX_CEILING_UNITS): 6 × 2.5 m = 15 m.</summary>
         public const byte MaxCeilingUnits = 6;
     }
+
+    /// <summary>
+    /// Visual-only constants for Unity rendering.
+    /// NOT mirrored in Rust — do not add these to cell.rs.
+    /// </summary>
+    public static class GridVisualConstants
+    {
+        /// Two grid cells side by side = one visual tile.
+        public const float TileSize = 5.0f;
+
+        /// Vertical scale per ceiling unit (decoupled from CellSize).
+        /// 2 units × 2.0 m = 4.0 m — canonical Backrooms wall height.
+        public const float CellHeight = 2.0f;
+
+        /// Visual wall thickness (render-only, not in Rust collision).
+        public const float WallThickness = 0.2f;
+
+        /// Inset from cell edge to wall face.
+        public const float WallInset = (GridConstants.CellSize - WallThickness) / 2f;
+    }
 }
