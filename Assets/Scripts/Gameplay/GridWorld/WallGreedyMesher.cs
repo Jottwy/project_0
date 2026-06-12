@@ -42,13 +42,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public static int[] ComputeWallHeights(GridCell[] cells, int size)
         {
             var heights = new int[cells.Length];
-            int chunkMax = 2;
+            int chunkMin = int.MaxValue;
 
             for (int i = 0; i < cells.Length; i++)
             {
-                if (cells[i].IsWalkable && cells[i].ceilingHeight > chunkMax)
-                    chunkMax = cells[i].ceilingHeight;
+                if (cells[i].IsWalkable && cells[i].ceilingHeight > 0
+                    && cells[i].ceilingHeight < chunkMin)
+                    chunkMin = cells[i].ceilingHeight;
             }
+            if (chunkMin == int.MaxValue) chunkMin = 2;
 
             for (int z = 0; z < size; z++)
             {
@@ -64,7 +66,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     h = MaxWalkableCeiling(cells, size, x, z - 1, h);
                     h = MaxWalkableCeiling(cells, size, x, z + 1, h);
 
-                    heights[i] = h > 0 ? Mathf.Max(h, 2) : chunkMax;
+                    heights[i] = h > 0 ? Mathf.Max(h, 2) : chunkMin;
                 }
             }
 
