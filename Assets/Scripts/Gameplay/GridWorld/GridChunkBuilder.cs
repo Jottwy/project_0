@@ -60,6 +60,26 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
     }
 
+    /// <summary>Render classification of one 5 m tile (a 2×2 block of cells).</summary>
+    public enum TileKind { Solid, Open, Border, Hollow }
+
+    /// <summary>Result of <see cref="GridChunkBuilder.ClassifyTile"/>.</summary>
+    public readonly struct TileClass
+    {
+        public readonly TileKind Kind;
+        public readonly byte WallEdges;   // Border: which tile edges carry a wall
+        public readonly bool HasPillar;
+        public readonly bool HasAnomaly;
+
+        public TileClass(TileKind kind, byte wallEdges, bool hasPillar, bool hasAnomaly)
+        {
+            Kind = kind;
+            WallEdges = wallEdges;
+            HasPillar = hasPillar;
+            HasAnomaly = hasAnomaly;
+        }
+    }
+
     /// <summary>
     /// Per-cell visual construction for one chunk of grid cells (§6 of
     /// BACKROOMS_GRID_SYSTEM.md). Walkable cells get Floor + Ceiling panels
@@ -73,6 +93,66 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const float Cs = GridConstants.CellSize;
         private const float Ch = GridVisualConstants.CellHeight;
         private const int Size = GridConstants.ChunkCells;
+
+        // Tile-edge flags: which side of a tile a wall or lip sits on.
+        public const byte EdgeSouth = 1; // -z
+        public const byte EdgeNorth = 2; // +z
+        public const byte EdgeWest  = 4; // -x
+        public const byte EdgeEast  = 8; // +x
+
+        /// <summary>
+        /// Classify the 2×2 cell block of tile (tileX, tileZ) into a render tile:
+        ///  · 4 Wall cells    → Solid (no floor/ceiling; perimeter walls only).
+        ///  · ≥1 Wall (mixed) → Border (floor + ceiling + a wall on every tile
+        ///    side whose BOTH cells are Wall).
+        ///  · 0 Wall, ≥2 Void → Hollow (no floor; void edges toward floor tiles).
+        ///  · otherwise       → Open (floor + ceiling; +pillar/+anomaly if any
+        ///    cell is one). Pit/Stair count as Open; a single Void is floored.
+        /// </summary>
+        public static TileClass ClassifyTile(GridCell[] cells, int tileX, int tileZ)
+        {
+            int cx = tileX * 2;
+            int cz = tileZ * 2;
+            GridCellType sw = cells[cz * Size + cx].Kind;
+            GridCellType se = cells[cz * Size + cx + 1].Kind;
+            GridCellType nw = cells[(cz + 1) * Size + cx].Kind;
+            GridCellType ne = cells[(cz + 1) * Size + cx + 1].Kind;
+
+            int wallCount = 0;
+            if (sw == GridCellType.Wall) wallCount++;
+            if (se == GridCellType.Wall) wallCount++;
+            if (nw == GridCellType.Wall) wallCount++;
+            if (ne == GridCellType.Wall) wallCount++;
+
+            int voidCount = 0;
+            if (sw == GridCellType.Void) voidCount++;
+            if (se == GridCellType.Void) voidCount++;
+            if (nw == GridCellType.Void) voidCount++;
+            if (ne == GridCellType.Void) voidCount++;
+
+            bool hasPillar = sw == GridCellType.Pillar || se == GridCellType.Pillar
+                          || nw == GridCellType.Pillar || ne == GridCellType.Pillar;
+            bool hasAnomaly = sw == GridCellType.Anomaly || se == GridCellType.Anomaly
+                          || nw == GridCellType.Anomaly || ne == GridCellType.Anomaly;
+
+            if (wallCount == 4)
+                return new TileClass(TileKind.Solid, 0, false, false);
+
+            if (wallCount >= 1)
+            {
+                byte edges = 0;
+                if (sw == GridCellType.Wall && se == GridCellType.Wall) edges |= EdgeSouth;
+                if (nw == GridCellType.Wall && ne == GridCellType.Wall) edges |= EdgeNorth;
+                if (sw == GridCellType.Wall && nw == GridCellType.Wall) edges |= EdgeWest;
+                if (se == GridCellType.Wall && ne == GridCellType.Wall) edges |= EdgeEast;
+                return new TileClass(TileKind.Border, edges, false, hasAnomaly);
+            }
+
+            if (voidCount >= 2)
+                return new TileClass(TileKind.Hollow, 0, false, false);
+
+            return new TileClass(TileKind.Open, 0, hasPillar, hasAnomaly);
+        }
 
         // Direction table for edge lips:
         // (dx, dz, yaw°) with prefabs authored on the +z edge.
