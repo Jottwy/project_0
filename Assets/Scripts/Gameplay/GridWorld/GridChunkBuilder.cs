@@ -260,8 +260,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return go;
         }
 
+        private static void AddColliderIfMissing(GameObject go)
+        {
+            foreach (var r in go.GetComponentsInChildren<MeshRenderer>())
+            {
+                if (r.GetComponent<Collider>() != null) continue;
+                var mf = r.GetComponent<MeshFilter>();
+                if (mf == null || mf.sharedMesh == null) continue;
+                var col    = r.gameObject.AddComponent<BoxCollider>();
+                var mb     = mf.sharedMesh.bounds;
+                col.center = mb.center;
+                col.size   = mb.size;
+            }
+        }
+
         private static void PlaceFloor(GridPrefabSet prefabs, Transform parent, int tx, int tz)
-            => Instantiate(prefabs.floor, parent, TileCenter(tx, tz), 0f);
+            => AddColliderIfMissing(Instantiate(prefabs.floor, parent, TileCenter(tx, tz), 0f));
 
         /// <summary>Ceiling panel at the fixed 4 m room height (baked into the prefab).</summary>
         private static void PlaceCeiling(GridPrefabSet prefabs, Transform parent, int tx, int tz)
@@ -273,8 +287,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
-                    Instantiate(prefabs.wall, parent,
-                        TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
+                    AddColliderIfMissing(Instantiate(prefabs.wall, parent,
+                        TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
         }
 
         /// <summary>Solid tile: a wall on each side facing a non-solid in-chunk tile.</summary>
