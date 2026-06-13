@@ -54,6 +54,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var cam = camGo.AddComponent<Camera>();
             cam.fieldOfView = 80f;
             cam.nearClipPlane = 0.1f;
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = Color.black;
             cam.tag = "MainCamera";
             camGo.AddComponent<AudioListener>();
 

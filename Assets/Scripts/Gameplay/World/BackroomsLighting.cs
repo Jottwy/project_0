@@ -1,18 +1,15 @@
 using UnityEngine;
-using UnityEngine.Rendering;
 
 namespace BackroomsSurvival.Gameplay.World
 {
     /// <summary>
-    /// Establishes the Backrooms visual atmosphere:
-    ///   • black sky (no skybox) and flat, dim yellow ambient — no sun,
-    ///   • dense yellow exponential fog that strangles visibility past ~15 m,
-    ///   • runtime fluorescent point lights spaced across each chunk ceiling.
+    /// Spawns the Backrooms fluorescent point lights across each chunk ceiling.
     ///
-    /// Global render settings are applied once in <see cref="Awake"/>. Per-chunk
-    /// lights are spawned via <see cref="PlaceFluorescentLights"/> and parented to
-    /// the chunk root, so they are destroyed together with the chunk when it
-    /// streams out — no manual cleanup needed.
+    /// Render settings (sky / ambient / fog) are intentionally NOT touched here —
+    /// they are configured elsewhere. Per-chunk lights are spawned via
+    /// <see cref="PlaceFluorescentLights"/> and parented to the chunk root, so
+    /// they are destroyed together with the chunk when it streams out — no manual
+    /// cleanup needed.
     /// </summary>
     public sealed class BackroomsLighting : MonoBehaviour
     {
@@ -31,21 +28,11 @@ namespace BackroomsSurvival.Gameplay.World
 
         private void Awake()
         {
-            // 1 — black sky + flat yellow ambient; kill any directional "sun".
-            RenderSettings.skybox       = null;
-            RenderSettings.ambientMode  = AmbientMode.Flat;
-            RenderSettings.ambientLight = ambientColor;
-
-            var lights = FindObjectsByType<Light>(FindObjectsSortMode.None);
-            foreach (var l in lights)
-                if (l.type == LightType.Directional)
-                    l.gameObject.SetActive(false);
-
-            // 2 — dense yellow exponential fog.
-            RenderSettings.fog        = true;
-            RenderSettings.fogMode    = FogMode.Exponential;
-            RenderSettings.fogColor   = fogColor;
-            RenderSettings.fogDensity = fogDensity;
+            // RenderSettings (sky / ambient / fog) are no longer driven here; this
+            // component only spawns the per-chunk fluorescent point lights via
+            // PlaceFluorescentLights. The ambient/fog fields are kept as inspector
+            // knobs for whatever does own those settings.
+            Debug.Log("[BackroomsLighting] Fluorescent lights only — RenderSettings untouched.");
         }
 
         /// <summary>
