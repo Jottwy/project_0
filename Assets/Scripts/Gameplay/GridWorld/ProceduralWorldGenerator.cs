@@ -426,44 +426,31 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 _loaded.Remove(key);
             }
 
-            // Pass 1 — generate cells for every column of the 3×3 ring first,
-            // so each chunk's neighbours exist before anything is rendered
-            // (avoids visible chunk-border seams / sky on ungenerated edges).
             for (int dz = -viewRadius; dz <= viewRadius; dz++)
                 for (int dx = -viewRadius; dx <= viewRadius; dx++)
-                    GenerateColumn(cx + dx, cz + dz);
-
-            // Pass 2 — render all columns now that the whole ring is generated.
-            for (int dz = -viewRadius; dz <= viewRadius; dz++)
-                for (int dx = -viewRadius; dx <= viewRadius; dx++)
-                    RenderColumn(cx + dx, cz + dz);
+                    EnsureColumn(cx + dx, cz + dz);
         }
 
-        // Generate (and cache) the cells of every layer in one column, top-down
-        // so the Pit forced-walkable chain propagates correctly.
-        private void GenerateColumn(int ccx, int ccz)
+        private void EnsureColumn(int ccx, int ccz)
         {
             HashSet<int> forcedWalkable = null;
+            var colCells = new GridCell[layerCount][];
+
             for (int layer = layerCount - 1; layer >= 0; layer--)
             {
                 var key = (ccx, ccz, layer);
-                GridCell[] cells;
                 if (!_cache.ContainsKey(key))
                 {
-                    cells = WorldGenerator.GenerateChunk(
+                    colCells[layer] = WorldGenerator.GenerateChunk(
                         seed, ccx, ccz, layer, GetConfig(layer), forcedWalkable);
-                    _cache[key] = cells;
+                    _cache[key] = colCells[layer];
                 }
                 else
-                    cells = _cache[key];
+                    colCells[layer] = _cache[key];
 
-                forcedWalkable = WorldGenerator.GetPitCellIndices(cells);
+                forcedWalkable = WorldGenerator.GetPitCellIndices(colCells[layer]);
             }
-        }
 
-        // Build GameObjects for any not-yet-loaded layer in this column.
-        private void RenderColumn(int ccx, int ccz)
-        {
             for (int layer = 0; layer < layerCount; layer++)
             {
                 var key = (ccx, ccz, layer);
@@ -472,7 +459,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 var origin = new Vector3(ccx * Side, layer * GridConstants.LayerHeight, ccz * Side);
                 var above  = layer + 1 < layerCount
                     ? _cache.GetValueOrDefault((ccx, ccz, layer + 1)) : null;
-                var go = GridChunkBuilder.Build(_cache[key], _prefabs, origin,
+                var go = GridChunkBuilder.Build(colCells[layer], _prefabs, origin,
                     $"Chunk_L{layer}_{ccx}_{ccz}", above);
                 go.transform.SetParent(transform, true);
                 _loaded[key] = go;
