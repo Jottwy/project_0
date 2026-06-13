@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.Player;
+using BackroomsSurvival.Gameplay.World;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -28,6 +30,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public LayerConfig layerConfig3;
 
         private ChunkStreamer _streamer;
+
+        // Backrooms atmosphere: global render settings (set in its Awake) plus
+        // per-chunk fluorescent lights placed as chunks stream in.
+        private BackroomsLighting _lighting;
+        private readonly HashSet<Transform> _litChunks = new HashSet<Transform>();
 
         private static GameObject SpawnPlayer()
         {
@@ -85,6 +92,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private void Start()
         {
+            // Adding the component runs its Awake immediately: skybox off, flat
+            // yellow ambient, sun disabled, dense fog. Held to light new chunks.
+            _lighting = gameObject.AddComponent<BackroomsLighting>();
+
             var streamerGo = new GameObject("ChunkStreamer");
             streamerGo.transform.SetParent(transform, false);
 
@@ -102,6 +113,28 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (playerGo == null)
                 playerGo = SpawnPlayer();
             _streamer.playerTransform = playerGo.transform;
+        }
+
+        // Light chunks as they appear. The ChunkStreamer parents every chunk root
+        // under its own transform; a chunk that streams out is Destroyed (with its
+        // child lights), so we just prune null entries and skip already-lit roots.
+        private void Update()
+        {
+            if (_lighting == null || _streamer == null) return;
+
+            _litChunks.RemoveWhere(t => t == null);
+
+            int tiles = GridConstants.ChunkCells / 2; // 20 cells → 10 tiles per side
+            var container = _streamer.transform;
+            for (int i = 0; i < container.childCount; i++)
+            {
+                var chunk = container.GetChild(i);
+                if (!_litChunks.Add(chunk)) continue; // already lit
+                _lighting.PlaceFluorescentLights(
+                    chunk, tiles, tiles,
+                    GridVisualConstants.TileSize,
+                    GridVisualConstants.CellHeight * 2f); // 2 × 2.0 m = 4 m ceiling
+            }
         }
     }
 }
