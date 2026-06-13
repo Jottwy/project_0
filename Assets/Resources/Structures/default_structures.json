@@ -1,0 +1,36 @@
+{
+  "structures": [
+    {
+      "id": "large_atrium",
+      "probability": 0.08,
+      "min_chunk_size": 1,
+      "layers_tall": 2,
+      "pattern": [
+        ["O","O","O","O"],
+        ["O","P","P","O"],
+        ["O","P","P","O"],
+        ["O","O","O","O"]
+      ]
+    },
+    {
+      "id": "corridor_cross",
+      "probability": 0.15,
+      "layers_tall": 1,
+      "pattern": [
+        ["W","C","W"],
+        ["C","C","C"],
+        ["W","C","W"]
+      ]
+    },
+    {
+      "id": "pit_shaft",
+      "probability": 0.06,
+      "layers_tall": 4,
+      "pattern": [
+        ["W","T","W"],
+        ["T","T","T"],
+        ["W","T","W"]
+      ]
+    }
+  ]
+}
