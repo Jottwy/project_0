@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.Audio;
 using BackroomsSurvival.Gameplay.Player;
 using BackroomsSurvival.Gameplay.World;
 using UnityEngine;
@@ -115,6 +116,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (playerGo == null)
                 playerGo = SpawnPlayer();
             _streamer.playerTransform = playerGo.transform;
+
+            // Global audio director: listener consolidation, reverb zone,
+            // flicker and oppressive-silence filter.
+            gameObject.AddComponent<BackroomsAudioSystem>();
         }
 
         // Light chunks as they appear. The ChunkStreamer parents every chunk root

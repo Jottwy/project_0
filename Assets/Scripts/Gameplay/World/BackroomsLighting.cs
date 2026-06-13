@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay.Audio;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.World
@@ -13,11 +14,6 @@ namespace BackroomsSurvival.Gameplay.World
     /// </summary>
     public sealed class BackroomsLighting : MonoBehaviour
     {
-        [Header("Ambient & fog")]
-        [SerializeField] private Color ambientColor = new Color(0.45f, 0.40f, 0.20f); // warm dim yellow
-        [SerializeField] private Color fogColor     = new Color(0.55f, 0.50f, 0.28f); // dirty yellow
-        [SerializeField] private float fogDensity   = 0.018f; // ~invisible at 15 m, fully hidden at 40 m
-
         [Header("Fluorescent lights")]
         [SerializeField] private float lightIntensity   = 1.8f;
         [SerializeField] private float lightRange        = 12f;
@@ -62,6 +58,8 @@ namespace BackroomsSurvival.Gameplay.World
                     light.intensity = lightIntensity;
                     light.range     = lightRange;
                     light.shadows   = LightShadows.None;
+
+                    go.AddComponent<FluorescentAudio>(); // 3D hum per lamp
                 }
             }
         }
