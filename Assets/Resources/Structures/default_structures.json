@@ -23,16 +23,6 @@
       ]
     },
     {
-      "id": "pit_shaft",
-      "probability": 0.06,
-      "layers_tall": 4,
-      "pattern": [
-        ["W","T","W"],
-        ["T","T","T"],
-        ["W","T","W"]
-      ]
-    },
-    {
       "id": "office_cluster",
       "probability": 0.10,
       "layers_tall": 1,
@@ -52,15 +42,6 @@
       "layers_tall": 1,
       "pattern": [
         ["C","P","C","P","C","P","C","P"]
-      ]
-    },
-    {
-      "id": "stairwell",
-      "probability": 0.05,
-      "layers_tall": 3,
-      "pattern": [
-        ["T","T"],
-        ["T","T"]
       ]
     },
     {
