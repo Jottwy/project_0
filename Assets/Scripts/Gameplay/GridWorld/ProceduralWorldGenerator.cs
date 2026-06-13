@@ -25,7 +25,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // StructureDefinition — parsed from default_structures.json
+    // StructureDefinition — JSON schema for Resources/Structures/
+    // default_structures.json. Kept as the authoring contract (validated by
+    // BackroomsSurvival.EditorTools.StructureValidator). The edge-based
+    // generator below does not place structures; the type documents the format.
     // ─────────────────────────────────────────────────────────────────
 
     [Serializable]
@@ -37,15 +40,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public string[][] pattern;   // [row][col], row 0 = south
     }
 
-    [Serializable]
-    internal sealed class StructureLibraryJson
+    // ─────────────────────────────────────────────────────────────────
+    // Edge-based chunk data (Unity render layer — NOT the Rust wire format).
+    //
+    // Paradigm: every tile always has a floor and a ceiling. Walls are 0.2 m
+    // panels that sit on the EDGES between tiles, not on tiles themselves.
+    // A wall on the east edge of tile (x,z) is the same physical panel as the
+    // west edge of tile (x+1,z); both flags are set, the builder emits it once.
+    //
+    // This lives entirely client-side. GridCellType.Wall and the GridChunkData
+    // wire format (the Rust contract) are untouched: ChunkData.cells carries no
+    // Wall cells, only Corridor/Pillar (and Pit/Void survive for ADR-008).
+    // ─────────────────────────────────────────────────────────────────
+
+    /// <summary>Which of a tile's four edges carry a wall panel.</summary>
+    public struct TileWalls
     {
-        public StructureDefinition[] structures;
+        public bool N, S, E, W;
+        public bool Any => N || S || E || W;
+    }
+
+    /// <summary>One chunk: render cells (floor/ceiling/pillar) + edge walls.</summary>
+    public struct ChunkData
+    {
+        public GridCell[]  cells;   // Cells×Cells, row-major. Corridor/Pillar only.
+        public TileWalls[] walls;   // Tiles×Tiles edge flags.
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // WorldGenerator — deterministic chunk generation
-    // Principle: everything starts as open space; wall lines divide it.
+    // WorldGenerator — deterministic edge-based chunk generation.
+    // Principle: everything is open floored space; wall LINES (sequences of
+    // shared tile edges) divide it into a labyrinth.
     // ─────────────────────────────────────────────────────────────────
 
     public static class WorldGenerator
@@ -53,66 +78,43 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const int Cells = GridConstants.ChunkCells; // 20
         private const int Tiles = Cells / 2;                // 10
 
-        private static List<StructureDefinition> _structures;
+        // Fixed border slots where openings are guaranteed so neighbouring
+        // chunks always connect (mirrors the seam contract of the old system).
+        private static readonly int[] BorderSlots = { 1, 5, 9 };
 
-        public static void LoadStructures()
+        public static ChunkData GenerateChunk(
+            long seed, int chunkX, int chunkZ, int layer, LayerConfig cfg)
         {
-            if (_structures != null) return;
-            _structures = new List<StructureDefinition>();
-            var ta = Resources.Load<TextAsset>("Structures/default_structures");
-            if (ta == null)
-            {
-                Debug.LogWarning("[WorldGenerator] default_structures.json not found in Resources/Structures/");
-                return;
-            }
-            var lib = JsonUtility.FromJson<StructureLibraryJson>(ta.text);
-            if (lib?.structures != null)
-                _structures.AddRange(lib.structures);
-        }
-
-        public static GridCell[] GenerateChunk(
-            long seed, int chunkX, int chunkZ, int layer,
-            LayerConfig cfg, HashSet<int> forcedWalkable = null)
-        {
-            LoadStructures();
             var rng = new System.Random(DeriveRngSeed(seed, chunkX, chunkZ, layer));
 
-            // Step 1 — fill all Corridor (everything is open space by default)
-            var tiles = new GridCellType[Tiles * Tiles];
-            for (int i = 0; i < tiles.Length; i++) tiles[i] = GridCellType.Corridor;
+            // Step 1 — no walls; every tile is open floored space.
+            var walls = new TileWalls[Tiles * Tiles];
 
-            // Step 2 — place wall lines with apertures
-            PlaceWallLines(rng, cfg, tiles);
+            int numLines = Mathf.RoundToInt(Mathf.Lerp(2f, 5f, Mathf.Clamp01(cfg.wallDensity)));
+            float minAp = Mathf.Clamp01(cfg.minApertureRatio);
+            float maxAp = Mathf.Clamp01(Mathf.Max(minAp, cfg.maxApertureRatio));
 
-            // Step 3 — superstructures
-            var pitTiles = new HashSet<int>();
-            TryPlaceStructures(rng, cfg, tiles, layer, pitTiles);
+            // Steps 2 & 4 — horizontal wall lines (N/S edges), from south then north.
+            PlaceHorizontalLines(rng, walls, numLines, minAp, maxAp, fromFar: false);
+            PlaceHorizontalLines(rng, walls, numLines, minAp, maxAp, fromFar: true);
+            // Steps 3 & 4 — vertical wall lines (E/W edges), from west then east.
+            PlaceVerticalLines(rng, walls, numLines, minAp, maxAp, fromFar: false);
+            PlaceVerticalLines(rng, walls, numLines, minAp, maxAp, fromFar: true);
 
-            // Step 4 — pits near walls
-            PlacePits(rng, cfg, tiles, pitTiles);
+            // Step 6 — guaranteed border apertures (before connectivity so the
+            // BFS sees the seams open).
+            OpenBorderApertures(walls);
 
-            // Step 5 — pillars in open areas
-            PlacePillars(rng, cfg, tiles);
+            // Step 5 — guarantee every tile is reachable from (0,0).
+            EnsureConnectivity(walls);
 
-            // Step 6 — fixed border connections (highest priority, last)
-            GenerateBorderConnections(tiles);
-
-            // Step 7 — forced walkable from layer above
-            if (forcedWalkable != null)
-                foreach (int idx in forcedWalkable)
-                    if ((uint)idx < (uint)tiles.Length)
-                        tiles[idx] = GridCellType.Corridor;
-
-            return TilesToCells(tiles, pitTiles);
-        }
-
-        public static HashSet<int> GetPitCellIndices(GridCell[] cells)
-        {
-            var set = new HashSet<int>();
+            // Cells: all corridor (floor + ceiling everywhere). Step 7 adds pillars.
+            var cells = new GridCell[Cells * Cells];
             for (int i = 0; i < cells.Length; i++)
-                if (cells[i].Kind == GridCellType.Pit)
-                    set.Add(i);
-            return set;
+                cells[i] = new GridCell(GridCellType.Corridor, 2, 0);
+            PlacePillars(rng, cfg, walls, cells);
+
+            return new ChunkData { cells = cells, walls = walls };
         }
 
         // ─── Seeding ──────────────────────────────────────────────────
@@ -121,49 +123,88 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             unchecked
             {
-                // layer intentionally ignored: every layer of a chunk shares the
-                // same pattern so floors/ceilings/walls line up across the stack.
-                long s = seed ^ ((long)cx * 73856093L) ^ ((long)cz * 19349663L);
+                long s = seed ^ ((long)cx * 73856093L) ^ ((long)cz * 19349663L) ^ ((long)layer * 2654435761L);
                 return (int)(s ^ (s >> 32));
             }
         }
 
-        // ─── Wall line placement ──────────────────────────────────────
+        // ─── Edge marking (symmetric: both sides of the shared edge) ─────
 
-        private static void PlaceWallLines(System.Random rng, LayerConfig cfg, GridCellType[] tiles)
+        // Wall on the south edge of tile (x,z) == north edge of tile (x,z-1).
+        private static void MarkHWall(TileWalls[] w, int x, int z)
         {
-            int numH = Mathf.RoundToInt(cfg.wallDensity * 8);
-            int numV = Mathf.RoundToInt(cfg.wallDensity * 8);
+            w[z * Tiles + x].S = true;
+            if (z - 1 >= 0) w[(z - 1) * Tiles + x].N = true;
+        }
 
-            float minAp = cfg.minApertureRatio;
-            float maxAp = Mathf.Max(minAp, cfg.maxApertureRatio);
+        // Wall on the west edge of tile (x,z) == east edge of tile (x-1,z).
+        private static void MarkVWall(TileWalls[] w, int x, int z)
+        {
+            w[z * Tiles + x].W = true;
+            if (x - 1 >= 0) w[z * Tiles + (x - 1)].E = true;
+        }
 
-            var hPos = PickWallPositions(rng, numH);
-            var vPos = PickWallPositions(rng, numV);
+        // ─── Wall lines ──────────────────────────────────────────────
 
-            foreach (int pos in hPos)
+        // Horizontal line at tile row z (a run of south-edge walls along X) with
+        // one passable aperture. fromFar runs it inward from the east border.
+        private static void PlaceHorizontalLines(System.Random rng, TileWalls[] w,
+            int count, float minAp, float maxAp, bool fromFar)
+        {
+            foreach (int z in PickLinePositions(rng, count))
             {
-                float ap = (float)(minAp + rng.NextDouble() * (maxAp - minAp));
-                PlaceWallLine(tiles, pos, horizontal: true, rng, ap);
-            }
-            foreach (int pos in vPos)
-            {
-                float ap = (float)(minAp + rng.NextDouble() * (maxAp - minAp));
-                PlaceWallLine(tiles, pos, horizontal: false, rng, ap);
+                if (z <= 0) continue; // needs row z-1 for the shared edge
+                int span = rng.Next(5, Tiles + 1); // [5, 10]
+                int startX = fromFar ? Mathf.Max(0, Tiles - span) : 0;
+                int endX   = fromFar ? Tiles : Mathf.Min(span, Tiles);
+                CarveLine(rng, minAp, maxAp, startX, endX,
+                    (x) => MarkHWall(w, x, z));
             }
         }
 
-        // Valid interior range [2, Tiles-3], min separation 2 tiles from each other.
-        private static List<int> PickWallPositions(System.Random rng, int numWalls)
+        // Vertical line at tile column x (a run of west-edge walls along Z).
+        private static void PlaceVerticalLines(System.Random rng, TileWalls[] w,
+            int count, float minAp, float maxAp, bool fromFar)
         {
-            var candidates = new List<int>(Tiles - 4);
-            for (int i = 2; i <= Tiles - 3; i++) candidates.Add(i);
+            foreach (int x in PickLinePositions(rng, count))
+            {
+                if (x <= 0) continue; // needs column x-1 for the shared edge
+                int span = rng.Next(5, Tiles + 1);
+                int startZ = fromFar ? Mathf.Max(0, Tiles - span) : 0;
+                int endZ   = fromFar ? Tiles : Mathf.Min(span, Tiles);
+                CarveLine(rng, minAp, maxAp, startZ, endZ,
+                    (z) => MarkVWall(w, x, z));
+            }
+        }
+
+        // Fill [start, end) with wall edges, leaving one random aperture so the
+        // line is passable. Aperture width is a ratio of the line length.
+        private static void CarveLine(System.Random rng, float minAp, float maxAp,
+            int start, int end, Action<int> mark)
+        {
+            int len = end - start;
+            if (len <= 0) return;
+
+            float ratio = minAp + (float)rng.NextDouble() * (maxAp - minAp);
+            int apLen   = Mathf.Clamp(Mathf.RoundToInt(len * ratio), 1, Mathf.Max(1, len - 1));
+            int apStart = start + rng.Next(0, len - apLen + 1);
+
+            for (int i = start; i < end; i++)
+                if (i < apStart || i >= apStart + apLen)
+                    mark(i);
+        }
+
+        // Interior positions [2, Tiles-2], min separation 2 between lines.
+        private static List<int> PickLinePositions(System.Random rng, int count)
+        {
+            var candidates = new List<int>();
+            for (int i = 2; i <= Tiles - 2; i++) candidates.Add(i);
             Shuffle(candidates, rng);
 
-            var chosen = new List<int>(numWalls);
+            var chosen = new List<int>(count);
             foreach (int c in candidates)
             {
-                if (chosen.Count >= numWalls) break;
+                if (chosen.Count >= count) break;
                 bool tooClose = false;
                 foreach (int p in chosen)
                     if (Mathf.Abs(c - p) < 2) { tooClose = true; break; }
@@ -172,181 +213,108 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return chosen;
         }
 
-        private static void PlaceWallLine(GridCellType[] tiles, int pos, bool horizontal,
-            System.Random rng, float apertureRatio)
+        // ─── Border apertures ─────────────────────────────────────────
+
+        // Open the fixed slots on the two seams this chunk owns: the north edge
+        // of its top row and the east edge of its last column (the builder emits
+        // only N/E walls — see GridChunkBuilder). The south/west seams are owned
+        // and opened by the neighbouring chunks at the same slots, so passages
+        // line up deterministically across the whole world.
+        private static void OpenBorderApertures(TileWalls[] w)
         {
-            // Fill the whole line with Wall.
-            for (int i = 0; i < Tiles; i++)
-                tiles[LineIdx(horizontal, pos, i)] = GridCellType.Wall;
-
-            // Carve apertures: minimum 2 open tiles, in pairs of 2 for passability.
-            int openCount = Mathf.Clamp(Mathf.RoundToInt(Tiles * apertureRatio), 2, Tiles - 2);
-            int pairs = openCount / 2;
-
-            // Candidate pair-start positions: [0, Tiles-2]
-            var candidates = new List<int>(Tiles - 1);
-            for (int i = 0; i <= Tiles - 2; i++) candidates.Add(i);
-            Shuffle(candidates, rng);
-
-            var open = new bool[Tiles];
-            int placed = 0;
-            foreach (int start in candidates)
+            foreach (int s in BorderSlots)
             {
-                if (placed >= pairs) break;
-                if (open[start] || open[start + 1]) continue;
-                open[start] = open[start + 1] = true;
-                placed++;
-            }
-
-            for (int i = 0; i < Tiles; i++)
-                if (open[i])
-                    tiles[LineIdx(horizontal, pos, i)] = GridCellType.Corridor;
-        }
-
-        // tile index for a point along a horizontal (tz=pos) or vertical (tx=pos) line.
-        private static int LineIdx(bool horizontal, int pos, int i) =>
-            horizontal ? pos * Tiles + i : i * Tiles + pos;
-
-        // ─── Superstructures ──────────────────────────────────────────
-
-        private static void TryPlaceStructures(System.Random rng, LayerConfig cfg,
-            GridCellType[] tiles, int layer, HashSet<int> pitTilesOut)
-        {
-            if (_structures == null || _structures.Count == 0) return;
-
-            foreach (var s in _structures)
-            {
-                if (rng.NextDouble() >= s.probability) continue;
-                if (s.pattern == null || s.pattern.Length == 0) continue;
-
-                int rows = s.pattern.Length;
-                int cols = s.pattern[0]?.Length ?? 0;
-                if (rows == 0 || cols == 0) continue;
-
-                int maxTx = Tiles - cols - 1;
-                int maxTz = Tiles - rows - 1;
-                if (maxTx < 1 || maxTz < 1) continue;
-
-                int anchorX = rng.Next(1, maxTx + 1);
-                int anchorZ = rng.Next(1, maxTz + 1);
-
-                for (int r = 0; r < rows; r++)
-                {
-                    var row = s.pattern[r];
-                    int cols2 = row?.Length ?? 0;
-                    for (int c = 0; c < Mathf.Min(cols, cols2); c++)
-                    {
-                        int idx = (anchorZ + r) * Tiles + (anchorX + c);
-                        if ((uint)idx >= (uint)tiles.Length) continue;
-                        switch (row[c])
-                        {
-                            case "W": tiles[idx] = GridCellType.Wall;     break;
-                            case "C": tiles[idx] = GridCellType.Corridor; break;
-                            case "O": tiles[idx] = GridCellType.Open;     break;
-                            case "P": tiles[idx] = GridCellType.Pillar;   break;
-                            case "T": tiles[idx] = GridCellType.Pit; pitTilesOut.Add(idx); break;
-                        }
-                    }
-                }
+                if (s >= Tiles) continue;
+                w[(Tiles - 1) * Tiles + s].N = false; // north seam opening
+                w[s * Tiles + (Tiles - 1)].E = false; // east seam opening
             }
         }
 
-        // ─── Pits ─────────────────────────────────────────────────────
+        // ─── Connectivity ─────────────────────────────────────────────
 
-        private static void PlacePits(System.Random rng, LayerConfig cfg,
-            GridCellType[] tiles, HashSet<int> pitTiles)
+        // BFS over tiles (passable across an edge with no wall). While any tile
+        // is unreachable from (0,0), find an isolated tile that borders the
+        // reached region and knock out the wall between them. The reached set
+        // grows by at least one each pass, so this ends in ≤ tile-count passes.
+        private static void EnsureConnectivity(TileWalls[] w)
         {
-            for (int tz = 0; tz < Tiles; tz++)
+            int guard = Tiles * Tiles + 1;
+            while (guard-- > 0)
             {
-                for (int tx = 0; tx < Tiles; tx++)
-                {
-                    int idx = tz * Tiles + tx;
-                    if (tiles[idx] == GridCellType.Wall) continue;
-                    if (!IsAdjacentToWall(tiles, tx, tz)) continue;
-                    if (rng.NextDouble() < cfg.pitChance)
-                    {
-                        tiles[idx] = GridCellType.Pit;
-                        pitTiles.Add(idx);
-                    }
-                }
+                var reached = Reachable(w);
+                if (!OpenFrontier(w, reached)) return; // all reached
             }
         }
 
-        private static bool IsAdjacentToWall(GridCellType[] tiles, int tx, int tz)
+        // Open one wall between an isolated tile and a reached neighbour.
+        // Returns false when every tile is already reached.
+        private static bool OpenFrontier(TileWalls[] w, bool[] reached)
         {
-            if (tx > 0        && tiles[tz * Tiles + (tx - 1)] == GridCellType.Wall) return true;
-            if (tx < Tiles-1  && tiles[tz * Tiles + (tx + 1)] == GridCellType.Wall) return true;
-            if (tz > 0        && tiles[(tz - 1) * Tiles + tx] == GridCellType.Wall) return true;
-            if (tz < Tiles-1  && tiles[(tz + 1) * Tiles + tx] == GridCellType.Wall) return true;
-            return false;
+            for (int idx = 0; idx < reached.Length; idx++)
+            {
+                if (reached[idx]) continue;
+                int x = idx % Tiles, z = idx / Tiles;
+                if (z + 1 < Tiles && reached[(z + 1) * Tiles + x]) { ClearEdgeN(w, x, z); return true; }
+                if (z - 1 >= 0    && reached[(z - 1) * Tiles + x]) { ClearEdgeS(w, x, z); return true; }
+                if (x + 1 < Tiles && reached[z * Tiles + (x + 1)]) { ClearEdgeE(w, x, z); return true; }
+                if (x - 1 >= 0    && reached[z * Tiles + (x - 1)]) { ClearEdgeW(w, x, z); return true; }
+            }
+            return false; // nothing isolated borders the reached set → fully connected
         }
+
+        private static bool[] Reachable(TileWalls[] w)
+        {
+            var visited = new bool[Tiles * Tiles];
+            var queue = new Queue<int>();
+            visited[0] = true;
+            queue.Enqueue(0);
+            while (queue.Count > 0)
+            {
+                int idx = queue.Dequeue();
+                int x = idx % Tiles, z = idx / Tiles;
+                var t = w[idx];
+                if (!t.N && z + 1 < Tiles) Visit(visited, queue, x, z + 1);
+                if (!t.S && z - 1 >= 0)    Visit(visited, queue, x, z - 1);
+                if (!t.E && x + 1 < Tiles) Visit(visited, queue, x + 1, z);
+                if (!t.W && x - 1 >= 0)    Visit(visited, queue, x - 1, z);
+            }
+            return visited;
+        }
+
+        private static void Visit(bool[] visited, Queue<int> queue, int x, int z)
+        {
+            int idx = z * Tiles + x;
+            if (visited[idx]) return;
+            visited[idx] = true;
+            queue.Enqueue(idx);
+        }
+
+        private static void ClearEdgeN(TileWalls[] w, int x, int z)
+        { w[z * Tiles + x].N = false; if (z + 1 < Tiles) w[(z + 1) * Tiles + x].S = false; }
+        private static void ClearEdgeS(TileWalls[] w, int x, int z)
+        { w[z * Tiles + x].S = false; if (z - 1 >= 0) w[(z - 1) * Tiles + x].N = false; }
+        private static void ClearEdgeE(TileWalls[] w, int x, int z)
+        { w[z * Tiles + x].E = false; if (x + 1 < Tiles) w[z * Tiles + (x + 1)].W = false; }
+        private static void ClearEdgeW(TileWalls[] w, int x, int z)
+        { w[z * Tiles + x].W = false; if (x - 1 >= 0) w[z * Tiles + (x - 1)].E = false; }
 
         // ─── Pillars ──────────────────────────────────────────────────
 
-        private static void PlacePillars(System.Random rng, LayerConfig cfg, GridCellType[] tiles)
+        // Pillars sit only in fully open tiles (no adjacent wall), spaced out.
+        private static void PlacePillars(System.Random rng, LayerConfig cfg,
+            TileWalls[] walls, GridCell[] cells)
         {
             for (int tz = 1; tz < Tiles - 1; tz++)
             {
                 for (int tx = 1; tx < Tiles - 1; tx++)
                 {
-                    if (tiles[tz * Tiles + tx] == GridCellType.Wall) continue;
+                    if (walls[tz * Tiles + tx].Any) continue;
                     if ((tx + tz * 3) % 4 != 0) continue;
-                    if (IsAdjacentToWall(tiles, tx, tz)) continue;
-                    if (rng.NextDouble() < cfg.pillarChance)
-                        tiles[tz * Tiles + tx] = GridCellType.Pillar;
+                    if (rng.NextDouble() >= cfg.pillarChance) continue;
+                    int cx = tx * 2, cz = tz * 2;
+                    cells[cz * Cells + cx] = new GridCell(GridCellType.Pillar, 2, 0);
                 }
             }
-        }
-
-        // ─── Border connections ───────────────────────────────────────
-
-        private static readonly int[] BorderSlots = { 1, 5, 9 };
-
-        private static void GenerateBorderConnections(GridCellType[] tiles)
-        {
-            foreach (int pos in BorderSlots)
-            {
-                int p2 = Mathf.Min(pos + 1, Tiles - 1);
-
-                ForceCorridor(tiles, pos, 0);  ForceCorridor(tiles, p2, 0);
-                ForceCorridor(tiles, pos, 1);  ForceCorridor(tiles, p2, 1);
-
-                ForceCorridor(tiles, pos, Tiles - 1); ForceCorridor(tiles, p2, Tiles - 1);
-                ForceCorridor(tiles, pos, Tiles - 2); ForceCorridor(tiles, p2, Tiles - 2);
-
-                ForceCorridor(tiles, 0, pos);  ForceCorridor(tiles, 0, p2);
-                ForceCorridor(tiles, 1, pos);  ForceCorridor(tiles, 1, p2);
-
-                ForceCorridor(tiles, Tiles - 1, pos);  ForceCorridor(tiles, Tiles - 1, p2);
-                ForceCorridor(tiles, Tiles - 2, pos);  ForceCorridor(tiles, Tiles - 2, p2);
-            }
-        }
-
-        private static void ForceCorridor(GridCellType[] tiles, int tx, int tz)
-        {
-            int idx = tz * Tiles + tx;
-            if ((uint)idx < (uint)tiles.Length)
-                tiles[idx] = GridCellType.Corridor;
-        }
-
-        // ─── Tile → Cell expansion ────────────────────────────────────
-
-        private static GridCell[] TilesToCells(GridCellType[] tiles, HashSet<int> pitTileIndices)
-        {
-            var cells = new GridCell[Cells * Cells];
-            for (int tz = 0; tz < Tiles; tz++)
-            {
-                for (int tx = 0; tx < Tiles; tx++)
-                {
-                    var kind = tiles[tz * Tiles + tx];
-                    byte ceil = (kind == GridCellType.Wall) ? (byte)0 : (byte)2;
-                    for (int dz = 0; dz < 2; dz++)
-                        for (int dx = 0; dx < 2; dx++)
-                            cells[(tz * 2 + dz) * Cells + (tx * 2 + dx)] =
-                                new GridCell(kind, ceil, 0);
-                }
-            }
-            return cells;
         }
 
         // ─── Utility ──────────────────────────────────────────────────
@@ -378,8 +346,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private GridPrefabSet _prefabs;
         private readonly Dictionary<(int, int, int), GameObject> _loaded
             = new Dictionary<(int, int, int), GameObject>();
-        private readonly Dictionary<(int, int, int), GridCell[]> _cache
-            = new Dictionary<(int, int, int), GridCell[]>();
+        private readonly Dictionary<(int, int, int), ChunkData> _cache
+            = new Dictionary<(int, int, int), ChunkData>();
 
         private int _lastCX = int.MinValue;
         private int _lastCZ = int.MinValue;
@@ -424,6 +392,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             {
                 Destroy(_loaded[key]);
                 _loaded.Remove(key);
+                _cache.Remove(key);
             }
 
             for (int dz = -viewRadius; dz <= viewRadius; dz++)
@@ -433,23 +402,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private void EnsureColumn(int ccx, int ccz)
         {
-            HashSet<int> forcedWalkable = null;
-            var colCells = new GridCell[layerCount][];
-
-            for (int layer = layerCount - 1; layer >= 0; layer--)
+            for (int layer = 0; layer < layerCount; layer++)
             {
                 var key = (ccx, ccz, layer);
                 if (!_cache.ContainsKey(key))
-                {
-                    // Always layer-0 config so every layer shares one pattern.
-                    colCells[layer] = WorldGenerator.GenerateChunk(
-                        seed, ccx, ccz, layer, GetConfig(0), forcedWalkable);
-                    _cache[key] = colCells[layer];
-                }
-                else
-                    colCells[layer] = _cache[key];
-
-                forcedWalkable = WorldGenerator.GetPitCellIndices(colCells[layer]);
+                    _cache[key] = WorldGenerator.GenerateChunk(
+                        seed, ccx, ccz, layer, GetConfig(layer));
             }
 
             for (int layer = 0; layer < layerCount; layer++)
@@ -458,9 +416,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (_loaded.ContainsKey(key)) continue;
 
                 var origin = new Vector3(ccx * Side, layer * GridConstants.LayerHeight, ccz * Side);
-                var above  = layer + 1 < layerCount
-                    ? _cache.GetValueOrDefault((ccx, ccz, layer + 1)) : null;
-                var go = GridChunkBuilder.Build(colCells[layer], _prefabs, origin,
+                ChunkData? above = layer + 1 < layerCount && _cache.ContainsKey((ccx, ccz, layer + 1))
+                    ? _cache[(ccx, ccz, layer + 1)]
+                    : (ChunkData?)null;
+                var go = GridChunkBuilder.Build(_cache[key], _prefabs, origin,
                     $"Chunk_L{layer}_{ccx}_{ccz}", above);
                 go.transform.SetParent(transform, true);
                 _loaded[key] = go;
@@ -476,13 +435,27 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static LayerConfig DefaultConfig(int layer)
         {
-            // All layers share layer-0 settings for now: dense walls + narrow
-            // apertures for an oppressive Backrooms feel.
             var cfg = ScriptableObject.CreateInstance<LayerConfig>();
-            cfg.wallDensity=0.75f; cfg.corridorWidth=1; cfg.openZoneChance=0.35f;
-            cfg.openZoneSize=4;    cfg.pitChance=0.02f; cfg.pillarChance=0.30f;
-            cfg.doubleHeightChance=0.10f; cfg.interLayerConnection=0.08f;
-            cfg.minApertureRatio=0.25f;   cfg.maxApertureRatio=0.45f;
+            cfg.corridorWidth = 1; cfg.doubleHeightChance = 0.10f; cfg.interLayerConnection = 0.08f;
+            switch (layer)
+            {
+                case 0: // Most oppressive: dense walls, narrow passages
+                    cfg.wallDensity=0.75f; cfg.minApertureRatio=0.25f; cfg.maxApertureRatio=0.40f;
+                    cfg.openZoneChance=0.15f; cfg.openZoneSize=3; cfg.pillarChance=0.30f; cfg.pitChance=0.02f;
+                    break;
+                case 1:
+                    cfg.wallDensity=0.65f; cfg.minApertureRatio=0.30f; cfg.maxApertureRatio=0.50f;
+                    cfg.openZoneChance=0.25f; cfg.openZoneSize=4; cfg.pillarChance=0.25f; cfg.pitChance=0.03f;
+                    break;
+                case 2:
+                    cfg.wallDensity=0.55f; cfg.minApertureRatio=0.35f; cfg.maxApertureRatio=0.55f;
+                    cfg.openZoneChance=0.35f; cfg.openZoneSize=5; cfg.pillarChance=0.20f; cfg.pitChance=0.04f;
+                    break;
+                default: // Most open: unsettling emptiness of higher levels
+                    cfg.wallDensity=0.45f; cfg.minApertureRatio=0.40f; cfg.maxApertureRatio=0.65f;
+                    cfg.openZoneChance=0.50f; cfg.openZoneSize=6; cfg.pillarChance=0.15f; cfg.pitChance=0.05f;
+                    break;
+            }
             return cfg;
         }
     }

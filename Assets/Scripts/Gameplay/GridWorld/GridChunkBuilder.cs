@@ -77,13 +77,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     }
 
     /// <summary>
-    /// Tile-based visual construction for one chunk (ADR-001 tile system). The
-    /// chunk's 20×20 Rust cells fold into 10×10 render tiles of 5 m (2×2 cells).
-    /// Each tile gets Floor + Ceiling panels at the fixed 4 m room height and
-    /// independent Wall prefab pieces (5×4×0.2) on its edges — no procedural
-    /// mesh, no fusion: one piece, one wall, like LEGO.
+    /// Edge-based visual construction for one chunk. The chunk's 20×20 cells fold
+    /// into 10×10 render tiles of 5 m (2×2 cells). EVERY tile gets a Floor and a
+    /// Ceiling panel at the fixed 4 m room height; walls are independent 5×4×0.2
+    /// prefab pieces placed on tile EDGES, driven by <see cref="ChunkData.walls"/>
+    /// — one piece, one wall, like LEGO.
     ///
-    /// Render only — Rust owns collision; nothing here adds colliders.
+    /// No-duplication rule: a wall on the edge between two tiles is the same
+    /// physical panel. Each chunk emits only its NORTH and EAST edges; the SOUTH
+    /// and WEST edges of any tile belong to (and are emitted by) the neighbouring
+    /// tile/chunk to the south/west. This makes every edge render exactly once.
+    ///
+    /// Pit/Void cells still collapse a tile to Hollow (open vertical shaft,
+    /// ADR-008); the edge generator does not emit them, but the path is kept.
     /// </summary>
     public static class GridChunkBuilder
     {
@@ -200,13 +206,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// connects. Void-only Hollow tiles above do NOT open the ceiling: they
         /// are not transitions and the cell below them is not guaranteed walkable.
         /// </summary>
-        public static GameObject Build(GridCell[] cells, GridPrefabSet prefabs,
-            Vector3 origin, string name, GridCell[] layerAbove = null)
+        public static GameObject Build(ChunkData data, GridPrefabSet prefabs,
+            Vector3 origin, string name, ChunkData? layerAbove = null)
         {
             var root = new GameObject(name);
             root.transform.position = origin;
 
-            // Classify every tile up front so placement can consult neighbours.
+            var cells = data.cells;
+            var walls = data.walls;
+            GridCell[] aboveCells = layerAbove.HasValue ? layerAbove.Value.cells : null;
+
+            // Classify every tile up front so the Hollow path can consult neighbours.
             var grid = new TileClass[Tiles * Tiles];
             for (int tz = 0; tz < Tiles; tz++)
                 for (int tx = 0; tx < Tiles; tx++)
@@ -217,35 +227,42 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 for (int tx = 0; tx < Tiles; tx++)
                 {
                     var tile = grid[tz * Tiles + tx];
-                    bool pitAbove = layerAbove != null && TileHasPit(layerAbove, tx, tz);
-                    switch (tile.Kind)
+
+                    // Pit/Void cells open the tile vertically (ADR-008).
+                    if (tile.Kind == TileKind.Hollow)
                     {
-                        case TileKind.Solid:
-                            PlaceSolidWalls(prefabs, root.transform, grid, tx, tz);
-                            break;
-
-                        case TileKind.Open:
-                            PlaceFloor(prefabs, root.transform, tx, tz);
-                            if (!pitAbove) PlaceCeiling(prefabs, root.transform, tx, tz);
-                            if (tile.HasPillar) PlacePillar(prefabs, root.transform, tx, tz);
-                            if (tile.HasAnomaly) PlaceAnomalyMarker(root.transform, tx, tz);
-                            break;
-
-                        case TileKind.Border:
-                            PlaceFloor(prefabs, root.transform, tx, tz);
-                            if (!pitAbove) PlaceCeiling(prefabs, root.transform, tx, tz);
-                            PlaceWalls(prefabs, root.transform, tile.WallEdges, tx, tz);
-                            if (tile.HasAnomaly) PlaceAnomalyMarker(root.transform, tx, tz);
-                            break;
-
-                        case TileKind.Hollow:
-                            PlaceVoidEdges(prefabs, root.transform, grid, tx, tz);
-                            break;
+                        PlaceVoidEdges(prefabs, root.transform, grid, tx, tz);
+                        continue;
                     }
+
+                    // Every other tile is floored and ceilinged.
+                    PlaceFloor(prefabs, root.transform, tx, tz);
+                    bool pitAbove = aboveCells != null && TileHasPit(aboveCells, tx, tz);
+                    if (!pitAbove) PlaceCeiling(prefabs, root.transform, tx, tz);
+
+                    byte edges = EdgeWalls(walls, tx, tz);
+                    if (edges != 0) PlaceWalls(prefabs, root.transform, edges, tx, tz);
+
+                    if (tile.HasPillar) PlacePillar(prefabs, root.transform, tx, tz);
+                    if (tile.HasAnomaly) PlaceAnomalyMarker(root.transform, tx, tz);
                 }
             }
 
             return root;
+        }
+
+        /// <summary>
+        /// Edge flags for tile (tx,tz): only the NORTH and EAST panels, which this
+        /// tile owns (the south/west panels belong to the neighbour tile/chunk).
+        /// </summary>
+        private static byte EdgeWalls(TileWalls[] walls, int tx, int tz)
+        {
+            if (walls == null) return 0;
+            var w = walls[tz * Tiles + tx];
+            byte e = 0;
+            if (w.N) e |= EdgeNorth;
+            if (w.E) e |= EdgeEast;
+            return e;
         }
 
         private static Vector3 TileCenter(int tx, int tz) =>
@@ -289,42 +306,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if ((edges & flag) != 0)
                     AddColliderIfMissing(Instantiate(prefabs.wall, parent,
                         TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
-        }
-
-        /// <summary>Solid tile: a wall on each side facing a non-solid in-chunk tile.</summary>
-        private static void PlaceSolidWalls(GridPrefabSet prefabs, Transform parent,
-            TileClass[] grid, int tx, int tz)
-        {
-            byte edges = 0;
-            foreach (var (flag, dx, dz, _) in NeighbourTable)
-            {
-                int nx = tx + dx;
-                int nz = tz + dz;
-                // Chunk border: the neighbour tile lives in the next chunk
-                // (unknown here). Emit the exterior wall so the seam isn't
-                // left open against an empty/unwalled neighbour.
-                if (nx < 0 || nz < 0 || nx >= Tiles || nz >= Tiles)
-                {
-                    PlaceWallOnEdge(prefabs, parent, tx, tz, dx, dz);
-                    continue;
-                }
-                if (grid[nz * Tiles + nx].Kind != TileKind.Solid)
-                    edges |= flag;
-            }
-            PlaceWalls(prefabs, parent, edges, tx, tz);
-        }
-
-        /// <summary>Emit one Wall piece on the tile edge facing (dx, dz), using
-        /// the same position/rotation table as interior solid walls.</summary>
-        private static void PlaceWallOnEdge(GridPrefabSet prefabs, Transform parent,
-            int tx, int tz, int dx, int dz)
-        {
-            byte flag = 0;
-            if      (dx ==  0 && dz ==  1) flag = EdgeNorth;
-            else if (dx ==  1 && dz ==  0) flag = EdgeEast;
-            else if (dx ==  0 && dz == -1) flag = EdgeSouth;
-            else if (dx == -1 && dz ==  0) flag = EdgeWest;
-            PlaceWalls(prefabs, parent, flag, tx, tz);
         }
 
         private static void PlacePillar(GridPrefabSet prefabs, Transform parent, int tx, int tz)
