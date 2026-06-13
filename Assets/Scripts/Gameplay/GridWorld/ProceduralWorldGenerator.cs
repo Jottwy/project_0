@@ -16,6 +16,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Range(0f, 1f)] public float openZoneChance      = 0.20f;
         [Range(2, 6)]   public int   openZoneSize        = 3;
         [Range(0f, 1f)] public float pitChance           = 0.08f;
+        // Chance per chunk of a vertical shaft (a floorless tile that drops
+        // through every layer). Must be uniform across layers for the shaft to
+        // punch cleanly (see WorldGenerator.GenerateChunk).
+        [Range(0f, 1f)] public float shaftChance         = 0.03f;
         [Range(0f, 1f)] public float pillarChance        = 0.20f;
         [Range(0f, 1f)] public float doubleHeightChance  = 0.05f;
         [Range(0f, 1f)] public float interLayerConnection = 0.08f;
@@ -65,6 +69,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     {
         public GridCell[]  cells;   // Cells×Cells, row-major. Corridor/Pillar only.
         public TileWalls[] walls;   // Tiles×Tiles edge flags.
+        public bool[]      shafts;  // Tiles×Tiles. true = floorless vertical shaft.
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -81,6 +86,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // Fixed border slots where openings are guaranteed so neighbouring
         // chunks always connect (mirrors the seam contract of the old system).
         private static readonly int[] BorderSlots = { 1, 5, 9 };
+
+        // Layer-independent salt for shaft RNG: the same column yields the same
+        // shaft tile on every layer (distinct from any real layer index 0..3).
+        private const int ShaftSalt = 0x5A;
 
         public static ChunkData GenerateChunk(
             long seed, int chunkX, int chunkZ, int layer, LayerConfig cfg)
@@ -108,13 +117,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Step 5 — guarantee every tile is reachable from (0,0).
             EnsureConnectivity(walls);
 
+            // Step 6.5 — vertical shafts. Seeded WITHOUT the layer index so the
+            // same column picks the same shaft tile on every layer → a clean
+            // hole that drops straight through. Opens the tile's walls so it is
+            // fully exposed. (Replaces random Pits with designed verticality.)
+            var shaftRng = new System.Random(DeriveRngSeed(seed, chunkX, chunkZ, ShaftSalt));
+            var shafts = new bool[Tiles * Tiles];
+            PlaceShafts(shaftRng, cfg, walls, shafts);
+
             // Cells: all corridor (floor + ceiling everywhere). Step 7 adds pillars.
             var cells = new GridCell[Cells * Cells];
             for (int i = 0; i < cells.Length; i++)
                 cells[i] = new GridCell(GridCellType.Corridor, 2, 0);
-            PlacePillars(rng, cfg, walls, cells);
+            PlacePillars(rng, cfg, walls, shafts, cells);
 
-            return new ChunkData { cells = cells, walls = walls };
+            return new ChunkData { cells = cells, walls = walls, shafts = shafts };
         }
 
         // ─── Seeding ──────────────────────────────────────────────────
@@ -298,17 +315,41 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static void ClearEdgeW(TileWalls[] w, int x, int z)
         { w[z * Tiles + x].W = false; if (x - 1 >= 0) w[z * Tiles + (x - 1)].E = false; }
 
+        // ─── Shafts ───────────────────────────────────────────────────
+
+        // With probability shaftChance, mark one interior tile as a vertical
+        // shaft and clear its four edges so the hole is fully exposed. Picked
+        // from a layer-independent RNG so the same tile is a shaft in every
+        // layer (uniform shaftChance required — DefaultConfig keeps it uniform).
+        private static void PlaceShafts(System.Random rng, LayerConfig cfg,
+            TileWalls[] walls, bool[] shafts)
+        {
+            if (rng.NextDouble() >= cfg.shaftChance) return;
+
+            int tx = 1 + rng.Next(Tiles - 2);
+            int tz = 1 + rng.Next(Tiles - 2);
+            shafts[tz * Tiles + tx] = true;
+
+            ClearEdgeN(walls, tx, tz);
+            ClearEdgeS(walls, tx, tz);
+            ClearEdgeE(walls, tx, tz);
+            ClearEdgeW(walls, tx, tz);
+        }
+
         // ─── Pillars ──────────────────────────────────────────────────
 
-        // Pillars sit only in fully open tiles (no adjacent wall), spaced out.
+        // Pillars sit only in fully open tiles (no adjacent wall, not a shaft),
+        // spaced out.
         private static void PlacePillars(System.Random rng, LayerConfig cfg,
-            TileWalls[] walls, GridCell[] cells)
+            TileWalls[] walls, bool[] shafts, GridCell[] cells)
         {
             for (int tz = 1; tz < Tiles - 1; tz++)
             {
                 for (int tx = 1; tx < Tiles - 1; tx++)
                 {
-                    if (walls[tz * Tiles + tx].Any) continue;
+                    int idx = tz * Tiles + tx;
+                    if (shafts[idx]) continue;
+                    if (walls[idx].Any) continue;
                     if ((tx + tz * 3) % 4 != 0) continue;
                     if (rng.NextDouble() >= cfg.pillarChance) continue;
                     int cx = tx * 2, cz = tz * 2;
@@ -434,6 +475,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             var cfg = ScriptableObject.CreateInstance<LayerConfig>();
             cfg.corridorWidth = 1; cfg.doubleHeightChance = 0.10f; cfg.interLayerConnection = 0.08f;
+            cfg.shaftChance = 0.03f; // uniform across layers so shafts punch through cleanly
             switch (layer)
             {
                 case 0: // Most oppressive: dense walls, narrow passages

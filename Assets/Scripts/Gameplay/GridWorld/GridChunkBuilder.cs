@@ -211,6 +211,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             var cells = data.cells;
             var walls = data.walls;
+            var shafts = data.shafts;
             bool isTopLayer = layerIndex >= layerCount - 1;
 
             // Classify every tile up front so the Hollow path can consult neighbours.
@@ -223,7 +224,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             {
                 for (int tx = 0; tx < Tiles; tx++)
                 {
-                    var tile = grid[tz * Tiles + tx];
+                    int idx = tz * Tiles + tx;
+
+                    // Vertical shaft: floorless hole that drops through every
+                    // layer, rimmed with void edges on all four sides (Task 2).
+                    if (shafts != null && shafts[idx])
+                    {
+                        PlaceShaftEdges(prefabs, root.transform, tx, tz);
+                        continue; // no slab, no roof, no walls
+                    }
+
+                    var tile = grid[idx];
 
                     // Pit/Void cells open the tile vertically (ADR-008).
                     if (tile.Kind == TileKind.Hollow)
@@ -332,6 +343,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (k == TileKind.Open || k == TileKind.Border) // tiles that have a floor
                     Instantiate(prefabs.voidEdge, parent, TileCenter(tx, tz), lipYaw);
             }
+        }
+
+        /// <summary>Shaft tile: a void-edge lip on all four sides (the hole is
+        /// fully open by construction, so no neighbour check).</summary>
+        private static void PlaceShaftEdges(GridPrefabSet prefabs, Transform parent, int tx, int tz)
+        {
+            foreach (var (_, _, _, lipYaw) in NeighbourTable)
+                Instantiate(prefabs.voidEdge, parent, TileCenter(tx, tz), lipYaw);
         }
 
         private static void PlaceAnomalyMarker(Transform parent, int tx, int tz)
