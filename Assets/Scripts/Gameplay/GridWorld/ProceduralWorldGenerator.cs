@@ -476,34 +476,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static LayerConfig DefaultConfig(int layer)
         {
+            // All layers share layer-0 settings for now: dense walls + narrow
+            // apertures for an oppressive Backrooms feel.
             var cfg = ScriptableObject.CreateInstance<LayerConfig>();
-            switch (layer)
-            {
-                case 0:
-                    cfg.wallDensity=0.45f; cfg.corridorWidth=2; cfg.openZoneChance=0.35f;
-                    cfg.openZoneSize=4;    cfg.pitChance=0.02f; cfg.pillarChance=0.30f;
-                    cfg.doubleHeightChance=0.10f; cfg.interLayerConnection=0.08f;
-                    cfg.minApertureRatio=0.5f;    cfg.maxApertureRatio=0.9f;
-                    break;
-                case 1:
-                    cfg.wallDensity=0.60f; cfg.corridorWidth=1; cfg.openZoneChance=0.15f;
-                    cfg.openZoneSize=3;    cfg.pitChance=0.03f; cfg.pillarChance=0.15f;
-                    cfg.doubleHeightChance=0.05f; cfg.interLayerConnection=0.10f;
-                    cfg.minApertureRatio=0.3f;    cfg.maxApertureRatio=0.6f;
-                    break;
-                case 2:
-                    cfg.wallDensity=0.70f; cfg.corridorWidth=1; cfg.openZoneChance=0.10f;
-                    cfg.openZoneSize=2;    cfg.pitChance=0.03f; cfg.pillarChance=0.10f;
-                    cfg.doubleHeightChance=0.00f; cfg.interLayerConnection=0.12f;
-                    cfg.minApertureRatio=0.2f;    cfg.maxApertureRatio=0.45f;
-                    break;
-                default:
-                    cfg.wallDensity=0.75f; cfg.corridorWidth=1; cfg.openZoneChance=0.05f;
-                    cfg.openZoneSize=2;    cfg.pitChance=0.04f; cfg.pillarChance=0.05f;
-                    cfg.doubleHeightChance=0.00f; cfg.interLayerConnection=0.05f;
-                    cfg.minApertureRatio=0.15f;   cfg.maxApertureRatio=0.35f;
-                    break;
-            }
+            cfg.wallDensity=0.75f; cfg.corridorWidth=1; cfg.openZoneChance=0.35f;
+            cfg.openZoneSize=4;    cfg.pitChance=0.02f; cfg.pillarChance=0.30f;
+            cfg.doubleHeightChance=0.10f; cfg.interLayerConnection=0.08f;
+            cfg.minApertureRatio=0.25f;   cfg.maxApertureRatio=0.45f;
             return cfg;
         }
     }
