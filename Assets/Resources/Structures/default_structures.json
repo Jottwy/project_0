@@ -31,6 +31,62 @@
         ["T","T","T"],
         ["W","T","W"]
       ]
+    },
+    {
+      "id": "office_cluster",
+      "probability": 0.10,
+      "layers_tall": 1,
+      "pattern": [
+        ["O","O","O","O","O","O","O"],
+        ["O","P","O","P","O","P","O"],
+        ["O","O","O","O","O","O","O"],
+        ["O","P","O","P","O","P","O"],
+        ["O","O","O","O","O","O","O"],
+        ["O","P","O","P","O","P","O"],
+        ["O","O","O","O","O","O","O"]
+      ]
+    },
+    {
+      "id": "long_corridor",
+      "probability": 0.12,
+      "layers_tall": 1,
+      "pattern": [
+        ["C","P","C","P","C","P","C","P"]
+      ]
+    },
+    {
+      "id": "stairwell",
+      "probability": 0.05,
+      "layers_tall": 3,
+      "pattern": [
+        ["T","T"],
+        ["T","T"]
+      ]
+    },
+    {
+      "id": "flooded_room",
+      "probability": 0.07,
+      "layers_tall": 1,
+      "pattern": [
+        ["W","W","W","W","W","W"],
+        ["W","O","O","O","O","W"],
+        ["W","O","O","O","O","W"],
+        ["W","O","O","O","O","W"],
+        ["W","O","O","O","O","W"],
+        ["W","W","C","W","W","W"]
+      ]
+    },
+    {
+      "id": "void_edge_zone",
+      "probability": 0.04,
+      "layers_tall": 1,
+      "pattern": [
+        ["W","W","W","W","W"],
+        ["W","C","C","C","W"],
+        ["W","C","C","C","W"],
+        ["W","C","C","C","W"],
+        ["W","W","W","W","W"]
+      ]
     }
   ]
 }

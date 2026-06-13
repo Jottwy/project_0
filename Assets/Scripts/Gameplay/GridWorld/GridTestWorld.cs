@@ -52,27 +52,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             // God mode label (Canvas → Text)
             var canvasGo = new GameObject("HUD");
-            canvasGo.transform.SetParent(root.transform, false);
             var canvas = canvasGo.AddComponent<Canvas>();
             canvas.renderMode = RenderMode.ScreenSpaceOverlay;
             canvasGo.AddComponent<UnityEngine.UI.CanvasScaler>();
             canvasGo.AddComponent<UnityEngine.UI.GraphicRaycaster>();
+            canvasGo.transform.SetParent(root.transform);
 
             var labelGo = new GameObject("GodModeLabel");
             labelGo.transform.SetParent(canvasGo.transform, false);
-            var label = labelGo.AddComponent<Text>(); // AddComponent crea el RectTransform
-            var rt = labelGo.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 1f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.pivot     = new Vector2(0.5f, 1f);
-            rt.anchoredPosition = new Vector2(0f, -10f);
-            rt.sizeDelta = new Vector2(0f, 60f);
+            var label = labelGo.AddComponent<Text>();
             label.text      = "[GOD MODE]";
             label.color     = Color.red;
-            label.fontSize  = 28;
-            label.fontStyle = FontStyle.Bold;
+            label.fontSize  = 24;
             label.alignment = TextAnchor.UpperCenter;
-            label.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            var rt = labelGo.GetComponent<RectTransform>();
+            rt.anchorMin = new Vector2(0f, 0.9f);
+            rt.anchorMax = new Vector2(1f, 1f);
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
             label.enabled   = false;
 
             // PlayerController — qualified: the legacy BackroomsSurvival.Gameplay
