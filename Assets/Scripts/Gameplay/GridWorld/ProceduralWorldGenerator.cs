@@ -116,8 +116,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Step 8 — pillars in large open zones
             PlacePillars(rng, cfg, tiles, zones);
 
-            // Step 9 — guarantee border connectivity
-            EnforceBorderCorridor(rng, tiles);
+            // Step 9 — fixed border connections (tiles 1, 5, 9 per side)
+            GenerateBorderConnections(tiles);
 
             // Step 10 — apply forced walkable from layer above
             if (forcedWalkable != null)
@@ -376,35 +376,39 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
-        // ─── Border connectivity ───────────────────────────────────────
+        // ─── Border connections ───────────────────────────────────────
+        // Fixed tile-slot positions so adjacent chunks always align.
+        private static readonly int[] BorderSlots = { 1, 5, 9 };
 
-        private static void EnforceBorderCorridor(System.Random rng, GridCellType[] tiles)
+        private static void GenerateBorderConnections(GridCellType[] tiles)
         {
-            // Each border side: guarantee at least one non-wall cell
-            // (pick one random position per side if all are wall)
-            EnsureSideCorridor(rng, tiles, 0, Tiles, false, 0);      // south z=0
-            EnsureSideCorridor(rng, tiles, 0, Tiles, false, Tiles - 1); // north
-            EnsureSideCorridor(rng, tiles, 0, Tiles, true, 0);       // west x=0
-            EnsureSideCorridor(rng, tiles, 0, Tiles, true, Tiles - 1);  // east
+            foreach (int pos in BorderSlots)
+            {
+                int p2 = Mathf.Min(pos + 1, Tiles - 1);
+
+                // South (tz=0): 2 border tiles + 2 interior tiles
+                ForceCorridor(tiles, pos, 0);  ForceCorridor(tiles, p2, 0);
+                ForceCorridor(tiles, pos, 1);  ForceCorridor(tiles, p2, 1);
+
+                // North (tz=Tiles-1)
+                ForceCorridor(tiles, pos, Tiles - 1); ForceCorridor(tiles, p2, Tiles - 1);
+                ForceCorridor(tiles, pos, Tiles - 2); ForceCorridor(tiles, p2, Tiles - 2);
+
+                // West (tx=0)
+                ForceCorridor(tiles, 0, pos);  ForceCorridor(tiles, 0, p2);
+                ForceCorridor(tiles, 1, pos);  ForceCorridor(tiles, 1, p2);
+
+                // East (tx=Tiles-1)
+                ForceCorridor(tiles, Tiles - 1, pos);  ForceCorridor(tiles, Tiles - 1, p2);
+                ForceCorridor(tiles, Tiles - 2, pos);  ForceCorridor(tiles, Tiles - 2, p2);
+            }
         }
 
-        private static void EnsureSideCorridor(System.Random rng, GridCellType[] tiles,
-            int start, int end, bool alongX, int fixedAxis)
+        private static void ForceCorridor(GridCellType[] tiles, int tx, int tz)
         {
-            bool hasOpen = false;
-            for (int i = start; i < end; i++)
-            {
-                int idx = alongX
-                    ? fixedAxis * Tiles + i
-                    : i * Tiles + fixedAxis;
-                if (tiles[idx] != GridCellType.Wall) { hasOpen = true; break; }
-            }
-            if (!hasOpen)
-            {
-                int pos = rng.Next(start + 1, end - 1);
-                int idx = alongX ? fixedAxis * Tiles + pos : pos * Tiles + fixedAxis;
+            int idx = tz * Tiles + tx;
+            if ((uint)idx < (uint)tiles.Length)
                 tiles[idx] = GridCellType.Corridor;
-            }
         }
 
         // ─── Tile → Cell expansion ────────────────────────────────────
