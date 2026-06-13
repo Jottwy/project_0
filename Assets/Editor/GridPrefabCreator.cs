@@ -44,13 +44,14 @@ namespace BackroomsSurvival.EditorTools
 
             SavePrefab(BuildFloor(floor), "Floor");
             SavePrefab(BuildCeiling(ceiling), "Ceiling");
+            SavePrefab(BuildFloorSlab(floor), "FloorSlab");
             SavePrefab(BuildWall(wall), "Wall");
             SavePrefab(BuildPillar(pillar), "Pillar");
             SavePrefab(BuildVoidEdge(voidEdge), "VoidEdge");
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"[GridPrefabCreator] 5 grid prefabs saved to {PrefabFolder}");
+            Debug.Log($"[GridPrefabCreator] 6 grid prefabs saved to {PrefabFolder}");
         }
 
         // ---- prefab builders -------------------------------------------------
@@ -63,6 +64,24 @@ namespace BackroomsSurvival.EditorTools
                 new Vector3(0, -0.04f, 0),
                 new Vector3(GridVisualConstants.TileSize, 0.08f, GridVisualConstants.TileSize));
             floor.isStatic = true;
+            return root;
+        }
+
+        /// <summary>
+        /// Shared horizontal slab covering one 5 m tile, CENTRED on its plane
+        /// (top face +0.04, bottom face -0.04). One slab is the floor of layer N
+        /// and the ceiling of layer N-1 at the same time — the builder positions
+        /// it at the right Y so adjacent layers stop double-stacking floor+ceiling.
+        /// Double-sided GridFloor material: reads as floor from above, ceiling
+        /// from below.
+        /// </summary>
+        private static GameObject BuildFloorSlab(Material mat)
+        {
+            var root = new GameObject("FloorSlab");
+            var slab = Box("Slab", root, mat,
+                Vector3.zero,
+                new Vector3(GridVisualConstants.TileSize, 0.08f, GridVisualConstants.TileSize));
+            slab.isStatic = true;
             return root;
         }
 

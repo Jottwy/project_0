@@ -416,11 +416,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (_loaded.ContainsKey(key)) continue;
 
                 var origin = new Vector3(ccx * Side, layer * GridConstants.LayerHeight, ccz * Side);
-                ChunkData? above = layer + 1 < layerCount && _cache.ContainsKey((ccx, ccz, layer + 1))
-                    ? _cache[(ccx, ccz, layer + 1)]
-                    : (ChunkData?)null;
                 var go = GridChunkBuilder.Build(_cache[key], _prefabs, origin,
-                    $"Chunk_L{layer}_{ccx}_{ccz}", above);
+                    $"Chunk_L{layer}_{ccx}_{ccz}", layer, layerCount);
                 go.transform.SetParent(transform, true);
                 _loaded[key] = go;
             }

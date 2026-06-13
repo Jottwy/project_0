@@ -10,6 +10,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     {
         public GameObject floor;
         public GameObject ceiling;
+        public GameObject floorSlab;
         public GameObject wall;
         public GameObject pillar;
         public GameObject voidEdge;
@@ -22,6 +23,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             {
                 floor = Resources.Load<GameObject>("GridPrefabs/Floor"),
                 ceiling = Resources.Load<GameObject>("GridPrefabs/Ceiling"),
+                floorSlab = Resources.Load<GameObject>("GridPrefabs/FloorSlab"),
                 wall = Resources.Load<GameObject>("GridPrefabs/Wall"),
                 pillar = Resources.Load<GameObject>("GridPrefabs/Pillar"),
                 voidEdge = Resources.Load<GameObject>("GridPrefabs/VoidEdge"),
@@ -31,6 +33,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (set.floor == null)
                 Debug.LogError("[GridPrefabSet] GridPrefabs not found in Resources. " +
                                "Run Backrooms/Create Grid Prefabs first.");
+            // FloorSlab is the shared floor/ceiling plane; fall back to Floor so
+            // the build still runs before Create Grid Prefabs is re-run.
+            if (set.floorSlab == null)
+                set.floorSlab = set.floor;
 
             // Wall side faces and ceiling panels must render both faces so backs
             // and undersides never cull to transparency. Idempotent — works
@@ -95,6 +101,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     {
         private const float Ch = GridVisualConstants.CellHeight;
         private const float Ts = GridVisualConstants.TileSize;
+        private const float LayerHeight = GridConstants.LayerHeight;
         private const int Size = GridConstants.ChunkCells;
         // A render tile is a 2×2 block of cells → 10×10 tiles per chunk.
         private const int Tiles = Size / 2;
@@ -187,34 +194,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return new TileClass(TileKind.Open, 0, hasPillar, hasAnomaly);
         }
 
-        /// <summary>True if any cell of tile (tileX, tileZ)'s 2×2 block is a Pit.</summary>
-        private static bool TileHasPit(GridCell[] cells, int tileX, int tileZ)
-        {
-            int cx = tileX * 2;
-            int cz = tileZ * 2;
-            return cells[cz * Size + cx].Kind == GridCellType.Pit
-                || cells[cz * Size + cx + 1].Kind == GridCellType.Pit
-                || cells[(cz + 1) * Size + cx].Kind == GridCellType.Pit
-                || cells[(cz + 1) * Size + cx + 1].Kind == GridCellType.Pit;
-        }
-
         /// <summary>
         /// Build the whole chunk under one root placed at <paramref name="origin"/>.
-        /// <paramref name="layerAbove"/> (optional): cells of the same chunk one
-        /// layer up. A Pit up there is a real vertical transition whose mouth is
-        /// this tile's ceiling plane — skip the ceiling panel so the shaft
-        /// connects. Void-only Hollow tiles above do NOT open the ceiling: they
-        /// are not transitions and the cell below them is not guaranteed walkable.
+        ///
+        /// Shared-slab model: a single FloorSlab at the tile's floor plane (local
+        /// Y = 0) is BOTH the floor of this layer and the ceiling of the layer
+        /// below — no per-layer ceiling is placed. Only the topmost layer
+        /// (<paramref name="layerIndex"/> == <paramref name="layerCount"/> - 1)
+        /// adds a roof slab at local Y = LayerHeight.
         /// </summary>
         public static GameObject Build(ChunkData data, GridPrefabSet prefabs,
-            Vector3 origin, string name, ChunkData? layerAbove = null)
+            Vector3 origin, string name, int layerIndex, int layerCount)
         {
             var root = new GameObject(name);
             root.transform.position = origin;
 
             var cells = data.cells;
             var walls = data.walls;
-            GridCell[] aboveCells = layerAbove.HasValue ? layerAbove.Value.cells : null;
+            bool isTopLayer = layerIndex >= layerCount - 1;
 
             // Classify every tile up front so the Hollow path can consult neighbours.
             var grid = new TileClass[Tiles * Tiles];
@@ -235,10 +232,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         continue;
                     }
 
-                    // Every other tile is floored and ceilinged.
-                    PlaceFloor(prefabs, root.transform, tx, tz);
-                    bool pitAbove = aboveCells != null && TileHasPit(aboveCells, tx, tz);
-                    if (!pitAbove) PlaceCeiling(prefabs, root.transform, tx, tz);
+                    // Floor of this layer == ceiling of the layer below (one slab).
+                    PlaceFloorSlab(prefabs, root.transform, tx, tz, 0f);
+                    // Only the top layer needs an explicit roof above it.
+                    if (isTopLayer)
+                        PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
 
                     byte edges = EdgeWalls(walls, tx, tz);
                     if (edges != 0) PlaceWalls(prefabs, root.transform, edges, tx, tz);
@@ -291,12 +289,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
-        private static void PlaceFloor(GridPrefabSet prefabs, Transform parent, int tx, int tz)
-            => AddColliderIfMissing(Instantiate(prefabs.floor, parent, TileCenter(tx, tz), 0f));
-
-        /// <summary>Ceiling panel at the fixed 4 m room height (baked into the prefab).</summary>
-        private static void PlaceCeiling(GridPrefabSet prefabs, Transform parent, int tx, int tz)
-            => Instantiate(prefabs.ceiling, parent, TileCenter(tx, tz), 0f);
+        /// <summary>Shared floor/ceiling slab at local height <paramref name="localY"/>.</summary>
+        private static void PlaceFloorSlab(GridPrefabSet prefabs, Transform parent,
+            int tx, int tz, float localY)
+            => AddColliderIfMissing(Instantiate(prefabs.floorSlab, parent,
+                TileCenter(tx, tz) + new Vector3(0f, localY, 0f), 0f));
 
         /// <summary>Independent 5×4×0.2 wall pieces on the flagged tile edges.</summary>
         private static void PlaceWalls(GridPrefabSet prefabs, Transform parent,
