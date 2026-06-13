@@ -11,21 +11,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     [CreateAssetMenu(menuName = "Backrooms/LayerConfig", fileName = "LayerConfig")]
     public sealed class LayerConfig : ScriptableObject
     {
-        [Range(0f, 1f)] public float wallDensity         = 0.50f;
-        [Range(1, 2)]   public int   corridorWidth       = 1;
-        [Range(0f, 1f)] public float openZoneChance      = 0.20f;
-        [Range(2, 6)]   public int   openZoneSize        = 3;
-        [Range(0f, 1f)] public float pitChance           = 0.08f;
+        [Range(0f, 1f)] public float wallDensity      = 0.50f;
+        [Range(0f, 1f)] public float openZoneChance  = 0.20f;
+        [Range(2, 6)]   public int   openZoneSize    = 3;
         // Chance per chunk of a vertical shaft (a floorless tile that drops
         // through every layer). Must be uniform across layers for the shaft to
         // punch cleanly (see WorldGenerator.GenerateChunk).
-        [Range(0f, 1f)] public float shaftChance         = 0.03f;
-        [Range(0f, 1f)] public float pillarChance        = 0.20f;
-        [Range(0f, 1f)] public float doubleHeightChance  = 0.05f;
-        [Range(0f, 1f)] public float interLayerConnection = 0.08f;
+        [Range(0f, 1f)] public float shaftChance     = 0.03f;
+        [Range(0f, 1f)] public float pillarChance    = 0.20f;
         // Aperture ratio range: how open the gaps in dividing walls are.
-        [Range(0f, 1f)] public float minApertureRatio    = 0.30f;
-        [Range(0f, 1f)] public float maxApertureRatio    = 0.70f;
+        [Range(0f, 1f)] public float minApertureRatio = 0.30f;
+        [Range(0f, 1f)] public float maxApertureRatio = 0.70f;
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -109,6 +105,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Steps 3 & 4 — vertical wall lines (E/W edges), from west then east.
             PlaceVerticalLines(rng, walls, numLines, minAp, maxAp, fromFar: false);
             PlaceVerticalLines(rng, walls, numLines, minAp, maxAp, fromFar: true);
+
+            // Step 2.5 — carve open zones (before connectivity so the BFS sees them)
+            PlaceOpenZones(rng, cfg, walls);
 
             // Step 6 — guaranteed border apertures (before connectivity so the
             // BFS sees the seams open).
@@ -203,7 +202,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (len <= 0) return;
 
             float ratio = minAp + (float)rng.NextDouble() * (maxAp - minAp);
-            int apLen   = Mathf.Clamp(Mathf.RoundToInt(len * ratio), 1, Mathf.Max(1, len - 1));
+            int apLen   = Mathf.Clamp(Mathf.RoundToInt(len * ratio), 2, len - 1);
             int apStart = start + rng.Next(0, len - apLen + 1);
 
             for (int i = start; i < end; i++)
@@ -228,6 +227,38 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (!tooClose) chosen.Add(c);
             }
             return chosen;
+        }
+
+        // ─── Open zones ───────────────────────────────────────────────
+
+        // Clear all interior edges of a random size×size tile rectangle, leaving
+        // the zone's outer border walls intact. Creates the large open rooms
+        // characteristic of Backrooms level 0.
+        private static void PlaceOpenZones(System.Random rng, LayerConfig cfg, TileWalls[] walls)
+        {
+            if (rng.NextDouble() >= cfg.openZoneChance) return;
+            int size = Mathf.Clamp(cfg.openZoneSize, 2, 6);
+            int maxOx = Tiles - size - 1;
+            int maxOz = Tiles - size - 1;
+            if (maxOx < 1 || maxOz < 1) return;
+            int ox = rng.Next(1, maxOx + 1);
+            int oz = rng.Next(1, maxOz + 1);
+
+            // Interior horizontal seams (N edge of row z = S edge of row z+1).
+            for (int z = oz; z < oz + size - 1; z++)
+                for (int x = ox; x < ox + size; x++)
+                {
+                    walls[z * Tiles + x].N = false;
+                    walls[(z + 1) * Tiles + x].S = false;
+                }
+
+            // Interior vertical seams (E edge of col x = W edge of col x+1).
+            for (int z = oz; z < oz + size; z++)
+                for (int x = ox; x < ox + size - 1; x++)
+                {
+                    walls[z * Tiles + x].E = false;
+                    walls[z * Tiles + (x + 1)].W = false;
+                }
         }
 
         // ─── Border apertures ─────────────────────────────────────────
@@ -474,25 +505,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static LayerConfig DefaultConfig(int layer)
         {
             var cfg = ScriptableObject.CreateInstance<LayerConfig>();
-            cfg.corridorWidth = 1; cfg.doubleHeightChance = 0.10f; cfg.interLayerConnection = 0.08f;
             cfg.shaftChance = 0.03f; // uniform across layers so shafts punch through cleanly
             switch (layer)
             {
                 case 0: // Most oppressive: dense walls, narrow passages
                     cfg.wallDensity=0.75f; cfg.minApertureRatio=0.25f; cfg.maxApertureRatio=0.40f;
-                    cfg.openZoneChance=0.15f; cfg.openZoneSize=3; cfg.pillarChance=0.30f; cfg.pitChance=0.02f;
+                    cfg.openZoneChance=0.15f; cfg.openZoneSize=3; cfg.pillarChance=0.30f;
                     break;
                 case 1:
                     cfg.wallDensity=0.65f; cfg.minApertureRatio=0.30f; cfg.maxApertureRatio=0.50f;
-                    cfg.openZoneChance=0.25f; cfg.openZoneSize=4; cfg.pillarChance=0.25f; cfg.pitChance=0.03f;
+                    cfg.openZoneChance=0.25f; cfg.openZoneSize=4; cfg.pillarChance=0.25f;
                     break;
                 case 2:
                     cfg.wallDensity=0.55f; cfg.minApertureRatio=0.35f; cfg.maxApertureRatio=0.55f;
-                    cfg.openZoneChance=0.35f; cfg.openZoneSize=5; cfg.pillarChance=0.20f; cfg.pitChance=0.04f;
+                    cfg.openZoneChance=0.35f; cfg.openZoneSize=5; cfg.pillarChance=0.20f;
                     break;
                 default: // Most open: unsettling emptiness of higher levels
                     cfg.wallDensity=0.45f; cfg.minApertureRatio=0.40f; cfg.maxApertureRatio=0.65f;
-                    cfg.openZoneChance=0.50f; cfg.openZoneSize=6; cfg.pillarChance=0.15f; cfg.pitChance=0.05f;
+                    cfg.openZoneChance=0.50f; cfg.openZoneSize=6; cfg.pillarChance=0.15f;
                     break;
             }
             return cfg;
