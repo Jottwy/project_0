@@ -60,13 +60,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             var labelGo = new GameObject("GodModeLabel");
             labelGo.transform.SetParent(canvasGo.transform, false);
+            var label = labelGo.AddComponent<Text>(); // AddComponent crea el RectTransform
             var rt = labelGo.GetComponent<RectTransform>();
             rt.anchorMin = new Vector2(0f, 1f);
             rt.anchorMax = new Vector2(1f, 1f);
             rt.pivot     = new Vector2(0.5f, 1f);
             rt.anchoredPosition = new Vector2(0f, -10f);
             rt.sizeDelta = new Vector2(0f, 60f);
-            var label = labelGo.AddComponent<Text>();
             label.text      = "[GOD MODE]";
             label.color     = Color.red;
             label.fontSize  = 28;
@@ -75,8 +75,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             label.font      = Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             label.enabled   = false;
 
-            // PlayerController
-            var pc = root.AddComponent<PlayerController>();
+            // PlayerController — qualified: the legacy BackroomsSurvival.Gameplay
+            // .PlayerController shadows the using directive from the enclosing
+            // namespace, so the bare name binds to the wrong type.
+            var pc = root.AddComponent<Player.PlayerController>();
             pc.playerCamera = cam;
             pc.godModeLabel = label;
 
