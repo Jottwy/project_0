@@ -274,19 +274,11 @@ pub(crate) use crate::world::levels::level_0::region_graph_builder::{
 // ─── Test-only re-exports (needed by `use super::*` in mod tests) ───
 
 #[cfg(test)]
-use crate::player::inventory::Item;
+use crate::utils::CHUNK_SIZE;
 #[cfg(test)]
-use crate::utils::{Vec3, CHUNK_SIZE};
-#[cfg(test)]
-pub(crate) use crate::world::architecture::chunk_generator::{
-    chunk_seed, stable_entity_id, stable_item_id,
-};
+pub(crate) use crate::world::architecture::chunk_generator::chunk_seed;
 #[cfg(test)]
 use crate::world::architecture::surface_builder::edge_delta;
-#[cfg(test)]
-use crate::world::chunk::DroppedItem;
-#[cfg(test)]
-use crate::world::entity::{Entity, EntityType};
 #[cfg(test)]
 pub use crate::world::levels::level_0::structure::StructureType;
 
