@@ -121,8 +121,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             unchecked
             {
-                long s = seed ^ ((long)cx * 73856093L) ^ ((long)cz * 19349663L)
-                              ^ ((long)layer * 83492791L);
+                // layer intentionally ignored: every layer of a chunk shares the
+                // same pattern so floors/ceilings/walls line up across the stack.
+                long s = seed ^ ((long)cx * 73856093L) ^ ((long)cz * 19349663L);
                 return (int)(s ^ (s >> 32));
             }
         }
@@ -440,8 +441,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 var key = (ccx, ccz, layer);
                 if (!_cache.ContainsKey(key))
                 {
+                    // Always layer-0 config so every layer shares one pattern.
                     colCells[layer] = WorldGenerator.GenerateChunk(
-                        seed, ccx, ccz, layer, GetConfig(layer), forcedWalkable);
+                        seed, ccx, ccz, layer, GetConfig(0), forcedWalkable);
                     _cache[key] = colCells[layer];
                 }
                 else
