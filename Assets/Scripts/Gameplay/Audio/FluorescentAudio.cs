@@ -24,6 +24,19 @@ namespace BackroomsSurvival.Gameplay.Audio
         // One clip shared by every lamp instead of one identical clip each.
         private static AudioClip _sharedHum;
 
+        /// <summary>
+        /// Nominal volume the global system drives (humVolume, and the flicker
+        /// fade). The live <see cref="Source"/> volume is this scaled by the
+        /// vertical-isolation fade — this component is the sole writer of
+        /// Source.volume so the two effects compose instead of fighting.
+        /// </summary>
+        public float baseVolume = 0.3f;
+
+        private Transform _listener;
+        private float _vertTimer;
+        private float _vertFade = 1f;
+        private const float VerticalCutoff = 3f; // ~3/4 of LayerHeight → silent beyond
+
         private void Awake()
         {
             if (_sharedHum == null)
@@ -33,10 +46,15 @@ namespace BackroomsSurvival.Gameplay.Audio
             src.clip         = _sharedHum;
             src.loop         = true;
             src.spatialBlend = 1f;                              // fully 3D
-            src.minDistance  = 1.5f;                            // full volume within
-            src.maxDistance  = 10f;                             // silent beyond
-            src.rolloffMode  = AudioRolloffMode.Logarithmic;
-            src.volume       = 0.4f;
+            src.minDistance  = 0.5f;                            // full volume within
+            src.maxDistance  = 5f;                              // silent beyond
+            src.rolloffMode  = AudioRolloffMode.Custom;         // natural proximity gradient
+            src.SetCustomCurve(AudioSourceCurveType.CustomRolloff, new AnimationCurve(
+                new Keyframe(0f,   1f),    // 0 m   — full volume
+                new Keyframe(0.3f, 0.8f),  // 1.5 m — still strong
+                new Keyframe(0.7f, 0.2f),  // 3.5 m — almost gone
+                new Keyframe(1f,   0f)));  // 5 m   — silent
+            src.volume       = baseVolume;                      // scaled by vertical fade in Update
             src.pitch        = 1f + Random.Range(-0.02f, 0.02f); // slight per-lamp detune
             src.dopplerLevel = 0f;                              // stationary lamp
             src.playOnAwake  = false;
@@ -54,6 +72,34 @@ namespace BackroomsSurvival.Gameplay.Audio
 
         private void OnEnable()  => Active.Add(this);
         private void OnDisable() => Active.Remove(this);
+
+        private void Update()
+        {
+            // Re-check the vertical gap to the listener every 0.1 s (cheap throttle);
+            // apply the resulting volume every frame so the flicker fade stays smooth.
+            _vertTimer -= Time.deltaTime;
+            if (_vertTimer <= 0f)
+            {
+                _vertTimer = 0.1f;
+                _vertFade  = ComputeVerticalFade();
+            }
+            if (Source != null) Source.volume = baseVolume * _vertFade;
+        }
+
+        // Lamps on other layers must not bleed through: fade out with vertical
+        // distance to the listener, fully silent past VerticalCutoff.
+        private float ComputeVerticalFade()
+        {
+            if (_listener == null)
+            {
+                var al = FindAnyObjectByType<AudioListener>();
+                if (al != null) _listener = al.transform;
+            }
+            if (_listener == null) return 1f;
+
+            float verticalDist = Mathf.Abs(transform.position.y - _listener.position.y);
+            return verticalDist > VerticalCutoff ? 0f : 1f - verticalDist / VerticalCutoff;
+        }
 
         /// <summary>
         /// Synthesises a seamless-looping fluorescent mains hum: a 60 Hz

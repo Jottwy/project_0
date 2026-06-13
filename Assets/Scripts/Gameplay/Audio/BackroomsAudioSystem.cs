@@ -15,11 +15,11 @@ namespace BackroomsSurvival.Gameplay.Audio
     {
         public static BackroomsAudioSystem Instance { get; private set; }
 
-        [SerializeField] private float humVolume       = 0.4f;
-        [SerializeField] private float minDistance      = 1.5f;
-        [SerializeField] private float maxDistance      = 10f;
+        [SerializeField] private float humVolume       = 0.3f;
+        [SerializeField] private float minDistance      = 0.5f;
+        [SerializeField] private float maxDistance      = 5f;
         [SerializeField] private float flickerInterval = 30f;
-        [SerializeField] private float silenceRadius    = 15f;
+        [SerializeField] private float silenceRadius    = 8f;
 
         private const float FlickerRadius      = 20f;
         private const float ListenerOpen       = 22000f; // unfiltered cutoff
@@ -54,8 +54,8 @@ namespace BackroomsSurvival.Gameplay.Audio
 
             var zone = playerGo.GetComponent<AudioReverbZone>();
             if (zone == null) zone = playerGo.AddComponent<AudioReverbZone>();
-            zone.minDistance  = 1f;
-            zone.maxDistance  = 25f;
+            zone.minDistance  = 0.5f;
+            zone.maxDistance  = 8f;
             zone.reverbPreset = AudioReverbPreset.Hallway; // open, empty-corridor space
 
             _lowPass = playerGo.GetComponent<AudioLowPassFilter>();
@@ -99,7 +99,9 @@ namespace BackroomsSurvival.Gameplay.Audio
 
                 lamp.Source.minDistance = minDistance;
                 lamp.Source.maxDistance = maxDistance;
-                if (lamp != _flickeringLamp) lamp.Source.volume = humVolume;
+                // Drive the lamp's base volume; FluorescentAudio applies it scaled
+                // by its vertical fade. Skip the flickering lamp so its fade holds.
+                if (lamp != _flickeringLamp) lamp.baseVolume = humVolume;
 
                 float d = (lamp.transform.position - _player.position).sqrMagnitude;
                 if (d < nearestSqr) nearestSqr = d;
@@ -152,27 +154,28 @@ namespace BackroomsSurvival.Gameplay.Audio
         private IEnumerator FlickerRoutine(FluorescentAudio lamp)
         {
             _flickeringLamp = lamp;
-            var src = lamp.Source;
 
-            yield return FadeVolume(lamp, src, src.volume, 0f, 0.1f);
+            yield return FadeBaseVolume(lamp, lamp.baseVolume, 0f, 0.1f);
             yield return new WaitForSeconds(Random.Range(0.05f, 0.2f));
-            yield return FadeVolume(lamp, src, 0f, humVolume, 0.15f);
+            yield return FadeBaseVolume(lamp, 0f, humVolume, 0.15f);
 
             _flickeringLamp = null;
         }
 
-        private static IEnumerator FadeVolume(
-            FluorescentAudio lamp, AudioSource src, float from, float to, float dur)
+        // Fade the lamp's base volume (not Source.volume directly) so the flicker
+        // composes with FluorescentAudio's vertical-isolation fade.
+        private static IEnumerator FadeBaseVolume(
+            FluorescentAudio lamp, float from, float to, float dur)
         {
             float e = 0f;
             while (e < dur)
             {
-                if (lamp == null || src == null) yield break; // lamp streamed out mid-flicker
+                if (lamp == null) yield break; // lamp streamed out mid-flicker
                 e += Time.deltaTime;
-                src.volume = Mathf.Lerp(from, to, e / dur);
+                lamp.baseVolume = Mathf.Lerp(from, to, e / dur);
                 yield return null;
             }
-            if (src != null) src.volume = to;
+            if (lamp != null) lamp.baseVolume = to;
         }
     }
 }
