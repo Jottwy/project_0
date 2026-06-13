@@ -301,14 +301,30 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int nx = tx + dx;
                 int nz = tz + dz;
                 // Chunk border: the neighbour tile lives in the next chunk
-                // (unknown here) → no wall, so two solid chunks never
-                // double-wall their shared seam.
+                // (unknown here). Emit the exterior wall so the seam isn't
+                // left open against an empty/unwalled neighbour.
                 if (nx < 0 || nz < 0 || nx >= Tiles || nz >= Tiles)
+                {
+                    PlaceWallOnEdge(prefabs, parent, tx, tz, dx, dz);
                     continue;
+                }
                 if (grid[nz * Tiles + nx].Kind != TileKind.Solid)
                     edges |= flag;
             }
             PlaceWalls(prefabs, parent, edges, tx, tz);
+        }
+
+        /// <summary>Emit one Wall piece on the tile edge facing (dx, dz), using
+        /// the same position/rotation table as interior solid walls.</summary>
+        private static void PlaceWallOnEdge(GridPrefabSet prefabs, Transform parent,
+            int tx, int tz, int dx, int dz)
+        {
+            byte flag = 0;
+            if      (dx ==  0 && dz ==  1) flag = EdgeNorth;
+            else if (dx ==  1 && dz ==  0) flag = EdgeEast;
+            else if (dx ==  0 && dz == -1) flag = EdgeSouth;
+            else if (dx == -1 && dz ==  0) flag = EdgeWest;
+            PlaceWalls(prefabs, parent, flag, tx, tz);
         }
 
         private static void PlacePillar(GridPrefabSet prefabs, Transform parent, int tx, int tz)
