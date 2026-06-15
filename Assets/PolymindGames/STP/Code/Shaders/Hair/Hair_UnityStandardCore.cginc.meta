@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 8332f969a17d05a4fa2da559c144fbc0
+ShaderIncludeImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Shaders/Hair/Hair_UnityStandardCore.cginc
+  uploadId: 760655

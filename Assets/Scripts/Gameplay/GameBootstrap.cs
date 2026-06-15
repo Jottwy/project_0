@@ -8,7 +8,7 @@ namespace BackroomsSurvival.Gameplay
     {
         private void Awake()
         {
-            EnsureComponent<ChunkRenderer>();
+            //EnsureComponent<ChunkRenderer>();
             EnsureComponent<EntityRenderer>();
             EnsureComponent<ItemRenderer>();
             EnsureComponent<WorldInteractor>();
@@ -19,6 +19,10 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<PoiDebugHud>();
             EnsureComponent<VerticalDebugMarkerRenderer>();
             EnsureComponent<NetworkInitializer>();
+            // Gate player spawn on the IPC connection (10 s offline fallback lives in
+            // GameMode). Restores the always-ready default on teardown, so non-networked
+            // scenes are unaffected.
+            EnsureComponent<GameBootGateBinder>();
             EnsureComponent<RemotePlayerManager>();
             EnsureComponent<JoinSessionUI>();
         }

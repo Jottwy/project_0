@@ -1,0 +1,599 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b68cd863358e134894bf7001b9e6d6f, type: 3}
+  m_Name: STP_Bow
+  m_EditorClassIdentifier: 
+  _baseProfile: {fileID: 11400000, guid: f491f73b564a2e545a6a389790fdc4c6, type: 2}
+  _motionData:
+  - State: 0
+    Motions:
+    - rid: 7414095998811374445
+    - rid: 7414095998811374446
+    - rid: 7414095998811374447
+  - State: 1
+    Motions:
+    - rid: 7414095998811374448
+  - State: 3
+    Motions:
+    - rid: 7414095998811374449
+    - rid: 7414095998811374450
+  - State: 5
+    Motions:
+    - rid: 7414095998811374451
+    - rid: 7414095998811374452
+  - State: 2
+    Motions:
+    - rid: 7414095998811374453
+  - State: 4
+    Motions:
+    - rid: 7414095998811374454
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414095998811374445
+      type: {class: GeneralMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        Look:
+          MaxSwayLength: 5
+          PositionSpring:
+            Damping: 10
+            Stiffness: 75
+            Mass: 1
+            Speed: 1
+          PositionSway: {x: -0.004, y: 0.003, z: 0}
+          RotationSpring:
+            Damping: 8
+            Stiffness: 95
+            Mass: 1
+            Speed: 1
+          RotationSway: {x: -1, y: -1, z: 0.9}
+        Strafe:
+          MaxSwayLength: 5
+          PositionSpring:
+            Damping: 9
+            Stiffness: 90
+            Mass: 1.2
+            Speed: 1
+          PositionSway: {x: 0.001, y: -0.0015, z: 0.0017499999}
+          RotationSpring:
+            Damping: 5
+            Stiffness: 90
+            Mass: 1.2
+            Speed: 1
+          RotationSway: {x: 0, y: 0.5, z: 0.75}
+        Jump:
+          PositionSpring:
+            Damping: 10
+            Stiffness: 125
+            Mass: 1
+            Speed: 1
+          PositionCurves:
+            Multiplier: 0.0139999995
+            XCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 1
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.052482665
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            YCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: -1
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 0.2
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.052482665
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            ZCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 1
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+          RotationSpring:
+            Damping: 10
+            Stiffness: 100
+            Mass: 1
+            Speed: 1
+          RotationCurves:
+            Multiplier: 5
+            XCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0.00075912476
+                value: -0.021469116
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 0.29541016
+                value: 0.0009460449
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.052482665
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            YCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 1
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.052482665
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            ZCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0.0053138733
+                value: -1
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 0.29382324
+                value: 0.0009460449
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.052482665
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+        Land:
+          PositionSpring:
+            Damping: 10
+            Stiffness: 115
+            Mass: 1
+            Speed: 1
+          PositionCurves:
+            Multiplier: 0.035
+            XCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 1
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            YCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: -5
+                inSlope: -14.683147
+                outSlope: -14.683147
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.33333334
+                outWeight: 0.3188105
+              - serializedVersion: 3
+                time: 0.1
+                value: -0.0149383545
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            ZCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 1
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+          RotationSpring:
+            Damping: 9
+            Stiffness: 115
+            Mass: 1
+            Speed: 1
+          RotationCurves:
+            Multiplier: -7.5
+            XCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: -0.0022773743
+                value: -0.35
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 0.34851074
+                value: -0.011779785
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.052482665
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            YCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 0.5
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 0.059237264
+                value: -1.4934471
+                inSlope: -2.0470343
+                outSlope: -2.0470343
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.33333334
+                outWeight: 0.061207734
+              - serializedVersion: 3
+                time: 0.3
+                value: 0
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+            ZCurve:
+              serializedVersion: 2
+              m_Curve:
+              - serializedVersion: 3
+                time: 0
+                value: 2
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              - serializedVersion: 3
+                time: 0.09030762
+                value: -1.4987427
+                inSlope: -2.0470343
+                outSlope: -2.0470343
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0.33333334
+                outWeight: 0.061207734
+              - serializedVersion: 3
+                time: 0.3
+                value: 0.0126953125
+                inSlope: 0
+                outSlope: 0
+                tangentMode: 0
+                weightedMode: 0
+                inWeight: 0
+                outWeight: 0
+              m_PreInfinity: 2
+              m_PostInfinity: 2
+              m_RotationOrder: 4
+        Fall:
+          PositionSpring:
+            Damping: 8
+            Stiffness: 100
+            Mass: 1
+            Speed: 1
+          RotationSpring:
+            Damping: 8
+            Stiffness: 100
+            Mass: 1
+            Speed: 1
+          PositionValue: 0.001
+          RotationValue: 2
+    - rid: 7414095998811374446
+      type: {class: NoiseMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        NoiseSpeed: 1
+        NoiseJitter: 0.1
+        PositionAmplitude: {x: 0.0034999999, y: 0.005, z: 0.0034999999}
+        RotationAmplitude: {x: 3, y: 3, z: 0.6}
+    - rid: 7414095998811374447
+      type: {class: RetractionMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        RetractionDistance: 0.75
+        PositionSpring:
+          Damping: 9
+          Stiffness: 100
+          Mass: 1
+          Speed: 1
+        PositionOffset: {x: 0, y: -0.04, z: -0.099999994}
+        RotationSpring:
+          Damping: 9
+          Stiffness: 100
+          Mass: 1
+          Speed: 1
+        RotationOffset: {x: -12, y: -5, z: 5}
+    - rid: 7414095998811374448
+      type: {class: BobMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        BobType: 0
+        BobSpeed: 1
+        PositionSpring:
+          Damping: 10
+          Stiffness: 120
+          Mass: 1
+          Speed: 1
+        PositionStepForce:
+          Force: {x: 0, y: 0, z: 0}
+          Duration: 0.125
+        PositionAmplitude: {x: 0.0055, y: -0.0075, z: 0}
+        RotationSpring:
+          Damping: 10
+          Stiffness: 120
+          Mass: 1
+          Speed: 1
+        RotationStepForce:
+          Force: {x: 0, y: 0, z: 0}
+          Duration: 0.125
+        RotationAmplitude: {x: -2, y: 0.5, z: -1}
+    - rid: 7414095998811374449
+      type: {class: OffsetMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        PositionSpring:
+          Damping: 10
+          Stiffness: 100
+          Mass: 1.1
+          Speed: 1
+        RotationSpring:
+          Damping: 10
+          Stiffness: 100
+          Mass: 1
+          Speed: 1
+        EnterForce:
+          Force: {x: -6, y: -2.25, z: 4.5}
+          Duration: 0.1
+        ExitForce:
+          Force: {x: 15, y: 0, z: -6}
+          Duration: 0.1
+        PositionOffset: {x: -0.01, y: -0.0465, z: 0.01}
+        RotationOffset: {x: 10, y: -1, z: 1}
+    - rid: 7414095998811374450
+      type: {class: BobMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        BobType: 0
+        BobSpeed: 1
+        PositionSpring:
+          Damping: 10
+          Stiffness: 90
+          Mass: 1.1
+          Speed: 1
+        PositionStepForce:
+          Force: {x: 0, y: -0.035, z: 0}
+          Duration: 0.05
+        PositionAmplitude: {x: 0.0175, y: -0.022499999, z: -0.001}
+        RotationSpring:
+          Damping: 10
+          Stiffness: 90
+          Mass: 1.1
+          Speed: 1
+        RotationStepForce:
+          Force: {x: 4, y: 0, z: 3}
+          Duration: 0.1
+        RotationAmplitude: {x: -6, y: 3.2, z: -3.2}
+    - rid: 7414095998811374451
+      type: {class: BobMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        BobType: 0
+        BobSpeed: 1
+        PositionSpring:
+          Damping: 10
+          Stiffness: 90
+          Mass: 1.1
+          Speed: 1
+        PositionStepForce:
+          Force: {x: 0, y: -0.004, z: 0}
+          Duration: 0.075
+        PositionAmplitude: {x: 0.008, y: -0.01, z: 0}
+        RotationSpring:
+          Damping: 10
+          Stiffness: 90
+          Mass: 1.1
+          Speed: 1
+        RotationStepForce:
+          Force: {x: 0, y: 2, z: 0}
+          Duration: 0.2
+        RotationAmplitude: {x: -2.5, y: 0.5, z: 2.5}
+    - rid: 7414095998811374452
+      type: {class: OffsetMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        PositionSpring:
+          Damping: 9
+          Stiffness: 110
+          Mass: 1
+          Speed: 1
+        RotationSpring:
+          Damping: 9
+          Stiffness: 110
+          Mass: 1
+          Speed: 1
+        EnterForce:
+          Force: {x: -12, y: 5.8500004, z: 1.287}
+          Duration: 0.15
+        ExitForce:
+          Force: {x: 12, y: 0.99, z: 4.5}
+          Duration: 0.15
+        PositionOffset: {x: 0, y: -0.01, z: -0.005}
+        RotationOffset: {x: -5, y: -2, z: 4}
+    - rid: 7414095998811374453
+      type: {class: BobMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        BobType: 0
+        BobSpeed: 1
+        PositionSpring:
+          Damping: 10
+          Stiffness: 90
+          Mass: 1
+          Speed: 1
+        PositionStepForce:
+          Force: {x: 0, y: -0.012, z: 0}
+          Duration: 0.075
+        PositionAmplitude: {x: 0.0055, y: -0.0069999998, z: 0}
+        RotationSpring:
+          Damping: 10
+          Stiffness: 90
+          Mass: 1
+          Speed: 1
+        RotationStepForce:
+          Force: {x: 0, y: 0, z: 3}
+          Duration: 0.2
+        RotationAmplitude: {x: -2, y: 0.5, z: -1.5}
+    - rid: 7414095998811374454
+      type: {class: OffsetMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        PositionSpring:
+          Damping: 9
+          Stiffness: 110
+          Mass: 1
+          Speed: 1
+        RotationSpring:
+          Damping: 9
+          Stiffness: 110
+          Mass: 1
+          Speed: 1
+        EnterForce:
+          Force: {x: 8.190001, y: 5.8500004, z: 1.287}
+          Duration: 0.1
+        ExitForce:
+          Force: {x: -12, y: 0.99, z: 4.5}
+          Duration: 0.1
+        PositionOffset: {x: 0, y: -0.01, z: -0.005}
+        RotationOffset: {x: -10, y: -2, z: -5}

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: f21d9c7fcbec23a499b82fa8ae128749
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/ItemProperty/STP_Cooked
+    Amount.asset
+  uploadId: 760655

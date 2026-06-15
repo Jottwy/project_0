@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 76b3557429c410d489c69b69bf3ac9ee
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_MedicinalCorn.prefab
+  uploadId: 760655

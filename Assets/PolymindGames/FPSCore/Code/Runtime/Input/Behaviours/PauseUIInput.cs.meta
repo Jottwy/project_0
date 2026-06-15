@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: c4b5c7a95cc4bb145a6e2127bc950272
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Input/Behaviours/PauseUIInput.cs
+  uploadId: 760655

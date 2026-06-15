@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 8f66e0d0d4c76274c96312a6de093afa
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Input/FPSBuildingInput.cs
+  uploadId: 760655

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 9366f63e7fa70c44495bd3f4bfead8a7
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Spring/AnimCurves2D.cs
+  uploadId: 760655

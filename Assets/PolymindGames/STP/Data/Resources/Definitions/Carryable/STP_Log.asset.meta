@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 2b9dca654dd8acd41a4359d7be10ce9d
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/Carryable/STP_Log.asset
+  uploadId: 760655

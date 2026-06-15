@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 414ea945b2f74fe8862f8e8e29f2d293
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Building/BuildingUtility.cs
+  uploadId: 760655

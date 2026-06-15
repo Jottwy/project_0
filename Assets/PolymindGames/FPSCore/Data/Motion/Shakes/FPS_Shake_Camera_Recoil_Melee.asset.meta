@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: f72324b6b2950914b8efb652d96ba8b9
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Motion/Shakes/FPS_Shake_Camera_Recoil_Melee.asset
+  uploadId: 760655

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 097dc707840b04541a7e5bedf146daef
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Models/BuildingPieces/CustomBuildings/Materials/BuildingPlanks.mat
+  uploadId: 760655

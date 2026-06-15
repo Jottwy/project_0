@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 715a2fd077b9d764a896d72845462be4
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Resources/Definitions/Surface/FPS_Heavy
+    Wood.asset
+  uploadId: 760655

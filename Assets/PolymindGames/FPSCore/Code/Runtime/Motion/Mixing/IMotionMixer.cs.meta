@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: c716cb8a8b1c2e54fb5a6e057fd4153d
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Mixing/IMotionMixer.cs
+  uploadId: 760655

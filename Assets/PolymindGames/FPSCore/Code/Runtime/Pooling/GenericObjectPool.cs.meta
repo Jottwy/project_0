@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: fe7c9d9e8c6f4ffc83dfad007e76dfbc
+timeCreated: 1739970612
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Pooling/GenericObjectPool.cs
+  uploadId: 760655

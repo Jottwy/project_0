@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 47d82999ddfe9fe43994e4fecdc27027
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Motion/Shakes/FPS_Shake_Camera_Explosion.asset
+  uploadId: 760655

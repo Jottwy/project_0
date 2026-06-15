@@ -1,0 +1,45 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &-4191670183892092023
+MonoBehaviour:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3b65001a606c44e99d42aa19c80334b5, type: 3}
+  m_Name: _CarriableBuildAction
+  m_EditorClassIdentifier: 
+  _buildMaterial:
+    _value: 2038334
+  _amount: 1
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 95a25d54124949242be5075dc68543da, type: 3}
+  m_Name: STP_Log
+  m_EditorClassIdentifier: 
+  _id: -9325329
+  _icon: {fileID: 21300000, guid: fb386be7630c22d43bdd231e555a8e83, type: 3}
+  _pickup: {fileID: 1710776606091772707, guid: 9ce393e7458a4734e9cfebd35042f0a8, type: 3}
+  _dropForce: {x: 2, y: 1, z: 0.5}
+  _dropTorque: 0.2
+  _wieldableSettings:
+    _animator: {fileID: 22100000, guid: b423c78537d2452438d8499f67a83b25, type: 2}
+    _motion: {fileID: 11400000, guid: 2423f371bc620a34ab70735e1f5e7ff5, type: 2}
+    _socket: 1
+    _positionOffset: {x: 0.05, y: 0, z: -0.05}
+    _rotationOffset: {x: 0, y: 0, z: 0}
+    _offsets:
+    - PositionOffset: {x: 0.013, y: 0.018, z: -0.262}
+      RotationOffset: {x: 351.86694, y: 349.9435, z: 113.65093}
+    - PositionOffset: {x: -0.298, y: 0.292, z: -0.178}
+      RotationOffset: {x: 351.86694, y: 349.9435, z: 113.65093}

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 0216596ec088b3d49a0c3e8c29df0a7a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/EditorToolbox/Runtime/Attributes/Property/Toolbox/ConditionAttributes/HideIfAttribute.cs
+  uploadId: 760655

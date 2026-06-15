@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: 1217698deb7fbc9449bced3e773b3c32
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _defaultEffect: {fileID: 11400000, guid: eb290b7e7cfdae64fbe38e85691fa7d5, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Utilities/Components/MaterialEffect.cs
+  uploadId: 760655

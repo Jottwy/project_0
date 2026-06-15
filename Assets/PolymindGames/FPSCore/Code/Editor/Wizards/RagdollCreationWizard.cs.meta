@@ -1,0 +1,34 @@
+fileFormatVersion: 2
+guid: fdc4865fbf3808d419f265e66a6a641c
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - m_ViewDataDictionary: {instanceID: 0}
+  - m_Animator: {instanceID: 0}
+  - _fleshMaterial: {fileID: 13400000, guid: a7397ecccd221074fa5f6c224e926f59, type: 2}
+  - m_Root: {instanceID: 0}
+  - m_LeftHips: {instanceID: 0}
+  - m_LeftKnee: {instanceID: 0}
+  - m_LeftFoot: {instanceID: 0}
+  - m_RightHips: {instanceID: 0}
+  - m_RightKnee: {instanceID: 0}
+  - m_RightFoot: {instanceID: 0}
+  - m_LeftArm: {instanceID: 0}
+  - m_LeftElbow: {instanceID: 0}
+  - m_RightArm: {instanceID: 0}
+  - m_RightElbow: {instanceID: 0}
+  - m_MiddleSpine: {instanceID: 0}
+  - m_Head: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/Wizards/RagdollCreationWizard.cs
+  uploadId: 760655

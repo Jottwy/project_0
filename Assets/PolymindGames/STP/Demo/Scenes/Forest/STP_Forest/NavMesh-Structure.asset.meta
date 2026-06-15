@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 17ec9f5f91293e14997f283bdae2c763
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 23800000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Demo/Scenes/Forest/STP_Forest/NavMesh-Structure.asset
+  uploadId: 760655

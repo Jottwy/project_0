@@ -1,0 +1,99 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1001 &7576061577863052221
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _prefabGuid._guidPart1
+      value: 1928371946
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _prefabGuid._guidPart2
+      value: -109828914
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _prefabGuid._guidPart3
+      value: -1923688102
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _prefabGuid._guidPart4
+      value: 860442055
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _instanceGuid._guidPart1
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _instanceGuid._guidPart2
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _instanceGuid._guidPart3
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -1212265102769747166, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _instanceGuid._guidPart4
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -142367877459773696, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _isConstructed
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 1053242835443831897, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: m_Intensity
+      value: 1.5
+      objectReference: {fileID: 0}
+    - target: {fileID: 1053242835443831897, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: m_ShadowRadius
+      value: 0.15
+      objectReference: {fileID: 0}
+    - target: {fileID: 7279468503811432202, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: m_Name
+      value: STP_BuildingPIece_Campfire_Constructed
+      objectReference: {fileID: 0}
+    - target: {fileID: 7279468503811523370, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7279468503811523370, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7279468503811523370, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7484681602980727492, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _state
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: 8211843503297991758, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8211843503297991758, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _requirements._requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 8211843503297991758, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _requirements.Array.data[0].RequiredAmount
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 8211843503297991758, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _requirements.Array.data[0].BuildMaterialId
+      value: -9290183
+      objectReference: {fileID: 0}
+    - target: {fileID: 8211843503297991758, guid: 89d2d99518751b240b52af3b8965f127, type: 3}
+      propertyPath: _requirements._requirements.Array.data[0].BuildMaterial._value
+      value: 8802899
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 89d2d99518751b240b52af3b8965f127, type: 3}

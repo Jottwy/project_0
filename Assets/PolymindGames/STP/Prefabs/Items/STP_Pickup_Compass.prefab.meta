@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: d323e82c4b5bcbf43b05b34c16643904
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_Compass.prefab
+  uploadId: 760655

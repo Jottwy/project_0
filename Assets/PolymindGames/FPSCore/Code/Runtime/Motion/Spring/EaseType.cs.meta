@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 5ecb2c0bfb19f4a0ea76111fe42c3d03
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Spring/EaseType.cs
+  uploadId: 760655

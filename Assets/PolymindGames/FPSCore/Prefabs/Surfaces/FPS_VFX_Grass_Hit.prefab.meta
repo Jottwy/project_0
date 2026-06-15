@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 4dbe4781eb7c01341bf0cf285021a2fa
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Surfaces/FPS_VFX_Grass_Hit.prefab
+  uploadId: 760655

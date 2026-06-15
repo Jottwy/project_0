@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 755b0f7493b4ad1479333cd28c173a04
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/UI/Building/SurvivalBook/SurvivalBookUI.cs
+  uploadId: 760655

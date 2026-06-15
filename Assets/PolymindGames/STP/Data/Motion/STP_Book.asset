@@ -1,0 +1,31 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b68cd863358e134894bf7001b9e6d6f, type: 3}
+  m_Name: STP_Book
+  m_EditorClassIdentifier: 
+  _baseProfile: {fileID: 0}
+  _motionData:
+  - State: 0
+    Data:
+    - {fileID: 0}
+    Motions:
+    - rid: 7414096002385969179
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096002385969179
+      type: {class: NoiseMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        NoiseSpeed: 0.7
+        NoiseJitter: 0
+        PositionAmplitude: {x: 0.003, y: 0.003, z: 0.003}
+        RotationAmplitude: {x: 1, y: 1, z: 1}

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: f70e5afc7eff5cf47bf2a1e59b7c83bd
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 112000000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Demo/Scenes/Prototype/STP_Prototype/LightingData.asset
+  uploadId: 760655

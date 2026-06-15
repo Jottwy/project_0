@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 5e597b3fae5c50640be7c2c9c6a5510f
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/UI/Inventory/Workstations/STP_UI_CookingStation.prefab
+  uploadId: 760655

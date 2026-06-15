@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 28e632dae0b32f34c8350150a4bc3e9e
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/VFX/Muzzle/TracerBeam.mat
+  uploadId: 760655

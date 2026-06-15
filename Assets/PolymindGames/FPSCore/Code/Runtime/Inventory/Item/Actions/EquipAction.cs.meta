@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 33980143be07c5a4fa2916f45ae66ee5
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: 71949b7fb15af6a4bb7d409fee38b478, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Inventory/Item/Actions/EquipAction.cs
+  uploadId: 760655

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 8826ae66d00c4db7a8df24c72081a06a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Carryables/ICarryableAction.cs
+  uploadId: 760655

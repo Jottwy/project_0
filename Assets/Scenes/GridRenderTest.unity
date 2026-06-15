@@ -119,7 +119,7 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
---- !u!1 &252913210
+--- !u!1 &555615353
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -127,8 +127,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 252913212}
-  - component: {fileID: 252913211}
+  - component: {fileID: 555615355}
+  - component: {fileID: 555615354}
   m_Layer: 0
   m_Name: Main Camera
   m_TagString: MainCamera
@@ -136,13 +136,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!20 &252913211
+--- !u!20 &555615354
 Camera:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 252913210}
+  m_GameObject: {fileID: 555615353}
   m_Enabled: 1
   serializedVersion: 2
   m_ClearFlags: 1
@@ -187,13 +187,13 @@ Camera:
   m_OcclusionCulling: 1
   m_StereoConvergence: 10
   m_StereoSeparation: 0.022
---- !u!4 &252913212
+--- !u!4 &555615355
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 252913210}
+  m_GameObject: {fileID: 555615353}
   serializedVersion: 2
   m_LocalRotation: {x: 0.3007058, y: 0, z: 0, w: 0.95371693}
   m_LocalPosition: {x: 0, y: 70, z: -110}
@@ -202,7 +202,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1664931331
+--- !u!1 &1152396139
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -210,8 +210,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 1664931333}
-  - component: {fileID: 1664931332}
+  - component: {fileID: 1152396141}
+  - component: {fileID: 1152396140}
   m_Layer: 0
   m_Name: Directional Light
   m_TagString: Untagged
@@ -219,13 +219,13 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!108 &1664931332
+--- !u!108 &1152396140
 Light:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1664931331}
+  m_GameObject: {fileID: 1152396139}
   m_Enabled: 1
   serializedVersion: 11
   m_Type: 1
@@ -284,13 +284,13 @@ Light:
   m_LightUnit: 1
   m_LuxAtDistance: 1
   m_EnableSpotReflector: 1
---- !u!4 &1664931333
+--- !u!4 &1152396141
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1664931331}
+  m_GameObject: {fileID: 1152396139}
   serializedVersion: 2
   m_LocalRotation: {x: 0.44037747, y: -0.26672933, z: 0.13885048, w: 0.8459573}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -299,7 +299,7 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1964084171
+--- !u!1 &2019439298
 GameObject:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
@@ -307,8 +307,8 @@ GameObject:
   m_PrefabAsset: {fileID: 0}
   serializedVersion: 6
   m_Component:
-  - component: {fileID: 1964084173}
-  - component: {fileID: 1964084172}
+  - component: {fileID: 2019439300}
+  - component: {fileID: 2019439299}
   m_Layer: 0
   m_Name: GridTestWorld
   m_TagString: Untagged
@@ -316,30 +316,33 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &1964084172
+--- !u!114 &2019439299
 MonoBehaviour:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1964084171}
+  m_GameObject: {fileID: 2019439298}
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: b05b9cbfabc8addba4ac5eee2943516f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
   seed: 42
-  folder: grid_test
-  chunkRadius: 1
-  onlyLayer: -1
   layerCount: 4
---- !u!4 &1964084173
+  onlyLayer: -1
+  viewRadius: 1
+  layerConfig0: {fileID: 0}
+  layerConfig1: {fileID: 0}
+  layerConfig2: {fileID: 0}
+  layerConfig3: {fileID: 0}
+--- !u!4 &2019439300
 Transform:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1964084171}
+  m_GameObject: {fileID: 2019439298}
   serializedVersion: 2
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
@@ -352,6 +355,6 @@ Transform:
 SceneRoots:
   m_ObjectHideFlags: 0
   m_Roots:
-  - {fileID: 1664931333}
-  - {fileID: 252913212}
-  - {fileID: 1964084173}
+  - {fileID: 1152396141}
+  - {fileID: 555615355}
+  - {fileID: 2019439300}

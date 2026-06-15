@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 6a1bdd386391fdb42a3338f66ba7ab16
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/PostProcessing/FPS_Effect_Inventory.asset
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: c599819967fb6ef418a47d2e0eed36fa
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Wieldables/Projectiles/STP_Projectile_BoneClub.prefab
+  uploadId: 760655

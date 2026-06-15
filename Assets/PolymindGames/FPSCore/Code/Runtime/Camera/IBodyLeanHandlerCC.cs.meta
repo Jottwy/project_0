@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 984baadc1d559264d86d4a3c1b75a745
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Camera/IBodyLeanHandlerCC.cs
+  uploadId: 760655

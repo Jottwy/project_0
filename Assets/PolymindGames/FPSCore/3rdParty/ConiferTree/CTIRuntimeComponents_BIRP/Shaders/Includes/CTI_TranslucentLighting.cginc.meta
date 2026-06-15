@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 6114db39b1d0ec24285fde4751509d58
+ShaderIncludeImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Shaders/Includes/CTI_TranslucentLighting.cginc
+  uploadId: 760655

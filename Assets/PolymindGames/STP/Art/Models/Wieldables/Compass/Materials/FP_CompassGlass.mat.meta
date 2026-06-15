@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 3ce834b8f5d663946b695aefbb5ff531
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Models/Wieldables/Compass/Materials/FP_CompassGlass.mat
+  uploadId: 760655

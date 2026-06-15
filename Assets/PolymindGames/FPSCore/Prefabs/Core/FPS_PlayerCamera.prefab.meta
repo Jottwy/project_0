@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 10becd3684315804faa795835a1f911d
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Core/FPS_PlayerCamera.prefab
+  uploadId: 760655

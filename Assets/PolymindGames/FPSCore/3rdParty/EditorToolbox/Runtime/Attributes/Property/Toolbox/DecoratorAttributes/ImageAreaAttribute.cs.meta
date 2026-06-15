@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: cab8a0ccefee21a458d0b2bfddf0e36e
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/EditorToolbox/Runtime/Attributes/Property/Toolbox/DecoratorAttributes/ImageAreaAttribute.cs
+  uploadId: 760655

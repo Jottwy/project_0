@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: d6fd3fee3be04cf6b4c9e472c22a7efe
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/Utilities/Common/ManagerEditor.cs
+  uploadId: 760655

@@ -1,0 +1,20 @@
+fileFormatVersion: 2
+guid: e30241769a2a4fd692887eec2202accf
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _gatherableVisuals: {instanceID: 0}
+  - _surface: {fileID: 13400000, guid: 989cee83728668343b371ca123ba7628, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Editor/Wizards/HarvestableCreationWizard.cs
+  uploadId: 760655

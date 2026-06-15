@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 0d1b3e300c4aaac43b8685e2ac5625e7
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Utilities/FPSCounterUI.cs
+  uploadId: 760655

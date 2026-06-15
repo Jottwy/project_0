@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 04099c3e5f3114d468c12cb1ee4a6f81
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Resources/Definitions/ItemCategory/FPS_Heals.asset
+  uploadId: 760655

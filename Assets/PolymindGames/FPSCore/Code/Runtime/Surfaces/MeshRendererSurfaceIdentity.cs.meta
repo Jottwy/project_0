@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 64522a737568eb147a659faa25dd7df7
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Surfaces/MeshRendererSurfaceIdentity.cs
+  uploadId: 760655

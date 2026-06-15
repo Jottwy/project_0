@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e4a45aa99a2bbcf459e59dbc881182b5
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Wieldables/FPS_Melee_Throw.asset
+  uploadId: 760655

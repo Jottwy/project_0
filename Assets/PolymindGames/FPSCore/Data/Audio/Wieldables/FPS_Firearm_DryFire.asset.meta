@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8efffc64a19828145926a0706f7f7486
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Wieldables/FPS_Firearm_DryFire.asset
+  uploadId: 760655

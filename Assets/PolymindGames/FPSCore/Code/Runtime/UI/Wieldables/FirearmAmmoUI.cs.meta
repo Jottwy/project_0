@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: c1db00d91d92d944382af0b3d1d75af0
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Wieldables/FirearmAmmoUI.cs
+  uploadId: 760655

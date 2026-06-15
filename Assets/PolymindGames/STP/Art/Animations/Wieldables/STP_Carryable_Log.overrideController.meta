@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: b423c78537d2452438d8499f67a83b25
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 22100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/Wieldables/STP_Carryable_Log.overrideController
+  uploadId: 760655

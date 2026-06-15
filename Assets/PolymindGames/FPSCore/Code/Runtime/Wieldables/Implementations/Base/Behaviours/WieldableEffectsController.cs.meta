@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 02b9e38777f53c043b10208fc21f291a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Base/Behaviours/WieldableEffectsController.cs
+  uploadId: 760655

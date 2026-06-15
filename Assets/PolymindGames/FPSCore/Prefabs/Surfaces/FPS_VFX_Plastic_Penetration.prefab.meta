@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 37645ae7e2a23584a8f8ef99c4f5b9bd
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Surfaces/FPS_VFX_Plastic_Penetration.prefab
+  uploadId: 760655

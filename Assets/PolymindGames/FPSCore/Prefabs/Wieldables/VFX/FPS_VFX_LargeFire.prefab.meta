@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: a08159446b4ec684fb87dfe4a5ed06d9
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Wieldables/VFX/FPS_VFX_LargeFire.prefab
+  uploadId: 760655

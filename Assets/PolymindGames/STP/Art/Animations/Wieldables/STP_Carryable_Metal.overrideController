@@ -1,0 +1,17 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!221 &22100000
+AnimatorOverrideController:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: STP_Carryable_Metal
+  m_Controller: {fileID: 9100000, guid: 331d7aaa0653df24c8c786fb084c51e7, type: 2}
+  m_Clips:
+  - m_OriginalClip: {fileID: 7400000, guid: 6fcd4ef4b0dd5df49a09e341d846c3d2, type: 2}
+    m_OverrideClip: {fileID: 4553857743056306861, guid: a38dc822042257a45a65255020d84430, type: 3}
+  - m_OriginalClip: {fileID: 7400000, guid: 4966c1d6c082a3d46a96afb0b9716e91, type: 2}
+    m_OverrideClip: {fileID: 3894389438184911172, guid: a38dc822042257a45a65255020d84430, type: 3}
+  - m_OriginalClip: {fileID: 7400000, guid: 1cee0a70c42f89f44ba4b62f9490d37d, type: 2}
+    m_OverrideClip: {fileID: 4957300337186772071, guid: a38dc822042257a45a65255020d84430, type: 3}

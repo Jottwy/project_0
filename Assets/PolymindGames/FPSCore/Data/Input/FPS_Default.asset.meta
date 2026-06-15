@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 6f28ed03f55333d43b915cfea383b56a
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Input/FPS_Default.asset
+  uploadId: 760655

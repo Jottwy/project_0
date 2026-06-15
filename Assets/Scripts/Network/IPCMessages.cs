@@ -6,6 +6,8 @@ namespace BackroomsSurvival.Net
     public class StatsMsg
     {
         public float health, hunger, thirst, sanity;
+        // ADR-009: server-authoritative stamina, interpolated client-side at 5 Hz.
+        public float stamina;
 
         public static StatsMsg Parse(object o)
         {
@@ -16,6 +18,7 @@ namespace BackroomsSurvival.Net
             s.hunger = IPCParse.F(d, "hunger");
             s.thirst = IPCParse.F(d, "thirst");
             s.sanity = IPCParse.F(d, "sanity");
+            s.stamina = IPCParse.F(d, "stamina");
             return s;
         }
     }
@@ -27,6 +30,8 @@ namespace BackroomsSurvival.Net
         public StatsMsg stats = new StatsMsg();
         public float speedModifier = 1f;
         public bool inventoryChanged;
+        // ADR-009: echo of the last client input_seq the server has applied.
+        public uint ackInputSeq;
 
         public static LocalPlayerMsg Parse(object o)
         {
@@ -38,7 +43,32 @@ namespace BackroomsSurvival.Net
             p.stats = StatsMsg.Parse(IPCParse.Get(d, "stats"));
             p.speedModifier = IPCParse.F(d, "speed_modifier");
             p.inventoryChanged = IPCParse.B(d, "inventory_changed");
+            p.ackInputSeq = (uint)IPCParse.L(d, "ack_input_seq");
             return p;
+        }
+    }
+
+    /// <summary>
+    /// ADR-009 §2 DeltaUpdate: the 20 Hz authoritative movement delta consumed by
+    /// the MovementReconciler — pose to detect desync, velocity to snap to, and
+    /// ackInputSeq to align with the client's input ring buffer.
+    /// </summary>
+    public class MovementDeltaMsg
+    {
+        public uint tick;
+        public uint ackInputSeq;
+        public Vector3 position;
+        public Vector3 velocity;
+
+        public static MovementDeltaMsg Parse(Dictionary<string, object> d)
+        {
+            var m = new MovementDeltaMsg();
+            if (d == null) return m;
+            m.tick = (uint)IPCParse.L(d, "tick");
+            m.ackInputSeq = (uint)IPCParse.L(d, "ack_input_seq");
+            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
+            m.velocity = IPCParse.Vec3(IPCParse.Get(d, "velocity"));
+            return m;
         }
     }
 

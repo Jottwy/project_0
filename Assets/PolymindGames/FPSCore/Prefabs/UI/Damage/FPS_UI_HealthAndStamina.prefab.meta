@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 1028d09b2019c1347afd32247aca5e9b
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Damage/FPS_UI_HealthAndStamina.prefab
+  uploadId: 760655

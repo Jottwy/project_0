@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c49e02632b290224f979013eb94fa723
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/BuildingPiece/Effects/STP_Effect_PlaceBuildingPiece.asset
+  uploadId: 760655

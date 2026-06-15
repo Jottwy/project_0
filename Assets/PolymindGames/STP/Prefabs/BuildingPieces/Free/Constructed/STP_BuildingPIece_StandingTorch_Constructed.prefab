@@ -1,0 +1,111 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1001 &3289432684912167916
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: -6570459137183177566, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -6570459137183177566, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _requirements._requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -6570459137183177566, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _requirements.Array.data[0].RequiredAmount
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: -6570459137183177566, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _requirements.Array.data[0].BuildMaterialId
+      value: -9290183
+      objectReference: {fileID: 0}
+    - target: {fileID: -6570459137183177566, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _requirements._requirements.Array.data[0].RequiredAmount
+      value: 2
+      objectReference: {fileID: 0}
+    - target: {fileID: -6570459137183177566, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _requirements._requirements.Array.data[0].BuildMaterial._value
+      value: -2823548
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _prefabGuid._guidPart1
+      value: 1597088664
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _prefabGuid._guidPart2
+      value: -482051521
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _prefabGuid._guidPart3
+      value: -1813369670
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _prefabGuid._guidPart4
+      value: -594051531
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _instanceGuid._guidPart1
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _instanceGuid._guidPart2
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _instanceGuid._guidPart3
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -2902385074016146912, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _instanceGuid._guidPart4
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2220883585905090366, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _isConstructed
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: 4421842381891647478, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: _state
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: 4821325095648677957, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 4821325095648677957, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_AreaSize.x
+      value: 0.5
+      objectReference: {fileID: 0}
+    - target: {fileID: 4821325095648677957, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_AreaSize.y
+      value: 0.5
+      objectReference: {fileID: 0}
+    - target: {fileID: 6543546146864834170, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6543546146864834170, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6543546146864834170, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7638717200186333001, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_Enabled
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7823879920602829929, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+      propertyPath: m_Name
+      value: STP_BuildingPIece_StandingTorch_Constructed
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}

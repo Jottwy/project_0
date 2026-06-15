@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: b1b3c589f3bfb3e47811d60dbe718b71
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Menu/FPS_UI_PauseMenu.prefab
+  uploadId: 760655

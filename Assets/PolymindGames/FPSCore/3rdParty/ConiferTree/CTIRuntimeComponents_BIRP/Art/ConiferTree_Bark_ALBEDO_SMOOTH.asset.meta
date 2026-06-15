@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 41ebf0d05b0ec4283bcbbbc656c82aec
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 18700000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Art/ConiferTree_Bark_ALBEDO_SMOOTH.asset
+  uploadId: 760655

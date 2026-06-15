@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c526268d83d505e4183820dca7433943
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Models/Wieldables/Projectiles/Arrows/Materials/FP_Arrows.mat
+  uploadId: 760655

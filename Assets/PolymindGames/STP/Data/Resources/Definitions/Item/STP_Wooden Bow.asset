@@ -1,0 +1,66 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: STP_Wooden Bow
+  m_EditorClassIdentifier: 
+  _id: -7892144
+  _parentGroup: {fileID: 11400000, guid: 134d0092531e8b44286d27a8134fa323, type: 2}
+  _icon: {fileID: 21300000, guid: 131feb2b06bc4824c8465b061fef4803, type: 3}
+  _description: 'Essential for silent hunting and basic defense in survival. '
+  _longDescription: Essential wooden bow for silent hunting and basic defense in
+    survival. Crafted for resourceful survivalists.
+  _pickup: {fileID: 7690275053532714762, guid: da5013c059d40964691dc2f83920ca8a, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 0.6
+  _stackSize: 1
+  _tag:
+    _value: 6549466
+  _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
+  _actions:
+  - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
+  _properties:
+  - _itemPropertyId: 1678210
+    _useRandomValue: 0
+    _valueRange: {x: 1, y: 0}
+  - _itemPropertyId: 1166878
+    _useRandomValue: 0
+    _valueRange: {x: 0, y: 0}
+  - _itemPropertyId: -8792658
+    _useRandomValue: 0
+    _valueRange: {x: 1, y: 0}
+  _data:
+  - rid: 7414096679504707713
+  - rid: 7414096679504707714
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096679504707713
+      type: {class: CraftingData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _blueprint:
+        - Item:
+            _value: -20407
+          Amount: 2
+        - Item:
+            _value: 9878845
+          Amount: 2
+        - Item:
+            _value: 8505358
+          Amount: 1
+        _craftAmount: 1
+        _craftDuration: 1.5
+        _craftLevel: 1
+        _dismantleEfficiency: 0.75
+    - rid: 7414096679504707714
+      type: {class: FuelData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _fuelCapacityRange: {x: 75, y: 90}

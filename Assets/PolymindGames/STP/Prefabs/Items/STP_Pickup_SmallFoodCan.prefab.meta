@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 81a94aa241cba664c9dce6803970a7b8
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_SmallFoodCan.prefab
+  uploadId: 760655

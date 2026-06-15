@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 5a792681d807e5643bb3cd6f2b8d4244
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Audio/Building/STP_BuildMaterial_Metal.asset
+  uploadId: 760655

@@ -1,0 +1,103 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1001 &8755859129096208853
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: -3725189722714725408, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _isConstructed
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements._requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements.Array.data[0].RequiredAmount
+      value: 1
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements.Array.data[0].BuildMaterialId
+      value: -9290183
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements._requirements.Array.data[0].RequiredAmount
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements._requirements.Array.data[1].RequiredAmount
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements._requirements.Array.data[0].BuildMaterial._value
+      value: -2805545
+      objectReference: {fileID: 0}
+    - target: {fileID: -3168678885794640049, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _requirements._requirements.Array.data[1].BuildMaterial._value
+      value: -2805545
+      objectReference: {fileID: 0}
+    - target: {fileID: 3012638045123229570, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _state
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _prefabGuid._guidPart1
+      value: 2006453362
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _prefabGuid._guidPart2
+      value: 2009355329
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _prefabGuid._guidPart3
+      value: 916935321
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _prefabGuid._guidPart4
+      value: -984566230
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _instanceGuid._guidPart1
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _instanceGuid._guidPart2
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _instanceGuid._guidPart3
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5870360122526360932, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: _instanceGuid._guidPart4
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6565073086046292659, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: m_Name
+      value: BuildingPIece_SleepingBag_Constructed
+      objectReference: {fileID: 0}
+    - target: {fileID: 7872444880596940960, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7872444880596940960, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 7872444880596940960, guid: 6583b44d70c8a294492567b92469a854, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: 6583b44d70c8a294492567b92469a854, type: 3}

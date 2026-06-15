@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 464476454d9f4e14db3d192020258eb9
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Utility/FPS_UI_FPSCounter.prefab
+  uploadId: 760655

@@ -1,0 +1,41 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: STP_Water Bottle
+  m_EditorClassIdentifier: 
+  _id: 7983286
+  _parentGroup: {fileID: 11400000, guid: 7086e42fbd522a0479e34273226dac6b, type: 2}
+  _icon: {fileID: 21300000, guid: 3fc231ffd1f7cbb4889481f55a143adf, type: 3}
+  _description: Gotta stay hydrated.
+  _longDescription: Essential for staying hydrated in the wild. A portable and reliable
+    source for quenching your thirst during survival adventures.
+  _pickup: {fileID: 7186072980853802903, guid: 1f43871f380706d47942bdf7bda640fa, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 0.5
+  _stackSize: 5
+  _tag:
+    _value: 0
+  _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
+  _actions:
+  - {fileID: 11400000, guid: c4ab169e037637d46adf5ae730db7971, type: 2}
+  _properties: []
+  _data:
+  - rid: 7414096679504707690
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096679504707690
+      type: {class: ConsumeData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _healthChange: {x: 0, y: 0}
+        _hungerChange: {x: 0, y: 0}
+        _thirstChange: {x: 40, y: 50}

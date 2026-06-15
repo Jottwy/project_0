@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8037d022f37257140a3f32935b8be489
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Motion/STP_Torch.asset
+  uploadId: 760655

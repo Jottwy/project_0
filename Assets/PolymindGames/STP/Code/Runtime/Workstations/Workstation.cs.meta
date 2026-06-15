@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: e35ae85ead3f2954bbf2e893a105a8da
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Workstations/Workstation.cs
+  uploadId: 760655

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: e795e49d036de2c47805aebb271686bb
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Resources/Definitions/ItemCategory/FPS_Melee.asset
+  uploadId: 760655

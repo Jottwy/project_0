@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: cd80dda723803f34ca22d87798b5caaa
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Wieldables/VFX/FPS_VFX_SmallFire.prefab
+  uploadId: 760655

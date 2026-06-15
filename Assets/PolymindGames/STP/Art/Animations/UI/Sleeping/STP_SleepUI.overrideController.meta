@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 10d00122a98b10340873bedf5633e315
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 22100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/UI/Sleeping/STP_SleepUI.overrideController
+  uploadId: 760655

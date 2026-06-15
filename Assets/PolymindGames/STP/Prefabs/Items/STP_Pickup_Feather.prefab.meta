@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 614a8637ddd5f0947b706892077b0777
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_Feather.prefab
+  uploadId: 760655

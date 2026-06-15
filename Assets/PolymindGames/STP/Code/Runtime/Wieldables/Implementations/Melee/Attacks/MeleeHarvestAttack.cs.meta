@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 412d4b52e9d2ea443bee097dabd36e72
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: e414839472d6ff74c939af78aa11802c, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Wieldables/Implementations/Melee/Attacks/MeleeHarvestAttack.cs
+  uploadId: 760655

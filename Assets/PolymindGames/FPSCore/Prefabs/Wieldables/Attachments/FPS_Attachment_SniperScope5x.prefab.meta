@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 8dcc6cdac40d45d428bfec8e335fa7d2
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Wieldables/Attachments/FPS_Attachment_SniperScope5x.prefab
+  uploadId: 760655

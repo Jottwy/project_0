@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 452215b13db0bdf4281a5b95604e6d64
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 31900000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/Characters/AvatarMasks/STP_Character_UpperBody.mask
+  uploadId: 760655

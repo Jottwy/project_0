@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 11662d6f4aca0744382845b528734eab
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/BuildingPiece/Structure/STP_Log_Door.asset
+  uploadId: 760655

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 5b2517b0de1659744b1402685218e993
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/EditorToolbox/Runtime/Attributes/Property/Toolbox/PropertyListAttributes/ReorderableListAttribute.cs
+  uploadId: 760655

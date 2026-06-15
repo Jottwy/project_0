@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 51f65481afd79ac469e9ff0f21b32b46
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Damage/FPS_UI_Damage.prefab
+  uploadId: 760655

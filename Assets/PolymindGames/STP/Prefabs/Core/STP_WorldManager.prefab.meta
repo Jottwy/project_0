@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 839dcce601455b147a73a95b3a6a6d00
+labels:
+- Manager
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Core/STP_WorldManager.prefab
+  uploadId: 760655

@@ -1,0 +1,20 @@
+fileFormatVersion: 2
+guid: b8633b4d49a23f649bf4b11c196bc51f
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _icon: {fileID: 21300000, guid: 730304b6f465c9a44bc96e79f37f3750, type: 3}
+  - _prefab: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Harvesting/HarvestableResourceDefinition.cs
+  uploadId: 760655

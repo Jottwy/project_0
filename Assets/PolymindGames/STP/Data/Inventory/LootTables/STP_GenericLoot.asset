@@ -1,0 +1,58 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 2be355c77afe40be95c839a2182dd0e1, type: 3}
+  m_Name: STP_GenericLoot
+  m_EditorClassIdentifier: 
+  _lootEntries:
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: 592964ac426c9554ead1f9c3f79e4912, type: 2}
+      _count: {x: 1, y: 5}
+    Probability: 7.5
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: c1aa81918f326da42acfbaaaab8720e7, type: 2}
+      _count: {x: 5, y: 10}
+    Probability: 6.5
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: 7086e42fbd522a0479e34273226dac6b, type: 2}
+      _count: {x: 1, y: 1}
+    Probability: 5
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: cf5dd5a63069e21458615566eb5d16e7, type: 2}
+      _count: {x: 1, y: 1}
+    Probability: 2.5
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: e795e49d036de2c47805aebb271686bb, type: 2}
+      _count: {x: 1, y: 1}
+    Probability: 2
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: 134d0092531e8b44286d27a8134fa323, type: 2}
+      _count: {x: 1, y: 1}
+    Probability: 1.5
+  - Item:
+      _method: 2
+      _item: {fileID: 0}
+      _category: {fileID: 11400000, guid: bd5e66b46d1176c4aa64403d65c8dc70, type: 2}
+      _count: {x: 1, y: 1}
+    Probability: 1
+  _totalProbability: 26

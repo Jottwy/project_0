@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: ffa692efa27057b4387b6e03f6c02226
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Menu/Widgets/FPS_UI_OptionSlider.prefab
+  uploadId: 760655

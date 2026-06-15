@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 3505db00a2e6f24459ce3b073a4cb8ac
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Wieldables/VFX/FPS_VFX_Explosion.prefab
+  uploadId: 760655

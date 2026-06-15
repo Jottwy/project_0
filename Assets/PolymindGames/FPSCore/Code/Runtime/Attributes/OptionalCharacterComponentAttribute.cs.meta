@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: b532fb8f3d284aed8be4d0e3a0e600c4
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Attributes/OptionalCharacterComponentAttribute.cs
+  uploadId: 760655

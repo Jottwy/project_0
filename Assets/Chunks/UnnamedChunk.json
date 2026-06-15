@@ -1,0 +1,87 @@
+{
+    "name": "",
+    "version": 1,
+    "weight": 0.15000000596046449,
+    "description": "",
+    "tags": [],
+    "width": 20.5,
+    "length": 5.0,
+    "depth": 12.0,
+    "layers": [
+        {
+            "zPosition": 0.0,
+            "height": 2.450000047683716,
+            "type": 1,
+            "cellSize": 0.05000000074505806,
+            "holeSize": 0.03999999910593033
+        },
+        {
+            "zPosition": -4.0,
+            "height": 20.0,
+            "type": 1,
+            "cellSize": 0.0,
+            "holeSize": 0.0
+        },
+        {
+            "zPosition": -8.0,
+            "height": 4.0,
+            "type": 1,
+            "cellSize": 0.0,
+            "holeSize": 0.0
+        },
+        {
+            "zPosition": -12.0,
+            "height": 2.0,
+            "type": 1,
+            "cellSize": 0.0,
+            "holeSize": 0.0
+        }
+    ],
+    "north": {
+        "enabled": true,
+        "thickness": 0.20000000298023225,
+        "openings": [
+            {
+                "position": 10.25,
+                "width": 1.5,
+                "height": 2.200000047683716
+            }
+        ]
+    },
+    "south": {
+        "enabled": true,
+        "thickness": 0.20000000298023225,
+        "openings": []
+    },
+    "east": {
+        "enabled": true,
+        "thickness": 0.20000000298023225,
+        "openings": []
+    },
+    "west": {
+        "enabled": true,
+        "thickness": 0.20000000298023225,
+        "openings": []
+    },
+    "wallColor": {
+        "r": 0.5,
+        "g": 0.5,
+        "b": 0.5,
+        "a": 1.0
+    },
+    "floorColor": {
+        "r": 0.699999988079071,
+        "g": 0.699999988079071,
+        "b": 0.699999988079071,
+        "a": 1.0
+    },
+    "grateColor": {
+        "r": 0.30000001192092898,
+        "g": 0.30000001192092898,
+        "b": 0.30000001192092898,
+        "a": 1.0
+    },
+    "customMaterial": {
+        "instanceID": 0
+    }
+}

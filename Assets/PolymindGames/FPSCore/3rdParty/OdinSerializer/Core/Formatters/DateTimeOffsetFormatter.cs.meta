@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 375dcaa4d9c3b384fb4b8e835c1033d0
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/OdinSerializer/Core/Formatters/DateTimeOffsetFormatter.cs
+  uploadId: 760655

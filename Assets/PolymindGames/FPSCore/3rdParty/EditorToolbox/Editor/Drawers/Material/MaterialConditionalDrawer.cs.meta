@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 238b848dd0d48f34fbcf905a3f6d5a0a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/EditorToolbox/Editor/Drawers/Material/MaterialConditionalDrawer.cs
+  uploadId: 760655

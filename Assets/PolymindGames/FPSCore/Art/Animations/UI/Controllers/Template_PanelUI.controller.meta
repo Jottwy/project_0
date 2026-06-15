@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 29cee424c0ad83845953ba8b55fd0efe
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/UI/Controllers/Template_PanelUI.controller
+  uploadId: 760655

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: f5aae3b4510e64c4bb61ec3c964fff52
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: 2fe975973830f4146a69758aa2b1c438, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/ShellEjectors/FirearmCartridgeSwapEjector.cs
+  uploadId: 760655

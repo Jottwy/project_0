@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 1c4aa521445b1fd4ea11360baec64980
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: e1a58380ff1f81744864fcf5a59cf4fd, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/ReloadableMagazines/FirearmProgressiveReloadableMagazine.cs
+  uploadId: 760655

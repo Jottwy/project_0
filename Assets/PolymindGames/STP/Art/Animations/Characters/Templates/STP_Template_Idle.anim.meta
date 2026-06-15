@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8d7c2f85979d7f34ca37a91b4c17aae2
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/Characters/Templates/STP_Template_Idle.anim
+  uploadId: 760655

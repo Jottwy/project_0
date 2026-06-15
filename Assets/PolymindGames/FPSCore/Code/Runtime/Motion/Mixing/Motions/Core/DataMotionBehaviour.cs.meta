@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 842b319f39afff64bb10a278d647e69c
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Mixing/Motions/Core/DataMotionBehaviour.cs
+  uploadId: 760655

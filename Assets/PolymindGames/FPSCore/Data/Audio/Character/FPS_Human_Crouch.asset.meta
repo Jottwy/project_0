@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 2fe2a89f3f214084ab2e8134ac72d9e7
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Character/FPS_Human_Crouch.asset
+  uploadId: 760655

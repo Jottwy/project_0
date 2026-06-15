@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 0c5686694d0ea794c8fd046871ed506c
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/BuildingPieces/Free/STP_BuildingPIece_StandingTorch.prefab
+  uploadId: 760655

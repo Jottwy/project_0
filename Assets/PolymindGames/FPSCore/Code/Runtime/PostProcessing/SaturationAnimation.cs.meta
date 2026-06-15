@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 7533b9e56eddf2e4aa9f90004e42a68a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/PostProcessing/SaturationAnimation.cs
+  uploadId: 760655

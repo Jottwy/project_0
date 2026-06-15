@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: acc6c28017b90514b8f8e7316eeea3b0
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Wieldables/STP_Wieldable_Compass.prefab
+  uploadId: 760655

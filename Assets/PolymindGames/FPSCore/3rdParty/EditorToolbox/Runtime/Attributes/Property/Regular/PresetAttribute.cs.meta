@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: c57d364a7f1597142b90de8bf5380b32
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/EditorToolbox/Runtime/Attributes/Property/Regular/PresetAttribute.cs
+  uploadId: 760655

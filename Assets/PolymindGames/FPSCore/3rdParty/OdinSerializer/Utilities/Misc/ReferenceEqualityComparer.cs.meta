@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: b31b9f59bb7ca65a6e3981774c8b82b4
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/OdinSerializer/Utilities/Misc/ReferenceEqualityComparer.cs
+  uploadId: 760655

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 6ff5a051900a4eb4ca2775a9ab4d0390
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Mixing/IShakeHandler.cs
+  uploadId: 760655

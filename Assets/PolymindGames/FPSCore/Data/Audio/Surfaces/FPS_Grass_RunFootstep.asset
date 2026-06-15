@@ -1,0 +1,82 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-7499139496998966777
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_RunFootstep_Grass 03_{-7499139496998966777}
+  m_AudioClip: {fileID: 8300000, guid: 0782668c4b91e2e458e88cf986b9b454, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-4125535523760589482
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_RunFootstep_Grass 01_{-4125535523760589482}
+  m_AudioClip: {fileID: 8300000, guid: c7d3cd232dc3b8f4bbb7179f94aa08ea, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &1980507267742920121
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_RunFootstep_Grass 02_{1980507267742920121}
+  m_AudioClip: {fileID: 8300000, guid: 34afa4663420a854ca4ace3b4f63132d, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &4670245138836978226
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_RunFootstep_Grass 04_{4670245138836978226}
+  m_AudioClip: {fileID: 8300000, guid: ba87c4ce2d1694449b40edc53a98ed82, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Grass_RunFootstep
+  m_Volume: -5
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -100, y: 100}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: -4125535523760589482}
+  - {fileID: 1980507267742920121}
+  - {fileID: -7499139496998966777}
+  - {fileID: 4670245138836978226}
+  - {fileID: 7077514615608266113}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &7077514615608266113
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_RunFootstep_Grass 05_{7077514615608266113}
+  m_AudioClip: {fileID: 8300000, guid: 15875dfdfb77b3e47be501cb6cfd672e, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

@@ -1,0 +1,29 @@
+fileFormatVersion: 2
+guid: d0fce40d29facd04faae64029c8d1a0b
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _audioMixer: {fileID: 24100000, guid: a46e248da8cc69044b0208bc3d6e01c1, type: 2}
+  - _defaultSnapshot: {fileID: 24500006, guid: a46e248da8cc69044b0208bc3d6e01c1, type: 2}
+  - _masterGroup: {fileID: 24300002, guid: a46e248da8cc69044b0208bc3d6e01c1, type: 2}
+  - _soundEffectsGroup: {fileID: 5335538235245489075, guid: a46e248da8cc69044b0208bc3d6e01c1,
+      type: 2}
+  - _ambienceGroup: {fileID: 2258447919680464512, guid: a46e248da8cc69044b0208bc3d6e01c1,
+      type: 2}
+  - _musicGroup: {fileID: -3260268299384241688, guid: a46e248da8cc69044b0208bc3d6e01c1,
+      type: 2}
+  - _uiGroup: {fileID: -8205733343261512471, guid: a46e248da8cc69044b0208bc3d6e01c1,
+      type: 2}
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: 1aa397fe7e9ff8b45bb80fa9e4dc1f3b, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Audio/AudioManager.cs
+  uploadId: 760655

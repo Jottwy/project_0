@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 5d3ded904854c45a884c86212264252a
+ShaderIncludeImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Shaders/Includes/CTI_Builtin4xTreeLibraryTumbling_301.cginc
+  uploadId: 760655

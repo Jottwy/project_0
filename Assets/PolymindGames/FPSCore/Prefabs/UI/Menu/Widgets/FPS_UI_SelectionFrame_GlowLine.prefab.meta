@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 52747f7e1dad74a4c9b5e0a7327a4f65
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Menu/Widgets/FPS_UI_SelectionFrame_GlowLine.prefab
+  uploadId: 760655

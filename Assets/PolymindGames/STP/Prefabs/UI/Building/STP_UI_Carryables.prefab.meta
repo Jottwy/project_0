@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: ec2a2886b30b20045986283e56968099
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/UI/Building/STP_UI_Carryables.prefab
+  uploadId: 760655

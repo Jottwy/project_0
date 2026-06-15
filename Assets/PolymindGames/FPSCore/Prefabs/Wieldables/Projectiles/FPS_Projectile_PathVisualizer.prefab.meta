@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 4a8e8f804ab965b4a81e2d175003ddc9
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Wieldables/Projectiles/FPS_Projectile_PathVisualizer.prefab
+  uploadId: 760655

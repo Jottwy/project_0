@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: faa66c3bdc8c01440bd5a3702ad3a3c5
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/UI/Shared/STP_UI_SelectionFrame_Rectangle.prefab
+  uploadId: 760655

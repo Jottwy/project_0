@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 6e6235fe71078404fbcdbc66e642502c
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Audio/Interactables/STP_Door_Close.asset
+  uploadId: 760655

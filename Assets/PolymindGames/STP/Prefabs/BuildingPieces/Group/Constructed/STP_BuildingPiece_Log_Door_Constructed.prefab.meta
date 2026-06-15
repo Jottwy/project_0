@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: e83bcb80ab974cd4893160b476812d15
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/BuildingPieces/Group/Constructed/STP_BuildingPiece_Log_Door_Constructed.prefab
+  uploadId: 760655

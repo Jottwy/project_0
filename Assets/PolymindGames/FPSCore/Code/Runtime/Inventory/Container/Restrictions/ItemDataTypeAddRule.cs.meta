@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: dfc10c8c3af812145b84b774a844c914
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Inventory/Container/Restrictions/ItemDataTypeAddRule.cs
+  uploadId: 760655

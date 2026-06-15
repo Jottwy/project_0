@@ -1,0 +1,115 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-9084515320784096521
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 01_{-9084515320784096521}
+  m_AudioClip: {fileID: 8300000, guid: 3955e801bf2e87445bc5ce95a551c41f, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-3267904429984929023
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 05_{-3267904429984929023}
+  m_AudioClip: {fileID: 8300000, guid: 433b0aac50ddc35449df01ae32188c30, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-3094902386764783346
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 02_{-3094902386764783346}
+  m_AudioClip: {fileID: 8300000, guid: de04e526ace7f5d40b6e2da310adfdea, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-721926185257334125
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 03_{-721926185257334125}
+  m_AudioClip: {fileID: 8300000, guid: 9dac2a222a5873e46abbc1e802120d23, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &3603962051261853836
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 08_{3603962051261853836}
+  m_AudioClip: {fileID: 8300000, guid: fa33c7624e839444b8bdcceab53f33df, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Concrete_RunFootstep
+  m_Volume: -14
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -75, y: 75}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: -9084515320784096521}
+  - {fileID: -3094902386764783346}
+  - {fileID: -721926185257334125}
+  - {fileID: 8566983107436272205}
+  - {fileID: -3267904429984929023}
+  - {fileID: 7748872382011224229}
+  - {fileID: 6910221670264147162}
+  - {fileID: 3603962051261853836}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &6910221670264147162
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 07_{6910221670264147162}
+  m_AudioClip: {fileID: 8300000, guid: d8b8631ea04b0c64cb734cb75f8f9cd7, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &7748872382011224229
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 06_{7748872382011224229}
+  m_AudioClip: {fileID: 8300000, guid: bfe1c39f82f77a441b8753f07f87c528, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &8566983107436272205
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_HardFootstep_Concrete 04_{8566983107436272205}
+  m_AudioClip: {fileID: 8300000, guid: b1c1302a5745a2344a681cb541a95192, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-7881876314002069900
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Grass 01_{-7881876314002069900}
+  m_AudioClip: {fileID: 8300000, guid: 89638789d3c089440b06d139e2daa361, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-1156711587625371830
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Grass 04_{-1156711587625371830}
+  m_AudioClip: {fileID: 8300000, guid: a5e9793c90eb8264ea27492ed743c17d, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &1434170837971274114
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Grass 03_{1434170837971274114}
+  m_AudioClip: {fileID: 8300000, guid: f40a216ddadc18e40b4597cd187724a5, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Grass_FallImpact
+  m_Volume: -4
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -150, y: 150}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: -7881876314002069900}
+  - {fileID: 8980899243944408873}
+  - {fileID: 1434170837971274114}
+  - {fileID: -1156711587625371830}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &8980899243944408873
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Grass 02_{8980899243944408873}
+  m_AudioClip: {fileID: 8300000, guid: e0014b3ed5963dc4290a5f5807129dc1, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

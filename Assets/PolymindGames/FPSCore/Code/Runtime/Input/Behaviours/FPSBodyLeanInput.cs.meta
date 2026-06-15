@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: d917211cf4b70714dbe1779e9e3f9a88
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Input/Behaviours/FPSBodyLeanInput.cs
+  uploadId: 760655

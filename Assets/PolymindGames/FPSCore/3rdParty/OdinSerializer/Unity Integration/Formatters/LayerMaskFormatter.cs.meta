@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 2786f157bf09e672d03581578a38d1b6
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/OdinSerializer/Unity Integration/Formatters/LayerMaskFormatter.cs
+  uploadId: 760655

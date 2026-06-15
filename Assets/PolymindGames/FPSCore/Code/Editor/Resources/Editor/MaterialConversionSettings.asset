@@ -1,0 +1,53 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d2674be1590b4a93a1876645a820131d, type: 3}
+  m_Name: MaterialConversionSettings
+  m_EditorClassIdentifier: 
+  _convertInfo:
+  - ConversionName: HDRP Lit - Built-In Standard
+    ShaderProperties:
+    - PropertyType: 0
+      OriginalProperty: _BaseColor
+      TargetProperty: _Color
+    - PropertyType: 0
+      OriginalProperty: _EmissiveColor
+      TargetProperty: _EmissionColor
+    - PropertyType: 3
+      OriginalProperty: _Metallic
+      TargetProperty: _Metallic
+    - PropertyType: 3
+      OriginalProperty: _Smoothness
+      TargetProperty: _Glossiness
+    - PropertyType: 4
+      OriginalProperty: _BaseColorMap
+      TargetProperty: _MainTex
+    - PropertyType: 4
+      OriginalProperty: _NormalMap
+      TargetProperty: _BumpMap
+    - PropertyType: 4
+      OriginalProperty: _NormalMap
+      TargetProperty: _BumpMap
+    - PropertyType: 4
+      OriginalProperty: _HeightMap
+      TargetProperty: _ParallaxMap
+    - PropertyType: 4
+      OriginalProperty: _EmissiveColorMap
+      TargetProperty: _EmissionMap
+    TextureChangeProperties:
+    - Property: _MetallicGlossMap
+      TargetTextureSuffix: _MET
+      TextureToDeleteSuffix: _MaskMap
+    - Property: _OcclusionMap
+      TargetTextureSuffix: _AO
+      TextureToDeleteSuffix: _MaskMap
+    OriginalShader: HDRP/Lit
+    TargetShader: Standard

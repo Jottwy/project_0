@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: b43b29802567f65478bbcc1fb065b22c
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Demo/Prefabs/Triggers/STP_Trigger_TeleportPlayer.prefab
+  uploadId: 760655

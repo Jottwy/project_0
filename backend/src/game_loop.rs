@@ -10,20 +10,22 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::ipc::{
-    ClientMessage, GameEvent, LocalPlayerState, PlayerAction, PlayerInput, RemotePlayerState,
-    ServerMessage, StatsView, WorldState,
+    ClientMessage, GameEvent, LocalPlayerState, MovementDelta, PlayerAction, PlayerInput,
+    RemotePlayerState, ServerMessage, StatsView, WorldState,
 };
 use crate::network::sync;
 use crate::network::{NetworkEvent, NetworkManager};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
-use crate::world::collision::{resolve_safe_spawn, CollisionResultKind, Level0Collision};
+use crate::world::collision::{resolve_safe_spawn, Level0Collision};
 use crate::world::World;
 
 const TICK_HZ: u64 = 60;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / TICK_HZ);
 /// WorldState to Unity at 10hz.
 const WORLD_STATE_EVERY: u64 = 6;
+/// ADR-009 §2: authoritative movement delta to Unity at 20hz (60 / 3).
+const MOVEMENT_DELTA_EVERY: u64 = 3;
 /// Entity AI runs at 10hz.
 const ENTITY_TICK_EVERY: u64 = 6;
 /// Ownership + teleportation checked at 1hz.
@@ -37,6 +39,11 @@ const CHUNK_BROADCAST_EVERY: u64 = 12;
 
 const BASE_SPEED: f32 = 5.0;
 const SPRINT_MULT: f32 = 1.5;
+/// ADR-009 Option B: tolerance added to the speed cap when validating the
+/// client-reported velocity before accepting its predicted position.
+const SPEED_TOLERANCE: f32 = 0.5;
+/// Stamina drained per second while the client reports the run move-state.
+const RUN_STAMINA_DRAIN: f32 = 15.0;
 
 /// TEMP DIAGNOSTIC — forces the god-traversal collision bypass on,
 /// independent of the DEV_GOD_TRAVERSAL environment variable.
@@ -59,7 +66,15 @@ pub async fn run(
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
     let mut tick: u64 = 0;
-    let mut last_input = PlayerInput::default();
+    let mut received_input = PlayerInput::default();
+    let mut has_received_input = false;
+    // ADR-009: ack the last input the server actually ACCEPTED (not merely
+    // received). u32::MAX = "nothing accepted yet"; input_seq is 0-based, so the
+    // first real input (seq 0) is processed correctly.
+    let mut last_accepted_input_seq: u32 = u32::MAX;
+    // Authoritative velocity echoed in the 20 Hz delta: the accepted client
+    // velocity, or zero when the speed cap rejected the move (held in place).
+    let mut authoritative_velocity = Vec3::ZERO;
     let mut processed_interactions: HashSet<(u16, u64)> = HashSet::new();
     // Track the last chunk position used for ownership so we only call
     // update_ownership when the player crosses a chunk boundary, not every tick.
@@ -117,7 +132,10 @@ pub async fn run(
         // ─── PHASE 1: RECEIVE (IPC + Network) ───
         while let Ok(msg) = from_clients.try_recv() {
             match msg {
-                ClientMessage::Input(input) => last_input = input,
+                ClientMessage::Input(input) => {
+                    received_input = input;
+                    has_received_input = true;
+                }
                 ClientMessage::Action(action) => {
                     debug!("action received: {}", action.action_type);
                     handle_action(
@@ -159,14 +177,21 @@ pub async fn run(
         }
 
         // ─── PHASE 2: SIMULATE ───
-        apply_movement(
-            &mut player,
-            &last_input,
-            dt,
-            &world,
-            tick,
-            dev_god_traversal,
-        );
+        // Only apply once a real input has arrived — the default PlayerInput has
+        // position [0,0,0], which would otherwise drag the player to the origin
+        // before the client's first packet. Track the accepted seq for the ack.
+        if has_received_input {
+            match apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal)
+            {
+                Some(seq) => {
+                    last_accepted_input_seq = seq;
+                    authoritative_velocity = Vec3::from_array(received_input.velocity);
+                }
+                // Speed cap removed: apply_movement always accepts the pose, so this
+                // arm is now unreachable; kept for match exhaustiveness.
+                None => authoritative_velocity = Vec3::ZERO,
+            }
+        }
         // Only refresh chunk ownership when the player crosses a chunk boundary.
         // Calling update_ownership every tick caused ~2 FPS churn from constant
         // chunk rebuild. Startup fires because last_ownership_chunk starts as None.
@@ -277,6 +302,14 @@ pub async fn run(
         // Broadcast player position to peers at 10hz.
         if tick % NET_BROADCAST_EVERY == 0 {
             sync::broadcast_player_update(&net, &player).await;
+            // Host-as-server relay: the host re-advertises the FULL peer roster (ids +
+            // current positions) so every joiner learns about ALL other peers, not just
+            // the host. Without this a joiner — which only connects to the host — never
+            // sees the other joiners. (A joiner's own roster is just {self, host}, so
+            // only the host has anything to relay.)
+            if net.is_host {
+                sync::broadcast_peer_roster(&net, &player).await;
+            }
         }
 
         // Broadcast chunk states at 5hz.
@@ -309,9 +342,23 @@ pub async fn run(
             net.process_retransmits().await;
         }
 
-        // ─── PHASE 4: SEND — WorldState to Unity at 10hz ───
+        // ─── PHASE 4: SEND ───
+
+        // ADR-009 §2: authoritative movement delta at 20hz for the client
+        // reconciler — pose + accepted-input ack, decoupled from the full snapshot.
+        if tick % MOVEMENT_DELTA_EVERY == 0 {
+            let _ = to_clients.send(ServerMessage::DeltaUpdate(MovementDelta {
+                tick,
+                ack_input_seq: last_accepted_input_seq,
+                position: player.position.to_array(),
+                velocity: authoritative_velocity.to_array(),
+            }));
+        }
+
+        // Full WorldState (stats/chunks/entities) to Unity at 10hz.
         if tick % WORLD_STATE_EVERY == 0 {
-            let snapshot = build_world_state(tick, &player, &mut world, &net);
+            let snapshot =
+                build_world_state(tick, &player, &mut world, &net, last_accepted_input_seq);
             let _ = to_clients.send(ServerMessage::WorldState(snapshot));
         }
 
@@ -490,6 +537,10 @@ fn preferred_spawn() -> Vec3 {
     Vec3::new(CHUNK_SIZE * 0.5, 1.8, CHUNK_SIZE * 0.5)
 }
 
+/// ADR-009 Option B: apply the client's authoritative-pose input and return the
+/// accepted `input_seq` (`None` when the speed cap rejected the move). The legacy
+/// direction-integration path was removed with the `input_seq` gate — `input_seq`
+/// is now 0-based and every input is a prediction packet.
 fn apply_movement(
     player: &mut Player,
     input: &PlayerInput,
@@ -497,56 +548,50 @@ fn apply_movement(
     world: &World,
     tick: u64,
     god_traversal: bool,
-) {
-    player.rotation = (player.rotation + input.look_delta[0]).rem_euclid(360.0);
-    let dir = Vec3::from_array(input.movement).normalized();
-    let sprint = if input.sprint { SPRINT_MULT } else { 1.0 };
-    let speed = BASE_SPEED * player.stats.speed_modifier * sprint;
-    let from = player.position;
-    let desired = player.position.add(dir.scale(speed * dt));
-    // DEV_GOD_TRAVERSAL: debug-only bypass — accept the desired position
-    // without collision resolution. Movement stays on the XZ plane (dir has
-    // no Y component), so the player keeps their current height.
+) -> Option<u32> {
+    player.rotation = input.look[1].rem_euclid(360.0); // yaw is INPUT (ADR-009 §8)
+    apply_client_authoritative_move(player, input, dt, world, tick, god_traversal)
+}
+
+/// ADR-009 Option B authoritative-move validation. The client owns prediction and
+/// its position, so the reported pose is ALWAYS applied — it is never discarded.
+///   * speed cap  — REMOVED. It used to `return None` when the finite-difference
+///                  velocity exceeded the sprint cap, holding the player at the last
+///                  accepted pose; on the remote avatar that surfaced as teleport
+///                  JUMPS between accepted poses. Velocity now only drives stamina.
+///   * collision  — still clamps the claimed position against static level geometry
+///                  (slides, never freezes).
+/// No server-side physics integration is performed. Always returns the accepted
+/// `input_seq` (`Some`).
+fn apply_client_authoritative_move(
+    player: &mut Player,
+    input: &PlayerInput,
+    dt: f32,
+    world: &World,
+    _tick: u64,
+    god_traversal: bool,
+) -> Option<u32> {
+    // Run-drain stamina from the reported move-state (2 == run).
+    if input.move_state == 2 {
+        player.stats.use_stamina(RUN_STAMINA_DRAIN * dt);
+    }
+
+    let claimed = Vec3::from_array(input.position);
+    // Velocity is intentionally NOT used to gate the pose (see doc above): a velocity
+    // cap that rejected the whole pose caused visible teleport jumps. Coop trusts the
+    // client position; wall collision below is the only spatial constraint.
+
     if god_traversal {
-        // TEMP god-traversal audit trace: desired == applied (resolver skipped).
-        if tick % 60 == 0 && dir.length() > 0.001 {
-            info!(
-                "MPTRACE step=GODT event=god_traversal_move desired=({:.2},{:.2},{:.2}) resolved=({:.2},{:.2},{:.2}) resolver=skipped",
-                desired.x, desired.y, desired.z, desired.x, desired.y, desired.z
-            );
-        }
-        player.position = desired;
-        return;
+        player.position = claimed;
+        return Some(input.input_seq);
     }
-    let resolved = Level0Collision::resolve_move(world, from, desired);
-    // Throttled collision trace (Phase 2.6 V26).
-    if tick % 30 == 0 {
-        match resolved.kind {
-            CollisionResultKind::Blocked => info!(
-                "MPTRACE step=V26 event=backend_collision_blocked player_id={} chunk=({},{}) cell=({},{}) flags={} reason={}",
-                player.id,
-                resolved.chunk_pos.0,
-                resolved.chunk_pos.1,
-                resolved.cell.0,
-                resolved.cell.1,
-                resolved.flags,
-                resolved.reason
-            ),
-            CollisionResultKind::SlidX | CollisionResultKind::SlidZ => info!(
-                "MPTRACE step=V26 event=backend_collision_slide player_id={} mode={} from=({:.2},{:.2},{:.2}) to=({:.2},{:.2},{:.2})",
-                player.id,
-                if resolved.kind == CollisionResultKind::SlidX { "slide_x" } else { "slide_z" },
-                from.x,
-                from.y,
-                from.z,
-                resolved.position.x,
-                resolved.position.y,
-                resolved.position.z
-            ),
-            CollisionResultKind::Free => {}
-        }
-    }
+
+    // Collision: verify the claimed position doesn't intersect static geometry.
+    // resolve_move slides/clamps against the level; the resolved point is the
+    // authoritative pose echoed back to the client.
+    let resolved = Level0Collision::resolve_move(world, player.position, claimed);
     player.position = resolved.position;
+    Some(input.input_seq)
 }
 
 async fn handle_action(
@@ -750,6 +795,7 @@ fn build_world_state(
     player: &Player,
     world: &mut World,
     net: &NetworkManager,
+    ack_input_seq: u32,
 ) -> WorldState {
     let remote_players: Vec<RemotePlayerState> = net
         .peers
@@ -802,9 +848,11 @@ fn build_world_state(
                 hunger: player.stats.hunger,
                 thirst: player.stats.thirst,
                 sanity: player.stats.sanity,
+                stamina: player.stats.stamina,
             },
             speed_modifier: player.stats.speed_modifier,
             inventory_changed: false,
+            ack_input_seq,
         },
         remote_players,
         visible_chunks: world.visible_chunk_views(),

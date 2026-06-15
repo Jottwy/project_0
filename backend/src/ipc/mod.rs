@@ -52,11 +52,30 @@ pub enum ClientMessage {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PlayerInput {
-    pub movement: [f32; 3], // normalized world-space direction
+    pub movement: [f32; 3], // normalized world-space direction (legacy path)
     pub look_delta: [f32; 2],
     pub sprint: bool,
     #[serde(default)]
     pub actions: Vec<String>,
+
+    // ADR-009 client-prediction fields. Optional (serde default) so a legacy
+    // movement-direction client still decodes; the STP client sends an
+    // authoritative pose for server validation (Option B). When `input_seq != 0`
+    // the game loop takes the prediction path instead of integrating `movement`.
+    #[serde(default)]
+    pub input_seq: u32,
+    #[serde(default)]
+    pub client_tick: u32,
+    #[serde(default)]
+    pub position: [f32; 3],
+    #[serde(default)]
+    pub velocity: [f32; 3],
+    #[serde(default)]
+    pub move_state: u8, // 0 idle, 1 walk, 2 run, 3 crouch, 4 jump
+    #[serde(default)]
+    pub look: [f32; 2], // pitch, yaw — INPUT, not server-corrected (ADR-009 §8)
+    #[serde(default)]
+    pub buttons: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,12 +96,26 @@ pub struct UiEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    /// Full renderable snapshot, sent at 10hz.
+    /// Full renderable snapshot (stats/chunks/entities), sent at the slow cadence.
     WorldState(WorldState),
+    /// ADR-009 §2: 20 Hz movement-domain delta — authoritative pose + input ack,
+    /// consumed by the client reconciler. Separate from the full WorldState.
+    DeltaUpdate(MovementDelta),
     /// Immediate one-off event (chunk_teleported, entity_killed, …).
     Event(GameEvent),
     /// Result of a requested action.
     ActionResult(ActionResult),
+}
+
+/// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the
+/// client reconciler needs — position to detect desync, velocity to correct to
+/// immediately (amended §5), and `ack_input_seq` to align with its input buffer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MovementDelta {
+    pub tick: u64,
+    pub ack_input_seq: u32,
+    pub position: [f32; 3],
+    pub velocity: [f32; 3],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +142,10 @@ pub struct LocalPlayerState {
     pub stats: StatsView,
     pub speed_modifier: f32,
     pub inventory_changed: bool,
+    /// ADR-009: echo of the last client `input_seq` the server has applied, so
+    /// the client reconciler can compare authoritative pose vs. its prediction.
+    #[serde(default)]
+    pub ack_input_seq: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -117,6 +154,8 @@ pub struct StatsView {
     pub hunger: f32,
     pub thirst: f32,
     pub sanity: f32,
+    /// ADR-009: server-authoritative stamina, interpolated client-side at 5 Hz.
+    pub stamina: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -230,9 +269,11 @@ mod tests {
                     hunger: 60.0,
                     thirst: 45.0,
                     sanity: 70.0,
+                    stamina: 100.0,
                 },
                 speed_modifier: 1.0,
                 inventory_changed: false,
+                ack_input_seq: 0,
             },
             remote_players: vec![],
             visible_chunks: vec![],
@@ -263,9 +304,11 @@ mod tests {
                     hunger: 50.0,
                     thirst: 40.0,
                     sanity: 30.0,
+                    stamina: 65.0,
                 },
                 speed_modifier: 0.7,
                 inventory_changed: true,
+                ack_input_seq: 0,
             },
             remote_players: vec![],
             visible_chunks: vec![ChunkView {
@@ -347,6 +390,7 @@ mod tests {
             look_delta: [0.5, -0.1],
             sprint: true,
             actions: vec!["interact".into()],
+            ..Default::default()
         });
         let body = rmp_serde::to_vec_named(&msg).unwrap();
         let decoded: ClientMessage = decode(&body).unwrap();
@@ -354,6 +398,26 @@ mod tests {
             ClientMessage::Input(input) => {
                 assert!(input.sprint);
                 assert_eq!(input.movement[2], 1.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn movement_delta_round_trips() {
+        let msg = ServerMessage::DeltaUpdate(MovementDelta {
+            tick: 240,
+            ack_input_seq: 57,
+            position: [12.0, 1.8, -4.0],
+            velocity: [0.0, 0.0, 5.0],
+        });
+        let frame = encode(&msg).unwrap();
+        let decoded: ServerMessage = decode(&frame[4..]).unwrap();
+        match decoded {
+            ServerMessage::DeltaUpdate(d) => {
+                assert_eq!(d.tick, 240);
+                assert_eq!(d.ack_input_seq, 57);
+                assert_eq!(d.velocity[2], 5.0);
             }
             _ => panic!("wrong variant"),
         }

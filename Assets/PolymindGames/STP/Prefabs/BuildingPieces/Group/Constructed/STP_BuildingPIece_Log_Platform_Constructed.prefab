@@ -1,0 +1,43 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1001 &2084326625405710479
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: -2361276654428280385, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: _requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: -2361276654428280385, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: _requirements._requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 2011758010089764400, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: _state
+      value: 3
+      objectReference: {fileID: 0}
+    - target: {fileID: 5584680376150961513, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5584680376150961513, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5584680376150961513, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5584680376151126345, guid: f67592f8713c19942a2a9fe137818967, type: 3}
+      propertyPath: m_Name
+      value: BuildingPIece_Log_Platform_Constructed
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: f67592f8713c19942a2a9fe137818967, type: 3}

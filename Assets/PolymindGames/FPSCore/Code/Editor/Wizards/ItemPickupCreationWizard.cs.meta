@@ -1,0 +1,23 @@
+fileFormatVersion: 2
+guid: 29227cae611241e4e8b89fce76c4000d
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _definition: {instanceID: 0}
+  - _model: {instanceID: 0}
+  - _pickUpAudio: {fileID: 11400000, guid: b029094a766756c44afe4d43345aaa25, type: 2}
+  - _surface: {fileID: 13400000, guid: 4ba610101557db44cad2decc4b88b035, type: 2}
+  - _interactEffect: {fileID: 11400000, guid: eb290b7e7cfdae64fbe38e85691fa7d5, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/Wizards/ItemPickupCreationWizard.cs
+  uploadId: 760655

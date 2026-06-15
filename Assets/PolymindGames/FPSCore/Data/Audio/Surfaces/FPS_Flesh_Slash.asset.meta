@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 19b64aa86c73d7d4084096f82d674e75
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Flesh_Slash.asset
+  uploadId: 760655

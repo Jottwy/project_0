@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 7ce569d5fc5415548b3367b0b5053e2b
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: d7c69018efc84ec4991b61cbe927076d, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Melee/Throwable.cs
+  uploadId: 760655

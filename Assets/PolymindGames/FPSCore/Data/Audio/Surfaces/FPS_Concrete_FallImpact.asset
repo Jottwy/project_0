@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &2814970028533431783
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Concrete 01_{2814970028533431783}
+  m_AudioClip: {fileID: 8300000, guid: 826183f89905f974b8114610673b4ef9, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &3804274867756948458
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Concrete 02_{3804274867756948458}
+  m_AudioClip: {fileID: 8300000, guid: d89e3e29a55236b4ebb59b8ea6153227, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &6401195138061990257
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Concrete 03_{6401195138061990257}
+  m_AudioClip: {fileID: 8300000, guid: 429b8d024fa9f004ca17136b28d4b901, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Concrete_FallImpact
+  m_Volume: -9
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -150, y: 150}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: 2814970028533431783}
+  - {fileID: 3804274867756948458}
+  - {fileID: 6401195138061990257}
+  - {fileID: 6683436518284932997}
+  m_AvoidRepeatingLast: 1
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &6683436518284932997
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_FallImpact_Concrete 04_{6683436518284932997}
+  m_AudioClip: {fileID: 8300000, guid: f6086e28908ad1a4280a2e9a6c9594dc, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

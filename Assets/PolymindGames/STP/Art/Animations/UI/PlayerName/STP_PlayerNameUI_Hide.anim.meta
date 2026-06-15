@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 1f725ccaff08ae94da9cf2712283c1a8
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/UI/PlayerName/STP_PlayerNameUI_Hide.anim
+  uploadId: 760655

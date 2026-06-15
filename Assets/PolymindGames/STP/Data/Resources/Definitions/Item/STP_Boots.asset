@@ -1,0 +1,50 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: STP_Boots
+  m_EditorClassIdentifier: 
+  _id: -3870361
+  _parentGroup: {fileID: 11400000, guid: cf5dd5a63069e21458615566eb5d16e7, type: 2}
+  _icon: {fileID: 21300000, guid: ca1263e17cc16a549a513153a014ec9b, type: 3}
+  _description: Basic boots, keeps you warm and comfortable while offering some defense.
+  _longDescription: 
+  _pickup: {fileID: 1847763772860184360, guid: 1348c6688e30bbe468d81fcc1b0f090a, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 0.3
+  _stackSize: 1
+  _tag:
+    _value: -5796568
+  _rarity: {fileID: 11400000, guid: b3aff7daf0a2c704e8db2d224fcc115f, type: 2}
+  _actions:
+  - {fileID: 11400000, guid: cfea35ee23f1fda47a276a7b208543f9, type: 2}
+  _properties: []
+  _data:
+  - rid: 7414096679504707671
+  - rid: 7414096679504707672
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096679504707671
+      type: {class: CraftingData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _blueprint:
+        - Item:
+            _value: 1370867
+          Amount: 2
+        _craftAmount: 0
+        _craftDuration: 0
+        _craftLevel: 0
+        _dismantleEfficiency: 1
+    - rid: 7414096679504707672
+      type: {class: FuelData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _fuelCapacityRange: {x: 40, y: 50}

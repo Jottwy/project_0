@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: d4ab8d2f979831e4995312927a535d72
+timeCreated: 1479307966
+licenseType: Store
+MonoImporter:
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Utilities/Components/CharacterRagdoll.cs
+  uploadId: 760655

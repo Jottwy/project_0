@@ -130,6 +130,20 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
     net.broadcast_unreliable(&payload).await;
 }
 
+/// Host-as-server relay: broadcast the FULL peer roster (every peer's id + current
+/// position) to all connected peers, so each joiner learns about ALL other peers and
+/// not just the host. A joiner only connects to the host, so without this it never
+/// sees the other joiners. Sent at the player-update cadence, by the host only.
+pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
+    if net.peers.is_empty() {
+        return;
+    }
+    let payload = PacketPayload::PeerList {
+        peers: build_peer_list(net, player),
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
 /// Send nearby chunk states to all peers (for chunks the local player owns).
 pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_pos: Vec3) {
     if net.peers.is_empty() {

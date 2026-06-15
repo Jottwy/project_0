@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 43c26376713608349ad318dd58f301ca
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/UI/Inventory/Workstations/CraftingStationUI.cs
+  uploadId: 760655

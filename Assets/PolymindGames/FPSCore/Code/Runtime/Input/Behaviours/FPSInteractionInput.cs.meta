@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: e18de739e4cbf1447a4fa7229849eca7
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Input/Behaviours/FPSInteractionInput.cs
+  uploadId: 760655

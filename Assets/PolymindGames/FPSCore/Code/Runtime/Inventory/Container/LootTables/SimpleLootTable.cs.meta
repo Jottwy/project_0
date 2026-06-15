@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: 2be355c77afe40be95c839a2182dd0e1
+timeCreated: 1735559255
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Inventory/Container/LootTables/SimpleLootTable.cs
+  uploadId: 760655

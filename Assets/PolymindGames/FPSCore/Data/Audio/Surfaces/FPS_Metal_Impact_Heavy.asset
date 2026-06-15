@@ -1,0 +1,82 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-8928108036802208400
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Impact_HeavyMetal 01_{-8928108036802208400}
+  m_AudioClip: {fileID: 8300000, guid: 624ce0652f0555b4e94c123bafcd4fb4, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-8039888366370835058
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Impact_HeavyMetal 02_{-8039888366370835058}
+  m_AudioClip: {fileID: 8300000, guid: c8e08ea02916b064ba1b9b0ceb1f34d1, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-6026452148484906461
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Impact_HeavyMetal 04_{-6026452148484906461}
+  m_AudioClip: {fileID: 8300000, guid: ff94544e827f0f048b4f561af456cb04, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-4889705446139049165
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Impact_HeavyMetal 05_{-4889705446139049165}
+  m_AudioClip: {fileID: 8300000, guid: 976623fb191e4454d8d7f7425b00489d, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &3789560157108546036
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Impact_HeavyMetal 03_{3789560157108546036}
+  m_AudioClip: {fileID: 8300000, guid: 6909f61b158db2244983f1f88e9b5fde, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Metal_Impact_Heavy
+  m_Volume: -10
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -150, y: 150}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: -8928108036802208400}
+  - {fileID: -8039888366370835058}
+  - {fileID: 3789560157108546036}
+  - {fileID: -6026452148484906461}
+  - {fileID: -4889705446139049165}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0

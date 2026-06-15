@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 4d6f01a0072b58f49b6e1edd4a0618f6
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Wieldables/FPS_Melee_Attack2.asset
+  uploadId: 760655

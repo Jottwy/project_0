@@ -1,0 +1,77 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a5f455fef6aaad459434bb61682f7d4, type: 3}
+  m_Name: FPS_Heavy Metal
+  m_EditorClassIdentifier: 
+  _id: 9632679
+  _velocityModifier: 1
+  _surfaceFriction: 0.95
+  _penetrationResistance: 0.95
+  _materials:
+  - {fileID: 13400000, guid: db86e7b925470cc47909dc84456a0a15, type: 2}
+  _effects:
+  - EffectType: 0
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 565c0e7faa9ce604d95c4f3b5ce229c8, type: 2}
+        Volume: 1
+  - EffectType: 5
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 3edda9c8027093949b3a5c6d8206f207, type: 2}
+        Volume: 0.75
+  - EffectType: 6
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 3edda9c8027093949b3a5c6d8206f207, type: 2}
+        Volume: 1
+  - EffectType: 7
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: d381c4a03320a564c884083272ae86cc, type: 2}
+        Volume: 1
+  - EffectType: 4
+    EffectData:
+      VisualEffect: {fileID: -2661592812077496925, guid: 5a7529d00e1918e4dab1dc05b50a16da, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 4334c656b54bada4cac4f9778b646439, type: 2}
+        Volume: 1
+  - EffectType: 2
+    EffectData:
+      VisualEffect: {fileID: -2661592812077496925, guid: 5a7529d00e1918e4dab1dc05b50a16da, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: cefc95ae988922f4e9b84d10eccc6d7c, type: 2}
+        Volume: 1
+  - EffectType: 1
+    EffectData:
+      VisualEffect: {fileID: -2661592812077496925, guid: 5a7529d00e1918e4dab1dc05b50a16da, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 4334c656b54bada4cac4f9778b646439, type: 2}
+        Volume: 1
+  - EffectType: 3
+    EffectData:
+      VisualEffect: {fileID: -2661592812077496925, guid: 5a7529d00e1918e4dab1dc05b50a16da, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 4334c656b54bada4cac4f9778b646439, type: 2}
+        Volume: 1

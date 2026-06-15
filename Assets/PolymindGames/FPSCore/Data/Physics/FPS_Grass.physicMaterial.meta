@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c4c81afadf3d641429b2f1e77c5cf261
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 13400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Physics/FPS_Grass.physicMaterial
+  uploadId: 760655

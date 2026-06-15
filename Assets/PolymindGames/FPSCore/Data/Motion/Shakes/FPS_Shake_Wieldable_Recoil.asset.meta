@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c39ee81d09109dd4cb7ca63e69014386
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Motion/Shakes/FPS_Shake_Wieldable_Recoil.asset
+  uploadId: 760655

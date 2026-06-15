@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: a5a264cd51b5add4ea39141a6e5a3299
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/UI/Wieldables/FPS_UI_Ammo_Show.anim
+  uploadId: 760655

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 565c0e7faa9ce604d95c4f3b5ce229c8
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Metal_Impact_Heavy.asset
+  uploadId: 760655

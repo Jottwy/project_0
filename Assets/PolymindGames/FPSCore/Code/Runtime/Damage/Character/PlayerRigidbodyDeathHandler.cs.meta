@@ -1,0 +1,22 @@
+fileFormatVersion: 2
+guid: 64e28c8dddb42f64cb4eef9d7ba5d5f2
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - m_DropAction: {fileID: 11400000, guid: f821f82ac64f9d042a2ae2469899cf10, type: 2}
+  - m_ViewTransform: {instanceID: 0}
+  - m_HeadRigidbody: {instanceID: 0}
+  - m_HeadCollider: {instanceID: 0}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Damage/Character/PlayerRigidbodyDeathHandler.cs
+  uploadId: 760655

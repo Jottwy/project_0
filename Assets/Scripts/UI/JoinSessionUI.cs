@@ -1,11 +1,13 @@
 using System;
 using System.Collections;
 using BackroomsSurvival.Net;
+using PolymindGames;
 using UnityEngine;
 using UnityEngine.EventSystems;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem.UI;
 #endif
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 namespace BackroomsSurvival.UI
@@ -16,6 +18,13 @@ namespace BackroomsSurvival.UI
 
         public bool enableAutoSolo = false;
         public float autoSoloDelaySeconds = 0.25f;
+
+        [SerializeField]
+        [Tooltip("Scene to load (via STP LevelManager) once the IPC connection succeeds. " +
+                 "Empty = stay in the current scene (pure overlay mode). Set by NetworkMenuBootstrap " +
+                 "for the menu->connect->gameplay flow.")]
+        private string _gameplayScene = "";
+        private bool _loadingGameplay;
 
         private Canvas _canvas;
         private GameObject _panel;
@@ -74,8 +83,7 @@ namespace BackroomsSurvival.UI
 
             if (_wasConnected)
             {
-                SetState(PanelState.Connected, "Connected");
-                HideMenu();
+                HandleConnected();
                 return;
             }
 
@@ -127,8 +135,7 @@ namespace BackroomsSurvival.UI
                 if (_state != PanelState.Connected)
                 {
                     Debug.Log("[JoinSessionUI] UI hidden on IPC connected");
-                    SetState(PanelState.Connected, "Connected");
-                    HideMenu();
+                    HandleConnected();
                 }
                 _wasConnected = true;
                 return;
@@ -158,6 +165,42 @@ namespace BackroomsSurvival.UI
                     SetUiInteractable(true);
                 }
             }
+        }
+
+        /// <summary>
+        /// Sets the scene to load once connected. Empty keeps pure overlay behavior.
+        /// Call before the connection succeeds (e.g. from NetworkMenuBootstrap).
+        /// </summary>
+        public void SetGameplayScene(string sceneName) => _gameplayScene = sceneName;
+
+        /// <summary>
+        /// Connection succeeded. From the menu (any scene that is NOT the gameplay scene)
+        /// this loads the gameplay scene via STP's LevelManager — the connection persists
+        /// because IPCClient/NetworkInitializer are DontDestroyOnLoad. Once already in the
+        /// gameplay scene (or in overlay mode) it just hides the panel. The scene guard +
+        /// _loadingGameplay flag prevent a reload loop.
+        /// </summary>
+        private void HandleConnected()
+        {
+            if (_state != PanelState.Connected)
+                SetState(PanelState.Connected, "Connected");
+
+            HideMenu();
+            TryLoadGameplayScene();
+        }
+
+        private void TryLoadGameplayScene()
+        {
+            if (_loadingGameplay) return;
+            if (string.IsNullOrWhiteSpace(_gameplayScene)) return; // overlay mode
+            if (SceneManager.GetActiveScene().name == _gameplayScene) return; // already there
+
+            var level = LevelManager.Instance;
+            if (level == null || level.IsLoadingOrSaving()) return;
+
+            _loadingGameplay = true;
+            Debug.Log($"[JoinSessionUI] Connected in '{SceneManager.GetActiveScene().name}' -> CreateGame(\"{_gameplayScene}\")");
+            level.CreateGame(_gameplayScene);
         }
 
         private void OnHostClicked()

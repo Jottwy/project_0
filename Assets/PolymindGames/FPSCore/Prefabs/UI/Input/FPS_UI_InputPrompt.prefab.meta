@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: dfcb6f88cc31b374cae8c532850c1a73
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Input/FPS_UI_InputPrompt.prefab
+  uploadId: 760655

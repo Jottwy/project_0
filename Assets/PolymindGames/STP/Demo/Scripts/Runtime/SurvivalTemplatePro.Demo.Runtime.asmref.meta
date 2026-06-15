@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 362a05987495a554bad74eda1b4acb13
+AssemblyDefinitionReferenceImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Demo/Scripts/Runtime/SurvivalTemplatePro.Demo.Runtime.asmref
+  uploadId: 760655

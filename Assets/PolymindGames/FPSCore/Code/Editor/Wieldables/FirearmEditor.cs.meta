@@ -1,0 +1,20 @@
+fileFormatVersion: 2
+guid: a5c5f64808e5381438ef36a3cd6a5c83
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _equipClip: {fileID: 7400000, guid: 6fcd4ef4b0dd5df49a09e341d846c3d2, type: 2}
+  - _holsterClip: {fileID: 7400000, guid: 4966c1d6c082a3d46a96afb0b9716e91, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/Wieldables/FirearmEditor.cs
+  uploadId: 760655

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: db62ebe1ffd94ab4ab9bc4779f53d2bb
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Inventory/LootTables/STP_GenericLoot.asset
+  uploadId: 760655

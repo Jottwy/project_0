@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: f100678c4ed989844b2f009432786875
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Wieldables/Projectiles/STP_Projectile_StoneArrow.prefab
+  uploadId: 760655

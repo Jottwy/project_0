@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: e26a3b275e0497344a72be9a7a921b59
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/BuildingPieces/Free/Constructed/STP_BuildingPiece_Anvil_Constructed.prefab
+  uploadId: 760655

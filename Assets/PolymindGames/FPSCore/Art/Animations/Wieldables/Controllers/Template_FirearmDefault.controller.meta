@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 3a81558a87651ba429bee046e86efce9
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 9100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/Wieldables/Controllers/Template_FirearmDefault.controller
+  uploadId: 760655

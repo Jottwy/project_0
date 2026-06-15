@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: b4fb4a255fad40f6a3447790e02dea1a
+timeCreated: 1734786751
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Utilities/Common/MonoSingleton.cs
+  uploadId: 760655

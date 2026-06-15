@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: f32dfff5d5d5ce343b8a6c1a6fdb525b
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_Rope.asset
+  uploadId: 760655

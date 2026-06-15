@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: c5b4995be3b85cb47b4e18449f0f0870
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_Military
+    Hat.asset
+  uploadId: 760655

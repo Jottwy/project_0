@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 556f89762da93b14d1ccb9cdebcdd0c4
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/OdinSerializer/Core/DataReaderWriters/Json/JsonTextReader.cs
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 3df1f16ee3fca804182c8e1b145828a0
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_HuntingKnife.prefab
+  uploadId: 760655

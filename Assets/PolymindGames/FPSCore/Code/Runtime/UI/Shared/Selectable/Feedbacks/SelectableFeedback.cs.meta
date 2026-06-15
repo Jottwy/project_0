@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 5161e7931e2743b18613bee3e0be12ec
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: 23faef08a937e0144a0e9d7aef65fb75, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Shared/Selectable/Feedbacks/SelectableFeedback.cs
+  uploadId: 760655

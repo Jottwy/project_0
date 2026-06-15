@@ -1,0 +1,34 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c9cad95054da6464b9101a942b883d4b, type: 3}
+  m_Name: FPS_Shake_Camera_Recoil_Firearm
+  m_EditorClassIdentifier: 
+  PositionShake:
+    Speed: 27
+    Spring:
+      Damping: 15
+      Stiffness: 200
+      Mass: 1
+      Speed: 1.2
+    XAmplitude: 0.03
+    YAmplitude: 0.03
+    ZAmplitude: 0.03
+  RotationShake:
+    Speed: 27
+    Spring:
+      Damping: 12
+      Stiffness: 135
+      Mass: 1
+      Speed: 1.05
+    XAmplitude: 2
+    YAmplitude: 2
+    ZAmplitude: 7.5

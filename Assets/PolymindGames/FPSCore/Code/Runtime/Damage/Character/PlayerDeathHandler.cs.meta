@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: 7d8a1c08318da5043a4296d7e193b39d
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - m_DropAction: {fileID: 11400000, guid: f821f82ac64f9d042a2ae2469899cf10, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Damage/Character/PlayerDeathHandler.cs
+  uploadId: 760655

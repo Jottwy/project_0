@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 52552dc75808b8243815a8fc34f25912
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/BuildingPieces/Free/Constructed/STP_BuildingPiece_Workbench_Constructed.prefab
+  uploadId: 760655

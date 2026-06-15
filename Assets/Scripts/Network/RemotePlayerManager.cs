@@ -12,8 +12,8 @@ namespace BackroomsSurvival.Net
         public GameObject remotePlayerPrefab;
 
         [Header("Interpolation")]
-        [Min(0f)] public float positionSmoothing = 12f;
-        [Min(0f)] public float rotationSmoothing = 10f;
+        [Min(0f)] public float positionSmoothing = 22f;
+        [Min(0f)] public float rotationSmoothing = 18f;
 
         [Header("Name Tag")]
         [Min(0f)] public float nameTagHeight = 2.2f;
@@ -113,6 +113,12 @@ namespace BackroomsSurvival.Net
                 view.targetRotation = rp.rotation;
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
                 view.lastSeenTime = Time.unscaledTime;
+
+                // TEMP DIAGNOSTIC (remove after case is identified): incoming = pose from the
+                // world_state; applied_target = lerp target just set; avatar_now = where the
+                // avatar root actually is (result of the previous frame's lerp). Reveals D
+                // (incoming != [POSE_SEND] pos), B (avatar lags target) and C (constant offset).
+                Debug.Log($"[POSE_RECV] id={rp.id} incoming={rp.position} applied_target={view.targetPosition} avatar_now={(view.root != null ? view.root.position.ToString() : "NULL")}");
 
                 string nameTagText = FormatNameTag(rp.id, rp.name);
                 if (view.nameTag != null && view.nameTag.text != nameTagText)

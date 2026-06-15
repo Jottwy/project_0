@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 977893ca660a4654d827a932ca988ba2
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/SaveSystem/FPS_UI_LevelDisplay.prefab
+  uploadId: 760655

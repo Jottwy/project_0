@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 14f4181ca612e43c9b344f073e03a7c6
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 18700000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Art/ConiferTree_Bark_NRM_AO_SPEC.asset
+  uploadId: 760655

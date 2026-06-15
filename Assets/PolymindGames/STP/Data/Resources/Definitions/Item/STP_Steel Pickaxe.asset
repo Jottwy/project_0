@@ -1,0 +1,55 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: STP_Steel Pickaxe
+  m_EditorClassIdentifier: 
+  _id: -1159981804
+  _parentGroup: {fileID: 11400000, guid: e795e49d036de2c47805aebb271686bb, type: 2}
+  _icon: {fileID: 21300000, guid: 69a4d277d030bdf44923f160ebb2e015, type: 3}
+  _description: Durable tool for mining, crafting, and survival.
+  _longDescription: A vital tool for any survivor, the pickaxe excels at mining,
+    resource gathering, and crafting. Built for durability, it can break through
+    stone and ore with ease, making it an essential asset in the wilderness.
+  _pickup: {fileID: 375143188622409950, guid: 565df45ce53b52e4fa0105f34cd93747, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 3
+  _stackSize: 1
+  _tag:
+    _value: 6549466
+  _rarity: {fileID: 11400000, guid: 5b78dfb1a8130fe4cab70086731e2ddd, type: 2}
+  _actions: []
+  _properties:
+  - _itemPropertyId: -8792658
+    _useRandomValue: 0
+    _valueRange: {x: 1, y: 0}
+  _data:
+  - rid: 4146511810374926394
+  references:
+    version: 2
+    RefIds:
+    - rid: 4146511810374926394
+      type: {class: CraftingData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _blueprint:
+        - Item:
+            _value: 1760821921
+          Amount: 5
+        - Item:
+            _value: 9878845
+          Amount: 5
+        - Item:
+            _value: -20407
+          Amount: 2
+        _craftAmount: 1
+        _craftDuration: 1.5
+        _craftLevel: 1
+        _dismantleEfficiency: 0.75

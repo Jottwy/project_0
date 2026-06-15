@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 5487cf22667a0bb47bf7214328eee65a
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: bb3c9d1e986fa924089abab03cd974e0, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/BarrelEffects/FirearmBasicBarrelEffect.cs
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 2427acd46b0190240b00294d9547c3f8
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/UI/Inventory/STP_UI_ItemCategoryIcon.prefab
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 210e283db8a599945a4f79d3e3c52ec4
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/UI/SaveSystem/STP_UI_SaveDisplay.prefab
+  uploadId: 760655

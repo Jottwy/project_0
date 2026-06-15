@@ -1,0 +1,10 @@
+fileFormatVersion: 2
+guid: fdf46c3a9268481fb2f4ee2125b2b9d3
+timeCreated: 1715842906
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/Utilities/RenderPipeline/MaterialConvertUtility.cs
+  uploadId: 760655

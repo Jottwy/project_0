@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 3945c4b3998d5ac4bb4c210206e48c28
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: e9734679ab4f13443b5590a7d0207f78, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/FireSystems/FirearmFireSystemBehaviour.cs
+  uploadId: 760655

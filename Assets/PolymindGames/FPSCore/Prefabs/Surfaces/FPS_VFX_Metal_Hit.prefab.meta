@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 5a7529d00e1918e4dab1dc05b50a16da
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Surfaces/FPS_VFX_Metal_Hit.prefab
+  uploadId: 760655

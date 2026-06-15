@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 932d5e9604ea26f4b9d616a7be02c2de
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Resources/Managers/LevelManager.asset
+  uploadId: 760655

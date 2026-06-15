@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 7268a66c8a1f5474c99f78963b32c350
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Inventory/ItemDisplay/ItemPropertyTextDisplay.cs
+  uploadId: 760655

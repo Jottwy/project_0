@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 44353a6f89da56549bcfe34dad07ed68
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Inventory/Actions/STP_ItemAction_Heal.asset
+  uploadId: 760655

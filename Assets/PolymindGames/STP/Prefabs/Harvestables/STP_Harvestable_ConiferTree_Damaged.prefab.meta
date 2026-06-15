@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: e91908fc1c02484479000cdef355b760
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Harvestables/STP_Harvestable_ConiferTree_Damaged.prefab
+  uploadId: 760655

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: e6d607e9c6a0a44fb974c8a3766673da
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Default
+    Components/Resources/CTI_default_albedo_array.asset
+  uploadId: 760655

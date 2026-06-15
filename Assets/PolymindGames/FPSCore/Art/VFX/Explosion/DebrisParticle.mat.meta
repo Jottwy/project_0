@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 72815344e9e9c7446895e130936932d7
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/VFX/Explosion/DebrisParticle.mat
+  uploadId: 760655

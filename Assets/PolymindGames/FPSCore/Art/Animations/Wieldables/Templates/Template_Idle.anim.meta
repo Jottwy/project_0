@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 1cee0a70c42f89f44ba4b62f9490d37d
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/Wieldables/Templates/Template_Idle.anim
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 446f887db76d0a043845dea93b02c767
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Surfaces/FPS_VFX_Plastic_Hit.prefab
+  uploadId: 760655

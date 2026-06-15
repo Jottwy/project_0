@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: ed9fe1c02f33b7843b5b62b0e8449f98
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Physics/FPS_Grenade.physicMaterial
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 46ceff09441451642b3155cc83421f51
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Inventory/FPS_UI_ItemWheel.prefab
+  uploadId: 760655

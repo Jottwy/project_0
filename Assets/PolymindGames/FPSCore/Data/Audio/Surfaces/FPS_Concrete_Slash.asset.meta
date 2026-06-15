@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c806daa23216089409292472d85675a3
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Concrete_Slash.asset
+  uploadId: 760655

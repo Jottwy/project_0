@@ -1,0 +1,46 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: STP_Feather
+  m_EditorClassIdentifier: 
+  _id: -9821754
+  _parentGroup: {fileID: 11400000, guid: 592964ac426c9554ead1f9c3f79e4912, type: 2}
+  _icon: {fileID: 21300000, guid: 657e3b2284a28c14b88f3b7fab54433f, type: 3}
+  _description: Can be used in crafting arrows, provides increased stability and
+    accuracy.
+  _longDescription: Key crafting material for arrows, enhancing their stability and
+    accuracy. A crucial resource for skilled archery in survival scenarios.
+  _pickup: {fileID: 9052018411027526118, guid: 614a8637ddd5f0947b706892077b0777, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 0.1
+  _stackSize: 20
+  _tag:
+    _value: 0
+  _rarity: {fileID: 11400000, guid: 5b78dfb1a8130fe4cab70086731e2ddd, type: 2}
+  _actions: []
+  _properties: []
+  _data:
+  - rid: 7414096679504707715
+  - rid: 7414096679504707716
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096679504707715
+      type: {class: BuildMaterialData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _buildMaterial:
+          _value: -8615515
+        _materialCount: 1
+    - rid: 7414096679504707716
+      type: {class: FuelData, ns: PolymindGames.InventorySystem, asm: PolymindGames}
+      data:
+        _fuelCapacityRange: {x: 15, y: 20}

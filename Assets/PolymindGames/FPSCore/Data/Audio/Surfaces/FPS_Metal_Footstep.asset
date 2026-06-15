@@ -1,0 +1,82 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-861454539525242384
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_WalkFootstep_Metal 05_{-861454539525242384}
+  m_AudioClip: {fileID: 8300000, guid: b16b24383465c614e861176b05f2c5ed, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &672445322920995890
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_WalkFootstep_Metal 02_{672445322920995890}
+  m_AudioClip: {fileID: 8300000, guid: 195a5dcd2c7efbc41b8a1d996cbbdccd, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &1436801001516594644
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_WalkFootstep_Metal 01_{1436801001516594644}
+  m_AudioClip: {fileID: 8300000, guid: a39c5741fa8ad5b438204dacbd530328, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &3939672692238134670
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_WalkFootstep_Metal 03_{3939672692238134670}
+  m_AudioClip: {fileID: 8300000, guid: b331ac1ebd9e65f49befa0fd52ecd373, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Metal_Footstep
+  m_Volume: -10
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -150, y: 150}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: 1436801001516594644}
+  - {fileID: 672445322920995890}
+  - {fileID: 3939672692238134670}
+  - {fileID: 9053929871389292309}
+  - {fileID: -861454539525242384}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &9053929871389292309
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_WalkFootstep_Metal 04_{9053929871389292309}
+  m_AudioClip: {fileID: 8300000, guid: 3f744aab2ff46fc4690eb1b5f6a64134, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

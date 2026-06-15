@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 1937ec891ffda5a40848b8745faf59a0
+labels:
+- Consumable
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Consumables/STP_ConsumableGroup_BlueberriesBush.prefab
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 47ef44b89c45d4f8292817305544b265
+ShaderIncludeImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Shaders/Includes/CTI_BillboardVertex_301.cginc
+  uploadId: 760655

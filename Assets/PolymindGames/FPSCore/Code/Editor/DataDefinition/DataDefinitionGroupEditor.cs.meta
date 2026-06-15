@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 0053578f7acb4423a496b79c1c446ffb
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/DataDefinition/DataDefinitionGroupEditor.cs
+  uploadId: 760655

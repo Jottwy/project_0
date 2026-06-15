@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 53d10103db97698a843f555cbc72bb6c
+DefaultImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/OdinSerializer/LICENSE
+  uploadId: 760655

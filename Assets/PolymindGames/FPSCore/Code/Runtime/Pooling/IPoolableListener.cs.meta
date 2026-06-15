@@ -1,0 +1,10 @@
+fileFormatVersion: 2
+guid: 0f46ea90a8e44a6ca1a74420d0f23100
+timeCreated: 1718366214
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Pooling/IPoolableListener.cs
+  uploadId: 760655

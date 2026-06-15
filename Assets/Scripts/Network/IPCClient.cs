@@ -84,10 +84,15 @@ namespace BackroomsSurvival.Net
         public delegate void WorldStateHandler(WorldStateMsg state);
         private readonly List<WorldStateHandler> _stateListeners = new List<WorldStateHandler>();
 
+        public delegate void MovementDeltaHandler(MovementDeltaMsg delta);
+        private readonly List<MovementDeltaHandler> _deltaListeners = new List<MovementDeltaHandler>();
+
         public void AddEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Add(handler); }
         public void RemoveEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Remove(handler); }
         public void AddStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Add(handler); }
         public void RemoveStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Remove(handler); }
+        public void AddMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Add(handler); }
+        public void RemoveMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Remove(handler); }
 
         private void NotifyListeners(GameEventMsg ev)
         {
@@ -101,6 +106,13 @@ namespace BackroomsSurvival.Net
             lock (_stateListeners)
                 foreach (var h in _stateListeners)
                     try { h(state); } catch { }
+        }
+
+        private void NotifyMovementDeltaListeners(MovementDeltaMsg delta)
+        {
+            lock (_deltaListeners)
+                foreach (var h in _deltaListeners)
+                    try { h(delta); } catch { }
         }
 
         // ─── Networking internals ───
@@ -180,6 +192,7 @@ namespace BackroomsSurvival.Net
 
         private readonly ConcurrentQueue<GameEventMsg> _pendingNotify = new ConcurrentQueue<GameEventMsg>();
         private readonly ConcurrentQueue<WorldStateMsg> _pendingStateNotify = new ConcurrentQueue<WorldStateMsg>();
+        private readonly ConcurrentQueue<MovementDeltaMsg> _pendingDeltaNotify = new ConcurrentQueue<MovementDeltaMsg>();
 
         private void Update()
         {
@@ -188,6 +201,9 @@ namespace BackroomsSurvival.Net
 
             while (_pendingStateNotify.TryDequeue(out var state))
                 NotifyStateListeners(state);
+
+            while (_pendingDeltaNotify.TryDequeue(out var delta))
+                NotifyMovementDeltaListeners(delta);
         }
 
         private void OnDestroy() => Shutdown();
@@ -297,6 +313,10 @@ namespace BackroomsSurvival.Net
                     _latestState = ws;
                     _pendingStateNotify.Enqueue(ws);
                     break;
+                case "delta_update":
+                    // ADR-009 §2: 20 Hz movement delta → MovementReconciler.
+                    _pendingDeltaNotify.Enqueue(MovementDeltaMsg.Parse(root));
+                    break;
                 case "event":
                     var gameEvent = GameEventMsg.Parse(root);
                     Events.Enqueue(gameEvent);
@@ -353,6 +373,42 @@ namespace BackroomsSurvival.Net
             w.WriteArrayHeader(n);
             for (int i = 0; i < n; i++) w.WriteString(actions[i]);
 
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// ADR-009 client-prediction input: the STP client owns prediction and
+        /// sends an authoritative pose (position+velocity+move_state) plus look
+        /// (pitch,yaw) for server validation (Option B). inputSeq lets the server
+        /// echo ack_input_seq so the reconciler can compare against its buffer.
+        /// Coexists with the legacy direction-based SendInput; the server takes
+        /// the prediction path only when input_seq != 0.
+        /// </summary>
+        public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
+            Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(11);
+            w.WriteString("type"); w.WriteString("input");
+            // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
+            // but they are non-optional in the wire schema and must be present).
+            w.WriteString("movement"); w.WriteArrayHeader(3);
+            w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
+            w.WriteString("look_delta"); w.WriteArrayHeader(2);
+            w.WriteFloat(0f); w.WriteFloat(0f);
+            w.WriteString("sprint"); w.WriteBool(moveState == 2);
+            w.WriteString("actions"); w.WriteArrayHeader(0);
+            // ADR-009 prediction fields.
+            w.WriteString("input_seq"); w.WriteInt(inputSeq);
+            w.WriteString("client_tick"); w.WriteInt(clientTick);
+            w.WriteString("position"); w.WriteArrayHeader(3);
+            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+            w.WriteString("velocity"); w.WriteArrayHeader(3);
+            w.WriteFloat(velocity.x); w.WriteFloat(velocity.y); w.WriteFloat(velocity.z);
+            w.WriteString("move_state"); w.WriteInt(moveState);
+            w.WriteString("look"); w.WriteArrayHeader(2);
+            w.WriteFloat(pitch); w.WriteFloat(yaw);
+            w.WriteString("buttons"); w.WriteInt(buttons);
             SendFrame(w.ToArray());
         }
 

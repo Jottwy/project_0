@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: b97edd0568494d21915627b8ed4c741c
+timeCreated: 1734626769
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/SaveSystem/LevelLoadingScreenWithTips.cs
+  uploadId: 760655

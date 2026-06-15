@@ -1,0 +1,152 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &4297077881346510443
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 3800490879742556320}
+  - component: {fileID: 1501007559775526800}
+  - component: {fileID: 1995285397713748997}
+  - component: {fileID: 4477416000882471135}
+  - component: {fileID: 7839095118810861288}
+  m_Layer: 5
+  m_Name: STP_UI_ItemCategoryIcon
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!224 &3800490879742556320
+RectTransform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4297077881346510443}
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+  m_AnchorMin: {x: 0.5, y: 0.5}
+  m_AnchorMax: {x: 0.5, y: 0.5}
+  m_AnchoredPosition: {x: 15, y: -15}
+  m_SizeDelta: {x: 30, y: 30}
+  m_Pivot: {x: 0.5, y: 0.5}
+--- !u!222 &1501007559775526800
+CanvasRenderer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4297077881346510443}
+  m_CullTransparentMesh: 0
+--- !u!114 &1995285397713748997
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4297077881346510443}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fe87c0e1cc204ed48ad3b37840f39efc, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  m_Material: {fileID: 0}
+  m_Color: {r: 1, g: 1, b: 1, a: 1}
+  m_RaycastTarget: 1
+  m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
+  m_Maskable: 1
+  m_OnCullStateChanged:
+    m_PersistentCalls:
+      m_Calls: []
+  m_Sprite: {fileID: 21300000, guid: 30300515cbb5aaf4aa5e21320bc56e6b, type: 3}
+  m_Type: 0
+  m_PreserveAspect: 0
+  m_FillCenter: 1
+  m_FillMethod: 4
+  m_FillAmount: 1
+  m_FillClockwise: 1
+  m_FillOrigin: 0
+  m_UseSpriteMesh: 0
+  m_PixelsPerUnitMultiplier: 1
+--- !u!114 &4477416000882471135
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4297077881346510443}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8d89b4516c586c240bcf00f06190899b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _isInteractable: 1
+  _isSelectable: 1
+  _navigation:
+    _mode: 3
+    _wrapAround: 0
+    _selectOnUp: {fileID: 0}
+    _selectOnDown: {fileID: 0}
+    _selectOnLeft: {fileID: 0}
+    _selectOnRight: {fileID: 0}
+  _feedbacks:
+  - rid: 7414096002500526189
+  - rid: 7414096002500526190
+  - rid: 7414096002500526191
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096002500526189
+      type: {class: ColorTintFeedback, ns: PolymindGames.UserInterface, asm: PolymindGames}
+      data:
+        _targetGraphic: {fileID: 1995285397713748997}
+        _normalColor: {r: 0.92156863, g: 0.92156863, b: 0.92156863, a: 0.64705884}
+        _highlightedColor: {r: 0.8679245, g: 0.6512721, b: 0.35617658, a: 0.78431374}
+        _pressedColor: {r: 0.7830189, g: 0.56910455, b: 0.2696244, a: 0.78431374}
+        _selectedColor: {r: 0.8301887, g: 0.60276365, b: 0.29369885, a: 0.6862745}
+        _disabledColor: {r: 0.8980392, g: 0.8980392, b: 0.8980392, a: 0.5882353}
+        _fadeDuration: 0.1
+    - rid: 7414096002500526190
+      type: {class: SizeChangeFeedback, ns: PolymindGames.UserInterface, asm: PolymindGames}
+      data:
+        _transform: {fileID: 3800490879742556320}
+        _highlightedSize: 0.95
+        _pressedSize: 0.9
+        _selectedSize: 1.15
+    - rid: 7414096002500526191
+      type: {class: AudioFeedback, ns: PolymindGames.UserInterface, asm: PolymindGames}
+      data:
+        _highlightAudio:
+          Clip: {fileID: 6418180475301049370, guid: 186dc34023555e14880b64d3ff21908c, type: 2}
+          Volume: 1
+          _clips: []
+        _selectedAudio:
+          Clip: {fileID: 6418180475301049370, guid: 3e8beca66bb8fb94ebe0e1c58086237f, type: 2}
+          Volume: 1
+          _clips: []
+--- !u!114 &7839095118810861288
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4297077881346510443}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: eea18dcc1ec1428d8c1c459277c2cd0f, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _definition: {fileID: 0}
+  _selectable: {fileID: 4477416000882471135}
+  _nameText: {fileID: 0}
+  _descriptionText: {fileID: 0}
+  _iconImage: {fileID: 1995285397713748997}

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 8f4a3ae893720b84788d24b3ea1cceb5
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Inventory/Restrictions/STP_Restriction_TorsoEquipment.asset
+  uploadId: 760655

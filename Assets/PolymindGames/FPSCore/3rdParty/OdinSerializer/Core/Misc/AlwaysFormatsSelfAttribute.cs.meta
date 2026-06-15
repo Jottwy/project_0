@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 0c6a5a4ddd95c3eb5130f6f26b688fc7
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/OdinSerializer/Core/Misc/AlwaysFormatsSelfAttribute.cs
+  uploadId: 760655

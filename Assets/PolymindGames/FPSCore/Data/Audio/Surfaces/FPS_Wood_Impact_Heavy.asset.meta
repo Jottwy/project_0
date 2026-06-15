@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 80f8a2a1996ec0642a2134eb59e032d3
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Wood_Impact_Heavy.asset
+  uploadId: 760655

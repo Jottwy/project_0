@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 07a76ac8300317a4d9dfb9c37f9a4508
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Inventory/Restrictions/STP_Restriction_FeetEquipment.asset
+  uploadId: 760655

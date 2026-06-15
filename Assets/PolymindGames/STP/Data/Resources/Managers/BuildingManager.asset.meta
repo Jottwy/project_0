@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 16ef573333486c14e8797898597549ad
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Managers/BuildingManager.asset
+  uploadId: 760655

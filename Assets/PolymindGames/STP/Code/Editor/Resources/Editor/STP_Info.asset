@@ -1,0 +1,44 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e1e990187d457d34e94b0f0349a1a2e5, type: 3}
+  m_Name: STP_Info
+  m_EditorClassIdentifier: 
+  _assetName: Survival Template Pro
+  _icon: {fileID: 2800000, guid: 3fddd7276058c294a939be47652b8a8e, type: 3}
+  _description: "Survival Template PRO is a powerful toolkit \ndesigned  to be as
+    modular and scalable as possible,\nwhile also offering a lot of features found
+    in modern survival games."
+  _priority: 100
+  _versionString: 1.5.3
+  _requiresValidation: 0
+  _scenes:
+  - sceneReference: {fileID: 102900000, guid: 879e3b3dc7c20b1468f9bcced58b7289, type: 3}
+    sceneName: STP_MainMenu
+    scenePath: Assets/PolymindGames/STP/Demo/Scenes/MainMenu/STP_MainMenu.unity
+    buildIndex: 0
+  - sceneReference: {fileID: 102900000, guid: a6e50490bf36ab04bbf75c74f74ce870, type: 3}
+    sceneName: STP_Showcase
+    scenePath: Assets/PolymindGames/STP/Demo/Scenes/Showcase/STP_Showcase.unity
+    buildIndex: 1
+  - sceneReference: {fileID: 102900000, guid: afcaeb59c360a39479751b5206e7cfa0, type: 3}
+    sceneName: STP_Forest
+    scenePath: Assets/PolymindGames/STP/Demo/Scenes/Forest/STP_Forest.unity
+    buildIndex: 2
+  - sceneReference: {fileID: 102900000, guid: 5fa35067fa350d744af436f345a9725c, type: 3}
+    sceneName: STP_Prototype
+    scenePath: Assets/PolymindGames/STP/Demo/Scenes/Prototype/STP_Prototype.unity
+    buildIndex: 3
+  _storeUrl: https://assetstore.unity.com/packages/templates/systems/stp-survival-template-pro-207954
+  _docsUrl: https://polymindgames.gitbook.io/welcome-to-gitbook/qgUktTCVlUDA7CAODZfe
+  _extraSites:
+  - Name: Multiplayer Addon
+    Url: https://assetstore.unity.com/packages/add-ons/multiplayer-stp-survival-template-pro-259841

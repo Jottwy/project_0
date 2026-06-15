@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 37e45c3ddbce59b4a8b5cc6d54d8c5c5
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/World/Sleep/ISleepControllerCC.cs
+  uploadId: 760655

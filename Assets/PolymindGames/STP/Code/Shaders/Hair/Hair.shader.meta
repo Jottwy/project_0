@@ -1,0 +1,17 @@
+fileFormatVersion: 2
+guid: dcae2dc1955704241a291fe478f50de8
+ShaderImporter:
+  externalObjects: {}
+  defaultTextures: []
+  nonModifiableTextures: []
+  preprocessorOverride: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Shaders/Hair/Hair.shader
+  uploadId: 760655

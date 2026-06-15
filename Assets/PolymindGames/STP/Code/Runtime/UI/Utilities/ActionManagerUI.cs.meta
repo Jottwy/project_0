@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: e5a627a1fb45d9a4688c5997e741896d
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/UI/Utilities/ActionManagerUI.cs
+  uploadId: 760655

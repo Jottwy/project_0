@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: d772f8527e08cb14a85716d223d12740
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Models/Wieldables/HuntingKnife/Materials/FP_HuntingKnife_Holster.mat
+  uploadId: 760655

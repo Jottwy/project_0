@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 64fe496a8b5c7f34b8af6ab2385a8103
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Wieldables/Crosshairs/BasicCrosshairUI.cs
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 594c3c38fa2433943853801d9e8b636d
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Demo/Prefabs/Buttons/STP_InteractiveButton.prefab
+  uploadId: 760655

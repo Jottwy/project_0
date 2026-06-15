@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 45ad59b9cf5ebd148a5150edd4009f60
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Models/Attachments/SniperScope1/Materials/ScopeLens.mat
+  uploadId: 760655

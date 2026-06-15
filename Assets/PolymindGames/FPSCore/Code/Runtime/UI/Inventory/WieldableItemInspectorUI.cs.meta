@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: fb250112a63c4bb890b3a343f7b94ae6
+timeCreated: 1719485626
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Inventory/WieldableItemInspectorUI.cs
+  uploadId: 760655

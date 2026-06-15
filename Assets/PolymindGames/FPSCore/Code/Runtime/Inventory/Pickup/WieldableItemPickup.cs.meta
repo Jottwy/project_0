@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: 0c02da14dc9342044bb9ea4d6fa3c089
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _addAudio: {fileID: 11400000, guid: b029094a766756c44afe4d43345aaa25, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Inventory/Pickup/WieldableItemPickup.cs
+  uploadId: 760655

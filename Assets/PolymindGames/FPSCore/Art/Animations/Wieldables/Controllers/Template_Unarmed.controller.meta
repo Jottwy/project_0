@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: f57c1817327926848b1f4811f040f9ac
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/Wieldables/Controllers/Template_Unarmed.controller
+  uploadId: 760655

@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: e05cb719f7665b34ebee0649f1dc68d3
+labels:
+- Prop
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/ConiferTree.prefab
+  uploadId: 760655

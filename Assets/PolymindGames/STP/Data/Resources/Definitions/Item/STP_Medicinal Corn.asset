@@ -1,0 +1,32 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4213430bbd6313b4a89ea1d7e1185c38, type: 3}
+  m_Name: STP_Medicinal Corn
+  m_EditorClassIdentifier: 
+  _id: -2044372056
+  _parentGroup: {fileID: 11400000, guid: 592964ac426c9554ead1f9c3f79e4912, type: 2}
+  _icon: {fileID: 21300000, guid: 6df6c48c30ebd7347bf67928e79019a1, type: 3}
+  _description: Can be used to craft healing pills
+  _longDescription: 
+  _pickup: {fileID: 7233473307875684863, guid: 76b3557429c410d489c69b69bf3ac9ee, type: 3}
+  _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
+  _weight: 0.3
+  _stackSize: 5
+  _tag:
+    _value: 0
+  _rarity: {fileID: 11400000, guid: 5b78dfb1a8130fe4cab70086731e2ddd, type: 2}
+  _actions: []
+  _properties: []
+  _data: []
+  references:
+    version: 2
+    RefIds: []

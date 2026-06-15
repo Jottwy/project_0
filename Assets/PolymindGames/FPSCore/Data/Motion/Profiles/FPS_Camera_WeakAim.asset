@@ -1,0 +1,53 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 0b68cd863358e134894bf7001b9e6d6f, type: 3}
+  m_Name: FPS_Camera_WeakAim
+  m_EditorClassIdentifier: 
+  _baseProfile: {fileID: 0}
+  _motionData:
+  - State: 0
+    Motions:
+    - rid: 7414096002500526255
+    - rid: 7414096002500526256
+  references:
+    version: 2
+    RefIds:
+    - rid: 7414096002500526255
+      type: {class: BobMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        BobType: 1
+        BobSpeed: 1
+        PositionSpring:
+          Damping: 10
+          Stiffness: 100
+          Mass: 1
+          Speed: 1
+        PositionStepForce:
+          Force: {x: 0, y: 0, z: 0}
+          Duration: 0.125
+        PositionAmplitude: {x: 0, y: 0, z: 0}
+        RotationSpring:
+          Damping: 10
+          Stiffness: 100
+          Mass: 1
+          Speed: 1
+        RotationStepForce:
+          Force: {x: 0, y: 0, z: 0}
+          Duration: 0.125
+        RotationAmplitude: {x: -1, y: 1, z: 0.35}
+    - rid: 7414096002500526256
+      type: {class: NoiseMotionData, ns: PolymindGames.ProceduralMotion, asm: PolymindGames}
+      data:
+        NoiseSpeed: 2
+        NoiseJitter: 0.45
+        PositionAmplitude: {x: 0, y: 0, z: 0}
+        RotationAmplitude: {x: 0.3, y: 0.3, z: 0.5}

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 5ae823064f3037848872ae3006f4bcf2
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 22100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/Characters/Controllers/STP_MaleSurvivor.overrideController
+  uploadId: 760655

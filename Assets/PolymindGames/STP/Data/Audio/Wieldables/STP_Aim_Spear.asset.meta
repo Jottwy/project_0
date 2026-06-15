@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 9a165d45a53794a41bb1112c19ecc171
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Audio/Wieldables/STP_Aim_Spear.asset
+  uploadId: 760655

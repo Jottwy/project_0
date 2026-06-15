@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: fbe5c7cd90f6c414cbbdb3eb06f7bcfb
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/Item/STP_Stone Arrow.asset
+  uploadId: 760655

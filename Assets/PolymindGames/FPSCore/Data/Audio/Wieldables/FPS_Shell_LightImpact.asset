@@ -1,0 +1,82 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-5265581612273229864
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: CasingDrop 02_{-5265581612273229864}
+  m_AudioClip: {fileID: 8300000, guid: db76226affbc4b7468030eef5f15664e, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-3385855540657754891
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: CasingDrop 05_{-3385855540657754891}
+  m_AudioClip: {fileID: 8300000, guid: 433fbf4d8d01f9b4ea27ad9f26a70a17, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &-2664204519854345398
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: CasingDrop 03_{-2664204519854345398}
+  m_AudioClip: {fileID: 8300000, guid: 90684a5a82855ae458ea8d7f0544f1a1, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &3038315184154625815
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: CasingDrop 04_{3038315184154625815}
+  m_AudioClip: {fileID: 8300000, guid: c4e663ba29a16674c957b23a230fb91f, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Shell_LightImpact
+  m_Volume: -8
+  m_Pitch: -150
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -75, y: 75}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: 7854631140042633366}
+  - {fileID: -5265581612273229864}
+  - {fileID: -2664204519854345398}
+  - {fileID: 3038315184154625815}
+  - {fileID: -3385855540657754891}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &7854631140042633366
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: CasingDrop 01_{7854631140042633366}
+  m_AudioClip: {fileID: 8300000, guid: 782ea502246b3ca45b74641ff2e4e6de, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

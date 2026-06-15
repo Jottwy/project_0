@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 1e367dccf79305b438a2b2e21a17f62e
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/UI/Wieldables/FPS_UI_Firemode_Update.anim
+  uploadId: 760655

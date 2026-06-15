@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 1e649cea86858ed4287d2305d0ffbd1e
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Editor/Wizards/BuildingPieceCreationWizard.cs
+  uploadId: 760655

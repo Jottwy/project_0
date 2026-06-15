@@ -1,0 +1,17 @@
+fileFormatVersion: 2
+guid: 4eaef8005b70b4c40a199a19153ccfdf
+ShaderImporter:
+  externalObjects: {}
+  defaultTextures: []
+  nonModifiableTextures: []
+  preprocessorOverride: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/3rdParty/ConiferTree/CTIRuntimeComponents_BIRP/Resources/CTI_Camera-DepthNormalTexture.shader
+  uploadId: 760655

@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: 79026954991e4bc39945ed90cadf1bf4
+timeCreated: 1743610771
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Camera/CharacterYPositionEaser.cs
+  uploadId: 760655

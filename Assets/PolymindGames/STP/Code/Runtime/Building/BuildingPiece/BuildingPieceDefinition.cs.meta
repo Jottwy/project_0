@@ -1,0 +1,24 @@
+fileFormatVersion: 2
+guid: 94880c3f6f2321d4ca749870023475cd
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _parentGroup: {instanceID: 0}
+  - _icon: {fileID: 21300000, guid: 730304b6f465c9a44bc96e79f37f3750, type: 3}
+  - _prefab: {instanceID: 0}
+  - _placeEffects: {fileID: 11400000, guid: c49e02632b290224f979013eb94fa723, type: 2}
+  - _constructEffects: {fileID: 11400000, guid: 6d453f570f455aa40a839e5ca9534a4b,
+      type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Building/BuildingPiece/BuildingPieceDefinition.cs
+  uploadId: 760655

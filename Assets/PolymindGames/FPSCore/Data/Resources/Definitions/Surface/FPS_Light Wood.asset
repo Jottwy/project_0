@@ -1,0 +1,78 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a5f455fef6aaad459434bb61682f7d4, type: 3}
+  m_Name: FPS_Light Wood
+  m_EditorClassIdentifier: 
+  _id: 6624767
+  _velocityModifier: 1
+  _surfaceFriction: 0.95
+  _penetrationResistance: 0.2
+  _materials:
+  - {fileID: 13400000, guid: 4ba610101557db44cad2decc4b88b035, type: 2}
+  - {fileID: 13400000, guid: 6a94fed3e37cc4c4481a377d9669c270, type: 2}
+  _effects:
+  - EffectType: 0
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 65a47ed0915869349a4277886e62da97, type: 2}
+        Volume: 1
+  - EffectType: 5
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 9183a6958cfb94542b414dc54f1c425a, type: 2}
+        Volume: 0.75
+  - EffectType: 6
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 9183a6958cfb94542b414dc54f1c425a, type: 2}
+        Volume: 1
+  - EffectType: 7
+    EffectData:
+      VisualEffect: {fileID: 0}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: dd8a984c943d13340a6e0d91eb427852, type: 2}
+        Volume: 1
+  - EffectType: 4
+    EffectData:
+      VisualEffect: {fileID: -7778768555609290106, guid: ed73b04b299849840aa8e5dd1dcd2987, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: fa9dbf840a0e05345bd4cedea88289e3, type: 2}
+        Volume: 1
+  - EffectType: 2
+    EffectData:
+      VisualEffect: {fileID: -8665423568215617794, guid: af2ae2b819c31184b870167295d3d874, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: 49fca88d405c05041841e5e595c71408, type: 2}
+        Volume: 1
+  - EffectType: 1
+    EffectData:
+      VisualEffect: {fileID: -8665423568215617794, guid: af2ae2b819c31184b870167295d3d874, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: fbed99f4ac72e054f8df777f882e6fd8, type: 2}
+        Volume: 1
+  - EffectType: 3
+    EffectData:
+      VisualEffect: {fileID: -7778768555609290106, guid: ed73b04b299849840aa8e5dd1dcd2987, type: 3}
+      DecalEffect: {fileID: 0}
+      AudioEffect:
+        Clip: {fileID: 6418180475301049370, guid: fbed99f4ac72e054f8df777f882e6fd8, type: 2}
+        Volume: 1

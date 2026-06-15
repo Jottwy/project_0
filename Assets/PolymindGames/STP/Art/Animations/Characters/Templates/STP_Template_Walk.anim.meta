@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 7ac2aaca74735ba488e1c908a826b82a
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 7400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Art/Animations/Characters/Templates/STP_Template_Walk.anim
+  uploadId: 760655

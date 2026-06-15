@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: d61d631c38e7f2449aa51f989f0212c7
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/ItemTag/STP_Torso
+    Equipment.asset
+  uploadId: 760655

@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: f4b22261a2914d9daeffbf703b49479a
+timeCreated: 1729174030
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Utilities/Components/TerrainDataManager.cs
+  uploadId: 760655

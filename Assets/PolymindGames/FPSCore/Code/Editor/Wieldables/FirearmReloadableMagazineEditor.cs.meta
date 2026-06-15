@@ -1,0 +1,22 @@
+fileFormatVersion: 2
+guid: 520bd4899ff14fedb56b845b60f2d46e
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _beginReloadClip: {fileID: 7400000, guid: 9a14336492c80dc458aa7ef450933bfb, type: 2}
+  - _reloadClip: {fileID: 7400000, guid: 63aa47c646e95c7489628d5eef2a35e8, type: 2}
+  - _endReloadClip: {fileID: 7400000, guid: 3d62d1c9d9ec9f5458163e03cc42e520, type: 2}
+  - _emptyReloadClip: {fileID: 7400000, guid: 34b583e3328c473479f5e2c8d2206f9d, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Editor/Wieldables/FirearmReloadableMagazineEditor.cs
+  uploadId: 760655

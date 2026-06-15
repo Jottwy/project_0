@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 47560fd70c87dfc4392c15b75b83da0b
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Characters/STP_AI_StaticMaleSurvivor.prefab
+  uploadId: 760655

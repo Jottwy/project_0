@@ -1,0 +1,51 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 20b2d8c8dee963a459e7537df4353d66, type: 3}
+  m_Name: NewChunk
+  m_EditorClassIdentifier: 
+  name: Chunk 1
+  version: 1
+  weight: 1
+  description: 
+  tags: []
+  width: 1
+  length: 1
+  depth: 1
+  layers:
+  - zPosition: 0
+    height: 0.1
+    type: 1
+    cellSize: 0.05
+    holeSize: 0.04
+  north:
+    enabled: 0
+    thickness: 0.2
+    openings:
+    - position: 1
+      width: 4.094
+      height: 5
+  south:
+    enabled: 1
+    thickness: 0.2
+    openings: []
+  east:
+    enabled: 1
+    thickness: 0.2
+    openings: []
+  west:
+    enabled: 1
+    thickness: 0.2
+    openings: []
+  wallColor: {r: 1, g: 0, b: 0, a: 1}
+  floorColor: {r: 1, g: 1, b: 1, a: 1}
+  grateColor: {r: 0.15395391, g: 1, b: 0, a: 1}
+  customMaterial: {fileID: 0}

@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 1fe14bf0177d0f646a01cdefa78a642b
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Code/Runtime/Inventory/Crafting/CraftRequirement.cs
+  uploadId: 760655

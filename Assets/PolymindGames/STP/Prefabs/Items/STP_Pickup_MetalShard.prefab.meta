@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 9a3bfd6d0fd75c242b4eae7114dcc667
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_MetalShard.prefab
+  uploadId: 760655

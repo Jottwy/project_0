@@ -1,0 +1,93 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1233149941 &-7341284106234758908
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_BluntImpact_Wood 02_{-7341284106234758908}
+  m_AudioClip: {fileID: 8300000, guid: 8603db9f5ccb5bf4c8bf77323354dc5c, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &1769039267123591965
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_BluntImpact_Wood 04_{1769039267123591965}
+  m_AudioClip: {fileID: 8300000, guid: 6f688411a09f2ab4bb06ffd6ec41824b, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &2661506932062498128
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_BluntImpact_Wood 06_{2661506932062498128}
+  m_AudioClip: {fileID: 8300000, guid: 5c6a9a6b66576954194c3d945e54bd23, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &4106436119152639663
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_BluntImpact_Wood 05_{4106436119152639663}
+  m_AudioClip: {fileID: 8300000, guid: ab3e3a40ec19a054aa933119784556be, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1307931743 &6418180475301049370
+AudioRandomContainer:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_Wood_BluntImpact
+  m_Volume: -8
+  m_Pitch: 0
+  m_AutomaticTriggerTime: 0
+  m_LoopCount: 1
+  m_VolumeRandomizationRange: {x: -5, y: 0}
+  m_PitchRandomizationRange: {x: -150, y: 150}
+  m_AutomaticTriggerTimeRandomizationRange: {x: 0, y: 0}
+  m_LoopCountRandomizationRange: {x: 0, y: 0}
+  m_Elements:
+  - {fileID: 7488851770972953153}
+  - {fileID: -7341284106234758908}
+  - {fileID: 6947201164330312832}
+  - {fileID: 1769039267123591965}
+  - {fileID: 4106436119152639663}
+  - {fileID: 2661506932062498128}
+  m_AvoidRepeatingLast: 0
+  m_PlaybackMode: 1
+  m_TriggerMode: 0
+  m_AutomaticTriggerMode: 1
+  m_LoopMode: 2
+  m_VolumeRandomizationEnabled: 1
+  m_PitchRandomizationEnabled: 1
+  m_AutomaticTriggerTimeRandomizationEnabled: 0
+  m_LoopCountRandomizationEnabled: 0
+--- !u!1233149941 &6947201164330312832
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_BluntImpact_Wood 03_{6947201164330312832}
+  m_AudioClip: {fileID: 8300000, guid: bb4bf7e247d9c5b4492b3e7a8544f100, type: 3}
+  m_Volume: 0
+  m_Enabled: 1
+--- !u!1233149941 &7488851770972953153
+AudioContainerElement:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: FPS_BluntImpact_Wood 01_{7488851770972953153}
+  m_AudioClip: {fileID: 8300000, guid: 266b1c96b5b39de479fbcee38f8eabf9, type: 3}
+  m_Volume: 0
+  m_Enabled: 1

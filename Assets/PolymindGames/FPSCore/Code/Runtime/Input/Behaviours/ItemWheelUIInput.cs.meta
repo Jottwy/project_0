@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: a67dc756eeee4625aa622614a4328d2f
+timeCreated: 1718355251
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Input/Behaviours/ItemWheelUIInput.cs
+  uploadId: 760655

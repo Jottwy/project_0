@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 074859cc324ee7d4aa0c0effccdb8abb
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Motion/STP_MainMenu.asset
+  uploadId: 760655

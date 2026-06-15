@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 6b59289d0a2d4f04fb6e62dd73523f5a
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/Items/STP_Pickup_RawMeat.prefab
+  uploadId: 760655

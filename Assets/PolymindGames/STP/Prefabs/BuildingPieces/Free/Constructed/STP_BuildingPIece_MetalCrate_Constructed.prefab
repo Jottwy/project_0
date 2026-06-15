@@ -1,0 +1,71 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1001 &3067503926967622702
+PrefabInstance:
+  m_ObjectHideFlags: 0
+  serializedVersion: 2
+  m_Modification:
+    serializedVersion: 3
+    m_TransformParent: {fileID: 0}
+    m_Modifications:
+    - target: {fileID: 607714535775068838, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.x
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 607714535775068838, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 607714535775068838, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: m_LocalEulerAnglesHint.z
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 1787455263536080847, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _requirements.Array.size
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _prefabGuid._guidPart1
+      value: 1676465978
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _prefabGuid._guidPart2
+      value: -899362673
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _prefabGuid._guidPart3
+      value: 359161834
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _prefabGuid._guidPart4
+      value: 1452493403
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _instanceGuid._guidPart1
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _instanceGuid._guidPart2
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _instanceGuid._guidPart3
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 5077082513086220089, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _instanceGuid._guidPart4
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 6181605201540285967, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: m_Name
+      value: STP_BuildingPIece_MetalCrate_Constructed
+      objectReference: {fileID: 0}
+    - target: {fileID: 6324188274761535686, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}
+      propertyPath: _state
+      value: 3
+      objectReference: {fileID: 0}
+    m_RemovedComponents: []
+    m_RemovedGameObjects: []
+    m_AddedGameObjects: []
+    m_AddedComponents: []
+  m_SourcePrefab: {fileID: 100100000, guid: ee7ed91e700e23a44b3dc2acacfc2bce, type: 3}

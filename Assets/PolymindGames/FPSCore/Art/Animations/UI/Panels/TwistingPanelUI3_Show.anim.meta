@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 31c83dc24ec4ce8468ec40244e6fc0bb
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Art/Animations/UI/Panels/TwistingPanelUI3_Show.anim
+  uploadId: 760655

@@ -1,0 +1,19 @@
+fileFormatVersion: 2
+guid: 1bd25276499c40b4baf46efe10276e76
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences:
+  - _damageAudio: {fileID: 11400000, guid: aca984436de9f6b4f85fe066eb22eb06, type: 2}
+  executionOrder: 0
+  icon: {instanceID: 0}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Damage/Character/CharacterDamageHandler.cs
+  uploadId: 760655

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: c44cb4e2bbb3b2549b2e0111580e365a
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Concrete_WalkFootstep.asset
+  uploadId: 760655

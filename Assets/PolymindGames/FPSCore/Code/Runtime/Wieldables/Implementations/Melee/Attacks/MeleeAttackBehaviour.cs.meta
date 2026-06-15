@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 07d9353a5bc620c409e333775a77a907
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: e414839472d6ff74c939af78aa11802c, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Melee/Attacks/MeleeAttackBehaviour.cs
+  uploadId: 760655

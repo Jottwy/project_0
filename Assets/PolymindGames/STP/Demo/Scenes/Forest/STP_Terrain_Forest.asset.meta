@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 303f0aebf4a109245af6e9de0e51318b
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 15600000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Demo/Scenes/Forest/STP_Terrain_Forest.asset
+  uploadId: 760655

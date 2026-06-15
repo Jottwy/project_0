@@ -1,0 +1,28 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d1371f6ac864cf14cb301e0dc955f35c, type: 3}
+  m_Name: FPS_Melee
+  m_EditorClassIdentifier: 
+  _id: -5547916
+  _icon: {fileID: 21300000, guid: 709f4acbccb9edc4cb48d04474595181, type: 3}
+  _members:
+  - {fileID: 11400000, guid: 0ab2e1b15ccb2bd4982f0b82b000b94c, type: 2}
+  - {fileID: 11400000, guid: 9bdf66e4f9f1f8241874e425e0b206a2, type: 2}
+  - {fileID: 11400000, guid: 7b0828587cd565b4ca922f9ff0a578f5, type: 2}
+  - {fileID: 11400000, guid: 00b143757668eff449dc141908ac25f0, type: 2}
+  - {fileID: 11400000, guid: c37c7f50f6981df4a86c3dbc60e3887a, type: 2}
+  - {fileID: 11400000, guid: b25740dcce9ff214dbe1b50192631f74, type: 2}
+  _defaultTag:
+    _value: 6549466
+  _baseActions:
+  - {fileID: 11400000, guid: 703a7c5fe04187f44a848598da05bb59, type: 2}
+  - {fileID: 11400000, guid: f821f82ac64f9d042a2ae2469899cf10, type: 2}

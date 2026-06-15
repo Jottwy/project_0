@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: ff2de46fe8917c64ca0c12f7451180d6
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: eca82c9a5e145594e855671bd3829a7c, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/RecoilManagers/FirearmRecoilManagerBehaviour.cs
+  uploadId: 760655

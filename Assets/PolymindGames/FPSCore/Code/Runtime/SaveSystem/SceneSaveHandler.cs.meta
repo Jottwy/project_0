@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: b0dcf513df8d4da7a0c74af9ec4ba063
+timeCreated: 1734593686
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/SaveSystem/SceneSaveHandler.cs
+  uploadId: 760655

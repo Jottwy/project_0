@@ -19,6 +19,13 @@ use super::{decode, encode, ClientMessage, ServerMessage};
 /// Reject absurd frame sizes (protects against a malformed length prefix).
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
+/// ADR-009 wire schema revision. Bumped when the player input/state schema
+/// changes; the transport itself is unchanged (still length-prefixed
+/// MessagePack). v2 adds the client-prediction fields to PlayerInput and
+/// ack_input_seq/stamina to the snapshot — all `serde(default)`, so v1 clients
+/// still interoperate.
+const WIRE_SCHEMA_VERSION: u32 = 2;
+
 /// Run the IPC server until a fatal accept error.
 ///
 /// * `to_game`  — channel to forward decoded client messages to the game loop.
@@ -29,7 +36,7 @@ pub async fn run(
     ipc_addr: String,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(&ipc_addr).await?;
-    info!("IPC server listening on {ipc_addr}");
+    info!("IPC server listening on {ipc_addr} (wire schema v{WIRE_SCHEMA_VERSION})");
 
     loop {
         let (stream, peer) = listener.accept().await?;

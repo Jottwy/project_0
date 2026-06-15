@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: b9439f11ee23db147a3b4c04fd53028a
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/BuildingPieceCategory/STP_Roofs.asset
+  uploadId: 760655

@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: 989cee83728668343b371ca123ba7628
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 13400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Physics/FPS_WoodHeavy.physicMaterial
+  uploadId: 760655

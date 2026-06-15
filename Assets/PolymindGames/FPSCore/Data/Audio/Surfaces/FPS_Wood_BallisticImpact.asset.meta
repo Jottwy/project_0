@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: fa9dbf840a0e05345bd4cedea88289e3
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Wood_BallisticImpact.asset
+  uploadId: 760655

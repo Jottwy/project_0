@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 81116bd70c76d4c41a8f57fbc1f3a3af
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Data/Resources/Definitions/BuildingPiece/Free/STP_Stone
+    Cabin.asset
+  uploadId: 760655

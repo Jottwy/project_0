@@ -1,0 +1,26 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1af7748b63514387bbe51512feae03a9, type: 3}
+  m_Name: BuildingManager
+  m_EditorClassIdentifier: 
+  _defaultBuildingPiece: {fileID: 11400000, guid: afa5cdb7e61d8014989cba07bda28f73, type: 2}
+  _groupPieceCenterPoint: 0
+  _defaultGroupPrefab: {fileID: 4265423152161599560, guid: d836465da72738042b29021e343f3bb7, type: 3}
+  _freePlacementMask:
+    serializedVersion: 2
+    m_Bits: 81921
+  _overlapCheckMask:
+    serializedVersion: 2
+    m_Bits: 123392
+  _placementAllowedMaterial: {fileID: 11400000, guid: 3fa968b7b305bfc418de91d4a7a066ad, type: 2}
+  _placementDeniedMaterialEffect: {fileID: 11400000, guid: b11921360c379f342b4019e1d040513b, type: 2}
+  _fullBuildEffect: {fileID: 11400000, guid: 0b0ac69fae31e2447b1fa93e2c2320b0, type: 2}

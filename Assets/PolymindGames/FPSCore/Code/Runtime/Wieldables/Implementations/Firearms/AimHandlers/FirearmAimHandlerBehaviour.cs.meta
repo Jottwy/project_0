@@ -1,0 +1,18 @@
+fileFormatVersion: 2
+guid: 750261f7eaf54144595b8c0ec7b7112d
+MonoImporter:
+  externalObjects: {}
+  serializedVersion: 2
+  defaultReferences: []
+  executionOrder: 0
+  icon: {fileID: 2800000, guid: 4de21de23e0e850459bbdfb2b35fd0b5, type: 3}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/AimHandlers/FirearmAimHandlerBehaviour.cs
+  uploadId: 760655

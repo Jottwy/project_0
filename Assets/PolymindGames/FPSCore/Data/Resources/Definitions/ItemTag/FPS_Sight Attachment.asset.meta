@@ -1,0 +1,16 @@
+fileFormatVersion: 2
+guid: 1c78be47fb7f8874885c2575983f6823
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 11400000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Resources/Definitions/ItemTag/FPS_Sight
+    Attachment.asset
+  uploadId: 760655

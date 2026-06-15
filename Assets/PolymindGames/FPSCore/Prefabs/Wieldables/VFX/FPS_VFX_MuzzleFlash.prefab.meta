@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 3269747563da3664a902a83495e1b7ad
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/Wieldables/VFX/FPS_VFX_MuzzleFlash.prefab
+  uploadId: 760655

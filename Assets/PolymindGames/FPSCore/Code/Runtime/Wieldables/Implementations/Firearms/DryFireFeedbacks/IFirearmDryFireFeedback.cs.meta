@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: b574b298c08d4820a6ec5c2080b3b222
+timeCreated: 1717650598
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Wieldables/Implementations/Firearms/DryFireFeedbacks/IFirearmDryFireFeedback.cs
+  uploadId: 760655

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 94c8c0411a2b4834690465de5d7196d6
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Prefabs/UI/Utility/FPS_UI_Message.prefab
+  uploadId: 760655

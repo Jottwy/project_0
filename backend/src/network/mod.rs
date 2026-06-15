@@ -497,8 +497,26 @@ impl NetworkManager {
                 events
             }
 
-            PacketPayload::PeerList { .. } => {
-                // Update peer knowledge (future: add new peers we don't know about).
+            PacketPayload::PeerList { peers } => {
+                // Host-as-server relay: the host periodically sends the full roster so each
+                // joiner learns about ALL peers, not just the host. Insert peers we don't know
+                // yet (the other joiners) using the address the host reported, and refresh
+                // positions for the ones we already track. build_world_state reads net.peers,
+                // so this is exactly what makes the other joiners appear in our world_state.
+                for info in &peers {
+                    if info.id == self.local_id {
+                        continue; // never track ourselves as a remote
+                    }
+                    if let Some(peer) = self.peers.get_mut(&info.id) {
+                        let rot = peer.rotation;
+                        let anim = peer.animation.clone();
+                        peer.update_player_state(info.position, rot, anim);
+                    } else if let Ok(addr) = info.addr.parse::<SocketAddr>() {
+                        let mut conn = PeerConnection::new(info.id, info.name.clone(), addr);
+                        conn.update_player_state(info.position, 0.0, "idle".into());
+                        self.peers.insert(info.id, conn);
+                    }
+                }
                 vec![]
             }
 

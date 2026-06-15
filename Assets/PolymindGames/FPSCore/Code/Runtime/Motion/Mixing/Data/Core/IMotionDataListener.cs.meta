@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: fdfedf6cb22b453e891bdadb5490e5d1
+timeCreated: 1735737417
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Mixing/Data/Core/IMotionDataListener.cs
+  uploadId: 760655

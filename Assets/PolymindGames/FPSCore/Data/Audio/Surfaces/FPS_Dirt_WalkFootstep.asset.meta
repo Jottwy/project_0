@@ -1,0 +1,15 @@
+fileFormatVersion: 2
+guid: b3f6473129a6a3c4ba56c15014d70e90
+NativeFormatImporter:
+  externalObjects: {}
+  mainObjectFileID: 6418180475301049370
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Data/Audio/Surfaces/FPS_Dirt_WalkFootstep.asset
+  uploadId: 760655

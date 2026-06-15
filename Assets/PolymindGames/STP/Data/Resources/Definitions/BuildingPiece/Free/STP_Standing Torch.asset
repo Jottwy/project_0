@@ -1,0 +1,21 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 94880c3f6f2321d4ca749870023475cd, type: 3}
+  m_Name: STP_Standing Torch
+  m_EditorClassIdentifier: 
+  _id: 8472702
+  _parentGroup: {fileID: 11400000, guid: 421e34f9f1c0ce5489ad6d36b9315292, type: 2}
+  _icon: {fileID: 21300000, guid: 73b7f33d8199ca6418a5506ba61ff74a, type: 3}
+  _prefab: {fileID: 4421842381891647478, guid: 0c5686694d0ea794c8fd046871ed506c, type: 3}
+  _description: Offers a decent amount of light and heat.
+  _placeEffects: {fileID: 11400000, guid: c49e02632b290224f979013eb94fa723, type: 2}
+  _constructEffects: {fileID: 11400000, guid: 6d453f570f455aa40a839e5ca9534a4b, type: 2}

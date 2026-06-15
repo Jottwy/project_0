@@ -1,0 +1,49 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 95a25d54124949242be5075dc68543da, type: 3}
+  m_Name: STP_Metal
+  m_EditorClassIdentifier: 
+  _id: -6882290
+  _icon: {fileID: 21300000, guid: 9df4aa0abc7861a4991ef3a18d498476, type: 3}
+  _pickup: {fileID: 8943929678372419657, guid: 0944f40a4a5997a42bc81a79716dd0c6, type: 3}
+  _dropForce: {x: 0, y: 2.5, z: 1.25}
+  _dropTorque: 0.2
+  _wieldableSettings:
+    _animator: {fileID: 22100000, guid: 1faf38b9bec7ce84bb07206cb68401a0, type: 2}
+    _motion: {fileID: 11400000, guid: 2423f371bc620a34ab70735e1f5e7ff5, type: 2}
+    _socket: 1
+    _positionOffset: {x: 0, y: 0, z: -0.15}
+    _rotationOffset: {x: 0, y: 0, z: 0}
+    _offsets:
+    - PositionOffset: {x: 0.0477, y: 0.2226, z: -0.0411}
+      RotationOffset: {x: 328.6633, y: 283.26886, z: 267.51047}
+    - PositionOffset: {x: 0.025928274, y: 0.19630167, z: -0.047839142}
+      RotationOffset: {x: 7.4350076, y: 279.77777, z: 91.55973}
+    - PositionOffset: {x: 0.035088316, y: 0.20313314, z: -0.07086277}
+      RotationOffset: {x: 48.25933, y: 285.1308, z: 96.77846}
+    - PositionOffset: {x: 0.05803476, y: 0.17873116, z: -0.090120174}
+      RotationOffset: {x: 24.21405, y: 96.10391, z: 262.73206}
+--- !u!114 &5368637786531996562
+MonoBehaviour:
+  m_ObjectHideFlags: 1
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3b65001a606c44e99d42aa19c80334b5, type: 3}
+  m_Name: _CarriableBuildAction
+  m_EditorClassIdentifier: 
+  _buildMaterial:
+    _value: -2823548
+  _amount: 1

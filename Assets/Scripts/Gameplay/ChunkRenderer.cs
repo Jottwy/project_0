@@ -113,10 +113,18 @@ namespace BackroomsSurvival.Gameplay
         public int maxChunkBuildsPerFrame = 2;
         public int maxChunkDestroysPerFrame = 4;
 
+        [Header("Debug / Offline")]
+        [Tooltip("Sin backend: genera chunks sintéticos con seed fijo alrededor de (0,0,0).")]
+        public bool offlineMode;
+        public long offlineSeed = 42;
+        [Tooltip("Radio en chunks: 3 = grid 7×7 = 49 chunks")]
+        public int offlineRadius = 3;
+
         // Build/rebuild/destroy policy lives in ChunkVisualLifecycle; this
         // renderer only orchestrates snapshots and builds chunk visuals.
         private readonly ChunkVisualLifecycle _lifecycle = new ChunkVisualLifecycle();
         private long _lastProcessedTick = -1;
+        private WorldStateMsg _offlineState;
 
         private Material _floorMat;
         private Material _ceilingMat;
@@ -304,11 +312,8 @@ namespace BackroomsSurvival.Gameplay
                 Camera.main.backgroundColor = new Color(0.030f, 0.030f, 0.038f);
             }
 
-            // A low, slightly warm ambient floor so areas between fluorescent
-            // fixtures stay readable without losing the oppressive feel.
-            RenderSettings.ambientMode = UnityEngine.Rendering.AmbientMode.Flat;
-            RenderSettings.ambientLight = new Color(0.17f, 0.16f, 0.13f);
-            RenderSettings.fog = false;
+            // RenderSettings (ambient / fog / skybox) are configured manually in the
+            // Lighting window and must NOT be overridden here at runtime.
 
             // Decorative VISFIX debug/validation visuals are off by default; the
             // real architecture is the backend-authored volumetric grid.
@@ -351,6 +356,30 @@ namespace BackroomsSurvival.Gameplay
 
         private void LateUpdate()
         {
+            if (offlineMode)
+            {
+                _worldSeed = offlineSeed;
+                if (_offlineState == null)
+                {
+                    _offlineState = new WorldStateMsg { tick = 1, worldSeed = offlineSeed };
+                    for (int cx = -offlineRadius; cx <= offlineRadius; cx++)
+                        for (int cz = -offlineRadius; cz <= offlineRadius; cz++)
+                            _offlineState.visibleChunks.Add(new ChunkViewMsg { pos = new[] { cx, cz } });
+                }
+                if (_offlineState.tick != _lastProcessedTick)
+                {
+                    _lastProcessedTick = _offlineState.tick;
+                    int pcx = Mathf.FloorToInt(transform.position.x / chunkSize);
+                    int pcz = Mathf.FloorToInt(transform.position.z / chunkSize);
+                    _lifecycle.Reconcile(_offlineState.visibleChunks, pcx, pcz);
+                }
+                _lifecycle.ProcessQueues(
+                    Mathf.Max(1, maxChunkBuildsPerFrame),
+                    Mathf.Max(1, maxChunkDestroysPerFrame),
+                    BuildChunk);
+                return;
+            }
+
             if (!IPCClient.TryGetInstance(out var ipc))
                 return;
 
@@ -412,7 +441,6 @@ namespace BackroomsSurvival.Gameplay
                     TintChunk(root, new Color(0.6f, 0.8f, 1f, 1f));
                 else if (cv.state == "stabilized")
                     TintChunk(root, new Color(0.8f, 1f, 0.8f, 1f));
-                //PoiVisualDecorator.Decorate(root.transform, cv, _worldSeed, chunkSize, ceilingHeight, showLayoutDebug);
                 return root;
             }
 
@@ -500,10 +528,6 @@ namespace BackroomsSurvival.Gameplay
                 string kind = cv.floorProfile == FloorConnectorUp ? "broad_stairwell" : "service_ramp";
                 Trace($"MPTRACE step=V30A event=unity_connector_rendered from=({cv.pos[0]},{cv.layer},{cv.pos[1]}) to=({cv.pos[0]},{targetLayer},{cv.pos[1]}) kind={kind}");
             }
-
-            // Phase 3.2D: POI visual identity from backend template_id (18–21).
-            // Added after batching/tint so the visuals stay independent objects.
-            //PoiVisualDecorator.Decorate(root.transform, cv, _worldSeed, chunkSize, ceilingHeight, showLayoutDebug);
 
             return root;
         }

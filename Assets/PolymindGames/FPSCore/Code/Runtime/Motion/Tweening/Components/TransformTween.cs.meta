@@ -1,0 +1,9 @@
+fileFormatVersion: 2
+guid: 33b00d3c76f6df0499c67df56bbfd443
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/Motion/Tweening/Components/TransformTween.cs
+  uploadId: 760655

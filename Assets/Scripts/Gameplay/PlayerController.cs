@@ -103,16 +103,12 @@ namespace BackroomsSurvival.Gameplay
             movement = FilterMovementForCollision(movement);
             CollectActions(keyboard, mouse);
 
-            // Send input to the authoritative backend.
-            _ipc.SendInput(movement, lookDelta, sprint, _queuedActions);
-            if (Time.unscaledTime >= _nextTransformSentLogTime)
-            {
-                int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
-                Debug.Log($"MPTRACE step=V event=local_transform_sent self_id={selfId} pos=({transform.position.x:F2},{transform.position.y:F2},{transform.position.z:F2}) rot={_yaw:F2} movement=({movement.x:F2},{movement.y:F2},{movement.z:F2})");
-                _nextTransformSentLogTime = Time.unscaledTime + 1f;
-            }
-            // Discrete actions go on their own channel too (backend handles them separately).
-            for (int i = 0; i < _queuedActions.Count; i++) _ipc.SendAction(_queuedActions[i]);
+            // ADR-009: PlayerController is DEPRECATED and is NOT an IPC sender. It used to emit
+            // SendInput + SendAction EVERY frame (unthrottled). With the STP rig live this ran as
+            // a SECOND sender alongside PlayerPoseTransmitter (~20 Hz) and the per-frame firehose
+            // saturated the backend's IPC write loop → "write loop lagged" → backend exit.
+            // PlayerPoseTransmitter is now the single authoritative pose sender; this legacy
+            // controller transmits nothing. (Local look stays responsive via HandleLook above.)
             _queuedActions.Clear();
 
             ApplyAuthoritativePosition();

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 6cf93df62cdad5a41afbfb0fb2ff2bea
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/STP/Prefabs/BuildingPieces/Group/STP_BuildingPIece_Log_WallWithDoor.prefab
+  uploadId: 760655

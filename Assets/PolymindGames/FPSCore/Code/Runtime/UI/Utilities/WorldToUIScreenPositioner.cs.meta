@@ -1,0 +1,10 @@
+﻿fileFormatVersion: 2
+guid: cb5cc86a9c6345a68781fcf97ff84d5a
+timeCreated: 1723377659
+AssetOrigin:
+  serializedVersion: 1
+  productId: 207954
+  packageName: STP - Survival Template PRO
+  packageVersion: 1.5.3
+  assetPath: Assets/PolymindGames/FPSCore/Code/Runtime/UI/Utilities/WorldToUIScreenPositioner.cs
+  uploadId: 760655

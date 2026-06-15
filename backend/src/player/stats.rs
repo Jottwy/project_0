@@ -30,6 +30,9 @@ pub struct PlayerStats {
     pub hunger: f32,
     pub thirst: f32,
     pub sanity: f32,
+    /// ADR-009: server-authoritative stamina (0..100). Drained by running
+    /// (applied in the movement step), passively regenerated in `update`.
+    pub stamina: f32,
 
     // Derived modifiers (recomputed each tick, broadcast to Unity for VFX).
     pub speed_modifier: f32,
@@ -44,6 +47,7 @@ impl Default for PlayerStats {
             hunger: 100.0,
             thirst: 100.0,
             sanity: 100.0,
+            stamina: 100.0,
             speed_modifier: 1.0,
             accuracy_modifier: 1.0,
             hallucination_intensity: 0.0,
@@ -56,8 +60,8 @@ impl PlayerStats {
     pub fn on_respawn() -> Self {
         Self {
             health: 100.0,
-            hunger: 50.0,
-            thirst: 50.0,
+            hunger: 100.0,
+            thirst: 100.0,
             sanity: 50.0,
             ..Default::default()
         }
@@ -72,12 +76,21 @@ impl PlayerStats {
         self.health = (self.health - amount).max(0.0);
     }
 
+    /// Drain stamina (from running). Applied in the movement step where the
+    /// move-state is known; `update` handles passive regeneration.
+    pub fn use_stamina(&mut self, amount: f32) {
+        self.stamina = (self.stamina - amount).clamp(0.0, 100.0);
+    }
+
     /// Advance survival simulation by `dt` seconds.
     pub fn update(&mut self, dt: f32, ctx: &StatContext) {
         // Base decay.
         self.hunger -= 0.5 * dt;
         self.thirst -= 0.7 * dt;
         self.sanity -= calculate_sanity_drain(ctx) * dt;
+
+        // Passive stamina regeneration (run-drain is applied in the movement step).
+        self.stamina = (self.stamina + 8.0 * dt).clamp(0.0, 100.0);
 
         // Clamp to valid range.
         self.hunger = self.hunger.clamp(0.0, 100.0);
