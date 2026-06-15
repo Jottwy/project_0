@@ -52,6 +52,25 @@ pub enum NetworkEvent {
         interaction_type: String,
         player_position: [f32; 3],
     },
+    /// Phase 2: a joiner asks the host to pick up an STP item (host-authoritative).
+    StpPickupRequest {
+        item_id: u32,
+        requester_id: PeerId,
+    },
+    /// Phase 2: the host grants an STP pickup to this (recoger) peer.
+    StpPickupGranted {
+        item_id: u32,
+        def_id: i32,
+        count: u16,
+    },
+    /// Phase 3: a joiner asks the host to spawn a dropped STP item in the world.
+    StpDropRequest {
+        drop_id: u64,
+        def_id: i32,
+        count: u16,
+        position: [f32; 3],
+        rotation: f32,
+    },
     WorldSyncReceived {
         world_seed: u64,
         world_revision: u64,
@@ -100,6 +119,13 @@ pub struct NetworkManager {
     pub local_id: PeerId,
     pub is_host: bool,
     pub peers: HashMap<PeerId, PeerConnection>,
+    /// Host-authoritative STP world items, replicated to peers (Phase 1). On the
+    /// host it is set from the IPC `set_stp_items` action; on joiners from the
+    /// relayed `StpItemList` packet. build_world_state mirrors it to the client.
+    pub stp_items: Vec<crate::network::protocol::StpItemInfo>,
+    /// Phase 3: client-generated drop ids already processed by the host, so a
+    /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
+    pub processed_stp_drops: std::collections::HashSet<u64>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     next_peer_id: PeerId,
@@ -141,6 +167,8 @@ impl NetworkManager {
             local_id,
             is_host,
             peers: HashMap::new(),
+            stp_items: Vec::new(),
+            processed_stp_drops: std::collections::HashSet::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
             next_peer_id: if is_host { 2 } else { 0 },
@@ -519,6 +547,45 @@ impl NetworkManager {
                 }
                 vec![]
             }
+
+            PacketPayload::StpItemList { items } => {
+                // Host-authoritative STP item roster: joiners mirror it verbatim so
+                // their build_world_state replicates the same items. (Phase 1.)
+                self.stp_items = items;
+                vec![]
+            }
+
+            PacketPayload::StpPickupRequest {
+                item_id,
+                requester_id,
+            } => vec![NetworkEvent::StpPickupRequest {
+                item_id,
+                requester_id,
+            }],
+
+            PacketPayload::StpPickupGranted {
+                item_id,
+                def_id,
+                count,
+            } => vec![NetworkEvent::StpPickupGranted {
+                item_id,
+                def_id,
+                count,
+            }],
+
+            PacketPayload::StpDropRequest {
+                drop_id,
+                def_id,
+                count,
+                position,
+                rotation,
+            } => vec![NetworkEvent::StpDropRequest {
+                drop_id,
+                def_id,
+                count,
+                position,
+                rotation,
+            }],
 
             PacketPayload::PlayerUpdate {
                 position,

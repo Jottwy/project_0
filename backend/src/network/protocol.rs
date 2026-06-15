@@ -69,6 +69,10 @@ pub enum PacketType {
     EntityUpdate = 0x13,
     StatUpdate = 0x14,
     InventorySync = 0x15,
+    StpItemList = 0x16,
+    StpPickupRequest = 0x17,
+    StpPickupGranted = 0x18,
+    StpDropRequest = 0x19,
     // Actions (0x20-0x2F)
     Interact = 0x20,
     Attack = 0x21,
@@ -109,6 +113,10 @@ impl PacketType {
             0x13 => Some(Self::EntityUpdate),
             0x14 => Some(Self::StatUpdate),
             0x15 => Some(Self::InventorySync),
+            0x16 => Some(Self::StpItemList),
+            0x17 => Some(Self::StpPickupRequest),
+            0x18 => Some(Self::StpPickupGranted),
+            0x19 => Some(Self::StpDropRequest),
             0x20 => Some(Self::Interact),
             0x21 => Some(Self::Attack),
             0x22 => Some(Self::Pickup),
@@ -140,6 +148,19 @@ pub struct PeerInfo {
     pub name: String,
     pub addr: String,
     pub position: [f32; 3],
+}
+
+/// A host-authoritative STP world item instance, replicated to all peers so each
+/// client reconstructs the same STP `ItemPickup` (`def_id` → `ItemDefinition` →
+/// prefab). `id` is the network instance id (host-assigned, monotonic); `def_id`
+/// is the STP `ItemDefinition` id (stable across instances). Phase 1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StpItemInfo {
+    pub id: u32,
+    pub def_id: i32,
+    pub count: u16,
+    pub position: [f32; 3],
+    pub rotation: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -242,6 +263,25 @@ pub enum PacketPayload {
     PeerList {
         peers: Vec<PeerInfo>,
     },
+    StpItemList {
+        items: Vec<StpItemInfo>,
+    },
+    StpPickupRequest {
+        item_id: u32,
+        requester_id: u16,
+    },
+    StpPickupGranted {
+        item_id: u32,
+        def_id: i32,
+        count: u16,
+    },
+    StpDropRequest {
+        drop_id: u64,
+        def_id: i32,
+        count: u16,
+        position: [f32; 3],
+        rotation: f32,
+    },
 
     // State
     PlayerUpdate {
@@ -334,6 +374,10 @@ impl PacketPayload {
             Self::Heartbeat => PacketType::Heartbeat as u16,
             Self::Disconnect { .. } => PacketType::Disconnect as u16,
             Self::PeerList { .. } => PacketType::PeerList as u16,
+            Self::StpItemList { .. } => PacketType::StpItemList as u16,
+            Self::StpPickupRequest { .. } => PacketType::StpPickupRequest as u16,
+            Self::StpPickupGranted { .. } => PacketType::StpPickupGranted as u16,
+            Self::StpDropRequest { .. } => PacketType::StpDropRequest as u16,
             Self::PlayerUpdate { .. } => PacketType::PlayerUpdate as u16,
             Self::ChunkState { .. } => PacketType::ChunkState as u16,
             Self::ChunkDelta { .. } => PacketType::ChunkDelta as u16,

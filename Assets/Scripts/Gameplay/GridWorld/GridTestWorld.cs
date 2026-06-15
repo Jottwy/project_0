@@ -61,10 +61,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Root
             var root = new GameObject("Player");
             root.tag = "Player";
-            var cc = root.AddComponent<CharacterController>();
-            cc.radius = 0.4f;
-            cc.height = 1.8f;
-            cc.center = new Vector3(0f, 0.9f, 0f);
+            //var cc = root.AddComponent<CharacterController>();
+            //cc.radius = 0.4f;
+            //cc.height = 1.8f;
+            //cc.center = new Vector3(0f, 0.9f, 0f);
             root.transform.position = new Vector3(25f, 2f, 25f); // chunk centre
 
             // Camera child

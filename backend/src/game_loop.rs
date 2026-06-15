@@ -143,6 +143,7 @@ pub async fn run(
                         &mut player,
                         &mut world,
                         &mut net,
+                        &to_clients,
                         &mut processed_interactions,
                     )
                     .await;
@@ -309,6 +310,7 @@ pub async fn run(
             // only the host has anything to relay.)
             if net.is_host {
                 sync::broadcast_peer_roster(&net, &player).await;
+                sync::broadcast_stp_items(&net).await;
             }
         }
 
@@ -455,6 +457,45 @@ async fn handle_network_event(
             world.apply_world_sync(world_seed, world_revision, &chunks, net.local_id);
         }
 
+        NetworkEvent::StpPickupRequest {
+            item_id,
+            requester_id,
+        } => {
+            if net.is_host {
+                process_stp_pickup(item_id, requester_id, net, to_clients).await;
+            }
+        }
+
+        NetworkEvent::StpPickupGranted {
+            item_id,
+            def_id,
+            count,
+        } => {
+            // We are the recoger: surface the grant to our Unity, which credits the
+            // local STP inventory (StpPickupController). The item already vanished via
+            // the host's stp_items removal.
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "stp_pickup_granted".into(),
+                data: serde_json::json!({
+                    "item_id": item_id,
+                    "def_id": def_id,
+                    "count": count,
+                }),
+            }));
+        }
+
+        NetworkEvent::StpDropRequest {
+            drop_id,
+            def_id,
+            count,
+            position,
+            rotation,
+        } => {
+            if net.is_host {
+                process_stp_drop(drop_id, def_id, count, position, rotation, net);
+            }
+        }
+
         NetworkEvent::WorldInteractRequest {
             requester_id,
             request_id,
@@ -599,6 +640,7 @@ async fn handle_action(
     player: &mut Player,
     world: &mut World,
     net: &mut NetworkManager,
+    to_clients: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut HashSet<(u16, u64)>,
 ) {
     match action.action_type.as_str() {
@@ -616,7 +658,8 @@ async fn handle_action(
                 request_id
             );
 
-            if target_id == 0 || request_id == 0 {
+            // pickup needs an existing target_id; drop has none (it creates an item).
+            if request_id == 0 || (interaction_type != "drop" && target_id == 0) {
                 info!(
                     "MPTRACE step=AF event=host_validate_interaction result=rejected reason=invalid_request target_id={} requester_id={}",
                     target_id,
@@ -681,7 +724,164 @@ async fn handle_action(
         "interact" | "pickup" => {
             debug!("legacy local pickup ignored; use world_interact with target_id");
         }
+        // Phase 1: the host Unity registers the authoritative STP item list. Gated to
+        // the host (joiners' lists come only via the relayed StpItemList packet, so a
+        // joiner sending this is ignored and cannot diverge the world).
+        "set_stp_items" => {
+            if !net.is_host {
+                return;
+            }
+            let items: Vec<crate::network::protocol::StpItemInfo> = action
+                .data
+                .get("items")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            info!(
+                "MPTRACE step=SI event=host_set_stp_items self_id={} count={}",
+                net.local_id,
+                items.len()
+            );
+            net.stp_items = items;
+        }
+        // Phase 2: a client asks to pick up an STP item. Host-authoritative: the host
+        // validates and removes it (vanishes for all via the stp_items relay) and grants
+        // it to the requester; a joiner forwards the request to the host.
+        "stp_pickup" => {
+            let item_id = json_u32(&action.data, "item_id").unwrap_or(0);
+            if item_id == 0 {
+                return;
+            }
+            if net.is_host {
+                process_stp_pickup(item_id, net.local_id, net, to_clients).await;
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpPickupRequest {
+                    item_id,
+                    requester_id: net.local_id,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // Phase 3: a client dropped an STP item from its inventory. Client-authoritative over
+        // its own inventory; the host assigns a fresh net id and adds it to stp_items, which
+        // the Phase 1 relay propagates so everyone spawns the same pickup (with the Phase 2 gate).
+        "stp_drop" => {
+            let drop_id = action.data.get("drop_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let def_id = action.data.get("def_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let count = action
+                .data
+                .get("count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(1)
+                .max(1) as u16;
+            let position: [f32; 3] = serde_json::from_value(
+                action.data.get("position").cloned().unwrap_or(serde_json::Value::Null),
+            )
+            .unwrap_or([0.0, 0.0, 0.0]);
+            let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            if net.is_host {
+                process_stp_drop(drop_id, def_id, count, position, rotation, net);
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpDropRequest {
+                    drop_id,
+                    def_id,
+                    count,
+                    position,
+                    rotation,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
         _ => {}
+    }
+}
+
+/// Monotonic id source for host-spawned dropped STP items. Starts high so it never
+/// collides with the low, host-Unity-assigned ids of the Phase 1 spawn ring.
+static NEXT_STP_DROP_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x4000_0000);
+
+fn next_stp_drop_id() -> u32 {
+    NEXT_STP_DROP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Phase 3: host adds a dropped STP item to the authoritative `stp_items` list. The 10 Hz
+/// relay (broadcast_stp_items) propagates it to all peers, where StpItemReplicator spawns it.
+/// Deduped by the client-generated `drop_id`: a repeated request (watcher race OR reliable
+/// retransmit when the host is slow) is ignored, so one logical drop spawns exactly one item.
+fn process_stp_drop(
+    drop_id: u64,
+    def_id: i32,
+    count: u16,
+    position: [f32; 3],
+    rotation: f32,
+    net: &mut NetworkManager,
+) {
+    if drop_id != 0 && !net.processed_stp_drops.insert(drop_id) {
+        info!(
+            "MPTRACE step=SD event=stp_drop_duplicate drop_id={} ignored=true",
+            drop_id
+        );
+        return;
+    }
+
+    let id = next_stp_drop_id();
+    net.stp_items.push(crate::network::protocol::StpItemInfo {
+        id,
+        def_id,
+        count,
+        position,
+        rotation,
+    });
+    info!(
+        "MPTRACE step=SD event=stp_drop_spawned id={} drop_id={} def_id={} count={} pos=({:.2},{:.2},{:.2})",
+        id, drop_id, def_id, count, position[0], position[1], position[2]
+    );
+}
+
+/// Phase 2: host-authoritative STP pickup. If the item still exists, remove it (which
+/// despawns it for everyone via the stp_items relay) and grant it to the requester —
+/// directly to the host's own Unity, or reliably to a joiner. A second request for an
+/// already-taken item finds nothing and is rejected (race-safe; the removal is the dedup).
+async fn process_stp_pickup(
+    item_id: u32,
+    requester_id: crate::network::PeerId,
+    net: &mut NetworkManager,
+    to_clients: &broadcast::Sender<ServerMessage>,
+) {
+    let pos = match net.stp_items.iter().position(|it| it.id == item_id) {
+        Some(p) => p,
+        None => {
+            info!(
+                "MPTRACE step=SP event=stp_pickup_rejected item_id={} requester_id={} reason=not_found",
+                item_id, requester_id
+            );
+            return;
+        }
+    };
+
+    let item = net.stp_items.remove(pos);
+    info!(
+        "MPTRACE step=SP event=stp_pickup_granted item_id={} requester_id={} def_id={} count={}",
+        item_id, requester_id, item.def_id, item.count
+    );
+
+    if requester_id == net.local_id {
+        let _ = to_clients.send(ServerMessage::Event(GameEvent {
+            event_type: "stp_pickup_granted".into(),
+            data: serde_json::json!({
+                "item_id": item_id,
+                "def_id": item.def_id,
+                "count": item.count,
+            }),
+        }));
+    } else {
+        let payload = crate::network::protocol::PacketPayload::StpPickupGranted {
+            item_id,
+            def_id: item.def_id,
+            count: item.count,
+        };
+        net.send_reliable(requester_id, &payload).await;
     }
 }
 
@@ -717,48 +917,113 @@ async fn process_authoritative_interaction(
         return;
     }
 
-    if target_kind != "item" || interaction_type != "pickup" {
-        info!(
-            "MPTRACE step=AF event=host_validate_interaction result=rejected reason=unsupported kind={} type={} target_id={} requester_id={}",
-            target_kind,
-            interaction_type,
-            target_id,
-            requester_id
-        );
-        return;
-    }
+    match interaction_type {
+        "pickup" => {
+            if target_kind != "item" {
+                info!(
+                    "MPTRACE step=AF event=host_validate_interaction result=rejected reason=unsupported kind={} type={} target_id={} requester_id={}",
+                    target_kind,
+                    interaction_type,
+                    target_id,
+                    requester_id
+                );
+                return;
+            }
 
-    match world.interact_with_item(target_id, requester_pos, 5.0) {
-        Ok((item_type, quantity)) => {
+            match world.interact_with_item(target_id, requester_pos, 5.0) {
+                Ok((item_type, quantity)) => {
+                    info!(
+                        "MPTRACE step=AF event=host_validate_interaction result=accepted reason=ok target_id={} requester_id={} item_type={} quantity={}",
+                        target_id,
+                        requester_id,
+                        item_type,
+                        quantity
+                    );
+                    info!(
+                        "MPTRACE step=AG event=world_object_state_changed revision={} target_id={} active=false kind=item requester_id={}",
+                        world.revision,
+                        target_id,
+                        requester_id
+                    );
+                    info!(
+                        "MPTRACE step=AH event=worldsync_after_interaction revision={} items={} entities={}",
+                        world.revision,
+                        world.visible_item_views().len(),
+                        world.visible_entity_views().len()
+                    );
+                    sync::broadcast_world_sync(net, world, player).await;
+                }
+                Err(reason) => {
+                    info!(
+                        "MPTRACE step=AF event=host_validate_interaction result=rejected reason={} target_id={} requester_id={}",
+                        reason,
+                        target_id,
+                        requester_id
+                    );
+                }
+            }
+        }
+        // Drop: the client carries the item type name in `target_kind`. The host spawns
+        // the item into the world at the requester's position and propagates it via the
+        // SAME broadcast_world_sync the pickup uses, so A, B and C all see it appear.
+        // NOTE: inventory ownership is NOT validated here — the backend does not track
+        // per-peer inventories yet (the client removes from its own UI). Deferred.
+        "drop" => {
+            let item = item_from_type_name(target_kind);
+            match world.spawn_dropped_item(requester_pos, item, 1) {
+                Some(item_id) => {
+                    info!(
+                        "MPTRACE step=AF event=host_validate_interaction result=accepted reason=drop requester_id={} item_type={} item_id={} pos=({:.2},{:.2},{:.2})",
+                        requester_id,
+                        target_kind,
+                        item_id,
+                        requester_pos.x,
+                        requester_pos.y,
+                        requester_pos.z
+                    );
+                    info!(
+                        "MPTRACE step=AH event=worldsync_after_interaction revision={} items={} entities={}",
+                        world.revision,
+                        world.visible_item_views().len(),
+                        world.visible_entity_views().len()
+                    );
+                    sync::broadcast_world_sync(net, world, player).await;
+                }
+                None => {
+                    info!(
+                        "MPTRACE step=AF event=host_validate_interaction result=rejected reason=drop_chunk_not_loaded requester_id={} pos=({:.2},{:.2},{:.2})",
+                        requester_id,
+                        requester_pos.x,
+                        requester_pos.y,
+                        requester_pos.z
+                    );
+                }
+            }
+        }
+        _ => {
             info!(
-                "MPTRACE step=AF event=host_validate_interaction result=accepted reason=ok target_id={} requester_id={} item_type={} quantity={}",
-                target_id,
-                requester_id,
-                item_type,
-                quantity
-            );
-            info!(
-                "MPTRACE step=AG event=world_object_state_changed revision={} target_id={} active=false kind=item requester_id={}",
-                world.revision,
+                "MPTRACE step=AF event=host_validate_interaction result=rejected reason=unsupported kind={} type={} target_id={} requester_id={}",
+                target_kind,
+                interaction_type,
                 target_id,
                 requester_id
             );
-            info!(
-                "MPTRACE step=AH event=worldsync_after_interaction revision={} items={} entities={}",
-                world.revision,
-                world.visible_item_views().len(),
-                world.visible_entity_views().len()
-            );
-            sync::broadcast_world_sync(net, world, player).await;
         }
-        Err(reason) => {
-            info!(
-                "MPTRACE step=AF event=host_validate_interaction result=rejected reason={} target_id={} requester_id={}",
-                reason,
-                target_id,
-                requester_id
-            );
-        }
+    }
+}
+
+/// Map the wire item-type name (shared with `Item::type_name`) to an `Item` for drops.
+fn item_from_type_name(name: &str) -> crate::player::inventory::Item {
+    use crate::player::inventory::Item;
+    match name {
+        "circuit" => Item::Circuit,
+        "battery" => Item::Battery,
+        "cable" => Item::Cable,
+        "food" => Item::Food,
+        "water" => Item::Water,
+        "medicine" => Item::Medicine,
+        "tool" => Item::Tool,
+        _ => Item::Metal,
     }
 }
 
@@ -859,5 +1124,6 @@ fn build_world_state(
         visible_entities: world.visible_entity_views(),
         visible_items: world.visible_item_views(),
         vertical_debug_markers: world.vertical_debug_marker_views(),
+        stp_items: net.stp_items.clone(),
     }
 }

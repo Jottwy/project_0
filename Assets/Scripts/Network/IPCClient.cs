@@ -439,6 +439,69 @@ namespace BackroomsSurvival.Net
             SendFrame(w.ToArray());
         }
 
+        /// <summary>
+        /// Phase 1: the host registers the authoritative STP item list with the backend.
+        /// The backend stores it, relays it to joiners, and echoes it in world_state.stp_items.
+        /// </summary>
+        public void SendSetStpItems(System.Collections.Generic.IReadOnlyList<StpItemSpec> items)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("set_stp_items");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(items.Count);
+            for (int i = 0; i < items.Count; i++)
+            {
+                var it = items[i];
+                w.WriteMapHeader(5);
+                w.WriteString("id"); w.WriteInt(it.id);
+                w.WriteString("def_id"); w.WriteInt(it.defId);
+                w.WriteString("count"); w.WriteInt(it.count);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(it.position.x); w.WriteFloat(it.position.y); w.WriteFloat(it.position.z);
+                w.WriteString("rotation"); w.WriteFloat(it.rotation);
+            }
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase 2: ask the host to pick up a replicated STP item by its network instance id.
+        /// The host validates, removes it (vanishes for all) and grants it back via a
+        /// "stp_pickup_granted" event consumed by StpPickupController.
+        /// </summary>
+        public void SendStpPickup(uint itemId)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_pickup");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("item_id"); w.WriteInt(itemId);
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase 3: tell the host the local player dropped an STP item from its inventory.
+        /// The host assigns a fresh net id, adds it to stp_items, and the Phase 1 relay spawns
+        /// the pickup for everyone (with the Phase 2 pickup gate).
+        /// </summary>
+        public void SendStpDrop(long dropId, int defId, int count, Vector3 position, float rotation)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_drop");
+            w.WriteString("data"); w.WriteMapHeader(5);
+            w.WriteString("drop_id"); w.WriteInt(dropId);
+            w.WriteString("def_id"); w.WriteInt(defId);
+            w.WriteString("count"); w.WriteInt(count);
+            w.WriteString("position"); w.WriteArrayHeader(3);
+            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+            w.WriteString("rotation"); w.WriteFloat(rotation);
+            SendFrame(w.ToArray());
+        }
+
         /// <summary>Send a UI lifecycle event (pause, save, quit, ...).</summary>
         public void SendUiEvent(string eventType)
         {

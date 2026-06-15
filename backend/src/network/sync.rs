@@ -144,6 +144,18 @@ pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
     net.broadcast_unreliable(&payload).await;
 }
 
+/// Host-as-server relay of the STP item roster: the host broadcasts its full
+/// authoritative item list so every joiner spawns the same STP items (Phase 1).
+pub async fn broadcast_stp_items(net: &NetworkManager) {
+    if net.peers.is_empty() {
+        return;
+    }
+    let payload = PacketPayload::StpItemList {
+        items: net.stp_items.clone(),
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
 /// Send nearby chunk states to all peers (for chunks the local player owns).
 pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_pos: Vec3) {
     if net.peers.is_empty() {

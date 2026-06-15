@@ -133,6 +133,11 @@ pub struct WorldState {
     /// Render-as-debug only: no collision, no traversal, no gameplay authority.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub vertical_debug_markers: Vec<VerticalDebugMarkerV0>,
+
+    /// Phase 1 — host-authoritative STP world items, replicated to all peers.
+    /// Omitted from the wire when empty (backward compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stp_items: Vec<crate::network::protocol::StpItemInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,6 +285,7 @@ mod tests {
             visible_entities: vec![],
             visible_items: vec![],
             vertical_debug_markers: vec![],
+            stp_items: vec![],
         });
         let frame = encode(&msg).unwrap();
         // Strip the 4-byte length prefix before decoding the body.
@@ -361,6 +367,7 @@ mod tests {
                 world_min: [30.0, 0.0, 30.0],
                 world_max: [50.0, 20.0, 50.0],
             }],
+            stp_items: vec![],
         });
         let frame = encode(&msg).unwrap();
         let decoded: ServerMessage = decode(&frame[4..]).unwrap();

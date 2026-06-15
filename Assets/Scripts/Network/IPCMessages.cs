@@ -565,6 +565,42 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
+    /// Phase 1 — one host-authoritative STP world item replicated in world_state.stp_items.
+    /// id = network instance id (host-assigned); defId = STP ItemDefinition id (stable).
+    /// </summary>
+    public class StpItemMsg
+    {
+        public uint id;
+        public int defId;
+        public int count;
+        public Vector3 position;
+        public float rotation;
+
+        public static StpItemMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var m = new StpItemMsg();
+            if (d == null) return m;
+            m.id = (uint)IPCParse.L(d, "id");
+            m.defId = (int)IPCParse.L(d, "def_id");
+            m.count = (int)IPCParse.L(d, "count");
+            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
+            m.rotation = IPCParse.F(d, "rotation");
+            return m;
+        }
+    }
+
+    /// <summary>Outbound spec the host sends via IPCClient.SendSetStpItems (Phase 1).</summary>
+    public struct StpItemSpec
+    {
+        public uint id;
+        public int defId;
+        public int count;
+        public Vector3 position;
+        public float rotation;
+    }
+
+    /// <summary>
     /// Phase 6.6/6.7 — debug placeholder for one backend virtual vertical node.
     /// World-space AABB; render-as-debug only (no collision, no traversal).
     /// kind: "stair" | "ramp" | "shaft" | "atrium" | "sealed_upper" | "other".
@@ -601,6 +637,8 @@ namespace BackroomsSurvival.Net
         public List<ItemViewMsg> visibleItems = new List<ItemViewMsg>();
         // Optional on the wire (omitted when empty) — stays an empty list then.
         public List<VerticalDebugMarkerMsg> verticalDebugMarkers = new List<VerticalDebugMarkerMsg>();
+        // Phase 1 — host-authoritative STP world items (omitted when empty).
+        public List<StpItemMsg> stpItems = new List<StpItemMsg>();
 
         public static WorldStateMsg Parse(Dictionary<string, object> d)
         {
@@ -625,6 +663,9 @@ namespace BackroomsSurvival.Net
 
             if (IPCParse.Get(d, "vertical_debug_markers") is object[] vm)
                 foreach (var item in vm) ws.verticalDebugMarkers.Add(VerticalDebugMarkerMsg.Parse(item));
+
+            if (IPCParse.Get(d, "stp_items") is object[] si)
+                foreach (var item in si) ws.stpItems.Add(StpItemMsg.Parse(item));
 
             return ws;
         }

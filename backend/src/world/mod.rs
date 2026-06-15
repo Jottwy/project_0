@@ -11,7 +11,7 @@ pub mod levels;
 pub mod volumetric_grid;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use log::info;
 use rand::rngs::StdRng;
@@ -23,6 +23,15 @@ use crate::network::PeerId;
 use crate::player::stats::StatContext;
 use crate::utils::{chunks_in_radius, world_to_chunk, ChunkPos, Vec3};
 use chunk::{layer_y, layered_chunk_pos, Chunk, ChunkLayer, ChunkState, LayeredChunkPos};
+
+/// Monotonic id source for player-dropped items. Starts high to keep dropped-item ids
+/// out of the range used by procedurally-generated items (stable hashes of seed+pos+index),
+/// so a fresh drop never reuses a generated item's id within a session.
+static NEXT_DROPPED_ID: AtomicU32 = AtomicU32::new(0xF000_0000);
+
+fn next_dropped_item_id() -> u32 {
+    NEXT_DROPPED_ID.fetch_add(1, Ordering::Relaxed)
+}
 use entity::EntityEvent;
 use graph::verticality::{export_vertical_debug_markers, VerticalDebugMarkerV0};
 use graph::world_graph::WorldGraph;
@@ -1113,6 +1122,29 @@ impl World {
         }
 
         Err("missing_or_inactive".into())
+    }
+
+    /// Spawn a player-dropped item at `position`. Inserts it into the chunk that
+    /// contains `position` and bumps the revision so the next `broadcast_world_sync`
+    /// propagates it to every peer (the same path the pickup uses to remove items).
+    /// Returns the new item id, or `None` if no chunk is loaded at that position.
+    pub fn spawn_dropped_item(
+        &mut self,
+        position: Vec3,
+        item: crate::player::inventory::Item,
+        quantity: u16,
+    ) -> Option<u32> {
+        let key = layered_chunk_pos(world_to_chunk(position), 0);
+        let chunk = self.chunks.get_mut(&key)?;
+        let id = next_dropped_item_id();
+        chunk.items.push(chunk::DroppedItem {
+            id,
+            item,
+            quantity,
+            position,
+        });
+        self.revision = self.revision.wrapping_add(1);
+        Some(id)
     }
 
     /// Set a chunk as anchored (from an AnchorBroadcast).

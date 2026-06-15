@@ -1,0 +1,4 @@
+repository "BackroomsSurvivalMMO/BackroomsSurvivalMMO@347043@cloud"
+  path "/"
+    br "/main"
+    co "/main"
