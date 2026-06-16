@@ -311,6 +311,9 @@ pub async fn run(
             if net.is_host {
                 sync::broadcast_peer_roster(&net, &player).await;
                 sync::broadcast_stp_items(&net).await;
+                sync::broadcast_stp_buildings(&net).await;
+                sync::broadcast_stp_carryables(&net).await;
+                sync::broadcast_stp_harvestables(&net).await;
             }
         }
 
@@ -493,6 +496,73 @@ async fn handle_network_event(
         } => {
             if net.is_host {
                 process_stp_drop(drop_id, def_id, count, position, rotation, net);
+            }
+        }
+
+        NetworkEvent::StpPlaceRequest {
+            place_id,
+            def_id,
+            position,
+            rotation,
+        } => {
+            if net.is_host {
+                process_stp_place(place_id, def_id, position, rotation, net);
+            }
+        }
+
+        NetworkEvent::StpBuildAddRequest {
+            add_id,
+            building_id,
+            material_id,
+        } => {
+            if net.is_host {
+                process_stp_build_add(add_id, building_id, material_id, net);
+            }
+        }
+
+        NetworkEvent::StpCarryablePickupRequest {
+            carryable_id,
+            requester_id,
+        } => {
+            if net.is_host {
+                process_stp_carryable_pickup(carryable_id, requester_id, net, to_clients).await;
+            }
+        }
+
+        NetworkEvent::StpCarryablePickupGranted {
+            carryable_id,
+            def_id,
+        } => {
+            // We are the recoger: surface the grant to our Unity, which carries the
+            // carryable in hand (StpCarryablePickupController). It already vanished for
+            // everyone via the host's stp_carryables removal.
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "stp_carryable_pickup_granted".into(),
+                data: serde_json::json!({
+                    "carryable_id": carryable_id,
+                    "def_id": def_id,
+                }),
+            }));
+        }
+
+        NetworkEvent::StpCarryableDropRequest {
+            drop_id,
+            def_id,
+            position,
+            rotation,
+        } => {
+            if net.is_host {
+                process_stp_carryable_drop(drop_id, def_id, position, rotation, net);
+            }
+        }
+
+        NetworkEvent::StpHarvestHitRequest {
+            hit_id,
+            harvestable_id,
+            amount,
+        } => {
+            if net.is_host {
+                process_stp_harvest_hit(hit_id, harvestable_id, amount, net);
             }
         }
 
@@ -792,6 +862,160 @@ async fn handle_action(
                 net.send_reliable(1, &payload).await;
             }
         }
+        // Phase B1: a client placed an STP building piece. The host assigns a fresh net id
+        // and adds it to stp_buildings, which the Phase B1 relay propagates so everyone
+        // spawns the same piece (StpBuildingReplicator). A joiner forwards to the host.
+        "stp_place" => {
+            let place_id = action.data.get("place_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let def_id = action.data.get("def_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let position: [f32; 3] = serde_json::from_value(
+                action.data.get("position").cloned().unwrap_or(serde_json::Value::Null),
+            )
+            .unwrap_or([0.0, 0.0, 0.0]);
+            let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            if net.is_host {
+                process_stp_place(place_id, def_id, position, rotation, net);
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpPlaceRequest {
+                    place_id,
+                    def_id,
+                    position,
+                    rotation,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // Phase B2: a client added one unit of build material to a piece. The host advances
+        // the piece's authoritative progress (added[material]) and the relay propagates it so
+        // every client derives the same construction state. A joiner forwards to the host.
+        "stp_build_add" => {
+            let add_id = action.data.get("add_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let building_id = action.data.get("building_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let material_id = action.data.get("material_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if building_id == 0 {
+                return;
+            }
+            if net.is_host {
+                process_stp_build_add(add_id, building_id, material_id, net);
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpBuildAddRequest {
+                    add_id,
+                    building_id,
+                    material_id,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // Phase B2.5: the host Unity registers the authoritative carryable list (host-only;
+        // a joiner sending this is ignored so it can't diverge the world).
+        "set_stp_carryables" => {
+            if !net.is_host {
+                return;
+            }
+            let carryables: Vec<crate::network::protocol::StpCarryableInfo> = action
+                .data
+                .get("carryables")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            info!(
+                "MPTRACE step=CY event=host_set_stp_carryables self_id={} count={}",
+                net.local_id,
+                carryables.len()
+            );
+            net.stp_carryables = carryables;
+        }
+        // Phase B2.5: a client asks to pick up a world carryable. Host-authoritative: the
+        // host removes it (vanishes for all via the relay) and grants it to the requester,
+        // who carries it in hand. A joiner forwards the request to the host.
+        "stp_carryable_pickup" => {
+            let carryable_id = json_u32(&action.data, "carryable_id").unwrap_or(0);
+            if carryable_id == 0 {
+                return;
+            }
+            if net.is_host {
+                process_stp_carryable_pickup(carryable_id, net.local_id, net, to_clients).await;
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpCarryablePickupRequest {
+                    carryable_id,
+                    requester_id: net.local_id,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // Phase B2.5: a client dropped a carryable in the world. The host assigns a fresh id
+        // and adds it to stp_carryables, which the relay propagates so everyone spawns it.
+        "stp_carryable_drop" => {
+            let drop_id = action.data.get("drop_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let def_id = action.data.get("def_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let position: [f32; 3] = serde_json::from_value(
+                action.data.get("position").cloned().unwrap_or(serde_json::Value::Null),
+            )
+            .unwrap_or([0.0, 0.0, 0.0]);
+            let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            if net.is_host {
+                process_stp_carryable_drop(drop_id, def_id, position, rotation, net);
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpCarryableDropRequest {
+                    drop_id,
+                    def_id,
+                    position,
+                    rotation,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // Phase B2.6: the host Unity registers the authoritative scene-harvestable list
+        // (host-only; remaining starts full). A joiner sending this is ignored.
+        "set_stp_harvestables" => {
+            if !net.is_host {
+                return;
+            }
+            #[derive(serde::Deserialize)]
+            struct HarvestableSpec {
+                id: u32,
+                position: [f32; 3],
+            }
+            let specs: Vec<HarvestableSpec> = action
+                .data
+                .get("harvestables")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            net.stp_harvestables = specs
+                .into_iter()
+                .map(|s| crate::network::protocol::StpHarvestableInfo {
+                    id: s.id,
+                    position: s.position,
+                    remaining: 1.0,
+                })
+                .collect();
+            info!(
+                "MPTRACE step=HV event=host_set_stp_harvestables self_id={} count={}",
+                net.local_id,
+                net.stp_harvestables.len()
+            );
+        }
+        // Phase B2.6: a client reports a harvest hit. Host-authoritative: the host reduces the
+        // harvestable's `remaining` and the relay propagates it. A joiner forwards to the host.
+        "stp_harvest_hit" => {
+            let hit_id = action.data.get("hit_id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let harvestable_id = action.data.get("harvestable_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let amount = action.data.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            if harvestable_id == 0 {
+                return;
+            }
+            if net.is_host {
+                process_stp_harvest_hit(hit_id, harvestable_id, amount, net);
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpHarvestHitRequest {
+                    hit_id,
+                    harvestable_id,
+                    amount,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
         _ => {}
     }
 }
@@ -836,6 +1060,212 @@ fn process_stp_drop(
     info!(
         "MPTRACE step=SD event=stp_drop_spawned id={} drop_id={} def_id={} count={} pos=({:.2},{:.2},{:.2})",
         id, drop_id, def_id, count, position[0], position[1], position[2]
+    );
+}
+
+/// Monotonic id source for host-spawned STP building pieces. Lives in its own high range
+/// so building ids never collide with item ids (the two lists are independent, but a
+/// distinct range keeps logs unambiguous).
+static NEXT_STP_BUILDING_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x6000_0000);
+
+fn next_stp_building_id() -> u32 {
+    NEXT_STP_BUILDING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Phase B1: host adds a placed STP building piece to the authoritative `stp_buildings`
+/// list. The 10 Hz relay (broadcast_stp_buildings) propagates it to all peers, where
+/// StpBuildingReplicator spawns it. Deduped by the client-generated `place_id`: a repeated
+/// request (reliable retransmit when the host is slow) is ignored, so one logical placement
+/// spawns exactly one piece.
+fn process_stp_place(
+    place_id: u64,
+    def_id: i32,
+    position: [f32; 3],
+    rotation: f32,
+    net: &mut NetworkManager,
+) {
+    if place_id != 0 && !net.processed_stp_places.insert(place_id) {
+        info!(
+            "MPTRACE step=BP event=stp_place_duplicate place_id={} ignored=true",
+            place_id
+        );
+        return;
+    }
+
+    let id = next_stp_building_id();
+    net.stp_buildings.push(crate::network::protocol::StpBuildingInfo {
+        id,
+        def_id,
+        position,
+        rotation,
+        added: Vec::new(),
+    });
+    info!(
+        "MPTRACE step=BP event=stp_place_spawned id={} place_id={} def_id={} pos=({:.2},{:.2},{:.2})",
+        id, place_id, def_id, position[0], position[1], position[2]
+    );
+}
+
+/// Phase B2: host advances the authoritative construction progress of a building piece.
+/// Accumulates one unit of `material_id` into the piece's `added` list. Deduped by the
+/// client-generated `add_id` (reliable retransmit safe). The 10 Hz relay propagates the
+/// updated `stp_buildings`, where StpBuildingReplicator derives the per-client progress.
+fn process_stp_build_add(
+    add_id: u64,
+    building_id: u32,
+    material_id: i32,
+    net: &mut NetworkManager,
+) {
+    if add_id != 0 && !net.processed_stp_build_adds.insert(add_id) {
+        info!(
+            "MPTRACE step=BM event=stp_build_add_duplicate add_id={} ignored=true",
+            add_id
+        );
+        return;
+    }
+
+    let building = match net.stp_buildings.iter_mut().find(|b| b.id == building_id) {
+        Some(b) => b,
+        None => {
+            info!(
+                "MPTRACE step=BM event=stp_build_add_no_building building_id={} add_id={} ignored=true",
+                building_id, add_id
+            );
+            return;
+        }
+    };
+
+    match building.added.iter_mut().find(|p| p.material_id == material_id) {
+        Some(p) => p.count = p.count.saturating_add(1),
+        None => building
+            .added
+            .push(crate::network::protocol::StpBuildProgress { material_id, count: 1 }),
+    }
+
+    info!(
+        "MPTRACE step=BM event=stp_build_add building_id={} material_id={} add_id={}",
+        building_id, material_id, add_id
+    );
+}
+
+/// Monotonic id source for host-spawned STP carryables. Lives in its own high range so
+/// carryable ids never collide with item/building ids.
+static NEXT_STP_CARRYABLE_ID: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0x7000_0000);
+
+fn next_stp_carryable_id() -> u32 {
+    NEXT_STP_CARRYABLE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Phase B2.5: host adds a dropped carryable to the authoritative `stp_carryables` list.
+/// The 10 Hz relay (broadcast_stp_carryables) propagates it to all peers, where
+/// StpCarryableReplicator spawns it. Deduped by the client-generated `drop_id`.
+fn process_stp_carryable_drop(
+    drop_id: u64,
+    def_id: i32,
+    position: [f32; 3],
+    rotation: f32,
+    net: &mut NetworkManager,
+) {
+    if drop_id != 0 && !net.processed_stp_carryable_drops.insert(drop_id) {
+        info!(
+            "MPTRACE step=CY event=stp_carryable_drop_duplicate drop_id={} ignored=true",
+            drop_id
+        );
+        return;
+    }
+
+    let id = next_stp_carryable_id();
+    net.stp_carryables.push(crate::network::protocol::StpCarryableInfo {
+        id,
+        def_id,
+        position,
+        rotation,
+    });
+    info!(
+        "MPTRACE step=CY event=stp_carryable_drop_spawned id={} drop_id={} def_id={} pos=({:.2},{:.2},{:.2})",
+        id, drop_id, def_id, position[0], position[1], position[2]
+    );
+}
+
+/// Phase B2.5: host-authoritative carryable pickup. If the carryable still exists, remove it
+/// (which despawns it for everyone via the relay) and grant it to the requester — directly to
+/// the host's own Unity, or reliably to a joiner. A second request for an already-taken
+/// carryable finds nothing and is rejected (race-safe; the removal is the dedup).
+async fn process_stp_carryable_pickup(
+    carryable_id: u32,
+    requester_id: crate::network::PeerId,
+    net: &mut NetworkManager,
+    to_clients: &broadcast::Sender<ServerMessage>,
+) {
+    let pos = match net.stp_carryables.iter().position(|c| c.id == carryable_id) {
+        Some(p) => p,
+        None => {
+            info!(
+                "MPTRACE step=CY event=stp_carryable_pickup_rejected carryable_id={} requester_id={} reason=not_found",
+                carryable_id, requester_id
+            );
+            return;
+        }
+    };
+
+    let carryable = net.stp_carryables.remove(pos);
+    info!(
+        "MPTRACE step=CY event=stp_carryable_pickup_granted carryable_id={} requester_id={} def_id={}",
+        carryable_id, requester_id, carryable.def_id
+    );
+
+    if requester_id == net.local_id {
+        let _ = to_clients.send(ServerMessage::Event(GameEvent {
+            event_type: "stp_carryable_pickup_granted".into(),
+            data: serde_json::json!({
+                "carryable_id": carryable_id,
+                "def_id": carryable.def_id,
+            }),
+        }));
+    } else {
+        let payload = crate::network::protocol::PacketPayload::StpCarryablePickupGranted {
+            carryable_id,
+            def_id: carryable.def_id,
+        };
+        net.send_reliable(requester_id, &payload).await;
+    }
+}
+
+/// Phase B2.6: host reduces a scene harvestable's authoritative `remaining` by `amount`.
+/// Deduped by the client-generated `hit_id` so a reliable retransmit (or two clients hitting
+/// the same tree) never double-counts. The 10 Hz relay propagates the updated health, and the
+/// host Unity spawns the resource carryables when it crosses to depleted (B2.6 → B2.5).
+fn process_stp_harvest_hit(
+    hit_id: u64,
+    harvestable_id: u32,
+    amount: f32,
+    net: &mut NetworkManager,
+) {
+    if hit_id != 0 && !net.processed_stp_harvest_hits.insert(hit_id) {
+        info!(
+            "MPTRACE step=HV event=stp_harvest_hit_duplicate hit_id={} ignored=true",
+            hit_id
+        );
+        return;
+    }
+
+    let harvestable = match net.stp_harvestables.iter_mut().find(|h| h.id == harvestable_id) {
+        Some(h) => h,
+        None => {
+            info!(
+                "MPTRACE step=HV event=stp_harvest_hit_no_target harvestable_id={} hit_id={} ignored=true",
+                harvestable_id, hit_id
+            );
+            return;
+        }
+    };
+
+    harvestable.remaining = (harvestable.remaining - amount.abs()).max(0.0);
+    info!(
+        "MPTRACE step=HV event=stp_harvest_hit harvestable_id={} amount={:.3} remaining={:.3} hit_id={}",
+        harvestable_id, amount, harvestable.remaining, hit_id
     );
 }
 
@@ -1125,5 +1555,8 @@ fn build_world_state(
         visible_items: world.visible_item_views(),
         vertical_debug_markers: world.vertical_debug_marker_views(),
         stp_items: net.stp_items.clone(),
+        stp_buildings: net.stp_buildings.clone(),
+        stp_carryables: net.stp_carryables.clone(),
+        stp_harvestables: net.stp_harvestables.clone(),
     }
 }

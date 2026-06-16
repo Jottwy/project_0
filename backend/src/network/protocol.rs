@@ -73,6 +73,9 @@ pub enum PacketType {
     StpPickupRequest = 0x17,
     StpPickupGranted = 0x18,
     StpDropRequest = 0x19,
+    StpBuildingList = 0x1A,
+    StpPlaceRequest = 0x1B,
+    StpBuildAddRequest = 0x1C,
     // Actions (0x20-0x2F)
     Interact = 0x20,
     Attack = 0x21,
@@ -90,6 +93,13 @@ pub enum PacketType {
     ChunkGenerate = 0x33,
     AnchorBroadcast = 0x34,
     StabilizerBroadcast = 0x35,
+    // STP Carryables (0x40-0x4F)
+    StpCarryableList = 0x40,
+    StpCarryablePickupRequest = 0x41,
+    StpCarryablePickupGranted = 0x42,
+    StpCarryableDropRequest = 0x43,
+    StpHarvestableList = 0x44,
+    StpHarvestHitRequest = 0x45,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -117,6 +127,9 @@ impl PacketType {
             0x17 => Some(Self::StpPickupRequest),
             0x18 => Some(Self::StpPickupGranted),
             0x19 => Some(Self::StpDropRequest),
+            0x1A => Some(Self::StpBuildingList),
+            0x1B => Some(Self::StpPlaceRequest),
+            0x1C => Some(Self::StpBuildAddRequest),
             0x20 => Some(Self::Interact),
             0x21 => Some(Self::Attack),
             0x22 => Some(Self::Pickup),
@@ -132,6 +145,12 @@ impl PacketType {
             0x33 => Some(Self::ChunkGenerate),
             0x34 => Some(Self::AnchorBroadcast),
             0x35 => Some(Self::StabilizerBroadcast),
+            0x40 => Some(Self::StpCarryableList),
+            0x41 => Some(Self::StpCarryablePickupRequest),
+            0x42 => Some(Self::StpCarryablePickupGranted),
+            0x43 => Some(Self::StpCarryableDropRequest),
+            0x44 => Some(Self::StpHarvestableList),
+            0x45 => Some(Self::StpHarvestHitRequest),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -161,6 +180,55 @@ pub struct StpItemInfo {
     pub count: u16,
     pub position: [f32; 3],
     pub rotation: f32,
+}
+
+/// A host-authoritative STP building piece, replicated to all peers so each client
+/// reconstructs the same placed piece (`def_id` → `BuildingPieceDefinition` → prefab).
+/// `id` is the network instance id (host-assigned, monotonic); `def_id` is the STP
+/// `BuildingPieceDefinition` id (stable across instances). Phase B1.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StpBuildingInfo {
+    pub id: u32,
+    pub def_id: i32,
+    pub position: [f32; 3],
+    pub rotation: f32,
+    /// Phase B2: host-authoritative construction progress — how many units of each
+    /// build material have been accepted for this piece. Clients derive completion by
+    /// comparing against the prefab-authored required amounts. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub added: Vec<StpBuildProgress>,
+}
+
+/// Phase B2: one (material → accepted count) entry of a building piece's construction
+/// progress. `material_id` is the STP `BuildMaterialDefinition` id (stable).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StpBuildProgress {
+    pub material_id: i32,
+    pub count: u16,
+}
+
+/// A host-authoritative STP world carryable (log/stone/metal pile), replicated to all
+/// peers so each client reconstructs the same `CarryablePickup` (`def_id` →
+/// `CarryableDefinition` → pickup prefab). `id` is the network instance id (host-assigned,
+/// monotonic); `def_id` is the STP `CarryableDefinition` id (stable). Phase B2.5.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StpCarryableInfo {
+    pub id: u32,
+    pub def_id: i32,
+    pub position: [f32; 3],
+    pub rotation: f32,
+}
+
+/// A host-authoritative STP scene-placed harvestable (tree/rock prefab), replicated to all
+/// peers so each client reflects the same construction-resource health. `id` is the network
+/// instance id (host-assigned); clients map it to their local harvestable by position
+/// proximity. `remaining` is the host-authoritative harvest amount (1.0 full → 0.0 depleted).
+/// Phase B2.6.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StpHarvestableInfo {
+    pub id: u32,
+    pub position: [f32; 3],
+    pub remaining: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,6 +350,20 @@ pub enum PacketPayload {
         position: [f32; 3],
         rotation: f32,
     },
+    StpBuildingList {
+        buildings: Vec<StpBuildingInfo>,
+    },
+    StpPlaceRequest {
+        place_id: u64,
+        def_id: i32,
+        position: [f32; 3],
+        rotation: f32,
+    },
+    StpBuildAddRequest {
+        add_id: u64,
+        building_id: u32,
+        material_id: i32,
+    },
 
     // State
     PlayerUpdate {
@@ -351,6 +433,31 @@ pub enum PacketPayload {
         tier: u8,
         remaining_hours: f32,
     },
+    StpCarryableList {
+        carryables: Vec<StpCarryableInfo>,
+    },
+    StpCarryablePickupRequest {
+        carryable_id: u32,
+        requester_id: u16,
+    },
+    StpCarryablePickupGranted {
+        carryable_id: u32,
+        def_id: i32,
+    },
+    StpCarryableDropRequest {
+        drop_id: u64,
+        def_id: i32,
+        position: [f32; 3],
+        rotation: f32,
+    },
+    StpHarvestableList {
+        harvestables: Vec<StpHarvestableInfo>,
+    },
+    StpHarvestHitRequest {
+        hit_id: u64,
+        harvestable_id: u32,
+        amount: f32,
+    },
 
     // Reliability
     Ack {
@@ -378,6 +485,9 @@ impl PacketPayload {
             Self::StpPickupRequest { .. } => PacketType::StpPickupRequest as u16,
             Self::StpPickupGranted { .. } => PacketType::StpPickupGranted as u16,
             Self::StpDropRequest { .. } => PacketType::StpDropRequest as u16,
+            Self::StpBuildingList { .. } => PacketType::StpBuildingList as u16,
+            Self::StpPlaceRequest { .. } => PacketType::StpPlaceRequest as u16,
+            Self::StpBuildAddRequest { .. } => PacketType::StpBuildAddRequest as u16,
             Self::PlayerUpdate { .. } => PacketType::PlayerUpdate as u16,
             Self::ChunkState { .. } => PacketType::ChunkState as u16,
             Self::ChunkDelta { .. } => PacketType::ChunkDelta as u16,
@@ -394,6 +504,12 @@ impl PacketPayload {
             Self::ChunkTeleport { .. } => PacketType::ChunkTeleport as u16,
             Self::AnchorBroadcast { .. } => PacketType::AnchorBroadcast as u16,
             Self::StabilizerBroadcast { .. } => PacketType::StabilizerBroadcast as u16,
+            Self::StpCarryableList { .. } => PacketType::StpCarryableList as u16,
+            Self::StpCarryablePickupRequest { .. } => PacketType::StpCarryablePickupRequest as u16,
+            Self::StpCarryablePickupGranted { .. } => PacketType::StpCarryablePickupGranted as u16,
+            Self::StpCarryableDropRequest { .. } => PacketType::StpCarryableDropRequest as u16,
+            Self::StpHarvestableList { .. } => PacketType::StpHarvestableList as u16,
+            Self::StpHarvestHitRequest { .. } => PacketType::StpHarvestHitRequest as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,

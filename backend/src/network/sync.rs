@@ -156,6 +156,42 @@ pub async fn broadcast_stp_items(net: &NetworkManager) {
     net.broadcast_unreliable(&payload).await;
 }
 
+/// Host-as-server relay of the STP building roster: the host broadcasts its full
+/// authoritative building list so every joiner spawns the same pieces (Phase B1).
+pub async fn broadcast_stp_buildings(net: &NetworkManager) {
+    if net.peers.is_empty() {
+        return;
+    }
+    let payload = PacketPayload::StpBuildingList {
+        buildings: net.stp_buildings.clone(),
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
+/// Host-as-server relay of the STP carryable roster: the host broadcasts its full
+/// authoritative carryable list so every joiner spawns the same world carryables (B2.5).
+pub async fn broadcast_stp_carryables(net: &NetworkManager) {
+    if net.peers.is_empty() {
+        return;
+    }
+    let payload = PacketPayload::StpCarryableList {
+        carryables: net.stp_carryables.clone(),
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
+/// Host-as-server relay of the STP harvestable health roster: the host broadcasts its full
+/// authoritative harvestable list so every joiner reflects the same tree/rock health (B2.6).
+pub async fn broadcast_stp_harvestables(net: &NetworkManager) {
+    if net.peers.is_empty() {
+        return;
+    }
+    let payload = PacketPayload::StpHarvestableList {
+        harvestables: net.stp_harvestables.clone(),
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
 /// Send nearby chunk states to all peers (for chunks the local player owns).
 pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_pos: Vec3) {
     if net.peers.is_empty() {

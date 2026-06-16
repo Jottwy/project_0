@@ -71,6 +71,42 @@ pub enum NetworkEvent {
         position: [f32; 3],
         rotation: f32,
     },
+    /// Phase B1: a joiner asks the host to place an STP building piece in the world.
+    StpPlaceRequest {
+        place_id: u64,
+        def_id: i32,
+        position: [f32; 3],
+        rotation: f32,
+    },
+    /// Phase B2: a joiner asks the host to add one unit of a build material to a piece.
+    StpBuildAddRequest {
+        add_id: u64,
+        building_id: u32,
+        material_id: i32,
+    },
+    /// Phase B2.5: a joiner asks the host to pick up a world carryable (host-authoritative).
+    StpCarryablePickupRequest {
+        carryable_id: u32,
+        requester_id: PeerId,
+    },
+    /// Phase B2.5: the host grants a carryable pickup to this peer (it carries it in hand).
+    StpCarryablePickupGranted {
+        carryable_id: u32,
+        def_id: i32,
+    },
+    /// Phase B2.5: a joiner asks the host to spawn a dropped carryable in the world.
+    StpCarryableDropRequest {
+        drop_id: u64,
+        def_id: i32,
+        position: [f32; 3],
+        rotation: f32,
+    },
+    /// Phase B2.6: a joiner reports a harvest hit on a scene harvestable (host-authoritative).
+    StpHarvestHitRequest {
+        hit_id: u64,
+        harvestable_id: u32,
+        amount: f32,
+    },
     WorldSyncReceived {
         world_seed: u64,
         world_revision: u64,
@@ -126,6 +162,28 @@ pub struct NetworkManager {
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
     pub processed_stp_drops: std::collections::HashSet<u64>,
+    /// Phase B1: host-authoritative STP building pieces, replicated to peers. On the
+    /// host it grows from the IPC `stp_place` action; on joiners from the relayed
+    /// `StpBuildingList` packet. build_world_state mirrors it to the client.
+    pub stp_buildings: Vec<crate::network::protocol::StpBuildingInfo>,
+    /// Phase B1: client-generated place ids already processed by the host, so a
+    /// duplicated `stp_place` (reliable retransmit) spawns exactly one piece.
+    pub processed_stp_places: std::collections::HashSet<u64>,
+    /// Phase B2: client-generated add ids already processed by the host, so a
+    /// duplicated `stp_build_add` (reliable retransmit) advances progress exactly once.
+    pub processed_stp_build_adds: std::collections::HashSet<u64>,
+    /// Phase B2.5: host-authoritative STP world carryables, replicated to peers. On the
+    /// host it is set from `set_stp_carryables` and grows from drops; on joiners from the
+    /// relayed `StpCarryableList` packet. build_world_state mirrors it to the client.
+    pub stp_carryables: Vec<crate::network::protocol::StpCarryableInfo>,
+    /// Phase B2.5: client-generated carryable drop ids already processed by the host (dedup).
+    pub processed_stp_carryable_drops: std::collections::HashSet<u64>,
+    /// Phase B2.6: host-authoritative STP scene harvestables (health), replicated to peers.
+    /// On the host it is set from `set_stp_harvestables` and reduced by `stp_harvest_hit`;
+    /// on joiners from the relayed `StpHarvestableList` packet.
+    pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
+    /// Phase B2.6: client-generated harvest-hit ids already processed by the host (dedup).
+    pub processed_stp_harvest_hits: std::collections::HashSet<u64>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     next_peer_id: PeerId,
@@ -169,6 +227,13 @@ impl NetworkManager {
             peers: HashMap::new(),
             stp_items: Vec::new(),
             processed_stp_drops: std::collections::HashSet::new(),
+            stp_buildings: Vec::new(),
+            processed_stp_places: std::collections::HashSet::new(),
+            processed_stp_build_adds: std::collections::HashSet::new(),
+            stp_carryables: Vec::new(),
+            processed_stp_carryable_drops: std::collections::HashSet::new(),
+            stp_harvestables: Vec::new(),
+            processed_stp_harvest_hits: std::collections::HashSet::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
             next_peer_id: if is_host { 2 } else { 0 },
@@ -554,6 +619,85 @@ impl NetworkManager {
                 self.stp_items = items;
                 vec![]
             }
+
+            PacketPayload::StpBuildingList { buildings } => {
+                // Host-authoritative STP building roster: joiners mirror it verbatim so
+                // their build_world_state replicates the same pieces. (Phase B1.)
+                self.stp_buildings = buildings;
+                vec![]
+            }
+
+            PacketPayload::StpPlaceRequest {
+                place_id,
+                def_id,
+                position,
+                rotation,
+            } => vec![NetworkEvent::StpPlaceRequest {
+                place_id,
+                def_id,
+                position,
+                rotation,
+            }],
+
+            PacketPayload::StpBuildAddRequest {
+                add_id,
+                building_id,
+                material_id,
+            } => vec![NetworkEvent::StpBuildAddRequest {
+                add_id,
+                building_id,
+                material_id,
+            }],
+
+            PacketPayload::StpCarryableList { carryables } => {
+                // Host-authoritative carryable roster: joiners mirror it verbatim. (B2.5)
+                self.stp_carryables = carryables;
+                vec![]
+            }
+
+            PacketPayload::StpCarryablePickupRequest {
+                carryable_id,
+                requester_id,
+            } => vec![NetworkEvent::StpCarryablePickupRequest {
+                carryable_id,
+                requester_id,
+            }],
+
+            PacketPayload::StpCarryablePickupGranted {
+                carryable_id,
+                def_id,
+            } => vec![NetworkEvent::StpCarryablePickupGranted {
+                carryable_id,
+                def_id,
+            }],
+
+            PacketPayload::StpCarryableDropRequest {
+                drop_id,
+                def_id,
+                position,
+                rotation,
+            } => vec![NetworkEvent::StpCarryableDropRequest {
+                drop_id,
+                def_id,
+                position,
+                rotation,
+            }],
+
+            PacketPayload::StpHarvestableList { harvestables } => {
+                // Host-authoritative harvestable health roster: joiners mirror it. (B2.6)
+                self.stp_harvestables = harvestables;
+                vec![]
+            }
+
+            PacketPayload::StpHarvestHitRequest {
+                hit_id,
+                harvestable_id,
+                amount,
+            } => vec![NetworkEvent::StpHarvestHitRequest {
+                hit_id,
+                harvestable_id,
+                amount,
+            }],
 
             PacketPayload::StpPickupRequest {
                 item_id,

@@ -502,6 +502,146 @@ namespace BackroomsSurvival.Net
             SendFrame(w.ToArray());
         }
 
+        /// <summary>
+        /// Phase B1: tell the host the local player placed an STP building piece. The host
+        /// assigns a fresh net id, adds it to stp_buildings, and the relay spawns the
+        /// replicated piece for everyone via StpBuildingReplicator. Deduped by place_id.
+        /// </summary>
+        public void SendStpPlace(long placeId, int defId, Vector3 position, float rotation)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_place");
+            w.WriteString("data"); w.WriteMapHeader(4);
+            w.WriteString("place_id"); w.WriteInt(placeId);
+            w.WriteString("def_id"); w.WriteInt(defId);
+            w.WriteString("position"); w.WriteArrayHeader(3);
+            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+            w.WriteString("rotation"); w.WriteFloat(rotation);
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase B2: tell the host the local player added one unit of build material to a
+        /// replicated piece (by its B1 network instance id). The host advances the piece's
+        /// authoritative progress and the relay propagates it. Deduped by addId. We never
+        /// touch inventory here — STP already consumed the in-hand carryable.
+        /// </summary>
+        public void SendStpBuildAdd(long addId, uint buildingId, int materialId)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_build_add");
+            w.WriteString("data"); w.WriteMapHeader(3);
+            w.WriteString("add_id"); w.WriteInt(addId);
+            w.WriteString("building_id"); w.WriteInt(buildingId);
+            w.WriteString("material_id"); w.WriteInt(materialId);
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase B2.5: the host registers the authoritative STP carryable list with the backend.
+        /// The backend stores it, relays it to joiners, and echoes it in world_state.stp_carryables.
+        /// </summary>
+        public void SendSetStpCarryables(System.Collections.Generic.IReadOnlyList<StpCarryableSpec> carryables)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("set_stp_carryables");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("carryables"); w.WriteArrayHeader(carryables.Count);
+            for (int i = 0; i < carryables.Count; i++)
+            {
+                var c = carryables[i];
+                w.WriteMapHeader(4);
+                w.WriteString("id"); w.WriteInt(c.id);
+                w.WriteString("def_id"); w.WriteInt(c.defId);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(c.position.x); w.WriteFloat(c.position.y); w.WriteFloat(c.position.z);
+                w.WriteString("rotation"); w.WriteFloat(c.rotation);
+            }
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase B2.5: ask the host to pick up a replicated carryable by its network id. The host
+        /// validates, removes it (vanishes for all) and grants it back via a
+        /// "stp_carryable_pickup_granted" event consumed by StpCarryablePickupController.
+        /// </summary>
+        public void SendStpCarryablePickup(uint carryableId)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_carryable_pickup");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("carryable_id"); w.WriteInt(carryableId);
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase B2.5: tell the host the local player dropped a carryable into the world. The host
+        /// assigns a fresh net id, adds it to stp_carryables, and the relay spawns it for everyone.
+        /// </summary>
+        public void SendStpCarryableDrop(long dropId, int defId, Vector3 position, float rotation)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_carryable_drop");
+            w.WriteString("data"); w.WriteMapHeader(4);
+            w.WriteString("drop_id"); w.WriteInt(dropId);
+            w.WriteString("def_id"); w.WriteInt(defId);
+            w.WriteString("position"); w.WriteArrayHeader(3);
+            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+            w.WriteString("rotation"); w.WriteFloat(rotation);
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase B2.6: the host registers the authoritative scene-harvestable list (id + position).
+        /// The backend stores it (remaining=1.0), relays it, and echoes it in stp_harvestables.
+        /// </summary>
+        public void SendSetStpHarvestables(System.Collections.Generic.IReadOnlyList<StpHarvestableSpec> harvestables)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("set_stp_harvestables");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("harvestables"); w.WriteArrayHeader(harvestables.Count);
+            for (int i = 0; i < harvestables.Count; i++)
+            {
+                var h = harvestables[i];
+                w.WriteMapHeader(2);
+                w.WriteString("id"); w.WriteInt(h.id);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(h.position.x); w.WriteFloat(h.position.y); w.WriteFloat(h.position.z);
+            }
+            SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Phase B2.6: report a harvest hit on a scene harvestable (by net id) to the host. The
+        /// host reduces its authoritative health and the relay propagates it. Deduped by hitId,
+        /// so two players chopping the same tree never double-count.
+        /// </summary>
+        public void SendStpHarvestHit(long hitId, uint harvestableId, float amount)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("stp_harvest_hit");
+            w.WriteString("data"); w.WriteMapHeader(3);
+            w.WriteString("hit_id"); w.WriteInt(hitId);
+            w.WriteString("harvestable_id"); w.WriteInt(harvestableId);
+            w.WriteString("amount"); w.WriteFloat(amount);
+            SendFrame(w.ToArray());
+        }
+
         /// <summary>Send a UI lifecycle event (pause, save, quit, ...).</summary>
         public void SendUiEvent(string eventType)
         {

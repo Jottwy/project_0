@@ -138,6 +138,21 @@ pub struct WorldState {
     /// Omitted from the wire when empty (backward compatible).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stp_items: Vec<crate::network::protocol::StpItemInfo>,
+
+    /// Phase B1 — host-authoritative STP building pieces, replicated to all peers.
+    /// Omitted from the wire when empty (backward compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stp_buildings: Vec<crate::network::protocol::StpBuildingInfo>,
+
+    /// Phase B2.5 — host-authoritative STP world carryables, replicated to all peers.
+    /// Omitted from the wire when empty (backward compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stp_carryables: Vec<crate::network::protocol::StpCarryableInfo>,
+
+    /// Phase B2.6 — host-authoritative STP scene harvestables (health), replicated to peers.
+    /// Omitted from the wire when empty (backward compatible).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,6 +301,9 @@ mod tests {
             visible_items: vec![],
             vertical_debug_markers: vec![],
             stp_items: vec![],
+            stp_buildings: vec![],
+            stp_carryables: vec![],
+            stp_harvestables: vec![],
         });
         let frame = encode(&msg).unwrap();
         // Strip the 4-byte length prefix before decoding the body.
@@ -368,6 +386,9 @@ mod tests {
                 world_max: [50.0, 20.0, 50.0],
             }],
             stp_items: vec![],
+            stp_buildings: vec![],
+            stp_carryables: vec![],
+            stp_harvestables: vec![],
         });
         let frame = encode(&msg).unwrap();
         let decoded: ServerMessage = decode(&frame[4..]).unwrap();

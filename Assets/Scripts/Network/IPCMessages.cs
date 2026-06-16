@@ -601,6 +601,116 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
+    /// Phase B1 — one host-authoritative STP building piece replicated in
+    /// world_state.stp_buildings. id = network instance id (host-assigned); defId =
+    /// STP BuildingPieceDefinition id (stable across instances).
+    /// </summary>
+    public class StpBuildingMsg
+    {
+        public uint id;
+        public int defId;
+        public Vector3 position;
+        public float rotation;
+        // Phase B2 — host-authoritative construction progress (units of each material accepted).
+        public List<StpBuildProgressMsg> added = new List<StpBuildProgressMsg>();
+
+        public static StpBuildingMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var m = new StpBuildingMsg();
+            if (d == null) return m;
+            m.id = (uint)IPCParse.L(d, "id");
+            m.defId = (int)IPCParse.L(d, "def_id");
+            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
+            m.rotation = IPCParse.F(d, "rotation");
+            if (IPCParse.Get(d, "added") is object[] ad)
+                foreach (var item in ad) m.added.Add(StpBuildProgressMsg.Parse(item));
+            return m;
+        }
+    }
+
+    /// <summary>Phase B2 — one (material → accepted count) entry of a piece's progress.</summary>
+    public class StpBuildProgressMsg
+    {
+        public int materialId;
+        public int count;
+
+        public static StpBuildProgressMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var p = new StpBuildProgressMsg();
+            if (d == null) return p;
+            p.materialId = (int)IPCParse.L(d, "material_id");
+            p.count = (int)IPCParse.L(d, "count");
+            return p;
+        }
+    }
+
+    /// <summary>
+    /// Phase B2.5 — one host-authoritative STP world carryable replicated in
+    /// world_state.stp_carryables. id = network instance id (host-assigned); defId =
+    /// STP CarryableDefinition id (stable).
+    /// </summary>
+    public class StpCarryableMsg
+    {
+        public uint id;
+        public int defId;
+        public Vector3 position;
+        public float rotation;
+
+        public static StpCarryableMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var m = new StpCarryableMsg();
+            if (d == null) return m;
+            m.id = (uint)IPCParse.L(d, "id");
+            m.defId = (int)IPCParse.L(d, "def_id");
+            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
+            m.rotation = IPCParse.F(d, "rotation");
+            return m;
+        }
+    }
+
+    /// <summary>Outbound spec the host sends via IPCClient.SendSetStpCarryables (Phase B2.5).</summary>
+    public struct StpCarryableSpec
+    {
+        public uint id;
+        public int defId;
+        public Vector3 position;
+        public float rotation;
+    }
+
+    /// <summary>
+    /// Phase B2.6 — one host-authoritative STP scene harvestable (tree/rock) replicated in
+    /// world_state.stp_harvestables. id = network instance id; remaining = harvest health
+    /// (1.0 full → 0.0 depleted); position lets clients map id → local harvestable.
+    /// </summary>
+    public class StpHarvestableMsg
+    {
+        public uint id;
+        public Vector3 position;
+        public float remaining;
+
+        public static StpHarvestableMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var m = new StpHarvestableMsg();
+            if (d == null) return m;
+            m.id = (uint)IPCParse.L(d, "id");
+            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
+            m.remaining = IPCParse.F(d, "remaining");
+            return m;
+        }
+    }
+
+    /// <summary>Outbound spec the host sends via IPCClient.SendSetStpHarvestables (Phase B2.6).</summary>
+    public struct StpHarvestableSpec
+    {
+        public uint id;
+        public Vector3 position;
+    }
+
+    /// <summary>
     /// Phase 6.6/6.7 — debug placeholder for one backend virtual vertical node.
     /// World-space AABB; render-as-debug only (no collision, no traversal).
     /// kind: "stair" | "ramp" | "shaft" | "atrium" | "sealed_upper" | "other".
@@ -639,6 +749,12 @@ namespace BackroomsSurvival.Net
         public List<VerticalDebugMarkerMsg> verticalDebugMarkers = new List<VerticalDebugMarkerMsg>();
         // Phase 1 — host-authoritative STP world items (omitted when empty).
         public List<StpItemMsg> stpItems = new List<StpItemMsg>();
+        // Phase B1 — host-authoritative STP building pieces (omitted when empty).
+        public List<StpBuildingMsg> stpBuildings = new List<StpBuildingMsg>();
+        // Phase B2.5 — host-authoritative STP world carryables (omitted when empty).
+        public List<StpCarryableMsg> stpCarryables = new List<StpCarryableMsg>();
+        // Phase B2.6 — host-authoritative STP scene harvestables / health (omitted when empty).
+        public List<StpHarvestableMsg> stpHarvestables = new List<StpHarvestableMsg>();
 
         public static WorldStateMsg Parse(Dictionary<string, object> d)
         {
@@ -666,6 +782,15 @@ namespace BackroomsSurvival.Net
 
             if (IPCParse.Get(d, "stp_items") is object[] si)
                 foreach (var item in si) ws.stpItems.Add(StpItemMsg.Parse(item));
+
+            if (IPCParse.Get(d, "stp_buildings") is object[] sb)
+                foreach (var item in sb) ws.stpBuildings.Add(StpBuildingMsg.Parse(item));
+
+            if (IPCParse.Get(d, "stp_carryables") is object[] sc)
+                foreach (var item in sc) ws.stpCarryables.Add(StpCarryableMsg.Parse(item));
+
+            if (IPCParse.Get(d, "stp_harvestables") is object[] sh)
+                foreach (var item in sh) ws.stpHarvestables.Add(StpHarvestableMsg.Parse(item));
 
             return ws;
         }
