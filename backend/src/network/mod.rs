@@ -77,6 +77,8 @@ pub enum NetworkEvent {
         def_id: i32,
         position: [f32; 3],
         rotation: f32,
+        group_id: u32,
+        is_group: bool,
     },
     /// Phase B2: a joiner asks the host to add one unit of a build material to a piece.
     StpBuildAddRequest {
@@ -172,6 +174,10 @@ pub struct NetworkManager {
     /// Phase B2: client-generated add ids already processed by the host, so a
     /// duplicated `stp_build_add` (reliable retransmit) advances progress exactly once.
     pub processed_stp_build_adds: std::collections::HashSet<u64>,
+    /// Phase B3: quantized world pose-cells already occupied by a group piece, so two
+    /// players placing on the SAME socket (distinct place_ids) yield exactly one piece —
+    /// the host accepts the first and rejects the rest. Key = (x,y,z,yaw) quantized.
+    pub occupied_stp_cells: std::collections::HashSet<(i32, i32, i32, i32)>,
     /// Phase B2.5: host-authoritative STP world carryables, replicated to peers. On the
     /// host it is set from `set_stp_carryables` and grows from drops; on joiners from the
     /// relayed `StpCarryableList` packet. build_world_state mirrors it to the client.
@@ -186,6 +192,10 @@ pub struct NetworkManager {
     pub processed_stp_harvest_hits: std::collections::HashSet<u64>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
+    /// ADR-011: when the LOCAL player last confirmed a pickup. `broadcast_player_update`
+    /// emits animation="pickup" while inside the ~1s window — a trigger flank for the proxy,
+    /// NOT the gesture duration (the client owns that via the Animator exitTime).
+    pub last_pickup_at: Option<Instant>,
     next_peer_id: PeerId,
     pub world_seed: u64,
     global_sequence: u32,
@@ -230,12 +240,14 @@ impl NetworkManager {
             stp_buildings: Vec::new(),
             processed_stp_places: std::collections::HashSet::new(),
             processed_stp_build_adds: std::collections::HashSet::new(),
+            occupied_stp_cells: std::collections::HashSet::new(),
             stp_carryables: Vec::new(),
             processed_stp_carryable_drops: std::collections::HashSet::new(),
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: std::collections::HashSet::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
+            last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
             global_sequence: 0,
@@ -632,11 +644,15 @@ impl NetworkManager {
                 def_id,
                 position,
                 rotation,
+                group_id,
+                is_group,
             } => vec![NetworkEvent::StpPlaceRequest {
                 place_id,
                 def_id,
                 position,
                 rotation,
+                group_id,
+                is_group,
             }],
 
             PacketPayload::StpBuildAddRequest {

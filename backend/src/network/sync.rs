@@ -98,7 +98,15 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
     if net.peers.is_empty() {
         return;
     }
-    let animation = if player.stats.speed_modifier < 1.0 {
+    // ADR-011: a recent local pickup takes priority — a trigger flank held ~1s so the client
+    // reliably catches the transition despite ~5Hz sample spacing. The gesture's duration is
+    // owned by the client (Animator exitTime), not by this window.
+    let animation = if net
+        .last_pickup_at
+        .map_or(false, |t| t.elapsed().as_millis() < 1000)
+    {
+        "pickup"
+    } else if player.stats.speed_modifier < 1.0 {
         "walk_slow"
     } else {
         "idle"

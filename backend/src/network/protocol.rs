@@ -192,6 +192,11 @@ pub struct StpBuildingInfo {
     pub def_id: i32,
     pub position: [f32; 3],
     pub rotation: f32,
+    /// Phase B3: host-authoritative group identity. All pieces of one structure share a
+    /// `group_id` so every client buckets them into one `BuildingPieceGroup` and rebuilds
+    /// the socket cohesion. `0` = standalone (free pieces, e.g. campfire). Host-assigned.
+    #[serde(default)]
+    pub group_id: u32,
     /// Phase B2: host-authoritative construction progress — how many units of each
     /// build material have been accepted for this piece. Clients derive completion by
     /// comparing against the prefab-authored required amounts. Omitted when empty.
@@ -358,6 +363,11 @@ pub enum PacketPayload {
         def_id: i32,
         position: [f32; 3],
         rotation: f32,
+        /// Phase B3: the group the client attached to (0 = new group, host mints one).
+        group_id: u32,
+        /// Phase B3: true if the piece is a GroupBuildingPiece (sockets/cohesion); false
+        /// for free pieces (no group, no pose-cell dedup — free pieces may stack).
+        is_group: bool,
     },
     StpBuildAddRequest {
         add_id: u64,

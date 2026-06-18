@@ -2,17 +2,24 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
-- Fecha: 2026-06-13
-- Hecho: Arranque de la migración STP → servidor-autoritativo. (1) Audit completo de MonoBehaviours STP+FPSCore (18 con estado server, ~30 writes directos). (2) Step 2 cerrado: arquitectura de 5 capas (Server / Network / Sync-NEW / STP Gameplay / Presentation) con contratos de frontera declarados (IMovementCorrectionSink, IStatTarget, IWorldStateSink, IInventoryWriter). (3) ADR-009 redactado y anexado a DECISIONS.md (PROPUESTA). (4) Checklist backend Rust A–E elaborado (prereq de Step 3). (5) Tarea 1.1: ChunkRenderer con offlineMode (seed fijo, 49 chunks) instanciado en BackroomsWithSTP.unity; build Roslyn en verde.
+- Fecha: 2026-06-18
+- Hecho: Sistema de animación de proxies remotos COMPLETO (locomoción + jump + pickup), 100% client-side salvo el sello de pickup en backend (ADR-011 VALIDADA). Controller custom que reemplaza el AnimatorOverrideController vendor. Build Roslyn 2-etapas (Assembly-CSharp + Assembly-CSharp-Editor) en verde; backend Rust recompilado (GNU) y copiado a Builds/Backend/.
 
 ## Próximo paso (UNO solo)
-- First boot: arrancar la escena BackroomsWithSTP con backend Rust vivo y validar el lazo completo en Play — atar MovementReconciler + StatInterpolator al STP_Player.prefab, conectar IPC, ver predicción/reconciliación de movimiento y stats interpolados. Pendientes menores aún: TimeSync (1 Hz) y borrado/stub de PlayerController.cs.
-- ATAR al GameObject del player (STP_Player.prefab root, donde está CharacterControllerMotor): MovementReconciler Y StatInterpolator — NO hecho aún: ambos compilan pero falta añadirlos al prefab (paso de editor, no verificable headless). Sin atarlos no corren en Play.
-- Seam del motor STP (leído 2026-06-14): PlayerMovementController NO tiene Update() ni escribe transform — solo provee velocidad vía _motor.SetMotionInput(GetMotionInput). CharacterControllerMotor.Update() es el único que mueve: _cController.Move(translation) (línea ~261). Fuentes para PlayerInputMessage: position=transform.position, velocity=_velocity realizada (pos-lastPos)/dt (línea ~263), move_state=PlayerMovementController.ActiveState. Hook de snap autoritativo = Teleport() (desactiva/reactiva controller); úsalo solo para spawn/desync grande, NO para corrección sub-umbral (la ADR prohíbe snap).
+- Commit + tag (proxy-anim-v1) del hito de animación de proxies (código _Migration + Rust ADR-011 + ADR-012/013 + enmienda ADR-011, todos ya escritos). Después abordar Fase 2 (Rust+ADR: retraso de desaparición del item + reserva anti-duplicado).
 
 ## En curso / a medias
 - Migración STP servidor-autoritativo: Steps 1–2 + Step 3 slice 3.1 (plumbing de protocolo) DONE y verificados. Falta slice 3.2 (capa L2 de predicción) y la reescritura de los 8 call sites de Inventory.
 - PlayerController.cs (proyecto Backrooms) marcado DEPRECATED por ADR-009 — pendiente de borrar/stub en slice 3.2 (conflicto con autoridad de movimiento de STP).
+- Fase 2 (retraso desaparición item + reserva anti-duplicado): backend authoritativo aún NO cabeado, riesgos abiertos en Deuda.
+
+## Estado actual — Sistema de animación de proxies (DONE 2026-06-18)
+- **Locomoción:** `RemoteAvatar/ProxyLocomotionFeeder.cs` — escribe `MovementSpeed` derivado de la velocidad planar (delta de transform.position interpolado por RemotePlayerManager / dt), mapeo a tiers 0/1/3 (Idle/Walk/Run) con deadzone+SmoothDamp y guard de teleport XZ. NO toca red.
+- **Jump:** `RemoteAvatar/ProxyJumpFeeder.cs` — derivado de velocidad vertical (deltaY/dt) client-side, edge-detection con latch, guard de teleport VERTICAL (chunk displacement/respawn no disparan falso jump) y discriminación rampa/escalera (umbral jumpVelocityUp por encima de la Y sostenida de rampa). Dispara trigger "Jump". NO toca red.
+- **Pickup:** FULL-BODY en Base Layer (NO upper-body: la AvatarMask amputaba el gesto que flexiona piernas para recoger del suelo). Señal vía campo `animation:String` desde backend (ADR-011). `RemoteAvatar/ProxyPickupHook.cs` con edge-detection sobre `rp.animation=="pickup"` (latch que distingue null/desconocido de no-pickup → fix del doble-trigger). Estado Pickup con Speed=2 (gesto a ~0.58s). Input lock LOCAL durante el gesto: `RemoteAvatar/LocalPickupInputLock.cs` (self-bootstrap) engancha el evento IPC `stp_pickup_granted` (confirmación local) y usa el `AddStateBlocker` nativo de STP (bloquea Walk/Run/Jump; el motor sigue vivo → PlayerPoseTransmitter sigue emitiendo la pose quieta). Duración del lock horneada del clip (clip.length/PickupSpeed) en `ProxyPickupHook.GestureDuration`, leída del prefab en Resources — NO hardcodeada.
+- **Controller:** `RemoteAvatar/ProxyLocomotionController.controller` (custom, reemplaza el AnimatorOverrideController vendor STP_MaleSurvivor), generado por `Editor/ProxyAnimatorControllerBuilder.cs`. Base Layer: Movement (BlendTree 1D-Simple, MovementSpeed, idle@0/walk@1/run@3) + Jump + Pickup, los tres FULL-BODY. Una sola capa, sin UpperBody, sin máscara.
+- **Binding durable:** `Editor/RemoteAvatarPrefabBuilder.cs` (menú "Backrooms ▸ Build Remote Avatar Prefab") asigna el controller custom a la variante y lo PERSISTE (RecordPrefabInstancePropertyModifications + re-binding sobre el asset guardado vía EnsureControllerBound). Resuelto el bug por el que el prefab corría el override vendor (walk/run vacíos → T-pose). El builder también cablea, idempotente y durable, los 3 feeders/hook (Wire* mirrors) con sus valores por defecto.
+- **Backend (ADR-011):** sello `last_pickup_at` en `NetworkManager` (backend/src/network/mod.rs), sellado en `process_stp_pickup` rama local Y en la rama joiner `StpPickupGranted` (game_loop.rs), y prioridad `animation="pickup"` durante ~1s en `broadcast_player_update` (sync.rs). Sin campo nuevo de schema. `backrooms_server.exe` recompilado (toolchain GNU) y copiado a `Builds/Backend/`.
 
 ## Estado actual — Integración STP servidor-autoritativo (Steps 1–2 DONE)
 - Decisión de arquitectura: STP es la capa cliente y conduce la experiencia; Rust posee TODO el estado autoritativo. PlayerController.cs (Backrooms) DEPRECATED.
@@ -65,6 +72,8 @@
 - Archivo WallGreedyMesherTests.cs contiene GridTileClassificationTests (rename diferido)
 - Tests Network/RemotePlayer fallan (preexistente, no relacionado con grid)
 - Comentarios de código (GridChunkBuilder/WallGreedyMesher/GridTestWorld) y memoria etiquetan el sistema de tiles como "ADR-001"; el ADR-001 real (DECISIONS.md) es Unity+URP. Mal-etiquetado a corregir.
+- ADR-011: la implementación divergió del texto del ADR en dos puntos, pendiente de ENMIENDA (DECISIONS.md es append-only, no se edita el ADR; se añade enmienda como en ADR-009): (a) el timestamp se selló en `NetworkManager.last_pickup_at`, NO en `Player` (motivo: NetworkManager está threadeado en los 3 puntos de sello/lectura; Player no llega sin cambiar firmas); (b) se añadió un sello ADICIONAL en la rama del joiner (`NetworkEvent::StpPickupGranted`) además del de `process_stp_pickup`, necesario porque en P2P multi-backend el joiner confirma su propio pickup ahí (sin él, un joiner que recoge no animaría en pantallas ajenas).
+- ProxyPickupHook.cs conserva un doc-comment stale que dice "upper-body Pickup" (ahora es full-body) — corregir.
 
 ## ADRs pendientes (numeración alineada con DECISIONS.md)
 - ADR-003: Topología de red (propuesta, ya en DECISIONS.md) — bloquea persistencia/regiones
@@ -72,6 +81,9 @@
 - ADR-005: IPC cliente↔servidor (protocolo, tick rate, autoridad) — bloquea conectar load_profiles end-to-end
 - ADR-006: Colisión Rust de celdas Wall (slab fino 0.2 m centrado)
 - ADR-009: Protocolo player/stat/world + predicción cliente (migración STP) — VALIDADA (2026-06-13). Comparte transporte con ADR-005. Slice 3.1 (plumbing) implementada y verde; slice 3.2 (predicción L2) pendiente.
+- ADR-012: AnimatorController custom de proxies (reemplaza el override vendor) — VALIDADA (2026-06-18), ya en DECISIONS.md.
+- ADR-013: animación de proxies velocity-derived (locomoción + jump client-side, cero cambios de red) — VALIDADA (2026-06-18), ya en DECISIONS.md.
+- ADR-011: ENMIENDA (2026-06-18) anexada reconciliando registro↔implementación (sello en NetworkManager + rama joiner).
 
 ## Decisiones recientes
 - Ver docs/DECISIONS.md (ADR-001..007). ADR-007 aprobada (implementada parcial); ADR-005/006 propuestas.
@@ -79,6 +91,8 @@
 ## Riesgos abiertos
 - ADR-003 (topología de red) sin validar: bloquea diseño de persistencia y regiones.
 - ADR-007: params nuevos sin cablear al algoritmo y load_profiles sin conectar end-to-end (espera ADR-005 IPC).
+- Fase 2 (retraso desaparición item al frame jugoso del clip ~0.20s sincronizado cliente↔servidor + reserva anti-duplicado autoritativa en backend) — no cabeada, riego de duplicado en pérdida de paquete IPC.
+- Fase 3 (aim/look sync — rotación de cámara remota → orientación del proxy; requiere campo de rotación nuevo en el paquete de pose → cambio de schema → ADR) — bloqueada por cambio de protocolo.
 
 ## NO tocar
 - Modelo de datos Rust (celdas 2.5 m): la conversión celda→tile vive SOLO en Unity (tileX = cellX / 2).

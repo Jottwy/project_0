@@ -474,6 +474,8 @@ async fn handle_network_event(
             def_id,
             count,
         } => {
+            // ADR-011: our own local player picked up (joiner path: host granted) → stamp window.
+            net.last_pickup_at = Some(std::time::Instant::now());
             // We are the recoger: surface the grant to our Unity, which credits the
             // local STP inventory (StpPickupController). The item already vanished via
             // the host's stp_items removal.
@@ -504,9 +506,14 @@ async fn handle_network_event(
             def_id,
             position,
             rotation,
+            group_id,
+            is_group,
         } => {
             if net.is_host {
-                process_stp_place(place_id, def_id, position, rotation, net);
+                process_stp_place(place_id, def_id, position, rotation, group_id, is_group, net);
+                // Phase B3: relay immediately so the placer's replicated copy (with its group)
+                // arrives within ~RTT, closing the round-trip gap when chaining pieces.
+                sync::broadcast_stp_buildings(net).await;
             }
         }
 
@@ -873,14 +880,21 @@ async fn handle_action(
             )
             .unwrap_or([0.0, 0.0, 0.0]);
             let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let group_id = action.data.get("group_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+            let is_group = action.data.get("is_group").and_then(|v| v.as_bool()).unwrap_or(false);
             if net.is_host {
-                process_stp_place(place_id, def_id, position, rotation, net);
+                process_stp_place(place_id, def_id, position, rotation, group_id, is_group, net);
+                // Phase B3: relay immediately so the placer's replicated copy (with its group)
+                // arrives within ~RTT, closing the round-trip gap when chaining pieces.
+                sync::broadcast_stp_buildings(net).await;
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpPlaceRequest {
                     place_id,
                     def_id,
                     position,
                     rotation,
+                    group_id,
+                    is_group,
                 };
                 net.send_reliable(1, &payload).await;
             }
@@ -1073,6 +1087,29 @@ fn next_stp_building_id() -> u32 {
     NEXT_STP_BUILDING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Phase B3: monotonic id source for host-minted STP building GROUPS. Starts at 1 so
+/// `group_id == 0` always means "standalone / no group".
+static NEXT_STP_GROUP_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn next_stp_group_id() -> u32 {
+    NEXT_STP_GROUP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Phase B3: quantize a placed pose to a dedup cell. Two clients targeting the same socket
+/// instantiate the same prefab on the same authoritative anchor and apply the same authored
+/// offset, so they compute an identical snapped pose → identical cell. Distinct sockets are
+/// far apart (≫ Q_POS), so there are no false collisions.
+fn stp_pose_cell(position: [f32; 3], rotation: f32) -> (i32, i32, i32, i32) {
+    const Q_POS: f32 = 0.25; // meters
+    const Q_YAW: f32 = 1.0; // degrees
+    (
+        (position[0] / Q_POS).round() as i32,
+        (position[1] / Q_POS).round() as i32,
+        (position[2] / Q_POS).round() as i32,
+        (rotation / Q_YAW).round() as i32,
+    )
+}
+
 /// Phase B1: host adds a placed STP building piece to the authoritative `stp_buildings`
 /// list. The 10 Hz relay (broadcast_stp_buildings) propagates it to all peers, where
 /// StpBuildingReplicator spawns it. Deduped by the client-generated `place_id`: a repeated
@@ -1083,6 +1120,8 @@ fn process_stp_place(
     def_id: i32,
     position: [f32; 3],
     rotation: f32,
+    req_group_id: u32,
+    is_group: bool,
     net: &mut NetworkManager,
 ) {
     if place_id != 0 && !net.processed_stp_places.insert(place_id) {
@@ -1093,17 +1132,43 @@ fn process_stp_place(
         return;
     }
 
+    // Phase B3: concurrency dedup by quantized pose-cell — only for group pieces (free
+    // pieces may legitimately stack). The first placement at a cell wins; a second one
+    // targeting the same socket (distinct place_id) is rejected, so no duplicate / no
+    // doubly-occupied socket.
+    if is_group {
+        let cell = stp_pose_cell(position, rotation);
+        if !net.occupied_stp_cells.insert(cell) {
+            info!(
+                "MPTRACE step=BP event=stp_place_cell_taken place_id={} cell=({},{},{},{}) rejected=true",
+                place_id, cell.0, cell.1, cell.2, cell.3
+            );
+            return;
+        }
+    }
+
+    // Phase B3: resolve the group. Free piece → 0; existing group → echo it; new group
+    // (group_id == 0 with is_group) → mint a fresh host-authoritative id.
+    let group_id = if !is_group {
+        0
+    } else if req_group_id != 0 {
+        req_group_id
+    } else {
+        next_stp_group_id()
+    };
+
     let id = next_stp_building_id();
     net.stp_buildings.push(crate::network::protocol::StpBuildingInfo {
         id,
         def_id,
         position,
         rotation,
+        group_id,
         added: Vec::new(),
     });
     info!(
-        "MPTRACE step=BP event=stp_place_spawned id={} place_id={} def_id={} pos=({:.2},{:.2},{:.2})",
-        id, place_id, def_id, position[0], position[1], position[2]
+        "MPTRACE step=BP event=stp_place_spawned id={} place_id={} def_id={} group_id={} pos=({:.2},{:.2},{:.2})",
+        id, place_id, def_id, group_id, position[0], position[1], position[2]
     );
 }
 
@@ -1297,6 +1362,8 @@ async fn process_stp_pickup(
     );
 
     if requester_id == net.local_id {
+        // ADR-011: our own local player picked up (host path) → stamp the pickup-anim window.
+        net.last_pickup_at = Some(std::time::Instant::now());
         let _ = to_clients.send(ServerMessage::Event(GameEvent {
             event_type: "stp_pickup_granted".into(),
             data: serde_json::json!({
