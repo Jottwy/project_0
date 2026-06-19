@@ -6,12 +6,12 @@
 - Hecho: Sistema de animación de proxies remotos COMPLETO (locomoción + jump + pickup), 100% client-side salvo el sello de pickup en backend (ADR-011 VALIDADA). Controller custom que reemplaza el AnimatorOverrideController vendor. Build Roslyn 2-etapas (Assembly-CSharp + Assembly-CSharp-Editor) en verde; backend Rust recompilado (GNU) y copiado a Builds/Backend/.
 
 ## Próximo paso (UNO solo)
-- Commit + tag (proxy-anim-v1) del hito de animación de proxies (código _Migration + Rust ADR-011 + ADR-012/013 + enmienda ADR-011, todos ya escritos). Después abordar Fase 2 (Rust+ADR: retraso de desaparición del item + reserva anti-duplicado).
+- Play-testear Fase 2 (ADR-014 VALIDADA 2026-06-19, implementada en backend): el item desaparece ~0.20s tras recogerlo (no al instante) y un item reservado rechaza peticiones concurrentes (un solo ganador). Luego commit del backend Fase 2 + el dedup de grants (ADR-011 follow-up). El hito proxy-anim ya está commiteado (proxy-anim-v1).
 
 ## En curso / a medias
 - Migración STP servidor-autoritativo: Steps 1–2 + Step 3 slice 3.1 (plumbing de protocolo) DONE y verificados. Falta slice 3.2 (capa L2 de predicción) y la reescritura de los 8 call sites de Inventory.
 - PlayerController.cs (proyecto Backrooms) marcado DEPRECATED por ADR-009 — pendiente de borrar/stub en slice 3.2 (conflicto con autoridad de movimiento de STP).
-- Fase 2 (retraso desaparición item + reserva anti-duplicado): backend authoritativo aún NO cabeado, riesgos abiertos en Deuda.
+- Fase 2 (retraso desaparición item + reserva anti-duplicado): backend IMPLEMENTADO (ADR-014 — pending_pickups host-only, borrado diferido PICKUP_REMOVE_DELAY=200ms, drenado por tick, purga en set_stp_items, rechazo de reservados). Pendiente play-test.
 
 ## Estado actual — Sistema de animación de proxies (DONE 2026-06-18)
 - **Locomoción:** `RemoteAvatar/ProxyLocomotionFeeder.cs` — escribe `MovementSpeed` derivado de la velocidad planar (delta de transform.position interpolado por RemotePlayerManager / dt), mapeo a tiers 0/1/3 (Idle/Walk/Run) con deadzone+SmoothDamp y guard de teleport XZ. NO toca red.
@@ -91,7 +91,7 @@
 ## Riesgos abiertos
 - ADR-003 (topología de red) sin validar: bloquea diseño de persistencia y regiones.
 - ADR-007: params nuevos sin cablear al algoritmo y load_profiles sin conectar end-to-end (espera ADR-005 IPC).
-- Fase 2 (retraso desaparición item al frame jugoso del clip ~0.20s sincronizado cliente↔servidor + reserva anti-duplicado autoritativa en backend) — no cabeada, riego de duplicado en pérdida de paquete IPC.
+- Fase 2 implementada (ADR-014 VALIDADA 2026-06-19): borrado diferido ~0.20s + reserva host-only anti-duplicado. Pendiente play-test. (El dedup de StpPickupGranted retransmitido — ADR-011 follow-up — también ya implementado.)
 - Fase 3 (aim/look sync — rotación de cámara remota → orientación del proxy; requiere campo de rotación nuevo en el paquete de pose → cambio de schema → ADR) — bloqueada por cambio de protocolo.
 
 ## NO tocar

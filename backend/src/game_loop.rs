@@ -44,6 +44,10 @@ const SPRINT_MULT: f32 = 1.5;
 const SPEED_TOLERANCE: f32 = 0.5;
 /// Stamina drained per second while the client reports the run move-state.
 const RUN_STAMINA_DRAIN: f32 = 15.0;
+/// ADR-014: delay between granting a pickup and removing the item from `stp_items` (the
+/// "juicy frame" of the gesture). Host-only. COUPLED to PickupSpeed (x2 in
+/// ProxyAnimatorControllerBuilder) → if PickupSpeed changes, re-tune this by hand.
+const PICKUP_REMOVE_DELAY: Duration = Duration::from_millis(600);
 
 /// TEMP DIAGNOSTIC — forces the god-traversal collision bypass on,
 /// independent of the DEV_GOD_TRAVERSAL environment variable.
@@ -175,6 +179,26 @@ pub async fn run(
             let res = resolve_safe_spawn(&mut world, preferred_spawn());
             player.position = res.position;
             spawn_resolved = true;
+        }
+
+        // ADR-014: drain reserved pickups whose juicy-frame delay elapsed → remove the item now
+        // (despawns for all via the stp_items diff at 10Hz). Tolerant: if the item already left
+        // stp_items by another path, just drop the (now-orphan) reservation. Host-only in practice
+        // (joiners never reserve), so the empty-map check makes it a no-op there.
+        if !net.pending_pickups.is_empty() {
+            let now = std::time::Instant::now();
+            let due: Vec<u32> = net
+                .pending_pickups
+                .iter()
+                .filter(|(_, (_, remove_at))| *remove_at <= now)
+                .map(|(item_id, _)| *item_id)
+                .collect();
+            for item_id in due {
+                net.pending_pickups.remove(&item_id);
+                if let Some(pos) = net.stp_items.iter().position(|it| it.id == item_id) {
+                    net.stp_items.remove(pos);
+                }
+            }
         }
 
         // ─── PHASE 2: SIMULATE ───
@@ -474,6 +498,16 @@ async fn handle_network_event(
             def_id,
             count,
         } => {
+            // ADR-011 follow-up: dedup retransmitted reliable grants. StpPickupGranted is reliable
+            // and may arrive multiple times; without this each copy re-stamps last_pickup_at →
+            // a duplicated "pickup" window on observers. Same form as processed_stp_drops/places/etc.
+            if item_id != 0 && !net.processed_stp_pickup_grants.insert(item_id) {
+                info!(
+                    "MPTRACE step=SP event=stp_pickup_grant_duplicate item_id={} ignored=true",
+                    item_id
+                );
+                return;
+            }
             // ADR-011: our own local player picked up (joiner path: host granted) → stamp window.
             net.last_pickup_at = Some(std::time::Instant::now());
             // We are the recoger: surface the grant to our Unity, which credits the
@@ -820,6 +854,11 @@ async fn handle_action(
                 items.len()
             );
             net.stp_items = items;
+            // ADR-014 invariant: drop reservations for items no longer present, so pending_pickups
+            // never points at a vanished item.
+            let present: std::collections::HashSet<u32> =
+                net.stp_items.iter().map(|it| it.id).collect();
+            net.pending_pickups.retain(|item_id, _| present.contains(item_id));
         }
         // Phase 2: a client asks to pick up an STP item. Host-authoritative: the host
         // validates and removes it (vanishes for all via the stp_items relay) and grants
@@ -1344,8 +1383,20 @@ async fn process_stp_pickup(
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
 ) {
-    let pos = match net.stp_items.iter().position(|it| it.id == item_id) {
-        Some(p) => p,
+    // ADR-014: the reservation is the dedup now that the removal is deferred. A request for an
+    // item already being channeled (reserved) is rejected just like a not-found one.
+    if net.pending_pickups.contains_key(&item_id) {
+        info!(
+            "MPTRACE step=SP event=stp_pickup_rejected item_id={} requester_id={} reason=reserved",
+            item_id, requester_id
+        );
+        return;
+    }
+
+    // The item must still exist. We do NOT remove it here (ADR-014 deferred removal): copy the
+    // fields the grant needs, then reserve it; the per-tick drain removes it at remove_at.
+    let (def_id, count) = match net.stp_items.iter().find(|it| it.id == item_id) {
+        Some(it) => (it.def_id, it.count),
         None => {
             info!(
                 "MPTRACE step=SP event=stp_pickup_rejected item_id={} requester_id={} reason=not_found",
@@ -1355,10 +1406,16 @@ async fn process_stp_pickup(
         }
     };
 
-    let item = net.stp_items.remove(pos);
     info!(
         "MPTRACE step=SP event=stp_pickup_granted item_id={} requester_id={} def_id={} count={}",
-        item_id, requester_id, item.def_id, item.count
+        item_id, requester_id, def_id, count
+    );
+
+    // ADR-014: reserve — keep the item visible in stp_items until remove_at; concurrent requests
+    // are rejected by the contains_key check above. The drain removes it at the juicy frame.
+    net.pending_pickups.insert(
+        item_id,
+        (requester_id, std::time::Instant::now() + PICKUP_REMOVE_DELAY),
     );
 
     if requester_id == net.local_id {
@@ -1368,15 +1425,15 @@ async fn process_stp_pickup(
             event_type: "stp_pickup_granted".into(),
             data: serde_json::json!({
                 "item_id": item_id,
-                "def_id": item.def_id,
-                "count": item.count,
+                "def_id": def_id,
+                "count": count,
             }),
         }));
     } else {
         let payload = crate::network::protocol::PacketPayload::StpPickupGranted {
             item_id,
-            def_id: item.def_id,
-            count: item.count,
+            def_id,
+            count,
         };
         net.send_reliable(requester_id, &payload).await;
     }

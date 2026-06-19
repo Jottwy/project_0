@@ -190,6 +190,15 @@ pub struct NetworkManager {
     pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
     /// Phase B2.6: client-generated harvest-hit ids already processed by the host (dedup).
     pub processed_stp_harvest_hits: std::collections::HashSet<u64>,
+    /// ADR-011 follow-up: host-assigned item ids whose StpPickupGranted the joiner already
+    /// processed, so a reliable retransmit of the grant never re-stamps last_pickup_at (which
+    /// would duplicate the proxy "pickup" window). Same dedup pattern as the processed_stp_* above.
+    pub processed_stp_pickup_grants: std::collections::HashSet<u32>,
+    /// ADR-014 (host-only): reserved pickups awaiting their deferred removal.
+    /// item_id → (requester_id, remove_at). The item stays in `stp_items` (visible) until
+    /// remove_at, but a second request for a reserved item is rejected — the reservation is the
+    /// dedup now that the removal is deferred. Never points at a vanished item (purged on removal).
+    pub pending_pickups: std::collections::HashMap<u32, (PeerId, Instant)>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     /// ADR-011: when the LOCAL player last confirmed a pickup. `broadcast_player_update`
@@ -245,6 +254,8 @@ impl NetworkManager {
             processed_stp_carryable_drops: std::collections::HashSet::new(),
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: std::collections::HashSet::new(),
+            processed_stp_pickup_grants: std::collections::HashSet::new(),
+            pending_pickups: std::collections::HashMap::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
             last_pickup_at: None,
