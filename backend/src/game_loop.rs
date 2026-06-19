@@ -3,7 +3,7 @@
 //! and streams `WorldState` back at 10hz. See ARCHITECTURE_V1.md §6.1.
 
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use log::{debug, info};
 use tokio::sync::{broadcast, mpsc};
@@ -14,10 +14,12 @@ use crate::ipc::{
     RemotePlayerState, ServerMessage, StatsView, WorldState,
 };
 use crate::network::sync;
-use crate::network::{NetworkEvent, NetworkManager};
+use crate::network::{NetworkEvent, NetworkManager, PeerId};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
-use crate::world::collision::{resolve_safe_spawn, Level0Collision};
+use crate::world::collision::{
+    resolve_safe_spawn, CollisionResultKind, Level0Collision, SimChunkCache,
+};
 use crate::world::World;
 
 const TICK_HZ: u64 = 60;
@@ -54,6 +56,32 @@ const PICKUP_REMOVE_DELAY: Duration = Duration::from_millis(600);
 /// MUST be reverted to `false` (or removed) after validation.
 const DEV_GOD_TRAVERSAL_HARDCODED: bool = true;
 
+/// ADR-016 slice 1 — TEST trigger: auto-inject one static phantom peer (the robapieles)
+/// at host startup so it can be seen in play-test. TEMPORARY scaffolding: in later slices
+/// the real game logic spawns the phantom; flip to `false` (or remove) when slice 1 is
+/// validated.
+const DEBUG_SPAWN_PHANTOM: bool = true;
+
+/// ADR-016 slice 2: phantom walk speed (m/s). Calibrated to human walking so the client's
+/// velocity-derived locomotion (ADR-013) reads it as walking, not teleporting — the proxy
+/// teleport guards only trip on chunk-displacement-scale jumps, far above this. Calibrable.
+const PHANTOM_WALK_SPEED: f32 = 1.8;
+/// ADR-016 slice 2: on a head-on block the phantom re-orients by a random turn in
+/// [90°, 270°] — never straight back into the wall, never a no-op — so it never stalls and
+/// wanders the maze (no smart pathing yet).
+const PHANTOM_TURN_MIN: f32 = std::f32::consts::FRAC_PI_2;
+const PHANTOM_TURN_MAX: f32 = std::f32::consts::PI * 1.5;
+/// Initial heading (yaw, radians) of a freshly driven phantom: +X (east of the host spawn).
+const PHANTOM_INITIAL_HEADING: f32 = std::f32::consts::FRAC_PI_2;
+/// ADR-016 slice 4: how long the phantom holds the FAKED "pickup" animation. Aligned with
+/// ADR-011's ~1s trigger-flank window (the real gesture's duration is client-owned, via the
+/// Animator exitTime). Movement is paused for this window so it reads like a player that is
+/// input-locked while picking up. PURE presentation — no real pickup state is ever touched.
+const PHANTOM_PICKUP_GESTURE: Duration = Duration::from_millis(1000);
+/// ADR-016 slice 4: cooldown between faked pickups while patrolling (theater — no item needed).
+/// Calibrable; small enough to see it recur in play-test.
+const PHANTOM_PICKUP_INTERVAL: Duration = Duration::from_secs(6);
+
 pub async fn run(
     mut from_clients: mpsc::Receiver<ClientMessage>,
     to_clients: broadcast::Sender<ServerMessage>,
@@ -79,10 +107,13 @@ pub async fn run(
     // Authoritative velocity echoed in the 20 Hz delta: the accepted client
     // velocity, or zero when the speed cap rejected the move (held in place).
     let mut authoritative_velocity = Vec3::ZERO;
-    let mut processed_interactions: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed_interactions: HashSet<(u16, u64)> = HashSet::with_capacity(256);
     // Track the last chunk position used for ownership so we only call
     // update_ownership when the player crosses a chunk boundary, not every tick.
     let mut last_ownership_chunk: Option<ChunkPos> = None;
+    // ADR-016 slice 2: host-only driver that walks phantom peers (the robapieles) each
+    // entity tick, resolving collision via ADR-017's sim-only chunk cache.
+    let mut phantom_driver = PhantomDriver::new(net.world_seed);
 
     // Bootstrap: host/solo creates the authoritative initial structure before
     // loading the surrounding ownership radius. Joiners wait for host WorldSync.
@@ -100,6 +131,15 @@ pub async fn run(
         // Reload ownership around the validated spawn so the streamed radius is
         // centred on where the player actually stands.
         world.update_ownership(player.position, player.id);
+
+        // ADR-016 slice 1 (TEST trigger): inject one phantom near the host spawn so it
+        // appears as a player (host + joiners, via the ADR-015 relay). Slice 2: register it
+        // with the driver so it WALKS (collision via ADR-017). No pickup AI yet (slice 4).
+        if DEBUG_SPAWN_PHANTOM {
+            let phantom_pos = [player.position.x + 3.0, player.position.y, player.position.z];
+            let phantom_id = net.spawn_phantom("Robapieles_Test", phantom_pos);
+            phantom_driver.add(phantom_id, PHANTOM_INITIAL_HEADING);
+        }
     }
 
     info!(
@@ -174,8 +214,10 @@ pub async fn run(
 
         // A joiner places its local player only once it has connected and the
         // host's world has arrived — never on the empty/pre-sync world, and
-        // never at the unsafe chunk-corner origin.
-        if !spawn_resolved && net.peer_count() > 0 && !world.chunks.is_empty() {
+        // never at the unsafe chunk-corner origin. ADR-016: real_peer_count so an
+        // injected phantom never satisfies this gate (no-op on a joiner, where the
+        // phantom is unmarked, but correct on any backend that injects one).
+        if !spawn_resolved && net.real_peer_count() > 0 && !world.chunks.is_empty() {
             let res = resolve_safe_spawn(&mut world, preferred_spawn());
             player.position = res.position;
             spawn_resolved = true;
@@ -206,16 +248,9 @@ pub async fn run(
         // position [0,0,0], which would otherwise drag the player to the origin
         // before the client's first packet. Track the accepted seq for the ack.
         if has_received_input {
-            match apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal)
-            {
-                Some(seq) => {
-                    last_accepted_input_seq = seq;
-                    authoritative_velocity = Vec3::from_array(received_input.velocity);
-                }
-                // Speed cap removed: apply_movement always accepts the pose, so this
-                // arm is now unreachable; kept for match exhaustiveness.
-                None => authoritative_velocity = Vec3::ZERO,
-            }
+            let seq = apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
+            last_accepted_input_seq = seq;
+            authoritative_velocity = Vec3::from_array(received_input.velocity);
         }
         // Only refresh chunk ownership when the player crosses a chunk boundary.
         // Calling update_ownership every tick caused ~2 FPS churn from constant
@@ -261,6 +296,13 @@ pub async fn run(
                 let _ = to_clients.send(ServerMessage::Event(ev));
             }
             world.tick_respawns(entity_dt);
+
+            // ADR-016 slice 2: advance phantom peers (host-only). Each phantom walks and its
+            // move is resolved via ADR-017 sim-only collision, so it respects walls/floor even
+            // far from the host (where world.chunks is empty). Same 10 Hz as the pose relay.
+            if net.is_host {
+                phantom_driver.step(&world, &mut net, entity_dt);
+            }
         }
 
         // Ownership is now handled per-chunk-boundary above; only teleportation
@@ -292,8 +334,9 @@ pub async fn run(
             }
         }
 
-        // Stats with real context from the world.
-        let ctx = world.stat_context_for(player.position, net.peer_count() as u32);
+        // Stats with real context from the world. ADR-016: real_peer_count so a phantom
+        // doesn't inflate the host's sanity context (it still renders in the roster).
+        let ctx = world.stat_context_for(player.position, net.real_peer_count() as u32);
         if dev_freeze_survival {
             player.stats.speed_modifier = 1.0;
             player.stats.accuracy_modifier = 1.0;
@@ -334,6 +377,10 @@ pub async fn run(
             // only the host has anything to relay.)
             if net.is_host {
                 sync::broadcast_peer_roster(&net, &player).await;
+                // ADR-015: relay each peer's full pose (rotation+animation, not just the
+                // position the roster carries) so joiners see other joiners gesture/face
+                // correctly. Host-only; no-op below two peers.
+                sync::broadcast_peer_poses(&net).await;
                 sync::broadcast_stp_items(&net).await;
                 sync::broadcast_stp_buildings(&net).await;
                 sync::broadcast_stp_carryables(&net).await;
@@ -350,6 +397,11 @@ pub async fn run(
         if tick % HEARTBEAT_EVERY == 0 {
             net.retry_pending_connection().await;
             net.send_heartbeats().await;
+
+            // ADR-016: keep injected phantoms alive — refresh their heartbeat before the
+            // timeout scan so check_timeouts never reaps them (they get no real packets).
+            // Runs at 1s, well under the 5s HEARTBEAT_TIMEOUT. No-op without phantoms.
+            net.refresh_phantom_heartbeats();
 
             // Check timeouts.
             let timeout_events = net.check_timeouts();
@@ -700,7 +752,7 @@ fn apply_movement(
     world: &World,
     tick: u64,
     god_traversal: bool,
-) -> Option<u32> {
+) -> u32 {
     player.rotation = input.look[1].rem_euclid(360.0); // yaw is INPUT (ADR-009 §8)
     apply_client_authoritative_move(player, input, dt, world, tick, god_traversal)
 }
@@ -722,7 +774,7 @@ fn apply_client_authoritative_move(
     world: &World,
     _tick: u64,
     god_traversal: bool,
-) -> Option<u32> {
+) -> u32 {
     // Run-drain stamina from the reported move-state (2 == run).
     if input.move_state == 2 {
         player.stats.use_stamina(RUN_STAMINA_DRAIN * dt);
@@ -735,7 +787,7 @@ fn apply_client_authoritative_move(
 
     if god_traversal {
         player.position = claimed;
-        return Some(input.input_seq);
+        return input.input_seq;
     }
 
     // Collision: verify the claimed position doesn't intersect static geometry.
@@ -743,7 +795,7 @@ fn apply_client_authoritative_move(
     // authoritative pose echoed back to the client.
     let resolved = Level0Collision::resolve_move(world, player.position, claimed);
     player.position = resolved.position;
-    Some(input.input_seq)
+    input.input_seq
 }
 
 async fn handle_action(
@@ -770,9 +822,17 @@ async fn handle_action(
             );
 
             // pickup needs an existing target_id; drop has none (it creates an item).
-            if request_id == 0 || (interaction_type != "drop" && target_id == 0) {
+            if request_id == 0 {
                 info!(
-                    "MPTRACE step=AF event=host_validate_interaction result=rejected reason=invalid_request target_id={} requester_id={}",
+                    "MPTRACE step=AF event=host_validate_interaction result=rejected reason=invalid_request_id target_id={} requester_id={}",
+                    target_id,
+                    net.local_id
+                );
+                return;
+            }
+            if interaction_type != "drop" && target_id == 0 {
+                info!(
+                    "MPTRACE step=AF event=host_validate_interaction result=rejected reason=invalid_target_id target_id={} requester_id={}",
                     target_id,
                     net.local_id
                 );
@@ -1616,17 +1676,16 @@ fn build_world_state(
     net: &NetworkManager,
     ack_input_seq: u32,
 ) -> WorldState {
-    let remote_players: Vec<RemotePlayerState> = net
-        .peers
-        .values()
-        .map(|p| RemotePlayerState {
+    let mut remote_players = Vec::with_capacity(net.peer_count());
+    for p in net.peers.values() {
+        remote_players.push(RemotePlayerState {
             id: p.id,
             name: p.name.clone(),
             position: p.position,
             rotation: p.rotation,
             animation: p.animation.clone(),
-        })
-        .collect();
+        });
+    }
 
     if tick % 30 == 0 {
         let remote_ids: Vec<u16> = remote_players.iter().map(|p| p.id).collect();
@@ -1682,5 +1741,217 @@ fn build_world_state(
         stp_buildings: net.stp_buildings.clone(),
         stp_carryables: net.stp_carryables.clone(),
         stp_harvestables: net.stp_harvestables.clone(),
+    }
+}
+
+// ─── ADR-016 slices 2+4: phantom movement + faked-pickup driver ───
+
+/// Host-only driver for phantom peers (the robapieles). Each phantom wanders: it steps along
+/// its heading and, on a head-on block, turns to a new heading — so it bumps walls and turns
+/// instead of clipping through them. Every step is resolved through ADR-017's
+/// `resolve_move_simulated` + `SimChunkCache`, so collision holds EVEN far from the host where
+/// `world.chunks` is empty (the cache generates the layout on-demand). It is ADR-017's first
+/// runtime consumer. Periodically the phantom also FAKES a pickup (slice 4): it freezes and
+/// flips its animation field to "pickup" for ~1s, then resumes. No detection/chase AI yet.
+///
+/// SAFETY INVARIANT (ADR-016 slice 4): the faked pickup is PURE THEATER — it touches ONLY the
+/// phantom's `animation` field (via `update_player_state`). It NEVER calls `process_stp_pickup`,
+/// NEVER inserts into `pending_pickups`, NEVER touches `stp_items`, NEVER credits an inventory,
+/// NEVER emits a `stp_pickup_granted`. The phantom has no effect on real game state beyond its
+/// own presentation field. (Calling the real pickup path would delete/reserve a real world item.)
+///
+/// The `SimChunkCache` lives here (a host-only game-loop local), not in World/NetworkManager:
+/// it is sim-only host state (ADR-017), and keeping it out of those structs is the least
+/// invasive home. The phantom POSE itself lives in its `PeerConnection` (the render source).
+struct PhantomDriver {
+    sim: SimChunkCache,
+    movers: Vec<PhantomMover>,
+}
+
+/// Per-phantom state: which peer, its current heading (yaw, radians), and the faked-pickup
+/// gesture bookkeeping (slice 4).
+struct PhantomMover {
+    id: PeerId,
+    heading: f32,
+    /// `Some(t)` while faking a pickup: movement is paused and `animation` is held at
+    /// "pickup" until `t`. `None` while walking. PURE presentation — never real pickup state.
+    pickup_until: Option<Instant>,
+    /// Earliest instant the next faked pickup may begin.
+    next_pickup_at: Instant,
+}
+
+impl PhantomDriver {
+    fn new(world_seed: u64) -> Self {
+        Self {
+            sim: SimChunkCache::new(world_seed),
+            movers: Vec::new(),
+        }
+    }
+
+    fn add(&mut self, id: PeerId, heading: f32) {
+        self.movers.push(PhantomMover {
+            id,
+            heading,
+            pickup_until: None,
+            next_pickup_at: Instant::now() + PHANTOM_PICKUP_INTERVAL,
+        });
+    }
+
+    /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
+    /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
+    /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
+    /// blocked step re-orients the heading so the phantom never stalls at a wall.
+    fn step(&mut self, world: &World, net: &mut NetworkManager, dt: f32) {
+        let now = Instant::now();
+        for i in 0..self.movers.len() {
+            let id = self.movers[i].id;
+            let from = match net.peers.get(&id) {
+                Some(p) => Vec3::from_array(p.position),
+                None => continue, // phantom no longer present
+            };
+
+            // ── Slice 4: faked-pickup gesture (PURE THEATER — only the animation field). ──
+            // End an expired gesture, then maybe start a new one when the cooldown elapsed.
+            if self.movers[i].pickup_until.map_or(false, |until| now >= until) {
+                self.movers[i].pickup_until = None;
+            }
+            if self.movers[i].pickup_until.is_none() && now >= self.movers[i].next_pickup_at {
+                self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
+                self.movers[i].next_pickup_at = now + PHANTOM_PICKUP_INTERVAL;
+                info!(
+                    "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
+                    id
+                );
+            }
+            // While gesturing: freeze in place and flip animation to "pickup" (the trigger
+            // flank the proxy edge-detects, ADR-011). We re-stamp the SAME grounded pose (keeps
+            // the heartbeat fresh). NOTHING real is touched — no process_stp_pickup, no
+            // pending_pickups, no stp_items, no grant. Movement is paused for the window so it
+            // reads like a player input-locked while picking up.
+            if self.movers[i].pickup_until.is_some() {
+                let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                if let Some(peer) = net.peers.get_mut(&id) {
+                    peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                }
+                continue;
+            }
+
+            // Heading → XZ direction (yaw 0 = +Z, Unity convention). Y is left to the
+            // collision resolver, which plants it on the real floor (fixes the slice-1 float).
+            let heading = self.movers[i].heading;
+            let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+            let desired = Vec3::new(
+                from.x + dir.x * PHANTOM_WALK_SPEED * dt,
+                from.y,
+                from.z + dir.z * PHANTOM_WALK_SPEED * dt,
+            );
+
+            let resolved =
+                Level0Collision::resolve_move_simulated(world, &mut self.sim, from, desired);
+
+            // Head-on block → re-orient so the phantom never stalls at a wall (slides keep
+            // their heading and hug the wall; only a full block turns).
+            if resolved.kind == CollisionResultKind::Blocked {
+                let turn = PHANTOM_TURN_MIN
+                    + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
+                self.movers[i].heading = (heading + turn).rem_euclid(std::f32::consts::TAU);
+            }
+
+            // Face the (possibly updated) heading so it never moonwalks. Unity yaw = the
+            // heading itself (dir = (sin, _, cos) → atan2(x, z) == heading), in degrees.
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = net.peers.get_mut(&id) {
+                // update_player_state also refreshes the heartbeat. animation = "idle": the
+                // walk/run pose is velocity-derived client-side (ADR-013); the animation
+                // channel is reserved for actions (pickup, ADR-011 — slice 4, not here).
+                peer.update_player_state(resolved.position.to_array(), yaw, "idle".into());
+            }
+
+            if net.session_start.elapsed().as_millis() % 1000 < 120 {
+                info!(
+                    "MPTRACE step=PH2 event=phantom_move phantom_id={} pos=({:.2},{:.2},{:.2}) yaw={:.1} kind={:?} sim_chunks={}",
+                    id,
+                    resolved.position.x,
+                    resolved.position.y,
+                    resolved.position.z,
+                    yaw,
+                    resolved.kind,
+                    self.sim.len()
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn phantom_driver_walks_via_sim_cache_far_from_host() {
+        // Far from any loaded chunk: the player/host collision path would treat every chunk
+        // as "unloaded" (everything blocks). The driver must instead resolve via ADR-017's
+        // sim-only cache, which generates the far layout on-demand.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [5000.0, 1.8, 5000.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42); // no chunks loaded
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING);
+
+        for _ in 0..40 {
+            driver.step(&world, &mut net, 0.1);
+        }
+
+        // The driver exercised the sim-only cache (proves on-demand generation far from host).
+        assert!(
+            driver.sim.len() > 0,
+            "driver must generate sim chunks far from the host"
+        );
+        // The phantom stayed grounded with a finite pose (never NaN, never an unloaded snap).
+        let p = net.peers[&pid].position;
+        assert!(
+            p[0].is_finite() && p[1].is_finite() && p[2].is_finite(),
+            "phantom pose must be finite"
+        );
+        assert!(p[1] > 0.0, "phantom must be grounded on a real floor, got y={}", p[1]);
+    }
+
+    #[tokio::test]
+    async fn phantom_fake_pickup_touches_only_animation_not_real_state() {
+        // SAFETY INVARIANT (ADR-016 slice 4): a faked pickup must flip ONLY the phantom's
+        // animation field — never the real pickup state. Seed a real item to prove it survives.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        net.stp_items.push(crate::network::protocol::StpItemInfo {
+            id: 7,
+            def_id: 1,
+            count: 1,
+            position: [10.5, 1.8, 10.0],
+            rotation: 0.0,
+        });
+        let pid = net.spawn_phantom("Robapieles_Test", [10.0, 1.8, 10.0]);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING);
+        // Force the gesture to be due now (instead of after the cooldown).
+        driver.movers[0].next_pickup_at = Instant::now();
+
+        driver.step(&world, &mut net, 0.1);
+
+        // It IS faking the gesture: the presentation flank is "pickup"…
+        assert_eq!(
+            net.peers[&pid].animation, "pickup",
+            "faked pickup must set the animation flank"
+        );
+        // …and the phantom stayed put during the gesture (movement paused).
+        assert_eq!(net.peers[&pid].position, [10.0, 1.8, 10.0]);
+        // INVARIANT: nothing real changed — the item still exists, no reservation, no grant.
+        assert_eq!(net.stp_items.len(), 1, "phantom must NOT remove real items");
+        assert!(net.stp_items.iter().any(|it| it.id == 7));
+        assert!(net.pending_pickups.is_empty(), "phantom must NOT reserve pickups");
+        assert!(
+            net.processed_stp_pickup_grants.is_empty(),
+            "phantom must NOT process any pickup grant"
+        );
     }
 }

@@ -10,7 +10,7 @@
 
 use log::info;
 
-use crate::utils::{world_to_chunk, Vec3, CHUNK_SIZE};
+use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::chunk::{
     layer_y, layered_chunk_pos, ChunkLayer, ChunkLayoutV1, LayeredChunkPos, CELL_ANOMALY,
     CELL_BLOCKED, CELL_HAZARD, CELL_PILLAR, CELL_PIT, CELL_RAMP, CELL_SAFE, CELL_WALKABLE,
@@ -71,35 +71,29 @@ pub struct CollisionResolve {
 pub struct Level0Collision;
 
 impl Level0Collision {
+    /// Player/host movement: collision against the loaded `world.chunks` only. An
+    /// unloaded chunk blocks (the host streams its own radius). Unchanged behaviour
+    /// — the historical player path, now expressed via the `LayoutSource::World` seam.
     pub fn resolve_move(world: &World, from: Vec3, desired: Vec3) -> CollisionResolve {
-        let desired = Vec3::new(desired.x, from.y, desired.z);
-        if !is_blocked_at(world, desired, PLAYER_RADIUS) {
-            return resolve_with_y(world, desired, CollisionResultKind::Free, "free");
-        }
+        resolve_move_src(&LayoutSource::World(world), from, desired)
+    }
 
-        let x_only = Vec3::new(desired.x, from.y, from.z);
-        if !is_blocked_at(world, x_only, PLAYER_RADIUS) {
-            return resolve_with_y(world, x_only, CollisionResultKind::SlidX, "z_blocked");
-        }
-
-        let z_only = Vec3::new(from.x, from.y, desired.z);
-        if !is_blocked_at(world, z_only, PLAYER_RADIUS) {
-            return resolve_with_y(world, z_only, CollisionResultKind::SlidZ, "x_blocked");
-        }
-
-        // Fully blocked — stay put, but report what actually blocked the
-        // desired move so the trace logs name the real obstruction.
-        let (chunk_pos, cell, flags, reason) = describe_block(world, desired, PLAYER_RADIUS);
-        let mut position = from;
-        position.y = floor_player_y(world, position);
-        CollisionResolve {
-            position,
-            kind: CollisionResultKind::Blocked,
-            chunk_pos,
-            cell,
-            flags,
-            reason,
-        }
+    /// ADR-017: movement for a server-side entity with NO screen (the robapieles,
+    /// ADR-016). Collision resolves against `world.chunks` first and, on a miss, a
+    /// host-only sim-only `SimChunkCache` that generates the chunk layout on-demand
+    /// from the deterministic generator. The generated layout is IDENTICAL to the
+    /// real chunk's, so this never diverges from the player path; the sim layouts
+    /// are NEVER inserted into `world.chunks` nor sent to render.
+    pub fn resolve_move_simulated(
+        world: &World,
+        sim: &mut SimChunkCache,
+        from: Vec3,
+        desired: Vec3,
+    ) -> CollisionResolve {
+        // Pre-warm the chunks this move can read so the resolve below is a pure
+        // read over (world.chunks ∪ sim cache) — keeps the cache borrow immutable.
+        sim.prewarm_for_move(world, from, desired);
+        resolve_move_src(&LayoutSource::WorldThenSim(world, sim), from, desired)
     }
 
     pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
@@ -108,6 +102,150 @@ impl Level0Collision {
 
     pub fn floor_player_y(world: &World, pos: Vec3) -> f32 {
         floor_player_y(world, pos)
+    }
+}
+
+/// ADR-017 — where collision reads chunk layouts from. `World` is the player/host
+/// path (loaded chunks only; an absent chunk blocks). `WorldThenSim` is the
+/// entity path: loaded chunks first, else the host-only on-demand sim cache. Both
+/// are READ-ONLY at query time (the sim cache is pre-warmed before the query), so
+/// the lookup never needs `&mut` and the player path is byte-for-byte unchanged.
+enum LayoutSource<'a> {
+    World(&'a World),
+    WorldThenSim(&'a World, &'a SimChunkCache),
+}
+
+impl<'a> LayoutSource<'a> {
+    #[inline]
+    fn layout(&self, key: LayeredChunkPos) -> Option<&ChunkLayoutV1> {
+        match self {
+            LayoutSource::World(world) => world.chunks.get(&key).map(|c| &c.layout),
+            LayoutSource::WorldThenSim(world, sim) => world
+                .chunks
+                .get(&key)
+                .map(|c| &c.layout)
+                .or_else(|| sim.layouts.get(&key)),
+        }
+    }
+}
+
+/// ADR-017 — host-only, sim-only collision cache. Holds `ChunkLayoutV1`s generated
+/// on-demand by the deterministic world generator for chunks NOT loaded in
+/// `world.chunks` (i.e. far from the host player). Consumed only by
+/// `Level0Collision::resolve_move_simulated` for screen-less server entities; it is
+/// NEVER inserted into `world.chunks` and NEVER serialized to Unity render
+/// (`build_chunk_views` reads `world.chunks` only). Bounded by `SIM_CACHE_MAX_CHUNKS`
+/// with farthest-from-query eviction so a roaming entity can't grow it without limit.
+///
+/// No consumer in production until ADR-016 (the robapieles); exercised by tests.
+pub struct SimChunkCache {
+    world_seed: u64,
+    layouts: std::collections::HashMap<LayeredChunkPos, ChunkLayoutV1>,
+}
+
+/// Max live sim-only chunk layouts. Calibrable: a few per-move 3×3 spans of
+/// headroom; a roaming entity evicts the farthest beyond this. ~420 B/layout, so
+/// 64 ≈ 27 KB — trivial, and entirely separate from world.chunks/render memory.
+pub const SIM_CACHE_MAX_CHUNKS: usize = 64;
+
+impl SimChunkCache {
+    pub fn new(world_seed: u64) -> Self {
+        Self {
+            world_seed,
+            layouts: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Live cached layouts (diagnostics / tests).
+    pub fn len(&self) -> usize {
+        self.layouts.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layouts.is_empty()
+    }
+
+    /// Make a layout available for `key` WITHOUT touching `world.chunks`: if the
+    /// chunk is already loaded for the host, or already cached, do nothing; else
+    /// generate it via the SAME deterministic path the real world uses
+    /// (`generate_chunk_layer`, same seed+pos+layer) and cache its layout. Identical
+    /// seed → layout identical to the real chunk (zero divergence). Side-effect-free:
+    /// content spawn uses stable ids, not the global entity-id counter.
+    fn ensure(&mut self, world: &World, key: LayeredChunkPos) {
+        if world.chunks.contains_key(&key) || self.layouts.contains_key(&key) {
+            return;
+        }
+        let pos = (key.0, key.2);
+        let layout =
+            crate::world::generator::generate_chunk_layer(self.world_seed, pos, key.1).layout;
+        self.layouts.insert(key, layout);
+    }
+
+    /// Pre-generate every chunk the upcoming move can read (the 3×3 chunk span
+    /// around both endpoints, at the move's layer), then enforce the cap. After
+    /// this the resolve is a pure read over `world.chunks ∪ cache`.
+    fn prewarm_for_move(&mut self, world: &World, from: Vec3, desired: Vec3) {
+        // resolve_move pins desired.y to from.y, so one layer covers the whole move.
+        let layer = layer_from_player_y(from.y);
+        for end in [from, desired] {
+            let c = world_to_chunk(end);
+            for dz in -1..=1 {
+                for dx in -1..=1 {
+                    self.ensure(world, layered_chunk_pos((c.0 + dx, c.1 + dz), layer));
+                }
+            }
+        }
+        self.enforce_cap(world_to_chunk(from));
+    }
+
+    /// Keep the cache within `SIM_CACHE_MAX_CHUNKS` by evicting the layouts whose
+    /// chunk is farthest (Chebyshev) from `center`. The current move's working set
+    /// sits closest to `center`, so it is never evicted (cap ≫ per-move span).
+    fn enforce_cap(&mut self, center: ChunkPos) {
+        while self.layouts.len() > SIM_CACHE_MAX_CHUNKS {
+            let Some(farthest) = self
+                .layouts
+                .keys()
+                .max_by_key(|k| (k.0 - center.0).abs().max((k.2 - center.1).abs()))
+                .copied()
+            else {
+                break;
+            };
+            self.layouts.remove(&farthest);
+        }
+    }
+}
+
+/// Core movement resolution, generic over where layouts are read (`LayoutSource`).
+/// The player wrapper passes `World`; the entity wrapper passes `WorldThenSim`.
+fn resolve_move_src(src: &LayoutSource, from: Vec3, desired: Vec3) -> CollisionResolve {
+    let desired = Vec3::new(desired.x, from.y, desired.z);
+    if !is_blocked_at_src(src, desired, PLAYER_RADIUS) {
+        return resolve_with_y(src, desired, CollisionResultKind::Free, "free");
+    }
+
+    let x_only = Vec3::new(desired.x, from.y, from.z);
+    if !is_blocked_at_src(src, x_only, PLAYER_RADIUS) {
+        return resolve_with_y(src, x_only, CollisionResultKind::SlidX, "z_blocked");
+    }
+
+    let z_only = Vec3::new(from.x, from.y, desired.z);
+    if !is_blocked_at_src(src, z_only, PLAYER_RADIUS) {
+        return resolve_with_y(src, z_only, CollisionResultKind::SlidZ, "x_blocked");
+    }
+
+    // Fully blocked — stay put, but report what actually blocked the
+    // desired move so the trace logs name the real obstruction.
+    let (chunk_pos, cell, flags, reason) = describe_block(src, desired, PLAYER_RADIUS);
+    let mut position = from;
+    position.y = floor_player_y_src(src, position);
+    CollisionResolve {
+        position,
+        kind: CollisionResultKind::Blocked,
+        chunk_pos,
+        cell,
+        flags,
+        reason,
     }
 }
 
@@ -345,10 +483,14 @@ fn preferred_cell(pos: Vec3, chunk_pos: (i32, i32)) -> (usize, usize) {
 // ─── Movement collision ───
 
 pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
+    is_blocked_at_src(&LayoutSource::World(world), pos, radius)
+}
+
+fn is_blocked_at_src(src: &LayoutSource, pos: Vec3, radius: f32) -> bool {
     let samples = capsule_samples(pos, radius);
     // 1. Cell-centre blockers (pillars, pits, storage) + unloaded chunks.
     for &(x, z) in &samples {
-        if sample_cell_blocks(world, pos.y, x, z) {
+        if sample_cell_blocks(src, pos.y, x, z) {
             return true;
         }
     }
@@ -364,9 +506,9 @@ pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
         }
         seen[n] = cp;
         n += 1;
-        if let Some(chunk) = world.chunks.get(&cp) {
-            if chunk.layout.has_edges()
-                && first_blocking_edge(&chunk.layout, chunk.pos, pos, radius).is_some()
+        if let Some(layout) = src.layout(cp) {
+            if layout.has_edges()
+                && first_blocking_edge(layout, (cp.0, cp.2), pos, radius).is_some()
             {
                 return true;
             }
@@ -391,14 +533,14 @@ fn capsule_samples(pos: Vec3, radius: f32) -> [(f32, f32); 9] {
 
 /// A cell that blocks regardless of edges: a centre prop (pillar/pit), explicit
 /// storage block, an unloaded chunk, or a legacy non-walkable wall cell.
-fn sample_cell_blocks(world: &World, y: f32, x: f32, z: f32) -> bool {
+fn sample_cell_blocks(src: &LayoutSource, y: f32, x: f32, z: f32) -> bool {
     let chunk_pos = world_to_chunk(Vec3::new(x, 0.0, z));
     let key = layered_chunk_pos(chunk_pos, layer_from_player_y(y));
-    let Some(chunk) = world.chunks.get(&key) else {
+    let Some(layout) = src.layout(key) else {
         return true;
     };
-    let (cell_x, cell_z) = cell_for_pos(&chunk.layout, chunk_pos, x, z);
-    let flags = chunk.layout.cell_flags(cell_x, cell_z);
+    let (cell_x, cell_z) = cell_for_pos(layout, chunk_pos, x, z);
+    let flags = layout.cell_flags(cell_x, cell_z);
     flags & (CELL_BLOCKED | CELL_WALL | CELL_PILLAR | CELL_PIT) != 0 || flags & CELL_WALKABLE == 0
 }
 
@@ -455,18 +597,18 @@ fn first_blocking_edge(
 /// Describe what blocks a desired move (for trace logs): a cell blocker if any,
 /// otherwise the nearest blocking edge.
 fn describe_block(
-    world: &World,
+    src: &LayoutSource,
     pos: Vec3,
     radius: f32,
 ) -> ((i32, i32), (usize, usize), u16, &'static str) {
     for (x, z) in capsule_samples(pos, radius) {
         let chunk_pos = world_to_chunk(Vec3::new(x, 0.0, z));
         let key = layered_chunk_pos(chunk_pos, layer_from_player_y(pos.y));
-        let Some(chunk) = world.chunks.get(&key) else {
+        let Some(layout) = src.layout(key) else {
             return (chunk_pos, (0, 0), 0, "unloaded_chunk");
         };
-        let cell = cell_for_pos(&chunk.layout, chunk_pos, x, z);
-        let flags = chunk.layout.cell_flags(cell.0, cell.1);
+        let cell = cell_for_pos(layout, chunk_pos, x, z);
+        let flags = layout.cell_flags(cell.0, cell.1);
         if flags & (CELL_BLOCKED | CELL_WALL | CELL_PILLAR | CELL_PIT) != 0
             || flags & CELL_WALKABLE == 0
         {
@@ -474,13 +616,12 @@ fn describe_block(
         }
     }
     let chunk_pos = world_to_chunk(pos);
-    let cell = world
-        .chunks
-        .get(&chunk_key_at(pos))
-        .map(|c| cell_for_pos(&c.layout, chunk_pos, pos.x, pos.z))
+    let cell = src
+        .layout(chunk_key_at(pos))
+        .map(|layout| cell_for_pos(layout, chunk_pos, pos.x, pos.z))
         .unwrap_or((0, 0));
-    if let Some(chunk) = world.chunks.get(&chunk_key_at(pos)) {
-        if let Some(kind) = first_blocking_edge(&chunk.layout, chunk_pos, pos, radius) {
+    if let Some(layout) = src.layout(chunk_key_at(pos)) {
+        if let Some(kind) = first_blocking_edge(layout, chunk_pos, pos, radius) {
             return (chunk_pos, cell, kind as u16, edge_block_reason(kind));
         }
     }
@@ -514,19 +655,18 @@ fn edge_block_reason(kind: u8) -> &'static str {
 }
 
 fn resolve_with_y(
-    world: &World,
+    src: &LayoutSource,
     mut position: Vec3,
     kind: CollisionResultKind,
     reason: &'static str,
 ) -> CollisionResolve {
-    position.y = floor_player_y(world, position);
+    position.y = floor_player_y_src(src, position);
     let chunk_pos = world_to_chunk(position);
-    let (cell, flags) = world
-        .chunks
-        .get(&chunk_key_at(position))
-        .map(|chunk| {
-            let cell = cell_for_pos(&chunk.layout, chunk_pos, position.x, position.z);
-            (cell, chunk.layout.cell_flags(cell.0, cell.1))
+    let (cell, flags) = src
+        .layout(chunk_key_at(position))
+        .map(|layout| {
+            let cell = cell_for_pos(layout, chunk_pos, position.x, position.z);
+            (cell, layout.cell_flags(cell.0, cell.1))
         })
         .unwrap_or(((0, 0), 0));
     CollisionResolve {
@@ -540,19 +680,27 @@ fn resolve_with_y(
 }
 
 fn floor_player_y(world: &World, pos: Vec3) -> f32 {
+    floor_player_y_src(&LayoutSource::World(world), pos)
+}
+
+fn floor_player_y_src(src: &LayoutSource, pos: Vec3) -> f32 {
     let chunk_pos = world_to_chunk(pos);
-    let key = chunk_key_at(pos);
-    let Some(chunk) = world
-        .chunks
-        .get(&key)
-        .or_else(|| world.chunks.get(&layered_chunk_pos(chunk_pos, 0)))
-    else {
-        return pos.y.max(PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT);
+    let primary = chunk_key_at(pos);
+    // The layout carries no layer field; the key does. A real chunk's `layer`
+    // always equals its key layer, so deriving the layer from the resolved key
+    // reproduces the previous `chunk.layer` exactly (primary key, else layer 0).
+    let (layout, layer) = if let Some(layout) = src.layout(primary) {
+        (layout, primary.1)
+    } else {
+        let zero = layered_chunk_pos(chunk_pos, 0);
+        match src.layout(zero) {
+            Some(layout) => (layout, 0),
+            None => return pos.y.max(PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT),
+        }
     };
 
-    let base =
-        PLAYER_BASE_Y + layer_y(chunk.layer) + chunk.layout.floor_level as f32 * FLOOR_LEVEL_HEIGHT;
-    match chunk.layout.floor_profile {
+    let base = PLAYER_BASE_Y + layer_y(layer) + layout.floor_level as f32 * FLOOR_LEVEL_HEIGHT;
+    match layout.floor_profile {
         crate::world::chunk::FLOOR_SUNKEN => base - 0.25,
         crate::world::chunk::FLOOR_RAISED => base + 0.35,
         FLOOR_CONNECTOR_UP => {
@@ -1066,5 +1214,120 @@ mod tests {
                 "seed {seed} spawn not clear"
             );
         }
+    }
+
+    // ── ADR-017: sim-only on-demand collision (SimChunkCache) ──
+
+    #[test]
+    fn sim_cache_layout_is_identical_to_the_real_generated_chunk() {
+        let world = World::new(42);
+        let mut sim = SimChunkCache::new(42);
+        let pos = (137, -94); // far from any loaded chunk
+        let key = layered_chunk_pos(pos, 0);
+        sim.ensure(&world, key);
+        let cached = sim
+            .layouts
+            .get(&key)
+            .expect("sim cache must hold the far chunk layout");
+        // The SAME deterministic path update_ownership uses for expansion chunks.
+        let real = generate_chunk(42, pos).layout;
+        assert_eq!(
+            *cached, real,
+            "sim layout must equal the real generated layout (zero divergence)"
+        );
+    }
+
+    #[test]
+    fn sim_collision_resolves_far_world_that_player_collision_sees_as_unloaded() {
+        let world = World::new(42); // no chunks loaded
+        let from = Vec3::new(5000.0, 1.8, 5000.0);
+        let desired = Vec3::new(5000.5, 1.8, 5000.5);
+
+        // Player/host path: the far chunk is absent → fully blocked as "unloaded".
+        let player = Level0Collision::resolve_move(&world, from, desired);
+        assert_eq!(player.kind, CollisionResultKind::Blocked);
+        assert_eq!(player.reason, "unloaded_chunk");
+
+        // Entity path: the layout is generated on-demand, so the move resolves
+        // against real geometry — never "unloaded".
+        let mut sim = SimChunkCache::new(world.seed);
+        let entity = Level0Collision::resolve_move_simulated(&world, &mut sim, from, desired);
+        assert_ne!(
+            entity.reason, "unloaded_chunk",
+            "sim path must resolve against a generated layout"
+        );
+        assert!(
+            sim.len() > 0,
+            "sim path must have generated + cached the far chunk(s)"
+        );
+    }
+
+    #[test]
+    fn sim_cache_does_not_regenerate_a_present_key() {
+        let world = World::new(42);
+        let mut sim = SimChunkCache::new(42);
+        let key = layered_chunk_pos((137, -94), 0);
+        sim.ensure(&world, key);
+        let n = sim.len();
+        sim.ensure(&world, key); // same key again
+        assert_eq!(sim.len(), n, "re-ensuring the same key must not duplicate");
+    }
+
+    #[test]
+    fn sim_cache_skips_chunks_already_loaded_in_world() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 1.8, 25.0), 1);
+        let mut sim = SimChunkCache::new(world.seed);
+        // (0,0) is loaded for the host → the sim cache must NOT shadow it.
+        sim.ensure(&world, layered_chunk_pos((0, 0), 0));
+        assert!(
+            sim.is_empty(),
+            "sim cache must not cache chunks already present in world.chunks"
+        );
+    }
+
+    #[test]
+    fn sim_cache_evicts_beyond_cap() {
+        let world = World::new(42);
+        let mut sim = SimChunkCache::new(42);
+        // Generate well beyond the cap, all far from a fixed center.
+        for i in 0..(SIM_CACHE_MAX_CHUNKS as i32 + 25) {
+            sim.ensure(&world, layered_chunk_pos((2000 + i, 0), 0));
+        }
+        sim.enforce_cap((2000, 0));
+        assert!(
+            sim.len() <= SIM_CACHE_MAX_CHUNKS,
+            "cache must not exceed the cap after eviction (got {})",
+            sim.len()
+        );
+    }
+
+    #[test]
+    fn sim_collision_never_touches_world_chunks_or_render() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 1.8, 25.0), 1);
+        let loaded_before = world.chunks.len();
+        let views_before = world.visible_chunk_views().len();
+
+        let mut sim = SimChunkCache::new(world.seed);
+        let from = Vec3::new(6000.0, 1.8, 6000.0); // far outside the host radius
+        let _ = Level0Collision::resolve_move_simulated(
+            &world,
+            &mut sim,
+            from,
+            Vec3::new(from.x + 0.5, from.y, from.z + 0.5),
+        );
+
+        assert!(sim.len() > 0, "the far move must have populated the sim cache");
+        assert_eq!(
+            world.chunks.len(),
+            loaded_before,
+            "sim collision must NOT insert into world.chunks"
+        );
+        assert_eq!(
+            world.visible_chunk_views().len(),
+            views_before,
+            "sim-only chunks must NEVER reach render (build_chunk_views)"
+        );
     }
 }

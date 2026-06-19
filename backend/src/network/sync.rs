@@ -152,6 +152,62 @@ pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
     net.broadcast_unreliable(&payload).await;
 }
 
+/// ADR-015: host-as-server relay of per-peer POSE (rotation + animation included).
+/// The roster relay (`broadcast_peer_roster` / `PeerList`) carries only POSITION, so a
+/// joiner — which only connects to the host — never learns the rotation or animation of
+/// the OTHER joiners (their pickup gesture, ADR-011, and facing). Here the host re-emits
+/// each peer's `PlayerUpdate` (pos/rot/anim from its `PeerConnection`) to every OTHER
+/// peer, stamped with that peer's id via `send_unreliable_as`, reusing the exact
+/// PlayerUpdate receive path. Host-only and a no-op below two peers (a joiner's peer set
+/// is just {host}, nothing to relay; with one joiner there is no second joiner to inform).
+/// Sent at the player-update cadence (`NET_BROADCAST_EVERY`, 10 Hz).
+pub async fn broadcast_peer_poses(net: &NetworkManager) {
+    if net.peers.len() < 2 {
+        return;
+    }
+    // Snapshot ids + poses up front so we don't hold a borrow of net.peers across the
+    // awaits below (and so a peer is never echoed its own pose).
+    let peer_ids: Vec<PeerId> = net.peers.keys().copied().collect();
+    let poses: Vec<(PeerId, PacketPayload)> = net
+        .peers
+        .values()
+        .map(|p| {
+            (
+                p.id,
+                PacketPayload::PlayerUpdate {
+                    position: p.position,
+                    rotation: p.rotation,
+                    animation: p.animation.clone(),
+                },
+            )
+        })
+        .collect();
+
+    for (src_id, payload) in &poses {
+        for &dest_id in &peer_ids {
+            if dest_id == *src_id {
+                continue; // never echo a peer its own pose
+            }
+            net.send_unreliable_as(*src_id, dest_id, payload).await;
+        }
+    }
+
+    // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
+    // the relay's datagram rate so the host log can be measured in play-test. Datagrams
+    // per call = P×(P−1); per second ≈ ×10 (NET_BROADCAST_EVERY = 10 Hz).
+    if net.session_start.elapsed().as_millis() % 1000 < 120 {
+        let p = peer_ids.len();
+        let per_call = p * p.saturating_sub(1);
+        info!(
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} relay_datagrams_per_call={} approx_per_sec={}",
+            net.local_id,
+            p,
+            per_call,
+            per_call * 10
+        );
+    }
+}
+
 /// Host-as-server relay of the STP item roster: the host broadcasts its full
 /// authoritative item list so every joiner spawns the same STP items (Phase 1).
 pub async fn broadcast_stp_items(net: &NetworkManager) {
@@ -266,7 +322,14 @@ pub async fn send_world_sync(
 }
 
 pub async fn broadcast_world_sync(net: &mut NetworkManager, world: &World, player: &Player) {
-    let peer_ids: Vec<PeerId> = net.peers.keys().copied().collect();
+    // ADR-016: skip phantoms — WorldSync is reliable and their addr is inert, so a copy
+    // would never be ACKed and just accumulate retransmits.
+    let peer_ids: Vec<PeerId> = net
+        .peers
+        .keys()
+        .copied()
+        .filter(|id| !net.is_phantom(*id))
+        .collect();
     for peer_id in peer_ids {
         send_world_sync(net, peer_id, world, player).await;
     }

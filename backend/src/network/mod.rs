@@ -27,6 +27,12 @@ use reliability::is_reliable;
 /// Identifier for a peer within a session.
 pub type PeerId = u16;
 
+/// ADR-016: base id for injected phantom peers (the robapieles). Chosen ABOVE the real-peer
+/// id space so it never collides: host=1, host-assigned fallbacks from 2 up, and joiner
+/// NET_IDs = 1000 + pid%60000 ∈ [1000, 60999] (`NetworkInitializer.GenerateDebugNetId`).
+/// 0xF000 (61440) clears that range with room to spare in the u16 id space.
+const PHANTOM_ID_BASE: PeerId = 0xF000;
+
 /// High-level events produced by the network layer for the game loop.
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
@@ -199,6 +205,13 @@ pub struct NetworkManager {
     /// remove_at, but a second request for a reserved item is rejected — the reservation is the
     /// dedup now that the removal is deferred. Never points at a vanished item (purged on removal).
     pub pending_pickups: std::collections::HashMap<u32, (PeerId, Instant)>,
+    /// ADR-016 (host-only, backend-only): ids of injected "phantom" peers (the robapieles).
+    /// A phantom lives in `peers` and renders like a real player, but is excluded from
+    /// `real_peer_count` (so it doesn't contaminate internal count gates) and skipped by
+    /// reliable broadcasts (its addr is inert). INVARIANT: this mark NEVER crosses the wire —
+    /// it is not in `PeerInfo` (P2P) nor `RemotePlayerState` (IPC); pure host-side state. A
+    /// joiner therefore cannot tell a phantom from a real peer (and its own set stays empty).
+    pub phantom_ids: std::collections::HashSet<PeerId>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     /// ADR-011: when the LOCAL player last confirmed a pickup. `broadcast_player_update`
@@ -245,17 +258,18 @@ impl NetworkManager {
             is_host,
             peers: HashMap::new(),
             stp_items: Vec::new(),
-            processed_stp_drops: std::collections::HashSet::new(),
+            processed_stp_drops: std::collections::HashSet::with_capacity(256),
             stp_buildings: Vec::new(),
-            processed_stp_places: std::collections::HashSet::new(),
-            processed_stp_build_adds: std::collections::HashSet::new(),
-            occupied_stp_cells: std::collections::HashSet::new(),
+            processed_stp_places: std::collections::HashSet::with_capacity(256),
+            processed_stp_build_adds: std::collections::HashSet::with_capacity(256),
+            occupied_stp_cells: std::collections::HashSet::with_capacity(256),
             stp_carryables: Vec::new(),
-            processed_stp_carryable_drops: std::collections::HashSet::new(),
+            processed_stp_carryable_drops: std::collections::HashSet::with_capacity(64),
             stp_harvestables: Vec::new(),
-            processed_stp_harvest_hits: std::collections::HashSet::new(),
-            processed_stp_pickup_grants: std::collections::HashSet::new(),
+            processed_stp_harvest_hits: std::collections::HashSet::with_capacity(128),
+            processed_stp_pickup_grants: std::collections::HashSet::with_capacity(128),
             pending_pickups: std::collections::HashMap::new(),
+            phantom_ids: std::collections::HashSet::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
             last_pickup_at: None,
@@ -468,6 +482,27 @@ impl NetworkManager {
         }
     }
 
+    /// ADR-015: send an unreliable packet to `dest_peer` stamped with an ARBITRARY
+    /// `sender_id` in the header (instead of `self.local_id`). The host uses this to
+    /// RELAY another peer's `PlayerUpdate` "on behalf of" that peer, so a joiner —
+    /// which only connects to the host — still learns the rotation+animation of the
+    /// OTHER joiners (PeerInfo/PeerList carry only position). The receive path is
+    /// unchanged: the destination updates `peers[sender_id]` exactly as for a genuine
+    /// PlayerUpdate. Also the mechanism ADR-016 will reuse to propagate a phantom
+    /// peer's pose (sender_id = phantom_id) — kept generic over `sender_id`/`dest`.
+    pub async fn send_unreliable_as(
+        &self,
+        sender_id: PeerId,
+        dest_peer: PeerId,
+        payload: &PacketPayload,
+    ) {
+        if let Some(peer) = self.peers.get(&dest_peer) {
+            let header = PacketHeader::new(payload.type_code(), sender_id, 0, self.timestamp());
+            let data = encode_packet(&header, payload);
+            let _ = self.socket.send_to(&data, peer.addr).await;
+        }
+    }
+
     /// Broadcast an unreliable packet to all connected peers.
     pub async fn broadcast_unreliable(&self, payload: &PacketPayload) {
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
@@ -490,9 +525,17 @@ impl NetworkManager {
     }
 
     /// Broadcast a reliable packet to all peers.
+    ///
+    /// ADR-016: phantom peers are skipped — their addr is inert (nobody listens), so a
+    /// reliable packet to one would never be ACKed and just pile up retransmits. Real
+    /// peers still receive it.
     pub async fn broadcast_reliable(&mut self, payload: &PacketPayload) {
-        let peer_addrs: Vec<(PeerId, SocketAddr)> =
-            self.peers.iter().map(|(id, p)| (*id, p.addr)).collect();
+        let peer_addrs: Vec<(PeerId, SocketAddr)> = self
+            .peers
+            .iter()
+            .filter(|(id, _)| !self.phantom_ids.contains(id))
+            .map(|(id, p)| (*id, p.addr))
+            .collect();
 
         for (pid, addr) in peer_addrs {
             let seq = self.next_sequence();
@@ -1209,6 +1252,76 @@ impl NetworkManager {
         }
         assigned_id
     }
+
+    // ─── ADR-016: phantom peers (robapieles) ───
+
+    /// Number of REAL connected peers, excluding injected phantoms. Used by the internal
+    /// count gates that must not count a phantom (joiner spawn gate, sanity context). The
+    /// rendered roster (`build_world_state`) still includes phantoms so they appear as
+    /// players. On a joiner `phantom_ids` is empty, so this equals `peer_count`.
+    pub fn real_peer_count(&self) -> usize {
+        self.peers
+            .keys()
+            .filter(|id| !self.phantom_ids.contains(id))
+            .count()
+    }
+
+    /// Whether `id` is an injected phantom peer (host-side mark only).
+    pub fn is_phantom(&self, id: PeerId) -> bool {
+        self.phantom_ids.contains(&id)
+    }
+
+    /// Pick a non-colliding id in the dedicated phantom range (≥ PHANTOM_ID_BASE), skipping
+    /// the local id and any id already in use. Slice 1 spawns exactly one phantom, but the
+    /// linear scan keeps it correct if more are added later.
+    fn allocate_phantom_id(&self) -> PeerId {
+        let mut id = PHANTOM_ID_BASE;
+        while id == self.local_id || self.peers.contains_key(&id) {
+            id = id.checked_add(1).unwrap_or(PHANTOM_ID_BASE);
+        }
+        id
+    }
+
+    /// ADR-016 slice 1: inject a synthetic "phantom" peer (the robapieles) DIRECTLY into
+    /// `peers`, OUTSIDE the handshake — no `PeerConnected` event (so no `send_world_sync`),
+    /// no real-peer id allocator. It renders as an ordinary remote player (`build_world_state`
+    /// and the ADR-015 pose relay treat it like any peer), but is marked in `phantom_ids` so
+    /// it never inflates `real_peer_count` and is skipped by reliable broadcasts. The mark is
+    /// backend-only (never serialized → never crosses the wire). Host-only by construction.
+    /// Returns the assigned phantom id.
+    pub fn spawn_phantom(&mut self, name: &str, position: [f32; 3]) -> PeerId {
+        let id = self.allocate_phantom_id();
+        // Inert, non-routable addr: nobody sends to it on the normal path, and reliable
+        // broadcasts skip it explicitly. 127.0.0.1:1 is never a real peer endpoint.
+        let addr: SocketAddr = (std::net::Ipv4Addr::LOCALHOST, 1).into();
+        let mut conn = PeerConnection::new(id, name.to_string(), addr);
+        conn.update_player_state(position, 0.0, "idle".into());
+        self.peers.insert(id, conn);
+        self.phantom_ids.insert(id);
+        info!(
+            "MPTRACE step=PH event=phantom_spawned self_id={} phantom_id={} name={} pos=({:.2},{:.2},{:.2}) peer_count={} real_peer_count={}",
+            self.local_id,
+            id,
+            name,
+            position[0],
+            position[1],
+            position[2],
+            self.peers.len(),
+            self.real_peer_count()
+        );
+        id
+    }
+
+    /// ADR-016: refresh injected phantoms' heartbeat so `check_timeouts` never reaps them
+    /// (they receive no real packets). Called each heartbeat-tick by the host before the
+    /// timeout scan. A no-op where `phantom_ids` is empty (e.g. on joiners).
+    pub fn refresh_phantom_heartbeats(&mut self) {
+        for id in &self.phantom_ids {
+            if let Some(peer) = self.peers.get_mut(id) {
+                peer.record_heartbeat();
+            }
+        }
+    }
 }
 
 /// Background task: read UDP datagrams, parse, and forward to the NetworkManager.
@@ -1457,5 +1570,84 @@ mod tests {
             NetworkEvent::PeerDisconnected { id: 2, .. }
         ));
         assert_eq!(net.peer_count(), 0);
+    }
+
+    // ─── ADR-016: phantom peers ───
+
+    #[tokio::test]
+    async fn phantom_counts_in_roster_but_not_in_real_count() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = host.spawn_phantom("Robapieles_Test", [10.0, 1.8, 5.0]);
+
+        // Renders as a peer (the roster / build_world_state includes it)…
+        assert_eq!(host.peer_count(), 1);
+        // …but the internal count gates (sanity, joiner spawn) must not count it.
+        assert_eq!(host.real_peer_count(), 0);
+        assert!(host.is_phantom(pid));
+        // Id is in the dedicated phantom range, clear of real ids and the local id.
+        assert_ne!(pid, host.local_id);
+        assert!(pid >= PHANTOM_ID_BASE);
+        // The phantom is reachable as a normal PeerConnection (so it renders).
+        let p = &host.peers[&pid];
+        assert_eq!(p.name, "Robapieles_Test");
+        assert_eq!(p.position, [10.0, 1.8, 5.0]);
+    }
+
+    #[tokio::test]
+    async fn phantom_survives_timeout_when_refreshed() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
+        // Force its heartbeat stale (it never receives real packets), then refresh as the
+        // game loop does each heartbeat-tick.
+        host.peers.get_mut(&pid).unwrap().last_heartbeat =
+            Instant::now() - Duration::from_secs(10);
+        host.refresh_phantom_heartbeats();
+
+        let events = host.check_timeouts();
+        assert!(events.is_empty(), "refreshed phantom must not time out");
+        assert!(host.peers.contains_key(&pid));
+    }
+
+    #[tokio::test]
+    async fn phantom_is_reaped_without_refresh() {
+        // Sanity check that the refresh is load-bearing: without it the timeout reaps it.
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
+        host.peers.get_mut(&pid).unwrap().last_heartbeat =
+            Instant::now() - Duration::from_secs(10);
+
+        let events = host.check_timeouts();
+        assert_eq!(events.len(), 1);
+        assert!(!host.peers.contains_key(&pid));
+    }
+
+    #[tokio::test]
+    async fn broadcast_reliable_skips_phantom() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        // A real peer with a routable test addr…
+        let real_id = 2;
+        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        host.peers
+            .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
+        // …and a phantom alongside it.
+        let phantom_id = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
+
+        let payload = PacketPayload::AnchorBroadcast {
+            chunk_pos: [0, 0],
+            durability: 1.0,
+            installed_by: "test".into(),
+        };
+        host.broadcast_reliable(&payload).await;
+
+        assert_eq!(
+            host.peers[&real_id].reliable_queue.len(),
+            1,
+            "real peer must receive the reliable broadcast"
+        );
+        assert_eq!(
+            host.peers[&phantom_id].reliable_queue.len(),
+            0,
+            "phantom must be skipped by reliable broadcast"
+        );
     }
 }
