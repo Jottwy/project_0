@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.World;
+using BackroomsSurvival.Net;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -16,7 +18,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Range(2, 6)]   public int   openZoneSize    = 3;
         // Chance per chunk of a vertical shaft (a floorless tile that drops
         // through every layer). Must be uniform across layers for the shaft to
-        // punch cleanly (see WorldGenerator.GenerateChunk).
+        // punch cleanly.
         [Range(0f, 1f)] public float shaftChance     = 0.03f;
         [Range(0f, 1f)] public float pillarChance    = 0.20f;
         // Aperture ratio range: how open the gaps in dividing walls are.
@@ -41,367 +43,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     }
 
     // ─────────────────────────────────────────────────────────────────
-    // Edge-based chunk data (Unity render layer — NOT the Rust wire format).
-    //
-    // Paradigm: every tile always has a floor and a ceiling. Walls are 0.2 m
-    // panels that sit on the EDGES between tiles, not on tiles themselves.
-    // A wall on the east edge of tile (x,z) is the same physical panel as the
-    // west edge of tile (x+1,z); both flags are set, the builder emits it once.
-    //
-    // This lives entirely client-side. GridCellType.Wall and the GridChunkData
-    // wire format (the Rust contract) are untouched: ChunkData.cells carries no
-    // Wall cells, only Corridor/Pillar (and Pit/Void survive for ADR-008).
-    // ─────────────────────────────────────────────────────────────────
-
-    /// <summary>Which of a tile's four edges carry a wall panel.</summary>
-    public struct TileWalls
-    {
-        public bool N, S, E, W;
-        public bool Any => N || S || E || W;
-    }
-
-    /// <summary>One chunk: render cells (floor/ceiling/pillar) + edge walls.</summary>
-    public struct ChunkData
-    {
-        public GridCell[]  cells;   // Cells×Cells, row-major. Corridor/Pillar only.
-        public TileWalls[] walls;   // Tiles×Tiles edge flags.
-        public bool[]      shafts;  // Tiles×Tiles. true = floorless vertical shaft.
-    }
-
-    // ─────────────────────────────────────────────────────────────────
-    // WorldGenerator — deterministic edge-based chunk generation.
-    // Principle: everything is open floored space; wall LINES (sequences of
-    // shared tile edges) divide it into a labyrinth.
-    // ─────────────────────────────────────────────────────────────────
-
-    public static class WorldGenerator
-    {
-        private const int Cells = GridConstants.ChunkCells; // 20
-        private const int Tiles = Cells / 2;                // 10
-
-        // Fixed border slots where openings are guaranteed so neighbouring
-        // chunks always connect (mirrors the seam contract of the old system).
-        private static readonly int[] BorderSlots = { 1, 5, 9 };
-
-        // Layer-independent salt for shaft RNG: the same column yields the same
-        // shaft tile on every layer (distinct from any real layer index 0..3).
-        private const int ShaftSalt = 0x5A;
-
-        public static ChunkData GenerateChunk(
-            long seed, int chunkX, int chunkZ, int layer, LayerConfig cfg)
-        {
-            var rng = new System.Random(DeriveRngSeed(seed, chunkX, chunkZ, layer));
-
-            // Step 1 — no walls; every tile is open floored space.
-            var walls = new TileWalls[Tiles * Tiles];
-
-            int numLines = Mathf.RoundToInt(Mathf.Lerp(2f, 5f, Mathf.Clamp01(cfg.wallDensity)));
-            float minAp = Mathf.Clamp01(cfg.minApertureRatio);
-            float maxAp = Mathf.Clamp01(Mathf.Max(minAp, cfg.maxApertureRatio));
-
-            // Steps 2 & 4 — horizontal wall lines (N/S edges), from south then north.
-            PlaceHorizontalLines(rng, walls, numLines, minAp, maxAp, fromFar: false);
-            PlaceHorizontalLines(rng, walls, numLines, minAp, maxAp, fromFar: true);
-            // Steps 3 & 4 — vertical wall lines (E/W edges), from west then east.
-            PlaceVerticalLines(rng, walls, numLines, minAp, maxAp, fromFar: false);
-            PlaceVerticalLines(rng, walls, numLines, minAp, maxAp, fromFar: true);
-
-            // Step 2.5 — carve open zones (before connectivity so the BFS sees them)
-            PlaceOpenZones(rng, cfg, walls);
-
-            // Step 6 — guaranteed border apertures (before connectivity so the
-            // BFS sees the seams open).
-            OpenBorderApertures(walls);
-
-            // Step 5 — guarantee every tile is reachable from (0,0).
-            EnsureConnectivity(walls);
-
-            // Step 6.5 — vertical shafts. Seeded WITHOUT the layer index so the
-            // same column picks the same shaft tile on every layer → a clean
-            // hole that drops straight through. Opens the tile's walls so it is
-            // fully exposed. (Replaces random Pits with designed verticality.)
-            var shaftRng = new System.Random(DeriveRngSeed(seed, chunkX, chunkZ, ShaftSalt));
-            var shafts = new bool[Tiles * Tiles];
-            PlaceShafts(shaftRng, cfg, walls, shafts);
-
-            // Cells: all corridor (floor + ceiling everywhere). Step 7 adds pillars.
-            var cells = new GridCell[Cells * Cells];
-            for (int i = 0; i < cells.Length; i++)
-                cells[i] = new GridCell(GridCellType.Corridor, 2, 0);
-            PlacePillars(rng, cfg, walls, shafts, cells);
-
-            return new ChunkData { cells = cells, walls = walls, shafts = shafts };
-        }
-
-        // ─── Seeding ──────────────────────────────────────────────────
-
-        private static int DeriveRngSeed(long seed, int cx, int cz, int layer)
-        {
-            unchecked
-            {
-                long s = seed ^ ((long)cx * 73856093L) ^ ((long)cz * 19349663L) ^ ((long)layer * 2654435761L);
-                return (int)(s ^ (s >> 32));
-            }
-        }
-
-        // ─── Edge marking (symmetric: both sides of the shared edge) ─────
-
-        // Wall on the south edge of tile (x,z) == north edge of tile (x,z-1).
-        private static void MarkHWall(TileWalls[] w, int x, int z)
-        {
-            w[z * Tiles + x].S = true;
-            if (z - 1 >= 0) w[(z - 1) * Tiles + x].N = true;
-        }
-
-        // Wall on the west edge of tile (x,z) == east edge of tile (x-1,z).
-        private static void MarkVWall(TileWalls[] w, int x, int z)
-        {
-            w[z * Tiles + x].W = true;
-            if (x - 1 >= 0) w[z * Tiles + (x - 1)].E = true;
-        }
-
-        // ─── Wall lines ──────────────────────────────────────────────
-
-        // Horizontal line at tile row z (a run of south-edge walls along X) with
-        // one passable aperture. fromFar runs it inward from the east border.
-        private static void PlaceHorizontalLines(System.Random rng, TileWalls[] w,
-            int count, float minAp, float maxAp, bool fromFar)
-        {
-            foreach (int z in PickLinePositions(rng, count))
-            {
-                if (z <= 0) continue; // needs row z-1 for the shared edge
-                int span = rng.Next(5, Tiles + 1); // [5, 10]
-                int startX = fromFar ? Mathf.Max(0, Tiles - span) : 0;
-                int endX   = fromFar ? Tiles : Mathf.Min(span, Tiles);
-                CarveLine(rng, minAp, maxAp, startX, endX,
-                    (x) => MarkHWall(w, x, z));
-            }
-        }
-
-        // Vertical line at tile column x (a run of west-edge walls along Z).
-        private static void PlaceVerticalLines(System.Random rng, TileWalls[] w,
-            int count, float minAp, float maxAp, bool fromFar)
-        {
-            foreach (int x in PickLinePositions(rng, count))
-            {
-                if (x <= 0) continue; // needs column x-1 for the shared edge
-                int span = rng.Next(5, Tiles + 1);
-                int startZ = fromFar ? Mathf.Max(0, Tiles - span) : 0;
-                int endZ   = fromFar ? Tiles : Mathf.Min(span, Tiles);
-                CarveLine(rng, minAp, maxAp, startZ, endZ,
-                    (z) => MarkVWall(w, x, z));
-            }
-        }
-
-        // Fill [start, end) with wall edges, leaving one random aperture so the
-        // line is passable. Aperture width is a ratio of the line length.
-        private static void CarveLine(System.Random rng, float minAp, float maxAp,
-            int start, int end, Action<int> mark)
-        {
-            int len = end - start;
-            if (len <= 0) return;
-
-            float ratio = minAp + (float)rng.NextDouble() * (maxAp - minAp);
-            int apLen   = Mathf.Clamp(Mathf.RoundToInt(len * ratio), 2, len - 1);
-            int apStart = start + rng.Next(0, len - apLen + 1);
-
-            for (int i = start; i < end; i++)
-                if (i < apStart || i >= apStart + apLen)
-                    mark(i);
-        }
-
-        // Interior positions [2, Tiles-2], min separation 2 between lines.
-        private static List<int> PickLinePositions(System.Random rng, int count)
-        {
-            var candidates = new List<int>();
-            for (int i = 2; i <= Tiles - 2; i++) candidates.Add(i);
-            Shuffle(candidates, rng);
-
-            var chosen = new List<int>(count);
-            foreach (int c in candidates)
-            {
-                if (chosen.Count >= count) break;
-                bool tooClose = false;
-                foreach (int p in chosen)
-                    if (Mathf.Abs(c - p) < 2) { tooClose = true; break; }
-                if (!tooClose) chosen.Add(c);
-            }
-            return chosen;
-        }
-
-        // ─── Open zones ───────────────────────────────────────────────
-
-        // Clear all interior edges of a random size×size tile rectangle, leaving
-        // the zone's outer border walls intact. Creates the large open rooms
-        // characteristic of Backrooms level 0.
-        private static void PlaceOpenZones(System.Random rng, LayerConfig cfg, TileWalls[] walls)
-        {
-            if (rng.NextDouble() >= cfg.openZoneChance) return;
-            int size = Mathf.Clamp(cfg.openZoneSize, 2, 6);
-            int maxOx = Tiles - size - 1;
-            int maxOz = Tiles - size - 1;
-            if (maxOx < 1 || maxOz < 1) return;
-            int ox = rng.Next(1, maxOx + 1);
-            int oz = rng.Next(1, maxOz + 1);
-
-            // Interior horizontal seams (N edge of row z = S edge of row z+1).
-            for (int z = oz; z < oz + size - 1; z++)
-                for (int x = ox; x < ox + size; x++)
-                {
-                    walls[z * Tiles + x].N = false;
-                    walls[(z + 1) * Tiles + x].S = false;
-                }
-
-            // Interior vertical seams (E edge of col x = W edge of col x+1).
-            for (int z = oz; z < oz + size; z++)
-                for (int x = ox; x < ox + size - 1; x++)
-                {
-                    walls[z * Tiles + x].E = false;
-                    walls[z * Tiles + (x + 1)].W = false;
-                }
-        }
-
-        // ─── Border apertures ─────────────────────────────────────────
-
-        // Open the fixed slots on the two seams this chunk owns: the north edge
-        // of its top row and the east edge of its last column (the builder emits
-        // only N/E walls — see GridChunkBuilder). The south/west seams are owned
-        // and opened by the neighbouring chunks at the same slots, so passages
-        // line up deterministically across the whole world.
-        private static void OpenBorderApertures(TileWalls[] w)
-        {
-            foreach (int s in BorderSlots)
-            {
-                if (s >= Tiles) continue;
-                w[(Tiles - 1) * Tiles + s].N = false; // north seam opening
-                w[s * Tiles + (Tiles - 1)].E = false; // east seam opening
-            }
-        }
-
-        // ─── Connectivity ─────────────────────────────────────────────
-
-        // BFS over tiles (passable across an edge with no wall). While any tile
-        // is unreachable from (0,0), find an isolated tile that borders the
-        // reached region and knock out the wall between them. The reached set
-        // grows by at least one each pass, so this ends in ≤ tile-count passes.
-        private static void EnsureConnectivity(TileWalls[] w)
-        {
-            int guard = Tiles * Tiles + 1;
-            while (guard-- > 0)
-            {
-                var reached = Reachable(w);
-                if (!OpenFrontier(w, reached)) return; // all reached
-            }
-        }
-
-        // Open one wall between an isolated tile and a reached neighbour.
-        // Returns false when every tile is already reached.
-        private static bool OpenFrontier(TileWalls[] w, bool[] reached)
-        {
-            for (int idx = 0; idx < reached.Length; idx++)
-            {
-                if (reached[idx]) continue;
-                int x = idx % Tiles, z = idx / Tiles;
-                if (z + 1 < Tiles && reached[(z + 1) * Tiles + x]) { ClearEdgeN(w, x, z); return true; }
-                if (z - 1 >= 0    && reached[(z - 1) * Tiles + x]) { ClearEdgeS(w, x, z); return true; }
-                if (x + 1 < Tiles && reached[z * Tiles + (x + 1)]) { ClearEdgeE(w, x, z); return true; }
-                if (x - 1 >= 0    && reached[z * Tiles + (x - 1)]) { ClearEdgeW(w, x, z); return true; }
-            }
-            return false; // nothing isolated borders the reached set → fully connected
-        }
-
-        private static bool[] Reachable(TileWalls[] w)
-        {
-            var visited = new bool[Tiles * Tiles];
-            var queue = new Queue<int>();
-            visited[0] = true;
-            queue.Enqueue(0);
-            while (queue.Count > 0)
-            {
-                int idx = queue.Dequeue();
-                int x = idx % Tiles, z = idx / Tiles;
-                var t = w[idx];
-                if (!t.N && z + 1 < Tiles) Visit(visited, queue, x, z + 1);
-                if (!t.S && z - 1 >= 0)    Visit(visited, queue, x, z - 1);
-                if (!t.E && x + 1 < Tiles) Visit(visited, queue, x + 1, z);
-                if (!t.W && x - 1 >= 0)    Visit(visited, queue, x - 1, z);
-            }
-            return visited;
-        }
-
-        private static void Visit(bool[] visited, Queue<int> queue, int x, int z)
-        {
-            int idx = z * Tiles + x;
-            if (visited[idx]) return;
-            visited[idx] = true;
-            queue.Enqueue(idx);
-        }
-
-        private static void ClearEdgeN(TileWalls[] w, int x, int z)
-        { w[z * Tiles + x].N = false; if (z + 1 < Tiles) w[(z + 1) * Tiles + x].S = false; }
-        private static void ClearEdgeS(TileWalls[] w, int x, int z)
-        { w[z * Tiles + x].S = false; if (z - 1 >= 0) w[(z - 1) * Tiles + x].N = false; }
-        private static void ClearEdgeE(TileWalls[] w, int x, int z)
-        { w[z * Tiles + x].E = false; if (x + 1 < Tiles) w[z * Tiles + (x + 1)].W = false; }
-        private static void ClearEdgeW(TileWalls[] w, int x, int z)
-        { w[z * Tiles + x].W = false; if (x - 1 >= 0) w[z * Tiles + (x - 1)].E = false; }
-
-        // ─── Shafts ───────────────────────────────────────────────────
-
-        // With probability shaftChance, mark one interior tile as a vertical
-        // shaft and clear its four edges so the hole is fully exposed. Picked
-        // from a layer-independent RNG so the same tile is a shaft in every
-        // layer (uniform shaftChance required — DefaultConfig keeps it uniform).
-        private static void PlaceShafts(System.Random rng, LayerConfig cfg,
-            TileWalls[] walls, bool[] shafts)
-        {
-            if (rng.NextDouble() >= cfg.shaftChance) return;
-
-            int tx = 1 + rng.Next(Tiles - 2);
-            int tz = 1 + rng.Next(Tiles - 2);
-            shafts[tz * Tiles + tx] = true;
-
-            ClearEdgeN(walls, tx, tz);
-            ClearEdgeS(walls, tx, tz);
-            ClearEdgeE(walls, tx, tz);
-            ClearEdgeW(walls, tx, tz);
-        }
-
-        // ─── Pillars ──────────────────────────────────────────────────
-
-        // Pillars sit only in fully open tiles (no adjacent wall, not a shaft),
-        // spaced out.
-        private static void PlacePillars(System.Random rng, LayerConfig cfg,
-            TileWalls[] walls, bool[] shafts, GridCell[] cells)
-        {
-            for (int tz = 1; tz < Tiles - 1; tz++)
-            {
-                for (int tx = 1; tx < Tiles - 1; tx++)
-                {
-                    int idx = tz * Tiles + tx;
-                    if (shafts[idx]) continue;
-                    if (walls[idx].Any) continue;
-                    if ((tx + tz * 3) % 4 != 0) continue;
-                    if (rng.NextDouble() >= cfg.pillarChance) continue;
-                    int cx = tx * 2, cz = tz * 2;
-                    cells[cz * Cells + cx] = new GridCell(GridCellType.Pillar, 2, 0);
-                }
-            }
-        }
-
-        // ─── Utility ──────────────────────────────────────────────────
-
-        private static void Shuffle<T>(List<T> list, System.Random rng)
-        {
-            for (int i = list.Count - 1; i > 0; i--)
-            {
-                int j = rng.Next(i + 1);
-                var t = list[i]; list[i] = list[j]; list[j] = t;
-            }
-        }
-    }
-
-    // ─────────────────────────────────────────────────────────────────
     // ChunkStreamer — manages a 3×3 ring of loaded chunks
     // ─────────────────────────────────────────────────────────────────
 
@@ -413,16 +54,64 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public Transform playerTransform;
 
         [Header("Layer configs (0..3)")]
+        // Fase 4.2: vestigial. The WorldGenerator that consumed these was removed;
+        // ChunkStreamer no longer reads layerConfigs, but GridTestWorld still assigns
+        // it, so the field (and the LayerConfig type) are retained for that wiring.
         public LayerConfig[] layerConfigs = new LayerConfig[4];
+
+        [Header("Fase 5A — per-layer visuals + lighting (set by GridTestWorld)")]
+        public LayerVisualConfig[] layerVisuals = new LayerVisualConfig[4];
+        public BackroomsLighting lighting;
+
+        [Header("Streaming budget (per frame)")]
+        [Tooltip("Chunks built per frame when streaming in. The anti-fall guard can exceed this for the player's own chunk.")]
+        public int maxChunkBuildsPerFrame = 1;
+        [Tooltip("Chunks destroyed per frame when streaming out.")]
+        public int maxChunkDestroysPerFrame = 2;
+        [Tooltip("Per-frame log of active / queued / built / destroyed chunk counts.")]
+        public bool debugLogging = false;
 
         private GridPrefabSet _prefabs;
         private readonly Dictionary<(int, int, int), GameObject> _loaded
             = new Dictionary<(int, int, int), GameObject>();
-        private readonly Dictionary<(int, int, int), ChunkData> _cache
-            = new Dictionary<(int, int, int), ChunkData>();
+
+        // Fase 4.1: chunks now stream from the backend (grid_gen) via IPC instead of
+        // the local WorldGenerator. _ipc is the bridge; _pending tracks requested-but-
+        // not-yet-arrived chunks (the request→reply is async, unlike the old synchronous
+        // BuildChunk); _wallsCache holds received bitmasks so a backtracked chunk
+        // rebuilds instantly without a round-trip (mirrors the old _cache lifetime,
+        // evicted on unload).
+        private IPCClient _ipc;
+        private readonly HashSet<(int, int, int)> _pending = new HashSet<(int, int, int)>();
+        private readonly Dictionary<(int, int, int), byte[,]> _wallsCache
+            = new Dictionary<(int, int, int), byte[,]>();
+
+        // Fase 4.1 fix: Time.unscaledTime when each key entered _pending. A request
+        // whose reply never arrives (lost after the socket accepted it, or a stale
+        // connection) is freed after PendingTimeout and re-queued — otherwise
+        // ExceptWith(_pending) would keep that chunk out of _buildQueue forever (the
+        // permanent-empty-chunk bug).
+        private readonly Dictionary<(int, int, int), float> _pendingSince
+            = new Dictionary<(int, int, int), float>();
+        private const float PendingTimeout = 2f; // seconds; well above localhost RTT, conservative
+
+        // Fase 5A: shared per-layer materials (built once, reused across all tiles of
+        // the layer; per-tile tint via MaterialPropertyBlock) + the fog layer currently
+        // applied to RenderSettings. _matCache is owned here and freed in OnDestroy.
+        private readonly Dictionary<int, LayerVisualMaterials> _matCache = new Dictionary<int, LayerVisualMaterials>();
+        private int _activeFogLayer = int.MinValue;
 
         private int _lastCX = int.MinValue;
         private int _lastCZ = int.MinValue;
+
+        // Pending streaming work, drained under per-frame budget in ProcessBudget().
+        // HashSets (not FIFO queues) so backtrack rescue can drop an arbitrary key and
+        // builds drain nearest-first against the CURRENT player chunk, re-evaluated each
+        // frame. _desired / _drainScratch are reused scratch to avoid per-frame allocs.
+        private readonly HashSet<(int, int, int)> _buildQueue = new HashSet<(int, int, int)>();
+        private readonly HashSet<(int, int, int)> _unloadQueue = new HashSet<(int, int, int)>();
+        private readonly HashSet<(int, int, int)> _desired = new HashSet<(int, int, int)>();
+        private readonly List<(int, int, int)> _drainScratch = new List<(int, int, int)>();
 
         private const float Side = GridConstants.ChunkCells * GridConstants.CellSize;
 
@@ -430,7 +119,35 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             _prefabs = GridPrefabSet.LoadFromResources();
             if (_prefabs.floor == null) return;
+            if (playerTransform == null) return;
+
+            // Fase 4.1: subscribe to backend chunk replies before requesting anything.
+            // The reply fires on the main thread (IPCClient drains its queue in Update).
+            if (IPCClient.TryGetInstance(out _ipc))
+                _ipc.AddChunkDataListener(OnChunkDataReceived);
+            else
+                Debug.LogWarning("[ChunkStreamer] No IPCClient present — no chunks will " +
+                                 "stream (Fase 4.1 needs the backend connection running).");
+
+            // Fill the queues for the initial ring and request the player's chunk first.
+            // NOTE (Fase 4.1): builds are now ASYNC (request→reply), so unlike the old
+            // synchronous path there is no floor guaranteed at frame 0 — the player's
+            // chunk arrives a few frames later (sub-ms round-trip on localhost). Brief
+            // fall-through at spawn / on very fast crossings is a known caveat, hardened
+            // in Fase 4.2.
             UpdateChunks(force: true);
+            int cx = Mathf.FloorToInt(playerTransform.position.x / Side);
+            int cz = Mathf.FloorToInt(playerTransform.position.z / Side);
+            ProcessBudget(cx, cz);
+        }
+
+        private void OnDestroy()
+        {
+            if (_ipc != null)
+                _ipc.RemoveChunkDataListener(OnChunkDataReceived);
+            // Fase 5A: free the shared per-layer materials we instanced.
+            foreach (var m in _matCache.Values) m.Destroy();
+            _matCache.Clear();
         }
 
         private void Update()
@@ -438,10 +155,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (playerTransform == null) return;
             int cx = Mathf.FloorToInt(playerTransform.position.x / Side);
             int cz = Mathf.FloorToInt(playerTransform.position.z / Side);
+
+            // On a chunk crossing, recompute the desired-set and re-queue work. The set is
+            // UNCHANGED from before (same viewRadius / layers / shafts) — only WHEN chunks
+            // are built/destroyed changes here, never WHICH.
             if (cx != _lastCX || cz != _lastCZ)
                 UpdateChunks();
+
+            // Fase 5A: fog follows the player's active layer (applied only on change).
+            ApplyFogForLayer(Mathf.Clamp(
+                Mathf.FloorToInt(playerTransform.position.y / GridConstants.LayerHeight),
+                0, layerCount - 1));
+
+            // Drain the queues under the per-frame budget every frame.
+            ProcessBudget(cx, cz);
         }
 
+        // Recompute the desired ring and reconcile it against loaded chunks + the pending
+        // queues. Does NOT build or destroy — that happens in ProcessBudget under budget.
         private void UpdateChunks(bool force = false)
         {
             if (playerTransform == null) return;
@@ -451,81 +182,256 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (!force && cx == _lastCX && cz == _lastCZ) return;
             _lastCX = cx; _lastCZ = cz;
 
-            var desired = new HashSet<(int, int, int)>();
+            _desired.Clear();
+            BuildDesiredSet(cx, cz, viewRadius, layerCount, _desired);
+            ReconcileQueues(_desired, _loaded.Keys, _buildQueue, _unloadQueue);
+            // Fase 4.1: ReconcileQueues re-adds every desired-not-loaded key, including
+            // chunks already requested and awaiting a reply. Drop those so we never
+            // re-request an in-flight chunk (the pure scheduler stays untouched).
+            _buildQueue.ExceptWith(_pending);
+        }
+
+        // Per-frame work under budget: anti-fall guard first, then nearest-first builds
+        // and farthest-first destroys, each capped.
+        private void ProcessBudget(int cx, int cz)
+        {
+            // Fase 4.1 fix: free any pending request whose reply never arrived so it can
+            // be re-requested (otherwise ExceptWith(_pending) blocks it forever).
+            ExpirePendingRequests();
+
+            // Anti-fall: prioritise the chunk under the player, budget or not. Fase 4.1:
+            // builds are async (request→reply), so this no longer GUARANTEES floor this
+            // frame — it just requests the player's chunk first (or builds instantly if
+            // its bitmask is already cached). The reply lands a few frames later.
+            int forced = 0;
+            int playerLayer = Mathf.Clamp(
+                Mathf.FloorToInt(playerTransform.position.y / GridConstants.LayerHeight),
+                0, layerCount - 1);
+            var guardKey = (cx, cz, playerLayer);
+            if (_desired.Contains(guardKey) && !_loaded.ContainsKey(guardKey))
+            {
+                // Drop from the queue only if fulfilled; a dropped send stays queued so
+                // the drain loop / next frame retries it (anti-fall also re-runs each frame).
+                if (RequestOrBuild(guardKey)) _buildQueue.Remove(guardKey);
+                forced++;
+            }
+
+            int builds = 0;
+            if (_buildQueue.Count > 0)
+            {
+                OrderByDistance(_buildQueue, cx, cz, nearestFirst: true, _drainScratch);
+                for (int i = 0; i < _drainScratch.Count && builds < maxChunkBuildsPerFrame; i++)
+                {
+                    var key = _drainScratch[i];
+                    if (!_buildQueue.Contains(key)) continue;
+                    if (!_desired.Contains(key) || _loaded.ContainsKey(key)) { _buildQueue.Remove(key); continue; } // stale/built
+                    // Dequeue only on success; a dropped send (no connection) stays queued → retried next frame.
+                    if (RequestOrBuild(key)) { _buildQueue.Remove(key); builds++; }
+                }
+            }
+
+            int destroys = 0;
+            if (_unloadQueue.Count > 0)
+            {
+                OrderByDistance(_unloadQueue, cx, cz, nearestFirst: false, _drainScratch);
+                for (int i = 0; i < _drainScratch.Count && destroys < maxChunkDestroysPerFrame; i++)
+                {
+                    var key = _drainScratch[i];
+                    if (!_unloadQueue.Remove(key)) continue;
+                    if (_desired.Contains(key)) continue;                  // rescued — back in range
+                    if (!_loaded.TryGetValue(key, out var go)) continue;
+                    Destroy(go);
+                    _loaded.Remove(key);
+                    _wallsCache.Remove(key);
+                    destroys++;
+                }
+            }
+
+            if (debugLogging && (forced + builds + destroys > 0 || _buildQueue.Count + _unloadQueue.Count > 0))
+                Debug.Log($"[ChunkStreamer] active={_loaded.Count} buildQ={_buildQueue.Count} " +
+                          $"unloadQ={_unloadQueue.Count} built={builds}(+{forced} forced) destroyed={destroys}");
+        }
+
+        // Fase 4.1: fulfil one chunk slot from the backend instead of generating locally.
+        // Returns true if the slot was handled (built from cache, already in flight, or a
+        // fresh request actually went out → now pending) so the caller dequeues it.
+        // Returns FALSE if the request was DROPPED (socket not connected): the key is NOT
+        // marked pending and stays in _buildQueue, so it is retried next frame instead of
+        // being stranded empty forever. The old synchronous local-generation path
+        // (WorldGenerator) was removed in Fase 4.2.
+        private bool RequestOrBuild((int, int, int) key)
+        {
+            if (_wallsCache.TryGetValue(key, out var walls))
+            {
+                BuildChunkFromBitmask(key, walls);
+                return true;
+            }
+            if (_pending.Contains(key))
+                return true; // already in flight — dedup, don't re-send
+            if (_ipc != null && _ipc.SendRequestChunk(key.Item1, key.Item2, (byte)key.Item3))
+            {
+                _pending.Add(key);
+                _pendingSince[key] = Time.unscaledTime;
+                return true;
+            }
+            return false; // send dropped → leave queued for retry
+        }
+
+        // Free pending requests older than PendingTimeout (reply lost / never delivered)
+        // and re-queue them if still wanted, so RequestOrBuild can re-issue with a fresh
+        // timestamp. Reuses _drainScratch (fully consumed here before the budget drains
+        // re-clear it via OrderByDistance) to avoid a per-frame allocation.
+        private void ExpirePendingRequests()
+        {
+            if (_pending.Count == 0) return;
+            float now = Time.unscaledTime;
+            _drainScratch.Clear();
+            foreach (var key in _pending)
+                if (now - _pendingSince[key] > PendingTimeout)
+                    _drainScratch.Add(key);
+            for (int i = 0; i < _drainScratch.Count; i++)
+            {
+                var key = _drainScratch[i];
+                _pending.Remove(key);
+                _pendingSince.Remove(key);
+                if (_desired.Contains(key) && !_loaded.ContainsKey(key))
+                    _buildQueue.Add(key);
+            }
+        }
+
+        // Backend reply (main thread). Cache the bitmask, then build the chunk if it is
+        // still wanted and not already built. Stale replies (chunk left the view before it
+        // arrived) are cached but not built — a later return visit builds instantly.
+        private void OnChunkDataReceived(GridChunkDataMsg data)
+        {
+            var key = (data.cx, data.cz, (int)data.layer);
+            _pending.Remove(key);
+            _pendingSince.Remove(key);
+            _wallsCache[key] = data.walls;
+            if (_desired.Contains(key) && !_loaded.ContainsKey(key))
+                BuildChunkFromBitmask(key, data.walls);
+        }
+
+        // Instantiate one chunk from a tile-wall bitmask, parenting it under the streamer
+        // ONLY once fully built so GridTestWorld's carve sees a complete chunk. Fase 5A:
+        // applies the layer's visuals (shared materials + per-tile tint) and lights it.
+        private void BuildChunkFromBitmask((int, int, int) key, byte[,] walls)
+        {
+            var (ccx, ccz, layer) = key;
+            var origin = new Vector3(ccx * Side, layer * GridConstants.LayerHeight, ccz * Side);
+            var cfg = GetLayerVisual(layer);
+            var mats = cfg != null ? GetLayerMaterials(layer) : null;
+
+            var go = GridChunkBuilder.BuildFromWalls(walls, _prefabs, origin,
+                $"Chunk_L{layer}_{ccx}_{ccz}", layer, layerCount, cfg, mats, ccx, ccz);
+            go.transform.SetParent(transform, true);
+            _loaded[key] = go;
+
+            // Fase 5A: light here (layer + coords known); GridTestWorld no longer lights.
+            if (lighting != null && cfg != null && mats != null)
+            {
+                int tiles = GridConstants.ChunkCells / 2;
+                lighting.PlaceFluorescentLights(go.transform, tiles, tiles,
+                    GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
+                    cfg, mats.lamp, ccx, ccz, layer);
+            }
+        }
+
+        // ── Fase 5A — per-layer visuals ────────────────────────────────────────
+
+        /// <summary>The visual config for <paramref name="layer"/> (clamped), or null.</summary>
+        private LayerVisualConfig GetLayerVisual(int layer)
+        {
+            if (layerVisuals == null || layerVisuals.Length == 0) return null;
+            return layerVisuals[Mathf.Clamp(layer, 0, layerVisuals.Length - 1)];
+        }
+
+        /// <summary>Shared materials for <paramref name="layer"/>, built once and cached.</summary>
+        private LayerVisualMaterials GetLayerMaterials(int layer)
+        {
+            var cfg = GetLayerVisual(layer);
+            if (cfg == null) return null;
+            if (!_matCache.TryGetValue(layer, out var m))
+            {
+                m = LayerVisualMaterials.Build(cfg);
+                _matCache[layer] = m;
+            }
+            return m;
+        }
+
+        /// <summary>Apply the fog of the player's active layer to RenderSettings (on change only).</summary>
+        private void ApplyFogForLayer(int layer)
+        {
+            if (layer == _activeFogLayer) return;
+            var cfg = GetLayerVisual(layer);
+            if (cfg == null) return;
+            _activeFogLayer = layer;
+            RenderSettings.fog = true;
+            RenderSettings.fogMode = FogMode.ExponentialSquared;
+            // Fase 5A: uniform, lighter fog. Was per-layer cfg.fogDensity (0.035–0.09 →
+            // too dense); now a flat 0.015 so the space reads without milky wash. This is
+            // the runtime fog owner, so setting it elsewhere (e.g. InitializeWorld) would
+            // be clobbered here on the first layer change. cfg.fogDensity/fogColor no
+            // longer drive fog (uniform look for now).
+            RenderSettings.fogDensity = 0.015f;
+            RenderSettings.fogColor = new Color(0.72f, 0.65f, 0.45f);
+        }
+
+        // ── Scheduling logic (pure; unit-tested headless in ChunkStreamSchedulerTests) ──
+
+        /// <summary>Fill <paramref name="into"/> with the desired ring of chunk keys
+        /// (cx,cz,layer) around the player's chunk — same set as before, just factored out
+        /// so it can be tested without Play.</summary>
+        public static void BuildDesiredSet(int cx, int cz, int viewRadius, int layerCount,
+            HashSet<(int, int, int)> into)
+        {
             for (int dz = -viewRadius; dz <= viewRadius; dz++)
                 for (int dx = -viewRadius; dx <= viewRadius; dx++)
                     for (int layer = 0; layer < layerCount; layer++)
-                        desired.Add((cx + dx, cz + dz, layer));
-
-            var toRemove = new List<(int, int, int)>();
-            foreach (var key in _loaded.Keys)
-                if (!desired.Contains(key)) toRemove.Add(key);
-            foreach (var key in toRemove)
-            {
-                Destroy(_loaded[key]);
-                _loaded.Remove(key);
-                _cache.Remove(key);
-            }
-
-            for (int dz = -viewRadius; dz <= viewRadius; dz++)
-                for (int dx = -viewRadius; dx <= viewRadius; dx++)
-                    EnsureColumn(cx + dx, cz + dz);
+                        into.Add((cx + dx, cz + dz, layer));
         }
 
-        private void EnsureColumn(int ccx, int ccz)
+        /// <summary>Reconcile the desired set against currently-loaded chunks and the
+        /// pending queues: enqueue new builds/unloads and rescue backtracked keys (a key
+        /// that left then re-entered range is never build-then-destroyed, nor vice versa).</summary>
+        public static void ReconcileQueues(
+            HashSet<(int, int, int)> desired,
+            ICollection<(int, int, int)> loaded,
+            HashSet<(int, int, int)> buildQueue,
+            HashSet<(int, int, int)> unloadQueue)
         {
-            for (int layer = 0; layer < layerCount; layer++)
-            {
-                var key = (ccx, ccz, layer);
-                if (!_cache.ContainsKey(key))
-                    _cache[key] = WorldGenerator.GenerateChunk(
-                        seed, ccx, ccz, layer, GetConfig(layer));
-            }
-
-            for (int layer = 0; layer < layerCount; layer++)
-            {
-                var key = (ccx, ccz, layer);
-                if (_loaded.ContainsKey(key)) continue;
-
-                var origin = new Vector3(ccx * Side, layer * GridConstants.LayerHeight, ccz * Side);
-                var go = GridChunkBuilder.Build(_cache[key], _prefabs, origin,
-                    $"Chunk_L{layer}_{ccx}_{ccz}", layer, layerCount);
-                go.transform.SetParent(transform, true);
-                _loaded[key] = go;
-            }
+            buildQueue.RemoveWhere(k => !desired.Contains(k) || loaded.Contains(k));
+            unloadQueue.RemoveWhere(k => desired.Contains(k) || !loaded.Contains(k));
+            foreach (var k in desired)
+                if (!loaded.Contains(k)) buildQueue.Add(k);
+            foreach (var k in loaded)
+                if (!desired.Contains(k)) unloadQueue.Add(k);
         }
 
-        private LayerConfig GetConfig(int layer)
+        /// <summary>Order <paramref name="keys"/> into <paramref name="into"/> by squared
+        /// horizontal chunk distance to (cx,cz): nearest-first for builds, farthest-first
+        /// for unloads. Pure distance only — no structural-room priority (deferred).</summary>
+        public static void OrderByDistance(
+            IEnumerable<(int, int, int)> keys, int cx, int cz, bool nearestFirst,
+            List<(int, int, int)> into)
         {
-            if (layerConfigs != null && layer < layerConfigs.Length && layerConfigs[layer] != null)
-                return layerConfigs[layer];
-            return DefaultConfig(layer);
+            into.Clear();
+            into.AddRange(keys);
+            into.Sort((a, b) =>
+            {
+                int cmp = Dist2(a, cx, cz).CompareTo(Dist2(b, cx, cz));
+                if (cmp == 0) cmp = a.Item3.CompareTo(b.Item3);
+                if (cmp == 0) cmp = a.Item1.CompareTo(b.Item1);
+                if (cmp == 0) cmp = a.Item2.CompareTo(b.Item2);
+                return nearestFirst ? cmp : -cmp;
+            });
         }
 
-        private static LayerConfig DefaultConfig(int layer)
+        private static long Dist2((int, int, int) k, int cx, int cz)
         {
-            var cfg = ScriptableObject.CreateInstance<LayerConfig>();
-            cfg.shaftChance = 0.03f; // uniform across layers so shafts punch through cleanly
-            switch (layer)
-            {
-                case 0: // Most oppressive: dense walls, narrow passages
-                    cfg.wallDensity=0.75f; cfg.minApertureRatio=0.25f; cfg.maxApertureRatio=0.40f;
-                    cfg.openZoneChance=0.15f; cfg.openZoneSize=3; cfg.pillarChance=0.30f;
-                    break;
-                case 1:
-                    cfg.wallDensity=0.65f; cfg.minApertureRatio=0.30f; cfg.maxApertureRatio=0.50f;
-                    cfg.openZoneChance=0.25f; cfg.openZoneSize=4; cfg.pillarChance=0.25f;
-                    break;
-                case 2:
-                    cfg.wallDensity=0.55f; cfg.minApertureRatio=0.35f; cfg.maxApertureRatio=0.55f;
-                    cfg.openZoneChance=0.35f; cfg.openZoneSize=5; cfg.pillarChance=0.20f;
-                    break;
-                default: // Most open: unsettling emptiness of higher levels
-                    cfg.wallDensity=0.45f; cfg.minApertureRatio=0.40f; cfg.maxApertureRatio=0.65f;
-                    cfg.openZoneChance=0.50f; cfg.openZoneSize=6; cfg.pillarChance=0.15f;
-                    break;
-            }
-            return cfg;
+            long dx = k.Item1 - cx, dz = k.Item2 - cz;
+            return dx * dx + dz * dz;
         }
+
     }
 }

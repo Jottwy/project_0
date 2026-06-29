@@ -66,6 +66,9 @@ MeshRenderer:
   m_ReflectionProbeUsage: 1
   m_RayTracingMode: 2
   m_RayTraceProcedural: 0
+  m_RayTracingAccelStructBuildFlagsOverride: 0
+  m_RayTracingAccelStructBuildFlags: 1
+  m_SmallMeshCulling: 1
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
@@ -224,6 +227,7 @@ MonoBehaviour:
     _guidPart2: -96195954
     _guidPart3: -2051908053
     _guidPart4: 1216501217
+  _isSaveable: 1
   _rootSaveFlags: 3
   _childrenToSave: []
   _rigidbodiesToSave: []

@@ -12,14 +12,18 @@
 //! 5. `ceiling_height` nunca supera `MAX_CEILING_UNITS`; capas limpias sin desbordamiento.
 
 mod cell;
+mod collision;
 mod generator;
 mod layer_rules;
 mod stitching;
+mod tile_walls;
 
 #[cfg(test)]
 mod tests;
 
 pub use cell::*;
+pub use collision::*;
 pub use generator::*;
 pub use layer_rules::*;
 pub use stitching::*;
+pub use tile_walls::*;

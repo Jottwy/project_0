@@ -107,13 +107,24 @@ namespace BackroomsSurvival.Net
             float yaw = rot.eulerAngles.y;
             long placeId = NextPlaceId();
 
+            // Phase B3: report the structure this piece belongs to so the host keeps the whole
+            // structure in one group on every client. A GroupBuildingPiece carries sockets and
+            // needs pose-cell dedup; a free piece (campfire) does not. If the piece attached to
+            // an already-replicated group, send that group's id; if it created a brand-new local
+            // group, send 0 so the host mints a fresh one.
+            bool isGroup = placed is GroupBuildingPiece;
+            uint groupId = 0;
+            var group = placed.ParentGroup;
+            if (group != null && group.gameObject.GetComponent<NetworkBuildingGroupInstance>() is { } comp)
+                groupId = comp.groupId;
+
             // Destroy the local piece (and its lone group, if it just created one) so the
             // host-authoritative replicated copy is the single source of truth on every
             // instance. Mirrors StpNativeDropWatcher's local-drop → host-echo handoff.
             DestroyLocalPiece(placed);
 
-            ipc.SendStpPlace(placeId, defId, pos, yaw);
-            Debug.Log($"[StpBuildingPlacementWatcher] placed def_id={defId} place_id={placeId} pos={pos:F2} → host.");
+            ipc.SendStpPlace(placeId, defId, pos, yaw, groupId, isGroup);
+            Debug.Log($"[StpBuildingPlacementWatcher] placed def_id={defId} place_id={placeId} group_id={groupId} is_group={isGroup} pos={pos:F2} → host.");
 
             _placedCandidate = null;
         }

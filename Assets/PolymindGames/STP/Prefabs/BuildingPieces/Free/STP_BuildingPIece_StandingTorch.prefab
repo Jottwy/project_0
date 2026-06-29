@@ -352,7 +352,7 @@ PrefabInstance:
     - target: {fileID: 6904426246880985791, guid: cd80dda723803f34ca22d87798b5caaa, type: 3}
       propertyPath: m_audioClip
       value: 
-      objectReference: {fileID: 8300000, guid: 78bc61f9270f3054d9fc30ea1aed6f23, type: 3}
+      objectReference: {fileID: 0}
     - target: {fileID: 8191316397005868040, guid: cd80dda723803f34ca22d87798b5caaa, type: 3}
       propertyPath: m_LocalScale.x
       value: 0.25

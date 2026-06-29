@@ -129,19 +129,19 @@ PrefabInstance:
     m_Modifications:
     - target: {fileID: 5488939612508327, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMax.y
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 5488939612508327, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMin.y
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 5488939612508327, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchoredPosition.x
-      value: 0
+      value: 113
       objectReference: {fileID: 0}
     - target: {fileID: 5488939612508327, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchoredPosition.y
-      value: 0
+      value: -180.20801
       objectReference: {fileID: 0}
     - target: {fileID: 240390170033609825, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMax.y
@@ -262,6 +262,14 @@ PrefabInstance:
     - target: {fileID: 672861639180177159, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchoredPosition.y
       value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 1206822831621316501, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
+      propertyPath: m_text
+      value: Backrooms     PlayTest v.0.0.0.5a
+      objectReference: {fileID: 0}
+    - target: {fileID: 1206822831621316501, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
+      propertyPath: m_margin.z
+      value: -181.40851
       objectReference: {fileID: 0}
     - target: {fileID: 1445803333929082667, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMax.y
@@ -615,6 +623,10 @@ PrefabInstance:
       propertyPath: m_Camera
       value: 
       objectReference: {fileID: 742955216}
+    - target: {fileID: 3714859430486550999, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
+      propertyPath: m_IsActive
+      value: 0
+      objectReference: {fileID: 0}
     - target: {fileID: 3742960107334200014, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMax.y
       value: 0
@@ -737,19 +749,19 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 5528292105409469394, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMax.y
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 5528292105409469394, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMin.y
-      value: 0
+      value: 1
       objectReference: {fileID: 0}
     - target: {fileID: 5528292105409469394, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchoredPosition.x
-      value: 0
+      value: 113
       objectReference: {fileID: 0}
     - target: {fileID: 5528292105409469394, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchoredPosition.y
-      value: 0
+      value: -230.208
       objectReference: {fileID: 0}
     - target: {fileID: 5640143924489279433, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchorMax.y
@@ -1033,6 +1045,10 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 9078767379694728333, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
       propertyPath: m_AnchoredPosition.y
+      value: 0
+      objectReference: {fileID: 0}
+    - target: {fileID: 9162050830984159906, guid: 489bbf5f5e3317746a2725c3ce133208, type: 3}
+      propertyPath: m_IsActive
       value: 0
       objectReference: {fileID: 0}
     m_RemovedComponents: []
@@ -1209,6 +1225,10 @@ PrefabInstance:
     - target: {fileID: 91631345097877820, guid: 746821ad3b57cea44b227148b5d56f3e, type: 3}
       propertyPath: m_Name
       value: Structure
+      objectReference: {fileID: 0}
+    - target: {fileID: 91631345097877820, guid: 746821ad3b57cea44b227148b5d56f3e, type: 3}
+      propertyPath: m_IsActive
+      value: 0
       objectReference: {fileID: 0}
     - target: {fileID: 8714481167267571112, guid: 746821ad3b57cea44b227148b5d56f3e, type: 3}
       propertyPath: m_LocalPosition.x

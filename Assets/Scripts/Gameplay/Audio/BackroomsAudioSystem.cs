@@ -65,9 +65,12 @@ namespace BackroomsSurvival.Gameplay.Audio
             _flickerTimer = flickerInterval;
         }
 
-        // Exactly one AudioListener, on the Player root. SpawnPlayer puts one on
-        // the camera — destroy that (and any other) so Unity doesn't warn about
-        // multiple listeners.
+        // Exactly one AudioListener, on the Player root. The scene player carries
+        // its own (typically on a camera child) — destroy that (and any other) so
+        // Unity doesn't warn about multiple listeners.
+        // BUG (sound): remounting on the root drops the camera's pitch, so
+        // positional audio is mis-oriented with the real scene player. Documented
+        // in GridTestWorld; left unfixed by request.
         private static void ConsolidateListener(GameObject playerGo)
         {
             var keep = playerGo.GetComponent<AudioListener>();

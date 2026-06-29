@@ -37,11 +37,16 @@ namespace BackroomsSurvival.Net
         private sealed class Tracked
         {
             public GameObject go;
+            public uint groupId;    // B3: the group this piece belongs to (0 = standalone)
             public bool complete;   // sticky: progress only advances, never downgrades
             public string addedKey; // last-applied progress snapshot (change detection)
         }
 
         private readonly Dictionary<uint, Tracked> _spawned = new Dictionary<uint, Tracked>();
+        // B3: group_id → reconstructed BuildingPieceGroup. Pieces sharing a group_id are
+        // bucketed here so their sockets cohere (membership + OccupyAdjacentSockets) on every
+        // client, exactly like STP's own save/load path.
+        private readonly Dictionary<uint, BuildingPieceGroup> _groups = new Dictionary<uint, BuildingPieceGroup>();
         // def_id → prefab-authored build requirements (the required amounts live in the prefab).
         private readonly Dictionary<int, BuildRequirement[]> _authoredByDef = new Dictionary<int, BuildRequirement[]>();
 
@@ -82,7 +87,7 @@ namespace BackroomsSurvival.Net
                 {
                     var go = SpawnBuilding(b, out bool complete);
                     if (go != null)
-                        _spawned[b.id] = new Tracked { go = go, complete = complete, addedKey = key };
+                        _spawned[b.id] = new Tracked { go = go, groupId = b.groupId, complete = complete, addedKey = key };
                 }
                 else if (tracked.addedKey != key)
                 {
@@ -103,6 +108,42 @@ namespace BackroomsSurvival.Net
             }
             foreach (uint k in stale)
                 _spawned.Remove(k);
+
+            // B3: drop group buckets whose BuildingPieceGroup was auto-destroyed by the vendor
+            // (it self-destructs when its last piece is removed). EnsureGroup recreates on demand.
+            List<uint> deadGroups = null;
+            foreach (var kv in _groups)
+            {
+                if (kv.Value == null)
+                    (deadGroups ??= new List<uint>()).Add(kv.Key);
+            }
+            if (deadGroups != null)
+                foreach (uint k in deadGroups)
+                    _groups.Remove(k);
+        }
+
+        // B3: returns the reconstructed BuildingPieceGroup for a group_id, creating it (tagged
+        // with a NetworkBuildingGroupInstance companion) on first use. group_id 0 = standalone
+        // (free pieces) → null, matching the B1 ungrouped path.
+        private BuildingPieceGroup EnsureGroup(uint groupId, Vector3 at)
+        {
+            if (groupId == 0)
+                return null;
+
+            if (_groups.TryGetValue(groupId, out var existing) && existing != null)
+                return existing;
+
+            var prefab = BuildingManager.Instance != null ? BuildingManager.Instance.DefaultGroupPrefab : null;
+            if (prefab == null)
+            {
+                Debug.LogWarning($"[StpBuildingReplicator] no DefaultGroupPrefab; group {groupId} pieces spawn standalone.");
+                return null;
+            }
+
+            var grp = Instantiate(prefab, at, Quaternion.identity);
+            grp.gameObject.AddComponent<NetworkBuildingGroupInstance>().groupId = groupId;
+            _groups[groupId] = grp;
+            return grp;
         }
 
         private GameObject SpawnBuilding(StpBuildingMsg b, out bool complete)
@@ -130,13 +171,18 @@ namespace BackroomsSurvival.Net
             var rot = Quaternion.Euler(0f, b.rotation, 0f);
             var prefabGo = prefab.gameObject;
 
-            // Instantiate INACTIVE so progress + state are set before Awake/Start run.
+            // B3: bucket this piece under its group so sockets cohere on every client.
+            var grp = EnsureGroup(b.groupId, b.position);
+
+            // Instantiate INACTIVE so progress + state are set before Awake/Start run. Parent
+            // under the group (4-arg overload keeps the WORLD pose) so GroupBuildingPiece's
+            // LoadMembers can find the group via GetComponentInParent.
             bool prefabWasActive = prefabGo.activeSelf;
             prefabGo.SetActive(false);
             GameObject go;
             try
             {
-                go = Instantiate(prefabGo, b.position, rot);
+                go = Instantiate(prefabGo, b.position, rot, grp != null ? grp.transform : null);
             }
             finally
             {
@@ -162,7 +208,14 @@ namespace BackroomsSurvival.Net
                 rb.useGravity = false;
             }
 
-            Debug.Log($"[StpBuildingReplicator] spawned id={b.id} def_id={b.defId} '{def.Name}' at {b.position:F1} (complete={isComplete}).");
+            // B3: wire group membership + socket occupancy via the SAME public save hook STP's
+            // own load path uses (_parentGroup via GetComponentInParent, AddBuildingPiece,
+            // OccupyAdjacentSockets). Runs active so GetComponentInParent finds the live group.
+            // Only for group pieces; free pieces (grp == null) stay standalone, exactly like B1.
+            if (grp != null && go.GetComponent<BuildingPiece>() is ISaveableComponent groupSaveable)
+                groupSaveable.LoadMembers(GetBoxedState(isComplete));
+
+            Debug.Log($"[StpBuildingReplicator] spawned id={b.id} def_id={b.defId} '{def.Name}' group_id={b.groupId} at {b.position:F1} (complete={isComplete}).");
             return go;
         }
 
@@ -180,8 +233,13 @@ namespace BackroomsSurvival.Net
             if (complete)
             {
                 // Completion transition → respawn in Constructed (the only flicker, at the end).
+                // Defer the respawn: Unity's Destroy runs at end of frame, so spawning inline
+                // would briefly leave two coincident pieces in the group and corrupt socket
+                // occupancy (the dying piece's ClearAdjacentSockets would unoccupy the new one).
+                // Null the handle and let the next reconcile re-spawn cleanly via EnsureGroup
+                // (which recreates the group if this was its last piece).
                 Destroy(tracked.go);
-                tracked.go = SpawnBuilding(b, out _);
+                tracked.go = null;
                 tracked.complete = true;
             }
             else if (tracked.go.GetComponent<Constructable>() is ISaveableComponent sc)
@@ -271,11 +329,7 @@ namespace BackroomsSurvival.Net
             if (piece == null)
                 return;
 
-            ResolveStateReflection();
-            if (_stateField == null)
-                return;
-
-            object boxed = complete ? _constructedBoxed : _placedBoxed;
+            object boxed = GetBoxedState(complete);
             if (boxed == null)
                 return;
 
@@ -287,6 +341,18 @@ namespace BackroomsSurvival.Net
             {
                 Debug.LogWarning($"[StpBuildingReplicator] could not force state: {e.Message}");
             }
+        }
+
+        // Boxed BuildingPieceState (Constructed | Placed) for the vendor's protected enum. Used
+        // both to force the visual state and as the `data` arg for GroupBuildingPiece.LoadMembers
+        // (which does `State = (BuildingPieceState)data`). Same reflection as B1 — none new.
+        private static object GetBoxedState(bool complete)
+        {
+            ResolveStateReflection();
+            if (_stateField == null)
+                return null;
+
+            return complete ? _constructedBoxed : _placedBoxed;
         }
 
         private static void ResolveStateReflection()

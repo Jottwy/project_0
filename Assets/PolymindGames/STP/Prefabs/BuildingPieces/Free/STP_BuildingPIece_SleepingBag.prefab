@@ -218,10 +218,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 580f142dfead966488f481c46283a8be, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _holdDuration: 0.3
-  _centerOffset: {x: 0, y: 0.05, z: 0}
   _interactTitle: 
   _interactDescription: 
+  _holdDuration: 0.3
+  _centerOffset: {x: 0, y: 0.05, z: 0}
   _materialEffect: {fileID: 688983000922624655}
 --- !u!114 &688983000922624655
 MonoBehaviour:

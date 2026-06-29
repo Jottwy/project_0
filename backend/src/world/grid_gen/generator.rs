@@ -459,13 +459,46 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
     }
 }
 
+/// SplitMix64 finalizer — full-avalanche bit diffusion of a single word.
+#[inline]
+fn splitmix64(mut z: u64) -> u64 {
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+/// Fold one value into a running hash state. Order-dependent (so `(cx, cz)` and
+/// `(cz, cx)` diverge) and fully diffused, unlike the previous commutative
+/// XOR-of-products mix where symmetric coordinates could correlate.
+#[inline]
+pub(super) fn mix(state: u64, value: u64) -> u64 {
+    splitmix64(state.wrapping_add(0x9e37_79b9_7f4a_7c15).wrapping_add(value))
+}
+
 /// Deterministic seed for one (chunk, layer) pair, unique across the world grid.
 fn derive_seed(world_seed: u64, (cx, cz): (i32, i32), layer_index: i32) -> u64 {
     let mut s = world_seed;
-    s ^= (cx as i64 as u64).wrapping_mul(0x9e3779b97f4a7c15);
-    s ^= (cz as i64 as u64).wrapping_mul(0x6c62272e07bb0142);
-    s ^= (layer_index as u64).wrapping_mul(1337);
+    s = mix(s, cx as i64 as u64);
+    s = mix(s, cz as i64 as u64);
+    s = mix(s, layer_index as i64 as u64);
     s
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    /// El fix: el plegado SplitMix64 NO conmuta (a diferencia del XOR-of-products
+    /// anterior), así que transponer entradas cambia la seed → coords de chunk
+    /// simétricas respecto a la diagonal dejan de correlacionar. Además, un cambio
+    /// de un solo bit en la entrada debe difundirse ampliamente (avalancha).
+    #[test]
+    fn mix_is_order_dependent_and_diffuses() {
+        let s = 0xBACC_0085;
+        assert_ne!(mix(mix(s, 3), 7), mix(mix(s, 7), 3), "mix no debe conmutar");
+        let flips = (mix(s, 0) ^ mix(s, 1)).count_ones();
+        assert!(flips >= 8, "un bit de entrada debe avalanchar, solo {flips} bits cambiaron");
+    }
 }
 
 /// True if the zone has at least one walkable neighbour cell outside its bounds.

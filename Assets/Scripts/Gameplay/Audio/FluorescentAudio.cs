@@ -39,35 +39,42 @@ namespace BackroomsSurvival.Gameplay.Audio
 
         private void Awake()
         {
-            if (_sharedHum == null)
-                _sharedHum = GenerateHum();
-
-            var src = gameObject.AddComponent<AudioSource>();
-            src.clip         = _sharedHum;
-            src.loop         = true;
-            src.spatialBlend = 1f;                              // fully 3D
-            src.minDistance  = 0.5f;                            // full volume within
-            src.maxDistance  = 5f;                              // silent beyond
-            src.rolloffMode  = AudioRolloffMode.Custom;         // natural proximity gradient
-            src.SetCustomCurve(AudioSourceCurveType.CustomRolloff, new AnimationCurve(
-                new Keyframe(0f,   1f),    // 0 m   — full volume
-                new Keyframe(0.3f, 0.8f),  // 1.5 m — still strong
-                new Keyframe(0.7f, 0.2f),  // 3.5 m — almost gone
-                new Keyframe(1f,   0f)));  // 5 m   — silent
-            src.volume       = baseVolume;                      // scaled by vertical fade in Update
-            src.pitch        = 1f + Random.Range(-0.02f, 0.02f); // slight per-lamp detune
-            src.dopplerLevel = 0f;                              // stationary lamp
-            src.playOnAwake  = false;
-            src.Play();
-            Source = src;
-
-            var reverb = gameObject.AddComponent<AudioReverbFilter>();
-            reverb.reverbPreset     = AudioReverbPreset.Room;   // nearby-wall reflections
-            reverb.room             = -1000;
-            reverb.roomHF           = -100;
-            reverb.decayTime        = 0.8f;
-            reverb.reflectionsLevel = -300;
-            reverb.reverbLevel      = 100;
+            // AUDIO DESACTIVADO por petición — el hum 3D por lámpara molestaba (cientos de
+            // AudioSource simultáneos, uno por lámpara × muchas lámparas × muchos chunks).
+            // Se comenta TODA la creación de audio: AudioSource + AudioReverbFilter + el clip
+            // sintetizado. Source queda null; los consumidores (BackroomsAudioSystem
+            // .TuneLampsAndFindNearest / .TryStartFlicker y el Update de abajo) ya hacen guard
+            // contra Source == null, así que no hay NRE ni hum. Para reactivar: descomenta.
+            //
+            // if (_sharedHum == null)
+            //     _sharedHum = GenerateHum();
+            //
+            // var src = gameObject.AddComponent<AudioSource>();
+            // src.clip         = _sharedHum;
+            // src.loop         = true;
+            // src.spatialBlend = 1f;                              // fully 3D
+            // src.minDistance  = 0.5f;                            // full volume within
+            // src.maxDistance  = 5f;                              // silent beyond
+            // src.rolloffMode  = AudioRolloffMode.Custom;         // natural proximity gradient
+            // src.SetCustomCurve(AudioSourceCurveType.CustomRolloff, new AnimationCurve(
+            //     new Keyframe(0f,   1f),    // 0 m   — full volume
+            //     new Keyframe(0.3f, 0.8f),  // 1.5 m — still strong
+            //     new Keyframe(0.7f, 0.2f),  // 3.5 m — almost gone
+            //     new Keyframe(1f,   0f)));  // 5 m   — silent
+            // src.volume       = baseVolume;                      // scaled by vertical fade in Update
+            // src.pitch        = 1f + Random.Range(-0.02f, 0.02f); // slight per-lamp detune
+            // src.dopplerLevel = 0f;                              // stationary lamp
+            // src.playOnAwake  = false;
+            // src.Play();
+            // Source = src;
+            //
+            // var reverb = gameObject.AddComponent<AudioReverbFilter>();
+            // reverb.reverbPreset     = AudioReverbPreset.Room;   // nearby-wall reflections
+            // reverb.room             = -1000;
+            // reverb.roomHF           = -100;
+            // reverb.decayTime        = 0.8f;
+            // reverb.reflectionsLevel = -300;
+            // reverb.reverbLevel      = 100;
         }
 
         private void OnEnable()  => Active.Add(this);

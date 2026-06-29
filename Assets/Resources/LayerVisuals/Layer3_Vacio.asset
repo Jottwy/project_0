@@ -1,0 +1,49 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fd899d36d211f014e939cc973dec9d79, type: 3}
+  m_Name: Layer3_Vacio
+  m_EditorClassIdentifier: 
+  floorTexture: {fileID: 2800000, guid: 6482eff00d0dc134994eea83c6f3f35c, type: 3}
+  floorTint: {r: 0.25, g: 0.23, b: 0.2, a: 1}
+  wallTexture: {fileID: 2800000, guid: d1c798872c2936c4c9887f4050e1010a, type: 3}
+  wallTint: {r: 0.3, g: 0.27, b: 0.22, a: 1}
+  ceilingTexture: {fileID: 2800000, guid: dd05e192d84308546afe376cd571b166, type: 3}
+  ceilingTint: {r: 0.2, g: 0.2, b: 0.18, a: 1}
+  showCeiling: 1
+  lightDensity: 0.25
+  brokenLampChance: 0.45
+  lampColor: {r: 0.8, g: 0.68, b: 0.4, a: 1}
+  lampIntensity: 0.9
+  lampRange: 7
+  fogDensity: 0.09
+  fogColor: {r: 0.28, g: 0.25, b: 0.22, a: 1}
+  ceilingPanelVariety: 0.95
+  ceilingPipeChance: 0
+  ceilingPipes: 0
+  propDensity: 0.08
+  propClusterBias: 0.3
+  props:
+  - prefab: {fileID: 0}
+    placeholderType: paper
+    spawnWeight: 2
+    canBeRotated: 1
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: stain
+    spawnWeight: 3
+    canBeRotated: 1
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: cable
+    spawnWeight: 2
+    canBeRotated: 0
+    floorOnly: 0

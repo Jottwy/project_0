@@ -25,6 +25,10 @@ namespace BackroomsSurvival.Net
         public int joinerNetPortOffset = 1;
         public float startupTimeout = 10f;
 
+        [Header("Debug")]
+        [Tooltip("Spawn the robapieles (phantom peer) on the host for play-testing. Injects DEBUG_SPAWN_PHANTOM=1 into the backend env. Host-only; no effect on joiners.")]
+        public bool debugSpawnPhantom = false;
+
         public Role CurrentRole { get; private set; } = Role.None;
         public bool IsBackendReady { get; private set; }
         public bool HasBackendProcess => _backendProcess != null && !_backendProcess.HasExited;
@@ -107,6 +111,12 @@ namespace BackroomsSurvival.Net
                 ["RUST_LOG"] = "info",
             };
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
+
+            // Fase 6B (Slice 1): debug-spawn the robapieles on the host. The backend reads
+            // DEBUG_SPAWN_PHANTOM from its env (inherited from Unity via UseShellExecute=false);
+            // injected here so it's a single inspector toggle, OFF by default. Host-only.
+            if (debugSpawnPhantom)
+                env["DEBUG_SPAWN_PHANTOM"] = "1";
 
             LogLaunchConfig(
                 sessionMode,

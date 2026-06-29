@@ -12,7 +12,7 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use super::generator::repair_connectivity;
+use super::generator::{mix, repair_connectivity};
 use super::{generate_layer, Cell, CellType, LayerGrid, LayerOutput, LayerRules, CHUNK_CELLS};
 
 /// Edge axis for canonical edge identification.
@@ -81,12 +81,13 @@ fn stitch_edges(
 /// Deterministic aperture position along a canonical edge, in 1..CHUNK_CELLS-1
 /// (never a corner, so apertures of perpendicular edges cannot collide).
 fn aperture_pos(world_seed: u64, kx: i32, kz: i32, axis: EdgeAxis, layer_index: i32) -> usize {
-    // Constante de dominio: separa el espacio de seeds de borde del de capas.
+    // Constante de dominio: separa el espacio de seeds de borde del de las celdas
+    // (`derive_seed` arranca de `world_seed` sin esta máscara → espacios disjuntos).
     let mut s = world_seed ^ 0xED6E_C0A7_05EA_05ED;
-    s ^= (kx as i64 as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    s ^= (kz as i64 as u64).wrapping_mul(0x6c62_272e_07bb_0142);
-    s ^= (axis as u64).wrapping_mul(0xa5a5_a5a5_a5a5_a5a5);
-    s ^= (layer_index as u64).wrapping_mul(1337);
+    s = mix(s, kx as i64 as u64);
+    s = mix(s, kz as i64 as u64);
+    s = mix(s, axis as u64);
+    s = mix(s, layer_index as i64 as u64);
     StdRng::seed_from_u64(s).gen_range(1..CHUNK_CELLS - 1)
 }
 

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -83,19 +84,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     }
 
     /// <summary>
-    /// Edge-based visual construction for one chunk. The chunk's 20×20 cells fold
-    /// into 10×10 render tiles of 5 m (2×2 cells). EVERY tile gets a Floor and a
-    /// Ceiling panel at the fixed 4 m room height; walls are independent 5×4×0.2
-    /// prefab pieces placed on tile EDGES, driven by <see cref="ChunkData.walls"/>
-    /// — one piece, one wall, like LEGO.
+    /// Edge-based visual construction for one chunk: 10×10 render tiles of 5 m,
+    /// every tile floored, walls as independent 5×4×0.2 prefab pieces on tile
+    /// EDGES (one piece, one wall, like LEGO).
     ///
-    /// No-duplication rule: a wall on the edge between two tiles is the same
-    /// physical panel. Each chunk emits only its NORTH and EAST edges; the SOUTH
-    /// and WEST edges of any tile belong to (and are emitted by) the neighbouring
-    /// tile/chunk to the south/west. This makes every edge render exactly once.
+    /// Fase 4.2: the local-generation path (Build(ChunkData)) was removed; chunks
+    /// now come from the backend grid_gen bitmask via <see cref="BuildFromWalls"/>.
+    /// No-duplication rule: each tile emits only its +Z and +X panels; the −Z/−X
+    /// panels belong to the neighbour tile/chunk, so every edge renders once.
     ///
-    /// Pit/Void cells still collapse a tile to Hollow (open vertical shaft,
-    /// ADR-008); the edge generator does not emit them, but the path is kept.
+    /// <see cref="ClassifyTile"/> (cells → TileClass) is retained for the
+    /// classification unit tests; it is not used by the runtime render path.
     /// </summary>
     public static class GridChunkBuilder
     {
@@ -122,15 +121,41 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             (EdgeEast, 0.5f, 0f, 90f),
         };
 
-        // Per-edge neighbour lookup: flag → (dx, dz, void-lip yaw). The VoidEdge
-        // lip is authored on the +z edge, so +z=0°, +x=90°, -z=180°, -x=270°.
-        private static readonly (byte flag, int dx, int dz, float lipYaw)[] NeighbourTable =
+        // Fase 5A (Bug #1) — per-layer light isolation. Each macro-layer paints its
+        // whole chunk onto a distinct Unity layer; a layer's lamps then illuminate only
+        // that layer's geometry (via Light.cullingMask) so point lights never bleed
+        // through the thin floor/ceiling slabs into the stacked layers above/below.
+        // These 4 Unity layers are ALREADY in the player camera's cullingMask AND the
+        // STP motor's collision mask, so reusing them keeps render + grounding intact
+        // with zero vendor edits (Default, StaticObject, DynamicObject, Building).
+        public static readonly int[] GeoLayers = { 0, 14, 15, 16 };
+
+        /// <summary>The Unity layer a macro-layer's geometry/lamps live on (wraps mod N).</summary>
+        public static int GeoLayer(int worldLayer)
         {
-            (EdgeNorth, 0, 1, 0f),
-            (EdgeEast, 1, 0, 90f),
-            (EdgeSouth, 0, -1, 180f),
-            (EdgeWest, -1, 0, 270f),
-        };
+            int n = GeoLayers.Length;
+            return GeoLayers[((worldLayer % n) + n) % n];
+        }
+
+        /// <summary>Bitmask of every per-layer geometry layer (the set GeoLayer can return).</summary>
+        public static readonly int GeoMask = BuildGeoMask();
+
+        private static int BuildGeoMask()
+        {
+            int m = 0;
+            foreach (int l in GeoLayers) m |= 1 << l;
+            return m;
+        }
+
+        /// <summary>Set <paramref name="go"/> and all descendants to <paramref name="layer"/>.</summary>
+        public static void SetLayerRecursively(GameObject go, int layer)
+        {
+            go.layer = layer;
+            var t = go.transform;
+            for (int i = 0; i < t.childCount; i++)
+                SetLayerRecursively(t.GetChild(i).gameObject, layer);
+        }
+
 
         /// <summary>
         /// Classify the 2×2 cell block of tile (tileX, tileZ) into a render tile:
@@ -195,83 +220,86 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
-        /// Build the whole chunk under one root placed at <paramref name="origin"/>.
+        /// Fase 4.1 — build a chunk from the backend grid_gen tile-wall bitmask
+        /// (ServerMessage::ChunkData). Every tile is floored (a roof slab on the top
+        /// layer only); walls come straight from
+        /// <paramref name="walls"/>[tx,tz] in the BACKEND convention
+        /// N=1(−Z) S=2(+Z) E=4(+X) W=8(−X). The 4.1 payload is walls + floors only —
+        /// no cells, pillars, voids or shafts.
         ///
-        /// Shared-slab model: a single FloorSlab at the tile's floor plane (local
-        /// Y = 0) is BOTH the floor of this layer and the ceiling of the layer
-        /// below — no per-layer ceiling is placed. Only the topmost layer
-        /// (<paramref name="layerIndex"/> == <paramref name="layerCount"/> - 1)
-        /// adds a roof slab at local Y = LayerHeight.
+        /// No-duplication rule: each tile emits only the
+        /// edges it OWNS — its +Z and +X panels. The shared edge is symmetric in the
+        /// bitmask (a tile's +Z bit equals its +Z-neighbour's −Z bit, guaranteed by the
+        /// backend crossing rule), so the −Z/−X panels are emitted by the neighbour
+        /// tile/chunk → every physical edge renders exactly once.
+        ///
+        /// Bit translation (backend convention → this builder's internal flags):
+        ///   backend S (2, +Z) → EdgeNorth (this tile's +z panel)
+        ///   backend E (4, +X) → EdgeEast  (this tile's +x panel)
         /// </summary>
-        public static GameObject Build(ChunkData data, GridPrefabSet prefabs,
-            Vector3 origin, string name, int layerIndex, int layerCount)
+        public static GameObject BuildFromWalls(byte[,] walls, GridPrefabSet prefabs,
+            Vector3 origin, string name, int layerIndex, int layerCount,
+            LayerVisualConfig cfg = null, LayerVisualMaterials mats = null,
+            int chunkX = 0, int chunkZ = 0)
         {
             var root = new GameObject(name);
             root.transform.position = origin;
-
-            var cells = data.cells;
-            var walls = data.walls;
-            var shafts = data.shafts;
             bool isTopLayer = layerIndex >= layerCount - 1;
-
-            // Classify every tile up front so the Hollow path can consult neighbours.
-            var grid = new TileClass[Tiles * Tiles];
-            for (int tz = 0; tz < Tiles; tz++)
-                for (int tx = 0; tx < Tiles; tx++)
-                    grid[tz * Tiles + tx] = ClassifyTile(cells, tx, tz);
+            // Fase 5A: "styled" = a layer visual config + its shared materials.
+            bool styled = cfg != null && mats != null;
+            // When the layer draws its own per-tile ceiling, the top-layer roof slab is
+            // redundant (coplanar with the ceiling) → suppress it to avoid z-fighting.
+            bool roofSlab = isTopLayer && !(styled && cfg.showCeiling);
 
             for (int tz = 0; tz < Tiles; tz++)
             {
                 for (int tx = 0; tx < Tiles; tx++)
                 {
-                    int idx = tz * Tiles + tx;
-
-                    // Vertical shaft: floorless hole that drops through every
-                    // layer, rimmed with void edges on all four sides (Task 2).
-                    if (shafts != null && shafts[idx])
-                    {
-                        PlaceShaftEdges(prefabs, root.transform, tx, tz);
-                        continue; // no slab, no roof, no walls
-                    }
-
-                    var tile = grid[idx];
-
-                    // Pit/Void cells open the tile vertically (ADR-008).
-                    if (tile.Kind == TileKind.Hollow)
-                    {
-                        PlaceVoidEdges(prefabs, root.transform, grid, tx, tz);
-                        continue;
-                    }
+                    // One deterministic RNG per tile drives the ±8% HSV-Value jitter so
+                    // surface tints vary tile-to-tile WITHOUT a material per tile.
+                    System.Random rng = styled ? new System.Random(TileSeed(chunkX, chunkZ, tx, tz)) : null;
 
                     // Floor of this layer == ceiling of the layer below (one slab).
-                    PlaceFloorSlab(prefabs, root.transform, tx, tz, 0f);
-                    // Only the top layer needs an explicit roof above it.
-                    if (isTopLayer)
+                    var floorGo = Instantiate(prefabs.floorSlab, root.transform, TileCenter(tx, tz), 0f);
+                    AddColliderIfMissing(floorGo);
+                    if (styled) Paint(floorGo, mats.floor, JitterValue(cfg.floorTint, rng));
+
+                    if (roofSlab)
                         PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
 
-                    byte edges = EdgeWalls(walls, tx, tz);
-                    if (edges != 0) PlaceWalls(prefabs, root.transform, edges, tx, tz);
+                    // Per-tile ceiling with Fase 5B procedural variety (panel type + moisture
+                    // stains). Variety comes from a pure hash so the floor/wall jitter (rng)
+                    // is untouched; the ceiling tint still draws one rng value inside so the
+                    // draw sequence — and thus floor/wall shades — stays byte-identical.
+                    if (styled && cfg.showCeiling)
+                        PlaceCeilingTile(prefabs, root.transform, tx, tz, mats, cfg, chunkX, chunkZ, rng);
 
-                    if (tile.HasPillar) PlacePillar(prefabs, root.transform, tx, tz);
-                    if (tile.HasAnomaly) PlaceAnomalyMarker(root.transform, tx, tz);
+                    byte b = walls[tx, tz];
+                    byte edges = 0;
+                    if ((b & 2) != 0) edges |= EdgeNorth; // backend S (+Z) → +z panel
+                    if ((b & 4) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
+                    if (edges != 0)
+                    {
+                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(cfg.wallTint, rng));
+                        else PlaceWalls(prefabs, root.transform, edges, tx, tz);
+                    }
                 }
             }
 
-            return root;
-        }
+            // Fase 5B (Slice 2): overhead pipes per chunk (Layers 1–2 via cfg.ceilingPipes).
+            if (styled && cfg.ceilingPipes)
+                PlacePipes(root.transform, cfg, mats, chunkX, chunkZ);
 
-        /// <summary>
-        /// Edge flags for tile (tx,tz): only the NORTH and EAST panels, which this
-        /// tile owns (the south/west panels belong to the neighbour tile/chunk).
-        /// </summary>
-        private static byte EdgeWalls(TileWalls[] walls, int tx, int tz)
-        {
-            if (walls == null) return 0;
-            var w = walls[tz * Tiles + tx];
-            byte e = 0;
-            if (w.N) e |= EdgeNorth;
-            if (w.E) e |= EdgeEast;
-            return e;
+            // Fase 5C: procedural props (placeholders) per tile.
+            if (styled && cfg.props != null && cfg.props.Length > 0)
+                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ);
+
+            // Fase 5A (Bug #1): tag the whole chunk to its macro-layer's Unity layer so
+            // per-layer lamp culling isolates it (see GeoLayers). Lamps/luminaires added
+            // afterwards by BackroomsLighting set their own layer. Pipes (above) are children
+            // of root, so they inherit the layer here too — lit only by this layer's lamps.
+            SetLayerRecursively(root, GeoLayer(layerIndex));
+            return root;
         }
 
         private static Vector3 TileCenter(int tx, int tz) =>
@@ -316,55 +344,330 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
         }
 
-        private static void PlacePillar(GridPrefabSet prefabs, Transform parent, int tx, int tz)
+        // ── Fase 5A — styled (per-layer) variants ──────────────────────────────
+
+        // Reused across all Paint() calls — SetPropertyBlock copies the data, so a
+        // single shared block avoids a per-tile allocation.
+        private static readonly MaterialPropertyBlock _mpb = new MaterialPropertyBlock();
+
+        /// <summary>Wall pieces using the shared layer material + a per-tile tint (MPB).</summary>
+        private static void PlaceWallsTinted(GridPrefabSet prefabs, Transform parent,
+            byte edges, int tx, int tz, Material mat, Color tint)
         {
-            var go = Instantiate(prefabs.pillar, parent, TileCenter(tx, tz), 0f);
-            var shaft = go.transform.Find("Shaft");
-            if (shaft != null)
+            foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
+                if ((edges & flag) != 0)
+                {
+                    var go = Instantiate(prefabs.wall, parent,
+                        TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
+                    AddColliderIfMissing(go);
+                    Paint(go, mat, tint);
+                }
+        }
+
+        /// <summary>Assign the shared material to every MeshRenderer and override
+        /// <c>_BaseColor</c> per-renderer with <paramref name="tint"/> via a property
+        /// block — no material instance is created.</summary>
+        private static void Paint(GameObject go, Material mat, Color tint)
+        {
+            _mpb.Clear();
+            _mpb.SetColor(LayerVisualMaterials.BaseColorId, tint);
+            foreach (var r in go.GetComponentsInChildren<MeshRenderer>())
             {
-                float h = 2f * Ch; // uniform 4 m room height
-                var s = shaft.localScale;
-                shaft.localScale = new Vector3(s.x, h, s.z);
-                shaft.localPosition = new Vector3(0f, h / 2f, 0f);
+                if (mat != null) r.sharedMaterial = mat;
+                r.SetPropertyBlock(_mpb);
             }
         }
 
-        /// <summary>Hollow tile: a lip on each side facing a floor-bearing tile.</summary>
-        private static void PlaceVoidEdges(GridPrefabSet prefabs, Transform parent,
-            TileClass[] grid, int tx, int tz)
+        /// <summary>Jitter the HSV Value of <paramref name="baseColor"/> by ±8%
+        /// (deterministic via <paramref name="rng"/>) to break tile uniformity.</summary>
+        private static Color JitterValue(Color baseColor, System.Random rng)
         {
-            foreach (var (_, dx, dz, lipYaw) in NeighbourTable)
+            if (rng == null) return baseColor;
+            Color.RGBToHSV(baseColor, out float h, out float s, out float v);
+            float k = 1f + (float)(rng.NextDouble() * 2.0 - 1.0) * 0.08f;
+            var c = Color.HSVToRGB(h, Mathf.Clamp01(s), Mathf.Clamp01(v * k));
+            c.a = baseColor.a;
+            return c;
+        }
+
+        /// <summary>Deterministic per-tile seed (no UnityEngine.Random).</summary>
+        private static int TileSeed(int cx, int cz, int tx, int tz)
+        {
+            unchecked { return cx * 73856093 ^ cz * 19349663 ^ tx * 83492791 ^ tz; }
+        }
+
+        // ── Fase 5B — procedural ceiling variety ────────────────────────────────
+
+        // Damp-grey multiplier for moisture-stained ceiling tiles.
+        private static readonly Color MoistureStain = new Color(0.7f, 0.68f, 0.6f);
+
+        /// <summary>
+        /// Per-tile ceiling with variety: normal / sunken / absent / dropped panels plus
+        /// moisture stains. Panel type and geometry come from a deterministic hash of
+        /// (chunk, tile) — NOT from <paramref name="rng"/> — so floor/wall jitter is
+        /// unaffected. One ceiling-tint rng value is still drawn here (unconditionally) to
+        /// keep the original draw sequence. <c>ceilingPanelVariety</c> scales the share of
+        /// non-normal panels in a fixed 3:2:1 (sunken:absent:dropped) ratio.
+        /// </summary>
+        private static void PlaceCeilingTile(GridPrefabSet prefabs, Transform parent,
+            int tx, int tz, LayerVisualMaterials mats, LayerVisualConfig cfg,
+            int chunkX, int chunkZ, System.Random rng)
+        {
+            CeilingHash(chunkX, chunkZ, tx, tz, out float hType, out float hDrop,
+                out float hTilt, out float hYaw);
+
+            // Base tint (still draws one rng value so floor/wall shades stay identical),
+            // darkened where moisture clusters.
+            Color tint = JitterValue(cfg.ceilingTint, rng);
+            if (MoistureAt(chunkX, chunkZ, tx, tz) < 0.20f)
+                tint *= MoistureStain;
+
+            float v = Mathf.Clamp01(cfg.ceilingPanelVariety);
+            float pSunken  = v * 0.5f;
+            float pAbsent  = pSunken + v * (1f / 3f);
+            float pDropped = pAbsent + v * (1f / 6f);
+
+            if (hType < pSunken)
             {
-                int nx = tx + dx;
-                int nz = tz + dz;
-                if (nx < 0 || nz < 0 || nx >= Tiles || nz >= Tiles)
-                    continue;
-                var k = grid[nz * Tiles + nx].Kind;
-                if (k == TileKind.Open || k == TileKind.Border) // tiles that have a floor
-                    Instantiate(prefabs.voidEdge, parent, TileCenter(tx, tz), lipYaw);
+                // Sunken panel: dips down into the room, slightly darker.
+                var go = Instantiate(prefabs.floorSlab, parent,
+                    TileCenter(tx, tz) + new Vector3(0f, LayerHeight - 0.1f, 0f), 0f);
+                Paint(go, mats.ceiling, tint * 0.8f);
+            }
+            else if (hType < pAbsent)
+            {
+                // "Absent": a near-black panel in place — guaranteed black, rather than
+                // revealing the dim underside of the floor above.
+                var go = Instantiate(prefabs.floorSlab, parent,
+                    TileCenter(tx, tz) + new Vector3(0f, LayerHeight, 0f), 0f);
+                Paint(go, mats.ceiling, new Color(0.05f, 0.05f, 0.05f, 1f));
+            }
+            else if (hType < pDropped)
+            {
+                // Dropped panel: half-size slab tilted 15–30°, hanging below the ceiling.
+                float tilt = 15f + hTilt * 15f;
+                float drop = 0.3f + hDrop * 0.3f;
+                var go = Instantiate(prefabs.floorSlab, parent,
+                    TileCenter(tx, tz) + new Vector3(0f, LayerHeight - drop, 0f), 0f);
+                go.transform.localScale    = new Vector3(0.5f, 1f, 0.5f);
+                go.transform.localRotation = Quaternion.Euler(tilt, hYaw * 360f, 0f);
+                Paint(go, mats.ceiling, tint * 0.85f);
+            }
+            else
+            {
+                // Normal panel.
+                var go = Instantiate(prefabs.floorSlab, parent,
+                    TileCenter(tx, tz) + new Vector3(0f, LayerHeight, 0f), 0f);
+                Paint(go, mats.ceiling, tint);
             }
         }
 
-        /// <summary>Shaft tile: a void-edge lip on all four sides (the hole is
-        /// fully open by construction, so no neighbour check).</summary>
-        private static void PlaceShaftEdges(GridPrefabSet prefabs, Transform parent, int tx, int tz)
+        /// <summary>Deterministic per-tile hash → four floats in [0,1), independent of the
+        /// jitter rng (so it never perturbs floor/wall tints).</summary>
+        private static void CeilingHash(int cx, int cz, int tx, int tz,
+            out float a, out float b, out float c, out float d)
         {
-            foreach (var (_, _, _, lipYaw) in NeighbourTable)
-                Instantiate(prefabs.voidEdge, parent, TileCenter(tx, tz), lipYaw);
+            unchecked
+            {
+                ulong h = 0x9E3779B97F4A7C15UL;
+                h ^= (ulong)(uint)cx * 0xFF51AFD7ED558CCDUL; h ^= h >> 33;
+                h ^= (ulong)(uint)cz * 0xC4CEB9FE1A85EC53UL; h ^= h >> 29;
+                h ^= (ulong)(uint)tx * 0x165667B19E3779F9UL; h ^= h >> 32;
+                h ^= (ulong)(uint)tz * 0x27D4EB2F165667C5UL; h ^= h >> 30;
+                h *= 0x9E3779B185EBCA87UL; h ^= h >> 32;
+                a = ((h      ) & 0xFFFF) / 65535f;
+                b = ((h >> 16) & 0xFFFF) / 65535f;
+                c = ((h >> 32) & 0xFFFF) / 65535f;
+                d = ((h >> 48) & 0xFFFF) / 65535f;
+            }
         }
 
-        private static void PlaceAnomalyMarker(Transform parent, int tx, int tz)
+        /// <summary>Moisture cluster value in [0,1): coarse 2-tile cells (in GLOBAL tile
+        /// coords) make adjacent tiles share a base so stains cluster and tile across chunk
+        /// seams; a per-tile jitter softens the block edges. &lt; 0.20 ⇒ stained.</summary>
+        private static float MoistureAt(int cx, int cz, int tx, int tz)
         {
-            var marker = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            marker.name = "AnomalyMarker";
-            var collider = marker.GetComponent<Collider>();
-            if (collider != null)
-                Object.Destroy(collider);
-            marker.transform.SetParent(parent, false);
-            marker.transform.localPosition = TileCenter(tx, tz) + new Vector3(0f, 1.2f, 0f);
-            marker.transform.localScale = Vector3.one * 0.6f;
-            marker.GetComponent<MeshRenderer>().sharedMaterial =
-                MaterialHelper.MakeEmissive(new Color(0.9f, 0.35f, 0.15f), 2f);
+            int gx = cx * Tiles + tx, gz = cz * Tiles + tz;
+            float cell = Hash01(gx >> 1, gz >> 1, 0x5BD1E995U); // shared by a 2×2 block
+            float jit  = Hash01(gx, gz, 0x1B873593U);           // per-tile
+            return cell * 0.8f + jit * 0.2f;
+        }
+
+        private static float Hash01(int x, int y, uint salt)
+        {
+            unchecked
+            {
+                uint h = (uint)(x * 73856093) ^ (uint)(y * 19349663) ^ salt;
+                h ^= h >> 15; h *= 0x2C1B3C6DU; h ^= h >> 12; h *= 0x297A2D39U; h ^= h >> 15;
+                return (h & 0xFFFFFFU) / 16777215f;
+            }
+        }
+
+        // ── Fase 5B (Slice 2) — overhead pipes ──────────────────────────────────
+
+        /// <summary>
+        /// 1–2 decorative pipes spanning the chunk just under the ceiling. Deterministic per
+        /// chunk; each pipe runs along X or Z at a random tile lane. Runtime Cube primitives
+        /// (no new prefab), collider stripped (Rust owns collision), on the shared layer pipe
+        /// material with a slight per-pipe value jitter. They are children of the chunk root,
+        /// so <see cref="SetLayerRecursively"/> (called after) puts them on the chunk's Unity
+        /// layer → lit only by this layer's lamps.
+        /// </summary>
+        private static void PlacePipes(Transform parent, LayerVisualConfig cfg,
+            LayerVisualMaterials mats, int chunkX, int chunkZ)
+        {
+            var rng = new System.Random(PipeSeed(chunkX, chunkZ));
+            if (rng.NextDouble() > cfg.ceilingPipeChance) return;
+
+            float span = Tiles * Ts;             // full chunk side (50 m)
+            float y    = LayerHeight - 0.25f;     // just under the ceiling, above the lamps
+            int count  = 1 + (int)(rng.NextDouble() * 2); // 1 or 2
+
+            for (int i = 0; i < count; i++)
+            {
+                bool alongX   = rng.NextDouble() > 0.5;
+                int lane      = (int)(rng.NextDouble() * Tiles);   // 0..Tiles-1
+                float lanePos = lane * Ts + Ts * 0.5f;             // tile centre on the cross axis
+
+                Vector3 pos   = alongX ? new Vector3(span * 0.5f, y, lanePos)
+                                       : new Vector3(lanePos, y, span * 0.5f);
+                Vector3 scale = alongX ? new Vector3(span, 0.2f, 0.2f)
+                                       : new Vector3(0.2f, 0.2f, span);
+
+                var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                go.name = "Pipe";
+                go.transform.SetParent(parent, false);
+                go.transform.localPosition = pos;
+                go.transform.localScale    = scale;
+
+                var col = go.GetComponent<Collider>();
+                if (col != null) Object.Destroy(col); // decorative — Rust owns collision
+
+                var rend = go.GetComponent<MeshRenderer>();
+                rend.sharedMaterial = mats.pipe;
+                // Slight per-pipe value jitter (±5%) so runs of pipes aren't identical.
+                float v = 0.95f + (float)rng.NextDouble() * 0.1f;
+                _mpb.Clear();
+                _mpb.SetColor(LayerVisualMaterials.BaseColorId, new Color(0.25f * v, 0.25f * v, 0.27f * v, 1f));
+                rend.SetPropertyBlock(_mpb);
+            }
+        }
+
+        /// <summary>Deterministic per-chunk pipe seed ("PIP").</summary>
+        private static int PipeSeed(int cx, int cz)
+            => unchecked(cx * 92837111 ^ cz * 689287499 ^ 0x504950);
+
+        // ── Fase 5C — procedural props ──────────────────────────────────────────
+
+        private const float PropFloorY = 0.04f;          // floor slab top surface (half of 0.08)
+        private const int   MaxPropsPerChunk = 12;        // perf cap (Fase 5C — option a)
+        private const uint  PropSaltFine   = 0x50524F50U; // "PROP" — spawn (per-tile)
+        private const uint  PropSaltCoarse = 0x434C5354U; // "CLST" — spawn (cluster cell)
+        private const uint  PropSaltOrder  = 0x4F524452U; // "ORDR" — cap subsample
+        private const uint  PropSaltPick   = 0x5049434BU; // "PICK" — weighted entry
+        private const uint  PropSaltYaw    = 0x59415750U; // "YAWP" — yaw
+        private const uint  PropSaltVarA   = 0x56415241U; // "VARA" — type variation (cable len)
+        private const uint  PropSaltVarB   = 0x56415242U; // "VARB" — chair tip
+
+        // Reused scratch so the cap subsample allocates nothing per chunk.
+        private static readonly List<(float key, int tx, int tz)> _propScratch
+            = new List<(float, int, int)>();
+
+        /// <summary>
+        /// Place one prop per selected tile from <paramref name="cfg"/>.props. Spawn, cluster
+        /// and within-tile choices are pure hashes of (chunk, tile) → deterministic, no order
+        /// coupling. Skips fully-walled tiles and the reserved chunk-centre tile, caps the
+        /// count per chunk (unbiased subset), and falls back to placeholder primitives when a
+        /// PropEntry has no prefab. Props are children of the chunk root, so they inherit the
+        /// chunk's Unity layer via SetLayerRecursively (called after) — lit only by this layer.
+        /// </summary>
+        private static void PlaceProps(Transform parent, byte[,] walls, LayerVisualConfig cfg,
+            LayerVisualMaterials mats, int chunkX, int chunkZ)
+        {
+            float totalWeight = 0f;
+            for (int i = 0; i < cfg.props.Length; i++)
+                totalWeight += Mathf.Max(0f, cfg.props[i].spawnWeight);
+            if (totalWeight <= 0f) return;
+
+            float density = Mathf.Clamp01(cfg.propDensity);
+            float bias    = Mathf.Clamp01(cfg.propClusterBias);
+            int center    = Tiles / 2;
+
+            // Pass 1: collect candidate tiles (spawn test + constraints). Cluster bias blends
+            // per-tile noise (uniform) with coarse 2×2-cell noise (clustered).
+            _propScratch.Clear();
+            for (int tz = 0; tz < Tiles; tz++)
+            {
+                for (int tx = 0; tx < Tiles; tx++)
+                {
+                    if (tx == center && tz == center) continue;      // reserved centre tile
+                    if ((walls[tx, tz] & 0x0F) == 0x0F) continue;    // fully enclosed / solid
+
+                    int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
+                    float fine   = Hash01(gx, gz, PropSaltFine);
+                    float coarse = Hash01(gx >> 1, gz >> 1, PropSaltCoarse);
+                    if (Mathf.Lerp(fine, coarse, bias) >= density) continue;
+
+                    _propScratch.Add((Hash01(gx, gz, PropSaltOrder), tx, tz));
+                }
+            }
+
+            // Cap: keep an unbiased deterministic subset (sort by order hash, drop the rest).
+            if (_propScratch.Count > MaxPropsPerChunk)
+            {
+                _propScratch.Sort((a, b) => a.key.CompareTo(b.key));
+                _propScratch.RemoveRange(MaxPropsPerChunk, _propScratch.Count - MaxPropsPerChunk);
+            }
+
+            // Pass 2: place one prop per selected tile.
+            for (int i = 0; i < _propScratch.Count; i++)
+            {
+                int tx = _propScratch[i].tx, tz = _propScratch[i].tz;
+                int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
+
+                PropEntry e = PickProp(cfg.props, Hash01(gx, gz, PropSaltPick) * totalWeight);
+                string type = e.placeholderType;
+
+                GameObject go = e.prefab != null
+                    ? Object.Instantiate(e.prefab)
+                    : PlaceholderFactory.Create(type, mats.prop, Hash01(gx, gz, PropSaltVarA));
+                go.transform.SetParent(parent, false);
+
+                // Y by kind: cables hang from the ceiling; flat decals lift slightly off the
+                // floor; the rest sit on the floor surface.
+                float y = PropFloorY;
+                if (!e.floorOnly && type == "cable")          y = LayerHeight;
+                else if (type == "paper" || type == "stain")  y = PropFloorY + 0.005f;
+                go.transform.localPosition = TileCenter(tx, tz) + new Vector3(0f, y, 0f);
+
+                // Yaw / tip.
+                if (e.canBeRotated)
+                {
+                    float hYaw = Hash01(gx, gz, PropSaltYaw);
+                    if (type == "chair")
+                    {
+                        float yaw = Mathf.Floor(hYaw * 4f) * 90f;                     // 0/90/180/270
+                        float tip = Hash01(gx, gz, PropSaltVarB) < 0.30f ? 90f : 0f;  // 30% tipped over
+                        go.transform.localRotation = Quaternion.Euler(0f, yaw, tip);
+                    }
+                    else
+                    {
+                        go.transform.localRotation = Quaternion.Euler(0f, hYaw * 360f, 0f);
+                    }
+                }
+            }
+        }
+
+        /// <summary>Weighted pick by cumulative spawnWeight; <paramref name="r"/> ∈ [0,total).</summary>
+        private static PropEntry PickProp(PropEntry[] props, float r)
+        {
+            float acc = 0f;
+            for (int i = 0; i < props.Length; i++)
+            {
+                acc += Mathf.Max(0f, props[i].spawnWeight);
+                if (r < acc) return props[i];
+            }
+            return props[props.Length - 1];
         }
     }
 }

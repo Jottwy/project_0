@@ -1,0 +1,59 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fd899d36d211f014e939cc973dec9d79, type: 3}
+  m_Name: Layer0_Vestibulo
+  m_EditorClassIdentifier: 
+  floorTexture: {fileID: 2800000, guid: 6482eff00d0dc134994eea83c6f3f35c, type: 3}
+  floorTint: {r: 0.82, g: 0.74, b: 0.51, a: 1}
+  wallTexture: {fileID: 2800000, guid: d1c798872c2936c4c9887f4050e1010a, type: 3}
+  wallTint: {r: 0.9, g: 0.85, b: 0.65, a: 1}
+  ceilingTexture: {fileID: 2800000, guid: dd05e192d84308546afe376cd571b166, type: 3}
+  ceilingTint: {r: 0.88, g: 0.88, b: 0.82, a: 1}
+  showCeiling: 1
+  lightDensity: 0.7
+  brokenLampChance: 0.1
+  lampColor: {r: 1, g: 0.97, b: 0.88, a: 1}
+  lampIntensity: 2.8
+  lampRange: 5
+  fogDensity: 0.035
+  fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
+  ceilingPanelVariety: 0
+  ceilingPipeChance: 0
+  ceilingPipes: 0
+  propDensity: 0.12
+  propClusterBias: 0.3
+  props:
+  - prefab: {fileID: 0}
+    placeholderType: desk
+    spawnWeight: 3
+    canBeRotated: 0
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: chair
+    spawnWeight: 4
+    canBeRotated: 1
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: paper
+    spawnWeight: 3
+    canBeRotated: 1
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: bin
+    spawnWeight: 2
+    canBeRotated: 0
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: stain
+    spawnWeight: 2
+    canBeRotated: 1
+    floorOnly: 1

@@ -1,15 +1,22 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.Audio;
-using BackroomsSurvival.Gameplay.Player;
 using BackroomsSurvival.Gameplay.World;
+using PolymindGames;
 using UnityEngine;
-using UnityEngine.UI;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
 {
+    // Alias inside the namespace body (not the compilation unit) so it shadows the
+    // sibling namespace BackroomsSurvival.Gameplay.Player, which otherwise wins the
+    // simple name "Player" from the enclosing scope. Binds it to the STP player type.
+    using Player = PolymindGames.Player;
+
     /// <summary>
     /// Test harness for the procedural world (replaces .bytes loading from Fase 3).
-    /// Instantiates a ChunkStreamer driven by the Player in the scene.
+    /// Instantiates a ChunkStreamer driven by the local STP <see cref="Player"/>.
+    /// It does not auto-spawn one; instead it waits for the player to appear via
+    /// <see cref="Player.PlayerCreated"/> (the player spawns late in multiplayer,
+    /// gated by GameBootGate IPC-ready), then defers world init until it exists.
     /// Replaced by the real IPC path in Fase 4.
     /// </summary>
     public sealed class GridTestWorld : MonoBehaviour
@@ -24,11 +31,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Chunks visible in each direction (1 = 3×3 ring)")]
         public int viewRadius = 1;
 
-        [Header("Layer Configs (optional — leave null for built-in defaults)")]
+        // DEPRECATED (Fase 4.2): LayerConfig drove the removed client-side WorldGenerator
+        // and no longer affects anything. Kept only so existing scene/prefab wiring that
+        // references these fields doesn't break. Use layerVisualConfigs (Fase 5A) instead.
+        [Header("Layer Configs (DEPRECATED — no effect; see Layer Visuals)")]
         public LayerConfig layerConfig0;
         public LayerConfig layerConfig1;
         public LayerConfig layerConfig2;
         public LayerConfig layerConfig3;
+
+        [Header("Fase 5A — Layer Visuals (assign Layer0..3; empty entries load from Resources/LayerVisuals)")]
+        public LayerVisualConfig[] layerVisualConfigs = new LayerVisualConfig[4];
 
         [Header("Rooms (test tool — non-authoritative, replaced by backend in Fase 4)")]
         [Tooltip("Enable the deterministic RoomSpawner prototype. Off by default.")]
@@ -47,7 +60,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // Backrooms atmosphere: global render settings (set in its Awake) plus
         // per-chunk fluorescent lights placed as chunks stream in.
         private BackroomsLighting _lighting;
-        private readonly HashSet<Transform> _litChunks = new HashSet<Transform>();
+        // Chunks already processed (carved). Fase 5A: lighting moved to ChunkStreamer.
+        private readonly HashSet<Transform> _processedChunks = new HashSet<Transform>();
 
         // Hand-placed destruction zones (trigger volumes tagged "DestructionZone")
         // carve a clean hole in each chunk as it streams in, so hand-built
@@ -56,72 +70,58 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // placed in the scene before entering Play.
         private List<Bounds> _destructionZones;
 
-        private static GameObject SpawnPlayer()
-        {
-            // Root
-            var root = new GameObject("Player");
-            root.tag = "Player";
-            //var cc = root.AddComponent<CharacterController>();
-            //cc.radius = 0.4f;
-            //cc.height = 1.8f;
-            //cc.center = new Vector3(0f, 0.9f, 0f);
-            root.transform.position = new Vector3(25f, 2f, 25f); // chunk centre
-
-            // Camera child
-            var camGo = new GameObject("PlayerCamera");
-            camGo.transform.SetParent(root.transform, false);
-            camGo.transform.localPosition = new Vector3(0f, 1.7f, 0f);
-            var cam = camGo.AddComponent<Camera>();
-            cam.fieldOfView = 80f;
-            cam.nearClipPlane = 0.1f;
-            cam.clearFlags = CameraClearFlags.SolidColor;
-            cam.backgroundColor = Color.black;
-            cam.tag = "MainCamera";
-            camGo.AddComponent<AudioListener>();
-
-            // God mode label (Canvas → Text)
-            var canvasGo = new GameObject("HUD");
-            var canvas = canvasGo.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvasGo.AddComponent<UnityEngine.UI.CanvasScaler>();
-            canvasGo.AddComponent<UnityEngine.UI.GraphicRaycaster>();
-            canvasGo.transform.SetParent(root.transform);
-
-            var labelGo = new GameObject("GodModeLabel");
-            labelGo.transform.SetParent(canvasGo.transform, false);
-            var label = labelGo.AddComponent<Text>();
-            label.text      = "[GOD MODE]";
-            label.color     = Color.red;
-            label.fontSize  = 24;
-            label.alignment = TextAnchor.UpperCenter;
-            var rt = labelGo.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0f, 0.9f);
-            rt.anchorMax = new Vector2(1f, 1f);
-            rt.offsetMin = Vector2.zero;
-            rt.offsetMax = Vector2.zero;
-            label.enabled   = false;
-
-            // PlayerController — qualified: the legacy BackroomsSurvival.Gameplay
-            // .PlayerController shadows the using directive from the enclosing
-            // namespace, so the bare name binds to the wrong type.
-            var pc = root.AddComponent<Player.PlayerController>();
-            pc.playerCamera = cam;
-            pc.godModeLabel = label;
-
-            Debug.Log("[GridTestWorld] Auto-spawned Player at (25,2,25)");
-            return root;
-        }
+        // Local player transform, captured once the STP player spawns. Drives the
+        // streamer, rooms and lighting. Null until OnPlayerCreated fires.
+        private Transform _player;
 
         private void Start()
         {
-            // Adding the component runs its Awake immediately: skybox off, flat
-            // yellow ambient, sun disabled, dense fog. Held to light new chunks.
-            _lighting = gameObject.AddComponent<BackroomsLighting>();
+            // The local STP player spawns LATE in multiplayer (gated by GameBootGate
+            // IPC-ready), so a one-shot FindWithTag in Start would miss it and leave
+            // the world un-streamed. Subscribe to the static PlayerCreated event and
+            // defer world init until the player exists. If it already spawned (e.g. a
+            // standalone scene with an immediate boot gate), handle that synchronously
+            // here so we never miss the event.
+            Player.PlayerCreated += OnPlayerCreated;
 
-            // Player first — both streamers need it. Auto-spawn if not in scene.
-            var playerGo = GameObject.FindWithTag("Player");
-            if (playerGo == null)
-                playerGo = SpawnPlayer();
+            if (GameMode.HasInstance && GameMode.Instance.LocalPlayer != null)
+                OnPlayerCreated(GameMode.Instance.LocalPlayer);
+        }
+
+        // First player created on this client is the local one; ignore any later
+        // invocations (defensive — also covers re-subscription on respawn).
+        private void OnPlayerCreated(Player player)
+        {
+            if (_player != null) return;
+
+            _player = player.transform;
+            Player.PlayerCreated -= OnPlayerCreated;
+            InitializeWorld(_player);
+        }
+
+        private void OnDestroy()
+        {
+            Player.PlayerCreated -= OnPlayerCreated;
+        }
+
+        private void InitializeWorld(Transform player)
+        {
+            // Fase 5A: a dim golden ambient fills the space so unlit corners read as
+            // Backrooms gloom rather than pure black (the per-layer spots only pool the
+            // floor). Set once — nothing else writes RenderSettings.ambient.
+            RenderSettings.ambientMode  = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = new Color(0.28f, 0.24f, 0.16f);
+
+            // Fase 5D: Built-in PPv2 post-process. BackroomsPostProcess first (its Awake
+            // builds the global volume + profile before anything reads the singleton), then
+            // the camera-side PostProcessLayer enabler, then the F4 visual-effects overlay.
+            gameObject.AddComponent<BackroomsPostProcess>();
+            gameObject.AddComponent<PlayerCameraPostProcessEnabler>();
+            gameObject.AddComponent<BackroomsGraphicsSettings>();
+
+            // Fase 5A: BackroomsLighting is handed to the streamer, which lights each
+            // chunk with that chunk's layer visual config (the streamer knows the layer).
+            _lighting = gameObject.AddComponent<BackroomsLighting>();
 
             // Optional deterministic room-placement prototype (test tool, off by
             // default). Created BEFORE the ChunkStreamer and force-spawned now so its
@@ -134,7 +134,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             {
                 _roomSpawner = gameObject.AddComponent<RoomSpawner>();
                 _roomSpawner.seed            = seed;
-                _roomSpawner.playerTransform = playerGo.transform;
+                _roomSpawner.playerTransform = player;
                 _roomSpawner.rooms           = rooms;
                 _roomSpawner.roomGridSize    = roomGridSize;
                 _roomSpawner.roomSpawnChance = roomSpawnChance;
@@ -155,11 +155,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             {
                 layerConfig0, layerConfig1, layerConfig2, layerConfig3
             };
-            _streamer.playerTransform = playerGo.transform;
+            _streamer.playerTransform = player;
+            // Fase 5A: per-layer visuals + lighting are driven by the streamer.
+            _streamer.layerVisuals = ResolveLayerVisuals();
+            _streamer.lighting = _lighting;
 
             // Global audio director: listener consolidation, reverb zone,
             // flicker and oppressive-silence filter.
-            gameObject.AddComponent<BackroomsAudioSystem>();
+            //
+            // BUG (sound) — left as-is on purpose, only documented:
+            // BackroomsAudioSystem was built around the old auto-spawned player,
+            // which carried its own AudioListener on a camera child. On Start it
+            // calls ConsolidateListener(), which remounts the AudioListener on the
+            // player ROOT and destroys every other one — including the real scene
+            // player's camera listener. With that player this mis-orients
+            // positional audio: lamp-hum panning, flicker direction and the
+            // distance-based "oppressive silence" low-pass all key off the root,
+            // which doesn't follow camera pitch. Not fixed here per request.
+            // gameObject.AddComponent<BackroomsAudioSystem>();
 
             // Snapshot destruction zones AFTER rooms spawn, so room-borne zones are
             // included alongside any hand-placed scene zones. CollectZones scans the
@@ -172,9 +185,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // child lights), so we just prune null entries and skip already-lit roots.
         private void Update()
         {
-            if (_lighting == null || _streamer == null) return;
+            if (_streamer == null) return;
 
-            _litChunks.RemoveWhere(t => t == null);
+            _processedChunks.RemoveWhere(t => t == null);
 
             // RoomSpawner streams new rooms in as the player moves; their carve zones
             // aren't in the Start snapshot. When it reports new rooms (only on a
@@ -192,22 +205,34 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // CollectZones scans the scene, so we never want it per chunk.
             _destructionZones ??= DestructionZoneCarver.CollectZones();
 
-            int tiles = GridConstants.ChunkCells / 2; // 20 cells → 10 tiles per side
             var container = _streamer.transform;
-            for (int i = 0; i < container.childCount; i++)
+            var childCount = container.childCount;
+            for (int i = childCount - 1; i >= 0; i--)
             {
                 var chunk = container.GetChild(i);
-                if (!_litChunks.Add(chunk)) continue; // already lit
-                _lighting.PlaceFluorescentLights(
-                    chunk, tiles, tiles,
-                    GridVisualConstants.TileSize,
-                    GridVisualConstants.CellHeight * 2f); // 2 × 2.0 m = 4 m ceiling
-
-                // Carve any pieces overlapping a destruction zone. Carve only
-                // removes renderer-bearing pieces, so the FluorescentLight children
-                // placed above survive the cut.
+                if (chunk == null) continue;
+                if (!_processedChunks.Add(chunk)) continue; // already processed
+                // Fase 5A: lighting now happens in ChunkStreamer (it knows the layer).
+                // Here we only carve hand-placed destruction zones (test tool, off by default).
                 DestructionZoneCarver.Carve(chunk.gameObject, _destructionZones);
             }
+        }
+
+        // Fase 5A: resolve the 4 layer visuals — inspector entries win; empty ones load
+        // the assets created by "Backrooms ▸ Create Layer Visuals" from Resources/LayerVisuals.
+        // A still-null entry → that layer renders unstyled (FloorSlab+Wall, no lighting).
+        private LayerVisualConfig[] ResolveLayerVisuals()
+        {
+            string[] names = { "Layer0_Vestibulo", "Layer1_Industrial", "Layer2_Concreto", "Layer3_Vacio" };
+            var result = new LayerVisualConfig[names.Length];
+            for (int i = 0; i < names.Length; i++)
+            {
+                LayerVisualConfig c = (layerVisualConfigs != null && i < layerVisualConfigs.Length)
+                    ? layerVisualConfigs[i] : null;
+                if (c == null) c = Resources.Load<LayerVisualConfig>("LayerVisuals/" + names[i]);
+                result[i] = c;
+            }
+            return result;
         }
     }
 }
