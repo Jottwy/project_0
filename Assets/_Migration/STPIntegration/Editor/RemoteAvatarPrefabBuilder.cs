@@ -18,7 +18,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// CharacterDamageHandler, CharacterAudioPlayer (local gameplay logic).
     /// ADD: ProxyLocomotionFeeder (drives MovementSpeed) + ProxyJumpFeeder (fires Jump from
     /// vertical velocity) + ProxyPickupHook (fires Pickup from rp.animation=="pickup") +
-    /// ProxyCrouchHook (lowers the visual while rp.crouch, ADR-020 placeholder) on the root.
+    /// ProxyCrouchHook (drives the Crouched blend from rp.crouch, ADR-020) on the root.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -79,6 +79,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 }
 
                 WireAnimatorController(instance);
+                WireControllerBinder(instance);
                 WireLocomotionFeeder(instance);
                 WireJumpFeeder(instance);
                 WirePickupHook(instance);
@@ -130,6 +131,36 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             // auto-recorded as a prefab override by SaveAsPrefabAsset (unlike the m_Enabled edits
             // above), so the variant kept binding the vendor controller. Force-record it.
             PrefabUtility.RecordPrefabInstancePropertyModifications(animator);
+        }
+
+        // BUG 1 fix (T-pose in the player BUILD, not the editor): make the custom controller a HARD build
+        // dependency + bind it at runtime. The variant's m_Controller override alone did NOT survive the
+        // build (the controller's only reference was that override — outside Resources — so it was stripped
+        // / the override didn't apply → Animator fell back to the inherited vendor controller → T-pose).
+        // ProxyControllerBinder holds a serialized RuntimeAnimatorController reference (never stripped) and
+        // assigns it in Awake (binding independent of the variant override). Editor Play already worked via
+        // the override; this adds the build guarantee.
+        private static void WireControllerBinder(GameObject root)
+        {
+            var animator = root.GetComponent<Animator>();
+            var controller = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
+                ProxyAnimatorControllerBuilder.OutputPath);
+            if (controller == null)
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] Proxy controller asset not found for the " +
+                    "runtime binder; a build may T-pose. Did the controller build succeed?");
+
+            var binder = root.GetComponent<ProxyControllerBinder>();
+            if (binder == null)
+                binder = root.AddComponent<ProxyControllerBinder>();
+
+            var so = new SerializedObject(binder);
+            var animProp = so.FindProperty("_animator");
+            if (animProp != null)
+                animProp.objectReferenceValue = animator;
+            var ctrlProp = so.FindProperty("_controller");
+            if (ctrlProp != null)
+                ctrlProp.objectReferenceValue = controller;
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         // Guaranteed binding (BUG ① fix): operate on the SAVED variant asset directly, immune to
@@ -228,35 +259,25 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        // Mirror of WirePickupHook for the cosmetic crouch placeholder (ADR-020). Resolves the
-        // visual child to lower and ships the calibrated depth/lerp defaults. Idempotent.
+        // Mirror of WirePickupHook for the crouch hook (ADR-020). Sets the Animator reference + the
+        // calibrated lerp speed; the hook drives the controller's "Crouched" blend param. Idempotent.
         private static void WireCrouchHook(GameObject root)
         {
+            var animator = root.GetComponent<Animator>();
+            if (animator == null)
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] No Animator on the variant root; " +
+                    "ProxyCrouchHook will resolve it at runtime (or stay inert if absent).");
+
             var hook = root.GetComponent<ProxyCrouchHook>();
             if (hook == null)
                 hook = root.AddComponent<ProxyCrouchHook>();
 
             var so = new SerializedObject(hook);
-            var visualProp = so.FindProperty("_visual");
-            if (visualProp != null)
-                visualProp.objectReferenceValue = FindModelChild(root);
-            SetFeederFloat(so, "_crouchDepth", 0.5f);
+            var animProp = so.FindProperty("_animator");
+            if (animProp != null)
+                animProp.objectReferenceValue = animator;
             SetFeederFloat(so, "_lerpSpeed", 10f);
             so.ApplyModifiedPropertiesWithoutUndo();
-        }
-
-        // Topmost ancestor of the skinned mesh that is a DIRECT child of the avatar root — the thing
-        // ProxyCrouchHook lowers (never the root, which the pose lerp owns). Null if the mesh sits on
-        // the root itself (the hook then no-ops, which is correct: nothing to offset under the root).
-        private static Transform FindModelChild(GameObject root)
-        {
-            var smr = root.GetComponentInChildren<SkinnedMeshRenderer>(true);
-            if (smr == null)
-                return null;
-            Transform t = smr.transform;
-            while (t.parent != null && t.parent != root.transform)
-                t = t.parent;
-            return t.parent == root.transform ? t : null;
         }
 
         private static void SetFeederFloat(SerializedObject so, string field, float value)

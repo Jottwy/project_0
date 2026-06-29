@@ -409,7 +409,7 @@ namespace BackroomsSurvival.Net
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false)
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(12);
+            w.WriteMapHeader(13); // 13 key/value pairs below — MUST match the count or rmp_serde drops the tail (crouch)
             w.WriteString("type"); w.WriteString("input");
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
             // but they are non-optional in the wire schema and must be present).

@@ -49,6 +49,15 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         // local input-lock in sync on the next rebuild.
         public const float PickupSpeed = 2f;
 
+        // ADR-020 (real clips): crouch locomotion. Same Generic + MaleSurvivor-skeleton format as the
+        // other clips (NO Humanoid retarget — the whole proxy pipeline plays Generic clips by matching
+        // bone names). Crouch blends as the Y axis over the locomotion BlendTree, driven by Crouched.
+        private const string CrouchedParam = "Crouched";
+        private const string CrouchIdleFbxPath =
+            "Assets/_Migration/STPIntegration/RemoteAvatar/Animations/CrouchIdle.fbx";
+        private const string CrouchedWalkFbxPath =
+            "Assets/_Migration/STPIntegration/RemoteAvatar/Animations/CrouchedWalking.fbx";
+
         // Vendor BlendTree thresholds (kept identical for locomotion parity).
         private const float IdleThreshold = 0f;
         private const float WalkThreshold = 1f;
@@ -84,14 +93,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var controller = AnimatorController.CreateAnimatorControllerAtPath(OutputPath);
             controller.AddParameter(MovementSpeedParam, AnimatorControllerParameterType.Float);
 
-            // Single locomotion state with a 1D-Simple BlendTree, identical to the vendor setup.
-            controller.CreateBlendTreeInController("Movement", out BlendTree tree, 0);
-            tree.blendType = BlendTreeType.Simple1D;
-            tree.blendParameter = MovementSpeedParam;
-            tree.useAutomaticThresholds = false;
-            tree.AddChild(idle, IdleThreshold);
-            tree.AddChild(walk, WalkThreshold);
-            tree.AddChild(run, RunThreshold);
+            AddMovementState(controller, idle, walk, run);
 
             AddJumpState(controller);
             AddPickupState(controller);
@@ -99,8 +101,52 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             EditorUtility.SetDirty(controller);
             AssetDatabase.SaveAssets();
             Debug.Log($"[ProxyAnimatorControllerBuilder] Built '{OutputPath}' " +
-                      "(locomotion idle@0 / walk@1 / run@3 on MovementSpeed; + full-body Jump; + full-body Pickup; all on Base Layer).");
+                      "(locomotion idle@0 / walk@1 / run@3 on MovementSpeed, 2D crouch blend on Crouched; " +
+                      "+ full-body Jump; + full-body Pickup; all on Base Layer).");
             return controller;
+        }
+
+        // Locomotion state (Base Layer default). With the crouch clips present it's a 2D
+        // FreeformCartesian BlendTree (X=MovementSpeed, Y=Crouched 0..1): standing idle/walk/run at
+        // Y=0, crouch idle/walk at Y=1 — so crouch blends ORTHOGONALLY over the SAME velocity-derived
+        // MovementSpeed (ProxyCrouchHook drives Crouched). Pickup/Jump are Any-State states that take
+        // over full-body briefly and return here STILL crouched (Crouched unchanged) → pickup+crouch
+        // coexist (ADR-020 invariant). Falls back to the vendor 1D locomotion if a crouch clip is
+        // missing (Crouched param omitted → ProxyCrouchHook no-ops).
+        private static void AddMovementState(AnimatorController controller, AnimationClip idle,
+            AnimationClip walk, AnimationClip run)
+        {
+            var crouchIdle = LoadClipFromFbx(CrouchIdleFbxPath);
+            var crouchWalk = LoadClipFromFbx(CrouchedWalkFbxPath);
+            bool hasCrouch = crouchIdle != null && crouchWalk != null;
+
+            controller.CreateBlendTreeInController("Movement", out BlendTree tree, 0);
+            tree.blendParameter = MovementSpeedParam;
+
+            if (hasCrouch)
+            {
+                controller.AddParameter(CrouchedParam, AnimatorControllerParameterType.Float);
+                tree.blendType = BlendTreeType.FreeformCartesian2D;
+                tree.blendParameterY = CrouchedParam;
+                tree.AddChild(idle, new Vector2(IdleThreshold, 0f));
+                tree.AddChild(walk, new Vector2(WalkThreshold, 0f));
+                tree.AddChild(run, new Vector2(RunThreshold, 0f));
+                tree.AddChild(crouchIdle, new Vector2(IdleThreshold, 1f));
+                tree.AddChild(crouchWalk, new Vector2(WalkThreshold, 1f));
+                // No crouch-run clip: running while crouched reuses crouch-walk (reads correctly).
+                tree.AddChild(crouchWalk, new Vector2(RunThreshold, 1f));
+            }
+            else
+            {
+                Debug.LogWarning("[ProxyAnimatorControllerBuilder] Crouch clip(s) missing " +
+                    $"(idle={(crouchIdle != null)} walk={(crouchWalk != null)}); building 1D locomotion " +
+                    "WITHOUT crouch (Crouched param omitted → ProxyCrouchHook stays inert).");
+                tree.blendType = BlendTreeType.Simple1D;
+                tree.useAutomaticThresholds = false;
+                tree.AddChild(idle, IdleThreshold);
+                tree.AddChild(walk, WalkThreshold);
+                tree.AddChild(run, RunThreshold);
+            }
         }
 
         // FASE 2: full-body Jump on top of the locomotion controller. Any State → Jump on the

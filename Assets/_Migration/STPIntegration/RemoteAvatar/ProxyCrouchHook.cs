@@ -4,70 +4,58 @@ using UnityEngine;
 namespace BackroomsSurvival.Migration.STPIntegration
 {
     /// <summary>
-    /// ADR-020 slice 3 (v1 PLACEHOLDER): lowers this remote player's VISUAL by a fixed depth while
-    /// its networked crouch flag is true. There are NO crouch animation clips in the project (only
-    /// the STP crouch AUDIO + the local CharacterCrouchState logic), so the proxy can't bend its
-    /// legs yet; the placeholder communicates "crouched" by silhouette + height (matching the
-    /// crouched collider/camera the local owner sees). Real crouch-idle/crouch-walk clips (an
-    /// additive layer over the velocity-derived locomotion BlendTree) are a later iteration — that
-    /// is presentation-only (ADR-012/013), no new ADR, just assets.
+    /// ADR-020 slice 3 (real clips): drives the Animator's "Crouched" blend parameter (0..1) from this
+    /// remote player's networked crouch flag, lerped. The proxy controller's locomotion is a 2D
+    /// FreeformCartesian BlendTree (MovementSpeed × Crouched, built by ProxyAnimatorControllerBuilder),
+    /// so Crouched=1 plays crouch-idle / crouch-walk over the SAME velocity-derived locomotion, while
+    /// pickup/jump (Any-State) still take over full-body briefly and return to the crouched blend.
+    /// Replaces the earlier pose-offset placeholder.
     ///
-    /// The offset is applied to a CHILD <see cref="_visual"/>, never to the avatar root: the
-    /// RemotePlayerManager overwrites <c>root.position</c> every frame via its pose lerp, so any
-    /// offset on the root would be erased. The crouch flag is read from the RemotePlayerManager view
-    /// whose root is this GameObject — same lookup as ProxyPickupHook, no change to RemotePlayerManager.
-    ///
-    /// Attach to the avatar root (same GameObject as the Animator). Removable: delete the file and
-    /// the proxy simply never crouches (locomotion + jump + pickup unaffected).
+    /// The crouch flag is read from the RemotePlayerManager view whose root is this GameObject — same
+    /// lookup as ProxyPickupHook, no change to RemotePlayerManager. Attach to the avatar root (same
+    /// GameObject as the Animator). Removable: delete the file and the proxy never crouches (Crouched
+    /// stays 0); locomotion + jump + pickup are unaffected.
     /// </summary>
     public sealed class ProxyCrouchHook : MonoBehaviour
     {
-        [Header("Placeholder pose-offset")]
-        [Tooltip("Visual transform lowered while crouched. If empty, auto-resolved at Awake to the " +
-                 "first renderable child (never the root, which the pose lerp overwrites).")]
-        [SerializeField] private Transform _visual;
+        [Header("Animator")]
+        [Tooltip("Animator that owns the Crouched blend param. Auto-filled from this GameObject if empty.")]
+        [SerializeField] private Animator _animator;
 
-        [Tooltip("How far down the visual drops when crouched (meters). Roughly the crouch height " +
-                 "delta of the local STP CharacterCrouchState.")]
-        [SerializeField, Range(0f, 1.2f)] private float _crouchDepth = 0.5f;
-
-        [Tooltip("Lerp speed of the offset (higher = snappier).")]
+        [Tooltip("Lerp speed of the Crouched blend (higher = snappier).")]
         [SerializeField, Min(0f)] private float _lerpSpeed = 10f;
 
+        private const string CrouchedParam = "Crouched";
+        private static readonly int CrouchedHash = Animator.StringToHash(CrouchedParam);
+
         private RemotePlayerManager _manager;
-        private float _baseLocalY;
-        private float _currentOffset;
-        private bool _hasVisual;
+        private float _current;
+        private bool _hasParam;
 
         private void Awake()
         {
-            if (_visual == null)
-                _visual = ResolveVisual();
-
-            // Only drive a CHILD; if the only candidate is the root itself, do nothing (the pose
-            // lerp owns the root). _hasVisual stays false → Update is a no-op.
-            _hasVisual = _visual != null && _visual != transform;
-            if (_hasVisual)
-                _baseLocalY = _visual.localPosition.y;
+            if (_animator == null)
+                _animator = GetComponent<Animator>();
+            _hasParam = HasCrouchedParam();
         }
 
-        // Re-arm for pool reuse: clear the offset so a recycled proxy never starts pre-crouched.
-        private void OnEnable() => _currentOffset = 0f;
+        // Re-arm for pool reuse: clear the blend so a recycled proxy never starts pre-crouched.
+        private void OnEnable()
+        {
+            _current = 0f;
+            if (_hasParam && _animator != null)
+                _animator.SetFloat(CrouchedHash, 0f);
+        }
 
         private void Update()
         {
-            if (!_hasVisual)
+            if (!_hasParam || _animator == null)
                 return;
 
-            bool crouch = ResolveCrouch();
-            float target = crouch ? -_crouchDepth : 0f;
-
+            float target = ResolveCrouch() ? 1f : 0f;
             float t = 1f - Mathf.Exp(-Mathf.Max(0f, _lerpSpeed) * Time.deltaTime);
-            _currentOffset = Mathf.Lerp(_currentOffset, target, t);
-
-            var lp = _visual.localPosition;
-            lp.y = _baseLocalY + _currentOffset;
-            _visual.localPosition = lp;
+            _current = Mathf.Lerp(_current, target, t);
+            _animator.SetFloat(CrouchedHash, _current);
         }
 
         /// <summary>This proxy's networked crouch flag, via the RemotePlayerManager view whose root is us.</summary>
@@ -87,26 +75,23 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return false;
         }
 
-        /// <summary>
-        /// First direct child that renders something (the model), skipping the billboard name tag and
-        /// the remote marker the manager parents to the root. Falls back to the first child, then self.
-        /// </summary>
-        private Transform ResolveVisual()
+        // True only if the controller actually exposes a "Crouched" float param (the builder omits it
+        // when the crouch clips are missing). Avoids per-frame SetFloat warnings on a missing param.
+        private bool HasCrouchedParam()
         {
-            for (int i = 0; i < transform.childCount; i++)
+            if (_animator == null || _animator.runtimeAnimatorController == null)
+                return false;
+
+            foreach (var p in _animator.parameters)
             {
-                var child = transform.GetChild(i);
-                string n = child.name;
-                if (n == "NameTag" || n == "RemoteMarker")
-                    continue;
-                if (child.GetComponentInChildren<Renderer>() != null)
-                    return child;
+                if (p.type == AnimatorControllerParameterType.Float && p.name == CrouchedParam)
+                    return true;
             }
-            return transform.childCount > 0 ? transform.GetChild(0) : transform;
+            return false;
         }
 
 #if UNITY_EDITOR
-        private void Reset() => _visual = ResolveVisual();
+        private void Reset() => _animator = GetComponent<Animator>();
 #endif
     }
 }
