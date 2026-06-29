@@ -271,6 +271,41 @@ Por qué es ADR (reglas duras 7, 9): cambia el formato de wire de la pose (IPC c
 
 Dependencias: extiende el camino de pose de ADR-011 (canal `animation`, ahora acompañado de `crouch`) y ADR-015 (relay host de pose peer→peer, que reenvía `crouch`). Comparte transporte con ADR-005/009. El crouch LOCAL reutiliza STP nativo (`CharacterCrouchState`/`IMotorCC`), no lo reimplementa. No toca worldgen/colisión.
 
+## ADR-021 — Camera Pitch Sync: pitch cuantizado `i8` en la pose relay (proxy cosmético head/spine)
+Estado: VALIDADA (2026-06-29, autorizada en sesión). Implementación POR PASOS en el orden de ADR-020 (1 = backend wire; 2 = cliente transmisión + recepción; 3 = cliente apply ProxyPitchHook). Comparte transporte con ADR-005/009; extiende el camino de pose de ADR-011/015/020.
+
+Contexto: STP es 100% primera persona; el pitch local de la cámara es `ILookHandlerCC.ViewAngles.x` (ya clamped). El proxy remoto (rig 3P Generic, ADR-012/013) hoy solo replica yaw (`rotation`) → un peer mirando arriba/abajo se ve mirando al frente. ASIMETRÍA CLAVE con ADR-020 (crouch): el campo de ENTRADA ya existe — `PlayerInput.look:[f32;2]` lleva `(pitch, yaw)` (ipc/mod.rs) y el cliente ya escribe ambos (IPCClient.SendPlayerInput); `PlayerPoseTransmitter` solo pasa `0f` en pitch y el backend ya consume `look[1]` como yaw (game_loop) descartando `look[0]`. Lo que falta es el hop de RELAY (host→clientes): la pose propagada (pos+rot+anim+crouch, ADR-011/015/020) no incluye pitch. A diferencia de jump/locomoción, el pitch NO tiene firma cinemática derivable de la posición → señal EXPLÍCITA, como crouch.
+
+Decisión: propagar el pitch por la pose relay como campo TIPADO `pitch: i8` cuantizado a 1° (rango −90..+90 cabe en `i8`), recorriendo la MISMA superficie que `crouch` en el hop de SALIDA. Cosmético/host-relay, NO autoritativo: el servidor lo propaga sin validar; no afecta colisión/hitreg/aim/combate. La cuantización a `i8` ocurre SOLO en el backend al construir el estado relay — el input sigue mandando `look[0]` float (campo preexistente, coste cero, single-sender ~30 Hz); el byte viaja únicamente en el broadcast P×J (ADR-015), donde importa el ancho de banda.
+
+Alcance Rust (schema bump v3→v4, `WIRE_SCHEMA_VERSION` en ipc/server.rs):
+1. `player::Player` += `pitch: i8` (init 0).
+2. `game_loop.rs` (junto a `player.crouch = received_input.crouch`): `player.pitch = quantize_pitch(received_input.look[0])` (clamp −90..90, redondeo a i8).
+3. `ipc::RemotePlayerState` += `#[serde(default)] pitch: i8` (backend→Unity).
+4. `network::protocol::PacketPayload::PlayerUpdate` += `pitch: i8` (P2P; serialización manual → append + decode tolerante a ausencia = 0; actualizar round-trip test).
+5. `network::peer::PeerConnection` += `pitch: i8` (init 0); `handle_packet` fija `peer.pitch`.
+6. `network::NetworkEvent::RemotePlayerUpdate` += `pitch`.
+7. `sync::broadcast_player_update` escribe `player.pitch`; `sync::broadcast_peer_poses` (ADR-015) reenvía `p.pitch`; `build_world_state` copia `peer.pitch`.
+Recompilar `backrooms_server.exe` (toolchain GNU) y copiar a `Builds/Backend/`.
+
+Alcance C# (Unity):
+- `PlayerPoseTransmitter` LEE `ILookHandlerCC.ViewAngles.x` del character local (resuelto live como el motor) → lo pasa a `SendPlayerInput` en vez de `0f`. Header MsgPack INTACTO en 13 (no hay campo de entrada nuevo). Rule #3: solo REPORTA, no aplica.
+- `IPCMessages.RemotePlayerMsg` += `pitch` (parse); `RemotePlayerManager` guarda `view.pitch`.
+- NUEVO `ProxyPitchHook` (espejo de `ProxyCrouchHook`), en `LateUpdate` (tras el Animator): resuelve head/neck/spine POR NOMBRE (rig Generic → sin `GetBoneTransform`), cacheado en Awake, no-op si faltan. Rota el head bone por el pitch (eje local X, lerp); spine lean reparte hasta ±30° en spine solo en |pitch|→90°. El UMBRAL de spine lean y la VELOCIDAD de lerp se exponen como `[SerializeField]` configurables en Inspector. Removable. Cableado vía `RemoteAvatarPrefabBuilder.WirePitchHook` + re-bake.
+
+Alternativas rechazadas:
+- (B) Cuantizar también en el input (cambiar `look` de `f32` a `i8`). RECHAZADA: rompe la semántica de entrada de ADR-009 §8 y es más invasiva; el input es single-sender (~30 Hz) y el campo float ya existe → cuantizar ahí no aporta ancho de banda.
+- (C) Derivar el pitch de la cinemática (como jump/locomoción ADR-013). RECHAZADA: el pitch no tiene firma posicional; requiere señal explícita.
+- (D) Pitch AUTORITATIVO (aim/hitreg server-side). RECHAZADA en v1: el pitch es presentación; si en el futuro alimenta combate requerirá su propio ADR (cf. ADR-010).
+
+Invariante: `pitch` ortogonal a `crouch`/`animation` (un peer agachado mirando arriba: los tres campos viajan). Receptor v3 que no decodifique `pitch` → 0 (mira al frente) sin error (serde default / decode tolerante) → compat hacia atrás. Robapieles (ADR-016): `update_player_state` SIN tocar → `peer.pitch` queda 0 → el fantasma mira al frente, gratis (mismo patrón que crouch=false). El pitch NO muta estado de juego: pura pose.
+
+Consecuencias / qué prohíbe: el schema de pose suma un eje de orientación vertical cuantizado; futuros estados de orientación (lean lateral, prone-aim) heredan el precedente del campo tipado. Bump v3→v4: cliente/peer v3 interopera (campo ausente = 0) pero no muestra pitch. PROHÍBE tratar el pitch como autoritativo (aim/hitreg) — si en el futuro alimenta combate/hitreg requerirá su propio ADR (cf. ADR-010). La pérdida de precisión por cuantización a 1° es aceptable para presentación.
+
+Por qué es ADR (reglas duras 7, 9): cambia el formato de wire de la pose relay (IPC backend→Unity y P2P peer↔peer) — API pública — y bumpea `WIRE_SCHEMA_VERSION` v3→v4. Plan/ADR antes de tocar código.
+
+Dependencias: extiende el camino de pose de ADR-011 (canal `animation`) / ADR-020 (`crouch`) y el relay de ADR-015. Reusa `PlayerInput.look[0]` (ADR-009 §8) sin cambiar su semántica de entrada. No toca worldgen/colisión.
+
 (plantilla)
 ## ADR-NNN — Título
 Estado: propuesta

@@ -37,6 +37,9 @@ pub struct PeerConnection {
     pub animation: String,
     /// ADR-020: cosmetic crouch state, set from PlayerUpdate; relayed, not authoritative.
     pub crouch: bool,
+    /// ADR-021: cosmetic camera pitch (degrees, −90..90, quantized to 1°), set from
+    /// PlayerUpdate; relayed, not authoritative.
+    pub pitch: i8,
     pub connected_at: Instant,
 }
 
@@ -55,6 +58,7 @@ impl PeerConnection {
             rotation: 0.0,
             animation: "idle".into(),
             crouch: false,
+            pitch: 0,
             connected_at: now,
         }
     }

@@ -32,6 +32,7 @@ namespace BackroomsSurvival.Net
         private const float LogInterval = 1f;           // [POSE_TX] heartbeat @ 1 Hz
 
         private CharacterControllerMotor _motor;
+        private ILookHandlerCC _lookHandler; // ADR-021: source of the local camera pitch
         private float _sendAccum;
         private float _logAccum;
         private uint _inputSeq;
@@ -83,6 +84,7 @@ namespace BackroomsSurvival.Net
             {
                 IsSending = false;
                 _hasPrev = false; // restart the finite difference after a gap / rig rebuild
+                _lookHandler = null; // the look handler is a sibling of the motor; re-resolve next time
                 MaybeLog(false, Vector3.zero);
                 return;
             }
@@ -118,10 +120,22 @@ namespace BackroomsSurvival.Net
             var motorCC = (IMotorCC)_motor;
             bool crouch = motorCC.Height < motorCC.DefaultHeight - 0.05f;
 
+            // ADR-021: report the LOCAL camera pitch (degrees). ViewAngles.x is the vertical
+            // look angle, already clamped by CharacterLookHandler. The look handler is a sibling
+            // component on the same character as the motor; resolve it lazily (it may be null for
+            // a frame after a rig rebuild) and report 0 (looking forward) until it appears.
+            if (_lookHandler == null)
+            {
+                var character = _motor.GetComponentInParent<ICharacter>();
+                if (character != null)
+                    _lookHandler = character.GetCC<ILookHandlerCC>();
+            }
+            float pitch = _lookHandler != null ? _lookHandler.ViewAngles.x : 0f;
+
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, 0f, yaw, 0, crouch);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = pos;

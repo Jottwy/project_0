@@ -116,6 +116,7 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         rotation: player.rotation,
         animation: animation.into(),
         crouch: player.crouch,
+        pitch: player.pitch,
     };
     info!(
         "Sending player update to peers={} local_id={} pos=({:.2}, {:.2}, {:.2})",
@@ -180,6 +181,7 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
                     rotation: p.rotation,
                     animation: p.animation.clone(),
                     crouch: p.crouch,
+                    pitch: p.pitch,
                 },
             )
         })

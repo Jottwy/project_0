@@ -124,6 +124,8 @@ namespace BackroomsSurvival.Net
         public string animation = "idle";
         // ADR-020: cosmetic crouch state of this remote player (host-relayed).
         public bool crouch;
+        // ADR-021: cosmetic camera pitch in degrees (−90..90, quantized to 1° on the wire).
+        public int pitch;
 
         public static RemotePlayerMsg Parse(object o)
         {
@@ -136,6 +138,7 @@ namespace BackroomsSurvival.Net
             r.rotation = IPCParse.F(d, "rotation");
             r.animation = IPCParse.S(d, "animation");
             r.crouch = IPCParse.B(d, "crouch");
+            r.pitch = (int)IPCParse.L(d, "pitch");
             return r;
         }
     }

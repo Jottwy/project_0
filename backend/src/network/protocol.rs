@@ -384,6 +384,11 @@ pub enum PacketPayload {
         /// omits it decodes to false; wire-compat across the v2→v3 schema bump).
         #[serde(default)]
         crouch: bool,
+        /// ADR-021: cosmetic camera pitch in degrees (−90..90, quantized to 1°). Appended
+        /// last + serde(default) → a v3 peer that omits it decodes to 0 (looking forward);
+        /// wire-compat across the v3→v4 schema bump.
+        #[serde(default)]
+        pitch: i8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -638,6 +643,7 @@ mod tests {
             rotation: 90.0,
             animation: "walk".into(),
             crouch: true,
+            pitch: -45,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -649,11 +655,13 @@ mod tests {
                 rotation,
                 animation,
                 crouch,
+                pitch,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
                 assert_eq!(animation, "walk");
                 assert!(crouch);
+                assert_eq!(pitch, -45);
             }
             _ => panic!("wrong variant"),
         }

@@ -113,6 +113,7 @@ namespace BackroomsSurvival.Net
                 view.targetRotation = rp.rotation;
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
                 view.crouch = rp.crouch; // ADR-020
+                view.pitch = rp.pitch;   // ADR-021
                 view.lastSeenTime = Time.unscaledTime;
 
                 // TEMP DIAGNOSTIC (remove after case is identified): incoming = pose from the
@@ -210,6 +211,7 @@ namespace BackroomsSurvival.Net
             view.targetRotation = view.root != null ? view.root.eulerAngles.y : 0f;
             view.animationState = "idle";
             view.crouch = false;
+            view.pitch = 0f;
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -228,6 +230,7 @@ namespace BackroomsSurvival.Net
             view.id = -1;
             view.animationState = "idle";
             view.crouch = false;
+            view.pitch = 0f;
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
 
@@ -454,6 +457,8 @@ namespace BackroomsSurvival.Net
         public string animationState = "idle";
         // ADR-020: cosmetic crouch state for this proxy (read by ProxyCrouchHook).
         public bool crouch;
+        // ADR-021: cosmetic camera pitch in degrees (read by ProxyPitchHook).
+        public float pitch;
         public float lastSeenTime;
     }
 

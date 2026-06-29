@@ -346,6 +346,9 @@ pub async fn run(
         if has_received_input {
             // ADR-020: record the client-reported crouch (cosmetic; relayed to peers, not validated).
             player.crouch = received_input.crouch;
+            // ADR-021: record the client-reported camera pitch, quantized to 1° (cosmetic;
+            // relayed to peers, not validated). yaw is consumed as `look[1]` in apply_movement.
+            player.pitch = quantize_pitch(received_input.look[0]);
             let seq = apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
             last_accepted_input_seq = seq;
             authoritative_velocity = Vec3::from_array(received_input.velocity);
@@ -648,10 +651,11 @@ async fn handle_network_event(
             rotation,
             animation,
             crouch,
+            pitch,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -889,6 +893,12 @@ fn apply_movement(
 ) -> u32 {
     player.rotation = input.look[1].rem_euclid(360.0); // yaw is INPUT (ADR-009 §8)
     apply_client_authoritative_move(player, input, dt, world, tick, god_traversal)
+}
+
+/// ADR-021: clamp the client-reported camera pitch to [−90, 90]° and quantize to 1°
+/// (i8). Cosmetic/host-relay; the 1° step is the wire resolution for the peer broadcast.
+fn quantize_pitch(deg: f32) -> i8 {
+    deg.clamp(-90.0, 90.0).round() as i8
 }
 
 /// ADR-009 Option B authoritative-move validation. The client owns prediction and
@@ -1819,6 +1829,7 @@ fn build_world_state(
             rotation: p.rotation,
             animation: p.animation.clone(),
             crouch: p.crouch,
+            pitch: p.pitch,
         });
     }
 

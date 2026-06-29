@@ -24,8 +24,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// MessagePack). v2 adds the client-prediction fields to PlayerInput and
 /// ack_input_seq/stamina to the snapshot. v3 (ADR-020) adds `crouch:bool` to
 /// PlayerInput and RemotePlayerState — all `serde(default)`, so v1/v2 clients
-/// still interoperate (a missing `crouch` decodes to false).
-const WIRE_SCHEMA_VERSION: u32 = 3;
+/// still interoperate (a missing `crouch` decodes to false). v4 (ADR-021) adds
+/// `pitch:i8` to RemotePlayerState (and the P2P PlayerUpdate) — reusing the
+/// existing `PlayerInput.look[0]` for input, also `serde(default)` (missing
+/// `pitch` decodes to 0 = looking forward).
+const WIRE_SCHEMA_VERSION: u32 = 4;
 
 /// Run the IPC server until a fatal accept error.
 ///

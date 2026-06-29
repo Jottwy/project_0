@@ -211,6 +211,9 @@ pub struct RemotePlayerState {
     /// ADR-020: cosmetic crouch state of this remote player (host-relayed).
     #[serde(default)]
     pub crouch: bool,
+    /// ADR-021: cosmetic camera pitch in degrees (−90..90, quantized to 1°), host-relayed.
+    #[serde(default)]
+    pub pitch: i8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -18,7 +18,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// CharacterDamageHandler, CharacterAudioPlayer (local gameplay logic).
     /// ADD: ProxyLocomotionFeeder (drives MovementSpeed) + ProxyJumpFeeder (fires Jump from
     /// vertical velocity) + ProxyPickupHook (fires Pickup from rp.animation=="pickup") +
-    /// ProxyCrouchHook (drives the Crouched blend from rp.crouch, ADR-020) on the root.
+    /// ProxyCrouchHook (drives the Crouched blend from rp.crouch, ADR-020) + ProxyPitchHook
+    /// (tilts head/neck/spine from rp.pitch, ADR-021) on the root.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -84,6 +85,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireJumpFeeder(instance);
                 WirePickupHook(instance);
                 WireCrouchHook(instance);
+                WirePitchHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -277,6 +279,21 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (animProp != null)
                 animProp.objectReferenceValue = animator;
             SetFeederFloat(so, "_lerpSpeed", 10f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Mirror of WireCrouchHook for the pitch hook (ADR-021). The hook resolves the rig bones by
+        // name at runtime; here we only bake the calibrated tuning fields. Idempotent.
+        private static void WirePitchHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyPitchHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyPitchHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_lerpSpeed", 10f);
+            SetFeederFloat(so, "_spineLeanThreshold", 45f);
+            SetFeederFloat(so, "_maxSpineLean", 30f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

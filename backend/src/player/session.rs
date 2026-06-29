@@ -25,6 +25,11 @@ pub struct Player {
     /// (presentation only — not validated, does not affect collision/hitreg/stamina).
     #[serde(default)]
     pub crouch: bool,
+    /// ADR-021: cosmetic camera pitch in degrees (−90..90), quantized to 1°. Reported by
+    /// the client (from `PlayerInput.look[0]`), relayed to peers; presentation only — not
+    /// validated, does not affect collision/hitreg/aim.
+    #[serde(default)]
+    pub pitch: i8,
 }
 
 impl Player {
@@ -40,6 +45,7 @@ impl Player {
             equipped_stabilizer: None,
             owned_chunks: Vec::new(),
             crouch: false,
+            pitch: 0,
         }
     }
 }

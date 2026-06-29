@@ -50,6 +50,7 @@ pub enum NetworkEvent {
         rotation: f32,
         animation: String,
         crouch: bool,
+        pitch: i8,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -807,6 +808,7 @@ impl NetworkManager {
                 rotation,
                 animation,
                 crouch,
+                pitch,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -815,6 +817,7 @@ impl NetworkManager {
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.update_player_state(position, rotation, animation.clone());
                     peer.crouch = crouch; // ADR-020: cosmetic crouch, alongside the pose
+                    peer.pitch = pitch; // ADR-021: cosmetic camera pitch, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -843,6 +846,7 @@ impl NetworkManager {
                     rotation,
                     animation,
                     crouch,
+                    pitch,
                 }]
             }
 
@@ -1481,6 +1485,7 @@ mod tests {
             rotation: 45.0,
             animation: "walk".into(),
             crouch: false,
+            pitch: 0,
         };
         host.broadcast_unreliable(&payload).await;
 
