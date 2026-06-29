@@ -380,6 +380,10 @@ pub enum PacketPayload {
         position: [f32; 3],
         rotation: f32,
         animation: String,
+        /// ADR-020: cosmetic crouch (appended last + serde(default) → a v2 peer that
+        /// omits it decodes to false; wire-compat across the v2→v3 schema bump).
+        #[serde(default)]
+        crouch: bool,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -633,6 +637,7 @@ mod tests {
             position: [10.0, 1.8, 20.0],
             rotation: 90.0,
             animation: "walk".into(),
+            crouch: true,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -643,10 +648,12 @@ mod tests {
                 position,
                 rotation,
                 animation,
+                crouch,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
                 assert_eq!(animation, "walk");
+                assert!(crouch);
             }
             _ => panic!("wrong variant"),
         }

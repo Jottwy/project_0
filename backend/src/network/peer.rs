@@ -35,6 +35,8 @@ pub struct PeerConnection {
     pub position: [f32; 3],
     pub rotation: f32,
     pub animation: String,
+    /// ADR-020: cosmetic crouch state, set from PlayerUpdate; relayed, not authoritative.
+    pub crouch: bool,
     pub connected_at: Instant,
 }
 
@@ -52,6 +54,7 @@ impl PeerConnection {
             position: [0.0, 1.8, 0.0],
             rotation: 0.0,
             animation: "idle".into(),
+            crouch: false,
             connected_at: now,
         }
     }

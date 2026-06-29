@@ -21,6 +21,10 @@ pub struct Player {
     pub inventory: Inventory,
     pub equipped_stabilizer: Option<StabilizerTier>,
     pub owned_chunks: Vec<ChunkPos>,
+    /// ADR-020: cosmetic crouch state reported by the client, relayed to peers
+    /// (presentation only — not validated, does not affect collision/hitreg/stamina).
+    #[serde(default)]
+    pub crouch: bool,
 }
 
 impl Player {
@@ -35,6 +39,7 @@ impl Player {
             inventory: Inventory::new(),
             equipped_stabilizer: None,
             owned_chunks: Vec::new(),
+            crouch: false,
         }
     }
 }

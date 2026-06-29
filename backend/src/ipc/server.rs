@@ -22,9 +22,10 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// ADR-009 wire schema revision. Bumped when the player input/state schema
 /// changes; the transport itself is unchanged (still length-prefixed
 /// MessagePack). v2 adds the client-prediction fields to PlayerInput and
-/// ack_input_seq/stamina to the snapshot — all `serde(default)`, so v1 clients
-/// still interoperate.
-const WIRE_SCHEMA_VERSION: u32 = 2;
+/// ack_input_seq/stamina to the snapshot. v3 (ADR-020) adds `crouch:bool` to
+/// PlayerInput and RemotePlayerState — all `serde(default)`, so v1/v2 clients
+/// still interoperate (a missing `crouch` decodes to false).
+const WIRE_SCHEMA_VERSION: u32 = 3;
 
 /// Run the IPC server until a fatal accept error.
 ///

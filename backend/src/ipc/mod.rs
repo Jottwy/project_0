@@ -48,6 +48,10 @@ pub enum ClientMessage {
     Action(PlayerAction),
     /// UI lifecycle events (pause, save, quit, …).
     UiEvent(UiEvent),
+    /// Fase 4.1 — ask the backend to generate one chunk via `grid_gen` and return
+    /// it as a 5 m tile-wall bitmask (see `ServerMessage::ChunkData`). Independent
+    /// of the legacy `world/` ChunkView path.
+    RequestChunk { cx: i32, cz: i32, layer: u8 },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -76,6 +80,9 @@ pub struct PlayerInput {
     pub look: [f32; 2], // pitch, yaw — INPUT, not server-corrected (ADR-009 §8)
     #[serde(default)]
     pub buttons: u16,
+    /// ADR-020: client-reported crouch (cosmetic; relayed to peers, not authoritative).
+    #[serde(default)]
+    pub crouch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,6 +112,22 @@ pub enum ServerMessage {
     Event(GameEvent),
     /// Result of a requested action.
     ActionResult(ActionResult),
+    /// Fase 4.1 — minimal grid_gen chunk payload (reply to `RequestChunk`).
+    ChunkData(GridChunkData),
+}
+
+/// Fase 4.1 — minimal backend-authoritative chunk: a 10×10 grid of 5 m tiles,
+/// each a wall bitmask. Derived from grid_gen's 20×20 grid of 2.5 m cells by
+/// `crate::world::grid_gen::chunk_tile_walls`. This is the NEW clean world path;
+/// it shares nothing with the legacy `world/` `ChunkView`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GridChunkData {
+    pub cx: i32,
+    pub cz: i32,
+    pub layer: u8,
+    /// `walls[x][z]`: per-tile edge bitmask. N=1 (−Z), S=2 (+Z), E=4 (+X), W=8 (−X).
+    /// The Unity consumer MUST use this same axis convention or Z will mirror.
+    pub walls: [[u8; 10]; 10],
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the
@@ -185,6 +208,9 @@ pub struct RemotePlayerState {
     pub position: [f32; 3],
     pub rotation: f32,
     pub animation: String,
+    /// ADR-020: cosmetic crouch state of this remote player (host-relayed).
+    #[serde(default)]
+    pub crouch: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

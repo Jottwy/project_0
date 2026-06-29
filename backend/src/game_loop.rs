@@ -2,7 +2,7 @@
 //! simulates local state (world, entities, stats), manages P2P networking,
 //! and streams `WorldState` back at 10hz. See ARCHITECTURE_V1.md §6.1.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use log::{debug, info};
@@ -10,16 +10,15 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::ipc::{
-    ClientMessage, GameEvent, LocalPlayerState, MovementDelta, PlayerAction, PlayerInput,
-    RemotePlayerState, ServerMessage, StatsView, WorldState,
+    ClientMessage, GameEvent, GridChunkData, LocalPlayerState, MovementDelta, PlayerAction,
+    PlayerInput, RemotePlayerState, ServerMessage, StatsView, WorldState,
 };
 use crate::network::sync;
 use crate::network::{NetworkEvent, NetworkManager, PeerId};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
-use crate::world::collision::{
-    resolve_safe_spawn, CollisionResultKind, Level0Collision, SimChunkCache,
-};
+use crate::world::collision::{resolve_safe_spawn, Level0Collision};
+use crate::world::grid_gen::{resolve_move_grid_gen, world_pos_to_layer, GridGenChunkCache};
 use crate::world::World;
 
 const TICK_HZ: u64 = 60;
@@ -51,21 +50,18 @@ const RUN_STAMINA_DRAIN: f32 = 15.0;
 /// ProxyAnimatorControllerBuilder) → if PickupSpeed changes, re-tune this by hand.
 const PICKUP_REMOVE_DELAY: Duration = Duration::from_millis(600);
 
-/// TEMP DIAGNOSTIC — forces the god-traversal collision bypass on,
-/// independent of the DEV_GOD_TRAVERSAL environment variable.
-/// MUST be reverted to `false` (or removed) after validation.
+/// Forces the god-traversal COLLISION BYPASS on (the player's claimed pose is trusted without
+/// clamping against the BACKEND world, which doesn't match the rendered ChunkStreamer — the known
+/// world-migration debt). Kept `true` on purpose until that migration so movement isn't
+/// rubber-banded against phantom walls. NOTE (ADR-016 slice 1): this no longer gates death —
+/// that is a SEPARATE flag (`DEV_INVINCIBLE`), so the robapieles can kill the host while the
+/// collision bypass stays on.
 const DEV_GOD_TRAVERSAL_HARDCODED: bool = true;
-
-/// ADR-016 slice 1 — TEST trigger: auto-inject one static phantom peer (the robapieles)
-/// at host startup so it can be seen in play-test. TEMPORARY scaffolding: in later slices
-/// the real game logic spawns the phantom; flip to `false` (or remove) when slice 1 is
-/// validated.
-const DEBUG_SPAWN_PHANTOM: bool = true;
 
 /// ADR-016 slice 2: phantom walk speed (m/s). Calibrated to human walking so the client's
 /// velocity-derived locomotion (ADR-013) reads it as walking, not teleporting — the proxy
 /// teleport guards only trip on chunk-displacement-scale jumps, far above this. Calibrable.
-const PHANTOM_WALK_SPEED: f32 = 1.8;
+const PHANTOM_WALK_SPEED: f32 = 3.0;
 /// ADR-016 slice 2: on a head-on block the phantom re-orients by a random turn in
 /// [90°, 270°] — never straight back into the wall, never a no-op — so it never stalls and
 /// wanders the maze (no smart pathing yet).
@@ -81,6 +77,64 @@ const PHANTOM_PICKUP_GESTURE: Duration = Duration::from_millis(1000);
 /// ADR-016 slice 4: cooldown between faked pickups while patrolling (theater — no item needed).
 /// Calibrable; small enough to see it recur in play-test.
 const PHANTOM_PICKUP_INTERVAL: Duration = Duration::from_secs(6);
+/// ADR-016 (tell phase): behavioral tell #2 — the phantom periodically goes UNNATURALLY STILL
+/// (a "stare"): it stops dead, holding idle + a fixed facing for `PHANTOM_STARE_DURATION`, on a
+/// near-perfect `PHANTOM_STARE_INTERVAL` cadence. Subtle (rare, brief) but learnable — humans
+/// don't freeze like a metronome. Calibrable: raise the interval / lower the duration to make it
+/// subtler. PURELY BEHAVIORAL — no wire flag; observable only by watching, never by reading packets.
+const PHANTOM_STARE_INTERVAL: Duration = Duration::from_secs(30);
+const PHANTOM_STARE_DURATION: Duration = Duration::from_millis(2500);
+/// ADR-016 — OBSERVATION LEASH (TEMPORARY, play-test only): keep the phantom within this radius
+/// (m) of its spawn so it stays in view to observe the cloned name, the stare, and two same-named
+/// players. If it drifts past this, its heading is re-aimed at the spawn instead of wandering off.
+/// NOT the final behavior: the robapieles must roam freely — free wander returns once the
+/// world→backend migration fixes collision (today it phases through visibly-rendered walls).
+/// Calibrable.
+const PHANTOM_WANDER_RADIUS: f32 = 9.0;
+
+// ADR-016 slice 2 — detection + chase. D1=(a): distance + a forward view cone ONLY, with NO
+// geometry line-of-sight. The phantom's collision is against the BACKEND world, not the
+// rendered ChunkStreamer, so a geometric raycast would test the WRONG walls; until the
+// world→backend migration, distance+angle is the honest prototype. Enter chase within
+// DETECT_RADIUS while the target is inside the cone; leave past LOSE_RADIUS (hysteresis so it
+// doesn't flicker at the edge). Chase moves faster than the wander walk.
+const PHANTOM_DETECT_RADIUS: f32 = 15.0;
+const PHANTOM_LOSE_RADIUS: f32 = 25.0;
+const PHANTOM_DETECT_HALF_FOV: f32 = std::f32::consts::FRAC_PI_3; // 60° half → 120° cone
+
+// ADR-016 slice 3a — Stalker FSM (Wander / Spotted / Stalk / Sprint). Peek/Search land in 3b.
+const PHANTOM_STALK_DISTANCE: f32 = 9.0; // STALK keeps roughly this gap from the player
+const PHANTOM_SPRINT_SPEED: f32 = 9.0; // top sprint speed (vs walk 3.0)
+const PHANTOM_SPRINT_RAMP: f32 = 1.5; // seconds to ramp WALK → SPRINT
+const PHANTOM_SPOTTED_MIN: f32 = 3.0; // SPOTTED stare duration range (s)
+const PHANTOM_SPOTTED_MAX: f32 = 8.0;
+const PHANTOM_STALK_PATIENCE: f32 = 25.0; // seconds stalking before it lunges
+const PHANTOM_WANDER_PAUSE_MIN: f32 = 3.0; // WANDER "looking at a wall" pause range (s)
+const PHANTOM_WANDER_PAUSE_MAX: f32 = 12.0;
+const PHANTOM_WANDER_PAUSE_CHANCE: f32 = 0.007; // per-tick (≈20% over 3 s at 10 Hz)
+const PHANTOM_SPRINT_RANDOM_CHANCE: f32 = 0.008; // per-tick unpredictable lunge
+
+// ADR-016 slice 3b-P1 — STATUE (weeping-angel: freezes while observed) + sound detection.
+// All inputs come from data the backend already has (player yaw; target speed derived from the
+// position delta — peers send no velocity/move_state). NO wire/IPC change.
+const PHANTOM_STATUE_RANGE: f32 = 20.0; // only freezes if the watching player is within this (m)
+const PHANTOM_STATUE_LOOK_HALF_FOV: f32 = std::f32::consts::FRAC_PI_6; // 30° half → 60° player cone
+const PHANTOM_STATUE_MAX: f32 = 6.0; // max seconds frozen → then it lunges (SPRINT)
+const PHANTOM_RUN_SPEED_THRESHOLD: f32 = 4.5; // target speed (m/s) read as "running" (above walk)
+const PHANTOM_SOUND_BONUS: f32 = 8.0; // extra detect radius (m) when the player is running
+const PHANTOM_SPEED_SANITY_MAX: f32 = 30.0; // ignore deltas above this (teleport/chunk-displace)
+const PHANTOM_SPOTTED_SOUND_MIN: f32 = 1.0; // shorter stare when alerted by noise (s)
+const PHANTOM_SPOTTED_SOUND_MAX: f32 = 2.0;
+// Fluidity (slice 3b-P1 follow-up): ease `heading` toward the player instead of snapping at
+// 10 Hz (which reads as lag). rad/s — STALK tracks, SPRINT tracks hard, STATUE turns its head.
+const PHANTOM_TURN_SPEED_STALK: f32 = 8.0;
+const PHANTOM_TURN_SPEED_SPRINT: f32 = 15.0;
+const PHANTOM_TURN_SPEED_STATUE: f32 = 3.0;
+// ADR-016 slice 1 (phantom damage) — host-only (joiners = Fase 7 debt). Damage flows through the
+// PhantomAttack channel, NEVER the pickup path (ADR-016 invariant).
+const PHANTOM_ATTACK_DAMAGE: f32 = 35.0; // frontal SPRINT hit (non-lethal; bounces to STALK)
+const PHANTOM_KNOCKBACK_RANGE: f32 = 3.0; // STATUE→SPRINT shove only within this (m)
+const PHANTOM_KNOCKBACK_FORCE: f32 = 3.0; // shove speed (m/s); client applies via SetVelocity
 
 pub async fn run(
     mut from_clients: mpsc::Receiver<ClientMessage>,
@@ -93,6 +147,14 @@ pub async fn run(
     let entity_dt = dt * ENTITY_TICK_EVERY as f32;
     let dev_freeze_survival = env_flag_enabled("DEV_FREEZE_SURVIVAL");
     let dev_god_traversal = DEV_GOD_TRAVERSAL_HARDCODED || env_flag_enabled("DEV_GOD_TRAVERSAL");
+    // ADR-016 slice 1: death/respawn is now SEPARATE from the collision bypass. God traversal
+    // keeps collision off (world-migration debt) while the player can still die (so the phantom
+    // can kill). Set DEV_INVINCIBLE to disable death/respawn for debugging. Default OFF.
+    let dev_invincible = env_flag_enabled("DEV_INVINCIBLE");
+    // ADR-016: debug-only spawn of the phantom (the robapieles). OFF unless DEBUG_SPAWN_PHANTOM
+    // is set in the env — a normal build never auto-spawns one (no leftover scaffolding). Kept as
+    // the explicit spawn trigger for the identity/tell phases and future play-tests.
+    let debug_spawn_phantom = env_flag_enabled("DEBUG_SPAWN_PHANTOM");
 
     let mut ticker = interval(TICK_DURATION);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -132,13 +194,21 @@ pub async fn run(
         // centred on where the player actually stands.
         world.update_ownership(player.position, player.id);
 
-        // ADR-016 slice 1 (TEST trigger): inject one phantom near the host spawn so it
-        // appears as a player (host + joiners, via the ADR-015 relay). Slice 2: register it
-        // with the driver so it WALKS (collision via ADR-017). No pickup AI yet (slice 4).
-        if DEBUG_SPAWN_PHANTOM {
+        // ADR-016 (debug-gated): inject one phantom near the host spawn so it appears as a
+        // player (host + joiners, via the ADR-015 relay). It walks (slice 2, collision via
+        // ADR-017), fakes pickups (slice 4) and impersonates a victim's NAME (identity phase).
+        // The victim is a real connected peer (none at startup → host-name fallback, upgraded by
+        // rebind_unbound_victims once a joiner connects). Spawns only when DEBUG_SPAWN_PHANTOM is set.
+        if debug_spawn_phantom {
             let phantom_pos = [player.position.x + 3.0, player.position.y, player.position.z];
-            let phantom_id = net.spawn_phantom("Robapieles_Test", phantom_pos);
-            phantom_driver.add(phantom_id, PHANTOM_INITIAL_HEADING);
+            let (victim_name, victim_bound) = choose_victim_name(&net);
+            let phantom_id = net.spawn_phantom(&victim_name, phantom_pos);
+            phantom_driver.add(
+                phantom_id,
+                PHANTOM_INITIAL_HEADING,
+                Vec3::from_array(phantom_pos),
+                victim_bound,
+            );
         }
     }
 
@@ -156,8 +226,11 @@ pub async fn run(
     }
     if dev_god_traversal {
         info!(
-            "DEV_GOD_TRAVERSAL active: collision resolution and survival death/respawn are disabled"
+            "DEV_GOD_TRAVERSAL active: player collision resolution is bypassed (death/respawn now gated separately — see DEV_INVINCIBLE)"
         );
+    }
+    if dev_invincible {
+        info!("DEV_INVINCIBLE active: survival death/respawn is disabled");
     }
     // TEMP god-traversal audit trace: always log exe path + raw env value +
     // effective bypass state so "which backend / which env" is provable.
@@ -195,6 +268,22 @@ pub async fn run(
                 ClientMessage::UiEvent(ev) => {
                     debug!("ui event: {}", ev.event_type);
                 }
+                ClientMessage::RequestChunk { cx, cz, layer } => {
+                    // Fase 4.1: grid_gen is the world source of truth. Generate the
+                    // requested chunk (with seam stitching) and reply with the 5 m
+                    // tile-wall bitmask. net.world_seed is the shared canonical seed
+                    // (env WORLD_SEED, propagated via handshake) — identical on every
+                    // peer, so the derived chunk is byte-identical across the session.
+                    let walls = crate::world::grid_gen::chunk_tile_walls(net.world_seed, cx, cz, layer);
+                    // Broadcast: in this P2P model each player runs its own backend with a
+                    // single Unity client, so the only subscriber IS the requester.
+                    let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
+                        cx,
+                        cz,
+                        layer,
+                        walls,
+                    }));
+                }
             }
         }
 
@@ -210,6 +299,13 @@ pub async fn run(
                 &mut processed_interactions,
             )
             .await;
+        }
+
+        // ADR-016 (identity phase): once a real peer is connected, an unbound phantom adopts
+        // that peer's NAME (cloning the victim; keeps its own unique id). Host-only; a cheap
+        // no-op once every phantom is bound (or when there is no phantom).
+        if net.is_host {
+            phantom_driver.rebind_unbound_victims(&mut net);
         }
 
         // A joiner places its local player only once it has connected and the
@@ -248,6 +344,8 @@ pub async fn run(
         // position [0,0,0], which would otherwise drag the player to the origin
         // before the client's first packet. Track the accepted seq for the ack.
         if has_received_input {
+            // ADR-020: record the client-reported crouch (cosmetic; relayed to peers, not validated).
+            player.crouch = received_input.crouch;
             let seq = apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
             last_accepted_input_seq = seq;
             authoritative_velocity = Vec3::from_array(received_input.velocity);
@@ -301,7 +399,42 @@ pub async fn run(
             // move is resolved via ADR-017 sim-only collision, so it respects walls/floor even
             // far from the host (where world.chunks is empty). Same 10 Hz as the pose relay.
             if net.is_host {
-                phantom_driver.step(&world, &mut net, entity_dt);
+                let attack =
+                    phantom_driver.step(&mut net, entity_dt, player.position, player.rotation);
+                // ADR-016 slice 1 — apply the phantom's attack to the HOST player. DEUDA: host
+                // only; a joiner's health lives in its own backend (Fase 7). The damage path is
+                // SEPARATE from the pickup theater (ADR-016 invariant intact).
+                match attack {
+                    PhantomAttack::Kill => {
+                        let death_pos = player.position.to_array();
+                        if !dev_invincible {
+                            player.stats.take_damage(100.0); // → is_dead → existing death/respawn
+                        }
+                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                            event_type: "phantom_kill".into(),
+                            data: serde_json::json!({ "pos": death_pos }),
+                        }));
+                    }
+                    PhantomAttack::Hit(dmg) => {
+                        if !dev_invincible {
+                            player.stats.take_damage(dmg);
+                        }
+                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                            event_type: "phantom_hit".into(),
+                            data: serde_json::json!({ "damage": dmg }),
+                        }));
+                    }
+                    PhantomAttack::Knockback(dx, dz) => {
+                        // Client-only: it applies the impulse (SetVelocity). Mutating
+                        // player.position here would be overwritten by the next client-authoritative
+                        // input (ADR-009), so the backend only signals the shove.
+                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                            event_type: "phantom_knockback".into(),
+                            data: serde_json::json!({ "dx": dx, "dz": dz }),
+                        }));
+                    }
+                    PhantomAttack::None => {}
+                }
             }
         }
 
@@ -346,9 +479,9 @@ pub async fn run(
         }
 
         // Death → respawn on a validated safe cell (never the unsafe origin).
-        // DEV_GOD_TRAVERSAL: survival death and the resulting respawn are
-        // skipped so debug traversal is never interrupted.
-        if !dev_god_traversal && player.stats.is_dead() {
+        // DEV_INVINCIBLE (not god-traversal anymore): survival death and the resulting respawn
+        // are skipped (debug only). This is the path a phantom Kill triggers via take_damage(100).
+        if !dev_invincible && player.stats.is_dead() {
             info!("Player died — respawning");
             player.stats = crate::player::stats::PlayerStats::on_respawn();
             let res = resolve_safe_spawn(&mut world, preferred_spawn());
@@ -514,10 +647,11 @@ async fn handle_network_event(
             position,
             rotation,
             animation,
+            crouch,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}",
-                id, position[0], position[1], position[2], rotation, animation
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -1684,6 +1818,7 @@ fn build_world_state(
             position: p.position,
             rotation: p.rotation,
             animation: p.animation.clone(),
+            crouch: p.crouch,
         });
     }
 
@@ -1744,15 +1879,149 @@ fn build_world_state(
     }
 }
 
-// ─── ADR-016 slices 2+4: phantom movement + faked-pickup driver ───
+// ─── ADR-016: phantom driver — movement (2) + faked pickup (4) + victim identity + tell ───
+
+/// ADR-016 (identity phase): pick the name the phantom (robapieles) impersonates. The victim is
+/// the first REAL (non-phantom) connected peer; its name is cloned (the phantom keeps its OWN
+/// unique id — the id mismatch is the intended subtle tell #1). Returns `(name, bound)`: `bound`
+/// is true when a real victim was found, false → host-name fallback (solo), which
+/// `rebind_unbound_victims` later upgrades to a real peer once one connects.
+fn choose_victim_name(net: &NetworkManager) -> (String, bool) {
+    match net.peers.values().find(|p| !net.phantom_ids.contains(&p.id)) {
+        Some(p) => (p.name.clone(), true),
+        None => (net.local_name.clone(), false),
+    }
+}
+
+/// ADR-016 — nearest REAL target (non-phantom) to `from` in XZ: the host's own local player
+/// (`host_player_pos`/`host_player_rot`, keyed by `net.local_id`) plus every real peer. Returns
+/// `(id, position, distance, yaw_deg)` of the closest. The `id` lets the caller look up the
+/// target's derived speed (sound detection, slice 3b-P1) and the `yaw` lets it test whether the
+/// player is looking back (STATUE). The host player is always a candidate → `Some` in practice.
+fn nearest_real_target(
+    net: &NetworkManager,
+    host_player_pos: Vec3,
+    host_player_rot: f32,
+    from: Vec3,
+) -> Option<(PeerId, Vec3, f32, f32)> {
+    let mut best = Some((
+        net.local_id,
+        host_player_pos,
+        from.distance_xz(host_player_pos),
+        host_player_rot,
+    ));
+    for p in net.peers.values() {
+        if net.phantom_ids.contains(&p.id) {
+            continue;
+        }
+        let pos = Vec3::from_array(p.position);
+        let d = from.distance_xz(pos);
+        if best.map_or(true, |(_, _, bd, _)| d < bd) {
+            best = Some((p.id, pos, d, p.rotation));
+        }
+    }
+    best
+}
+
+/// ADR-016 slice 3b-P1 (STATUE): is the PHANTOM inside the player's forward HORIZONTAL cone —
+/// i.e. is the player looking at it? `player_yaw` is degrees (Unity yaw, 0 = +Z). Pitch is not
+/// available per-peer (and is discarded for the host), so this is the horizontal cone only:
+/// looking up/down does not count. No geometry occlusion (consistent with D1=(a)).
+fn player_is_looking_at(player_pos: Vec3, player_yaw: f32, phantom_pos: Vec3) -> bool {
+    let dx = phantom_pos.x - player_pos.x;
+    let dz = phantom_pos.z - player_pos.z;
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < f32::EPSILON {
+        return true; // on top of each other → counts as looked-at
+    }
+    let yaw = player_yaw.to_radians();
+    // Player forward unit dir (Unity yaw): (sin, cos). dot with the unit to-phantom vector.
+    let dot = (yaw.sin() * dx + yaw.cos() * dz) / len;
+    dot >= PHANTOM_STATUE_LOOK_HALF_FOV.cos()
+}
+
+/// ADR-016 (fluidity): angularly ease `current` heading toward `target` (both yaw radians) by
+/// factor `t` in [0,1], via normalize-lerp of the unit direction vectors (nlerp — naturally takes
+/// the shorter arc, no angle-wrap special-casing). Returns the blended yaw. Smooths the phantom's
+/// turn-to-face so it tracks the player without a 10 Hz snap.
+fn lerp_heading(current: f32, target: f32, t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    // dir = (sin(yaw), cos(yaw)) — the Unity yaw convention used throughout the driver.
+    let mx = current.sin() * (1.0 - t) + target.sin() * t;
+    let mz = current.cos() * (1.0 - t) + target.cos() * t;
+    let len = (mx * mx + mz * mz).sqrt();
+    if len > 0.001 {
+        mx.atan2(mz).rem_euclid(std::f32::consts::TAU)
+    } else {
+        current // ~diametrically opposite at t≈0.5 → keep current; next tick resolves it
+    }
+}
+
+/// ADR-016 slice 2: is `target` inside the phantom's forward view cone (heading ± HALF_FOV)?
+/// Distance is checked by the caller; this is angle ONLY, with no geometry occlusion (D1=(a)).
+fn in_view_cone(heading: f32, from: Vec3, target: Vec3) -> bool {
+    let tx = target.x - from.x;
+    let tz = target.z - from.z;
+    let len = (tx * tx + tz * tz).sqrt();
+    if len < f32::EPSILON {
+        return true; // target is on top of the phantom → counts as seen
+    }
+    // Heading unit dir: yaw 0 = +Z, so dir = (sin, _, cos). dot with the unit to-target vector.
+    let dot = (heading.sin() * tx + heading.cos() * tz) / len;
+    dot >= PHANTOM_DETECT_HALF_FOV.cos()
+}
+
+/// ADR-016 slice 3a — the robapieles' behavioral FSM. Drives how it relates to the nearest real
+/// player. PEEK/SEARCH (corner-peeking, last-known-position hunting) arrive in slice 3b; until
+/// then their would-be transitions fall back to `Wander`. PURELY BEHAVIORAL — no wire flag; the
+/// state is observable only by watching, never by reading packets.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PhantomState {
+    /// Erratic patrol: walks its heading, pauses to "look at walls", fakes pickups, does the
+    /// metronomic stare tell, and stays near spawn via the observation leash.
+    Wander,
+    /// Saw the player: freezes and stares straight at them for a randomized window, then STALK.
+    Spotted,
+    /// Shadows the player at a held distance; its patience runs out into a SPRINT.
+    Stalk,
+    /// Weeping-angel freeze (slice 3b-P1): the player is looking at it, so it goes dead still
+    /// until they look away (→ STALK) or it tires of the game (→ SPRINT). Entered from STALK;
+    /// never interrupts a committed SPRINT.
+    Statue,
+    /// Lunges straight at the player with a ramped speed; "attacks" (anim-only) at point blank.
+    Sprint,
+}
+
+/// ADR-016 slice 1 (phantom damage) — what `PhantomDriver::step` produced this tick for the HOST
+/// player. Returned to the game loop, which owns `player`/`stats`. DEUDA: host-only — a joiner's
+/// health lives in its own backend (P2P multi-backend), so this never affects joiners
+/// (cross-backend damage authority is Fase 7). The damage path is SEPARATE from the pickup
+/// theater (ADR-016 invariant intact).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PhantomAttack {
+    /// Nothing happened this tick.
+    None,
+    /// Frontal point-blank hit: non-lethal `damage` to health; the phantom bounces back to STALK.
+    Hit(f32),
+    /// Point-blank from BEHIND: lethal (the loop applies 100 dmg → the existing death/respawn).
+    Kill,
+    /// A shove the CLIENT applies (dx, dz m/s via the motor's SetVelocity). The backend never
+    /// mutates the player pose for this — it's client-authoritative and would be overwritten by
+    /// the next input (ADR-009), so the backend only signals the direction/force.
+    Knockback(f32, f32),
+}
 
 /// Host-only driver for phantom peers (the robapieles). Each phantom wanders: it steps along
 /// its heading and, on a head-on block, turns to a new heading — so it bumps walls and turns
-/// instead of clipping through them. Every step is resolved through ADR-017's
-/// `resolve_move_simulated` + `SimChunkCache`, so collision holds EVEN far from the host where
-/// `world.chunks` is empty (the cache generates the layout on-demand). It is ADR-017's first
-/// runtime consumer. Periodically the phantom also FAKES a pickup (slice 4): it freezes and
-/// flips its animation field to "pickup" for ~1s, then resumes. No detection/chase AI yet.
+/// instead of clipping through them. Every step is resolved through `resolve_move_grid_gen` +
+/// `GridGenChunkCache`, so the phantom collides against the SAME grid_gen world Unity renders
+/// (not world::generator), generated on-demand even far from the host. Periodically the phantom
+/// also FAKES a pickup (slice 4): it freezes and
+/// flips its animation field to "pickup" for ~1s, then resumes. It does a behavioral TELL #2
+/// (an unnatural, near-metronomic "stare"), and clones a real peer's NAME (victim identity;
+/// keeps its own id). Slice 2: it also DETECTS the nearest real player (distance + forward cone,
+/// no geometry LOS — D1=(a)) and CHASES them at CHASE_SPEED, dropping the wander/stare/pickup
+/// theater until it loses them past LOSE_RADIUS.
 ///
 /// SAFETY INVARIANT (ADR-016 slice 4): the faked pickup is PURE THEATER — it touches ONLY the
 /// phantom's `animation` field (via `update_player_state`). It NEVER calls `process_stp_pickup`,
@@ -1760,74 +2029,185 @@ fn build_world_state(
 /// NEVER emits a `stp_pickup_granted`. The phantom has no effect on real game state beyond its
 /// own presentation field. (Calling the real pickup path would delete/reserve a real world item.)
 ///
-/// The `SimChunkCache` lives here (a host-only game-loop local), not in World/NetworkManager:
-/// it is sim-only host state (ADR-017), and keeping it out of those structs is the least
-/// invasive home. The phantom POSE itself lives in its `PeerConnection` (the render source).
+/// The `GridGenChunkCache` lives here (a host-only game-loop local), not in World/NetworkManager:
+/// it is sim-only host state, the least invasive home. The phantom POSE itself lives in its
+/// `PeerConnection` (the render source). (world::collision's `SimChunkCache` is unchanged but no
+/// longer has a production consumer; it remains for tests / future world::generator entities.)
 struct PhantomDriver {
-    sim: SimChunkCache,
+    grid_cache: GridGenChunkCache,
     movers: Vec<PhantomMover>,
+    /// Last-tick XZ position of each real target (host + peers), keyed by id. Used to derive each
+    /// target's speed (sound detection, slice 3b-P1) — peers never send velocity/move_state, so a
+    /// position delta is the only uniform "is it running?" signal. Rebuilt each tick from the
+    /// current targets, so disconnected ids drop out automatically.
+    prev_target_pos: HashMap<PeerId, Vec3>,
 }
 
-/// Per-phantom state: which peer, its current heading (yaw, radians), and the faked-pickup
-/// gesture bookkeeping (slice 4).
+/// Per-phantom state: which peer, its heading (yaw, radians), the faked-pickup gesture (slice 4),
+/// the "stare" tell (tell phase), and the victim-name binding (identity phase).
 struct PhantomMover {
     id: PeerId,
     heading: f32,
+    /// Spawn position; the observation leash (PHANTOM_WANDER_RADIUS) re-aims the heading here
+    /// when the phantom drifts too far, so it stays in view during play-test.
+    spawn_pos: Vec3,
     /// `Some(t)` while faking a pickup: movement is paused and `animation` is held at
     /// "pickup" until `t`. `None` while walking. PURE presentation — never real pickup state.
     pickup_until: Option<Instant>,
     /// Earliest instant the next faked pickup may begin.
     next_pickup_at: Instant,
+    /// `Some(t)` while doing the "stare" tell: frozen, unnaturally still ("idle") until `t`.
+    /// `None` while walking. The tell is its near-metronomic regularity.
+    stare_until: Option<Instant>,
+    /// Earliest instant the next stare tell may begin.
+    next_stare_at: Instant,
+    /// `true` once the name was bound to a real victim (so it is not rebound). `false` = still
+    /// on the host-name fallback; adopts a real peer's name when one connects.
+    victim_bound: bool,
+    /// ADR-016 slice 3a — current FSM state. Replaces the slice-2 `chasing` bool.
+    state: PhantomState,
+    /// Seconds spent in the current `state` (reset to 0 on every transition). Drives the SPOTTED
+    /// stare length, the STALK patience, and the SPRINT speed ramp.
+    state_timer: f32,
+    /// Randomized SPOTTED stare length (s), drawn in [SPOTTED_MIN, SPOTTED_MAX] on entry.
+    spotted_duration: f32,
+    /// Last position the player was seen at while STALK/SPRINT — recorded now so slice 3b's
+    /// SEARCH/PEEK need no further step() rework.
+    last_known_player_pos: Option<Vec3>,
+    /// WANDER organic pause: remaining time (s) it stands still "looking at a wall". `is_paused`
+    /// gates it.
+    wander_pause_timer: f32,
+    is_paused: bool,
+    /// Smoothed turn target (yaw radians): STALK/SPRINT/STATUE ease `heading` toward this instead
+    /// of snapping each tick (fluidity), so it tracks the player without 10 Hz rotational jerk.
+    heading_target: f32,
 }
 
 impl PhantomDriver {
     fn new(world_seed: u64) -> Self {
         Self {
-            sim: SimChunkCache::new(world_seed),
+            grid_cache: GridGenChunkCache::new(world_seed),
             movers: Vec::new(),
+            prev_target_pos: HashMap::new(),
         }
     }
 
-    fn add(&mut self, id: PeerId, heading: f32) {
+    fn add(&mut self, id: PeerId, heading: f32, spawn_pos: Vec3, victim_bound: bool) {
+        let now = Instant::now();
         self.movers.push(PhantomMover {
             id,
             heading,
+            spawn_pos,
             pickup_until: None,
-            next_pickup_at: Instant::now() + PHANTOM_PICKUP_INTERVAL,
+            next_pickup_at: now + PHANTOM_PICKUP_INTERVAL,
+            stare_until: None,
+            next_stare_at: now + PHANTOM_STARE_INTERVAL,
+            victim_bound,
+            state: PhantomState::Wander,
+            state_timer: 0.0,
+            spotted_duration: 0.0,
+            last_known_player_pos: None,
+            wander_pause_timer: 0.0,
+            is_paused: false,
+            heading_target: heading,
         });
+    }
+
+    /// ADR-016 (identity phase): once a real (non-phantom) peer is connected, any phantom still
+    /// on its fallback name adopts that peer's NAME — cloning the victim's identity while keeping
+    /// its OWN unique id (never the victim's id, which would collide the client's `_active[id]`).
+    /// The rename rides the existing roster/PeerList + ADR-015 relay (no schema). One-shot per
+    /// phantom; cheap no-op once all are bound or no real peer exists.
+    fn rebind_unbound_victims(&mut self, net: &mut NetworkManager) {
+        if self.movers.iter().all(|m| m.victim_bound) {
+            return;
+        }
+        let victim_name = net
+            .peers
+            .values()
+            .find(|p| !net.phantom_ids.contains(&p.id))
+            .map(|p| p.name.clone());
+        let Some(victim_name) = victim_name else {
+            return;
+        };
+        for m in self.movers.iter_mut().filter(|m| !m.victim_bound) {
+            if let Some(peer) = net.peers.get_mut(&m.id) {
+                peer.name = victim_name.clone();
+            }
+            m.victim_bound = true;
+            info!(
+                "MPTRACE step=PH5 event=phantom_victim_bound phantom_id={} victim_name={}",
+                m.id, victim_name
+            );
+        }
     }
 
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
     /// blocked step re-orients the heading so the phantom never stalls at a wall.
-    fn step(&mut self, world: &World, net: &mut NetworkManager, dt: f32) {
+    fn step(
+        &mut self,
+        net: &mut NetworkManager,
+        dt: f32,
+        host_player_pos: Vec3,
+        host_player_rot: f32,
+    ) -> PhantomAttack {
         let now = Instant::now();
+
+        // ADR-016 slice 3b-P1 — derive each real target's XZ speed from its last-tick position
+        // (peers send no velocity/move_state, so this is the uniform "is it running?" signal for
+        // sound detection). Teleport / chunk-displacement deltas are clamped out. Computed once
+        // per tick; the map is rebuilt from the current targets so stale ids drop out.
+        let mut cur_positions: Vec<(PeerId, Vec3)> = Vec::with_capacity(net.peers.len() + 1);
+        cur_positions.push((net.local_id, host_player_pos));
+        for p in net.peers.values() {
+            if !net.phantom_ids.contains(&p.id) {
+                cur_positions.push((p.id, Vec3::from_array(p.position)));
+            }
+        }
+        let mut target_speeds: HashMap<PeerId, f32> = HashMap::with_capacity(cur_positions.len());
+        for (tid, cur) in &cur_positions {
+            let speed = match self.prev_target_pos.get(tid) {
+                Some(prev) => {
+                    let d = ((cur.x - prev.x).powi(2) + (cur.z - prev.z).powi(2)).sqrt() / dt;
+                    if d > PHANTOM_SPEED_SANITY_MAX {
+                        0.0 // teleport / chunk displacement — not a footstep
+                    } else {
+                        d
+                    }
+                }
+                None => 0.0,
+            };
+            target_speeds.insert(*tid, speed);
+        }
+        self.prev_target_pos = cur_positions.into_iter().collect();
+
+        // ADR-016 slice 1 — the attack produced this tick; the game loop applies it to the host.
+        // One phantom today; with several, the last attacker this tick wins (host-only debt).
+        let mut attack = PhantomAttack::None;
         for i in 0..self.movers.len() {
             let id = self.movers[i].id;
             let from = match net.peers.get(&id) {
                 Some(p) => Vec3::from_array(p.position),
                 None => continue, // phantom no longer present
             };
+            // The grid_gen layer to collide against, derived from the phantom's own Y (works on
+            // every layer without a hardcoded layer).
+            let current_layer = world_pos_to_layer(from.y);
 
-            // ── Slice 4: faked-pickup gesture (PURE THEATER — only the animation field). ──
-            // End an expired gesture, then maybe start a new one when the cooldown elapsed.
+            // Nearest REAL player (the host's own local player + any real peer). D1=(a): distance
+            // + a forward view cone only, NO geometry line-of-sight (collision = grid_gen world).
+            let target = nearest_real_target(net, host_player_pos, host_player_rot, from);
+            self.movers[i].state_timer += dt;
+
+            // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
+            // are PURE THEATER — only the `animation` field. While active, freeze in place holding
+            // "pickup" (the trigger flank the proxy edge-detects, ADR-011). NOTHING real is
+            // touched: no process_stp_pickup, no pending_pickups, no stp_items, no grant. ──
             if self.movers[i].pickup_until.map_or(false, |until| now >= until) {
                 self.movers[i].pickup_until = None;
             }
-            if self.movers[i].pickup_until.is_none() && now >= self.movers[i].next_pickup_at {
-                self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
-                self.movers[i].next_pickup_at = now + PHANTOM_PICKUP_INTERVAL;
-                info!(
-                    "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
-                    id
-                );
-            }
-            // While gesturing: freeze in place and flip animation to "pickup" (the trigger
-            // flank the proxy edge-detects, ADR-011). We re-stamp the SAME grounded pose (keeps
-            // the heartbeat fresh). NOTHING real is touched — no process_stp_pickup, no
-            // pending_pickups, no stp_items, no grant. Movement is paused for the window so it
-            // reads like a player input-locked while picking up.
             if self.movers[i].pickup_until.is_some() {
                 let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
                 if let Some(peer) = net.peers.get_mut(&id) {
@@ -1836,50 +2216,413 @@ impl PhantomDriver {
                 continue;
             }
 
-            // Heading → XZ direction (yaw 0 = +Z, Unity convention). Y is left to the
-            // collision resolver, which plants it on the real floor (fixes the slice-1 float).
-            let heading = self.movers[i].heading;
-            let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
-            let desired = Vec3::new(
-                from.x + dir.x * PHANTOM_WALK_SPEED * dt,
-                from.y,
-                from.z + dir.z * PHANTOM_WALK_SPEED * dt,
-            );
+            // ADR-016 slice 3a — Stalker FSM. `state` is Copy, so the match holds no borrow.
+            let state = self.movers[i].state;
+            match state {
+                // ── WANDER: erratic patrol + detection. Keeps the slice-4 fake-pickup imitation,
+                // the metronomic stare tell, organic "look at a wall" pauses, and the play-test
+                // observation leash. Detecting the player (radius + cone) → SPOTTED. ──
+                PhantomState::Wander => {
+                    // Detection: normally distance + forward cone. A RUNNING target (speed from
+                    // delta) is HEARD — detected from farther (DETECT + SOUND_BONUS) AND from any
+                    // direction (no cone). Sound-only detection reacts faster (a shorter stare).
+                    let (detected, by_sound) = match target {
+                        Some((tid, tpos, dist, _)) => {
+                            let normal = dist <= PHANTOM_DETECT_RADIUS
+                                && in_view_cone(self.movers[i].heading, from, tpos);
+                            let running = target_speeds.get(&tid).copied().unwrap_or(0.0)
+                                > PHANTOM_RUN_SPEED_THRESHOLD;
+                            let sound =
+                                running && dist <= PHANTOM_DETECT_RADIUS + PHANTOM_SOUND_BONUS;
+                            (normal || sound, sound && !normal)
+                        }
+                        None => (false, false),
+                    };
+                    if detected {
+                        self.movers[i].state = PhantomState::Spotted;
+                        self.movers[i].state_timer = 0.0;
+                        let (lo, hi) = if by_sound {
+                            (PHANTOM_SPOTTED_SOUND_MIN, PHANTOM_SPOTTED_SOUND_MAX)
+                        } else {
+                            (PHANTOM_SPOTTED_MIN, PHANTOM_SPOTTED_MAX)
+                        };
+                        self.movers[i].spotted_duration = lo + rand::random::<f32>() * (hi - lo);
+                        self.movers[i].is_paused = false;
+                        info!(
+                            "MPTRACE step=PH_SPOTTED event=phantom_spotted phantom_id={} dur={:.1} by_sound={}",
+                            id, self.movers[i].spotted_duration, by_sound
+                        );
+                        continue;
+                    }
 
-            let resolved =
-                Level0Collision::resolve_move_simulated(world, &mut self.sim, from, desired);
+                    // Slice 4: start a faked-pickup gesture when the cooldown elapsed. Stamp the
+                    // "pickup" flank now and freeze; the top-of-loop gesture freeze holds the pose
+                    // for the rest of the window. (Anim-only — ADR-016 invariant.)
+                    if now >= self.movers[i].next_pickup_at {
+                        self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
+                        self.movers[i].next_pickup_at = now + PHANTOM_PICKUP_INTERVAL;
+                        info!(
+                            "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
+                            id
+                        );
+                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                        }
+                        continue;
+                    }
 
-            // Head-on block → re-orient so the phantom never stalls at a wall (slides keep
-            // their heading and hug the wall; only a full block turns).
-            if resolved.kind == CollisionResultKind::Blocked {
-                let turn = PHANTOM_TURN_MIN
-                    + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
-                self.movers[i].heading = (heading + turn).rem_euclid(std::f32::consts::TAU);
-            }
+                    // Tell #2: metronomic unnatural stillness (the tell is its regularity).
+                    if self.movers[i].stare_until.map_or(false, |until| now >= until) {
+                        self.movers[i].stare_until = None;
+                    }
+                    if self.movers[i].stare_until.is_none()
+                        && now >= self.movers[i].next_stare_at
+                    {
+                        self.movers[i].stare_until = Some(now + PHANTOM_STARE_DURATION);
+                        self.movers[i].next_stare_at = now + PHANTOM_STARE_INTERVAL;
+                        info!(
+                            "MPTRACE step=PH6 event=phantom_tell_stare phantom_id={} note=behavioral_tell_unnatural_stillness",
+                            id
+                        );
+                    }
+                    if self.movers[i].stare_until.is_some() {
+                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            peer.update_player_state(from.to_array(), yaw, "idle".into());
+                        }
+                        continue;
+                    }
 
-            // Face the (possibly updated) heading so it never moonwalks. Unity yaw = the
-            // heading itself (dir = (sin, _, cos) → atan2(x, z) == heading), in degrees.
-            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-            if let Some(peer) = net.peers.get_mut(&id) {
-                // update_player_state also refreshes the heartbeat. animation = "idle": the
-                // walk/run pose is velocity-derived client-side (ADR-013); the animation
-                // channel is reserved for actions (pickup, ADR-011 — slice 4, not here).
-                peer.update_player_state(resolved.position.to_array(), yaw, "idle".into());
-            }
+                    // Organic pause: stand still "looking at a wall". Count down if paused; else a
+                    // small per-tick chance to start one. On resume, turn to a new heading.
+                    if self.movers[i].is_paused {
+                        self.movers[i].wander_pause_timer -= dt;
+                        if self.movers[i].wander_pause_timer <= 0.0 {
+                            self.movers[i].is_paused = false;
+                            let turn = PHANTOM_TURN_MIN
+                                + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
+                            self.movers[i].heading =
+                                (self.movers[i].heading + turn).rem_euclid(std::f32::consts::TAU);
+                        } else {
+                            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                            if let Some(peer) = net.peers.get_mut(&id) {
+                                peer.update_player_state(from.to_array(), yaw, "idle".into());
+                            }
+                            continue;
+                        }
+                    } else if rand::random::<f32>() < PHANTOM_WANDER_PAUSE_CHANCE {
+                        self.movers[i].is_paused = true;
+                        self.movers[i].wander_pause_timer = PHANTOM_WANDER_PAUSE_MIN
+                            + rand::random::<f32>()
+                                * (PHANTOM_WANDER_PAUSE_MAX - PHANTOM_WANDER_PAUSE_MIN);
+                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            peer.update_player_state(from.to_array(), yaw, "idle".into());
+                        }
+                        continue;
+                    }
 
-            if net.session_start.elapsed().as_millis() % 1000 < 120 {
-                info!(
-                    "MPTRACE step=PH2 event=phantom_move phantom_id={} pos=({:.2},{:.2},{:.2}) yaw={:.1} kind={:?} sim_chunks={}",
-                    id,
-                    resolved.position.x,
-                    resolved.position.y,
-                    resolved.position.z,
-                    yaw,
-                    resolved.kind,
-                    self.sim.len()
-                );
+                    // Observation leash (WANDER-only, play-test crutch): re-aim toward spawn if it
+                    // drifted past the radius so it stays in view. STALK/SPRINT ignore it.
+                    if from.distance_xz(self.movers[i].spawn_pos) > PHANTOM_WANDER_RADIUS {
+                        let dx = self.movers[i].spawn_pos.x - from.x;
+                        let dz = self.movers[i].spawn_pos.z - from.z;
+                        if dx * dx + dz * dz > f32::EPSILON {
+                            self.movers[i].heading = dx.atan2(dz).rem_euclid(std::f32::consts::TAU);
+                        }
+                    }
+
+                    // Walk the heading; a full block (neither axis advanced) re-orients so it
+                    // never stalls at a wall. A slide keeps the heading and hugs the wall.
+                    let heading = self.movers[i].heading;
+                    let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+                    let desired = Vec3::new(
+                        from.x + dir.x * PHANTOM_WALK_SPEED * dt,
+                        from.y,
+                        from.z + dir.z * PHANTOM_WALK_SPEED * dt,
+                    );
+                    let resolved =
+                        resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
+                    let blocked =
+                        (resolved.x - from.x).abs() < 1e-4 && (resolved.z - from.z).abs() < 1e-4;
+                    if blocked {
+                        let turn = PHANTOM_TURN_MIN
+                            + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
+                        self.movers[i].heading = (heading + turn).rem_euclid(std::f32::consts::TAU);
+                    }
+                    let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+                    }
+                    if net.session_start.elapsed().as_millis() % 1000 < 120 {
+                        info!(
+                            "MPTRACE step=PH2 event=phantom_move phantom_id={} pos=({:.2},{:.2},{:.2}) yaw={:.1} blocked={} grid_chunks={}",
+                            id, resolved.x, resolved.y, resolved.z, yaw, blocked, self.grid_cache.len()
+                        );
+                    }
+                }
+
+                // ── SPOTTED: frozen stare. Faces the player; exits to STALK once the stare window
+                // elapses (deterministic), may unpredictably SPRINT mid-stare; loses the player
+                // (past DETECT_RADIUS*1.5) → WANDER. ──
+                PhantomState::Spotted => {
+                    let still = match target {
+                        Some((_, _, dist, _)) => dist <= PHANTOM_DETECT_RADIUS * 1.5,
+                        None => false,
+                    };
+                    if !still {
+                        self.movers[i].state = PhantomState::Wander;
+                        self.movers[i].state_timer = 0.0;
+                        continue;
+                    }
+                    let (_, tpos, _dist, _) = target.unwrap(); // still ⇒ Some
+                    let heading = (tpos.x - from.x)
+                        .atan2(tpos.z - from.z)
+                        .rem_euclid(std::f32::consts::TAU);
+                    self.movers[i].heading = heading;
+
+                    // Stare done → STALK (checked before the random lunge so it's deterministic
+                    // once the window passes).
+                    if self.movers[i].state_timer >= self.movers[i].spotted_duration {
+                        self.movers[i].state = PhantomState::Stalk;
+                        self.movers[i].state_timer = 0.0;
+                        info!("MPTRACE step=PH_STALK event=phantom_stalk phantom_id={}", id);
+                        continue;
+                    }
+                    // Unpredictable lunge mid-stare (scarier when imprevisible).
+                    if rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE {
+                        self.movers[i].state = PhantomState::Sprint;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
+                            id
+                        );
+                        continue;
+                    }
+                    let yaw = heading.to_degrees().rem_euclid(360.0);
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        peer.update_player_state(from.to_array(), yaw, "idle".into());
+                    }
+                }
+
+                // ── STALK: shadow the player at a held gap. Patience (or an unpredictable roll) →
+                // SPRINT; lost past LOSE_RADIUS → WANDER (slice 3b: SEARCH the last-known pos). ──
+                PhantomState::Stalk => {
+                    let dist_opt = target.map(|(_, _, d, _)| d);
+                    if dist_opt.map_or(true, |d| d > PHANTOM_LOSE_RADIUS) {
+                        // 3b will SEARCH `last_known_player_pos`; for 3a fall back to WANDER.
+                        self.movers[i].state = PhantomState::Wander;
+                        self.movers[i].state_timer = 0.0;
+                        continue;
+                    }
+                    let (_, tpos, dist, tyaw) = target.unwrap();
+                    self.movers[i].last_known_player_pos = Some(tpos);
+
+                    // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
+                    // close → freeze. Entered only from STALK; a committed SPRINT is never frozen.
+                    if dist < PHANTOM_STATUE_RANGE && player_is_looking_at(tpos, tyaw, from) {
+                        self.movers[i].state = PhantomState::Statue;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_STATUE event=phantom_statue phantom_id={} dist={:.2}",
+                            id, dist
+                        );
+                        continue;
+                    }
+
+                    if self.movers[i].state_timer > PHANTOM_STALK_PATIENCE
+                        || rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0
+                    {
+                        self.movers[i].state = PhantomState::Sprint;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} dist={:.2}",
+                            id, dist
+                        );
+                        continue;
+                    }
+
+                    let to_player = (tpos.x - from.x)
+                        .atan2(tpos.z - from.z)
+                        .rem_euclid(std::f32::consts::TAU);
+                    // Ease toward the player instead of snapping (a 10 Hz snap reads as lag);
+                    // movement follows the smoothed heading → a curved, less robotic track.
+                    self.movers[i].heading_target = to_player;
+                    let t = (PHANTOM_TURN_SPEED_STALK * dt).min(1.0);
+                    self.movers[i].heading =
+                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+                    let heading = self.movers[i].heading;
+                    // Maintain STALK_DISTANCE: close in if too far, ease back if too near (it
+                    // backs away while still facing you — unsettling), else hold.
+                    let (move_dir, speed) = if dist > PHANTOM_STALK_DISTANCE + 2.0 {
+                        (heading, PHANTOM_WALK_SPEED)
+                    } else if dist < PHANTOM_STALK_DISTANCE {
+                        (
+                            (heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU),
+                            PHANTOM_WALK_SPEED * 0.6,
+                        )
+                    } else {
+                        (heading, 0.0)
+                    };
+                    let dir = Vec3::new(move_dir.sin(), 0.0, move_dir.cos());
+                    let desired = Vec3::new(
+                        from.x + dir.x * speed * dt,
+                        from.y,
+                        from.z + dir.z * speed * dt,
+                    );
+                    let resolved =
+                        resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
+                    let yaw = heading.to_degrees().rem_euclid(360.0);
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+                    }
+                    if net.session_start.elapsed().as_millis() % 1000 < 120 {
+                        info!(
+                            "MPTRACE step=PH_STALK event=phantom_stalk_move phantom_id={} pos=({:.2},{:.2},{:.2}) dist={:.2}",
+                            id, resolved.x, resolved.y, resolved.z, dist
+                        );
+                    }
+                }
+
+                // ── STATUE: weeping-angel freeze. Dead still while the player keeps looking. They
+                // look away → STALK (resumes the hunt, never back to WANDER); tires after
+                // STATUE_MAX → SPRINT; loses the player past LOSE_RADIUS → WANDER. Never reached
+                // mid-SPRINT (a committed lunge is not frozen). ──
+                PhantomState::Statue => {
+                    let lost = match target {
+                        Some((_, _, dist, _)) => dist > PHANTOM_LOSE_RADIUS,
+                        None => true,
+                    };
+                    if lost {
+                        self.movers[i].state = PhantomState::Wander;
+                        self.movers[i].state_timer = 0.0;
+                        continue;
+                    }
+                    let (_, tpos, dist, tyaw) = target.unwrap();
+                    self.movers[i].last_known_player_pos = Some(tpos);
+
+                    // Tired of the game → lunge (checked before the look test so the timeout always
+                    // wins once it elapses). If point-blank, also SHOVE the player — the client
+                    // applies the impulse (SetVelocity); the backend only signals the direction.
+                    if self.movers[i].state_timer >= PHANTOM_STATUE_MAX {
+                        let dx = tpos.x - from.x;
+                        let dz = tpos.z - from.z;
+                        let len = (dx * dx + dz * dz).sqrt();
+                        if dist < PHANTOM_KNOCKBACK_RANGE && len > 0.001 {
+                            attack = PhantomAttack::Knockback(
+                                dx / len * PHANTOM_KNOCKBACK_FORCE,
+                                dz / len * PHANTOM_KNOCKBACK_FORCE,
+                            );
+                        }
+                        self.movers[i].state = PhantomState::Sprint;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_statue_timeout knockback={}",
+                            id,
+                            dist < PHANTOM_KNOCKBACK_RANGE
+                        );
+                        continue;
+                    }
+                    // Player looked away → resume stalking.
+                    if !player_is_looking_at(tpos, tyaw, from) {
+                        self.movers[i].state = PhantomState::Stalk;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_STALK event=phantom_statue_release phantom_id={}",
+                            id
+                        );
+                        continue;
+                    }
+                    // Frozen in place, but it SLOWLY turns its head toward you (creepier than a
+                    // fixed facing): position held, only the heading eases toward the player.
+                    let to_player = (tpos.x - from.x)
+                        .atan2(tpos.z - from.z)
+                        .rem_euclid(std::f32::consts::TAU);
+                    self.movers[i].heading_target = to_player;
+                    let t = (PHANTOM_TURN_SPEED_STATUE * dt).min(1.0);
+                    self.movers[i].heading =
+                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+                    let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        peer.update_player_state(from.to_array(), yaw, "idle".into());
+                    }
+                }
+
+                // ── SPRINT: ramp WALK→SPRINT straight at the player. Point-blank → anim-only
+                // "attack" (ADR-016 invariant) then STALK; lost past LOSE_RADIUS*1.2 → WANDER
+                // (slice 3b: SEARCH — it doesn't give up easily mid-lunge). ──
+                PhantomState::Sprint => {
+                    let dist_opt = target.map(|(_, _, d, _)| d);
+                    if dist_opt.map_or(true, |d| d > PHANTOM_LOSE_RADIUS * 1.2) {
+                        self.movers[i].state = PhantomState::Wander;
+                        self.movers[i].state_timer = 0.0;
+                        continue;
+                    }
+                    let (_, tpos, dist, tyaw) = target.unwrap();
+                    self.movers[i].last_known_player_pos = Some(tpos);
+                    let to_player = (tpos.x - from.x)
+                        .atan2(tpos.z - from.z)
+                        .rem_euclid(std::f32::consts::TAU);
+                    // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
+                    self.movers[i].heading_target = to_player;
+                    let t = (PHANTOM_TURN_SPEED_SPRINT * dt).min(1.0);
+                    self.movers[i].heading =
+                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+                    let heading = self.movers[i].heading;
+
+                    // Point-blank "attack". The pickup gesture is the VISUAL only (ADR-016
+                    // invariant — the DAMAGE rides the separate PhantomAttack channel, never the
+                    // pickup path). Front (player looking) = non-lethal hit; behind = kill.
+                    if dist < 1.5 {
+                        self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
+                        self.movers[i].state = PhantomState::Stalk; // bounce off after the strike
+                        self.movers[i].state_timer = 0.0;
+                        if player_is_looking_at(tpos, tyaw, from) {
+                            attack = PhantomAttack::Hit(PHANTOM_ATTACK_DAMAGE);
+                            info!(
+                                "MPTRACE step=PH_SPRINT event=phantom_hit phantom_id={} dmg={:.0}",
+                                id, PHANTOM_ATTACK_DAMAGE
+                            );
+                        } else {
+                            attack = PhantomAttack::Kill;
+                            info!(
+                                "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} note=from_behind",
+                                id
+                            );
+                        }
+                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                        }
+                        continue;
+                    }
+
+                    let ramp = (self.movers[i].state_timer / PHANTOM_SPRINT_RAMP).clamp(0.0, 1.0);
+                    let speed =
+                        PHANTOM_WALK_SPEED + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp;
+                    let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+                    let desired = Vec3::new(
+                        from.x + dir.x * speed * dt,
+                        from.y,
+                        from.z + dir.z * speed * dt,
+                    );
+                    let resolved =
+                        resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
+                    let yaw = heading.to_degrees().rem_euclid(360.0);
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+                    }
+                    if net.session_start.elapsed().as_millis() % 1000 < 120 {
+                        info!(
+                            "MPTRACE step=PH_SPRINT event=phantom_sprint_move phantom_id={} pos=({:.2},{:.2},{:.2}) speed={:.1} dist={:.2}",
+                            id, resolved.x, resolved.y, resolved.z, speed, dist
+                        );
+                    }
+                }
             }
         }
+        attack
     }
 }
 
@@ -1888,25 +2631,26 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn phantom_driver_walks_via_sim_cache_far_from_host() {
-        // Far from any loaded chunk: the player/host collision path would treat every chunk
-        // as "unloaded" (everything blocks). The driver must instead resolve via ADR-017's
-        // sim-only cache, which generates the far layout on-demand.
+    async fn phantom_driver_walks_via_grid_cache_far_from_host() {
+        // Far from the host: the phantom must resolve collision against grid_gen via the
+        // on-demand GridGenChunkCache (the host player is parked very far so it never chases).
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let start = [5000.0, 1.8, 5000.0];
         let pid = net.spawn_phantom("Robapieles_Test", start);
-        let world = World::new(42); // no chunks loaded
+        let world = World::new(42); // seed source only; the phantom no longer reads world.chunks
         let mut driver = PhantomDriver::new(world.seed);
-        driver.add(pid, PHANTOM_INITIAL_HEADING);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
 
-        for _ in 0..40 {
-            driver.step(&world, &mut net, 0.1);
+        // 200 ticks (20 s sim): a WANDER pause can freeze it for up to 12 s, so this window
+        // guarantees at least one walk step → the grid_gen cache is exercised deterministically.
+        for _ in 0..200 {
+            driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
         }
 
-        // The driver exercised the sim-only cache (proves on-demand generation far from host).
+        // The driver exercised the grid_gen cache (proves on-demand generation far from host).
         assert!(
-            driver.sim.len() > 0,
-            "driver must generate sim chunks far from the host"
+            driver.grid_cache.len() > 0,
+            "driver must generate grid_gen chunks far from the host"
         );
         // The phantom stayed grounded with a finite pose (never NaN, never an unloaded snap).
         let p = net.peers[&pid].position;
@@ -1915,6 +2659,104 @@ mod tests {
             "phantom pose must be finite"
         );
         assert!(p[1] > 0.0, "phantom must be grounded on a real floor, got y={}", p[1]);
+    }
+
+    #[tokio::test]
+    async fn phantom_transitions_wander_to_spotted_in_radius() {
+        // ADR-016 slice 3a: a real player within DETECT_RADIUS and inside the forward cone trips
+        // WANDER → SPOTTED in a single step (detection is checked first in WANDER → deterministic
+        // regardless of the sim collision at the origin).
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        // PHANTOM_INITIAL_HEADING faces +X (dir = (sin, _, cos) at FRAC_PI_2 = (1, 0, 0)).
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        let player = Vec3::new(6.0, 1.8, 0.0); // 6 m ahead (+X): inside radius and cone
+
+        driver.step(&mut net, 0.1, player, 0.0);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Spotted,
+            "a player in radius + cone must trip WANDER → SPOTTED"
+        );
+        // Entering SPOTTED arms a randomized stare window in [SPOTTED_MIN, SPOTTED_MAX].
+        let dur = driver.movers[0].spotted_duration;
+        assert!(
+            (PHANTOM_SPOTTED_MIN..=PHANTOM_SPOTTED_MAX).contains(&dur),
+            "spotted_duration must be seeded in range, got {dur}"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_stays_wander_when_player_beyond_radius() {
+        // A player well past DETECT_RADIUS → no detection (stays in WANDER).
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        let player = Vec3::new(100.0, 1.8, 0.0); // far beyond the detect/lose radius
+
+        driver.step(&mut net, 0.1, player, 0.0);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Wander,
+            "must not engage a player beyond the detect radius"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_spotted_to_stalk_after_duration() {
+        // ADR-016 slice 3a: once the SPOTTED stare window elapses, the phantom advances to STALK.
+        // The duration check precedes the random lunge, so an elapsed window is deterministic.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        // Force a SPOTTED already past its (tiny) stare window, player still in range.
+        driver.movers[0].state = PhantomState::Spotted;
+        driver.movers[0].spotted_duration = 0.5;
+        driver.movers[0].state_timer = 10.0;
+        let player = Vec3::new(6.0, 1.8, 0.0); // inside DETECT_RADIUS*1.5
+
+        driver.step(&mut net, 0.1, player, 0.0);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Stalk,
+            "an elapsed SPOTTED stare must advance to STALK"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_sprints_after_patience_exceeded() {
+        // ADR-016 slice 3a: a phantom that has STALKed past PHANTOM_STALK_PATIENCE lunges into
+        // SPRINT. The patience check precedes the random roll, so this is deterministic.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        // Force a STALK whose patience has already run out, player inside LOSE_RADIUS.
+        driver.movers[0].state = PhantomState::Stalk;
+        driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE + 5.0;
+        let player = Vec3::new(6.0, 1.8, 0.0);
+
+        driver.step(&mut net, 0.1, player, 0.0);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "patience exhausted while stalking must trigger SPRINT"
+        );
     }
 
     #[tokio::test]
@@ -1930,13 +2772,14 @@ mod tests {
             rotation: 0.0,
         });
         let pid = net.spawn_phantom("Robapieles_Test", [10.0, 1.8, 10.0]);
+        let spawn_pos = net.peers[&pid].position; // actual (grid_gen-snapped) spawn position
         let world = World::new(42);
         let mut driver = PhantomDriver::new(world.seed);
-        driver.add(pid, PHANTOM_INITIAL_HEADING);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(spawn_pos), true);
         // Force the gesture to be due now (instead of after the cooldown).
         driver.movers[0].next_pickup_at = Instant::now();
 
-        driver.step(&world, &mut net, 0.1);
+        driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
 
         // It IS faking the gesture: the presentation flank is "pickup"…
         assert_eq!(
@@ -1944,7 +2787,7 @@ mod tests {
             "faked pickup must set the animation flank"
         );
         // …and the phantom stayed put during the gesture (movement paused).
-        assert_eq!(net.peers[&pid].position, [10.0, 1.8, 10.0]);
+        assert_eq!(net.peers[&pid].position, spawn_pos);
         // INVARIANT: nothing real changed — the item still exists, no reservation, no grant.
         assert_eq!(net.stp_items.len(), 1, "phantom must NOT remove real items");
         assert!(net.stp_items.iter().any(|it| it.id == 7));
@@ -1953,5 +2796,215 @@ mod tests {
             net.processed_stp_pickup_grants.is_empty(),
             "phantom must NOT process any pickup grant"
         );
+    }
+
+    #[tokio::test]
+    async fn phantom_clones_victim_name_but_keeps_its_own_id() {
+        // ADR-016 identity phase: the phantom impersonates a real peer's NAME but never its id.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+        // No real peers yet → spawn falls back to the host name, unbound.
+        let (name0, bound0) = choose_victim_name(&net);
+        assert_eq!(name0, net.local_name, "solo fallback is the host name");
+        assert!(!bound0, "fallback spawn must be unbound");
+        let pid = net.spawn_phantom(&name0, [0.0, 1.8, 0.0]);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::new(0.0, 1.8, 0.0), bound0);
+
+        // A real victim connects with a name.
+        let victim_id = 2;
+        let addr = "127.0.0.1:9999".parse().unwrap();
+        net.peers.insert(
+            victim_id,
+            crate::network::peer::PeerConnection::new(victim_id, "Joel".into(), addr),
+        );
+
+        driver.rebind_unbound_victims(&mut net);
+
+        // The phantom now wears the victim's NAME…
+        assert_eq!(net.peers[&pid].name, "Joel", "phantom must clone the victim name");
+        // …but keeps its OWN unique phantom id (never the victim's id — the subtle tell).
+        assert_ne!(pid, victim_id);
+        assert!(net.is_phantom(pid));
+        assert!(!net.is_phantom(victim_id));
+        // The real victim is untouched.
+        assert_eq!(net.peers[&victim_id].name, "Joel");
+
+        // Idempotent: a second rebind does not steal a new victim (bound stays put).
+        driver.rebind_unbound_victims(&mut net);
+        assert_eq!(net.peers[&pid].name, "Joel");
+    }
+
+    #[tokio::test]
+    async fn phantom_statue_freezes_when_player_looks() {
+        // ADR-016 slice 3b-P1: a STALKing phantom freezes (STATUE) when the player looks at it
+        // (within range + horizontal cone). Deterministic — no rand on this path.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Stalk;
+        let player = Vec3::new(6.0, 1.8, 0.0); // close, inside STATUE_RANGE
+        let player_yaw = 270.0; // faces -X, i.e. toward the phantom near the origin
+
+        driver.step(&mut net, 0.1, player, player_yaw);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Statue,
+            "a watched STALKer must freeze into STATUE"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_statue_releases_to_stalk_when_player_looks_away() {
+        // STATUE resumes STALK (not WANDER) the moment the player looks away.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Statue;
+        let player = Vec3::new(6.0, 1.8, 0.0); // close, inside LOSE_RADIUS
+        let player_yaw = 90.0; // faces +X, AWAY from the phantom
+
+        driver.step(&mut net, 0.1, player, player_yaw);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Stalk,
+            "STATUE must release to STALK when the player looks away"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_sound_detection_hears_running_player_outside_cone() {
+        // ADR-016 slice 3b-P1: a RUNNING player beyond the normal cone/radius (but within
+        // DETECT + SOUND_BONUS) is HEARD → SPOTTED with a short (sound) stare. Speed is derived
+        // from the per-tick position delta, so we pre-seed last tick's position.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        // Heading +X; the player is BEHIND (-X) at ~18 m: outside the cone AND beyond
+        // DETECT_RADIUS (15), but inside DETECT + SOUND_BONUS (23).
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        // Seed last-tick position 1 m back → 10 m/s this tick (> RUN_THRESHOLD, < sanity cap).
+        driver.prev_target_pos.insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
+        let player = Vec3::new(-18.0, 1.8, 0.0);
+
+        driver.step(&mut net, 0.1, player, 0.0);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Spotted,
+            "a running player within sound range must be heard → SPOTTED"
+        );
+        assert!(
+            driver.movers[0].spotted_duration <= PHANTOM_SPOTTED_SOUND_MAX,
+            "sound-triggered stare must use the short window, got {}",
+            driver.movers[0].spotted_duration
+        );
+    }
+
+    #[test]
+    fn lerp_heading_eases_toward_target_via_shorter_arc() {
+        use std::f32::consts::{FRAC_PI_2, TAU};
+        // t = 1 → exactly the target; t = 0 → unchanged.
+        assert!((lerp_heading(0.0, FRAC_PI_2, 1.0) - FRAC_PI_2).abs() < 1e-3);
+        assert!((lerp_heading(1.0, 2.0, 0.0) - 1.0).abs() < 1e-3);
+        // A partial ease lands strictly between current and target.
+        let mid = lerp_heading(0.0, FRAC_PI_2, 0.5);
+        assert!(mid > 0.01 && mid < FRAC_PI_2 - 0.01, "partial ease, got {mid}");
+        // Shorter arc: 350° → 10° must cross 0, not swing the long way through 180°.
+        let h = lerp_heading(350f32.to_radians(), 10f32.to_radians(), 0.5);
+        let dist_to_zero = h.min(TAU - h);
+        assert!(dist_to_zero < 0.2, "must take the shorter arc through 0, got {h}");
+    }
+
+    #[tokio::test]
+    async fn phantom_sprint_kills_from_behind() {
+        // ADR-016 slice 1: a point-blank SPRINT while the player is NOT looking (phantom behind)
+        // → lethal Kill. Deterministic.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        // Place the player point-blank relative to the phantom's actual (snapped) spawn pos.
+        let ppos = net.peers[&pid].position;
+        let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
+        let player_yaw = 90.0; // faces +X, AWAY from the phantom (to its west) → not looking
+
+        let attack = driver.step(&mut net, 0.1, player, player_yaw);
+
+        assert!(matches!(attack, PhantomAttack::Kill), "behind-attack must KILL, got {attack:?}");
+    }
+
+    #[tokio::test]
+    async fn phantom_sprint_hits_from_front() {
+        // Point-blank SPRINT while the player IS looking → non-lethal Hit, bounces to STALK.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        let ppos = net.peers[&pid].position;
+        let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
+        let player_yaw = 270.0; // faces -X, TOWARD the phantom → looking
+
+        let attack = driver.step(&mut net, 0.1, player, player_yaw);
+
+        assert!(
+            matches!(attack, PhantomAttack::Hit(d) if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
+            "frontal attack must HIT for {PHANTOM_ATTACK_DAMAGE}, got {attack:?}"
+        );
+        assert_eq!(driver.movers[0].state, PhantomState::Stalk, "must bounce to STALK after a hit");
+    }
+
+    #[tokio::test]
+    async fn phantom_statue_timeout_knocks_back_point_blank() {
+        // STATUE that times out while the player is point-blank → SPRINT + a Knockback signal.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Statue;
+        driver.movers[0].state_timer = PHANTOM_STATUE_MAX + 1.0;
+        let ppos = net.peers[&pid].position;
+        let player = Vec3::new(ppos[0] + 2.0, 1.8, ppos[2]); // within PHANTOM_KNOCKBACK_RANGE (3 m)
+
+        let attack = driver.step(&mut net, 0.1, player, 0.0);
+
+        assert!(
+            matches!(attack, PhantomAttack::Knockback(_, _)),
+            "point-blank STATUE timeout must shove, got {attack:?}"
+        );
+        assert_eq!(driver.movers[0].state, PhantomState::Sprint);
+    }
+
+    #[tokio::test]
+    async fn phantom_idle_step_returns_no_attack() {
+        // A plain WANDER step far from any player produces no attack.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+
+        let attack = driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
+
+        assert_eq!(attack, PhantomAttack::None);
     }
 }

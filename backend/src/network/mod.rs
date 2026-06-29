@@ -49,6 +49,7 @@ pub enum NetworkEvent {
         position: [f32; 3],
         rotation: f32,
         animation: String,
+        crouch: bool,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -805,6 +806,7 @@ impl NetworkManager {
                 position,
                 rotation,
                 animation,
+                crouch,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -812,6 +814,7 @@ impl NetworkManager {
                 );
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.update_player_state(position, rotation, animation.clone());
+                    peer.crouch = crouch; // ADR-020: cosmetic crouch, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -839,6 +842,7 @@ impl NetworkManager {
                     position,
                     rotation,
                     animation,
+                    crouch,
                 }]
             }
 
@@ -1290,6 +1294,16 @@ impl NetworkManager {
     /// backend-only (never serialized → never crosses the wire). Host-only by construction.
     /// Returns the assigned phantom id.
     pub fn spawn_phantom(&mut self, name: &str, position: [f32; 3]) -> PeerId {
+        // ADR-018: the phantom collides + renders against grid_gen, but `position` comes from the
+        // world::generator player spawn and may be a grid_gen WALL → it would spawn stuck. Snap it
+        // to a nearby grid_gen-walkable cell.
+        let mut position = crate::world::grid_gen::resolve_spawn_near(self.world_seed, position);
+        // Ground at the grid_gen floor: the spawn-time player.position.y is the world::generator
+        // value (≈1.8, above the grid_gen floor) → it would float. grid_floor_y(layer) is the
+        // rendered floor; +0.1 sits just above it (the real player's LOCAL SEND Y is ≈0).
+        position[1] =
+            crate::world::grid_gen::grid_floor_y(crate::world::grid_gen::world_pos_to_layer(position[1]))
+                + 0.1;
         let id = self.allocate_phantom_id();
         // Inert, non-routable addr: nobody sends to it on the normal path, and reliable
         // broadcasts skip it explicitly. 127.0.0.1:1 is never a real peer endpoint.
@@ -1466,6 +1480,7 @@ mod tests {
             position: [10.0, 1.8, 20.0],
             rotation: 45.0,
             animation: "walk".into(),
+            crouch: false,
         };
         host.broadcast_unreliable(&payload).await;
 
@@ -1590,7 +1605,10 @@ mod tests {
         // The phantom is reachable as a normal PeerConnection (so it renders).
         let p = &host.peers[&pid];
         assert_eq!(p.name, "Robapieles_Test");
-        assert_eq!(p.position, [10.0, 1.8, 5.0]);
+        // XZ may be snapped to a grid_gen-walkable cell, and Y is grounded to the grid_gen floor
+        // + the player's stand height (ADR-018).
+        let expected_y = crate::world::grid_gen::grid_floor_y(0) + 0.1;
+        assert_eq!(p.position[1], expected_y, "spawn Y grounded just above the grid_gen floor");
     }
 
     #[tokio::test]
