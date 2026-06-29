@@ -13,7 +13,18 @@ namespace BackroomsSurvival.Net
 
         [Header("Interpolation")]
         [Min(0f)] public float positionSmoothing = 22f;
+
+        [Tooltip("DEPRECATED (kept only so existing scenes don't lose a serialized value): the old " +
+                 "exponential yaw factor. Yaw now uses SmoothDampAngle with rotationSmoothTime; this " +
+                 "field is unused.")]
         [Min(0f)] public float rotationSmoothing = 18f;
+
+        [Tooltip("Yaw smoothing as seconds-to-target (SmoothDampAngle). Lower = snappier.")]
+        [Min(0f)] public float rotationSmoothTime = 0.1f;
+
+        [Tooltip("If the yaw error exceeds this (degrees) the proxy SNAPS instead of sweeping " +
+                 "(respawn / chunk displacement / instant 180° turns).")]
+        [Min(0f)] public float yawSnapThreshold = 120f;
 
         [Header("Name Tag")]
         [Min(0f)] public float nameTagHeight = 2.2f;
@@ -164,9 +175,21 @@ namespace BackroomsSurvival.Net
                 float posT = 1f - Mathf.Exp(-Mathf.Max(0f, positionSmoothing) * dt);
                 view.root.position = Vector3.Lerp(view.root.position, view.targetPosition, posT);
 
-                float rotT = 1f - Mathf.Exp(-Mathf.Max(0f, rotationSmoothing) * dt);
+                // [C] Critically-damped yaw (SmoothDampAngle) — less lag in sustained turns than the
+                // old exponential lerp, no overshoot. Snap past a large error so respawn / chunk
+                // displacement / instant 180° turns don't sweep the long way around.
                 float currentY = view.root.eulerAngles.y;
-                float newY = Mathf.LerpAngle(currentY, view.targetRotation, rotT);
+                float newY;
+                if (Mathf.Abs(Mathf.DeltaAngle(currentY, view.targetRotation)) > yawSnapThreshold)
+                {
+                    newY = view.targetRotation;
+                    view.yawVelocity = 0f;
+                }
+                else
+                {
+                    newY = Mathf.SmoothDampAngle(currentY, view.targetRotation,
+                        ref view.yawVelocity, rotationSmoothTime, Mathf.Infinity, dt);
+                }
                 view.root.rotation = Quaternion.Euler(0f, newY, 0f);
 
                 ApplyAnimation(view);
@@ -209,6 +232,7 @@ namespace BackroomsSurvival.Net
             view.id = id;
             view.targetPosition = view.root != null ? view.root.position : Vector3.zero;
             view.targetRotation = view.root != null ? view.root.eulerAngles.y : 0f;
+            view.yawVelocity = 0f; // [C] no carry-over from a recycled view
             view.animationState = "idle";
             view.crouch = false;
             view.pitch = 0f;
@@ -233,6 +257,7 @@ namespace BackroomsSurvival.Net
             view.pitch = 0f;
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
+            view.yawVelocity = 0f; // [C]
 
             if (view.nameTag != null)
                 view.nameTag.text = string.Empty;
@@ -454,6 +479,8 @@ namespace BackroomsSurvival.Net
         public TextMeshPro nameTag;
         public Vector3 targetPosition;
         public float targetRotation;
+        // [C] SmoothDampAngle state for the yaw smoothing (degrees/sec); reset on spawn/release.
+        public float yawVelocity;
         public string animationState = "idle";
         // ADR-020: cosmetic crouch state for this proxy (read by ProxyCrouchHook).
         public bool crouch;

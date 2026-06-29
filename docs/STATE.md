@@ -3,10 +3,16 @@
 
 ## Última sesión
 - Fecha: 2026-06-30
-- Hecho: **[B] Camera Pitch Sync (ADR-021) COMPLETO y play-tested** — el proxy remoto inclina cabeza/cuello (60/40) y hace spine lean en ángulos extremos según el pitch de cámara del peer. Wire schema v3→v4 (`pitch:i8` cuantizado a 1°). Commit de cierre. (Sesión previa: [A] Crouch ADR-020.)
+- Hecho: **[B] Camera Pitch Sync (ADR-021)** play-tested (el proxy inclina cabeza/cuello 60/40 + spine lean; wire v3→v4, `pitch:i8`) **+ [C] yaw smoothing del proxy** (SmoothDampAngle + snap-guard; pendiente play-test de calibración). Commits de cierre. (Sesión previa: [A] Crouch ADR-020.)
 
 ## Próximo paso (UNO solo)
-- **[C] Character Rotation Polish** — (alcance por definir al iniciar). (Otros play-tests pendientes — Fase 2 ADR-014, robapieles ADR-016 — siguen en ▸ Riesgos abiertos.)
+- **[D] Foot IK** — (alcance por definir al iniciar). (Play-tests pendientes — Fase 2 ADR-014, robapieles ADR-016, y la calibración de [C] — siguen en ▸ Riesgos abiertos.)
+
+## Estado actual — Character Rotation Polish [C] (yaw del proxy) — IMPLEMENTADO (pendiente play-test de calibración)
+- Cambio CLIENT-ONLY (sin red/schema/ADR), todo en `RemotePlayerManager`. El yaw del proxy pasó de `LerpAngle` exponencial a **`Mathf.SmoothDampAngle`** (críticamente amortiguado → menos lag en giros sostenidos, sin overshoot), con estado `RemotePlayerView.yawVelocity`.
+- **Snap-guard:** si `|Mathf.DeltaAngle(currentY, targetRotation)| > yawSnapThreshold` (120° default) → snap directo + `yawVelocity=0` (respawn / chunk displacement / giro de 180° instantáneo no barren media vuelta).
+- `rotationSmoothing` CONSERVADO como **deprecated** (tooltip; el campo ya no se usa pero se mantiene para no perder el valor serializado en escenas existentes). Nuevos `[SerializeField]`: `rotationSmoothTime=0.1` (seg-a-objetivo), `yawSnapThreshold=120`. `yawVelocity` se resetea en `Acquire` (spawn) y `Release`.
+- Interacción con ADR-021: `ProxyPitchHook` lee `transform.right` en `LateUpdate` (tras el `Update` que fija el yaw) → yaw más suave = eje de pitch más suave. Compile-check Roslyn verde. Calibración (`rotationSmoothTime` ~0.08–0.12, `yawSnapThreshold` ~100–140°) en play-test.
 
 ## Estado actual — Camera Pitch Sync (ADR-021) — COMPLETO (play-tested: el proxy inclina la cabeza)
 - **Decisión (2026-06-30):** propagar el pitch de cámara del peer como campo TIPADO `pitch:i8` (cuantizado a 1°, rango −90..90) en la pose relay. Cosmético/host-relay, NO autoritativo. ASIMETRÍA con crouch: el campo de ENTRADA ya existía (`PlayerInput.look[0]`, ADR-009 §8) → el cliente solo lo RELLENA (header MsgPack intacto en 13, sin off-by-one); lo NUEVO es solo el hop de salida (RemotePlayerState + P2P PlayerUpdate). Cuantización a i8 SOLO en el backend (el input sigue float; el byte viaja en el broadcast P×J ADR-015).
