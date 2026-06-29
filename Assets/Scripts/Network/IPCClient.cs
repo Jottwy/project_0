@@ -87,12 +87,18 @@ namespace BackroomsSurvival.Net
         public delegate void MovementDeltaHandler(MovementDeltaMsg delta);
         private readonly List<MovementDeltaHandler> _deltaListeners = new List<MovementDeltaHandler>();
 
+        // Fase 4.1 — grid_gen chunk replies (RequestChunk → ChunkData → ChunkStreamer).
+        public delegate void ChunkDataHandler(GridChunkDataMsg data);
+        private readonly List<ChunkDataHandler> _chunkDataListeners = new List<ChunkDataHandler>();
+
         public void AddEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Add(handler); }
         public void RemoveEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Remove(handler); }
         public void AddStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Add(handler); }
         public void RemoveStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Remove(handler); }
         public void AddMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Add(handler); }
         public void RemoveMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Remove(handler); }
+        public void AddChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Add(handler); }
+        public void RemoveChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Remove(handler); }
 
         private void NotifyListeners(GameEventMsg ev)
         {
@@ -113,6 +119,13 @@ namespace BackroomsSurvival.Net
             lock (_deltaListeners)
                 foreach (var h in _deltaListeners)
                     try { h(delta); } catch { }
+        }
+
+        private void NotifyChunkDataListeners(GridChunkDataMsg data)
+        {
+            lock (_chunkDataListeners)
+                foreach (var h in _chunkDataListeners)
+                    try { h(data); } catch { }
         }
 
         // ─── Networking internals ───
@@ -193,6 +206,7 @@ namespace BackroomsSurvival.Net
         private readonly ConcurrentQueue<GameEventMsg> _pendingNotify = new ConcurrentQueue<GameEventMsg>();
         private readonly ConcurrentQueue<WorldStateMsg> _pendingStateNotify = new ConcurrentQueue<WorldStateMsg>();
         private readonly ConcurrentQueue<MovementDeltaMsg> _pendingDeltaNotify = new ConcurrentQueue<MovementDeltaMsg>();
+        private readonly ConcurrentQueue<GridChunkDataMsg> _pendingChunkDataNotify = new ConcurrentQueue<GridChunkDataMsg>();
 
         private void Update()
         {
@@ -204,6 +218,9 @@ namespace BackroomsSurvival.Net
 
             while (_pendingDeltaNotify.TryDequeue(out var delta))
                 NotifyMovementDeltaListeners(delta);
+
+            while (_pendingChunkDataNotify.TryDequeue(out var chunkData))
+                NotifyChunkDataListeners(chunkData);
         }
 
         private void OnDestroy() => Shutdown();
@@ -317,6 +334,10 @@ namespace BackroomsSurvival.Net
                     // ADR-009 §2: 20 Hz movement delta → MovementReconciler.
                     _pendingDeltaNotify.Enqueue(MovementDeltaMsg.Parse(root));
                     break;
+                case "chunk_data":
+                    // Fase 4.1: grid_gen chunk reply → ChunkStreamer (drained on the main thread).
+                    _pendingChunkDataNotify.Enqueue(GridChunkDataMsg.Parse(root));
+                    break;
                 case "event":
                     var gameEvent = GameEventMsg.Parse(root);
                     Events.Enqueue(gameEvent);
@@ -385,10 +406,10 @@ namespace BackroomsSurvival.Net
         /// the prediction path only when input_seq != 0.
         /// </summary>
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
-            Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons)
+            Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false)
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(11);
+            w.WriteMapHeader(12);
             w.WriteString("type"); w.WriteString("input");
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
             // but they are non-optional in the wire schema and must be present).
@@ -409,7 +430,30 @@ namespace BackroomsSurvival.Net
             w.WriteString("look"); w.WriteArrayHeader(2);
             w.WriteFloat(pitch); w.WriteFloat(yaw);
             w.WriteString("buttons"); w.WriteInt(buttons);
+            // ADR-020: cosmetic crouch state, relayed to peers (not authoritative).
+            w.WriteString("crouch"); w.WriteBool(crouch);
             SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// Fase 4.1: ask the backend to generate one chunk via grid_gen and reply
+        /// with its 5 m tile-wall bitmask ("chunk_data" → ChunkStreamer). Maps to
+        /// ClientMessage::RequestChunk { cx, cz, layer }.
+        ///
+        /// Returns true if the frame was written to the socket, false if it was
+        /// dropped (no connection yet / write failed). The caller (ChunkStreamer)
+        /// uses this so it never marks a chunk "pending" for a request that never
+        /// left — which otherwise stranded that chunk empty forever.
+        /// </summary>
+        public bool SendRequestChunk(int cx, int cz, byte layer)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(4);
+            w.WriteString("type"); w.WriteString("request_chunk");
+            w.WriteString("cx"); w.WriteInt(cx);
+            w.WriteString("cz"); w.WriteInt(cz);
+            w.WriteString("layer"); w.WriteInt(layer);
+            return SendFrame(w.ToArray());
         }
 
         /// <summary>Send a discrete action request (craft, pickup, attack, ...).</summary>
@@ -507,18 +551,20 @@ namespace BackroomsSurvival.Net
         /// assigns a fresh net id, adds it to stp_buildings, and the relay spawns the
         /// replicated piece for everyone via StpBuildingReplicator. Deduped by place_id.
         /// </summary>
-        public void SendStpPlace(long placeId, int defId, Vector3 position, float rotation)
+        public void SendStpPlace(long placeId, int defId, Vector3 position, float rotation, uint groupId, bool isGroup)
         {
             var w = new MsgPackWriter();
             w.WriteMapHeader(3);
             w.WriteString("type"); w.WriteString("action");
             w.WriteString("action_type"); w.WriteString("stp_place");
-            w.WriteString("data"); w.WriteMapHeader(4);
+            w.WriteString("data"); w.WriteMapHeader(6);
             w.WriteString("place_id"); w.WriteInt(placeId);
             w.WriteString("def_id"); w.WriteInt(defId);
             w.WriteString("position"); w.WriteArrayHeader(3);
             w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
             w.WriteString("rotation"); w.WriteFloat(rotation);
+            w.WriteString("group_id"); w.WriteInt(groupId);
+            w.WriteString("is_group"); w.WriteBool(isGroup);
             SendFrame(w.ToArray());
         }
 
@@ -652,7 +698,13 @@ namespace BackroomsSurvival.Net
             SendFrame(w.ToArray());
         }
 
-        private void SendFrame(byte[] body)
+        /// <summary>
+        /// Write a length-prefixed frame to the socket. Returns true if it was
+        /// written, false if dropped (no live stream, or a write error — the
+        /// network thread will detect the break and reconnect). Existing callers
+        /// that ignore the return are unaffected.
+        /// </summary>
+        private bool SendFrame(byte[] body)
         {
             var frame = new byte[4 + body.Length];
             int len = body.Length;
@@ -664,9 +716,9 @@ namespace BackroomsSurvival.Net
 
             lock (_sendLock)
             {
-                if (_stream == null) return;
-                try { _stream.Write(frame, 0, frame.Length); }
-                catch (Exception) { /* the network thread will detect and reconnect */ }
+                if (_stream == null) return false;
+                try { _stream.Write(frame, 0, frame.Length); return true; }
+                catch (Exception) { return false; /* the network thread will detect and reconnect */ }
             }
         }
     }

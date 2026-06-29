@@ -72,6 +72,49 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// Fase 4.1 — backend grid_gen chunk reply (ServerMessage::ChunkData, tag
+    /// "chunk_data"). A 10×10 grid of 5 m tiles, each an edge-wall bitmask in the
+    /// BACKEND convention: N=1 (−Z), S=2 (+Z), E=4 (+X), W=8 (−X). walls[x,z].
+    /// </summary>
+    public class GridChunkDataMsg
+    {
+        public const int Tiles = 10;
+        public const byte WallN = 1; // −Z
+        public const byte WallS = 2; // +Z
+        public const byte WallE = 4; // +X
+        public const byte WallW = 8; // −X
+
+        public int cx;
+        public int cz;
+        public byte layer;
+        public byte[,] walls = new byte[Tiles, Tiles];
+
+        public static GridChunkDataMsg Parse(Dictionary<string, object> d)
+        {
+            var m = new GridChunkDataMsg();
+            if (d == null) return m;
+            m.cx = (int)IPCParse.L(d, "cx");
+            m.cz = (int)IPCParse.L(d, "cz");
+            m.layer = (byte)IPCParse.L(d, "layer");
+            // Backend [[u8;10];10] → object[ x ] of object[ z ] of long (MsgPackReader).
+            if (IPCParse.Get(d, "walls") is object[] rows)
+            {
+                int nx = Mathf.Min(rows.Length, Tiles);
+                for (int x = 0; x < nx; x++)
+                {
+                    if (rows[x] is object[] col)
+                    {
+                        int nz = Mathf.Min(col.Length, Tiles);
+                        for (int z = 0; z < nz; z++)
+                            m.walls[x, z] = (byte)IPCParse.ToLong(col[z]);
+                    }
+                }
+            }
+            return m;
+        }
+    }
+
     public class RemotePlayerMsg
     {
         public int id;
@@ -79,6 +122,8 @@ namespace BackroomsSurvival.Net
         public Vector3 position;
         public float rotation;
         public string animation = "idle";
+        // ADR-020: cosmetic crouch state of this remote player (host-relayed).
+        public bool crouch;
 
         public static RemotePlayerMsg Parse(object o)
         {
@@ -90,6 +135,7 @@ namespace BackroomsSurvival.Net
             r.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             r.rotation = IPCParse.F(d, "rotation");
             r.animation = IPCParse.S(d, "animation");
+            r.crouch = IPCParse.B(d, "crouch");
             return r;
         }
     }
@@ -611,6 +657,9 @@ namespace BackroomsSurvival.Net
         public int defId;
         public Vector3 position;
         public float rotation;
+        // Phase B3 — host-assigned group identity (0 = standalone). Pieces sharing a groupId
+        // are bucketed into one BuildingPieceGroup so sockets cohere across all clients.
+        public uint groupId;
         // Phase B2 — host-authoritative construction progress (units of each material accepted).
         public List<StpBuildProgressMsg> added = new List<StpBuildProgressMsg>();
 
@@ -623,6 +672,7 @@ namespace BackroomsSurvival.Net
             m.defId = (int)IPCParse.L(d, "def_id");
             m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             m.rotation = IPCParse.F(d, "rotation");
+            m.groupId = (uint)IPCParse.L(d, "group_id");
             if (IPCParse.Get(d, "added") is object[] ad)
                 foreach (var item in ad) m.added.Add(StpBuildProgressMsg.Parse(item));
             return m;

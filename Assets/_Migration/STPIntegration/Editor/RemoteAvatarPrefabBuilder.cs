@@ -17,7 +17,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// DISABLE (not delete): Player, HealthManager, Inventory, CharacterDeathHandler,
     /// CharacterDamageHandler, CharacterAudioPlayer (local gameplay logic).
     /// ADD: ProxyLocomotionFeeder (drives MovementSpeed) + ProxyJumpFeeder (fires Jump from
-    /// vertical velocity) + ProxyPickupHook (fires Pickup from rp.animation=="pickup") on the root.
+    /// vertical velocity) + ProxyPickupHook (fires Pickup from rp.animation=="pickup") +
+    /// ProxyCrouchHook (lowers the visual while rp.crouch, ADR-020 placeholder) on the root.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -81,6 +82,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireLocomotionFeeder(instance);
                 WireJumpFeeder(instance);
                 WirePickupHook(instance);
+                WireCrouchHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -224,6 +226,37 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 animProp.objectReferenceValue = animator;
             SetFeederFloat(so, "_gestureDuration", ProxyAnimatorControllerBuilder.GetPickupGestureDuration());
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Mirror of WirePickupHook for the cosmetic crouch placeholder (ADR-020). Resolves the
+        // visual child to lower and ships the calibrated depth/lerp defaults. Idempotent.
+        private static void WireCrouchHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyCrouchHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyCrouchHook>();
+
+            var so = new SerializedObject(hook);
+            var visualProp = so.FindProperty("_visual");
+            if (visualProp != null)
+                visualProp.objectReferenceValue = FindModelChild(root);
+            SetFeederFloat(so, "_crouchDepth", 0.5f);
+            SetFeederFloat(so, "_lerpSpeed", 10f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Topmost ancestor of the skinned mesh that is a DIRECT child of the avatar root — the thing
+        // ProxyCrouchHook lowers (never the root, which the pose lerp owns). Null if the mesh sits on
+        // the root itself (the hook then no-ops, which is correct: nothing to offset under the root).
+        private static Transform FindModelChild(GameObject root)
+        {
+            var smr = root.GetComponentInChildren<SkinnedMeshRenderer>(true);
+            if (smr == null)
+                return null;
+            Transform t = smr.transform;
+            while (t.parent != null && t.parent != root.transform)
+                t = t.parent;
+            return t.parent == root.transform ? t : null;
         }
 
         private static void SetFeederFloat(SerializedObject so, string field, float value)

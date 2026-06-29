@@ -1,3 +1,4 @@
+using PolymindGames;
 using PolymindGames.MovementSystem;
 using UnityEngine;
 
@@ -111,10 +112,16 @@ namespace BackroomsSurvival.Net
             Vector3 horiz = new Vector3(vel.x, 0f, vel.z);
             byte moveState = horiz.magnitude > 0.1f ? (byte)1 : (byte)0;
 
+            // ADR-020: report the LOCAL crouch state, derived from the motor height. STP's native
+            // CharacterCrouchState lowers Motor.Height when crouching; we only READ it (never apply,
+            // never reimplement — rule #3). Relayed cosmetically to peers; not authoritative.
+            var motorCC = (IMotorCC)_motor;
+            bool crouch = motorCC.Height < motorCC.DefaultHeight - 0.05f;
+
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, 0f, yaw, 0);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, 0f, yaw, 0, crouch);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = pos;
