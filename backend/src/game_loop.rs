@@ -349,6 +349,9 @@ pub async fn run(
             // ADR-021: record the client-reported camera pitch, quantized to 1° (cosmetic;
             // relayed to peers, not validated). yaw is consumed as `look[1]` in apply_movement.
             player.pitch = quantize_pitch(received_input.look[0]);
+            // ADR-022: record the client-reported worn clothing IDs (cosmetic; relayed to peers,
+            // not validated). Read by the client from its inventory equipment slots.
+            player.equipment = received_input.equipment;
             let seq = apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
             last_accepted_input_seq = seq;
             authoritative_velocity = Vec3::from_array(received_input.velocity);
@@ -652,10 +655,11 @@ async fn handle_network_event(
             animation,
             crouch,
             pitch,
+            equipment,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -1830,6 +1834,7 @@ fn build_world_state(
             animation: p.animation.clone(),
             crouch: p.crouch,
             pitch: p.pitch,
+            equipment: p.equipment,
         });
     }
 

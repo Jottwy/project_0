@@ -19,6 +19,7 @@
   - `EquipAction` — `FPSCore/.../Inventory/Item/Actions/EquipAction.cs` (única clase con "Equip" en runtime).
   - `WieldableArmsHandler` / `IWieldableArmsHandlerCC` — `FPSCore/.../Wieldables/Components/WieldableArmsHandler.cs`.
   - **NO existe:** `Wearable`, `WearableItem`, `ClothingSlot`, `EquipmentSlot`, `CharacterEquipment`, `ItemEquipper`, `Loadout`. (Glob `*Wearable*`, `*Clothing*`, `*Loadout*` → sin resultados.)
+  - **⚠️ CORRECCIÓN (2026-06-30, ADR-022):** lo anterior es ERRÓNEO. STP **SÍ** trae un sistema de ropa corporal completo: `CharacterClothing` (`STP/Code/Runtime/Utilities/CharacterClothing.cs`) que gestiona 4 slots `Head/Torso/Legs/Feet` vía contenedores de inventario tagueados (`ItemConstants.*EquipmentTag`), con preview 3P (`CharacterPreviewUI`). Equipar = `SetClothing(BodyPoint, itemId)` togglea `SkinnedMeshRenderer` pre-colocados + opacity mask. El glob `*Clothing*` debió encontrar `CharacterClothing.cs`. Ver ADR-022 y STATE.md §[E].
 
 - **API pública relevante:**
   - `EquipAction : ItemAction` — **no es un sistema de equipo de ropa**. Es una `ItemAction` (ScriptableObject) que, al ejecutarse sobre un `ItemStack`, busca el contenedor por `Tag` del item y, si es `WieldableTag`, selecciona ese wieldable en mano vía `IWieldableInventoryCC.SelectAtIndex(...)`. Es "equipar arma/herramienta", no "vestir".
@@ -33,7 +34,7 @@
     ```
   - El cambio de "apariencia de brazos" se hace por **SkinnedMeshRenderer + GameObject.SetActive** sobre sets predefinidos, **no** por swap dinámico de meshes ni bone attachments arbitrarios.
 
-- **Approach recomendado:**
+- **Approach recomendado:** *(⚠️ obsoleto — ver corrección 2026-06-30 arriba; [E]/ADR-022 reutilizó el `CharacterClothing` nativo de STP en vez de construir desde cero)*
   - STP **no tiene** un sistema de ropa/equipo corporal. Hay que construirlo desde cero en `_Migration/STPIntegration/`.
   - Modelo sugerido: un `ClothingItem` propio (tag de item nuevo) + un `CharacterClothingController` propio que escuche cambios en un `IItemContainer` dedicado (creado por restricción de tag) y haga swap de `SkinnedMeshRenderer`/material por slot. Reutiliza la infraestructura de `IItemContainer` + `ContainerRestriction` de STP **sin modificarla** (solo se consume).
   - Para el "ArmSet" FPS sí se puede reaprovechar `ToggleNextArmSet()` si la ropa solo cambia brazos en primera persona.

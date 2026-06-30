@@ -1,4 +1,5 @@
 using PolymindGames;
+using PolymindGames.InventorySystem;
 using PolymindGames.MovementSystem;
 using UnityEngine;
 
@@ -32,7 +33,12 @@ namespace BackroomsSurvival.Net
         private const float LogInterval = 1f;           // [POSE_TX] heartbeat @ 1 Hz
 
         private CharacterControllerMotor _motor;
+        private ICharacter _character;       // cached parent character (look handler + inventory source)
         private ILookHandlerCC _lookHandler; // ADR-021: source of the local camera pitch
+        // ADR-022: cached inventory equipment containers (Head/Torso/Legs/Feet) + reusable read buffer.
+        private IItemContainer _headEquip, _torsoEquip, _legsEquip, _feetEquip;
+        private bool _equipmentResolved;
+        private readonly int[] _equipment = new int[4];
         private float _sendAccum;
         private float _logAccum;
         private uint _inputSeq;
@@ -85,6 +91,11 @@ namespace BackroomsSurvival.Net
                 IsSending = false;
                 _hasPrev = false; // restart the finite difference after a gap / rig rebuild
                 _lookHandler = null; // the look handler is a sibling of the motor; re-resolve next time
+                // ADR-022: the rig rebuild invalidates the character/inventory too — drop the cached
+                // containers so they re-resolve against the fresh character on the next valid frame.
+                _character = null;
+                _headEquip = _torsoEquip = _legsEquip = _feetEquip = null;
+                _equipmentResolved = false;
                 MaybeLog(false, Vector3.zero);
                 return;
             }
@@ -124,18 +135,21 @@ namespace BackroomsSurvival.Net
             // look angle, already clamped by CharacterLookHandler. The look handler is a sibling
             // component on the same character as the motor; resolve it lazily (it may be null for
             // a frame after a rig rebuild) and report 0 (looking forward) until it appears.
-            if (_lookHandler == null)
-            {
-                var character = _motor.GetComponentInParent<ICharacter>();
-                if (character != null)
-                    _lookHandler = character.GetCC<ILookHandlerCC>();
-            }
+            if (_character == null)
+                _character = _motor.GetComponentInParent<ICharacter>();
+            if (_lookHandler == null && _character != null)
+                _lookHandler = _character.GetCC<ILookHandlerCC>();
             float pitch = _lookHandler != null ? _lookHandler.ViewAngles.x : 0f;
+
+            // ADR-022: report the LOCAL worn clothing item IDs read from the inventory equipment
+            // slots. STP's CharacterClothing applies them locally; we only READ (rule #3). Relayed
+            // cosmetically to peers, not authoritative.
+            ReadEquipment();
 
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch, _equipment);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = pos;
@@ -170,6 +184,40 @@ namespace BackroomsSurvival.Net
             }
 
             _motor = null;
+        }
+
+        /// <summary>
+        /// ADR-022: fills <see cref="_equipment"/> with the 4 worn clothing item IDs in protocol
+        /// order [Head, Torso, Legs, Feet] (0 = empty slot). Resolves the inventory equipment
+        /// containers lazily off the cached character; re-resolves after a rig rebuild (motor loss).
+        /// </summary>
+        private void ReadEquipment()
+        {
+            if (!_equipmentResolved)
+            {
+                var inventory = _character?.Inventory;
+                if (inventory != null)
+                {
+                    _headEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.HeadEquipmentTag));
+                    _torsoEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.TorsoEquipmentTag));
+                    _legsEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.LegsEquipmentTag));
+                    _feetEquip = inventory.FindContainer(ItemContainerFilters.WithTag(ItemConstants.FeetEquipmentTag));
+                    _equipmentResolved = true;
+                }
+            }
+
+            _equipment[0] = SlotItemId(_headEquip);
+            _equipment[1] = SlotItemId(_torsoEquip);
+            _equipment[2] = SlotItemId(_legsEquip);
+            _equipment[3] = SlotItemId(_feetEquip);
+        }
+
+        // First-slot item id of an equipment container (0 = empty / missing container).
+        private static int SlotItemId(IItemContainer container)
+        {
+            if (container == null || container.SlotsCount == 0)
+                return 0;
+            return container.GetItemAtIndex(0).Item?.Id ?? 0;
         }
 
         // Temporary live-verification log (throttled to 1 Hz, removable).

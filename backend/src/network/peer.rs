@@ -40,6 +40,10 @@ pub struct PeerConnection {
     /// ADR-021: cosmetic camera pitch (degrees, −90..90, quantized to 1°), set from
     /// PlayerUpdate; relayed, not authoritative.
     pub pitch: i8,
+    /// ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty), set
+    /// from PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
+    /// update_player_state — so the phantom (ADR-016) keeps default clothing.
+    pub equipment: [i32; 4],
     pub connected_at: Instant,
 }
 
@@ -59,6 +63,7 @@ impl PeerConnection {
             animation: "idle".into(),
             crouch: false,
             pitch: 0,
+            equipment: [0; 4],
             connected_at: now,
         }
     }

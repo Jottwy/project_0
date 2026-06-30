@@ -27,8 +27,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// still interoperate (a missing `crouch` decodes to false). v4 (ADR-021) adds
 /// `pitch:i8` to RemotePlayerState (and the P2P PlayerUpdate) — reusing the
 /// existing `PlayerInput.look[0]` for input, also `serde(default)` (missing
-/// `pitch` decodes to 0 = looking forward).
-const WIRE_SCHEMA_VERSION: u32 = 4;
+/// `pitch` decodes to 0 = looking forward). v5 (ADR-022) adds `equipment:[i32;4]`
+/// (worn clothing item IDs) to PlayerInput, RemotePlayerState and the P2P
+/// PlayerUpdate — all `serde(default)`, so older clients interoperate (a missing
+/// `equipment` decodes to [0,0,0,0] = no clothing).
+const WIRE_SCHEMA_VERSION: u32 = 5;
 
 /// Run the IPC server until a fatal accept error.
 ///

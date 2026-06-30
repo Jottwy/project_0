@@ -125,6 +125,7 @@ namespace BackroomsSurvival.Net
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
                 view.crouch = rp.crouch; // ADR-020
                 view.pitch = rp.pitch;   // ADR-021
+                view.equipment = rp.equipment; // ADR-022 (rp is fresh per parse → no aliasing)
                 view.lastSeenTime = Time.unscaledTime;
 
                 // TEMP DIAGNOSTIC (remove after case is identified): incoming = pose from the
@@ -236,6 +237,7 @@ namespace BackroomsSurvival.Net
             view.animationState = "idle";
             view.crouch = false;
             view.pitch = 0f;
+            view.equipment = new int[4]; // ADR-022: no stale clothing on a recycled proxy
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -255,6 +257,7 @@ namespace BackroomsSurvival.Net
             view.animationState = "idle";
             view.crouch = false;
             view.pitch = 0f;
+            view.equipment = new int[4]; // ADR-022
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -486,6 +489,8 @@ namespace BackroomsSurvival.Net
         public bool crouch;
         // ADR-021: cosmetic camera pitch in degrees (read by ProxyPitchHook).
         public float pitch;
+        // ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (read by ProxyClothingHook).
+        public int[] equipment = new int[4];
         public float lastSeenTime;
     }
 

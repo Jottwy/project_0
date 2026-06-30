@@ -306,6 +306,47 @@ Por qué es ADR (reglas duras 7, 9): cambia el formato de wire de la pose relay 
 
 Dependencias: extiende el camino de pose de ADR-011 (canal `animation`) / ADR-020 (`crouch`) y el relay de ADR-015. Reusa `PlayerInput.look[0]` (ADR-009 §8) sin cambiar su semántica de entrada. No toca worldgen/colisión.
 
+## ADR-022 — Equipment/Clothing Sync: 4 item IDs `equipment:[i32;4]` en la pose relay (proxy cosmético, swap de SkinnedMeshRenderer pre-colocado)
+Estado: VALIDADA (2026-06-30, autorizada en sesión). Implementación POR SLICES en el orden de ADR-020/021 (A = backend wire; B = cliente transmisión; C = cliente recepción + apply ProxyClothingHook). Comparte transporte con ADR-005/009; extiende el camino de pose de ADR-011/015/020/021.
+
+Contexto: STP YA trae un sistema de ropa LOCAL completo y funcional (`CharacterClothing` + 4 contenedores de inventario tagueados `Head/Torso/Legs/Feet Equipment`, `ItemConstants`; preview 3P en `CharacterPreviewUI`). [CORRECCIÓN: el AUDIT previo afirmó falsamente "STP no tiene Wearable/ClothingSlot, construir desde cero" — su glob `*Clothing*` debió encontrar `CharacterClothing.cs`; STP trae justo el sistema que el audit recomendaba construir.] El mecanismo visual NO es mesh swap ni bone attachment: cada item es un `SkinnedMeshRenderer` PRE-COLOCADO como hijo bindeado al esqueleto, y equipar = `SetClothing()` hace `prevRenderer.SetActive(false)` + `newRenderer.SetActive(true)` + fija una opacity mask en el shader del cuerpo. El item equipado por slot se lee del inventario (`container.GetItemAtIndex(0).Item?.Id`, int) y `IItemContainer.SlotChanged` es el evento de cambio. Pero ese estado es LOCAL: ningún peer ve la ropa de otro. CLAVE: el modelo base del proxy 3P (`MTP_PlayerViewer`, del que `RemotePlayerAvatar` es variante) YA tiene el `CharacterClothing` con el guardarropa completo pre-colocado y mapeado a item IDs (`_clothing`: Head 2 / Torso 3 / Feet 1 / Legs 3 items; Hands vacío). El proxy NO necesita meshes ni retargeting nuevos — solo recibir los 4 IDs y llamar `SetClothing()`. A diferencia de jump/locomoción, el equipamiento NO tiene firma cinemática derivable de la posición → señal EXPLÍCITA, como crouch/pitch.
+
+Decisión: propagar el equipamiento por la pose relay como campo TIPADO `equipment: [i32;4]` (4 item IDs crudos), recorriendo la MISMA superficie que `crouch`/`pitch`. Orden de protocolo del array: `[0]=Head, [1]=Torso, [2]=Legs, [3]=Feet` (NO el orden del enum `BodyPoint`, que es Head/Torso/Feet/Hands/Legs); `0` = slot vacío (coincide con `slot.GetItem()?.Id ?? 0` y con la rama `null` de `CharacterClothing`). Hands queda fuera (guardarropa vacío). Item ID CRUDO (i32) porque `Item.Id == DataIdReference<ItemDefinition>._value` es un hash determinista del item en la DB compartida → el jugador local y el `CharacterClothing` del proxy resuelven el mismo item al mismo int sin tabla intermedia. Cosmético/host-relay, NO autoritativo: el servidor lo PROPAGA sin validar; no afecta inventario/grant/stp_items/stats/colisión. El equip LOCAL sigue siendo de STP nativo (no se reimplementa).
+
+Cadencia: EN CADA POSE (mirror de crouch/pitch), NO one-shot. El relay (ADR-015) es UDP no fiable → llevar los 4 IDs en cada pose es self-healing (un paquete perdido se corrige en la siguiente) y da late-joiner correcto GRATIS (un cliente que entra recibe el equipamiento de todos en ≤100 ms), igual que crouch/pitch. El proxy aplica con change-detection (coste por-frame cero salvo en el cambio real) → "inmediato" se cumple. `SlotChanged` se usa SOLO en el lado TX como trigger de relectura barata, no como transporte.
+
+Alcance del cambio Rust (schema bump v4→v5, `WIRE_SCHEMA_VERSION` en ipc/server.rs):
+1. `player::Player` += `equipment: [i32;4]` (init `[0;4]`).
+2. `game_loop.rs` (junto a `player.crouch`/`player.pitch`): `player.equipment = received_input.equipment`.
+3. `ipc::PlayerInput` += `#[serde(default)] equipment: [i32;4]` (cliente→backend; default `[0;4]` = compat con cliente v4).
+4. `ipc::RemotePlayerState` += `#[serde(default)] equipment: [i32;4]` (backend→Unity; junto a `crouch`/`pitch`).
+5. `network::protocol::PacketPayload::PlayerUpdate` += `equipment: [i32;4]` (P2P; serde default → peer v4 = `[0;4]`; actualizar round-trip test).
+6. `network::peer::PeerConnection` += `equipment: [i32;4]` (init `[0;4]`); `handle_packet` (rama `PlayerUpdate`) fija `peer.equipment`. `update_player_state` SIN tocar (mismo patrón que pitch → el robapieles queda con ropa default).
+7. `network::NetworkEvent::RemotePlayerUpdate` += `equipment`.
+8. `sync::broadcast_player_update` escribe `player.equipment`; `sync::broadcast_peer_poses` (ADR-015) reenvía `p.equipment`; `build_world_state` copia `peer.equipment`.
+Recompilar `backrooms_server.exe` (toolchain GNU) y copiar a `Builds/Backend/`.
+
+Alcance C# (Unity):
+- `IPCClient.SendPlayerInput(..., int[] equipment)` escribe la clave `equipment` como array MsgPack de 4 i32; `WriteMapHeader` 13→14 (heed gotcha del header manual: contar pares exactos o `rmp_serde` descarta la cola).
+- `PlayerPoseTransmitter` LEE los 4 item IDs de los contenedores de equipment del `ICharacter.Inventory` local (`FindContainer(WithTag(HeadEquipmentTag))…`, refs cacheadas y re-resueltas live como el motor por el rig rebuild; guard `0` si falta el contenedor) → los pasa a `SendPlayerInput`. Rule #3: solo REPORTA (el apply local es de `CharacterClothing` nativo).
+- `IPCMessages.RemotePlayerMsg` += `int[] equipment` (parse vía `IPCParse.IntArray`, helper existente); `RemotePlayerManager` guarda `view.equipment`.
+- NUEVO `ProxyClothingHook` (espejo de `ProxyCrouchHook`): cachea el `CharacterClothing` del proxy (`GetComponentInChildren`), lee `view.equipment`, change-detection por slot (sentinela inicial → primer valor siempre aplica, incl. `0`), llama `CharacterClothing.SetClothing(bodyPoint, itemId)` solo en cambio. `OnEnable` resetea sentinelas (reuso de pool). Removable: borrar el archivo → el proxy va con ropa default. Cableado vía `RemoteAvatarPrefabBuilder.WireClothingHook` (que además pone `CharacterClothing._attachToCharacter = false` para que no intente bindearse al inventario deshabilitado del proxy) + re-bake.
+
+Alternativas rechazadas:
+- (B) ONE-SHOT al cambiar (`SlotChanged`) por canal fiable. RECHAZADA: el relay (ADR-015) es UDP no fiable → un cambio perdido = ropa stale permanente; late-joiner exigiría meter equipment en el snapshot de join (`PeerInfo`/world sync → más schema); y el canal reliable tiene un BUG ABIERTO (`StpPickupGranted` retransmite sin fin pese al ACK). Every-pose es self-healing + late-joiner gratis.
+- (C) PALETTE index `i8` (tabla global itemId→índice, 4 B). RECHAZADA en v1: añade una tabla compartida frágil que debe mantenerse sincronizada con el autoring de items; el i32 crudo es determinista (`Item.Id == DataIdReference._value`). Optimización DIFERIDA si la medición del traffic gate (ADR-015) lo exige — migrar a palette NO requiere ADR mayor (mismo eje de pose), solo enmienda.
+- (D) Equipment AUTORITATIVO (armor/defensa/stats server-side). RECHAZADA en v1: es presentación (como ADR-011/013/020/021); si en el futuro afecta combate/stats requerirá su propio ADR.
+
+Invariante: `equipment` ortogonal a `crouch`/`pitch`/`animation` (un peer agachado, mirando arriba, con casco: los cuatro campos viajan). Receptor v4 que no decodifique `equipment` → `[0;4]` (sin ropa) sin error (serde default / decode tolerante) → compat hacia atrás. Robapieles (ADR-016): `update_player_state` SIN tocar → `peer.equipment` queda `[0;4]` → el fantasma va con ropa default, gratis (mismo patrón que crouch=false / pitch=0). NO muta estado de juego (inventario/grant/stp_items/stats): pura pose. `SetClothing` no depende del inventario → funciona standalone en el proxy.
+
+Invariante de contenido: el guardarropa pre-colocado del proxy (`MTP_PlayerViewer.CharacterClothing._clothing`: Head 2 / Torso 3 / Feet 1 / Legs 3) debe cubrir TODO item de ropa recogible del mundo. Un item equipado fuera del set → `SetClothing(bodyPoint, id)` no encuentra renderer → slot vacío (degradación elegante, sin crash). Auditar `ropa pickupeable ⊆ guardarropa del proxy` es criterio de aceptación del play-test.
+
+Consecuencias / qué prohíbe: el schema de pose suma 4 IDs de equipamiento (≈16 B/pose en hop de input + hop de relay); interactúa con el traffic gate ABIERTO de ADR-015 (medir P×J en play-test). Bump v4→v5: cliente/peer v4 interopera (campo ausente = `[0;4]`) pero no muestra ropa. PROHÍBE tratar el equipment como autoritativo (armor/stats). El i32 crudo es DEUDA de ancho de banda explícita: si el gate lo exige, migrar a palette `i8` (4 B) es enmienda futura, no ADR nuevo. El equipment sigue siendo host-presentational: se desvanece con la sesión.
+
+Por qué es ADR (reglas duras 7, 9): cambia el formato de wire de la pose (IPC cliente↔servidor y P2P peer↔peer) — API pública — y bumpea `WIRE_SCHEMA_VERSION` v4→v5. Plan/ADR antes de tocar código.
+
+Dependencias: extiende el camino de pose de ADR-011 (canal `animation`) / ADR-020 (`crouch`) / ADR-021 (`pitch`) y el relay de ADR-015. El equip LOCAL reutiliza el sistema de ropa nativo de STP (`CharacterClothing` + contenedores de inventario tagueados), no lo reimplementa. El proxy reusa el `CharacterClothing` pre-existente del `MTP_PlayerViewer`. No toca worldgen/colisión.
+
 (plantilla)
 ## ADR-NNN — Título
 Estado: propuesta

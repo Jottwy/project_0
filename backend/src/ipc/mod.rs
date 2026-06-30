@@ -83,6 +83,10 @@ pub struct PlayerInput {
     /// ADR-020: client-reported crouch (cosmetic; relayed to peers, not authoritative).
     #[serde(default)]
     pub crouch: bool,
+    /// ADR-022: client-reported worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty);
+    /// cosmetic, relayed to peers, not authoritative.
+    #[serde(default)]
+    pub equipment: [i32; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +218,9 @@ pub struct RemotePlayerState {
     /// ADR-021: cosmetic camera pitch in degrees (−90..90, quantized to 1°), host-relayed.
     #[serde(default)]
     pub pitch: i8,
+    /// ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty), host-relayed.
+    #[serde(default)]
+    pub equipment: [i32; 4],
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

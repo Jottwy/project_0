@@ -406,10 +406,11 @@ namespace BackroomsSurvival.Net
         /// the prediction path only when input_seq != 0.
         /// </summary>
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
-            Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false)
+            Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
+            int[] equipment = null)
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(13); // 13 key/value pairs below — MUST match the count or rmp_serde drops the tail (crouch)
+            w.WriteMapHeader(14); // 14 key/value pairs below — MUST match the count or rmp_serde drops the tail (equipment)
             w.WriteString("type"); w.WriteString("input");
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
             // but they are non-optional in the wire schema and must be present).
@@ -432,6 +433,10 @@ namespace BackroomsSurvival.Net
             w.WriteString("buttons"); w.WriteInt(buttons);
             // ADR-020: cosmetic crouch state, relayed to peers (not authoritative).
             w.WriteString("crouch"); w.WriteBool(crouch);
+            // ADR-022: worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty), relayed to peers.
+            w.WriteString("equipment"); w.WriteArrayHeader(4);
+            for (int i = 0; i < 4; i++)
+                w.WriteInt(equipment != null && i < equipment.Length ? equipment[i] : 0);
             SendFrame(w.ToArray());
         }
 

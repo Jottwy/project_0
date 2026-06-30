@@ -389,6 +389,11 @@ pub enum PacketPayload {
         /// wire-compat across the v3→v4 schema bump.
         #[serde(default)]
         pitch: i8,
+        /// ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty).
+        /// Appended last + serde(default) → a v4 peer that omits it decodes to [0,0,0,0]
+        /// (no clothing); wire-compat across the v4→v5 schema bump.
+        #[serde(default)]
+        equipment: [i32; 4],
     },
     ChunkState {
         data: ChunkSyncData,
@@ -644,6 +649,7 @@ mod tests {
             animation: "walk".into(),
             crouch: true,
             pitch: -45,
+            equipment: [101, 202, 303, 404],
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -656,12 +662,14 @@ mod tests {
                 animation,
                 crouch,
                 pitch,
+                equipment,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
                 assert_eq!(animation, "walk");
                 assert!(crouch);
                 assert_eq!(pitch, -45);
+                assert_eq!(equipment, [101, 202, 303, 404]);
             }
             _ => panic!("wrong variant"),
         }

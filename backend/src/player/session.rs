@@ -30,6 +30,11 @@ pub struct Player {
     /// validated, does not affect collision/hitreg/aim.
     #[serde(default)]
     pub pitch: i8,
+    /// ADR-022: cosmetic equipment — the 4 worn clothing item IDs [Head, Torso, Legs, Feet]
+    /// (0 = empty). Reported by the client from its inventory equipment slots, relayed to
+    /// peers; presentation only — not validated, does not affect inventory/grants/stats.
+    #[serde(default)]
+    pub equipment: [i32; 4],
 }
 
 impl Player {
@@ -46,6 +51,7 @@ impl Player {
             owned_chunks: Vec::new(),
             crouch: false,
             pitch: 0,
+            equipment: [0; 4],
         }
     }
 }

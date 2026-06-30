@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
 using System.IO;
+using PolymindGames;
 using UnityEditor;
 using UnityEngine;
 
@@ -20,7 +21,9 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// vertical velocity) + ProxyPickupHook (fires Pickup from rp.animation=="pickup") +
     /// ProxyCrouchHook (drives the Crouched blend from rp.crouch, ADR-020) + ProxyPitchHook
     /// (tilts head/neck/spine from rp.pitch, ADR-021) + ProxyGroundingHook (offsets Hips so the
-    /// feet rest on the rendered floor, [D] slice 1) on the root.
+    /// feet rest on the rendered floor, [D] slice 1) + ProxyClothingHook (drives CharacterClothing
+    /// from rp.equipment, ADR-022) on the root. ADR-022 also sets CharacterClothing._attachToCharacter
+    /// = false so the proxy never binds to its disabled inventory.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -88,6 +91,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireCrouchHook(instance);
                 WirePitchHook(instance);
                 WireGroundingHook(instance);
+                WireClothingHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -314,6 +318,40 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_airborneFade", 1.5f);
             SetFeederFloat(so, "_smoothTime", 0.1f);
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-022: adds the clothing hook (drives CharacterClothing.SetClothing from the networked
+        // equipment IDs) AND sets the proxy's CharacterClothing._attachToCharacter = false so it never
+        // tries to bind to the disabled proxy inventory — a null equipment container in
+        // AttachToCharacter would NRE silently. Idempotent.
+        private static void WireClothingHook(GameObject root)
+        {
+            if (root.GetComponent<ProxyClothingHook>() == null)
+                root.AddComponent<ProxyClothingHook>();
+
+            var clothing = root.GetComponentInChildren<CharacterClothing>(true);
+            if (clothing == null)
+            {
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] No CharacterClothing under the variant; " +
+                    "ProxyClothingHook will stay inert (no wardrobe to drive).");
+                return;
+            }
+
+            var so = new SerializedObject(clothing);
+            var attachProp = so.FindProperty("_attachToCharacter");
+            if (attachProp != null)
+            {
+                attachProp.boolValue = false;
+                so.ApplyModifiedPropertiesWithoutUndo();
+                // CharacterClothing is inherited from the base MTP_PlayerViewer; force-record the
+                // override so SaveAsPrefabAsset persists it on the variant (cf. WireAnimatorController).
+                PrefabUtility.RecordPrefabInstancePropertyModifications(clothing);
+            }
+            else
+            {
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] CharacterClothing._attachToCharacter not found; " +
+                    "the proxy may attempt an inventory bind (potential NRE).");
+            }
         }
 
         private static void SetFeederFloat(SerializedObject so, string field, float value)

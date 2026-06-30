@@ -126,6 +126,8 @@ namespace BackroomsSurvival.Net
         public bool crouch;
         // ADR-021: cosmetic camera pitch in degrees (−90..90, quantized to 1° on the wire).
         public int pitch;
+        // ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty).
+        public int[] equipment = new int[4];
 
         public static RemotePlayerMsg Parse(object o)
         {
@@ -139,6 +141,10 @@ namespace BackroomsSurvival.Net
             r.animation = IPCParse.S(d, "animation");
             r.crouch = IPCParse.B(d, "crouch");
             r.pitch = (int)IPCParse.L(d, "pitch");
+            // ADR-022: normalize to exactly 4 slots (a v4 peer omitting the field → all zeros).
+            var equip = IPCParse.IntArray(IPCParse.Get(d, "equipment"));
+            for (int i = 0; i < 4; i++)
+                r.equipment[i] = i < equip.Length ? equip[i] : 0;
             return r;
         }
     }
