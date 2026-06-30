@@ -3,10 +3,20 @@
 
 ## Última sesión
 - Fecha: 2026-06-30
-- Hecho: **[B] Camera Pitch Sync (ADR-021)** play-tested (el proxy inclina cabeza/cuello 60/40 + spine lean; wire v3→v4, `pitch:i8`) **+ [C] yaw smoothing del proxy** (SmoothDampAngle + snap-guard; pendiente play-test de calibración). Commits de cierre. (Sesión previa: [A] Crouch ADR-020.)
+- Hecho: **[D] Foot IK — Slice 1 (Body Grounding)** IMPLEMENTADO (compile-check Roslyn verde). El proxy remoto planta el cuerpo en el suelo RENDERIZADO (ChunkStreamer) corrigiendo el desfase backend-Y ↔ render. Bake del prefab + play-test de calibración PENDIENTES (el editor está abierto → no se pudo hornear headless). (Sesión previa: [C] yaw smoothing del proxy.)
 
 ## Próximo paso (UNO solo)
-- **[D] Foot IK** — (alcance por definir al iniciar). (Play-tests pendientes — Fase 2 ADR-014, robapieles ADR-016, y la calibración de [C] — siguen en ▸ Riesgos abiertos.)
+- **[E] Equipment/Clothing Sync** — leer `AUDIT.md` sección Equipment ANTES de proponer nada. El audit confirma que STP **NO tiene Wearable/ClothingSlot**: todo el sistema de ropa hay que construirlo desde cero. Plan primero, espera confirmación humana. (Play-tests pendientes acumulados: calibración de [C] (yaw), Fase 2 (ADR-014), robapieles (ADR-016), y AHORA la calibración de [D] grounding.)
+
+## Estado actual — [D] Foot IK Slice 1 (Body Grounding) — IMPLEMENTADO (pendiente bake + play-test)
+- **Problema que resuelve:** el proxy se posiciona desde la pose del backend (`floor_player_y`), pero lo que se RENDERIZA y se pisa es el `ChunkStreamer` client-side (otro mundo, deuda conocida) → los pies del proxy flotan/se hunden en el suelo visible. El grounding raycastea al suelo renderizado y corrige.
+- **Componente nuevo `Assets/_Migration/STPIntegration/RemoteAvatar/ProxyGroundingHook.cs`** (vive en Assembly-CSharp, sin asmdef en _Migration, igual que los demás hooks): en `LateUpdate` (tras el Animator) raycast hacia abajo desde `root.position + up*_rayUp` contra `GridChunkBuilder.GeoMask` (las Unity layers de suelo {0,14,15,16}, sin hardcodear); `gap = hit.point.y − root.position.y`; `Mathf.SmoothDamp` del offset; `Hips.position += up*offset` (mueve TODO el esqueleto → los pies aterrizan en el suelo VISIBLE). Rig GENERIC (no Humanoid, sin OnAnimatorIK): `Hips` cacheado POR NOMBRE en Awake (mismo patrón que `ProxyPitchHook` con Head/Neck), guard no-op si falta. `OnEnable` resetea el offset (reutilización de pool).
+- **Airborne fade:** peso 1 mientras `|gap| ≤ _groundSnapMax` (0.5 m), desvanece linealmente a 0 en `_airborneFade` (1.5 m) → un salto (`ProxyJumpFeeder`), chunk displacement o respawn levantan el cuerpo lejos del suelo y NO lo pegan; en el ápex `|gap|` es máximo → suelta del todo. Sin hit → offset a 0.
+- **Sin self-hit:** los `CapsuleCollider` del proxy están en layer 12, FUERA de `GeoMask` → el raycast nunca golpea el propio avatar; `QueryTriggerInteraction.Ignore` evita volúmenes trigger.
+- **Cliente-only:** NO toca el `root` en red (toca `Hips`, hijo) → `RemotePlayerManager` (lerp de pose) y `ProxyLocomotionFeeder` (lee XZ del root) INTACTOS. Cero red, cero schema, cero ADR. Removible (borrar el archivo → el proxy vuelve a la Y cruda del backend).
+- **Cableado:** `Assets/_Migration/STPIntegration/Editor/RemoteAvatarPrefabBuilder.cs` → `WireGroundingHook` (mirror idempotente de `WirePitchHook`) hornea defaults: `_rayUp=1`, `_rayDown=3`, `_groundSnapMax=0.5`, `_airborneFade=1.5`, `_smoothTime=0.1`. Doc-comment de la clase actualizado para listar el hook.
+- **Alcance decidido (aprobado por el humano):** Slice 1 = Body Grounding (offset de Hips). Slice 2 = IK por pie de 2 huesos (UpperLeg/LowerLeg/Foot a la normal + caída de pelvis) queda como FOLLOW-UP si el play-test lo pide. Cadena de pierna confirmada del esqueleto MaleSurvivor: `Hips → UpperLeg.{L,R} → LowerLeg.{L,R} → Foot.{L,R} → Toes.{L,R}`.
+- **Verificación:** compile-check Roslyn verde (csc .NET Core de Unity contra UnityEngine + `BackroomsSurvival.dll`; la ref a `GridChunkBuilder.GeoMask` resuelve). El edit del builder es mirror exacto de `WirePitchHook`. Bake del prefab (`RemotePlayerAvatar.prefab`, menú *Backrooms ▸ Build Remote Avatar Prefab*) y play-test PENDIENTES (editor abierto).
 
 ## Estado actual — Character Rotation Polish [C] (yaw del proxy) — IMPLEMENTADO (pendiente play-test de calibración)
 - Cambio CLIENT-ONLY (sin red/schema/ADR), todo en `RemotePlayerManager`. El yaw del proxy pasó de `LerpAngle` exponencial a **`Mathf.SmoothDampAngle`** (críticamente amortiguado → menos lag en giros sostenidos, sin overshoot), con estado `RemotePlayerView.yawVelocity`.
@@ -105,6 +115,8 @@
 - load_profiles no conectado end-to-end hasta ADR-005 IPC
 
 ## Deuda conocida
+- [D] grounding: `GeoMask` incluye la layer 0 (Default) → un prop con collider directamente bajo los pies podría capturar el raycast en vez del slab de suelo; aceptable en slice 1, revisar en play-test.
+- [D] grounding: el airborne fade discrimina por `|gap|`; un salto de altura menor que `_airborneFade` podría recibir un tirón leve hacia abajo. Calibrar `_groundSnapMax`/`_airborneFade` vs. la altura real del salto y el desfase real entre mundos en play-test.
 - (OBSOLETO con edge-based) Celda Wall solitaria/diagonal no emite pared — ya no aplica: las paredes son flags de arista, no se derivan de celdas Wall.
 - (OBSOLETO con edge-based) Tile Solid en borde de chunk no emite pared exterior — ya no hay tiles Solid; cada chunk emite sus aristas N/E.
 - StructureValidator.cs comenta `ProceduralWorldGenerator.TryPlaceStructures` (método retirado en edge-based); el validador sigue funcionando (autónomo, MiniJson). Comentario stale a corregir.

@@ -19,7 +19,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// ADD: ProxyLocomotionFeeder (drives MovementSpeed) + ProxyJumpFeeder (fires Jump from
     /// vertical velocity) + ProxyPickupHook (fires Pickup from rp.animation=="pickup") +
     /// ProxyCrouchHook (drives the Crouched blend from rp.crouch, ADR-020) + ProxyPitchHook
-    /// (tilts head/neck/spine from rp.pitch, ADR-021) on the root.
+    /// (tilts head/neck/spine from rp.pitch, ADR-021) + ProxyGroundingHook (offsets Hips so the
+    /// feet rest on the rendered floor, [D] slice 1) on the root.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -86,6 +87,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WirePickupHook(instance);
                 WireCrouchHook(instance);
                 WirePitchHook(instance);
+                WireGroundingHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -294,6 +296,23 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_lerpSpeed", 10f);
             SetFeederFloat(so, "_spineLeanThreshold", 45f);
             SetFeederFloat(so, "_maxSpineLean", 30f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Mirror of WirePitchHook for the body-grounding hook ([D] slice 1). The hook resolves the
+        // Hips bone by name at runtime; here we only bake the calibrated tuning fields. Idempotent.
+        private static void WireGroundingHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyGroundingHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyGroundingHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_rayUp", 1.0f);
+            SetFeederFloat(so, "_rayDown", 3.0f);
+            SetFeederFloat(so, "_groundSnapMax", 0.5f);
+            SetFeederFloat(so, "_airborneFade", 1.5f);
+            SetFeederFloat(so, "_smoothTime", 0.1f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
