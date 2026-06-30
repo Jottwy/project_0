@@ -399,6 +399,11 @@ pub enum PacketPayload {
         /// schema bump.
         #[serde(default)]
         held_item: i32,
+        /// ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit). Appended
+        /// last + serde(default) → a v6 peer that omits it decodes to 0 (no flinch); wire-compat
+        /// across the v6→v7 schema bump.
+        #[serde(default)]
+        hit_seq: u8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -656,6 +661,7 @@ mod tests {
             pitch: -45,
             equipment: [101, 202, 303, 404],
             held_item: 12345,
+            hit_seq: 7,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -670,6 +676,7 @@ mod tests {
                 pitch,
                 equipment,
                 held_item,
+                hit_seq,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -678,6 +685,7 @@ mod tests {
                 assert_eq!(pitch, -45);
                 assert_eq!(equipment, [101, 202, 303, 404]);
                 assert_eq!(held_item, 12345);
+                assert_eq!(hit_seq, 7);
             }
             _ => panic!("wrong variant"),
         }

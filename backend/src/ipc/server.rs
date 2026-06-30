@@ -33,8 +33,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// `equipment` decodes to [0,0,0,0] = no clothing). v6 (ADR-023) adds `held_item:i32`
 /// (the held wieldable item ID) to PlayerInput, RemotePlayerState and the P2P
 /// PlayerUpdate — also `serde(default)`, so older clients interoperate (a missing
-/// `held_item` decodes to 0 = empty hands).
-const WIRE_SCHEMA_VERSION: u32 = 6;
+/// `held_item` decodes to 0 = empty hands). v7 (ADR-024) adds `hit_seq:u8` (a monotonic
+/// hit-reaction counter, incremented on each local DamageReceived) to PlayerInput,
+/// RemotePlayerState and the P2P PlayerUpdate — also `serde(default)`, so older clients
+/// interoperate (a missing `hit_seq` decodes to 0 = never hit, no flinch).
+const WIRE_SCHEMA_VERSION: u32 = 7;
 
 /// Run the IPC server until a fatal accept error.
 ///

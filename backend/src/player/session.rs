@@ -40,6 +40,11 @@ pub struct Player {
     /// affect inventory/grants/combat.
     #[serde(default)]
     pub held_item: i32,
+    /// ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit). Incremented
+    /// by the client on each local DamageReceived event, relayed to peers; presentation only —
+    /// not validated, does not affect inventory/grants/stats/combat/hitreg.
+    #[serde(default)]
+    pub hit_seq: u8,
 }
 
 impl Player {
@@ -58,6 +63,7 @@ impl Player {
             pitch: 0,
             equipment: [0; 4],
             held_item: 0,
+            hit_seq: 0,
         }
     }
 }

@@ -48,6 +48,10 @@ pub struct PeerConnection {
     /// authoritative. NOTE: set in handle_packet, NOT in update_player_state — so the phantom
     /// (ADR-016) keeps empty hands.
     pub held_item: i32,
+    /// ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit), set from
+    /// PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
+    /// update_player_state — so the phantom (ADR-016) never flinches.
+    pub hit_seq: u8,
     pub connected_at: Instant,
 }
 
@@ -69,6 +73,7 @@ impl PeerConnection {
             pitch: 0,
             equipment: [0; 4],
             held_item: 0,
+            hit_seq: 0,
             connected_at: now,
         }
     }

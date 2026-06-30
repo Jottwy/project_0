@@ -43,6 +43,13 @@ namespace BackroomsSurvival.Net
         private IWieldableInventoryCC _wieldableInv;
         private IItemContainer _holster;
         private bool _heldResolved;
+        // ADR-024: cached local health manager + monotonic hit-reaction counter. Unlike every other
+        // field (read per-pose), this is PUSHED by the IHealthManager.DamageReceived event — incremented
+        // on each real local damage event (ReceiveDamage). We never poll Health: the StatInterpolator
+        // (ADR-009) writes it via SetHealthSilent (no event), so polling the delta would false-flinch on
+        // reconciliation. Subscribed when the character resolves, unsubscribed on rig rebuild / OnDestroy.
+        private IHealthManager _health;
+        private byte _hitSeq;
         private float _sendAccum;
         private float _logAccum;
         private uint _inputSeq;
@@ -104,6 +111,9 @@ namespace BackroomsSurvival.Net
                 _wieldableInv = null;
                 _holster = null;
                 _heldResolved = false;
+                // ADR-024: the rig rebuild destroys the health manager — unsubscribe and drop it so we
+                // re-subscribe against the fresh character next valid frame (no leaked stale handler).
+                UnsubscribeHealth();
                 MaybeLog(false, Vector3.zero);
                 return;
             }
@@ -149,6 +159,15 @@ namespace BackroomsSurvival.Net
                 _lookHandler = _character.GetCC<ILookHandlerCC>();
             float pitch = _lookHandler != null ? _lookHandler.ViewAngles.x : 0f;
 
+            // ADR-024: subscribe to the LOCAL health manager once it resolves, so DamageReceived
+            // bumps the hit-reaction counter (cosmetic; relayed to peers, not authoritative).
+            if (_health == null && _character != null)
+            {
+                _health = _character.HealthManager;
+                if (_health != null)
+                    _health.DamageReceived += OnDamageReceived;
+            }
+
             // ADR-022: report the LOCAL worn clothing item IDs read from the inventory equipment
             // slots. STP's CharacterClothing applies them locally; we only READ (rule #3). Relayed
             // cosmetically to peers, not authoritative.
@@ -161,7 +180,7 @@ namespace BackroomsSurvival.Net
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem, _hitSeq);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = pos;
@@ -261,6 +280,21 @@ namespace BackroomsSurvival.Net
             return _holster.GetItemAtIndex(index).Item?.Id ?? 0;
         }
 
+        /// <summary>
+        /// ADR-024: bump the monotonic hit-reaction counter on each real local damage event. The
+        /// signature matches DamageReceivedDelegate (in DamageArgs). `damage` is the (negative)
+        /// health delta; any DamageReceived is a hit, so we increment unconditionally (wrapping).
+        /// </summary>
+        private void OnDamageReceived(float damage, in DamageArgs args) => _hitSeq++;
+
+        // Drop the health subscription (rig rebuild / teardown). Safe to call when not subscribed.
+        private void UnsubscribeHealth()
+        {
+            if (_health != null)
+                _health.DamageReceived -= OnDamageReceived;
+            _health = null;
+        }
+
         // Temporary live-verification log (throttled to 1 Hz, removable).
         private void MaybeLog(bool sent, Vector3 pos)
         {
@@ -273,6 +307,7 @@ namespace BackroomsSurvival.Net
 
         private void OnDestroy()
         {
+            UnsubscribeHealth(); // ADR-024: never leak the DamageReceived handler past teardown.
             if (_instance == this)
                 _instance = null;
         }

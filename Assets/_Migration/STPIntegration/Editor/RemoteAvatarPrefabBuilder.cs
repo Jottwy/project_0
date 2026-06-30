@@ -24,8 +24,9 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// feet rest on the rendered floor, [D] slice 1) + ProxyClothingHook (drives CharacterClothing
     /// from rp.equipment, ADR-022) + ProxyHeldItemHook (attaches the held wieldable's pickup mesh
     /// to Hand.R from rp.heldItem, with per-category placement + finger grip from a GripPoseSet,
-    /// ADR-023) on the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the
-    /// proxy never binds to its disabled inventory.
+    /// ADR-023) + ProxyHitReactionHook (procedural spine recoil flinch from rp.hitSeq, ADR-024) on
+    /// the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the proxy never
+    /// binds to its disabled inventory.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -95,6 +96,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireGroundingHook(instance);
                 WireClothingHook(instance);
                 WireHeldItemHook(instance);
+                WireHitReactionHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -377,6 +379,21 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var gripProp = so.FindProperty("_gripPoses");
             if (gripProp != null)
                 gripProp.objectReferenceValue = gripPoses;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Mirror of WirePitchHook for the hit-reaction hook (ADR-024). The hook resolves the spine
+        // bones by name at runtime + reads the networked hit counter; here we only bake the
+        // calibrated recoil tuning fields. Idempotent.
+        private static void WireHitReactionHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyHitReactionHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyHitReactionHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_magnitude", 18f);
+            SetFeederFloat(so, "_recoverTime", 0.3f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

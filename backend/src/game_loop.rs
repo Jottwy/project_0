@@ -355,6 +355,9 @@ pub async fn run(
             // ADR-023: record the client-reported held item ID (cosmetic; relayed to peers,
             // not validated). Read by the client from its wieldable holster slot.
             player.held_item = received_input.held_item;
+            // ADR-024: record the client-reported hit-reaction counter (cosmetic; relayed to
+            // peers, not validated). Incremented client-side on each local DamageReceived.
+            player.hit_seq = received_input.hit_seq;
             let seq = apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
             last_accepted_input_seq = seq;
             authoritative_velocity = Vec3::from_array(received_input.velocity);
@@ -660,10 +663,11 @@ async fn handle_network_event(
             pitch,
             equipment,
             held_item,
+            hit_seq,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -1840,6 +1844,7 @@ fn build_world_state(
             pitch: p.pitch,
             equipment: p.equipment,
             held_item: p.held_item,
+            hit_seq: p.hit_seq,
         });
     }
 

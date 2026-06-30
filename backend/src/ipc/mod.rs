@@ -91,6 +91,10 @@ pub struct PlayerInput {
     /// not authoritative.
     #[serde(default)]
     pub held_item: i32,
+    /// ADR-024: client-reported hit-reaction counter (monotonic, wrapping); incremented on each
+    /// local DamageReceived. Cosmetic, relayed to peers, not authoritative.
+    #[serde(default)]
+    pub hit_seq: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +232,9 @@ pub struct RemotePlayerState {
     /// ADR-023: cosmetic held item ID (0 = empty hands), host-relayed.
     #[serde(default)]
     pub held_item: i32,
+    /// ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit), host-relayed.
+    #[serde(default)]
+    pub hit_seq: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

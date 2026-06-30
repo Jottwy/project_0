@@ -130,6 +130,8 @@ namespace BackroomsSurvival.Net
         public int[] equipment = new int[4];
         // ADR-023: cosmetic held item ID (0 = empty hands).
         public int heldItem;
+        // ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit).
+        public int hitSeq;
 
         public static RemotePlayerMsg Parse(object o)
         {
@@ -149,6 +151,8 @@ namespace BackroomsSurvival.Net
                 r.equipment[i] = i < equip.Length ? equip[i] : 0;
             // ADR-023: held item (a v5 peer omitting the field → 0 = empty hands).
             r.heldItem = (int)IPCParse.L(d, "held_item");
+            // ADR-024: hit-reaction counter (a v6 peer omitting the field → 0 = never hit).
+            r.hitSeq = (int)IPCParse.L(d, "hit_seq");
             return r;
         }
     }
