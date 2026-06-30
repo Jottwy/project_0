@@ -52,6 +52,7 @@ pub enum NetworkEvent {
         crouch: bool,
         pitch: i8,
         equipment: [i32; 4],
+        held_item: i32,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -811,6 +812,7 @@ impl NetworkManager {
                 crouch,
                 pitch,
                 equipment,
+                held_item,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -821,6 +823,7 @@ impl NetworkManager {
                     peer.crouch = crouch; // ADR-020: cosmetic crouch, alongside the pose
                     peer.pitch = pitch; // ADR-021: cosmetic camera pitch, alongside the pose
                     peer.equipment = equipment; // ADR-022: cosmetic clothing, alongside the pose
+                    peer.held_item = held_item; // ADR-023: cosmetic held item, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -851,6 +854,7 @@ impl NetworkManager {
                     crouch,
                     pitch,
                     equipment,
+                    held_item,
                 }]
             }
 
@@ -1491,6 +1495,7 @@ mod tests {
             crouch: false,
             pitch: 0,
             equipment: [0; 4],
+            held_item: 0,
         };
         host.broadcast_unreliable(&payload).await;
 

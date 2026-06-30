@@ -118,6 +118,7 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         crouch: player.crouch,
         pitch: player.pitch,
         equipment: player.equipment,
+        held_item: player.held_item,
     };
     info!(
         "Sending player update to peers={} local_id={} pos=({:.2}, {:.2}, {:.2})",
@@ -184,6 +185,7 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
                     crouch: p.crouch,
                     pitch: p.pitch,
                     equipment: p.equipment,
+                    held_item: p.held_item,
                 },
             )
         })

@@ -22,8 +22,10 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// ProxyCrouchHook (drives the Crouched blend from rp.crouch, ADR-020) + ProxyPitchHook
     /// (tilts head/neck/spine from rp.pitch, ADR-021) + ProxyGroundingHook (offsets Hips so the
     /// feet rest on the rendered floor, [D] slice 1) + ProxyClothingHook (drives CharacterClothing
-    /// from rp.equipment, ADR-022) on the root. ADR-022 also sets CharacterClothing._attachToCharacter
-    /// = false so the proxy never binds to its disabled inventory.
+    /// from rp.equipment, ADR-022) + ProxyHeldItemHook (attaches the held wieldable's pickup mesh
+    /// to Hand.R from rp.heldItem, with per-category placement + finger grip from a GripPoseSet,
+    /// ADR-023) on the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the
+    /// proxy never binds to its disabled inventory.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
     ///
@@ -92,6 +94,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WirePitchHook(instance);
                 WireGroundingHook(instance);
                 WireClothingHook(instance);
+                WireHeldItemHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -352,6 +355,72 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 Debug.LogWarning("[RemoteAvatarPrefabBuilder] CharacterClothing._attachToCharacter not found; " +
                     "the proxy may attempt an inventory bind (potential NRE).");
             }
+        }
+
+        // ADR-023: adds the held-item hook (instantiates the held wieldable's pickup mesh under
+        // Hand.R from the networked held item ID) and wires its per-category GripPoseSet (Slice 2:
+        // model placement + finger curl by item category). The hook resolves the hand/finger bones
+        // by name at runtime; here we bake the bone name + the GripPoseSet reference. Idempotent —
+        // an existing GripPoseSet asset is referenced as-is (calibration preserved), not reseeded.
+        private static void WireHeldItemHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyHeldItemHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyHeldItemHook>();
+
+            var gripPoses = LoadOrCreateGripPoseSet();
+
+            var so = new SerializedObject(hook);
+            var boneProp = so.FindProperty("_handBoneName");
+            if (boneProp != null)
+                boneProp.stringValue = "Hand.R";
+            var gripProp = so.FindProperty("_gripPoses");
+            if (gripProp != null)
+                gripProp.objectReferenceValue = gripPoses;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-023 Slice 2: the per-category grip config lives as a ScriptableObject (live-editable
+        // during Play). Created once with sensible default buckets (Melee/Firearms/Tools + fallback);
+        // re-bakes reuse the existing asset so play-test calibration is never overwritten.
+        private const string GripPoseSetPath = OutputDir + "/GripPoseSet.asset";
+
+        private static GripPoseSet LoadOrCreateGripPoseSet()
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<GripPoseSet>(GripPoseSetPath);
+            if (existing != null)
+                return existing;
+
+            var set = ScriptableObject.CreateInstance<GripPoseSet>();
+            set.fingerBendAxis = Vector3.forward;
+            set.grips = new[]
+            {
+                // Default curls give a visible grip out of the box; calibrate in play-test.
+                NewGrip("Melee", fingerCurl: 55f, thumbCurl: 40f),
+                NewGrip("Firearms", fingerCurl: 50f, thumbCurl: 35f),
+                NewGrip("Tools", fingerCurl: 35f, thumbCurl: 25f),
+                NewGrip("", fingerCurl: 40f, thumbCurl: 30f), // fallback (empty category name)
+            };
+
+            if (!Directory.Exists(OutputDir))
+                Directory.CreateDirectory(OutputDir);
+            AssetDatabase.CreateAsset(set, GripPoseSetPath);
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[RemoteAvatarPrefabBuilder] Created default GripPoseSet at '{GripPoseSetPath}'.");
+            return set;
+        }
+
+        private static GripPoseSet.CategoryGrip NewGrip(string category, float fingerCurl, float thumbCurl)
+        {
+            return new GripPoseSet.CategoryGrip
+            {
+                categoryName = category,
+                modelLocalPosition = Vector3.zero,
+                modelLocalEuler = Vector3.zero,
+                modelLocalScale = Vector3.one,
+                fingerCurl = fingerCurl,
+                thumbCurl = thumbCurl,
+            };
         }
 
         private static void SetFeederFloat(SerializedObject so, string field, float value)

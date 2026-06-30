@@ -30,8 +30,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// `pitch` decodes to 0 = looking forward). v5 (ADR-022) adds `equipment:[i32;4]`
 /// (worn clothing item IDs) to PlayerInput, RemotePlayerState and the P2P
 /// PlayerUpdate — all `serde(default)`, so older clients interoperate (a missing
-/// `equipment` decodes to [0,0,0,0] = no clothing).
-const WIRE_SCHEMA_VERSION: u32 = 5;
+/// `equipment` decodes to [0,0,0,0] = no clothing). v6 (ADR-023) adds `held_item:i32`
+/// (the held wieldable item ID) to PlayerInput, RemotePlayerState and the P2P
+/// PlayerUpdate — also `serde(default)`, so older clients interoperate (a missing
+/// `held_item` decodes to 0 = empty hands).
+const WIRE_SCHEMA_VERSION: u32 = 6;
 
 /// Run the IPC server until a fatal accept error.
 ///

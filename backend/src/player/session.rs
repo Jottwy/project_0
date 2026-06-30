@@ -35,6 +35,11 @@ pub struct Player {
     /// peers; presentation only — not validated, does not affect inventory/grants/stats.
     #[serde(default)]
     pub equipment: [i32; 4],
+    /// ADR-023: cosmetic held item ID (0 = empty hands). Reported by the client from its
+    /// wieldable holster slot, relayed to peers; presentation only — not validated, does not
+    /// affect inventory/grants/combat.
+    #[serde(default)]
+    pub held_item: i32,
 }
 
 impl Player {
@@ -52,6 +57,7 @@ impl Player {
             crouch: false,
             pitch: 0,
             equipment: [0; 4],
+            held_item: 0,
         }
     }
 }

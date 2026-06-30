@@ -39,6 +39,10 @@ namespace BackroomsSurvival.Net
         private IItemContainer _headEquip, _torsoEquip, _legsEquip, _feetEquip;
         private bool _equipmentResolved;
         private readonly int[] _equipment = new int[4];
+        // ADR-023: cached wieldable inventory + holster container, source of the held item ID.
+        private IWieldableInventoryCC _wieldableInv;
+        private IItemContainer _holster;
+        private bool _heldResolved;
         private float _sendAccum;
         private float _logAccum;
         private uint _inputSeq;
@@ -96,6 +100,10 @@ namespace BackroomsSurvival.Net
                 _character = null;
                 _headEquip = _torsoEquip = _legsEquip = _feetEquip = null;
                 _equipmentResolved = false;
+                // ADR-023: drop the cached wieldable inventory/holster too — re-resolve next valid frame.
+                _wieldableInv = null;
+                _holster = null;
+                _heldResolved = false;
                 MaybeLog(false, Vector3.zero);
                 return;
             }
@@ -146,10 +154,14 @@ namespace BackroomsSurvival.Net
             // cosmetically to peers, not authoritative.
             ReadEquipment();
 
+            // ADR-023: report the LOCAL held wieldable item ID, read from the holster's selected
+            // slot. STP's WieldableInventory applies the equip locally; we only READ (rule #3).
+            int heldItem = ReadHeldItem();
+
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch, _equipment);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = pos;
@@ -218,6 +230,35 @@ namespace BackroomsSurvival.Net
             if (container == null || container.SlotsCount == 0)
                 return 0;
             return container.GetItemAtIndex(0).Item?.Id ?? 0;
+        }
+
+        /// <summary>
+        /// ADR-023: the LOCAL held wieldable item ID — the item in the holster's selected slot
+        /// (0 = empty hands / nothing equipped). Resolves the wieldable inventory CC and the
+        /// holster container (tagged <c>WieldableTag</c>) lazily off the cached character;
+        /// re-resolves after a rig rebuild (motor loss). STP applies the equip; we only READ.
+        /// </summary>
+        private int ReadHeldItem()
+        {
+            if (!_heldResolved)
+            {
+                if (_character != null)
+                {
+                    _wieldableInv = _character.GetCC<IWieldableInventoryCC>();
+                    _holster = _character.Inventory?.FindContainer(
+                        ItemContainerFilters.WithTag(ItemConstants.WieldableTag));
+                    // Resolved once both are present; otherwise retry next frame.
+                    _heldResolved = _wieldableInv != null && _holster != null;
+                }
+            }
+
+            if (_wieldableInv == null || _holster == null)
+                return 0;
+
+            int index = _wieldableInv.SelectedIndex;
+            if (index < 0 || index >= _holster.SlotsCount)
+                return 0;
+            return _holster.GetItemAtIndex(index).Item?.Id ?? 0;
         }
 
         // Temporary live-verification log (throttled to 1 Hz, removable).

@@ -44,6 +44,10 @@ pub struct PeerConnection {
     /// from PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
     /// update_player_state — so the phantom (ADR-016) keeps default clothing.
     pub equipment: [i32; 4],
+    /// ADR-023: cosmetic held item ID (0 = empty hands), set from PlayerUpdate; relayed, not
+    /// authoritative. NOTE: set in handle_packet, NOT in update_player_state — so the phantom
+    /// (ADR-016) keeps empty hands.
+    pub held_item: i32,
     pub connected_at: Instant,
 }
 
@@ -64,6 +68,7 @@ impl PeerConnection {
             crouch: false,
             pitch: 0,
             equipment: [0; 4],
+            held_item: 0,
             connected_at: now,
         }
     }

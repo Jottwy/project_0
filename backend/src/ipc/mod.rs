@@ -87,6 +87,10 @@ pub struct PlayerInput {
     /// cosmetic, relayed to peers, not authoritative.
     #[serde(default)]
     pub equipment: [i32; 4],
+    /// ADR-023: client-reported held item ID (0 = empty hands); cosmetic, relayed to peers,
+    /// not authoritative.
+    #[serde(default)]
+    pub held_item: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,6 +225,9 @@ pub struct RemotePlayerState {
     /// ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty), host-relayed.
     #[serde(default)]
     pub equipment: [i32; 4],
+    /// ADR-023: cosmetic held item ID (0 = empty hands), host-relayed.
+    #[serde(default)]
+    pub held_item: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

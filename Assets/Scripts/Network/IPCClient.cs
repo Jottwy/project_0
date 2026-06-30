@@ -407,10 +407,10 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
-            int[] equipment = null)
+            int[] equipment = null, int heldItem = 0)
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(14); // 14 key/value pairs below — MUST match the count or rmp_serde drops the tail (equipment)
+            w.WriteMapHeader(15); // 15 key/value pairs below — MUST match the count or rmp_serde drops the tail (held_item)
             w.WriteString("type"); w.WriteString("input");
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
             // but they are non-optional in the wire schema and must be present).
@@ -437,6 +437,8 @@ namespace BackroomsSurvival.Net
             w.WriteString("equipment"); w.WriteArrayHeader(4);
             for (int i = 0; i < 4; i++)
                 w.WriteInt(equipment != null && i < equipment.Length ? equipment[i] : 0);
+            // ADR-023: held item ID (0 = empty hands), relayed to peers (not authoritative).
+            w.WriteString("held_item"); w.WriteInt(heldItem);
             SendFrame(w.ToArray());
         }
 

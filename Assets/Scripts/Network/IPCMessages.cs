@@ -128,6 +128,8 @@ namespace BackroomsSurvival.Net
         public int pitch;
         // ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty).
         public int[] equipment = new int[4];
+        // ADR-023: cosmetic held item ID (0 = empty hands).
+        public int heldItem;
 
         public static RemotePlayerMsg Parse(object o)
         {
@@ -145,6 +147,8 @@ namespace BackroomsSurvival.Net
             var equip = IPCParse.IntArray(IPCParse.Get(d, "equipment"));
             for (int i = 0; i < 4; i++)
                 r.equipment[i] = i < equip.Length ? equip[i] : 0;
+            // ADR-023: held item (a v5 peer omitting the field → 0 = empty hands).
+            r.heldItem = (int)IPCParse.L(d, "held_item");
             return r;
         }
     }

@@ -126,6 +126,7 @@ namespace BackroomsSurvival.Net
                 view.crouch = rp.crouch; // ADR-020
                 view.pitch = rp.pitch;   // ADR-021
                 view.equipment = rp.equipment; // ADR-022 (rp is fresh per parse → no aliasing)
+                view.heldItem = rp.heldItem; // ADR-023
                 view.lastSeenTime = Time.unscaledTime;
 
                 // TEMP DIAGNOSTIC (remove after case is identified): incoming = pose from the
@@ -238,6 +239,7 @@ namespace BackroomsSurvival.Net
             view.crouch = false;
             view.pitch = 0f;
             view.equipment = new int[4]; // ADR-022: no stale clothing on a recycled proxy
+            view.heldItem = 0; // ADR-023: no stale held item on a recycled proxy
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -258,6 +260,7 @@ namespace BackroomsSurvival.Net
             view.crouch = false;
             view.pitch = 0f;
             view.equipment = new int[4]; // ADR-022
+            view.heldItem = 0; // ADR-023
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -491,6 +494,8 @@ namespace BackroomsSurvival.Net
         public float pitch;
         // ADR-022: cosmetic worn clothing item IDs [Head, Torso, Legs, Feet] (read by ProxyClothingHook).
         public int[] equipment = new int[4];
+        // ADR-023: cosmetic held item ID (read by ProxyHeldItemHook); 0 = empty hands.
+        public int heldItem;
         public float lastSeenTime;
     }
 
