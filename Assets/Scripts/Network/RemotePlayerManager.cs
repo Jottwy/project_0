@@ -128,13 +128,16 @@ namespace BackroomsSurvival.Net
                 view.equipment = rp.equipment; // ADR-022 (rp is fresh per parse → no aliasing)
                 view.heldItem = rp.heldItem; // ADR-023
                 view.hitSeq = rp.hitSeq; // ADR-024
+                // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
+                // is the visible body); it reappears at the respawn position on dead→false.
+                // Change-detected so SetActive only fires on the edge.
+                if (view.dead != rp.dead)
+                {
+                    view.dead = rp.dead;
+                    if (view.root != null)
+                        view.root.gameObject.SetActive(!rp.dead);
+                }
                 view.lastSeenTime = Time.unscaledTime;
-
-                // TEMP DIAGNOSTIC (remove after case is identified): incoming = pose from the
-                // world_state; applied_target = lerp target just set; avatar_now = where the
-                // avatar root actually is (result of the previous frame's lerp). Reveals D
-                // (incoming != [POSE_SEND] pos), B (avatar lags target) and C (constant offset).
-                Debug.Log($"[POSE_RECV] id={rp.id} incoming={rp.position} applied_target={view.targetPosition} avatar_now={(view.root != null ? view.root.position.ToString() : "NULL")}");
 
                 string nameTagText = FormatNameTag(rp.id, rp.name);
                 if (view.nameTag != null && view.nameTag.text != nameTagText)
@@ -242,6 +245,7 @@ namespace BackroomsSurvival.Net
             view.equipment = new int[4]; // ADR-022: no stale clothing on a recycled proxy
             view.heldItem = 0; // ADR-023: no stale held item on a recycled proxy
             view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
+            view.dead = false; // ADR-028 post-E3: recycled proxy starts visible (root just re-activated above)
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -264,6 +268,7 @@ namespace BackroomsSurvival.Net
             view.equipment = new int[4]; // ADR-022
             view.heldItem = 0; // ADR-023
             view.hitSeq = 0; // ADR-024
+            view.dead = false; // ADR-028 post-E3: pooled SetActive(false) is the pool's, not the flag's
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -501,6 +506,9 @@ namespace BackroomsSurvival.Net
         public int heldItem;
         // ADR-024: cosmetic hit-reaction counter (read by ProxyHitReactionHook); 0 = never hit.
         public int hitSeq;
+        // ADR-028 post-E3: cosmetic dead flag (server-derived on the peer's backend). While true
+        // the proxy root is hidden — the peer's corpse (CorpseSpawner) is the visible body.
+        public bool dead;
         public float lastSeenTime;
     }
 
