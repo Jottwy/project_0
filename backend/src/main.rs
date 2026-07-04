@@ -105,8 +105,11 @@ async fn main() {
     // Unity → game loop (input / actions).
     let (to_game_tx, to_game_rx) = mpsc::channel::<ipc::ClientMessage>(1024);
 
-    // Game loop → Unity (world snapshots).
-    let (state_tx, _) = broadcast::channel::<ipc::ServerMessage>(64);
+    // Game loop → Unity (world snapshots). Capacity 256 (was 64): idle traffic alone is
+    // ~30 msg/s (20 Hz delta + 10 Hz world_state), so 64 was only ~2 s of writer stall before
+    // "IPC write loop lagged" dropped messages — including Events (player_died). 256 rides out
+    // an ~8 s stall (Unity scene-load/GC hitches back-pressuring the piped stdout logs).
+    let (state_tx, _) = broadcast::channel::<ipc::ServerMessage>(256);
 
     // IPC server task (Unity ↔ Rust on localhost:7777).
     let ipc_state_tx = state_tx.clone();

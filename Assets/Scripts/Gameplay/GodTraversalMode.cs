@@ -13,6 +13,6 @@ namespace BackroomsSurvival.Gameplay
     public static class GodTraversalMode
     {
         // SET TO true TO ENABLE — restores false for normal gameplay.
-        public static bool IsEnabled = true;
+        public static bool IsEnabled = false;
     }
 }

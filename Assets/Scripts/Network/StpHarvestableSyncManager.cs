@@ -46,10 +46,22 @@ namespace BackroomsSurvival.Net
         private float _nextScan;
         private uint _dropCounter;
 
-        // Reflection (HarvestableResource): set health field + invoke protected SetState.
+        // ── Vendor reflection (STP private members) ──
+        // All 6 are resolved + type-checked ONCE in Start via ResolveVendorReflection(); if any is
+        // missing or mismatched the manager disables itself (see Start) instead of degrading hook
+        // by hook. Because that happens before any bind/strip, the vendor spawners are never
+        // destroyed on failure → harvestables keep their vendor-local drop behaviour.
+        // HarvestableResource: authoritative health field + protected SetState.
         private static FieldInfo _remainingField;
         private static MethodInfo _setStateMethod;
-        private static bool _hrReflectionResolved;
+        // HarvestableFallBehaviour: resource-carryable prefab + count (read before stripping the spawner).
+        private static FieldInfo _fallItemPrefabField;
+        private static FieldInfo _fallItemCountField;
+        // PrefabSpawner: resource prefabs + spawn-count range.
+        private static FieldInfo _spawnerPrefabsField;
+        private static FieldInfo _spawnerCountRangeField;
+        private static bool _reflectionResolved;
+        private static bool _reflectionOk;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -72,6 +84,17 @@ namespace BackroomsSurvival.Net
 
         private void OnSceneLoaded(Scene scene, LoadSceneMode mode) => ArmWarmup();
 
+        private void Start()
+        {
+            // Resolve every vendor private member up front, BEFORE any bind/strip can run in Update.
+            // If a required member is missing/renamed, disable the whole manager: it must never strip
+            // vendor spawners it can no longer replace (that would leave depleted harvestables empty
+            // with no fallback). Disabled → harvestables keep their vendor-local drop behaviour
+            // (non-networked). The failure is reported once, loudly, in ResolveVendorReflection.
+            if (!ResolveVendorReflection())
+                enabled = false;
+        }
+
         private void ArmWarmup()
         {
             _warmedUp = false;
@@ -83,6 +106,11 @@ namespace BackroomsSurvival.Net
 
         private void Update()
         {
+            // Belt-and-suspenders: Start already set enabled=false on reflection failure, so Update
+            // would not run — but if something external re-enables the manager, never bind/strip.
+            if (!_reflectionOk)
+                return;
+
             if (Time.unscaledTime < _nextScan)
                 return;
             _nextScan = Time.unscaledTime + scanInterval;
@@ -193,12 +221,12 @@ namespace BackroomsSurvival.Net
             var fall = hr.GetComponentInChildren<HarvestableFallBehaviour>(true);
             if (fall != null)
             {
-                var prefab = ReflGet<Rigidbody>(fall, "_itemPrefab");
+                var prefab = _fallItemPrefabField.GetValue(fall) as Rigidbody;
                 int def = CarryableDefIdOf(prefab);
                 if (def >= 0)
                 {
                     logDefId = def;
-                    logCount = Mathf.Max(1, ReflGetInt(fall, "_itemCount"));
+                    logCount = Mathf.Max(1, Convert.ToInt32(_fallItemCountField.GetValue(fall)));
                 }
                 Destroy(fall);
             }
@@ -208,13 +236,13 @@ namespace BackroomsSurvival.Net
             {
                 if (logDefId < 0)
                 {
-                    var prefabs = ReflGet<Rigidbody[]>(spawner, "_prefabs");
+                    var prefabs = _spawnerPrefabsField.GetValue(spawner) as Rigidbody[];
                     if (prefabs != null && prefabs.Length > 0)
                     {
                         int def = CarryableDefIdOf(prefabs[0]);
                         if (def >= 0)
                         {
-                            var range = ReflGetV2I(spawner, "_spawnCountRange");
+                            var range = _spawnerCountRangeField.GetValue(spawner) is Vector2Int v ? v : default;
                             logDefId = def;
                             logCount = Mathf.Max(1, (range.x + range.y) / 2);
                         }
@@ -236,8 +264,8 @@ namespace BackroomsSurvival.Net
             if (hr == null)
                 return;
 
-            ResolveHrReflection();
-
+            // Reflection is resolved + validated in Start; when this runs the manager is enabled,
+            // so both members are non-null. The guards are kept as defensive no-ops.
             if (_remainingField != null)
                 _remainingField.SetValue(hr, h.remaining);
 
@@ -297,19 +325,88 @@ namespace BackroomsSurvival.Net
             return (long)Mathf.Max(1, netId) * 1000000000L + 500000000L + (++_dropCounter);
         }
 
-        #region Reflection helpers
-        private static void ResolveHrReflection()
+        #region Reflection
+
+        // Resolve + type-check all 6 vendor private members ONCE. Returns true only if every member
+        // is present AND has the expected type/signature — a rename-to-same-name-different-type is
+        // caught here, before the first SetValue/Invoke. On failure, logs the FULL manifest once
+        // (all 6 with OK/MISSING status) so a large STP rename is diagnosed in a single pass.
+        private static bool ResolveVendorReflection()
         {
-            if (_hrReflectionResolved)
-                return;
-            _hrReflectionResolved = true;
+            if (_reflectionResolved)
+                return _reflectionOk;
+            _reflectionResolved = true;
 
-            _remainingField = typeof(HarvestableResource).GetField("_remainingHarvestAmount", BindingFlags.NonPublic | BindingFlags.Instance);
-            _setStateMethod = typeof(HarvestableResource).GetMethod("SetState", BindingFlags.NonPublic | BindingFlags.Instance,
-                null, new[] { typeof(HarvestableState) }, null);
+            var missing = new List<string>();
+            _remainingField         = ResolveField(typeof(HarvestableResource), "_remainingHarvestAmount", typeof(float), missing);
+            _setStateMethod         = ResolveMethod(typeof(HarvestableResource), "SetState", typeof(HarvestableState), missing);
+            _fallItemPrefabField    = ResolveField(typeof(HarvestableFallBehaviour), "_itemPrefab", typeof(Rigidbody), missing);
+            _fallItemCountField     = ResolveField(typeof(HarvestableFallBehaviour), "_itemCount", typeof(int), missing);
+            _spawnerPrefabsField    = ResolveField(typeof(PrefabSpawner), "_prefabs", typeof(Rigidbody[]), missing);
+            _spawnerCountRangeField = ResolveField(typeof(PrefabSpawner), "_spawnCountRange", typeof(Vector2Int), missing);
 
-            if (_remainingField == null || _setStateMethod == null)
-                Debug.LogWarning("[StpHarvestableSyncManager] HarvestableResource reflection incomplete; health may not apply.");
+            _reflectionOk = missing.Count == 0;
+            if (!_reflectionOk)
+                Debug.LogError(BuildReflectionManifest(missing));
+
+            return _reflectionOk;
+        }
+
+        // Resolves one private instance field and verifies its declared type. Records a reason in
+        // `missing` and returns null on any failure (so the caller disables the manager).
+        private static FieldInfo ResolveField(Type type, string name, Type expected, List<string> missing)
+        {
+            var fi = type.GetField(name, BindingFlags.NonPublic | BindingFlags.Instance);
+            if (fi == null)
+            {
+                missing.Add($"{type.Name}.{name} (field {expected.Name}) — NOT FOUND");
+                return null;
+            }
+            if (fi.FieldType != expected)
+            {
+                missing.Add($"{type.Name}.{name} (field) — TYPE MISMATCH: expected {expected.Name}, found {fi.FieldType.Name}");
+                return null;
+            }
+            return fi;
+        }
+
+        // Resolves one protected/private instance method by its single parameter type and verifies
+        // it returns void. Same failure contract as ResolveField.
+        private static MethodInfo ResolveMethod(Type type, string name, Type paramType, List<string> missing)
+        {
+            var mi = type.GetMethod(name, BindingFlags.NonPublic | BindingFlags.Instance, null, new[] { paramType }, null);
+            if (mi == null)
+            {
+                missing.Add($"{type.Name}.{name}({paramType.Name}) (method) — NOT FOUND");
+                return null;
+            }
+            if (mi.ReturnType != typeof(void))
+            {
+                missing.Add($"{type.Name}.{name} (method) — RETURN MISMATCH: expected void, found {mi.ReturnType.Name}");
+                return null;
+            }
+            return mi;
+        }
+
+        // Full manifest of ALL 6 expected members with OK/MISSING status (not just the first
+        // failure), so a large STP rename is fixed in one pass instead of six run-fail cycles.
+        private static string BuildReflectionManifest(List<string> missing)
+        {
+            string Status(object resolved) => resolved != null ? "OK" : "MISSING";
+            var lines = new List<string>
+            {
+                "[StpHarvestableSyncManager] STP vendor API drift — reflection into required private members failed. " +
+                "Harvest sync DISABLED (manager auto-disabled; harvestables keep vendor-local drop behaviour, no network sync).",
+                "Expected members (baseline STP ResourceHarvesting / FPSCore):",
+                $"  HarvestableResource._remainingHarvestAmount : float          [{Status(_remainingField)}]",
+                $"  HarvestableResource.SetState(HarvestableState) : void        [{Status(_setStateMethod)}]",
+                $"  HarvestableFallBehaviour._itemPrefab : Rigidbody             [{Status(_fallItemPrefabField)}]",
+                $"  HarvestableFallBehaviour._itemCount : int                    [{Status(_fallItemCountField)}]",
+                $"  PrefabSpawner._prefabs : Rigidbody[]                         [{Status(_spawnerPrefabsField)}]",
+                $"  PrefabSpawner._spawnCountRange : Vector2Int                  [{Status(_spawnerCountRangeField)}]",
+                "Failures: " + string.Join("; ", missing),
+            };
+            return string.Join("\n", lines);
         }
 
         private static int CarryableDefIdOf(Rigidbody prefab)
@@ -319,24 +416,6 @@ namespace BackroomsSurvival.Net
             var pickup = prefab.GetComponent<CarryablePickup>();
             var def = pickup != null ? pickup.Definition : null;
             return def != null ? def.Id : -1;
-        }
-
-        private static T ReflGet<T>(object obj, string field) where T : class
-        {
-            var fi = obj.GetType().GetField(field, BindingFlags.NonPublic | BindingFlags.Instance);
-            return fi != null ? fi.GetValue(obj) as T : null;
-        }
-
-        private static int ReflGetInt(object obj, string field)
-        {
-            var fi = obj.GetType().GetField(field, BindingFlags.NonPublic | BindingFlags.Instance);
-            return fi != null ? Convert.ToInt32(fi.GetValue(obj)) : 0;
-        }
-
-        private static Vector2Int ReflGetV2I(object obj, string field)
-        {
-            var fi = obj.GetType().GetField(field, BindingFlags.NonPublic | BindingFlags.Instance);
-            return fi != null && fi.GetValue(obj) is Vector2Int v ? v : default;
         }
         #endregion
 

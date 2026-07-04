@@ -30,7 +30,6 @@ namespace BackroomsSurvival.Net
 
         private const float SendHz = 30f;
         private const float SendInterval = 1f / SendHz; // ~33 ms (single sender; backend read loop handles this easily)
-        private const float LogInterval = 1f;           // [POSE_TX] heartbeat @ 1 Hz
 
         private CharacterControllerMotor _motor;
         private ICharacter _character;       // cached parent character (look handler + inventory source)
@@ -51,7 +50,6 @@ namespace BackroomsSurvival.Net
         private IHealthManager _health;
         private byte _hitSeq;
         private float _sendAccum;
-        private float _logAccum;
         private uint _inputSeq;
         private uint _clientTick;
         private Vector3 _prevPos;
@@ -88,10 +86,24 @@ namespace BackroomsSurvival.Net
             ResolveMotor();
 
             float frameDt = Time.unscaledDeltaTime;
-            _logAccum += frameDt;
             _sendAccum += frameDt;
             if (_sendAccum < SendInterval)
                 return;
+
+            // ADR-025 respawn hallazgo-1 fix (client leg): while an authoritative reposition is
+            // pending (snap window armed, snap not yet applied), do NOT re-assert the stale local
+            // pose — the server trusts client-authoritative positions, so one stale report lands
+            // the respawn on the OLD pose instead of the honored safe spawn (observed: honored
+            // (22.5,…) but the player ended at the STP scene spawn the transmitter re-reported).
+            // Bounded by the snap window (0.35 s max, no retries); _sendAccum keeps accruing so
+            // the first post-snap frame sends immediately, and _hasPrev restarts the finite-diff
+            // velocity so that first send doesn't export a huge snap-crossing velocity (which the
+            // server speed-cap would reject).
+            if (AuthoritativePoseApplier.SnapPending)
+            {
+                _hasPrev = false;
+                return;
+            }
 
             float dt = _sendAccum; // elapsed since last send → drives the finite-diff velocity
             _sendAccum = 0f;
@@ -114,7 +126,6 @@ namespace BackroomsSurvival.Net
                 // ADR-024: the rig rebuild destroys the health manager — unsubscribe and drop it so we
                 // re-subscribe against the fresh character next valid frame (no leaked stale handler).
                 UnsubscribeHealth();
-                MaybeLog(false, Vector3.zero);
                 return;
             }
 
@@ -126,7 +137,6 @@ namespace BackroomsSurvival.Net
             {
                 IsSending = false;
                 _hasPrev = false;
-                MaybeLog(false, pos);
                 return;
             }
 
@@ -188,7 +198,6 @@ namespace BackroomsSurvival.Net
             }
 
             IsSending = sent;
-            MaybeLog(sent, pos);
         }
 
         /// <summary>
@@ -284,8 +293,19 @@ namespace BackroomsSurvival.Net
         /// ADR-024: bump the monotonic hit-reaction counter on each real local damage event. The
         /// signature matches DamageReceivedDelegate (in DamageArgs). `damage` is the (negative)
         /// health delta; any DamageReceived is a hit, so we increment unconditionally (wrapping).
+        ///
+        /// ADR-025 Slice B: ALSO report the damage to the authoritative backend, so server health
+        /// tracks local damage and the server owns the resulting death/respawn. DamageReceived
+        /// only fires on REAL local damage (falls, hazards — ReceiveDamage): server-driven damage
+        /// (starvation, entities, phantom) reaches this client via SetHealthSilent, which never
+        /// raises this event → no double-count, no feedback loop. Same invariant as hit_seq.
         /// </summary>
-        private void OnDamageReceived(float damage, in DamageArgs args) => _hitSeq++;
+        private void OnDamageReceived(float damage, in DamageArgs args)
+        {
+            _hitSeq++;
+            if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
+                ipc.SendReportDamage(Mathf.Abs(damage), args.DamageType.ToString());
+        }
 
         // Drop the health subscription (rig rebuild / teardown). Safe to call when not subscribed.
         private void UnsubscribeHealth()
@@ -293,16 +313,6 @@ namespace BackroomsSurvival.Net
             if (_health != null)
                 _health.DamageReceived -= OnDamageReceived;
             _health = null;
-        }
-
-        // Temporary live-verification log (throttled to 1 Hz, removable).
-        private void MaybeLog(bool sent, Vector3 pos)
-        {
-            if (_logAccum < LogInterval)
-                return;
-
-            _logAccum = 0f;
-            Debug.Log($"[POSE_TX] seq={_inputSeq} motorFound={(_motor != null)} sending={sent} pos={pos}");
         }
 
         private void OnDestroy()

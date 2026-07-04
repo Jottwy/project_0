@@ -186,7 +186,6 @@ MonoBehaviour:
     Audio:
       Clip: {fileID: 0}
       Volume: 0
-      _clips: []
     Event:
       m_PersistentCalls:
         m_Calls: []
@@ -194,7 +193,6 @@ MonoBehaviour:
     Audio:
       Clip: {fileID: 0}
       Volume: 0
-      _clips: []
     Event:
       m_PersistentCalls:
         m_Calls: []
@@ -211,10 +209,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 580f142dfead966488f481c46283a8be, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _holdDuration: 0.3
-  _centerOffset: {x: 0, y: -0.15, z: 0}
   _interactTitle: 
   _interactDescription: 
+  _holdDuration: 0.3
+  _centerOffset: {x: 0, y: -0.15, z: 0}
   _materialEffect: {fileID: 8195358325053676807}
 --- !u!114 &8195358325053676807
 MonoBehaviour:

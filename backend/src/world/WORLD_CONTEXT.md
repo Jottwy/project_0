@@ -189,9 +189,14 @@ Views are sorted by `(pos[0], layer, pos[1])` for stable serialization.
 ## 8. Volumetric Grid (render metadata only)
 
 `VolumetricGridViewV0` is sent to Unity for:
-- Chunks with `chunk_is_v30a()` (multi-layer vertical structures)
 - Showcase chunks near spawn (seed 7778, positions `[0,0],[1,0],[0,1],[1,1]`)
 - All layer-0 chunks if `ENABLE_LEVEL0_VOLUMETRIC_COLUMNS = true` (currently **false**)
+
+(2026-07-02) The `chunk_is_v30a()` disjunct was REMOVED from this gate: under
+worldgraph-v1 nearly every layer-0 chunk carries a V30A vertical flag (measured
+60/62), so it attached the column payload world-wide (~1.3 MB per 10 Hz WorldState),
+saturating the IPC pipe and dropping one-shot events under lag. V30A features render
+via the flat fallback path (`vertical_flags` / `inter_layer_volumes` still ship).
 
 **Critical:** Volumetric grid has zero collision/movement authority.
 It is pure render metadata. Backend collision stays in `collision.rs` + `ChunkLayoutV1`.
@@ -247,7 +252,7 @@ These invariants are tested and must not be broken:
 | `generate_initial_structure_chunks` + `Level0Builder` | HIGH | Touched = world generation changes for all seeds. Run all 3 seed tests. |
 | `ChunkLayoutV1` field additions | MEDIUM | IPC struct changes require Unity client update. |
 | `pack_layout_cells()` format | HIGH | Unity reads `[cells][edges_v][edges_h]` by positional offset. |
-| `chunk_is_v30a()` predicate | MEDIUM | Gates V30A cache, volumetric grid, and vertical navigation. |
+| `chunk_is_v30a()` predicate | MEDIUM | Gates V30A cache and vertical navigation (no longer the volumetric grid — see §8). |
 | `view_cache` invalidation | LOW | Must invalidate on any structural change. Already tested. |
 | `update_ownership` V30A restore path | MEDIUM | Avoid re-running Level0Builder in hot path (was a stall bug). |
 | `level0_proven_structure_connections` | HIGH | Used for RegionGraph edge promotion. Non-determinism breaks connectivity. |

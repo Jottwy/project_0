@@ -19,7 +19,6 @@ namespace BackroomsSurvival.Gameplay
             //EnsureComponent<SanityEffects>();
             EnsureComponent<TeleportationVFX>();
             EnsureComponent<MinimapRenderer>();
-            EnsureComponent<HUDUpdater>();
             EnsureComponent<PoiDebugHud>();
             EnsureComponent<VerticalDebugMarkerRenderer>();
             EnsureComponent<NetworkInitializer>();

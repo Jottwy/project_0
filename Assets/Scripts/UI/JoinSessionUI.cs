@@ -662,11 +662,15 @@ namespace BackroomsSurvival.UI
                 return;
             }
 
+            // SCENE-SCOPED on purpose (was DontDestroyOnLoad): a DDOL EventSystem created in
+            // MainMenu (which has none baked) survived into STP_Showcase, whose BAKED EventSystem
+            // then coexisted with it → Unity's "multiple EventSystems" warning spam every frame
+            // and a fragile input setup. Scenes that lack a baked EventSystem still get one here
+            // (EnsureEventSystem runs again per scene); scenes that have one keep theirs alone.
             var go = new GameObject("EventSystem");
             go.AddComponent<EventSystem>();
             EnsureInputModule(go);
-            DontDestroyOnLoad(go);
-            Debug.Log("[JoinSessionUI] EventSystem created");
+            Debug.Log("[JoinSessionUI] EventSystem created (scene-scoped)");
         }
 
         private static void EnsureInputModule(GameObject go)
