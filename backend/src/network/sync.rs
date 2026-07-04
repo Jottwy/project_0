@@ -120,6 +120,9 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         equipment: player.equipment,
         held_item: player.held_item,
         hit_seq: player.hit_seq,
+        // ADR-028 post-E3: SERVER-derived (authoritative stats, ADR-025) — the one pose field
+        // the client does not report.
+        dead: player.stats.is_dead(),
     };
     info!(
         "Sending player update to peers={} local_id={} pos=({:.2}, {:.2}, {:.2})",
@@ -188,6 +191,7 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
                     equipment: p.equipment,
                     held_item: p.held_item,
                     hit_seq: p.hit_seq,
+                    dead: p.dead,
                 },
             )
         })
@@ -226,6 +230,20 @@ pub async fn broadcast_stp_items(net: &NetworkManager) {
     }
     let payload = PacketPayload::StpItemList {
         items: net.stp_items.clone(),
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
+/// ADR-028 Fase E: host-as-server relay of the corpse roster — the host broadcasts its
+/// full authoritative `world.corpses` so every joiner mirrors the same lootable corpses
+/// (their own build_world_state then filters by THEIR player's proximity). Full-roster
+/// UDP at 10 Hz = self-healing, same pattern as broadcast_stp_items.
+pub async fn broadcast_corpses(net: &NetworkManager, world: &World) {
+    if net.peers.is_empty() {
+        return;
+    }
+    let payload = PacketPayload::CorpseList {
+        corpses: world.corpses.values().cloned().collect(),
     };
     net.broadcast_unreliable(&payload).await;
 }

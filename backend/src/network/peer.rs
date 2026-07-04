@@ -52,6 +52,11 @@ pub struct PeerConnection {
     /// PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
     /// update_player_state — so the phantom (ADR-016) never flinches.
     pub hit_seq: u8,
+    /// ADR-028 post-E3: cosmetic dead flag — SERVER-derived on the owning backend
+    /// (`player.stats.is_dead()`, ADR-025), relayed so observers hide the standing proxy while
+    /// its corpse lies there. NOT authoritative for any gameplay decision. NOTE: set in
+    /// handle_packet, NOT in update_player_state — so the phantom (ADR-016) never hides.
+    pub dead: bool,
     pub connected_at: Instant,
 }
 
@@ -74,6 +79,7 @@ impl PeerConnection {
             equipment: [0; 4],
             held_item: 0,
             hit_seq: 0,
+            dead: false,
             connected_at: now,
         }
     }

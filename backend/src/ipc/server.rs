@@ -36,8 +36,18 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// `held_item` decodes to 0 = empty hands). v7 (ADR-024) adds `hit_seq:u8` (a monotonic
 /// hit-reaction counter, incremented on each local DamageReceived) to PlayerInput,
 /// RemotePlayerState and the P2P PlayerUpdate — also `serde(default)`, so older clients
-/// interoperate (a missing `hit_seq` decodes to 0 = never hit, no flinch).
-const WIRE_SCHEMA_VERSION: u32 = 7;
+/// interoperate (a missing `hit_seq` decodes to 0 = never hit, no flinch). v8 (ADR-028)
+/// adds `visible_corpses: Vec<CorpseView>` to WorldState (lootable corpses: id, owner,
+/// frozen death position, equipment/held_item snapshot, loot stacks) — `serde(default)`
+/// and skipped when empty, so a v7 client interoperates (it simply never sees corpses).
+/// v9 (ADR-028 Fase E) adds four P2P PacketPayload variants for the host-authoritative corpse
+/// relay — CorpseList broadcast, CorpseSpawnRequest and CorpseTakeRequest joiner→host, and
+/// CorpseTakeResult host→requester; the IPC surface is unchanged from v8. A v8 peer drops the
+/// unknown packets on decode (fails the payload parse, packet ignored) and simply never sees
+/// remote corpses. v10 (ADR-028 post-E3) adds `dead:bool` to RemotePlayerState and the P2P
+/// PlayerUpdate — SERVER-derived (`player.stats.is_dead()`, not client-reported; PlayerInput
+/// unchanged), `serde(default)`, so a v9 peer decodes false (never hides the proxy).
+const WIRE_SCHEMA_VERSION: u32 = 10;
 
 /// Run the IPC server until a fatal accept error.
 ///
@@ -113,32 +123,45 @@ async fn read_loop(
 
 /// Encode outbound `ServerMessage`s and write them to the socket.
 async fn write_loop(mut writer: OwnedWriteHalf, mut state_rx: broadcast::Receiver<ServerMessage>) {
+    // Throttle for the per-WorldState diagnostic logs below. They used to fire on EVERY
+    // WorldState (10 Hz × 2 lines = 20 log lines/s) INSIDE this hot path; stdout/stderr are
+    // PIPED to Unity (OutputDataReceived → Debug.Log), so when Unity's main thread stalls the
+    // pipe fills and the blocked log write stalls this whole loop → the 256-slot broadcast
+    // buffer overflows → "IPC write loop lagged, skipped N" (dropping deltas AND events, e.g.
+    // player_died). Keeping the trace at 1 per 2 s preserves the diagnostic value at 1/40th
+    // of the log pressure.
+    let mut next_ws_log = std::time::Instant::now();
     loop {
         match state_rx.recv().await {
             Ok(msg) => match encode(&msg) {
                 Ok(frame) => {
                     if let ServerMessage::WorldState(ws) = &msg {
-                        let remote_ids: Vec<u16> = ws.remote_players.iter().map(|p| p.id).collect();
-                        info!(
-                            "MPTRACE step=I event=ipc_serialize_world_state self_id=<unknown> sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=ipc peer_count=<unknown> remote_players_count={} remote_players_ids={:?} seed={} revision={} chunks={} entities={} items={}",
-                            ws.remote_players.len(),
-                            remote_ids,
-                            ws.world_seed,
-                            ws.world_revision,
-                            ws.visible_chunks.len(),
-                            ws.visible_entities.len(),
-                            ws.visible_items.len()
-                        );
-                        let layout_chunks = ws
-                            .visible_chunks
-                            .iter()
-                            .filter(|chunk| chunk.layout_cells.len() == 100)
-                            .count();
-                        info!(
-                            "MPTRACE step=CC event=chunk_layout_sync chunks={} layout_chunks={} fields=edge_openings,macro_id,zone_kind,floor_profile,layout_cells",
-                            ws.visible_chunks.len(),
-                            layout_chunks
-                        );
+                        let now = std::time::Instant::now();
+                        if now >= next_ws_log {
+                            next_ws_log = now + std::time::Duration::from_secs(2);
+                            let remote_ids: Vec<u16> =
+                                ws.remote_players.iter().map(|p| p.id).collect();
+                            info!(
+                                "MPTRACE step=I event=ipc_serialize_world_state self_id=<unknown> sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=ipc peer_count=<unknown> remote_players_count={} remote_players_ids={:?} seed={} revision={} chunks={} entities={} items={}",
+                                ws.remote_players.len(),
+                                remote_ids,
+                                ws.world_seed,
+                                ws.world_revision,
+                                ws.visible_chunks.len(),
+                                ws.visible_entities.len(),
+                                ws.visible_items.len()
+                            );
+                            let layout_chunks = ws
+                                .visible_chunks
+                                .iter()
+                                .filter(|chunk| chunk.layout_cells.len() == 100)
+                                .count();
+                            info!(
+                                "MPTRACE step=CC event=chunk_layout_sync chunks={} layout_chunks={} fields=edge_openings,macro_id,zone_kind,floor_profile,layout_cells",
+                                ws.visible_chunks.len(),
+                                layout_chunks
+                            );
+                        }
                     }
                     if writer.write_all(&frame).await.is_err() {
                         break;
@@ -148,7 +171,11 @@ async fn write_loop(mut writer: OwnedWriteHalf, mut state_rx: broadcast::Receive
             },
             Err(broadcast::error::RecvError::Closed) => break,
             Err(broadcast::error::RecvError::Lagged(skipped)) => {
-                // Unity fell behind; older snapshots are stale anyway.
+                // Unity fell behind; older snapshots are stale anyway. NOTE: this drops
+                // whatever was oldest in the broadcast buffer — including Events (player_died).
+                // The throttled logging above + the 256 capacity make this rare; if it still
+                // fires, events may have been lost and TP_WATCH/DEATH_FLOW readings around this
+                // timestamp are suspect.
                 warn!("IPC write loop lagged, skipped {skipped} messages");
             }
         }

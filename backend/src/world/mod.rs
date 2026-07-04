@@ -3,6 +3,7 @@
 pub mod architecture;
 pub mod chunk;
 pub mod collision;
+pub mod corpse;
 pub mod entity;
 pub mod generator;
 pub mod graph;
@@ -43,7 +44,16 @@ use levels::level_0::region_graph_builder::{
 static V30A2_VISFIX_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
 static UNIFIED_VOLUMETRIC_IPC_LAST_REVISION: AtomicU64 = AtomicU64::new(0);
 
-const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = true;
+/// Rollout flag for the unified volumetric world: `true` attaches a column to EVERY
+/// layer-0 chunk. OFF (2026-07-02) — that violated the IPC contract (ipc/mod.rs
+/// `ChunkView.volumetric_grid`: "Present only on the near-spawn showcase host chunk;
+/// omitted otherwise") and bloated every 10 Hz WorldState to ~1.3 MB, saturating the
+/// IPC pipe whenever Unity's main thread stalled (worst at respawn) → the 256-slot
+/// broadcast buffer overflowed ("IPC write loop lagged") and dropped one-shot events
+/// (player_died / player_respawned). Unity renders non-column chunks via the legacy
+/// flat renderer fallback. This is the ONLY constant with this name — a duplicate
+/// (dead) associated const inside `impl World` used to shadow-confuse edits; removed.
+const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = false;
 
 /// Tunable world parameters (ARCHITECTURE_V1.md §11.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -165,6 +175,12 @@ pub struct World {
     v30a_chunk_cache: Option<Vec<Chunk>>,
     view_cache: Option<(u64, usize, Vec<ChunkView>)>,
     pub world_graph: Option<WorldGraph>,
+    /// ADR-028: lootable corpses. GLOBAL on purpose — never stored in chunks, so
+    /// `update_ownership` unloads can't destroy them (persist until fully looted).
+    pub corpses: HashMap<u32, corpse::CorpseData>,
+    /// ADR-028: session-monotonic corpse id source (u32 keyed map, wraps — a session
+    /// never approaches 2^32 deaths).
+    next_corpse_id: u32,
 }
 
 impl World {
@@ -179,6 +195,8 @@ impl World {
             v30a_chunk_cache: None,
             view_cache: None,
             world_graph: None,
+            corpses: HashMap::new(),
+            next_corpse_id: 1,
         }
     }
 
@@ -203,6 +221,9 @@ impl World {
         self.v30a_chunk_cache = None;
         self.view_cache = None;
         self.world_graph = None; // NUEVO
+        // ADR-028: adopting a remote world discards local corpses (none should exist
+        // yet at join time; consistent with chunks.clear()).
+        self.corpses.clear();
     }
 
     pub fn generate_initial_structures(&mut self, owner_id: PeerId) {
@@ -1186,9 +1207,8 @@ impl World {
     }
 
     /// Attach the backend-authored unified volumetric column to layer-0 chunks.
-    /// Render-only: it does not touch chunk layout / collision authority.
-    const ENABLE_LEVEL0_VOLUMETRIC_COLUMNS: bool = true;
-
+    /// Render-only: it does not touch chunk layout / collision authority. Gated by the
+    /// module-level `ENABLE_LEVEL0_VOLUMETRIC_COLUMNS` rollout flag (see its doc).
     fn volumetric_grid_view_for(
         &self,
         chunk: &Chunk,
@@ -1200,7 +1220,14 @@ impl World {
         let is_showcase = self.seed == volumetric_grid::SHOWCASE_SEED
             && volumetric_grid::is_showcase_chunk_pos(chunk.pos);
 
-        if is_showcase || chunk_is_v30a(chunk) || ENABLE_LEVEL0_VOLUMETRIC_COLUMNS {
+        // The `chunk_is_v30a(chunk)` disjunct was removed from this gate (2026-07-02):
+        // under worldgraph-v1 nearly every layer-0 chunk carries a V30A vertical flag
+        // (measured 60/62), so it re-attached the column payload world-wide (~1.3 MB per
+        // WorldState at 10 Hz) exactly like the rollout flag above — same IPC-contract
+        // violation, same event-dropping lag. The predicate still gates the V30A collision
+        // cache and vertical navigation elsewhere; V30A features render via the flat
+        // fallback path (vertical_flags / inter_layer_volumes still ship in ChunkView).
+        if is_showcase || ENABLE_LEVEL0_VOLUMETRIC_COLUMNS {
             return volumetric_grid::unified_column_view(self.seed, chunk);
         }
 

@@ -13,6 +13,7 @@ use crate::ipc::{
     ClientMessage, GameEvent, GridChunkData, LocalPlayerState, MovementDelta, PlayerAction,
     PlayerInput, RemotePlayerState, ServerMessage, StatsView, WorldState,
 };
+use crate::network::protocol::PacketPayload;
 use crate::network::sync;
 use crate::network::{NetworkEvent, NetworkManager, PeerId};
 use crate::player::Player;
@@ -52,11 +53,15 @@ const PICKUP_REMOVE_DELAY: Duration = Duration::from_millis(600);
 
 /// Forces the god-traversal COLLISION BYPASS on (the player's claimed pose is trusted without
 /// clamping against the BACKEND world, which doesn't match the rendered ChunkStreamer — the known
-/// world-migration debt). Kept `true` on purpose until that migration so movement isn't
-/// rubber-banded against phantom walls. NOTE (ADR-016 slice 1): this no longer gates death —
-/// that is a SEPARATE flag (`DEV_INVINCIBLE`), so the robapieles can kill the host while the
-/// collision bypass stays on.
-const DEV_GOD_TRAVERSAL_HARDCODED: bool = true;
+/// world-migration debt). NOTE (ADR-016 slice 1): this no longer gates death — that is a SEPARATE
+/// flag (`DEV_INVINCIBLE`), so the robapieles can kill the host while the collision bypass stays on.
+/// TURNED OFF (2026-07-01): was left `true` and was letting the client's claimed position drift
+/// uncorrected into hostile-entity melee range (the "4th damage source" investigation) — server
+/// validation is the trade-off accepted over god-mode's phantom-wall-avoidance. If the backend/
+/// ChunkStreamer world mismatch causes visible rubber-banding, that is the ALREADY-DOCUMENTED
+/// world-authoritative migration debt (see STATE.md), not a new regression — re-enable via
+/// `DEV_GOD_TRAVERSAL=1` env for debugging without re-hardcoding this.
+const DEV_GOD_TRAVERSAL_HARDCODED: bool = false;
 
 /// ADR-016 slice 2: phantom walk speed (m/s). Calibrated to human walking so the client's
 /// velocity-derived locomotion (ADR-013) reads it as walking, not teleporting — the proxy
@@ -173,6 +178,9 @@ pub async fn run(
     // Track the last chunk position used for ownership so we only call
     // update_ownership when the player crosses a chunk boundary, not every tick.
     let mut last_ownership_chunk: Option<ChunkPos> = None;
+    // ADR-025 respawn-on-demand: edge flag so a dead player (health stays 0 until the client
+    // sends respawn_request) emits player_died exactly ONCE, not every tick. Reset on revive.
+    let mut death_announced = false;
     // ADR-016 slice 2: host-only driver that walks phantom peers (the robapieles) each
     // entity tick, resolving collision via ADR-017's sim-only chunk cache.
     let mut phantom_driver = PhantomDriver::new(net.world_seed);
@@ -358,9 +366,18 @@ pub async fn run(
             // ADR-024: record the client-reported hit-reaction counter (cosmetic; relayed to
             // peers, not validated). Incremented client-side on each local DamageReceived.
             player.hit_seq = received_input.hit_seq;
-            let seq = apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
-            last_accepted_input_seq = seq;
-            authoritative_velocity = Vec3::from_array(received_input.velocity);
+            // ADR-025 respawn-on-demand: while DEAD the server FREEZES the authoritative pose —
+            // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
+            // take_damage). Any local client drift while dead is corrected by the applier's snap
+            // on player_respawned. The ack does not advance (nothing was accepted).
+            if !player.stats.is_dead() {
+                let seq =
+                    apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
+                last_accepted_input_seq = seq;
+                authoritative_velocity = Vec3::from_array(received_input.velocity);
+            } else {
+                authoritative_velocity = Vec3::ZERO;
+            }
         }
         // Only refresh chunk ownership when the player crosses a chunk boundary.
         // Calling update_ownership every tick caused ~2 FPS churn from constant
@@ -493,16 +510,39 @@ pub async fn run(
         // Death → respawn on a validated safe cell (never the unsafe origin).
         // DEV_INVINCIBLE (not god-traversal anymore): survival death and the resulting respawn
         // are skipped (debug only). This is the path a phantom Kill triggers via take_damage(100).
+        // ADR-025 respawn-on-demand (decided 2026-07-02): the server NO LONGER auto-respawns.
+        // The player stays dead (health 0, pose frozen — see the is_dead gate in the input
+        // block) with the native DeathUI visible, until the client sends "respawn_request"
+        // (handled in handle_action, which runs resolve_safe_spawn + emits player_respawned).
+        // player_died fires exactly once per death (edge flag), with the REAL death position
+        // (previously mislabeled: it carried the post-respawn spawn position).
         if !dev_invincible && player.stats.is_dead() {
-            info!("Player died — respawning");
-            player.stats = crate::player::stats::PlayerStats::on_respawn();
-            let res = resolve_safe_spawn(&mut world, preferred_spawn());
-            player.position = res.position;
-            let _ = to_clients.send(ServerMessage::Event(GameEvent {
-                event_type: "player_died".into(),
-                data: serde_json::json!({ "death_pos": player.position.to_array() }),
-            }));
-            world.update_ownership(player.position, player.id);
+            if !death_announced {
+                death_announced = true;
+                // TEMP DIAG (death-cause dump; REMOVE after diagnosis): stats + candidate cause at
+                // the death edge. starving/dehydrated=true → survival drain; both false → a hit
+                // (phantom if phantom_active, else entity `damage_taken` / reported local damage).
+                info!(
+                    "MPTRACE step=DEATH_DIAG event=player_died_cause health={:.2} hunger={:.2} thirst={:.2} sanity={:.2} phantom_active={} starving={} dehydrated={} death_pos=({:.1},{:.1},{:.1})",
+                    player.stats.health,
+                    player.stats.hunger,
+                    player.stats.thirst,
+                    player.stats.sanity,
+                    debug_spawn_phantom,
+                    player.stats.hunger <= 0.0,
+                    player.stats.thirst <= 0.0,
+                    player.position.x,
+                    player.position.y,
+                    player.position.z
+                );
+                info!("Player died — awaiting respawn_request (respawn-on-demand)");
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "player_died".into(),
+                    data: serde_json::json!({ "death_pos": player.position.to_array() }),
+                }));
+            }
+        } else {
+            death_announced = false; // revived (respawn_request honored) → re-arm the edge
         }
 
         // Stat warnings at 1hz.
@@ -530,6 +570,8 @@ pub async fn run(
                 sync::broadcast_stp_buildings(&net).await;
                 sync::broadcast_stp_carryables(&net).await;
                 sync::broadcast_stp_harvestables(&net).await;
+                // ADR-028 Fase E: full corpse roster (host-authoritative, self-healing).
+                sync::broadcast_corpses(&net, &world).await;
             }
         }
 
@@ -664,10 +706,11 @@ async fn handle_network_event(
             equipment,
             held_item,
             hit_seq,
+            dead,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -882,6 +925,235 @@ async fn handle_network_event(
         NetworkEvent::HandshakeReceived { .. } => {
             // Handled internally by NetworkManager.
         }
+
+        // ─── ADR-028 Fase E: corpse relay (host-authoritative) ───
+        NetworkEvent::CorpseSpawnRequest {
+            request_id,
+            requester_id,
+            owner_name,
+            position,
+            equipment,
+            held_item,
+            items,
+        } => {
+            if !net.is_host {
+                return; // only the host owns corpse authority
+            }
+            // ADR-028 post-E3: defense against old/malicious clients — a v9 joiner (or a forged
+            // request) could still ship an empty snapshot; the immortal-empty-corpse rule is
+            // backend-authoritative, so enforce it here too, not just at the joiner's forward.
+            if crate::world::corpse::corpse_loot_is_empty(&items) {
+                info!(
+                    "MPTRACE step=CORPSE event=corpse_spawn_skipped reason=empty_loot requester_id={} request_id={}",
+                    requester_id, request_id
+                );
+                return;
+            }
+            match apply_corpse_spawn_request(
+                world,
+                &mut net.processed_corpse_requests,
+                requester_id,
+                request_id,
+                CorpseSpawnData {
+                    owner_name,
+                    position,
+                    equipment,
+                    held_item,
+                    items,
+                },
+            ) {
+                Some(corpse_id) => info!(
+                    "MPTRACE step=CORPSE event=corpse_spawned corpse_id={} owner_id={} pos=({:.2},{:.2},{:.2}) relayed=true request_id={}",
+                    corpse_id, requester_id, position[0], position[1], position[2], request_id
+                ),
+                None => info!(
+                    "MPTRACE step=CORPSE event=corpse_spawn_duplicate requester_id={} request_id={} ignored=true",
+                    requester_id, request_id
+                ),
+            }
+        }
+
+        NetworkEvent::CorpseTakeRequest {
+            request_id,
+            requester_id,
+            corpse_id,
+            item_index,
+            quantity,
+            requester_pos,
+        } => {
+            if !net.is_host {
+                return;
+            }
+            match apply_corpse_take_request(
+                world,
+                &mut net.processed_corpse_requests,
+                requester_id,
+                request_id,
+                CorpseTakeData {
+                    corpse_id,
+                    item_index,
+                    quantity,
+                    requester_pos,
+                },
+            ) {
+                Some(result) => {
+                    if let PacketPayload::CorpseTakeResult {
+                        accepted, item_id, quantity, corpse_empty, ref reason, ..
+                    } = result
+                    {
+                        info!(
+                            "MPTRACE step=CORPSE event=corpse_take_relayed corpse_id={} item_index={} requester_id={} accepted={} item_id={} quantity={} corpse_empty={} reason={}",
+                            corpse_id, item_index, requester_id, accepted, item_id, quantity, corpse_empty,
+                            if reason.is_empty() { "-" } else { reason }
+                        );
+                    }
+                    net.send_reliable(requester_id, &result).await;
+                }
+                None => info!(
+                    "MPTRACE step=CORPSE event=corpse_take_duplicate requester_id={} request_id={} ignored=true",
+                    requester_id, request_id
+                ),
+            }
+        }
+
+        NetworkEvent::CorpseTakeResult {
+            request_id,
+            accepted,
+            corpse_id,
+            item_index,
+            item_id,
+            quantity,
+            corpse_empty,
+            reason,
+        } => {
+            // We are the requester: surface the host's verdict to OUR Unity through the SAME
+            // IPC events Fase D already consumes (CorpseLootSync's confirm/rollback works
+            // unchanged). Deduped: the verdict is reliable and may retransmit — a duplicated
+            // corpse_item_taken would double-shift the client's index mirror.
+            if !net.processed_corpse_results.insert(request_id) {
+                info!(
+                    "MPTRACE step=CORPSE event=corpse_take_result_duplicate request_id={} ignored=true",
+                    request_id
+                );
+                return;
+            }
+            if accepted {
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "corpse_item_taken".into(),
+                    data: serde_json::json!({
+                        "corpse_id": corpse_id,
+                        "item_index": item_index,
+                        "item_id": item_id,
+                        "quantity": quantity,
+                        "corpse_empty": corpse_empty,
+                    }),
+                }));
+            } else {
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "corpse_take_rejected".into(),
+                    data: serde_json::json!({
+                        "corpse_id": corpse_id,
+                        "item_index": item_index,
+                        "reason": reason,
+                    }),
+                }));
+            }
+        }
+
+        NetworkEvent::CorpseListReceived { corpses } => {
+            // Joiner: mirror the host's authoritative roster verbatim (same trust as
+            // StpItemList). The host never receives this (it doesn't broadcast to itself),
+            // but guard anyway — its own map is the source of truth.
+            if !net.is_host {
+                world.corpses = corpses.into_iter().map(|c| (c.id, c)).collect();
+            }
+        }
+    }
+}
+
+/// ADR-028 Fase E: the loot-snapshot half of a CorpseSpawnRequest (everything except the
+/// dedupe key), grouped so the handler keeps a readable arity.
+struct CorpseSpawnData {
+    owner_name: String,
+    position: [f32; 3],
+    equipment: [i32; 4],
+    held_item: i32,
+    items: Vec<crate::world::corpse::CorpseStack>,
+}
+
+/// ADR-028 Fase E: the take half of a CorpseTakeRequest (everything except the dedupe key).
+struct CorpseTakeData {
+    corpse_id: u32,
+    item_index: u32,
+    quantity: u16,
+    requester_pos: [f32; 3],
+}
+
+/// ADR-028 Fase E: host-side handling of a (possibly retransmitted) corpse spawn request.
+/// Returns the new corpse id, or `None` when the (requester, request_id) pair was already
+/// processed — a reliable retransmit must spawn EXACTLY one corpse (the known open
+/// infinite-retransmit bug makes this dedupe load-bearing, not defensive).
+fn apply_corpse_spawn_request(
+    world: &mut World,
+    processed: &mut HashSet<(u16, u64)>,
+    requester_id: u16,
+    request_id: u64,
+    spawn: CorpseSpawnData,
+) -> Option<u32> {
+    if !processed.insert((requester_id, request_id)) {
+        return None;
+    }
+    Some(world.spawn_corpse(
+        requester_id,
+        spawn.owner_name,
+        Vec3::from_array(spawn.position),
+        spawn.equipment,
+        spawn.held_item,
+        spawn.items,
+    ))
+}
+
+/// ADR-028 Fase E: host-side handling of a (possibly retransmitted) corpse take request.
+/// Returns the ready-to-send verdict payload, or `None` when deduped (retransmit: the
+/// original verdict is already in the reliable-send pipeline; sending a second would
+/// double-fire the requester's IPC event).
+fn apply_corpse_take_request(
+    world: &mut World,
+    processed: &mut HashSet<(u16, u64)>,
+    requester_id: u16,
+    request_id: u64,
+    take: CorpseTakeData,
+) -> Option<PacketPayload> {
+    if !processed.insert((requester_id, request_id)) {
+        return None;
+    }
+    match world.take_corpse_item(
+        take.corpse_id,
+        take.item_index as usize,
+        take.quantity,
+        Vec3::from_array(take.requester_pos),
+        crate::world::corpse::CORPSE_LOOT_MAX_DISTANCE,
+    ) {
+        Ok(taken) => Some(PacketPayload::CorpseTakeResult {
+            request_id,
+            accepted: true,
+            corpse_id: take.corpse_id,
+            item_index: take.item_index,
+            item_id: taken.item_id,
+            quantity: taken.quantity,
+            corpse_empty: !world.corpses.contains_key(&take.corpse_id),
+            reason: String::new(),
+        }),
+        Err(reason) => Some(PacketPayload::CorpseTakeResult {
+            request_id,
+            accepted: false,
+            corpse_id: take.corpse_id,
+            item_index: take.item_index,
+            item_id: 0,
+            quantity: 0,
+            corpse_empty: false,
+            reason,
+        }),
     }
 }
 
@@ -950,9 +1222,55 @@ fn apply_client_authoritative_move(
     // resolve_move slides/clamps against the level; the resolved point is the
     // authoritative pose echoed back to the client.
     let resolved = Level0Collision::resolve_move(world, player.position, claimed);
+
+    // TEMP DIAG (rubber-banding trigger-rate audit; REMOVE after diagnosis): count resolve_move
+    // invocations/sec and how many resolve as Blocked (pressed against a wall), to test whether
+    // this path's call rate could plausibly correlate with the ~5s DEATH_DIAG death cadence, or
+    // whether it's orders of magnitude more frequent (call-rate is gated by TICK_HZ=60 once
+    // has_received_input is true, i.e. every tick — NOT by the 30Hz client send rate) and thus
+    // unrelated to the death cause. Fully-qualified CollisionResultKind path (no new `use`) so
+    // removing this block leaves no orphaned import.
+    RESOLVE_MOVE_CALLS_DIAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if matches!(
+        resolved.kind,
+        crate::world::collision::CollisionResultKind::Blocked
+    ) {
+        RESOLVE_MOVE_BLOCKED_DIAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if _tick % 60 == 0 {
+        let calls = RESOLVE_MOVE_CALLS_DIAG.swap(0, std::sync::atomic::Ordering::Relaxed);
+        let blocked = RESOLVE_MOVE_BLOCKED_DIAG.swap(0, std::sync::atomic::Ordering::Relaxed);
+        info!(
+            "MPTRACE step=RESOLVE_DIAG event=resolve_move_rate calls_per_sec={} blocked_per_sec={}",
+            calls, blocked
+        );
+    }
+
+    // TEMP DIAG (TP-source audit; REMOVE after diagnosis): the clamp displaced the CLAIMED pose by
+    // a large XZ amount → server-side rubber-banding against the (mismatched) backend world. This
+    // pose only reaches the client through delta_update inside a death window, so a client-side TP
+    // outside a window can NOT come from here — this log proves/disproves correlation. Throttled to
+    // 1/s (a sustained wall-press displaces every tick).
+    {
+        let dx = resolved.position.x - claimed.x;
+        let dz = resolved.position.z - claimed.z;
+        if (dx * dx + dz * dz).sqrt() > 2.0 && _tick % 60 == 0 {
+            info!(
+                "MPTRACE step=TP_WATCH TP_SOURCE=resolve_move_clamp claimed=({:.1},{:.1},{:.1}) resolved=({:.1},{:.1},{:.1}) kind={:?}",
+                claimed.x, claimed.y, claimed.z,
+                resolved.position.x, resolved.position.y, resolved.position.z,
+                resolved.kind
+            );
+        }
+    }
+
     player.position = resolved.position;
     input.input_seq
 }
+
+// TEMP DIAG (rubber-banding trigger-rate audit; REMOVE after diagnosis): see apply_client_authoritative_move.
+static RESOLVE_MOVE_CALLS_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static RESOLVE_MOVE_BLOCKED_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 async fn handle_action(
     action: &PlayerAction,
@@ -963,6 +1281,207 @@ async fn handle_action(
     processed_interactions: &mut HashSet<(u16, u64)>,
 ) {
     match action.action_type.as_str() {
+        // ADR-025 Slice B: the client reports REAL local damage (falls, hazards — its
+        // HealthManager.DamageReceived) so the authoritative health tracks it. Death is then
+        // owned by the existing is_dead() → respawn → "player_died" path in run(). Gated by
+        // DEV_FREEZE_SURVIVAL like every other player-damage source; sanitized (NaN/negative/
+        // huge → clamped) so a malformed report can never poison the authoritative health.
+        "report_damage" => {
+            let raw = action.data.get("amount").and_then(|v| v.as_f64());
+            let amount = sanitize_reported_damage(raw);
+            let cause = json_str(&action.data, "cause").unwrap_or("unknown");
+            if amount > 0.0 && !env_flag_enabled("DEV_FREEZE_SURVIVAL") {
+                player.stats.take_damage(amount);
+                info!(
+                    "MPTRACE step=DMG event=report_damage_applied amount={:.1} cause={} health={:.2}",
+                    amount, cause, player.stats.health
+                );
+            }
+        }
+        // ADR-025 respawn-on-demand: the client's native Respawn button asks the server to
+        // respawn. Honored ONLY while actually dead (sanitized like report_damage: a spammed or
+        // abusive request while alive is a logged no-op). This is the resolve+reposition that the
+        // death block used to run automatically; player_respawned carries the resolved position
+        // and arms the client's AuthoritativePoseApplier snap.
+        "respawn_request" => {
+            if player.stats.is_dead() {
+                player.stats = crate::player::stats::PlayerStats::on_respawn();
+                // ADR-028: this death's corpse (if any) is sealed; re-arm the dedupe
+                // so the NEXT death can report its own loot snapshot.
+                player.death_loot_reported = false;
+                let res = resolve_safe_spawn(world, preferred_spawn());
+                player.position = res.position;
+                info!(
+                    "MPTRACE step=RESPAWN event=respawn_request_honored pos=({:.2},{:.2},{:.2})",
+                    player.position.x, player.position.y, player.position.z
+                );
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "player_respawned".into(),
+                    data: serde_json::json!({ "position": player.position.to_array() }),
+                }));
+                world.update_ownership(player.position, player.id);
+            } else {
+                info!(
+                    "MPTRACE step=RESPAWN event=respawn_request_ignored reason=not_dead health={:.2}",
+                    player.stats.health
+                );
+            }
+        }
+        // ADR-028 Fase A: the client reports its death-loot snapshot (full STP inventory +
+        // equipment + held item, raw STP item ids) at the death edge. Trust-the-client, same
+        // level as position/equipment/held_item — the server has no authoritative inventory
+        // to verify against (the legacy Rust Inventory is disconnected from the real game).
+        // Gated on is_dead (a report while alive is a logged no-op — ordered IPC guarantees
+        // the killing report_damage arrives first) and deduped per death (the client's event
+        // fast-path + derived-edge fallback may both fire; only the first creates a corpse).
+        // The corpse anchors at player.position, frozen by the ADR-025 death gate until
+        // respawn_request.
+        "report_death_loot" => {
+            if !player.stats.is_dead() {
+                info!(
+                    "MPTRACE step=CORPSE event=death_loot_ignored reason=not_dead health={:.2}",
+                    player.stats.health
+                );
+            } else if player.death_loot_reported {
+                info!("MPTRACE step=CORPSE event=death_loot_ignored reason=already_reported");
+            } else if net.is_host {
+                let (equipment, held_item, items) = parse_death_loot(&action.data);
+                // ADR-028 post-E3: a corpse born empty would be immortal (despawn-on-empty
+                // only runs after a take) — dying naked leaves no physical trace.
+                if crate::world::corpse::corpse_loot_is_empty(&items) {
+                    player.death_loot_reported = true;
+                    info!("MPTRACE step=CORPSE event=corpse_spawn_skipped reason=empty_loot");
+                    return;
+                }
+                let stack_count = items.len();
+                let corpse_id = world.spawn_corpse(
+                    player.id,
+                    player.name.clone(),
+                    player.position,
+                    equipment,
+                    held_item,
+                    items,
+                );
+                player.death_loot_reported = true;
+                info!(
+                    "MPTRACE step=CORPSE event=corpse_spawned corpse_id={} owner_id={} pos=({:.2},{:.2},{:.2}) stacks={} held_item={}",
+                    corpse_id,
+                    player.id,
+                    player.position.x,
+                    player.position.y,
+                    player.position.z,
+                    stack_count,
+                    held_item
+                );
+            } else {
+                // ADR-028 Fase E: joiners do NOT spawn locally — corpse ids are host-assigned
+                // (global uniqueness) and the roster mirror brings the corpse back within one
+                // 10 Hz broadcast tick. Reliable + host-side (requester, request_id) dedupe.
+                let (equipment, held_item, items) = parse_death_loot(&action.data);
+                // ADR-028 post-E3: empty snapshot → no corpse anywhere; skip the hop too.
+                if crate::world::corpse::corpse_loot_is_empty(&items) {
+                    player.death_loot_reported = true;
+                    info!("MPTRACE step=CORPSE event=corpse_spawn_skipped reason=empty_loot");
+                    return;
+                }
+                let stack_count = items.len();
+                let request_id = net.next_corpse_request_id;
+                net.next_corpse_request_id += 1;
+                let payload = PacketPayload::CorpseSpawnRequest {
+                    request_id,
+                    requester_id: net.local_id,
+                    owner_name: player.name.clone(),
+                    position: player.position.to_array(),
+                    equipment,
+                    held_item,
+                    items,
+                };
+                player.death_loot_reported = true;
+                info!(
+                    "MPTRACE step=CORPSE event=corpse_spawn_forwarded_to_host request_id={} stacks={} held_item={}",
+                    request_id, stack_count, held_item
+                );
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // ADR-028 Fase A: loot one stack from a corpse. The server only keeps the container
+        // accounting (the granted stack's destination — the looter's STP inventory — lives
+        // client-side, same trust principle as pickup). Success is confirmed by the
+        // "corpse_item_taken" event; the WorldState reflects the new contents next tick and
+        // the corpse despawns by absence once empty. No reservation: the single-threaded
+        // loop serializes competing takes (the loser gets a logged rejection).
+        "take_corpse_item" => {
+            let corpse_id = json_u32(&action.data, "corpse_id").unwrap_or(0);
+            let item_index = json_u32(&action.data, "item_index").unwrap_or(u32::MAX) as usize;
+            let quantity = json_u32(&action.data, "quantity")
+                .map(|q| q.min(u16::MAX as u32) as u16)
+                .unwrap_or(0);
+            // ADR-028 Fase E: a joiner forwards to the host (authority) instead of mutating
+            // its local mirror (which the 10 Hz roster broadcast overwrites anyway). The
+            // verdict comes back as a reliable CorpseTakeResult → the same IPC events.
+            if !net.is_host {
+                let request_id = net.next_corpse_request_id;
+                net.next_corpse_request_id += 1;
+                let payload = PacketPayload::CorpseTakeRequest {
+                    request_id,
+                    requester_id: net.local_id,
+                    corpse_id,
+                    item_index: item_index as u32,
+                    quantity,
+                    requester_pos: player.position.to_array(),
+                };
+                info!(
+                    "MPTRACE step=CORPSE event=corpse_take_forwarded_to_host request_id={} corpse_id={} item_index={} quantity={}",
+                    request_id, corpse_id, item_index, quantity
+                );
+                net.send_reliable(1, &payload).await;
+                return;
+            }
+            match world.take_corpse_item(
+                corpse_id,
+                item_index,
+                quantity,
+                player.position,
+                crate::world::corpse::CORPSE_LOOT_MAX_DISTANCE,
+            ) {
+                Ok(taken) => {
+                    let corpse_empty = !world.corpses.contains_key(&corpse_id);
+                    info!(
+                        "MPTRACE step=CORPSE event=corpse_item_taken corpse_id={} item_index={} item_id={} quantity={} corpse_empty={}",
+                        corpse_id, item_index, taken.item_id, taken.quantity, corpse_empty
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "corpse_item_taken".into(),
+                        data: serde_json::json!({
+                            "corpse_id": corpse_id,
+                            "item_index": item_index,
+                            "item_id": taken.item_id,
+                            "quantity": taken.quantity,
+                            "corpse_empty": corpse_empty,
+                        }),
+                    }));
+                }
+                Err(reason) => {
+                    info!(
+                        "MPTRACE step=CORPSE event=corpse_take_rejected corpse_id={} item_index={} reason={}",
+                        corpse_id, item_index, reason
+                    );
+                    // Fase D fix #1: the client applies the take LOCALLY the instant the drag/
+                    // Take-All gesture completes (StorageStationUI's native transfer has no
+                    // request-gate — see CorpseLootSync class doc) and rolls it back on rejection.
+                    // Without this broadcast the client would never learn to roll back, and the
+                    // "server manda, cliente refleja" invariant would silently break on rejection.
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "corpse_take_rejected".into(),
+                        data: serde_json::json!({
+                            "corpse_id": corpse_id,
+                            "item_index": item_index,
+                            "reason": reason,
+                        }),
+                    }));
+                }
+            }
+        }
         "world_interact" => {
             let target_id = json_u32(&action.data, "target_id").unwrap_or(0);
             let request_id = json_u64(&action.data, "request_id").unwrap_or(0);
@@ -1805,6 +2324,60 @@ fn json_u32(value: &serde_json::Value, key: &str) -> Option<u32> {
     json_u64(value, key).and_then(|v| u32::try_from(v).ok())
 }
 
+/// ADR-028: raw STP item ids (`DataIdReference` hashes) may be NEGATIVE — the u32/u64
+/// helpers above would drop them. i64 → i32 with range check.
+fn json_i32(value: &serde_json::Value, key: &str) -> Option<i32> {
+    value
+        .get(key)
+        .and_then(|v| v.as_i64())
+        .and_then(|v| i32::try_from(v).ok())
+}
+
+/// ADR-028: parse the client-reported death-loot snapshot from `report_death_loot`
+/// action data: `{ equipment: [i32;4], held_item: i32, items: [{item_id, quantity}] }`.
+/// Malformed or missing fields degrade to empty (never poison the corpse with junk);
+/// out-of-range stacks are skipped. Length/zero-quantity hygiene is enforced again by
+/// `spawn_corpse` (single choke point).
+fn parse_death_loot(data: &serde_json::Value) -> ([i32; 4], i32, Vec<crate::world::corpse::CorpseStack>) {
+    let mut equipment = [0i32; 4];
+    if let Some(arr) = data.get("equipment").and_then(|v| v.as_array()) {
+        for (slot, value) in arr.iter().take(4).enumerate() {
+            equipment[slot] = value
+                .as_i64()
+                .and_then(|v| i32::try_from(v).ok())
+                .unwrap_or(0);
+        }
+    }
+
+    let held_item = json_i32(data, "held_item").unwrap_or(0);
+
+    let items = data
+        .get("items")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let item_id = json_i32(entry, "item_id")?;
+                    let quantity = json_u32(entry, "quantity")
+                        .map(|q| q.min(u16::MAX as u32) as u16)?;
+                    Some(crate::world::corpse::CorpseStack { item_id, quantity })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    (equipment, held_item, items)
+}
+
+/// ADR-025 Slice B: sanitize a client-reported damage amount. Missing/NaN/∞/negative → 0
+/// (never poisons the authoritative health); capped at 100 (one report can at most kill).
+fn sanitize_reported_damage(raw: Option<f64>) -> f32 {
+    match raw {
+        Some(v) if v.is_finite() => (v as f32).clamp(0.0, 100.0),
+        _ => 0.0,
+    }
+}
+
 fn json_str<'a>(value: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     value.get(key).and_then(|v| v.as_str())
 }
@@ -1845,6 +2418,7 @@ fn build_world_state(
             equipment: p.equipment,
             held_item: p.held_item,
             hit_seq: p.hit_seq,
+            dead: p.dead,
         });
     }
 
@@ -1902,6 +2476,7 @@ fn build_world_state(
         stp_buildings: net.stp_buildings.clone(),
         stp_carryables: net.stp_carryables.clone(),
         stp_harvestables: net.stp_harvestables.clone(),
+        visible_corpses: world.visible_corpse_views(player.position),
     }
 }
 
@@ -2655,6 +3230,157 @@ impl PhantomDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_reported_damage_rejects_garbage_and_clamps() {
+        // ADR-025 Slice B: a malformed client report must never poison authoritative health.
+        assert_eq!(sanitize_reported_damage(None), 0.0);
+        assert_eq!(sanitize_reported_damage(Some(f64::NAN)), 0.0);
+        assert_eq!(sanitize_reported_damage(Some(f64::INFINITY)), 0.0);
+        assert_eq!(sanitize_reported_damage(Some(-25.0)), 0.0);
+        assert_eq!(sanitize_reported_damage(Some(35.5)), 35.5);
+        assert_eq!(sanitize_reported_damage(Some(9999.0)), 100.0);
+    }
+
+    // ADR-028 Fase E: THE dedupe-under-retransmission test (explicitly required — the reliable
+    // channel has a known open infinite-retransmit bug, STATE.md, so the same request WILL
+    // arrive multiple times in production, not just in theory).
+    #[test]
+    fn corpse_spawn_request_dedupes_under_retransmit() {
+        let mut world = World::new(42);
+        let mut processed: HashSet<(u16, u64)> = HashSet::new();
+        let items = vec![crate::world::corpse::CorpseStack { item_id: -12345, quantity: 3 }];
+
+        let spawn_data = |items: Vec<crate::world::corpse::CorpseStack>| CorpseSpawnData {
+            owner_name: "Joel".into(),
+            position: [-22.0, 1.8, 9.0],
+            equipment: [0, -1, -2, -3],
+            held_item: -99,
+            items,
+        };
+
+        let first =
+            apply_corpse_spawn_request(&mut world, &mut processed, 1004, 7, spawn_data(items.clone()));
+        assert!(first.is_some(), "first request must spawn");
+        assert_eq!(world.corpses.len(), 1);
+
+        // Reliable retransmit: same (requester, request_id) → EXACTLY one corpse, no duplicate.
+        for _ in 0..3 {
+            let dup = apply_corpse_spawn_request(
+                &mut world, &mut processed, 1004, 7, spawn_data(items.clone()),
+            );
+            assert!(dup.is_none(), "retransmit must be deduped");
+        }
+        assert_eq!(world.corpses.len(), 1, "retransmits must never duplicate the corpse");
+
+        // A DIFFERENT request id from the same peer is a new death → spawns.
+        let second =
+            apply_corpse_spawn_request(&mut world, &mut processed, 1004, 8, spawn_data(items));
+        assert!(second.is_some());
+        assert_eq!(world.corpses.len(), 2);
+        assert_ne!(first.unwrap(), second.unwrap(), "host-assigned ids stay unique");
+    }
+
+    #[test]
+    fn corpse_take_request_dedupes_validates_and_reports_verdict() {
+        let mut world = World::new(42);
+        let mut processed: HashSet<(u16, u64)> = HashSet::new();
+        let pos = [10.0f32, 1.8, 20.0];
+        let corpse_id = world.spawn_corpse(
+            1004, "Joel".into(), Vec3::from_array(pos), [0; 4], 0,
+            vec![crate::world::corpse::CorpseStack { item_id: -55, quantity: 2 }],
+        );
+
+        let take_data = |corpse_id: u32, quantity: u16, requester_pos: [f32; 3]| CorpseTakeData {
+            corpse_id,
+            item_index: 0,
+            quantity,
+            requester_pos,
+        };
+
+        // Accepted take, then retransmit of the SAME request → deduped (no double removal).
+        let verdict = apply_corpse_take_request(
+            &mut world, &mut processed, 1004, 21, take_data(corpse_id, 1, pos),
+        );
+        match verdict {
+            Some(PacketPayload::CorpseTakeResult { accepted, item_id, quantity, corpse_empty, .. }) => {
+                assert!(accepted);
+                assert_eq!(item_id, -55);
+                assert_eq!(quantity, 1);
+                assert!(!corpse_empty);
+            }
+            other => panic!("expected verdict, got {other:?}"),
+        }
+        let dup = apply_corpse_take_request(
+            &mut world, &mut processed, 1004, 21, take_data(corpse_id, 1, pos),
+        );
+        assert!(dup.is_none(), "retransmitted take must be deduped");
+        assert_eq!(
+            world.corpses[&corpse_id].items[0].quantity, 1,
+            "retransmit must not remove a second unit"
+        );
+
+        // Rejected take (too far) still produces a verdict so the requester can roll back.
+        let far = [9999.0f32, 0.0, 9999.0];
+        let rejected = apply_corpse_take_request(
+            &mut world, &mut processed, 1004, 22, take_data(corpse_id, 1, far),
+        );
+        match rejected {
+            Some(PacketPayload::CorpseTakeResult { accepted, ref reason, .. }) => {
+                assert!(!accepted);
+                assert!(reason.starts_with("too_far"), "reason was: {reason}");
+            }
+            other => panic!("expected verdict, got {other:?}"),
+        }
+
+        // Depleting take reports corpse_empty=true and removes the entry.
+        let deplete = apply_corpse_take_request(
+            &mut world, &mut processed, 1004, 23, take_data(corpse_id, 9, pos),
+        );
+        match deplete {
+            Some(PacketPayload::CorpseTakeResult { accepted, quantity, corpse_empty, .. }) => {
+                assert!(accepted);
+                assert_eq!(quantity, 1);
+                assert!(corpse_empty);
+            }
+            other => panic!("expected verdict, got {other:?}"),
+        }
+        assert!(world.corpses.is_empty());
+    }
+
+    #[test]
+    fn parse_death_loot_reads_negative_ids_and_degrades_malformed_to_empty() {
+        // ADR-028: raw STP DataIdReference ids may be negative — they must parse.
+        let data = serde_json::json!({
+            "equipment": [101, 0, -303, 404],
+            "held_item": -12345,
+            "items": [
+                { "item_id": -12345, "quantity": 3 },
+                { "item_id": 99, "quantity": 1 },
+                { "item_id": 7 },                       // missing quantity → skipped
+                { "quantity": 5 },                      // missing item_id → skipped
+                { "item_id": 5, "quantity": 700000 },   // clamps to u16::MAX
+            ],
+        });
+        let (equipment, held_item, items) = parse_death_loot(&data);
+        assert_eq!(equipment, [101, 0, -303, 404]);
+        assert_eq!(held_item, -12345);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].item_id, -12345);
+        assert_eq!(items[0].quantity, 3);
+        assert_eq!(items[2].quantity, u16::MAX);
+
+        // Malformed/missing payload degrades to naked-and-empty, never an error.
+        let (equipment, held_item, items) = parse_death_loot(&serde_json::json!({}));
+        assert_eq!(equipment, [0; 4]);
+        assert_eq!(held_item, 0);
+        assert!(items.is_empty());
+
+        // Short equipment array fills what it has; extra entries beyond 4 are ignored.
+        let (equipment, _, _) =
+            parse_death_loot(&serde_json::json!({ "equipment": [1, 2] }));
+        assert_eq!(equipment, [1, 2, 0, 0]);
+    }
 
     #[tokio::test]
     async fn phantom_driver_walks_via_grid_cache_far_from_host() {

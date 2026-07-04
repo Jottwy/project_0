@@ -45,6 +45,12 @@ pub struct Player {
     /// not validated, does not affect inventory/grants/stats/combat/hitreg.
     #[serde(default)]
     pub hit_seq: u8,
+    /// ADR-028: server-side dedupe — true once this death's loot snapshot spawned a
+    /// corpse. Guards against a double `report_death_loot` (the client's event
+    /// fast-path + derived-edge fallback both firing) duplicating the inventory.
+    /// Re-armed (false) when `respawn_request` is honored. Session-transient.
+    #[serde(default)]
+    pub death_loot_reported: bool,
 }
 
 impl Player {
@@ -64,6 +70,7 @@ impl Player {
             equipment: [0; 4],
             held_item: 0,
             hit_seq: 0,
+            death_loot_reported: false,
         }
     }
 }

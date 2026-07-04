@@ -188,6 +188,12 @@ pub struct WorldState {
     /// Omitted from the wire when empty (backward compatible).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
+
+    /// ADR-028 — lootable corpses near the player (global storage in `World::corpses`,
+    /// filtered by proximity for bandwidth only — the map itself is never pruned).
+    /// Omitted from the wire when empty (backward compatible: a v7 client never sees it).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visible_corpses: Vec<CorpseView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +241,10 @@ pub struct RemotePlayerState {
     /// ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit), host-relayed.
     #[serde(default)]
     pub hit_seq: u8,
+    /// ADR-028 post-E3: cosmetic dead flag (server-derived on the owning backend) — the client
+    /// hides this peer's standing proxy while true (its corpse is the visible body).
+    #[serde(default)]
+    pub dead: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +300,29 @@ pub struct ItemView {
     pub quantity: u16,
 }
 
+/// ADR-028 — one loot stack of a corpse. `item_id` is the raw STP item id
+/// (`DataIdReference` hash, may be NEGATIVE — same scheme as `equipment`/`held_item`,
+/// ADR-022/023), NOT the legacy backend `Item` enum.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemStackView {
+    pub item_id: i32,
+    pub quantity: u16,
+}
+
+/// ADR-028 — a lootable corpse. `position` is the server-frozen death position (the
+/// loot interaction point); the client-side ragdoll is cosmetic and never moves it.
+/// `equipment`/`held_item` are the cosmetic snapshot that dresses the ragdoll.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpseView {
+    pub id: u32,
+    pub owner_id: u32,
+    pub owner_name: String,
+    pub position: [f32; 3],
+    pub equipment: [i32; 4],
+    pub held_item: i32,
+    pub items: Vec<ItemStackView>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GameEvent {
     pub event_type: String,
@@ -326,6 +359,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn player_died_and_respawned_events_encode_with_type_tag() {
+        // ADR-025 Slice B diagnosis: prove the death/respawn GameEvents SERIALIZE (encode must
+        // not fail on the internally-tagged enum + serde_json::Value payload) and carry the
+        // "type":"event" tag + fields the Unity Dispatch switch matches on.
+        for (event_type, key) in [("player_died", "death_pos"), ("player_respawned", "position")] {
+            let msg = ServerMessage::Event(GameEvent {
+                event_type: event_type.into(),
+                data: serde_json::json!({ key: [22.5f32, 1.8, 22.5] }),
+            });
+            let frame = encode(&msg).unwrap_or_else(|e| panic!("{event_type} failed to encode: {e}"));
+            // Decode the body as a generic msgpack map (as Unity's reader does) and check the tag.
+            let val: serde_json::Value = rmp_serde::from_slice(&frame[4..])
+                .unwrap_or_else(|e| panic!("{event_type} body not a decodable map: {e}"));
+            assert_eq!(val.get("type").and_then(|v| v.as_str()), Some("event"));
+            assert_eq!(val.get("event_type").and_then(|v| v.as_str()), Some(event_type));
+            assert!(val.get("data").and_then(|d| d.get(key)).is_some(), "{event_type} data missing {key}");
+        }
+    }
+
+    #[test]
     fn server_message_round_trips() {
         let msg = ServerMessage::WorldState(WorldState {
             tick: 42,
@@ -354,6 +407,7 @@ mod tests {
             stp_buildings: vec![],
             stp_carryables: vec![],
             stp_harvestables: vec![],
+            visible_corpses: vec![],
         });
         let frame = encode(&msg).unwrap();
         // Strip the 4-byte length prefix before decoding the body.
@@ -439,6 +493,19 @@ mod tests {
             stp_buildings: vec![],
             stp_carryables: vec![],
             stp_harvestables: vec![],
+            // ADR-028: negative item_id (raw STP DataIdReference hash) must round-trip.
+            visible_corpses: vec![CorpseView {
+                id: 3,
+                owner_id: 7,
+                owner_name: "Joel".into(),
+                position: [22.5, 1.8, 22.5],
+                equipment: [101, 0, -303, 404],
+                held_item: -12345,
+                items: vec![
+                    ItemStackView { item_id: -12345, quantity: 3 },
+                    ItemStackView { item_id: 99, quantity: 1 },
+                ],
+            }],
         });
         let frame = encode(&msg).unwrap();
         let decoded: ServerMessage = decode(&frame[4..]).unwrap();
@@ -456,6 +523,16 @@ mod tests {
                 assert_eq!(ws.vertical_debug_markers.len(), 1);
                 assert_eq!(ws.vertical_debug_markers[0].id, 9001);
                 assert_eq!(ws.vertical_debug_markers[0].kind, "stair");
+                assert_eq!(ws.visible_corpses.len(), 1);
+                let corpse = &ws.visible_corpses[0];
+                assert_eq!(corpse.id, 3);
+                assert_eq!(corpse.owner_id, 7);
+                assert_eq!(corpse.owner_name, "Joel");
+                assert_eq!(corpse.equipment, [101, 0, -303, 404]);
+                assert_eq!(corpse.held_item, -12345);
+                assert_eq!(corpse.items.len(), 2);
+                assert_eq!(corpse.items[0].item_id, -12345);
+                assert_eq!(corpse.items[0].quantity, 3);
             }
             _ => panic!("wrong variant"),
         }

@@ -54,6 +54,7 @@ pub enum NetworkEvent {
         equipment: [i32; 4],
         held_item: i32,
         hit_seq: u8,
+        dead: bool,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -119,6 +120,40 @@ pub enum NetworkEvent {
         hit_id: u64,
         harvestable_id: u32,
         amount: f32,
+    },
+    /// ADR-028 Fase E: a joiner's player died — it asks the host to spawn the corpse.
+    CorpseSpawnRequest {
+        request_id: u64,
+        requester_id: PeerId,
+        owner_name: String,
+        position: [f32; 3],
+        equipment: [i32; 4],
+        held_item: i32,
+        items: Vec<crate::world::corpse::CorpseStack>,
+    },
+    /// ADR-028 Fase E: a joiner asks the host to take a stack from a corpse.
+    CorpseTakeRequest {
+        request_id: u64,
+        requester_id: PeerId,
+        corpse_id: u32,
+        item_index: u32,
+        quantity: u16,
+        requester_pos: [f32; 3],
+    },
+    /// ADR-028 Fase E: the host's verdict for OUR CorpseTakeRequest (we are the requester).
+    CorpseTakeResult {
+        request_id: u64,
+        accepted: bool,
+        corpse_id: u32,
+        item_index: u32,
+        item_id: i32,
+        quantity: u16,
+        corpse_empty: bool,
+        reason: String,
+    },
+    /// ADR-028 Fase E: the host's full corpse roster (10 Hz) — mirror it into world.corpses.
+    CorpseListReceived {
+        corpses: Vec<crate::world::corpse::CorpseData>,
     },
     WorldSyncReceived {
         world_seed: u64,
@@ -205,6 +240,16 @@ pub struct NetworkManager {
     /// processed, so a reliable retransmit of the grant never re-stamps last_pickup_at (which
     /// would duplicate the proxy "pickup" window). Same dedup pattern as the processed_stp_* above.
     pub processed_stp_pickup_grants: std::collections::HashSet<u32>,
+    /// ADR-028 Fase E (host-only): (requester, request_id) pairs of corpse spawn/take requests
+    /// already processed, so a reliable retransmit spawns exactly one corpse / takes exactly one
+    /// stack. Keyed by requester too (request ids are per-peer counters, not globally unique).
+    pub processed_corpse_requests: std::collections::HashSet<(PeerId, u64)>,
+    /// ADR-028 Fase E (joiner-only): request_ids whose CorpseTakeResult we already surfaced to
+    /// our Unity, so a reliable retransmit of the verdict never double-fires the IPC event
+    /// (a duplicated corpse_item_taken would double-shift CorpseLootSync's index mirror).
+    pub processed_corpse_results: std::collections::HashSet<u64>,
+    /// ADR-028 Fase E (joiner-only): monotonic source for our corpse request ids.
+    pub next_corpse_request_id: u64,
     /// ADR-014 (host-only): reserved pickups awaiting their deferred removal.
     /// item_id → (requester_id, remove_at). The item stays in `stp_items` (visible) until
     /// remove_at, but a second request for a reserved item is rejected — the reservation is the
@@ -273,6 +318,9 @@ impl NetworkManager {
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: std::collections::HashSet::with_capacity(128),
             processed_stp_pickup_grants: std::collections::HashSet::with_capacity(128),
+            processed_corpse_requests: std::collections::HashSet::with_capacity(64),
+            processed_corpse_results: std::collections::HashSet::with_capacity(64),
+            next_corpse_request_id: 1,
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
             incoming_rx: rx,
@@ -782,6 +830,67 @@ impl NetworkManager {
                 requester_id,
             }],
 
+            // ADR-028 Fase E: corpse relay — 1:1 payload→event mapping; all the authority
+            // logic (dedupe, spawn/take, verdict relay, mirroring) lives in game_loop, which
+            // owns World (corpses live in world.corpses, not in NetworkManager).
+            PacketPayload::CorpseSpawnRequest {
+                request_id,
+                requester_id,
+                owner_name,
+                position,
+                equipment,
+                held_item,
+                items,
+            } => vec![NetworkEvent::CorpseSpawnRequest {
+                request_id,
+                requester_id,
+                owner_name,
+                position,
+                equipment,
+                held_item,
+                items,
+            }],
+
+            PacketPayload::CorpseTakeRequest {
+                request_id,
+                requester_id,
+                corpse_id,
+                item_index,
+                quantity,
+                requester_pos,
+            } => vec![NetworkEvent::CorpseTakeRequest {
+                request_id,
+                requester_id,
+                corpse_id,
+                item_index,
+                quantity,
+                requester_pos,
+            }],
+
+            PacketPayload::CorpseTakeResult {
+                request_id,
+                accepted,
+                corpse_id,
+                item_index,
+                item_id,
+                quantity,
+                corpse_empty,
+                reason,
+            } => vec![NetworkEvent::CorpseTakeResult {
+                request_id,
+                accepted,
+                corpse_id,
+                item_index,
+                item_id,
+                quantity,
+                corpse_empty,
+                reason,
+            }],
+
+            PacketPayload::CorpseList { corpses } => {
+                vec![NetworkEvent::CorpseListReceived { corpses }]
+            }
+
             PacketPayload::StpPickupGranted {
                 item_id,
                 def_id,
@@ -815,6 +924,7 @@ impl NetworkManager {
                 equipment,
                 held_item,
                 hit_seq,
+                dead,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -827,6 +937,7 @@ impl NetworkManager {
                     peer.equipment = equipment; // ADR-022: cosmetic clothing, alongside the pose
                     peer.held_item = held_item; // ADR-023: cosmetic held item, alongside the pose
                     peer.hit_seq = hit_seq; // ADR-024: cosmetic hit-reaction counter, alongside the pose
+                    peer.dead = dead; // ADR-028 post-E3: cosmetic dead flag, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -859,6 +970,7 @@ impl NetworkManager {
                     equipment,
                     held_item,
                     hit_seq,
+                    dead,
                 }]
             }
 
@@ -1438,6 +1550,92 @@ mod tests {
         assert_ne!(joiner.local_id, 0, "joiner should have an assigned ID");
     }
 
+    // ADR-028 Fase E: the corpse relay's three network hops over real sockets —
+    // (1) joiner → host CorpseSpawnRequest (reliable), (2) host → all CorpseList
+    // broadcast (mirror), (3) host → requester CorpseTakeResult (reliable) surfacing
+    // as the requester-side event. Authority/dedupe logic is unit-tested in game_loop
+    // (apply_corpse_* helpers); this covers the wire + handle_packet event mapping.
+    #[tokio::test]
+    async fn corpse_relay_hops_round_trip_between_peers() {
+        use crate::world::corpse::CorpseStack;
+
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+        let mut joiner = NetworkManager::bind(0, 1004, 0, false).await.unwrap();
+        joiner.initiate_connection(host_addr).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        host.process_incoming().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        joiner.process_incoming().await;
+        assert_eq!(joiner.local_id, 1004);
+
+        // Hop 1: joiner forwards its death-loot snapshot to the host.
+        let spawn = PacketPayload::CorpseSpawnRequest {
+            request_id: 1,
+            requester_id: joiner.local_id,
+            owner_name: "Joel".into(),
+            position: [-22.0, 1.8, 9.0],
+            equipment: [0, -1, -2, -3],
+            held_item: -99,
+            items: vec![CorpseStack { item_id: -12345, quantity: 3 }],
+        };
+        joiner.send_reliable(1, &spawn).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let host_events = host.process_incoming().await;
+        assert!(
+            host_events.iter().any(|e| matches!(
+                e,
+                NetworkEvent::CorpseSpawnRequest { request_id: 1, requester_id: 1004, .. }
+            )),
+            "host should receive the spawn request, got: {host_events:?}"
+        );
+
+        // Hop 2: host broadcasts the roster; the joiner mirrors it.
+        let mut world = crate::world::World::new(42);
+        let corpse_id = world.spawn_corpse(
+            1004,
+            "Joel".into(),
+            crate::utils::Vec3::new(-22.0, 1.8, 9.0),
+            [0, -1, -2, -3],
+            -99,
+            vec![CorpseStack { item_id: -12345, quantity: 3 }],
+        );
+        super::sync::broadcast_corpses(&host, &world).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let joiner_events = joiner.process_incoming().await;
+        let mirrored = joiner_events.iter().find_map(|e| match e {
+            NetworkEvent::CorpseListReceived { corpses } => Some(corpses),
+            _ => None,
+        });
+        let mirrored = mirrored.expect("joiner should receive the corpse roster");
+        assert_eq!(mirrored.len(), 1);
+        assert_eq!(mirrored[0].id, corpse_id);
+        assert_eq!(mirrored[0].owner_name, "Joel");
+        assert_eq!(mirrored[0].items[0].item_id, -12345);
+
+        // Hop 3: host sends the take verdict back to the requester only.
+        let verdict = PacketPayload::CorpseTakeResult {
+            request_id: 2,
+            accepted: true,
+            corpse_id,
+            item_index: 0,
+            item_id: -12345,
+            quantity: 1,
+            corpse_empty: false,
+            reason: String::new(),
+        };
+        host.send_reliable(1004, &verdict).await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        let joiner_events = joiner.process_incoming().await;
+        assert!(
+            joiner_events.iter().any(|e| matches!(
+                e,
+                NetworkEvent::CorpseTakeResult { request_id: 2, accepted: true, item_id: -12345, .. }
+            )),
+            "joiner should receive the take verdict, got: {joiner_events:?}"
+        );
+    }
+
     #[tokio::test]
     async fn host_honors_requested_peer_id_when_available() {
         let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
@@ -1501,6 +1699,7 @@ mod tests {
             equipment: [0; 4],
             held_item: 0,
             hit_seq: 0,
+            dead: false,
         };
         host.broadcast_unreliable(&payload).await;
 

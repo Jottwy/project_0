@@ -100,6 +100,11 @@ pub enum PacketType {
     StpCarryableDropRequest = 0x43,
     StpHarvestableList = 0x44,
     StpHarvestHitRequest = 0x45,
+    // ADR-028 Fase E: host-authoritative corpse relay (same block — loot/world-object family)
+    CorpseList = 0x46,
+    CorpseSpawnRequest = 0x47,
+    CorpseTakeRequest = 0x48,
+    CorpseTakeResult = 0x49,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -151,6 +156,10 @@ impl PacketType {
             0x43 => Some(Self::StpCarryableDropRequest),
             0x44 => Some(Self::StpHarvestableList),
             0x45 => Some(Self::StpHarvestHitRequest),
+            0x46 => Some(Self::CorpseList),
+            0x47 => Some(Self::CorpseSpawnRequest),
+            0x48 => Some(Self::CorpseTakeRequest),
+            0x49 => Some(Self::CorpseTakeResult),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -404,6 +413,12 @@ pub enum PacketPayload {
         /// across the v6→v7 schema bump.
         #[serde(default)]
         hit_seq: u8,
+        /// ADR-028 post-E3: cosmetic dead flag, SERVER-derived on the owning backend
+        /// (`player.stats.is_dead()`) — observers hide the standing proxy while dead. Appended
+        /// last + serde(default) → a v9 peer that omits it decodes to false (never hides);
+        /// wire-compat across the v9→v10 schema bump.
+        #[serde(default)]
+        dead: bool,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -493,6 +508,49 @@ pub enum PacketPayload {
         amount: f32,
     },
 
+    // ADR-028 Fase E: host-authoritative corpse relay. Corpses reuse the storage type
+    // (`world::corpse::CorpseData`) directly on the wire — same precedent as ChunkLayoutV1.
+    /// Host → all: the full authoritative corpse roster, broadcast at 10 Hz (self-healing,
+    /// same pattern as StpItemList). Joiners mirror it verbatim into their `world.corpses`.
+    CorpseList {
+        corpses: Vec<crate::world::corpse::CorpseData>,
+    },
+    /// Joiner → host (reliable): "my player died with this loot snapshot — spawn the corpse".
+    /// The host dedupes by (sender, request_id): reliable retransmits spawn exactly one corpse.
+    CorpseSpawnRequest {
+        request_id: u64,
+        requester_id: u16,
+        owner_name: String,
+        position: [f32; 3],
+        equipment: [i32; 4],
+        held_item: i32,
+        items: Vec<crate::world::corpse::CorpseStack>,
+    },
+    /// Joiner → host (reliable): "take `quantity` from stack `item_index` of corpse `corpse_id`".
+    /// `requester_pos` is the claimed position (same trust level as Interact.player_position);
+    /// the host validates it against the corpse's frozen death position. Deduped like spawn.
+    CorpseTakeRequest {
+        request_id: u64,
+        requester_id: u16,
+        corpse_id: u32,
+        item_index: u32,
+        quantity: u16,
+        requester_pos: [f32; 3],
+    },
+    /// Host → requester (reliable): the verdict for one CorpseTakeRequest. The joiner backend
+    /// dedupes by request_id and emits the SAME IPC event Fase D already consumes
+    /// (corpse_item_taken / corpse_take_rejected) to its own Unity.
+    CorpseTakeResult {
+        request_id: u64,
+        accepted: bool,
+        corpse_id: u32,
+        item_index: u32,
+        item_id: i32,
+        quantity: u16,
+        corpse_empty: bool,
+        reason: String,
+    },
+
     // Reliability
     Ack {
         acked_sequence: u32,
@@ -544,6 +602,10 @@ impl PacketPayload {
             Self::StpCarryableDropRequest { .. } => PacketType::StpCarryableDropRequest as u16,
             Self::StpHarvestableList { .. } => PacketType::StpHarvestableList as u16,
             Self::StpHarvestHitRequest { .. } => PacketType::StpHarvestHitRequest as u16,
+            Self::CorpseList { .. } => PacketType::CorpseList as u16,
+            Self::CorpseSpawnRequest { .. } => PacketType::CorpseSpawnRequest as u16,
+            Self::CorpseTakeRequest { .. } => PacketType::CorpseTakeRequest as u16,
+            Self::CorpseTakeResult { .. } => PacketType::CorpseTakeResult as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
@@ -662,6 +724,7 @@ mod tests {
             equipment: [101, 202, 303, 404],
             held_item: 12345,
             hit_seq: 7,
+            dead: true,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -677,6 +740,7 @@ mod tests {
                 equipment,
                 held_item,
                 hit_seq,
+                dead,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -686,6 +750,7 @@ mod tests {
                 assert_eq!(equipment, [101, 202, 303, 404]);
                 assert_eq!(held_item, 12345);
                 assert_eq!(hit_seq, 7);
+                assert!(dead);
             }
             _ => panic!("wrong variant"),
         }
@@ -837,5 +902,97 @@ mod tests {
 
         let p = PacketPayload::Ack { acked_sequence: 0 };
         assert_eq!(p.type_code(), PacketType::Ack as u16);
+    }
+
+    // ADR-028 Fase E: all four corpse-relay payloads must round-trip, including negative
+    // raw STP item ids (DataIdReference hashes) in every id-bearing field.
+    #[test]
+    fn corpse_payloads_round_trip() {
+        use crate::utils::Vec3;
+        use crate::world::corpse::{CorpseData, CorpseStack};
+
+        let corpse = CorpseData {
+            id: 7,
+            owner_id: 1004,
+            owner_name: "Joel".into(),
+            position: Vec3::new(-22.3, 1.8, 9.7),
+            equipment: [0, -2328174, -2864101, -3870361],
+            held_item: -1159981804,
+            items: vec![CorpseStack { item_id: -12345, quantity: 3 }],
+        };
+
+        let list = PacketPayload::CorpseList { corpses: vec![corpse.clone()] };
+        let header = PacketHeader::new(list.type_code(), 1, 1, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &list)).unwrap();
+        match decoded {
+            PacketPayload::CorpseList { corpses } => {
+                assert_eq!(corpses.len(), 1);
+                assert_eq!(corpses[0].id, 7);
+                assert_eq!(corpses[0].owner_name, "Joel");
+                assert_eq!(corpses[0].held_item, -1159981804);
+                assert_eq!(corpses[0].items[0].item_id, -12345);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let spawn = PacketPayload::CorpseSpawnRequest {
+            request_id: 42,
+            requester_id: 1004,
+            owner_name: "Joel".into(),
+            position: [-22.3, 1.8, 9.7],
+            equipment: [0, -2328174, -2864101, -3870361],
+            held_item: -1159981804,
+            items: vec![CorpseStack { item_id: 99, quantity: 1 }],
+        };
+        let header = PacketHeader::new(spawn.type_code(), 1004, 2, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &spawn)).unwrap();
+        match decoded {
+            PacketPayload::CorpseSpawnRequest { request_id, requester_id, items, .. } => {
+                assert_eq!(request_id, 42);
+                assert_eq!(requester_id, 1004);
+                assert_eq!(items[0].item_id, 99);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let take = PacketPayload::CorpseTakeRequest {
+            request_id: 43,
+            requester_id: 1004,
+            corpse_id: 7,
+            item_index: 2,
+            quantity: 1,
+            requester_pos: [-21.0, 1.8, 9.0],
+        };
+        let header = PacketHeader::new(take.type_code(), 1004, 3, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &take)).unwrap();
+        match decoded {
+            PacketPayload::CorpseTakeRequest { request_id, corpse_id, item_index, .. } => {
+                assert_eq!(request_id, 43);
+                assert_eq!(corpse_id, 7);
+                assert_eq!(item_index, 2);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let result = PacketPayload::CorpseTakeResult {
+            request_id: 43,
+            accepted: false,
+            corpse_id: 7,
+            item_index: 2,
+            item_id: -12345,
+            quantity: 0,
+            corpse_empty: false,
+            reason: "too_far distance=9.31".into(),
+        };
+        let header = PacketHeader::new(result.type_code(), 1, 4, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &result)).unwrap();
+        match decoded {
+            PacketPayload::CorpseTakeResult { accepted, item_id, reason, .. } => {
+                assert!(!accepted);
+                assert_eq!(item_id, -12345);
+                assert!(reason.starts_with("too_far"));
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }
