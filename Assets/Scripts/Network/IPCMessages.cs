@@ -132,6 +132,9 @@ namespace BackroomsSurvival.Net
         public int heldItem;
         // ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit).
         public int hitSeq;
+        // ADR-028 post-E3: cosmetic dead flag (server-derived on the peer's own backend) —
+        // hide the standing proxy while true (the corpse is the visible body).
+        public bool dead;
 
         public static RemotePlayerMsg Parse(object o)
         {
@@ -153,6 +156,8 @@ namespace BackroomsSurvival.Net
             r.heldItem = (int)IPCParse.L(d, "held_item");
             // ADR-024: hit-reaction counter (a v6 peer omitting the field → 0 = never hit).
             r.hitSeq = (int)IPCParse.L(d, "hit_seq");
+            // ADR-028 post-E3: dead flag (a v9 backend omitting the field → false = visible).
+            r.dead = IPCParse.B(d, "dead");
             return r;
         }
     }
@@ -802,6 +807,59 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>ADR-028: outbound loot stack the client reports via IPCClient.SendReportDeathLoot.
+    /// itemId = raw STP item id (DataIdReference — may be negative), NEVER a backend enum.</summary>
+    public struct CorpseLootStack
+    {
+        public int itemId;
+        public int quantity;
+    }
+
+    /// <summary>
+    /// ADR-028 — one lootable corpse replicated in world_state.visible_corpses. position is the
+    /// server-frozen death position (the loot interaction point); the client ragdoll is cosmetic
+    /// and never moves it. equipment/heldItem are the cosmetic snapshot that dresses the ragdoll.
+    /// </summary>
+    public class CorpseViewMsg
+    {
+        public uint id;
+        public uint ownerId;
+        public string ownerName = "";
+        public Vector3 position;
+        public int[] equipment = new int[4];
+        public int heldItem;
+        public List<CorpseLootStack> items = new List<CorpseLootStack>();
+
+        public static CorpseViewMsg Parse(object o)
+        {
+            var d = o as Dictionary<string, object>;
+            var m = new CorpseViewMsg();
+            if (d == null) return m;
+            m.id = (uint)IPCParse.L(d, "id");
+            m.ownerId = (uint)IPCParse.L(d, "owner_id");
+            m.ownerName = IPCParse.S(d, "owner_name");
+            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
+            // Normalize to exactly 4 slots (mirror of RemotePlayerMsg.equipment, ADR-022).
+            var equip = IPCParse.IntArray(IPCParse.Get(d, "equipment"));
+            for (int i = 0; i < 4; i++)
+                m.equipment[i] = i < equip.Length ? equip[i] : 0;
+            m.heldItem = (int)IPCParse.L(d, "held_item");
+            if (IPCParse.Get(d, "items") is object[] stacks)
+            {
+                foreach (var entry in stacks)
+                {
+                    if (entry is not Dictionary<string, object> stack) continue;
+                    m.items.Add(new CorpseLootStack
+                    {
+                        itemId = (int)IPCParse.L(stack, "item_id"),
+                        quantity = (int)IPCParse.L(stack, "quantity"),
+                    });
+                }
+            }
+            return m;
+        }
+    }
+
     public class WorldStateMsg
     {
         public long tick;
@@ -822,6 +880,8 @@ namespace BackroomsSurvival.Net
         public List<StpCarryableMsg> stpCarryables = new List<StpCarryableMsg>();
         // Phase B2.6 — host-authoritative STP scene harvestables / health (omitted when empty).
         public List<StpHarvestableMsg> stpHarvestables = new List<StpHarvestableMsg>();
+        // ADR-028 — lootable corpses near the player (omitted when empty; v7 backend → empty).
+        public List<CorpseViewMsg> visibleCorpses = new List<CorpseViewMsg>();
 
         public static WorldStateMsg Parse(Dictionary<string, object> d)
         {
@@ -858,6 +918,9 @@ namespace BackroomsSurvival.Net
 
             if (IPCParse.Get(d, "stp_harvestables") is object[] sh)
                 foreach (var item in sh) ws.stpHarvestables.Add(StpHarvestableMsg.Parse(item));
+
+            if (IPCParse.Get(d, "visible_corpses") is object[] cv)
+                foreach (var item in cv) ws.visibleCorpses.Add(CorpseViewMsg.Parse(item));
 
             return ws;
         }

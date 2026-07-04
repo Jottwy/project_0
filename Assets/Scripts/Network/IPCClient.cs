@@ -316,7 +316,7 @@ namespace BackroomsSurvival.Net
 
             switch (type)
             {
-                case "world_state":
+                case ProtocolMessageTypes.WorldState:
                     var ws = WorldStateMsg.Parse(root);
                     if (Environment.TickCount >= _nextRemotePlayersLogTick)
                     {
@@ -330,20 +330,20 @@ namespace BackroomsSurvival.Net
                     _latestState = ws;
                     _pendingStateNotify.Enqueue(ws);
                     break;
-                case "delta_update":
+                case ProtocolMessageTypes.DeltaUpdate:
                     // ADR-009 §2: 20 Hz movement delta → MovementReconciler.
                     _pendingDeltaNotify.Enqueue(MovementDeltaMsg.Parse(root));
                     break;
-                case "chunk_data":
+                case ProtocolMessageTypes.ChunkData:
                     // Fase 4.1: grid_gen chunk reply → ChunkStreamer (drained on the main thread).
                     _pendingChunkDataNotify.Enqueue(GridChunkDataMsg.Parse(root));
                     break;
-                case "event":
+                case ProtocolMessageTypes.Event:
                     var gameEvent = GameEventMsg.Parse(root);
                     Events.Enqueue(gameEvent);
                     _pendingNotify.Enqueue(gameEvent);
                     break;
-                case "action_result":
+                case ProtocolMessageTypes.ActionResult:
                     // Phase 4 will consume these; ignored for now.
                     break;
             }
@@ -409,38 +409,53 @@ namespace BackroomsSurvival.Net
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
             int[] equipment = null, int heldItem = 0, byte hitSeq = 0)
         {
+            // Hardening (postmortem of the `crouch` off-by-one, ADR-020): the map header
+            // count and the number of pairs written below are kept in sync by hand. We can't
+            // auto-count without rewriting MsgPackWriter (the header is emitted BEFORE the
+            // pairs, and 16 crosses the fixmap→map16 encoding boundary), so every pair bumps
+            // `fields` and the assert fails loudly in the editor / dev builds if a future
+            // field drifts them apart (rmp_serde would silently drop the tail, as `crouch`
+            // did). Debug.Assert is [Conditional("UNITY_ASSERTIONS")] → stripped from release
+            // players; the message is a const literal (zero alloc on the pose hot path).
+            const int FieldCount = 16;
+            int fields = 0;
+
             var w = new MsgPackWriter();
-            w.WriteMapHeader(16); // 16 key/value pairs below — MUST match the count or rmp_serde drops the tail (hit_seq)
-            w.WriteString("type"); w.WriteString("input");
+            w.WriteMapHeader(FieldCount);
+            w.WriteString("type"); w.WriteString("input"); fields++;
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
             // but they are non-optional in the wire schema and must be present).
             w.WriteString("movement"); w.WriteArrayHeader(3);
-            w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
+            w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f); fields++;
             w.WriteString("look_delta"); w.WriteArrayHeader(2);
-            w.WriteFloat(0f); w.WriteFloat(0f);
-            w.WriteString("sprint"); w.WriteBool(moveState == 2);
-            w.WriteString("actions"); w.WriteArrayHeader(0);
+            w.WriteFloat(0f); w.WriteFloat(0f); fields++;
+            w.WriteString("sprint"); w.WriteBool(moveState == 2); fields++;
+            w.WriteString("actions"); w.WriteArrayHeader(0); fields++;
             // ADR-009 prediction fields.
-            w.WriteString("input_seq"); w.WriteInt(inputSeq);
-            w.WriteString("client_tick"); w.WriteInt(clientTick);
+            w.WriteString("input_seq"); w.WriteInt(inputSeq); fields++;
+            w.WriteString("client_tick"); w.WriteInt(clientTick); fields++;
             w.WriteString("position"); w.WriteArrayHeader(3);
-            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z); fields++;
             w.WriteString("velocity"); w.WriteArrayHeader(3);
-            w.WriteFloat(velocity.x); w.WriteFloat(velocity.y); w.WriteFloat(velocity.z);
-            w.WriteString("move_state"); w.WriteInt(moveState);
+            w.WriteFloat(velocity.x); w.WriteFloat(velocity.y); w.WriteFloat(velocity.z); fields++;
+            w.WriteString("move_state"); w.WriteInt(moveState); fields++;
             w.WriteString("look"); w.WriteArrayHeader(2);
-            w.WriteFloat(pitch); w.WriteFloat(yaw);
-            w.WriteString("buttons"); w.WriteInt(buttons);
+            w.WriteFloat(pitch); w.WriteFloat(yaw); fields++;
+            w.WriteString("buttons"); w.WriteInt(buttons); fields++;
             // ADR-020: cosmetic crouch state, relayed to peers (not authoritative).
-            w.WriteString("crouch"); w.WriteBool(crouch);
+            w.WriteString("crouch"); w.WriteBool(crouch); fields++;
             // ADR-022: worn clothing item IDs [Head, Torso, Legs, Feet] (0 = empty), relayed to peers.
             w.WriteString("equipment"); w.WriteArrayHeader(4);
             for (int i = 0; i < 4; i++)
                 w.WriteInt(equipment != null && i < equipment.Length ? equipment[i] : 0);
+            fields++;
             // ADR-023: held item ID (0 = empty hands), relayed to peers (not authoritative).
-            w.WriteString("held_item"); w.WriteInt(heldItem);
+            w.WriteString("held_item"); w.WriteInt(heldItem); fields++;
             // ADR-024: hit-reaction counter (monotonic, wrapping; 0 = never hit), relayed to peers.
-            w.WriteString("hit_seq"); w.WriteInt(hitSeq);
+            w.WriteString("hit_seq"); w.WriteInt(hitSeq); fields++;
+
+            Debug.Assert(fields == FieldCount,
+                "SendPlayerInput: field count drifted from the map header — a pair was added/removed without updating WriteMapHeader (rmp_serde would drop the tail).");
             SendFrame(w.ToArray());
         }
 
@@ -465,6 +480,46 @@ namespace BackroomsSurvival.Net
             return SendFrame(w.ToArray());
         }
 
+        /// <summary>
+        /// Emit an {type:"action", action_type, data:{...}} frame — the shared shape of
+        /// every discrete action request. <paramref name="writeData"/> writes exactly
+        /// <paramref name="dataFieldCount"/> key/value pairs into the <c>data</c> map, in the
+        /// order the backend expects. Byte-for-byte equivalent to the hand-rolled bodies it
+        /// replaced (same map(3) envelope + same data map). Returns SendFrame's result
+        /// (true = written, false = dropped); existing void callers ignore it.
+        ///
+        /// CAUTION: <paramref name="dataFieldCount"/> is written to the wire as-is and is NOT
+        /// cross-checked against the pairs <paramref name="writeData"/> emits — the caller must
+        /// keep the two in sync (unlike SendPlayerInput, whose Debug.Assert guards its count).
+        /// A self-check would need to count map entries the writer does not expose, so this
+        /// stays a caller contract.
+        ///
+        /// NOTE: this only covers action frames whose <c>data</c> is a MAP. SendAction, whose
+        /// <c>data</c> is nil (0xc0, not an empty map 0x80), does not use this helper.
+        /// </summary>
+        private bool SendActionFrame(string actionType, int dataFieldCount, Action<MsgPackWriter> writeData)
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString(actionType);
+            w.WriteString("data"); w.WriteMapHeader(dataFieldCount);
+            writeData(w);
+            return SendFrame(w.ToArray());
+        }
+
+        /// <summary>
+        /// ADR-025 respawn-on-demand: ask the server to respawn the (dead) local player. Sent by
+        /// RespawnRequester when the native STP Respawn button fires HealthManager.Respawn. The
+        /// server honors it only while the player is actually dead (spam/abuse = logged no-op),
+        /// resolves a safe spawn and answers with the "player_respawned" event that arms the
+        /// AuthoritativePoseApplier snap. Rides the Action channel — no wire schema change.
+        /// </summary>
+        public void SendRespawnRequest()
+        {
+            SendActionFrame(ProtocolActionTypes.RespawnRequest, 0, _ => { });
+        }
+
         /// <summary>Send a discrete action request (craft, pickup, attack, ...).</summary>
         public void SendAction(string actionType)
         {
@@ -476,20 +531,75 @@ namespace BackroomsSurvival.Net
             SendFrame(w.ToArray());
         }
 
+        /// <summary>
+        /// ADR-025 Slice B: report REAL local damage (HealthManager.DamageReceived — falls,
+        /// hazards) to the authoritative backend so server health tracks local damage and the
+        /// server owns the resulting death/respawn. Rides the existing Action channel
+        /// (action_type is additive, data is free-form) — NO wire schema change, no bump.
+        /// </summary>
+        public void SendReportDamage(float amount, string cause)
+        {
+            SendActionFrame(ProtocolActionTypes.ReportDamage, 2, w =>
+            {
+                w.WriteString("amount"); w.WriteFloat(amount);
+                w.WriteString("cause"); w.WriteString(cause);
+            });
+        }
+
+        /// <summary>
+        /// ADR-028 Fase B: report the death-loot snapshot at the local death edge. The server
+        /// (gated on its own is_dead + per-death dedupe) spawns the authoritative corpse at the
+        /// frozen death position. Trust-the-client, same level as position/equipment/held_item —
+        /// the backend has no authoritative inventory to verify against. Rides the Action
+        /// channel; the CorpseView payload is the wire change (schema v8), not this frame.
+        /// `items` carries raw STP item ids (DataIdReference — may be negative) + counts.
+        /// </summary>
+        public void SendReportDeathLoot(int[] equipment, int heldItem, System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
+        {
+            SendActionFrame(ProtocolActionTypes.ReportDeathLoot, 3, w =>
+            {
+                w.WriteString("equipment"); w.WriteArrayHeader(4);
+                for (int i = 0; i < 4; i++)
+                    w.WriteInt(equipment != null && i < equipment.Length ? equipment[i] : 0);
+                w.WriteString("held_item"); w.WriteInt(heldItem);
+                w.WriteString("items"); w.WriteArrayHeader(items?.Count ?? 0);
+                for (int i = 0; i < (items?.Count ?? 0); i++)
+                {
+                    w.WriteMapHeader(2);
+                    w.WriteString("item_id"); w.WriteInt(items[i].itemId);
+                    w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+                }
+            });
+        }
+
+        /// <summary>
+        /// ADR-028 Fase D: report a loot withdrawal from a corpse's container. The actual item
+        /// move (corpse → looter's inventory) already happened locally via StorageStationUI; this
+        /// only mirrors it to the server's CorpseData so despawn-when-empty and a future cross-
+        /// client relay stay correct. <paramref name="itemIndex"/> is the SERVER-side Vec index
+        /// (see CorpseLootSync's index-mirroring doc — NOT necessarily the local UI slot index).
+        /// </summary>
+        public void SendTakeCorpseItem(uint corpseId, int itemIndex, int quantity)
+        {
+            SendActionFrame(ProtocolActionTypes.TakeCorpseItem, 3, w =>
+            {
+                w.WriteString("corpse_id"); w.WriteInt(corpseId);
+                w.WriteString("item_index"); w.WriteInt(itemIndex);
+                w.WriteString("quantity"); w.WriteInt(quantity);
+            });
+        }
+
         public void SendWorldInteractRequest(long requestId, uint targetId, string targetKind, string interactionType, Vector3 playerPosition)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("world_interact");
-            w.WriteString("data"); w.WriteMapHeader(5);
-            w.WriteString("request_id"); w.WriteInt(requestId);
-            w.WriteString("target_id"); w.WriteInt(targetId);
-            w.WriteString("target_kind"); w.WriteString(targetKind);
-            w.WriteString("interaction_type"); w.WriteString(interactionType);
-            w.WriteString("player_position"); w.WriteArrayHeader(3);
-            w.WriteFloat(playerPosition.x); w.WriteFloat(playerPosition.y); w.WriteFloat(playerPosition.z);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.WorldInteract, 5, w =>
+            {
+                w.WriteString("request_id"); w.WriteInt(requestId);
+                w.WriteString("target_id"); w.WriteInt(targetId);
+                w.WriteString("target_kind"); w.WriteString(targetKind);
+                w.WriteString("interaction_type"); w.WriteString(interactionType);
+                w.WriteString("player_position"); w.WriteArrayHeader(3);
+                w.WriteFloat(playerPosition.x); w.WriteFloat(playerPosition.y); w.WriteFloat(playerPosition.z);
+            });
         }
 
         /// <summary>
@@ -498,24 +608,21 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendSetStpItems(System.Collections.Generic.IReadOnlyList<StpItemSpec> items)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("set_stp_items");
-            w.WriteString("data"); w.WriteMapHeader(1);
-            w.WriteString("items"); w.WriteArrayHeader(items.Count);
-            for (int i = 0; i < items.Count; i++)
+            SendActionFrame(ProtocolActionTypes.SetStpItems, 1, w =>
             {
-                var it = items[i];
-                w.WriteMapHeader(5);
-                w.WriteString("id"); w.WriteInt(it.id);
-                w.WriteString("def_id"); w.WriteInt(it.defId);
-                w.WriteString("count"); w.WriteInt(it.count);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(it.position.x); w.WriteFloat(it.position.y); w.WriteFloat(it.position.z);
-                w.WriteString("rotation"); w.WriteFloat(it.rotation);
-            }
-            SendFrame(w.ToArray());
+                w.WriteString("items"); w.WriteArrayHeader(items.Count);
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var it = items[i];
+                    w.WriteMapHeader(5);
+                    w.WriteString("id"); w.WriteInt(it.id);
+                    w.WriteString("def_id"); w.WriteInt(it.defId);
+                    w.WriteString("count"); w.WriteInt(it.count);
+                    w.WriteString("position"); w.WriteArrayHeader(3);
+                    w.WriteFloat(it.position.x); w.WriteFloat(it.position.y); w.WriteFloat(it.position.z);
+                    w.WriteString("rotation"); w.WriteFloat(it.rotation);
+                }
+            });
         }
 
         /// <summary>
@@ -525,13 +632,10 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpPickup(uint itemId)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_pickup");
-            w.WriteString("data"); w.WriteMapHeader(1);
-            w.WriteString("item_id"); w.WriteInt(itemId);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpPickup, 1, w =>
+            {
+                w.WriteString("item_id"); w.WriteInt(itemId);
+            });
         }
 
         /// <summary>
@@ -541,18 +645,15 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpDrop(long dropId, int defId, int count, Vector3 position, float rotation)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_drop");
-            w.WriteString("data"); w.WriteMapHeader(5);
-            w.WriteString("drop_id"); w.WriteInt(dropId);
-            w.WriteString("def_id"); w.WriteInt(defId);
-            w.WriteString("count"); w.WriteInt(count);
-            w.WriteString("position"); w.WriteArrayHeader(3);
-            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
-            w.WriteString("rotation"); w.WriteFloat(rotation);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpDrop, 5, w =>
+            {
+                w.WriteString("drop_id"); w.WriteInt(dropId);
+                w.WriteString("def_id"); w.WriteInt(defId);
+                w.WriteString("count"); w.WriteInt(count);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("rotation"); w.WriteFloat(rotation);
+            });
         }
 
         /// <summary>
@@ -562,19 +663,16 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpPlace(long placeId, int defId, Vector3 position, float rotation, uint groupId, bool isGroup)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_place");
-            w.WriteString("data"); w.WriteMapHeader(6);
-            w.WriteString("place_id"); w.WriteInt(placeId);
-            w.WriteString("def_id"); w.WriteInt(defId);
-            w.WriteString("position"); w.WriteArrayHeader(3);
-            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
-            w.WriteString("rotation"); w.WriteFloat(rotation);
-            w.WriteString("group_id"); w.WriteInt(groupId);
-            w.WriteString("is_group"); w.WriteBool(isGroup);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpPlace, 6, w =>
+            {
+                w.WriteString("place_id"); w.WriteInt(placeId);
+                w.WriteString("def_id"); w.WriteInt(defId);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("rotation"); w.WriteFloat(rotation);
+                w.WriteString("group_id"); w.WriteInt(groupId);
+                w.WriteString("is_group"); w.WriteBool(isGroup);
+            });
         }
 
         /// <summary>
@@ -585,15 +683,12 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpBuildAdd(long addId, uint buildingId, int materialId)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_build_add");
-            w.WriteString("data"); w.WriteMapHeader(3);
-            w.WriteString("add_id"); w.WriteInt(addId);
-            w.WriteString("building_id"); w.WriteInt(buildingId);
-            w.WriteString("material_id"); w.WriteInt(materialId);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpBuildAdd, 3, w =>
+            {
+                w.WriteString("add_id"); w.WriteInt(addId);
+                w.WriteString("building_id"); w.WriteInt(buildingId);
+                w.WriteString("material_id"); w.WriteInt(materialId);
+            });
         }
 
         /// <summary>
@@ -602,23 +697,20 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendSetStpCarryables(System.Collections.Generic.IReadOnlyList<StpCarryableSpec> carryables)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("set_stp_carryables");
-            w.WriteString("data"); w.WriteMapHeader(1);
-            w.WriteString("carryables"); w.WriteArrayHeader(carryables.Count);
-            for (int i = 0; i < carryables.Count; i++)
+            SendActionFrame(ProtocolActionTypes.SetStpCarryables, 1, w =>
             {
-                var c = carryables[i];
-                w.WriteMapHeader(4);
-                w.WriteString("id"); w.WriteInt(c.id);
-                w.WriteString("def_id"); w.WriteInt(c.defId);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(c.position.x); w.WriteFloat(c.position.y); w.WriteFloat(c.position.z);
-                w.WriteString("rotation"); w.WriteFloat(c.rotation);
-            }
-            SendFrame(w.ToArray());
+                w.WriteString("carryables"); w.WriteArrayHeader(carryables.Count);
+                for (int i = 0; i < carryables.Count; i++)
+                {
+                    var c = carryables[i];
+                    w.WriteMapHeader(4);
+                    w.WriteString("id"); w.WriteInt(c.id);
+                    w.WriteString("def_id"); w.WriteInt(c.defId);
+                    w.WriteString("position"); w.WriteArrayHeader(3);
+                    w.WriteFloat(c.position.x); w.WriteFloat(c.position.y); w.WriteFloat(c.position.z);
+                    w.WriteString("rotation"); w.WriteFloat(c.rotation);
+                }
+            });
         }
 
         /// <summary>
@@ -628,13 +720,10 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpCarryablePickup(uint carryableId)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_carryable_pickup");
-            w.WriteString("data"); w.WriteMapHeader(1);
-            w.WriteString("carryable_id"); w.WriteInt(carryableId);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpCarryablePickup, 1, w =>
+            {
+                w.WriteString("carryable_id"); w.WriteInt(carryableId);
+            });
         }
 
         /// <summary>
@@ -643,17 +732,14 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpCarryableDrop(long dropId, int defId, Vector3 position, float rotation)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_carryable_drop");
-            w.WriteString("data"); w.WriteMapHeader(4);
-            w.WriteString("drop_id"); w.WriteInt(dropId);
-            w.WriteString("def_id"); w.WriteInt(defId);
-            w.WriteString("position"); w.WriteArrayHeader(3);
-            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
-            w.WriteString("rotation"); w.WriteFloat(rotation);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpCarryableDrop, 4, w =>
+            {
+                w.WriteString("drop_id"); w.WriteInt(dropId);
+                w.WriteString("def_id"); w.WriteInt(defId);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("rotation"); w.WriteFloat(rotation);
+            });
         }
 
         /// <summary>
@@ -662,21 +748,18 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendSetStpHarvestables(System.Collections.Generic.IReadOnlyList<StpHarvestableSpec> harvestables)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("set_stp_harvestables");
-            w.WriteString("data"); w.WriteMapHeader(1);
-            w.WriteString("harvestables"); w.WriteArrayHeader(harvestables.Count);
-            for (int i = 0; i < harvestables.Count; i++)
+            SendActionFrame(ProtocolActionTypes.SetStpHarvestables, 1, w =>
             {
-                var h = harvestables[i];
-                w.WriteMapHeader(2);
-                w.WriteString("id"); w.WriteInt(h.id);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(h.position.x); w.WriteFloat(h.position.y); w.WriteFloat(h.position.z);
-            }
-            SendFrame(w.ToArray());
+                w.WriteString("harvestables"); w.WriteArrayHeader(harvestables.Count);
+                for (int i = 0; i < harvestables.Count; i++)
+                {
+                    var h = harvestables[i];
+                    w.WriteMapHeader(2);
+                    w.WriteString("id"); w.WriteInt(h.id);
+                    w.WriteString("position"); w.WriteArrayHeader(3);
+                    w.WriteFloat(h.position.x); w.WriteFloat(h.position.y); w.WriteFloat(h.position.z);
+                }
+            });
         }
 
         /// <summary>
@@ -686,15 +769,12 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendStpHarvestHit(long hitId, uint harvestableId, float amount)
         {
-            var w = new MsgPackWriter();
-            w.WriteMapHeader(3);
-            w.WriteString("type"); w.WriteString("action");
-            w.WriteString("action_type"); w.WriteString("stp_harvest_hit");
-            w.WriteString("data"); w.WriteMapHeader(3);
-            w.WriteString("hit_id"); w.WriteInt(hitId);
-            w.WriteString("harvestable_id"); w.WriteInt(harvestableId);
-            w.WriteString("amount"); w.WriteFloat(amount);
-            SendFrame(w.ToArray());
+            SendActionFrame(ProtocolActionTypes.StpHarvestHit, 3, w =>
+            {
+                w.WriteString("hit_id"); w.WriteInt(hitId);
+                w.WriteString("harvestable_id"); w.WriteInt(harvestableId);
+                w.WriteString("amount"); w.WriteFloat(amount);
+            });
         }
 
         /// <summary>Send a UI lifecycle event (pause, save, quit, ...).</summary>
