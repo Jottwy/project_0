@@ -1,0 +1,41 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 30c019a4189b44b449afe33648c32b72, type: 3}
+  m_Name: GripPoseSet
+  m_EditorClassIdentifier: 
+  fingerBendAxis: {x: 0, y: 0, z: 1}
+  invertBend: 0
+  grips:
+  - categoryName: Melee
+    modelLocalPosition: {x: 0, y: 0, z: 0}
+    modelLocalEuler: {x: 0, y: 0, z: 0}
+    modelLocalScale: {x: 1, y: 1, z: 1}
+    fingerCurl: 55
+    thumbCurl: 40
+  - categoryName: Firearms
+    modelLocalPosition: {x: 0, y: 0, z: 0}
+    modelLocalEuler: {x: 0, y: 0, z: 0}
+    modelLocalScale: {x: 1, y: 1, z: 1}
+    fingerCurl: 50
+    thumbCurl: 35
+  - categoryName: Tools
+    modelLocalPosition: {x: 0, y: 0, z: 0}
+    modelLocalEuler: {x: 0, y: 0, z: 0}
+    modelLocalScale: {x: 1, y: 1, z: 1}
+    fingerCurl: 35
+    thumbCurl: 25
+  - categoryName: 
+    modelLocalPosition: {x: 0, y: 0, z: 0}
+    modelLocalEuler: {x: 0, y: 0, z: 0}
+    modelLocalScale: {x: 1, y: 1, z: 1}
+    fingerCurl: 40
+    thumbCurl: 30
