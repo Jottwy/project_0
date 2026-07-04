@@ -3379,7 +3379,7 @@ MonoBehaviour:
   _startingSlotIndex: 0
   _dropHolsterSpeed: 1.45
   _dropDelay: 0.35
-  _dropOnDeath: 1
+  _dropOnDeath: 0
 --- !u!114 &610298917859559493
 MonoBehaviour:
   m_ObjectHideFlags: 0
