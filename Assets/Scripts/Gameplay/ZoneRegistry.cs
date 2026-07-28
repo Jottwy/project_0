@@ -53,19 +53,7 @@ namespace BackroomsSurvival.Gameplay
                 return;
 
             foreach (var cv in state.visibleChunks)
-            {
-                var key = (cv.pos[0], cv.pos[1]);
-                byte zone = (byte)cv.zoneKind;
-
-                if (_zoneByChunk.TryGetValue(key, out byte existing) && existing == zone)
-                    continue; // already registered with this value — skip the log spam
-
-                _zoneByChunk[key] = zone;
-
-                // TEMPORARY (Pieza 1 verification) — remove once Piezas 2/3 land and the
-                // registry has a real consumer to confirm it through instead of the console.
-                Debug.Log($"[ZoneRegistry] chunk ({key.Item1}, {key.Item2}) zoneKind={zone}");
-            }
+                _zoneByChunk[(cv.pos[0], cv.pos[1])] = (byte)cv.zoneKind;
         }
     }
 
