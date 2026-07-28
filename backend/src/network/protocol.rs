@@ -105,6 +105,10 @@ pub enum PacketType {
     CorpseSpawnRequest = 0x47,
     CorpseTakeRequest = 0x48,
     CorpseTakeResult = 0x49,
+    // ADR-029 V0: PvP hit candidate -> host validation -> victim-applied damage
+    PvpHitCandidate = 0x4A,
+    PvpDamageGrant = 0x4B,
+    PvpHitRejected = 0x4C,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -160,6 +164,9 @@ impl PacketType {
             0x47 => Some(Self::CorpseSpawnRequest),
             0x48 => Some(Self::CorpseTakeRequest),
             0x49 => Some(Self::CorpseTakeResult),
+            0x4A => Some(Self::PvpHitCandidate),
+            0x4B => Some(Self::PvpDamageGrant),
+            0x4C => Some(Self::PvpHitRejected),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -551,6 +558,48 @@ pub enum PacketPayload {
         reason: String,
     },
 
+    // ADR-029 V0: PvP hit candidate -> host validation -> victim-applied damage. The health
+    // mutation itself never crosses this enum — only the candidate report, the validated
+    // grant, and the rejection travel P2P; `PlayerStats::take_damage` runs locally on
+    // whichever backend owns the affected player (see game_loop.rs authority split).
+    /// Shooter backend -> host (reliable): "I hit this proxy" — a CANDIDATE only, never
+    /// authoritative. `origin`/`hit_position`/`client_tick` are debug/feedback, not validated.
+    PvpHitCandidate {
+        request_id: u64,
+        attacker_id: u32,
+        victim_id: u32,
+        weapon_id: i32,
+        damage: f32,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        #[serde(default)]
+        client_tick: Option<u32>,
+        #[serde(default)]
+        hit_position: Option<[f32; 3]>,
+    },
+    /// Host -> victim backend (reliable): damage already validated/clamped by host authority.
+    /// The victim backend is STILL free to reject it locally (see `victim_invulnerable`
+    /// re-check, ADR-029 invulnerability amendment) before calling `PlayerStats::take_damage`.
+    PvpDamageGrant {
+        request_id: u64,
+        attacker_id: u32,
+        victim_id: u32,
+        weapon_id: i32,
+        damage: f32,
+        reason: String,
+    },
+    /// Host -> shooter backend (reliable): a candidate was rejected. `reason` is one of the
+    /// stable values documented in game_loop.rs (`duplicate`, `attacker_missing`,
+    /// `victim_missing`, `victim_dead`, `victim_invulnerable`, `invalid_weapon`,
+    /// `invalid_damage`, `invalid_direction`, `too_far`, `line_of_sight_failed`,
+    /// `not_authority`, `self_hit`, `stale_or_malformed`).
+    PvpHitRejected {
+        request_id: u64,
+        attacker_id: u32,
+        victim_id: u32,
+        reason: String,
+    },
+
     // Reliability
     Ack {
         acked_sequence: u32,
@@ -606,6 +655,9 @@ impl PacketPayload {
             Self::CorpseSpawnRequest { .. } => PacketType::CorpseSpawnRequest as u16,
             Self::CorpseTakeRequest { .. } => PacketType::CorpseTakeRequest as u16,
             Self::CorpseTakeResult { .. } => PacketType::CorpseTakeResult as u16,
+            Self::PvpHitCandidate { .. } => PacketType::PvpHitCandidate as u16,
+            Self::PvpDamageGrant { .. } => PacketType::PvpDamageGrant as u16,
+            Self::PvpHitRejected { .. } => PacketType::PvpHitRejected as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
@@ -919,6 +971,8 @@ mod tests {
             equipment: [0, -2328174, -2864101, -3870361],
             held_item: -1159981804,
             items: vec![CorpseStack { item_id: -12345, quantity: 3 }],
+            // ADR-028 amendment (world chests): the flag must survive the P2P mirror hop.
+            is_chest: true,
         };
 
         let list = PacketPayload::CorpseList { corpses: vec![corpse.clone()] };
@@ -931,6 +985,7 @@ mod tests {
                 assert_eq!(corpses[0].owner_name, "Joel");
                 assert_eq!(corpses[0].held_item, -1159981804);
                 assert_eq!(corpses[0].items[0].item_id, -12345);
+                assert!(corpses[0].is_chest);
             }
             _ => panic!("wrong variant"),
         }
@@ -991,6 +1046,104 @@ mod tests {
                 assert!(!accepted);
                 assert_eq!(item_id, -12345);
                 assert!(reason.starts_with("too_far"));
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // ADR-029 V0: the three new PvP payloads must round-trip, including negative raw STP
+    // weapon ids and the Option<T> debug-only fields (both Some and omitted-via-default).
+    #[test]
+    fn pvp_hit_candidate_round_trip_with_optional_fields() {
+        let payload = PacketPayload::PvpHitCandidate {
+            request_id: 501,
+            attacker_id: 1004,
+            victim_id: 1,
+            weapon_id: -2328174,
+            damage: 22.5,
+            origin: [1.0, 1.8, 2.0],
+            direction: [0.0, 0.0, 1.0],
+            client_tick: Some(4200),
+            hit_position: Some([1.0, 1.8, 5.0]),
+        };
+        let header = PacketHeader::new(payload.type_code(), 1004, 1, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
+        match decoded {
+            PacketPayload::PvpHitCandidate {
+                request_id, attacker_id, victim_id, weapon_id, damage, client_tick, hit_position, ..
+            } => {
+                assert_eq!(request_id, 501);
+                assert_eq!(attacker_id, 1004);
+                assert_eq!(victim_id, 1);
+                assert_eq!(weapon_id, -2328174);
+                assert_eq!(damage, 22.5);
+                assert_eq!(client_tick, Some(4200));
+                assert_eq!(hit_position, Some([1.0, 1.8, 5.0]));
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        // A decoder that never set the optional debug fields (older payload shape) must
+        // decode them as None via serde(default), not error out. Externally-tagged enum
+        // wire shape: {"pvp_hit_candidate": {fields...}} (rename_all = "snake_case").
+        let bytes = rmp_serde::to_vec_named(&serde_json::json!({
+            "pvp_hit_candidate": {
+                "request_id": 502u64,
+                "attacker_id": 1u32,
+                "victim_id": 1004u32,
+                "weapon_id": 1001i32,
+                "damage": 10.0f32,
+                "origin": [0.0f32, 1.8, 0.0],
+                "direction": [0.0f32, 0.0, 1.0],
+            }
+        }))
+        .unwrap();
+        let decoded: PacketPayload = rmp_serde::from_slice(&bytes).unwrap();
+        match decoded {
+            PacketPayload::PvpHitCandidate { client_tick, hit_position, .. } => {
+                assert_eq!(client_tick, None);
+                assert_eq!(hit_position, None);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn pvp_damage_grant_round_trip() {
+        let payload = PacketPayload::PvpDamageGrant {
+            request_id: 501,
+            attacker_id: 1004,
+            victim_id: 1,
+            weapon_id: -2328174,
+            damage: 18.0,
+            reason: "validated".into(),
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 9, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
+        match decoded {
+            PacketPayload::PvpDamageGrant { request_id, damage, reason, .. } => {
+                assert_eq!(request_id, 501);
+                assert_eq!(damage, 18.0);
+                assert_eq!(reason, "validated");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn pvp_hit_rejected_round_trip() {
+        let payload = PacketPayload::PvpHitRejected {
+            request_id: 501,
+            attacker_id: 1004,
+            victim_id: 1,
+            reason: "too_far".into(),
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 10, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
+        match decoded {
+            PacketPayload::PvpHitRejected { request_id, reason, .. } => {
+                assert_eq!(request_id, 501);
+                assert_eq!(reason, "too_far");
             }
             _ => panic!("wrong variant"),
         }

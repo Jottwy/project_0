@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use log::{debug, info};
+use log::{debug, info, warn};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -15,7 +15,7 @@ use crate::ipc::{
 };
 use crate::network::protocol::PacketPayload;
 use crate::network::sync;
-use crate::network::{NetworkEvent, NetworkManager, PeerId};
+use crate::network::{BoundedDedupeSet, NetworkEvent, NetworkManager, PeerId};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::collision::{resolve_safe_spawn, Level0Collision};
@@ -30,6 +30,13 @@ const WORLD_STATE_EVERY: u64 = 6;
 const MOVEMENT_DELTA_EVERY: u64 = 3;
 /// Entity AI runs at 10hz.
 const ENTITY_TICK_EVERY: u64 = 6;
+/// DISABLED 2026-07-07: PvE entity damage (Lurker/Crawler/Shadow) — diagnosed as the cause of
+/// silent walking deaths. Entities are invisible (EntityRenderer never wired into the STP scene)
+/// and the damage has no client feedback (StatInterpolator applies health via SetHealthSilent;
+/// Unity has no "damage_taken" handler). AI (aggro/movement/attack events) keeps running; only
+/// the health application is gated. Re-enable ONLY with an explicit decision (renderer +
+/// feedback + rebalance) — see STATE.md "Deuda: entidades PvE".
+const ENTITY_DAMAGE_ENABLED: bool = false;
 /// Ownership + teleportation checked at 1hz.
 const SLOW_TICK_EVERY: u64 = 60;
 /// Player position broadcast to peers at 10hz.
@@ -38,6 +45,13 @@ const NET_BROADCAST_EVERY: u64 = 6;
 const HEARTBEAT_EVERY: u64 = 60;
 /// Chunk state broadcast at 5hz.
 const CHUNK_BROADCAST_EVERY: u64 = 12;
+/// ADR-029 V0 (invulnerability amendment): ticks a respawned player remains immune to PvP
+/// damage. Derived from TICK_HZ so "3 seconds" always means 3 real seconds regardless of
+/// tick rate — never a magic number independent of it.
+const RESPAWN_INVULN_TICKS: u32 = (TICK_HZ * 3) as u32;
+/// ADR-032: host-only world autosave cadence (~3 real minutes). Derived from TICK_HZ so the
+/// interval holds regardless of tick rate. 60*180 = 10800 ticks @60Hz.
+const AUTOSAVE_EVERY: u64 = TICK_HZ * 180;
 
 const BASE_SPEED: f32 = 5.0;
 const SPRINT_MULT: f32 = 1.5;
@@ -141,6 +155,61 @@ const PHANTOM_ATTACK_DAMAGE: f32 = 35.0; // frontal SPRINT hit (non-lethal; boun
 const PHANTOM_KNOCKBACK_RANGE: f32 = 3.0; // STATUE→SPRINT shove only within this (m)
 const PHANTOM_KNOCKBACK_FORCE: f32 = 3.0; // shove speed (m/s); client applies via SetVelocity
 
+/// ADR-032: where the host reads/writes its world save. `SAVE_PATH` env overrides; default is
+/// `./saves/world_{seed}.json`.
+fn resolve_save_path(seed: u64) -> std::path::PathBuf {
+    std::env::var("SAVE_PATH")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from(format!("./saves/world_{seed}.json")))
+}
+
+/// ADR-032: apply a loaded save over a freshly-generated host world. Restores corpses/chests, the
+/// corpse-id allocator (defensively above both the saved counter and any loaded id), the four
+/// host-authoritative STP rosters, and the host player's durable slice.
+fn hydrate_from_save(
+    world: &mut World,
+    player: &mut Player,
+    net: &mut NetworkManager,
+    save: crate::persistence::save::SaveFile,
+) {
+    world.corpses.clear();
+    for c in save.corpses {
+        world.corpses.insert(c.id, c);
+    }
+    let max_corpse_id = world.corpses.keys().copied().max().unwrap_or(0);
+    let next_id = save
+        .next_corpse_id
+        .max(max_corpse_id.wrapping_add(1))
+        .max(1);
+    world.set_next_corpse_id(next_id);
+
+    net.stp_items = save.stp_items;
+    net.stp_buildings = save.stp_buildings;
+    net.stp_carryables = save.stp_carryables;
+    net.stp_harvestables = save.stp_harvestables;
+
+    if let Some(p) = save.host_player {
+        player.stats = p.stats;
+        player.position = p.position;
+        player.rotation = p.rotation;
+        player.inventory = p.inventory;
+        player.equipment = p.equipment;
+        player.held_item = p.held_item;
+        player.respawn_point = p.respawn_point;
+        player.stp_inventory = p.stp_inventory;
+    }
+
+    info!(
+        "ADR-032: world hydrated from save (corpses={}, buildings={}, items={}, carryables={}, harvestables={}, next_corpse_id={})",
+        world.corpses.len(),
+        net.stp_buildings.len(),
+        net.stp_items.len(),
+        net.stp_carryables.len(),
+        net.stp_harvestables.len(),
+        next_id
+    );
+}
+
 pub async fn run(
     mut from_clients: mpsc::Receiver<ClientMessage>,
     to_clients: broadcast::Sender<ServerMessage>,
@@ -148,6 +217,29 @@ pub async fn run(
 ) {
     let mut player = Player::new(net.local_id, &net.local_name);
     let mut world = World::new(net.world_seed);
+
+    // ADR-032: host-only world persistence. Load BEFORE generating/spawning so a persisted seed
+    // (and player position) win. Non-host backends never load/save — world state isn't
+    // authoritative there (joiners adopt the host's world via WorldSync).
+    let save_path = resolve_save_path(net.world_seed);
+    let mut session_name = net.local_name.clone();
+    let mut loaded_save = if net.is_host {
+        crate::persistence::save::load_or_fresh(&save_path)
+    } else {
+        None
+    };
+    if let Some(save) = &loaded_save {
+        if save.world_seed != net.world_seed {
+            warn!(
+                "ADR-032: save world_seed {} differs from launch WORLD_SEED {}; adopting saved seed",
+                save.world_seed, net.world_seed
+            );
+        }
+        net.world_seed = save.world_seed;
+        world = World::new(save.world_seed);
+        session_name = save.session_name.clone();
+    }
+
     let dt = 1.0 / TICK_HZ as f32;
     let entity_dt = dt * ENTITY_TICK_EVERY as f32;
     let dev_freeze_survival = env_flag_enabled("DEV_FREEZE_SURVIVAL");
@@ -184,6 +276,14 @@ pub async fn run(
     // ADR-016 slice 2: host-only driver that walks phantom peers (the robapieles) each
     // entity tick, resolving collision via ADR-017's sim-only chunk cache.
     let mut phantom_driver = PhantomDriver::new(net.world_seed);
+    // ADR-032 (snap de sesión restaurada): armed by the hydration branch below. The
+    // "session_restored" event CANNOT be emitted at hydration time — Unity's IPC client hasn't
+    // connected yet (broadcast to zero receivers = dropped) — so it is deferred until the first
+    // PlayerInput proves the client is alive and subscribed. It reuses ONLY the applier's snap
+    // mechanism (a position-carrying arming event, same shape as player_respawned) and is a
+    // DISTINCT event type on purpose: RespawnRequester listens for player_respawned and would
+    // force the native STP respawn chain (SetHealthSilent(0) + RestoreHealth) at boot.
+    let mut pending_restore_snap = false;
 
     // Bootstrap: host/solo creates the authoritative initial structure before
     // loading the surrounding ownership radius. Joiners wait for host WorldSync.
@@ -194,13 +294,23 @@ pub async fn run(
     let mut spawn_resolved = false;
     if net.is_host {
         world.generate_initial_structures(player.id);
-        world.update_ownership(player.position, player.id);
-        let res = resolve_safe_spawn(&mut world, preferred_spawn());
-        player.position = res.position;
-        spawn_resolved = true;
-        // Reload ownership around the validated spawn so the streamed radius is
-        // centred on where the player actually stands.
-        world.update_ownership(player.position, player.id);
+
+        if let Some(save) = loaded_save.take() {
+            // ADR-032: hydrate persisted state over the freshly-generated deterministic world and
+            // KEEP the persisted player position (skip the resolve_safe_spawn override below).
+            hydrate_from_save(&mut world, &mut player, &mut net, save);
+            spawn_resolved = true;
+            pending_restore_snap = true;
+            world.update_ownership(player.position, player.id);
+        } else {
+            world.update_ownership(player.position, player.id);
+            let res = resolve_safe_spawn(&mut world, preferred_spawn());
+            player.position = res.position;
+            spawn_resolved = true;
+            // Reload ownership around the validated spawn so the streamed radius is
+            // centred on where the player actually stands.
+            world.update_ownership(player.position, player.id);
+        }
 
         // ADR-016 (debug-gated): inject one phantom near the host spawn so it appears as a
         // player (host + joiners, via the ADR-015 relay). It walks (slice 2, collision via
@@ -262,6 +372,38 @@ pub async fn run(
                     has_received_input = true;
                 }
                 ClientMessage::Action(action) => {
+                    // ADR-032: graceful save-on-quit. Unity's teardown (OnApplicationQuit →
+                    // KillBackend) sends this RIGHT BEFORE it force-kills this process, then waits
+                    // briefly for us to exit. Persist synchronously NOW (host-only) — don't wait for
+                    // the 3-min autosave timer — then exit so Unity's WaitForExit sees a clean exit
+                    // and skips the Kill fallback. Idempotent with the timer autosave (atomic write).
+                    if action.action_type == "save_and_shutdown" {
+                        if net.is_host {
+                            match crate::persistence::save::save_world(
+                                &save_path,
+                                &session_name,
+                                &world,
+                                &player,
+                                &net.stp_items,
+                                &net.stp_buildings,
+                                &net.stp_carryables,
+                                &net.stp_harvestables,
+                            ) {
+                                Ok(()) => info!(
+                                    "ADR-032: save-on-shutdown written to {}",
+                                    save_path.display()
+                                ),
+                                Err(e) => warn!("ADR-032: save-on-shutdown failed: {e}"),
+                            }
+                        } else {
+                            info!("ADR-032: save-on-shutdown on non-host — nothing to persist, exiting");
+                        }
+                        std::process::exit(0);
+                    }
+                    info!(
+                        "MPTRACE step=PVP event=backend_action_received backend action_received action={}",
+                        action.action_type
+                    );
                     debug!("action received: {}", action.action_type);
                     handle_action(
                         &action,
@@ -270,6 +412,7 @@ pub async fn run(
                         &mut net,
                         &to_clients,
                         &mut processed_interactions,
+                        tick,
                     )
                     .await;
                 }
@@ -295,6 +438,45 @@ pub async fn run(
             }
         }
 
+        // ADR-032 (snap de sesión restaurada): first PlayerInput ⇒ Unity is connected and
+        // subscribed — emit the deferred position-arming event exactly once. Carries the
+        // CURRENT authoritative position (hydrated; the XZ speed cap has held it against the
+        // client's scene-spawn claims). AuthoritativePoseApplier snaps the LOCAL player to it;
+        // RespawnRequester ignores this type (no stats/invuln/native-respawn side effects).
+        if pending_restore_snap && has_received_input {
+            pending_restore_snap = false;
+            info!(
+                "ADR-032: emitting session_restored snap pos=({:.2},{:.2},{:.2})",
+                player.position.x, player.position.y, player.position.z
+            );
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "session_restored".into(),
+                data: serde_json::json!({ "position": player.position.to_array() }),
+            }));
+            // ADR-032 amendment: restore the real STP inventory in the same deferred window,
+            // AFTER the snap event (independent consumers — applier vs InventoryRestorer — so
+            // order is cosmetic, but keep it deterministic). Skipped when empty: an empty
+            // snapshot is indistinguishable from a pre-amendment save, and clearing the
+            // client's fresh-session containers over that ambiguity would destroy STP starter
+            // items for no gain (accepted degradation: a genuinely-naked persisted state falls
+            // back to whatever STP grants a fresh session).
+            if !player.stp_inventory.is_empty() {
+                info!(
+                    "ADR-032: emitting inventory_restored ({} stacks)",
+                    player.stp_inventory.len()
+                );
+                let items: Vec<serde_json::Value> = player
+                    .stp_inventory
+                    .iter()
+                    .map(|s| serde_json::json!({ "item_id": s.item_id, "quantity": s.quantity }))
+                    .collect();
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "inventory_restored".into(),
+                    data: serde_json::json!({ "items": items }),
+                }));
+            }
+        }
+
         // Process incoming network packets.
         let net_events = net.process_incoming().await;
         for event in net_events {
@@ -305,6 +487,7 @@ pub async fn run(
                 &mut net,
                 &to_clients,
                 &mut processed_interactions,
+                tick,
             )
             .await;
         }
@@ -413,7 +596,7 @@ pub async fn run(
         // Entity AI at 10hz.
         if tick % ENTITY_TICK_EVERY == 0 {
             let (damage, events) = world.tick_entities(entity_dt, player.position, player.id);
-            if !dev_freeze_survival && damage > 0.0 {
+            if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
                 player.stats.take_damage(damage);
             }
             for ev in events {
@@ -600,6 +783,7 @@ pub async fn run(
                     &mut net,
                     &to_clients,
                     &mut processed_interactions,
+                    tick,
                 )
                 .await;
             }
@@ -630,6 +814,24 @@ pub async fn run(
             let _ = to_clients.send(ServerMessage::WorldState(snapshot));
         }
 
+        // ADR-032: host-only autosave (~3 min). The single-threaded loop makes tick-boundary
+        // serialization an inherently consistent snapshot — no pause/lock needed. Skips tick 0.
+        if net.is_host && tick > 0 && tick % AUTOSAVE_EVERY == 0 {
+            match crate::persistence::save::save_world(
+                &save_path,
+                &session_name,
+                &world,
+                &player,
+                &net.stp_items,
+                &net.stp_buildings,
+                &net.stp_carryables,
+                &net.stp_harvestables,
+            ) {
+                Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
+                Err(e) => warn!("ADR-032: autosave failed: {e}"),
+            }
+        }
+
         tick = tick.wrapping_add(1);
     }
 }
@@ -653,6 +855,7 @@ async fn handle_network_event(
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut HashSet<(u16, u64)>,
+    tick: u64,
 ) {
     match event {
         NetworkEvent::PeerConnected { id, name } => {
@@ -1068,6 +1271,112 @@ async fn handle_network_event(
                 world.corpses = corpses.into_iter().map(|c| (c.id, c)).collect();
             }
         }
+
+        // ─── ADR-029 V0: PvP relay (host-authoritative validation, victim-applied damage) ───
+        NetworkEvent::PvpHitCandidate {
+            request_id,
+            attacker_id,
+            victim_id,
+            weapon_id,
+            damage,
+            origin: _,
+            direction,
+            client_tick: _,
+            hit_position: _,
+        } => {
+            if !net.is_host {
+                return; // only the host validates PvP candidates
+            }
+            process_pvp_hit_candidate_host(
+                PvpCandidateFields {
+                    request_id,
+                    attacker_id,
+                    victim_id,
+                    weapon_id,
+                    damage,
+                    direction,
+                },
+                player,
+                net,
+                to_clients,
+                tick,
+            )
+            .await;
+        }
+
+        NetworkEvent::PvpDamageGrant {
+            request_id,
+            attacker_id,
+            victim_id,
+            weapon_id,
+            damage,
+            reason: _,
+        } => {
+            // We are the victim's own backend (the host addressed this packet to us because
+            // OUR local player is the victim) — apply the damage here, never elsewhere.
+            if victim_id != net.local_id as u32 {
+                info!(
+                    "MPTRACE step=PVP event=pvp_damage_grant_victim_mismatch self_id={} expected_victim={} got_victim={} request_id={}",
+                    net.local_id, net.local_id, victim_id, request_id
+                );
+                return;
+            }
+            match apply_pvp_damage_grant(
+                &mut player.stats,
+                &mut net.processed_pvp_grants,
+                attacker_id,
+                request_id,
+                damage,
+                tick,
+            ) {
+                Ok(health) => {
+                    info!(
+                        "MPTRACE step=PVP event=pvp_damage_applied request_id={} attacker_id={} weapon_id={} damage={:.1} health={:.2}",
+                        request_id, attacker_id, weapon_id, damage, health
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "pvp_damage_taken".into(),
+                        data: serde_json::json!({
+                            "attacker_id": attacker_id,
+                            "weapon_id": weapon_id,
+                            "damage": damage,
+                            "health": health,
+                        }),
+                    }));
+                }
+                Err(reason) => {
+                    info!(
+                        "MPTRACE step=PVP event=pvp_damage_grant_blocked reason={} request_id={} attacker_id={}",
+                        reason, request_id, attacker_id
+                    );
+                }
+            }
+        }
+
+        NetworkEvent::PvpHitRejected {
+            request_id,
+            attacker_id,
+            victim_id: _,
+            reason,
+        } => {
+            // We are the shooter's own backend (the host addressed this packet to us because
+            // OUR local player fired the rejected shot) — surface it to our own Unity.
+            if attacker_id != net.local_id as u32 {
+                info!(
+                    "MPTRACE step=PVP event=pvp_hit_rejected_attacker_mismatch self_id={} expected_attacker={} got_attacker={} request_id={}",
+                    net.local_id, net.local_id, attacker_id, request_id
+                );
+                return;
+            }
+            info!(
+                "MPTRACE step=PVP event=pvp_hit_rejected_relayed request_id={} reason={}",
+                request_id, reason
+            );
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "pvp_hit_rejected".into(),
+                data: serde_json::json!({ "request_id": request_id, "reason": reason }),
+            }));
+        }
     }
 }
 
@@ -1161,6 +1470,41 @@ fn preferred_spawn() -> Vec3 {
     // Centre of the starter chunk (0,0). The resolver snaps this to the nearest
     // validated safe cell; Y is recomputed from the chunk floor.
     Vec3::new(CHUNK_SIZE * 0.5, 1.8, CHUNK_SIZE * 0.5)
+}
+
+/// ADR-031: the STP "Sleeping Bag" BuildingPieceDefinition id. Placing this piece (via the existing
+/// `stp_place` action) sets the player's respawn point. TODO(config): hardcoded like the ADR-029 PvP
+/// weapon allowlist; move to a config surface when one exists.
+const BED_DEF_ID: i32 = -4996552;
+
+/// ADR-031: resolve where a respawn lands. If the player has a bed (`respawn_point`), stream its
+/// chunk in (resolve_safe_spawn only reads loaded chunks) and prefer it; else use the fixed starter
+/// spawn. If the resolver falls back to the starter cluster despite a bed (its chunk is non-flat /
+/// has no safe cell), "trust the bed": spawn at the bed's exact position if a capsule fits there,
+/// instead of teleporting to the fixed (0,0) origin. Extracted from the `respawn_request` handler so
+/// the selection logic is unit-testable without the async loop.
+fn resolve_respawn(
+    world: &mut World,
+    respawn_point: Option<Vec3>,
+    player_id: PeerId,
+) -> crate::world::collision::SpawnResolution {
+    let preferred = respawn_point.unwrap_or_else(preferred_spawn);
+    if respawn_point.is_some() {
+        world.update_ownership(preferred, player_id);
+    }
+    let mut res = resolve_safe_spawn(world, preferred);
+    if res.method == crate::world::collision::SpawnMethod::Repaired {
+        if let Some(bed) = respawn_point {
+            if let Some(bed_res) = crate::world::collision::try_bed_spawn(world, bed) {
+                info!(
+                    "MPTRACE step=BED event=trust_bed_spawn pos=({:.2},{:.2},{:.2})",
+                    bed_res.position.x, bed_res.position.y, bed_res.position.z
+                );
+                res = bed_res;
+            }
+        }
+    }
+    res
 }
 
 /// ADR-009 Option B: apply the client's authoritative-pose input and return the
@@ -1279,6 +1623,7 @@ async fn handle_action(
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut HashSet<(u16, u64)>,
+    tick: u64,
 ) {
     match action.action_type.as_str() {
         // ADR-025 Slice B: the client reports REAL local damage (falls, hazards — its
@@ -1298,6 +1643,46 @@ async fn handle_action(
                 );
             }
         }
+        // ADR-032 amendment: the client reports its CURRENT real STP inventory (InventoryReporter,
+        // debounced on-change). Trust-the-client — same level as report_death_loot: no
+        // authoritative inventory exists to verify against (decided in ADR-030). Hygiene shared
+        // with corpse/chest spawns (sanitize_loot_stacks: quantity<=0 dropped, truncated to
+        // MAX_CORPSE_STACKS=64 — first 64 kept). Only mirrored into RAM here; persistence picks
+        // it up via PlayerSnapshot on the next save.
+        "report_inventory" => {
+            let mut items = parse_loot_stacks(&action.data);
+            crate::world::corpse::sanitize_loot_stacks(&mut items);
+            debug!("report_inventory: {} stacks", items.len());
+            player.stp_inventory = items;
+        }
+        // ADR-030: the client reports eating/drinking an item (STP's own local Hunger/Thirst
+        // managers are disabled by StatInterpolator, ADR-009 L2, so without this the survival
+        // stats can only ever go DOWN between respawns). Trust-the-client for possession (no
+        // authoritative inventory exists to verify against — same level as report_death_loot);
+        // the backend is the sole authority on HOW MUCH an item restores (consumable_spec's
+        // fixed table), never a client-reported amount. No dedupe: local action, ordered TCP IPC.
+        "consume_item" => {
+            let item_id = action.data.get("item_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            if player.stats.is_dead() {
+                info!(
+                    "MPTRACE step=CONSUME event=consume_item_ignored reason=dead item_id={}",
+                    item_id
+                );
+            } else if let Some(spec) = consumable_spec(item_id) {
+                player.stats.restore_hunger(spec.hunger_restore);
+                player.stats.restore_thirst(spec.thirst_restore);
+                player.stats.restore_health(spec.health_restore);
+                info!(
+                    "MPTRACE step=CONSUME event=consume_item_applied item_id={} hunger={:.2} thirst={:.2} health={:.2}",
+                    item_id, player.stats.hunger, player.stats.thirst, player.stats.health
+                );
+            } else {
+                info!(
+                    "MPTRACE step=CONSUME event=consume_item_rejected reason=unknown_item item_id={}",
+                    item_id
+                );
+            }
+        }
         // ADR-025 respawn-on-demand: the client's native Respawn button asks the server to
         // respawn. Honored ONLY while actually dead (sanitized like report_damage: a spammed or
         // abusive request while alive is a logged no-op). This is the resolve+reposition that the
@@ -1306,10 +1691,15 @@ async fn handle_action(
         "respawn_request" => {
             if player.stats.is_dead() {
                 player.stats = crate::player::stats::PlayerStats::on_respawn();
+                // ADR-029 V0 invulnerability amendment: a fresh respawn is immune to PvP
+                // damage for RESPAWN_INVULN_TICKS (tick-based, no spatial safe zone).
+                player.stats.invuln_until_tick = (tick as u32).wrapping_add(RESPAWN_INVULN_TICKS);
                 // ADR-028: this death's corpse (if any) is sealed; re-arm the dedupe
                 // so the NEXT death can report its own loot snapshot.
                 player.death_loot_reported = false;
-                let res = resolve_safe_spawn(world, preferred_spawn());
+                // ADR-031: respawn at the player's bed if they placed one, else the fixed starter
+                // spawn (extracted to resolve_respawn so the selection logic is unit-testable).
+                let res = resolve_respawn(world, player.respawn_point, player.id);
                 player.position = res.position;
                 info!(
                     "MPTRACE step=RESPAWN event=respawn_request_honored pos=({:.2},{:.2},{:.2})",
@@ -1402,6 +1792,39 @@ async fn handle_action(
                     request_id, stack_count, held_item
                 );
                 net.send_reliable(1, &payload).await;
+            }
+        }
+        // ADR-028 amendment (world chests): the HOST's Unity seeds N supply chests at session
+        // start — walkable positions raycast against the RENDERED world (the backend can't
+        // validate them, two-worlds debt) and loot picked client-side from the richer chest
+        // pools (trust-the-client, same level as report_death_loot). A chest is a corpse-entry
+        // with is_chest=true: all relay/loot/despawn machinery is reused untouched. Host-only:
+        // joiners receive chests through the CorpseList mirror and must never seed. Dedupe by
+        // (player, request_id) via the SAME processed_interactions set world_interact uses —
+        // guards a client re-send after reconnect. Empty loot → skipped (post-E3 rule: an
+        // empty container would be immortal).
+        "spawn_world_chest" => {
+            let request_id = json_u64(&action.data, "request_id").unwrap_or(0);
+            let position = json_vec3(&action.data, "position")
+                .map(Vec3::from_array)
+                .unwrap_or(player.position);
+            let (_, _, items) = parse_death_loot(&action.data);
+            match handle_spawn_world_chest(
+                world,
+                net.is_host,
+                player.id,
+                request_id,
+                position,
+                items,
+                processed_interactions,
+            ) {
+                Ok(chest_id) => info!(
+                    "MPTRACE step=CHEST event=chest_seeded chest_id={} pos=({:.2},{:.2},{:.2}) request_id={}",
+                    chest_id, position.x, position.y, position.z, request_id
+                ),
+                Err(reason) => info!(
+                    "MPTRACE step=CHEST event=chest_seed_ignored reason={reason} request_id={request_id}"
+                ),
             }
         }
         // ADR-028 Fase A: loot one stack from a corpse. The server only keeps the container
@@ -1656,6 +2079,17 @@ async fn handle_action(
             let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
             let group_id = action.data.get("group_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
             let is_group = action.data.get("is_group").and_then(|v| v.as_bool()).unwrap_or(false);
+            // ADR-031: placing a Sleeping Bag sets THIS player's respawn point ("last placed wins").
+            // Runs on the placer's own backend (host OR joiner) since the stp_place action arrives here
+            // regardless of who relays the building; trust-the-client for the position (same level as
+            // report_death_loot — the server validates it when resolving the spawn).
+            if def_id == BED_DEF_ID {
+                player.respawn_point = Some(Vec3::from_array(position));
+                info!(
+                    "MPTRACE step=BED event=respawn_point_set pos=({:.2},{:.2},{:.2})",
+                    position[0], position[1], position[2]
+                );
+            }
             if net.is_host {
                 process_stp_place(place_id, def_id, position, rotation, group_id, is_group, net);
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
@@ -1804,7 +2238,490 @@ async fn handle_action(
                 net.send_reliable(1, &payload).await;
             }
         }
+        // ADR-029 V0 Fase 1+3: Unity reports a candidate PvP hit against a remote-player
+        // proxy. Unity NEVER applies damage — this backend either validates it directly (if
+        // it is the host) or forwards it to the host for validation (if it is a joiner).
+        // `attacker_id` is ALWAYS this backend's own `net.local_id`, never the IPC-reported
+        // value — same principle as `world_interact`'s `requester_id` (this backend is the
+        // only trustworthy source of "who is shooting" for itself).
+        "pvp_hit_candidate" => {
+            let request_id = json_u64(&action.data, "request_id").unwrap_or(0);
+            if request_id == 0 {
+                info!("MPTRACE step=PVP event=pvp_hit_candidate_ignored reason=invalid_request_id");
+                return;
+            }
+            let victim_id = json_u32(&action.data, "victim_id").unwrap_or(0);
+            let weapon_id = json_i32(&action.data, "weapon_id").unwrap_or(0);
+            let damage = action.data.get("damage").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let origin = json_vec3(&action.data, "origin").unwrap_or([0.0, 0.0, 0.0]);
+            let direction = json_vec3(&action.data, "direction").unwrap_or([0.0, 0.0, 0.0]);
+            let hit_position = json_vec3(&action.data, "hit_position");
+            let client_tick = json_u32(&action.data, "client_tick");
+            let attacker_id = net.local_id as u32;
+
+            info!(
+                "MPTRACE step=PVP event=pvp_hit_candidate_received self_id={} request_id={} attacker_id={} victim_id={} weapon_id={} damage={:.1}",
+                net.local_id, request_id, attacker_id, victim_id, weapon_id, damage
+            );
+
+            if net.is_host {
+                process_pvp_hit_candidate_host(
+                    PvpCandidateFields {
+                        request_id,
+                        attacker_id,
+                        victim_id,
+                        weapon_id,
+                        damage,
+                        direction,
+                    },
+                    player,
+                    net,
+                    to_clients,
+                    tick,
+                )
+                .await;
+            } else {
+                let payload = PacketPayload::PvpHitCandidate {
+                    request_id,
+                    attacker_id,
+                    victim_id,
+                    weapon_id,
+                    damage,
+                    origin,
+                    direction,
+                    client_tick,
+                    hit_position,
+                };
+                info!(
+                    "MPTRACE step=PVP event=pvp_hit_candidate_forwarded_to_host request_id={} victim_id={} weapon_id={}",
+                    request_id, victim_id, weapon_id
+                );
+                net.send_reliable(1, &payload).await;
+            }
+        }
         _ => {}
+    }
+}
+
+// ─── ADR-029 V0: PvP hit candidate → host validation → victim-applied damage ───
+//
+// Authority split (see ADR-029 "Decision de autoridad" + the invulnerability amendment):
+// Unity never applies PvP damage. The HOST validates a candidate (11-step order below,
+// short-circuiting at the first failure) and either grants it to the victim's own backend
+// or rejects it back to the shooter's own backend. The VICTIM's own backend is the only
+// place `PlayerStats::take_damage` is ever called for PvP — even a host-granted hit is
+// re-checked there (dedupe + invulnerability), because the host cannot see a remote peer's
+// `invuln_until_tick` (not relayed over the wire — see the amendment).
+
+/// Everything needed to validate/dispatch ONE candidate hit, gathered from `handle_action`
+/// (local shot) or a `NetworkEvent::PvpHitCandidate` (a remote peer's shot, forwarded to us
+/// because we are the host). `attacker_id` is always a value the CALLER already trusts (this
+/// backend's own `net.local_id` for a local shot, or the sender's self-reported id for a
+/// forwarded one — same trust level as the rest of the P2P relay, e.g. `CorpseSpawnRequest`).
+struct PvpCandidateFields {
+    request_id: u64,
+    attacker_id: u32,
+    victim_id: u32,
+    weapon_id: i32,
+    damage: f32,
+    direction: [f32; 3],
+}
+
+/// Hardcoded per-weapon caps (max damage per hit, max effective range in meters). The ids are
+/// the REAL STP `DataIdReference` ids of the weapon `ItemDefinition` assets, confirmed by
+/// reading the assets in Fase 2. Any id NOT in this list of 7 (and `0`) rejects
+/// `invalid_weapon`.
+struct PvpWeaponSpec {
+    max_damage: f32,
+    max_range: f32,
+}
+
+/// `weapon_id == 0` is STP's own "no item" sentinel and is ALWAYS rejected (`invalid_weapon`),
+/// regardless of this table, per ADR-029's validation list item 7.
+///
+// TODO(balance): placeholder values, pendiente pasada de balance dedicada — NO son valores finales.
+fn pvp_weapon_spec(weapon_id: i32) -> Option<PvpWeaponSpec> {
+    match weapon_id {
+        0 => None,
+        // ── Firearms ──
+        9692212 => Some(PvpWeaponSpec {
+            // STP_Marlin 336
+            max_damage: 45.0,
+            max_range: 100.0,
+        }),
+        -7892144 => Some(PvpWeaponSpec {
+            // STP_Wooden Bow
+            max_damage: 35.0,
+            max_range: 60.0,
+        }),
+        // ── Melee ──
+        -1198406010 => Some(PvpWeaponSpec {
+            // STP_Bone Club
+            max_damage: 15.0,
+            max_range: 2.5,
+        }),
+        2211292 => Some(PvpWeaponSpec {
+            // STP_Hunting Axe
+            max_damage: 25.0,
+            max_range: 2.5,
+        }),
+        -9575342 => Some(PvpWeaponSpec {
+            // STP_Hunting Knife
+            max_damage: 12.0,
+            max_range: 2.0,
+        }),
+        -1159981804 => Some(PvpWeaponSpec {
+            // STP_Steel Pickaxe
+            max_damage: 20.0,
+            max_range: 2.5,
+        }),
+        5085425 => Some(PvpWeaponSpec {
+            // STP_Stone Spear
+            max_damage: 18.0,
+            max_range: 3.0,
+        }),
+        -52379 => Some(PvpWeaponSpec {
+            // STP_Wooden Spear
+            max_damage: 16.0,
+            max_range: 3.0,
+        }),
+        _ => None,
+    }
+}
+
+/// ADR-030: fixed per-item restoration applied by `"consume_item"`. The ids are the REAL STP
+/// `DataIdReference` ids of the item `ItemDefinition` assets (confirmed by reading the assets'
+/// `ConsumeData`). Values are the MIDPOINT of that asset's own authored `_hungerChange`/
+/// `_thirstChange`/`_healthChange` range, simplified to a single fixed number (the server has
+/// no client-reported roll to apply — trust-the-client stops at "this item was consumed", per
+/// ADR-030). Any id NOT in this table rejects `unknown_item`.
+///
+// TODO(balance): fixed value = midpoint of the asset's authored range, not a re-balanced number.
+struct ConsumableSpec {
+    hunger_restore: f32,
+    thirst_restore: f32,
+    health_restore: f32,
+}
+
+fn consumable_spec(item_id: i32) -> Option<ConsumableSpec> {
+    match item_id {
+        -5498592 => Some(ConsumableSpec {
+            // STP_Apple: hunger 10..25, thirst 5..10
+            hunger_restore: 17.5,
+            thirst_restore: 7.5,
+            health_restore: 0.0,
+        }),
+        1045632 => Some(ConsumableSpec {
+            // STP_Cooked Meat: hunger 40..50
+            hunger_restore: 45.0,
+            thirst_restore: 0.0,
+            health_restore: 0.0,
+        }),
+        -7862085 => Some(ConsumableSpec {
+            // STP_Energy Bar: hunger 25..30
+            hunger_restore: 27.5,
+            thirst_restore: 0.0,
+            health_restore: 0.0,
+        }),
+        6285896 => Some(ConsumableSpec {
+            // STP_Large Food Can: hunger 50..65, thirst 10..15
+            hunger_restore: 57.5,
+            thirst_restore: 12.5,
+            health_restore: 0.0,
+        }),
+        -7580928 => Some(ConsumableSpec {
+            // STP_Small Food Can: hunger 30..40, thirst 5..10
+            hunger_restore: 35.0,
+            thirst_restore: 7.5,
+            health_restore: 0.0,
+        }),
+        7983286 => Some(ConsumableSpec {
+            // STP_Water Bottle: thirst 40..50
+            hunger_restore: 0.0,
+            thirst_restore: 45.0,
+            health_restore: 0.0,
+        }),
+        -7174886 => Some(ConsumableSpec {
+            // STP_Antibiotics: health 50..60
+            hunger_restore: 0.0,
+            thirst_restore: 0.0,
+            health_restore: 55.0,
+        }),
+        _ => None,
+    }
+}
+
+/// PeerId is u16; the wire/ADR fields are u32. A value that doesn't fit u16 can never be a
+/// real peer id (host=1, joiners ∈[1000,60999], phantoms ≥0xF000 per network/mod.rs), so it
+/// safely resolves to "unknown" rather than panicking or silently truncating.
+fn peer_id_from_u32(id: u32) -> Option<PeerId> {
+    u16::try_from(id).ok()
+}
+
+/// Pure input to `validate_pvp_hit` — everything pre-resolved from `Player`/`NetworkManager`
+/// so the 11-step validation order is unit-testable without a live UDP socket or async runtime.
+struct PvpValidationInput {
+    is_host: bool,
+    request_id: u64,
+    attacker_id: u32,
+    victim_id: u32,
+    attacker_known: bool,
+    victim_known: bool,
+    victim_dead: bool,
+    /// Only meaningful when the victim is THIS backend's own local player — see the
+    /// invulnerability amendment for why a remote victim's value can't be checked here.
+    victim_invuln: bool,
+    weapon_id: i32,
+    damage: f32,
+    direction: [f32; 3],
+    attacker_pos: Vec3,
+    victim_pos: Vec3,
+}
+
+enum PvpVerdict {
+    Accepted { clamped_damage: f32 },
+    Rejected(&'static str),
+}
+
+/// The 11-step validation order from ADR-029, short-circuiting at the first failure. Step
+/// 11 (line of sight) is a gated, degradable stub in V0 (see `process_pvp_hit_candidate_host`
+/// for the flag check) — it never rejects here, so it isn't represented as a branch.
+fn validate_pvp_hit(
+    input: &PvpValidationInput,
+    dedupe: &mut BoundedDedupeSet<(u32, u64)>,
+) -> PvpVerdict {
+    if !input.is_host {
+        return PvpVerdict::Rejected("not_authority");
+    }
+    if input.victim_id == input.attacker_id {
+        return PvpVerdict::Rejected("self_hit");
+    }
+    if !input.attacker_known {
+        return PvpVerdict::Rejected("attacker_missing");
+    }
+    if !input.victim_known {
+        return PvpVerdict::Rejected("victim_missing");
+    }
+    if !dedupe.insert((input.attacker_id, input.request_id)) {
+        return PvpVerdict::Rejected("duplicate");
+    }
+    if input.victim_dead {
+        return PvpVerdict::Rejected("victim_dead");
+    }
+    if input.victim_invuln {
+        return PvpVerdict::Rejected("victim_invulnerable");
+    }
+    let Some(spec) = pvp_weapon_spec(input.weapon_id) else {
+        return PvpVerdict::Rejected("invalid_weapon");
+    };
+    if !input.damage.is_finite() || input.damage <= 0.0 {
+        return PvpVerdict::Rejected("invalid_damage");
+    }
+    // "El host clamp/reject" (ADR-029): an over-cap hit still lands, clamped, rather than
+    // being thrown away outright — matches `PvpDamageGrant.damage`'s doc ("ya validado/
+    // clampado por host").
+    let clamped_damage = input.damage.min(spec.max_damage);
+    let dir_len = Vec3::from_array(input.direction).length();
+    if !dir_len.is_finite() || dir_len < 1e-4 {
+        return PvpVerdict::Rejected("invalid_direction");
+    }
+    let dist = input.attacker_pos.distance(input.victim_pos);
+    if !dist.is_finite() || dist > spec.max_range {
+        return PvpVerdict::Rejected("too_far");
+    }
+    PvpVerdict::Accepted { clamped_damage }
+}
+
+/// The ONLY place PvP damage is actually applied (victim-applied damage, ADR-029's core
+/// authority split). Runs on whichever backend owns `stats` — the host, when the victim is
+/// its own local player (no network hop), or a joiner, from `NetworkEvent::PvpDamageGrant`.
+/// Defensive dedupe guards a retransmitted grant from ever applying damage twice; the
+/// invulnerability re-check is the REAL enforcement point for a victim the host could not
+/// check itself (a remote peer's `invuln_until_tick` isn't relayed over the wire).
+fn apply_pvp_damage_grant(
+    stats: &mut crate::player::stats::PlayerStats,
+    dedupe: &mut BoundedDedupeSet<(u32, u64)>,
+    attacker_id: u32,
+    request_id: u64,
+    damage: f32,
+    tick: u64,
+) -> Result<f32, &'static str> {
+    if !dedupe.insert((attacker_id, request_id)) {
+        return Err("duplicate");
+    }
+    if stats.invuln_until_tick > tick as u32 {
+        return Err("victim_invulnerable");
+    }
+    stats.take_damage(damage);
+    Ok(stats.health)
+}
+
+/// Host-side entry point for a PvP hit candidate, whether it came directly from OUR own
+/// attached Unity (`attacker_id == net.local_id`) or was forwarded here via a
+/// `PvpHitCandidate` P2P packet from a remote peer's backend. Resolves attacker/victim
+/// position + known-ness + dead/invuln state into a `PvpValidationInput`, runs the
+/// validation order, and dispatches the grant/reject to whichever backend needs it —
+/// applying directly (no network hop) when the affected party is this same backend's own
+/// local player.
+async fn process_pvp_hit_candidate_host(
+    candidate: PvpCandidateFields,
+    player: &mut Player,
+    net: &mut NetworkManager,
+    to_clients: &broadcast::Sender<ServerMessage>,
+    tick: u64,
+) {
+    // Step 11 (line of sight) is degradable in V0: gated by a flag, never actually rejects
+    // (no raycast-vs-backend-collision implemented yet — see ADR-029 §11's own escape
+    // hatch: "documentar line_of_sight_failed... pero no saltarse distancia/dedupe/dano").
+    if env_flag_enabled("PVP_LOS_CHECK_ENABLED") {
+        info!(
+            "MPTRACE step=PVP event=pvp_los_check_stub reason=not_implemented request_id={}",
+            candidate.request_id
+        );
+    }
+
+    let local_id_u32 = net.local_id as u32;
+    let attacker_is_local = candidate.attacker_id == local_id_u32;
+    let victim_is_local = candidate.victim_id == local_id_u32;
+
+    let attacker_known = attacker_is_local
+        || peer_id_from_u32(candidate.attacker_id)
+            .map(|id| net.peers.contains_key(&id))
+            .unwrap_or(false);
+    let victim_known = victim_is_local
+        || peer_id_from_u32(candidate.victim_id)
+            .map(|id| net.peers.contains_key(&id))
+            .unwrap_or(false);
+
+    let victim_dead = if victim_is_local {
+        player.stats.is_dead()
+    } else {
+        peer_id_from_u32(candidate.victim_id)
+            .and_then(|id| net.peers.get(&id))
+            .map(|p| p.dead)
+            .unwrap_or(false)
+    };
+    // See the invulnerability amendment: only checkable host-side when the victim IS this
+    // backend's own local player. A remote peer's real value is re-checked defensively on
+    // ITS OWN backend in `apply_pvp_damage_grant`.
+    let victim_invuln = victim_is_local && player.stats.invuln_until_tick > tick as u32;
+
+    let attacker_pos = if attacker_is_local {
+        player.position
+    } else {
+        peer_id_from_u32(candidate.attacker_id)
+            .and_then(|id| net.peers.get(&id))
+            .map(|p| Vec3::from_array(p.position))
+            .unwrap_or(Vec3::ZERO)
+    };
+    let victim_pos = if victim_is_local {
+        player.position
+    } else {
+        peer_id_from_u32(candidate.victim_id)
+            .and_then(|id| net.peers.get(&id))
+            .map(|p| Vec3::from_array(p.position))
+            .unwrap_or(Vec3::ZERO)
+    };
+
+    let input = PvpValidationInput {
+        is_host: net.is_host,
+        request_id: candidate.request_id,
+        attacker_id: candidate.attacker_id,
+        victim_id: candidate.victim_id,
+        attacker_known,
+        victim_known,
+        victim_dead,
+        victim_invuln,
+        weapon_id: candidate.weapon_id,
+        damage: candidate.damage,
+        direction: candidate.direction,
+        attacker_pos,
+        victim_pos,
+    };
+
+    match validate_pvp_hit(&input, &mut net.processed_pvp_hits) {
+        PvpVerdict::Accepted { clamped_damage } => {
+            info!(
+                "MPTRACE step=PVP event=pvp_hit_validated request_id={} attacker_id={} victim_id={} weapon_id={} damage={:.1}",
+                candidate.request_id, candidate.attacker_id, candidate.victim_id, candidate.weapon_id, clamped_damage
+            );
+
+            if victim_is_local {
+                // No network hop: the host IS the victim's own backend.
+                match apply_pvp_damage_grant(
+                    &mut player.stats,
+                    &mut net.processed_pvp_grants,
+                    candidate.attacker_id,
+                    candidate.request_id,
+                    clamped_damage,
+                    tick,
+                ) {
+                    Ok(health) => {
+                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                            event_type: "pvp_damage_taken".into(),
+                            data: serde_json::json!({
+                                "attacker_id": candidate.attacker_id,
+                                "weapon_id": candidate.weapon_id,
+                                "damage": clamped_damage,
+                                "health": health,
+                            }),
+                        }));
+                    }
+                    Err(reason) => {
+                        info!(
+                            "MPTRACE step=PVP event=pvp_damage_grant_blocked_local reason={} request_id={}",
+                            reason, candidate.request_id
+                        );
+                    }
+                }
+            } else if let Some(victim_peer) = peer_id_from_u32(candidate.victim_id) {
+                let grant = PacketPayload::PvpDamageGrant {
+                    request_id: candidate.request_id,
+                    attacker_id: candidate.attacker_id,
+                    victim_id: candidate.victim_id,
+                    weapon_id: candidate.weapon_id,
+                    damage: clamped_damage,
+                    reason: "validated".into(),
+                };
+                net.send_reliable(victim_peer, &grant).await;
+            }
+
+            if attacker_is_local {
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "pvp_hit_confirmed".into(),
+                    data: serde_json::json!({
+                        "request_id": candidate.request_id,
+                        "victim_id": candidate.victim_id,
+                        "damage": clamped_damage,
+                    }),
+                }));
+            }
+            // NOTE (deviation, see final report): ADR-029's wire list defines NO P2P packet
+            // for "confirmed" — only `PvpHitRejected` for rejections. A REMOTE shooter (not
+            // the host) gets no explicit confirm in V0; the victim's health dropping in the
+            // next WorldState/pose relay is its only feedback. Not inventing a new packet
+            // here (out of this task's declared scope).
+        }
+        PvpVerdict::Rejected(reason) => {
+            info!(
+                "MPTRACE step=PVP event=pvp_hit_rejected request_id={} attacker_id={} victim_id={} reason={}",
+                candidate.request_id, candidate.attacker_id, candidate.victim_id, reason
+            );
+            if attacker_is_local {
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "pvp_hit_rejected".into(),
+                    data: serde_json::json!({ "request_id": candidate.request_id, "reason": reason }),
+                }));
+            } else if let Some(attacker_peer) = peer_id_from_u32(candidate.attacker_id) {
+                let payload = PacketPayload::PvpHitRejected {
+                    request_id: candidate.request_id,
+                    attacker_id: candidate.attacker_id,
+                    victim_id: candidate.victim_id,
+                    reason: reason.into(),
+                };
+                net.send_reliable(attacker_peer, &payload).await;
+            }
+        }
     }
 }
 
@@ -2333,11 +3250,48 @@ fn json_i32(value: &serde_json::Value, key: &str) -> Option<i32> {
         .and_then(|v| i32::try_from(v).ok())
 }
 
+fn json_vec3(value: &serde_json::Value, key: &str) -> Option<[f32; 3]> {
+    let arr = value.get(key)?.as_array()?;
+    if arr.len() < 3 {
+        return None;
+    }
+    Some([
+        arr[0].as_f64()? as f32,
+        arr[1].as_f64()? as f32,
+        arr[2].as_f64()? as f32,
+    ])
+}
+
 /// ADR-028: parse the client-reported death-loot snapshot from `report_death_loot`
 /// action data: `{ equipment: [i32;4], held_item: i32, items: [{item_id, quantity}] }`.
 /// Malformed or missing fields degrade to empty (never poison the corpse with junk);
 /// out-of-range stacks are skipped. Length/zero-quantity hygiene is enforced again by
 /// `spawn_corpse` (single choke point).
+/// ADR-028 amendment (world chests): the pure gate+seed step behind the "spawn_world_chest"
+/// action, extracted so host-gate/dedupe/empty-loot rules are unit-testable without a live
+/// NetworkManager. Dedupe rides the SAME `processed_interactions` set `world_interact` uses,
+/// keyed (player, request_id).
+fn handle_spawn_world_chest(
+    world: &mut World,
+    is_host: bool,
+    player_id: PeerId,
+    request_id: u64,
+    position: Vec3,
+    items: Vec<crate::world::corpse::CorpseStack>,
+    processed_interactions: &mut HashSet<(u16, u64)>,
+) -> Result<u32, &'static str> {
+    if !is_host {
+        return Err("not_host");
+    }
+    if !processed_interactions.insert((player_id, request_id)) {
+        return Err("duplicate");
+    }
+    if crate::world::corpse::corpse_loot_is_empty(&items) {
+        return Err("empty_loot");
+    }
+    Ok(world.spawn_chest(position, items))
+}
+
 fn parse_death_loot(data: &serde_json::Value) -> ([i32; 4], i32, Vec<crate::world::corpse::CorpseStack>) {
     let mut equipment = [0i32; 4];
     if let Some(arr) = data.get("equipment").and_then(|v| v.as_array()) {
@@ -2351,8 +3305,15 @@ fn parse_death_loot(data: &serde_json::Value) -> ([i32; 4], i32, Vec<crate::worl
 
     let held_item = json_i32(data, "held_item").unwrap_or(0);
 
-    let items = data
-        .get("items")
+    let items = parse_loot_stacks(data);
+
+    (equipment, held_item, items)
+}
+
+/// Parse the `items:[{item_id,quantity}]` array shared by `report_death_loot` (ADR-028) and
+/// `report_inventory` (ADR-032 amendment). Extracted from `parse_death_loot` verbatim.
+fn parse_loot_stacks(data: &serde_json::Value) -> Vec<crate::world::corpse::CorpseStack> {
+    data.get("items")
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
@@ -2364,9 +3325,7 @@ fn parse_death_loot(data: &serde_json::Value) -> ([i32; 4], i32, Vec<crate::worl
                 })
                 .collect()
         })
-        .unwrap_or_default();
-
-    (equipment, held_item, items)
+        .unwrap_or_default()
 }
 
 /// ADR-025 Slice B: sanitize a client-reported damage amount. Missing/NaN/∞/negative → 0
@@ -3382,6 +4341,46 @@ mod tests {
         assert_eq!(equipment, [1, 2, 0, 0]);
     }
 
+    // ADR-032 amendment: a valid report_inventory mirrors the client's real STP inventory into
+    // player.stp_inventory, with the shared corpse hygiene applied (quantity<=0 dropped,
+    // truncated to MAX_CORPSE_STACKS — the FIRST 64 valid stacks survive, the rest discarded).
+    #[tokio::test]
+    async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut world = World::new(42);
+        let mut player = Player::new(1, "Host");
+        let (tx, _rx) = broadcast::channel(16);
+        let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+        // 1 zero-quantity (dropped) + 70 valid (truncated to 64, first-come order).
+        let mut items = vec![serde_json::json!({ "item_id": -999, "quantity": 0 })];
+        for i in 0..70 {
+            items.push(serde_json::json!({ "item_id": 1000 + i, "quantity": 2 }));
+        }
+        let action = crate::ipc::PlayerAction {
+            action_type: "report_inventory".into(),
+            data: serde_json::json!({ "items": items }),
+        };
+        handle_action(&action, &mut player, &mut world, &mut net, &tx, &mut processed, 0).await;
+
+        assert_eq!(player.stp_inventory.len(), crate::world::corpse::MAX_CORPSE_STACKS);
+        assert!(player.stp_inventory.iter().all(|s| s.quantity > 0));
+        // First valid stack survives; the zero-quantity one never entered.
+        assert_eq!(player.stp_inventory[0].item_id, 1000);
+        // Truncation keeps the first 64 valid stacks: 1000..1063 — 1064+ discarded.
+        assert_eq!(player.stp_inventory.last().unwrap().item_id, 1063);
+
+        // A follow-up report REPLACES the snapshot (latest wins), never appends.
+        let action = crate::ipc::PlayerAction {
+            action_type: "report_inventory".into(),
+            data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
+        };
+        handle_action(&action, &mut player, &mut world, &mut net, &tx, &mut processed, 0).await;
+        assert_eq!(player.stp_inventory.len(), 1);
+        assert_eq!(player.stp_inventory[0].item_id, 42);
+        assert_eq!(player.stp_inventory[0].quantity, 3);
+    }
+
     #[tokio::test]
     async fn phantom_driver_walks_via_grid_cache_far_from_host() {
         // Far from the host: the phantom must resolve collision against grid_gen via the
@@ -3758,5 +4757,398 @@ mod tests {
         let attack = driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
 
         assert_eq!(attack, PhantomAttack::None);
+    }
+
+    // ─── ADR-029 V0: PvP validation order + victim-applied damage ───
+
+    fn base_pvp_input(request_id: u64) -> PvpValidationInput {
+        PvpValidationInput {
+            is_host: true,
+            request_id,
+            attacker_id: 1,
+            victim_id: 1004,
+            attacker_known: true,
+            victim_known: true,
+            victim_dead: false,
+            victim_invuln: false,
+            weapon_id: 9692212, // STP_Marlin 336 (firearm): max_damage=45, max_range=100
+            damage: 20.0,
+            direction: [0.0, 0.0, 1.0],
+            attacker_pos: Vec3::new(0.0, 1.8, 0.0),
+            victim_pos: Vec3::new(0.0, 1.8, 10.0),
+        }
+    }
+
+    #[test]
+    fn validate_pvp_hit_accepts_valid_candidate() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        match validate_pvp_hit(&base_pvp_input(1), &mut dedupe) {
+            PvpVerdict::Accepted { clamped_damage } => assert_eq!(clamped_damage, 20.0),
+            PvpVerdict::Rejected(reason) => panic!("expected accept, got {reason}"),
+        }
+    }
+
+    #[test]
+    fn validate_pvp_hit_duplicate_request_rejected_and_never_grants_twice() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let input = base_pvp_input(2);
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Accepted { .. }
+        ));
+        // Reliable retransmit of the SAME (attacker_id, request_id) → rejected, not a second grant.
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("duplicate")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_self_hit() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(3);
+        input.victim_id = input.attacker_id;
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("self_hit")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_attacker_missing() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(4);
+        input.attacker_known = false;
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("attacker_missing")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_victim_missing() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(5);
+        input.victim_known = false;
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("victim_missing")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_victim_dead() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(6);
+        input.victim_dead = true;
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("victim_dead")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_victim_invulnerable() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(7);
+        input.victim_invuln = true;
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("victim_invulnerable")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_invalid_weapon() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(8);
+        input.weapon_id = 0; // STP's "no item" sentinel — always rejected
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("invalid_weapon")
+        ));
+
+        let mut dedupe2 = BoundedDedupeSet::with_capacity(64);
+        let mut input2 = base_pvp_input(9);
+        input2.weapon_id = 999_999; // not one of the 7 real STP weapon ids
+        assert!(matches!(
+            validate_pvp_hit(&input2, &mut dedupe2),
+            PvpVerdict::Rejected("invalid_weapon")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_invalid_damage_and_clamps_overcap() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(10);
+        input.damage = 0.0;
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("invalid_damage")
+        ));
+
+        let mut dedupe2 = BoundedDedupeSet::with_capacity(64);
+        let mut input2 = base_pvp_input(11);
+        input2.damage = f32::NAN;
+        assert!(matches!(
+            validate_pvp_hit(&input2, &mut dedupe2),
+            PvpVerdict::Rejected("invalid_damage")
+        ));
+
+        // Over the weapon's cap → clamped, NOT rejected — ADR-029: "el host clamp/reject"
+        // (PvpDamageGrant.damage docs: "ya validado/clampado por host"). Checked for both a
+        // firearm (Marlin 336, cap 45) and a melee (Hunting Axe, cap 25) so both categories
+        // of the real allowlist are represented.
+        let mut dedupe3 = BoundedDedupeSet::with_capacity(64);
+        let mut input3 = base_pvp_input(12); // Marlin 336 (firearm), max_damage=45
+        input3.damage = 9999.0;
+        match validate_pvp_hit(&input3, &mut dedupe3) {
+            PvpVerdict::Accepted { clamped_damage } => assert_eq!(clamped_damage, 45.0),
+            PvpVerdict::Rejected(reason) => panic!("expected clamp, got rejected: {reason}"),
+        }
+
+        let mut dedupe4 = BoundedDedupeSet::with_capacity(64);
+        let mut input4 = base_pvp_input(13);
+        input4.weapon_id = 2211292; // STP_Hunting Axe (melee), max_damage=25
+        input4.victim_pos = Vec3::new(0.0, 1.8, 2.0); // within the axe's 2.5 m range
+        input4.damage = 9999.0;
+        match validate_pvp_hit(&input4, &mut dedupe4) {
+            PvpVerdict::Accepted { clamped_damage } => assert_eq!(clamped_damage, 25.0),
+            PvpVerdict::Rejected(reason) => panic!("expected clamp, got rejected: {reason}"),
+        }
+    }
+
+    #[test]
+    fn validate_pvp_hit_rejects_too_far() {
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(13);
+        input.victim_pos = Vec3::new(0.0, 1.8, 500.0); // beyond the Marlin 336's 100 m range
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("too_far")
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_too_far_uses_3d_distance_with_real_y() {
+        // ADR-026 (enmienda 2026-07-06): with the client's real Y now relayed (no longer
+        // flattened), too_far stays 3D on purpose — a melee attacker at the same XZ but a
+        // layer above (ΔY=4 m > the axe's 2.5 m range) must be rejected, where a 2D check
+        // would have accepted a hit through the ceiling.
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let mut input = base_pvp_input(40);
+        input.weapon_id = 2211292; // STP_Hunting Axe (melee), max_range=2.5
+        input.attacker_pos = Vec3::new(0.0, 1.8, 0.0);
+        input.victim_pos = Vec3::new(0.0, 5.8, 0.0); // same XZ, 4 m above (other layer)
+        assert!(matches!(
+            validate_pvp_hit(&input, &mut dedupe),
+            PvpVerdict::Rejected("too_far")
+        ));
+
+        // A modest real-jump ΔY within range still lands: 3D distance ≈ 1.9 m ≤ 2.5 m.
+        let mut dedupe2 = BoundedDedupeSet::with_capacity(64);
+        let mut input2 = base_pvp_input(41);
+        input2.weapon_id = 2211292;
+        input2.attacker_pos = Vec3::new(0.0, 2.9, 0.0); // attacker mid-jump (+1.1 m)
+        input2.victim_pos = Vec3::new(1.5, 1.8, 0.0);
+        assert!(matches!(
+            validate_pvp_hit(&input2, &mut dedupe2),
+            PvpVerdict::Accepted { .. }
+        ));
+    }
+
+    #[test]
+    fn validate_pvp_hit_accepts_all_seven_real_weapon_ids() {
+        // Each of the 7 real STP weapon ids must clear the invalid_weapon gate (the rest of
+        // the flow is covered by the other tests — here we only assert the allowlist knows
+        // them). victim_pos is kept point-blank so a short-range melee never trips too_far.
+        let real_ids: [i32; 7] = [
+            9692212,     // STP_Marlin 336
+            -7892144,    // STP_Wooden Bow
+            -1198406010, // STP_Bone Club
+            2211292,     // STP_Hunting Axe
+            -9575342,    // STP_Hunting Knife
+            -1159981804, // STP_Steel Pickaxe
+            5085425,     // STP_Stone Spear
+        ];
+        // -52379 (STP_Wooden Spear) is the 8th; kept separate only to name every id explicitly.
+        let all_ids: Vec<i32> = real_ids.iter().copied().chain(std::iter::once(-52379)).collect();
+
+        for (i, id) in all_ids.iter().enumerate() {
+            let mut dedupe = BoundedDedupeSet::with_capacity(8);
+            let mut input = base_pvp_input(i as u64);
+            input.weapon_id = *id;
+            input.victim_pos = Vec3::new(0.0, 1.8, 1.5); // within every weapon's min range
+            input.damage = 5.0; // under every weapon's cap → no clamp noise
+            match validate_pvp_hit(&input, &mut dedupe) {
+                PvpVerdict::Accepted { .. } => {}
+                PvpVerdict::Rejected(reason) => {
+                    panic!("real weapon id {id} was rejected: {reason}")
+                }
+            }
+        }
+    }
+
+    // ADR-028 amendment (world chests): host gate, request_id dedupe (reused
+    // processed_interactions set), and the post-E3 empty-loot rule, in one pass.
+    #[test]
+    fn spawn_world_chest_gates_dedupes_and_seeds() {
+        use crate::world::corpse::CorpseStack;
+
+        let mut world = World::new(42);
+        let mut processed = HashSet::new();
+        let pos = Vec3::new(10.0, 1.8, 20.0);
+        let loot = || vec![CorpseStack { item_id: -5498592, quantity: 2 }];
+
+        // Non-host never seeds (joiners mirror via CorpseList instead).
+        assert_eq!(
+            handle_spawn_world_chest(&mut world, false, 1, 1, pos, loot(), &mut processed),
+            Err("not_host")
+        );
+        assert!(world.corpses.is_empty());
+
+        // Host seeds once; the entry is flagged as a chest.
+        let id = handle_spawn_world_chest(&mut world, true, 1, 1, pos, loot(), &mut processed)
+            .expect("first seed must succeed");
+        assert!(world.corpses[&id].is_chest);
+
+        // Same (player, request_id) re-sent → duplicate, nothing new seeded.
+        assert_eq!(
+            handle_spawn_world_chest(&mut world, true, 1, 1, pos, loot(), &mut processed),
+            Err("duplicate")
+        );
+        assert_eq!(world.corpses.len(), 1);
+
+        // Fresh request_id but empty loot → skipped (immortal-empty-container rule).
+        assert_eq!(
+            handle_spawn_world_chest(&mut world, true, 1, 2, pos, vec![], &mut processed),
+            Err("empty_loot")
+        );
+        assert_eq!(world.corpses.len(), 1);
+    }
+
+    #[test]
+    fn consumable_spec_resolves_all_seven_real_item_ids() {
+        // Each of the 7 real STP consumable ids must resolve to a spec (ADR-030 allowlist).
+        let real_ids: [i32; 7] = [
+            -5498592,  // STP_Apple
+            1045632,   // STP_Cooked Meat
+            -7862085,  // STP_Energy Bar
+            6285896,   // STP_Large Food Can
+            -7580928,  // STP_Small Food Can
+            7983286,   // STP_Water Bottle
+            -7174886,  // STP_Antibiotics
+        ];
+        for id in real_ids {
+            assert!(
+                consumable_spec(id).is_some(),
+                "real consumable id {id} was not found in the allowlist"
+            );
+        }
+    }
+
+    #[test]
+    fn consumable_spec_rejects_unknown_id() {
+        assert!(consumable_spec(0).is_none());
+        assert!(consumable_spec(9692212).is_none()); // a real weapon id, not a consumable
+        assert!(consumable_spec(123456789).is_none());
+    }
+
+    #[test]
+    fn apply_pvp_damage_grant_applies_once_and_dedupes_retransmit() {
+        let mut stats = crate::player::stats::PlayerStats::default();
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let health_before = stats.health;
+
+        let result = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 100, 30.0, 0);
+        assert_eq!(result, Ok(health_before - 30.0));
+
+        // Retransmitted grant (same attacker_id + request_id) → deduped, health unchanged.
+        let dup = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 100, 30.0, 0);
+        assert_eq!(dup, Err("duplicate"));
+        assert_eq!(stats.health, health_before - 30.0);
+    }
+
+    #[test]
+    fn apply_pvp_damage_grant_blocks_while_invulnerable_then_applies_after() {
+        let mut stats = crate::player::stats::PlayerStats::default();
+        stats.invuln_until_tick = 500;
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+        let health_before = stats.health;
+
+        let blocked = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 200, 30.0, 100);
+        assert_eq!(blocked, Err("victim_invulnerable"));
+        assert_eq!(stats.health, health_before, "a blocked grant must not touch health");
+
+        // Past the invuln window (tick >= invuln_until_tick), a fresh request_id applies.
+        let applied = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 201, 30.0, 600);
+        assert_eq!(applied, Ok(health_before - 30.0));
+    }
+
+    // ── ADR-031 bed respawn ──
+
+    // A clean, flat, all-walkable chunk at `pos` so resolve_safe_spawn accepts a cell there.
+    fn insert_clean_flat_chunk(world: &mut crate::world::World, pos: (i32, i32)) {
+        use crate::world::chunk::{CELL_WALKABLE, EDGE_KIND_OPEN, FLOOR_FLAT, LAYOUT_GRID_SIZE};
+        let mut chunk = crate::world::generator::generate_chunk_layer(1, pos, 0);
+        let g = LAYOUT_GRID_SIZE as usize;
+        chunk.layout.cells = vec![CELL_WALKABLE; g * g];
+        chunk.layout.edges_v = vec![EDGE_KIND_OPEN; (g + 1) * g];
+        chunk.layout.edges_h = vec![EDGE_KIND_OPEN; g * (g + 1)];
+        chunk.layout.floor_profile = FLOOR_FLAT;
+        chunk.layout.vertical_flags = 0;
+        let key = chunk.key();
+        world.chunks.insert(key, chunk);
+    }
+
+    #[test]
+    fn resolve_respawn_without_bed_uses_fixed_starter() {
+        let mut world = crate::world::World::new(1);
+        let res = resolve_respawn(&mut world, None, 1);
+        assert_eq!(res.chunk, (0, 0), "no bed → the fixed starter spawn (chunk 0,0)");
+    }
+
+    #[test]
+    fn resolve_respawn_prefers_a_placed_bed() {
+        // A bed far from the origin, on a clean flat chunk: respawn must land at the bed, not (0,0).
+        let mut world = crate::world::World::new(1);
+        insert_clean_flat_chunk(&mut world, (10, 10));
+        let bed = Vec3::new(10.0 * CHUNK_SIZE + 25.0, 1.8, 10.0 * CHUNK_SIZE + 25.0);
+        let res = resolve_respawn(&mut world, Some(bed), 1);
+        assert_eq!(res.chunk, (10, 10), "a bed must pull the respawn to the bed's chunk, not (0,0)");
+        assert!(
+            (res.position.x - bed.x).abs() < CHUNK_SIZE && (res.position.z - bed.z).abs() < CHUNK_SIZE,
+            "respawn should land in the bed's chunk near the bed, got {:?}",
+            res.position
+        );
+    }
+
+    // NOTE: the trust-the-bed FALLBACK (resolve→Repaired then bed used) is covered deterministically
+    // by collision::tests::try_bed_spawn_recovers_where_resolve_safe_spawn_would_repair. It cannot be
+    // forced through resolve_respawn here because update_ownership generates procedural neighbours that
+    // may themselves offer a safe cell (avoiding the Repaired fallback) — non-deterministic.
+
+    #[test]
+    fn respawn_point_last_placed_wins() {
+        // ADR-031 "last placed wins": each Sleeping Bag placement overwrites the single slot.
+        let mut p = Player::new(1, "t");
+        p.respawn_point = Some(Vec3::new(10.0, 1.8, 10.0));
+        p.respawn_point = Some(Vec3::new(500.0, 1.8, 500.0));
+        assert_eq!(p.respawn_point, Some(Vec3::new(500.0, 1.8, 500.0)));
+    }
+
+    #[test]
+    fn bounded_dedupe_set_evicts_oldest_past_capacity() {
+        let mut dedupe: BoundedDedupeSet<(u32, u64)> = BoundedDedupeSet::with_capacity(2);
+        assert!(dedupe.insert((1, 1)));
+        assert!(dedupe.insert((1, 2)));
+        // Still within the 2-entry window — both remain deduped (no eviction yet).
+        assert!(!dedupe.insert((1, 1)));
+        assert!(!dedupe.insert((1, 2)));
+
+        // A third entry exceeds capacity → evicts the OLDEST, (1,1). (1,2)/(1,3) stay.
+        assert!(dedupe.insert((1, 3)));
+        assert!(dedupe.insert((1, 1)), "evicted entry must be insertable again");
+        assert!(!dedupe.insert((1, 3)), "not-yet-evicted entry must stay deduped");
     }
 }

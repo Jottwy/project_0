@@ -20,8 +20,24 @@ use crate::world::chunk::{
 use crate::world::World;
 
 pub const PLAYER_RADIUS: f32 = 0.35;
+/// Player-pivot convention: a grounded player's transform sits this far above the floor
+/// (a standing player on layer 0, floor world Y ≈ 0, reports transform.y = PLAYER_BASE_Y).
+/// MIRRORED (not wire-synced) in Unity as `GridConstants.PlayerBaseY` — the remote-proxy
+/// grounding fix subtracts it to place a feet-pivoted avatar on the rendered floor. Keep the
+/// two in lockstep; exposing it over the wire would be a protocol change (new ADR).
 const PLAYER_BASE_Y: f32 = 1.8;
 const FLOOR_LEVEL_HEIGHT: f32 = 1.5;
+
+/// ADR-026 (enmienda 2026-07-06, parte 3): max |claimed.y − from.y| per processed tick for
+/// the player's client-reported Y to be ACCEPTED instead of floor-pinned. Plausibility clamp,
+/// not real anti-cheat (same trust level as X/Z since ADR-009 Option B). Value rationale:
+/// (i) matches the project's already-calibrated vertical-teleport threshold
+/// (`ProxyJumpFeeder._verticalTeleportDistance` = 3.0 m single-frame); (ii) < LAYER_HEIGHT
+/// (4 m) so an instant layer change never passes as continuous movement; (iii) worst-case
+/// legitimate motion between ~30 Hz input samples at terminal fall speed (~25 m/s) is ~0.8 m,
+/// so 3.0 gives 3-4x headroom for network jitter.
+// TODO(balance): conservative initial value, pending a dedicated calibration pass.
+pub const MAX_CLAIMED_Y_STEP: f32 = 3.0;
 
 /// Whether an edge kind blocks player movement across the boundary.
 pub fn edge_blocks_movement(kind: u8) -> bool {
@@ -72,10 +88,15 @@ pub struct Level0Collision;
 
 impl Level0Collision {
     /// Player/host movement: collision against the loaded `world.chunks` only. An
-    /// unloaded chunk blocks (the host streams its own radius). Unchanged behaviour
-    /// — the historical player path, now expressed via the `LayoutSource::World` seam.
+    /// unloaded chunk blocks (the host streams its own radius). The historical player
+    /// path, expressed via the `LayoutSource::World` seam.
+    ///
+    /// ADR-026 (enmienda 2026-07-06, parte 3): the client's claimed Y (`desired.y`) rides
+    /// along and, when physically plausible (see `MAX_CLAIMED_Y_STEP`), becomes the result Y
+    /// instead of the historical `floor_player_y` pin. XZ gating is untouched: blocking is
+    /// still tested at `from.y` (same layer/cell resolution as always).
     pub fn resolve_move(world: &World, from: Vec3, desired: Vec3) -> CollisionResolve {
-        resolve_move_src(&LayoutSource::World(world), from, desired)
+        resolve_move_src(&LayoutSource::World(world), from, desired, Some(desired.y))
     }
 
     /// ADR-017: movement for a server-side entity with NO screen (the robapieles,
@@ -93,7 +114,10 @@ impl Level0Collision {
         // Pre-warm the chunks this move can read so the resolve below is a pure
         // read over (world.chunks ∪ sim cache) — keeps the cache borrow immutable.
         sim.prewarm_for_move(world, from, desired);
-        resolve_move_src(&LayoutSource::WorldThenSim(world, sim), from, desired)
+        // ADR-026 parte 3 does NOT apply here: a server-driven entity (the phantom,
+        // ADR-016) has no client-reported Y — it depends on the floor pin for its
+        // grounding (ADR-016 slice 2), so the entity path keeps the historical pin.
+        resolve_move_src(&LayoutSource::WorldThenSim(world, sim), from, desired, None)
     }
 
     pub fn is_blocked_at(world: &World, pos: Vec3, radius: f32) -> bool {
@@ -218,27 +242,41 @@ impl SimChunkCache {
 
 /// Core movement resolution, generic over where layouts are read (`LayoutSource`).
 /// The player wrapper passes `World`; the entity wrapper passes `WorldThenSim`.
-fn resolve_move_src(src: &LayoutSource, from: Vec3, desired: Vec3) -> CollisionResolve {
+/// `claimed_y`: ADR-026 parte 3 — `Some(y)` on the player path (the client-reported Y,
+/// accepted by `resolve_with_y` when plausible), `None` on the entity path (historical
+/// floor pin). XZ gating below always tests at `from.y` regardless — the claimed Y NEVER
+/// affects which layer/cells block (the TP-attribution watchpath stays bit-identical).
+fn resolve_move_src(
+    src: &LayoutSource,
+    from: Vec3,
+    desired: Vec3,
+    claimed_y: Option<f32>,
+) -> CollisionResolve {
     let desired = Vec3::new(desired.x, from.y, desired.z);
     if !is_blocked_at_src(src, desired, PLAYER_RADIUS) {
-        return resolve_with_y(src, desired, CollisionResultKind::Free, "free");
+        return resolve_with_y(src, desired, CollisionResultKind::Free, "free", claimed_y);
     }
 
     let x_only = Vec3::new(desired.x, from.y, from.z);
     if !is_blocked_at_src(src, x_only, PLAYER_RADIUS) {
-        return resolve_with_y(src, x_only, CollisionResultKind::SlidX, "z_blocked");
+        return resolve_with_y(src, x_only, CollisionResultKind::SlidX, "z_blocked", claimed_y);
     }
 
     let z_only = Vec3::new(from.x, from.y, desired.z);
     if !is_blocked_at_src(src, z_only, PLAYER_RADIUS) {
-        return resolve_with_y(src, z_only, CollisionResultKind::SlidZ, "x_blocked");
+        return resolve_with_y(src, z_only, CollisionResultKind::SlidZ, "x_blocked", claimed_y);
     }
 
     // Fully blocked — stay put, but report what actually blocked the
     // desired move so the trace logs name the real obstruction.
     let (chunk_pos, cell, flags, reason) = describe_block(src, desired, PLAYER_RADIUS);
     let mut position = from;
-    position.y = floor_player_y_src(src, position);
+    if claimed_y.is_none() {
+        // Entity path: historical floor pin.
+        position.y = floor_player_y_src(src, position);
+    }
+    // Player path (claimed_y present): keep from.y — ADR-026 parte 3's literal contract
+    // ("se mantiene from.y solo si el movimiento queda totalmente bloqueado").
     CollisionResolve {
         position,
         kind: CollisionResultKind::Blocked,
@@ -303,6 +341,28 @@ pub fn resolve_safe_spawn(world: &mut World, preferred: Vec3) -> SpawnResolution
     let res = repair_starter_spawn(world);
     log_spawn_resolved(&res);
     res
+}
+
+/// ADR-031 "trust the bed": accept a player's bed position as their spawn even if it sits on a
+/// non-flat / non-"safe" chunk that `resolve_safe_spawn` would reject and dump at the starter cluster.
+/// The player stood on this cell to place the bed, so its XZ is walkable — we only verify a player
+/// capsule still fits there (the SAME basic clearance check `find_safe_spawn` applies), recompute the
+/// standing Y from the loaded floor, and use it. Returns None if the exact spot is blocked (caller
+/// keeps the starter fallback so a respawn always resolves). The bed's chunk MUST already be loaded
+/// (caller streams it via `update_ownership` first).
+pub fn try_bed_spawn(world: &World, bed: Vec3) -> Option<SpawnResolution> {
+    let y = floor_player_y(world, bed);
+    let standing = Vec3::new(bed.x, y, bed.z);
+    if is_blocked_at(world, standing, PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN) {
+        return None;
+    }
+    let chunk = world_to_chunk(bed);
+    Some(SpawnResolution {
+        position: standing,
+        chunk,
+        cell: preferred_cell(bed, chunk),
+        method: SpawnMethod::Preferred, // trusted: exact bed position accepted
+    })
 }
 
 fn log_spawn_resolved(res: &SpawnResolution) {
@@ -654,12 +714,20 @@ fn edge_block_reason(kind: u8) -> &'static str {
     }
 }
 
+/// `claimed_y`: ADR-026 parte 3 — when present (player path) and physically plausible
+/// (finite, |Δ| from the incoming `position.y` = the player's previous Y ≤
+/// `MAX_CLAIMED_Y_STEP`), the result Y is the CLIENT's claimed Y (real jumps/falls reach the
+/// pose relay). Implausible or absent → historical `floor_player_y` pin (safe fallback; the
+/// XZ move itself is never rejected over Y). `chunk_pos`/`cell`/`flags` are always computed
+/// at the floor-pinned height, exactly as before — bit-identical diagnostics either way.
 fn resolve_with_y(
     src: &LayoutSource,
     mut position: Vec3,
     kind: CollisionResultKind,
     reason: &'static str,
+    claimed_y: Option<f32>,
 ) -> CollisionResolve {
+    let from_y = position.y;
     position.y = floor_player_y_src(src, position);
     let chunk_pos = world_to_chunk(position);
     let (cell, flags) = src
@@ -669,6 +737,11 @@ fn resolve_with_y(
             (cell, layout.cell_flags(cell.0, cell.1))
         })
         .unwrap_or(((0, 0), 0));
+    if let Some(claimed) = claimed_y {
+        if claimed.is_finite() && (claimed - from_y).abs() <= MAX_CLAIMED_Y_STEP {
+            position.y = claimed;
+        }
+    }
     CollisionResolve {
         position,
         kind,
@@ -928,6 +1001,93 @@ mod tests {
         assert!(result.position.z > from.z, "z should advance");
     }
 
+    // ─── ADR-026 (enmienda 2026-07-06, parte 3): claimed client Y ───
+
+    #[test]
+    fn claimed_y_within_step_is_accepted_not_flattened() {
+        // A real jump/fall: |claimed.y − from.y| ≤ MAX_CLAIMED_Y_STEP → the client's Y IS
+        // the result Y (no floor pin). Ascending and descending both accepted.
+        let world = clean_world((0, 0));
+        let from = Vec3::new(25.0, 1.8, 25.0);
+
+        let up = Level0Collision::resolve_move(&world, from, Vec3::new(25.3, 2.9, 25.0));
+        assert_eq!(up.kind, CollisionResultKind::Free);
+        assert!(
+            (up.position.y - 2.9).abs() < 0.001,
+            "ascending claimed Y must be accepted, got {}",
+            up.position.y
+        );
+
+        let down = Level0Collision::resolve_move(&world, from, Vec3::new(25.3, 0.4, 25.0));
+        assert!(
+            (down.position.y - 0.4).abs() < 0.001,
+            "descending claimed Y must be accepted, got {}",
+            down.position.y
+        );
+    }
+
+    #[test]
+    fn claimed_y_absurd_step_falls_back_to_floor() {
+        // Vertical teleport / compromised client: |Δy| > MAX_CLAIMED_Y_STEP → the Y falls
+        // back to floor_player_y for THAT tick; the XZ move itself is not rejected.
+        // Non-finite Y is likewise never accepted.
+        let world = clean_world((0, 0));
+        let from = Vec3::new(25.0, 1.8, 25.0);
+        let floor = Level0Collision::floor_player_y(&world, from);
+
+        let teleport = Level0Collision::resolve_move(&world, from, Vec3::new(25.3, 50.0, 25.0));
+        assert_eq!(teleport.kind, CollisionResultKind::Free, "XZ move must not be rejected");
+        assert!(
+            (teleport.position.y - floor).abs() < 0.001,
+            "absurd claimed Y must flatten to floor {floor}, got {}",
+            teleport.position.y
+        );
+
+        let nan = Level0Collision::resolve_move(&world, from, Vec3::new(25.3, f32::NAN, 25.0));
+        assert!(
+            (nan.position.y - floor).abs() < 0.001,
+            "non-finite claimed Y must flatten to floor, got {}",
+            nan.position.y
+        );
+    }
+
+    #[test]
+    fn claimed_y_blocked_keeps_from_y() {
+        // Fully blocked XZ: the player stays put and KEEPS its previous Y (ADR-026 parte 3:
+        // "se mantiene from.y solo si el movimiento queda totalmente bloqueado") — it is
+        // NOT floor-pinned (from.y was itself accepted/clamped on a previous tick).
+        let mut world = clean_world((0, 0));
+        // Box in the +X, +Z and diagonal target cells around cell (4,4) (centre 22.5, 22.5).
+        set_cell(&mut world, (0, 0), 5, 4, CELL_BLOCKED);
+        set_cell(&mut world, (0, 0), 4, 5, CELL_BLOCKED);
+        set_cell(&mut world, (0, 0), 5, 5, CELL_BLOCKED);
+        let from = Vec3::new(22.5, 2.5, 22.5); // mid-jump Y from a previous accepted tick
+        let result = Level0Collision::resolve_move(&world, from, Vec3::new(26.0, 2.6, 26.0));
+        assert_eq!(result.kind, CollisionResultKind::Blocked);
+        assert!(
+            (result.position.y - 2.5).abs() < 0.001,
+            "blocked must keep from.y (2.5), got {}",
+            result.position.y
+        );
+    }
+
+    #[test]
+    fn entity_sim_path_keeps_floor_pin() {
+        // The entity path (phantom, ADR-016/017) has no client-reported Y — it must keep
+        // the historical floor pin for its grounding even if `desired.y` drifts.
+        let world = clean_world((0, 0));
+        let mut sim = SimChunkCache::new(world.seed);
+        let from = Vec3::new(25.0, 3.0, 25.0);
+        let result =
+            Level0Collision::resolve_move_simulated(&world, &mut sim, from, Vec3::new(25.3, 3.0, 25.0));
+        let floor = Level0Collision::floor_player_y(&world, from);
+        assert!(
+            (result.position.y - floor).abs() < 0.001,
+            "entity path must stay floor-pinned at {floor}, got {}",
+            result.position.y
+        );
+    }
+
     #[test]
     fn cross_chunk_boundary_gap_is_open_and_walls_block() {
         // Two real generated chunks share a boundary with a centred 2-cell gap.
@@ -964,6 +1124,50 @@ mod tests {
             res.position,
             PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN
         ));
+    }
+
+    // ── ADR-031 trust-the-bed (risk C mode ii) ──
+
+    #[test]
+    fn try_bed_spawn_accepts_a_clear_bed_position() {
+        // A walkable bed cell is accepted verbatim (XZ preserved, Y from the floor).
+        let world = clean_world((2, 2));
+        let bed = Vec3::new(2.0 * CHUNK_SIZE + 25.0, 1.8, 2.0 * CHUNK_SIZE + 25.0);
+        let res = try_bed_spawn(&world, bed).expect("a clear bed spot must resolve");
+        assert!(
+            (res.position.x - bed.x).abs() < 0.01 && (res.position.z - bed.z).abs() < 0.01,
+            "trusted spawn keeps the bed XZ, got {:?}",
+            res.position
+        );
+        assert!(!is_blocked_at(&world, res.position, PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN));
+    }
+
+    #[test]
+    fn try_bed_spawn_rejects_a_blocked_bed_position() {
+        // A wall line crossing the bed's capsule leaves no clearance → None (caller keeps the fallback).
+        let mut world = clean_world((2, 2));
+        for z in 0..LAYOUT_GRID_SIZE as usize {
+            set_v_edge(&mut world, (2, 2), 5, z, EDGE_KIND_WALL); // wall the x=25 (local) boundary
+        }
+        let bed = Vec3::new(2.0 * CHUNK_SIZE + 25.0, 1.8, 2.0 * CHUNK_SIZE + 25.0); // sits on the wall
+        assert!(is_blocked_at(&world, bed, PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN));
+        assert!(try_bed_spawn(&world, bed).is_none());
+    }
+
+    #[test]
+    fn try_bed_spawn_recovers_where_resolve_safe_spawn_would_repair() {
+        // Bed on a walkable but NON-FLAT chunk: the resolver rejects every cell (→ Repaired), but
+        // trust-the-bed still accepts the walkable spot — the exact risk-C scenario.
+        let mut world = clean_world((3, 3));
+        world.chunks.get_mut(&key((3, 3))).unwrap().layout.vertical_flags = 1; // non-flat → resolver rejects
+        let bed = Vec3::new(3.0 * CHUNK_SIZE + 25.0, 1.8, 3.0 * CHUNK_SIZE + 25.0);
+        assert_eq!(
+            resolve_safe_spawn(&mut world, bed).method,
+            SpawnMethod::Repaired,
+            "a non-flat bed chunk must make the resolver fall back"
+        );
+        let res = try_bed_spawn(&world, bed).expect("trust-the-bed recovers the walkable non-flat spot");
+        assert!((res.position.x - bed.x).abs() < 0.01 && (res.position.z - bed.z).abs() < 0.01);
     }
 
     #[test]

@@ -46,6 +46,12 @@ pub struct CorpseData {
     /// Held item snapshot (0 = empty hands).
     pub held_item: i32,
     pub items: Vec<CorpseStack>,
+    /// ADR-028 amendment (world chests): true for a host-seeded supply chest — same loot
+    /// machinery, crate visual instead of a ragdoll, no dead-player owner (`owner_id` = 0,
+    /// a reserved value no real peer uses). `serde(default)` → a pre-amendment peer decodes
+    /// `false` and renders the chest as a corpse (cosmetic-only degradation, no wire bump).
+    #[serde(default)]
+    pub is_chest: bool,
 }
 
 /// Hygiene cap on reported loot stacks: the STP inventory tops out well below this
@@ -60,6 +66,15 @@ pub const MAX_CORPSE_STACKS: usize = 64;
 /// stacks=0, after players died naked).
 pub fn corpse_loot_is_empty(items: &[CorpseStack]) -> bool {
     items.iter().all(|s| s.quantity == 0)
+}
+
+/// Shared loot-stack hygiene (ADR-028 corpses/chests + ADR-032 amendment `report_inventory`):
+/// zero-quantity stacks are dropped, and anything past `MAX_CORPSE_STACKS` is TRUNCATED (the
+/// first 64 survive, the rest are discarded — a real STP inventory tops out well below, so an
+/// oversized report is malformed or malicious and is never trusted into unbounded server memory).
+pub fn sanitize_loot_stacks(items: &mut Vec<CorpseStack>) {
+    items.retain(|s| s.quantity > 0);
+    items.truncate(MAX_CORPSE_STACKS);
 }
 
 /// Loot interaction range (meters). Was 5.0 (mirroring `interact_with_item`'s convention) until
@@ -85,8 +100,7 @@ impl World {
         held_item: i32,
         mut items: Vec<CorpseStack>,
     ) -> u32 {
-        items.retain(|s| s.quantity > 0);
-        items.truncate(MAX_CORPSE_STACKS);
+        sanitize_loot_stacks(&mut items);
 
         let id = self.next_corpse_id;
         self.next_corpse_id = self.next_corpse_id.wrapping_add(1);
@@ -100,6 +114,33 @@ impl World {
                 equipment,
                 held_item,
                 items,
+                is_chest: false,
+            },
+        );
+        self.revision = self.revision.wrapping_add(1);
+        id
+    }
+
+    /// ADR-028 amendment (world chests): create a host-seeded supply chest. Same storage,
+    /// relay, loot, and despawn-on-empty machinery as a corpse — only the flag (and the
+    /// crate visual it selects client-side) differs. No dead-player snapshot: owner_id 0
+    /// (reserved), empty equipment/held. Same hygiene as `spawn_corpse`.
+    pub fn spawn_chest(&mut self, position: Vec3, mut items: Vec<CorpseStack>) -> u32 {
+        sanitize_loot_stacks(&mut items);
+
+        let id = self.next_corpse_id;
+        self.next_corpse_id = self.next_corpse_id.wrapping_add(1);
+        self.corpses.insert(
+            id,
+            CorpseData {
+                id,
+                owner_id: 0,
+                owner_name: "Supply Crate".into(),
+                position,
+                equipment: [0; 4],
+                held_item: 0,
+                items,
+                is_chest: true,
             },
         );
         self.revision = self.revision.wrapping_add(1);
@@ -185,6 +226,7 @@ impl World {
                         quantity: s.quantity,
                     })
                     .collect(),
+                is_chest: c.is_chest,
             })
             .collect();
         // HashMap iteration order is nondeterministic — sort for stable serialization
@@ -300,6 +342,58 @@ mod tests {
         assert_eq!(views[0].held_item, -55);
         assert_eq!(views[0].items.len(), 1);
         assert_eq!(views[0].items[0].item_id, 1);
+    }
+
+    // ADR-028 amendment (world chests): a chest is a corpse-entry with is_chest=true and no
+    // dead-player snapshot; looting it goes through the EXACT same take path, including
+    // despawn-on-empty.
+    #[test]
+    fn spawn_chest_stores_flagged_entry_and_loots_like_a_corpse() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(10.0, 1.8, 20.0);
+        let id = world.spawn_chest(pos, stacks(&[(-5498592, 3), (9692212, 1)]));
+
+        let chest = &world.corpses[&id];
+        assert!(chest.is_chest);
+        assert_eq!(chest.owner_id, 0);
+        assert_eq!(chest.owner_name, "Supply Crate");
+        assert_eq!(chest.equipment, [0; 4]);
+        assert_eq!(chest.held_item, 0);
+
+        // Corpses and chests share the id space and the view pipeline.
+        let corpse_id = spawn_test_corpse(&mut world, pos, stacks(&[(1, 1)]));
+        assert_ne!(id, corpse_id);
+        let views = world.visible_corpse_views(pos);
+        assert_eq!(views.len(), 2);
+        assert!(views.iter().any(|v| v.id == id && v.is_chest));
+        assert!(views.iter().any(|v| v.id == corpse_id && !v.is_chest));
+
+        // Same take path; last stack out removes the chest (despawn-on-empty).
+        let taken = world
+            .take_corpse_item(id, 0, 99, pos, CORPSE_LOOT_MAX_DISTANCE)
+            .unwrap();
+        assert_eq!(taken, CorpseStack { item_id: -5498592, quantity: 3 });
+        let taken = world
+            .take_corpse_item(id, 0, 1, pos, CORPSE_LOOT_MAX_DISTANCE)
+            .unwrap();
+        assert_eq!(taken, CorpseStack { item_id: 9692212, quantity: 1 });
+        assert!(!world.corpses.contains_key(&id));
+        assert!(world.corpses.contains_key(&corpse_id), "the real corpse must be untouched");
+    }
+
+    // ADR-032 amendment: the shared hygiene helper — quantity<=0 dropped FIRST, then the
+    // survivors truncated to MAX_CORPSE_STACKS (first 64 kept, 65+ discarded).
+    #[test]
+    fn sanitize_loot_stacks_drops_zeroes_then_truncates_to_cap() {
+        let mut items = vec![CorpseStack { item_id: -1, quantity: 0 }];
+        for i in 0..(MAX_CORPSE_STACKS as i32 + 6) {
+            items.push(CorpseStack { item_id: i, quantity: 1 });
+        }
+        sanitize_loot_stacks(&mut items);
+        assert_eq!(items.len(), MAX_CORPSE_STACKS);
+        assert!(items.iter().all(|s| s.quantity > 0));
+        assert_eq!(items[0].item_id, 0, "zero-qty stack must not consume a cap slot");
+        assert_eq!(items.last().unwrap().item_id, MAX_CORPSE_STACKS as i32 - 1);
     }
 
     // ADR-028 post-E3: the empty-snapshot rule that prevents immortal empty corpses.

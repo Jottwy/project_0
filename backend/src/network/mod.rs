@@ -33,6 +33,42 @@ pub type PeerId = u16;
 /// 0xF000 (61440) clears that range with room to spare in the u16 id space.
 const PHANTOM_ID_BASE: PeerId = 0xF000;
 
+/// ADR-029 V0: a size-bounded, insertion-ordered dedupe set. Unlike the older `processed_*`
+/// `HashSet`s elsewhere in this module (which grow unbounded for the session's lifetime),
+/// ADR-029 explicitly requires PvP dedupe structures to have pruning by size or age — this
+/// evicts the oldest entry once `cap` is exceeded, in O(1) amortized per insert.
+#[derive(Debug)]
+pub struct BoundedDedupeSet<K: std::hash::Hash + Eq + Copy> {
+    order: std::collections::VecDeque<K>,
+    set: std::collections::HashSet<K>,
+    cap: usize,
+}
+
+impl<K: std::hash::Hash + Eq + Copy> BoundedDedupeSet<K> {
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            order: std::collections::VecDeque::with_capacity(cap),
+            set: std::collections::HashSet::with_capacity(cap),
+            cap,
+        }
+    }
+
+    /// Returns `true` if `key` was newly inserted (not a duplicate). A duplicate does NOT
+    /// refresh its position in the eviction order (first-seen wins the recency slot).
+    pub fn insert(&mut self, key: K) -> bool {
+        if !self.set.insert(key) {
+            return false;
+        }
+        self.order.push_back(key);
+        if self.order.len() > self.cap {
+            if let Some(oldest) = self.order.pop_front() {
+                self.set.remove(&oldest);
+            }
+        }
+        true
+    }
+}
+
 /// High-level events produced by the network layer for the game loop.
 #[derive(Debug, Clone)]
 pub enum NetworkEvent {
@@ -155,6 +191,38 @@ pub enum NetworkEvent {
     CorpseListReceived {
         corpses: Vec<crate::world::corpse::CorpseData>,
     },
+    /// ADR-029 V0: a remote peer's backend forwarded a PvP hit candidate to us (the host) for
+    /// validation. All authority logic (dedupe, the 11-step validation order, grant/reject
+    /// dispatch) lives in game_loop.rs, same split as the corpse relay above.
+    PvpHitCandidate {
+        request_id: u64,
+        attacker_id: u32,
+        victim_id: u32,
+        weapon_id: i32,
+        damage: f32,
+        origin: [f32; 3],
+        direction: [f32; 3],
+        client_tick: Option<u32>,
+        hit_position: Option<[f32; 3]>,
+    },
+    /// ADR-029 V0: the host validated a PvP hit against OUR local player and granted the
+    /// damage. We are the victim's backend — apply it via `PlayerStats::take_damage`.
+    PvpDamageGrant {
+        request_id: u64,
+        attacker_id: u32,
+        victim_id: u32,
+        weapon_id: i32,
+        damage: f32,
+        reason: String,
+    },
+    /// ADR-029 V0: the host rejected OUR PvP hit candidate. We are the shooter's backend —
+    /// surface the reason to our own Unity, never apply damage.
+    PvpHitRejected {
+        request_id: u64,
+        attacker_id: u32,
+        victim_id: u32,
+        reason: String,
+    },
     WorldSyncReceived {
         world_seed: u64,
         world_revision: u64,
@@ -250,6 +318,16 @@ pub struct NetworkManager {
     pub processed_corpse_results: std::collections::HashSet<u64>,
     /// ADR-028 Fase E (joiner-only): monotonic source for our corpse request ids.
     pub next_corpse_request_id: u64,
+    /// ADR-029 V0 (host-only): (attacker_id, request_id) pairs of PvP hit candidates already
+    /// validated, so a reliable retransmit of `PvpHitCandidate` never grants/rejects twice.
+    /// Size-bounded (see `BoundedDedupeSet`), unlike the older unbounded `processed_*` sets —
+    /// required explicitly by ADR-029 ("las estructuras de dedupe deben tener poda").
+    pub processed_pvp_hits: BoundedDedupeSet<(u32, u64)>,
+    /// ADR-029 V0 (victim-side, host or joiner): (attacker_id, request_id) pairs of
+    /// `PvpDamageGrant` already applied to this backend's own `PlayerStats`, so a reliable
+    /// retransmit of the grant never doubles the damage. This is the LOAD-BEARING defensive
+    /// dedupe — the victim's own backend is the final authority over its own health.
+    pub processed_pvp_grants: BoundedDedupeSet<(u32, u64)>,
     /// ADR-014 (host-only): reserved pickups awaiting their deferred removal.
     /// item_id → (requester_id, remove_at). The item stays in `stp_items` (visible) until
     /// remove_at, but a second request for a reserved item is rejected — the reservation is the
@@ -321,6 +399,8 @@ impl NetworkManager {
             processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: std::collections::HashSet::with_capacity(64),
             next_corpse_request_id: 1,
+            processed_pvp_hits: BoundedDedupeSet::with_capacity(512),
+            processed_pvp_grants: BoundedDedupeSet::with_capacity(512),
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
             incoming_rx: rx,
@@ -890,6 +970,59 @@ impl NetworkManager {
             PacketPayload::CorpseList { corpses } => {
                 vec![NetworkEvent::CorpseListReceived { corpses }]
             }
+
+            // ADR-029 V0: PvP relay — 1:1 payload→event mapping; all authority logic
+            // (dedupe, validation order, grant/reject dispatch) lives in game_loop, which
+            // owns Player/PlayerStats (health lives there, not in NetworkManager).
+            PacketPayload::PvpHitCandidate {
+                request_id,
+                attacker_id,
+                victim_id,
+                weapon_id,
+                damage,
+                origin,
+                direction,
+                client_tick,
+                hit_position,
+            } => vec![NetworkEvent::PvpHitCandidate {
+                request_id,
+                attacker_id,
+                victim_id,
+                weapon_id,
+                damage,
+                origin,
+                direction,
+                client_tick,
+                hit_position,
+            }],
+
+            PacketPayload::PvpDamageGrant {
+                request_id,
+                attacker_id,
+                victim_id,
+                weapon_id,
+                damage,
+                reason,
+            } => vec![NetworkEvent::PvpDamageGrant {
+                request_id,
+                attacker_id,
+                victim_id,
+                weapon_id,
+                damage,
+                reason,
+            }],
+
+            PacketPayload::PvpHitRejected {
+                request_id,
+                attacker_id,
+                victim_id,
+                reason,
+            } => vec![NetworkEvent::PvpHitRejected {
+                request_id,
+                attacker_id,
+                victim_id,
+                reason,
+            }],
 
             PacketPayload::StpPickupGranted {
                 item_id,

@@ -321,6 +321,9 @@ pub struct CorpseView {
     pub equipment: [i32; 4],
     pub held_item: i32,
     pub items: Vec<ItemStackView>,
+    /// ADR-028 amendment (world chests): crate visual + no dead-player owner client-side.
+    #[serde(default)]
+    pub is_chest: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -363,7 +366,13 @@ mod tests {
         // ADR-025 Slice B diagnosis: prove the death/respawn GameEvents SERIALIZE (encode must
         // not fail on the internally-tagged enum + serde_json::Value payload) and carry the
         // "type":"event" tag + fields the Unity Dispatch switch matches on.
-        for (event_type, key) in [("player_died", "death_pos"), ("player_respawned", "position")] {
+        // ADR-032: session_restored is the third position-arming event (hydration snap) and
+        // must keep the exact same wire shape the applier parses.
+        for (event_type, key) in [
+            ("player_died", "death_pos"),
+            ("player_respawned", "position"),
+            ("session_restored", "position"),
+        ] {
             let msg = ServerMessage::Event(GameEvent {
                 event_type: event_type.into(),
                 data: serde_json::json!({ key: [22.5f32, 1.8, 22.5] }),
@@ -505,6 +514,7 @@ mod tests {
                     ItemStackView { item_id: -12345, quantity: 3 },
                     ItemStackView { item_id: 99, quantity: 1 },
                 ],
+                is_chest: false,
             }],
         });
         let frame = encode(&msg).unwrap();

@@ -200,6 +200,17 @@ impl World {
         }
     }
 
+    /// ADR-032: expose the corpse-id allocator so world persistence can save it and a loaded save
+    /// can restore it — otherwise a fresh corpse/chest could reuse an id that a persisted one still
+    /// holds. Read-only + explicit setter; `next_corpse_id` itself stays private.
+    pub fn next_corpse_id(&self) -> u32 {
+        self.next_corpse_id
+    }
+
+    pub fn set_next_corpse_id(&mut self, value: u32) {
+        self.next_corpse_id = value;
+    }
+
     /// Ensure a chunk exists at `pos`, generating it deterministically if needed.
     pub fn ensure_chunk(&mut self, pos: ChunkPos) -> &mut Chunk {
         self.ensure_chunk_layer(pos, 0)

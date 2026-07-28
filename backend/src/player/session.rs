@@ -51,6 +51,18 @@ pub struct Player {
     /// Re-armed (false) when `respawn_request` is honored. Session-transient.
     #[serde(default)]
     pub death_loot_reported: bool,
+    /// ADR-031: the player's respawn point (a placed "Sleeping Bag" position), or None → the fixed
+    /// starter spawn. Set by the `stp_place` handler when a bed is placed ("last placed wins");
+    /// consumed by `respawn_request`. Session-transient (RAM, not persisted), like the fields above.
+    #[serde(default)]
+    pub respawn_point: Option<Vec3>,
+    /// ADR-032 amendment: latest client-reported snapshot of the REAL STP inventory (raw item
+    /// ids, same stack shape corpses use — NOT the legacy `inventory` above, which is
+    /// disconnected from the real game). Fed by the debounced `report_inventory` action
+    /// (trust-the-client, sanitized on receipt); persisted via `PlayerSnapshot.stp_inventory`
+    /// and pushed back to the client with the `inventory_restored` event after hydration.
+    #[serde(default)]
+    pub stp_inventory: Vec<crate::world::corpse::CorpseStack>,
 }
 
 impl Player {
@@ -71,6 +83,8 @@ impl Player {
             held_item: 0,
             hit_seq: 0,
             death_loot_reported: false,
+            respawn_point: None,
+            stp_inventory: Vec::new(),
         }
     }
 }
