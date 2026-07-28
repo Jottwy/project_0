@@ -259,12 +259,24 @@ fn resolve_move_src(
 
     let x_only = Vec3::new(desired.x, from.y, from.z);
     if !is_blocked_at_src(src, x_only, PLAYER_RADIUS) {
-        return resolve_with_y(src, x_only, CollisionResultKind::SlidX, "z_blocked", claimed_y);
+        return resolve_with_y(
+            src,
+            x_only,
+            CollisionResultKind::SlidX,
+            "z_blocked",
+            claimed_y,
+        );
     }
 
     let z_only = Vec3::new(from.x, from.y, desired.z);
     if !is_blocked_at_src(src, z_only, PLAYER_RADIUS) {
-        return resolve_with_y(src, z_only, CollisionResultKind::SlidZ, "x_blocked", claimed_y);
+        return resolve_with_y(
+            src,
+            z_only,
+            CollisionResultKind::SlidZ,
+            "x_blocked",
+            claimed_y,
+        );
     }
 
     // Fully blocked — stay put, but report what actually blocked the
@@ -1036,7 +1048,11 @@ mod tests {
         let floor = Level0Collision::floor_player_y(&world, from);
 
         let teleport = Level0Collision::resolve_move(&world, from, Vec3::new(25.3, 50.0, 25.0));
-        assert_eq!(teleport.kind, CollisionResultKind::Free, "XZ move must not be rejected");
+        assert_eq!(
+            teleport.kind,
+            CollisionResultKind::Free,
+            "XZ move must not be rejected"
+        );
         assert!(
             (teleport.position.y - floor).abs() < 0.001,
             "absurd claimed Y must flatten to floor {floor}, got {}",
@@ -1078,8 +1094,12 @@ mod tests {
         let world = clean_world((0, 0));
         let mut sim = SimChunkCache::new(world.seed);
         let from = Vec3::new(25.0, 3.0, 25.0);
-        let result =
-            Level0Collision::resolve_move_simulated(&world, &mut sim, from, Vec3::new(25.3, 3.0, 25.0));
+        let result = Level0Collision::resolve_move_simulated(
+            &world,
+            &mut sim,
+            from,
+            Vec3::new(25.3, 3.0, 25.0),
+        );
         let floor = Level0Collision::floor_player_y(&world, from);
         assert!(
             (result.position.y - floor).abs() < 0.001,
@@ -1139,7 +1159,11 @@ mod tests {
             "trusted spawn keeps the bed XZ, got {:?}",
             res.position
         );
-        assert!(!is_blocked_at(&world, res.position, PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN));
+        assert!(!is_blocked_at(
+            &world,
+            res.position,
+            PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN
+        ));
     }
 
     #[test]
@@ -1150,7 +1174,11 @@ mod tests {
             set_v_edge(&mut world, (2, 2), 5, z, EDGE_KIND_WALL); // wall the x=25 (local) boundary
         }
         let bed = Vec3::new(2.0 * CHUNK_SIZE + 25.0, 1.8, 2.0 * CHUNK_SIZE + 25.0); // sits on the wall
-        assert!(is_blocked_at(&world, bed, PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN));
+        assert!(is_blocked_at(
+            &world,
+            bed,
+            PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN
+        ));
         assert!(try_bed_spawn(&world, bed).is_none());
     }
 
@@ -1159,14 +1187,20 @@ mod tests {
         // Bed on a walkable but NON-FLAT chunk: the resolver rejects every cell (→ Repaired), but
         // trust-the-bed still accepts the walkable spot — the exact risk-C scenario.
         let mut world = clean_world((3, 3));
-        world.chunks.get_mut(&key((3, 3))).unwrap().layout.vertical_flags = 1; // non-flat → resolver rejects
+        world
+            .chunks
+            .get_mut(&key((3, 3)))
+            .unwrap()
+            .layout
+            .vertical_flags = 1; // non-flat → resolver rejects
         let bed = Vec3::new(3.0 * CHUNK_SIZE + 25.0, 1.8, 3.0 * CHUNK_SIZE + 25.0);
         assert_eq!(
             resolve_safe_spawn(&mut world, bed).method,
             SpawnMethod::Repaired,
             "a non-flat bed chunk must make the resolver fall back"
         );
-        let res = try_bed_spawn(&world, bed).expect("trust-the-bed recovers the walkable non-flat spot");
+        let res =
+            try_bed_spawn(&world, bed).expect("trust-the-bed recovers the walkable non-flat spot");
         assert!((res.position.x - bed.x).abs() < 0.01 && (res.position.z - bed.z).abs() < 0.01);
     }
 
@@ -1461,7 +1495,7 @@ mod tests {
             "sim path must resolve against a generated layout"
         );
         assert!(
-            sim.len() > 0,
+            !sim.is_empty(),
             "sim path must have generated + cached the far chunk(s)"
         );
     }
@@ -1522,7 +1556,10 @@ mod tests {
             Vec3::new(from.x + 0.5, from.y, from.z + 0.5),
         );
 
-        assert!(sim.len() > 0, "the far move must have populated the sim cache");
+        assert!(
+            !sim.is_empty(),
+            "the far move must have populated the sim cache"
+        );
         assert_eq!(
             world.chunks.len(),
             loaded_before,
