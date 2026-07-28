@@ -703,7 +703,7 @@ impl VolumetricGridV0 {
                 if is_open {
                     open += 1;
                 }
-                if is_open == ((x as u32 + z as u32) % 2 == 0) {
+                if is_open == (x as u32 + z as u32).is_multiple_of(2) {
                     parity_open += 1;
                 }
             }
@@ -1456,7 +1456,7 @@ fn carve_rare_shaft(
         return;
     }
     let h = column_hash(world_seed, chunk.pos, V30D_SHAFT_SALT);
-    if h % V30D_SHAFT_RARITY != 0 {
+    if !h.is_multiple_of(V30D_SHAFT_RARITY) {
         return;
     }
     // Deterministic interior candidate cell; the shaft only forms where the
@@ -1617,7 +1617,7 @@ fn push_relationship_nodes(
     // area. Markers only — no voids are carved.
     if chunk_chebyshev_from_origin(chunk.pos) >= V30D_SAFE_RADIUS_CHUNKS {
         let ramp_hash = column_hash(world_seed, chunk.pos, V30D_RAMP_SALT);
-        if ramp_hash % V30D_RAMP_RARITY == 0 {
+        if ramp_hash.is_multiple_of(V30D_RAMP_RARITY) {
             let x = (2 + ((ramp_hash >> 8) % 6)) as u8;
             let z = (2 + ((ramp_hash >> 16) % 6)) as u8;
             if grid.cell(x, 0, z).is_walkable() {
@@ -1632,7 +1632,7 @@ fn push_relationship_nodes(
             }
         }
         let broken_hash = column_hash(world_seed, chunk.pos, V30D_BROKEN_SALT);
-        if broken_hash % V30D_BROKEN_RARITY == 0 {
+        if broken_hash.is_multiple_of(V30D_BROKEN_RARITY) {
             let x = (2 + ((broken_hash >> 8) % 6)) as u8;
             let z = (2 + ((broken_hash >> 16) % 6)) as u8;
             if grid.cell(x, 1, z).is_walkable() {
@@ -1729,6 +1729,8 @@ fn apply_explicit_access(grid: &mut VolumetricGridV0, access: &[VerticalAccessNo
     }
 }
 
+// TODO(refactor): group into a params struct; deferred to keep this diff to a lint fix.
+#[allow(clippy::too_many_arguments)]
 fn push_macro_access(
     world_seed: u64,
     chunk: &Chunk,
@@ -2156,7 +2158,7 @@ pub fn showcase_global(gx: i32, gy: i32, gz: i32) -> CellOccupancy {
 
     // Spawn-safe readable starter pocket inside the showcase.
     // Keeps seed 7778 playable while preserving surrounding vertical architecture.
-    if gy == 1 && gx >= 3 && gx <= 6 && gz >= 3 && gz <= 6 {
+    if gy == 1 && (3..=6).contains(&gx) && (3..=6).contains(&gz) {
         return CellOccupancy::Room;
     }
     if gy == 1 && (gx == 5 || gz == 5) {
@@ -2854,11 +2856,7 @@ pub fn log_level0_adapter_fix_once(world_seed: u64, chunks: &[&Chunk]) {
         if chunk.pos == (0, 0) {
             let core_walkable = (4..=5)
                 .all(|x| (4..=5).all(|z| column.grid.cell(x as u8, 1, z as u8).is_walkable()));
-            let no_danger = !column
-                .grid
-                .cells
-                .iter()
-                .any(|c| *c == CellOccupancy::DangerZone);
+            let no_danger = !column.grid.cells.contains(&CellOccupancy::DangerZone);
             spawn_readable = core_walkable && no_danger;
         }
     }
@@ -3416,11 +3414,7 @@ mod tests {
                 }
             }
             assert!(
-                !column
-                    .grid
-                    .cells
-                    .iter()
-                    .any(|c| *c == CellOccupancy::DangerZone),
+                !column.grid.cells.contains(&CellOccupancy::DangerZone),
                 "seed {seed}: danger pocket invaded the spawn chunk"
             );
         }
