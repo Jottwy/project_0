@@ -121,8 +121,7 @@ impl SaveFile {
     /// needed.
     pub fn save_to<P: AsRef<Path>>(&mut self, path: P) -> std::io::Result<()> {
         self.last_saved = chrono::Utc::now().to_rfc3339();
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
 
         let path = path.as_ref();
         if let Some(parent) = path.parent() {
@@ -159,7 +158,10 @@ fn backup_unusable(path: &Path) {
     let bak = std::path::PathBuf::from(bak);
     match std::fs::rename(path, &bak) {
         Ok(()) => warn!("ADR-032: moved unusable save to {}", bak.display()),
-        Err(e) => warn!("ADR-032: failed to back up unusable save {}: {e}", path.display()),
+        Err(e) => warn!(
+            "ADR-032: failed to back up unusable save {}: {e}",
+            path.display()
+        ),
     }
 }
 
@@ -272,11 +274,17 @@ mod tests {
             Vec3::new(10.0, 1.8, 20.0),
             [101, 202, 303, 404],
             -55,
-            vec![CorpseStack { item_id: -12345, quantity: 3 }],
+            vec![CorpseStack {
+                item_id: -12345,
+                quantity: 3,
+            }],
         );
         world.spawn_chest(
             Vec3::new(5.0, 1.8, 5.0),
-            vec![CorpseStack { item_id: 9692212, quantity: 1 }],
+            vec![CorpseStack {
+                item_id: 9692212,
+                quantity: 1,
+            }],
         );
         world
     }
@@ -293,8 +301,14 @@ mod tests {
         player.held_item = 9692212;
         player.respawn_point = Some(Vec3::new(5.0, 1.8, 5.0));
         player.stp_inventory = vec![
-            CorpseStack { item_id: -52379, quantity: 2 },
-            CorpseStack { item_id: 3621376, quantity: 30 },
+            CorpseStack {
+                item_id: -52379,
+                quantity: 2,
+            },
+            CorpseStack {
+                item_id: 3621376,
+                quantity: 30,
+            },
         ];
 
         let items = vec![StpItemInfo {
@@ -341,7 +355,10 @@ mod tests {
         assert_eq!(loaded.world_seed, 42);
         assert_eq!(loaded.corpses.len(), 2);
         assert!(loaded.corpses.iter().any(|c| c.is_chest));
-        assert!(loaded.corpses.iter().any(|c| !c.is_chest && c.owner_name == "Joel"));
+        assert!(loaded
+            .corpses
+            .iter()
+            .any(|c| !c.is_chest && c.owner_name == "Joel"));
         assert_eq!(loaded.next_corpse_id, world.next_corpse_id());
         assert_eq!(loaded.stp_items.len(), 1);
         assert_eq!(loaded.stp_buildings[0].def_id, 5498433);
@@ -358,8 +375,14 @@ mod tests {
         assert_eq!(
             hp.stp_inventory,
             vec![
-                CorpseStack { item_id: -52379, quantity: 2 },
-                CorpseStack { item_id: 3621376, quantity: 30 },
+                CorpseStack {
+                    item_id: -52379,
+                    quantity: 2
+                },
+                CorpseStack {
+                    item_id: 3621376,
+                    quantity: 30
+                },
             ]
         );
 
@@ -394,7 +417,10 @@ mod tests {
 
         let loaded = load_or_fresh(&path).expect("pre-amendment save with host_player must parse");
         let hp = loaded.host_player.expect("host_player present");
-        assert!(hp.stp_inventory.is_empty(), "missing stp_inventory must default to empty");
+        assert!(
+            hp.stp_inventory.is_empty(),
+            "missing stp_inventory must default to empty"
+        );
         assert!((hp.stats.health - 80.0).abs() < 1e-4);
         let _ = std::fs::remove_file(&path);
     }
@@ -404,7 +430,10 @@ mod tests {
         let path = scratch_path("corrupt");
         std::fs::write(&path, b"{ this is not valid json ][").unwrap();
 
-        assert!(load_or_fresh(&path).is_none(), "a corrupt save must not crash — start fresh");
+        assert!(
+            load_or_fresh(&path).is_none(),
+            "a corrupt save must not crash — start fresh"
+        );
         // Original was moved aside, not left in place.
         assert!(!path.exists(), "corrupt save should be renamed to .bak");
         let mut bak = path.as_os_str().to_owned();
@@ -422,7 +451,10 @@ mod tests {
         save.version = "999.0.0".into();
         save.save_to(&path).unwrap();
 
-        assert!(load_or_fresh(&path).is_none(), "major-version mismatch → fresh world");
+        assert!(
+            load_or_fresh(&path).is_none(),
+            "major-version mismatch → fresh world"
+        );
         assert!(!path.exists());
         let mut bak = path.as_os_str().to_owned();
         bak.push(".bak");
@@ -445,7 +477,11 @@ mod tests {
 
         let loaded = load_or_fresh(&path).expect("file must still be valid after a double save");
         let hp = loaded.host_player.expect("host player present");
-        assert!((hp.stats.health - 88.0).abs() < 1e-4, "last write must win, got {}", hp.stats.health);
+        assert!(
+            (hp.stats.health - 88.0).abs() < 1e-4,
+            "last write must win, got {}",
+            hp.stats.health
+        );
         let _ = std::fs::remove_file(&path);
     }
 
