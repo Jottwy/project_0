@@ -53,7 +53,18 @@ namespace BackroomsSurvival.Gameplay
                 return;
 
             foreach (var cv in state.visibleChunks)
+            {
+                // Pieza 3 fix: visibleChunks carries every loaded layer of a column, and the
+                // backend orders its views by (x, layer, z) — so without this filter the LAST
+                // write for a given (cx,cz) is whichever layer sorts highest, not layer 0 where
+                // the player actually walks. Multi-layer V30A columns (the spawn cluster is one)
+                // were silently keying zone_kind off their TOP layer. TryGetZone never returned
+                // false for these — the value wasn't missing, it was wrong — so no existing gate
+                // (ZoneWaitTimeout, ChunkLootManager's zone gate) could have caught it.
+                if (cv.layer != 0)
+                    continue;
                 _zoneByChunk[(cv.pos[0], cv.pos[1])] = (byte)cv.zoneKind;
+            }
         }
     }
 
