@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -247,6 +248,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             bool isTopLayer = layerIndex >= layerCount - 1;
             // Fase 5A: "styled" = a layer visual config + its shared materials.
             bool styled = cfg != null && mats != null;
+            // Zone-kind first pass: multiplied into the layer's floor/wall/ceiling tint
+            // below. ZoneRegistry is keyed by XZ chunk coord only (zone_kind ignores
+            // vertical layer) — white ("no change") when the chunk hasn't been seen yet
+            // (e.g. first frame of a fresh request) or carries no zone data.
+            Color zoneTint = styled && ZoneRegistry.TryGetZone(chunkX, chunkZ, out byte zoneKind)
+                ? cfg.ZoneTint(zoneKind)
+                : Color.white;
             // When the layer draws its own per-tile ceiling, the top-layer roof slab is
             // redundant (coplanar with the ceiling) → suppress it to avoid z-fighting.
             bool roofSlab = isTopLayer && !(styled && cfg.showCeiling);
@@ -262,7 +270,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // Floor of this layer == ceiling of the layer below (one slab).
                     var floorGo = Instantiate(prefabs.floorSlab, root.transform, TileCenter(tx, tz), 0f);
                     AddColliderIfMissing(floorGo);
-                    if (styled) Paint(floorGo, mats.floor, JitterValue(cfg.floorTint, rng));
+                    if (styled) Paint(floorGo, mats.floor, JitterValue(cfg.floorTint * zoneTint, rng));
 
                     if (roofSlab)
                         PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
@@ -272,7 +280,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // is untouched; the ceiling tint still draws one rng value inside so the
                     // draw sequence — and thus floor/wall shades — stays byte-identical.
                     if (styled && cfg.showCeiling)
-                        PlaceCeilingTile(prefabs, root.transform, tx, tz, mats, cfg, chunkX, chunkZ, rng);
+                        PlaceCeilingTile(prefabs, root.transform, tx, tz, mats, cfg, chunkX, chunkZ, rng, zoneTint);
 
                     byte b = walls[tx, tz];
                     byte edges = 0;
@@ -280,7 +288,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if ((b & 4) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
                     if (edges != 0)
                     {
-                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(cfg.wallTint, rng));
+                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(cfg.wallTint * zoneTint, rng));
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz);
                     }
                 }
@@ -411,14 +419,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// </summary>
         private static void PlaceCeilingTile(GridPrefabSet prefabs, Transform parent,
             int tx, int tz, LayerVisualMaterials mats, LayerVisualConfig cfg,
-            int chunkX, int chunkZ, System.Random rng)
+            int chunkX, int chunkZ, System.Random rng, Color zoneTint)
         {
             CeilingHash(chunkX, chunkZ, tx, tz, out float hType, out float hDrop,
                 out float hTilt, out float hYaw);
 
             // Base tint (still draws one rng value so floor/wall shades stay identical),
             // darkened where moisture clusters.
-            Color tint = JitterValue(cfg.ceilingTint, rng);
+            Color tint = JitterValue(cfg.ceilingTint * zoneTint, rng);
             if (MoistureAt(chunkX, chunkZ, tx, tz) < 0.20f)
                 tint *= MoistureStain;
 

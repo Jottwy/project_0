@@ -61,6 +61,43 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float propDensity = 0.15f;
         [Range(0f, 1f)] [Tooltip("0 = uniform placement, 1 = strongly clustered.")]
         public float propClusterBias = 0.3f;
+
+        [Header("Zone tint (first pass — placeholder hues, not final art)")]
+        [Tooltip("Multiplied into floor/wall/ceiling tint by the chunk's zone_kind " +
+                 "(backend/src/world/chunk/surface_profiles.rs ZONE_* constants, indices " +
+                 "0-11). Index out of range or a null/short array falls back to white " +
+                 "(no change). GridChunkBuilder looks this up via ZoneRegistry.")]
+        public Color[] zoneTints = DefaultZoneTints();
+
+        /// <summary>
+        /// 12 placeholder hues, one per ZONE_* (0=Normal .. 11=Pit) — deliberately loud
+        /// so the 12 zones read as visually distinct in a first playtest pass. Swap for
+        /// authored per-zone palettes later; this is not the final look.
+        /// </summary>
+        private static Color[] DefaultZoneTints() => new[]
+        {
+            new Color(1f,    1f,    1f   ), // 0  ZONE_NORMAL      — no change
+            new Color(1f,    0.85f, 0.6f ), // 1  ZONE_STORAGE     — warm tan
+            new Color(0.75f, 1f,    0.8f ), // 2  ZONE_SAFE        — green
+            new Color(1f,    0.55f, 0.55f), // 3  ZONE_DANGER      — red
+            new Color(0.85f, 0.9f,  1f   ), // 4  ZONE_OPEN_HALL   — pale blue
+            new Color(1f,    0.9f,  0.7f ), // 5  ZONE_PILLAR_HALL — sand
+            new Color(0.6f,  0.95f, 0.95f), // 6  ZONE_HUMID       — teal
+            new Color(0.35f, 0.35f, 0.4f ), // 7  ZONE_BLACKOUT    — dark grey
+            new Color(1f,    0.92f, 0.65f), // 8  ZONE_MANILA      — manila yellow
+            new Color(0.9f,  1f,    1f   ), // 9  ZONE_CLEANING    — bright cyan-white
+            new Color(1f,    0.35f, 0.35f), // 10 ZONE_RED         — deep red
+            new Color(0.35f, 0.25f, 0.35f), // 11 ZONE_PIT         — dark purple
+        };
+
+        /// <summary>Bounds-safe lookup; out-of-range or unconfigured falls back to white.</summary>
+        public Color ZoneTint(int zoneKind)
+        {
+            if (zoneTints == null || zoneTints.Length == 0)
+                return Color.white;
+            int i = Mathf.Clamp(zoneKind, 0, zoneTints.Length - 1);
+            return zoneTints[i];
+        }
     }
 
     /// <summary>
