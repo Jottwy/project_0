@@ -31,6 +31,8 @@ fn inter_layer_layers(target_layer: ChunkLayer) -> Vec<ChunkLayer> {
     vec![0, target_layer]
 }
 
+// TODO(refactor): group into a params struct; deferred to keep this diff to a lint fix.
+#[allow(clippy::too_many_arguments)]
 fn inter_layer_volume(
     world_seed: u64,
     base_chunk: ChunkPos,
@@ -301,7 +303,7 @@ pub(crate) fn apply_v30a_layout(
         .iter()
         .copied()
         .find(|layer| *layer != 0)
-        .unwrap_or(if world_seed % 2 == 0 { -1 } else { 1 });
+        .unwrap_or(if world_seed.is_multiple_of(2) { -1 } else { 1 });
     let branch_flag = if target_layer > 0 {
         V30A_UPPER_OFFICE_BRANCH
     } else {

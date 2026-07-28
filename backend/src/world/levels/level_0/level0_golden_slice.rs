@@ -31,7 +31,7 @@ mod tests {
         assert_eq!(c.entities[1].id, 335462221);
         assert_eq!(c.entities[1].entity_type, EntityType::Crawler);
         assert!((c.entities[1].position.x - 195.3512_f32).abs() < 0.001);
-        assert!((c.entities[1].position.z - 381.3600_f32).abs() < 0.001);
+        assert!((c.entities[1].position.z - 381.36_f32).abs() < 0.001);
 
         assert_eq!(c.entities[2].id, 813281721);
         assert_eq!(c.entities[2].entity_type, EntityType::Lurker);
@@ -40,7 +40,7 @@ mod tests {
 
         assert_eq!(c.entities[3].id, 1442489330);
         assert_eq!(c.entities[3].entity_type, EntityType::Crawler);
-        assert!((c.entities[3].position.x - 174.0550_f32).abs() < 0.001);
+        assert!((c.entities[3].position.x - 174.055_f32).abs() < 0.001);
         assert!((c.entities[3].position.z - 378.3161_f32).abs() < 0.001);
 
         assert_eq!(c.items.len(), 8, "item count changed");
@@ -52,7 +52,7 @@ mod tests {
         assert_eq!(c.items[1].id, 1247068023);
         assert_eq!(c.items[1].item, Item::Circuit);
         assert!((c.items[1].position.x - 182.5457_f32).abs() < 0.001);
-        assert!((c.items[1].position.z - 352.6400_f32).abs() < 0.001);
+        assert!((c.items[1].position.z - 352.64_f32).abs() < 0.001);
 
         assert_eq!(c.items[2].id, 1775481219);
         assert_eq!(c.items[2].item, Item::Circuit);
