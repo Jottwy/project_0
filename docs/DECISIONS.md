@@ -496,6 +496,23 @@ Por qué es ADR (reglas duras 4, 9): toca el sistema núcleo de colisión/autori
 
 Dependencias: mismo patrón y módulo que ADR-018 (colisión grid_gen del fantasma); consistente con ADR-009 Opción B enmendada (confiar en la pose del cliente); complementa ADR-025 (el snap de respawn ahora aterriza en un spawn re-snapeado al mundo renderizado). Paso incremental hacia la migración mundo→backend-authoritative (STATE.md), sin sustituirla. No afecta ADR-003/005; no toca schema.
 
+### Enmienda ADR-026 (2026-07-06 -- desbloqueo PARCIAL: solo parte 3, Y del cliente; partes 1-2 siguen bloqueadas)
+VALIDACION HUMANA RECIBIDA (2026-07-06, en sesion) para implementar UNICAMENTE la parte 3 de este ADR (aceptar `claimed.y` del cliente en vez de aplanar incondicionalmente a `floor_player_y`). Las partes 1-2 (migracion de la colision XZ del jugador de `world::generator` a `grid_gen`, y el re-snap de spawn con `resolve_spawn_near`) SIGUEN BLOQUEADAS por la atribucion de TP en curso -- los diagnosticos `TP_WATCH`/`RESOLVE_DIAG` (game_loop.rs, marcados "REMOVE after diagnosis") permanecen activos e intactos; este cambio NO toca el camino XZ que vigilan.
+
+Motivo del desbloqueo parcial: dos sintomas visibles en play-test de 3 instancias (2026-07-06) -- (a) la altura de los proxies remotos no sigue desniveles reales, (b) la animacion de salto nunca se reproduce en proxies remotos (`ProxyJumpFeeder` deriva el salto de la velocidad vertical del root, que llega aplanada) -- dependen SOLO del aplanado de Y en `resolve_with_y` (collision.rs), no del camino XZ. El "FIX COLATERAL DOCUMENTADO" del ADR base cubre exactamente esto.
+
+Alcance exacto implementado:
+1. `resolve_move_src`/`resolve_with_y` (world/collision.rs) ganan un modo claimed-Y usado SOLO por el wrapper del jugador (`Level0Collision::resolve_move`): en los casos Free/SlidX/SlidZ, la Y del resultado es la `claimed.y` del cliente SI pasa un clamp de plausibilidad fisica; en Blocked se mantiene `from.y` (contrato literal de la parte 3 del ADR base). El gating XZ (`is_blocked_at` con `from.y`, resolucion de capa/celda, sliding) queda BIT-IDENTICO al actual -- cero cambio en el camino que la atribucion de TP vigila.
+2. CLAMP DE PLAUSIBILIDAD: `|claimed.y - from.y| <= MAX_CLAIMED_Y_STEP = 3.0 m` por tick procesado, y `claimed.y` finita. Justificacion del valor: (i) precedente ya calibrado en el proyecto -- `ProxyJumpFeeder._verticalTeleportDistance = 3.0` trata un salto single-frame de |dY|>3 m como teleport vertical, no como movimiento; (ii) es < LAYER_HEIGHT (4 m), asi que un cambio instantaneo de capa nunca pasa como movimiento continuo; (iii) el movimiento legitimo peor-caso entre muestras de input (~30 Hz, caida terminal ~25 m/s) es ~0.8 m -- 3.0 da margen 3-4x para jitter de red. TODO(balance): valor conservador inicial, pendiente pasada de calibracion dedicada.
+3. FALLBACK SEGURO (no rechazo): si el delta excede el clamp (teleport vertical, cliente comprometido, o gap de red largo), la Y cae al comportamiento actual (`floor_player_y`) SOLO ese tick; el movimiento XZ no se rechaza. Un cliente laggeado cayendo se aplana temporalmente al suelo (cosmetico, solo en pantallas ajenas) y reconverge al aterrizar.
+4. El path de ENTIDADES simuladas (`resolve_move_simulated`, ADR-017 -- hoy test-only tras ADR-018) CONSERVA el floor-pin actual: el fantasma depende de `floor_player_y` para su grounding (ADR-016 slice 2) y no reporta una Y propia. El modo claimed-Y es exclusivo del jugador.
+5. `broadcast_player_update`/`broadcast_peer_poses` relayan la Y real automaticamente (leen `player.position`) -- sin cambio de codigo, sin cambio de wire/schema (la pose siempre llevo Y; solo cambia su valor).
+6. PvP (ADR-029): la validacion `too_far` usa distancia 3D (`Vec3::distance`) y SE MANTIENE 3D con Y real variable. Razonado: con la Y aplanada era 2D de facto; con Y real, 3D es estrictamente mas correcto (un atacante melee en otra capa a 4 m verticales del mismo XZ queda fuera de rango, donde una distancia 2D habria aceptado el golpe a traves del techo).
+
+PROHIBE (sin nuevo ADR/enmienda): reintroducir el floor-pin incondicional de Y para el jugador; tocar el gating XZ o los diagnosticos TP_WATCH/RESOLVE_DIAG bajo esta enmienda; implementar las partes 1-2 mientras la atribucion de TP siga abierta.
+
+NOTA ACLARATORIA (2026-07-06, misma sesion — convencion del canal de Y, correccion post-playtest): `claimed.y` TAL COMO LLEGA AL BACKEND representa la convencion del canal — "pies + PLAYER_BASE_Y" — NO el transform crudo del motor. El cliente COMPENSA EN ORIGEN antes de enviar (`PlayerPoseTransmitter` suma `GridConstants.PlayerBaseY` a la Y del motor, cuyo pivote esta en los PIES). Motivo: el primer playtest tras esta enmienda hundio los proxies ~1.8 m en el suelo (solo asomaba la coronilla) por DOBLE DESCUENTO — el motor STP reporta Y con pivote-pies (~0 sobre el suelo renderizado), y al dejar de aplanarse en el backend esa Y cruda llegaba al receptor, cuyo `RemotePlayerManager` restaba `PlayerBaseY` otra vez (esa resta des-hacia la convencion +1.8 que el backend YA NO aplicaba al dato). Compensar en el emisor restaura UNA convencion uniforme para TODOS los emisores del canal: jugadores reales (compensados en origen), robapieles/spawn/respawn/floor-fallback (nativos en esa convencion via `floor_player_y`). La alternativa (quitar la resta en el receptor) se rechazo porque haria flotar 1.8 m al fantasma y a todo emisor no-claimed (spawn/respawn/fallback), reintroduciendo el bug original para ellos. El clamp de plausibilidad opera sobre la Y ya compensada (~1.8 en reposo, como antes del desbloqueo) — los deltas frame-a-frame vuelven a ser pequenos y el fallback no se dispara de forma espuria en juego normal.
+
 ## ADR-027 — Resiliencia de eventos one-shot + puente UI para writes silenciosos (salud)
 Estado: VALIDADA (2026-07-03, autorizada en sesión). Implementación COMPLETA (tested E2E en runtime).
 
@@ -602,3 +619,265 @@ Dos ajustes decididos con el humano tras cerrar E3 (play-test 3 instancias valid
 1. **`dead: bool` en la pose relay (bump v9→v10).** Hallazgo del play-test: el proxy 3P de un jugador muerto sigue DE PIE junto a su propio cadáver tumbado en las pantallas ajenas (duplicado visual) — el estado muerto no viajaba en la pose. Se añade el campo tipado `dead: bool` recorriendo la superficie de SALIDA de la pose (precedente ADR-020/021/022/023/024), con una DIFERENCIA clave: a diferencia de crouch/pitch/equipment/held_item/hit_seq (reportados por el cliente), `dead` es DERIVADO DEL SERVIDOR — el backend lo estampa desde su propio `player.stats.is_dead()` autoritativo (ADR-025); NO se añade campo a `PlayerInput` (el cliente no reporta nada). Superficie: `RemotePlayerState` (IPC out) + `PacketPayload::PlayerUpdate` (P2P) + `PeerConnection.dead` (fijado en handle_packet, `update_player_state` SIN tocar → el robapieles queda `dead=false` y nunca se oculta, gratis, mismo patrón que pitch/equipment) + `broadcast_player_update`/`broadcast_peer_poses`/`build_world_state`. Cliente: `RemotePlayerMsg.dead` (parse) + `RemotePlayerManager` oculta/muestra el root del proxy por change-detection (`SetActive`); al respawnear (`dead=false`) el proxy reaparece en la nueva posición. Compat: receptor v9 decodifica `dead=false` (serde default) → nunca oculta, sin error. Cosmético/host-relay, NO autoritativo — la muerte real la posee cada backend (ADR-025); este campo es solo presentación del proxy. PROHÍBE usar `dead` para lógica de juego (loot gates, colisión, targeting) — para eso está el estado autoritativo del backend propio.
 
 2. **Regla de cadáver vacío (sin cambio de wire).** Hallazgo de los datos del play-test (cadáveres 6 y 7, `stacks=0`): un cadáver que NACE vacío nunca despawnea — el despawn-por-vacío solo corre tras un take y no hay nada que tomar → cadáver vacío inmortal. Regla nueva: un snapshot de muerte SIN loot efectivo (cero stacks, o todos con cantidad 0) NO spawnea cadáver. Guardas backend en los tres puntos de entrada (arm IPC del host, arm de reenvío del joiner —ahorra además el hop—, y el arm relayed del host como defensa ante clientes viejos/maliciosos), vía helper compartido `corpse_loot_is_empty` en `world/corpse.rs`. El cliente (DeathLootReporter) NO se toca — la higiene es backend-authoritative. Consecuencia: morir desnudo no deja rastro físico; si el diseño de juego futuro quiere "cadáver ambiental aunque vacío", requerirá revisar esta regla (y entonces también un despawn alternativo, p.ej. timeout SOLO para vacíos).
+
+## ADR-029 -- PvP V0: hit candidate -> host validation -> victim-applied damage
+Estado: PROPUESTA (2026-07-04). Solo contrato tecnico; no implementado aun. Requiere aprobacion humana antes de tocar codigo runtime.
+
+Contexto: ADR-010 define hitreg con lag compensation como objetivo futuro, pero su enmienda dejo PvP jugador-jugador fuera porque la salud de cada jugador vive en su propio backend local. ADR-024 (`hit_seq`) es explicitamente cosmetico y no autoritativo. ADR-025/027 ya validan salud/muerte/respawn server-driven por backend local. ADR-028 ya valida corpse/loot host-authoritative con relay P2P y dedupe por `request_id`. PvP V0 debe reutilizar esos sistemas sin reescribirlos.
+
+Objetivo V0: loop funcional minimo `disparar -> validar impacto -> aplicar dano -> morir -> corpse/loot -> respawn`, sin lag compensation, sin servidor dedicado, sin mover toda la autoridad de health al host, y sin aplicar dano desde Unity.
+
+Decision de autoridad:
+1. Unity shooter solo reporta impactos candidatos. Nunca aplica dano PvP real.
+2. El backend host valida impactos PvP. El host es authority de validacion, no propietario final de la health del peer victima.
+3. El backend victima aplica su propia health tras recibir un grant validado. La unica mutacion real de health PvP usa `PlayerStats::take_damage` en el backend local de la victima.
+4. El flujo de muerte, corpse/loot y respawn reutiliza ADR-025/027/028. PvP no crea un camino nuevo de muerte.
+
+Nombres exactos de mensajes:
+- IPC Unity -> backend local: `action_type = "pvp_hit_candidate"`.
+- P2P shooter/backend -> host: `PacketPayload::PvpHitCandidate`.
+- P2P host -> backend victima: `PacketPayload::PvpDamageGrant`.
+- P2P host -> backend shooter: `PacketPayload::PvpHitRejected` para rechazo claro. Opcionalmente puede usarse tambien para rechazo local del host.
+- IPC backend shooter -> Unity shooter: evento `pvp_hit_rejected`.
+- IPC backend shooter -> Unity shooter: evento `pvp_hit_confirmed` cuando el grant fue aceptado por host. V0 puede emitirlo en el host al decidir grant, sin esperar ack visual de la victima.
+- IPC backend victima -> Unity victima: evento `pvp_damage_taken` solo para feedback local. La health real llega por `WorldState.local_player.stats`.
+
+Campos minimos:
+- `PvpHitCandidate`:
+  - `request_id: u64` monotono por shooter backend/Unity session.
+  - `attacker_id: u32`.
+  - `victim_id: u32`.
+  - `weapon_id: i32` STP raw `DataIdReference`, `0` prohibido salvo arma fallback documentada.
+  - `damage: f32` candidato, clampado por host.
+  - `origin: [f32;3]`.
+  - `direction: [f32;3]` normalizada o rechazable.
+  - `client_tick: u32` opcional para trazas; V0 no hace rewind.
+  - `hit_position: [f32;3]` opcional, solo debug/feedback; no autoridad.
+- `PvpDamageGrant`:
+  - `request_id: u64`.
+  - `attacker_id: u32`.
+  - `victim_id: u32`.
+  - `weapon_id: i32`.
+  - `damage: f32` ya validado/clampado por host.
+  - `reason: String` o enum string estable para trazas (`"validated"` en aceptados).
+- `PvpHitRejected`:
+  - `request_id: u64`.
+  - `attacker_id: u32`.
+  - `victim_id: u32`.
+  - `reason: String` con valores estables: `duplicate`, `attacker_missing`, `victim_missing`, `victim_dead`, `invalid_weapon`, `invalid_damage`, `invalid_direction`, `too_far`, `line_of_sight_failed`, `not_authority`, `self_hit`, `stale_or_malformed`.
+
+Dedupe:
+- El host mantiene una ventana acotada de impactos procesados por `(attacker_id, request_id)`.
+- Un duplicado nunca aplica dano de nuevo. Debe responder `PvpHitRejected{reason:"duplicate"}` o reemitir el resultado anterior si se decide cachear outcomes; V0 prefiere rechazo duplicate por menor superficie.
+- La victima tambien mantiene dedupe defensivo por `(attacker_id, request_id)` para que retransmisiones de `PvpDamageGrant` no dupliquen dano.
+- Las estructuras de dedupe deben tener poda por tamano o edad. Si se itera para serializar/loggear con salida determinista, ordenar antes de output.
+
+Validaciones host V0:
+1. El host debe ser authority. Si no lo es, rechaza `not_authority`.
+2. `attacker_id` debe ser el peer emisor o el jugador local host cuando el host dispara.
+3. `victim_id` debe existir como peer conocido o jugador local host.
+4. `victim_id != attacker_id`.
+5. La victima no debe estar muerta segun el ultimo estado conocido por el host (`dead` server-derived en pose relay o estado local host si la victima es host).
+6. `request_id` no duplicado.
+7. `weapon_id` debe estar en allowlist/config V0. Si no hay tabla final, V0 permite una allowlist pequena de firearms/melee conocidos y rechaza `0`.
+8. `damage` debe ser finito, mayor que 0 y menor o igual al maximo permitido para el arma. El host clamp/reject; no acepta dano arbitrario alto del cliente.
+9. `direction` debe ser finita y normalizable.
+10. Distancia atacante-victima dentro de rango razonable del arma usando posiciones actuales conocidas por el host. Sin lag compensation en V0.
+11. Line of sight: V0 intenta raycast/segment test contra la collision backend disponible. Si la divergencia backend-vs-Unity causa falsos negativos en play-test, el fallback permitido para V0 es documentar `line_of_sight_failed` como validacion degradable y gatearla por flag, pero no saltarse distancia/dedupe/dano.
+
+Sistemas que NO se deben tocar en V0 salvo bug directamente causado por PvP:
+- `report_damage`: no se usa para PvP.
+- `hit_seq`: no se usa como dano real.
+- `RespawnRequester`, `AuthoritativePoseApplier`, `PlayerPoseTransmitter` snap/death gates: no cambiar salvo adaptador externo minimo.
+- `StatInterpolator` y `SilentHealthUIBridge`: no cambiar salvo que una prueba PvP demuestre incompatibilidad directa.
+- `DeathLootReporter`, `CorpseSpawner`, `CorpseLootSync`: no cambiar en Fase 1-3; corpse/loot debe funcionar por la muerte existente.
+- World generation, chunk determinism, entity IDs, item IDs, structures.
+- NPC damage y `report_damage` local existente.
+- MaterialHelper.
+- STP vendor code bajo `Assets/PolymindGames/`; usar interceptores/adaptadores externos.
+
+Archivos probablemente afectados por implementacion futura:
+- Backend Rust: `backend/src/game_loop.rs`, `backend/src/network/protocol.rs`, `backend/src/network/mod.rs`, `backend/src/network/sync.rs` solo si hace falta helper de envio, `backend/src/player/stats.rs` solo si tests requieren API auxiliar, `backend/src/ipc/mod.rs` para eventos/parse si se tipa algo nuevo, y tests de red/game loop.
+- Unity: `Assets/Scripts/Network/IPCClient.cs`, `Assets/Scripts/Network/ProtocolActionTypes.cs`, `Assets/Scripts/Network/IPCMessages.cs` si se parsean eventos nuevos, nuevo adaptador PvP en `_Migration/STPIntegration/RemoteAvatar` o ruta equivalente, posible ajuste del builder de `RemotePlayerAvatar` para hit colliders/proxy damage adapter.
+- Docs: `docs/STATE.md` al cerrar fases y este ADR solo mediante enmiendas append-only si el contrato cambia.
+
+Pruebas automaticas requeridas:
+- Rust: serializacion/deserializacion de los nuevos `PacketPayload`.
+- Rust: host acepta candidate valido y produce `PvpDamageGrant` una sola vez.
+- Rust: duplicate `(attacker_id, request_id)` no duplica grant ni dano.
+- Rust: victima dedupea `PvpDamageGrant` duplicado.
+- Rust: rechazos para victim dead, attacker missing, victim missing, self_hit, invalid_weapon, invalid_damage, too_far.
+- Rust: NPC damage existente sigue pasando.
+- Rust: corpse relay tests existentes siguen pasando.
+
+Pruebas manuales requeridas:
+- Host dispara a joiner: baja health del joiner por stats reconciliadas; host recibe feedback confirmado; joiner puede morir, generar corpse, ser looteado y respawnear.
+- Joiner dispara a host: baja health del host; muerte/corpse/loot/respawn sin regresiones.
+- Joiner dispara a joiner via host: host valida, victima aplica dano, shooter recibe confirm/reject.
+- Disparo fuera de rango o arma invalida: rechazo claro, sin dano.
+- Duplicar/retransmitir el mismo request_id: cero dano extra.
+- Confirmar invariantes existentes: RemotePlayers=1, mismo `world_seed`/`world_revision`, mismos chunks/entities/items/structures, NPC damage intacto, `report_damage` local intacto, death/respawn/corpse/loot intactos.
+
+Plan de implementacion por fases:
+1. Fase 1 Rust/protocolo minimo: anadir packets, dedupe y validacion host sin Unity hit adapter complejo. Gate: tests Rust verdes. Sin tocar STP.
+2. Fase 2 Unity candidato: adaptador externo que convierte impacto sobre proxy remoto en `pvp_hit_candidate`. Gate: compile Unity/Roslyn y prueba de que Unity no aplica dano local.
+3. Fase 3 victim-applied damage: backend victima aplica `PlayerStats::take_damage` solo desde `PvpDamageGrant`; eventos confirm/reject/damage_taken. Gate: tests Rust + prueba host/joiner de health.
+4. Fase 4 muerte/corpse/loot/respawn E2E: validar que ADR-025/027/028 cubren muerte PvP sin cambios o con minimo pegamento. Gate: play-test host+joiner y joiner+joiner.
+5. Fase 5 feedback visual: hitmarker confirmado, indicador de dano recibido, proxy flinch cosmetico reutilizando senales existentes sin convertir `hit_seq` en autoridad. Gate: feedback coincide con grant/reject.
+
+Consecuencias aceptadas V0:
+- Sin lag compensation ni rewind; se valida contra estado actual conocido por host.
+- Anti-cheat minimo, no completo. Se reduce dano arbitrario con allowlist/clamp/dedupe/authority host.
+- Puede haber falsos negativos de line of sight por la deuda conocida de divergencia backend-vs-Unity; debe medirse antes de relajar esa validacion.
+- Si el host cae, PvP authority cae con el host, igual que corpses/stp_items actuales.
+
+### Enmienda ADR-029 (2026-07-04, misma sesion -- invulnerabilidad post-respawn, sin friendly fire, sin animaciones nuevas)
+Cierra las preguntas de diseno abiertas de la sesion de propuesta original (friendly fire, animaciones de combate) y define el mecanismo de invulnerabilidad que ADR-029 ya nombraba en su lista de `reason` (`victim_invulnerable`) sin especificar.
+
+Decisiones:
+1. Invulnerabilidad SOLO temporal por tick, post-respawn. Sin zona espacial (no hay "safe zone" ni radio de spawn protegido) -- unicamente una ventana de tiempo tras respawnear. Campo nuevo `PlayerStats.invuln_until_tick: u32` (0 = sin invulnerabilidad activa), seteado por el handler `respawn_request` (game_loop.rs) a `tick_actual + RESPAWN_INVULN_TICKS`. `RESPAWN_INVULN_TICKS` es una constante derivada de `TICK_HZ` (60hz -> 180 ticks = 3s reales), no un numero magico independiente del tick rate.
+2. Division de autoridad host-vs-victima para esta validacion (consecuencia de que la salud vive en el backend de cada jugador). El host solo puede verificar `victim_invulnerable` cuando la victima es SU PROPIO jugador local (tiene acceso directo a `PlayerStats.invuln_until_tick`). Para una victima que es un peer remoto, el host NO tiene visibilidad de ese campo (no viaja por el wire -- no se anade a `PlayerUpdate`/pose relay en esta enmienda, seria cambio de schema fuera de alcance). La imposicion REAL para ese caso ocurre en el backend de la victima al recibir `PvpDamageGrant`: SIEMPRE re-verifica su propio `invuln_until_tick` antes de llamar `PlayerStats::take_damage`, independientemente de lo que el host haya decidido. Esto es defensa en profundidad, no una laguna: coherente con "el host es authority de validacion, no propietario final de la health" (ADR-029 Decision de autoridad).
+3. Sin friendly fire / equipos / zona PvE-only en V0. Terreno completamente nuevo (no hay nocion de equipo o zona en el roadmap actual) -- explicitamente FUERA de alcance. Todo dano PvP valida y aplica igual sin importar quien dispare a quien.
+4. Sin animaciones de combate nuevas. El feedback visual de recibir un impacto reutiliza el flinch cosmetico ya existente (`hit_seq`, ADR-024) -- ortogonal, no autoritativo, sin cambios. No se disena ni implementa ninguna animacion de ataque/disparo nueva en V0.
+
+Alcance del cambio (implementacion en la MISMA sesion que esta enmienda, Fases 1 y 3 de ADR-029, backend Rust solamente): `PlayerStats.invuln_until_tick: u32` (`#[serde(default)]`); `RESPAWN_INVULN_TICKS` (game_loop.rs); reason `victim_invulnerable` anadido al validador host (orden fijo, paso 6 de 11, entre `victim_dead` y `invalid_weapon`) y a la enum de razones estables de `PvpHitRejected`. No toca Unity/STP, no toca ADR-025/027/028 salvo lectura.
+
+## ADR-030 -- Acción de consumo (comer/beber): nuevo protocolo cliente↔su-propio-backend
+
+Estado: VALIDADA e IMPLEMENTADA (2026-07-07, misma sesión). Confirmado con el humano antes de implementar: trust-the-client para posesión del item (no existe inventario autoritativo que verificar), y sin dedupe por `request_id` (acción local, no P2P).
+
+Contexto: diagnóstico de la sesión anterior confirmó que hunger/thirst del backend SOLO pueden subir vía `PlayerStats::on_respawn()` (reset a 100/100 al morir). No existía ninguna acción de red para "consumir" un item — `ConsumeAction.cs`/`StatInteractable.cs` (STP) modifican Hunger/Thirst LOCAL, pero `StatInterpolator` (ADR-009 L2) ya desactivó esos managers (`enabled=false`) y sobreescribe el valor mostrado desde el servidor a 5Hz — cualquier cambio local se revierte en el siguiente snapshot. Resultado: toda sesión terminaba en muerte inevitable por inanición/deshidratación, sin relación con la distancia al host (la teoría de "muerte por alejarse del host" del diagnóstico previo quedó descartada: no existe ningún chequeo de distancia/ownership que aplique daño en el código).
+
+Investigación de precedente hecha ANTES de fijar el contrato (evitó reinventar mal un patrón):
+- `take_corpse_item` valida posesión contra `world.corpses` — una colección PROPIA del servidor (loot de cadáver), no el inventario del jugador vivo.
+- El inventario del propio jugador no tiene modelo autoritativo server-side real: `player.inventory` (`backend/src/player/inventory.rs`) es un `Item` enum LEGACY (`Metal/Circuit/Battery/Cable/Food/Water/Medicine/Tool/Stabilizer`) de un prototipo pre-STP sin relación con los ids reales de STP (`DataIdReference`). El propio código ya documenta esto en el handler de `report_death_loot` (game_loop.rs): "the server has no authoritative inventory to verify against (the legacy Rust Inventory is disconnected from the real game)".
+- El dedupe por `request_id`/`BoundedDedupeSet` (ADR-028/029) existe para el riesgo de reenvío P2P (`send_reliable` con retransmisión). `report_damage`/`respawn_request` — acciones LOCALES cliente↔su-propio-backend, igual que consumo — no tienen dedupe porque el canal IPC es TCP ordenado (sin duplicación en tránsito).
+
+Decisión de autoridad:
+1. Trust-the-client para POSESIÓN del item, mismo nivel de confianza que `report_death_loot`/`stp_pickup`/`report_damage`. El backend NO verifica que el item exista realmente en el inventario del jugador (no hay con qué verificarlo). Solo valida que el `item_id` reportado esté en una tabla de consumibles conocidos (allowlist fija, mismo patrón que `pvp_weapon_spec`).
+2. El backend SÍ es la única fuente de verdad de CUÁNTO restaura cada item — valores FIJOS por `item_id`, nunca lo que el cliente reporte (el cliente no envía cantidades). Los valores fijos se toman del punto medio de los rangos YA AUTORADOS en los assets STP reales de cada item (`ConsumeData._hungerChange`/`_thirstChange`/`_healthChange`) — no son placeholders inventados, son el balance de diseño existente simplificado a un valor fijo. Marcado `TODO(balance)` solo en cuanto a la simplificación rango→fijo, no en cuanto a la magnitud.
+3. Sin dedupe por `request_id` — acción local sobre canal TCP ordenado, mismo nivel que `report_damage`/`respawn_request`.
+4. Consumir con el stat correspondiente ya en 100 SÍ se permite (desperdicio silencioso, clamp sin más) — decisión explícita por simplicidad; no hay rechazo especial para ese caso.
+5. No se toca el descuento de stack en el inventario local — eso lo sigue haciendo STP (`ConsumeAction`, decremento de slot) sin cambios. El servidor no lleva la cuenta de cuántas unidades tiene el jugador de cada item.
+
+Nombres exactos de mensajes:
+- IPC Unity -> backend local: `action_type = "consume_item"`. Sin contraparte P2P — no hay hop de red entre jugadores; cada backend resuelve el consumo de SU PROPIO jugador local, igual que `report_damage`.
+- Sin evento de confirmación nuevo — el resultado se observa vía `WorldState.local_player.stats` (mismo patrón que `report_damage`, que tampoco emite confirmación explícita).
+
+Campos mínimos:
+- `consume_item`: `{ item_id: i32 }` — el `DataIdReference` STP del item consumido (mismo tipo/rango que `held_item`/`weapon_id` en ADRs previos). Nada más: sin `request_id` (sin dedupe), sin cantidad/slot (el servidor no lleva inventario).
+
+Validaciones backend-local (no hay "host" para esta acción — cada backend valida su propio consumo, igual que la salud):
+1. `item_id` debe resolver en la tabla `consumable_spec` (allowlist fija, mismo patrón que `pvp_weapon_spec`). Si no resuelve → no-op logueado (`reason=unknown_item`), nada se aplica.
+2. El jugador no debe estar muerto (`player.stats.is_dead()`) — un consumo mientras muerto es un no-op logueado (mismo patrón que `respawn_request_ignored`).
+3. Aplicación: `PlayerStats::restore_hunger`/`restore_thirst`/`restore_health` (nuevos, mismo patrón que `take_damage` — delta clamped a [0,100], sin rechazo por "ya está lleno").
+4. Gate `DEV_FREEZE_SURVIVAL`: NO se gatea. A diferencia de `report_damage` (gateado porque aplicar DAÑO durante freeze rompería la garantía "nada te hace daño"), restaurar durante freeze es inocuo (el clamp evita pasarse de 100) y no rompe ninguna garantía del flag.
+
+Sistemas que NO se deben tocar:
+- `StatInterpolator` (ADR-009 L2): sigue siendo la única fuente visual, sin cambios — ahora simplemente tiene datos reales del servidor que mostrar en vez de un valor que solo puede bajar.
+- `ConsumeAction.cs`/`StatInteractable.cs` (vendor STP): CERO ediciones. La regla dura de nunca tocar STP se resuelve con una `ItemAction` nueva propia (`NetworkedConsumeAction`, fuera de `PolymindGames/`) que reemplaza la REFERENCIA (`_actions[]`) en los assets de item afectados, no el código vendor. `StatInteractable` se deja intacta y sin enganchar — auditado y confirmado sin uso en ninguna escena/prefab del proyecto (contenido de demo del vendor, no contenido real del juego).
+- ADR-025/027 (muerte/respawn), ADR-028 (corpse), ADR-029 (PvP): sin cambios; consumo no crea ninguna ruta nueva de daño ni de muerte.
+- Inventario legacy Rust (`player/inventory.rs`, `Item` enum pre-STP): sin tocar, sigue muerto/desconectado del juego real.
+
+Archivos afectados:
+- Backend: `backend/src/player/stats.rs` (+ `restore_hunger`/`restore_thirst`/`restore_health` + tests de clamp), `backend/src/game_loop.rs` (+ `ConsumableSpec`/`consumable_spec` + rama `"consume_item"` en `handle_action` + tests de `consumable_spec`).
+- Unity: `Assets/Scripts/Network/ProtocolActionTypes.cs` (+ `ConsumeItem`), `Assets/Scripts/Network/IPCClient.cs` (+ `SendConsumeItem`), `Assets/Scripts/Network/NetworkedConsumeAction.cs` (NUEVO), reasignación de `_actions[]` en los 6 assets `STP_*.asset` con `ConsumeData` real de comida (Apple/Cooked Meat/Energy Bar/Large Food Can/Small Food Can/Water Bottle) + 1 de salud (Antibiotics).
+
+Pruebas automáticas:
+- Rust: `consumable_spec` resuelve los 7 ids reales conocidos y rechaza un id desconocido/0.
+- Rust: `restore_hunger`/`restore_thirst`/`restore_health` clampan a [0,100] sin pasarse de 100 ni bajar de 0.
+- Rust: suite completa (PvP/corpse/entity/stats/etc.) sigue en verde — cero regresión.
+
+Pruebas manuales pendientes: comer/beber un item real detiene el decaimiento visible en el HUD (vía `StatInterpolator`) sin necesidad de respawn; consumir con hunger/thirst en 100 no rompe nada (clamp silencioso).
+
+Consecuencias aceptadas: sin anti-cheat de cantidad/posesión — un cliente modificado podría enviar `consume_item` repetidamente sin tener el item real y restaurar stats gratis. Mismo nivel de confianza ya aceptado para pickup/death-loot/report_damage en toda la migración; no es una regresión de seguridad nueva, es consistente con el resto del sistema hasta que exista inventario autoritativo real (fuera de alcance de este ADR).
+
+### Enmienda ADR-028 (2026-07-07 — cofres de mundo "Opción B": world.corpses admite entries de tipo cofre)
+Validación humana explícita recibida en esta sesión. Extiende el contenedor de loot de ADR-028 (corpse) a COFRES DE MUNDO sembrados por el host — loot concentrado y mejor que los caches sueltos de StpItemSpawner (que siguen vivos en paralelo, "Opción A"; los cofres son ADICIONALES, no un reemplazo).
+
+Decisión de colección: se REUTILIZA `world.corpses` con un campo nuevo `CorpseData.is_chest: bool` (`#[serde(default)]`) en vez de una colección paralela. Razón (menos invasivo, medido en superficie de código): TODA la maquinaria de ADR-028 — `take_corpse_item` (IPC + hop P2P `CorpseTakeRequest`/`CorpseTakeResult` + dedupe), `broadcast_corpses`/`CorpseList` (espejo verbatim en joiners), `visible_corpse_views` (filtro por radio + orden estable), despawn-por-vacío, persistencia fuera del ciclo de chunks — funciona para cofres SIN TOCAR UNA LÍNEA. Una colección paralela habría duplicado los 4 flujos y el relay. El campo viaja: (a) IPC `CorpseView.is_chest`; (b) P2P `CorpseList` serializa `CorpseData` directo (rmp named) → additive, un peer v10 viejo decodifica `false` (serde default) y renderiza el cofre como cadáver — degradación cosmética, sin error. NO hay bump de `WIRE_SCHEMA_VERSION` (campo additive con default, mismo precedente que los campos serde(default) de v1→v2).
+
+Semántica del cofre vs cadáver:
+1. Sin owner de jugador: `owner_id = 0` (reservado, nunca un PeerId real: host=1, joiners ≥1000, fantasmas ≥0xF000), `owner_name = "Supply Crate"`, `equipment = [0;4]`, `held_item = 0`.
+2. Despawn: IGUAL que el cadáver — se vacía y desaparece (despawn-por-vacío existente, cero código nuevo). Sin respawn de cofres en V0; si el diseño futuro quiere re-siembra periódica será enmienda aparte.
+3. Trigger de siembra: HOST-side al arrancar la partida, desde Unity (no por muerte). Nueva acción IPC `action_type = "spawn_world_chest"` (una por cofre): `{ request_id: u64, position: [f32;3], items: [{item_id,quantity}] }`. Posición y contenido los decide el CLIENTE host (trust-the-client, mismo nivel que `report_death_loot` — el contenido sale de los mismos pools de StpItemSpawner pero con más cantidad/variedad y arma garantizada; la posición usa el mismo `TryFindWalkablePoint` contra el mundo RENDERIZADO, coherente con caches/zonas — el backend no puede validar posiciones del mundo que no renderiza, deuda de los dos mundos ya registrada). Solo el host la honra: en un backend no-host es no-op logueado (los joiners reciben los cofres por el espejo `CorpseList`, nunca los siembran).
+4. Dedupe de siembra: por `(player_id, request_id)` REUTILIZANDO el `processed_interactions` ya existente en `handle_action` (mismo set que protege `world_interact`) — protege contra re-envíos del cliente tras reconexión sin estructura nueva.
+5. Guardas de cadáver que NO aplican al cofre: el gate `is_dead` y el dedupe `death_loot_reported` son del flujo de muerte y no participan; la regla de "snapshot vacío no spawnea" SÍ se aplica (mismo helper `corpse_loot_is_empty` — un cofre que nace vacío sería inmortal por la misma razón post-E3).
+6. Cliente (variante visual): `CorpseSpawner` bifurca por `is_chest` — en vez del ragdoll CorpseAvatar instancia el prefab del crate STP existente (`BuildingPieceDefinition` "STP_Storage Crate", id `5498433`, resoluble en runtime vía Resources) NEUTRALIZADO a visual-only, y monta EN LA RAÍZ el mismo stack de interacción/loot del cadáver (BoxCollider trigger + Interactable + StorageStation reflection-fed + CorpseLootSync) — sin clothing, sin held item, sin ragdoll, sin freezer, sin appearance-updates. Un cofre no dispara NADA del flujo de muerte (death events/respawn/DeathUI): ese flujo solo se origina en `report_death_loot`, que el cofre no usa.
+7. Cantidad V0: 4 cofres por partida, `TODO(balance)` (mismo orden de magnitud que los 6 caches de items).
+
+Archivos: backend `world/corpse.rs` (campo + `spawn_chest` + tests), `game_loop.rs` (rama `spawn_world_chest`), `ipc/mod.rs` (`CorpseView.is_chest`); Unity `ProtocolActionTypes.cs`/`IPCClient.cs` (acción nueva), `IPCMessages.cs` (parse), `CorpseSpawner.cs` (rama cofre), `StpChestSpawner.cs` (NUEVO, siembra host-side espejo de StpItemSpawner). Tests: siembra con inventario, take de cofre idéntico al de cadáver, dedupe de siembra, round-trip P2P con `is_chest`.
+
+## ADR-031 — Cama de respawn: colocar un saco de dormir fija el punto de respawn del jugador (enmienda del contrato de respawn de ADR-025/027)
+Validación humana explícita recibida (Approach 1 + riesgo C modo "confía en la cama"). Objetivo: "colocar cama → morir → respawnear en esa cama" en vez del spawn fijo global.
+
+Contexto (estado previo): el respawn tiene UN solo punto de decisión — el handler `respawn_request` llama `resolve_safe_spawn(world, preferred_spawn())`, donde `preferred_spawn()` es un FIJO hardcodeado (centro del chunk (0,0)). No existía ningún punto de respawn variable por-jugador. `resolve_safe_spawn(world, preferred)` YA está parametrizado por una posición preferida — solo se le pasaba el fijo.
+
+Decisión (Approach 1 — derivar de la colocación, backend-only, CERO protocolo/wire nuevo):
+1. **Contrato**: `Player` gana `respawn_point: Option<Vec3>` (`#[serde(default)]`, session-transient, mismo patrón que `death_loot_reported` de ADR-028). Colocar el `BuildingPieceDefinition` STP "Sleeping Bag" (`def_id = -4996552`) vía la acción `stp_place` YA EXISTENTE setea `player.respawn_point = Some(position)`. NO hay acción de protocolo nueva, NO hay bump de `WIRE_SCHEMA_VERSION` (el campo no viaja por el wire — la posición resuelta ya llega al cliente por el evento `player_respawned` existente). Owner implícito y no ambiguo: cada peer corre su propio backend con UN solo `Player`, y `stp_place` es cliente→su-propio-backend (no un paquete P2P), así que la acción llega al backend del propio colocador — se setea en el arm ANTES de la rama host/joiner para que funcione en ambos. Trust-the-client para la posición (mismo nivel que `report_death_loot`; el servidor la valida al resolver el spawn).
+2. **Múltiples camas — "última gana"**: `respawn_point` es un único slot; cada saco colocado sobrescribe el campo. Simple e intuitivo (tu cama más reciente es tu casa). Una lista multi-cama con selección quedaría para una enmienda si el diseño lo pide.
+3. **Consumo en `respawn_request`**: `preferred = player.respawn_point.unwrap_or_else(preferred_spawn)`; si hay cama, `world.update_ownership(preferred, player.id)` ANTES de resolver (streamea/genera el chunk de la cama desde el seed on-demand — `resolve_safe_spawn` solo lee chunks cargados y nunca streamea); luego `resolve_safe_spawn(world, preferred)`. El resto del handler (reset de stats, invuln PvP de ADR-029, evento `player_respawned`, ownership refresh final) queda INTACTO.
+4. **Riesgo C (cama en zona no streameada / chunk no plano) — resuelto en modo "confía en la cama"**: aun tras streamear, `resolve_safe_spawn` exige chunk FLAT + celda segura; una cama sobre chunk vertical/hazard sería rechazada y caería al fallback starter (0,0) — un teleport silencioso al origen, no un error. Fix: si `res.method == SpawnMethod::Repaired` (cayó al fallback) Y `player.respawn_point.is_some()`, usar la posición de la cama directamente vía `try_bed_spawn(world, bed)` — chequeo de clearance BÁSICO reutilizando la misma verificación de cápsula que `find_safe_spawn` (`!is_blocked_at(world, standing, PLAYER_RADIUS + SPAWN_CLEARANCE_MARGIN)`), con la Y recomputada del suelo cargado (`floor_player_y`) — en vez de caer a (0,0). Justificación: el jugador estuvo de pie en la cama para colocarla, así que su XZ es un punto pisable; solo se verifica que quepa la cápsula ahí. Si ni eso pasa (bloqueado), se conserva el fallback starter (garantía de que un respawn siempre resuelve).
+5. **Riesgo B (cama destruida por PvP u otro) — no aplica hoy**: NO existe ningún camino de destrucción de construcciones en el backend (ni paquete demolish, ni health/durability en `StpBuildingInfo`, `stp_buildings` es append-only). Nadie puede destruir la cama. Caveat documentado: si se añade demolish en el futuro, habrá que limpiar `respawn_point` al retirar la cama (follow-up atado a esa feature).
+6. **Persistencia**: `respawn_point` es RAM (session-transient), como `stp_buildings`. No sobrevive a un reinicio del backend. Aceptable en V0.
+
+Referencia cruzada: enmienda el contrato de respawn de **ADR-025** (respawn-on-demand; `respawn_request` sigue siendo el único punto que llama `resolve_safe_spawn`) y **ADR-027** (cadena de muerte/respawn server-driven). No toca el cliente Unity, el protocolo/wire, PvP/ADR-029, consumo/ADR-030, grounding/ADR-026, ChunkLootManager ni StpChestSpawner.
+
+Archivos: backend `player/session.rs` (campo `respawn_point` + `Player::new`), `game_loop.rs` (const `BED_DEF_ID`, rama `stp_place` setea la cama, `respawn_request` usa la cama + modo confía-en-la-cama), `world/collision.rs` (`try_bed_spawn` + tests). Tests: respawn usa la cama; fallback al fijo si no hay cama; modo confía-en-la-cama activa cuando el resolver cae a Repaired; "última cama gana" con múltiples colocaciones.
+
+## ADR-032 — Persistencia de mundo V0: autosave host-only del estado no-reconstruible (JSON), seed como ancla determinista
+Validación humana explícita recibida en esta sesión, con dos decisiones cerradas: (1) save-on-exit = SOLO intervalo de autosave, sin handler `ctrl_c` (Unity lanza el backend como proceso hijo y lo mata; en Windows un kill no da señal graceful fiable → la única garantía real de durabilidad es el intervalo, no el cierre); (2) granularidad = intervalo fijo ~3 min, no event-driven. Completa la "Fase 5" de persistencia ya anticipada en `persistence/save.rs` (que traía el `SaveFile` de metadata y el comentario "Detailed per-player / anchor / stabilizer payloads are added in Phase 5", pero nunca se cableaba: nadie llamaba `SaveFile`).
+
+Contexto (modelo de estado del servidor): arquitectura P2P mesh — CADA cliente corre su propio backend, y cada proceso instancia UN solo `Player` local (`net.local_id`) + su `World` (game_loop.rs). Solo el backend del HOST tiene el estado autoritativo del mundo (construcciones, cofres, rosters de loot). Las stats de los joiners (health/hunger/thirst/sanity) viven en SUS backends y NUNCA llegan al host (la pose relay lleva posición/cosméticos, no stats; el daño PvP se aplica víctima-side). Consecuencia dura que fija el alcance: un autosave en el host persiste el mundo + el jugador-host, pero NO puede persistir las stats de los joiners sin protocolo nuevo.
+
+Decisión — qué se persiste (estado real, no reconstruible del seed) y qué NO (reconstruible → regenerar):
+1. **Seed como ancla determinista.** El terreno base (chunks vía `generator::generate_chunk`) y el `world_graph` (`WorldGraph::from_level0_region_graph(seed, rg)`, función pura del seed) NO se guardan: se regeneran del `world_seed`. El save guarda el seed una vez; todo lo geométrico se reconstruye; solo se persiste lo que un jugador CAMBIÓ sobre el mundo generado.
+2. **Payloads guardados** (todos ya derivan `Serialize/Deserialize`): `host_player: PlayerSnapshot { stats, position, rotation, inventory, equipment, held_item, respawn_point }`; `corpses: Vec<CorpseData>` (incluye cofres `is_chest`, enmienda ADR-028); `next_corpse_id` (continuidad del allocator de ids); los cuatro rosters host-autoritativos `stp_items` / `stp_buildings` / `stp_carryables` / `stp_harvestables`.
+3. **Formato: `serde_json`** (NO bincode). Razones: ya es dependencia con ese propósito declarado en `Cargo.toml`; todos los structs a guardar ya derivan serde; legible → depurable a mano en una fase donde el esquema cambiará; volumen pequeño (decenas–cientos de entries). Escritura ATÓMICA (write a `<path>.tmp` + `rename`) para que una muerte del proceso a mitad de escritura no deje un save corrupto.
+4. **Mecanismo (host-only):** autosave por timer dentro del game loop — `if net.is_host && tick % AUTOSAVE_EVERY == 0` con `AUTOSAVE_EVERY = TICK_HZ * 180` (10800 ticks @60Hz = 3 min), derivado de `TICK_HZ` para que "3 min" no dependa del tick rate. Carga al arrancar (host): si existe el archivo, cargar y ADOPTAR el `world_seed` del save (ignorar `WORLD_SEED` env si difiere — solo loguear warning; desacopla la persistencia de los args de lanzamiento de Unity), reconstruir `World` con ese seed, generar la estructura determinista, e hidratar por encima: `world.corpses`, `next_corpse_id`, los 4 `net.stp_*`, y el `Player`. Con save cargado se OMITE el `resolve_safe_spawn` de arranque (se conserva la posición persistida del jugador). Ruta configurable por env `SAVE_PATH`, default `./saves/world_{seed}.json`.
+5. **Robustez (nunca hard-fail del arranque):** si el archivo falta → mundo fresco. Si el parse falla O la versión MAYOR (`major` de `CARGO_PKG_VERSION`) no cuadra → renombrar el archivo a `<path>.bak`, loguear, y arrancar mundo fresco. Un save corrupto/incompatible jamás debe tumbar el servidor. Cambios ADITIVOS dentro de la misma major se toleran con `#[serde(default)]` en cada campo nuevo del `SaveFile` (patrón dominante del proyecto) + serde_json ignora campos desconocidos por defecto.
+6. **Snapshot consistente sin pausar el loop (propiedad, no riesgo):** el game loop es single-thread cooperativo (un solo task tokio conduce la sim). Serializar en el borde de un tick es INHERENTEMENTE un snapshot consistente — nada muta `world`/`player` mientras se serializa; no hace falta pausar ni lockear. Los joiners conectados no se enteran (su estado no está en el host). El único coste es el hitch de serialización de ese tick, sub-ms/low-ms para este volumen.
+7. **Continuidad de ids:** `next_corpse_id` (privado en `World`) se expone con accesores (`next_corpse_id()` / `set_next_corpse_id`). Al hidratar se restaura como `max(save.next_corpse_id, max_corpse_id_cargado + 1, 1)` — defensivo contra un contador guardado stale, garantiza que un cofre/cadáver nuevo nunca colisiona con uno cargado.
+
+Non-goals explícitos (fuera de V0, cada uno con su razón):
+- **Persistencia de joiners:** IMPOSIBLE en el modelo actual sin wire nuevo — las stats de un joiner nunca llegan al host (trust-the-client; solo pose+cosméticos viajan). Un joiner que re-entra arranca fresco. ADR futuro si se quiere (requeriría relay de stats o save per-UUID en cada backend).
+- **Anclas / estabilizadores:** viven en `chunk.state = Active{stabilized,anchored}`, y los chunks se DESCARGAN (`update_ownership` → `world.chunks.remove`) fuera del radio → ese estado YA es efímero dentro de una sesión viva. No persistirlo es consistente con el comportamiento actual, no una regresión (`sync.rs`: "no anchor persistence yet"). Persistirlo exigiría un registro fuera de los chunks, que no existe.
+- **Desplazamiento/teleport de chunks:** `tick_teleportation` reasigna `chunk.seed = rng.gen()` → un chunk desplazado tiene un seed nuevo del stream RNG, no reconstruible del seed base ni reproducible (depende del timing de ticks). Pero como el estado desplazado también se pierde al descargar el chunk hoy, regenerar el terreno pristino del seed en el re-arranque es consistente; la temática Backrooms además re-baraja el terreno de por sí.
+
+Enmienda cruzada: el punto 6 de **ADR-031** decía "`respawn_point` es RAM (session-transient), no sobrevive a un reinicio del backend". ADR-032 lo enmienda PARCIALMENTE: el `respawn_point` del jugador-HOST sí sobrevive (va en `PlayerSnapshot`); el de un joiner sigue sin persistir (non-goal de joiners). No toca ADR-031 en ningún otro punto.
+
+Riesgo aceptado (degradación, no crash): los `def_id` (hashes `DataIdReference`) de corpses/buildings están horneados en assets de Unity; si cambian entre versiones, una entry con def_id viejo renderiza fallback/vacío — la degradación elegante ya está diseñada (fallback cubo en `CorpseSpawner`, slot vacío en clothing). No fatal.
+
+NO toca: protocolo/wire P2P (cero paquetes nuevos, cero bump de `WIRE_SCHEMA_VERSION` — la persistencia es local al backend host), PvP/ADR-029, consumo/ADR-030, grounding/ADR-026, la LÓGICA de cama de ADR-031 (solo se persiste el campo `respawn_point` ya existente), ni cómo `ChunkLootManager`/`StpChestSpawner` GENERAN el loot (solo se persisten los `net.stp_*` resultantes).
+
+Archivos: backend `persistence/save.rs` (extender `SaveFile` con payloads + `PlayerSnapshot` + `save_world` + `load_or_fresh` + escritura atómica + tests), `world/mod.rs` (accesores `next_corpse_id`), `game_loop.rs` (const `AUTOSAVE_EVERY`, `resolve_save_path`, load+hidratación en el arranque host, hook de autosave en el loop). Tests: round-trip save/load (coincidencia de estado), fallback por versión incompatible/corrupta (no crashea, arranca fresco), continuidad de `next_corpse_id` tras recarga (sin colisión de ids).
+
+### Enmienda ADR-032 (save-on-quit vía teardown controlado por Unity — el punto 4 dijo "solo intervalo, sin ctrl_c"; esto NO es ctrl_c)
+Validación humana explícita recibida (tarea de implementación dirigida). Contexto: la decisión #4 de ADR-032 descartó el save-on-exit porque en Windows un kill de proceso hijo no da señal graceful fiable — CIERTO para `ctrl_c`. Pero la investigación de esta sesión encontró que el kill del backend NO es un kill del SO opaco: lo ejecuta CÓDIGO NUESTRO (`NetworkInitializer.KillBackend`, disparado por `OnApplicationQuit → Shutdown` cuando el "Quit Game" de STP llama `Application.Quit()` vía `LevelManager.FadeInAndQuitGame`). Como el punto de kill es interceptable, el save-on-quit SÍ es viable sin depender de una señal del SO.
+
+Mecanismo (additive, sin wire P2P, sin bump de schema): nueva acción IPC cliente→su-propio-backend `save_and_shutdown` (mismo patrón additive que `consume_item`/ADR-030 — nuevo `action_type`, sin tocar el protocolo P2P). Flujo: en `KillBackend`, ANTES del `_backendProcess.Kill()`, Unity envía `save_and_shutdown` (síncrono — `IPCClient.SendFrame` escribe directo al socket TCP, no hay cola en background) y hace `WaitForExit(1500ms)`. El backend, al recibir la acción en el arm de `ClientMessage::Action`, guarda SÍNCRONO vía `save_world` (host-only; no espera al timer de 3 min) y luego `std::process::exit(0)`. El backend sale limpio → `WaitForExit` retorna → Unity omite el `Kill` de fallback. Si el IPC ya está caído o el backend no responde en 1.5 s → fallback al `Kill` (nunca bloquea el teardown indefinidamente). Un joiner también recibe la acción y sale (nada que persistir). Idempotente con el autosave del timer (misma escritura atómica tmp+rename; "el último gana").
+
+Qué NO cambia de ADR-032: el autosave por intervalo de 3 min SIGUE siendo la garantía base de durabilidad (cubre crashes, kills externos, cierres no-graceful). El save-on-quit es una MEJORA aditiva encima, no un reemplazo — reduce la ventana de pérdida en un cierre limpio de ≤3 min a ~0. Los non-goals (joiners, anclas, desplazamiento de chunks) siguen intactos. Riesgo aceptado: si Unity crashea (no "Quit Game" limpio) el save-on-quit no dispara — pero para eso está el intervalo.
+
+Archivos (enmienda): backend `game_loop.rs` (arm `save_and_shutdown` en `ClientMessage::Action`: save síncrono host-only + `process::exit`); Unity `ProtocolActionTypes.cs` (`SaveAndShutdown`), `IPCClient.cs` (`SendSaveAndShutdown`), `NetworkInitializer.cs` (`TryRequestBackendSave` + `KillBackend` envía la acción y espera antes de matar, const `SaveOnQuitTimeoutMs=1500`). Test: `back_to_back_saves_are_idempotent_last_write_wins` (dos guardados seguidos al mismo archivo no lo corrompen — el segundo gana), cubriendo la coexistencia save-on-quit + timer.
+
+### Enmienda ADR-032 (inventario STP real persistente — `stp_inventory` en PlayerSnapshot + report_inventory/inventory_restored)
+Validación humana explícita recibida. Cierra el hueco de diseño detectado en el playtest de carga: `PlayerSnapshot.inventory` persistía el `Inventory` Rust LEGACY (desconectado del juego real, siempre vacío — ADR-028 ya lo declaraba "disconnected from the real game") → un host recargado aparecía "sin inventario" aunque el save fuera correcto. El inventario real es 100% STP client-side; el backend solo lo veía en el flanco de muerte (`report_death_loot`, ADR-028).
+
+Decisión (3 piezas, todas additive — sin bump de wire P2P, precedente ADR-030):
+1. **Reporte on-change (cliente→backend):** nuevo componente Unity `InventoryReporter` — espejo de la enumeración de `DeathLootReporter.BuildSnapshot` (TODOS los contenedores del `ICharacter.Inventory`: backpack, hotbar, equipment, holster) — suscrito a `IItemContainer.SlotChanged` de todos los contenedores (mismo evento que ADR-022), con DEBOUNCE ~1 s (varios cambios seguidos → un solo envío). Envía la acción IPC nueva `report_inventory {items:[{item_id,quantity}]}` a su propio backend. Se descartó el modelo petición-antes-de-guardar: el autosave es síncrono dentro del tick del game loop; esperar un round-trip al cliente lo volvería async y frágil. Con on-change el backend siempre tiene el último estado (≤1 s stale) y el save es gratis.
+2. **Backend:** `Player.stp_inventory: Vec<CorpseStack>` (RAM, session-state; MISMA estructura que corpse.rs — no un tipo nuevo). El handler de `report_inventory` es trust-the-client EXPLÍCITO (mismo nivel que `report_death_loot`/`consume_item`: no existe inventario autoritativo contra el que validar, decidido en ADR-030) con el saneo de higiene REUTILIZADO de corpse.rs (`sanitize_loot_stacks`, extraído para compartirlo con `spawn_corpse`/`spawn_chest`, no reescrito): `quantity<=0` descartado, cap `MAX_CORPSE_STACKS=64` por TRUNCADO (los primeros 64 se quedan, el 65+ se descarta — mismo comportamiento que `spawn_corpse`; un inventario STP real ronda 20-30 slots, superar 64 es reporte malformado/malicioso). `PlayerSnapshot` gana `stp_inventory: Vec<CorpseStack>` con `#[serde(default)]` — additive: el campo legacy `inventory` queda INTACTO (sin uso real, no se elimina para no romper el shape), y un save viejo sin `stp_inventory` carga con default vacío.
+3. **Restauración (backend→cliente):** al hidratar, `player.stp_inventory` se restaura del snapshot y en la MISMA ventana diferida al primer input donde se emite `session_restored` (enmienda del snap) se emite también el evento nuevo `inventory_restored {items:[...]}`. Componente Unity `InventoryRestorer`: escucha el evento, LIMPIA todos los contenedores primero (el mismo `IItemContainer.Clear()` nativo que usa `DeathLootReporter.OnRespawn` — idempotencia: neutraliza cualquier restauración previa/duplicada, incluido el save system nativo de STP si estuviera activo) y añade cada stack vía `AddItem` nativo del inventario STP (routing/stacking automático). Orden dentro de la ventana: `session_restored` primero, `inventory_restored` después — independientes (uno arma el snap del applier, el otro puebla contenedores), no se pisan.
+
+Coherencia con muerte (gratis, sin código extra): morir → `DeathLootReporter.OnRespawn` limpia contenedores → `SlotChanged` dispara el reporter → se reporta inventario vacío → el próximo save refleja "desnudo, loot en el corpse" (que YA persiste vía `world.corpses`). Auto-consistente por construcción.
+
+Riesgos aceptados: cliente modificado puede fabricar su inventario persistido (mismo nivel de confianza de toda la migración, no es regresión); la restauración pisa lo que el cliente tuviera al momento del evento (correcto: el save es la verdad de la sesión).
+
+Archivos (enmienda): backend `world/corpse.rs` (`sanitize_loot_stacks` extraído), `player/session.rs` (campo `stp_inventory`), `game_loop.rs` (handler `report_inventory` + emisión `inventory_restored` en la ventana diferida), `persistence/save.rs` (`PlayerSnapshot.stp_inventory` + round-trip); Unity `ProtocolActionTypes.cs` (`ReportInventory`), `IPCClient.cs` (`SendReportInventory`), `InventoryReporter.cs` (NUEVO), `InventoryRestorer.cs` (NUEVO). Tests: report actualiza el campo; cap 64 por truncado; `quantity<=0` descartado; round-trip save/load con inventario poblado; save viejo sin el campo carga con default vacío.
+
+### Enmienda de estado (2026-07-28) — corrección de cabeceras ADR-029, ADR-031, ADR-032
+Corrección de registro (sin cambio de contrato): las cabeceras de estos tres ADRs quedaron desactualizadas respecto a lo realmente implementado y confirmado. DECISIONS.md es append-only — esta nota corrige el estado sin editar el texto original de cada ADR.
+
+- **ADR-029 (PvP V0):** la cabecera original dice "Estado: PROPUESTA (2026-07-04)". Estado real: **VALIDADA E IMPLEMENTADA** — Fases 1–4 completas, loop hit→validación→daño→muerte→corpse→loot confirmado E2E en playtest real (2026-07-06, ver docs/STATE.md ▸ ADR-029). La validación quedó implícita en la enmienda de invulnerabilidad post-respawn sin actualizar formalmente el campo Estado; esta nota lo corrige.
+- **ADR-031 (Cama de respawn):** carecía de línea `Estado:` explícita. Estado: **VALIDADA** (validación humana explícita recibida, según el propio texto del ADR).
+- **ADR-032 (Persistencia de mundo V0) + sus 2 enmiendas (save-on-quit, inventario STP real):** carecía de línea `Estado:` explícita. Estado: **VALIDADA** (validación humana explícita recibida en sesión, según el propio texto del ADR y sus enmiendas).
