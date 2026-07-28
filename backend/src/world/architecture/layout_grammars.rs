@@ -620,7 +620,7 @@ pub(crate) fn dir_delta(dir: u8) -> ChunkPos {
 
 /// Rotation for hallway_straight: 0 = N/S open, 90 = E/W open.
 pub(crate) fn straight_rotation(dir: u8) -> u16 {
-    if dir % 2 == 0 {
+    if dir.is_multiple_of(2) {
         90
     } else {
         0

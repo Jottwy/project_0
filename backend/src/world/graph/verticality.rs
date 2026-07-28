@@ -280,7 +280,7 @@ pub fn inject_basic_verticality(
 
 fn should_spawn_vertical_connection(base: &SpatialNode) -> bool {
     let hash = vertical_hash(base.coord.chunk_x, base.coord.chunk_z, base.id);
-    hash % 7 == 0
+    hash.is_multiple_of(7)
 }
 
 fn pick_vertical_kind(base: &SpatialNode) -> VerticalConnectionKind {

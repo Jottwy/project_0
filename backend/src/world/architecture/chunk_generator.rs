@@ -91,7 +91,7 @@ pub fn build_chunk_layout(template_id: u8, rotation: u16) -> ChunkLayoutV1 {
             layout.vertical_flags |= 1 << 2;
         }
         TEMPLATE_ARCH_ROOM => {
-            layout.floor_profile = if rotation % 180 == 0 {
+            layout.floor_profile = if rotation.is_multiple_of(180) {
                 FLOOR_RAMP_NORTH_SOUTH
             } else {
                 FLOOR_RAMP_EAST_WEST
@@ -99,7 +99,7 @@ pub fn build_chunk_layout(template_id: u8, rotation: u16) -> ChunkLayoutV1 {
             layout.vertical_flags |= 1 << 3;
         }
         TEMPLATE_CLEANING_AREA => {
-            layout.floor_profile = if rotation % 180 == 0 {
+            layout.floor_profile = if rotation.is_multiple_of(180) {
                 FLOOR_STAIRS_NORTH_SOUTH
             } else {
                 FLOOR_STAIRS_EAST_WEST
