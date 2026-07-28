@@ -826,7 +826,9 @@ impl World {
     }
 
     /// Tick all chunk teleport timers (called at 1hz from the game loop).
-    pub fn tick_teleportation(&mut self) -> Vec<GameEvent> {
+    /// `tick` is the caller's game-loop tick counter, threaded through ONLY for the
+    /// TEMP DIAG log below (TP attribution audit) — no other use, no behavior change.
+    pub fn tick_teleportation(&mut self, tick: u64) -> Vec<GameEvent> {
         let mut events = Vec::new();
         let (t_min, t_max) = self.config.teleport_interval;
 
@@ -879,6 +881,7 @@ impl World {
 
                 // Regenerate in-place with a new random seed.
                 if let Some(chunk) = self.chunks.get_mut(&key) {
+                    let old_seed = chunk.seed;
                     chunk.seed = new_seed;
                     chunk.teleport_timer = self.rng.gen_range(t_min..t_max);
                     // Regenerate entities and items (old ones are lost).
@@ -892,6 +895,14 @@ impl World {
                     self.revision = self.revision.wrapping_add(1);
 
                     info!("Chunk {:?} teleported (new seed {})", old_pos, new_seed);
+                    // TEMP DIAG (TP-source audit; REMOVE after diagnosis): legitimate world
+                    // mechanic (chunk displacement, CLAUDE.md core mechanic) vs a client-visible
+                    // TP bug look identical to the player — this makes the legitimate ones
+                    // greppable so they can be cross-referenced against reported TPs and ruled out.
+                    info!(
+                        "MPTRACE step=CHUNK_DISPLACEMENT tick={} chunk_id=({},{}) old_seed={} new_seed={}",
+                        tick, old_pos.0, old_pos.1, old_seed, new_seed
+                    );
                     events.push(GameEvent {
                         event_type: "chunk_teleported".into(),
                         data: serde_json::json!({
@@ -1852,7 +1863,7 @@ mod tests {
             chunk.teleport_timer = 0.5; // Will expire on next 1hz tick.
         }
         let old_seed = world.chunks[&key((0, 0))].seed;
-        let events = world.tick_teleportation();
+        let events = world.tick_teleportation(1);
         // The chunk at (0,0) should have teleported.
         let new_seed = world.chunks[&key((0, 0))].seed;
         assert_ne!(

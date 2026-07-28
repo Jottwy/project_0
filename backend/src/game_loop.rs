@@ -664,7 +664,7 @@ pub async fn run(
         // Ownership is now handled per-chunk-boundary above; only teleportation
         // and other slow-tick work runs here.
         if tick % SLOW_TICK_EVERY == 0 && (net.is_host || net.peer_count() == 0) {
-            let events = world.tick_teleportation();
+            let events = world.tick_teleportation(tick);
             for ev in &events {
                 let _ = to_clients.send(ServerMessage::Event(ev.clone()));
             }
