@@ -88,6 +88,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>Hard ceiling on ceilingHeight (MAX_CEILING_UNITS): 6 × 2.5 m = 15 m.</summary>
         public const byte MaxCeilingUnits = 6;
+
+        /// <summary>
+        /// The Y a grounded player's transform sits at above the rendered floor (world Y ≈ 0 on
+        /// layer 0). MUST MATCH backend/src/world/collision.rs::PLAYER_BASE_Y — it is the backend's
+        /// player-pivot convention: a standing player reports transform.y = floorY + PlayerBaseY.
+        /// Not carried over the wire (that would be a protocol change / new ADR); mirrored here as a
+        /// documented shared constant. Used to re-ground remote proxies whose root pivot is at the
+        /// FEET: proxyRootY = backendY − PlayerBaseY places the feet on the rendered floor.
+        /// </summary>
+        public const float PlayerBaseY = 1.8f;
     }
 
     /// <summary>
