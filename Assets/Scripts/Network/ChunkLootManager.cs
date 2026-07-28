@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Gameplay.GridWorld;
 using PolymindGames.InventorySystem;
 using PolymindGames.WieldableSystem;
@@ -41,6 +42,15 @@ namespace BackroomsSurvival.Net
     ///
     /// Governs only while <see cref="Enabled"/> is true; the old spawners early-out on that flag so
     /// exactly one system authors procedural loot at a time (A/B comparison switch).
+    ///
+    /// ZONE GATE (Pieza 3, zone_kind → loot): CollectLoads resolves each column's zone via
+    /// <see cref="ZoneRegistry.TryGetZone"/> before rolling it. Unlike ChunkStreamer's
+    /// ZoneReadyOrExpired (which times out after 0.75s so a chunk's FLOOR never leaves a permanent
+    /// hole), loot has no such constraint — an un-rolled column is simply invisible, not broken
+    /// geometry. So this gate has NO timeout and NO fallback profile: an unknown zone just leaves
+    /// the column unsealed, re-evaluated from _desiredColumns every scan (scanInterval) until
+    /// ZoneRegistry has an answer. Deliberately not sharing ZoneReadyOrExpired's timeout policy —
+    /// see docs/STATE.md Pieza 3 for the reasoning.
     /// </summary>
     public sealed class ChunkLootManager : MonoBehaviour
     {
@@ -50,6 +60,15 @@ namespace BackroomsSurvival.Net
         public const bool Enabled = true;
 
         private static ChunkLootManager _instance;
+
+        // Pieza 3: per-zone loot profile table, GripPoseSet-style lazy Resources.Load cache (this
+        // manager self-bootstraps via RuntimeInitializeOnLoadMethod — no scene/prefab to hold a
+        // serialized reference, same reason CorpseSpawner caches GripPoseSet the same way). Null
+        // until "Backrooms ▸ Create Zone Loot Table" has been run once; ZONE-BY-ZONE VARIATION IS
+        // SILENTLY ABSENT (not an error) until then — every column resolves ZoneLootProfile.Default.
+        private static ZoneLootTable _zoneLootTable;
+        private static ZoneLootTable LootTable =>
+            _zoneLootTable != null ? _zoneLootTable : (_zoneLootTable = Resources.Load<ZoneLootTable>("Loot/ZoneLootTable"));
 
         [Tooltip("Only run once the host is in this scene (avoids placing loot in the menu).")]
         public string gameplayScene = "STP_Showcase";
@@ -376,7 +395,7 @@ namespace BackroomsSurvival.Net
         private void CollectLoads(
             HashSet<(int cx, int cz)> generated,
             ICollection<(int cx, int cz, int slot)> collected,
-            System.Func<long, int, int, List<ChunkLootRoll.Entry>> roll,
+            System.Func<long, int, int, ZoneLootProfile, List<ChunkLootRoll.Entry>> roll,
             float rayY)
         {
             _pendingPlacements.Clear();
@@ -384,10 +403,25 @@ namespace BackroomsSurvival.Net
             {
                 if (generated.Contains(col)) continue;
 
-                var entries = roll(_worldSeed, col.cx, col.cz);
+                // Zone gate (Pieza 3, no-timeout variant — see class doc "ZONE GATE"): a column
+                // whose zone_kind is not known yet is left UNSEALED (no generated.Add) and retried
+                // next scan. No fallback profile — rolling with the wrong zone would permanently
+                // seal the column under stale content (see ZoneLootProfile's hard constraint on
+                // slot-count stability; a wrong PROFILE is still recoverable in principle, but there
+                // is no reason to accept the risk when waiting costs nothing here).
+                if (!ZoneRegistry.TryGetZone(col.cx, col.cz, out byte zoneKind))
+                    continue;
+
+                var profile = LootTable != null ? LootTable.Profile(zoneKind) : ZoneLootProfile.Default;
+                var entries = roll(_worldSeed, col.cx, col.cz, profile);
+                // TEMP DIAGNOSTIC (Pieza 3 — remove after playtest confirmation, mirrors
+                // [ZoneTintDiag] from Pieza 2/STATE.md): confirms which zone_kind a column resolved
+                // to and how many entries its profile rolled, cross-checkable against what actually
+                // appears in-world and against the "items/carryables → N live" log right after.
+                Debug.Log($"[ZoneLootDiag] col=({col.cx},{col.cz}) zoneKind={zoneKind} rolled={entries.Count}");
                 if (entries.Count == 0)
                 {
-                    generated.Add(col); // deterministically empty — nothing to place, don't retry
+                    generated.Add(col); // deterministically empty under this zone's profile — don't retry
                     continue;
                 }
 

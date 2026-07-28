@@ -17,6 +17,11 @@ namespace BackroomsSurvival.Net
     /// refactored out of those two files: the old scatter spawners stay byte-identical as the A/B
     /// comparison baseline (they are only DISABLED behind a flag, not edited). When the old
     /// spawners are deleted in a later prompt, their copies go and this becomes the single source.
+    ///
+    /// PIEZA 3 (zone_kind → loot): RollItems/RollCarryables now take a <see cref="ZoneLootProfile"/>
+    /// (resolved by the Unity side from ZoneRegistry + ZoneLootTable) that varies cache/zone chance,
+    /// pool weights and material weights per zone_kind. See ZoneLootProfile's doc-comment for the
+    /// hard constraint this must preserve (never change entry COUNT).
     /// </summary>
     public static class ChunkLootRoll
     {
@@ -35,18 +40,19 @@ namespace BackroomsSurvival.Net
         {
             "Marlin 336", "Wooden Bow", "Bone Club", "Hunting Axe", "Hunting Knife", "Steel Pickaxe", "Stone Spear", "Wooden Spear"
         };
-        private const float WeaponRollChance = 0.15f;
         private static readonly string[] CarryableTypes = { "Log", "Stone", "Metal" };
 
         // ── Density (TODO(balance): first-playtest placeholders, mirror the old per-cache/zone
         // counts but now rolled PER CHUNK COLUMN so the live total is bounded by the ~3×3 ring
         // instead of a one-shot world-wide scatter). ──────────────────────────────────────────
-        private const float ItemCacheChancePerChunk = 0.40f;
+        // Cache/zone existence chance and pool/material weights are now PER-ZONE (see
+        // ZoneLootProfile below, resolved by ChunkLootManager via ZoneRegistry). These two counts
+        // stay FIXED consts on purpose — Pieza 3 hard constraint: a zone's profile may vary
+        // chance/pools/rarity but never the slot COUNT (see ZoneLootProfile's doc-comment).
         private const int ItemsPerCache = 6;
         // TODO(balance): construction-material abundance test (2026-07-07) — carryable zones are
         // 100% construction materials (Log/Stone/Metal). Chance 0.30→0.60 and per-zone 8→16
         // (~x4 more materials). Not tuned final values.
-        private const float CarryableZoneChancePerChunk = 0.60f;
         private const int CarryablesPerZone = 16;
         // Cluster tightness in chunk-normalized units (chunk side = 1.0). Item caches stay a tight
         // 1.5 m pile. Carryable zones: SPREAD widened 6 m → 12 m (2026-07-07) so the same 16
@@ -95,18 +101,101 @@ namespace BackroomsSurvival.Net
             return h;
         }
 
-        /// <summary>Deterministic per-chunk item cache. Empty list = this chunk has no cache.</summary>
-        public static List<Entry> RollItems(long worldSeed, int cx, int cz)
+        /// <summary>
+        /// 12 first-pass profiles, one per ZONE_* (0=Normal..11=Pit, mirrors
+        /// backend/src/world/chunk/surface_profiles.rs) — TODO(balance): distinguishable so the
+        /// wiring is OBSERVABLE in playtest, deliberately NOT a tuned final design (approved plan,
+        /// see docs/STATE.md Pieza 3). Per the zone_kind distribution audited for that plan, the
+        /// expansion generator (the vast majority of the explorable world) only reaches NORMAL/
+        /// OPEN_HALL/PILLAR_HALL/STORAGE/HUMID in real volume; SAFE/DANGER/CLEANING only occur in
+        /// the starter structures near spawn, and RED/PIT need depth >= 12 chunks at ~1% each. All
+        /// 12 are still wired for completeness. Entry 0 (NORMAL) is byte-for-value identical to
+        /// <see cref="ZoneLootProfile.Default"/> — the ~83%-of-the-world case keeps today's feel.
+        /// </summary>
+        public static ZoneLootProfile[] DefaultZoneLootProfiles() => new[]
+        {
+            ZoneLootProfile.Default, // 0  ZONE_NORMAL      — baseline, unchanged from pre-Pieza-3
+            new ZoneLootProfile // 1  ZONE_STORAGE — abundant, material/metal-heavy
+            {
+                itemCacheChance = 0.55f, carryableZoneChance = 0.75f, weaponRollChance = 0.10f,
+                consumableWeight = 1f, medicalWeight = 1f, ammoWeight = 1f, materialWeight = 3f,
+                logWeight = 25f, stoneWeight = 25f, metalWeight = 50f,
+            },
+            new ZoneLootProfile // 2  ZONE_SAFE — utility-heavy, low weapon rarity
+            {
+                itemCacheChance = 0.60f, carryableZoneChance = 0.30f, weaponRollChance = 0.05f,
+                consumableWeight = 3f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 40f, stoneWeight = 35f, metalWeight = 25f,
+            },
+            new ZoneLootProfile // 3  ZONE_DANGER — weapon/ammo/medical-heavy
+            {
+                itemCacheChance = 0.45f, carryableZoneChance = 0.40f, weaponRollChance = 0.35f,
+                consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 3f, materialWeight = 1f,
+                logWeight = 30f, stoneWeight = 30f, metalWeight = 40f,
+            },
+            new ZoneLootProfile // 4  ZONE_OPEN_HALL — near-baseline, slightly sparser
+            {
+                itemCacheChance = 0.35f, carryableZoneChance = 0.55f, weaponRollChance = 0.15f,
+                consumableWeight = 2f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 45f, stoneWeight = 35f, metalWeight = 20f,
+            },
+            new ZoneLootProfile // 5  ZONE_PILLAR_HALL — stone-leaning, cache-sparse
+            {
+                itemCacheChance = 0.30f, carryableZoneChance = 0.65f, weaponRollChance = 0.12f,
+                consumableWeight = 2f, medicalWeight = 1f, ammoWeight = 1f, materialWeight = 2f,
+                logWeight = 30f, stoneWeight = 45f, metalWeight = 25f,
+            },
+            new ZoneLootProfile // 6  ZONE_HUMID — medical-leaning (mould/rot), stone-heavy
+            {
+                itemCacheChance = 0.30f, carryableZoneChance = 0.50f, weaponRollChance = 0.10f,
+                consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 2f,
+                logWeight = 20f, stoneWeight = 50f, metalWeight = 30f,
+            },
+            new ZoneLootProfile // 7  ZONE_BLACKOUT — TODO(balance): no battery/flashlight item yet; material-heavy stand-in
+            {
+                itemCacheChance = 0.50f, carryableZoneChance = 0.40f, weaponRollChance = 0.10f,
+                consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 3f,
+                logWeight = 20f, stoneWeight = 20f, metalWeight = 60f,
+            },
+            new ZoneLootProfile // 8  ZONE_MANILA — office/safe-pocket, consumable-leaning
+            {
+                itemCacheChance = 0.45f, carryableZoneChance = 0.45f, weaponRollChance = 0.08f,
+                consumableWeight = 3f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 35f, stoneWeight = 35f, metalWeight = 30f,
+            },
+            new ZoneLootProfile // 9  ZONE_CLEANING — chemicals/tools stand-in, medical+metal-heavy
+            {
+                itemCacheChance = 0.40f, carryableZoneChance = 0.35f, weaponRollChance = 0.05f,
+                consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 2f,
+                logWeight = 15f, stoneWeight = 25f, metalWeight = 60f,
+            },
+            new ZoneLootProfile // 10 ZONE_RED — signalled danger, high weapon/ammo rarity
+            {
+                itemCacheChance = 0.65f, carryableZoneChance = 0.25f, weaponRollChance = 0.45f,
+                consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 3f, materialWeight = 1f,
+                logWeight = 25f, stoneWeight = 25f, metalWeight = 50f,
+            },
+            new ZoneLootProfile // 11 ZONE_PIT — rare/deep, richest cache odds, medical-heavy (fall risk)
+            {
+                itemCacheChance = 0.70f, carryableZoneChance = 0.20f, weaponRollChance = 0.30f,
+                consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 2f, materialWeight = 1f,
+                logWeight = 20f, stoneWeight = 40f, metalWeight = 40f,
+            },
+        };
+
+        /// <summary>Deterministic per-chunk item cache under a zone's loot profile. Empty list =
+        /// this chunk has no cache.</summary>
+        public static List<Entry> RollItems(long worldSeed, int cx, int cz, ZoneLootProfile profile)
         {
             var rng = new DeterministicRng(Hash(worldSeed, cx, cz, ItemSalt));
             var result = new List<Entry>();
-            if (rng.NextFloat() >= ItemCacheChancePerChunk)
+            if (rng.NextFloat() >= profile.itemCacheChance)
                 return result; // no cache in this chunk
 
             RollCentre(ref rng, out float cu, out float cv);
             for (int slot = 0; slot < ItemsPerCache; slot++)
             {
-                string name = RollItemName(ref rng);
+                string name = RollItemName(ref rng, profile);
                 ClusterAround(ref rng, cu, cv, CacheClusterRadius, out float u, out float v);
                 result.Add(new Entry(slot, name, 1, u, v, rng.NextFloat() * 360f));
             }
@@ -114,34 +203,39 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// Deterministic per-chunk carryable resource zone. Empty = no zone. Each SLOT rolls its own
-        /// material (2026-07-07: was one type per whole zone — felt too concentrated), so a zone mixes
-        /// Log/Stone/Metal, spread over ZoneSpreadRadius.
+        /// Deterministic per-chunk carryable resource zone under a zone's loot profile. Empty = no
+        /// zone. Each SLOT rolls its own material (2026-07-07: was one type per whole zone — felt
+        /// too concentrated), so a zone mixes Log/Stone/Metal, spread over ZoneSpreadRadius.
         /// </summary>
-        public static List<Entry> RollCarryables(long worldSeed, int cx, int cz)
+        public static List<Entry> RollCarryables(long worldSeed, int cx, int cz, ZoneLootProfile profile)
         {
             var rng = new DeterministicRng(Hash(worldSeed, cx, cz, CarrySalt));
             var result = new List<Entry>();
-            if (rng.NextFloat() >= CarryableZoneChancePerChunk)
+            if (rng.NextFloat() >= profile.carryableZoneChance)
                 return result; // no zone in this chunk
 
             RollCentre(ref rng, out float cu, out float cv);
             for (int slot = 0; slot < CarryablesPerZone; slot++)
             {
-                string name = RollMaterialName(ref rng); // per-slot MIX (was a single type per zone)
+                string name = RollMaterialName(ref rng, profile); // per-slot MIX (was a single type per zone)
                 ClusterAround(ref rng, cu, cv, ZoneSpreadRadius, out float u, out float v);
                 result.Add(new Entry(slot, name, 1, u, v, rng.NextFloat() * 360f));
             }
             return result;
         }
 
-        // Per-slot construction-material pick, weighted so basics dominate: Log 40% / Stone 35% /
-        // Metal 25%. Same deterministic RNG stream, so same seed+chunk → same mix. TODO(balance).
-        private static string RollMaterialName(ref DeterministicRng rng)
+        // Per-slot construction-material pick, weighted by the zone's profile (relative weights,
+        // normalized here). Same deterministic RNG stream, so same seed+chunk+profile → same mix.
+        private static string RollMaterialName(ref DeterministicRng rng, ZoneLootProfile profile)
         {
-            float r = rng.NextFloat();
-            int idx = r < 0.40f ? 0 : (r < 0.75f ? 1 : 2);
-            return CarryableTypes[idx]; // { "Log", "Stone", "Metal" }
+            float total = profile.logWeight + profile.stoneWeight + profile.metalWeight;
+            if (total <= 0f)
+                return CarryableTypes[0]; // degenerate profile guard — never leave a slot unnamed
+
+            float r = rng.NextFloat() * total;
+            if ((r -= profile.logWeight) < 0f) return CarryableTypes[0];
+            if ((r -= profile.stoneWeight) < 0f) return CarryableTypes[1];
+            return CarryableTypes[2]; // { "Log", "Stone", "Metal" }
         }
 
         /// <summary>
@@ -173,20 +267,28 @@ namespace BackroomsSurvival.Net
             v = Clamp01(cv + r * Sin(ang));
         }
 
-        // Mirror of StpItemSpawner.RollItemName (weapon roll, else even split across the 3 common
-        // pools with a 50/50 ammo/material tiebreak).
-        private static string RollItemName(ref DeterministicRng rng)
+        // Weighted pick across the 4 common pools (mirror of StpItemSpawner.RollItemName's shape —
+        // weapon roll first, then a pool pick — but the pool pick is now weighted by the zone's
+        // profile instead of a flat 1/3-1/3-1/6-1/6 split).
+        private static string RollItemName(ref DeterministicRng rng, ZoneLootProfile profile)
         {
-            if (rng.NextFloat() < WeaponRollChance)
+            if (rng.NextFloat() < profile.weaponRollChance)
                 return WeaponPool[rng.NextInt(WeaponPool.Length)];
 
-            int poolPick = rng.NextInt(3);
-            string[] pool = poolPick switch
+            float total = profile.consumableWeight + profile.medicalWeight + profile.ammoWeight + profile.materialWeight;
+            string[] pool;
+            if (total <= 0f)
             {
-                0 => ConsumablePool,
-                1 => MedicalPool,
-                _ => rng.NextFloat() < 0.5f ? AmmoPool : MaterialPool,
-            };
+                pool = ConsumablePool; // degenerate profile guard — never leave a slot unnamed
+            }
+            else
+            {
+                float r = rng.NextFloat() * total;
+                if ((r -= profile.consumableWeight) < 0f) pool = ConsumablePool;
+                else if ((r -= profile.medicalWeight) < 0f) pool = MedicalPool;
+                else if ((r -= profile.ammoWeight) < 0f) pool = AmmoPool;
+                else pool = MaterialPool;
+            }
             return pool[rng.NextInt(pool.Length)];
         }
 
@@ -194,6 +296,61 @@ namespace BackroomsSurvival.Net
         // Tiny local trig (keeps this file free of a UnityEngine dependency for pure headless use).
         private static float Cos(float a) => (float)System.Math.Cos(a);
         private static float Sin(float a) => (float)System.Math.Sin(a);
+    }
+
+    /// <summary>
+    /// Per-zone loot tuning (Pieza 3, zone_kind → loot). Plain data, no UnityEngine dependency
+    /// (keeps this file pure/headless-testable, same reason <see cref="DeterministicRng"/> below
+    /// avoids it) — <c>[System.Serializable]</c> alone (mscorlib, not a UnityEngine attribute) is
+    /// enough for the Unity-side <c>BackroomsSurvival.Gameplay.GridWorld.ZoneLootTable</c> to
+    /// serialize an array of these in the Inspector.
+    ///
+    /// HARD CONSTRAINT — never add a field that changes entry COUNT (e.g. a per-zone item/carryable
+    /// count override). <see cref="ChunkLootManager"/> keys its pickup memory on (cx,cz,slot),
+    /// where slot is a bare 0..N-1 ordinal from THIS roll (ItemsPerCache / CarryablesPerZone stay
+    /// fixed consts above, deliberately NOT profile fields). A chunk re-rolled under a different
+    /// profile — e.g. zone_kind resolved after this column's zone was unknown at an earlier roll —
+    /// must always yield the same slot COUNT as before, or old collected-slot keys go out of range
+    /// or orphan still-live loot. See docs/STATE.md Pieza 3 for the full reasoning.
+    /// </summary>
+    [System.Serializable]
+    public struct ZoneLootProfile
+    {
+        /// <summary>Chance [0,1) a chunk in this zone rolls an item cache (ItemsPerCache slots) at all.</summary>
+        public float itemCacheChance;
+        /// <summary>Chance [0,1) a chunk in this zone rolls a carryable resource zone (CarryablesPerZone slots).</summary>
+        public float carryableZoneChance;
+        /// <summary>Within a rolled item slot, chance it comes from WeaponPool instead of the 4 pools below.</summary>
+        public float weaponRollChance;
+
+        // Item pool weights (relative; normalized at roll time — need not sum to any particular total).
+        public float consumableWeight;
+        public float medicalWeight;
+        public float ammoWeight;
+        public float materialWeight;
+
+        // Carryable material weights (relative; normalized at roll time).
+        public float logWeight;
+        public float stoneWeight;
+        public float metalWeight;
+
+        /// <summary>ZONE_NORMAL's profile — the same numbers as the pre-Pieza-3 flat constants
+        /// (0.40 cache chance, 0.60 zone chance, 0.15 weapon chance, 2:2:1:1 pool split, 40:35:25
+        /// material split), so the ~83%-of-the-world default zone keeps the already-playtested
+        /// ADR-030 feel.</summary>
+        public static ZoneLootProfile Default => new ZoneLootProfile
+        {
+            itemCacheChance = 0.40f,
+            carryableZoneChance = 0.60f,
+            weaponRollChance = 0.15f,
+            consumableWeight = 2f,
+            medicalWeight = 2f,
+            ammoWeight = 1f,
+            materialWeight = 1f,
+            logWeight = 40f,
+            stoneWeight = 35f,
+            metalWeight = 25f,
+        };
     }
 
     /// <summary>
