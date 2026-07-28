@@ -458,6 +458,9 @@ pub async fn run(
                 event_type: "session_restored".into(),
                 data: serde_json::json!({ "position": player.position.to_array() }),
             }));
+            // TEMP DIAG (TP attribution audit; REMOVE after diagnosis): see
+            // Player::last_reposition_tick doc comment.
+            player.last_reposition_tick = Some(tick);
             // ADR-032 amendment: restore the real STP inventory in the same deferred window,
             // AFTER the snap event (independent consumers — applier vs InventoryRestorer — so
             // order is cosmetic, but keep it deterministic). Skipped when empty: an empty
@@ -734,6 +737,9 @@ pub async fn run(
                     event_type: "player_died".into(),
                     data: serde_json::json!({ "death_pos": player.position.to_array() }),
                 }));
+                // TEMP DIAG (TP attribution audit; REMOVE after diagnosis): see
+                // Player::last_reposition_tick doc comment.
+                player.last_reposition_tick = Some(tick);
             }
         } else {
             death_announced = false; // revived (respawn_request honored) → re-arm the edge
@@ -1609,11 +1615,23 @@ fn apply_client_authoritative_move(
     // outside a window can NOT come from here — this log proves/disproves correlation. Throttled to
     // 1/s (a sustained wall-press displaces every tick).
     {
+        // TEMP DIAG (TP attribution audit; REMOVE after diagnosis): explicit `in_window` marker —
+        // previously this had to be inferred indirectly from the comment above. Mirrors the
+        // client's AuthoritativePoseApplier.SnapWindow (0.35s) as a tick count off TICK_HZ, using
+        // Player::last_reposition_tick (sealed at session_restored/player_died/player_respawned).
+        // Approximate by construction: the backend doesn't know the client's actual timer state,
+        // only when IT sent the arming event — good enough to cross-reference against reported TPs.
+        const TP_WATCH_WINDOW_TICKS: u64 = (0.35 * TICK_HZ as f64) as u64;
+        let in_window = player
+            .last_reposition_tick
+            .is_some_and(|t| _tick.saturating_sub(t) <= TP_WATCH_WINDOW_TICKS);
+
         let dx = resolved.position.x - claimed.x;
         let dz = resolved.position.z - claimed.z;
         if (dx * dx + dz * dz).sqrt() > 2.0 && _tick % 60 == 0 {
             info!(
-                "MPTRACE step=TP_WATCH TP_SOURCE=resolve_move_clamp claimed=({:.1},{:.1},{:.1}) resolved=({:.1},{:.1},{:.1}) kind={:?}",
+                "MPTRACE step=TP_WATCH TP_SOURCE=resolve_move_clamp in_window={} claimed=({:.1},{:.1},{:.1}) resolved=({:.1},{:.1},{:.1}) kind={:?}",
+                in_window,
                 claimed.x, claimed.y, claimed.z,
                 resolved.position.x, resolved.position.y, resolved.position.z,
                 resolved.kind
@@ -1727,6 +1745,9 @@ async fn handle_action(
                     event_type: "player_respawned".into(),
                     data: serde_json::json!({ "position": player.position.to_array() }),
                 }));
+                // TEMP DIAG (TP attribution audit; REMOVE after diagnosis): see
+                // Player::last_reposition_tick doc comment.
+                player.last_reposition_tick = Some(tick);
                 world.update_ownership(player.position, player.id);
             } else {
                 info!(

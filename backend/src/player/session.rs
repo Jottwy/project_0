@@ -63,6 +63,14 @@ pub struct Player {
     /// and pushed back to the client with the `inventory_restored` event after hydration.
     #[serde(default)]
     pub stp_inventory: Vec<crate::world::corpse::CorpseStack>,
+    /// TEMP DIAG (TP attribution audit; REMOVE after diagnosis): game-loop tick of the last
+    /// authoritative-reposition event sent to this player (`session_restored`/`player_died`/
+    /// `player_respawned` — the same three that arm the client's `AuthoritativePoseApplier`
+    /// snap window). Lets `TP_WATCH` approximate whether a rubber-band it logs fell inside that
+    /// window or not, without the backend needing to know the client's actual timer state.
+    /// Diagnostic-only: never serialized (`skip`), never persisted, never read by gameplay logic.
+    #[serde(skip)]
+    pub last_reposition_tick: Option<u64>,
 }
 
 impl Player {
@@ -85,6 +93,7 @@ impl Player {
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),
+            last_reposition_tick: None,
         }
     }
 }
