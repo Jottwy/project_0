@@ -42,10 +42,11 @@ use crate::world::levels::level_0::builder::Level0Builder;
 // callers reach templates via the architecture facade (see architecture/mod.rs),
 // not through generator.
 use crate::world::architecture::layout_grammars::{
-    TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_DEAD_END, TEMPLATE_HALLWAY_CORNER,
-    TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE, TEMPLATE_INTERSECTION,
-    TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER,
-    TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
+    template_zone_kind, TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_DEAD_END,
+    TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
+    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM,
+    TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC,
+    TEMPLATE_STORAGE_ROOM,
 };
 
 pub use crate::world::levels::level_0::structure::StructureV0;
@@ -127,7 +128,13 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     } else {
         Vec::new()
     };
-    let layout = build_chunk_layout(template_id, rotation);
+    let mut layout = build_chunk_layout(template_id, rotation);
+    // Expansion chunks (unlike generate_initial_structure_chunks_inner's fixed
+    // structures) have no StructureV0 to derive a zone from — mirror the same
+    // template→zone mapping used by the structure path's fallback
+    // (structure_zone_kind's `_ => template_zone_kind(...)` arm) so zone_kind
+    // reflects this chunk's actual template instead of staying ZONE_NORMAL.
+    layout.zone_kind = template_zone_kind(template_id);
 
     let mut chunk = Chunk {
         pos,
@@ -280,6 +287,8 @@ pub(crate) use crate::world::architecture::chunk_generator::chunk_seed;
 #[cfg(test)]
 use crate::world::architecture::surface_builder::edge_delta;
 #[cfg(test)]
+use crate::world::chunk::ZONE_NORMAL;
+#[cfg(test)]
 pub use crate::world::levels::level_0::structure::StructureType;
 
 // ─── Tests ───
@@ -366,6 +375,37 @@ mod tests {
         let c = generate_chunk(42, (0, 0));
         assert!(!c.items.is_empty());
         assert!(c.items.len() >= 5);
+    }
+
+    #[test]
+    fn expansion_chunk_zone_kind_matches_template() {
+        // Regression: generate_chunk_layer (the infinite on-demand expansion path,
+        // as opposed to the finite generate_initial_structures set near spawn) used
+        // to leave zone_kind at its ChunkLayoutV1 default (ZONE_NORMAL) no matter
+        // which template_id it picked — storage/humid/danger/etc. rooms never
+        // surfaced their zone. Assert the mapping holds across a spread of
+        // expansion chunks, and that themed zones actually appear.
+        let mut saw_non_normal = false;
+        for x in -20..20 {
+            for z in -20..20 {
+                let c = generate_chunk(1234, (x, z));
+                assert_eq!(
+                    c.layout.zone_kind,
+                    template_zone_kind(c.template_id),
+                    "chunk ({x},{z}) template {} has zone_kind {} but template_zone_kind says {}",
+                    c.template_id,
+                    c.layout.zone_kind,
+                    template_zone_kind(c.template_id)
+                );
+                if c.layout.zone_kind != ZONE_NORMAL {
+                    saw_non_normal = true;
+                }
+            }
+        }
+        assert!(
+            saw_non_normal,
+            "expected at least one themed zone_kind across a 40x40 expansion sweep"
+        );
     }
 
     #[test]
