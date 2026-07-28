@@ -318,7 +318,11 @@ pub async fn run(
         // The victim is a real connected peer (none at startup → host-name fallback, upgraded by
         // rebind_unbound_victims once a joiner connects). Spawns only when DEBUG_SPAWN_PHANTOM is set.
         if debug_spawn_phantom {
-            let phantom_pos = [player.position.x + 3.0, player.position.y, player.position.z];
+            let phantom_pos = [
+                player.position.x + 3.0,
+                player.position.y,
+                player.position.z,
+            ];
             let (victim_name, victim_bound) = choose_victim_name(&net);
             let phantom_id = net.spawn_phantom(&victim_name, phantom_pos);
             phantom_driver.add(
@@ -425,7 +429,8 @@ pub async fn run(
                     // tile-wall bitmask. net.world_seed is the shared canonical seed
                     // (env WORLD_SEED, propagated via handshake) — identical on every
                     // peer, so the derived chunk is byte-identical across the session.
-                    let walls = crate::world::grid_gen::chunk_tile_walls(net.world_seed, cx, cz, layer);
+                    let walls =
+                        crate::world::grid_gen::chunk_tile_walls(net.world_seed, cx, cz, layer);
                     // Broadcast: in this P2P model each player runs its own backend with a
                     // single Unity client, so the only subscriber IS the requester.
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
@@ -554,8 +559,14 @@ pub async fn run(
             // take_damage). Any local client drift while dead is corrected by the applier's snap
             // on player_respawned. The ack does not advance (nothing was accepted).
             if !player.stats.is_dead() {
-                let seq =
-                    apply_movement(&mut player, &received_input, dt, &world, tick, dev_god_traversal);
+                let seq = apply_movement(
+                    &mut player,
+                    &received_input,
+                    dt,
+                    &world,
+                    tick,
+                    dev_god_traversal,
+                );
                 last_accepted_input_seq = seq;
                 authoritative_velocity = Vec3::from_array(received_input.velocity);
             } else {
@@ -992,7 +1003,9 @@ async fn handle_network_event(
             is_group,
         } => {
             if net.is_host {
-                process_stp_place(place_id, def_id, position, rotation, group_id, is_group, net);
+                process_stp_place(
+                    place_id, def_id, position, rotation, group_id, is_group, net,
+                );
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
                 // arrives within ~RTT, closing the round-trip gap when chaining pieces.
                 sync::broadcast_stp_buildings(net).await;
@@ -1614,7 +1627,8 @@ fn apply_client_authoritative_move(
 
 // TEMP DIAG (rubber-banding trigger-rate audit; REMOVE after diagnosis): see apply_client_authoritative_move.
 static RESOLVE_MOVE_CALLS_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-static RESOLVE_MOVE_BLOCKED_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static RESOLVE_MOVE_BLOCKED_DIAG: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 
 async fn handle_action(
     action: &PlayerAction,
@@ -1662,7 +1676,11 @@ async fn handle_action(
         // the backend is the sole authority on HOW MUCH an item restores (consumable_spec's
         // fixed table), never a client-reported amount. No dedupe: local action, ordered TCP IPC.
         "consume_item" => {
-            let item_id = action.data.get("item_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let item_id = action
+                .data
+                .get("item_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
             if player.stats.is_dead() {
                 info!(
                     "MPTRACE step=CONSUME event=consume_item_ignored reason=dead item_id={}",
@@ -2016,7 +2034,8 @@ async fn handle_action(
             // never points at a vanished item.
             let present: std::collections::HashSet<u32> =
                 net.stp_items.iter().map(|it| it.id).collect();
-            net.pending_pickups.retain(|item_id, _| present.contains(item_id));
+            net.pending_pickups
+                .retain(|item_id, _| present.contains(item_id));
         }
         // Phase 2: a client asks to pick up an STP item. Host-authoritative: the host
         // validates and removes it (vanishes for all via the stp_items relay) and grants
@@ -2040,8 +2059,16 @@ async fn handle_action(
         // its own inventory; the host assigns a fresh net id and adds it to stp_items, which
         // the Phase 1 relay propagates so everyone spawns the same pickup (with the Phase 2 gate).
         "stp_drop" => {
-            let drop_id = action.data.get("drop_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            let def_id = action.data.get("def_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let drop_id = action
+                .data
+                .get("drop_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let def_id = action
+                .data
+                .get("def_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
             let count = action
                 .data
                 .get("count")
@@ -2049,10 +2076,18 @@ async fn handle_action(
                 .unwrap_or(1)
                 .max(1) as u16;
             let position: [f32; 3] = serde_json::from_value(
-                action.data.get("position").cloned().unwrap_or(serde_json::Value::Null),
+                action
+                    .data
+                    .get("position")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             )
             .unwrap_or([0.0, 0.0, 0.0]);
-            let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let rotation = action
+                .data
+                .get("rotation")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             if net.is_host {
                 process_stp_drop(drop_id, def_id, count, position, rotation, net);
             } else {
@@ -2070,15 +2105,39 @@ async fn handle_action(
         // and adds it to stp_buildings, which the Phase B1 relay propagates so everyone
         // spawns the same piece (StpBuildingReplicator). A joiner forwards to the host.
         "stp_place" => {
-            let place_id = action.data.get("place_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            let def_id = action.data.get("def_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let place_id = action
+                .data
+                .get("place_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let def_id = action
+                .data
+                .get("def_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
             let position: [f32; 3] = serde_json::from_value(
-                action.data.get("position").cloned().unwrap_or(serde_json::Value::Null),
+                action
+                    .data
+                    .get("position")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             )
             .unwrap_or([0.0, 0.0, 0.0]);
-            let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
-            let group_id = action.data.get("group_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let is_group = action.data.get("is_group").and_then(|v| v.as_bool()).unwrap_or(false);
+            let rotation = action
+                .data
+                .get("rotation")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            let group_id = action
+                .data
+                .get("group_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let is_group = action
+                .data
+                .get("is_group")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             // ADR-031: placing a Sleeping Bag sets THIS player's respawn point ("last placed wins").
             // Runs on the placer's own backend (host OR joiner) since the stp_place action arrives here
             // regardless of who relays the building; trust-the-client for the position (same level as
@@ -2091,7 +2150,9 @@ async fn handle_action(
                 );
             }
             if net.is_host {
-                process_stp_place(place_id, def_id, position, rotation, group_id, is_group, net);
+                process_stp_place(
+                    place_id, def_id, position, rotation, group_id, is_group, net,
+                );
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
                 // arrives within ~RTT, closing the round-trip gap when chaining pieces.
                 sync::broadcast_stp_buildings(net).await;
@@ -2111,9 +2172,21 @@ async fn handle_action(
         // the piece's authoritative progress (added[material]) and the relay propagates it so
         // every client derives the same construction state. A joiner forwards to the host.
         "stp_build_add" => {
-            let add_id = action.data.get("add_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            let building_id = action.data.get("building_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let material_id = action.data.get("material_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let add_id = action
+                .data
+                .get("add_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let building_id = action
+                .data
+                .get("building_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let material_id = action
+                .data
+                .get("material_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
             if building_id == 0 {
                 return;
             }
@@ -2168,13 +2241,29 @@ async fn handle_action(
         // Phase B2.5: a client dropped a carryable in the world. The host assigns a fresh id
         // and adds it to stp_carryables, which the relay propagates so everyone spawns it.
         "stp_carryable_drop" => {
-            let drop_id = action.data.get("drop_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            let def_id = action.data.get("def_id").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+            let drop_id = action
+                .data
+                .get("drop_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let def_id = action
+                .data
+                .get("def_id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0) as i32;
             let position: [f32; 3] = serde_json::from_value(
-                action.data.get("position").cloned().unwrap_or(serde_json::Value::Null),
+                action
+                    .data
+                    .get("position")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             )
             .unwrap_or([0.0, 0.0, 0.0]);
-            let rotation = action.data.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let rotation = action
+                .data
+                .get("rotation")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             if net.is_host {
                 process_stp_carryable_drop(drop_id, def_id, position, rotation, net);
             } else {
@@ -2221,9 +2310,21 @@ async fn handle_action(
         // Phase B2.6: a client reports a harvest hit. Host-authoritative: the host reduces the
         // harvestable's `remaining` and the relay propagates it. A joiner forwards to the host.
         "stp_harvest_hit" => {
-            let hit_id = action.data.get("hit_id").and_then(|v| v.as_u64()).unwrap_or(0);
-            let harvestable_id = action.data.get("harvestable_id").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-            let amount = action.data.get("amount").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let hit_id = action
+                .data
+                .get("hit_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let harvestable_id = action
+                .data
+                .get("harvestable_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            let amount = action
+                .data
+                .get("amount")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             if harvestable_id == 0 {
                 return;
             }
@@ -2252,7 +2353,11 @@ async fn handle_action(
             }
             let victim_id = json_u32(&action.data, "victim_id").unwrap_or(0);
             let weapon_id = json_i32(&action.data, "weapon_id").unwrap_or(0);
-            let damage = action.data.get("damage").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+            let damage = action
+                .data
+                .get("damage")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
             let origin = json_vec3(&action.data, "origin").unwrap_or([0.0, 0.0, 0.0]);
             let direction = json_vec3(&action.data, "direction").unwrap_or([0.0, 0.0, 0.0]);
             let hit_position = json_vec3(&action.data, "hit_position");
@@ -2849,14 +2954,15 @@ fn process_stp_place(
     };
 
     let id = next_stp_building_id();
-    net.stp_buildings.push(crate::network::protocol::StpBuildingInfo {
-        id,
-        def_id,
-        position,
-        rotation,
-        group_id,
-        added: Vec::new(),
-    });
+    net.stp_buildings
+        .push(crate::network::protocol::StpBuildingInfo {
+            id,
+            def_id,
+            position,
+            rotation,
+            group_id,
+            added: Vec::new(),
+        });
     info!(
         "MPTRACE step=BP event=stp_place_spawned id={} place_id={} def_id={} group_id={} pos=({:.2},{:.2},{:.2})",
         id, place_id, def_id, group_id, position[0], position[1], position[2]
@@ -2892,11 +2998,18 @@ fn process_stp_build_add(
         }
     };
 
-    match building.added.iter_mut().find(|p| p.material_id == material_id) {
+    match building
+        .added
+        .iter_mut()
+        .find(|p| p.material_id == material_id)
+    {
         Some(p) => p.count = p.count.saturating_add(1),
         None => building
             .added
-            .push(crate::network::protocol::StpBuildProgress { material_id, count: 1 }),
+            .push(crate::network::protocol::StpBuildProgress {
+                material_id,
+                count: 1,
+            }),
     }
 
     info!(
@@ -2933,12 +3046,13 @@ fn process_stp_carryable_drop(
     }
 
     let id = next_stp_carryable_id();
-    net.stp_carryables.push(crate::network::protocol::StpCarryableInfo {
-        id,
-        def_id,
-        position,
-        rotation,
-    });
+    net.stp_carryables
+        .push(crate::network::protocol::StpCarryableInfo {
+            id,
+            def_id,
+            position,
+            rotation,
+        });
     info!(
         "MPTRACE step=CY event=stp_carryable_drop_spawned id={} drop_id={} def_id={} pos=({:.2},{:.2},{:.2})",
         id, drop_id, def_id, position[0], position[1], position[2]
@@ -3007,7 +3121,11 @@ fn process_stp_harvest_hit(
         return;
     }
 
-    let harvestable = match net.stp_harvestables.iter_mut().find(|h| h.id == harvestable_id) {
+    let harvestable = match net
+        .stp_harvestables
+        .iter_mut()
+        .find(|h| h.id == harvestable_id)
+    {
         Some(h) => h,
         None => {
             info!(
@@ -3067,7 +3185,10 @@ async fn process_stp_pickup(
     // are rejected by the contains_key check above. The drain removes it at the juicy frame.
     net.pending_pickups.insert(
         item_id,
-        (requester_id, std::time::Instant::now() + PICKUP_REMOVE_DELAY),
+        (
+            requester_id,
+            std::time::Instant::now() + PICKUP_REMOVE_DELAY,
+        ),
     );
 
     if requester_id == net.local_id {
@@ -3292,7 +3413,9 @@ fn handle_spawn_world_chest(
     Ok(world.spawn_chest(position, items))
 }
 
-fn parse_death_loot(data: &serde_json::Value) -> ([i32; 4], i32, Vec<crate::world::corpse::CorpseStack>) {
+fn parse_death_loot(
+    data: &serde_json::Value,
+) -> ([i32; 4], i32, Vec<crate::world::corpse::CorpseStack>) {
     let mut equipment = [0i32; 4];
     if let Some(arr) = data.get("equipment").and_then(|v| v.as_array()) {
         for (slot, value) in arr.iter().take(4).enumerate() {
@@ -3319,8 +3442,8 @@ fn parse_loot_stacks(data: &serde_json::Value) -> Vec<crate::world::corpse::Corp
             arr.iter()
                 .filter_map(|entry| {
                     let item_id = json_i32(entry, "item_id")?;
-                    let quantity = json_u32(entry, "quantity")
-                        .map(|q| q.min(u16::MAX as u32) as u16)?;
+                    let quantity =
+                        json_u32(entry, "quantity").map(|q| q.min(u16::MAX as u32) as u16)?;
                     Some(crate::world::corpse::CorpseStack { item_id, quantity })
                 })
                 .collect()
@@ -3447,7 +3570,11 @@ fn build_world_state(
 /// is true when a real victim was found, false → host-name fallback (solo), which
 /// `rebind_unbound_victims` later upgrades to a real peer once one connects.
 fn choose_victim_name(net: &NetworkManager) -> (String, bool) {
-    match net.peers.values().find(|p| !net.phantom_ids.contains(&p.id)) {
+    match net
+        .peers
+        .values()
+        .find(|p| !net.phantom_ids.contains(&p.id))
+    {
         Some(p) => (p.name.clone(), true),
         None => (net.local_name.clone(), false),
     }
@@ -3765,7 +3892,10 @@ impl PhantomDriver {
             // are PURE THEATER — only the `animation` field. While active, freeze in place holding
             // "pickup" (the trigger flank the proxy edge-detects, ADR-011). NOTHING real is
             // touched: no process_stp_pickup, no pending_pickups, no stp_items, no grant. ──
-            if self.movers[i].pickup_until.map_or(false, |until| now >= until) {
+            if self.movers[i]
+                .pickup_until
+                .map_or(false, |until| now >= until)
+            {
                 self.movers[i].pickup_until = None;
             }
             if self.movers[i].pickup_until.is_some() {
@@ -3833,12 +3963,13 @@ impl PhantomDriver {
                     }
 
                     // Tell #2: metronomic unnatural stillness (the tell is its regularity).
-                    if self.movers[i].stare_until.map_or(false, |until| now >= until) {
+                    if self.movers[i]
+                        .stare_until
+                        .map_or(false, |until| now >= until)
+                    {
                         self.movers[i].stare_until = None;
                     }
-                    if self.movers[i].stare_until.is_none()
-                        && now >= self.movers[i].next_stare_at
-                    {
+                    if self.movers[i].stare_until.is_none() && now >= self.movers[i].next_stare_at {
                         self.movers[i].stare_until = Some(now + PHANTOM_STARE_DURATION);
                         self.movers[i].next_stare_at = now + PHANTOM_STARE_INTERVAL;
                         info!(
@@ -3947,7 +4078,10 @@ impl PhantomDriver {
                     if self.movers[i].state_timer >= self.movers[i].spotted_duration {
                         self.movers[i].state = PhantomState::Stalk;
                         self.movers[i].state_timer = 0.0;
-                        info!("MPTRACE step=PH_STALK event=phantom_stalk phantom_id={}", id);
+                        info!(
+                            "MPTRACE step=PH_STALK event=phantom_stalk phantom_id={}",
+                            id
+                        );
                         continue;
                     }
                     // Unpredictable lunge mid-stare (scarier when imprevisible).
@@ -4208,7 +4342,10 @@ mod tests {
     fn corpse_spawn_request_dedupes_under_retransmit() {
         let mut world = World::new(42);
         let mut processed: HashSet<(u16, u64)> = HashSet::new();
-        let items = vec![crate::world::corpse::CorpseStack { item_id: -12345, quantity: 3 }];
+        let items = vec![crate::world::corpse::CorpseStack {
+            item_id: -12345,
+            quantity: 3,
+        }];
 
         let spawn_data = |items: Vec<crate::world::corpse::CorpseStack>| CorpseSpawnData {
             owner_name: "Joel".into(),
@@ -4218,26 +4355,43 @@ mod tests {
             items,
         };
 
-        let first =
-            apply_corpse_spawn_request(&mut world, &mut processed, 1004, 7, spawn_data(items.clone()));
+        let first = apply_corpse_spawn_request(
+            &mut world,
+            &mut processed,
+            1004,
+            7,
+            spawn_data(items.clone()),
+        );
         assert!(first.is_some(), "first request must spawn");
         assert_eq!(world.corpses.len(), 1);
 
         // Reliable retransmit: same (requester, request_id) → EXACTLY one corpse, no duplicate.
         for _ in 0..3 {
             let dup = apply_corpse_spawn_request(
-                &mut world, &mut processed, 1004, 7, spawn_data(items.clone()),
+                &mut world,
+                &mut processed,
+                1004,
+                7,
+                spawn_data(items.clone()),
             );
             assert!(dup.is_none(), "retransmit must be deduped");
         }
-        assert_eq!(world.corpses.len(), 1, "retransmits must never duplicate the corpse");
+        assert_eq!(
+            world.corpses.len(),
+            1,
+            "retransmits must never duplicate the corpse"
+        );
 
         // A DIFFERENT request id from the same peer is a new death → spawns.
         let second =
             apply_corpse_spawn_request(&mut world, &mut processed, 1004, 8, spawn_data(items));
         assert!(second.is_some());
         assert_eq!(world.corpses.len(), 2);
-        assert_ne!(first.unwrap(), second.unwrap(), "host-assigned ids stay unique");
+        assert_ne!(
+            first.unwrap(),
+            second.unwrap(),
+            "host-assigned ids stay unique"
+        );
     }
 
     #[test]
@@ -4246,8 +4400,15 @@ mod tests {
         let mut processed: HashSet<(u16, u64)> = HashSet::new();
         let pos = [10.0f32, 1.8, 20.0];
         let corpse_id = world.spawn_corpse(
-            1004, "Joel".into(), Vec3::from_array(pos), [0; 4], 0,
-            vec![crate::world::corpse::CorpseStack { item_id: -55, quantity: 2 }],
+            1004,
+            "Joel".into(),
+            Vec3::from_array(pos),
+            [0; 4],
+            0,
+            vec![crate::world::corpse::CorpseStack {
+                item_id: -55,
+                quantity: 2,
+            }],
         );
 
         let take_data = |corpse_id: u32, quantity: u16, requester_pos: [f32; 3]| CorpseTakeData {
@@ -4259,10 +4420,20 @@ mod tests {
 
         // Accepted take, then retransmit of the SAME request → deduped (no double removal).
         let verdict = apply_corpse_take_request(
-            &mut world, &mut processed, 1004, 21, take_data(corpse_id, 1, pos),
+            &mut world,
+            &mut processed,
+            1004,
+            21,
+            take_data(corpse_id, 1, pos),
         );
         match verdict {
-            Some(PacketPayload::CorpseTakeResult { accepted, item_id, quantity, corpse_empty, .. }) => {
+            Some(PacketPayload::CorpseTakeResult {
+                accepted,
+                item_id,
+                quantity,
+                corpse_empty,
+                ..
+            }) => {
                 assert!(accepted);
                 assert_eq!(item_id, -55);
                 assert_eq!(quantity, 1);
@@ -4271,7 +4442,11 @@ mod tests {
             other => panic!("expected verdict, got {other:?}"),
         }
         let dup = apply_corpse_take_request(
-            &mut world, &mut processed, 1004, 21, take_data(corpse_id, 1, pos),
+            &mut world,
+            &mut processed,
+            1004,
+            21,
+            take_data(corpse_id, 1, pos),
         );
         assert!(dup.is_none(), "retransmitted take must be deduped");
         assert_eq!(
@@ -4282,10 +4457,18 @@ mod tests {
         // Rejected take (too far) still produces a verdict so the requester can roll back.
         let far = [9999.0f32, 0.0, 9999.0];
         let rejected = apply_corpse_take_request(
-            &mut world, &mut processed, 1004, 22, take_data(corpse_id, 1, far),
+            &mut world,
+            &mut processed,
+            1004,
+            22,
+            take_data(corpse_id, 1, far),
         );
         match rejected {
-            Some(PacketPayload::CorpseTakeResult { accepted, ref reason, .. }) => {
+            Some(PacketPayload::CorpseTakeResult {
+                accepted,
+                ref reason,
+                ..
+            }) => {
                 assert!(!accepted);
                 assert!(reason.starts_with("too_far"), "reason was: {reason}");
             }
@@ -4294,10 +4477,19 @@ mod tests {
 
         // Depleting take reports corpse_empty=true and removes the entry.
         let deplete = apply_corpse_take_request(
-            &mut world, &mut processed, 1004, 23, take_data(corpse_id, 9, pos),
+            &mut world,
+            &mut processed,
+            1004,
+            23,
+            take_data(corpse_id, 9, pos),
         );
         match deplete {
-            Some(PacketPayload::CorpseTakeResult { accepted, quantity, corpse_empty, .. }) => {
+            Some(PacketPayload::CorpseTakeResult {
+                accepted,
+                quantity,
+                corpse_empty,
+                ..
+            }) => {
                 assert!(accepted);
                 assert_eq!(quantity, 1);
                 assert!(corpse_empty);
@@ -4336,8 +4528,7 @@ mod tests {
         assert!(items.is_empty());
 
         // Short equipment array fills what it has; extra entries beyond 4 are ignored.
-        let (equipment, _, _) =
-            parse_death_loot(&serde_json::json!({ "equipment": [1, 2] }));
+        let (equipment, _, _) = parse_death_loot(&serde_json::json!({ "equipment": [1, 2] }));
         assert_eq!(equipment, [1, 2, 0, 0]);
     }
 
@@ -4361,9 +4552,21 @@ mod tests {
             action_type: "report_inventory".into(),
             data: serde_json::json!({ "items": items }),
         };
-        handle_action(&action, &mut player, &mut world, &mut net, &tx, &mut processed, 0).await;
+        handle_action(
+            &action,
+            &mut player,
+            &mut world,
+            &mut net,
+            &tx,
+            &mut processed,
+            0,
+        )
+        .await;
 
-        assert_eq!(player.stp_inventory.len(), crate::world::corpse::MAX_CORPSE_STACKS);
+        assert_eq!(
+            player.stp_inventory.len(),
+            crate::world::corpse::MAX_CORPSE_STACKS
+        );
         assert!(player.stp_inventory.iter().all(|s| s.quantity > 0));
         // First valid stack survives; the zero-quantity one never entered.
         assert_eq!(player.stp_inventory[0].item_id, 1000);
@@ -4375,7 +4578,16 @@ mod tests {
             action_type: "report_inventory".into(),
             data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
         };
-        handle_action(&action, &mut player, &mut world, &mut net, &tx, &mut processed, 0).await;
+        handle_action(
+            &action,
+            &mut player,
+            &mut world,
+            &mut net,
+            &tx,
+            &mut processed,
+            0,
+        )
+        .await;
         assert_eq!(player.stp_inventory.len(), 1);
         assert_eq!(player.stp_inventory[0].item_id, 42);
         assert_eq!(player.stp_inventory[0].quantity, 3);
@@ -4409,7 +4621,11 @@ mod tests {
             p[0].is_finite() && p[1].is_finite() && p[2].is_finite(),
             "phantom pose must be finite"
         );
-        assert!(p[1] > 0.0, "phantom must be grounded on a real floor, got y={}", p[1]);
+        assert!(
+            p[1] > 0.0,
+            "phantom must be grounded on a real floor, got y={}",
+            p[1]
+        );
     }
 
     #[tokio::test]
@@ -4526,7 +4742,12 @@ mod tests {
         let spawn_pos = net.peers[&pid].position; // actual (grid_gen-snapped) spawn position
         let world = World::new(42);
         let mut driver = PhantomDriver::new(world.seed);
-        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(spawn_pos), true);
+        driver.add(
+            pid,
+            PHANTOM_INITIAL_HEADING,
+            Vec3::from_array(spawn_pos),
+            true,
+        );
         // Force the gesture to be due now (instead of after the cooldown).
         driver.movers[0].next_pickup_at = Instant::now();
 
@@ -4542,7 +4763,10 @@ mod tests {
         // INVARIANT: nothing real changed — the item still exists, no reservation, no grant.
         assert_eq!(net.stp_items.len(), 1, "phantom must NOT remove real items");
         assert!(net.stp_items.iter().any(|it| it.id == 7));
-        assert!(net.pending_pickups.is_empty(), "phantom must NOT reserve pickups");
+        assert!(
+            net.pending_pickups.is_empty(),
+            "phantom must NOT reserve pickups"
+        );
         assert!(
             net.processed_stp_pickup_grants.is_empty(),
             "phantom must NOT process any pickup grant"
@@ -4560,7 +4784,12 @@ mod tests {
         assert!(!bound0, "fallback spawn must be unbound");
         let pid = net.spawn_phantom(&name0, [0.0, 1.8, 0.0]);
         let mut driver = PhantomDriver::new(42);
-        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::new(0.0, 1.8, 0.0), bound0);
+        driver.add(
+            pid,
+            PHANTOM_INITIAL_HEADING,
+            Vec3::new(0.0, 1.8, 0.0),
+            bound0,
+        );
 
         // A real victim connects with a name.
         let victim_id = 2;
@@ -4573,7 +4802,10 @@ mod tests {
         driver.rebind_unbound_victims(&mut net);
 
         // The phantom now wears the victim's NAME…
-        assert_eq!(net.peers[&pid].name, "Joel", "phantom must clone the victim name");
+        assert_eq!(
+            net.peers[&pid].name, "Joel",
+            "phantom must clone the victim name"
+        );
         // …but keeps its OWN unique phantom id (never the victim's id — the subtle tell).
         assert_ne!(pid, victim_id);
         assert!(net.is_phantom(pid));
@@ -4645,7 +4877,9 @@ mod tests {
         // DETECT_RADIUS (15), but inside DETECT + SOUND_BONUS (23).
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         // Seed last-tick position 1 m back → 10 m/s this tick (> RUN_THRESHOLD, < sanity cap).
-        driver.prev_target_pos.insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
+        driver
+            .prev_target_pos
+            .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
         let player = Vec3::new(-18.0, 1.8, 0.0);
 
         driver.step(&mut net, 0.1, player, 0.0);
@@ -4670,11 +4904,17 @@ mod tests {
         assert!((lerp_heading(1.0, 2.0, 0.0) - 1.0).abs() < 1e-3);
         // A partial ease lands strictly between current and target.
         let mid = lerp_heading(0.0, FRAC_PI_2, 0.5);
-        assert!(mid > 0.01 && mid < FRAC_PI_2 - 0.01, "partial ease, got {mid}");
+        assert!(
+            mid > 0.01 && mid < FRAC_PI_2 - 0.01,
+            "partial ease, got {mid}"
+        );
         // Shorter arc: 350° → 10° must cross 0, not swing the long way through 180°.
         let h = lerp_heading(350f32.to_radians(), 10f32.to_radians(), 0.5);
         let dist_to_zero = h.min(TAU - h);
-        assert!(dist_to_zero < 0.2, "must take the shorter arc through 0, got {h}");
+        assert!(
+            dist_to_zero < 0.2,
+            "must take the shorter arc through 0, got {h}"
+        );
     }
 
     #[tokio::test]
@@ -4695,7 +4935,10 @@ mod tests {
 
         let attack = driver.step(&mut net, 0.1, player, player_yaw);
 
-        assert!(matches!(attack, PhantomAttack::Kill), "behind-attack must KILL, got {attack:?}");
+        assert!(
+            matches!(attack, PhantomAttack::Kill),
+            "behind-attack must KILL, got {attack:?}"
+        );
     }
 
     #[tokio::test]
@@ -4718,7 +4961,11 @@ mod tests {
             matches!(attack, PhantomAttack::Hit(d) if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
             "frontal attack must HIT for {PHANTOM_ATTACK_DAMAGE}, got {attack:?}"
         );
-        assert_eq!(driver.movers[0].state, PhantomState::Stalk, "must bounce to STALK after a hit");
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Stalk,
+            "must bounce to STALK after a hit"
+        );
     }
 
     #[tokio::test]
@@ -4972,7 +5219,11 @@ mod tests {
             5085425,     // STP_Stone Spear
         ];
         // -52379 (STP_Wooden Spear) is the 8th; kept separate only to name every id explicitly.
-        let all_ids: Vec<i32> = real_ids.iter().copied().chain(std::iter::once(-52379)).collect();
+        let all_ids: Vec<i32> = real_ids
+            .iter()
+            .copied()
+            .chain(std::iter::once(-52379))
+            .collect();
 
         for (i, id) in all_ids.iter().enumerate() {
             let mut dedupe = BoundedDedupeSet::with_capacity(8);
@@ -4998,7 +5249,12 @@ mod tests {
         let mut world = World::new(42);
         let mut processed = HashSet::new();
         let pos = Vec3::new(10.0, 1.8, 20.0);
-        let loot = || vec![CorpseStack { item_id: -5498592, quantity: 2 }];
+        let loot = || {
+            vec![CorpseStack {
+                item_id: -5498592,
+                quantity: 2,
+            }]
+        };
 
         // Non-host never seeds (joiners mirror via CorpseList instead).
         assert_eq!(
@@ -5031,13 +5287,13 @@ mod tests {
     fn consumable_spec_resolves_all_seven_real_item_ids() {
         // Each of the 7 real STP consumable ids must resolve to a spec (ADR-030 allowlist).
         let real_ids: [i32; 7] = [
-            -5498592,  // STP_Apple
-            1045632,   // STP_Cooked Meat
-            -7862085,  // STP_Energy Bar
-            6285896,   // STP_Large Food Can
-            -7580928,  // STP_Small Food Can
-            7983286,   // STP_Water Bottle
-            -7174886,  // STP_Antibiotics
+            -5498592, // STP_Apple
+            1045632,  // STP_Cooked Meat
+            -7862085, // STP_Energy Bar
+            6285896,  // STP_Large Food Can
+            -7580928, // STP_Small Food Can
+            7983286,  // STP_Water Bottle
+            -7174886, // STP_Antibiotics
         ];
         for id in real_ids {
             assert!(
@@ -5078,7 +5334,10 @@ mod tests {
 
         let blocked = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 200, 30.0, 100);
         assert_eq!(blocked, Err("victim_invulnerable"));
-        assert_eq!(stats.health, health_before, "a blocked grant must not touch health");
+        assert_eq!(
+            stats.health, health_before,
+            "a blocked grant must not touch health"
+        );
 
         // Past the invuln window (tick >= invuln_until_tick), a fresh request_id applies.
         let applied = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 201, 30.0, 600);
@@ -5105,7 +5364,11 @@ mod tests {
     fn resolve_respawn_without_bed_uses_fixed_starter() {
         let mut world = crate::world::World::new(1);
         let res = resolve_respawn(&mut world, None, 1);
-        assert_eq!(res.chunk, (0, 0), "no bed → the fixed starter spawn (chunk 0,0)");
+        assert_eq!(
+            res.chunk,
+            (0, 0),
+            "no bed → the fixed starter spawn (chunk 0,0)"
+        );
     }
 
     #[test]
@@ -5115,9 +5378,14 @@ mod tests {
         insert_clean_flat_chunk(&mut world, (10, 10));
         let bed = Vec3::new(10.0 * CHUNK_SIZE + 25.0, 1.8, 10.0 * CHUNK_SIZE + 25.0);
         let res = resolve_respawn(&mut world, Some(bed), 1);
-        assert_eq!(res.chunk, (10, 10), "a bed must pull the respawn to the bed's chunk, not (0,0)");
+        assert_eq!(
+            res.chunk,
+            (10, 10),
+            "a bed must pull the respawn to the bed's chunk, not (0,0)"
+        );
         assert!(
-            (res.position.x - bed.x).abs() < CHUNK_SIZE && (res.position.z - bed.z).abs() < CHUNK_SIZE,
+            (res.position.x - bed.x).abs() < CHUNK_SIZE
+                && (res.position.z - bed.z).abs() < CHUNK_SIZE,
             "respawn should land in the bed's chunk near the bed, got {:?}",
             res.position
         );
@@ -5148,7 +5416,13 @@ mod tests {
 
         // A third entry exceeds capacity → evicts the OLDEST, (1,1). (1,2)/(1,3) stay.
         assert!(dedupe.insert((1, 3)));
-        assert!(dedupe.insert((1, 1)), "evicted entry must be insertable again");
-        assert!(!dedupe.insert((1, 3)), "not-yet-evicted entry must stay deduped");
+        assert!(
+            dedupe.insert((1, 1)),
+            "evicted entry must be insertable again"
+        );
+        assert!(
+            !dedupe.insert((1, 3)),
+            "not-yet-evicted entry must stay deduped"
+        );
     }
 }

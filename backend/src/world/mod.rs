@@ -232,8 +232,8 @@ impl World {
         self.v30a_chunk_cache = None;
         self.view_cache = None;
         self.world_graph = None; // NUEVO
-        // ADR-028: adopting a remote world discards local corpses (none should exist
-        // yet at join time; consistent with chunks.clear()).
+                                 // ADR-028: adopting a remote world discards local corpses (none should exist
+                                 // yet at join time; consistent with chunks.clear()).
         self.corpses.clear();
     }
 
