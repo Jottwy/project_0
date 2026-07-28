@@ -62,8 +62,8 @@ pub fn chunk_tile_walls(
 /// hand-built grid.
 pub fn tile_walls_from_grid(grid: &LayerGrid) -> [[u8; TILES_PER_SIDE]; TILES_PER_SIDE] {
     let mut walls = [[0u8; TILES_PER_SIDE]; TILES_PER_SIDE];
-    for tx in 0..TILES_PER_SIDE {
-        for tz in 0..TILES_PER_SIDE {
+    for (tx, column) in walls.iter_mut().enumerate() {
+        for (tz, cell) in column.iter_mut().enumerate() {
             let x0 = (tx * 2) as i32; // west cell column
             let x1 = x0 + 1; // east cell column
             let z0 = (tz * 2) as i32; // north (−Z) cell row
@@ -86,14 +86,17 @@ pub fn tile_walls_from_grid(grid: &LayerGrid) -> [[u8; TILES_PER_SIDE]; TILES_PE
             if !edge_open(grid, &[((x0, z0), (x0 - 1, z0)), ((x0, z1), (x0 - 1, z1))]) {
                 bits |= WALL_W;
             }
-            walls[tx][tz] = bits;
+            *cell = bits;
         }
     }
     walls
 }
 
+/// One edge crossing: a 2.5 m cell pair straddling a tile boundary.
+type EdgeCrossing = ((i32, i32), (i32, i32));
+
 /// True if any of the given (interior_cell, neighbour_cell) crossings is passable.
-fn edge_open(grid: &LayerGrid, crossings: &[((i32, i32), (i32, i32))]) -> bool {
+fn edge_open(grid: &LayerGrid, crossings: &[EdgeCrossing]) -> bool {
     crossings.iter().any(|&(inner, neighbour)| {
         cell_walkable(grid, inner.0, inner.1)
             && neighbour_walkable_or_open(grid, neighbour.0, neighbour.1)

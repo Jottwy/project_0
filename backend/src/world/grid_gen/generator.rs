@@ -109,7 +109,10 @@ pub fn generate_layer(
             .iter()
             .filter_map(|&(dx, dz)| {
                 let (nx, nz) = (cx + dx, cz + dz);
-                if nx >= 1 && nz >= 1 && nx <= NODE_MAX && nz <= NODE_MAX
+                if nx >= 1
+                    && nz >= 1
+                    && nx <= NODE_MAX
+                    && nz <= NODE_MAX
                     && grid.get(nx as usize, nz as usize).is_solid()
                 {
                     Some((nx, nz))
@@ -198,7 +201,11 @@ pub fn generate_layer(
 
         for cz in z0..z1 {
             for cx in x0..x1 {
-                grid.set(cx as usize, cz as usize, Cell::new(CellType::Open, rules.ceiling_open, zid));
+                grid.set(
+                    cx as usize,
+                    cz as usize,
+                    Cell::new(CellType::Open, rules.ceiling_open, zid),
+                );
             }
         }
 
@@ -208,7 +215,11 @@ pub fn generate_layer(
                 let mut px = x0 + 2;
                 while px < x1 - 1 {
                     if rng.gen::<f32>() < rules.pillar_chance {
-                        grid.set(px as usize, pz as usize, Cell::new(CellType::Pillar, 0, zid));
+                        grid.set(
+                            px as usize,
+                            pz as usize,
+                            Cell::new(CellType::Pillar, 0, zid),
+                        );
                     }
                     px += 3;
                 }
@@ -361,7 +372,9 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
                         let (nx, nz) = (cx as i32 + dx, cz as i32 + dz);
                         if LayerGrid::in_bounds(nx, nz) {
                             let (nx, nz) = (nx as usize, nz as usize);
-                            if grid.get(nx, nz).is_walkable() && comp[nz * CHUNK_CELLS + nx] == u32::MAX {
+                            if grid.get(nx, nz).is_walkable()
+                                && comp[nz * CHUNK_CELLS + nx] == u32::MAX
+                            {
                                 comp[nz * CHUNK_CELLS + nx] = id;
                                 stack.push((nx, nz));
                             }
@@ -416,8 +429,11 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
                 }
                 let cell = grid.get(nxu, nzu);
                 let passable = cell.is_walkable()
-                    || (cell.kind() == CellType::Wall && nx > 0 && nz > 0
-                        && nxu < CHUNK_CELLS - 1 && nzu < CHUNK_CELLS - 1);
+                    || (cell.kind() == CellType::Wall
+                        && nx > 0
+                        && nz > 0
+                        && nxu < CHUNK_CELLS - 1
+                        && nzu < CHUNK_CELLS - 1);
                 if !passable {
                     continue;
                 }
@@ -472,7 +488,11 @@ fn splitmix64(mut z: u64) -> u64 {
 /// XOR-of-products mix where symmetric coordinates could correlate.
 #[inline]
 pub(super) fn mix(state: u64, value: u64) -> u64 {
-    splitmix64(state.wrapping_add(0x9e37_79b9_7f4a_7c15).wrapping_add(value))
+    splitmix64(
+        state
+            .wrapping_add(0x9e37_79b9_7f4a_7c15)
+            .wrapping_add(value),
+    )
 }
 
 /// Deterministic seed for one (chunk, layer) pair, unique across the world grid.
@@ -482,23 +502,6 @@ fn derive_seed(world_seed: u64, (cx, cz): (i32, i32), layer_index: i32) -> u64 {
     s = mix(s, cz as i64 as u64);
     s = mix(s, layer_index as i64 as u64);
     s
-}
-
-#[cfg(test)]
-mod hash_tests {
-    use super::*;
-
-    /// El fix: el plegado SplitMix64 NO conmuta (a diferencia del XOR-of-products
-    /// anterior), así que transponer entradas cambia la seed → coords de chunk
-    /// simétricas respecto a la diagonal dejan de correlacionar. Además, un cambio
-    /// de un solo bit en la entrada debe difundirse ampliamente (avalancha).
-    #[test]
-    fn mix_is_order_dependent_and_diffuses() {
-        let s = 0xBACC_0085;
-        assert_ne!(mix(mix(s, 3), 7), mix(mix(s, 7), 3), "mix no debe conmutar");
-        let flips = (mix(s, 0) ^ mix(s, 1)).count_ones();
-        assert!(flips >= 8, "un bit de entrada debe avalanchar, solo {flips} bits cambiaron");
-    }
 }
 
 /// True if the zone has at least one walkable neighbour cell outside its bounds.
@@ -524,14 +527,7 @@ fn is_zone_connected(grid: &LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32) -> bo
 
 /// Punch a single-cell-wide corridor from the zone border to the nearest
 /// existing maze corridor outside the zone.
-fn connect_zone_to_maze(
-    grid: &mut LayerGrid,
-    x0: i32,
-    z0: i32,
-    x1: i32,
-    z1: i32,
-    ceiling: u8,
-) {
+fn connect_zone_to_maze(grid: &mut LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32, ceiling: u8) {
     let cx_center = (x0 + x1) / 2;
     let cz_center = (z0 + z1) / 2;
 
@@ -557,7 +553,11 @@ fn connect_zone_to_maze(
         Some(p) => p,
         None => {
             // No maze exists yet — open the zone's first interior corner.
-            grid.set(x0 as usize, z0 as usize, Cell::new(CellType::Corridor, ceiling, 0));
+            grid.set(
+                x0 as usize,
+                z0 as usize,
+                Cell::new(CellType::Corridor, ceiling, 0),
+            );
             return;
         }
     };
@@ -571,9 +571,37 @@ fn connect_zone_to_maze(
     while cx != tx || cz != tz {
         let dx = (tx - cx).signum();
         let dz = (tz - cz).signum();
-        if dx != 0 { cx += dx; } else { cz += dz; }
-        if !grid.get(cx as usize, cz as usize).is_walkable() {
-            grid.set(cx as usize, cz as usize, Cell::new(CellType::Corridor, ceiling, 0));
+        if dx != 0 {
+            cx += dx;
+        } else {
+            cz += dz;
         }
+        if !grid.get(cx as usize, cz as usize).is_walkable() {
+            grid.set(
+                cx as usize,
+                cz as usize,
+                Cell::new(CellType::Corridor, ceiling, 0),
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    /// El fix: el plegado SplitMix64 NO conmuta (a diferencia del XOR-of-products
+    /// anterior), así que transponer entradas cambia la seed → coords de chunk
+    /// simétricas respecto a la diagonal dejan de correlacionar. Además, un cambio
+    /// de un solo bit en la entrada debe difundirse ampliamente (avalancha).
+    #[test]
+    fn mix_is_order_dependent_and_diffuses() {
+        let s = 0xBACC_0085;
+        assert_ne!(mix(mix(s, 3), 7), mix(mix(s, 7), 3), "mix no debe conmutar");
+        let flips = (mix(s, 0) ^ mix(s, 1)).count_ones();
+        assert!(
+            flips >= 8,
+            "un bit de entrada debe avalanchar, solo {flips} bits cambiaron"
+        );
     }
 }

@@ -66,7 +66,10 @@ fn all_walkable_cells_are_connected() {
             let rules = &LAYER_PROFILES[layer_index as usize];
             let out = generate_layer(rules, seed, TEST_CHUNK, layer_index, &[]);
             let (reached, total) = flood_fill_walkable(&out.grid);
-            assert!(total > 0, "seed {seed} capa {layer_index}: grid sin celdas transitables");
+            assert!(
+                total > 0,
+                "seed {seed} capa {layer_index}: grid sin celdas transitables"
+            );
             assert_eq!(
                 reached, total,
                 "seed {seed} capa {layer_index} ({}): {} de {} celdas transitables alcanzables — hay zonas aisladas (§5 falló)",
@@ -93,7 +96,10 @@ fn sealing_preserves_main_component() {
     for seed in seeds {
         let out = generate_layer(rules, seed, TEST_CHUNK, 3, &[]);
         let (reached, total) = flood_fill_walkable(&out.grid);
-        assert_eq!(reached, total, "seed {seed} capa 3: aún hay componentes aisladas");
+        assert_eq!(
+            reached, total,
+            "seed {seed} capa 3: aún hay componentes aisladas"
+        );
 
         // Umbral: un sellado catastrófico deja el bolsillo (1–2 celdas) como
         // único superviviente. Un laberinto legítimamente pequeño (la rama del
@@ -152,7 +158,11 @@ fn different_seeds_produce_different_grids() {
     let rules = &LAYER_PROFILES[1];
     let a = generate_layer(rules, TEST_SEED, TEST_CHUNK, 1, &[]);
     let b = generate_layer(rules, TEST_SEED + 1, TEST_CHUNK, 1, &[]);
-    assert_ne!(a.grid.cells(), b.grid.cells(), "seeds distintas produjeron el mismo grid");
+    assert_ne!(
+        a.grid.cells(),
+        b.grid.cells(),
+        "seeds distintas produjeron el mismo grid"
+    );
 }
 
 #[test]
@@ -160,7 +170,11 @@ fn different_chunk_coords_produce_different_grids() {
     let rules = &LAYER_PROFILES[1];
     let a = generate_layer(rules, TEST_SEED, (0, 0), 1, &[]);
     let b = generate_layer(rules, TEST_SEED, (1, 0), 1, &[]);
-    assert_ne!(a.grid.cells(), b.grid.cells(), "chunks distintos produjeron el mismo grid");
+    assert_ne!(
+        a.grid.cells(),
+        b.grid.cells(),
+        "chunks distintos produjeron el mismo grid"
+    );
 }
 
 // ── 3. Escaleras/pozos con destino garantizado ────────────────────────────────
@@ -209,10 +223,26 @@ fn stair_and_pit_counts_match_rules() {
     for layer_index in 0..LAYER_PROFILES.len() as i32 {
         let rules = &LAYER_PROFILES[layer_index as usize];
         let out = gen(layer_index, &[]);
-        let stairs = out.grid.cells().iter().filter(|c| c.kind() == CellType::Stair).count();
-        let pits = out.grid.cells().iter().filter(|c| c.kind() == CellType::Pit).count();
-        assert_eq!(stairs, rules.num_stairs as usize, "capa {layer_index}: nº de escaleras no respeta el perfil");
-        assert_eq!(pits, rules.num_pits as usize, "capa {layer_index}: nº de pozos no respeta el perfil");
+        let stairs = out
+            .grid
+            .cells()
+            .iter()
+            .filter(|c| c.kind() == CellType::Stair)
+            .count();
+        let pits = out
+            .grid
+            .cells()
+            .iter()
+            .filter(|c| c.kind() == CellType::Pit)
+            .count();
+        assert_eq!(
+            stairs, rules.num_stairs as usize,
+            "capa {layer_index}: nº de escaleras no respeta el perfil"
+        );
+        assert_eq!(
+            pits, rules.num_pits as usize,
+            "capa {layer_index}: nº de pozos no respeta el perfil"
+        );
     }
 }
 
@@ -228,8 +258,18 @@ fn layer_profiles_change_the_output() {
     for seed in [TEST_SEED, 7, 1234, 555_555] {
         let v = generate_layer(&LAYER_PROFILES[0], seed, TEST_CHUNK, 0, &[]);
         let c = generate_layer(&LAYER_PROFILES[2], seed, TEST_CHUNK, 2, &[]);
-        open_0 += v.grid.cells().iter().filter(|c| c.kind() != CellType::Wall).count();
-        open_2 += c.grid.cells().iter().filter(|c| c.kind() != CellType::Wall).count();
+        open_0 += v
+            .grid
+            .cells()
+            .iter()
+            .filter(|c| c.kind() != CellType::Wall)
+            .count();
+        open_2 += c
+            .grid
+            .cells()
+            .iter()
+            .filter(|c| c.kind() != CellType::Wall)
+            .count();
     }
     assert!(
         open_2 > open_0 + open_0 / 4,
@@ -275,8 +315,14 @@ fn seam_apertures_match_between_neighbours() {
             let west_b: Vec<usize> = (0..CHUNK_CELLS)
                 .filter(|&z| b.grid.get(0, z).is_walkable())
                 .collect();
-            assert!(!east_a.is_empty(), "seed {seed} capa {layer_index}: borde este de (0,0) sin apertura");
-            assert_eq!(east_a, west_b, "seed {seed} capa {layer_index}: aperturas E/O no coinciden");
+            assert!(
+                !east_a.is_empty(),
+                "seed {seed} capa {layer_index}: borde este de (0,0) sin apertura"
+            );
+            assert_eq!(
+                east_a, west_b,
+                "seed {seed} capa {layer_index}: aperturas E/O no coinciden"
+            );
 
             // Norte↔Sur
             let c = generate_chunk_layer(rules, seed, (0, 1), layer_index, &[]);
@@ -286,8 +332,14 @@ fn seam_apertures_match_between_neighbours() {
             let south_c: Vec<usize> = (0..CHUNK_CELLS)
                 .filter(|&x| c.grid.get(x, 0).is_walkable())
                 .collect();
-            assert!(!north_a.is_empty(), "seed {seed} capa {layer_index}: borde norte de (0,0) sin apertura");
-            assert_eq!(north_a, south_c, "seed {seed} capa {layer_index}: aperturas N/S no coinciden");
+            assert!(
+                !north_a.is_empty(),
+                "seed {seed} capa {layer_index}: borde norte de (0,0) sin apertura"
+            );
+            assert_eq!(
+                north_a, south_c,
+                "seed {seed} capa {layer_index}: aperturas N/S no coinciden"
+            );
         }
     }
 }
@@ -307,7 +359,13 @@ fn merged_3x3_chunks_are_globally_connected() {
             let mut merged = vec![Cell::SOLID_WALL; side * side];
             for ccz in 0..N {
                 for ccx in 0..N {
-                    let out = generate_chunk_layer(rules, seed, (ccx as i32, ccz as i32), layer_index, &[]);
+                    let out = generate_chunk_layer(
+                        rules,
+                        seed,
+                        (ccx as i32, ccz as i32),
+                        layer_index,
+                        &[],
+                    );
                     for z in 0..CHUNK_CELLS {
                         for x in 0..CHUNK_CELLS {
                             merged[(ccz * CHUNK_CELLS + z) * side + ccx * CHUNK_CELLS + x] =
@@ -320,8 +378,8 @@ fn merged_3x3_chunks_are_globally_connected() {
             // Flood-fill global sobre el grid fusionado.
             let mut total = 0usize;
             let mut start = None;
-            for i in 0..side * side {
-                if merged[i].is_walkable() {
+            for (i, cell) in merged.iter().enumerate() {
+                if cell.is_walkable() {
                     total += 1;
                     if start.is_none() {
                         start = Some(i);
