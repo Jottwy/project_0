@@ -24,13 +24,13 @@ pub const MAX_CEILING_UNITS: u8 = 6;
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum CellType {
-    Wall    = 0,
+    Wall = 0,
     Corridor = 1,
-    Open    = 2,
-    Pillar  = 3,
-    Stair   = 4,
-    Pit     = 5,
-    Void    = 6,
+    Open = 2,
+    Pillar = 3,
+    Stair = 4,
+    Pit = 5,
+    Void = 6,
     Anomaly = 7,
 }
 
@@ -42,8 +42,11 @@ impl CellType {
     pub fn is_walkable(self) -> bool {
         matches!(
             self,
-            CellType::Corridor | CellType::Open | CellType::Stair
-                | CellType::Pit | CellType::Anomaly
+            CellType::Corridor
+                | CellType::Open
+                | CellType::Stair
+                | CellType::Pit
+                | CellType::Anomaly
         )
     }
 }
@@ -142,7 +145,10 @@ mod tests {
         assert_eq!(LAYER_HEIGHT_M, 4.0);
 
         // Cell::kind() es inverso de CellType as u8
-        assert_eq!(Cell::new(CellType::Corridor, 2, 0).kind(), CellType::Corridor);
+        assert_eq!(
+            Cell::new(CellType::Corridor, 2, 0).kind(),
+            CellType::Corridor
+        );
         assert_eq!(Cell::SOLID_WALL.kind(), CellType::Wall);
     }
 

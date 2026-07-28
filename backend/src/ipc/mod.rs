@@ -377,13 +377,20 @@ mod tests {
                 event_type: event_type.into(),
                 data: serde_json::json!({ key: [22.5f32, 1.8, 22.5] }),
             });
-            let frame = encode(&msg).unwrap_or_else(|e| panic!("{event_type} failed to encode: {e}"));
+            let frame =
+                encode(&msg).unwrap_or_else(|e| panic!("{event_type} failed to encode: {e}"));
             // Decode the body as a generic msgpack map (as Unity's reader does) and check the tag.
             let val: serde_json::Value = rmp_serde::from_slice(&frame[4..])
                 .unwrap_or_else(|e| panic!("{event_type} body not a decodable map: {e}"));
             assert_eq!(val.get("type").and_then(|v| v.as_str()), Some("event"));
-            assert_eq!(val.get("event_type").and_then(|v| v.as_str()), Some(event_type));
-            assert!(val.get("data").and_then(|d| d.get(key)).is_some(), "{event_type} data missing {key}");
+            assert_eq!(
+                val.get("event_type").and_then(|v| v.as_str()),
+                Some(event_type)
+            );
+            assert!(
+                val.get("data").and_then(|d| d.get(key)).is_some(),
+                "{event_type} data missing {key}"
+            );
         }
     }
 
@@ -511,8 +518,14 @@ mod tests {
                 equipment: [101, 0, -303, 404],
                 held_item: -12345,
                 items: vec![
-                    ItemStackView { item_id: -12345, quantity: 3 },
-                    ItemStackView { item_id: 99, quantity: 1 },
+                    ItemStackView {
+                        item_id: -12345,
+                        quantity: 3,
+                    },
+                    ItemStackView {
+                        item_id: 99,
+                        quantity: 1,
+                    },
                 ],
                 is_chest: false,
             }],

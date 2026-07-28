@@ -1147,7 +1147,11 @@ impl Level0Builder {
     }
 
     fn place_multilayer_showcase(&mut self) {
-        let target_layer: ChunkLayer = if self.world_seed.is_multiple_of(2) { -1 } else { 1 };
+        let target_layer: ChunkLayer = if self.world_seed.is_multiple_of(2) {
+            -1
+        } else {
+            1
+        };
         let connector_kind = if target_layer > 0 {
             "broad_stairwell"
         } else {

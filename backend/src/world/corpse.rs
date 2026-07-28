@@ -293,7 +293,13 @@ mod tests {
         let taken = world
             .take_corpse_item(id, 0, 2, pos, CORPSE_LOOT_MAX_DISTANCE)
             .unwrap();
-        assert_eq!(taken, CorpseStack { item_id: -12345, quantity: 2 });
+        assert_eq!(
+            taken,
+            CorpseStack {
+                item_id: -12345,
+                quantity: 2
+            }
+        );
         assert_eq!(world.corpses[&id].items, stacks(&[(-12345, 3)]));
 
         // Over-ask clamps to what remains; corpse now empty → entry removed.
@@ -324,16 +330,15 @@ mod tests {
         let mut world = World::new(42);
         let center = Vec3::new(25.0, 1.8, 25.0); // chunk (0,0)
         let chunk_size = world.config.chunk_size;
-        let radius = world.config.unload_radius.max(world.config.ownership_radius);
+        let radius = world
+            .config
+            .unload_radius
+            .max(world.config.ownership_radius);
 
         // In range: same chunk. Out of range: (radius+2) chunks away on X.
         let near = spawn_test_corpse(&mut world, center, stacks(&[(1, 1)]));
         let far_x = (radius as f32 + 2.0) * chunk_size + 25.0;
-        let _far = spawn_test_corpse(
-            &mut world,
-            Vec3::new(far_x, 1.8, 25.0),
-            stacks(&[(2, 1)]),
-        );
+        let _far = spawn_test_corpse(&mut world, Vec3::new(far_x, 1.8, 25.0), stacks(&[(2, 1)]));
 
         let views = world.visible_corpse_views(center);
         assert_eq!(views.len(), 1);
@@ -372,27 +377,51 @@ mod tests {
         let taken = world
             .take_corpse_item(id, 0, 99, pos, CORPSE_LOOT_MAX_DISTANCE)
             .unwrap();
-        assert_eq!(taken, CorpseStack { item_id: -5498592, quantity: 3 });
+        assert_eq!(
+            taken,
+            CorpseStack {
+                item_id: -5498592,
+                quantity: 3
+            }
+        );
         let taken = world
             .take_corpse_item(id, 0, 1, pos, CORPSE_LOOT_MAX_DISTANCE)
             .unwrap();
-        assert_eq!(taken, CorpseStack { item_id: 9692212, quantity: 1 });
+        assert_eq!(
+            taken,
+            CorpseStack {
+                item_id: 9692212,
+                quantity: 1
+            }
+        );
         assert!(!world.corpses.contains_key(&id));
-        assert!(world.corpses.contains_key(&corpse_id), "the real corpse must be untouched");
+        assert!(
+            world.corpses.contains_key(&corpse_id),
+            "the real corpse must be untouched"
+        );
     }
 
     // ADR-032 amendment: the shared hygiene helper — quantity<=0 dropped FIRST, then the
     // survivors truncated to MAX_CORPSE_STACKS (first 64 kept, 65+ discarded).
     #[test]
     fn sanitize_loot_stacks_drops_zeroes_then_truncates_to_cap() {
-        let mut items = vec![CorpseStack { item_id: -1, quantity: 0 }];
+        let mut items = vec![CorpseStack {
+            item_id: -1,
+            quantity: 0,
+        }];
         for i in 0..(MAX_CORPSE_STACKS as i32 + 6) {
-            items.push(CorpseStack { item_id: i, quantity: 1 });
+            items.push(CorpseStack {
+                item_id: i,
+                quantity: 1,
+            });
         }
         sanitize_loot_stacks(&mut items);
         assert_eq!(items.len(), MAX_CORPSE_STACKS);
         assert!(items.iter().all(|s| s.quantity > 0));
-        assert_eq!(items[0].item_id, 0, "zero-qty stack must not consume a cap slot");
+        assert_eq!(
+            items[0].item_id, 0,
+            "zero-qty stack must not consume a cap slot"
+        );
         assert_eq!(items.last().unwrap().item_id, MAX_CORPSE_STACKS as i32 - 1);
     }
 
@@ -422,10 +451,7 @@ mod tests {
         world.update_ownership(origin, 1);
         let corpse_chunk = crate::utils::world_to_chunk(far_pos);
         assert!(
-            !world
-                .chunks
-                .keys()
-                .any(|k| (k.0, k.2) == corpse_chunk),
+            !world.chunks.keys().any(|k| (k.0, k.2) == corpse_chunk),
             "test premise: the corpse's chunk must actually be unloaded"
         );
 

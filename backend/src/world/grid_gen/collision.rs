@@ -120,9 +120,18 @@ pub fn world_pos_to_layer(y: f32) -> u8 {
 pub fn resolve_spawn_near(seed: u64, pos: [f32; 3]) -> [f32; 3] {
     const OFFSETS: [(f32, f32); 13] = [
         (0.0, 0.0), // original cell first, then a 12-step spiral (±2.5 cross, ±5 cross, ±5 diag)
-        (2.5, 0.0), (0.0, 2.5), (-2.5, 0.0), (0.0, -2.5),
-        (5.0, 0.0), (0.0, 5.0), (-5.0, 0.0), (0.0, -5.0),
-        (5.0, 5.0), (-5.0, 5.0), (5.0, -5.0), (-5.0, -5.0),
+        (2.5, 0.0),
+        (0.0, 2.5),
+        (-2.5, 0.0),
+        (0.0, -2.5),
+        (5.0, 0.0),
+        (0.0, 5.0),
+        (-5.0, 0.0),
+        (0.0, -5.0),
+        (5.0, 5.0),
+        (-5.0, 5.0),
+        (5.0, -5.0),
+        (-5.0, -5.0),
     ];
     let mut cache = GridGenChunkCache::new(seed);
     let layer = world_pos_to_layer(pos[1]);
@@ -276,7 +285,10 @@ mod tests {
         // The result is either a walkable grid_gen cell or the original fallback.
         let mut c = GridGenChunkCache::new(seed);
         let walkable = is_walkable_grid_gen(&mut c, Vec3::new(r[0], r[1], r[2]), 0);
-        assert!(walkable || r == input, "result must be walkable or the original fallback");
+        assert!(
+            walkable || r == input,
+            "result must be walkable or the original fallback"
+        );
     }
 
     #[test]

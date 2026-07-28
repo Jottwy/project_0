@@ -214,8 +214,16 @@ mod tests {
         let mut s = PlayerStats::default();
         s.update(1.0, &StatContext::default());
         // 100 - 0.05, 100 - 0.07 over one second.
-        assert!((s.hunger - 99.95).abs() < 1e-4, "hunger decay should be 0.05/s, got {}", s.hunger);
-        assert!((s.thirst - 99.93).abs() < 1e-4, "thirst decay should be 0.07/s, got {}", s.thirst);
+        assert!(
+            (s.hunger - 99.95).abs() < 1e-4,
+            "hunger decay should be 0.05/s, got {}",
+            s.hunger
+        );
+        assert!(
+            (s.thirst - 99.93).abs() < 1e-4,
+            "thirst decay should be 0.07/s, got {}",
+            s.thirst
+        );
     }
 
     // Balance (2026-07-07): lock in the softened starvation/dehydration damage (5× weaker).
@@ -228,7 +236,11 @@ mod tests {
             ..Default::default()
         };
         s.update(1.0, &StatContext::default());
-        assert!((s.health - 99.0).abs() < 1e-4, "empty hunger+thirst should cost 1.0 HP/s, got {}", s.health);
+        assert!(
+            (s.health - 99.0).abs() < 1e-4,
+            "empty hunger+thirst should cost 1.0 HP/s, got {}",
+            s.health
+        );
 
         // Hunger-only empty → 0.4 HP/s.
         let mut h = PlayerStats {
@@ -236,6 +248,10 @@ mod tests {
             ..Default::default()
         };
         h.update(1.0, &StatContext::default());
-        assert!((h.health - 99.6).abs() < 1e-4, "empty hunger should cost 0.4 HP/s, got {}", h.health);
+        assert!(
+            (h.health - 99.6).abs() < 1e-4,
+            "empty hunger should cost 0.4 HP/s, got {}",
+            h.health
+        );
     }
 }
