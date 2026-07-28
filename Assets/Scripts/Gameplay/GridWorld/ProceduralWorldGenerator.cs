@@ -95,6 +95,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             = new Dictionary<(int, int, int), float>();
         private const float PendingTimeout = 2f; // seconds; well above localhost RTT, conservative
 
+        // Zone-kind gate (Pieza 2 fix): ChunkData (grid_gen geometry) and WorldState
+        // (ChunkView, the only carrier of zone_kind) are independent IPC messages with no
+        // ordering guarantee, so a chunk often arrived before ZoneRegistry knew its zone and
+        // got baked with a white tint forever. A chunk whose zone is not known yet is held
+        // back and retried from _wallsCache next frame — the same "stays queued" semantics a
+        // dropped request already uses. Time.unscaledTime when each key first had to wait;
+        // after ZoneWaitTimeout it builds anyway (white) so a missing zone can never leave a
+        // permanent hole in the world.
+        private readonly Dictionary<(int, int, int), float> _zoneWaitSince
+            = new Dictionary<(int, int, int), float>();
+        private const float ZoneWaitTimeout = 0.75f; // seconds; ~7 world-state ticks at 10hz
+
         // Fase 5A: shared per-layer materials (built once, reused across all tiles of
         // the layer; per-tile tint via MaterialPropertyBlock) + the fog layer currently
         // applied to RenderSettings. _matCache is owned here and freed in OnDestroy.
@@ -212,7 +224,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             {
                 // Drop from the queue only if fulfilled; a dropped send stays queued so
                 // the drain loop / next frame retries it (anti-fall also re-runs each frame).
-                if (RequestOrBuild(guardKey)) _buildQueue.Remove(guardKey);
+                // EXEMPT from the zone gate on purpose: the chunk under the player must
+                // never be delayed for a cosmetic tint. It builds immediately (white if the
+                // zone has not arrived) exactly as it did before the gate existed.
+                if (RequestOrBuild(guardKey, bypassZoneGate: true)) _buildQueue.Remove(guardKey);
                 forced++;
             }
 
@@ -243,6 +258,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     Destroy(go);
                     _loaded.Remove(key);
                     _wallsCache.Remove(key);
+                    _zoneWaitSince.Remove(key);
                     destroys++;
                 }
             }
@@ -259,10 +275,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // marked pending and stays in _buildQueue, so it is retried next frame instead of
         // being stranded empty forever. The old synchronous local-generation path
         // (WorldGenerator) was removed in Fase 4.2.
-        private bool RequestOrBuild((int, int, int) key)
+        // bypassZoneGate: build as soon as the bitmask is available, without waiting for
+        // zone_kind. Reserved for the anti-fall guard chunk (see ProcessBudget).
+        private bool RequestOrBuild((int, int, int) key, bool bypassZoneGate = false)
         {
             if (_wallsCache.TryGetValue(key, out var walls))
             {
+                // Zone unknown and still inside the grace window → leave queued (same
+                // contract as a dropped send) so the retry picks it up from _wallsCache.
+                if (!bypassZoneGate && !ZoneReadyOrExpired(key))
+                    return false;
                 BuildChunkFromBitmask(key, walls);
                 return true;
             }
@@ -275,6 +297,33 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 return true;
             }
             return false; // send dropped → leave queued for retry
+        }
+
+        /// <summary>
+        /// True when <paramref name="key"/> may be built: either ZoneRegistry knows the
+        /// chunk's zone_kind, or it has been waiting longer than ZoneWaitTimeout (build it
+        /// unstyled rather than ever leave a hole). False means "not yet — retry next frame".
+        /// Mirrors the _pendingSince/ExpirePendingRequests timeout pattern.
+        /// </summary>
+        private bool ZoneReadyOrExpired((int, int, int) key)
+        {
+            if (ZoneRegistry.TryGetZone(key.Item1, key.Item2, out _))
+            {
+                _zoneWaitSince.Remove(key);
+                return true;
+            }
+
+            float now = Time.unscaledTime;
+            if (!_zoneWaitSince.TryGetValue(key, out float since))
+            {
+                _zoneWaitSince[key] = now; // first deferral — start the grace window
+                return false;
+            }
+            if (now - since < ZoneWaitTimeout)
+                return false;
+
+            _zoneWaitSince.Remove(key); // gave up waiting; build white so no hole persists
+            return true;
         }
 
         // Free pending requests older than PendingTimeout (reply lost / never delivered)
@@ -309,7 +358,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             _pendingSince.Remove(key);
             _wallsCache[key] = data.walls;
             if (_desired.Contains(key) && !_loaded.ContainsKey(key))
-                BuildChunkFromBitmask(key, data.walls);
+            {
+                // Zone gate: geometry arrived, but zone_kind rides a different IPC message.
+                // If it is not known yet, re-queue instead of baking a white tint forever —
+                // ProcessBudget retries from _wallsCache (no re-request) until the zone lands
+                // or ZoneWaitTimeout expires. The chunk under the player is never held here:
+                // the anti-fall guard runs every frame and bypasses the gate.
+                if (ZoneReadyOrExpired(key))
+                    BuildChunkFromBitmask(key, data.walls);
+                else
+                    _buildQueue.Add(key);
+            }
         }
 
         // Instantiate one chunk from a tile-wall bitmask, parenting it under the streamer
