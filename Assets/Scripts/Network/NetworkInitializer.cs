@@ -40,6 +40,11 @@ namespace BackroomsSurvival.Net
         public string LastEffectiveRole { get; private set; } = "none";
         public string LastConnectTo { get; private set; } = "<none>";
 
+        // ADR-032: how long teardown waits for the backend to save + self-exit before force-killing.
+        // The backend saves synchronously and exits in ~tens of ms; this is a generous ceiling that
+        // never blocks teardown indefinitely.
+        private const int SaveOnQuitTimeoutMs = 1500;
+
         private Process _backendProcess;
         private float _startupTimer;
         private bool _waitingForBackend;
@@ -642,9 +647,41 @@ namespace BackroomsSurvival.Net
             StatusMessage = "";
         }
 
+        // ADR-032: ask the backend to persist the world NOW (before we kill it). Best-effort — if
+        // the IPC stream is already down or this isn't a host, it's a harmless no-op and we fall
+        // through to the kill. The send is synchronous (IPCClient.SendFrame), so on success the
+        // frame is on the socket before we return. Uses TryGetInstance to bypass the quitting gate
+        // (Instance returns null once MarkQuitting has run during OnApplicationQuit).
+        private void TryRequestBackendSave()
+        {
+            try
+            {
+                if (IPCClient.TryGetInstance(out var ipc) && ipc != null && ipc.IsConnected)
+                {
+                    ipc.SendSaveAndShutdown();
+                    Debug.Log("[NetworkInitializer] ADR-032: requested backend save-on-quit");
+                }
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning($"[NetworkInitializer] ADR-032: could not request backend save: {e.Message}");
+            }
+        }
+
         private void KillBackend()
         {
             if (_backendProcess == null) return;
+
+            // ADR-032: graceful save-on-quit — request a synchronous save and give the backend a
+            // short window to persist and self-exit BEFORE we force-kill. Never blocks indefinitely.
+            TryRequestBackendSave();
+            try
+            {
+                if (!_backendProcess.HasExited)
+                    _backendProcess.WaitForExit(SaveOnQuitTimeoutMs);
+            }
+            catch { }
+
             try
             {
                 _backendProcess.CancelOutputRead();
@@ -658,7 +695,11 @@ namespace BackroomsSurvival.Net
                 {
                     _backendProcess.Kill();
                     _backendProcess.WaitForExit(2000);
-                    Debug.Log("[NetworkInitializer] Backend process killed");
+                    Debug.Log("[NetworkInitializer] Backend process killed (save-on-quit timed out or unavailable)");
+                }
+                else
+                {
+                    Debug.Log("[NetworkInitializer] Backend exited gracefully after save-on-quit");
                 }
             }
             catch (Exception e)

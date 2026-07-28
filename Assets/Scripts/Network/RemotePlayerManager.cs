@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay;
+using BackroomsSurvival.Gameplay.GridWorld;
 using TMPro;
 using UnityEngine;
 
@@ -105,22 +106,42 @@ namespace BackroomsSurvival.Net
 
                 _idsThisFrame.Add(rp.id);
 
+                // Bug fix (remote proxy floating): the backend relays the player-pivot Y
+                // (transform sits PlayerBaseY above the floor — see GridConstants.PlayerBaseY),
+                // but the RemotePlayerAvatar root pivot is at the FEET. Drop the pose to the floor
+                // by subtracting PlayerBaseY so the feet land on the rendered floor; ProxyGroundingHook
+                // then only absorbs the small render/backend residual (< groundSnapMax).
+                Vector3 groundedPosition = rp.position;
+                groundedPosition.y -= GridConstants.PlayerBaseY;
+
                 if (!_active.TryGetValue(rp.id, out var view))
                 {
+                    Debug.Log(
+                        $"MPTRACE step=PVP event=remote_proxy_create_begin remote_id={rp.id} name={rp.name} " +
+                        $"pos=({groundedPosition.x:F2},{groundedPosition.y:F2},{groundedPosition.z:F2})");
                     view = Acquire(rp.id, rp.name);
                     _active[rp.id] = view;
                     if (view.root != null)
                     {
-                        view.root.position = rp.position;
+                        view.root.position = groundedPosition;
                         view.root.rotation = Quaternion.Euler(0f, rp.rotation, 0f);
                     }
                     Debug.Log(
                         $"[RemotePlayerManager] spawned id={rp.id}, name={rp.name}, " +
-                        $"pos={rp.position}");
+                        $"pos={groundedPosition}");
                     Debug.Log($"MPTRACE step=K event=remote_player_manager_spawn self_id={selfId} sender_id=<none> assigned_id=<none> peer_id={rp.id} endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
                 }
+                else
+                {
+                    int handlerCount = view.root != null
+                        ? view.root.GetComponentsInChildren<RemotePvpHitbox>(true).Length
+                        : 0;
+                    Debug.Log(
+                        $"MPTRACE step=PVP event=remote_proxy_update remote_id={rp.id} " +
+                        $"root={(view.root != null ? view.root.name : "<null>")} pvp_hitboxes={handlerCount}");
+                }
 
-                view.targetPosition = rp.position;
+                view.targetPosition = groundedPosition;
                 view.targetRotation = rp.rotation;
                 view.animationState = string.IsNullOrWhiteSpace(rp.animation) ? "idle" : rp.animation;
                 view.crouch = rp.crouch; // ADR-020
@@ -250,6 +271,14 @@ namespace BackroomsSurvival.Net
 
             if (view.root != null)
                 view.root.name = $"RemotePlayer_{id}";
+
+            if (view.root != null)
+            {
+                Debug.Log(
+                    $"MPTRACE step=PVP event=remote_proxy_acquire remote_id={id} " +
+                    $"root={view.root.name} active={view.root.gameObject.activeSelf}");
+                RemotePvpHitbox.Install(view.root.gameObject, id);
+            }
 
             ConfigureNameText(view.nameTag, FormatNameTag(id, playerName));
 

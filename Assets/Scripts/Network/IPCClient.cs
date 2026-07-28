@@ -520,6 +520,18 @@ namespace BackroomsSurvival.Net
             SendActionFrame(ProtocolActionTypes.RespawnRequest, 0, _ => { });
         }
 
+        /// <summary>
+        /// ADR-032: graceful save-on-quit. NetworkInitializer sends this during app teardown,
+        /// BEFORE it force-kills the backend process, so the host persists the world immediately
+        /// (not on the 3-min autosave timer). Zero-data action; the backend saves synchronously and
+        /// then exits. Best-effort — the write is synchronous (SendFrame), so if the IPC stream is
+        /// still up the frame is flushed to the socket before we return.
+        /// </summary>
+        public void SendSaveAndShutdown()
+        {
+            SendActionFrame(ProtocolActionTypes.SaveAndShutdown, 0, _ => { });
+        }
+
         /// <summary>Send a discrete action request (craft, pickup, attack, ...).</summary>
         public void SendAction(string actionType)
         {
@@ -543,6 +555,22 @@ namespace BackroomsSurvival.Net
             {
                 w.WriteString("amount"); w.WriteFloat(amount);
                 w.WriteString("cause"); w.WriteString(cause);
+            });
+        }
+
+        /// <summary>
+        /// ADR-030: report a consumed item (eat/drink) to the authoritative backend so
+        /// hunger/thirst/health restore by a fixed, server-owned amount (StatInterpolator's
+        /// managers are disabled — ADR-009 L2 — so without this report the survival stats can
+        /// only ever go down between respawns). Trust-the-client for possession (no
+        /// authoritative inventory exists to verify against, same level as report_death_loot);
+        /// no request_id — local action over the ordered IPC channel, no dedupe needed.
+        /// </summary>
+        public void SendConsumeItem(int itemId)
+        {
+            SendActionFrame(ProtocolActionTypes.ConsumeItem, 1, w =>
+            {
+                w.WriteString("item_id"); w.WriteInt(itemId);
             });
         }
 
@@ -573,6 +601,49 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-028 amendment (world chests): seed one host-authoritative supply chest. Host-only
+        /// server-side (a joiner's send is a logged no-op — joiners mirror chests via CorpseList);
+        /// deduped by (player, request_id) against client re-sends after reconnect. Position is
+        /// raycast against the RENDERED world by the caller (StpChestSpawner); loot is picked
+        /// client-side (trust-the-client, same level as SendReportDeathLoot).
+        /// </summary>
+        /// <summary>
+        /// ADR-032 amendment: report the CURRENT real STP inventory (debounced on-change by
+        /// InventoryReporter) so the backend can persist it. Same items shape as
+        /// SendReportDeathLoot; the backend applies the shared corpse hygiene (cap 64, qty>0).
+        /// </summary>
+        public void SendReportInventory(System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
+        {
+            SendActionFrame(ProtocolActionTypes.ReportInventory, 1, w =>
+            {
+                w.WriteString("items"); w.WriteArrayHeader(items?.Count ?? 0);
+                for (int i = 0; i < (items?.Count ?? 0); i++)
+                {
+                    w.WriteMapHeader(2);
+                    w.WriteString("item_id"); w.WriteInt(items[i].itemId);
+                    w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+                }
+            });
+        }
+
+        public void SendSpawnWorldChest(long requestId, Vector3 position, System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
+        {
+            SendActionFrame(ProtocolActionTypes.SpawnWorldChest, 3, w =>
+            {
+                w.WriteString("request_id"); w.WriteInt(requestId);
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("items"); w.WriteArrayHeader(items?.Count ?? 0);
+                for (int i = 0; i < (items?.Count ?? 0); i++)
+                {
+                    w.WriteMapHeader(2);
+                    w.WriteString("item_id"); w.WriteInt(items[i].itemId);
+                    w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+                }
+            });
+        }
+
+        /// <summary>
         /// ADR-028 Fase D: report a loot withdrawal from a corpse's container. The actual item
         /// move (corpse → looter's inventory) already happened locally via StorageStationUI; this
         /// only mirrors it to the server's CorpseData so despawn-when-empty and a future cross-
@@ -587,6 +658,43 @@ namespace BackroomsSurvival.Net
                 w.WriteString("item_index"); w.WriteInt(itemIndex);
                 w.WriteString("quantity"); w.WriteInt(quantity);
             });
+        }
+
+        /// <summary>
+        /// ADR-029 Fase 1: report a candidate PvP hit detected locally against a remote proxy.
+        /// This does not apply damage. The backend currently logs/ignores it until validation and
+        /// grant packets are implemented.
+        /// </summary>
+        public bool SendPvpHitCandidate(long requestId, int attackerId, int victimId, int weaponId,
+            float damage, Vector3 origin, Vector3 direction, uint clientTick, Vector3 hitPosition)
+        {
+            Debug.Log(
+                $"MPTRACE step=PVP event=ipc_send_pvp_hit_candidate action={ProtocolActionTypes.PvpHitCandidate} " +
+                $"request_id={requestId} attacker_id={attackerId} victim_id={victimId} connected={_connected}");
+
+            bool sent = SendActionFrame(ProtocolActionTypes.PvpHitCandidate, 9, w =>
+            {
+                w.WriteString("request_id"); w.WriteInt(requestId);
+                w.WriteString("attacker_id"); w.WriteInt(attackerId);
+                w.WriteString("victim_id"); w.WriteInt(victimId);
+                w.WriteString("weapon_id"); w.WriteInt(weaponId);
+                w.WriteString("damage"); w.WriteFloat(damage);
+                w.WriteString("origin"); w.WriteArrayHeader(3);
+                w.WriteFloat(origin.x); w.WriteFloat(origin.y); w.WriteFloat(origin.z);
+                w.WriteString("direction"); w.WriteArrayHeader(3);
+                w.WriteFloat(direction.x); w.WriteFloat(direction.y); w.WriteFloat(direction.z);
+                w.WriteString("client_tick"); w.WriteInt(clientTick);
+                w.WriteString("hit_position"); w.WriteArrayHeader(3);
+                w.WriteFloat(hitPosition.x); w.WriteFloat(hitPosition.y); w.WriteFloat(hitPosition.z);
+            });
+            if (!sent)
+            {
+                Debug.LogWarning(
+                    $"MPTRACE step=PVP event=ipc_send_pvp_hit_candidate_failed request_id={requestId} " +
+                    $"attacker_id={attackerId} victim_id={victimId} connected={_connected}");
+            }
+
+            return sent;
         }
 
         public void SendWorldInteractRequest(long requestId, uint targetId, string targetKind, string interactionType, Vector3 playerPosition)

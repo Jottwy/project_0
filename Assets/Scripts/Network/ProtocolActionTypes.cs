@@ -29,5 +29,25 @@ namespace BackroomsSurvival.Net
         /// <summary>ADR-028 Fase D: report a loot withdrawal from a corpse's container (backend
         /// action implemented Fase A) so the server's CorpseData mirrors the local take.</summary>
         public const string TakeCorpseItem = "take_corpse_item";
+        /// <summary>ADR-028 amendment (world chests): host seeds one supply chest (position +
+        /// loot picked client-side; host-only server-side, deduped by request_id).</summary>
+        public const string SpawnWorldChest = "spawn_world_chest";
+        /// <summary>ADR-029 Fase 1: report a candidate PvP hit. Unity never applies PvP damage.</summary>
+        public const string PvpHitCandidate = "pvp_hit_candidate";
+        /// <summary>ADR-030: report a consumed item (eat/drink) so the server-authoritative
+        /// hunger/thirst/health restore by a fixed amount. Unity never applies the restore
+        /// itself — StatInterpolator (ADR-009 L2) only displays what the server reports back.</summary>
+        public const string ConsumeItem = "consume_item";
+        /// <summary>ADR-032: graceful save-on-quit. Sent by NetworkInitializer during teardown
+        /// (before it force-kills the backend process) so the host persists the world immediately
+        /// instead of waiting for the 3-min autosave timer. The backend saves synchronously (if
+        /// host) and then exits the process.</summary>
+        public const string SaveAndShutdown = "save_and_shutdown";
+        /// <summary>ADR-032 amendment: debounced on-change report of the REAL STP inventory
+        /// (every container, raw item ids) so world persistence can save it — the legacy Rust
+        /// inventory is disconnected from the game. Trust-the-client, same level as
+        /// report_death_loot. Sent by InventoryReporter; restored via the inventory_restored
+        /// event consumed by InventoryRestorer.</summary>
+        public const string ReportInventory = "report_inventory";
     }
 }

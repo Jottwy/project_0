@@ -1,0 +1,485 @@
+using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.GridWorld;
+using PolymindGames.InventorySystem;
+using PolymindGames.WieldableSystem;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+namespace BackroomsSurvival.Net
+{
+    /// <summary>
+    /// HOST-ONLY procedural loot tied to REAL chunk streaming (Fase-0 "Opción C", client-side
+    /// position-ring variant). Replaces the one-shot scatter of StpItemSpawner / the resource-zone
+    /// scatter of StpCarryableSpawner: instead of a fixed set of caches placed once around spawn and
+    /// retried, loot is generated PER CHUNK as the chunk enters the streaming ring and removed as it
+    /// leaves — so loot appears/despawns with the world the player actually walks through, and the
+    /// broadcast list stays bounded to the live ring instead of growing forever.
+    ///
+    /// AUTHORITY / DETERMINISM (see <see cref="ChunkLootRoll"/>):
+    /// - What a chunk contains is a pure function of (worldSeed, cx, cz) → reproducible on reload
+    ///   without persisting geometry; only the small "already picked up" set is remembered.
+    /// - Pickup memory: a slot removed from the backend's mirror (LatestState) while we had it live
+    ///   is marked collected, so a reloaded chunk regenerates everything EXCEPT what was taken.
+    /// - On UNLOAD, still-live (un-picked) loot is FORGOTTEN (removed from the sent list, shrinking
+    ///   the broadcast) and regenerated identically if the chunk returns — indistinguishable from
+    ///   persisting it, minus the collected set.
+    ///
+    /// SEND MODEL — same merge-from-mirror the old spawners use: set_stp_items/set_stp_carryables
+    /// FULL-REPLACE the backend list, and that list is MULTI-AUTHOR (player drops via StpDrop,
+    /// scene-authored carryables). So a send is: (backend mirror MINUS the ids WE just unloaded) +
+    /// (our new placements). We never rebuild the list from our own bookkeeping alone — that would
+    /// drop other authors' entries. Pickups are already gone from the mirror (pickup-aware for free).
+    ///
+    /// SCOPE (approved Fase-0): items + carryables ONLY. World chests (StpChestSpawner) stay
+    /// one-shot, untouched. NO protocol change. NO backend / resolve_move / update_ownership /
+    /// TP-diagnostic contact: purely the CLIENT ring (position math + walkable raycast) + the
+    /// existing host→backend relay.
+    ///
+    /// SINGLE-LAYER placement: loot is keyed per (cx,cz) COLUMN and placed on whatever floor the
+    /// walkable raycast finds at the player's current vertical band — same single-layer behaviour as
+    /// the old scatter. Multi-layer loot was explicitly out of the approved scope.
+    ///
+    /// Governs only while <see cref="Enabled"/> is true; the old spawners early-out on that flag so
+    /// exactly one system authors procedural loot at a time (A/B comparison switch).
+    /// </summary>
+    public sealed class ChunkLootManager : MonoBehaviour
+    {
+        /// <summary>Master switch. true → this manager governs procedural loot and the old scatter
+        /// spawners stand down. Flip to false to A/B against the old one-shot scatter (Fase-0 step 5;
+        /// the old code is left intact, only gated).</summary>
+        public const bool Enabled = true;
+
+        private static ChunkLootManager _instance;
+
+        [Tooltip("Only run once the host is in this scene (avoids placing loot in the menu).")]
+        public string gameplayScene = "STP_Showcase";
+        [Tooltip("Seconds after scene load before the first scan (lets the chunks around the host stream in).")]
+        [Min(0f)] public float warmupSeconds = 2f;
+        [Tooltip("Scan cadence. NOT every frame: BuildDesiredSet allocates/iterates and the placement raycast is the real cost; the ring only changes on a chunk crossing, and this interval also retries chunks whose floor was not rendered yet.")]
+        [Min(0.05f)] public float scanInterval = 0.25f;
+
+        // Mirror ChunkStreamer's ring geometry so loot chunks == rendered chunks.
+        private const int ViewRadius = 1;
+        private const float Side = GridConstants.ChunkCells * GridConstants.CellSize; // 50 m
+        // Walkable raycast — identical to StpItemSpawner/StpCarryableSpawner/ProxyGroundingHook
+        // (origin kept UNDER the 4 m layer ceiling; short reach to the walkable slab).
+        private const float RaycastUpOffset = 1f;
+        private const float RaycastDownRange = 3f;
+
+        private float _warmupEnd;
+        private bool _warmedUp;
+        private float _nextScan;
+
+        // Columns whose loot has been generated+sent (or rolled empty). A column leaves this set on
+        // unload so it regenerates on return.
+        private readonly HashSet<(int cx, int cz)> _generatedItemChunks = new HashSet<(int, int)>();
+        private readonly HashSet<(int cx, int cz)> _generatedCarryChunks = new HashSet<(int, int)>();
+
+        // Session pickup memory (host-side, never persisted). A collected slot is skipped when its
+        // chunk regenerates.
+        //
+        // ITEMS: permanent for the session (no timed respawn) → plain set.
+        // CARRYABLES (construction materials): timed respawn (2026-07-07 balance). Each collected
+        // slot stores WHEN it was taken; after CarryableRespawnSeconds it EXPIRES from this set,
+        // its chunk is un-sealed and its still-live loot forgotten, so the next scan re-rolls the
+        // chunk fresh and the expired material reappears — even if the player never left the chunk.
+        // (This is why carryables key on time, not just presence: the "confirmed" set the previous
+        // slice added is untouched — a respawned material simply gets a NEW id and re-confirms
+        // normally; the behavioural change lives entirely in this collected set.)
+        private readonly HashSet<(int cx, int cz, int slot)> _collectedItems = new HashSet<(int, int, int)>();
+        private readonly Dictionary<(int cx, int cz, int slot), float> _collectedCarry = new Dictionary<(int, int, int), float>();
+        // TODO(balance): 30 min. Only construction-material carryables respawn on this timer.
+        private const float CarryableRespawnSeconds = 1800f;
+
+        // network id → (chunk, slot) of loot WE placed and that is still live. This is our authority on
+        // which mirror ids are ours (the mirror carries no chunk/slot info) — used for pickup-diff,
+        // to drop our unloaded ids from the broadcast, and to span maxId so a fresh id never collides
+        // with a not-yet-echoed one. Other authors' ids never appear here.
+        private struct LiveLoot
+        {
+            public int cx, cz, slot;
+        }
+        private readonly Dictionary<uint, LiveLoot> _liveItems = new Dictionary<uint, LiveLoot>();
+        private readonly Dictionary<uint, LiveLoot> _liveCarry = new Dictionary<uint, LiveLoot>();
+
+        // Ids we have seen ECHOED back in a snapshot at least once. A live id missing from the mirror
+        // only counts as "picked up" if it was previously confirmed — otherwise it is just a placement
+        // the backend has not echoed yet (snapshot lag > scanInterval on a hitch) and must NOT be
+        // mistaken for a pickup (which would wrongly mark its slot collected and never respawn it).
+        private readonly HashSet<uint> _confirmedItems = new HashSet<uint>();
+        private readonly HashSet<uint> _confirmedCarry = new HashSet<uint>();
+
+        // Reused scratch (avoid per-scan allocs).
+        private readonly HashSet<(int, int, int)> _desiredScratch = new HashSet<(int, int, int)>();
+        private readonly HashSet<(int cx, int cz)> _desiredColumns = new HashSet<(int, int)>();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void Bootstrap()
+        {
+            if (!Enabled || _instance != null)
+                return;
+
+            var go = new GameObject("[ChunkLootManager]");
+            _instance = go.AddComponent<ChunkLootManager>();
+            DontDestroyOnLoad(go);
+        }
+
+        private void OnEnable() => _warmupEnd = Time.unscaledTime + warmupSeconds;
+
+        private void OnDestroy()
+        {
+            if (_instance == this)
+                _instance = null;
+        }
+
+        private void Update()
+        {
+            if (Time.unscaledTime < _nextScan)
+                return;
+            _nextScan = Time.unscaledTime + scanInterval;
+
+            var init = NetworkInitializer.Instance;
+            if (init == null || init.CurrentRole != NetworkInitializer.Role.Host)
+                return; // only the host authors loot (backend ignores set_stp_* from a non-host)
+
+            if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
+                return;
+
+            var state = ipc.LatestState;
+            if (state == null)
+                return; // no world snapshot yet → no seed, no authoritative list to merge from
+
+            if (SceneManager.GetActiveScene().name != gameplayScene)
+                return;
+
+            if (!_warmedUp)
+            {
+                if (Time.unscaledTime < _warmupEnd)
+                    return; // let chunks around the host stream in first
+                _warmedUp = true;
+            }
+
+            var cam = Camera.main;
+            if (cam == null)
+                return; // no local camera yet (host not in a playable scene)
+
+            // STEP 3: fold pickups into the collected set BEFORE any unload, so a slot picked up on
+            // the same scan it leaves the ring is remembered as taken (not forgotten-and-regenerated).
+            AbsorbItemPickups(state.stpItems);
+            AbsorbCarryPickups(state.stpCarryables);
+
+            // STEP 1: current ring → desired columns (reuse ChunkStreamer's public ring; layerCount=1
+            // gives the (cx,cz) column ring directly — placement is single-layer).
+            int pcx = Mathf.FloorToInt(cam.transform.position.x / Side);
+            int pcz = Mathf.FloorToInt(cam.transform.position.z / Side);
+            _desiredScratch.Clear();
+            ChunkStreamer.BuildDesiredSet(pcx, pcz, ViewRadius, layerCount: 1, _desiredScratch);
+            _desiredColumns.Clear();
+            foreach (var k in _desiredScratch)
+                _desiredColumns.Add((k.Item1, k.Item2));
+
+            float rayY = cam.transform.position.y; // player's vertical band → floor of the walked layer
+            _worldSeed = state.worldSeed;
+            _now = Time.unscaledTime;
+
+            // STEP 4 (coalesced): reconcile each channel; at most one send per channel per scan.
+            ReconcileItems(ipc, state, rayY);
+            ReconcileCarryables(ipc, state, rayY);
+        }
+
+        // ── Pickup diff ─────────────────────────────────────────────────────────────────────
+        // Any live id absent from the backend mirror was picked up → record its (chunk,slot) so a
+        // reload does not resurrect it, and drop it from our live map.
+        private void AbsorbItemPickups(List<StpItemMsg> mirror)
+        {
+            if (_liveItems.Count == 0) return;
+            _presentIds.Clear();
+            foreach (var it in mirror) _presentIds.Add(it.id);
+            _idRemovalScratch.Clear();
+            foreach (var kv in _liveItems)
+            {
+                if (_presentIds.Contains(kv.Key))
+                    _confirmedItems.Add(kv.Key);                 // echoed → now confirmed live
+                else if (_confirmedItems.Contains(kv.Key))
+                    _idRemovalScratch.Add(kv.Key);               // was live, now gone → picked up
+                // else: not yet echoed (placement lag) → leave; check again next scan
+            }
+            foreach (var id in _idRemovalScratch)
+            {
+                var v = _liveItems[id];
+                _collectedItems.Add((v.cx, v.cz, v.slot));
+                _liveItems.Remove(id);
+                _confirmedItems.Remove(id);
+            }
+        }
+
+        private void AbsorbCarryPickups(List<StpCarryableMsg> mirror)
+        {
+            if (_liveCarry.Count == 0) return;
+            _presentIds.Clear();
+            foreach (var c in mirror) _presentIds.Add(c.id);
+            _idRemovalScratch.Clear();
+            foreach (var kv in _liveCarry)
+            {
+                if (_presentIds.Contains(kv.Key))
+                    _confirmedCarry.Add(kv.Key);
+                else if (_confirmedCarry.Contains(kv.Key))
+                    _idRemovalScratch.Add(kv.Key);
+            }
+            foreach (var id in _idRemovalScratch)
+            {
+                var v = _liveCarry[id];
+                _collectedCarry[(v.cx, v.cz, v.slot)] = _now; // stamp WHEN taken → drives the respawn timer
+                _liveCarry.Remove(id);
+                _confirmedCarry.Remove(id);
+            }
+        }
+
+        // ── Items channel ─────────────────────────────────────────────────────────────────────
+        private void ReconcileItems(IPCClient ipc, WorldStateMsg state, float rayY)
+        {
+            _removedIds.Clear();
+            CollectUnloads(_generatedItemChunks, _liveItems); // appends to _removedIds, prunes generated+live
+            foreach (var id in _removedIds) _confirmedItems.Remove(id);
+            LiveSlotsOf(_liveItems);
+            CollectLoads(_generatedItemChunks, _collectedItems, ChunkLootRoll.RollItems, rayY);
+
+            if (_removedIds.Count == 0 && _pendingPlacements.Count == 0)
+                return; // nothing changed this scan → no send (coalesced)
+
+            var merged = new List<StpItemSpec>();
+            uint maxId = 0;
+            // The broadcast is the backend mirror (other authors' drops + our already-echoed loot),
+            // minus what we unloaded, plus this scan's fresh placements. Pickups propagate for free
+            // (a picked item vanishes from the mirror). We deliberately do NOT re-emit our own
+            // not-yet-echoed placements from a private store: without a reliable per-item echo signal
+            // (world_revision tracks world.chunks, not net.stp_items) that cannot be told apart from a
+            // pickup, so re-emitting would resurrect items the player just took. Residual: on a
+            // snapshot hitch a placement from the previous scan can be dropped by a racing full-replace
+            // and re-appears on the chunk's next reload (deterministic) — rare and self-healing.
+            foreach (var it in state.stpItems)
+            {
+                if (_removedIds.Contains(it.id)) continue; // our unloaded loot leaves the broadcast
+                merged.Add(new StpItemSpec { id = it.id, defId = it.defId, count = it.count, position = it.position, rotation = it.rotation });
+                if (it.id > maxId) maxId = it.id;
+            }
+            // maxId must ALSO span our live ids (echoed or not) so a fresh id below can never collide
+            // with — nor overwrite the _liveItems entry of — a not-yet-echoed placement.
+            foreach (var id in _liveItems.Keys)
+                if (id > maxId) maxId = id;
+
+            uint nextId = maxId + 1;
+            int placed = 0;
+            foreach (var p in _pendingPlacements)
+            {
+                var def = ItemDefinition.GetWithName(p.entry.Name);
+                if (def == null)
+                {
+                    Debug.LogWarning($"[ChunkLootManager] item '{p.entry.Name}' not in ItemDefinition DB; skipped.");
+                    continue;
+                }
+                uint id = nextId++;
+                merged.Add(new StpItemSpec { id = id, defId = def.Id, count = p.entry.Count, position = p.pos, rotation = p.entry.Rotation });
+                _liveItems[id] = new LiveLoot { cx = p.cx, cz = p.cz, slot = p.entry.Slot };
+                placed++;
+            }
+
+            ipc.SendSetStpItems(merged);
+            Debug.Log($"[ChunkLootManager] items → {merged.Count} live ({placed} placed, {_removedIds.Count} unloaded this scan).");
+        }
+
+        // ── Carryables channel ─────────────────────────────────────────────────────────────────
+        private void ReconcileCarryables(IPCClient ipc, WorldStateMsg state, float rayY)
+        {
+            _removedIds.Clear();
+            // ORDER MATTERS: unload chunks that left the ring FIRST (harvests their live ids while the
+            // chunk is still in _generatedCarryChunks), THEN expire. Expiry un-seals a chunk by removing
+            // it from _generatedCarryChunks; if a chunk both expires AND leaves the ring on the same
+            // scan, expiring first would make CollectUnloads (which only scans still-generated chunks)
+            // skip it, orphaning its live ids in the broadcast. Unload-then-expire closes that gap
+            // (expiry's Remove of an already-unloaded chunk is a harmless no-op).
+            CollectUnloads(_generatedCarryChunks, _liveCarry); // appends to _removedIds
+            // Timed respawn (materials): expire old collected slots and un-seal their chunks so
+            // CollectLoads re-rolls them. Still-live materials are untouched (they keep their ids and
+            // stay in the broadcast); CollectLoads skips currently-live slots (LiveSlotsOf) so only the
+            // expired (now un-collected, not-live) slots are re-placed.
+            ExpireCarryables();
+            foreach (var id in _removedIds) _confirmedCarry.Remove(id);
+            LiveSlotsOf(_liveCarry);
+            CollectLoads(_generatedCarryChunks, _collectedCarry.Keys, ChunkLootRoll.RollCarryables, rayY);
+
+            if (_removedIds.Count == 0 && _pendingPlacements.Count == 0)
+                return;
+
+            var merged = new List<StpCarryableSpec>();
+            uint maxId = 0;
+            foreach (var c in state.stpCarryables) // mirror minus unloaded (see items channel for why we don't re-emit)
+            {
+                if (_removedIds.Contains(c.id)) continue;
+                merged.Add(new StpCarryableSpec { id = c.id, defId = c.defId, position = c.position, rotation = c.rotation });
+                if (c.id > maxId) maxId = c.id;
+            }
+            foreach (var id in _liveCarry.Keys) // maxId spans our live ids (echoed or not) — no id reuse/overwrite
+                if (id > maxId) maxId = id;
+
+            uint nextId = maxId + 1;
+            int placed = 0;
+            foreach (var p in _pendingPlacements)
+            {
+                var def = CarryableDefinition.GetWithName(p.entry.Name);
+                if (def == null)
+                {
+                    Debug.LogWarning($"[ChunkLootManager] carryable '{p.entry.Name}' not in CarryableDefinition DB; skipped.");
+                    continue;
+                }
+                uint id = nextId++;
+                merged.Add(new StpCarryableSpec { id = id, defId = def.Id, position = p.pos, rotation = p.entry.Rotation });
+                _liveCarry[id] = new LiveLoot { cx = p.cx, cz = p.cz, slot = p.entry.Slot };
+                placed++;
+            }
+
+            ipc.SendSetStpCarryables(merged);
+            Debug.Log($"[ChunkLootManager] carryables → {merged.Count} live ({placed} placed, {_removedIds.Count} unloaded this scan).");
+        }
+
+        // Columns in `generated` that left the ring: gather OUR live ids there into _removedIds and
+        // forget them (they regenerate deterministically on return, minus collected). Appends to
+        // _removedIds (the caller clears it once at the top of the scan, so expiry can pre-fill it).
+        private void CollectUnloads(HashSet<(int cx, int cz)> generated, Dictionary<uint, LiveLoot> live)
+        {
+            _unloadScratch.Clear();
+            foreach (var col in generated)
+                if (!_desiredColumns.Contains(col)) _unloadScratch.Add(col);
+
+            foreach (var col in _unloadScratch)
+            {
+                foreach (var kv in live)
+                    if (kv.Value.cx == col.cx && kv.Value.cz == col.cz) _removedIds.Add(kv.Key);
+                generated.Remove(col);
+            }
+            foreach (var id in _removedIds)
+                live.Remove(id);
+        }
+
+        // Rebuild _liveSlotsScratch (current (chunk,slot) set) from a live map, so CollectLoads can
+        // skip slots that are already placed & present when it re-rolls an un-sealed chunk (else the
+        // re-roll would duplicate a still-live material).
+        private void LiveSlotsOf(Dictionary<uint, LiveLoot> live)
+        {
+            _liveSlotsScratch.Clear();
+            foreach (var v in live.Values)
+                _liveSlotsScratch.Add((v.cx, v.cz, v.slot));
+        }
+
+        // Desired columns not yet generated: roll + raycast-place. A non-empty roll whose floor is
+        // not rendered yet stays pending (retried next scan). Fills _pendingPlacements.
+        private void CollectLoads(
+            HashSet<(int cx, int cz)> generated,
+            ICollection<(int cx, int cz, int slot)> collected,
+            System.Func<long, int, int, List<ChunkLootRoll.Entry>> roll,
+            float rayY)
+        {
+            _pendingPlacements.Clear();
+            foreach (var col in _desiredColumns)
+            {
+                if (generated.Contains(col)) continue;
+
+                var entries = roll(_worldSeed, col.cx, col.cz);
+                if (entries.Count == 0)
+                {
+                    generated.Add(col); // deterministically empty — nothing to place, don't retry
+                    continue;
+                }
+
+                ChunkLootRoll.RemoveCollected(entries, col.cx, col.cz, collected);
+                // Also skip slots already placed & present (a re-rolled un-sealed chunk keeps its
+                // still-live materials — don't duplicate them; only expired/uncollected slots remain).
+                entries.RemoveAll(e => _liveSlotsScratch.Contains((col.cx, col.cz, e.Slot)));
+                if (entries.Count == 0)
+                {
+                    generated.Add(col); // every slot already taken or still live — sealed, don't retry
+                    continue;
+                }
+
+                bool placedAny = false;
+                foreach (var e in entries)
+                {
+                    if (!TryPlace(col.cx, col.cz, e, rayY, out Vector3 pos)) continue; // floor missing this slot
+                    placedAny = true;
+                    _pendingPlacements.Add((col.cx, col.cz, e, pos));
+                }
+
+                // Seal once at least one slot landed. If a non-empty (uncollected) roll placed nothing,
+                // the floor isn't rendered yet → leave pending for a later scan.
+                if (placedAny)
+                    generated.Add(col);
+            }
+        }
+
+        private static bool TryPlace(int cx, int cz, ChunkLootRoll.Entry e, float rayY, out Vector3 point)
+        {
+            float wx = cx * Side + e.U * Side;
+            float wz = cz * Side + e.V * Side;
+            var origin = new Vector3(wx, rayY + RaycastUpOffset, wz);
+            if (Physics.Raycast(origin, Vector3.down, out RaycastHit hit, RaycastUpOffset + RaycastDownRange,
+                    GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore))
+            {
+                point = hit.point;
+                return true;
+            }
+            point = default;
+            return false;
+        }
+
+        // ── Timed material respawn (carryables only) ──────────────────────────────────────────
+        // Expire collected-carryable slots older than CarryableRespawnSeconds and UN-SEAL their
+        // chunks so CollectLoads re-rolls them this scan. Still-live materials are left untouched
+        // (they keep their ids, stay in the broadcast); CollectLoads skips currently-live slots, so
+        // only the expired (now un-collected, not-live) slots get re-placed. Un-picked slots are
+        // never affected. Atomic by construction: nothing leaves the broadcast until its replacement
+        // is placed (fixes the earlier forget-then-replace dropout).
+        private void ExpireCarryables()
+        {
+            if (_collectedCarry.Count == 0) return;
+
+            SelectExpired(_collectedCarry, _now, CarryableRespawnSeconds, _expiredScratch);
+            if (_expiredScratch.Count == 0) return;
+
+            foreach (var key in _expiredScratch)
+            {
+                _collectedCarry.Remove(key);
+                _generatedCarryChunks.Remove((key.cx, key.cz)); // un-seal → CollectLoads re-rolls it
+            }
+        }
+
+        /// <summary>Pure: collect keys whose stamped time is at least <paramref name="ttlSeconds"/>
+        /// old relative to <paramref name="now"/>. Extracted for headless testing (no Unity time).</summary>
+        public static void SelectExpired(Dictionary<(int cx, int cz, int slot), float> collected,
+            float now, float ttlSeconds, List<(int cx, int cz, int slot)> into)
+        {
+            into.Clear();
+            foreach (var kv in collected)
+                if (now - kv.Value >= ttlSeconds) into.Add(kv.Key);
+        }
+
+        // worldSeed + scan time captured each scan from the snapshot (read by CollectLoads/expiry).
+        private long _worldSeed;
+        private float _now;
+
+        // Static scratch shared across the two channels (single-threaded Update; sequential, never
+        // reentrant). Cleared at each point of use.
+        private static readonly HashSet<uint> _presentIds = new HashSet<uint>();
+        private static readonly List<uint> _idRemovalScratch = new List<uint>();
+
+        // Per-channel scratch (the two channels run sequentially in one Update; cleared per channel).
+        private readonly HashSet<uint> _removedIds = new HashSet<uint>();
+        private readonly List<(int cx, int cz)> _unloadScratch = new List<(int, int)>();
+        private readonly List<(int cx, int cz, ChunkLootRoll.Entry entry, Vector3 pos)> _pendingPlacements
+            = new List<(int, int, ChunkLootRoll.Entry, Vector3)>();
+        // Expiry scratch (carryable channel only).
+        private readonly List<(int cx, int cz, int slot)> _expiredScratch = new List<(int, int, int)>();
+        // Current (chunk,slot) set of OUR live loot for the channel being reconciled — rebuilt per
+        // channel per scan by LiveSlotsOf; lets CollectLoads skip slots that are already placed.
+        private readonly HashSet<(int cx, int cz, int slot)> _liveSlotsScratch = new HashSet<(int, int, int)>();
+    }
+}

@@ -179,6 +179,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         private GameObject SpawnCorpse(CorpseViewMsg corpse)
         {
+            // ADR-028 amendment (world chests): a chest entry reuses the whole corpse pipeline
+            // (roster reconcile, take/despawn, CorpseLootSync) but renders as a static crate.
+            if (corpse.isChest)
+                return SpawnChest(corpse);
+
             var template = ResolveTemplate();
             if (template == null)
                 return null;
@@ -202,6 +207,81 @@ namespace BackroomsSurvival.Migration.STPIntegration
             WireLoot(go, corpse, heldItemInstance);
 
             Debug.Log($"[CorpseSpawner] spawned corpse_id={corpse.id} owner={corpse.ownerName} pos={corpse.position:F2} items={corpse.items.Count}");
+            return go;
+        }
+
+        // ADR-028 amendment (world chests): the STP "Storage Crate" building piece definition —
+        // definitions live under Resources, so the crate PREFAB is reachable at runtime through
+        // it without any new serialized reference (same resolution idiom as CarryableDefinition
+        // in StpCarryableSpawner). Id read from STP_Storage Crate.asset.
+        private const int StorageCrateBuildingDefId = 5498433;
+
+        // Chest visual + loot: crate mesh instead of a ragdoll, and the SAME interaction/loot
+        // stack a corpse gets — except it mounts on a dedicated child (no bones to track; the
+        // vendor crate colliders stay on the root for physical presence) and skips everything
+        // death-specific (clothing, held item, ragdoll, freezer, appearance updates). Nothing
+        // here touches the death flow: that only ever starts at report_death_loot.
+        private GameObject SpawnChest(CorpseViewMsg corpse)
+        {
+            var go = ResolveChestVisual(corpse.position);
+            go.name = $"Chest_{corpse.id}";
+
+            // Interaction child, not the root: LayerConstants.InteractableNoCollision on the
+            // root would strip the crate's physical presence (the vendor colliders kept above).
+            var interact = new GameObject("LootInteract");
+            interact.transform.SetParent(go.transform, false);
+            interact.transform.localPosition = Vector3.zero;
+            interact.layer = LayerConstants.InteractableNoCollision;
+
+            var box = interact.AddComponent<BoxCollider>();
+            box.isTrigger = true;
+            box.size = new Vector3(1.2f, 1.0f, 1.2f);
+            box.center = new Vector3(0f, 0.5f, 0f);
+
+            var interactable = interact.AddComponent<Interactable>();
+            interactable.Title = "Loot supply crate";
+
+            var container = BuildLootContainer(corpse, out var restriction);
+
+            var station = interact.AddComponent<StorageStation>();
+            if (StorageStationContainersField != null)
+                StorageStationContainersField.SetValue(station, new IItemContainer[] { container });
+            else
+                Debug.LogError($"[CorpseSpawner] chest {corpse.id}: StorageStation._containers field not found via reflection " +
+                    "(vendor internals changed?) — the loot panel will show empty. Falling back gracefully, no exception.");
+            InitializeInspectionSettings(station, WorkstationOpenSettingsField, corpse.id);
+            InitializeInspectionSettings(station, WorkstationCloseSettingsField, corpse.id);
+
+            // Same placement as the corpse's sync: the ROOT, where LateUpdate's reconcile
+            // (GetComponent<CorpseLootSync>) finds it.
+            var sync = go.AddComponent<CorpseLootSync>();
+            sync.Initialize(corpse.id, container, restriction);
+
+            Debug.Log($"[CorpseSpawner] spawned chest_id={corpse.id} pos={corpse.position:F2} items={corpse.items.Count}");
+            return go;
+        }
+
+        // The crate mesh, neutralized: vendor MonoBehaviours (BuildingPiece/saveables) and
+        // Rigidbodies destroyed, COLLIDERS kept (unlike NeutralizeToVisualOnly) so the crate has
+        // physical presence. Missing definition/prefab → primitive placeholder cube ("no bloquees
+        // por arte"), never a null return: a chest must always be lootable once replicated.
+        private static GameObject ResolveChestVisual(Vector3 position)
+        {
+            var def = DataDefinition<PolymindGames.BuildingSystem.BuildingPieceDefinition>.GetWithId(StorageCrateBuildingDefId);
+            var prefab = def != null && def.Prefab != null ? def.Prefab.gameObject : null;
+            if (prefab == null)
+            {
+                Debug.LogWarning("[CorpseSpawner] Storage Crate building definition/prefab not found — using a placeholder cube.");
+                var cube = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                cube.transform.position = position + Vector3.up * 0.5f;
+                return cube;
+            }
+
+            var go = Instantiate(prefab, position, Quaternion.identity);
+            foreach (var rb in go.GetComponentsInChildren<Rigidbody>(true))
+                Destroy(rb);
+            foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
+                Destroy(mb);
             return go;
         }
 
@@ -366,7 +446,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             // first left the panel empty — see RejectAllRestriction doc), sealed right after.
             restriction = RejectAllRestriction.CreateUnsealed();
             var container = new ItemContainer.Builder()
-                .WithName($"{corpse.ownerName}'s corpse")
+                .WithName(corpse.isChest ? corpse.ownerName : $"{corpse.ownerName}'s corpse")
                 .WithSize(size)
                 .WithMaxWeight(ItemContainer.Builder.MaxWeightLimit)
                 .WithAllowStacking(true)

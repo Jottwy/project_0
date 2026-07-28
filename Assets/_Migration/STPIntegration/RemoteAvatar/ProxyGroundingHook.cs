@@ -6,17 +6,20 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// <summary>
     /// [D] Body grounding (slice 1): pins this remote proxy's body to the RENDERED floor.
     ///
-    /// The proxy root is positioned from the backend pose (floor_player_y), but what is RENDERED
-    /// and walked is the client-side ChunkStreamer — a DIFFERENT world (see STATE.md debt). The
-    /// two floor heights don't match, so the proxy's feet float above or sink into the visible
-    /// floor. This hook raycasts down to the rendered floor and offsets the <c>Hips</c> bone (the
-    /// whole skeleton with it) so the feet rest on what is actually drawn.
+    /// The proxy root is positioned from the backend pose, re-grounded to the rendered floor by
+    /// RemotePlayerManager (root Y = backendY − PlayerBaseY), but what is RENDERED and walked is
+    /// the client-side ChunkStreamer — a DIFFERENT world (see STATE.md debt). The two floor heights
+    /// don't match exactly, so the proxy's feet still float above or sink into the visible floor by
+    /// a small residual. This hook raycasts down to the rendered floor and offsets the
+    /// <c>Pelvis</c> bone (the whole skeleton with it) so the feet rest on what is actually drawn.
     ///
-    /// The rig is GENERIC (not Humanoid) → no <c>OnAnimatorIK</c>; the Hips bone is resolved BY
-    /// NAME and cached (same approach as ProxyPitchHook). The shift is applied in <c>LateUpdate</c>
+    /// The rig is GENERIC (not Humanoid) → no <c>OnAnimatorIK</c>; the Pelvis bone is resolved BY
+    /// NAME and cached (same approach as ProxyPitchHook). The bone is "Pelvis", NOT "Hips" — this
+    /// rig (MTP_PlayerViewer / RemotePlayerAvatar) has no "Hips" (verified in the prefab; same fact
+    /// CorpseSpawner relies on). The shift is applied in <c>LateUpdate</c>
     /// AFTER the Animator writes the pose, as an additive world-space Y offset recomputed from
-    /// scratch each frame (the Animator re-writes Hips first, so nothing accumulates). Only Hips is
-    /// touched — the networked root stays under RemotePlayerManager (pose lerp) and
+    /// scratch each frame (the Animator re-writes Pelvis first, so nothing accumulates). Only Pelvis
+    /// is touched — the networked root stays under RemotePlayerManager (pose lerp) and
     /// ProxyLocomotionFeeder (XZ velocity), so this is purely cosmetic: zero network, zero schema,
     /// zero ADR.
     ///
@@ -51,15 +54,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("SmoothDamp time of the applied vertical offset (lower = snappier).")]
         [SerializeField, Min(0f)] private float _smoothTime = 0.1f;
 
-        private Transform _hips;
+        private Transform _pelvis;
         private bool _hasRig;
-        private float _offset;    // smoothed world-Y shift applied to Hips this frame
+        private float _offset;    // smoothed world-Y shift applied to Pelvis this frame
         private float _offsetVel; // SmoothDamp state
 
         private void Awake()
         {
-            _hips = FindBone("Hips");
-            _hasRig = _hips != null; // no hips → nothing to ground
+            // "Pelvis" — this rig has no "Hips" bone (verified in MTP_PlayerViewer.prefab; the
+            // old "Hips" lookup silently no-op'd, which was the remote-proxy floating bug).
+            _pelvis = FindBone("Pelvis");
+            _hasRig = _pelvis != null; // no pelvis → nothing to ground
         }
 
         // Re-arm for pool reuse: clear the offset so a recycled proxy never starts pre-shifted.
@@ -78,12 +83,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _offset = Mathf.SmoothDamp(_offset, target, ref _offsetVel, _smoothTime);
 
             if (!Mathf.Approximately(_offset, 0f))
-                _hips.position += new Vector3(0f, _offset, 0f);
+                _pelvis.position += new Vector3(0f, _offset, 0f);
         }
 
         /// <summary>
-        /// Desired Hips Y shift this frame: the gap between the rendered floor (raycast) and the
-        /// backend feet level (root.position.y), weighted down to zero as the body goes airborne.
+        /// Desired Pelvis Y shift this frame: the gap between the rendered floor (raycast) and the
+        /// proxy feet level (root.position.y, already re-grounded by RemotePlayerManager), weighted
+        /// down to zero as the body goes airborne.
         /// </summary>
         private float ResolveOffset()
         {

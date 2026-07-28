@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay.GridWorld;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.MovementSystem;
@@ -187,13 +188,22 @@ namespace BackroomsSurvival.Net
             // slot. STP's WieldableInventory applies the equip locally; we only READ (rule #3).
             int heldItem = ReadHeldItem();
 
+            // ADR-026 (enmienda 2026-07-06, Opción C): the wire's Y convention is
+            // "feet + PlayerBaseY" — the same one the backend's spawn/floor-fallback and the
+            // phantom natively emit, and the one RemotePlayerManager un-does on the receiving
+            // side (root.y = wireY − PlayerBaseY). The motor's transform is FEET-pivoted, so
+            // compensate at the source; sending the raw feet Y would make the proxy double-
+            // subtract and sink the body ~1.8 m into the floor. XZ and velocity stay raw.
+            Vector3 wirePos = pos;
+            wirePos.y += GridConstants.PlayerBaseY;
+
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, pos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem, _hitSeq);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem, _hitSeq);
                 _inputSeq++;
                 _clientTick++;
-                LastSent = pos;
+                LastSent = wirePos;
                 sent = true;
             }
 

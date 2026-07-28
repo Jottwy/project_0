@@ -829,6 +829,8 @@ namespace BackroomsSurvival.Net
         public int[] equipment = new int[4];
         public int heldItem;
         public List<CorpseLootStack> items = new List<CorpseLootStack>();
+        /// <summary>ADR-028 amendment: true → host-seeded supply chest (crate visual, no ragdoll).</summary>
+        public bool isChest;
 
         public static CorpseViewMsg Parse(object o)
         {
@@ -838,6 +840,7 @@ namespace BackroomsSurvival.Net
             m.id = (uint)IPCParse.L(d, "id");
             m.ownerId = (uint)IPCParse.L(d, "owner_id");
             m.ownerName = IPCParse.S(d, "owner_name");
+            m.isChest = IPCParse.B(d, "is_chest");
             m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             // Normalize to exactly 4 slots (mirror of RemotePlayerMsg.equipment, ADR-022).
             var equip = IPCParse.IntArray(IPCParse.Get(d, "equipment"));

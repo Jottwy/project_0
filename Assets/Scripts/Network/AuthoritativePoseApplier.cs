@@ -51,6 +51,11 @@ namespace BackroomsSurvival.Net
         // honored — the reposition that the death block used to apply in the same tick.
         private const string DiedEvent = "player_died";
         private const string RespawnedEvent = "player_respawned";
+        // ADR-032: emitted once after the backend hydrates a world save (deferred to the first
+        // PlayerInput so the IPC subscription exists). Same wire shape as player_respawned
+        // ("position" key) but a DISTINCT type: RespawnRequester must NOT force the native
+        // respawn chain for a session load — only this applier consumes it (position snap only).
+        private const string RestoredEvent = "session_restored";
 
         private static AuthoritativePoseApplier _instance;
 
@@ -209,7 +214,8 @@ namespace BackroomsSurvival.Net
         // Fired on the main thread (IPCClient.Update drains the event queue before the delta queue).
         private void OnGameEvent(GameEventMsg ev)
         {
-            if (ev == null || (ev.eventType != DiedEvent && ev.eventType != RespawnedEvent))
+            if (ev == null ||
+                (ev.eventType != DiedEvent && ev.eventType != RespawnedEvent && ev.eventType != RestoredEvent))
                 return;
 
             // The backend froze (death) or repositioned (respawn) the local player's authoritative
