@@ -596,7 +596,7 @@ pub async fn run(
                 last_ownership_chunk = Some(current_chunk);
             }
         }
-        if tick % 60 == 0 {
+        if tick.is_multiple_of(60) {
             info!(
                 "MPTRACE step=Q event=local_transform_from_ipc self_id={} pos=({:.2},{:.2},{:.2}) rot={:.2}",
                 net.local_id,
@@ -608,7 +608,7 @@ pub async fn run(
         }
 
         // Entity AI at 10hz.
-        if tick % ENTITY_TICK_EVERY == 0 {
+        if tick.is_multiple_of(ENTITY_TICK_EVERY) {
             let (damage, events) = world.tick_entities(entity_dt, player.position, player.id);
             if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
                 player.stats.take_damage(damage);
@@ -666,7 +666,7 @@ pub async fn run(
 
         // Ownership is now handled per-chunk-boundary above; only teleportation
         // and other slow-tick work runs here.
-        if tick % SLOW_TICK_EVERY == 0 && (net.is_host || net.peer_count() == 0) {
+        if tick.is_multiple_of(SLOW_TICK_EVERY) && (net.is_host || net.peer_count() == 0) {
             let events = world.tick_teleportation(tick);
             for ev in &events {
                 let _ = to_clients.send(ServerMessage::Event(ev.clone()));
@@ -746,14 +746,14 @@ pub async fn run(
         }
 
         // Stat warnings at 1hz.
-        if tick % SLOW_TICK_EVERY == 0 {
+        if tick.is_multiple_of(SLOW_TICK_EVERY) {
             emit_stat_warnings(&player, &to_clients);
         }
 
         // ─── PHASE 3: NETWORK SEND ───
 
         // Broadcast player position to peers at 10hz.
-        if tick % NET_BROADCAST_EVERY == 0 {
+        if tick.is_multiple_of(NET_BROADCAST_EVERY) {
             sync::broadcast_player_update(&net, &player).await;
             // Host-as-server relay: the host re-advertises the FULL peer roster (ids +
             // current positions) so every joiner learns about ALL other peers, not just
@@ -776,12 +776,12 @@ pub async fn run(
         }
 
         // Broadcast chunk states at 5hz.
-        if tick % CHUNK_BROADCAST_EVERY == 0 {
+        if tick.is_multiple_of(CHUNK_BROADCAST_EVERY) {
             sync::broadcast_chunk_states(&net, &world, player.position).await;
         }
 
         // Heartbeat every 1s.
-        if tick % HEARTBEAT_EVERY == 0 {
+        if tick.is_multiple_of(HEARTBEAT_EVERY) {
             net.retry_pending_connection().await;
             net.send_heartbeats().await;
 
@@ -807,7 +807,7 @@ pub async fn run(
         }
 
         // Process reliable retransmits.
-        if tick % ENTITY_TICK_EVERY == 0 {
+        if tick.is_multiple_of(ENTITY_TICK_EVERY) {
             net.process_retransmits().await;
         }
 
@@ -815,7 +815,7 @@ pub async fn run(
 
         // ADR-009 §2: authoritative movement delta at 20hz for the client
         // reconciler — pose + accepted-input ack, decoupled from the full snapshot.
-        if tick % MOVEMENT_DELTA_EVERY == 0 {
+        if tick.is_multiple_of(MOVEMENT_DELTA_EVERY) {
             let _ = to_clients.send(ServerMessage::DeltaUpdate(MovementDelta {
                 tick,
                 ack_input_seq: last_accepted_input_seq,
@@ -825,7 +825,7 @@ pub async fn run(
         }
 
         // Full WorldState (stats/chunks/entities) to Unity at 10hz.
-        if tick % WORLD_STATE_EVERY == 0 {
+        if tick.is_multiple_of(WORLD_STATE_EVERY) {
             let snapshot =
                 build_world_state(tick, &player, &mut world, &net, last_accepted_input_seq);
             let _ = to_clients.send(ServerMessage::WorldState(snapshot));
@@ -833,7 +833,7 @@ pub async fn run(
 
         // ADR-032: host-only autosave (~3 min). The single-threaded loop makes tick-boundary
         // serialization an inherently consistent snapshot — no pause/lock needed. Skips tick 0.
-        if net.is_host && tick > 0 && tick % AUTOSAVE_EVERY == 0 {
+        if net.is_host && tick > 0 && tick.is_multiple_of(AUTOSAVE_EVERY) {
             match crate::persistence::save::save_world(
                 &save_path,
                 &session_name,
@@ -1551,11 +1551,12 @@ fn quantize_pitch(deg: f32) -> i8 {
 /// ADR-009 Option B authoritative-move validation. The client owns prediction and
 /// its position, so the reported pose is ALWAYS applied — it is never discarded.
 ///   * speed cap  — REMOVED. It used to `return None` when the finite-difference
-///                  velocity exceeded the sprint cap, holding the player at the last
-///                  accepted pose; on the remote avatar that surfaced as teleport
-///                  JUMPS between accepted poses. Velocity now only drives stamina.
+///     velocity exceeded the sprint cap, holding the player at the last
+///     accepted pose; on the remote avatar that surfaced as teleport
+///     JUMPS between accepted poses. Velocity now only drives stamina.
 ///   * collision  — still clamps the claimed position against static level geometry
-///                  (slides, never freezes).
+///     (slides, never freezes).
+///
 /// No server-side physics integration is performed. Always returns the accepted
 /// `input_seq` (`Some`).
 fn apply_client_authoritative_move(
@@ -1600,7 +1601,7 @@ fn apply_client_authoritative_move(
     ) {
         RESOLVE_MOVE_BLOCKED_DIAG.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    if _tick % 60 == 0 {
+    if _tick.is_multiple_of(60) {
         let calls = RESOLVE_MOVE_CALLS_DIAG.swap(0, std::sync::atomic::Ordering::Relaxed);
         let blocked = RESOLVE_MOVE_BLOCKED_DIAG.swap(0, std::sync::atomic::Ordering::Relaxed);
         info!(
@@ -1628,7 +1629,7 @@ fn apply_client_authoritative_move(
 
         let dx = resolved.position.x - claimed.x;
         let dz = resolved.position.z - claimed.z;
-        if (dx * dx + dz * dz).sqrt() > 2.0 && _tick % 60 == 0 {
+        if (dx * dx + dz * dz).sqrt() > 2.0 && _tick.is_multiple_of(60) {
             info!(
                 "MPTRACE step=TP_WATCH TP_SOURCE=resolve_move_clamp in_window={} claimed=({:.1},{:.1},{:.1}) resolved=({:.1},{:.1},{:.1}) kind={:?}",
                 in_window,
@@ -3233,6 +3234,8 @@ async fn process_stp_pickup(
     }
 }
 
+// TODO(refactor): group into a params struct; deferred to keep this diff to a lint fix.
+#[allow(clippy::too_many_arguments)]
 async fn process_authoritative_interaction(
     requester_id: u16,
     request_id: u64,
@@ -3525,7 +3528,7 @@ fn build_world_state(
         });
     }
 
-    if tick % 30 == 0 {
+    if tick.is_multiple_of(30) {
         let remote_ids: Vec<u16> = remote_players.iter().map(|p| p.id).collect();
         info!(
             "WorldState remote_players={} ids={:?}",
@@ -3624,7 +3627,7 @@ fn nearest_real_target(
         }
         let pos = Vec3::from_array(p.position);
         let d = from.distance_xz(pos);
-        if best.map_or(true, |(_, _, bd, _)| d < bd) {
+        if best.is_none_or(|(_, _, bd, _)| d < bd) {
             best = Some((p.id, pos, d, p.rotation));
         }
     }
@@ -3915,7 +3918,7 @@ impl PhantomDriver {
             // touched: no process_stp_pickup, no pending_pickups, no stp_items, no grant. ──
             if self.movers[i]
                 .pickup_until
-                .map_or(false, |until| now >= until)
+                .is_some_and(|until| now >= until)
             {
                 self.movers[i].pickup_until = None;
             }
@@ -3984,10 +3987,7 @@ impl PhantomDriver {
                     }
 
                     // Tell #2: metronomic unnatural stillness (the tell is its regularity).
-                    if self.movers[i]
-                        .stare_until
-                        .map_or(false, |until| now >= until)
-                    {
+                    if self.movers[i].stare_until.is_some_and(|until| now >= until) {
                         self.movers[i].stare_until = None;
                     }
                     if self.movers[i].stare_until.is_none() && now >= self.movers[i].next_stare_at {
@@ -4125,7 +4125,7 @@ impl PhantomDriver {
                 // SPRINT; lost past LOSE_RADIUS → WANDER (slice 3b: SEARCH the last-known pos). ──
                 PhantomState::Stalk => {
                     let dist_opt = target.map(|(_, _, d, _)| d);
-                    if dist_opt.map_or(true, |d| d > PHANTOM_LOSE_RADIUS) {
+                    if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
                         // 3b will SEARCH `last_known_player_pos`; for 3a fall back to WANDER.
                         self.movers[i].state = PhantomState::Wander;
                         self.movers[i].state_timer = 0.0;
@@ -4269,7 +4269,7 @@ impl PhantomDriver {
                 // (slice 3b: SEARCH — it doesn't give up easily mid-lunge). ──
                 PhantomState::Sprint => {
                     let dist_opt = target.map(|(_, _, d, _)| d);
-                    if dist_opt.map_or(true, |d| d > PHANTOM_LOSE_RADIUS * 1.2) {
+                    if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS * 1.2) {
                         self.movers[i].state = PhantomState::Wander;
                         self.movers[i].state_timer = 0.0;
                         continue;
@@ -4633,7 +4633,7 @@ mod tests {
 
         // The driver exercised the grid_gen cache (proves on-demand generation far from host).
         assert!(
-            driver.grid_cache.len() > 0,
+            !driver.grid_cache.is_empty(),
             "driver must generate grid_gen chunks far from the host"
         );
         // The phantom stayed grounded with a finite pose (never NaN, never an unloaded snap).
@@ -5348,8 +5348,10 @@ mod tests {
 
     #[test]
     fn apply_pvp_damage_grant_blocks_while_invulnerable_then_applies_after() {
-        let mut stats = crate::player::stats::PlayerStats::default();
-        stats.invuln_until_tick = 500;
+        let mut stats = crate::player::stats::PlayerStats {
+            invuln_until_tick: 500,
+            ..Default::default()
+        };
         let mut dedupe = BoundedDedupeSet::with_capacity(64);
         let health_before = stats.health;
 
