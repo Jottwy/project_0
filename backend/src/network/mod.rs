@@ -1453,7 +1453,7 @@ impl NetworkManager {
         self.pending_connect_addr = None;
 
         // Add the host as a peer.
-        let host_peer = PeerConnection::new(sender_id, format!("Host"), from_addr);
+        let host_peer = PeerConnection::new(sender_id, "Host".to_string(), from_addr);
         self.peers.insert(sender_id, host_peer);
         info!(
             "MPTRACE step=F event=joiner_register_host self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
@@ -1562,9 +1562,9 @@ impl NetworkManager {
         // Ground at the grid_gen floor: the spawn-time player.position.y is the world::generator
         // value (≈1.8, above the grid_gen floor) → it would float. grid_floor_y(layer) is the
         // rendered floor; +0.1 sits just above it (the real player's LOCAL SEND Y is ≈0).
-        position[1] =
-            crate::world::grid_gen::grid_floor_y(crate::world::grid_gen::world_pos_to_layer(position[1]))
-                + 0.1;
+        position[1] = crate::world::grid_gen::grid_floor_y(
+            crate::world::grid_gen::world_pos_to_layer(position[1]),
+        ) + 0.1;
         let id = self.allocate_phantom_id();
         // Inert, non-routable addr: nobody sends to it on the normal path, and reliable
         // broadcasts skip it explicitly. 127.0.0.1:1 is never a real peer endpoint.
@@ -1710,7 +1710,10 @@ mod tests {
             position: [-22.0, 1.8, 9.0],
             equipment: [0, -1, -2, -3],
             held_item: -99,
-            items: vec![CorpseStack { item_id: -12345, quantity: 3 }],
+            items: vec![CorpseStack {
+                item_id: -12345,
+                quantity: 3,
+            }],
         };
         joiner.send_reliable(1, &spawn).await;
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1718,7 +1721,11 @@ mod tests {
         assert!(
             host_events.iter().any(|e| matches!(
                 e,
-                NetworkEvent::CorpseSpawnRequest { request_id: 1, requester_id: 1004, .. }
+                NetworkEvent::CorpseSpawnRequest {
+                    request_id: 1,
+                    requester_id: 1004,
+                    ..
+                }
             )),
             "host should receive the spawn request, got: {host_events:?}"
         );
@@ -1731,7 +1738,10 @@ mod tests {
             crate::utils::Vec3::new(-22.0, 1.8, 9.0),
             [0, -1, -2, -3],
             -99,
-            vec![CorpseStack { item_id: -12345, quantity: 3 }],
+            vec![CorpseStack {
+                item_id: -12345,
+                quantity: 3,
+            }],
         );
         super::sync::broadcast_corpses(&host, &world).await;
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -1763,7 +1773,12 @@ mod tests {
         assert!(
             joiner_events.iter().any(|e| matches!(
                 e,
-                NetworkEvent::CorpseTakeResult { request_id: 2, accepted: true, item_id: -12345, .. }
+                NetworkEvent::CorpseTakeResult {
+                    request_id: 2,
+                    accepted: true,
+                    item_id: -12345,
+                    ..
+                }
             )),
             "joiner should receive the take verdict, got: {joiner_events:?}"
         );
@@ -1960,7 +1975,10 @@ mod tests {
         // XZ may be snapped to a grid_gen-walkable cell, and Y is grounded to the grid_gen floor
         // + the player's stand height (ADR-018).
         let expected_y = crate::world::grid_gen::grid_floor_y(0) + 0.1;
-        assert_eq!(p.position[1], expected_y, "spawn Y grounded just above the grid_gen floor");
+        assert_eq!(
+            p.position[1], expected_y,
+            "spawn Y grounded just above the grid_gen floor"
+        );
     }
 
     #[tokio::test]
@@ -1969,8 +1987,7 @@ mod tests {
         let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
         // Force its heartbeat stale (it never receives real packets), then refresh as the
         // game loop does each heartbeat-tick.
-        host.peers.get_mut(&pid).unwrap().last_heartbeat =
-            Instant::now() - Duration::from_secs(10);
+        host.peers.get_mut(&pid).unwrap().last_heartbeat = Instant::now() - Duration::from_secs(10);
         host.refresh_phantom_heartbeats();
 
         let events = host.check_timeouts();
@@ -1983,8 +2000,7 @@ mod tests {
         // Sanity check that the refresh is load-bearing: without it the timeout reaps it.
         let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let pid = host.spawn_phantom("Robapieles_Test", [0.0, 1.8, 0.0]);
-        host.peers.get_mut(&pid).unwrap().last_heartbeat =
-            Instant::now() - Duration::from_secs(10);
+        host.peers.get_mut(&pid).unwrap().last_heartbeat = Instant::now() - Duration::from_secs(10);
 
         let events = host.check_timeouts();
         assert_eq!(events.len(), 1);

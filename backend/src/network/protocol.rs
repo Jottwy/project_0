@@ -27,7 +27,7 @@ impl PacketHeader {
         }
     }
 
-    pub fn to_bytes(&self) -> [u8; HEADER_SIZE] {
+    pub fn to_bytes(self) -> [u8; HEADER_SIZE] {
         let mut buf = [0u8; HEADER_SIZE];
         buf[0..2].copy_from_slice(&self.packet_type.to_be_bytes());
         buf[2..4].copy_from_slice(&self.sender_id.to_be_bytes());
@@ -970,12 +970,17 @@ mod tests {
             position: Vec3::new(-22.3, 1.8, 9.7),
             equipment: [0, -2328174, -2864101, -3870361],
             held_item: -1159981804,
-            items: vec![CorpseStack { item_id: -12345, quantity: 3 }],
+            items: vec![CorpseStack {
+                item_id: -12345,
+                quantity: 3,
+            }],
             // ADR-028 amendment (world chests): the flag must survive the P2P mirror hop.
             is_chest: true,
         };
 
-        let list = PacketPayload::CorpseList { corpses: vec![corpse.clone()] };
+        let list = PacketPayload::CorpseList {
+            corpses: vec![corpse.clone()],
+        };
         let header = PacketHeader::new(list.type_code(), 1, 1, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &list)).unwrap();
         match decoded {
@@ -997,12 +1002,20 @@ mod tests {
             position: [-22.3, 1.8, 9.7],
             equipment: [0, -2328174, -2864101, -3870361],
             held_item: -1159981804,
-            items: vec![CorpseStack { item_id: 99, quantity: 1 }],
+            items: vec![CorpseStack {
+                item_id: 99,
+                quantity: 1,
+            }],
         };
         let header = PacketHeader::new(spawn.type_code(), 1004, 2, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &spawn)).unwrap();
         match decoded {
-            PacketPayload::CorpseSpawnRequest { request_id, requester_id, items, .. } => {
+            PacketPayload::CorpseSpawnRequest {
+                request_id,
+                requester_id,
+                items,
+                ..
+            } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(requester_id, 1004);
                 assert_eq!(items[0].item_id, 99);
@@ -1021,7 +1034,12 @@ mod tests {
         let header = PacketHeader::new(take.type_code(), 1004, 3, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &take)).unwrap();
         match decoded {
-            PacketPayload::CorpseTakeRequest { request_id, corpse_id, item_index, .. } => {
+            PacketPayload::CorpseTakeRequest {
+                request_id,
+                corpse_id,
+                item_index,
+                ..
+            } => {
                 assert_eq!(request_id, 43);
                 assert_eq!(corpse_id, 7);
                 assert_eq!(item_index, 2);
@@ -1042,7 +1060,12 @@ mod tests {
         let header = PacketHeader::new(result.type_code(), 1, 4, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &result)).unwrap();
         match decoded {
-            PacketPayload::CorpseTakeResult { accepted, item_id, reason, .. } => {
+            PacketPayload::CorpseTakeResult {
+                accepted,
+                item_id,
+                reason,
+                ..
+            } => {
                 assert!(!accepted);
                 assert_eq!(item_id, -12345);
                 assert!(reason.starts_with("too_far"));
@@ -1070,7 +1093,14 @@ mod tests {
         let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
         match decoded {
             PacketPayload::PvpHitCandidate {
-                request_id, attacker_id, victim_id, weapon_id, damage, client_tick, hit_position, ..
+                request_id,
+                attacker_id,
+                victim_id,
+                weapon_id,
+                damage,
+                client_tick,
+                hit_position,
+                ..
             } => {
                 assert_eq!(request_id, 501);
                 assert_eq!(attacker_id, 1004);
@@ -1100,7 +1130,11 @@ mod tests {
         .unwrap();
         let decoded: PacketPayload = rmp_serde::from_slice(&bytes).unwrap();
         match decoded {
-            PacketPayload::PvpHitCandidate { client_tick, hit_position, .. } => {
+            PacketPayload::PvpHitCandidate {
+                client_tick,
+                hit_position,
+                ..
+            } => {
                 assert_eq!(client_tick, None);
                 assert_eq!(hit_position, None);
             }
@@ -1121,7 +1155,12 @@ mod tests {
         let header = PacketHeader::new(payload.type_code(), 1, 9, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
         match decoded {
-            PacketPayload::PvpDamageGrant { request_id, damage, reason, .. } => {
+            PacketPayload::PvpDamageGrant {
+                request_id,
+                damage,
+                reason,
+                ..
+            } => {
                 assert_eq!(request_id, 501);
                 assert_eq!(damage, 18.0);
                 assert_eq!(reason, "validated");
@@ -1141,7 +1180,9 @@ mod tests {
         let header = PacketHeader::new(payload.type_code(), 1, 10, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
         match decoded {
-            PacketPayload::PvpHitRejected { request_id, reason, .. } => {
+            PacketPayload::PvpHitRejected {
+                request_id, reason, ..
+            } => {
                 assert_eq!(request_id, 501);
                 assert_eq!(reason, "too_far");
             }

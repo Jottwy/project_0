@@ -103,7 +103,7 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
     // owned by the client (Animator exitTime), not by this window.
     let animation = if net
         .last_pickup_at
-        .map_or(false, |t| t.elapsed().as_millis() < 1000)
+        .is_some_and(|t| t.elapsed().as_millis() < 1000)
     {
         "pickup"
     } else if player.stats.speed_modifier < 1.0 {
@@ -290,7 +290,7 @@ pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
-    for (_key, chunk) in &world.chunks {
+    for chunk in world.chunks.values() {
         if chunk.owner != Some(net.local_id) {
             continue;
         }
