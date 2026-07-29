@@ -23,7 +23,7 @@ MonoBehaviour:
   brokenLampChance: 0.2
   lampColor: {r: 0.95, g: 0.92, b: 0.75, a: 1}
   lampIntensity: 1.6
-  lampRange: 11
+  lampRange: 5.5
   fogDensity: 0.05
   fogColor: {r: 0.6, g: 0.58, b: 0.52, a: 1}
   ceilingPanelVariety: 0.4

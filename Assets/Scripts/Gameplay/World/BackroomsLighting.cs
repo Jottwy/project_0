@@ -21,6 +21,9 @@ namespace BackroomsSurvival.Gameplay.World
         private const double FlickerChance = 0.30;
         private const double DeathChance = 0.10;
 
+        // Pieza D — salt for the per-chunk lamp-density jitter ("LDNS").
+        private const uint LightSaltDensity = 0x4C444E53U;
+
         // Lazy-init at first use, NOT via a field initializer: a static initializer in a
         // MonoBehaviour runs inside the first AddComponent's constructor context, where
         // creating a MaterialPropertyBlock throws "CreateImpl not allowed from constructor".
@@ -33,13 +36,30 @@ namespace BackroomsSurvival.Gameplay.World
         /// </summary>
         public void PlaceFluorescentLights(Transform chunkRoot, int tilesX, int tilesZ,
             float tileSize, float ceilingHeight, LayerVisualConfig cfg, Material lampMat,
-            int chunkX, int chunkZ, int worldLayer)
+            int chunkX, int chunkZ, int worldLayer, byte[,] walls)
         {
             if (cfg == null) return;
 
             // One deterministic RNG per chunk; tiles drawn in scan order.
             var rng = new System.Random(unchecked(chunkX * 73856093 ^ chunkZ * 19349663));
             Color litEmission = cfg.lampColor * Mathf.Max(0f, cfg.lampIntensity);
+
+            // Pieza D — per-chunk density jitter. With a flat cfg.lightDensity every
+            // chunk lands within a couple of lamps of the same count, so a corridor is
+            // lit identically end to end and the space reads as one uniform box. The
+            // band is deliberately asymmetric downward so genuinely DARK stretches
+            // exist; the pure hash keeps it deterministic per chunk (all peers agree)
+            // without touching the rng stream above. TODO(balance): band tuned by eye.
+            float density = Mathf.Clamp01(cfg.lightDensity *
+                (0.30f + GridChunkBuilder.Hash01(chunkX, chunkZ, LightSaltDensity) * 0.90f));
+
+            // Lamps hang from the ceiling of a tile the player can be under. A fully
+            // enclosed tile has no such space — its luminaire was buried inside solid
+            // geometry, wasting a draw call and a realtime Light on something never
+            // seen. Same 0x0F test GridChunkBuilder.PlaceProps uses. null ⇒ no filter
+            // (caller without geometry to hand, e.g. a fixed test room).
+            bool HasCeilingSpace(int tx, int tz)
+                => walls == null || (walls[tx, tz] & 0x0F) != 0x0F;
 
             // Fase 5A (Bug #1): isolate this layer's lamps to this layer's geometry so
             // light never bleeds through the thin slabs into adjacent stacked layers.
@@ -54,7 +74,8 @@ namespace BackroomsSurvival.Gameplay.World
             {
                 for (int tx = 0; tx < tilesX; tx++)
                 {
-                    if (rng.NextDouble() >= cfg.lightDensity) continue; // no luminaire here
+                    if (!HasCeilingSpace(tx, tz)) continue;   // solid tile — nothing to light
+                    if (rng.NextDouble() >= density) continue; // no luminaire here
 
                     var localPos = new Vector3(
                         (tx + 0.5f) * tileSize,
@@ -74,17 +95,22 @@ namespace BackroomsSurvival.Gameplay.World
 
                     if (broken) continue; // dark tube, no light cast (mesh stays)
 
-                    // One centred Point light per panel (4 lights/panel killed perf). Range 5 m
-                    // from a ~4 m ceiling gives only √(5²−4²) ≈ 3 m horizontal reach — it
-                    // physically can't cross a 5 m corridor, so it can't bleed sideways even
-                    // before the per-layer cull.
+                    // One centred Point light per panel (4 lights/panel killed perf).
+                    //
+                    // Pieza D: the range now comes from cfg.lampRange instead of a hardcoded
+                    // 5 m that silently ignored the field. HARD CONSTRAINT when retuning it:
+                    // horizontal reach at floor level is √(range² − ceilingHeight²), and it
+                    // must stay under the 5 m corridor width or a lamp lights the corridor
+                    // BEYOND its own wall — the per-layer cullingMask below only stops
+                    // bleed between macro-layers, never sideways within one. With a 4 m
+                    // ceiling that caps range at ~6.4 m; the authored values are ≤ 6.
                     var lightGo = new GameObject("FluorescentLight");
                     lightGo.transform.SetParent(mesh.transform, false); // centred under the panel
                     var light = lightGo.AddComponent<Light>();
                     light.type        = LightType.Point;
                     light.color       = cfg.lampColor;
                     light.intensity   = cfg.lampIntensity;
-                    light.range       = 5f;
+                    light.range       = Mathf.Max(0.1f, cfg.lampRange);
                     light.shadows     = LightShadows.None;
                     light.renderMode  = LightRenderMode.Auto;
                     light.cullingMask = litMask; // only this layer's geometry + non-geo

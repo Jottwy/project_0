@@ -392,7 +392,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int tiles = GridConstants.ChunkCells / 2;
                 lighting.PlaceFluorescentLights(go.transform, tiles, tiles,
                     GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
-                    cfg, mats.lamp, ccx, ccz, layer);
+                    cfg, mats.lamp, ccx, ccz, layer, walls);
             }
         }
 

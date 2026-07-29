@@ -606,7 +606,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return cell * 0.8f + jit * 0.2f;
         }
 
-        private static float Hash01(int x, int y, uint salt)
+        /// <summary>Deterministic [0,1) hash of two ints under <paramref name="salt"/>.
+        /// Shared with <see cref="World.BackroomsLighting"/> (Pieza D) so lamp placement
+        /// and surface variety draw from the same generator instead of a near-copy that
+        /// can drift.</summary>
+        internal static float Hash01(int x, int y, uint salt)
         {
             unchecked
             {
