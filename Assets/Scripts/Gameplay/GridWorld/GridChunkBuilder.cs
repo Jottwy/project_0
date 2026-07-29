@@ -112,6 +112,27 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public const byte EdgeWest  = 4; // -x
         public const byte EdgeEast  = 8; // +x
 
+        // ADR-033/Pillar (enmienda "Opción (c)"): nibble alto de walls[tx,tz] —
+        // qué sub-celda de 2.5 m del tile de 5 m es una columna. Mapeo fijado en
+        // docs/DECISIONS.md; NO cambiar sin nueva enmienda. Espejo exacto de
+        // PILLAR_NW/NE/SW/SE en backend/src/world/grid_gen/tile_walls.rs.
+        public const byte PillarNW = 0x10; // (x0, z0)
+        public const byte PillarNE = 0x20; // (x1, z0)
+        public const byte PillarSW = 0x40; // (x0, z1)
+        public const byte PillarSE = 0x80; // (x1, z1)
+        public const byte PillarMask = PillarNW | PillarNE | PillarSW | PillarSE;
+
+        // Sub-cell table: flag → fractional offset within the tile (0 = west/north
+        // edge of the tile, 1 = east/south edge). SubCellCenter() converts this to
+        // a local position centred on the 2.5 m sub-cell.
+        private static readonly (byte flag, float sx, float sz)[] PillarSubCellTable =
+        {
+            (PillarNW, 0f, 0f),
+            (PillarNE, 1f, 0f),
+            (PillarSW, 0f, 1f),
+            (PillarSE, 1f, 1f),
+        };
+
         // Wall pieces: edge flag → local offset (× TileSize) + yaw. The Wall
         // prefab runs along X (yaw 0 → N/S edges); yaw 90 turns it along Z.
         private static readonly (byte flag, float ox, float oz, float yaw)[] WallEdgeTable =
@@ -225,8 +246,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// (ServerMessage::ChunkData). Every tile is floored (a roof slab on the top
         /// layer only); walls come straight from
         /// <paramref name="walls"/>[tx,tz] in the BACKEND convention
-        /// N=1(−Z) S=2(+Z) E=4(+X) W=8(−X). The 4.1 payload is walls + floors only —
-        /// no cells, pillars, voids or shafts.
+        /// N=1(−Z) S=2(+Z) E=4(+X) W=8(−X). Since ADR-033/Pillar (enmienda "Opción
+        /// (c)") the HIGH nibble additionally marks which of the tile's 4 sub-cells
+        /// is a column (<see cref="PillarNW"/>/<see cref="PillarNE"/>/
+        /// <see cref="PillarSW"/>/<see cref="PillarSE"/>) — everything else (voids,
+        /// shafts, non-pillar cell content) is still NOT representable in this
+        /// payload.
         ///
         /// No-duplication rule: each tile emits only the
         /// edges it OWNS — its +Z and +X panels. The shared edge is symmetric in the
@@ -237,6 +262,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// Bit translation (backend convention → this builder's internal flags):
         ///   backend S (2, +Z) → EdgeNorth (this tile's +z panel)
         ///   backend E (4, +X) → EdgeEast  (this tile's +x panel)
+        ///
+        /// Pillars have no such translation: each high-nibble bit already names its
+        /// own sub-cell directly (NW/NE/SW/SE), unambiguous per tile — no neighbour
+        /// shares or owns a sub-cell, so there is no duplication rule to apply.
         /// </summary>
         public static GameObject BuildFromWalls(byte[,] walls, GridPrefabSet prefabs,
             Vector3 origin, string name, int layerIndex, int layerCount,
@@ -291,6 +320,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(cfg.wallTint * zoneTint, rng));
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz);
                     }
+
+                    // ADR-033/Pillar: nibble alto → columnas por sub-celda. Sin
+                    // traducción de bits (a diferencia de N/S/E/W): cada bit ya
+                    // nombra su propia sub-celda, sin reparto con el vecino.
+                    byte pillarBits = (byte)(b & PillarMask);
+                    if (pillarBits != 0 && prefabs.pillar != null)
+                    {
+                        // Primer pase (decisión explícita): mats.wall, SIN material
+                        // propio de pilar — pendiente de pasada de arte separada.
+                        Color pillarTint = styled ? JitterValue(cfg.wallTint * zoneTint, rng) : Color.white;
+                        PlacePillars(prefabs, root.transform, pillarBits, tx, tz,
+                            styled ? mats.wall : null, pillarTint);
+                    }
+                    else if (pillarBits != 0 && prefabs.pillar == null && !_loggedMissingPillarPrefab)
+                    {
+                        // Sin fallback (a diferencia de floorSlab→floor): un chunk
+                        // sin este prefab simplemente no dibuja columnas — nunca
+                        // NullReference. Logueado una sola vez para no ahogar la
+                        // consola en un mundo con muchos tiles PILLAR_HALL.
+                        _loggedMissingPillarPrefab = true;
+                        Debug.LogError("[GridChunkBuilder] GridPrefabs/Pillar no encontrado en Resources — " +
+                                       "las columnas de ADR-033 no se dibujarán. Ejecuta Backrooms/Create Grid Prefabs.");
+                    }
                 }
             }
 
@@ -312,6 +364,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static Vector3 TileCenter(int tx, int tz) =>
             new Vector3((tx + 0.5f) * Ts, 0f, (tz + 0.5f) * Ts);
+
+        /// <summary>
+        /// Center of one 2.5 m sub-cell within tile (tx,tz). (sx,sz) ∈ {0,1}²:
+        /// 0 = west/north half of the tile, 1 = east/south half — matches
+        /// <see cref="PillarSubCellTable"/> and the backend's (x0,z0)/(x1,z1)
+        /// convention (tile_walls.rs). Equivalent to TileCenter(tx,tz) offset by
+        /// ±1.25 m per axis.
+        /// </summary>
+        private static Vector3 SubCellCenter(int tx, int tz, float sx, float sz) =>
+            TileCenter(tx, tz) + new Vector3(
+                (sx - 0.5f) * GridConstants.CellSize,
+                0f,
+                (sz - 0.5f) * GridConstants.CellSize);
 
         private static GameObject Instantiate(GameObject prefab, Transform parent,
             Vector3 localPos, float yaw)
@@ -350,6 +415,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if ((edges & flag) != 0)
                     AddColliderIfMissing(Instantiate(prefabs.wall, parent,
                         TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
+        }
+
+        // Logged once per session (not once per tile/chunk) so a world with many
+        // PILLAR_HALL chunks doesn't flood the console — see the call site in
+        // BuildFromWalls.
+        private static bool _loggedMissingPillarPrefab;
+
+        /// <summary>
+        /// ADR-033/Pillar: one <c>prefabs.pillar</c> instance per flagged sub-cell,
+        /// centred via <see cref="SubCellCenter"/>. RENDER ONLY — the prefab itself
+        /// carries no collider (authored that way in GridPrefabCreator.BuildPillar;
+        /// collision stays exclusively in Rust, unaffected by this commit). Caller
+        /// guarantees <c>prefabs.pillar != null</c>.
+        /// </summary>
+        private static void PlacePillars(GridPrefabSet prefabs, Transform parent,
+            byte pillarBits, int tx, int tz, Material mat, Color tint)
+        {
+            foreach (var (flag, sx, sz) in PillarSubCellTable)
+            {
+                if ((pillarBits & flag) == 0) continue;
+                var go = Instantiate(prefabs.pillar, parent, SubCellCenter(tx, tz, sx, sz), 0f);
+                if (mat != null) Paint(go, mat, tint);
+            }
         }
 
         // ── Fase 5A — styled (per-layer) variants ──────────────────────────────
@@ -610,6 +698,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 {
                     if (tx == center && tz == center) continue;      // reserved centre tile
                     if ((walls[tx, tz] & 0x0F) == 0x0F) continue;    // fully enclosed / solid
+                    // ADR-033/Pillar: a tile with ANY pillar sub-cell is excluded
+                    // outright, not just the sub-cell itself — props spawn at
+                    // TileCenter (whole-tile granularity), which would clip inside
+                    // the column regardless of which of the 4 sub-cells it occupies.
+                    if ((walls[tx, tz] & PillarMask) != 0) continue;
 
                     int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
                     float fine   = Hash01(gx, gz, PropSaltFine);
