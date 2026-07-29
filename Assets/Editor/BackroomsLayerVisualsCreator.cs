@@ -19,8 +19,8 @@ namespace BackroomsSurvival.EditorTools
     /// LayerVisualConfig.DefaultZoneTints, marcado como paleta placeholder "no
     /// final"). Horneado, un cambio futuro del inicializador ya
     /// no propagaría a esos assets. Los campos que este creador NO asigna
-    /// (props/propDensity/propClusterBias/ceilingPipe*) se conservan intactos en
-    /// un asset existente, pero salen a su default en uno recién creado.
+    /// (props/propDensity/propClusterBias) se conservan intactos en un asset
+    /// existente, pero salen a su default en uno recién creado.
     /// </summary>
     public static class BackroomsLayerVisualsCreator
     {
@@ -49,6 +49,7 @@ namespace BackroomsSurvival.EditorTools
                 c.lampColor = new Color(1.00f, 0.97f, 0.88f, 1f); c.lampIntensity = 2.0f; c.lampRange = 13f;
                 c.fogDensity = 0.035f; c.fogColor = new Color(0.78f, 0.71f, 0.59f, 1f);
                 c.ceilingPanelVariety = 0.25f;
+                c.ceilingPipes = true; c.ceilingPipeChance = 0.35f;
             });
 
             Save("Layer1_Industrial", c =>
@@ -61,6 +62,7 @@ namespace BackroomsSurvival.EditorTools
                 c.lampColor = new Color(0.95f, 0.92f, 0.75f, 1f); c.lampIntensity = 1.6f; c.lampRange = 11f;
                 c.fogDensity = 0.05f; c.fogColor = new Color(0.60f, 0.58f, 0.52f, 1f);
                 c.ceilingPanelVariety = 0.40f;
+                c.ceilingPipes = true; c.ceilingPipeChance = 0.80f;
             });
 
             Save("Layer2_Concreto", c =>
@@ -73,6 +75,7 @@ namespace BackroomsSurvival.EditorTools
                 c.lampColor = new Color(0.88f, 0.80f, 0.55f, 1f); c.lampIntensity = 1.3f; c.lampRange = 9f;
                 c.fogDensity = 0.07f; c.fogColor = new Color(0.42f, 0.40f, 0.37f, 1f);
                 c.ceilingPanelVariety = 0.70f;
+                c.ceilingPipes = true; c.ceilingPipeChance = 1.00f;
             });
 
             Save("Layer3_Vacio", c =>
@@ -85,6 +88,7 @@ namespace BackroomsSurvival.EditorTools
                 c.lampColor = new Color(0.80f, 0.68f, 0.40f, 1f); c.lampIntensity = 0.9f; c.lampRange = 7f;
                 c.fogDensity = 0.09f; c.fogColor = new Color(0.28f, 0.25f, 0.22f, 1f);
                 c.ceilingPanelVariety = 0.95f;
+                c.ceilingPipes = false; c.ceilingPipeChance = 0f;
             });
 
             AssetDatabase.SaveAssets();
