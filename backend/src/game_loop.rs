@@ -445,32 +445,6 @@ pub async fn run(
                         cz,
                         layer,
                     );
-                    // TEMPORARY DIAG (REMOVE after ADR-033 playtest confirmation, mismo
-                    // criterio que [ZoneTintDiag]/[ZoneLootDiag] de la Pieza 2/3). Es la
-                    // ÚNICA prueba inequívoca de que la geometría que se ve salió de
-                    // grid_gen con el perfil de ESTA zona: se emite en el mismo punto que
-                    // produce el ChunkData que Unity renderiza, y no existe otro productor
-                    // de ChunkData. Solo zonas no-NORMAL, para no ahogar el log.
-                    let zone_kind =
-                        crate::world::zone_density::zone_kind_for(net.world_seed, cx, cz, layer);
-                    if zone_kind != 0 {
-                        let flat = &crate::world::grid_gen::LAYER_PROFILES[(layer as usize)
-                            .min(crate::world::grid_gen::LAYER_PROFILES.len() - 1)];
-                        info!(
-                            "[ZoneDensityDiag] source=grid_gen chunk=({},{}) layer={} zone_kind={} profile={} zones={} size={} pillars={:.2} (flat: zones={} size={} pillars={:.2})",
-                            cx,
-                            cz,
-                            layer,
-                            zone_kind,
-                            if &rules == flat { "FLAT" } else { "ZONED" },
-                            rules.num_open_zones,
-                            rules.open_zone_size,
-                            rules.pillar_chance,
-                            flat.num_open_zones,
-                            flat.open_zone_size,
-                            flat.pillar_chance
-                        );
-                    }
                     // Broadcast: in this P2P model each player runs its own backend with a
                     // single Unity client, so the only subscriber IS the requester.
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
