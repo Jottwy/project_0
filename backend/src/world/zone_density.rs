@@ -317,6 +317,80 @@ mod tests {
         assert!(checked > 0, "no se comprobó ningún chunk PILLAR_HALL");
     }
 
+    /// El perfil PILLAR_HALL debe seguir produciendo chunks JUGABLES.
+    ///
+    /// Hueco de cobertura real que abre ADR-033: `all_walkable_cells_are_connected`
+    /// y `sealing_preserves_main_component` barren `LAYER_PROFILES`, así que
+    /// NINGUNO toca el perfil derivado de PILLAR_HALL. Un perfil más abierto
+    /// cambia el sustrato del sellado de bolsillos (la calibración de Fase 2 ya
+    /// avisa de que zonas sobredimensionadas borran el laberinto), así que la
+    /// conectividad hay que probarla explícitamente sobre el perfil nuevo.
+    #[test]
+    fn pillar_hall_chunks_stay_connected_and_non_degenerate() {
+        use crate::world::grid_gen::{generate_chunk_layer, LayerGrid, CHUNK_CELLS};
+
+        fn flood(grid: &LayerGrid) -> (usize, usize) {
+            let (mut total, mut start) = (0usize, None);
+            for z in 0..CHUNK_CELLS {
+                for x in 0..CHUNK_CELLS {
+                    if grid.get(x, z).is_walkable() {
+                        total += 1;
+                        start.get_or_insert((x, z));
+                    }
+                }
+            }
+            let Some(start) = start else { return (0, 0) };
+            let mut visited = vec![false; CHUNK_CELLS * CHUNK_CELLS];
+            visited[start.1 * CHUNK_CELLS + start.0] = true;
+            let mut queue = vec![start];
+            let mut reached = 0usize;
+            while let Some((x, z)) = queue.pop() {
+                reached += 1;
+                for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+                    if !LayerGrid::in_bounds(nx, nz) {
+                        continue;
+                    }
+                    let (nx, nz) = (nx as usize, nz as usize);
+                    if !visited[nz * CHUNK_CELLS + nx] && grid.get(nx, nz).is_walkable() {
+                        visited[nz * CHUNK_CELLS + nx] = true;
+                        queue.push((nx, nz));
+                    }
+                }
+            }
+            (reached, total)
+        }
+
+        let mut checked = 0usize;
+        for seed in SEEDS {
+            for cx in -12..=12 {
+                for cz in -12..=12 {
+                    if zone_kind_for(seed, cx, cz, 0) != ZONE_PILLAR_HALL {
+                        continue;
+                    }
+                    let rules = rules_for(seed, cx, cz, 0);
+                    let out = generate_chunk_layer(&rules, seed, (cx, cz), 0, &[]);
+                    let (reached, total) = flood(&out.grid);
+                    assert_eq!(
+                        reached, total,
+                        "seed {seed} chunk ({cx},{cz}) PILLAR_HALL: {reached} de {total} celdas alcanzables — zonas aisladas"
+                    );
+                    // Mismo suelo absoluto que `sealing_preserves_main_component`:
+                    // un sellado catastrófico dejaría un bolsillo minúsculo.
+                    assert!(
+                        total >= 30,
+                        "seed {seed} chunk ({cx},{cz}) PILLAR_HALL: solo {total} celdas transitables"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 20,
+            "solo {checked} chunks PILLAR_HALL comprobados"
+        );
+    }
+
     /// El resolver es una función pura del seed: misma entrada → misma salida,
     /// también tras poblar la memoización. Es el contrato del que depende que
     /// todos los peers generen la misma geometría.
