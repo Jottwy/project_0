@@ -450,3 +450,279 @@ fn border_cells_remain_solid_wall() {
         }
     }
 }
+
+// ── 6. Densidades vecinas divergentes (ADR-033) ───────────────────────────────
+//
+// Escenario que INTRODUCE ADR-033: chunks VECINOS con perfiles de densidad
+// DISTINTOS dentro de la MISMA capa. Todo lo probado hasta aquí — incluido
+// `merged_3x3_chunks_are_globally_connected` — usa un perfil UNIFORME para el
+// bloque entero, así que la costura nunca se ejercitó con densidades mixtas.
+//
+// Por qué estos tests nacen en VERDE (deliberado, no es un descuido): la
+// posición de apertura (`aperture_pos`, stitching.rs) deriva de
+// (world_seed, borde canónico, eje, capa) y NO de `rules` — dos vecinos con
+// perfiles distintos ya acuerdan la apertura por construcción. Estos tests no
+// demuestran un bug actual: fijan por escrito una invariante hoy ACCIDENTAL,
+// para que el cableado de zone_kind (ADR-033, Paso 2: `zone_kind` → LayerRules
+// por chunk en las rutas de render y del robapieles) no pueda romperla en
+// silencio. Son el guardarraíl del Paso 2, no su diagnóstico.
+
+/// Índice de perfil por chunk en tablero de ajedrez: el contraste MÁXIMO
+/// expresable con los perfiles ya calibrados — 0 ("El Vestíbulo", el más
+/// cerrado: 1 zona de 5 celdas, sin pilares) contra 2 ("El Caos", el más
+/// abierto: 4 zonas de 7 celdas, pilares al 0.6). No se inventan números de
+/// perfil: cablear zone_kind producirá contrastes de este orden o menores.
+fn checkerboard_profile(ccx: usize, ccz: usize) -> usize {
+    if (ccx + ccz).is_multiple_of(2) {
+        0
+    } else {
+        2
+    }
+}
+
+/// Genera un bloque `n`×`n` de chunks COSTURADOS, eligiendo el perfil de CADA
+/// chunk con `profile_at` (índice en `LAYER_PROFILES`). Todos comparten seed y
+/// capa: lo único que varía entre vecinos es la densidad. Índice del resultado:
+/// `ccz * n + ccx`.
+fn block_grids(
+    n: usize,
+    profile_at: impl Fn(usize, usize) -> usize,
+    seed: u64,
+    layer_index: i32,
+) -> Vec<LayerGrid> {
+    let mut grids = Vec::with_capacity(n * n);
+    for ccz in 0..n {
+        for ccx in 0..n {
+            let rules = &LAYER_PROFILES[profile_at(ccx, ccz)];
+            let out = generate_chunk_layer(rules, seed, (ccx as i32, ccz as i32), layer_index, &[]);
+            grids.push(out.grid);
+        }
+    }
+    grids
+}
+
+/// Fusiona el bloque en un grid plano de lado `n * CHUNK_CELLS`.
+fn merge_grids(grids: &[LayerGrid], n: usize) -> Vec<Cell> {
+    let side = n * CHUNK_CELLS;
+    let mut merged = vec![Cell::SOLID_WALL; side * side];
+    for ccz in 0..n {
+        for ccx in 0..n {
+            let grid = &grids[ccz * n + ccx];
+            for z in 0..CHUNK_CELLS {
+                for x in 0..CHUNK_CELLS {
+                    merged[(ccz * CHUNK_CELLS + z) * side + ccx * CHUNK_CELLS + x] = grid.get(x, z);
+                }
+            }
+        }
+    }
+    merged
+}
+
+/// Flood-fill ortogonal sobre un grid fusionado cuadrado. (alcanzadas, total).
+fn flood_fill_merged(merged: &[Cell], side: usize) -> (usize, usize) {
+    let mut total = 0usize;
+    let mut start = None;
+    for (i, cell) in merged.iter().enumerate() {
+        if cell.is_walkable() {
+            total += 1;
+            if start.is_none() {
+                start = Some(i);
+            }
+        }
+    }
+    let Some(start) = start else { return (0, 0) };
+
+    let mut visited = vec![false; merged.len()];
+    visited[start] = true;
+    let mut queue = vec![start];
+    let mut reached = 0usize;
+    while let Some(i) = queue.pop() {
+        reached += 1;
+        let (x, z) = (i % side, i / side);
+        for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+            let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+            if nx < 0 || nz < 0 || nx as usize >= side || nz as usize >= side {
+                continue;
+            }
+            let ni = nz as usize * side + nx as usize;
+            if !visited[ni] && merged[ni].is_walkable() {
+                visited[ni] = true;
+                queue.push(ni);
+            }
+        }
+    }
+    (reached, total)
+}
+
+/// Seeds de la suite normal: las 4 de `layer_profiles_change_the_output` (para
+/// cruzar el mismo terreno que el test de contraste de perfiles) + las 3 de
+/// `all_walkable_cells_are_connected`.
+const DENSITY_MIX_SEEDS: [u64; 7] = [TEST_SEED, 7, 1234, 555_555, 1, 42, 9_999_999];
+
+/// Bloque 3×3 con densidades alternas: el flood-fill global debe alcanzar TODO
+/// lo transitable cruzando fronteras entre chunks de densidad MUY distinta.
+/// Requisito duro de la consecuencia #4 de ADR-033.
+#[test]
+fn neighbouring_density_profiles_stay_globally_connected() {
+    const N: usize = 3;
+    let side = N * CHUNK_CELLS;
+
+    for seed in DENSITY_MIX_SEEDS {
+        let grids = block_grids(N, checkerboard_profile, seed, 0);
+        let merged = merge_grids(&grids, N);
+        let (reached, total) = flood_fill_merged(&merged, side);
+        assert!(
+            total > 0,
+            "seed {seed}: bloque 3×3 de densidades mixtas sin celdas transitables"
+        );
+        assert_eq!(
+            reached, total,
+            "seed {seed}: {reached} de {total} celdas alcanzables en el bloque 3×3 de densidades MIXTAS — la costura no sobrevive a perfiles distintos entre vecinos"
+        );
+    }
+}
+
+/// Alineación de apertura por borde compartido: con perfiles distintos a cada
+/// lado, cada frontera sigue teniendo al menos UNA posición transitable en
+/// AMBOS chunks — la travesía real que la conectividad global necesita.
+///
+/// Se asierta la intersección no vacía, no la igualdad de los conjuntos de
+/// borde (lo que sí hace el test de perfil uniforme): con densidades divergentes
+/// el pase de reparación de cada chunk puede dejar transitables de más en su
+/// propio borde. La intersección no vacía es la propiedad SUFICIENTE y es la que
+/// depende de que `aperture_pos` ignore `rules`.
+#[test]
+fn shared_borders_keep_a_crossable_aperture_across_density_profiles() {
+    const N: usize = 3;
+    let last = CHUNK_CELLS - 1;
+
+    for seed in DENSITY_MIX_SEEDS {
+        let grids = block_grids(N, checkerboard_profile, seed, 0);
+        for ccz in 0..N {
+            for ccx in 0..N {
+                let a = &grids[ccz * N + ccx];
+                // Borde este: (ccx, ccz) | (ccx+1, ccz).
+                if ccx + 1 < N {
+                    let b = &grids[ccz * N + ccx + 1];
+                    let crossable = (0..CHUNK_CELLS)
+                        .any(|z| a.get(last, z).is_walkable() && b.get(0, z).is_walkable());
+                    assert!(
+                        crossable,
+                        "seed {seed}: borde E entre ({ccx},{ccz}) [perfil {}] y ({},{ccz}) [perfil {}] sin travesía transitable",
+                        checkerboard_profile(ccx, ccz),
+                        ccx + 1,
+                        checkerboard_profile(ccx + 1, ccz)
+                    );
+                }
+                // Borde sur (+Z): (ccx, ccz) | (ccx, ccz+1).
+                if ccz + 1 < N {
+                    let b = &grids[(ccz + 1) * N + ccx];
+                    let crossable = (0..CHUNK_CELLS)
+                        .any(|x| a.get(x, last).is_walkable() && b.get(x, 0).is_walkable());
+                    assert!(
+                        crossable,
+                        "seed {seed}: borde S entre ({ccx},{ccz}) [perfil {}] y ({ccx},{}) [perfil {}] sin travesía transitable",
+                        checkerboard_profile(ccx, ccz),
+                        ccz + 1,
+                        checkerboard_profile(ccx, ccz + 1)
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// MEDICIÓN (no aserción dura, deliberado): paneles de pared UNILATERALES en
+/// bordes de chunk con densidades divergentes.
+///
+/// `tile_walls` trata al vecino fuera de chunk como ABIERTO (tile_walls.rs), así
+/// que si la celda de borde de A es transitable y la de B no, A no dibuja muro y
+/// B sí: un panel visible desde un lado solo. Eso YA ocurre con perfiles
+/// uniformes; ADR-033 solo lo hace MÁS frecuente (salón abierto pegado a maze
+/// denso). Convertirlo en aserción dura exigiría cambiar el contrato de render,
+/// que ADR-033 prohíbe explícitamente — por eso aquí solo se acota con un techo
+/// HOLGADO que detecte una explosión (p. ej. un cableado futuro que rompa la
+/// simetría de borde por completo), no la asimetría ordinaria.
+#[test]
+fn border_panel_asymmetry_stays_within_a_loose_ceiling() {
+    const N: usize = 3;
+    // MEDIDO al escribir este test (2026-07-29): 0 de 840 aristas — asimetría
+    // CERO incluso con el contraste máximo de perfiles. Razón: `generate_layer`
+    // reserva TODO el borde como Wall sólido (`border_cells_remain_solid_wall`) y
+    // lo único que lo abre es la apertura canónica compartida, que ambos vecinos
+    // derivan de la misma `edge_seed` con independencia de `rules` — así que las
+    // celdas de borde coinciden por construcción y los paneles salen simétricos.
+    // El techo se deja HOLGADO (10 %, no 0 %) a propósito: asertar el 0 exacto
+    // convertiría esto en una aserción dura del contrato de render, que ADR-033
+    // prohíbe. Este techo solo detecta una EXPLOSIÓN de asimetría (un cableado
+    // futuro que abra celdas de borde por densidad), no la asimetría ordinaria.
+    const MAX_ASYMMETRIC_FRACTION: f64 = 0.10;
+
+    let mut asymmetric = 0usize;
+    let mut compared = 0usize;
+
+    for seed in DENSITY_MIX_SEEDS {
+        let grids = block_grids(N, checkerboard_profile, seed, 0);
+        let walls: Vec<_> = grids.iter().map(tile_walls_from_grid).collect();
+        let last_tile = TILES_PER_SIDE - 1;
+
+        for ccz in 0..N {
+            for ccx in 0..N {
+                let a = &walls[ccz * N + ccx];
+                if ccx + 1 < N {
+                    let b = &walls[ccz * N + ccx + 1];
+                    for tz in 0..TILES_PER_SIDE {
+                        compared += 1;
+                        if (a[last_tile][tz] & WALL_E != 0) != (b[0][tz] & WALL_W != 0) {
+                            asymmetric += 1;
+                        }
+                    }
+                }
+                if ccz + 1 < N {
+                    let b = &walls[(ccz + 1) * N + ccx];
+                    for tx in 0..TILES_PER_SIDE {
+                        compared += 1;
+                        if (a[tx][last_tile] & WALL_S != 0) != (b[tx][0] & WALL_N != 0) {
+                            asymmetric += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(compared > 0, "no se comparó ningún borde");
+    let fraction = asymmetric as f64 / compared as f64;
+    assert!(
+        fraction <= MAX_ASYMMETRIC_FRACTION,
+        "{asymmetric} de {compared} aristas de borde compartido son paneles unilaterales ({:.1} %) — por encima del techo holgado del {:.0} %; la simetría de borde se degradó, revisar antes de seguir",
+        fraction * 100.0,
+        MAX_ASYMMETRIC_FRACTION * 100.0
+    );
+}
+
+/// Barrido amplio de densidades mixtas. Más lento que la suite normal; se
+/// ejecuta explícitamente con `cargo test -- --ignored` (mismo patrón que
+/// `connectivity_seed_sweep`).
+#[test]
+#[ignore = "barrido amplio; correr con --ignored"]
+fn neighbouring_density_connectivity_seed_sweep() {
+    const N: usize = 3;
+    let side = N * CHUNK_CELLS;
+
+    let mut failures = Vec::new();
+    for seed in 0u64..200 {
+        let grids = block_grids(N, checkerboard_profile, seed, 0);
+        let merged = merge_grids(&grids, N);
+        let (reached, total) = flood_fill_merged(&merged, side);
+        if reached != total {
+            failures.push((seed, reached, total));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} seeds con componentes aisladas en bloques de densidad mixta: {:?}",
+        failures.len(),
+        &failures[..failures.len().min(20)]
+    );
+}
