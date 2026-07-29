@@ -26,7 +26,7 @@ MonoBehaviour:
   lampRange: 5
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
-  ceilingPanelVariety: 0
+  ceilingPanelVariety: 0.25
   ceilingPipeChance: 0
   ceilingPipes: 0
   propDensity: 0.12
