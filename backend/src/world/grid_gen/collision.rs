@@ -21,7 +21,8 @@ use std::collections::HashMap;
 use crate::utils::Vec3;
 
 use super::{
-    generate_chunk_layer, LayerGrid, CELL_SIZE_M, CHUNK_CELLS, LAYER_HEIGHT_M, LAYER_PROFILES,
+    generate_chunk_layer, LayerGrid, LayerRules, CELL_SIZE_M, CHUNK_CELLS, LAYER_HEIGHT_M,
+    LAYER_PROFILES,
 };
 
 /// World-units per chunk side (20 cells × 2.5 m = 50 m).
@@ -35,13 +36,39 @@ pub const GRID_CACHE_MAX_CHUNKS: usize = 64;
 pub struct GridGenChunkCache {
     seed: u64,
     cache: HashMap<(i32, i32, u8), LayerGrid>,
+    rules_fn: RulesFn,
+}
+
+/// Resolutor de perfil por chunk: `(world_seed, cx, cz, layer) → LayerRules`.
+///
+/// ADR-033 inyecta aquí `world::zone_density::rules_for` (que deriva el perfil
+/// del `zone_kind` del chunk) SIN que `grid_gen` importe `world/` — la
+/// invariante del módulo se conserva porque grid_gen solo conoce la FIRMA, no
+/// la implementación ni el concepto de zona.
+pub type RulesFn = fn(u64, i32, i32, u8) -> LayerRules;
+
+/// Resolutor por defecto: perfil de capa, el comportamiento pre-ADR-033.
+///
+/// Solo para consumidores que deliberadamente no quieren densidad por zona
+/// (tests de generación pura). Las rutas de RENDER y ROBAPIELES deben inyectar
+/// el resolutor real: si una usa este y la otra no, render y colisión divergen
+/// — exactamente lo que ADR-033 promete que no pasa.
+pub fn default_layer_rules(_seed: u64, _cx: i32, _cz: i32, layer: u8) -> LayerRules {
+    LAYER_PROFILES[(layer as usize).min(LAYER_PROFILES.len() - 1)].clone()
 }
 
 impl GridGenChunkCache {
+    /// Caché con el perfil de capa plano (sin densidad por zona).
     pub fn new(seed: u64) -> Self {
+        Self::with_rules(seed, default_layer_rules)
+    }
+
+    /// Caché con resolutor de perfil explícito (ADR-033).
+    pub fn with_rules(seed: u64, rules_fn: RulesFn) -> Self {
         Self {
             seed,
             cache: HashMap::new(),
+            rules_fn,
         }
     }
 
@@ -55,12 +82,14 @@ impl GridGenChunkCache {
 
     /// The grid_gen `LayerGrid` for (cx, cz, layer), generated on first access with the same
     /// generator + EMPTY `forced_walkable` that `chunk_tile_walls` uses — so the cached grid is
-    /// byte-identical to the rendered chunk's source.
+    /// byte-identical to the rendered chunk's source. Since ADR-033 that identity ALSO requires
+    /// the same `rules_fn` as the render path: `grid_cache_layout_matches_direct_generation`
+    /// guards it.
     pub fn get_or_generate(&mut self, cx: i32, cz: i32, layer: u8) -> &LayerGrid {
         let key = (cx, cz, layer);
         if !self.cache.contains_key(&key) {
-            let rules = &LAYER_PROFILES[(layer as usize).min(LAYER_PROFILES.len() - 1)];
-            let out = generate_chunk_layer(rules, self.seed, (cx, cz), layer as i32, &[]);
+            let rules = (self.rules_fn)(self.seed, cx, cz, layer);
+            let out = generate_chunk_layer(&rules, self.seed, (cx, cz), layer as i32, &[]);
             self.cache.insert(key, out.grid);
         }
         self.cache.get(&key).expect("just inserted")
@@ -117,7 +146,10 @@ pub fn world_pos_to_layer(y: f32) -> u8 {
 /// spawn, which may land on a grid_gen wall → the phantom would spawn stuck. Tries the original
 /// cell first, then a cross/ring of offsets (±2.5/5/7.5 m). Falls back to `pos` if none is
 /// walkable (rare). Uses a throwaway cache (the PhantomDriver keeps its own for movement).
-pub fn resolve_spawn_near(seed: u64, pos: [f32; 3]) -> [f32; 3] {
+///
+/// `rules_fn` must be the SAME resolutor the phantom's movement cache uses (ADR-033), or the snap
+/// would land against a different world than the one the phantom then walks on.
+pub fn resolve_spawn_near(seed: u64, pos: [f32; 3], rules_fn: RulesFn) -> [f32; 3] {
     const OFFSETS: [(f32, f32); 13] = [
         (0.0, 0.0), // original cell first, then a 12-step spiral (±2.5 cross, ±5 cross, ±5 diag)
         (2.5, 0.0),
@@ -133,7 +165,7 @@ pub fn resolve_spawn_near(seed: u64, pos: [f32; 3]) -> [f32; 3] {
         (5.0, -5.0),
         (-5.0, -5.0),
     ];
-    let mut cache = GridGenChunkCache::new(seed);
+    let mut cache = GridGenChunkCache::with_rules(seed, rules_fn);
     let layer = world_pos_to_layer(pos[1]);
     for (dx, dz) in OFFSETS {
         let cand = Vec3::new(pos[0] + dx, pos[1], pos[2] + dz);
@@ -280,7 +312,7 @@ mod tests {
     fn resolve_spawn_near_lands_walkable_or_falls_back_keeping_y() {
         let seed = 42;
         let input = [27.5_f32, 1.8, 27.5];
-        let r = resolve_spawn_near(seed, input);
+        let r = resolve_spawn_near(seed, input, default_layer_rules);
         assert!((r[1] - input[1]).abs() < 1e-4, "Y must be preserved");
         // The result is either a walkable grid_gen cell or the original fallback.
         let mut c = GridGenChunkCache::new(seed);
@@ -289,6 +321,19 @@ mod tests {
             walkable || r == input,
             "result must be walkable or the original fallback"
         );
+    }
+
+    /// Perfil de prueba con densidad de salón-con-pilares. LOCAL a propósito: el
+    /// resolutor real vive en `world::zone_density` y `grid_gen` no importa
+    /// `world/` ni en tests. Aquí se prueba el MECANISMO (la caché honra
+    /// `rules_fn`); la coincidencia con el resolutor real de ADR-033 se prueba en
+    /// `world::zone_density::tests::render_and_phantom_agree_on_pillar_hall`.
+    fn pillar_hall_like_rules(_seed: u64, _cx: i32, _cz: i32, layer: u8) -> LayerRules {
+        let mut rules = LAYER_PROFILES[(layer as usize).min(LAYER_PROFILES.len() - 1)].clone();
+        rules.num_open_zones = 4;
+        rules.open_zone_size = 7;
+        rules.pillar_chance = 0.6;
+        rules
     }
 
     #[test]
@@ -303,6 +348,29 @@ mod tests {
             cached.as_slice(),
             direct.grid.cells(),
             "cache layout must equal direct generation"
+        );
+
+        // ADR-033: la identidad debe sostenerse también cuando el perfil NO es el
+        // plano de capa — es el caso nuevo que introduce la densidad por zona.
+        let mut zoned = GridGenChunkCache::with_rules(42, pillar_hall_like_rules);
+        let zoned_cached = zoned.get_or_generate(pos.0, pos.1, 0).cells().to_vec();
+        let zoned_direct = generate_chunk_layer(
+            &pillar_hall_like_rules(42, pos.0, pos.1, 0),
+            42,
+            pos,
+            0,
+            &[],
+        );
+        assert_eq!(
+            zoned_cached.as_slice(),
+            zoned_direct.grid.cells(),
+            "cache layout must equal direct generation con perfil por zona"
+        );
+        // Y el caso zonificado tiene que ser REALMENTE distinto del plano, o la
+        // aserción de arriba sería vacía.
+        assert_ne!(
+            zoned_cached, cached,
+            "el perfil de zona no cambió el grid — el test no estaría probando nada"
         );
     }
 }

@@ -24,7 +24,7 @@
 //! Axis convention (IPC contract, mirror in Unity): N = −Z, S = +Z, E = +X,
 //! W = −X. Bits: N=1, S=2, E=4, W=8.
 
-use super::{generate_chunk_layer, LayerGrid, CHUNK_CELLS, LAYER_PROFILES};
+use super::{generate_chunk_layer, LayerGrid, LayerRules, CHUNK_CELLS};
 
 /// Tiles per chunk side: 2 cells per 5 m tile → 10 for CHUNK_CELLS = 20.
 pub const TILES_PER_SIDE: usize = CHUNK_CELLS / 2;
@@ -42,17 +42,23 @@ pub const WALL_W: u8 = 8; // −X
 
 /// Generate one chunk (with seam stitching) and derive its 5 m tile-wall bitmask.
 ///
-/// `layer` selects the personality profile, clamped to the 4 `LAYER_PROFILES`.
+/// `rules` is the chunk's personality profile. Hasta ADR-033 se derivaba aquí de
+/// `LAYER_PROFILES[layer]`; ahora lo INYECTA el llamador (`game_loop`, vía
+/// `world::zone_density::rules_for`) para que `zone_kind` pueda variar la
+/// densidad por chunk sin que `grid_gen` importe nada de `world/`. El consumidor
+/// de colisión del robapieles (`GridGenChunkCache`) debe inyectar EL MISMO
+/// resolutor o render y colisión divergen.
+///
 /// `forced_walkable` is empty in Fase 4.1 (no cross-layer coordination yet), so
 /// stairs/pits may lead into a wall in adjacent layers — a known, deferred
 /// limitation that does not affect single-layer rendering.
 pub fn chunk_tile_walls(
+    rules: &LayerRules,
     world_seed: u64,
     cx: i32,
     cz: i32,
     layer: u8,
 ) -> [[u8; TILES_PER_SIDE]; TILES_PER_SIDE] {
-    let rules = &LAYER_PROFILES[(layer as usize).min(LAYER_PROFILES.len() - 1)];
     let out = generate_chunk_layer(rules, world_seed, (cx, cz), layer as i32, &[]);
     tile_walls_from_grid(&out.grid)
 }

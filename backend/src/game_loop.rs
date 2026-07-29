@@ -429,8 +429,22 @@ pub async fn run(
                     // tile-wall bitmask. net.world_seed is the shared canonical seed
                     // (env WORLD_SEED, propagated via handshake) — identical on every
                     // peer, so the derived chunk is byte-identical across the session.
-                    let walls =
-                        crate::world::grid_gen::chunk_tile_walls(net.world_seed, cx, cz, layer);
+                    // ADR-033: el perfil de densidad sale del `zone_kind` del chunk
+                    // (resolver puro por seed), no de `LAYER_PROFILES[layer]` plano.
+                    // El robapieles inyecta ESTE MISMO resolutor en su caché de
+                    // colisión, así que render y colisión del fantasma no divergen.
+                    // `zone_kind` NO viaja por IPC: se deriva de net.world_seed +
+                    // (cx,cz,layer) que el propio mensaje ya trae — sin cambio de
+                    // protocolo, como fija el ADR.
+                    let rules =
+                        crate::world::zone_density::rules_for(net.world_seed, cx, cz, layer);
+                    let walls = crate::world::grid_gen::chunk_tile_walls(
+                        &rules,
+                        net.world_seed,
+                        cx,
+                        cz,
+                        layer,
+                    );
                     // Broadcast: in this P2P model each player runs its own backend with a
                     // single Unity client, so the only subscriber IS the requester.
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
@@ -3797,7 +3811,14 @@ struct PhantomMover {
 impl PhantomDriver {
     fn new(world_seed: u64) -> Self {
         Self {
-            grid_cache: GridGenChunkCache::new(world_seed),
+            // ADR-033: el fantasma colisiona contra la MISMA densidad por zona que
+            // se renderiza. Es el consumidor que hereda el cambio sin divergencia
+            // (a diferencia del jugador real, que sigue contra world::generator —
+            // deuda aceptada y documentada en el ADR).
+            grid_cache: GridGenChunkCache::with_rules(
+                world_seed,
+                crate::world::zone_density::rules_for,
+            ),
             movers: Vec::new(),
             prev_target_pos: HashMap::new(),
         }

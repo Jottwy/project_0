@@ -1558,7 +1558,14 @@ impl NetworkManager {
         // ADR-018: the phantom collides + renders against grid_gen, but `position` comes from the
         // world::generator player spawn and may be a grid_gen WALL → it would spawn stuck. Snap it
         // to a nearby grid_gen-walkable cell.
-        let mut position = crate::world::grid_gen::resolve_spawn_near(self.world_seed, position);
+        // ADR-033: mismo resolutor de densidad por zona que usa la caché de
+        // movimiento del fantasma (y que el render) — si el snap usara el perfil
+        // plano, aterrizaría contra un mundo distinto del que luego camina.
+        let mut position = crate::world::grid_gen::resolve_spawn_near(
+            self.world_seed,
+            position,
+            crate::world::zone_density::rules_for,
+        );
         // Ground at the grid_gen floor: the spawn-time player.position.y is the world::generator
         // value (≈1.8, above the grid_gen floor) → it would float. grid_floor_y(layer) is the
         // rendered floor; +0.1 sits just above it (the real player's LOCAL SEND Y is ≈0).

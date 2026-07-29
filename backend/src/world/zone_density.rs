@@ -274,6 +274,49 @@ mod tests {
         }
     }
 
+    /// GARANTÍA CENTRAL DE ADR-033 (opción 2): en un chunk que resuelve a
+    /// PILLAR_HALL, la geometría que se RENDERIZA y la que el ROBAPIELES usa para
+    /// colisionar son la misma. Es el test que se rompería si alguien cableara una
+    /// de las dos rutas y olvidara la otra.
+    #[test]
+    fn render_and_phantom_agree_on_pillar_hall() {
+        use crate::world::grid_gen::{chunk_tile_walls, tile_walls_from_grid, GridGenChunkCache};
+
+        let mut checked = 0usize;
+        for seed in SEEDS {
+            // Buscar chunks que de verdad resuelvan a PILLAR_HALL con este seed.
+            let hits: Vec<(i32, i32)> = (-12..=12)
+                .flat_map(|cx| (-12..=12).map(move |cz| (cx, cz)))
+                .filter(|&(cx, cz)| zone_kind_for(seed, cx, cz, 0) == ZONE_PILLAR_HALL)
+                .take(6)
+                .collect();
+            assert!(
+                !hits.is_empty(),
+                "seed {seed}: ningún chunk PILLAR_HALL en el barrido — la prueba de concepto no tendría dónde verse"
+            );
+
+            let mut cache = GridGenChunkCache::with_rules(seed, rules_for);
+            for (cx, cz) in hits {
+                let rules = rules_for(seed, cx, cz, 0);
+                let rendered = chunk_tile_walls(&rules, seed, cx, cz, 0);
+                let phantom = tile_walls_from_grid(cache.get_or_generate(cx, cz, 0));
+                assert_eq!(
+                    rendered, phantom,
+                    "seed {seed} chunk ({cx},{cz}) PILLAR_HALL: render y colisión del robapieles divergen"
+                );
+                // Y el chunk tiene que ser distinto del que daría el perfil plano,
+                // o PILLAR_HALL seguiría siendo una etiqueta sin efecto.
+                let flat = chunk_tile_walls(&LAYER_PROFILES[0], seed, cx, cz, 0);
+                assert_ne!(
+                    rendered, flat,
+                    "seed {seed} chunk ({cx},{cz}): PILLAR_HALL no cambió la geometría"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 0, "no se comprobó ningún chunk PILLAR_HALL");
+    }
+
     /// El resolver es una función pura del seed: misma entrada → misma salida,
     /// también tras poblar la memoización. Es el contrato del que depende que
     /// todos los peers generen la misma geometría.
