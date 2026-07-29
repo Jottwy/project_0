@@ -23,8 +23,17 @@
 //!
 //! Axis convention (IPC contract, mirror in Unity): N = −Z, S = +Z, E = +X,
 //! W = −X. Bits: N=1, S=2, E=4, W=8.
+//!
+//! ADR-033/Pillar (enmienda "Opción (c)", 2026-07-29): el nibble alto —antes
+//! sin uso, todo consumidor vivo ya enmascaraba con `0x0F`— codifica cuál de
+//! las 4 sub-celdas de 2.5 m del tile es `CellType::Pillar`: `0x10` NW
+//! `(x0,z0)`, `0x20` NE `(x1,z0)`, `0x40` SW `(x0,z1)`, `0x80` SE `(x1,z1)`.
+//! Criterio ESTRICTO — `kind() == CellType::Pillar`, nunca `is_solid()` (que
+//! agrupa Wall|Pillar|Void y dibujaría columnas en agujeros/paredes). Mismo
+//! tamaño de wire, mismo tipo `[[u8;10];10]`, sin bump de schema. PROHIBIDO
+//! reutilizar estos bits o cambiar el mapeo sin nueva enmienda (`DECISIONS.md`).
 
-use super::{generate_chunk_layer, LayerGrid, LayerRules, CHUNK_CELLS};
+use super::{generate_chunk_layer, CellType, LayerGrid, LayerRules, CHUNK_CELLS};
 
 /// Tiles per chunk side: 2 cells per 5 m tile → 10 for CHUNK_CELLS = 20.
 pub const TILES_PER_SIDE: usize = CHUNK_CELLS / 2;
@@ -39,6 +48,13 @@ pub const WALL_N: u8 = 1; // −Z
 pub const WALL_S: u8 = 2; // +Z
 pub const WALL_E: u8 = 4; // +X
 pub const WALL_W: u8 = 8; // −X
+
+/// Per-tile pillar bits (nibble alto, ADR-033/Pillar). Uno por sub-celda de
+/// 2.5 m del tile de 5 m; ver el mapeo en el doc-comment del módulo.
+pub const PILLAR_NW: u8 = 0x10; // (x0, z0)
+pub const PILLAR_NE: u8 = 0x20; // (x1, z0)
+pub const PILLAR_SW: u8 = 0x40; // (x0, z1)
+pub const PILLAR_SE: u8 = 0x80; // (x1, z1)
 
 /// Generate one chunk (with seam stitching) and derive its 5 m tile-wall bitmask.
 ///
@@ -92,6 +108,25 @@ pub fn tile_walls_from_grid(grid: &LayerGrid) -> [[u8; TILES_PER_SIDE]; TILES_PE
             if !edge_open(grid, &[((x0, z0), (x0 - 1, z0)), ((x0, z1), (x0 - 1, z1))]) {
                 bits |= WALL_W;
             }
+
+            // ADR-033/Pillar: nibble alto, una sub-celda a la vez. Criterio
+            // ESTRICTO `kind() == CellType::Pillar` — nunca `is_solid()`, que
+            // también marcaría Wall/Void y rompería tanto los tests de bit
+            // exacto de este módulo como la garantía "solo columnas reales"
+            // de la enmienda.
+            if is_pillar(grid, x0, z0) {
+                bits |= PILLAR_NW;
+            }
+            if is_pillar(grid, x1, z0) {
+                bits |= PILLAR_NE;
+            }
+            if is_pillar(grid, x0, z1) {
+                bits |= PILLAR_SW;
+            }
+            if is_pillar(grid, x1, z1) {
+                bits |= PILLAR_SE;
+            }
+
             *cell = bits;
         }
     }
@@ -121,6 +156,14 @@ fn neighbour_walkable_or_open(grid: &LayerGrid, x: i32, z: i32) -> bool {
     !LayerGrid::in_bounds(x, z) || grid.get(x as usize, z as usize).is_walkable()
 }
 
+/// ADR-033/Pillar: true iff the in-bounds cell at `(x, z)` is EXACTLY
+/// `CellType::Pillar`. Cells inside a tile are always in-bounds (`x0/x1/z0/z1`
+/// never leave `[0, CHUNK_CELLS)`), but this stays defensive like its `_open`
+/// siblings above.
+fn is_pillar(grid: &LayerGrid, x: i32, z: i32) -> bool {
+    LayerGrid::in_bounds(x, z) && grid.get(x as usize, z as usize).kind() == CellType::Pillar
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +172,100 @@ mod tests {
     fn open(grid: &mut LayerGrid, x: usize, z: usize) {
         grid.set(x, z, Cell::new(CellType::Corridor, 2, 0));
     }
+
+    fn pillar(grid: &mut LayerGrid, x: usize, z: usize) {
+        grid.set(x, z, Cell::new(CellType::Pillar, 2, 0));
+    }
+
+    /// ADR-033/Pillar (a): grid a mano, sin seed — las 4 sub-celdas de un tile
+    /// son `Pillar`. Los 4 bits del nibble alto deben salir exactos. Como
+    /// ninguna sub-celda es caminable, las 4 aristas del tile también salen
+    /// cerradas (mismo mecanismo que `isolated_open_tile_is_walled_on_all_four_edges`
+    /// en su caso contrario): el bitmask completo es `0xFF`.
+    #[test]
+    fn tile_with_all_four_subcells_pillar_sets_exact_nibble() {
+        // Tile (2,2): cells x∈{4,5}, z∈{4,5} — mismo tile que usan los tests
+        // vecinos, esta vez con Pillar en vez de Corridor.
+        let mut grid = LayerGrid::new_solid();
+        pillar(&mut grid, 4, 4); // NW (x0,z0)
+        pillar(&mut grid, 5, 4); // NE (x1,z0)
+        pillar(&mut grid, 4, 5); // SW (x0,z1)
+        pillar(&mut grid, 5, 5); // SE (x1,z1)
+
+        let walls = tile_walls_from_grid(&grid);
+        assert_eq!(
+            walls[2][2],
+            WALL_N | WALL_S | WALL_E | WALL_W | PILLAR_NW | PILLAR_NE | PILLAR_SW | PILLAR_SE,
+            "nibble alto debe marcar las 4 sub-celdas Pillar; nibble bajo cerrado porque ninguna es caminable"
+        );
+    }
+
+    /// ADR-033/Pillar (a, complemento): un único pilar en UNA sub-celda no
+    /// enciende las otras 3 posiciones del nibble — descarta un `bits |=` mal
+    /// direccionado que marcase el tile entero en vez de la sub-celda.
+    #[test]
+    fn single_pillar_subcell_sets_only_its_own_bit() {
+        let mut grid = LayerGrid::new_solid();
+        // Resto del tile (2,2) caminable; solo (5,4) = NE es Pillar.
+        open(&mut grid, 4, 4);
+        pillar(&mut grid, 5, 4);
+        open(&mut grid, 4, 5);
+        open(&mut grid, 5, 5);
+
+        let walls = tile_walls_from_grid(&grid);
+        assert_eq!(
+            walls[2][2] & 0xF0,
+            PILLAR_NE,
+            "solo NE debe llevar el bit de pilar"
+        );
+    }
+
+    /// ADR-033/Pillar (d): las celdas de borde (índice 0 y `CHUNK_CELLS-1`) son
+    /// SIEMPRE `Cell::SOLID_WALL` (`border_cells_remain_solid_wall`, tests.rs) —
+    /// nunca `Pillar` — así que los tiles perimetrales (0 y `TILES_PER_SIDE-1`)
+    /// no pueden llevar nibble alto. Verificado sobre generación REAL (no solo
+    /// por construcción) con el perfil de mayor `pillar_chance` disponible, para
+    /// que una futura recalibración de perfiles no lo rompa en silencio.
+    #[test]
+    // `i` indexa ambos ejes de `walls` (fila y columna) en el mismo cuerpo del
+    // bucle; no hay un único `enumerate()` que cubra las 4 comprobaciones.
+    #[allow(clippy::needless_range_loop)]
+    fn border_tiles_never_carry_pillar_bits() {
+        use super::super::LAYER_PROFILES;
+
+        let rules = &LAYER_PROFILES[2]; // "El Caos": pillar_chance 0.6, el más alto calibrado
+        let last = TILES_PER_SIDE - 1;
+        for seed in [TEST_SEED_LOCAL, 1, 42, 9_999_999] {
+            for layer_index in 0..LAYER_PROFILES.len() as i32 {
+                let out = generate_chunk_layer(rules, seed, (3, -7), layer_index, &[]);
+                let walls = tile_walls_from_grid(&out.grid);
+                for i in 0..TILES_PER_SIDE {
+                    assert_eq!(
+                        walls[i][0] & 0xF0,
+                        0,
+                        "seed {seed} capa {layer_index}: tile borde norte ({i},0) con nibble alto"
+                    );
+                    assert_eq!(
+                        walls[i][last] & 0xF0,
+                        0,
+                        "seed {seed} capa {layer_index}: tile borde sur ({i},{last}) con nibble alto"
+                    );
+                    assert_eq!(
+                        walls[0][i] & 0xF0,
+                        0,
+                        "seed {seed} capa {layer_index}: tile borde oeste (0,{i}) con nibble alto"
+                    );
+                    assert_eq!(
+                        walls[last][i] & 0xF0,
+                        0,
+                        "seed {seed} capa {layer_index}: tile borde este ({last},{i}) con nibble alto"
+                    );
+                }
+            }
+        }
+    }
+
+    const TEST_SEED_LOCAL: u64 = 0xBACC_0085;
 
     #[test]
     fn isolated_open_tile_is_walled_on_all_four_edges() {

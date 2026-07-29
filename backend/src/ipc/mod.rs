@@ -137,8 +137,12 @@ pub struct GridChunkData {
     pub cx: i32,
     pub cz: i32,
     pub layer: u8,
-    /// `walls[x][z]`: per-tile edge bitmask. N=1 (−Z), S=2 (+Z), E=4 (+X), W=8 (−X).
-    /// The Unity consumer MUST use this same axis convention or Z will mirror.
+    /// `walls[x][z]`: per-tile bitmask. Low nibble (`0x0F`) = edge walls: N=1
+    /// (−Z), S=2 (+Z), E=4 (+X), W=8 (−X). High nibble (`0x10..0x80`, ADR-033/
+    /// Pillar enmienda "Opción (c)") = which of the tile's four 2.5 m sub-cells
+    /// is `CellType::Pillar`: `0x10` NW, `0x20` NE, `0x40` SW, `0x80` SE. The
+    /// Unity consumer MUST use this same axis convention and bit mapping or Z
+    /// will mirror / pillars will render in the wrong sub-cell.
     pub walls: [[u8; 10]; 10],
 }
 

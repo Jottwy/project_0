@@ -305,16 +305,88 @@ mod tests {
                     "seed {seed} chunk ({cx},{cz}) PILLAR_HALL: render y colisión del robapieles divergen"
                 );
                 // Y el chunk tiene que ser distinto del que daría el perfil plano,
-                // o PILLAR_HALL seguiría siendo una etiqueta sin efecto.
+                // o PILLAR_HALL seguiría siendo una etiqueta sin efecto. ADR-033/
+                // Pillar: comparar SOLO el nibble bajo (aristas) — desde que el
+                // nibble alto existe, comparar el byte completo se volvería
+                // trivialmente satisfacible por los bits de pilar sin que la
+                // GEOMETRÍA de aristas hubiera cambiado en absoluto (falso verde).
                 let flat = chunk_tile_walls(&LAYER_PROFILES[0], seed, cx, cz, 0);
+                let rendered_edges: Vec<u8> = rendered.iter().flatten().map(|b| b & 0x0F).collect();
+                let flat_edges: Vec<u8> = flat.iter().flatten().map(|b| b & 0x0F).collect();
                 assert_ne!(
-                    rendered, flat,
-                    "seed {seed} chunk ({cx},{cz}): PILLAR_HALL no cambió la geometría"
+                    rendered_edges, flat_edges,
+                    "seed {seed} chunk ({cx},{cz}): PILLAR_HALL no cambió la geometría de aristas"
                 );
                 checked += 1;
             }
         }
         assert!(checked > 0, "no se comprobó ningún chunk PILLAR_HALL");
+    }
+
+    /// ADR-033/Pillar (b): en un chunk PILLAR_HALL real (mismo barrido que
+    /// `render_and_phantom_agree_on_pillar_hall`), el nibble alto del bitmask
+    /// coincide CELDA A CELDA con las `CellType::Pillar` reales del grid — no
+    /// solo "hay pilares en algún sitio", sino la sub-celda EXACTA. Es la
+    /// verificación de que la enmienda "Opción (c)" no introdujo el mismo
+    /// riesgo de desalineación que descartó la Opción (b) (props client-side).
+    #[test]
+    // `tx`/`tz` indexan `walls` (2 ejes) Y derivan `x0/x1/z0/z1` para leer el
+    // grid original; no hay un `enumerate()` único que cubra ambos usos.
+    #[allow(clippy::needless_range_loop)]
+    fn pillar_nibble_matches_real_pillar_cells_on_pillar_hall_chunks() {
+        use crate::world::grid_gen::{
+            tile_walls_from_grid, CellType, PILLAR_NE, PILLAR_NW, PILLAR_SE, PILLAR_SW,
+            TILES_PER_SIDE,
+        };
+
+        let mut checked_chunks = 0usize;
+        let mut checked_subcells = 0usize;
+        for seed in SEEDS {
+            let hits: Vec<(i32, i32)> = (-12..=12)
+                .flat_map(|cx| (-12..=12).map(move |cz| (cx, cz)))
+                .filter(|&(cx, cz)| zone_kind_for(seed, cx, cz, 0) == ZONE_PILLAR_HALL)
+                .take(6)
+                .collect();
+
+            for (cx, cz) in hits {
+                let rules = rules_for(seed, cx, cz, 0);
+                let out =
+                    crate::world::grid_gen::generate_chunk_layer(&rules, seed, (cx, cz), 0, &[]);
+                let walls = tile_walls_from_grid(&out.grid);
+
+                for tx in 0..TILES_PER_SIDE {
+                    for tz in 0..TILES_PER_SIDE {
+                        let (x0, x1, z0, z1) = (tx * 2, tx * 2 + 1, tz * 2, tz * 2 + 1);
+                        let expect =
+                            |x: usize, z: usize| out.grid.get(x, z).kind() == CellType::Pillar;
+                        let byte = walls[tx][tz];
+                        assert_eq!(
+                            (byte & PILLAR_NW) != 0, expect(x0, z0),
+                            "seed {seed} chunk ({cx},{cz}) tile ({tx},{tz}) NW: nibble no coincide con la celda real"
+                        );
+                        assert_eq!(
+                            (byte & PILLAR_NE) != 0, expect(x1, z0),
+                            "seed {seed} chunk ({cx},{cz}) tile ({tx},{tz}) NE: nibble no coincide con la celda real"
+                        );
+                        assert_eq!(
+                            (byte & PILLAR_SW) != 0, expect(x0, z1),
+                            "seed {seed} chunk ({cx},{cz}) tile ({tx},{tz}) SW: nibble no coincide con la celda real"
+                        );
+                        assert_eq!(
+                            (byte & PILLAR_SE) != 0, expect(x1, z1),
+                            "seed {seed} chunk ({cx},{cz}) tile ({tx},{tz}) SE: nibble no coincide con la celda real"
+                        );
+                        checked_subcells += 4;
+                    }
+                }
+                checked_chunks += 1;
+            }
+        }
+        assert!(
+            checked_chunks > 0,
+            "no se comprobó ningún chunk PILLAR_HALL"
+        );
+        assert!(checked_subcells > 0, "no se comprobó ninguna sub-celda");
     }
 
     /// El perfil PILLAR_HALL debe seguir produciendo chunks JUGABLES.
