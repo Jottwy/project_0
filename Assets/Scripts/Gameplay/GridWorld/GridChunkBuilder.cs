@@ -304,10 +304,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     Color floorBase = styled ? cfg.FloorTintFor(Hash01(gx, gz, TintSaltFloor)) : Color.white;
                     Color wallBase  = styled ? cfg.WallTintFor(Hash01(gx, gz, TintSaltWall))   : Color.white;
 
+                    // Pieza F — damp patches on floor and walls, not just the ceiling.
+                    // Own salt pair per surface, so the three fields are uncorrelated.
+                    bool floorDamp = styled && MoistureAt(chunkX, chunkZ, tx, tz,
+                        MoistSaltFloorCell, MoistSaltFloorJit) < FloorStainThreshold;
+                    bool wallDamp = styled && MoistureAt(chunkX, chunkZ, tx, tz,
+                        MoistSaltWallCell, MoistSaltWallJit) < WallStainThreshold;
+
                     // Floor of this layer == ceiling of the layer below (one slab).
                     var floorGo = Instantiate(prefabs.floorSlab, root.transform, TileCenter(tx, tz), 0f);
                     AddColliderIfMissing(floorGo);
-                    if (styled) Paint(floorGo, mats.floor, JitterValue(floorBase * zoneTint, rng));
+                    if (styled)
+                    {
+                        // Stain multiplies AFTER the jitter, mirroring PlaceCeilingTile.
+                        Color t = JitterValue(floorBase * zoneTint, rng);
+                        if (floorDamp) t *= FloorStain;
+                        Paint(floorGo, mats.floor, t);
+                    }
 
                     if (roofSlab)
                         PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
@@ -325,7 +338,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if ((b & 4) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
                     if (edges != 0)
                     {
-                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(wallBase * zoneTint, rng));
+                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall,
+                            Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain));
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz);
                     }
 
@@ -337,7 +351,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     {
                         // Primer pase (decisión explícita): mats.wall, SIN material
                         // propio de pilar — pendiente de pasada de arte separada.
-                        Color pillarTint = styled ? JitterValue(wallBase * zoneTint, rng) : Color.white;
+                        Color pillarTint = styled
+                            ? Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain)
+                            : Color.white;
                         PlacePillars(prefabs, root.transform, pillarBits, tx, tz,
                             styled ? mats.wall : null, pillarTint);
                     }
@@ -494,6 +510,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return c;
         }
 
+        /// <summary>Pieza F — <paramref name="tint"/> darkened by <paramref name="stain"/>
+        /// when <paramref name="damp"/>. Kept as a one-liner so the wall and pillar call
+        /// sites can stay single expressions and not disturb the rng draw order.</summary>
+        private static Color Damp(Color tint, bool damp, Color stain) => damp ? tint * stain : tint;
+
         /// <summary>Deterministic per-tile seed (no UnityEngine.Random).</summary>
         private static int TileSeed(int cx, int cz, int tx, int tz)
         {
@@ -532,7 +553,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             Color tint = JitterValue(
                 cfg.CeilingTintFor(Hash01(chunkX * Tiles + tx, chunkZ * Tiles + tz, TintSaltCeiling))
                 * zoneTint, rng);
-            if (MoistureAt(chunkX, chunkZ, tx, tz) < 0.20f)
+            if (MoistureAt(chunkX, chunkZ, tx, tz, MoistSaltCeilCell, MoistSaltCeilJit) < 0.20f)
                 tint *= MoistureStain;
 
             float v = Mathf.Clamp01(cfg.ceilingPanelVariety);
@@ -597,14 +618,33 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>Moisture cluster value in [0,1): coarse 2-tile cells (in GLOBAL tile
         /// coords) make adjacent tiles share a base so stains cluster and tile across chunk
-        /// seams; a per-tile jitter softens the block edges. &lt; 0.20 ⇒ stained.</summary>
-        private static float MoistureAt(int cx, int cz, int tx, int tz)
+        /// seams; a per-tile jitter softens the block edges. Below the surface's threshold
+        /// ⇒ stained. Pieza F: the salts are parameters so each surface gets its OWN damp
+        /// field — sharing one would stack a floor stain under every ceiling stain, which
+        /// reads as a lighting bug rather than water damage.</summary>
+        private static float MoistureAt(int cx, int cz, int tx, int tz, uint saltCell, uint saltJit)
         {
             int gx = cx * Tiles + tx, gz = cz * Tiles + tz;
-            float cell = Hash01(gx >> 1, gz >> 1, 0x5BD1E995U); // shared by a 2×2 block
-            float jit  = Hash01(gx, gz, 0x1B873593U);           // per-tile
+            float cell = Hash01(gx >> 1, gz >> 1, saltCell); // shared by a 2×2 block
+            float jit  = Hash01(gx, gz, saltJit);            // per-tile
             return cell * 0.8f + jit * 0.2f;
         }
+
+        // Ceiling salts keep their original literals so the ceiling damp field — already
+        // confirmed in playtest — stays byte-identical to before Pieza F.
+        private const uint MoistSaltCeilCell = 0x5BD1E995U;
+        private const uint MoistSaltCeilJit  = 0x1B873593U;
+        private const uint MoistSaltFloorCell = 0x464C4443U; // "FLDC"
+        private const uint MoistSaltFloorJit  = 0x464C444AU; // "FLDJ"
+        private const uint MoistSaltWallCell  = 0x574C4443U; // "WLDC"
+        private const uint MoistSaltWallJit   = 0x574C444AU; // "WLDJ"
+
+        // Damp multipliers per surface. Floor is the strongest (soaked carpet goes dark);
+        // walls stain least (water runs down rather than pooling).
+        private static readonly Color FloorStain = new Color(0.74f, 0.71f, 0.64f);
+        private static readonly Color WallStain  = new Color(0.84f, 0.82f, 0.74f);
+        private const float FloorStainThreshold = 0.22f;
+        private const float WallStainThreshold  = 0.18f;
 
         /// <summary>Deterministic [0,1) hash of two ints under <paramref name="salt"/>.
         /// Shared with <see cref="World.BackroomsLighting"/> (Pieza D) so lamp placement
