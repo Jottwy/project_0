@@ -685,6 +685,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const uint  PropSaltYaw    = 0x59415750U; // "YAWP" — yaw
         private const uint  PropSaltVarA   = 0x56415241U; // "VARA" — type variation (cable len)
         private const uint  PropSaltVarB   = 0x56415242U; // "VARB" — chair tip
+        private const uint  PropSaltSide   = 0x53494445U; // "SIDE" — Pieza E, wall to hug
+
+        // Pieza E — how far from the tile centre a wall-aligned prop backs off, in
+        // metres. The wall panel sits at ±Ts/2 (2.5 m), so 1.9 leaves ~0.6 m for the
+        // prop's own depth and keeps it from clipping through the panel.
+        private const float PropHugInset = 1.9f;
+
+        /// <summary>Offset direction and facing yaw per wall bit, indexed by BIT POSITION
+        /// of the backend edge convention (0 = N/−Z, 1 = S/+Z, 2 = E/+X, 3 = W/−X). The
+        /// prop backs against that wall and faces into the room.</summary>
+        private static readonly (float ox, float oz, float yaw)[] WallHugTable =
+        {
+            ( 0f, -1f,   0f), // N (−Z): back to −Z, face +Z
+            ( 0f,  1f, 180f), // S (+Z)
+            ( 1f,  0f, 270f), // E (+X): back to +X, face −X
+            (-1f,  0f,  90f), // W (−X)
+        };
 
         // Reused scratch so the cap subsample allocates nothing per chunk.
         private static readonly List<(float key, int tx, int tz)> _propScratch
@@ -775,6 +792,36 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     else
                     {
                         go.transform.localRotation = Quaternion.Euler(0f, hYaw * 360f, 0f);
+                    }
+                }
+                else if (e.floorOnly)
+                {
+                    // Pieza E — wall-hugging. PropEntry.canBeRotated == false already
+                    // MEANS "wall-aligned" per its own tooltip, but nothing ever aligned
+                    // anything: those props sat at the tile centre with identity rotation,
+                    // furniture floating in the middle of a corridor. Now a floor-standing
+                    // wall-aligned prop backs against one of the tile's own walled sides.
+                    //
+                    // Uses the tile's FULL low nibble, not the two bits BuildFromWalls
+                    // renders: N/W panels are drawn by the neighbouring tile (dedup), but
+                    // the wall is physically there and this tile's bit says so.
+                    byte sides = (byte)(walls[tx, tz] & 0x0F);
+                    if (sides != 0)
+                    {
+                        int count = 0;
+                        for (int b = 0; b < 4; b++)
+                            if ((sides & (1 << b)) != 0) count++;
+                        int pick = Mathf.Clamp((int)(Hash01(gx, gz, PropSaltSide) * count), 0, count - 1);
+                        for (int b = 0; b < 4; b++)
+                        {
+                            if ((sides & (1 << b)) == 0) continue;
+                            if (pick-- > 0) continue;
+                            var hug = WallHugTable[b];
+                            go.transform.localPosition += new Vector3(
+                                hug.ox * PropHugInset, 0f, hug.oz * PropHugInset);
+                            go.transform.localRotation = Quaternion.Euler(0f, hug.yaw, 0f);
+                            break;
+                        }
                     }
                 }
             }

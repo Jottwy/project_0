@@ -29,7 +29,7 @@ MonoBehaviour:
   ceilingPanelVariety: 0.25
   ceilingPipeChance: 0.35
   ceilingPipes: 1
-  propDensity: 0.12
+  propDensity: 0.18
   propClusterBias: 0.3
   props:
   - prefab: {fileID: 0}
@@ -57,6 +57,16 @@ MonoBehaviour:
     spawnWeight: 2
     canBeRotated: 1
     floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: cabinet
+    spawnWeight: 2
+    canBeRotated: 0
+    floorOnly: 1
+  - prefab: {fileID: 0}
+    placeholderType: cable
+    spawnWeight: 1
+    canBeRotated: 1
+    floorOnly: 0
   floorTintVariants:
   - {r: 0.82, g: 0.74, b: 0.51, a: 1}
   - {r: 0.78, g: 0.71, b: 0.5, a: 1}
