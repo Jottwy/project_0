@@ -296,10 +296,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // surface tints vary tile-to-tile WITHOUT a material per tile.
                     System.Random rng = styled ? new System.Random(TileSeed(chunkX, chunkZ, tx, tz)) : null;
 
+                    // Pieza C — per-tile tint palette. Pure hashes in GLOBAL tile coords
+                    // (so a palette choice tiles across chunk seams), with their own salts
+                    // so they never perturb the jitter rng draw sequence — same discipline
+                    // as CeilingHash/MoistureAt. Unauthored palette ⇒ the layer's flat tint.
+                    int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
+                    Color floorBase = styled ? cfg.FloorTintFor(Hash01(gx, gz, TintSaltFloor)) : Color.white;
+                    Color wallBase  = styled ? cfg.WallTintFor(Hash01(gx, gz, TintSaltWall))   : Color.white;
+
                     // Floor of this layer == ceiling of the layer below (one slab).
                     var floorGo = Instantiate(prefabs.floorSlab, root.transform, TileCenter(tx, tz), 0f);
                     AddColliderIfMissing(floorGo);
-                    if (styled) Paint(floorGo, mats.floor, JitterValue(cfg.floorTint * zoneTint, rng));
+                    if (styled) Paint(floorGo, mats.floor, JitterValue(floorBase * zoneTint, rng));
 
                     if (roofSlab)
                         PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
@@ -317,7 +325,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if ((b & 4) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
                     if (edges != 0)
                     {
-                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(cfg.wallTint * zoneTint, rng));
+                        if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall, JitterValue(wallBase * zoneTint, rng));
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz);
                     }
 
@@ -329,7 +337,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     {
                         // Primer pase (decisión explícita): mats.wall, SIN material
                         // propio de pilar — pendiente de pasada de arte separada.
-                        Color pillarTint = styled ? JitterValue(cfg.wallTint * zoneTint, rng) : Color.white;
+                        Color pillarTint = styled ? JitterValue(wallBase * zoneTint, rng) : Color.white;
                         PlacePillars(prefabs, root.transform, pillarBits, tx, tz,
                             styled ? mats.wall : null, pillarTint);
                     }
@@ -492,6 +500,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             unchecked { return cx * 73856093 ^ cz * 19349663 ^ tx * 83492791 ^ tz; }
         }
 
+        // Pieza C — per-tile tint palette salts. One per surface role so floor, wall
+        // and ceiling pick INDEPENDENTLY (a shared salt would make all three switch
+        // shade on the same tiles, reading as a grid of coloured boxes).
+        private const uint TintSaltFloor   = 0x46544E54U; // "FTNT"
+        private const uint TintSaltWall    = 0x57544E54U; // "WTNT"
+        private const uint TintSaltCeiling = 0x43544E54U; // "CTNT"
+
         // ── Fase 5B — procedural ceiling variety ────────────────────────────────
 
         // Damp-grey multiplier for moisture-stained ceiling tiles.
@@ -514,7 +529,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             // Base tint (still draws one rng value so floor/wall shades stay identical),
             // darkened where moisture clusters.
-            Color tint = JitterValue(cfg.ceilingTint * zoneTint, rng);
+            Color tint = JitterValue(
+                cfg.CeilingTintFor(Hash01(chunkX * Tiles + tx, chunkZ * Tiles + tz, TintSaltCeiling))
+                * zoneTint, rng);
             if (MoistureAt(chunkX, chunkZ, tx, tz) < 0.20f)
                 tint *= MoistureStain;
 

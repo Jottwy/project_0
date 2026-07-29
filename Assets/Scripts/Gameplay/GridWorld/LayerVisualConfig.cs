@@ -62,6 +62,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Range(0f, 1f)] [Tooltip("0 = uniform placement, 1 = strongly clustered.")]
         public float propClusterBias = 0.3f;
 
+        [Header("Per-tile tint palette (Pieza C)")]
+        [Tooltip("Alternative floor tints picked per TILE by a deterministic hash. Empty/null " +
+                 "⇒ every tile uses floorTint (behaviour before this field existed).")]
+        public Color[] floorTintVariants;
+        [Tooltip("Alternative wall tints, same rule. Also drives the tile's pillars, so a " +
+                 "column matches the wall panels of its own tile.")]
+        public Color[] wallTintVariants;
+        [Tooltip("Alternative ceiling tints, same rule.")]
+        public Color[] ceilingTintVariants;
+
+        /// <summary>
+        /// One entry of <paramref name="variants"/> chosen by <paramref name="h"/> ∈ [0,1),
+        /// or <paramref name="baseTint"/> when the palette is unset. Bounds-safe, same shape
+        /// as <see cref="ZoneTint"/> — an unauthored layer keeps its single flat tint, so
+        /// adding this field changed nothing until a palette was written.
+        /// </summary>
+        private static Color PickTint(Color[] variants, Color baseTint, float h)
+        {
+            if (variants == null || variants.Length == 0) return baseTint;
+            return variants[Mathf.Clamp((int)(h * variants.Length), 0, variants.Length - 1)];
+        }
+
+        /// <summary>Floor tint for a tile whose palette hash is <paramref name="h"/>.</summary>
+        public Color FloorTintFor(float h) => PickTint(floorTintVariants, floorTint, h);
+
+        /// <summary>Wall (and pillar) tint for a tile whose palette hash is <paramref name="h"/>.</summary>
+        public Color WallTintFor(float h) => PickTint(wallTintVariants, wallTint, h);
+
+        /// <summary>Ceiling tint for a tile whose palette hash is <paramref name="h"/>.</summary>
+        public Color CeilingTintFor(float h) => PickTint(ceilingTintVariants, ceilingTint, h);
+
         [Header("Zone tint (first pass — placeholder hues, not final art)")]
         [Tooltip("Multiplied into floor/wall/ceiling tint by the chunk's zone_kind " +
                  "(backend/src/world/chunk/surface_profiles.rs ZONE_* constants, indices " +

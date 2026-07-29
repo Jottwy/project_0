@@ -50,6 +50,29 @@ namespace BackroomsSurvival.EditorTools
                 c.fogDensity = 0.035f; c.fogColor = new Color(0.78f, 0.71f, 0.59f, 1f);
                 c.ceilingPanelVariety = 0.25f;
                 c.ceilingPipes = true; c.ceilingPipeChance = 0.35f;
+                // Pieza C — paleta por tile. Desviaciones DISCRETAS del tinte base
+                // (la primera entrada ES el tinte base), no tonos nuevos: sobre ellas
+                // sigue aplicandose el jitter HSV de ±8%, asi que un rango ancho aqui
+                // leeria como parches de color, no como desgaste.
+                c.floorTintVariants = new[]
+                {
+                    new Color(0.82f, 0.74f, 0.51f, 1f),
+                    new Color(0.78f, 0.71f, 0.50f, 1f),
+                    new Color(0.85f, 0.76f, 0.52f, 1f),
+                };
+                c.wallTintVariants = new[]
+                {
+                    new Color(0.90f, 0.85f, 0.65f, 1f),
+                    new Color(0.85f, 0.79f, 0.58f, 1f),
+                    new Color(0.93f, 0.88f, 0.70f, 1f),
+                    new Color(0.86f, 0.85f, 0.62f, 1f), // leve viraje verdoso (humedad)
+                };
+                c.ceilingTintVariants = new[]
+                {
+                    new Color(0.88f, 0.88f, 0.82f, 1f),
+                    new Color(0.85f, 0.85f, 0.79f, 1f),
+                    new Color(0.90f, 0.90f, 0.85f, 1f),
+                };
             });
 
             Save("Layer1_Industrial", c =>
