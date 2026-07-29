@@ -414,11 +414,6 @@ namespace BackroomsSurvival.Net
 
                 var profile = LootTable != null ? LootTable.Profile(zoneKind) : ZoneLootProfile.Default;
                 var entries = roll(_worldSeed, col.cx, col.cz, profile);
-                // TEMP DIAGNOSTIC (Pieza 3 — remove after playtest confirmation, mirrors
-                // [ZoneTintDiag] from Pieza 2/STATE.md): confirms which zone_kind a column resolved
-                // to and how many entries its profile rolled, cross-checkable against what actually
-                // appears in-world and against the "items/carryables → N live" log right after.
-                Debug.Log($"[ZoneLootDiag] col=({col.cx},{col.cz}) zoneKind={zoneKind} rolled={entries.Count}");
                 if (entries.Count == 0)
                 {
                     generated.Add(col); // deterministically empty under this zone's profile — don't retry
