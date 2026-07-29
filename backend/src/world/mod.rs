@@ -10,6 +10,9 @@ pub mod graph;
 pub mod grid_gen;
 pub mod levels;
 pub mod volumetric_grid;
+/// ADR-033: `zone_kind` → `LayerRules` para las rutas grid_gen de render y
+/// robapieles. Vive aquí (no en `grid_gen`) porque lee `world/`.
+pub mod zone_density;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
