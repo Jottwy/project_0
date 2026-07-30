@@ -883,7 +883,11 @@ fn connect_zone_never_writes_on_the_reserved_border() {
 fn connected_zone_skips_reconnection_entirely() {
     let mut grid = grid_with_sealed_zone();
     // Abre UNA celda del anillo → la zona pasa a tener vecino transitable.
-    grid.set((ZX0 - 1) as usize, ZZ0 as usize, Cell::new(CellType::Corridor, 2, 0));
+    grid.set(
+        (ZX0 - 1) as usize,
+        ZZ0 as usize,
+        Cell::new(CellType::Corridor, 2, 0),
+    );
 
     assert!(
         is_zone_connected(&grid, ZX0, ZZ0, ZX1, ZZ1),
@@ -1075,7 +1079,9 @@ fn straight_bias_keeps_the_maze_connected() {
 #[test]
 fn branch_persistence_comes_from_the_profile_not_the_old_literal() {
     let grid_for = |bp: f32| {
-        grid_fingerprint(&generate_layer(&phase1_only_profile(0.0, bp), 4242, TEST_CHUNK, 0, &[]).grid)
+        grid_fingerprint(
+            &generate_layer(&phase1_only_profile(0.0, bp), 4242, TEST_CHUNK, 0, &[]).grid,
+        )
     };
 
     let (low, mid, high) = (grid_for(0.0), grid_for(0.82), grid_for(1.0));
