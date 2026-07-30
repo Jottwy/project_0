@@ -260,7 +260,7 @@ namespace BackroomsSurvival.Net
             if (!_bound.TryGetValue(h.id, out var nh) || nh == null)
                 return;
 
-            var hr = nh.GetComponent<HarvestableResource>();
+            var hr = nh.Harvestable;
             if (hr == null)
                 return;
 

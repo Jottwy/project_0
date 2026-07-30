@@ -24,6 +24,19 @@ namespace BackroomsSurvival.Net
         private bool _subscribed;
         private static uint _hitCounter;
 
+        /// The vendor component this instance wraps, resolved once. Exposed so the sync manager
+        /// reuses this cache instead of doing its own GetComponent per harvestable per scan.
+        /// Lazy-resolves in case it is read before OnEnable (disabled object).
+        public HarvestableResource Harvestable
+        {
+            get
+            {
+                if (_harvestable == null)
+                    _harvestable = GetComponent<HarvestableResource>();
+                return _harvestable;
+            }
+        }
+
         private void OnEnable()
         {
             if (_harvestable == null)

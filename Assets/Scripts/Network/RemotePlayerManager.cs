@@ -41,6 +41,7 @@ namespace BackroomsSurvival.Net
         private readonly HashSet<int> _idsThisFrame = new HashSet<int>();
         private readonly List<int> _toRemove = new List<int>();
         private float _nextReceiveLogTime;
+        private float _nextProxyLogTime;
         private float _nextUpdateLogTime;
         private IPCClient _ipc;
 
@@ -76,20 +77,33 @@ namespace BackroomsSurvival.Net
                 UpdateFromWorldState(state.remotePlayers);
         }
 
+        /// Comma-joined remote ids for the MPTRACE logs. Called only from the throttled/cold log
+        /// paths — it used to be built unconditionally on every state update and thrown away.
+        private static string JoinIds(List<RemotePlayerMsg> remotePlayers)
+        {
+            return string.Join(",", remotePlayers.ConvertAll(r => r.id.ToString()));
+        }
+
         public void UpdateFromWorldState(List<RemotePlayerMsg> remotePlayers)
         {
             if (remotePlayers == null)
                 return;
 
             int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
-            var ids = remotePlayers.ConvertAll(r => r.id.ToString());
 
             if (Time.unscaledTime >= _nextReceiveLogTime)
             {
                 Debug.Log($"[RemotePlayerManager] remote count={remotePlayers.Count}");
-                Debug.Log($"MPTRACE step=K event=remote_player_manager_receive self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
+                Debug.Log($"MPTRACE step=K event=remote_player_manager_receive self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{JoinIds(remotePlayers)}]");
                 _nextReceiveLogTime = Time.unscaledTime + 2f;
             }
+
+            // Per-proxy diagnostic logs used to run EVERY frame per remote (one string alloc plus
+            // a GetComponentsInChildren each). Same 2 s cadence as the receive log above: the
+            // traces stay available, the per-frame cost does not.
+            bool logProxy = Time.unscaledTime >= _nextProxyLogTime;
+            if (logProxy)
+                _nextProxyLogTime = Time.unscaledTime + 2f;
 
             _idsThisFrame.Clear();
 
@@ -100,7 +114,8 @@ namespace BackroomsSurvival.Net
 
                 if (selfId > 0 && rp.id == selfId)
                 {
-                    Debug.Log($"[RemotePlayerManager] ignored local id={rp.id}");
+                    if (logProxy)
+                        Debug.Log($"[RemotePlayerManager] ignored local id={rp.id}");
                     continue;
                 }
 
@@ -129,9 +144,9 @@ namespace BackroomsSurvival.Net
                     Debug.Log(
                         $"[RemotePlayerManager] spawned id={rp.id}, name={rp.name}, " +
                         $"pos={groundedPosition}");
-                    Debug.Log($"MPTRACE step=K event=remote_player_manager_spawn self_id={selfId} sender_id=<none> assigned_id=<none> peer_id={rp.id} endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
+                    Debug.Log($"MPTRACE step=K event=remote_player_manager_spawn self_id={selfId} sender_id=<none> assigned_id=<none> peer_id={rp.id} endpoint=<unity> peer_count=<unknown> remote_players_count={remotePlayers.Count} remote_players_ids=[{JoinIds(remotePlayers)}]");
                 }
-                else
+                else if (logProxy)
                 {
                     int handlerCount = view.root != null
                         ? view.root.GetComponentsInChildren<RemotePvpHitbox>(true).Length
@@ -543,14 +558,24 @@ namespace BackroomsSurvival.Net
 
     public sealed class BillboardNameTag : MonoBehaviour
     {
+        private Camera _cam;
+        private Transform _camTransform;
+
         private void LateUpdate()
         {
-            var cam = Camera.main;
+            // Camera.main is a tag lookup; it ran once per name tag PER FRAME. Cache it and
+            // re-resolve only when the cached camera is gone or disabled (scene reload / camera
+            // swap), which is the way STP hands over between cameras.
+            if (_cam == null || !_cam.isActiveAndEnabled)
+            {
+                _cam = Camera.main;
+                _camTransform = _cam != null ? _cam.transform : null;
+            }
 
-            if (cam == null)
+            if (_camTransform == null)
                 return;
 
-            Vector3 direction = transform.position - cam.transform.position;
+            Vector3 direction = transform.position - _camTransform.position;
 
             if (direction.sqrMagnitude < 0.0001f)
                 return;
