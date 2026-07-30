@@ -505,7 +505,7 @@ fn derive_seed(world_seed: u64, (cx, cz): (i32, i32), layer_index: i32) -> u64 {
 }
 
 /// True if the zone has at least one walkable neighbour cell outside its bounds.
-fn is_zone_connected(grid: &LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32) -> bool {
+pub(super) fn is_zone_connected(grid: &LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32) -> bool {
     for cz in z0..z1 {
         for cx in x0..x1 {
             for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
@@ -527,15 +527,42 @@ fn is_zone_connected(grid: &LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32) -> bo
 
 /// Punch a single-cell-wide corridor from the zone border to the nearest
 /// existing maze corridor outside the zone.
-fn connect_zone_to_maze(grid: &mut LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32, ceiling: u8) {
+///
+/// "Estampar gana": el camino solo carva celdas `Wall` INTERIORES — nunca Void
+/// ni Pillar, que son contenido estampado por las Fases 4 y 6. Mismo criterio,
+/// literalmente la misma guarda, que `repair_connectivity` (`kind() == Wall`) y
+/// que `carve_aperture` del costurado, que se detiene ante contenido estampado
+/// ("stamped content (Void/Pillar): stop", `stitching.rs`). Antes esta función
+/// usaba `!is_walkable()`, que trata Pillar y Void como material carvable y por
+/// tanto los borraba — era la única de las tres rutas de carvado que rompía el
+/// invariante.
+///
+/// Bordes: ni la búsqueda de destino ni la carvada tocan ya la fila/columna 0 y
+/// `CHUNK_CELLS - 1`, reservadas para el costurado. La restricción es HOY
+/// inocua —en Fase 5 los bordes siguen sólidos, así que jamás serían destino—,
+/// pero se hace explícita a propósito: es defensa ante un reordenado de fases.
+/// Si el costurado llegara a correr antes que esta función, un destino en el
+/// borde haría que la L taladrase una apertura unilateral que el chunk vecino
+/// no conoce. Misma defensa, y por la misma razón, que la guarda de borde de
+/// `carve_aperture`.
+pub(super) fn connect_zone_to_maze(
+    grid: &mut LayerGrid,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+    ceiling: u8,
+) {
     let cx_center = (x0 + x1) / 2;
     let cz_center = (z0 + z1) / 2;
+    let last = CHUNK_CELLS as i32 - 1;
 
-    // Find nearest walkable cell outside the zone (Manhattan distance).
+    // Find nearest walkable cell outside the zone (Manhattan distance). Interior
+    // only: a border cell must never become the target (see the note above).
     let mut best_dist = i32::MAX;
     let mut target: Option<(i32, i32)> = None;
-    for z in 0..CHUNK_CELLS as i32 {
-        for x in 0..CHUNK_CELLS as i32 {
+    for z in 1..last {
+        for x in 1..last {
             if x >= x0 && x < x1 && z >= z0 && z < z1 {
                 continue;
             }
@@ -576,7 +603,13 @@ fn connect_zone_to_maze(grid: &mut LayerGrid, x0: i32, z0: i32, x1: i32, z1: i32
         } else {
             cz += dz;
         }
-        if !grid.get(cx as usize, cz as usize).is_walkable() {
+        // Solo muro interior. El contenido estampado (Void/Pillar) se respeta y
+        // el camino sigue avanzando sin escribir; lo que quede suelto lo
+        // reconecta `repair_connectivity` (post-Fase 6), que es quien tiene
+        // permiso para buscar una ruta alternativa alrededor del estampado.
+        if LayerGrid::is_interior(cx, cz)
+            && grid.get(cx as usize, cz as usize).kind() == CellType::Wall
+        {
             grid.set(
                 cx as usize,
                 cz as usize,

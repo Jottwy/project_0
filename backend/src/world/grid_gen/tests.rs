@@ -726,3 +726,180 @@ fn neighbouring_density_connectivity_seed_sweep() {
         &failures[..failures.len().min(20)]
     );
 }
+
+// ── connect_zone_to_maze — "estampar gana" + borde reservado ─────────────────
+//
+// Fase 5 solo llama a `connect_zone_to_maze` cuando `is_zone_connected` es
+// falso, es decir cuando NINGUNA celda del perímetro exterior de la zona es
+// transitable. Es una ruta rara en generación normal, así que estos tests la
+// construyen a mano en vez de buscar una seed que la dispare: se estampa una
+// zona rodeada íntegramente de contenido (Pillar/Void) y se invoca la función
+// directamente, que es como la ejerce el call site de `generator.rs`.
+
+use super::generator::{connect_zone_to_maze, is_zone_connected};
+
+/// Zona de prueba: rectángulo `[5,10) × [5,10)` de celdas `Open`.
+const ZX0: i32 = 5;
+const ZZ0: i32 = 5;
+const ZX1: i32 = 10;
+const ZZ1: i32 = 10;
+
+/// Grid sólido con la zona estampada y su perímetro exterior COMPLETO relleno
+/// de contenido estampado, alternando Pillar y Void. Eso fuerza
+/// `is_zone_connected == false` sin usar ninguna celda transitable.
+fn grid_with_sealed_zone() -> LayerGrid {
+    let mut grid = LayerGrid::new_solid();
+
+    for z in ZZ0..ZZ1 {
+        for x in ZX0..ZX1 {
+            grid.set(x as usize, z as usize, Cell::new(CellType::Open, 2, 1));
+        }
+    }
+
+    // Anillo ortogonal exterior: columnas ZX0-1 / ZX1 y filas ZZ0-1 / ZZ1.
+    let stamp = |i: i32| {
+        if i % 2 == 0 {
+            Cell::new(CellType::Pillar, 0, 1)
+        } else {
+            Cell::new(CellType::Void, 0, 0)
+        }
+    };
+    for z in ZZ0..ZZ1 {
+        grid.set((ZX0 - 1) as usize, z as usize, stamp(z));
+        grid.set(ZX1 as usize, z as usize, stamp(z + 1));
+    }
+    for x in ZX0..ZX1 {
+        grid.set(x as usize, (ZZ0 - 1) as usize, stamp(x));
+        grid.set(x as usize, ZZ1 as usize, stamp(x + 1));
+    }
+
+    grid
+}
+
+fn count_kind(grid: &LayerGrid, kind: CellType) -> usize {
+    grid.cells().iter().filter(|c| c.kind() == kind).count()
+}
+
+/// (1) El camino de reconexión NUNCA convierte contenido estampado en Corridor.
+/// Antes del fix la guarda era `!is_walkable()`, que da true para Pillar y Void
+/// y por tanto los borraba: en un PILLAR_HALL eso es un hueco en la retícula de
+/// columnas, y en El Vacío un puente sobre el abismo.
+#[test]
+fn connect_zone_never_carves_stamped_content() {
+    let mut grid = grid_with_sealed_zone();
+    // Única celda transitable fuera de la zona → destino inequívoco.
+    grid.set(2, 2, Cell::new(CellType::Corridor, 2, 0));
+
+    assert!(
+        !is_zone_connected(&grid, ZX0, ZZ0, ZX1, ZZ1),
+        "el montaje debe dejar la zona aislada, si no el test no ejerce nada"
+    );
+
+    let pillars_before = count_kind(&grid, CellType::Pillar);
+    let voids_before = count_kind(&grid, CellType::Void);
+    assert!(pillars_before > 0 && voids_before > 0, "montaje degenerado");
+
+    connect_zone_to_maze(&mut grid, ZX0, ZZ0, ZX1, ZZ1, 2);
+
+    assert_eq!(
+        count_kind(&grid, CellType::Pillar),
+        pillars_before,
+        "ninguna columna estampada puede desaparecer"
+    );
+    assert_eq!(
+        count_kind(&grid, CellType::Void),
+        voids_before,
+        "ningún void estampado puede desaparecer"
+    );
+
+    // La celda del anillo que la L atraviesa primero: sigue estampada.
+    let first_on_path = grid.get((ZX0 - 1) as usize, ZZ0 as usize);
+    assert!(
+        !matches!(first_on_path.kind(), CellType::Corridor),
+        "la primera celda del anillo en la ruta se convirtió en Corridor: {:?}",
+        first_on_path.kind()
+    );
+
+    // Y sí debe haber carvado muro: la reconexión tiene que hacer ALGO.
+    assert!(
+        grid.get(3, 5).kind() == CellType::Corridor || grid.get(2, 3).kind() == CellType::Corridor,
+        "el camino debería haber carvado al menos una celda Wall interior"
+    );
+}
+
+/// (2) La L nunca escribe en la fila/columna de borde. El montaje deja como
+/// única celda transitable una del BORDE (0, 2): antes del fix el barrido de
+/// destino la elegía y la L bajaba por la columna x = 0 carvando (0,5), (0,4),
+/// (0,3) — apertura unilateral que el chunk vecino no conoce. Ahora el borde no
+/// es elegible como destino y la función cae en su rama sin-destino.
+#[test]
+fn connect_zone_never_writes_on_the_reserved_border() {
+    let mut grid = grid_with_sealed_zone();
+    grid.set(0, 2, Cell::new(CellType::Corridor, 2, 0)); // transitable EN EL BORDE
+
+    assert!(!is_zone_connected(&grid, ZX0, ZZ0, ZX1, ZZ1));
+
+    connect_zone_to_maze(&mut grid, ZX0, ZZ0, ZX1, ZZ1, 2);
+
+    let last = CHUNK_CELLS - 1;
+    for i in 0..CHUNK_CELLS {
+        // (0,2) es la celda que el montaje puso a mano; el resto del borde debe
+        // seguir sólido, y esa tampoco pudo cambiar de tipo.
+        if i != 2 {
+            assert_eq!(
+                grid.get(0, i).kind(),
+                CellType::Wall,
+                "columna 0 alterada en z={i}"
+            );
+        }
+        assert_eq!(
+            grid.get(last, i).kind(),
+            CellType::Wall,
+            "columna {last} alterada en z={i}"
+        );
+        assert_eq!(
+            grid.get(i, 0).kind(),
+            CellType::Wall,
+            "fila 0 alterada en x={i}"
+        );
+        assert_eq!(
+            grid.get(i, last).kind(),
+            CellType::Wall,
+            "fila {last} alterada en x={i}"
+        );
+    }
+    assert_eq!(
+        grid.get(0, 2).kind(),
+        CellType::Corridor,
+        "la celda de borde del montaje no debe reescribirse"
+    );
+}
+
+/// (3) El gate sigue funcionando: con la zona YA conectada, el call site de
+/// Fase 5 (`if !is_zone_connected { connect_zone_to_maze }`) no entra, y el
+/// grid queda intacto. Replica ese patrón literal en vez de instrumentar la
+/// llamada.
+#[test]
+fn connected_zone_skips_reconnection_entirely() {
+    let mut grid = grid_with_sealed_zone();
+    // Abre UNA celda del anillo → la zona pasa a tener vecino transitable.
+    grid.set((ZX0 - 1) as usize, ZZ0 as usize, Cell::new(CellType::Corridor, 2, 0));
+
+    assert!(
+        is_zone_connected(&grid, ZX0, ZZ0, ZX1, ZZ1),
+        "con una celda del anillo abierta la zona está conectada"
+    );
+
+    let before: Vec<Cell> = grid.cells().to_vec();
+    if !is_zone_connected(&grid, ZX0, ZZ0, ZX1, ZZ1) {
+        connect_zone_to_maze(&mut grid, ZX0, ZZ0, ZX1, ZZ1, 2);
+    }
+
+    assert!(
+        before
+            .iter()
+            .zip(grid.cells().iter())
+            .all(|(a, b)| a.kind() == b.kind()),
+        "el gate no debe dejar pasar nada cuando la zona ya está conectada"
+    );
+}
