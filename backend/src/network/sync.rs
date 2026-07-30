@@ -124,15 +124,18 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         // the client does not report.
         dead: player.stats.is_dead(),
     };
-    info!(
-        "Sending player update to peers={} local_id={} pos=({:.2}, {:.2}, {:.2})",
-        net.peers.len(),
-        net.local_id,
-        player.position.x,
-        player.position.y,
-        player.position.z
-    );
+    // Both lines are on the same once-a-second window now. This runs at the full tick rate, so
+    // unthrottled it was the single noisiest line in the backend log — it formatted three floats
+    // every tick and buried the TP_WATCH / MPTRACE traces the open TP-attribution diagnosis needs.
     if net.session_start.elapsed().as_millis() % 1000 < 120 {
+        info!(
+            "Sending player update to peers={} local_id={} pos=({:.2}, {:.2}, {:.2})",
+            net.peers.len(),
+            net.local_id,
+            player.position.x,
+            player.position.y,
+            player.position.z
+        );
         info!(
             "MPTRACE step=R event=send_player_update self_id={} peer_count={} pos=({:.2},{:.2},{:.2}) rot={:.2}",
             net.local_id,

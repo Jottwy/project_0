@@ -789,11 +789,14 @@ impl World {
             self.view_cache = None;
         }
 
-        let layer0 = self.chunks.values().filter(|c| c.layer == 0).count();
-        let lower = self.chunks.values().filter(|c| c.layer < 0).count();
-        let upper = self.chunks.values().filter(|c| c.layer > 0).count();
+        // The three per-layer tallies feed the V30AFIX log only, so they are counted inside the
+        // guard — three full scans of `chunks` were being done on every call and thrown away
+        // whenever no V30A chunk was loaded, which is the common case.
         let v30a = self.chunks.values().filter(|c| chunk_is_v30a(c)).count();
         if v30a > 0 {
+            let layer0 = self.chunks.values().filter(|c| c.layer == 0).count();
+            let lower = self.chunks.values().filter(|c| c.layer < 0).count();
+            let upper = self.chunks.values().filter(|c| c.layer > 0).count();
             info!(
                 "MPTRACE step=V30AFIX event=visible_layer_chunks layer0={} lower={} upper={} v30a={} total={}",
                 layer0,
@@ -929,17 +932,25 @@ impl World {
         let mut total_damage = 0.0f32;
         let mut events = Vec::new();
 
-        let chunk_positions: Vec<LayeredChunkPos> = self.chunks.keys().copied().collect();
-        for key in chunk_positions {
-            let chunk = match self.chunks.get_mut(&key) {
-                Some(c) if c.is_active() => c,
-                _ => continue,
-            };
+        // The key snapshot existed only to avoid holding a borrow of `self.chunks` across the uses
+        // of `self.rng` / `self.respawn_queue`. Destructuring gives those three disjoint borrows
+        // directly, so the per-tick Vec of every loaded chunk key disappears. Iteration order is
+        // unchanged: `keys()` + `get_mut` walked the map in exactly the order `values_mut()` does.
+        let Self {
+            chunks,
+            rng,
+            respawn_queue,
+            ..
+        } = self;
+        for chunk in chunks.values_mut() {
+            if !chunk.is_active() {
+                continue;
+            }
             let pos = chunk.pos;
 
             let mut despawned_ids = Vec::new();
             for entity in chunk.entities.iter_mut() {
-                let event = entity.update(dt, player_pos, player_id, pos, &mut self.rng);
+                let event = entity.update(dt, player_pos, player_id, pos, rng);
                 match event {
                     EntityEvent::AttackPlayer { damage, .. } => {
                         total_damage += damage;
@@ -958,10 +969,14 @@ impl World {
                 }
             }
 
-            // Remove despawned entities; queue them for respawn.
+            // Remove despawned entities; queue them for respawn. Nothing despawned is the normal
+            // case, and then the retain is a full scan of the chunk's entities for no reason.
+            if despawned_ids.is_empty() {
+                continue;
+            }
             for id in &despawned_ids {
-                let timer = self.rng.gen_range(120.0..300.0);
-                self.respawn_queue.push((*id, pos, timer));
+                let timer = rng.gen_range(120.0..300.0);
+                respawn_queue.push((*id, pos, timer));
             }
             chunk.entities.retain(|e| !despawned_ids.contains(&e.id));
         }
