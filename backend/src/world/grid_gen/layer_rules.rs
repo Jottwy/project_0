@@ -49,6 +49,34 @@ pub struct LayerRules {
     pub wall_density: f32,
     /// Corridor vs open-zone ratio 0.0–1.0.
     pub corridor_ratio: f32,
+
+    // ── Sesgo de rectitud de la Fase 1 ──────────────────────────────────────
+    // Los dos campos llevan `serde(default)` a propósito: la
+    // `generation_config.json` ya distribuida no los contiene, y sin default
+    // `parse_profiles` fallaría entero y caería a los perfiles compilados —
+    // una regresión silenciosa. Con default, un JSON viejo sigue siendo válido
+    // y reproduce el comportamiento anterior.
+    /// Probabilidad de que el backtracker de Fase 1 continúe en la MISMA
+    /// dirección por la que entró al nodo, cuando esa continuación sigue sin
+    /// visitar. 0.0 = sorteo uniforme entre vecinos, el comportamiento
+    /// histórico: con ese valor `generate_layer` no consume NI UN draw extra
+    /// del RNG, así que todo layer que lo deje a 0 genera grid byte-idéntico.
+    #[serde(default = "default_straight_bias")]
+    pub straight_bias: f32,
+    /// Probabilidad de empujar el destino al stack del DFS (sesgo a corredores
+    /// largos) en vez de descartar una entrada aleatoria (ramificación). Era el
+    /// literal `0.82` incrustado en `generate_layer`; el default reproduce ese
+    /// valor exacto, así que parametrizarlo no cambia ningún sorteo.
+    #[serde(default = "default_branch_persistence")]
+    pub branch_persistence: f32,
+}
+
+fn default_straight_bias() -> f32 {
+    0.0
+}
+
+fn default_branch_persistence() -> f32 {
+    0.82
 }
 
 /// Layer profiles — §3 of the design document, recalibrated in Fase 2.
@@ -81,6 +109,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         inter_layer_down: 0.10,
         wall_density: 0.4,
         corridor_ratio: 0.7,
+        straight_bias: 0.0,
+        branch_persistence: 0.82,
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
@@ -100,6 +130,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         inter_layer_down: 0.10,
         wall_density: 0.6,
         corridor_ratio: 0.5,
+        straight_bias: 0.0,
+        branch_persistence: 0.82,
     },
     // ── Layer 2 — El Caos ───────────────────────────────────────────────────
     LayerRules {
@@ -119,6 +151,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         inter_layer_down: 0.15,
         wall_density: 0.8,
         corridor_ratio: 0.4,
+        straight_bias: 0.0,
+        branch_persistence: 0.82,
     },
     // ── Layer 3 — El Vacío ──────────────────────────────────────────────────
     LayerRules {
@@ -138,6 +172,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         inter_layer_down: 0.0,
         wall_density: 0.7,
         corridor_ratio: 0.5,
+        straight_bias: 0.0,
+        branch_persistence: 0.82,
     },
 ];
 
@@ -183,6 +219,25 @@ mod tests {
     fn missing_file_falls_back_to_defaults() {
         let got = load_profiles(Path::new("definitely/missing/generation_config.json"));
         assert_eq!(got, LAYER_PROFILES);
+    }
+
+    /// La `generation_config.json` ya distribuida no lleva los campos de sesgo
+    /// de rectitud. Debe seguir parseando —vía `serde(default)`— y reproducir
+    /// los valores históricos, en vez de invalidar el fichero entero y caer en
+    /// silencio a los perfiles compilados.
+    #[test]
+    fn json_without_straightness_fields_still_parses_with_historic_defaults() {
+        let json = r#"[
+            {"wide_chance":0.10,"erode_chance":0.08,"num_open_zones":1,"open_zone_size":5,
+             "pillar_chance":0.0,"num_anomalies":0,"num_stairs":2,"num_pits":2,"num_voids":0,
+             "ceiling_corridor":2,"ceiling_open":2,"inter_layer_up":0.05,"inter_layer_down":0.10,
+             "wall_density":0.4,"corridor_ratio":0.7}
+        ]"#;
+        // Un solo perfil ⇒ `parse_profiles` lo rechaza por conteo, así que se
+        // deserializa la fila suelta para aislar el contrato de serde.
+        let row: LayerRules = serde_json::from_str::<Vec<LayerRules>>(json).unwrap()[0].clone();
+        assert_eq!(row.straight_bias, 0.0);
+        assert_eq!(row.branch_persistence, 0.82);
     }
 
     #[test]

@@ -17,6 +17,12 @@ use super::{Cell, CellType, LayerRules, CHUNK_CELLS};
 /// Highest odd-index maze node. Leaves index 0 and CHUNK_CELLS-1 as solid border.
 const NODE_MAX: i32 = CHUNK_CELLS as i32 - 3; // 17 for CHUNK_CELLS=20
 
+/// Una entrada del stack del backtracker de Fase 1:
+/// `(posición del nodo, dirección de entrada como paso de 2 celdas, run_len)`.
+/// La dirección del nodo raíz es `(0, 0)` — no se entró a él desde ningún sitio.
+/// `run_len` cuenta los pasos rectos consecutivos acumulados hasta ese nodo.
+type StackNode = ((i32, i32), (i32, i32), u32);
+
 // ── Public types ──────────────────────────────────────────────────────────────
 
 /// Flat 20×20 grid of cells for one layer of one chunk.
@@ -98,13 +104,19 @@ pub fn generate_layer(
     // the intermediate wall cell and the destination node.
     //
     // Stack management:
-    //   82% → push destination (DFS bias → long corridors).
-    //   18% → drop a random stack entry (ramification / shorter branches).
+    //   `branch_persistence` (0.82 por defecto) → push destination
+    //       (DFS bias → long corridors).
+    //   resto → drop a random stack entry (ramification / shorter branches).
+    //
+    // Cada entrada del stack lleva, además de la posición, la DIRECCIÓN de
+    // entrada al nodo (paso de 2 celdas; `(0, 0)` en el nodo raíz, que no tiene)
+    // y `run_len`, la cuenta de pasos rectos consecutivos hasta él. Ambos
+    // alimentan el sesgo de rectitud de `rules.straight_bias`.
     let mut wide_marks: Vec<(i32, i32)> = Vec::new();
-    let mut stack: Vec<(i32, i32)> = vec![(1, 1)];
+    let mut stack: Vec<StackNode> = vec![((1, 1), (0, 0), 0)];
     grid.set(1, 1, corr(rules.ceiling_corridor));
 
-    while let Some(&(cx, cz)) = stack.last() {
+    while let Some(&((cx, cz), dir, run_len)) = stack.last() {
         let unvisited: Vec<(i32, i32)> = [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)]
             .iter()
             .filter_map(|&(dx, dz)| {
@@ -127,7 +139,15 @@ pub fn generate_layer(
             continue;
         }
 
-        let (nx, nz) = unvisited[rng.gen_range(0..unvisited.len())];
+        // Bifurcación deliberada. Con `straight_bias == 0.0` se ejecuta EXACTA-
+        // MENTE la línea histórica, mismo draw y mismo orden: es lo que
+        // garantiza que todo perfil que no active el sesgo siga generando un
+        // grid byte-idéntico. Ningún draw extra se consume en esa rama.
+        let (nx, nz) = if rules.straight_bias > 0.0 {
+            pick_biased_toward_straight(&unvisited, (cx, cz), dir, rules.straight_bias, &mut rng)
+        } else {
+            unvisited[rng.gen_range(0..unvisited.len())]
+        };
         let (mx, mz) = ((cx + nx) / 2, (cz + nz) / 2);
 
         grid.set(mx as usize, mz as usize, corr(rules.ceiling_corridor));
@@ -138,8 +158,10 @@ pub fn generate_layer(
             wide_marks.push((nx, nz));
         }
 
-        if rng.gen::<f32>() < 0.82 {
-            stack.push((nx, nz));
+        if rng.gen::<f32>() < rules.branch_persistence {
+            let step = (nx - cx, nz - cz);
+            let next_run = if step == dir { run_len + 1 } else { 1 };
+            stack.push(((nx, nz), step, next_run));
         } else if !stack.is_empty() {
             let drop = rng.gen_range(0..stack.len());
             stack.remove(drop);
@@ -473,6 +495,34 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
             i = parent[i];
         }
     }
+}
+
+/// Elige el siguiente nodo sesgando hacia CONTINUAR RECTO.
+///
+/// Si el nodo que prolonga `dir` sigue sin visitar, se toma con probabilidad
+/// `straight_bias`; en cualquier otro caso (raíz sin dirección, recto ya
+/// visitado, o sorteo fallido) cae al sorteo uniforme histórico entre los
+/// vecinos disponibles. El backtracker sortea dirección uniformemente, así que
+/// sin este sesgo "corredor largo" acaba significando "serpenteante largo": el
+/// stack no recordaba por dónde se había entrado.
+///
+/// SOLO se llama con `straight_bias > 0.0`. Consume draws adicionales del RNG,
+/// y por eso vive detrás de esa condición — un perfil con el sesgo apagado no
+/// debe ver alterada su secuencia de sorteos.
+fn pick_biased_toward_straight(
+    unvisited: &[(i32, i32)],
+    (cx, cz): (i32, i32),
+    dir: (i32, i32),
+    straight_bias: f32,
+    rng: &mut StdRng,
+) -> (i32, i32) {
+    if dir != (0, 0) {
+        let straight = (cx + dir.0, cz + dir.1);
+        if unvisited.contains(&straight) && rng.gen::<f32>() < straight_bias {
+            return straight;
+        }
+    }
+    unvisited[rng.gen_range(0..unvisited.len())]
 }
 
 /// SplitMix64 finalizer — full-avalanche bit diffusion of a single word.

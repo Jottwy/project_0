@@ -903,3 +903,193 @@ fn connected_zone_skips_reconnection_entirely() {
         "el gate no debe dejar pasar nada cuando la zona ya está conectada"
     );
 }
+
+// ── Fase 1 — sesgo de rectitud configurable ──────────────────────────────────
+
+/// FNV-1a sobre los 4 bytes de cada celda (tipo, techo, zone_id). Cubre el grid
+/// entero, no solo la topología: si cambiara un `ceiling_height` el hash lo ve.
+fn grid_fingerprint(grid: &LayerGrid) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for c in grid.cells() {
+        for b in [
+            c.cell_type,
+            c.ceiling_height,
+            c.zone_id as u8,
+            (c.zone_id >> 8) as u8,
+        ] {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
+    }
+    h
+}
+
+/// Huellas capturadas del generador ANTES de introducir `straight_bias` /
+/// `branch_persistence` (y DESPUÉS del fix de `connect_zone_to_maze`, que sí
+/// cambia output a propósito). Son el contrato de determinismo de seeds ya
+/// jugadas: si una de estas cambia, todo mundo existente se regenera distinto.
+///
+/// NO se regeneran "porque el test falla". Un fallo aquí significa que un
+/// cambio alteró la secuencia de sorteos del caso por defecto, que es
+/// exactamente lo que estas constantes existen para impedir.
+const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
+    ((0, 3133931653), 0x0FF40FF7E328D804),
+    ((0, 1), 0x6AA9C9BF3A0D1E3F),
+    ((0, 42), 0xF6C220EB54522D7E),
+    ((0, 7778), 0xD1FC7FC55857B890),
+    ((1, 3133931653), 0x729F00EC161AE35A),
+    ((1, 1), 0x94A9570BED47AA30),
+    ((1, 42), 0xA64F9DF2D6414E94),
+    ((1, 7778), 0xBB477C0673433452),
+    ((2, 3133931653), 0x21F5AA54AC3E781D),
+    ((2, 1), 0x20E48EE57701349E),
+    ((2, 42), 0x037F8205D291E17A),
+    ((2, 7778), 0x866CE51249E7FF3F),
+    ((3, 3133931653), 0x424D9C1396AC3BB7),
+    ((3, 1), 0x1290567179328DCF),
+    ((3, 42), 0x428CC16E52B3433E),
+    ((3, 7778), 0x0C875E3B81D0BDE6),
+];
+
+/// (1) REGRESIÓN CRÍTICA. Con los defaults (`straight_bias` 0.0,
+/// `branch_persistence` 0.82 — el literal que sustituye) los 4 perfiles reales
+/// producen grid byte-idéntico al de antes del cambio. Es el test más
+/// importante de esta pieza: si falla, el sesgo de rectitud no se commitea.
+#[test]
+fn default_profiles_generate_byte_identical_grids() {
+    let mut drift = Vec::new();
+    for ((layer, seed), expected) in PHASE1_GOLDENS {
+        let out = generate_chunk_layer(
+            &LAYER_PROFILES[layer as usize],
+            seed,
+            TEST_CHUNK,
+            layer,
+            &[],
+        );
+        let got = grid_fingerprint(&out.grid);
+        if got != expected {
+            drift.push(format!(
+                "layer {layer} seed {seed}: esperado 0x{expected:016X}, obtenido 0x{got:016X}"
+            ));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "la generación por defecto cambió — se regeneraría CADA chunk de toda seed ya jugada:\n{}",
+        drift.join("\n")
+    );
+}
+
+/// Perfil de laboratorio: sólo Fase 1. Todo lo que ensucia la medida de tramos
+/// rectos (ensanchado, erosión, zonas, voids, escaleras) queda apagado, así el
+/// grid resultante ES el laberinto del backtracker y nada más.
+fn phase1_only_profile(straight_bias: f32, branch_persistence: f32) -> LayerRules {
+    let mut r = LAYER_PROFILES[0].clone();
+    r.wide_chance = 0.0;
+    r.erode_chance = 0.0;
+    r.num_open_zones = 0;
+    r.open_zone_size = 0;
+    r.pillar_chance = 0.0;
+    r.num_anomalies = 0;
+    r.num_stairs = 0;
+    r.num_pits = 0;
+    r.num_voids = 0;
+    r.straight_bias = straight_bias;
+    r.branch_persistence = branch_persistence;
+    r
+}
+
+/// Longitud media de los tramos rectos maximales de celdas transitables,
+/// contando por filas y por columnas. Un laberinto más recto sube esta media.
+fn mean_straight_run(grid: &LayerGrid) -> f64 {
+    let mut runs: Vec<usize> = Vec::new();
+    for fixed in 0..CHUNK_CELLS {
+        for horizontal in [true, false] {
+            let mut run = 0usize;
+            for moving in 0..CHUNK_CELLS {
+                let (x, z) = if horizontal {
+                    (moving, fixed)
+                } else {
+                    (fixed, moving)
+                };
+                if grid.get(x, z).is_walkable() {
+                    run += 1;
+                } else {
+                    if run > 1 {
+                        runs.push(run);
+                    }
+                    run = 0;
+                }
+            }
+            if run > 1 {
+                runs.push(run);
+            }
+        }
+    }
+    if runs.is_empty() {
+        return 0.0;
+    }
+    runs.iter().sum::<usize>() as f64 / runs.len() as f64
+}
+
+/// (2) Con el sesgo alto los tramos rectos son MÁS LARGOS en media. Afirmación
+/// estadística sobre un barrido de seeds, no exacta por seed: el sesgo es una
+/// probabilidad, no una garantía, y una seed suelta puede ir en contra.
+#[test]
+fn straight_bias_lengthens_runs_on_average() {
+    const SEEDS: u64 = 40;
+    let base = phase1_only_profile(0.0, 0.82);
+    let biased = phase1_only_profile(0.9, 0.82);
+
+    let mut base_sum = 0.0;
+    let mut biased_sum = 0.0;
+    for seed in 0..SEEDS {
+        base_sum += mean_straight_run(&generate_layer(&base, seed, TEST_CHUNK, 0, &[]).grid);
+        biased_sum += mean_straight_run(&generate_layer(&biased, seed, TEST_CHUNK, 0, &[]).grid);
+    }
+    let (base_mean, biased_mean) = (base_sum / SEEDS as f64, biased_sum / SEEDS as f64);
+
+    assert!(
+        biased_mean > base_mean,
+        "straight_bias 0.9 debería alargar los tramos rectos: base {base_mean:.3} vs sesgado {biased_mean:.3}"
+    );
+}
+
+/// El sesgo no puede romper el invariante número uno del módulo: el grid sigue
+/// siendo conexo. Sería un modo de fallo plausible — sesgar la exploración
+/// altera el orden de visita del backtracker.
+#[test]
+fn straight_bias_keeps_the_maze_connected() {
+    let biased = phase1_only_profile(0.95, 0.82);
+    for seed in 0..25u64 {
+        let out = generate_chunk_layer(&biased, seed, TEST_CHUNK, 0, &[]);
+        let (reached, total) = flood_fill_walkable(&out.grid);
+        assert_eq!(reached, total, "seed {seed}: grid no conexo con sesgo alto");
+    }
+}
+
+/// (3) `branch_persistence` se lee de verdad de la config y no del 0.82 que
+/// había incrustado. Tres valores distintos, todo lo demás igual, tres grids
+/// distintos — y el 0.82 explícito reproduce exactamente el perfil por defecto,
+/// que es la prueba de que sustituir el literal no cambió nada.
+#[test]
+fn branch_persistence_comes_from_the_profile_not_the_old_literal() {
+    let grid_for = |bp: f32| {
+        grid_fingerprint(&generate_layer(&phase1_only_profile(0.0, bp), 4242, TEST_CHUNK, 0, &[]).grid)
+    };
+
+    let (low, mid, high) = (grid_for(0.0), grid_for(0.82), grid_for(1.0));
+    assert_ne!(low, mid, "branch_persistence 0.0 y 0.82 deben divergir");
+    assert_ne!(mid, high, "branch_persistence 0.82 y 1.0 deben divergir");
+    assert_ne!(low, high, "branch_persistence 0.0 y 1.0 deben divergir");
+
+    // El valor por defecto del perfil ES 0.82: pedirlo explícitamente no puede
+    // cambiar nada respecto a dejarlo en su default.
+    let mut defaulted = phase1_only_profile(0.0, 0.82);
+    defaulted.branch_persistence = LAYER_PROFILES[0].branch_persistence;
+    assert_eq!(
+        mid,
+        grid_fingerprint(&generate_layer(&defaulted, 4242, TEST_CHUNK, 0, &[]).grid),
+        "el default del perfil debe seguir siendo el 0.82 histórico"
+    );
+}
