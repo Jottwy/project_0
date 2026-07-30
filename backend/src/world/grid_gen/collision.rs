@@ -86,13 +86,13 @@ impl GridGenChunkCache {
     /// the same `rules_fn` as the render path: `grid_cache_layout_matches_direct_generation`
     /// guards it.
     pub fn get_or_generate(&mut self, cx: i32, cz: i32, layer: u8) -> &LayerGrid {
-        let key = (cx, cz, layer);
-        if !self.cache.contains_key(&key) {
-            let rules = (self.rules_fn)(self.seed, cx, cz, layer);
-            let out = generate_chunk_layer(&rules, self.seed, (cx, cz), layer as i32, &[]);
-            self.cache.insert(key, out.grid);
-        }
-        self.cache.get(&key).expect("just inserted")
+        // Single hash lookup per access (was contains_key + insert + get = 3).
+        let seed = self.seed;
+        let rules_fn = self.rules_fn;
+        self.cache.entry((cx, cz, layer)).or_insert_with(|| {
+            let rules = rules_fn(seed, cx, cz, layer);
+            generate_chunk_layer(&rules, seed, (cx, cz), layer as i32, &[]).grid
+        })
     }
 
     /// Evict the farthest-from-`center` (Chebyshev) layouts until within the cap. The current

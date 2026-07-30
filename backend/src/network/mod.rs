@@ -1270,23 +1270,7 @@ impl NetworkManager {
                 self.peers.len(),
                 self.peer_ids()
             );
-            let ack_payload = PacketPayload::HandshakeAck {
-                assigned_id: existing.id,
-                world_seed: self.world_seed,
-                config: SessionConfig::default(),
-                peers: self
-                    .peers
-                    .values()
-                    .map(|p| PeerInfo {
-                        id: p.id,
-                        name: p.name.clone(),
-                        addr: p.addr.to_string(),
-                        position: p.position,
-                    })
-                    .collect(),
-                anchors: vec![],
-                stabilizers: vec![],
-            };
+            let ack_payload = self.build_handshake_ack(existing.id);
             info!(
                 "Sending handshake ACK to {} assigned_id={}",
                 from_addr, existing.id
@@ -1320,23 +1304,7 @@ impl NetworkManager {
                 self.peers.len(),
                 self.peer_ids()
             );
-            let ack_payload = PacketPayload::HandshakeAck {
-                assigned_id: existing.id,
-                world_seed: self.world_seed,
-                config: SessionConfig::default(),
-                peers: self
-                    .peers
-                    .values()
-                    .map(|p| PeerInfo {
-                        id: p.id,
-                        name: p.name.clone(),
-                        addr: p.addr.to_string(),
-                        position: p.position,
-                    })
-                    .collect(),
-                anchors: vec![],
-                stabilizers: vec![],
-            };
+            let ack_payload = self.build_handshake_ack(existing.id);
             info!(
                 "Sending handshake ACK to {} assigned_id={}",
                 from_addr, existing.id
@@ -1377,23 +1345,7 @@ impl NetworkManager {
         );
 
         // Send HandshakeAck with world info.
-        let ack_payload = PacketPayload::HandshakeAck {
-            assigned_id,
-            world_seed: self.world_seed,
-            config: SessionConfig::default(),
-            peers: self
-                .peers
-                .values()
-                .map(|p| PeerInfo {
-                    id: p.id,
-                    name: p.name.clone(),
-                    addr: p.addr.to_string(),
-                    position: p.position,
-                })
-                .collect(),
-            anchors: vec![],
-            stabilizers: vec![],
-        };
+        let ack_payload = self.build_handshake_ack(assigned_id);
         info!(
             "Sending handshake ACK to {} assigned_id={}",
             from_addr, assigned_id
@@ -1490,6 +1442,29 @@ impl NetworkManager {
             .collect();
         endpoints.sort();
         endpoints
+    }
+
+    /// Build the `HandshakeAck` payload for `assigned_id` from the current peer table.
+    /// Single source for the three handshake paths (new peer / duplicate by id / duplicate by
+    /// endpoint), which previously carried byte-identical copies of this block.
+    fn build_handshake_ack(&self, assigned_id: PeerId) -> PacketPayload {
+        PacketPayload::HandshakeAck {
+            assigned_id,
+            world_seed: self.world_seed,
+            config: SessionConfig::default(),
+            peers: self
+                .peers
+                .values()
+                .map(|p| PeerInfo {
+                    id: p.id,
+                    name: p.name.clone(),
+                    addr: p.addr.to_string(),
+                    position: p.position,
+                })
+                .collect(),
+            anchors: vec![],
+            stabilizers: vec![],
+        }
     }
 
     fn allocate_peer_id(&mut self, requested_id: PeerId) -> PeerId {
