@@ -427,11 +427,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static void AddColliderIfMissing(GameObject go)
         {
-            foreach (var r in go.GetComponentsInChildren<MeshRenderer>())
+            // List overload: same traversal and order as the array one, but it fills a reusable
+            // buffer instead of allocating an array per call. This runs once per instantiated
+            // wall/floor/ceiling piece — several hundred times per chunk.
+            go.GetComponentsInChildren(_rendererScratch);
+            for (int i = 0; i < _rendererScratch.Count; i++)
             {
-                if (r.GetComponent<Collider>() != null) continue;
-                var mf = r.GetComponent<MeshFilter>();
-                if (mf == null || mf.sharedMesh == null) continue;
+                var r = _rendererScratch[i];
+                if (r.TryGetComponent<Collider>(out _)) continue;
+                if (!r.TryGetComponent<MeshFilter>(out var mf) || mf.sharedMesh == null) continue;
                 var col    = r.gameObject.AddComponent<BoxCollider>();
                 var mb     = mf.sharedMesh.bounds;
                 col.center = mb.center;
@@ -483,6 +487,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // Reused across all Paint() calls — SetPropertyBlock copies the data, so a
         // single shared block avoids a per-tile allocation.
         private static readonly MaterialPropertyBlock _mpb = new MaterialPropertyBlock();
+
+        /// Reusable buffer for the GetComponentsInChildren(List) overload, shared by
+        /// AddColliderIfMissing and Paint (they never run nested). Chunk building called the
+        /// array-returning overload twice per instantiated piece, so this was the single largest
+        /// source of per-chunk garbage in the builder.
+        private static readonly List<MeshRenderer> _rendererScratch = new List<MeshRenderer>();
 
         // ── Medias paredes — knee walls ─────────────────────────────────────────
 
@@ -583,8 +593,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             byte edges, int tx, int tz, Material mat, Color tint,
             LayerVisualConfig cfg, int gx, int gz)
         {
-            float variety = cfg != null ? Mathf.Clamp01(cfg.wallPanelVariety) : 0f;
-            float kneeScale = cfg != null ? cfg.KneeWallHeightClamped / WallPrefabHeight : 1f;
+            // One aliveness check instead of two: `!= null` on a UnityEngine.Object is an
+            // overloaded operator that calls into native code, not a reference compare.
+            bool hasCfg = cfg != null;
+            float variety = hasCfg ? Mathf.Clamp01(cfg.wallPanelVariety) : 0f;
+            float kneeScale = hasCfg ? cfg.KneeWallHeightClamped / WallPrefabHeight : 1f;
 
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
@@ -605,8 +618,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             _mpb.Clear();
             _mpb.SetColor(LayerVisualMaterials.BaseColorId, tint);
-            foreach (var r in go.GetComponentsInChildren<MeshRenderer>())
+            // Same non-allocating overload as AddColliderIfMissing; the two never nest, so they
+            // can share one scratch buffer.
+            go.GetComponentsInChildren(_rendererScratch);
+            for (int i = 0; i < _rendererScratch.Count; i++)
             {
+                var r = _rendererScratch[i];
                 if (mat != null) r.sharedMaterial = mat;
                 r.SetPropertyBlock(_mpb);
             }
@@ -811,8 +828,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 go.transform.localPosition = pos;
                 go.transform.localScale    = scale;
 
-                var col = go.GetComponent<Collider>();
-                if (col != null) Object.Destroy(col); // decorative — Rust owns collision
+                if (go.TryGetComponent<Collider>(out var col))
+                    Object.Destroy(col); // decorative — Rust owns collision
 
                 var rend = go.GetComponent<MeshRenderer>();
                 rend.sharedMaterial = mats.pipe;
@@ -921,10 +938,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 PropEntry e = PickProp(cfg.props, Hash01(gx, gz, PropSaltPick) * totalWeight);
                 string type = e.placeholderType;
 
-                GameObject go = e.prefab != null
-                    ? Object.Instantiate(e.prefab)
-                    : PlaceholderFactory.Create(type, mats.prop, Hash01(gx, gz, PropSaltVarA));
-                go.transform.SetParent(parent, false);
+                // Instantiating straight under `parent` avoids the scene-root spawn + reparent
+                // (two transform-hierarchy updates) the SetParent path costs. The placeholder
+                // branch has no such overload, and it still draws PropSaltVarA only when it is
+                // the branch taken — same hash sequence as before.
+                GameObject go;
+                if (e.prefab != null)
+                {
+                    go = Object.Instantiate(e.prefab, parent, false);
+                }
+                else
+                {
+                    go = PlaceholderFactory.Create(type, mats.prop, Hash01(gx, gz, PropSaltVarA));
+                    go.transform.SetParent(parent, false);
+                }
 
                 // Y by kind: cables hang from the ceiling; flat decals lift slightly off the
                 // floor; the rest sit on the floor surface.

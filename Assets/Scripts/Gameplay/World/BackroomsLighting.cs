@@ -90,7 +90,7 @@ namespace BackroomsSurvival.Gameplay.World
 
                     // Luminaire mesh (always): emissive when working, near-dark when broken.
                     var mesh = MakeLuminaire(chunkRoot, localPos, lampMat,
-                        broken ? cfg.lampColor * 0.04f : litEmission);
+                        broken ? cfg.lampColor * 0.04f : litEmission, out var meshRenderer);
                     mesh.layer = geoLayer; // so only this layer's lamps light the tube
 
                     if (broken) continue; // dark tube, no light cast (mesh stays)
@@ -121,7 +121,7 @@ namespace BackroomsSurvival.Gameplay.World
                         f.target        = light;
                         f.baseIntensity = cfg.lampIntensity;
                         f.frequency     = frequency;
-                        f.mesh          = mesh.GetComponent<MeshRenderer>();
+                        f.mesh          = meshRenderer; // already resolved by MakeLuminaire
                         f.litEmission   = litEmission;
                         if (dying) f.Invoke(nameof(LampFlicker.StartDying), deathIn);
                     }
@@ -129,13 +129,14 @@ namespace BackroomsSurvival.Gameplay.World
             }
         }
 
+        /// <paramref name="renderer"/> is handed back so the flicker path does not look the
+        /// MeshRenderer up a second time on a component this method already resolved.
         private static GameObject MakeLuminaire(Transform parent, Vector3 localPos,
-            Material lampMat, Color emission)
+            Material lampMat, Color emission, out MeshRenderer renderer)
         {
             var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
             go.name = "Luminaire";
-            var col = go.GetComponent<Collider>();
-            if (col != null) Destroy(col); // decorative — no collision
+            if (go.TryGetComponent<Collider>(out var col)) Destroy(col); // decorative — no collision
             go.transform.SetParent(parent, false);
             go.transform.localPosition = localPos;
             go.transform.localScale = new Vector3(1.65f, 0.08f, 1.65f); // flat square ceiling panel
@@ -146,6 +147,7 @@ namespace BackroomsSurvival.Gameplay.World
             _lampMpb.Clear();
             _lampMpb.SetColor(LayerVisualMaterials.EmissionColorId, emission);
             r.SetPropertyBlock(_lampMpb);
+            renderer = r;
             return go;
         }
     }
