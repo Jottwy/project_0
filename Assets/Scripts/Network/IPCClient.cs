@@ -294,13 +294,18 @@ namespace BackroomsSurvival.Net
         private void ReadFrames(NetworkStream stream)
         {
             var lenBuf = new byte[4];
+            // One frame buffer per connection, grown on demand, instead of a fresh byte[len] per
+            // message. Safe to reuse: MsgPackReader copies out of it (ReadStr does GetString,
+            // ReadBin copies into a new array), so nothing decoded keeps a reference to it, and
+            // the reader stops after one value — stale bytes past `len` are never looked at.
+            byte[] body = new byte[4096];
             while (_running)
             {
                 if (!ReadExactlyWithTimeout(stream, lenBuf, 4)) break;
                 int len = (lenBuf[0] << 24) | (lenBuf[1] << 16) | (lenBuf[2] << 8) | lenBuf[3];
                 if (len <= 0 || len > 32 * 1024 * 1024) break;
 
-                var body = new byte[len];
+                if (body.Length < len) body = new byte[Mathf.NextPowerOfTwo(len)];
                 if (!ReadExactlyWithTimeout(stream, body, len)) break;
 
                 try { Dispatch(body); }

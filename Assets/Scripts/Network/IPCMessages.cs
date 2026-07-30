@@ -149,9 +149,7 @@ namespace BackroomsSurvival.Net
             r.crouch = IPCParse.B(d, "crouch");
             r.pitch = (int)IPCParse.L(d, "pitch");
             // ADR-022: normalize to exactly 4 slots (a v4 peer omitting the field → all zeros).
-            var equip = IPCParse.IntArray(IPCParse.Get(d, "equipment"));
-            for (int i = 0; i < 4; i++)
-                r.equipment[i] = i < equip.Length ? equip[i] : 0;
+            IPCParse.FillIntArray(IPCParse.Get(d, "equipment"), r.equipment);
             // ADR-023: held item (a v5 peer omitting the field → 0 = empty hands).
             r.heldItem = (int)IPCParse.L(d, "held_item");
             // ADR-024: hit-reaction counter (a v6 peer omitting the field → 0 = never hit).
@@ -431,7 +429,11 @@ namespace BackroomsSurvival.Net
         public bool HasBackendLayout => hasBackendLayout;
 
         private static readonly HashSet<int> _loggedInvalidLayouts = new HashSet<int>();
-        private static readonly HashSet<string> _loggedVolumeParseChunks = new HashSet<string>();
+        // Tuple key, not an interpolated string: only the Debug.Log below is deduplicated, so the
+        // key itself was still being built for every volume-carrying chunk of every snapshot,
+        // long after the log had gone quiet.
+        private static readonly HashSet<(int, int, int, int)> _loggedVolumeParseChunks
+            = new HashSet<(int, int, int, int)>();
 
         public static ChunkViewMsg Parse(object o)
         {
@@ -477,8 +479,7 @@ namespace BackroomsSurvival.Net
 
         private static void LogVolumeParseOnce(ChunkViewMsg c)
         {
-            string key = $"{c.pos[0]}:{c.layer}:{c.pos[1]}:{c.interLayerVolumes.Count}";
-            if (!_loggedVolumeParseChunks.Add(key))
+            if (!_loggedVolumeParseChunks.Add((c.pos[0], c.layer, c.pos[1], c.interLayerVolumes.Count)))
                 return;
 
             Debug.Log($"MPTRACE step=V30A2 event=v30a2_visfix_unity_volume_count_received chunk=({c.pos[0]},{c.layer},{c.pos[1]}) volume_count={c.interLayerVolumes.Count}");
@@ -843,9 +844,7 @@ namespace BackroomsSurvival.Net
             m.isChest = IPCParse.B(d, "is_chest");
             m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             // Normalize to exactly 4 slots (mirror of RemotePlayerMsg.equipment, ADR-022).
-            var equip = IPCParse.IntArray(IPCParse.Get(d, "equipment"));
-            for (int i = 0; i < 4; i++)
-                m.equipment[i] = i < equip.Length ? equip[i] : 0;
+            IPCParse.FillIntArray(IPCParse.Get(d, "equipment"), m.equipment);
             m.heldItem = (int)IPCParse.L(d, "held_item");
             if (IPCParse.Get(d, "items") is object[] stacks)
             {
@@ -895,35 +894,69 @@ namespace BackroomsSurvival.Net
             ws.worldRevision = IPCParse.L(d, "world_revision");
             ws.localPlayer = LocalPlayerMsg.Parse(IPCParse.Get(d, "local_player"));
 
+            // Every list below is grown one Add at a time from an array whose length is already
+            // known, so each one paid a log2(n) chain of backing-array reallocations per snapshot.
+            // Setting Capacity first sizes the backing array once. Same list instance, same
+            // contents, same order.
             if (IPCParse.Get(d, "remote_players") is object[] rp)
+            {
+                ws.remotePlayers.Capacity = rp.Length;
                 foreach (var item in rp) ws.remotePlayers.Add(RemotePlayerMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "visible_chunks") is object[] vc)
+            {
+                ws.visibleChunks.Capacity = vc.Length;
                 foreach (var item in vc) ws.visibleChunks.Add(ChunkViewMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "visible_entities") is object[] ve)
+            {
+                ws.visibleEntities.Capacity = ve.Length;
                 foreach (var item in ve) ws.visibleEntities.Add(EntityViewMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "visible_items") is object[] vi)
+            {
+                ws.visibleItems.Capacity = vi.Length;
                 foreach (var item in vi) ws.visibleItems.Add(ItemViewMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "vertical_debug_markers") is object[] vm)
+            {
+                ws.verticalDebugMarkers.Capacity = vm.Length;
                 foreach (var item in vm) ws.verticalDebugMarkers.Add(VerticalDebugMarkerMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "stp_items") is object[] si)
+            {
+                ws.stpItems.Capacity = si.Length;
                 foreach (var item in si) ws.stpItems.Add(StpItemMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "stp_buildings") is object[] sb)
+            {
+                ws.stpBuildings.Capacity = sb.Length;
                 foreach (var item in sb) ws.stpBuildings.Add(StpBuildingMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "stp_carryables") is object[] sc)
+            {
+                ws.stpCarryables.Capacity = sc.Length;
                 foreach (var item in sc) ws.stpCarryables.Add(StpCarryableMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "stp_harvestables") is object[] sh)
+            {
+                ws.stpHarvestables.Capacity = sh.Length;
                 foreach (var item in sh) ws.stpHarvestables.Add(StpHarvestableMsg.Parse(item));
+            }
 
             if (IPCParse.Get(d, "visible_corpses") is object[] cv)
+            {
+                ws.visibleCorpses.Capacity = cv.Length;
                 foreach (var item in cv) ws.visibleCorpses.Add(CorpseViewMsg.Parse(item));
+            }
 
             return ws;
         }
@@ -982,6 +1015,17 @@ namespace BackroomsSurvival.Net
             if (v is object[] a && a.Length >= 2)
                 return new[] { (int)ToLong(a[0]), (int)ToLong(a[1]) };
             return new[] { 0, 0 };
+        }
+
+        /// Fills <paramref name="dest"/> from a msgpack array, zeroing any slot the wire did not
+        /// carry — the same normalization IntArray + a copy loop performed, minus the throwaway
+        /// int[] that allocated once per remote player and once per corpse, every snapshot.
+        public static void FillIntArray(object v, int[] dest)
+        {
+            var a = v as object[];
+            int n = a?.Length ?? 0;
+            for (int i = 0; i < dest.Length; i++)
+                dest[i] = i < n ? (int)ToLong(a[i]) : 0;
         }
 
         public static int[] IntArray(object v)
