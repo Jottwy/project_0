@@ -82,3 +82,5 @@ MonoBehaviour:
   - {r: 0.9, g: 0.9, b: 0.85, a: 1}
   wallPanelVariety: 0.2
   kneeWallHeight: 1.35
+  lintelChance: 0.12
+  lintelClearance: 2.2

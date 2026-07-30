@@ -49,7 +49,8 @@ namespace BackroomsSurvival.Tests
         /// los ignora si son null, así que el test no depende de Shader.Find ni deja
         /// materiales huérfanos.
         /// </summary>
-        private LayerVisualConfig StyledConfig(float variety, float kneeHeight)
+        private LayerVisualConfig StyledConfig(float variety, float kneeHeight,
+            float lintelChance = 0f, float lintelClearance = 2.2f)
         {
             _cfg = ScriptableObject.CreateInstance<LayerVisualConfig>();
             _cfg.showCeiling = false;      // menos hijos que filtrar; no afecta a las paredes
@@ -57,6 +58,8 @@ namespace BackroomsSurvival.Tests
             _cfg.props = null;
             _cfg.wallPanelVariety = variety;
             _cfg.kneeWallHeight = kneeHeight;
+            _cfg.lintelChance = lintelChance;
+            _cfg.lintelClearance = lintelClearance;
             return _cfg;
         }
 
@@ -73,6 +76,29 @@ namespace BackroomsSurvival.Tests
             foreach (Transform c in root.transform)
                 if (c.name.StartsWith("Wall")) list.Add(c);
             return list;
+        }
+
+        private static List<Transform> LintelInstances(GameObject root)
+        {
+            var list = new List<Transform>();
+            foreach (Transform c in root.transform)
+                if (c.name == "Lintel") list.Add(c);
+            return list;
+        }
+
+        private static float TileCentreCoord(int t) => (t + 0.5f) * 5f;
+
+        /// <summary>
+        /// Línea de pared a lo largo de X en el borde +z de la fila <paramref name="tz"/>,
+        /// con UN hueco en <paramref name="gapTx"/>: la forma canónica de un vano
+        /// (arista abierta con el mismo muro continuando a ambos lados).
+        /// </summary>
+        private static byte[,] WallLineWithGap(int tz, int gapTx, int fromTx, int toTx)
+        {
+            var walls = EmptyWalls();
+            for (int tx = fromTx; tx <= toTx; tx++)
+                if (tx != gapTx) walls[tx, tz] = BitS;
+            return walls;
         }
 
         /// <summary>AABB en mundo del collider del panel (el BoxCollider vive en el hijo
@@ -173,6 +199,84 @@ namespace BackroomsSurvival.Tests
             var b = ColliderBounds(panels[0]);
             Assert.GreaterOrEqual(b.max.y, LayerVisualConfig.MinKneeWallHeight - 1e-3f,
                 "la geometría construida tampoco puede quedar por debajo del mínimo");
+        }
+
+        // ── 4. Dintel: solo sobre vano, nunca sobre pared ni en borde ───────────
+
+        /// <summary>
+        /// Fila 3..7 en tz=5 con pared en todas menos tx=5. Con <c>lintelChance = 1</c> el
+        /// único dintel posible es el del vano: si apareciera también sobre las aristas con
+        /// pared saldrían 6, y ese es justo el caso que ADR-018 prohíbe (abriría un hueco a
+        /// ras de suelo en una arista que el robapieles considera sólida).
+        /// </summary>
+        [Test]
+        public void LintelLandsOnlyOnTheDoorwayNeverOnAWalledEdge()
+        {
+            const float clearance = 2.2f;
+            var walls = WallLineWithGap(tz: 5, gapTx: 5, fromTx: 3, toTx: 7);
+
+            _root = Build(walls, StyledConfig(0f, 1.35f, 1f, clearance), "ChunkDoorway");
+
+            var lintels = LintelInstances(_root);
+            Assert.AreEqual(1, lintels.Count,
+                "un solo vano en la línea ⇒ un solo dintel; más de uno significaría que " +
+                "también se cuelga sobre aristas con pared");
+
+            var l = lintels[0];
+            Assert.AreEqual(TileCentreCoord(5), l.localPosition.x, 1e-3f, "dintel en el tile del vano");
+            Assert.AreEqual(TileCentreCoord(5) + 2.5f, l.localPosition.z, 1e-3f, "sobre el borde +z del tile");
+            Assert.AreEqual(clearance, l.localPosition.y, 1e-3f, "cuelga desde la altura de paso");
+
+            var b = ColliderBounds(l);
+            Assert.AreEqual(clearance, b.min.y, 1e-3f,
+                "la cara inferior debe quedar a la altura de paso — el vano sigue siendo transitable");
+            Assert.AreEqual(4f, b.max.y, 1e-3f, "y llegar hasta el techo de la capa");
+        }
+
+        /// <summary>
+        /// El mismo vano, pero en la fila de borde: sus vecinos colineales viven en el chunk
+        /// contiguo, que este builder no ve. Se omite en vez de adivinar — mismo criterio
+        /// que el invariante de borde del nibble de pilares de ADR-033.
+        /// </summary>
+        [Test]
+        public void LintelIsSkippedOnBorderTiles()
+        {
+            var walls = WallLineWithGap(tz: 0, gapTx: 5, fromTx: 3, toTx: 7);
+
+            _root = Build(walls, StyledConfig(0f, 1.35f, 1f, 2.2f), "ChunkBorderDoorway");
+
+            Assert.AreEqual(0, LintelInstances(_root).Count,
+                "tz = 0 es tile de borde ⇒ sin dintel, aunque el vano exista dentro del chunk");
+        }
+
+        /// <summary>Simetría del caso anterior en el eje X (tx de borde, carril E).</summary>
+        [Test]
+        public void LintelIsSkippedOnBorderTilesAlongX()
+        {
+            var walls = EmptyWalls();
+            // Muro corriendo a lo largo de Z en el borde +x de la columna tx=0, hueco en tz=5.
+            for (int tz = 3; tz <= 7; tz++)
+                if (tz != 5) walls[0, tz] = BitE;
+
+            _root = Build(walls, StyledConfig(0f, 1.35f, 1f, 2.2f), "ChunkBorderDoorwayX");
+
+            Assert.AreEqual(0, LintelInstances(_root).Count,
+                "tx = 0 es tile de borde ⇒ sin dintel");
+        }
+
+        /// <summary>
+        /// Una arista abierta en mitad de una sala (sin muro que continúe a los lados) NO es
+        /// un vano: un dintel ahí leería como viga suelta, no como dintel.
+        /// </summary>
+        [Test]
+        public void OpenFloorWithoutASurroundingWallLineGetsNoLintel()
+        {
+            var walls = EmptyWalls(); // cero paredes ⇒ cero vanos, solo suelo abierto
+
+            _root = Build(walls, StyledConfig(0f, 1.35f, 1f, 2.2f), "ChunkOpenFloor");
+
+            Assert.AreEqual(0, LintelInstances(_root).Count,
+                "sin línea de muro que interrumpir no hay vano que cubrir");
         }
     }
 }

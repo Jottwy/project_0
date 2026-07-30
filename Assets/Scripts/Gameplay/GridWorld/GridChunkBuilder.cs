@@ -338,8 +338,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
                     byte b = walls[tx, tz];
                     byte edges = 0;
-                    if ((b & 2) != 0) edges |= EdgeNorth; // backend S (+Z) → +z panel
-                    if ((b & 4) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
+                    if ((b & BackendBitS) != 0) edges |= EdgeNorth; // backend S (+Z) → +z panel
+                    if ((b & BackendBitE) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
                     if (edges != 0)
                     {
                         if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall,
@@ -347,6 +347,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                             cfg, gx, gz);
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz);
                     }
+
+                    // Medias paredes (2): dintel sobre vano. Va FUERA del `if (edges != 0)`
+                    // porque un dintel vive justo donde NO hay panel. Su tinte NO pasa por
+                    // JitterValue a propósito: una draw extra del rng aquí correría la
+                    // secuencia y cambiaría el tinte de los pilares de este tile — la misma
+                    // disciplina que mantiene PlaceCeilingTile.
+                    if (styled)
+                        PlaceLintels(prefabs, root.transform, walls, cfg, tx, tz, gx, gz,
+                            mats.wall, Damp(wallBase * zoneTint, wallDamp, WallStain));
 
                     // ADR-033/Pillar: nibble alto → columnas por sub-celda. Sin
                     // traducción de bits (a diferencia de N/S/E/W): cada bit ya
@@ -488,6 +497,77 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static uint KneeSaltFor(byte flag) =>
             (flag == EdgeNorth || flag == EdgeSouth) ? WallSaltKneeN : WallSaltKneeE;
+
+        // ── Medias paredes — dinteles sobre vano ────────────────────────────────
+
+        // Backend bit convention of the low nibble of walls[tx,tz]
+        // (backend/src/world/grid_gen/tile_walls.rs). BuildFromWalls consumes only S and
+        // E: the −Z/−X panels belong to the neighbour tile (no-duplication rule), so
+        // these two bits are also the only ones whose ABSENCE this tile may read as a
+        // doorway it owns.
+        private const byte BackendBitS = 2; // +Z → this tile's EdgeNorth panel
+        private const byte BackendBitE = 4; // +X → this tile's EdgeEast  panel
+
+        private const uint WallSaltLintelN = 0x4C4E544EU; // "LNTN" — lintel, X-running lane
+        private const uint WallSaltLintelE = 0x4C4E5445U; // "LNTE" — lintel, Z-running lane
+
+        /// <summary>
+        /// Hanging lintel beams over DOORWAYS. A doorway is an edge this tile owns that is
+        /// OPEN while the same wall line continues — walled — on both collinear neighbours;
+        /// that distinguishes a real gap in a wall from plain open floor, where a beam
+        /// would read as a random girder in the middle of a room.
+        ///
+        /// Deliberately restricted to already-open edges. Hanging a beam on a WALLED edge
+        /// would leave a gap at floor level in an edge the backend marks solid, and the
+        /// phantom (ADR-016) collides against that same grid_gen layout — render and
+        /// phantom would disagree, which is exactly what ADR-018 guarantees against. So a
+        /// lintel never changes traversal in either direction (see
+        /// <see cref="LayerVisualConfig.MinLintelClearance"/> for the other half).
+        ///
+        /// Border tiles (0 / Tiles-1) are skipped: their collinear neighbours live in the
+        /// adjacent chunk, which this builder cannot see — same criterion as the pillar
+        /// border invariant of ADR-033.
+        /// </summary>
+        private static void PlaceLintels(GridPrefabSet prefabs, Transform parent, byte[,] walls,
+            LayerVisualConfig cfg, int tx, int tz, int gx, int gz, Material mat, Color tint)
+        {
+            float chance = Mathf.Clamp01(cfg.lintelChance);
+            if (chance <= 0f) return;
+            if (tx == 0 || tx == Tiles - 1 || tz == 0 || tz == Tiles - 1) return;
+
+            float clearance = cfg.LintelClearanceClamped;
+            float scaleY = (WallPrefabHeight - clearance) / WallPrefabHeight;
+            if (scaleY <= 0f) return; // clearance authored at/above the ceiling — nothing to hang
+
+            byte b = walls[tx, tz];
+
+            if ((b & BackendBitS) == 0
+                && (walls[tx - 1, tz] & BackendBitS) != 0
+                && (walls[tx + 1, tz] & BackendBitS) != 0
+                && Hash01(gx, gz, WallSaltLintelN) < chance)
+                PlaceLintelPiece(prefabs, parent, tx, tz, 0f, 0.5f, 0f, clearance, scaleY, mat, tint);
+
+            if ((b & BackendBitE) == 0
+                && (walls[tx, tz - 1] & BackendBitE) != 0
+                && (walls[tx, tz + 1] & BackendBitE) != 0
+                && Hash01(gx, gz, WallSaltLintelE) < chance)
+                PlaceLintelPiece(prefabs, parent, tx, tz, 0.5f, 0f, 90f, clearance, scaleY, mat, tint);
+        }
+
+        /// <summary>One beam spanning a doorway, occupying [clearance, LayerHeight]. Named
+        /// "Lintel" (not "Wall(Clone)") so it is distinguishable in the hierarchy and in
+        /// tests.</summary>
+        private static void PlaceLintelPiece(GridPrefabSet prefabs, Transform parent,
+            int tx, int tz, float ox, float oz, float yaw, float clearance, float scaleY,
+            Material mat, Color tint)
+        {
+            var go = Instantiate(prefabs.wall, parent,
+                TileCenter(tx, tz) + new Vector3(ox * Ts, clearance, oz * Ts), yaw);
+            go.name = "Lintel";
+            go.transform.localScale = new Vector3(1f, scaleY, 1f);
+            AddColliderIfMissing(go);
+            Paint(go, mat, tint);
+        }
 
         /// <summary>
         /// Wall pieces using the shared layer material + a per-tile tint (MPB).

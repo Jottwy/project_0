@@ -49,3 +49,5 @@ MonoBehaviour:
     floorOnly: 0
   wallPanelVariety: 0
   kneeWallHeight: 1.35
+  lintelChance: 0
+  lintelClearance: 2.2

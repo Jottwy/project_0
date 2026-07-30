@@ -95,6 +95,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Effective knee-wall height: never low enough to become traversable.</summary>
         public float KneeWallHeightClamped => Mathf.Max(MinKneeWallHeight, kneeWallHeight);
 
+        [Range(0f, 1f)]
+        [Tooltip("Chance that a DOORWAY (an open tile edge with wall continuing on both " +
+                 "sides of the same line) gets a hanging lintel beam. 0 = none. Lintels " +
+                 "only ever go over edges the backend already marks OPEN — never over a " +
+                 "walled edge, which would make the render disagree with the phantom's " +
+                 "grid_gen collision (ADR-018).")]
+        public float lintelChance = 0f;
+        [Tooltip("Height (m) of the underside of a lintel beam. Clamped up to " +
+                 "MinLintelClearance so the doorway stays walkable.")]
+        public float lintelClearance = 2.2f;
+
+        /// <summary>
+        /// Floor for <see cref="lintelClearance"/>. Same reasoning as
+        /// <see cref="MinKneeWallHeight"/>, mirrored: the beam carries a runtime collider,
+        /// so hanging it lower than the player capsule (FPS_Player.prefab m_Height 1.8)
+        /// would CLOSE a doorway the backend marks open — the phantom would walk through
+        /// where the player cannot. 1.9 m keeps the margin.
+        /// </summary>
+        public const float MinLintelClearance = 1.9f;
+
+        /// <summary>Effective lintel clearance: never low enough to block the doorway.</summary>
+        public float LintelClearanceClamped => Mathf.Max(MinLintelClearance, lintelClearance);
+
         /// <summary>
         /// One entry of <paramref name="variants"/> chosen by <paramref name="h"/> ∈ [0,1),
         /// or <paramref name="baseTint"/> when the palette is unset. Bounds-safe, same shape
