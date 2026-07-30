@@ -28,7 +28,7 @@ MonoBehaviour:
     _value: 0
   _rarity: {fileID: 11400000, guid: 5b78dfb1a8130fe4cab70086731e2ddd, type: 2}
   _actions:
-  - {fileID: 11400000, guid: 59fe392297328864e80629d3fb6db5d1, type: 2}
+  - {fileID: 11400000, guid: 4f5fda0809d902c36f9f8a5c977215e0, type: 2}
   _properties: []
   _data:
   - rid: 7414096679504707719
