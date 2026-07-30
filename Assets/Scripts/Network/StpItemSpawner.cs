@@ -53,13 +53,8 @@ namespace BackroomsSurvival.Net
         // once the host walks a bit closer.
         private const float ScatterMaxRadius = 200f;
         private const float WeaponRollChance = 0.15f;
-        private const int MaxPlacementAttempts = 12;
-        // MUST stay under LAYER_HEIGHT (4 m): with the old value (5), the ray origin started
-        // ABOVE the layer's ceiling and landed on its top face / the next layer's floor (logged
-        // Y = 4.0 / 8.0 instead of the real -1.0 floor). Mirrors ProxyGroundingHook's validated
-        // _rayUp=1/_rayDown=3 — origin below the ceiling, short reach down to the walkable slab.
-        private const float RaycastUpOffset = 1f;
-        private const float RaycastDownRange = 3f;
+        // Placement attempts + ray geometry live in LootPlacement (shared with the carryable and
+        // chest spawners); the ray origin MUST stay under LAYER_HEIGHT — see the note there.
 
         // Retry cadence: same simple Update()-polling this file already used, just kept alive
         // past the first attempt instead of stopping at _sent=true.
@@ -180,7 +175,7 @@ namespace BackroomsSurvival.Net
 
             for (int c = 0; c < attemptsThisRound; c++)
             {
-                if (!TryFindWalkablePoint(hostPos, ScatterMinRadius, ScatterMaxRadius, out Vector3 cacheCenter))
+                if (!LootPlacement.TryFindWalkablePoint(hostPos, ScatterMinRadius, ScatterMaxRadius, out Vector3 cacheCenter))
                     continue; // stays pending
 
                 pendingCacheCount--;
@@ -272,31 +267,6 @@ namespace BackroomsSurvival.Net
                 _ => Random.value < 0.5f ? AmmoPool : MaterialPool,
             };
             return pool[Random.Range(0, pool.Length)];
-        }
-
-        /// <summary>
-        /// Same walkable check <c>ProxyGroundingHook</c> already uses: raycast down against the
-        /// rendered floor's GeoMask. Duplicated (not shared) in StpCarryableSpawner to keep this
-        /// change contained to the two spawner files named in scope.
-        /// </summary>
-        private static bool TryFindWalkablePoint(Vector3 center, float minRadius, float maxRadius, out Vector3 point)
-        {
-            for (int attempt = 0; attempt < MaxPlacementAttempts; attempt++)
-            {
-                float ang = Random.value * Mathf.PI * 2f;
-                float dist = Mathf.Lerp(minRadius, maxRadius, Random.value);
-                Vector3 candidate = center + new Vector3(Mathf.Cos(ang), 0f, Mathf.Sin(ang)) * dist;
-                Vector3 rayOrigin = candidate + Vector3.up * RaycastUpOffset;
-                if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, RaycastUpOffset + RaycastDownRange,
-                        GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore))
-                {
-                    point = hit.point;
-                    return true;
-                }
-            }
-
-            point = center;
-            return false;
         }
 
         private void OnDestroy()

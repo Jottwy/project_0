@@ -49,13 +49,8 @@ namespace BackroomsSurvival.Net
         // same reasoning as StpItemSpawner.ScatterMaxRadius.
         private const float ZoneMaxRadius = 200f;
         private const float ZoneSpreadRadius = 6f; // wider/looser than StpItemSpawner's cache pile
-        private const int MaxPlacementAttempts = 12;
-        // MUST stay under LAYER_HEIGHT (4 m): with the old value (5), the ray origin started
-        // ABOVE the layer's ceiling and landed on its top face / the next layer's floor (logged
-        // Y = 4.0 / 8.0 instead of the real -1.0 floor). Mirrors ProxyGroundingHook's validated
-        // _rayUp=1/_rayDown=3 — origin below the ceiling, short reach down to the walkable slab.
-        private const float RaycastUpOffset = 1f;
-        private const float RaycastDownRange = 3f;
+        // Placement attempts + ray geometry live in LootPlacement (shared with the item and chest
+        // spawners); the ray origin MUST stay under LAYER_HEIGHT — see the note there.
 
         // Retry cadence: same simple Update()-polling this file already used for the authored
         // scan, just kept alive for the procedural zones instead of stopping after one attempt.
@@ -265,7 +260,7 @@ namespace BackroomsSurvival.Net
 
             for (int z = 0; z < attemptsThisRound; z++)
             {
-                if (!TryFindWalkablePoint(hostPos, ZoneMinRadius, ZoneMaxRadius, out Vector3 zoneCenter))
+                if (!LootPlacement.TryFindWalkablePoint(hostPos, ZoneMinRadius, ZoneMaxRadius, out Vector3 zoneCenter))
                     continue; // stays pending
 
                 pendingZoneCount--;
@@ -281,7 +276,7 @@ namespace BackroomsSurvival.Net
 
                 for (int i = 0; i < CarryablesPerZone; i++)
                 {
-                    if (!TryFindWalkablePoint(zoneCenter, 0f, ZoneSpreadRadius, out Vector3 pos))
+                    if (!LootPlacement.TryFindWalkablePoint(zoneCenter, 0f, ZoneSpreadRadius, out Vector3 pos))
                         continue;
 
                     confirmed.Add(new StpCarryableSpec
@@ -337,31 +332,6 @@ namespace BackroomsSurvival.Net
 
             ipc.SendSetStpCarryables(merged);
             Debug.Log($"[StpCarryableSpawner] sent {merged.Count} carryables total ({newlyConfirmed.Count} newly placed this round).");
-        }
-
-        /// <summary>
-        /// Same walkable check <c>ProxyGroundingHook</c> already uses: raycast down against the
-        /// rendered floor's GeoMask. Duplicated (not shared) in StpItemSpawner to keep this change
-        /// contained to the two spawner files named in scope.
-        /// </summary>
-        private static bool TryFindWalkablePoint(Vector3 center, float minRadius, float maxRadius, out Vector3 point)
-        {
-            for (int attempt = 0; attempt < MaxPlacementAttempts; attempt++)
-            {
-                float ang = Random.value * Mathf.PI * 2f;
-                float dist = Mathf.Lerp(minRadius, maxRadius, Random.value);
-                Vector3 candidate = center + new Vector3(Mathf.Cos(ang), 0f, Mathf.Sin(ang)) * dist;
-                Vector3 rayOrigin = candidate + Vector3.up * RaycastUpOffset;
-                if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, RaycastUpOffset + RaycastDownRange,
-                        GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore))
-                {
-                    point = hit.point;
-                    return true;
-                }
-            }
-
-            point = center;
-            return false;
         }
 
         private void JoinerCleanup(IPCClient ipc)

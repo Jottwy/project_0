@@ -36,11 +36,8 @@ namespace BackroomsSurvival.Net
         private const int ChestCount = 16;
         private const float ScatterMinRadius = 5f;
         private const float ScatterMaxRadius = 200f;
-        private const int MaxPlacementAttempts = 12;
-        // Same reasoning as StpItemSpawner/StpCarryableSpawner (fixed 2026-07-07): the ray origin
-        // MUST stay under the 4 m LAYER_HEIGHT ceiling or it lands on upper-layer geometry.
-        private const float RaycastUpOffset = 1f;
-        private const float RaycastDownRange = 3f;
+        // Placement attempts + ray geometry live in LootPlacement (shared with the item and
+        // carryable spawners); the ray origin MUST stay under LAYER_HEIGHT — see the note there.
 
         private const float RetryIntervalSeconds = 10f;
         private const float RetryWindowSeconds = 180f;
@@ -134,7 +131,7 @@ namespace BackroomsSurvival.Net
             int attemptsThisRound = _pendingChestCount;
             for (int c = 0; c < attemptsThisRound; c++)
             {
-                if (!TryFindWalkablePoint(cam.transform.position, ScatterMinRadius, ScatterMaxRadius, out Vector3 pos))
+                if (!LootPlacement.TryFindWalkablePoint(cam.transform.position, ScatterMinRadius, ScatterMaxRadius, out Vector3 pos))
                     continue; // stays pending
 
                 _pendingChestCount--;
@@ -195,26 +192,6 @@ namespace BackroomsSurvival.Net
         /// same scope-containment note as theirs): raycast down against the rendered floor's
         /// GeoMask, ray origin kept under the 4 m layer ceiling.
         /// </summary>
-        private static bool TryFindWalkablePoint(Vector3 center, float minRadius, float maxRadius, out Vector3 point)
-        {
-            for (int attempt = 0; attempt < MaxPlacementAttempts; attempt++)
-            {
-                float ang = Random.value * Mathf.PI * 2f;
-                float dist = Mathf.Lerp(minRadius, maxRadius, Random.value);
-                Vector3 candidate = center + new Vector3(Mathf.Cos(ang), 0f, Mathf.Sin(ang)) * dist;
-                Vector3 rayOrigin = candidate + Vector3.up * RaycastUpOffset;
-                if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, RaycastUpOffset + RaycastDownRange,
-                        BackroomsSurvival.Gameplay.GridWorld.GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore))
-                {
-                    point = hit.point;
-                    return true;
-                }
-            }
-
-            point = center;
-            return false;
-        }
-
         private void OnDestroy()
         {
             if (_instance == this)
