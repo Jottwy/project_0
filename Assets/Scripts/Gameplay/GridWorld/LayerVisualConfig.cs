@@ -72,6 +72,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Alternative ceiling tints, same rule.")]
         public Color[] ceilingTintVariants;
 
+        [Header("Wall variety — medias paredes")]
+        [Range(0f, 1f)]
+        [Tooltip("Fraction of drawn wall panels that become KNEE WALLS (partial height, " +
+                 "see-over). 0 = every panel full height (behaviour before this field " +
+                 "existed). Picked per panel by a deterministic hash, not by the tint rng.")]
+        public float wallPanelVariety = 0f;
+        [Tooltip("Height (m) of a knee wall. Clamped up to MinKneeWallHeight — a knee wall " +
+                 "MUST stay untraversable (see KneeWallHeightClamped).")]
+        public float kneeWallHeight = 1.35f;
+
+        /// <summary>
+        /// Floor for <see cref="kneeWallHeight"/>. Wall panels are the ONLY grid_gen surface
+        /// that carries a runtime Unity collider (GridChunkBuilder.AddColliderIfMissing;
+        /// pillars and ceiling panels do not), so their height is a gameplay quantity, not a
+        /// cosmetic one. FPS_Player.prefab: _jumpHeight 1.05, m_StepOffset 0.275 — below
+        /// ~1.15 m the player clears the panel and walks through an edge the backend marks
+        /// solid. 1.2 m keeps the margin; eye height ~1.65 m still sees over.
+        /// </summary>
+        public const float MinKneeWallHeight = 1.2f;
+
+        /// <summary>Effective knee-wall height: never low enough to become traversable.</summary>
+        public float KneeWallHeightClamped => Mathf.Max(MinKneeWallHeight, kneeWallHeight);
+
         /// <summary>
         /// One entry of <paramref name="variants"/> chosen by <paramref name="h"/> ∈ [0,1),
         /// or <paramref name="baseTint"/> when the palette is unset. Bounds-safe, same shape

@@ -102,6 +102,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const float Ch = GridVisualConstants.CellHeight;
         private const float Ts = GridVisualConstants.TileSize;
         private const float LayerHeight = GridConstants.LayerHeight;
+        // Authored height of the Wall prefab (GridPrefabCreator.BuildWall: a 5 × 4 × 0.2
+        // box whose pivot sits on the floor). Any partial-height wall variant scales the
+        // root by (wanted / this), which drags the runtime BoxCollider along with it.
+        private const float WallPrefabHeight = 2f * Ch;
         private const int Size = GridConstants.ChunkCells;
         // A render tile is a 2×2 block of cells → 10×10 tiles per chunk.
         private const int Tiles = Size / 2;
@@ -339,7 +343,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (edges != 0)
                     {
                         if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall,
-                            Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain));
+                            Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain),
+                            cfg, gx, gz);
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz);
                     }
 
@@ -470,15 +475,44 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // single shared block avoids a per-tile allocation.
         private static readonly MaterialPropertyBlock _mpb = new MaterialPropertyBlock();
 
-        /// <summary>Wall pieces using the shared layer material + a per-tile tint (MPB).</summary>
+        // ── Medias paredes — knee walls ─────────────────────────────────────────
+
+        // Salts for the wall-variety hashes. One per ORIENTATION LANE, not per edge
+        // flag: a panel running along X and one running along Z on the same tile are
+        // different physical walls and must decide independently. (S shares N's salt
+        // and W shares E's because the runtime only ever emits the N/E panels — the
+        // no-duplication rule of BuildFromWalls — so the two never coexist on a tile.)
+        // Values distinct from every TintSalt*/MoistSalt*/PropSalt* in this file.
+        private const uint WallSaltKneeN = 0x4B4E574EU; // "KNWN" — knee, X-running lane
+        private const uint WallSaltKneeE = 0x4B4E5745U; // "KNWE" — knee, Z-running lane
+
+        private static uint KneeSaltFor(byte flag) =>
+            (flag == EdgeNorth || flag == EdgeSouth) ? WallSaltKneeN : WallSaltKneeE;
+
+        /// <summary>
+        /// Wall pieces using the shared layer material + a per-tile tint (MPB).
+        /// <paramref name="cfg"/>.wallPanelVariety turns a share of the panels into KNEE
+        /// WALLS (partial height, see-over) chosen by a pure hash of the GLOBAL tile coords
+        /// — never by <c>rng</c>, so the tint draw sequence of Piezas A-F is untouched.
+        /// The knee wall stays untraversable by construction (see
+        /// <see cref="LayerVisualConfig.MinKneeWallHeight"/>): the runtime BoxCollider
+        /// scales with the transform, so the collider matches the visual exactly — no
+        /// invisible full-height barrier, and no new hole either.
+        /// </summary>
         private static void PlaceWallsTinted(GridPrefabSet prefabs, Transform parent,
-            byte edges, int tx, int tz, Material mat, Color tint)
+            byte edges, int tx, int tz, Material mat, Color tint,
+            LayerVisualConfig cfg, int gx, int gz)
         {
+            float variety = cfg != null ? Mathf.Clamp01(cfg.wallPanelVariety) : 0f;
+            float kneeScale = cfg != null ? cfg.KneeWallHeightClamped / WallPrefabHeight : 1f;
+
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
                 {
                     var go = Instantiate(prefabs.wall, parent,
                         TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
+                    if (variety > 0f && Hash01(gx, gz, KneeSaltFor(flag)) < variety)
+                        go.transform.localScale = new Vector3(1f, kneeScale, 1f);
                     AddColliderIfMissing(go);
                     Paint(go, mat, tint);
                 }

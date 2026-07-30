@@ -47,3 +47,5 @@ MonoBehaviour:
     spawnWeight: 2
     canBeRotated: 0
     floorOnly: 0
+  wallPanelVariety: 0
+  kneeWallHeight: 1.35
