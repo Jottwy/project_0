@@ -1183,3 +1183,73 @@ Se usa `RoomTypeForTile`, no el `RoomTypeForPanel` de ADR-035: un prop se coloca
 - El catálogo es el MISMO de siempre (`PropEntry` con placeholders): no hacen falta modelos nuevos para que esto se note, a diferencia de ADR-035, que queda inerte hasta que se autorice un prefab.
 
 Tests: cliente 4/4 assemblies Roslyn en verde + **6 tests EditMode nuevos** en `PropRoomTypeTests.cs`. Los recuentos esperados NO son estimaciones: salen de evaluar el mismo `Hash01` del builder sobre los 99 tiles elegibles con `propClusterBias = 0` y `propDensity = 0.04` (elegido para que los tres casos queden por debajo del tope de 12 y el test mida el multiplicador, no el tope) — baseline 4, `SealedRoom` 9, `CorridorSpine` 1, media rejilla sellada 7. **Compile-verificados, NO ejecutados por el agente** (requieren el editor). Backend sin tocar: 411/411 sigue en verde.
+
+---
+
+## ADR-037 — `stp_demolish`: retirada host-autoritativa de una pieza de construcción NO construida (cierra el caveat de demolición de ADR-031)
+Fecha: 2026-07-31
+Estado: **DECIDIDA, NO IMPLEMENTADA**. Cambia el wire (paquete nuevo `0x1D` + acción nueva) → por eso existe este ADR antes de tocar código (regla dura #7).
+
+### Problema
+Cancelar un fantasma con la tecla de cancelación (Y → acción `Abort`, mantenida `_cancelPreviewDuration = 0.35 s`) **no funciona en multijugador**: la pieza desaparece un frame y vuelve.
+
+Mecanismo exacto, verificado por lectura:
+1. `CharacterConstructableBuilder.DestroyConstructable` (`Assets/PolymindGames/STP/Code/Runtime/Building/Components/CharacterConstructableBuilder.cs:230`) hace `Destroy(...)` **puramente local**. Es código vendor y no sabe nada de la red.
+2. La pieza sigue viva en el estado autoritativo `net.stp_buildings`, que el relay de 10 Hz (`broadcast_stp_buildings`) sigue emitiendo.
+3. `StpBuildingReplicator.LateUpdate` (`Assets/Scripts/Network/StpBuildingReplicator.cs:86`) reconcilia contra ese estado: la condición de spawn es `!_spawned.TryGetValue(b.id, out tracked) || tracked.go == null`. El `Destroy` del vendor deja justamente `tracked.go == null` → **la respawnea al frame siguiente**.
+
+No es un fallo del replicador: hace exactamente lo que se diseñó (el estado del host manda). Falta la mitad que nunca se construyó — una ruta para que el cliente DIGA que la pieza debe desaparecer. `DECISIONS.md` (ADR-031, punto 5) ya lo dejó escrito: *"NO existe ningún camino de destrucción de construcciones en el backend (ni paquete demolish, ni health/durability en `StpBuildingInfo`, `stp_buildings` es append-only)"*, con el follow-up atado: al añadir demolish hay que limpiar `respawn_point`.
+
+Este ADR añade esa ruta. **No** añade destrucción de edificios terminados, **no** añade durabilidad, **no** añade PvP contra construcciones.
+
+### Decisión
+
+**Alcance deliberadamente estrecho: solo piezas NO construidas.** Es paridad exacta con lo que el vendor ya permite cancelar — `CharacterConstructableBuilder.GetClosestConstructable` salta `constructable.IsConstructed` (`:191`), así que una pieza terminada nunca es candidata a la Y. "Demoler una base construida" es otra feature, con otro ADR.
+
+**1. Acción cliente→su-propio-backend: `stp_demolish`**
+
+```
+{ demolish_id: u64, building_id: u32 }
+```
+
+`demolish_id` es el mismo esquema de id globalmente único que ya usan `place_id`/`add_id`: `LastSelectedNetId * 1_000_000_000 + contador` — dos clientes nunca colisionan y una retransmisión fiable se deduplica en el host.
+
+**2. Paquete P2P: `PacketType::StpDemolishRequest = 0x1D`**
+
+Siguiente libre del bloque State (0x10-0x1F); el último ocupado es `StpBuildAddRequest = 0x1C`. Variante `PacketPayload::StpDemolishRequest { demolish_id, building_id }` + `NetworkEvent` homónimo. Un joiner reenvía al host con `send_reliable`; **nunca aplica el cambio en local**, igual que `stp_place`/`stp_build_add`. El host es el único que muta `stp_buildings`.
+
+**3. `process_stp_demolish` (host-only) hace exactamente tres cosas:**
+
+- **Dedup** por `demolish_id` en un `HashSet` nuevo `net.processed_stp_demolishes`, espejo de `processed_stp_places`/`processed_stp_build_adds`. Una retransmisión no puede borrar por segunda vez (y con ids reciclados, borrar una pieza distinta).
+- **Retira la entry** de `net.stp_buildings`. El relay deja de emitirla y el barrido de obsoletos que YA existe en `StpBuildingReplicator.LateUpdate:99-110` la destruye en todas las instancias, host incluido. **Cero código de destrucción nuevo en el cliente** — esa ruta ya está escrita y probada.
+- **Libera la celda de pose** en `net.occupied_stp_cells` recalculando `stp_pose_cell(b.position, b.rotation)` sobre la entry que se retira, **solo si `group_id != 0`**. Es la inversa exacta del `insert` de `process_stp_place:2977`, que solo ocurre cuando `is_group`; y `group_id != 0 ⟺ is_group` en el momento de colocar (`process_stp_place:2988-2994`), así que el flag no hace falta persistirlo. **Sin esto la arista queda bloqueada para siempre**: colocar, cancelar y volver a colocar en el mismo socket sería imposible el resto de la sesión, con el rechazo silencioso (`stp_place_cell_taken`) como único rastro.
+
+**4. `respawn_point` (el follow-up que ADR-031 dejó atado).** La rama de acción de `handle_action` tiene `player: &mut Player` en scope, igual que la de `stp_place`. Cuando la pieza retirada es la cama (`def_id == BED_DEF_ID`) **y** el `respawn_point` del jugador que cancela coincide con su posición (tolerancia 0.5 m), se pone a `None`. Simétrico con `stp_place:2185-2191`, que fija el punto en el backend del que coloca.
+
+**Lo que este punto NO cubre, a propósito:** el `respawn_point` de OTRO jugador que apuntara a esa cama. `respawn_point` vive en el `Player` de cada backend (RAM, session-transient por ADR-032) y el host no lo posee. Degradación aceptada y acotada: `resolve_respawn` (`game_loop.rs:1523`) resuelve un spawn seguro alrededor de la coordenada, así que ese jugador reaparece **donde estuvo la cama**, no en un estado inválido. No es un crash ni una posición ilegal; es un punto de reaparición desactualizado. Arreglarlo de verdad exige propagar la invalidación a los peers — paquete adicional que no se justifica para el caso "cancelé un fantasma".
+
+**5. Persistencia: nada que hacer.** `stp_buildings` ya se guarda entero (ADR-032, punto 2). Retirar una entry hace que el guardado siguiente salga más corto. Ningún cambio de schema, ningún migrador.
+
+### Alcance Rust
+1. `network/protocol.rs` — `PacketType::StpDemolishRequest = 0x1D`, su rama en `from_u16`, la variante de `PacketPayload` y su rama en el mapeo a `PacketType`.
+2. `network/mod.rs` — `NetworkEvent::StpDemolishRequest`, decodificación en `handle_packet`, y el campo `processed_stp_demolishes` en `NetworkManager` (+ init con `with_capacity(256)`).
+3. `game_loop.rs` — rama `"stp_demolish"` en `handle_action` (host aplica / joiner reenvía, más la limpieza de `respawn_point`), rama de `NetworkEvent::StpDemolishRequest` en `handle_network_event` (host-only, seguida de `broadcast_stp_buildings` inmediato como ya hace `StpPlaceRequest:1035` — cerrar el hueco de round-trip importa más aquí, porque el jugador está mirando el fantasma que acaba de cancelar), y `fn process_stp_demolish`.
+
+`WIRE_SCHEMA_VERSION` **se bumpea**. Interoperabilidad con un peer viejo: no reconoce `0x1D` y lo descarta — el que cancela ve la pieza volver, exactamente el comportamiento de hoy. Degradación al estado actual, nunca error.
+
+### Alcance cliente
+1. `ProtocolActionTypes.cs` — `StpDemolish = "stp_demolish"`.
+2. `IPCClient.cs` — `SendStpDemolish(long demolishId, uint buildingId)`, calcado de `SendStpBuildAdd`.
+3. `StpBuildingReplicator.cs` — **la única pieza con algo de sutileza**. Detección: una pieza rastreada cuyo `go` desapareció **sin que lo hayamos nulificado nosotros**. Se distingue con un flag en `Tracked`, porque la ruta de compleción de B2 (`ApplyProgressUpdate:241-243`) YA nulifica `tracked.go` a propósito para forzar un respawn limpio en `Constructed`; sin el flag, cada pieza terminada se auto-demolería. Al detectarlo: `SendStpDemolish` + suprimir el respawn hasta que el host confirme (la entry desaparece del relay) — si se respawnease mientras tanto, el jugador vería el fantasma parpadear de vuelta durante el RTT.
+
+Cero ediciones a código vendor. Es el patrón de gancho externo / corregir-después que ya usan `StpBuildingPlacementWatcher` y `StpNativeDropWatcher`.
+
+### Consecuencias
+- **Exactamente un cliente emite el demolish por cancelación.** El `Destroy` del vendor es local, así que solo la instancia donde se pulsó la tecla ve morir su `GameObject`. No hace falta ninguna elección de emisor ni supresión de duplicados entre clientes.
+- **Cancelar una estructura agrupada emite N demolishes, y eso es correcto.** `DestroyConstructable:246-250` destruye TODAS las piezas no construidas del grupo, no solo la apuntada. Cada una desaparece por separado en el replicador → un demolish por pieza. Las piezas ya construidas del mismo grupo sobreviven, igual que en solo.
+- **`processed_stp_places` NO se limpia al demoler.** El `place_id` de una pieza retirada sigue marcado como consumido a propósito: es dedup de retransmisión, no un contador de piezas vivas. Liberarlo abriría la puerta a que un retransmit tardío resucite la pieza recién cancelada.
+- **Sin conexión (`!ipc.IsConnected`), comportamiento intacto.** El watcher no manda nada y el replicador tampoco suprime nada — la ruta de solo se queda como está hoy.
+- **El coste de red es despreciable y acotado**: un paquete fiable por cancelación, y las cancelaciones son un acto humano deliberado de 0.35 s mantenidos.
+- **Abre la puerta, no la cruza.** Con `stp_demolish` en el wire, una futura demolición de piezas CONSTRUIDAS (con su coste, su permiso y su devolución de materiales) reutiliza este paquete en vez de inventar otro. Ese día habrá que revisar el punto 4: la cama construida sí es la que más importa limpiar.
+
+Tests: backend — unitarios de `process_stp_demolish` (retirada efectiva; dedup por `demolish_id` repetido; liberación de celda que permite recolocar en la misma pose; pieza inexistente ignorada sin pánico; `group_id == 0` no toca `occupied_stp_cells`) + round-trip de serialización del `PacketPayload` nuevo con valores no-default, `cargo test` y `cargo clippy --all-targets -D warnings` en verde. Cliente: compile-check Roslyn de los 4 assemblies. **La verificación real de esta pieza es un playtest a dos instancias** — la ruta entera (tecla → destroy vendor → detección → paquete → host → relay → barrido de obsoletos en ambas) no es alcanzable desde tests headless.
