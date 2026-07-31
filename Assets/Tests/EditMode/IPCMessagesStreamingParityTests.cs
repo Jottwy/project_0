@@ -455,5 +455,334 @@ namespace BackroomsSurvival.Tests
             Assert.IsNotNull(fresh.roomZones);
             Assert.AreEqual(0, fresh.roomZones.Length);
         }
+
+        // ── C3: ChunkViewMsg + los anidados volumétricos/layer ──
+
+        [Test]
+        public void InterLayerVolumeMsgParityWithArrayFields()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(9);
+            w.WriteString("volume_id"); w.WriteInt(12);
+            w.WriteString("kind"); w.WriteString("shaft");
+            w.WriteString("base_chunk"); w.WriteArrayHeader(2); w.WriteInt(1); w.WriteInt(2);
+            w.WriteString("involved_layers"); w.WriteArrayHeader(3); w.WriteInt(0); w.WriteInt(1); w.WriteInt(2);
+            w.WriteString("footprint_cell_min"); w.WriteArrayHeader(2); w.WriteInt(3); w.WriteInt(4);
+            w.WriteString("footprint_cell_max"); w.WriteArrayHeader(2); w.WriteInt(5); w.WriteInt(6);
+            w.WriteString("safety_type"); w.WriteString("railed");
+            w.WriteString("future_audio_hint"); w.WriteString("hum");
+            w.WriteString("visual_flags"); w.WriteInt(7);
+            byte[] frame = w.ToArray();
+
+            var legacy = InterLayerVolumeMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = InterLayerVolumeMsg.Parse(new MsgPackReader(frame));
+
+            Assert.AreEqual(legacy.volumeId, fresh.volumeId);
+            Assert.AreEqual(legacy.kind, fresh.kind);
+            CollectionAssert.AreEqual(legacy.baseChunk, fresh.baseChunk);
+            CollectionAssert.AreEqual(legacy.involvedLayers, fresh.involvedLayers);
+            CollectionAssert.AreEqual(legacy.footprintCellMin, fresh.footprintCellMin);
+            CollectionAssert.AreEqual(legacy.footprintCellMax, fresh.footprintCellMax);
+            Assert.AreEqual(legacy.safetyType, fresh.safetyType);
+            Assert.AreEqual(legacy.futureAudioHint, fresh.futureAudioHint);
+            Assert.AreEqual(legacy.visualFlags, fresh.visualFlags);
+            CollectionAssert.AreEqual(legacy.visualHints, fresh.visualHints, "visual_hints ausente ⇒ array vacío en ambas rutas");
+        }
+
+        [Test]
+        public void VolumetricFaceMsgParity()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("cell"); w.WriteArrayHeader(3); w.WriteInt(1); w.WriteInt(2); w.WriteInt(3);
+            w.WriteString("dir"); w.WriteInt(VolumetricGridMsg.DirUp);
+            w.WriteString("kind"); w.WriteInt(VolumetricGridMsg.FaceFloor);
+            byte[] frame = w.ToArray();
+
+            var legacy = VolumetricFaceMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = VolumetricFaceMsg.Parse(new MsgPackReader(frame));
+
+            Assert.AreEqual(legacy.x, fresh.x);
+            Assert.AreEqual(legacy.y, fresh.y);
+            Assert.AreEqual(legacy.z, fresh.z);
+            Assert.AreEqual(legacy.dir, fresh.dir);
+            Assert.AreEqual(legacy.kind, fresh.kind);
+        }
+
+        [Test]
+        public void LayerBandMsgParity()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(8);
+            w.WriteString("band_id"); w.WriteInt(1);
+            w.WriteString("layer"); w.WriteInt(2);
+            w.WriteString("profile"); w.WriteString("mixed");
+            w.WriteString("profile_code"); w.WriteInt(3);
+            w.WriteString("accessible"); w.WriteBool(true);
+            w.WriteString("danger_profile"); w.WriteString("low");
+            w.WriteString("resource_profile"); w.WriteString("scarce");
+            w.WriteString("anomaly_profile"); w.WriteString("none");
+            byte[] frame = w.ToArray();
+
+            var legacy = LayerBandMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = LayerBandMsg.Parse(new MsgPackReader(frame));
+
+            Assert.AreEqual(legacy.bandId, fresh.bandId);
+            Assert.AreEqual(legacy.layer, fresh.layer);
+            Assert.AreEqual(legacy.profile, fresh.profile);
+            Assert.AreEqual(legacy.profileCode, fresh.profileCode);
+            Assert.AreEqual(legacy.accessible, fresh.accessible);
+            Assert.AreEqual(legacy.dangerProfile, fresh.dangerProfile);
+            Assert.AreEqual(legacy.resourceProfile, fresh.resourceProfile);
+            Assert.AreEqual(legacy.anomalyProfile, fresh.anomalyProfile);
+        }
+
+        [Test]
+        public void VerticalAccessNodeMsgParity()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(7);
+            w.WriteString("access_id"); w.WriteInt(4);
+            w.WriteString("access_type"); w.WriteString("stair");
+            w.WriteString("access_type_code"); w.WriteInt(1);
+            w.WriteString("from_layer"); w.WriteInt(0);
+            w.WriteString("to_layer"); w.WriteInt(1);
+            w.WriteString("footprint_cell_min"); w.WriteArrayHeader(2); w.WriteInt(1); w.WriteInt(1);
+            w.WriteString("footprint_cell_max"); w.WriteArrayHeader(2); w.WriteInt(3); w.WriteInt(3);
+            byte[] frame = w.ToArray();
+
+            var legacy = VerticalAccessNodeMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = VerticalAccessNodeMsg.Parse(new MsgPackReader(frame));
+
+            Assert.AreEqual(legacy.accessId, fresh.accessId);
+            Assert.AreEqual(legacy.accessType, fresh.accessType);
+            Assert.AreEqual(legacy.accessTypeCode, fresh.accessTypeCode);
+            Assert.AreEqual(legacy.fromLayer, fresh.fromLayer);
+            Assert.AreEqual(legacy.toLayer, fresh.toLayer);
+            CollectionAssert.AreEqual(legacy.footprintCellMin, fresh.footprintCellMin);
+            CollectionAssert.AreEqual(legacy.footprintCellMax, fresh.footprintCellMax);
+            Assert.AreEqual(false, fresh.explicitAccess, "\"explicit\" ausente ⇒ default false en ambas rutas");
+        }
+
+        [Test]
+        public void BandHeightSpecMsgParity()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(5);
+            w.WriteString("band_index"); w.WriteInt(0);
+            w.WriteString("layer"); w.WriteInt(1);
+            w.WriteString("room_height"); w.WriteFloat(3.5f);
+            w.WriteString("total_height"); w.WriteFloat(4f);
+            w.WriteString("neighbor_max_room_height"); w.WriteFloat(3.8f);
+            byte[] frame = w.ToArray();
+
+            var legacy = BandHeightSpecMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = BandHeightSpecMsg.Parse(new MsgPackReader(frame));
+
+            Assert.AreEqual(legacy.bandIndex, fresh.bandIndex);
+            Assert.AreEqual(legacy.layer, fresh.layer);
+            Assert.AreEqual(legacy.roomHeight, fresh.roomHeight);
+            Assert.AreEqual(legacy.totalHeight, fresh.totalHeight);
+            Assert.AreEqual(legacy.neighborMaxRoomHeight, fresh.neighborMaxRoomHeight);
+        }
+
+        [Test]
+        public void VolumetricGridMsgParityNilReturnsNullOnBothPaths()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(1);
+            w.WriteString("volumetric_grid"); w.WriteNil();
+            byte[] frame = w.ToArray();
+
+            var reader = new MsgPackReader(frame);
+            reader.ReadMapHeader();
+            reader.ReadKey();
+            var fresh = VolumetricGridMsg.Parse(reader);
+
+            var legacyReader = new MsgPackReader(frame);
+            var legacyRoot = legacyReader.ReadValue() as Dictionary<string, object>;
+            var legacy = IPCParse.Get(legacyRoot, "volumetric_grid") != null
+                ? VolumetricGridMsg.Parse(IPCParse.Get(legacyRoot, "volumetric_grid"))
+                : null;
+
+            Assert.IsNull(legacy);
+            Assert.IsNull(fresh, "un volumetric_grid nil debe seguir devolviendo null en la ruta streaming");
+        }
+
+        [Test]
+        public void VolumetricGridMsgParityWithNestedFacesLayerBandsAccessAndHeightBands()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(15);
+            w.WriteString("active"); w.WriteBool(true);
+            w.WriteString("column_id"); w.WriteInt(999);
+            w.WriteString("column_coord"); w.WriteArrayHeader(2); w.WriteInt(1); w.WriteInt(1);
+            w.WriteString("source"); w.WriteString("showcase");
+            w.WriteString("dims"); w.WriteArrayHeader(3); w.WriteInt(4); w.WriteInt(3); w.WriteInt(4);
+            w.WriteString("cell_size_xz"); w.WriteFloat(5f);
+            w.WriteString("layer_height"); w.WriteFloat(7f);
+            w.WriteString("origin_world"); w.WriteArrayHeader(3); w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
+            w.WriteString("base_layer"); w.WriteInt(0);
+            w.WriteString("cells"); w.WriteArrayHeader(3); w.WriteInt(0); w.WriteInt(1); w.WriteInt(2);
+            w.WriteString("faces"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(3);
+            w.WriteString("cell"); w.WriteArrayHeader(3); w.WriteInt(1); w.WriteInt(0); w.WriteInt(1);
+            w.WriteString("dir"); w.WriteInt(VolumetricGridMsg.DirNorth);
+            w.WriteString("kind"); w.WriteInt(VolumetricGridMsg.FaceWall);
+            w.WriteString("open_cell_count"); w.WriteInt(10);
+            w.WriteString("solid_cell_count"); w.WriteInt(5);
+            w.WriteString("vertical_connection_count"); w.WriteInt(2);
+            w.WriteString("valid_vertical_opening_count"); w.WriteInt(1);
+            w.WriteString("atrium_span"); w.WriteBool(false);
+            w.WriteString("layer_bands"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2); w.WriteString("band_id"); w.WriteInt(1); w.WriteString("layer"); w.WriteInt(0);
+            w.WriteString("vertical_access"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2); w.WriteString("access_id"); w.WriteInt(2); w.WriteString("access_type"); w.WriteString("ramp");
+            w.WriteString("height_bands"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2); w.WriteString("band_index"); w.WriteInt(0); w.WriteString("room_height"); w.WriteFloat(3f);
+            byte[] frame = w.ToArray();
+
+            var legacyReader = new MsgPackReader(frame);
+            var legacyRoot = legacyReader.ReadValue();
+            var legacy = VolumetricGridMsg.Parse(legacyRoot);
+
+            var freshReader = new MsgPackReader(frame);
+            var fresh = VolumetricGridMsg.Parse(freshReader);
+
+            Assert.IsNotNull(fresh);
+            Assert.AreEqual(legacy.active, fresh.active);
+            Assert.AreEqual(legacy.columnId, fresh.columnId);
+            CollectionAssert.AreEqual(legacy.columnCoord, fresh.columnCoord);
+            Assert.AreEqual(legacy.source, fresh.source);
+            Assert.AreEqual(legacy.nx, fresh.nx);
+            Assert.AreEqual(legacy.ny, fresh.ny);
+            Assert.AreEqual(legacy.nz, fresh.nz);
+            Assert.AreEqual(legacy.cellSizeXZ, fresh.cellSizeXZ);
+            Assert.AreEqual(legacy.layerHeight, fresh.layerHeight);
+            Assert.AreEqual(legacy.originWorld, fresh.originWorld);
+            Assert.AreEqual(legacy.baseLayer, fresh.baseLayer);
+            CollectionAssert.AreEqual(legacy.cells, fresh.cells);
+            Assert.AreEqual(legacy.openCellCount, fresh.openCellCount);
+            Assert.AreEqual(legacy.solidCellCount, fresh.solidCellCount);
+            Assert.AreEqual(legacy.verticalConnectionCount, fresh.verticalConnectionCount);
+            Assert.AreEqual(legacy.validVerticalOpeningCount, fresh.validVerticalOpeningCount);
+            Assert.AreEqual(legacy.atriumSpan, fresh.atriumSpan);
+
+            Assert.AreEqual(legacy.faces.Count, fresh.faces.Count);
+            Assert.AreEqual(legacy.faces[0].x, fresh.faces[0].x);
+            Assert.AreEqual(legacy.faces[0].dir, fresh.faces[0].dir);
+            Assert.AreEqual(legacy.faces[0].kind, fresh.faces[0].kind);
+
+            Assert.AreEqual(legacy.layerBands.Count, fresh.layerBands.Count);
+            Assert.AreEqual(legacy.layerBands[0].bandId, fresh.layerBands[0].bandId);
+
+            Assert.AreEqual(legacy.verticalAccess.Count, fresh.verticalAccess.Count);
+            Assert.AreEqual(legacy.verticalAccess[0].accessType, fresh.verticalAccess[0].accessType);
+
+            Assert.AreEqual(legacy.heightBands.Count, fresh.heightBands.Count);
+            Assert.AreEqual(legacy.heightBands[0].roomHeight, fresh.heightBands[0].roomHeight);
+        }
+
+        [Test]
+        public void ChunkViewMsgParityWithFullPackedLayoutAndVolumetricGrid()
+        {
+            const int g = 3; // grid pequeño a propósito: exhaustivo, legible a mano
+            int cellCount = g * g;
+            int vEdgeCount = (g + 1) * g;
+            int hEdgeCount = g * (g + 1);
+            int total = cellCount + vEdgeCount + hEdgeCount;
+
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(19);
+            w.WriteString("chunk_schema"); w.WriteInt(1);
+            w.WriteString("pos"); w.WriteArrayHeader(2); w.WriteInt(3); w.WriteInt(-2);
+            w.WriteString("layer"); w.WriteInt(0);
+            w.WriteString("layer_y"); w.WriteFloat(0f);
+            w.WriteString("template_id"); w.WriteInt(1);
+            w.WriteString("rotation"); w.WriteInt(90);
+            w.WriteString("mirrored"); w.WriteBool(true);
+            w.WriteString("state"); w.WriteString("stabilized");
+            w.WriteString("has_workbench"); w.WriteBool(true);
+            w.WriteString("layout_grid_size"); w.WriteInt(g);
+            w.WriteString("layout_cell_size"); w.WriteFloat(5f);
+            w.WriteString("layout_cells"); w.WriteArrayHeader(total);
+            for (int i = 0; i < total; i++) w.WriteInt(i + 1); // valores distintos ⇒ el split no puede confundir secciones
+            w.WriteString("edge_openings"); w.WriteInt(2);
+            w.WriteString("macro_id"); w.WriteInt(55);
+            w.WriteString("zone_kind"); w.WriteInt(5);
+            w.WriteString("macro_local"); w.WriteArrayHeader(2); w.WriteInt(1); w.WriteInt(1);
+            w.WriteString("macro_size"); w.WriteArrayHeader(2); w.WriteInt(2); w.WriteInt(2);
+            w.WriteString("floor_level"); w.WriteInt(0);
+            w.WriteString("inter_layer_volumes"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2); w.WriteString("volume_id"); w.WriteInt(1); w.WriteString("kind"); w.WriteString("atrium");
+            byte[] frame = w.ToArray();
+
+            var legacy = ChunkViewMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = ChunkViewMsg.Parse(new MsgPackReader(frame));
+
+            Assert.AreEqual(legacy.chunkSchema, fresh.chunkSchema);
+            CollectionAssert.AreEqual(legacy.pos, fresh.pos);
+            Assert.AreEqual(legacy.layer, fresh.layer);
+            Assert.AreEqual(legacy.templateId, fresh.templateId);
+            Assert.AreEqual(legacy.rotation, fresh.rotation);
+            Assert.AreEqual(legacy.mirrored, fresh.mirrored);
+            Assert.AreEqual(legacy.state, fresh.state);
+            Assert.AreEqual(legacy.hasWorkbench, fresh.hasWorkbench);
+            Assert.AreEqual(legacy.layoutGridSize, fresh.layoutGridSize);
+            Assert.AreEqual(legacy.layoutCellSize, fresh.layoutCellSize);
+            CollectionAssert.AreEqual(legacy.layoutCells, fresh.layoutCells);
+            Assert.AreEqual(legacy.edgeOpenings, fresh.edgeOpenings);
+            Assert.AreEqual(legacy.macroId, fresh.macroId);
+            Assert.AreEqual(legacy.zoneKind, fresh.zoneKind);
+            CollectionAssert.AreEqual(legacy.macroLocal, fresh.macroLocal);
+            CollectionAssert.AreEqual(legacy.macroSize, fresh.macroSize);
+            Assert.AreEqual(legacy.floorLevel, fresh.floorLevel);
+
+            // SplitPackedLayout() corrió en ambas rutas — mismo split, mismos flags.
+            Assert.AreEqual(legacy.hasBackendLayout, fresh.hasBackendLayout);
+            Assert.IsTrue(fresh.hasBackendLayout);
+            Assert.AreEqual(legacy.hasEdgeLayout, fresh.hasEdgeLayout);
+            Assert.IsTrue(fresh.hasEdgeLayout);
+            CollectionAssert.AreEqual(legacy.cellFlags, fresh.cellFlags);
+            CollectionAssert.AreEqual(legacy.verticalEdges, fresh.verticalEdges);
+            CollectionAssert.AreEqual(legacy.horizontalEdges, fresh.horizontalEdges);
+            for (int x = 0; x < g; x++)
+                for (int z = 0; z < g; z++)
+                    Assert.AreEqual(legacy.GetCell(x, z), fresh.GetCell(x, z), $"GetCell({x},{z})");
+            for (int x = 0; x <= g; x++)
+                for (int z = 0; z < g; z++)
+                    Assert.AreEqual(legacy.GetVEdge(x, z), fresh.GetVEdge(x, z), $"GetVEdge({x},{z})");
+            for (int x = 0; x < g; x++)
+                for (int z = 0; z <= g; z++)
+                    Assert.AreEqual(legacy.GetHEdge(x, z), fresh.GetHEdge(x, z), $"GetHEdge({x},{z})");
+
+            Assert.AreEqual(legacy.interLayerVolumes.Count, fresh.interLayerVolumes.Count);
+            Assert.AreEqual(legacy.interLayerVolumes[0].volumeId, fresh.interLayerVolumes[0].volumeId);
+            Assert.AreEqual(legacy.interLayerVolumes[0].kind, fresh.interLayerVolumes[0].kind);
+
+            Assert.IsNull(legacy.volumetricGrid, "volumetric_grid ausente en el fixture ⇒ null en ambas rutas");
+            Assert.IsNull(fresh.volumetricGrid);
+            Assert.IsFalse(fresh.HasVolumetricGrid);
+        }
+
+        [Test]
+        public void ChunkViewMsgParityWithVolumetricGridPresentSetsHasVolumetricGrid()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("pos"); w.WriteArrayHeader(2); w.WriteInt(0); w.WriteInt(0);
+            w.WriteString("layer"); w.WriteInt(0);
+            w.WriteString("volumetric_grid"); w.WriteMapHeader(2);
+            w.WriteString("active"); w.WriteBool(true);
+            w.WriteString("source"); w.WriteString("showcase");
+            byte[] frame = w.ToArray();
+
+            var legacy = ChunkViewMsg.Parse(new MsgPackReader(frame).ReadValue());
+            var fresh = ChunkViewMsg.Parse(new MsgPackReader(frame));
+
+            Assert.IsTrue(legacy.HasVolumetricGrid);
+            Assert.IsTrue(fresh.HasVolumetricGrid);
+            Assert.AreEqual(legacy.volumetricGrid.source, fresh.volumetricGrid.source);
+        }
     }
 }

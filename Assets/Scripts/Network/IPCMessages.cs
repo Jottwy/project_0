@@ -605,6 +605,24 @@ namespace BackroomsSurvival.Net
             b.neighborMaxRoomHeight = IPCParse.F(d, "neighbor_max_room_height");
             return b;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static BandHeightSpecMsg Parse(MsgPackReader r)
+        {
+            var b = new BandHeightSpecMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "band_index")) b.bandIndex = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "layer")) b.layer = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "room_height")) b.roomHeight = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "total_height")) b.totalHeight = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "neighbor_max_room_height")) b.neighborMaxRoomHeight = r.ReadFloat();
+                else r.Skip();
+            }
+            return b;
+        }
     }
 
     /// <summary>
@@ -686,6 +704,86 @@ namespace BackroomsSurvival.Net
                 foreach (var item in access) g.verticalAccess.Add(VerticalAccessNodeMsg.Parse(item));
             if (IPCParse.Get(d, "height_bands") is object[] hbands)
                 foreach (var item in hbands) g.heightBands.Add(BandHeightSpecMsg.Parse(item));
+            return g;
+        }
+
+        /// <summary>
+        /// Streaming twin of <see cref="Parse(object)"/>. Unlike every other nested Msg type,
+        /// this one reads its OWN nil-check (a nil value here means "no volumetric grid on this
+        /// chunk" ⇒ returns null, exactly like Parse(object) does for a non-dictionary input) —
+        /// so ChunkViewMsg.Parse can call this unconditionally on the "volumetric_grid" key
+        /// without a separate presence check first.
+        /// </summary>
+        public static VolumetricGridMsg Parse(MsgPackReader r)
+        {
+            int n = r.ReadMapHeader();
+            if (n < 0) return null;
+
+            var g = new VolumetricGridMsg();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "active")) g.active = r.ReadBool();
+                else if (MsgPackReader.Is(k, "column_id")) g.columnId = (ulong)r.ReadInt();
+                else if (MsgPackReader.Is(k, "column_coord")) g.columnCoord = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "source")) g.source = r.ReadString();
+                else if (MsgPackReader.Is(k, "dims"))
+                {
+                    var dims = r.ReadIntArray();
+                    if (dims.Length >= 3) { g.nx = dims[0]; g.ny = dims[1]; g.nz = dims[2]; }
+                }
+                else if (MsgPackReader.Is(k, "cell_size_xz")) g.cellSizeXZ = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "layer_height")) g.layerHeight = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "origin_world")) g.originWorld = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "base_layer")) g.baseLayer = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "cells")) g.cells = r.ReadByteArrayValues();
+                else if (MsgPackReader.Is(k, "faces"))
+                {
+                    int fc = r.ReadArrayHeader();
+                    if (fc > 0)
+                    {
+                        g.faces.Capacity = fc;
+                        for (int fi = 0; fi < fc; fi++) g.faces.Add(VolumetricFaceMsg.Parse(r));
+                    }
+                }
+                else if (MsgPackReader.Is(k, "open_cell_count")) g.openCellCount = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "solid_cell_count")) g.solidCellCount = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "vertical_connection_count")) g.verticalConnectionCount = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "valid_vertical_opening_count")) g.validVerticalOpeningCount = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "atrium_span")) g.atriumSpan = r.ReadBool();
+                else if (MsgPackReader.Is(k, "layer_bands"))
+                {
+                    int bc = r.ReadArrayHeader();
+                    if (bc > 0)
+                    {
+                        g.layerBands.Capacity = bc;
+                        for (int bi = 0; bi < bc; bi++) g.layerBands.Add(LayerBandMsg.Parse(r));
+                    }
+                }
+                else if (MsgPackReader.Is(k, "vertical_access"))
+                {
+                    int ac = r.ReadArrayHeader();
+                    if (ac > 0)
+                    {
+                        g.verticalAccess.Capacity = ac;
+                        for (int ai = 0; ai < ac; ai++) g.verticalAccess.Add(VerticalAccessNodeMsg.Parse(r));
+                    }
+                }
+                else if (MsgPackReader.Is(k, "height_bands"))
+                {
+                    int hc = r.ReadArrayHeader();
+                    if (hc > 0)
+                    {
+                        g.heightBands.Capacity = hc;
+                        for (int hi = 0; hi < hc; hi++) g.heightBands.Add(BandHeightSpecMsg.Parse(r));
+                    }
+                }
+                else r.Skip();
+            }
+            // Same post-fixups as Parse(object) — a zero/negative wire value falls back to the
+            // documented default rather than propagating a degenerate scale into the renderer.
+            if (g.cellSizeXZ <= 0f) g.cellSizeXZ = 5f;
+            if (g.layerHeight <= 0f) g.layerHeight = 7f;
             return g;
         }
 
@@ -786,6 +884,62 @@ namespace BackroomsSurvival.Net
                 LogVolumeParseOnce(c);
             if (IPCParse.Get(d, "volumetric_grid") != null)
                 c.volumetricGrid = VolumetricGridMsg.Parse(IPCParse.Get(d, "volumetric_grid"));
+            c.SplitPackedLayout();
+            return c;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>. Same post-fixups, same
+        /// SplitPackedLayout() call, same MPTRACE log-once — only the source of the fields
+        /// differs (token walk instead of a materialized Dictionary).</summary>
+        public static ChunkViewMsg Parse(MsgPackReader r)
+        {
+            var c = new ChunkViewMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "chunk_schema")) c.chunkSchema = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "pos")) c.pos = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "layer")) c.layer = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "layer_y")) c.layerY = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "template_id")) c.templateId = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "rotation")) c.rotation = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "mirrored")) c.mirrored = r.ReadBool();
+                else if (MsgPackReader.Is(k, "state")) c.state = r.ReadString();
+                else if (MsgPackReader.Is(k, "has_workbench")) c.hasWorkbench = r.ReadBool();
+                else if (MsgPackReader.Is(k, "layout_grid_size")) c.layoutGridSize = Mathf.Max(1, (int)r.ReadInt());
+                else if (MsgPackReader.Is(k, "layout_cell_size")) c.layoutCellSize = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "layout_cells")) c.layoutCells = r.ReadUShortArrayValues();
+                else if (MsgPackReader.Is(k, "edge_openings")) c.edgeOpenings = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "macro_id")) c.macroId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "zone_kind")) c.zoneKind = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "macro_local")) c.macroLocal = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "macro_size")) c.macroSize = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "floor_level")) c.floorLevel = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "floor_profile")) c.floorProfile = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "ceiling_profile")) c.ceilingProfile = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "light_profile")) c.lightProfile = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "anomaly_flags")) c.anomalyFlags = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "vertical_flags")) c.verticalFlags = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "inter_layer_volumes"))
+                {
+                    int vc = r.ReadArrayHeader();
+                    if (vc > 0)
+                    {
+                        c.interLayerVolumes.Capacity = vc;
+                        for (int vi = 0; vi < vc; vi++) c.interLayerVolumes.Add(InterLayerVolumeMsg.Parse(r));
+                    }
+                }
+                else if (MsgPackReader.Is(k, "volumetric_grid")) c.volumetricGrid = VolumetricGridMsg.Parse(r);
+                else r.Skip();
+            }
+            // Same post-fixups as Parse(object).
+            if (c.chunkSchema <= 0) c.chunkSchema = 1;
+            if (c.layoutCellSize <= 0f) c.layoutCellSize = 5f;
+            if (c.macroSize[0] <= 0) c.macroSize[0] = 1;
+            if (c.macroSize[1] <= 0) c.macroSize[1] = 1;
+            if (c.interLayerVolumes.Count > 0)
+                LogVolumeParseOnce(c);
             c.SplitPackedLayout();
             return c;
         }
