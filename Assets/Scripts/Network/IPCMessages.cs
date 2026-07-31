@@ -21,6 +21,25 @@ namespace BackroomsSurvival.Net
             s.stamina = IPCParse.F(d, "stamina");
             return s;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/> — same field set, zero
+        /// intermediate Dictionary/box. Reads its own map header.</summary>
+        public static StatsMsg Parse(MsgPackReader r)
+        {
+            var s = new StatsMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "health")) s.health = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "hunger")) s.hunger = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "thirst")) s.thirst = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "sanity")) s.sanity = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "stamina")) s.stamina = r.ReadFloat();
+                else r.Skip();
+            }
+            return s;
+        }
     }
 
     public class LocalPlayerMsg
@@ -46,6 +65,25 @@ namespace BackroomsSurvival.Net
             p.ackInputSeq = (uint)IPCParse.L(d, "ack_input_seq");
             return p;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static LocalPlayerMsg Parse(MsgPackReader r)
+        {
+            var p = new LocalPlayerMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "position")) p.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "rotation")) p.rotation = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "stats")) p.stats = StatsMsg.Parse(r);
+                else if (MsgPackReader.Is(k, "speed_modifier")) p.speedModifier = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "inventory_changed")) p.inventoryChanged = r.ReadBool();
+                else if (MsgPackReader.Is(k, "ack_input_seq")) p.ackInputSeq = (uint)r.ReadInt();
+                else r.Skip();
+            }
+            return p;
+        }
     }
 
     /// <summary>
@@ -68,6 +106,27 @@ namespace BackroomsSurvival.Net
             m.ackInputSeq = (uint)IPCParse.L(d, "ack_input_seq");
             m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             m.velocity = IPCParse.Vec3(IPCParse.Get(d, "velocity"));
+            return m;
+        }
+
+        /// <summary>
+        /// Streaming twin of <see cref="Parse(Dictionary{string,object})"/>. Root-tagged message
+        /// (ServerMessage::DeltaUpdate, "type":"delta_update") — IPCClient.Dispatch already
+        /// consumed the map header AND the "type" pair, so this reads only the REMAINING
+        /// <paramref name="remainingPairs"/> key/value pairs, not a header of its own.
+        /// </summary>
+        public static MovementDeltaMsg Parse(MsgPackReader r, int remainingPairs)
+        {
+            var m = new MovementDeltaMsg();
+            for (int i = 0; i < remainingPairs; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "tick")) m.tick = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "ack_input_seq")) m.ackInputSeq = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "velocity")) m.velocity = r.ReadVec3();
+                else r.Skip();
+            }
             return m;
         }
     }
@@ -125,6 +184,24 @@ namespace BackroomsSurvival.Net
             z.x1 = (byte)IPCParse.L(d, "x1");
             z.z1 = (byte)IPCParse.L(d, "z1");
             z.kindByte = (byte)IPCParse.L(d, "kind");
+            return z;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static RoomZoneMsg Parse(MsgPackReader r)
+        {
+            var z = new RoomZoneMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "x0")) z.x0 = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "z0")) z.z0 = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "x1")) z.x1 = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "z1")) z.z1 = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "kind")) z.kindByte = (byte)r.ReadInt();
+                else r.Skip();
+            }
             return z;
         }
     }
@@ -190,6 +267,56 @@ namespace BackroomsSurvival.Net
             }
             return m;
         }
+
+        /// <summary>
+        /// Streaming twin of <see cref="Parse(Dictionary{string,object})"/>. Root-tagged message
+        /// (ServerMessage::ChunkData, "type":"chunk_data") — reads the REMAINING
+        /// <paramref name="remainingPairs"/> pairs after IPCClient.Dispatch already consumed the
+        /// map header and the "type" pair.
+        /// </summary>
+        public static GridChunkDataMsg Parse(MsgPackReader r, int remainingPairs)
+        {
+            var m = new GridChunkDataMsg();
+            for (int i = 0; i < remainingPairs; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "cx")) m.cx = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "cz")) m.cz = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "layer")) m.layer = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "walls"))
+                {
+                    // Backend [[u8;10];10]. Consume every row/col the wire actually sent (keeps
+                    // the cursor in sync for the fields after this one) but only STORE within the
+                    // 10×10 contract — same clamp as the old Mathf.Min(rows.Length, Tiles).
+                    int rows = r.ReadArrayHeader();
+                    if (rows < 0) rows = 0;
+                    for (int x = 0; x < rows; x++)
+                    {
+                        int cols = r.ReadArrayHeader();
+                        if (cols < 0) cols = 0;
+                        for (int z = 0; z < cols; z++)
+                        {
+                            byte v = (byte)r.ReadInt();
+                            if (x < Tiles && z < Tiles) m.walls[x, z] = v;
+                        }
+                    }
+                }
+                else if (MsgPackReader.Is(k, "room_zones"))
+                {
+                    // ADR-034: additive key, absent entirely on a chunk with no zones (or a
+                    // pre-ADR backend) ⇒ m.roomZones stays the shared NoRoomZones default.
+                    int zc = r.ReadArrayHeader();
+                    if (zc > 0)
+                    {
+                        m.roomZones = new RoomZoneMsg[zc];
+                        for (int zi = 0; zi < zc; zi++)
+                            m.roomZones[zi] = RoomZoneMsg.Parse(r);
+                    }
+                }
+                else r.Skip();
+            }
+            return m;
+        }
     }
 
     public class RemotePlayerMsg
@@ -235,6 +362,30 @@ namespace BackroomsSurvival.Net
             r.dead = IPCParse.B(d, "dead");
             return r;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static RemotePlayerMsg Parse(MsgPackReader reader)
+        {
+            var r = new RemotePlayerMsg();
+            int n = reader.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = reader.ReadKey();
+                if (MsgPackReader.Is(k, "id")) r.id = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "name")) r.name = reader.ReadString();
+                else if (MsgPackReader.Is(k, "position")) r.position = reader.ReadVec3();
+                else if (MsgPackReader.Is(k, "rotation")) r.rotation = reader.ReadFloat();
+                else if (MsgPackReader.Is(k, "animation")) r.animation = reader.ReadString();
+                else if (MsgPackReader.Is(k, "crouch")) r.crouch = reader.ReadBool();
+                else if (MsgPackReader.Is(k, "pitch")) r.pitch = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "equipment")) reader.ReadIntArrayInto(r.equipment);
+                else if (MsgPackReader.Is(k, "held_item")) r.heldItem = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "hit_seq")) r.hitSeq = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "dead")) r.dead = reader.ReadBool();
+                else reader.Skip();
+            }
+            return r;
+        }
     }
 
     public class InterLayerVolumeMsg
@@ -267,6 +418,29 @@ namespace BackroomsSurvival.Net
             v.visualHints = IPCParse.StringArray(IPCParse.Get(d, "visual_hints"));
             return v;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static InterLayerVolumeMsg Parse(MsgPackReader r)
+        {
+            var v = new InterLayerVolumeMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "volume_id")) v.volumeId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "kind")) v.kind = r.ReadString();
+                else if (MsgPackReader.Is(k, "base_chunk")) v.baseChunk = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "involved_layers")) v.involvedLayers = r.ReadIntArray();
+                else if (MsgPackReader.Is(k, "footprint_cell_min")) v.footprintCellMin = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "footprint_cell_max")) v.footprintCellMax = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "safety_type")) v.safetyType = r.ReadString();
+                else if (MsgPackReader.Is(k, "future_audio_hint")) v.futureAudioHint = r.ReadString();
+                else if (MsgPackReader.Is(k, "visual_flags")) v.visualFlags = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "visual_hints")) v.visualHints = r.ReadStringArray();
+                else r.Skip();
+            }
+            return v;
+        }
     }
 
     /// <summary>
@@ -289,6 +463,26 @@ namespace BackroomsSurvival.Net
             if (cell.Length >= 3) { f.x = cell[0]; f.y = cell[1]; f.z = cell[2]; }
             f.dir = (byte)IPCParse.L(d, "dir");
             f.kind = (byte)IPCParse.L(d, "kind");
+            return f;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static VolumetricFaceMsg Parse(MsgPackReader r)
+        {
+            var f = new VolumetricFaceMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "cell"))
+                {
+                    var cell = r.ReadIntArray();
+                    if (cell.Length >= 3) { f.x = cell[0]; f.y = cell[1]; f.z = cell[2]; }
+                }
+                else if (MsgPackReader.Is(k, "dir")) f.dir = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "kind")) f.kind = (byte)r.ReadInt();
+                else r.Skip();
+            }
             return f;
         }
     }
@@ -319,6 +513,27 @@ namespace BackroomsSurvival.Net
             b.anomalyProfile = IPCParse.S(d, "anomaly_profile");
             return b;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static LayerBandMsg Parse(MsgPackReader r)
+        {
+            var b = new LayerBandMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "band_id")) b.bandId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "layer")) b.layer = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "profile")) b.profile = r.ReadString();
+                else if (MsgPackReader.Is(k, "profile_code")) b.profileCode = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "accessible")) b.accessible = r.ReadBool();
+                else if (MsgPackReader.Is(k, "danger_profile")) b.dangerProfile = r.ReadString();
+                else if (MsgPackReader.Is(k, "resource_profile")) b.resourceProfile = r.ReadString();
+                else if (MsgPackReader.Is(k, "anomaly_profile")) b.anomalyProfile = r.ReadString();
+                else r.Skip();
+            }
+            return b;
+        }
     }
 
     public class VerticalAccessNodeMsg
@@ -345,6 +560,27 @@ namespace BackroomsSurvival.Net
             n.footprintCellMin = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_min"));
             n.footprintCellMax = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_max"));
             n.explicitAccess = IPCParse.B(d, "explicit");
+            return n;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static VerticalAccessNodeMsg Parse(MsgPackReader r)
+        {
+            var n = new VerticalAccessNodeMsg();
+            int fc = r.ReadMapHeader();
+            for (int i = 0; i < fc; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "access_id")) n.accessId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "access_type")) n.accessType = r.ReadString();
+                else if (MsgPackReader.Is(k, "access_type_code")) n.accessTypeCode = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "from_layer")) n.fromLayer = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "to_layer")) n.toLayer = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "footprint_cell_min")) n.footprintCellMin = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "footprint_cell_max")) n.footprintCellMax = r.ReadIntArray2();
+                else if (MsgPackReader.Is(k, "explicit")) n.explicitAccess = r.ReadBool();
+                else r.Skip();
+            }
             return n;
         }
     }
@@ -688,6 +924,25 @@ namespace BackroomsSurvival.Net
             e.healthPct = IPCParse.F(d, "health_pct");
             return e;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static EntityViewMsg Parse(MsgPackReader r)
+        {
+            var e = new EntityViewMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) e.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "entity_type")) e.entityType = r.ReadString();
+                else if (MsgPackReader.Is(k, "position")) e.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "rotation")) e.rotation = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "state")) e.state = r.ReadString();
+                else if (MsgPackReader.Is(k, "health_pct")) e.healthPct = r.ReadFloat();
+                else r.Skip();
+            }
+            return e;
+        }
     }
 
     public class ItemViewMsg
@@ -706,6 +961,23 @@ namespace BackroomsSurvival.Net
             i.itemType = IPCParse.S(d, "item_type");
             i.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             i.quantity = (int)IPCParse.L(d, "quantity");
+            return i;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static ItemViewMsg Parse(MsgPackReader r)
+        {
+            var i = new ItemViewMsg();
+            int n = r.ReadMapHeader();
+            for (int idx = 0; idx < n; idx++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) i.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "item_type")) i.itemType = r.ReadString();
+                else if (MsgPackReader.Is(k, "position")) i.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "quantity")) i.quantity = (int)r.ReadInt();
+                else r.Skip();
+            }
             return i;
         }
     }
@@ -732,6 +1004,24 @@ namespace BackroomsSurvival.Net
             m.count = (int)IPCParse.L(d, "count");
             m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             m.rotation = IPCParse.F(d, "rotation");
+            return m;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static StpItemMsg Parse(MsgPackReader r)
+        {
+            var m = new StpItemMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "def_id")) m.defId = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "count")) m.count = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "rotation")) m.rotation = r.ReadFloat();
+                else r.Skip();
+            }
             return m;
         }
     }
@@ -777,6 +1067,33 @@ namespace BackroomsSurvival.Net
                 foreach (var item in ad) m.added.Add(StpBuildProgressMsg.Parse(item));
             return m;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static StpBuildingMsg Parse(MsgPackReader r)
+        {
+            var m = new StpBuildingMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "def_id")) m.defId = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "rotation")) m.rotation = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "group_id")) m.groupId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "added"))
+                {
+                    int ac = r.ReadArrayHeader();
+                    if (ac > 0)
+                    {
+                        m.added.Capacity = ac;
+                        for (int ai = 0; ai < ac; ai++) m.added.Add(StpBuildProgressMsg.Parse(r));
+                    }
+                }
+                else r.Skip();
+            }
+            return m;
+        }
     }
 
     /// <summary>Phase B2 — one (material → accepted count) entry of a piece's progress.</summary>
@@ -792,6 +1109,21 @@ namespace BackroomsSurvival.Net
             if (d == null) return p;
             p.materialId = (int)IPCParse.L(d, "material_id");
             p.count = (int)IPCParse.L(d, "count");
+            return p;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static StpBuildProgressMsg Parse(MsgPackReader r)
+        {
+            var p = new StpBuildProgressMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "material_id")) p.materialId = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "count")) p.count = (int)r.ReadInt();
+                else r.Skip();
+            }
             return p;
         }
     }
@@ -817,6 +1149,23 @@ namespace BackroomsSurvival.Net
             m.defId = (int)IPCParse.L(d, "def_id");
             m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
             m.rotation = IPCParse.F(d, "rotation");
+            return m;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static StpCarryableMsg Parse(MsgPackReader r)
+        {
+            var m = new StpCarryableMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "def_id")) m.defId = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "rotation")) m.rotation = r.ReadFloat();
+                else r.Skip();
+            }
             return m;
         }
     }
@@ -851,6 +1200,22 @@ namespace BackroomsSurvival.Net
             m.remaining = IPCParse.F(d, "remaining");
             return m;
         }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static StpHarvestableMsg Parse(MsgPackReader r)
+        {
+            var m = new StpHarvestableMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "remaining")) m.remaining = r.ReadFloat();
+                else r.Skip();
+            }
+            return m;
+        }
     }
 
     /// <summary>Outbound spec the host sends via IPCClient.SendSetStpHarvestables (Phase B2.6).</summary>
@@ -881,6 +1246,23 @@ namespace BackroomsSurvival.Net
             m.kind = IPCParse.S(d, "kind");
             m.worldMin = IPCParse.Vec3(IPCParse.Get(d, "world_min"));
             m.worldMax = IPCParse.Vec3(IPCParse.Get(d, "world_max"));
+            return m;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static VerticalDebugMarkerMsg Parse(MsgPackReader r)
+        {
+            var m = new VerticalDebugMarkerMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "kind")) m.kind = r.ReadString();
+                else if (MsgPackReader.Is(k, "world_min")) m.worldMin = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "world_max")) m.worldMax = r.ReadVec3();
+                else r.Skip();
+            }
             return m;
         }
     }
@@ -934,6 +1316,47 @@ namespace BackroomsSurvival.Net
                         quantity = (int)IPCParse.L(stack, "quantity"),
                     });
                 }
+            }
+            return m;
+        }
+
+        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
+        public static CorpseViewMsg Parse(MsgPackReader r)
+        {
+            var m = new CorpseViewMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "owner_id")) m.ownerId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "owner_name")) m.ownerName = r.ReadString();
+                else if (MsgPackReader.Is(k, "is_chest")) m.isChest = r.ReadBool();
+                else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
+                else if (MsgPackReader.Is(k, "equipment")) r.ReadIntArrayInto(m.equipment);
+                else if (MsgPackReader.Is(k, "held_item")) m.heldItem = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "items"))
+                {
+                    int sc = r.ReadArrayHeader();
+                    if (sc > 0)
+                    {
+                        m.items.Capacity = sc;
+                        for (int si = 0; si < sc; si++)
+                        {
+                            var stack = new CorpseLootStack();
+                            int sn = r.ReadMapHeader();
+                            for (int fi = 0; fi < sn; fi++)
+                            {
+                                var fk = r.ReadKey();
+                                if (MsgPackReader.Is(fk, "item_id")) stack.itemId = (int)r.ReadInt();
+                                else if (MsgPackReader.Is(fk, "quantity")) stack.quantity = (int)r.ReadInt();
+                                else r.Skip();
+                            }
+                            m.items.Add(stack);
+                        }
+                    }
+                }
+                else r.Skip();
             }
             return m;
         }
