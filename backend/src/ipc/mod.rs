@@ -16,6 +16,7 @@ use serde_json::Value;
 
 use crate::world::chunk::InterLayerVolumeV0;
 use crate::world::graph::verticality::VerticalDebugMarkerV0;
+use crate::world::grid_gen::RoomZone;
 use crate::world::volumetric_grid::VolumetricGridViewV0;
 
 pub const DEFAULT_IPC_ADDR: &str = "127.0.0.1:7777";
@@ -144,6 +145,14 @@ pub struct GridChunkData {
     /// Unity consumer MUST use this same axis convention and bit mapping or Z
     /// will mirror / pillars will render in the wrong sub-cell.
     pub walls: [[u8; 10]; 10],
+    /// ADR-034 — rects de Fase 4 con su `RoomType`, en coordenadas de CELDA
+    /// (2.5 m), NO de tile. Campo ADITIVO: `walls` queda intacto (su byte está
+    /// lleno y blindado por ADR-033/Pillar), así que esto viaja aparte en vez
+    /// de robar bits. Omitido del wire cuando está vacío (`num_open_zones == 0`)
+    /// — un cliente sin soporte simplemente no ve la clave, mismo patrón que
+    /// `volumetric_grid`/`vertical_debug_markers`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub room_zones: Vec<RoomZone>,
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the

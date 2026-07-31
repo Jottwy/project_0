@@ -438,7 +438,10 @@ pub async fn run(
                     // protocolo, como fija el ADR.
                     let rules =
                         crate::world::zone_density::rules_for(net.world_seed, cx, cz, layer);
-                    let walls = crate::world::grid_gen::chunk_tile_walls(
+                    // ADR-034: la variante `_and_rooms` devuelve ADEMÁS los rects
+                    // de Fase 4 con su RoomType. Misma generación, un solo pase —
+                    // el bitmask sale idéntico al de `chunk_tile_walls`.
+                    let (walls, room_zones) = crate::world::grid_gen::chunk_tile_walls_and_rooms(
                         &rules,
                         net.world_seed,
                         cx,
@@ -452,6 +455,7 @@ pub async fn run(
                         cz,
                         layer,
                         walls,
+                        room_zones,
                     }));
                 }
             }

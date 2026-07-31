@@ -1719,3 +1719,185 @@ fn branch_persistence_comes_from_the_profile_not_the_old_literal() {
         "el default del perfil debe seguir siendo el 0.82 histórico"
     );
 }
+
+// ── ADR-034 — RoomZone (transporte de RoomType al cliente) ───────────────────
+
+/// `LayerOutput::room_zones` reporta el `kind` que de verdad se estampó, para
+/// los 3 tipos. Es el cableado que hace posible el resto: sin esto el cliente
+/// recibiría un tipo que no corresponde a la geometría que ve.
+#[test]
+fn room_zones_report_the_stamped_kind() {
+    // (weights, kind esperado en el wire) — ver `RoomType::wire_kind`.
+    for (weights, expected_kind) in [
+        ((1.0, 0.0, 0.0), 0u8), // Open (default: sin draw extra)
+        ((0.0, 1.0, 0.0), 1),   // SealedRoom
+        ((0.0, 0.0, 1.0), 2),   // CorridorSpine
+    ] {
+        let mut rules = LAYER_PROFILES[0].clone();
+        rules.room_type_weights = weights;
+        for seed in [TEST_SEED, 1, 42, 7778] {
+            let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+            assert_eq!(
+                out.room_zones.len(),
+                rules.num_open_zones as usize,
+                "seed {seed}: una RoomZone por zona estampada, weights={weights:?}"
+            );
+            for zone in &out.room_zones {
+                assert_eq!(
+                    zone.kind, expected_kind,
+                    "seed {seed}: weights={weights:?} debería dar kind={expected_kind}"
+                );
+            }
+        }
+    }
+}
+
+/// Las coordenadas NO son un rect nominal recalculado: son el rect REAL que se
+/// estampó. Se verifica contra el contenido del grid — el perímetro de un
+/// `SealedRoom` tiene que caer exactamente en el anillo exterior de
+/// `[x0,x1) × [z0,z1)`, y el interior tiene que ser transitable. Si el rect
+/// reportado estuviera desplazado o sin clampar, esto falla.
+#[test]
+fn sealed_room_zone_rect_matches_the_real_perimeter() {
+    let mut rules = LAYER_PROFILES[0].clone();
+    rules.room_type_weights = (0.0, 1.0, 0.0); // siempre SealedRoom
+
+    // Sin Voids/anomalías/escaleras: esas fases posteriores pueden pisar
+    // celdas DENTRO de la zona y romper la comprobación de interior, y no es
+    // lo que este test mide (el rect, no la supervivencia del relleno).
+    rules.num_voids = 0;
+    rules.num_anomalies = 0;
+    rules.num_stairs = 0;
+    rules.num_pits = 0;
+
+    for seed in [TEST_SEED, 1, 42, 7778, 9_999_999] {
+        // `generate_layer`, no `generate_chunk_layer`: el costurado carva
+        // aperturas de borde y puede reconectar a través del perímetro.
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        assert_eq!(out.room_zones.len(), 1, "seed {seed}: se espera una zona");
+        let z = out.room_zones[0];
+        let (x0, z0, x1, z1) = (z.x0 as usize, z.z0 as usize, z.x1 as usize, z.z1 as usize);
+
+        assert!(
+            x0 < x1 && z0 < z1 && x1 < CHUNK_CELLS && z1 < CHUNK_CELLS,
+            "seed {seed}: rect degenerado o sin clampar ({x0},{z0})-({x1},{z1})"
+        );
+        // Origen y tamaño PARES — la alineación a tile de 5 m que exige el
+        // render (ver `tile_aligned_size`). Va aquí porque el cliente usará
+        // este mismo rect para decidir qué panel de pared instancia.
+        assert_eq!(
+            (x0 % 2, z0 % 2, (x1 - x0) % 2, (z1 - z0) % 2),
+            (0, 0, 0, 0),
+            "seed {seed}: rect de SealedRoom sin alinear a la retícula de tiles"
+        );
+
+        let mut perimeter_sealed = 0usize;
+        for cz in z0..z1 {
+            for cx in x0..x1 {
+                let on_perimeter = cx == x0 || cx == x1 - 1 || cz == z0 || cz == z1 - 1;
+                let kind = out.grid.get(cx, cz).kind();
+                if on_perimeter {
+                    // Corridor = una entrada carvada; cualquier otra cosa es
+                    // que el rect reportado no es el que se estampó.
+                    assert!(
+                        matches!(kind, CellType::SealedWall | CellType::Corridor),
+                        "seed {seed}: perímetro ({cx},{cz}) es {kind:?}, el rect no coincide"
+                    );
+                    if kind == CellType::SealedWall {
+                        perimeter_sealed += 1;
+                    }
+                } else {
+                    assert!(
+                        out.grid.get(cx, cz).is_walkable(),
+                        "seed {seed}: interior ({cx},{cz}) no transitable ({kind:?})"
+                    );
+                }
+            }
+        }
+        assert!(
+            perimeter_sealed > 0,
+            "seed {seed}: rect sin una sola celda SealedWall — no es una SealedRoom"
+        );
+    }
+}
+
+/// `CorridorSpine`: el rect reportado tiene que llevar el eje angosto a
+/// `CORRIDOR_SPINE_TOTAL_WIDTH` (4 celdas: 2 de pared larga + 2 caminables) y
+/// tener SealedWall dentro. Distingue el spine de una SealedRoom cuadrada, que
+/// es justo lo que el cliente necesita separar para elegir modelo de pared.
+#[test]
+fn corridor_spine_zone_rect_is_narrow_and_sealed() {
+    let mut rules = LAYER_PROFILES[0].clone();
+    rules.room_type_weights = (0.0, 0.0, 1.0); // siempre CorridorSpine
+    rules.num_voids = 0;
+    rules.num_anomalies = 0;
+
+    for seed in [TEST_SEED, 1, 42, 7778, 9_999_999] {
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        assert_eq!(out.room_zones.len(), 1, "seed {seed}: se espera una zona");
+        let z = out.room_zones[0];
+        assert_eq!(z.kind, 2, "seed {seed}: kind debería ser CorridorSpine");
+
+        let (w, h) = (
+            (z.x1 - z.x0) as i32, // ancho en celdas
+            (z.z1 - z.z0) as i32,
+        );
+        assert!(
+            w.min(h) == CORRIDOR_SPINE_TOTAL_WIDTH,
+            "seed {seed}: eje angosto {}, se esperaba {CORRIDOR_SPINE_TOTAL_WIDTH} ({w}×{h})",
+            w.min(h)
+        );
+
+        let mut sealed = 0usize;
+        for cz in z.z0 as usize..z.z1 as usize {
+            for cx in z.x0 as usize..z.x1 as usize {
+                if out.grid.get(cx, cz).kind() == CellType::SealedWall {
+                    sealed += 1;
+                }
+            }
+        }
+        assert!(
+            sealed > 0,
+            "seed {seed}: rect de spine sin SealedWall dentro"
+        );
+    }
+}
+
+/// El perfil por defecto (RoomType inactivo, layers 1-3) sigue reportando sus
+/// zonas — como `Open`. `room_zones` NO es "solo para zonas selladas": el
+/// cliente necesita saber también dónde hay sala abierta para no aplicarle la
+/// variante de pasillo.
+#[test]
+fn default_profile_still_reports_open_zones() {
+    for (layer, rules) in LAYER_PROFILES.iter().enumerate().skip(1) {
+        let out = generate_layer(rules, TEST_SEED, TEST_CHUNK, layer as i32, &[]);
+        assert_eq!(
+            out.room_zones.len(),
+            rules.num_open_zones as usize,
+            "capa {layer}: se esperaba una RoomZone por zona"
+        );
+        assert!(
+            out.room_zones.iter().all(|z| z.kind == 0),
+            "capa {layer}: perfil default debería reportar solo Open (kind 0)"
+        );
+    }
+}
+
+/// `chunk_tile_walls_and_rooms` no puede divergir de `chunk_tile_walls`: el
+/// bitmask tiene que salir BYTE-IDÉNTICO. Si alguien cambia una de las dos
+/// funciones sin la otra, render de colisión y render visual se separan.
+#[test]
+fn walls_and_rooms_matches_plain_walls_bitmask() {
+    for layer in 0..LAYER_PROFILES.len() as u8 {
+        let rules = &LAYER_PROFILES[layer as usize];
+        for seed in [TEST_SEED, 42, 7778] {
+            let plain = chunk_tile_walls(rules, seed, TEST_CHUNK.0, TEST_CHUNK.1, layer);
+            let (both, _) =
+                chunk_tile_walls_and_rooms(rules, seed, TEST_CHUNK.0, TEST_CHUNK.1, layer);
+            assert_eq!(
+                plain, both,
+                "capa {layer} seed {seed}: los dos caminos dieron bitmasks distintos"
+            );
+        }
+    }
+}

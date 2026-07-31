@@ -11,6 +11,7 @@
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
+use serde::{Deserialize, Serialize};
 
 use super::layer_rules::default_room_type_weights;
 use super::{Cell, CellType, LayerRules, CHUNK_CELLS};
@@ -31,7 +32,7 @@ const CORRIDOR_SPINE_WIDTH: i32 = 2;
 
 /// Footprint total del eje angosto de un `CorridorSpine` — ver
 /// `CORRIDOR_SPINE_WIDTH`.
-const CORRIDOR_SPINE_TOTAL_WIDTH: i32 = CORRIDOR_SPINE_WIDTH + 2;
+pub(super) const CORRIDOR_SPINE_TOTAL_WIDTH: i32 = CORRIDOR_SPINE_WIDTH + 2;
 
 /// Tipo de zona estampado en Fase 4. `Open` es el único que existía antes de
 /// RoomType; `SealedRoom`/`CorridorSpine` estampan un perímetro `SealedWall`
@@ -51,6 +52,34 @@ impl RoomType {
     pub(super) fn has_sealed_perimeter(self) -> bool {
         matches!(self, RoomType::SealedRoom | RoomType::CorridorSpine)
     }
+
+    /// Discriminante estable que viaja por el wire en `RoomZone::kind`.
+    /// CONTRATO con `RoomZoneKind` de Unity (`GridChunkDataMsg`): mismo orden
+    /// que las variantes del enum. Cambiar un valor rompe el cliente.
+    fn wire_kind(self) -> u8 {
+        match self {
+            RoomType::Open => 0,
+            RoomType::SealedRoom => 1,
+            RoomType::CorridorSpine => 2,
+        }
+    }
+}
+
+/// Un rect estampado en Fase 4 con el `RoomType` que lo produjo, en
+/// coordenadas de CELDA locales al chunk (`x1`/`z1` EXCLUSIVOS, igual que el
+/// `zones` interno de la fase). `RoomType` en sí es `pub(super)` y no sale de
+/// `grid_gen`; esta es su forma serializable, la única que cruza el proceso.
+///
+/// Los 4 límites caben en `u8` porque `CHUNK_CELLS` es 20 y el generador ya
+/// los clampa a `CHUNK_CELLS - 1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomZone {
+    pub x0: u8,
+    pub z0: u8,
+    pub x1: u8,
+    pub z1: u8,
+    /// 0 = Open, 1 = SealedRoom, 2 = CorridorSpine — ver `RoomType::wire_kind`.
+    pub kind: u8,
 }
 
 /// Redondea `sz` al par superior más cercano.
@@ -360,6 +389,10 @@ pub struct LayerOutput {
     pub require_walkable_above: Vec<(u8, u8)>,
     /// Positions in `layer_index - 1` that must be walkable (from pits placed here).
     pub require_walkable_below: Vec<(u8, u8)>,
+    /// Rects estampados en Fase 4 con su `RoomType`, en orden de estampado.
+    /// Vacío cuando `num_open_zones == 0`. Es lo único que sobrevive del
+    /// `RoomType` sorteado ahí: el grid de celdas no lo guarda.
+    pub room_zones: Vec<RoomZone>,
 }
 
 // ── Main entry point ──────────────────────────────────────────────────────────
@@ -509,6 +542,7 @@ pub fn generate_layer(
     // producción) está a salvo de esto por construcción: con una sola zona
     // no hay con qué solaparse. Ver DECISIONS.md (RoomType) para el resto.
     let mut zones: Vec<(i32, i32, i32, i32)> = Vec::new(); // (x0, z0, x1, z1) exclusive
+    let mut room_zones: Vec<RoomZone> = Vec::new();
     for zone_idx in 0..rules.num_open_zones {
         let room_type = if rules.room_type_weights == default_room_type_weights() {
             RoomType::Open // caso por defecto: sin draw extra, byte-idéntico
@@ -631,6 +665,15 @@ pub fn generate_layer(
         }
 
         zones.push((x0, z0, x1, z1));
+        // Mismo rect ya clampado que usan Fases 5/6, con el tipo que lo
+        // estampó — el único punto del pipeline donde ambos coexisten.
+        room_zones.push(RoomZone {
+            x0: x0 as u8,
+            z0: z0 as u8,
+            x1: x1 as u8,
+            z1: z1 as u8,
+            kind: room_type.wire_kind(),
+        });
     }
 
     // ── Phase 5 — Reconnect isolated zones (§5 "reconectar después") ─────────
@@ -744,6 +787,7 @@ pub fn generate_layer(
         grid,
         require_walkable_above,
         require_walkable_below,
+        room_zones,
     }
 }
 

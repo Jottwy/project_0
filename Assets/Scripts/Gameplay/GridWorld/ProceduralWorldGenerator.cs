@@ -86,6 +86,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private readonly Dictionary<(int, int, int), byte[,]> _wallsCache
             = new Dictionary<(int, int, int), byte[,]>();
 
+        // ADR-034: rects de sala (RoomType) del mismo mensaje ChunkData. Cacheado en
+        // PARALELO a _wallsCache y con SU MISMA vida (escrito en OnChunkDataReceived,
+        // desalojado junto a él al descargar el chunk) — así una reconstrucción desde
+        // caché nunca queda con el bitmask pero sin su tipo de sala.
+        //
+        // Clave (cx, cz, LAYER), no (cx, cz): el RoomType se sortea por capa dentro de
+        // cada chunk. ZoneRegistry sí ignora la capa (zone_kind se asigna por
+        // estructura, es igual en toda la columna) y ese atajo le costó un bug real
+        // — ver el fix cf1ab94 de la Pieza 3. Aquí NO aplica: dos capas del mismo
+        // chunk tienen zonas distintas, con rects distintos.
+        private readonly Dictionary<(int, int, int), RoomZoneMsg[]> _roomZonesCache
+            = new Dictionary<(int, int, int), RoomZoneMsg[]>();
+
         // Fase 4.1 fix: Time.unscaledTime when each key entered _pending. A request
         // whose reply never arrives (lost after the socket accepted it, or a stale
         // connection) is freed after PendingTimeout and re-queued — otherwise
@@ -258,6 +271,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     Destroy(go);
                     _loaded.Remove(key);
                     _wallsCache.Remove(key);
+                    _roomZonesCache.Remove(key); // ADR-034: misma vida que el bitmask
                     _zoneWaitSince.Remove(key);
                     destroys++;
                 }
@@ -357,6 +371,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             _pending.Remove(key);
             _pendingSince.Remove(key);
             _wallsCache[key] = data.walls;
+            _roomZonesCache[key] = data.roomZones; // ADR-034; nunca null, vacío si el wire no lo trae
             if (_desired.Contains(key) && !_loaded.ContainsKey(key))
             {
                 // Zone gate: geometry arrived, but zone_kind rides a different IPC message.
@@ -370,6 +385,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     _buildQueue.Add(key);
             }
         }
+
+        /// <summary>
+        /// ADR-034 — rects de sala del chunk (cx, cz, layer). Devuelve un array VACÍO
+        /// (nunca null) si el chunk no está cargado, no tiene zonas, o el backend es
+        /// anterior al ADR: "sin zona conocida" y "zona Open" son estados distintos,
+        /// pero ambos se manejan igual desde fuera — ninguna zona cubre el tile.
+        /// </summary>
+        public RoomZoneMsg[] GetRoomZones(int cx, int cz, int layer) =>
+            _roomZonesCache.TryGetValue((cx, cz, layer), out var zones)
+                ? zones
+                : System.Array.Empty<RoomZoneMsg>();
 
         // Instantiate one chunk from a tile-wall bitmask, parenting it under the streamer
         // ONLY once fully built so GridTestWorld's carve sees a complete chunk. Fase 5A:

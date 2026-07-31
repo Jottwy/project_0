@@ -1076,3 +1076,46 @@ EXCEPCIÓN DELIBERADA #2 en `PHASE1_GOLDENS`: el fix de costura es genérico (af
 VERIFICACIÓN DE ARRANQUE (para el playtest): el backend no lee `WORLD_SEED` del entorno por defecto — `main.rs` usa `42` si la variable no está fijada. Unity SIEMPRE pasa `WORLD_SEED` explícito al lanzar el proceso (`NetworkInitializer.StartAsHost`, default de parámetro `42`); un playtest anterior corrió con seed `7778` porque algo en la UI de sesión lo fijó explícitamente (no identificado con certeza — no coincide con `AutoConnect` ni con el autosolo de `JoinSessionUI`, cuyos `session_name` no coinciden con el observado). Con el flujo normal de la UI sin tocar nada, la seed efectiva es 42.
 
 Tests: 406/406 en verde (+2 desde el cierre de la pieza anterior), 4/4 barridos ignorados (`--ignored`) en verde, `cargo clippy --all-targets -- -D warnings` limpio en los 4 commits. Release recompilado y desplegado en `Builds/Backend/`.
+
+---
+
+## ADR-034 — `RoomZone`: transporte de `RoomType` al cliente como campo aditivo de `GridChunkData`
+Fecha: 2026-07-31
+Estado: **DECIDIDA E IMPLEMENTADA** (Pieza 1 de la ronda de variantes de pared).
+
+### Problema
+`RoomType` (`Open`/`SealedRoom`/`CorridorSpine`, Fase 4 de `grid_gen`) **no cruzaba el límite del proceso en ninguna forma**. Auditoría previa a esta pieza (grep exhaustivo dentro y fuera de `backend/src/world/grid_gen/`) lo confirmó:
+
+- `RoomType` es `pub(super)` y vive como **variable local** de `generate_layer` (`generator.rs`): elige qué función de estampado corre y se descarta. No se guarda en `Cell` (3 campos: `cell_type`, `ceiling_height`, `zone_id`), no salía en `LayerOutput`, no se serializaba. Los únicos usos fuera de `grid_gen` eran `zone_density.rs` fijando `room_type_weights` — config de ENTRADA, no salida.
+- `CellType::SealedWall` (valor 8), la única huella de `RoomType` en el grid, **colapsa dos veces**: (a) `tile_walls_from_grid` solo pregunta `is_walkable()`, así que un `SealedWall` produce exactamente el mismo bit de arista que un `Wall` normal; (b) en la ruta de contrato de celda, `GridCell.Kind` (C#) colapsa todo valor > `Anomaly` a `Wall`, fijado por el test `SealedWallByteCollapsesToWallOnClient`.
+- El `u8` de `walls[tx][tz]` **está lleno**: nibble bajo = 4 aristas, nibble alto = 4 sub-celdas de pilar. ADR-033/Pillar lo blinda expresamente ("PROHIBIDO reutilizar estos bits o cambiar el mapeo sin nueva enmienda").
+
+Consecuencia: el cliente no podía elegir variante de modelo de pared consciente del tipo de sala. `zone_kind` sí le llega (vía `ChunkView` → `ZoneRegistry`), pero `zone_kind` es la personalidad de la ZONA MACRO, no la del rect estampado dentro del chunk.
+
+### Alternativa rechazada: derivación client-side sin dato nuevo
+Se evaluó deducir el tipo leyendo la forma del bitmask (un rectángulo cerrado con pocas aperturas "parece" `SealedRoom`). Rechazada:
+- `CorridorSpine` es **indistinguible** de un pasillo largo del maze — dos lados largos con pared y extremos abiertos es la firma de cualquier corredor. Falso positivo garantizado.
+- `Open` es indistinguible de una zona erosionada (`erode_chance`/`wide_chance`).
+- Sería **reimplementar reglas de backend en C#**, sin ningún test capaz de pincharlo (el cliente no tiene el generador). El precedente propio del repo va en contra: `resolver_matches_real_world_zone_kind` existe justamente porque un cálculo espejado cliente/servidor deriva con el tiempo.
+
+Coste evitado: ~20 bytes por chunk. Coste asumido: heurística frágil permanente. No compensa.
+
+### Decisión
+Campo **ADITIVO** `room_zones: Vec<RoomZone>` en `ipc::GridChunkData`, con `#[serde(default, skip_serializing_if = "Vec::is_empty")]` — mismo patrón que `volumetric_grid` y `vertical_debug_markers`. **`walls` no se toca** (sigue blindado por ADR-033/Pillar) y **NO hay bump de `WIRE_SCHEMA_VERSION`**: la clave simplemente falta en un peer viejo, y el cliente la trata como "sin zonas".
+
+Se transporta el **rect + tipo**, no una rejilla por tile: es más barato (1-4 entradas de 5 bytes frente a 100) y da más información — el cliente sabe qué paredes pertenecen a QUÉ sala, que es lo que hace falta para variar el modelo por sala en vez de por tile suelto.
+
+- `RoomZone { x0, z0, x1, z1, kind }` — `u8`, coordenadas de **CELDA** (2.5 m, `x1`/`z1` exclusivos), NO de tile. `kind`: 0 = `Open`, 1 = `SealedRoom`, 2 = `CorridorSpine` (`RoomType::wire_kind`, mismo orden que el enum interno). `RoomType` sigue siendo `pub(super)`: `RoomZone` es su única forma serializable.
+- `LayerOutput` += `room_zones`, acumulado en el punto exacto de Fase 4 donde el tipo sorteado y el rect ya clampado coexisten — el único del pipeline.
+- `chunk_tile_walls_and_rooms` es una función NUEVA junto a `chunk_tile_walls`, no un cambio de firma: los consumidores de colisión (`GridGenChunkCache`) y los tests de paridad de `zone_density` no deben cargar con un dato que no usan. Un test (`walls_and_rooms_matches_plain_walls_bitmask`) fija que las dos rutas dan bitmasks byte-idénticos.
+- Cliente: `RoomZoneMsg`/`RoomZoneKind` en `IPCMessages.cs` (el wire posee sus tipos, como el resto de `*Msg`). `roomZones` **nunca es null** — ausencia del campo ⇒ array vacío. Un `kind` desconocido colapsa a `Open` (el tipo sin perímetro sellado, o sea el comportamiento previo a RoomType), mismo criterio de degradación que `GridCell.Kind`.
+- Almacenamiento cliente: `_roomZonesCache` en `ChunkStreamer`, clave **`(cx, cz, layer)`**, en paralelo a `_wallsCache` y con su misma vida (escrito en `OnChunkDataReceived`, desalojado con él). La capa va en la clave A PROPÓSITO: `ZoneRegistry` la ignora porque `zone_kind` es igual en toda la columna, y ese atajo ya costó un bug real (fix `cf1ab94`, Pieza 3); `RoomType` se sortea por capa, así que aquí ignorarla sería el mismo error.
+
+### Consecuencias
+- El cliente puede saber, por chunk y por capa, qué rect de celdas es `SealedRoom`/`CorridorSpine`/`Open` — habilita variantes de modelo de pared conscientes del tipo de sala (Pieza 2 de esta ronda), sin tocar el bitmask ni el protocolo existente.
+- **NO resuelve el acoplamiento `zone_kind` + capa de `ZoneRegistry`**, que sigue exactamente como estaba (keyed por XZ, filtrando `layer != 0`). Un consumidor que combine `zone_kind` con `RoomType` seguirá leyendo el primero de un mensaje distinto (`WorldState`/`ChunkView`) sin garantía de orden — la puerta de zona con timeout de `ChunkStreamer` sigue siendo la mitigación. Deliberadamente fuera de alcance.
+- El `RoomType` viaja como **rect**, no como máscara por tile: un tile de 5 m puede solaparse parcialmente con un rect de celdas. En los perfiles de producción de hoy los rects de `SealedRoom`/`CorridorSpine` están alineados a la retícula de tiles (fix de cuantización del ADR anterior), así que el solape parcial solo puede darse con `RoomType::Open`, que no tiene perímetro propio. Si algún día se autoriza un rect sellado sin alinear, el consumidor tendrá que decidir la regla de desempate.
+- Sigue SIN transportarse la distinción `SealedWall` vs `Wall` a nivel de celda o de bit: el cliente la infiere del rect + tipo, no del bitmask. No se contempla cambiarlo.
+- Sin anti-solape entre zonas (limitación heredada del ADR de RoomType): con `num_open_zones > 1` y pesos no default, dos `RoomZone` pueden solaparse en el wire igual que se solapan en el grid. Hoy el riesgo es cero (layer 0 tiene una sola zona; layers 1-3 tienen RoomType inactivo).
+
+Tests: 411/411 backend en verde (+5: `kind` estampado para los 3 tipos, rect real de `SealedRoom` verificado contra el contenido del grid + alineación a tile, geometría angosta de `CorridorSpine`, perfil default reportando `Open`, paridad de bitmask entre las dos funciones), `cargo clippy --all-targets -- -D warnings` limpio, `cargo fmt --check` limpio. Cliente: 4/4 assemblies Roslyn en verde + 5 tests EditMode nuevos en `RoomZoneWireTests.cs` (round-trip msgpack REAL con y sin el campo presente — compatibilidad hacia atrás; `kind` desconocido; límites exclusivos) **compile-verificados pero NO ejecutados por el agente** (requieren el editor).

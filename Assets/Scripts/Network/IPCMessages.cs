@@ -73,6 +73,63 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
+    /// ADR-034 — tipo de zona estampada por la Fase 4 de grid_gen.
+    ///
+    /// Los valores son un CONTRATO con el enum `RoomType` del backend
+    /// (backend/src/world/grid_gen/generator.rs, ver `RoomType::wire_kind`).
+    /// Cambiar uno exige cambiar el Rust en el mismo commit.
+    /// </summary>
+    public enum RoomZoneKind : byte
+    {
+        Open = 0,
+        SealedRoom = 1,
+        CorridorSpine = 2,
+    }
+
+    /// <summary>
+    /// ADR-034 — un rect estampado en la Fase 4, en coordenadas de CELDA (2.5 m)
+    /// locales al chunk, con x1/z1 EXCLUSIVOS. Mirror de `grid_gen::RoomZone`.
+    ///
+    /// Ojo con la escala: el resto del render cliente trabaja en tiles de 5 m
+    /// (`GridChunkDataMsg.Tiles` = 10 por lado); estas coordenadas son de celda
+    /// (20 por lado). Un tile `tx` cubre las celdas `2*tx` y `2*tx + 1`.
+    /// </summary>
+    public struct RoomZoneMsg
+    {
+        public byte x0, z0, x1, z1;
+
+        /// <summary>Discriminante crudo del wire; ver <see cref="Kind"/>.</summary>
+        public byte kindByte;
+
+        /// <summary>
+        /// Accesor con tipo. Un valor desconocido (backend más nuevo que este
+        /// cliente) colapsa a <see cref="RoomZoneKind.Open"/> — el tipo sin
+        /// perímetro sellado, o sea el comportamiento histórico previo a
+        /// RoomType. Mismo criterio de degradación que <c>GridCell.Kind</c>.
+        /// </summary>
+        public RoomZoneKind Kind =>
+            kindByte <= (byte)RoomZoneKind.CorridorSpine
+                ? (RoomZoneKind)kindByte
+                : RoomZoneKind.Open;
+
+        /// <summary>True si la celda (cx, cz) del chunk cae dentro del rect.</summary>
+        public bool ContainsCell(int cellX, int cellZ) =>
+            cellX >= x0 && cellX < x1 && cellZ >= z0 && cellZ < z1;
+
+        public static RoomZoneMsg Parse(object o)
+        {
+            var z = new RoomZoneMsg();
+            if (!(o is Dictionary<string, object> d)) return z;
+            z.x0 = (byte)IPCParse.L(d, "x0");
+            z.z0 = (byte)IPCParse.L(d, "z0");
+            z.x1 = (byte)IPCParse.L(d, "x1");
+            z.z1 = (byte)IPCParse.L(d, "z1");
+            z.kindByte = (byte)IPCParse.L(d, "kind");
+            return z;
+        }
+    }
+
+    /// <summary>
     /// Fase 4.1 — backend grid_gen chunk reply (ServerMessage::ChunkData, tag
     /// "chunk_data"). A 10×10 grid of 5 m tiles, each an edge-wall bitmask in the
     /// BACKEND convention: N=1 (−Z), S=2 (+Z), E=4 (+X), W=8 (−X). walls[x,z].
@@ -85,10 +142,21 @@ namespace BackroomsSurvival.Net
         public const byte WallE = 4; // +X
         public const byte WallW = 8; // −X
 
+        /// <summary>Instancia compartida para "sin zonas" — evita alocar por chunk.</summary>
+        private static readonly RoomZoneMsg[] NoRoomZones = new RoomZoneMsg[0];
+
         public int cx;
         public int cz;
         public byte layer;
         public byte[,] walls = new byte[Tiles, Tiles];
+
+        /// <summary>
+        /// ADR-034 — rects de Fase 4 con su tipo de sala. NUNCA null: un backend
+        /// que no manda la clave (versión anterior al ADR, o chunk sin zonas)
+        /// deja el array VACÍO, así que el consumidor solo tiene que tratar el
+        /// caso "ninguna zona cubre este tile", no un caso de nulo aparte.
+        /// </summary>
+        public RoomZoneMsg[] roomZones = NoRoomZones;
 
         public static GridChunkDataMsg Parse(Dictionary<string, object> d)
         {
@@ -110,6 +178,15 @@ namespace BackroomsSurvival.Net
                             m.walls[x, z] = (byte)IPCParse.ToLong(col[z]);
                     }
                 }
+            }
+            // ADR-034: campo ADITIVO con skip_serializing_if en el backend — la
+            // clave falta por completo cuando no hay zonas, y faltaba SIEMPRE
+            // antes del ADR. Ausencia ⇒ array vacío, nunca error.
+            if (IPCParse.Get(d, "room_zones") is object[] zones && zones.Length > 0)
+            {
+                m.roomZones = new RoomZoneMsg[zones.Length];
+                for (int i = 0; i < zones.Length; i++)
+                    m.roomZones[i] = RoomZoneMsg.Parse(zones[i]);
             }
             return m;
         }

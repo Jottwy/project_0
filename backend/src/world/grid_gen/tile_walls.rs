@@ -33,7 +33,7 @@
 //! tamaño de wire, mismo tipo `[[u8;10];10]`, sin bump de schema. PROHIBIDO
 //! reutilizar estos bits o cambiar el mapeo sin nueva enmienda (`DECISIONS.md`).
 
-use super::{generate_chunk_layer, CellType, LayerGrid, LayerRules, CHUNK_CELLS};
+use super::{generate_chunk_layer, CellType, LayerGrid, LayerRules, RoomZone, CHUNK_CELLS};
 
 /// Tiles per chunk side: 2 cells per 5 m tile → 10 for CHUNK_CELLS = 20.
 pub const TILES_PER_SIDE: usize = CHUNK_CELLS / 2;
@@ -75,8 +75,26 @@ pub fn chunk_tile_walls(
     cz: i32,
     layer: u8,
 ) -> [[u8; TILES_PER_SIDE]; TILES_PER_SIDE] {
+    chunk_tile_walls_and_rooms(rules, world_seed, cx, cz, layer).0
+}
+
+/// Igual que `chunk_tile_walls`, pero devuelve TAMBIÉN los `RoomZone` de Fase 4.
+///
+/// Existe como función aparte, y no como cambio de firma de `chunk_tile_walls`,
+/// porque los consumidores de COLISIÓN (`GridGenChunkCache`) y los tests de
+/// paridad de `zone_density` solo quieren el bitmask: el rect de sala no les
+/// dice nada y no deben cargar con él. El único llamador de esta variante es la
+/// ruta de IPC (`game_loop`, `ServerMessage::ChunkData`), que sí lo manda al
+/// cliente. Ambas comparten la MISMA generación — no hay riesgo de divergir.
+pub fn chunk_tile_walls_and_rooms(
+    rules: &LayerRules,
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    layer: u8,
+) -> ([[u8; TILES_PER_SIDE]; TILES_PER_SIDE], Vec<RoomZone>) {
     let out = generate_chunk_layer(rules, world_seed, (cx, cz), layer as i32, &[]);
-    tile_walls_from_grid(&out.grid)
+    (tile_walls_from_grid(&out.grid), out.room_zones)
 }
 
 /// Pure conversion: derive the tile-wall bitmask from an already-generated
