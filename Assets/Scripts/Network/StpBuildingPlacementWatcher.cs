@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay.Building;
 using PolymindGames;
 using PolymindGames.BuildingSystem;
 using UnityEngine;
@@ -16,6 +17,11 @@ namespace BackroomsSurvival.Net
     ///
     /// Gating: a joiner's placement does NOT persist locally — the host validates and the
     /// relay drives every spawn, so all instances stay identical. Self-bootstraps; removable.
+    ///
+    /// Grid walls (<see cref="GridWallBuildingPiece"/>) get two extras, both consequences of that
+    /// same round-trip and both scoped to this piece type only: the slot is reserved locally while
+    /// the request is in flight (<see cref="GridWallReservations"/>), and the preview is re-armed so
+    /// panels can be chained without reopening the survival book (<see cref="RearmPreview"/>).
     /// </summary>
     public sealed class StpBuildingPlacementWatcher : MonoBehaviour
     {
@@ -102,7 +108,11 @@ namespace BackroomsSurvival.Net
             if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
                 return; // no host link → leave the local piece as-is (offline/solo fallback)
 
-            int defId = placed.Definition.Id;
+            // Captured before DestroyLocalPiece: the re-arm below needs the definition, and reading
+            // it off a destroyed component is a trap waiting for the day Destroy stops being
+            // end-of-frame.
+            var definition = placed.Definition;
+            int defId = definition.Id;
             placed.transform.GetPositionAndRotation(out var pos, out var rot);
             float yaw = rot.eulerAngles.y;
             long placeId = NextPlaceId();
@@ -126,7 +136,56 @@ namespace BackroomsSurvival.Net
             ipc.SendStpPlace(placeId, defId, pos, yaw, groupId, isGroup);
             Debug.Log($"[StpBuildingPlacementWatcher] placed def_id={defId} place_id={placeId} group_id={groupId} is_group={isGroup} pos={pos:F2} → host.");
 
+            // A grid wall is standalone, so the host does not pose-cell dedup it and the slot stays
+            // physically empty for the whole round-trip. Hold it locally until the replicated wall
+            // arrives, or a fast second placement lands a duplicate in the same slot.
+            if (placed is GridWallBuildingPiece)
+            {
+                GridWallReservations.Reserve(pos, yaw);
+                // Deferred a frame on purpose — see RearmPreview.
+                CoroutineUtility.InvokeNextFrameSafe(this, () => RearmPreview(definition));
+            }
+
             _placedCandidate = null;
+        }
+
+        /// <summary>
+        /// Puts a fresh preview of the same piece back in the player's hands so walls can be built
+        /// one after another.
+        ///
+        /// The vendor only re-arms automatically for <see cref="GroupBuildingPiece"/>
+        /// (CharacterBuildController.HandleSuccessfulPlacement passes
+        /// <c>createNew: _buildingPiece is GroupBuildingPiece</c>), and that class is sealed, so a
+        /// grid wall cannot inherit the behaviour — it ends build mode after every single panel and
+        /// the survival book has to be reopened for the next one. Hence this hook, which runs from
+        /// the ObjectPlaced event, i.e. AFTER the controller has already torn build mode down; the
+        /// SetBuildingPiece call below pushes the input context straight back.
+        ///
+        /// Restricted to grid walls on purpose: re-arming the free pieces (campfire, sleeping bag)
+        /// would change vendor behaviour nobody asked to change.
+        ///
+        /// Deferred one frame by the caller. Re-arming inline would run while the place action is
+        /// still dispatching its own callbacks: SetBuildingPiece pops and re-pushes the building
+        /// input context, and that toggles every PlayerInputBehaviour — including the one whose
+        /// callback we are currently inside, which unregisters and re-registers the very action
+        /// being dispatched. The Input System tolerates that, but nothing is gained by relying on
+        /// it. One frame with no preview is invisible.
+        /// </summary>
+        private void RearmPreview(BuildingPieceDefinition definition)
+        {
+            if (_controller == null || definition == null || definition.Prefab == null)
+                return;
+
+            // A frame passed: the player may have hit Escape or picked something else out of the
+            // book. Only fill an empty hand — never stomp a choice they made in the meantime.
+            if (_controller.BuildingPiece != null)
+                return;
+
+            // Same spawn recipe as the survival book and the vendor's own chaining: parked far below
+            // the world so the fresh preview never flashes at the origin before its first
+            // UpdatePlacement positions it.
+            var preview = Instantiate(definition.Prefab, new Vector3(0f, -1000f, 0f), Quaternion.identity);
+            _controller.SetBuildingPiece(preview);
         }
 
         private static void DestroyLocalPiece(BuildingPiece placed)
