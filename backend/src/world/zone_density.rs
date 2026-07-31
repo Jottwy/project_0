@@ -175,6 +175,23 @@ fn rules_for_zone(zone_kind: u8, layer: u8) -> LayerRules {
     // `generate_layer`). Se baja igualmente para que el perfil no se contradiga a
     // sí mismo si algún día se cablea.
     rules.wall_density = rules.wall_density.min(0.35);
+    // Override EXPLÍCITO, no heredado: la identidad de PILLAR_HALL es la
+    // retícula de columnas sobre una zona Open — incompatible con perímetro
+    // sellado (SealedRoom/CorridorSpine). Si el perfil de capa base activa
+    // RoomType (layer 0 en producción, desde esta sesión), un chunk
+    // PILLAR_HALL heredaría esos pesos SIN QUERERLO, produciendo salas
+    // selladas con retícula de pilares por encima — y, peor, exactamente el
+    // caso borde de una SealedRoom incomunicada (entradas que no llegan al
+    // maze) ya se disparó de verdad en un chunk PILLAR_HALL real durante el
+    // experimento previo (chunk (9,4), seed 42: sala colapsada a 25 celdas
+    // transitables, por debajo del suelo de 30 que exige
+    // `pillar_hall_chunks_stay_connected_and_non_degenerate`). Forzar Open
+    // aquí es la corrección, no una mitigación temporal.
+    // Literal, no `default_room_type_weights()`: esa función es `pub(super)`
+    // dentro de `grid_gen` (visible a sus descendientes), y `zone_density` es
+    // un módulo hermano, no descendiente — no la alcanza. El tuple es el
+    // mismo valor documentado y estable de "RoomType::Open siempre".
+    rules.room_type_weights = (1.0, 0.0, 0.0);
     rules
 }
 
@@ -241,8 +258,12 @@ mod tests {
         }
     }
 
-    /// PILLAR_HALL debe cambiar la geometría de verdad; los otros 11 zone_kind
-    /// deben devolver el perfil de capa INTACTO (primer pase incremental).
+    /// PILLAR_HALL debe cambiar la geometría de verdad Y forzar
+    /// `room_type_weights` a `(1,0,0)` (Open) SIN IMPORTAR lo que diga el
+    /// perfil de capa base — su identidad es la retícula de columnas sobre
+    /// una zona Open, incompatible con perímetro `SealedWall`. Los otros 11
+    /// zone_kind deben devolver el perfil de capa INTACTO, weights incluidos
+    /// (primer pase incremental).
     #[test]
     fn only_pillar_hall_changes_the_profile() {
         for layer in 0..LAYER_PROFILES.len() as u8 {
@@ -263,6 +284,12 @@ mod tests {
                         rules.num_open_zones >= base.num_open_zones
                             && rules.open_zone_size >= base.open_zone_size,
                         "capa {layer}: PILLAR_HALL quedó MÁS cerrado que su capa base"
+                    );
+                    assert_eq!(
+                        rules.room_type_weights,
+                        (1.0, 0.0, 0.0),
+                        "capa {layer}: PILLAR_HALL debe forzar RoomType::Open, heredó {:?} del perfil base",
+                        rules.room_type_weights
                     );
                 } else {
                     assert_eq!(
