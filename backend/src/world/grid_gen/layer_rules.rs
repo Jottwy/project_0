@@ -121,8 +121,10 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         erode_chance: 0.08,
         num_open_zones: 1,
         open_zone_size: 5,
-        open_zone_size_x: None,
-        open_zone_size_z: None,
+        // 17.5 m: validado en dos experimentos previos (SealedRoom y
+        // CorridorSpine, sesión de RoomType) antes de pasar a producción.
+        open_zone_size_x: Some(7),
+        open_zone_size_z: Some(7),
         pillar_chance: 0.0,
         num_anomalies: 0,
         num_stairs: 2,
@@ -136,7 +138,11 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         corridor_ratio: 0.7,
         straight_bias: 0.0,
         branch_persistence: 0.82,
-        room_type_weights: (1.0, 0.0, 0.0),
+        // Producción, no experimento (esta sesión activa RoomType de verdad):
+        // 50% Open (maze tradicional), 30% SealedRoom, 20% CorridorSpine.
+        // Rompe a propósito los 4 PHASE1_GOLDENS de layer 0 — ver
+        // DECISIONS.md (RoomType en producción) y el commit que los actualiza.
+        room_type_weights: (0.5, 0.3, 0.2),
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {

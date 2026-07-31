@@ -789,6 +789,13 @@ fn open_zone_size_x_z_produce_a_non_square_zone() {
     rules.num_open_zones = 1;
     rules.open_zone_size_x = Some(3);
     rules.open_zone_size_z = Some(12);
+    // Fuerza Open explícito: layer 0 en producción ya no es
+    // room_type_weights default (RoomType activo, (0.5, 0.3, 0.2)) — sin
+    // esto la zona podría salir SealedRoom/CorridorSpine (que además
+    // redondean tamaño/origen a paridad de tile, Pieza de alineación),
+    // cambiando el footprint medido y rompiendo este test. La prueba es de
+    // sz_x/sz_z para Open, no de RoomType.
+    rules.room_type_weights = (1.0, 0.0, 0.0);
     // Cero escaleras/pozos/voids/anomalías: todas esas fases reasignan
     // zone_id a 0 en la celda que tocan (Fase 6/7), lo que podría "recortar"
     // el bbox medido si cayeran justo en una esquina de la zona. Aisla la
@@ -1329,11 +1336,20 @@ fn grid_fingerprint(grid: &LayerGrid) -> u64 {
 /// NO se regeneran "porque el test falla". Un fallo aquí significa que un
 /// cambio alteró la secuencia de sorteos del caso por defecto, que es
 /// exactamente lo que estas constantes existen para impedir.
+///
+/// EXCEPCIÓN DELIBERADA — layer 0 (las 4 primeras entradas): actualizadas al
+/// activar RoomType en producción (`room_type_weights: (0.5, 0.3, 0.2)`,
+/// `open_zone_size_x/z: Some(7)`, `LAYER_PROFILES[0]`). Es la única vez que
+/// esta regla "no se regenera porque el test falla" se salta a propósito: el
+/// cambio de huella ES el cambio de producto (mundos NUEVOS de layer 0 salen
+/// distintos; seeds YA jugadas antes de este commit regeneran su layer 0
+/// distinto). Documentado en DECISIONS.md. Layers 1-3 (las 12 restantes)
+/// siguen bajo la regla normal — cualquier cambio ahí sigue siendo bug.
 const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
-    ((0, 3133931653), 0x0FF40FF7E328D804),
-    ((0, 1), 0x6AA9C9BF3A0D1E3F),
-    ((0, 42), 0xF6C220EB54522D7E),
-    ((0, 7778), 0xD1FC7FC55857B890),
+    ((0, 3133931653), 0x401418810ECD39FF),
+    ((0, 1), 0x338FC2AE7D17E9F4),
+    ((0, 42), 0x33867857ADE056DE),
+    ((0, 7778), 0x856CF4907033B755),
     ((1, 3133931653), 0x729F00EC161AE35A),
     ((1, 1), 0x94A9570BED47AA30),
     ((1, 42), 0xA64F9DF2D6414E94),
@@ -1381,10 +1397,21 @@ fn default_profiles_generate_byte_identical_grids() {
 /// puesto EXPLÍCITAMENTE a `(1.0, 0.0, 0.0)` en vez de heredarlo del literal
 /// de `LAYER_PROFILES` — cubre el camino `weights == default` de la propia
 /// comparación en Fase 4, no solo "nadie tocó el campo".
+///
+/// SOLO layers 1-3: desde que RoomType entró en producción en layer 0
+/// (`room_type_weights: (0.5, 0.3, 0.2)`), forzar `(1.0, 0.0, 0.0)` a mano
+/// para layer 0 ya NO reproduce su golden — ese golden se capturó con los
+/// pesos de producción reales, no con Open forzado. El camino "weights ==
+/// default, sin draw extra" que este test protege sigue existiendo (lo
+/// ejercitan layers 1-3, que siguen en default), solo que layer 0 dejó de
+/// ser el layer que lo demuestra.
 #[test]
 fn explicit_default_room_type_weights_generate_byte_identical_grids() {
     let mut drift = Vec::new();
     for ((layer, seed), expected) in PHASE1_GOLDENS {
+        if layer == 0 {
+            continue;
+        }
         let mut rules = LAYER_PROFILES[layer as usize].clone();
         rules.room_type_weights = (1.0, 0.0, 0.0);
         let out = generate_chunk_layer(&rules, seed, TEST_CHUNK, layer, &[]);
@@ -1397,7 +1424,7 @@ fn explicit_default_room_type_weights_generate_byte_identical_grids() {
     }
     assert!(
         drift.is_empty(),
-        "room_type_weights = (1.0, 0.0, 0.0) explícito debería seguir dando el grid histórico:\n{}",
+        "room_type_weights = (1.0, 0.0, 0.0) explícito debería seguir dando el grid histórico (layers 1-3):\n{}",
         drift.join("\n")
     );
 }
