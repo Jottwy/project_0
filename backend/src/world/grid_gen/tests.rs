@@ -745,7 +745,7 @@ const ZX1: i32 = 10;
 const ZZ1: i32 = 10;
 
 /// Grid sólido con la zona estampada y su perímetro exterior COMPLETO relleno
-/// de contenido estampado, alternando Pillar y Void. Eso fuerza
+/// de contenido estampado, alternando Pillar/Void/SealedWall. Eso fuerza
 /// `is_zone_connected == false` sin usar ninguna celda transitable.
 fn grid_with_sealed_zone() -> LayerGrid {
     let mut grid = LayerGrid::new_solid();
@@ -757,12 +757,11 @@ fn grid_with_sealed_zone() -> LayerGrid {
     }
 
     // Anillo ortogonal exterior: columnas ZX0-1 / ZX1 y filas ZZ0-1 / ZZ1.
-    let stamp = |i: i32| {
-        if i % 2 == 0 {
-            Cell::new(CellType::Pillar, 0, 1)
-        } else {
-            Cell::new(CellType::Void, 0, 0)
-        }
+    // Las 3 rondas de contenido estampado/protegido que existen hoy.
+    let stamp = |i: i32| match i % 3 {
+        0 => Cell::new(CellType::Pillar, 0, 1),
+        1 => Cell::new(CellType::Void, 0, 0),
+        _ => Cell::new(CellType::SealedWall, 0, 1),
     };
     for z in ZZ0..ZZ1 {
         grid.set((ZX0 - 1) as usize, z as usize, stamp(z));
@@ -823,7 +822,10 @@ fn open_zone_size_x_z_produce_a_non_square_zone() {
 /// (1) El camino de reconexión NUNCA convierte contenido estampado en Corridor.
 /// Antes del fix la guarda era `!is_walkable()`, que da true para Pillar y Void
 /// y por tanto los borraba: en un PILLAR_HALL eso es un hueco en la retícula de
-/// columnas, y en El Vacío un puente sobre el abismo.
+/// columnas, y en El Vacío un puente sobre el abismo. SealedWall (RoomType)
+/// nunca tuvo ese bug histórico — `kind() == Wall` ya lo excluía por
+/// construcción — pero se cubre igual para que el test siga barriendo las 3
+/// rondas de contenido protegido que `grid_with_sealed_zone` estampa hoy.
 #[test]
 fn connect_zone_never_carves_stamped_content() {
     let mut grid = grid_with_sealed_zone();
@@ -837,7 +839,11 @@ fn connect_zone_never_carves_stamped_content() {
 
     let pillars_before = count_kind(&grid, CellType::Pillar);
     let voids_before = count_kind(&grid, CellType::Void);
-    assert!(pillars_before > 0 && voids_before > 0, "montaje degenerado");
+    let sealed_before = count_kind(&grid, CellType::SealedWall);
+    assert!(
+        pillars_before > 0 && voids_before > 0 && sealed_before > 0,
+        "montaje degenerado"
+    );
 
     connect_zone_to_maze(&mut grid, ZX0, ZZ0, ZX1, ZZ1, 2);
 
@@ -850,6 +856,11 @@ fn connect_zone_never_carves_stamped_content() {
         count_kind(&grid, CellType::Void),
         voids_before,
         "ningún void estampado puede desaparecer"
+    );
+    assert_eq!(
+        count_kind(&grid, CellType::SealedWall),
+        sealed_before,
+        "ningún perímetro protegido puede desaparecer"
     );
 
     // La celda del anillo que la L atraviesa primero: sigue estampada.
@@ -1020,6 +1031,137 @@ fn carve_explicit_entrance_never_writes_the_reserved_border() {
     }
 }
 
+// ── RoomType — geometría de SealedRoom y CorridorSpine ───────────────────────
+
+/// Estampado + entradas de una `SealedRoom`, aisladas de `generate_layer`
+/// (sin Fase 5/6/repair/7 de por medio — geometría pura, determinista, sin
+/// depender de que el maze circundante llegue a conectarla). Perímetro
+/// completo salvo 1-3 entradas (rango fijo), interior estrictamente Open.
+#[test]
+fn sealed_room_perimeter_and_entrances_geometry() {
+    let perimeter_len = (2 * (ZX1 - ZX0) + 2 * (ZZ1 - ZZ0) - 4) as usize;
+    for seed in [TEST_SEED, 1, 42, 7778, 9_999_999, 100, 200, 300] {
+        let mut grid = LayerGrid::new_solid();
+        stamp_sealed_room(&mut grid, ZX0, ZZ0, ZX1, ZZ1, 1, 2);
+        assert_eq!(
+            count_kind(&grid, CellType::SealedWall),
+            perimeter_len,
+            "seed {seed}: perímetro incompleto antes de carvar entradas"
+        );
+
+        carve_sealed_room_entrances(&mut grid, 2, seed, ZX0, ZZ0, ZX1, ZZ1);
+
+        let (mut sealed, mut entrances) = (0usize, 0usize);
+        for z in ZZ0..ZZ1 {
+            for x in ZX0..ZX1 {
+                let is_perimeter = x == ZX0 || x == ZX1 - 1 || z == ZZ0 || z == ZZ1 - 1;
+                if !is_perimeter {
+                    assert_eq!(
+                        grid.get(x as usize, z as usize).kind(),
+                        CellType::Open,
+                        "seed {seed}: interior alterado en ({x},{z})"
+                    );
+                    continue;
+                }
+                match grid.get(x as usize, z as usize).kind() {
+                    CellType::SealedWall => sealed += 1,
+                    CellType::Corridor => entrances += 1,
+                    other => panic!(
+                        "seed {seed}: perímetro con tipo inesperado {other:?} en ({x},{z})"
+                    ),
+                }
+            }
+        }
+        assert!(
+            (1..=3).contains(&entrances),
+            "seed {seed}: {entrances} entradas, esperado 1-3"
+        );
+        assert_eq!(
+            sealed + entrances,
+            perimeter_len,
+            "seed {seed}: perímetro no cuadra tras carvar entradas"
+        );
+    }
+}
+
+/// Estampado + entradas de un `CorridorSpine`, ambas orientaciones. Ancho
+/// caminable fijo (2 celdas) entre los 2 lados largos sellados; extremos
+/// cortos abiertos, con carvado extendiéndose más allá del propio footprint.
+#[test]
+fn corridor_spine_perimeter_and_entrances_geometry() {
+    for seed in [TEST_SEED, 1, 42, 7778] {
+        // Horizontal: ancho caminable en Z (2 celdas, footprint total 4), largo en X.
+        let (x0, z0, x1, z1) = (3, 5, 15, 9); // z1-z0 = 4 = CORRIDOR_SPINE_TOTAL_WIDTH
+        let mut grid = LayerGrid::new_solid();
+        stamp_corridor_spine(&mut grid, x0, z0, x1, z1, 1, 2, true);
+        carve_corridor_spine_entrances(&mut grid, 2, seed, x0, z0, x1, z1, true);
+
+        for x in x0..x1 {
+            assert_eq!(
+                grid.get(x as usize, z0 as usize).kind(),
+                CellType::SealedWall,
+                "seed {seed}: lado largo norte no sellado en x={x}"
+            );
+            assert_eq!(
+                grid.get(x as usize, (z1 - 1) as usize).kind(),
+                CellType::SealedWall,
+                "seed {seed}: lado largo sur no sellado en x={x}"
+            );
+        }
+        for z in (z0 + 1)..(z1 - 1) {
+            assert!(
+                grid.get(x0 as usize, z as usize).is_walkable(),
+                "seed {seed}: extremo oeste no caminable en z={z}"
+            );
+            assert!(
+                grid.get((x1 - 1) as usize, z as usize).is_walkable(),
+                "seed {seed}: extremo este no caminable en z={z}"
+            );
+        }
+        let west_extends = (0..CHUNK_CELLS as i32).any(|z| {
+            LayerGrid::in_bounds(x0 - 1, z)
+                && grid.get((x0 - 1) as usize, z as usize).kind() == CellType::Corridor
+        });
+        let east_extends = (0..CHUNK_CELLS as i32).any(|z| {
+            LayerGrid::in_bounds(x1, z)
+                && grid.get(x1 as usize, z as usize).kind() == CellType::Corridor
+        });
+        assert!(west_extends, "seed {seed}: sin carvado más allá del extremo oeste");
+        assert!(east_extends, "seed {seed}: sin carvado más allá del extremo este");
+    }
+
+    for seed in [TEST_SEED, 1, 42, 7778] {
+        // Vertical: ancho caminable en X (2 celdas, footprint total 4), largo en Z.
+        let (x0, z0, x1, z1) = (5, 3, 9, 15);
+        let mut grid = LayerGrid::new_solid();
+        stamp_corridor_spine(&mut grid, x0, z0, x1, z1, 1, 2, false);
+        carve_corridor_spine_entrances(&mut grid, 2, seed, x0, z0, x1, z1, false);
+
+        for z in z0..z1 {
+            assert_eq!(
+                grid.get(x0 as usize, z as usize).kind(),
+                CellType::SealedWall,
+                "seed {seed}: lado largo oeste no sellado en z={z}"
+            );
+            assert_eq!(
+                grid.get((x1 - 1) as usize, z as usize).kind(),
+                CellType::SealedWall,
+                "seed {seed}: lado largo este no sellado en z={z}"
+            );
+        }
+        let north_extends = (0..CHUNK_CELLS as i32).any(|x| {
+            LayerGrid::in_bounds(x, z0 - 1)
+                && grid.get(x as usize, (z0 - 1) as usize).kind() == CellType::Corridor
+        });
+        let south_extends = (0..CHUNK_CELLS as i32).any(|x| {
+            LayerGrid::in_bounds(x, z1)
+                && grid.get(x as usize, z1 as usize).kind() == CellType::Corridor
+        });
+        assert!(north_extends, "seed {seed}: sin carvado más allá del extremo norte");
+        assert!(south_extends, "seed {seed}: sin carvado más allá del extremo sur");
+    }
+}
+
 // ── SealedWall — sellado de bolsillos sobre una sala incomunicada ───────────
 
 /// Grid con una SealedRoom completamente incomunicada: perímetro SealedWall
@@ -1163,6 +1305,67 @@ fn default_profiles_generate_byte_identical_grids() {
         "la generación por defecto cambió — se regeneraría CADA chunk de toda seed ya jugada:\n{}",
         drift.join("\n")
     );
+}
+
+/// (1b) Mismo blindaje que el test anterior, pero con `room_type_weights`
+/// puesto EXPLÍCITAMENTE a `(1.0, 0.0, 0.0)` en vez de heredarlo del literal
+/// de `LAYER_PROFILES` — cubre el camino `weights == default` de la propia
+/// comparación en Fase 4, no solo "nadie tocó el campo".
+#[test]
+fn explicit_default_room_type_weights_generate_byte_identical_grids() {
+    let mut drift = Vec::new();
+    for ((layer, seed), expected) in PHASE1_GOLDENS {
+        let mut rules = LAYER_PROFILES[layer as usize].clone();
+        rules.room_type_weights = (1.0, 0.0, 0.0);
+        let out = generate_chunk_layer(&rules, seed, TEST_CHUNK, layer, &[]);
+        let got = grid_fingerprint(&out.grid);
+        if got != expected {
+            drift.push(format!(
+                "layer {layer} seed {seed}: esperado 0x{expected:016X}, obtenido 0x{got:016X}"
+            ));
+        }
+    }
+    assert!(
+        drift.is_empty(),
+        "room_type_weights = (1.0, 0.0, 0.0) explícito debería seguir dando el grid histórico:\n{}",
+        drift.join("\n")
+    );
+}
+
+/// Cableado end-to-end: `room_type_weights` no default de verdad llega al
+/// grid final de `generate_layer` (no solo a las funciones de estampado
+/// aisladas que prueban las 2 geometrías de arriba).
+#[test]
+fn sealed_room_weight_actually_reaches_generate_layer() {
+    let mut rules = LAYER_PROFILES[0].clone();
+    rules.room_type_weights = (0.0, 1.0, 0.0); // siempre SealedRoom
+    for seed in [TEST_SEED, 1, 42, 7778] {
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        assert!(
+            count_kind(&out.grid, CellType::SealedWall) > 0,
+            "seed {seed}: weights=(0,1,0) debería producir SealedWall en el grid final"
+        );
+    }
+}
+
+/// Idem para CorridorSpine — y confirma "sin pilares" de verdad en el grid
+/// final (no solo por construcción del umbral `min(eff_sz) >= 6`).
+#[test]
+fn corridor_spine_weight_actually_reaches_generate_layer() {
+    let mut rules = LAYER_PROFILES[0].clone();
+    rules.room_type_weights = (0.0, 0.0, 1.0); // siempre CorridorSpine
+    for seed in [TEST_SEED, 1, 42, 7778] {
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        assert!(
+            count_kind(&out.grid, CellType::SealedWall) > 0,
+            "seed {seed}: weights=(0,0,1) debería producir SealedWall en el grid final"
+        );
+        assert_eq!(
+            count_kind(&out.grid, CellType::Pillar),
+            0,
+            "seed {seed}: CorridorSpine nunca debería sembrar pilares"
+        );
+    }
 }
 
 /// Perfil de laboratorio: sólo Fase 1. Todo lo que ensucia la medida de tramos

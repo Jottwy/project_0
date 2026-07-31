@@ -12,7 +12,241 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
+use super::layer_rules::default_room_type_weights;
 use super::{Cell, CellType, LayerRules, CHUNK_CELLS};
+
+/// Ancho CAMINABLE fijo (celdas) de una zona `CorridorSpine` — 2 celdas = 5 m,
+/// el mismo ancho de tile que usa el resto del render (`tile_walls.rs`).
+/// Documentado en DECISIONS.md (RoomType): un pasillo más ancho empezaría a
+/// sentirse como una sala, y 2 es el mínimo que sigue leyéndose como
+/// "corredor" a escala humana.
+///
+/// NO es el ancho total del rect: como `SealedRoom`, el perímetro (aquí, los
+/// 2 lados largos) es un anillo INTERIOR al footprint, no una franja aparte
+/// fuera de él — así que el rect necesita `CORRIDOR_SPINE_WIDTH + 2` de ancho
+/// total para alojar 2 celdas de pared (una a cada lado largo) MÁS las
+/// `CORRIDOR_SPINE_WIDTH` celdas de suelo caminable en medio. Con solo 2
+/// celdas de footprint total, ambas serían pared y no quedaría suelo.
+const CORRIDOR_SPINE_WIDTH: i32 = 2;
+
+/// Footprint total del eje angosto de un `CorridorSpine` — ver
+/// `CORRIDOR_SPINE_WIDTH`.
+const CORRIDOR_SPINE_TOTAL_WIDTH: i32 = CORRIDOR_SPINE_WIDTH + 2;
+
+/// Tipo de zona estampado en Fase 4. `Open` es el único que existía antes de
+/// RoomType; `SealedRoom`/`CorridorSpine` estampan un perímetro `SealedWall`
+/// en vez de dejarlo a merced del maze/erosión circundante.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum RoomType {
+    Open,
+    SealedRoom,
+    CorridorSpine,
+}
+
+/// Sorteo ponderado de `RoomType` contra `(open, sealed, spine)`. Solo se
+/// llama cuando los pesos NO son el default — ver el caller en Fase 4, que
+/// evita esta función (y el draw que consume) por completo en ese caso.
+pub(super) fn pick_room_type(weights: (f32, f32, f32), rng: &mut StdRng) -> RoomType {
+    let (open, sealed, spine) = weights;
+    let total = open + sealed + spine;
+    if total <= 0.0 {
+        return RoomType::Open;
+    }
+    let roll = rng.gen::<f32>() * total;
+    if roll < open {
+        RoomType::Open
+    } else if roll < open + sealed {
+        RoomType::SealedRoom
+    } else {
+        RoomType::CorridorSpine
+    }
+}
+
+/// Seed determinista por zona para la selección de entradas
+/// (SealedRoom/CorridorSpine). Stream INDEPENDIENTE del `rng` compartido de
+/// Fase 4 — mismo patrón que `aperture_pos` en `stitching.rs` — así que
+/// activar RoomType nunca perturba el resto del sorteo de la capa (el sorteo
+/// de TIPO sí usa el `rng` compartido; la posición/cuenta de entradas, no).
+pub(super) fn zone_entrance_seed(
+    world_seed: u64,
+    (cx, cz): (i32, i32),
+    layer_index: i32,
+    zone_idx: u32,
+) -> u64 {
+    // Constante de dominio propia, distinta de la de `aperture_pos`
+    // (`0xED6E_C0A7_05EA_05ED`) y de `derive_seed` (sin máscara) — tres
+    // espacios de seed disjuntos por construcción.
+    let mut s = world_seed ^ 0x2E17_5A17_E17E_A17E;
+    s = mix(s, cx as i64 as u64);
+    s = mix(s, cz as i64 as u64);
+    s = mix(s, layer_index as i64 as u64);
+    s = mix(s, zone_idx as u64);
+    s
+}
+
+/// Estampa una zona `RoomType::Open` — comportamiento histórico, sin cambios.
+pub(super) fn stamp_open_zone(
+    grid: &mut LayerGrid,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+    zid: u16,
+    ceiling_open: u8,
+) {
+    for cz in z0..z1 {
+        for cx in x0..x1 {
+            grid.set(
+                cx as usize,
+                cz as usize,
+                Cell::new(CellType::Open, ceiling_open, zid),
+            );
+        }
+    }
+}
+
+/// Estampa una `SealedRoom`: perímetro completo (el anillo exterior del rect,
+/// no un anillo aparte) a `SealedWall`, interior a `Open`. Las entradas se
+/// carvan por separado (`carve_sealed_room_entrances`), después de estampar,
+/// para poder breachear el perímetro que se acaba de escribir.
+pub(super) fn stamp_sealed_room(
+    grid: &mut LayerGrid,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+    zid: u16,
+    ceiling_open: u8,
+) {
+    for cz in z0..z1 {
+        for cx in x0..x1 {
+            let perimeter = cx == x0 || cx == x1 - 1 || cz == z0 || cz == z1 - 1;
+            let cell = if perimeter {
+                Cell::new(CellType::SealedWall, 0, zid)
+            } else {
+                Cell::new(CellType::Open, ceiling_open, zid)
+            };
+            grid.set(cx as usize, cz as usize, cell);
+        }
+    }
+}
+
+/// Estampa un `CorridorSpine`: los 2 lados LARGOS (perpendiculares al eje
+/// mayor) a `SealedWall`; los 2 extremos CORTOS quedan `Open`, sin sellar —
+/// las entradas se carvan hacia fuera desde ahí
+/// (`carve_corridor_spine_entrances`), no perforando un perímetro propio (no
+/// hay perímetro en los extremos cortos, solo en los lados largos).
+// TODO(refactor): 8 argumentos porque toma el rect (x0,z0,x1,z1) desuelto en
+// vez de un tipo `Rect`; mismo criterio que los `too_many_arguments` ya
+// aceptados en el repo (game_loop.rs, volumetric_grid.rs, v30a_showcase.rs) —
+// riesgo cero, el refactor de firma queda para sesión propia.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn stamp_corridor_spine(
+    grid: &mut LayerGrid,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+    zid: u16,
+    ceiling_open: u8,
+    horizontal: bool,
+) {
+    for cz in z0..z1 {
+        for cx in x0..x1 {
+            let long_side = if horizontal {
+                cz == z0 || cz == z1 - 1
+            } else {
+                cx == x0 || cx == x1 - 1
+            };
+            let cell = if long_side {
+                Cell::new(CellType::SealedWall, 0, zid)
+            } else {
+                Cell::new(CellType::Open, ceiling_open, zid)
+            };
+            grid.set(cx as usize, cz as usize, cell);
+        }
+    }
+}
+
+/// Candidatos de entrada para una `SealedRoom`: cada celda de perímetro que
+/// NO es esquina (dirección de breach ambigua en una esquina), con su
+/// dirección de carvado hacia fuera. Mismo criterio que `aperture_pos`
+/// (`stitching.rs`) de evitar esquinas para que direcciones perpendiculares
+/// nunca colisionen.
+fn sealed_room_entrance_candidates(
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+) -> Vec<((i32, i32), (i32, i32))> {
+    let mut v = Vec::new();
+    for x in (x0 + 1)..(x1 - 1) {
+        v.push(((x, z0), (0, -1))); // lado norte
+        v.push(((x, z1 - 1), (0, 1))); // lado sur
+    }
+    for z in (z0 + 1)..(z1 - 1) {
+        v.push(((x0, z), (-1, 0))); // lado oeste
+        v.push(((x1 - 1, z), (1, 0))); // lado este
+    }
+    v
+}
+
+/// Carva de 1 a 3 entradas de una `SealedRoom` (rango fijo; el CONTEO además
+/// del punto/dirección viene del hash determinista de la zona). Si la zona es
+/// demasiado pequeña para tener un solo candidato válido (ningún lado con
+/// celda no-esquina), no carva nada — límite conocido de zonas diminutas, no
+/// tratado aquí.
+pub(super) fn carve_sealed_room_entrances(
+    grid: &mut LayerGrid,
+    ceiling: u8,
+    seed: u64,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+) {
+    let mut candidates = sealed_room_entrance_candidates(x0, z0, x1, z1);
+    if candidates.is_empty() {
+        return;
+    }
+    let mut hash_rng = StdRng::seed_from_u64(seed);
+    let n = hash_rng.gen_range(1..=3usize.min(candidates.len()));
+    candidates.shuffle(&mut hash_rng);
+    for &(start, dir) in candidates.iter().take(n) {
+        carve_explicit_entrance(grid, ceiling, start, dir);
+    }
+}
+
+/// Carva las EXACTAS 2 entradas de un `CorridorSpine`, una en cada extremo
+/// corto. A diferencia de `SealedRoom`, el punto de partida no es una celda de
+/// perímetro propio (los extremos cortos ya son `Open`, sin sellar): es la
+/// celda del propio extremo, y la carvada se extiende hacia fuera desde ahí.
+#[allow(clippy::too_many_arguments)] // mismo motivo que stamp_corridor_spine
+pub(super) fn carve_corridor_spine_entrances(
+    grid: &mut LayerGrid,
+    ceiling: u8,
+    seed: u64,
+    x0: i32,
+    z0: i32,
+    x1: i32,
+    z1: i32,
+    horizontal: bool,
+) {
+    let mut hash_rng = StdRng::seed_from_u64(seed);
+    if horizontal {
+        let span = (z1 - z0 - 2).max(1); // evita las esquinas (lado largo N/S)
+        let z_a = z0 + 1 + hash_rng.gen_range(0..span);
+        let z_b = z0 + 1 + hash_rng.gen_range(0..span);
+        carve_explicit_entrance(grid, ceiling, (x0, z_a), (-1, 0)); // extremo oeste
+        carve_explicit_entrance(grid, ceiling, (x1 - 1, z_b), (1, 0)); // extremo este
+    } else {
+        let span = (x1 - x0 - 2).max(1);
+        let x_a = x0 + 1 + hash_rng.gen_range(0..span);
+        let x_b = x0 + 1 + hash_rng.gen_range(0..span);
+        carve_explicit_entrance(grid, ceiling, (x_a, z0), (0, -1)); // extremo norte
+        carve_explicit_entrance(grid, ceiling, (x_b, z1 - 1), (0, 1)); // extremo sur
+    }
+}
 
 /// Highest odd-index maze node. Leaves index 0 and CHUNK_CELLS-1 as solid border.
 const NODE_MAX: i32 = CHUNK_CELLS as i32 - 3; // 17 for CHUNK_CELLS=20
@@ -207,42 +441,97 @@ pub fn generate_layer(
 
     // ── Phase 4 — Open zones ("stamp wins" — overwrite maze) ─────────────────
     //
-    // Stamps `num_open_zones` rectangles of size ~open_zone_size as OPEN cells.
-    // Zones track zone_id (1-based) so reconnection and later phases can
-    // identify which cells belong to which zone.
-    // Pillar grids are seeded inside zones whose side length is ≥ 6 cells.
+    // Stamps `num_open_zones` rectangles, cada una de un `RoomType` sorteado
+    // por hash contra `rules.room_type_weights` (default `(1.0, 0.0, 0.0)` =
+    // SIEMPRE Open, sin draw extra del RNG compartido — mismo principio que
+    // `straight_bias`: todo perfil que no active los otros dos pesos genera
+    // grid byte-idéntico al de antes de RoomType). Zones track zone_id
+    // (1-based) so reconnection and later phases can identify which cells
+    // belong to which zone.
+    //
+    // Anti-solape: NO implementado a propósito. Con `num_open_zones > 1` y
+    // tipos SealedRoom/CorridorSpine activos, una zona posterior puede
+    // solaparse con el perímetro o interior de una anterior sin protección —
+    // el origen de cada zona es un `gen_range` ciego (líneas siguientes),
+    // ajeno a las demás. Layer 0 (`num_open_zones == 1` en los 4 perfiles de
+    // producción) está a salvo de esto por construcción: con una sola zona
+    // no hay con qué solaparse. Ver DECISIONS.md (RoomType) para el resto.
     let mut zones: Vec<(i32, i32, i32, i32)> = Vec::new(); // (x0, z0, x1, z1) exclusive
     for zone_idx in 0..rules.num_open_zones {
+        let room_type = if rules.room_type_weights == default_room_type_weights() {
+            RoomType::Open // caso por defecto: sin draw extra, byte-idéntico
+        } else {
+            pick_room_type(rules.room_type_weights, &mut rng)
+        };
+
         // `open_zone_size_x`/`_z` en `None` (todo perfil que no las active) ⇒
-        // sz_x == sz_z == open_zone_size, exactamente el escalar de antes:
-        // mismos dos `gen_range` (x0, z0), mismo orden, cero draws extra.
+        // sz_x == sz_z == open_zone_size, exactamente el escalar de antes.
         let sz_x = rules.open_zone_size_x.unwrap_or(rules.open_zone_size) as i32;
         let sz_z = rules.open_zone_size_z.unwrap_or(rules.open_zone_size) as i32;
-        let max_origin_x = (CHUNK_CELLS as i32 - 1 - sz_x).max(1);
-        let max_origin_z = (CHUNK_CELLS as i32 - 1 - sz_z).max(1);
+        // CorridorSpine: ancho fijo caminable (2 celdas = 5 m; footprint total
+        // del eje angosto = `CORRIDOR_SPINE_TOTAL_WIDTH`, que YA incluye las 2
+        // paredes largas — ver su doc-comment). Con footprint total 4 en el
+        // eje angosto, `min(eff_sz_x, eff_sz_z) == 4 < 6` sigue excluyendo la
+        // retícula de pilares por construcción, mismo umbral que ya existía:
+        // "Sin pilares" sale gratis, sin caso especial. Largo = el eje mayor
+        // configurado. Orientación: se deriva de cuál configuración (sz_x vs
+        // sz_z) es mayor — no se sortea aparte, así que un perfil con
+        // sz_x == sz_z (el caso típico, ambos heredados del mismo
+        // `open_zone_size` escalar) siempre da spine horizontal, un desempate
+        // determinista documentado, no un bug.
+        let (eff_sz_x, eff_sz_z) = match room_type {
+            RoomType::Open | RoomType::SealedRoom => (sz_x, sz_z),
+            RoomType::CorridorSpine => {
+                if sz_x >= sz_z {
+                    (sz_x, CORRIDOR_SPINE_TOTAL_WIDTH)
+                } else {
+                    (CORRIDOR_SPINE_TOTAL_WIDTH, sz_z)
+                }
+            }
+        };
+
+        // Mismos dos `gen_range` (x0, z0) que el caso por defecto, mismo
+        // orden — con RoomType::Open (eff_sz == sz) esto es byte-idéntico.
+        let max_origin_x = (CHUNK_CELLS as i32 - 1 - eff_sz_x).max(1);
+        let max_origin_z = (CHUNK_CELLS as i32 - 1 - eff_sz_z).max(1);
         let x0 = rng.gen_range(1..=max_origin_x);
         let z0 = rng.gen_range(1..=max_origin_z);
-        let x1 = (x0 + sz_x).min(CHUNK_CELLS as i32 - 1);
-        let z1 = (z0 + sz_z).min(CHUNK_CELLS as i32 - 1);
+        let x1 = (x0 + eff_sz_x).min(CHUNK_CELLS as i32 - 1);
+        let z1 = (z0 + eff_sz_z).min(CHUNK_CELLS as i32 - 1);
         let zid = zone_idx as u16 + 1;
 
-        for cz in z0..z1 {
-            for cx in x0..x1 {
-                grid.set(
-                    cx as usize,
-                    cz as usize,
-                    Cell::new(CellType::Open, rules.ceiling_open, zid),
+        match room_type {
+            RoomType::Open => stamp_open_zone(&mut grid, x0, z0, x1, z1, zid, rules.ceiling_open),
+            RoomType::SealedRoom => {
+                stamp_sealed_room(&mut grid, x0, z0, x1, z1, zid, rules.ceiling_open);
+                let seed = zone_entrance_seed(world_seed, chunk_coord, layer_index, zone_idx);
+                carve_sealed_room_entrances(&mut grid, rules.ceiling_corridor, seed, x0, z0, x1, z1);
+            }
+            RoomType::CorridorSpine => {
+                let horizontal = eff_sz_x >= eff_sz_z;
+                stamp_corridor_spine(&mut grid, x0, z0, x1, z1, zid, rules.ceiling_open, horizontal);
+                let seed = zone_entrance_seed(world_seed, chunk_coord, layer_index, zone_idx);
+                carve_corridor_spine_entrances(
+                    &mut grid,
+                    rules.ceiling_corridor,
+                    seed,
+                    x0,
+                    z0,
+                    x1,
+                    z1,
+                    horizontal,
                 );
             }
         }
 
-        // Umbral de pilares: `min(sz_x, sz_z) >= 6`, no área — un pasillo
-        // largo y angosto (p.ej. 3×18) nunca debe sembrar pilares aunque su
-        // área sea grande; lo que importa es que quepa al menos un slot de
-        // retícula (paso 3, offset 2) en AMBOS ejes, igual que exigía el
-        // `sz >= 6` escalar original (con sz_x == sz_z, `min` reproduce
-        // exactamente el mismo umbral).
-        if sz_x.min(sz_z) >= 6 {
+        // Umbral de pilares: `min(eff_sz_x, eff_sz_z) >= 6`, no área — un
+        // pasillo largo y angosto (p.ej. 3×18, o cualquier CorridorSpine,
+        // ancho fijo 2) nunca debe sembrar pilares aunque su área sea grande;
+        // lo que importa es que quepa al menos un slot de retícula (paso 3,
+        // offset 2) en AMBOS ejes. Mismo mecanismo para Open y SealedRoom —
+        // la retícula solo toca `[x0+2, x1-2] × [z0+2, z1-2]`, siempre
+        // interior al perímetro (protegido o no).
+        if eff_sz_x.min(eff_sz_z) >= 6 {
             let mut pz = z0 + 2;
             while pz < z1 - 1 {
                 let mut px = x0 + 2;

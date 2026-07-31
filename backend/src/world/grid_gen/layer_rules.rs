@@ -79,6 +79,15 @@ pub struct LayerRules {
     /// valor exacto, así que parametrizarlo no cambia ningún sorteo.
     #[serde(default = "default_branch_persistence")]
     pub branch_persistence: f32,
+
+    // ── RoomType (Fase 4) ────────────────────────────────────────────────────
+    /// Pesos (open, sealed, spine) del sorteo de tipo de zona en Fase 4.
+    /// Default `(1.0, 0.0, 0.0)` = SIEMPRE Open, sin draw extra del RNG
+    /// compartido — mismo principio que `straight_bias`: todo perfil que no
+    /// active los otros dos pesos genera grid byte-idéntico al de antes de
+    /// RoomType.
+    #[serde(default = "default_room_type_weights")]
+    pub room_type_weights: (f32, f32, f32),
 }
 
 fn default_straight_bias() -> f32 {
@@ -87,6 +96,10 @@ fn default_straight_bias() -> f32 {
 
 fn default_branch_persistence() -> f32 {
     0.82
+}
+
+pub(super) fn default_room_type_weights() -> (f32, f32, f32) {
+    (1.0, 0.0, 0.0)
 }
 
 /// Layer profiles — §3 of the design document, recalibrated in Fase 2.
@@ -123,6 +136,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         corridor_ratio: 0.7,
         straight_bias: 0.0,
         branch_persistence: 0.82,
+        room_type_weights: (1.0, 0.0, 0.0),
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
@@ -146,6 +160,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         corridor_ratio: 0.5,
         straight_bias: 0.0,
         branch_persistence: 0.82,
+        room_type_weights: (1.0, 0.0, 0.0),
     },
     // ── Layer 2 — El Caos ───────────────────────────────────────────────────
     LayerRules {
@@ -169,6 +184,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         corridor_ratio: 0.4,
         straight_bias: 0.0,
         branch_persistence: 0.82,
+        room_type_weights: (1.0, 0.0, 0.0),
     },
     // ── Layer 3 — El Vacío ──────────────────────────────────────────────────
     LayerRules {
@@ -192,6 +208,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         corridor_ratio: 0.5,
         straight_bias: 0.0,
         branch_persistence: 0.82,
+        room_type_weights: (1.0, 0.0, 0.0),
     },
 ];
 
