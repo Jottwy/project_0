@@ -948,6 +948,78 @@ fn connected_zone_skips_reconnection_entirely() {
     );
 }
 
+// ── Fase 4 — carvado de entrada explícita ────────────────────────────────────
+
+/// Breach de un perímetro propio: `start` sobre una celda `SealedWall`,
+/// avanzando hacia una celda ya transitable a 3 pasos de distancia. Debe
+/// convertir `start` Y las celdas Wall intermedias a Corridor, deteniéndose
+/// justo al tocar lo transitable (sin tocar esa celda de nuevo).
+#[test]
+fn carve_explicit_entrance_breaches_own_perimeter_and_reaches_the_maze() {
+    let mut grid = LayerGrid::new_solid();
+    grid.set(5, 5, Cell::new(CellType::SealedWall, 0, 1)); // perímetro propio
+    grid.set(2, 5, Cell::new(CellType::Corridor, 2, 0)); // maze existente
+
+    carve_explicit_entrance(&mut grid, 2, (5, 5), (-1, 0));
+
+    assert_eq!(grid.get(5, 5).kind(), CellType::Corridor, "breach del perímetro");
+    assert_eq!(grid.get(4, 5).kind(), CellType::Corridor, "muro intermedio carvado");
+    assert_eq!(grid.get(3, 5).kind(), CellType::Corridor, "muro intermedio carvado");
+    assert_eq!(
+        grid.get(2, 5).kind(),
+        CellType::Corridor,
+        "la celda ya transitable no debe tocarse de más (sigue siendo Corridor)"
+    );
+    assert_eq!(
+        grid.get(1, 5).kind(),
+        CellType::Wall,
+        "no debe seguir carvando más allá de donde alcanzó el laberinto"
+    );
+}
+
+/// Se detiene ante contenido estampado/protegido de OTRA zona (Pillar/Void/
+/// SealedWall) sin tocarlo — "estampar gana", mismo criterio que
+/// `carve_aperture` y `connect_zone_to_maze`.
+#[test]
+fn carve_explicit_entrance_stops_before_stamped_content() {
+    for (kind, label) in [
+        (CellType::Pillar, "Pillar"),
+        (CellType::Void, "Void"),
+        (CellType::SealedWall, "SealedWall"),
+    ] {
+        let mut grid = LayerGrid::new_solid();
+        grid.set(5, 5, Cell::new(CellType::SealedWall, 0, 1));
+        grid.set(3, 5, Cell::new(kind, 0, 9)); // contenido de OTRA zona (zid=9)
+
+        carve_explicit_entrance(&mut grid, 2, (5, 5), (-1, 0));
+
+        assert_eq!(grid.get(5, 5).kind(), CellType::Corridor, "{label}: breach propio sí ocurre");
+        assert_eq!(grid.get(4, 5).kind(), CellType::Corridor, "{label}: muro intermedio sí se carva");
+        assert_eq!(grid.get(3, 5).kind(), kind, "{label}: contenido ajeno intacto");
+    }
+}
+
+/// Nunca escribe en el borde reservado (fila/columna 0 o `CHUNK_CELLS - 1`),
+/// incluso si el camino cruza todo el chunk sin encontrar nada transitable.
+#[test]
+fn carve_explicit_entrance_never_writes_the_reserved_border() {
+    let mut grid = LayerGrid::new_solid();
+    grid.set(2, 5, Cell::new(CellType::SealedWall, 0, 1));
+
+    carve_explicit_entrance(&mut grid, 2, (2, 5), (-1, 0)); // hacia x=0, sin nada transitable
+
+    assert_eq!(grid.get(2, 5).kind(), CellType::Corridor, "breach propio");
+    assert_eq!(grid.get(1, 5).kind(), CellType::Corridor, "muro intermedio carvado");
+    let last = CHUNK_CELLS - 1;
+    assert_eq!(grid.get(0, 5).kind(), CellType::Wall, "borde x=0 intacto");
+    for i in 0..CHUNK_CELLS {
+        assert_eq!(grid.get(0, i).kind(), CellType::Wall, "columna 0 alterada en z={i}");
+        assert_eq!(grid.get(last, i).kind(), CellType::Wall, "columna {last} alterada en z={i}");
+        assert_eq!(grid.get(i, 0).kind(), CellType::Wall, "fila 0 alterada en x={i}");
+        assert_eq!(grid.get(i, last).kind(), CellType::Wall, "fila {last} alterada en x={i}");
+    }
+}
+
 // ── SealedWall — sellado de bolsillos sobre una sala incomunicada ───────────
 
 /// Grid con una SealedRoom completamente incomunicada: perímetro SealedWall

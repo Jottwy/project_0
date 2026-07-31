@@ -705,6 +705,56 @@ pub(super) fn connect_zone_to_maze(
     }
 }
 
+/// Carva una entrada explícita: fija `start` a Corridor (sea ya transitable,
+/// o el punto exacto que el propio estampador de la zona decide perforar —
+/// p. ej. una celda de su perímetro `SealedWall`) y avanza en línea recta
+/// (`dir`, paso de 1 celda) hacia fuera hasta tocar una celda ya transitable
+/// o contenido estampado/protegido de OTRA zona (SealedWall/Pillar/Void) —
+/// se detiene ante ambos. Mismo criterio de parada que
+/// `stitching::carve_aperture`, pero a diferencia de aquella, `start` no es
+/// una celda de borde de chunk: es un punto de perímetro de zona que YA
+/// decidió quien llama (hash determinista, Fase 4) — esta función no elige
+/// nada, solo carva.
+///
+/// Duplicada a propósito en vez de subir `carve_aperture` a `pub(super)`:
+/// son ~20 líneas, y los dos módulos existen por razones de vida distintas
+/// (costura entre chunks vs. entradas dentro de un chunk).
+///
+/// Precondición del llamador: `start` debe ser una celda interior — el
+/// perímetro de zona de Fase 4 siempre lo es (`x0/z0 >= 1`,
+/// `x1/z1 <= CHUNK_CELLS - 1`); esta función no lo valida.
+pub(super) fn carve_explicit_entrance(
+    grid: &mut LayerGrid,
+    ceiling: u8,
+    start: (i32, i32),
+    dir: (i32, i32),
+) {
+    let corr = Cell::new(CellType::Corridor, ceiling, 0);
+    grid.set(start.0 as usize, start.1 as usize, corr);
+
+    let (mut x, mut z) = start;
+    let last = CHUNK_CELLS as i32 - 1;
+    loop {
+        x += dir.0;
+        z += dir.1;
+        // Nunca escribir el borde reservado (fila/columna 0 y CHUNK_CELLS-1):
+        // mismo criterio que `carve_aperture` y `connect_zone_to_maze` — el
+        // costurado de Bloque E depende de que esas celdas queden intactas
+        // hasta que él decida abrirlas.
+        if x <= 0 || z <= 0 || x >= last || z >= last {
+            return; // el pase de reparación conecta el túnel al laberinto
+        }
+        let cell = grid.get(x as usize, z as usize);
+        if cell.is_walkable() {
+            return; // alcanzó el laberinto (o el interior de otra zona)
+        }
+        if cell.kind() != CellType::Wall {
+            return; // contenido estampado/protegido de otra zona: para, no lo toca
+        }
+        grid.set(x as usize, z as usize, corr);
+    }
+}
+
 #[cfg(test)]
 mod hash_tests {
     use super::*;
