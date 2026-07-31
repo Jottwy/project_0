@@ -780,6 +780,46 @@ fn count_kind(grid: &LayerGrid, kind: CellType) -> usize {
     grid.cells().iter().filter(|c| c.kind() == kind).count()
 }
 
+/// Zonas rectangulares no cuadradas: `open_zone_size_x`/`_z` sustituyen a
+/// `open_zone_size` cuando están presentes, produciendo un rect anisotrópico
+/// real (no una aproximación). `num_open_zones = 1` para que la zona 1 sea la
+/// única del grid — sin ambigüedad de solape al medir su bbox.
+#[test]
+fn open_zone_size_x_z_produce_a_non_square_zone() {
+    let mut rules = LAYER_PROFILES[0].clone();
+    rules.num_open_zones = 1;
+    rules.open_zone_size_x = Some(3);
+    rules.open_zone_size_z = Some(12);
+    // Cero escaleras/pozos/voids/anomalías: todas esas fases reasignan
+    // zone_id a 0 en la celda que tocan (Fase 6/7), lo que podría "recortar"
+    // el bbox medido si cayeran justo en una esquina de la zona. Aisla la
+    // medición al estampado puro de Fase 4.
+    rules.num_stairs = 0;
+    rules.num_pits = 0;
+    rules.num_voids = 0;
+    rules.num_anomalies = 0;
+
+    for seed in [TEST_SEED, 1, 42, 7778] {
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        let mut bb: Option<(i32, i32, i32, i32)> = None;
+        for z in 0..CHUNK_CELLS {
+            for x in 0..CHUNK_CELLS {
+                if out.grid.get(x, z).zone_id != 1 {
+                    continue;
+                }
+                let (x, z) = (x as i32, z as i32);
+                bb = Some(match bb {
+                    None => (x, z, x, z),
+                    Some((a, b, c, d)) => (a.min(x), b.min(z), c.max(x), d.max(z)),
+                });
+            }
+        }
+        let (x0, z0, x1, z1) = bb.expect("zona 1 sin celdas");
+        assert_eq!(x1 - x0 + 1, 3, "seed {seed}: ancho X esperado 3");
+        assert_eq!(z1 - z0 + 1, 12, "seed {seed}: alto Z esperado 12");
+    }
+}
+
 /// (1) El camino de reconexión NUNCA convierte contenido estampado en Corridor.
 /// Antes del fix la guarda era `!is_walkable()`, que da true para Pillar y Void
 /// y por tanto los borraba: en un PILLAR_HALL eso es un hueco en la retícula de

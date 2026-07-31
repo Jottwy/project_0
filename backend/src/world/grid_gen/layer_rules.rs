@@ -22,8 +22,18 @@ pub struct LayerRules {
     pub erode_chance: f32,
     /// Number of open-zone rectangles stamped onto the maze.
     pub num_open_zones: u32,
-    /// Base side length of each open zone in cells.
+    /// Base side length of each open zone in cells. Square when
+    /// `open_zone_size_x`/`_z` are unset (both `None`).
     pub open_zone_size: u32,
+    /// Override for the X side length (cells). `None` (default) = inherit
+    /// `open_zone_size`, so a profile that doesn't set this stays exactly
+    /// square — zero behaviour change for every profile that doesn't opt in.
+    #[serde(default)]
+    pub open_zone_size_x: Option<u32>,
+    /// Override for the Z side length (cells). Same default rule as
+    /// `open_zone_size_x`.
+    #[serde(default)]
+    pub open_zone_size_z: Option<u32>,
     /// Probability of placing a pillar every 3 cells inside large open zones.
     pub pillar_chance: f32,
     pub num_anomalies: u32,
@@ -98,6 +108,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         erode_chance: 0.08,
         num_open_zones: 1,
         open_zone_size: 5,
+        open_zone_size_x: None,
+        open_zone_size_z: None,
         pillar_chance: 0.0,
         num_anomalies: 0,
         num_stairs: 2,
@@ -119,6 +131,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         erode_chance: 0.30,
         num_open_zones: 3,
         open_zone_size: 6,
+        open_zone_size_x: None,
+        open_zone_size_z: None,
         pillar_chance: 0.5,
         num_anomalies: 2,
         num_stairs: 2,
@@ -140,6 +154,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         erode_chance: 0.28,
         num_open_zones: 4,
         open_zone_size: 7,
+        open_zone_size_x: None,
+        open_zone_size_z: None,
         pillar_chance: 0.6,
         num_anomalies: 6,
         num_stairs: 1,
@@ -161,6 +177,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         erode_chance: 0.20,
         num_open_zones: 3,
         open_zone_size: 6,
+        open_zone_size_x: None,
+        open_zone_size_z: None,
         pillar_chance: 0.3,
         num_anomalies: 4,
         num_stairs: 0,

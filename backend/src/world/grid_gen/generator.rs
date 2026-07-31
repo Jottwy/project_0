@@ -213,12 +213,17 @@ pub fn generate_layer(
     // Pillar grids are seeded inside zones whose side length is ≥ 6 cells.
     let mut zones: Vec<(i32, i32, i32, i32)> = Vec::new(); // (x0, z0, x1, z1) exclusive
     for zone_idx in 0..rules.num_open_zones {
-        let sz = rules.open_zone_size as i32;
-        let max_origin = (CHUNK_CELLS as i32 - 1 - sz).max(1);
-        let x0 = rng.gen_range(1..=max_origin);
-        let z0 = rng.gen_range(1..=max_origin);
-        let x1 = (x0 + sz).min(CHUNK_CELLS as i32 - 1);
-        let z1 = (z0 + sz).min(CHUNK_CELLS as i32 - 1);
+        // `open_zone_size_x`/`_z` en `None` (todo perfil que no las active) ⇒
+        // sz_x == sz_z == open_zone_size, exactamente el escalar de antes:
+        // mismos dos `gen_range` (x0, z0), mismo orden, cero draws extra.
+        let sz_x = rules.open_zone_size_x.unwrap_or(rules.open_zone_size) as i32;
+        let sz_z = rules.open_zone_size_z.unwrap_or(rules.open_zone_size) as i32;
+        let max_origin_x = (CHUNK_CELLS as i32 - 1 - sz_x).max(1);
+        let max_origin_z = (CHUNK_CELLS as i32 - 1 - sz_z).max(1);
+        let x0 = rng.gen_range(1..=max_origin_x);
+        let z0 = rng.gen_range(1..=max_origin_z);
+        let x1 = (x0 + sz_x).min(CHUNK_CELLS as i32 - 1);
+        let z1 = (z0 + sz_z).min(CHUNK_CELLS as i32 - 1);
         let zid = zone_idx as u16 + 1;
 
         for cz in z0..z1 {
@@ -231,7 +236,13 @@ pub fn generate_layer(
             }
         }
 
-        if sz >= 6 {
+        // Umbral de pilares: `min(sz_x, sz_z) >= 6`, no área — un pasillo
+        // largo y angosto (p.ej. 3×18) nunca debe sembrar pilares aunque su
+        // área sea grande; lo que importa es que quepa al menos un slot de
+        // retícula (paso 3, offset 2) en AMBOS ejes, igual que exigía el
+        // `sz >= 6` escalar original (con sz_x == sz_z, `min` reproduce
+        // exactamente el mismo umbral).
+        if sz_x.min(sz_z) >= 6 {
             let mut pz = z0 + 2;
             while pz < z1 - 1 {
                 let mut px = x0 + 2;
