@@ -302,8 +302,21 @@ pub fn generate_layer(
     // elimina transitabilidad, así que sobreviven igual.
     for &(fx, fz) in forced_walkable {
         let (fx, fz) = (fx as usize, fz as usize);
-        if fx < CHUNK_CELLS && fz < CHUNK_CELLS && !grid.get(fx, fz).is_walkable() {
-            grid.set(fx, fz, corr(rules.ceiling_corridor));
+        if fx < CHUNK_CELLS && fz < CHUNK_CELLS {
+            let cell = grid.get(fx, fz);
+            // Explícito contra SealedWall, no solo `!is_walkable()`: mismo
+            // criterio que el fix de c42dd48 en `connect_zone_to_maze` — una
+            // posición forzada nunca debe poder perforar un perímetro
+            // protegido. Ruta hoy inalcanzable en producción (los dos
+            // llamadores reales pasan `forced_walkable: &[]`, ver
+            // collision.rs/tile_walls.rs), pero se corrige igual: era la
+            // única de las 4 rutas de carvado que usaba `!is_walkable()` en
+            // vez de una guarda explícita por tipo — SealedWall ya es
+            // no-walkable por el cambio de cell.rs, así que sin este fix
+            // habría caído aquí como cualquier otro muro.
+            if !cell.is_walkable() && cell.kind() != CellType::SealedWall {
+                grid.set(fx, fz, corr(rules.ceiling_corridor));
+            }
         }
     }
 
@@ -450,8 +463,16 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
                     continue;
                 }
                 let cell = grid.get(nxu, nzu);
+                // `kind() == Wall` ya excluye SealedWall por construcción (son
+                // variantes distintas del mismo enum), pero el
+                // `&& kind() != SealedWall` se deja explícito a propósito: si
+                // este check migrara algún día a algo más amplio (`is_solid()`,
+                // `!is_walkable()` — el mismo error de criterio que corrigió
+                // c42dd48 en `connect_zone_to_maze`), SealedWall seguiría
+                // bloqueado sin depender de que quien lo cambie recuerde por qué.
                 let passable = cell.is_walkable()
                     || (cell.kind() == CellType::Wall
+                        && cell.kind() != CellType::SealedWall
                         && nx > 0
                         && nz > 0
                         && nxu < CHUNK_CELLS - 1
@@ -489,7 +510,9 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
         let mut i = hit;
         while parent[i] != usize::MAX {
             let (x, z) = (i % CHUNK_CELLS, i / CHUNK_CELLS);
-            if grid.get(x, z).kind() == CellType::Wall {
+            let k = grid.get(x, z).kind();
+            // Misma guarda explícita que en `passable` arriba — ver comentario.
+            if k == CellType::Wall && k != CellType::SealedWall {
                 grid.set(x, z, Cell::new(CellType::Corridor, ceiling, 0));
             }
             i = parent[i];
@@ -653,13 +676,15 @@ pub(super) fn connect_zone_to_maze(
         } else {
             cz += dz;
         }
-        // Solo muro interior. El contenido estampado (Void/Pillar) se respeta y
-        // el camino sigue avanzando sin escribir; lo que quede suelto lo
-        // reconecta `repair_connectivity` (post-Fase 6), que es quien tiene
-        // permiso para buscar una ruta alternativa alrededor del estampado.
-        if LayerGrid::is_interior(cx, cz)
-            && grid.get(cx as usize, cz as usize).kind() == CellType::Wall
-        {
+        // Solo muro interior. El contenido estampado/protegido (Void/Pillar/
+        // SealedWall) se respeta y el camino sigue avanzando sin escribir; lo
+        // que quede suelto lo reconecta `repair_connectivity` (post-Fase 6),
+        // que es quien tiene permiso para buscar una ruta alternativa
+        // alrededor del estampado. `&& kind() != SealedWall` explícito, misma
+        // razón que en `repair_connectivity`: aunque `kind() == Wall` ya lo
+        // excluye, la redundancia es defensa ante un futuro cambio de criterio.
+        let k = grid.get(cx as usize, cz as usize).kind();
+        if LayerGrid::is_interior(cx, cz) && k == CellType::Wall && k != CellType::SealedWall {
             grid.set(
                 cx as usize,
                 cz as usize,

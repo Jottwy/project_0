@@ -32,13 +32,28 @@ pub enum CellType {
     Pit = 5,
     Void = 6,
     Anomaly = 7,
+    /// Perímetro protegido de una zona estampada (RoomType `SealedRoom` /
+    /// `CorridorSpine`, Fase 4). Ningún pase de carvado (`repair_connectivity`,
+    /// `carve_aperture`, `connect_zone_to_maze`, el sellado de
+    /// `forced_walkable`) puede tocarlo salvo el propio estampador de la zona —
+    /// es lo que hace posible una "sala grande real" sin muros interiores.
+    /// Colapsa a `GridCellType.Wall` en Unity vía el fallback existente
+    /// (`cellType <= Anomaly ? ... : Wall`), sin requerir cambios en C#.
+    SealedWall = 8,
 }
 
 impl CellType {
+    /// `SealedWall` deliberadamente FUERA de esta lista: no es material
+    /// genérico carvable/estampado como Wall/Pillar/Void, es un perímetro
+    /// protegido — un tipo aparte, no una propiedad de "solidez" compartida.
     pub fn is_solid(self) -> bool {
         matches!(self, CellType::Wall | CellType::Pillar | CellType::Void)
     }
 
+    /// `SealedWall` deliberadamente FUERA de esta lista (bloquea como Wall:
+    /// no transitable), para que las rutas de carvado puedan seguir
+    /// distinguiéndolo de Wall vía `kind() == CellType::Wall` sin que ningún
+    /// criterio basado en "no caminable" lo confunda con muro genérico.
     pub fn is_walkable(self) -> bool {
         matches!(
             self,
@@ -97,6 +112,7 @@ impl Cell {
             5 => CellType::Pit,
             6 => CellType::Void,
             7 => CellType::Anomaly,
+            8 => CellType::SealedWall,
             _ => CellType::Wall, // unknown values collapse to Wall (safe/solid)
         }
     }
@@ -133,6 +149,7 @@ mod tests {
         assert_eq!(CellType::Pit as u8, 5);
         assert_eq!(CellType::Void as u8, 6);
         assert_eq!(CellType::Anomaly as u8, 7);
+        assert_eq!(CellType::SealedWall as u8, 8);
 
         // height_units helper: metros → unidades de 2.5 m
         assert_eq!(height_units(5.0), 2);
@@ -150,6 +167,10 @@ mod tests {
             CellType::Corridor
         );
         assert_eq!(Cell::SOLID_WALL.kind(), CellType::Wall);
+        assert_eq!(
+            Cell::new(CellType::SealedWall, 0, 3).kind(),
+            CellType::SealedWall
+        );
     }
 
     #[test]
@@ -162,5 +183,15 @@ mod tests {
         assert!(CellType::Stair.is_walkable());
         assert!(CellType::Pit.is_walkable());
         assert!(CellType::Anomaly.is_walkable());
+    }
+
+    /// `SealedWall` bloquea como Wall (no transitable) pero deliberadamente NO
+    /// cuenta como `is_solid()` — es un perímetro protegido, no material
+    /// genérico carvable/estampado. Ver doc-comment de `CellType::SealedWall`.
+    #[test]
+    fn sealed_wall_blocks_but_is_not_generic_solid() {
+        assert!(!CellType::SealedWall.is_walkable());
+        assert!(!CellType::SealedWall.is_solid());
+        assert_ne!(CellType::SealedWall, CellType::Wall);
     }
 }

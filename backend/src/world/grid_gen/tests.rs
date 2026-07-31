@@ -908,6 +908,75 @@ fn connected_zone_skips_reconnection_entirely() {
     );
 }
 
+// ── SealedWall — sellado de bolsillos sobre una sala incomunicada ───────────
+
+/// Grid con una SealedRoom completamente incomunicada: perímetro SealedWall
+/// SIN NINGÚN hueco, interior Open, y una componente "exterior" (corredor)
+/// más grande en otra zona del grid para que sea la raíz de
+/// `repair_connectivity`. SealedWall no es `passable` para el BFS de
+/// reparación (guarda de la Pieza 1), así que la sala nunca puede conectarse
+/// por esa vía — el "caso borde" que documenta DECISIONS.md/RoomType.
+fn grid_with_incommunicado_sealed_room() -> LayerGrid {
+    let mut grid = LayerGrid::new_solid();
+
+    for z in ZZ0..ZZ1 {
+        for x in ZX0..ZX1 {
+            let perimeter = x == ZX0 || x == ZX1 - 1 || z == ZZ0 || z == ZZ1 - 1;
+            let cell = if perimeter {
+                Cell::new(CellType::SealedWall, 0, 1)
+            } else {
+                Cell::new(CellType::Open, 2, 1)
+            };
+            grid.set(x as usize, z as usize, cell);
+        }
+    }
+
+    // Componente "exterior" más grande, lejos de la sala, para que sea la raíz.
+    for x in 1..15 {
+        grid.set(x as usize, 1, Cell::new(CellType::Corridor, 2, 0));
+    }
+
+    grid
+}
+
+/// El sellado de bolsillos (post-Fase 6, dentro de `repair_connectivity`) NO
+/// distingue "interior de una SealedRoom legítima" de "bolsillo de ruido": si
+/// la sala queda TOTALMENTE incomunicada (sin ninguna entrada viva), su
+/// interior Open se convierte en Wall igual que cualquier otro bolsillo. El
+/// perímetro SealedWall en sí es inmune (nunca `is_walkable()`, la guarda de
+/// la Pieza 1 ni siquiera necesita activarse para protegerlo), pero el
+/// CONTENIDO que encerraba desaparece igual.
+///
+/// Limitación conocida, documentada en DECISIONS.md (RoomType, "caso borde
+/// 5(a)") — este test la deja EXPLÍCITA en vez de silenciosa: si algún día
+/// `repair_connectivity` aprende a preservar salas selladas en vez de
+/// borrarlas, este test debe actualizarse A PROPÓSITO, no romperse por
+/// sorpresa sin que nadie lo note.
+#[test]
+fn repair_connectivity_erases_a_fully_incommunicado_sealed_room() {
+    let mut grid = grid_with_incommunicado_sealed_room();
+
+    let sealed_before = count_kind(&grid, CellType::SealedWall);
+    let open_before = count_kind(&grid, CellType::Open);
+    assert!(sealed_before > 0 && open_before > 0, "montaje degenerado");
+
+    repair_connectivity(&mut grid, 2);
+
+    assert_eq!(
+        count_kind(&grid, CellType::SealedWall),
+        sealed_before,
+        "el perímetro SealedWall no debería poder desaparecer NUNCA"
+    );
+    assert_eq!(
+        count_kind(&grid, CellType::Open),
+        0,
+        "una SealedRoom sin entradas debería perder TODO su interior Open al \
+         sellado de bolsillos (limitación conocida, ver DECISIONS.md/RoomType \
+         — si esto falla, alguien cambió el comportamiento; actualiza este \
+         test a propósito)"
+    );
+}
+
 // ── Fase 1 — sesgo de rectitud configurable ──────────────────────────────────
 
 /// FNV-1a sobre los 4 bytes de cada celda (tipo, techo, zone_id). Cubre el grid

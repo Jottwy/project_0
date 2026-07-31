@@ -23,6 +23,12 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(5, (byte)GridCellType.Pit);
             Assert.AreEqual(6, (byte)GridCellType.Void);
             Assert.AreEqual(7, (byte)GridCellType.Anomaly);
+            // GridCellType NO tiene un caso SealedWall (Rust cell.rs, valor 8):
+            // el fallback de Kind (cellType <= Anomaly ? ... : Wall) ya lo
+            // colapsa a Wall sin que el enum C# necesite conocerlo. Ver
+            // UnknownCellTypeCollapsesToWall más abajo (usa 200, no 8 — 8 ya
+            // no es "valor desconocido" del lado Rust, pero sigue colapsando
+            // igual del lado C#, que es lo que ese test verifica).
         }
 
         [Test]
@@ -55,6 +61,22 @@ namespace BackroomsSurvival.Tests
             var cell = new GridCell { cellType = 200, ceilingHeight = 0, zoneId = 0 };
             Assert.AreEqual(GridCellType.Wall, cell.Kind);
             Assert.IsTrue(cell.IsSolid);
+        }
+
+        /// <summary>
+        /// Rust cell.rs añadió CellType::SealedWall = 8 (perímetro protegido de
+        /// RoomType). Unity no necesita distinguirlo: el fallback existente de
+        /// Kind (cellType &lt;= Anomaly ? ... : Wall) ya lo colapsa a Wall, así
+        /// que un chunk con SealedWall se renderiza como muro normal sin tocar
+        /// una línea de C#. Este test fija ese comportamiento a propósito.
+        /// </summary>
+        [Test]
+        public void SealedWallByteCollapsesToWallOnClient()
+        {
+            var cell = new GridCell { cellType = 8, ceilingHeight = 0, zoneId = 3 };
+            Assert.AreEqual(GridCellType.Wall, cell.Kind);
+            Assert.IsTrue(cell.IsSolid);
+            Assert.IsFalse(cell.IsWalkable);
         }
 
         [Test]

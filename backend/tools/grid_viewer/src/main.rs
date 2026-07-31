@@ -34,6 +34,7 @@ fn color(ct: CellType) -> Rgb<u8> {
         CellType::Pit => Rgb([0x3a, 0x7a, 0xa3]),
         CellType::Void => Rgb([0x1a, 0x16, 0x12]),
         CellType::Anomaly => Rgb([0xb8, 0x54, 0x2f]),
+        CellType::SealedWall => Rgb([0x4a, 0x2a, 0x6a]),
     }
 }
 

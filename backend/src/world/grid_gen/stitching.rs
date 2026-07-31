@@ -93,8 +93,11 @@ fn aperture_pos(world_seed: u64, kx: i32, kz: i32, axis: EdgeAxis, layer_index: 
 
 /// Open the border cell at `start` and carve inward (direction `dir`) through
 /// Wall cells until reaching an already-walkable cell. Stops without carving
-/// if it meets stamped content (Void/Pillar) — "estampar gana"; the repair
-/// pass after stitching reconnects around it.
+/// if it meets stamped/protected content (Void/Pillar/SealedWall) —
+/// "estampar gana"; the repair pass after stitching reconnects around it.
+/// `kind() != Wall` already covers SealedWall (and anything else that isn't
+/// literally plain Wall) — no separate guard needed, unlike the two carve
+/// routes in `generator.rs` that historically used `!is_walkable()`.
 fn carve_aperture(
     grid: &mut LayerGrid,
     rules: &LayerRules,
@@ -120,7 +123,7 @@ fn carve_aperture(
             return; // reached the maze
         }
         if cell.kind() != CellType::Wall {
-            return; // stamped content (Void/Pillar): stop, repair pass handles it
+            return; // stamped/protected content (Void/Pillar/SealedWall): stop
         }
         grid.set(x as usize, z as usize, corr);
     }
