@@ -1002,9 +1002,21 @@ fn carve_explicit_entrance_breaches_own_perimeter_and_reaches_the_maze() {
 
     carve_explicit_entrance(&mut grid, 2, (5, 5), (-1, 0));
 
-    assert_eq!(grid.get(5, 5).kind(), CellType::Corridor, "breach del perímetro");
-    assert_eq!(grid.get(4, 5).kind(), CellType::Corridor, "muro intermedio carvado");
-    assert_eq!(grid.get(3, 5).kind(), CellType::Corridor, "muro intermedio carvado");
+    assert_eq!(
+        grid.get(5, 5).kind(),
+        CellType::Corridor,
+        "breach del perímetro"
+    );
+    assert_eq!(
+        grid.get(4, 5).kind(),
+        CellType::Corridor,
+        "muro intermedio carvado"
+    );
+    assert_eq!(
+        grid.get(3, 5).kind(),
+        CellType::Corridor,
+        "muro intermedio carvado"
+    );
     assert_eq!(
         grid.get(2, 5).kind(),
         CellType::Corridor,
@@ -1033,9 +1045,21 @@ fn carve_explicit_entrance_stops_before_stamped_content() {
 
         carve_explicit_entrance(&mut grid, 2, (5, 5), (-1, 0));
 
-        assert_eq!(grid.get(5, 5).kind(), CellType::Corridor, "{label}: breach propio sí ocurre");
-        assert_eq!(grid.get(4, 5).kind(), CellType::Corridor, "{label}: muro intermedio sí se carva");
-        assert_eq!(grid.get(3, 5).kind(), kind, "{label}: contenido ajeno intacto");
+        assert_eq!(
+            grid.get(5, 5).kind(),
+            CellType::Corridor,
+            "{label}: breach propio sí ocurre"
+        );
+        assert_eq!(
+            grid.get(4, 5).kind(),
+            CellType::Corridor,
+            "{label}: muro intermedio sí se carva"
+        );
+        assert_eq!(
+            grid.get(3, 5).kind(),
+            kind,
+            "{label}: contenido ajeno intacto"
+        );
     }
 }
 
@@ -1049,14 +1073,34 @@ fn carve_explicit_entrance_never_writes_the_reserved_border() {
     carve_explicit_entrance(&mut grid, 2, (2, 5), (-1, 0)); // hacia x=0, sin nada transitable
 
     assert_eq!(grid.get(2, 5).kind(), CellType::Corridor, "breach propio");
-    assert_eq!(grid.get(1, 5).kind(), CellType::Corridor, "muro intermedio carvado");
+    assert_eq!(
+        grid.get(1, 5).kind(),
+        CellType::Corridor,
+        "muro intermedio carvado"
+    );
     let last = CHUNK_CELLS - 1;
     assert_eq!(grid.get(0, 5).kind(), CellType::Wall, "borde x=0 intacto");
     for i in 0..CHUNK_CELLS {
-        assert_eq!(grid.get(0, i).kind(), CellType::Wall, "columna 0 alterada en z={i}");
-        assert_eq!(grid.get(last, i).kind(), CellType::Wall, "columna {last} alterada en z={i}");
-        assert_eq!(grid.get(i, 0).kind(), CellType::Wall, "fila 0 alterada en x={i}");
-        assert_eq!(grid.get(i, last).kind(), CellType::Wall, "fila {last} alterada en x={i}");
+        assert_eq!(
+            grid.get(0, i).kind(),
+            CellType::Wall,
+            "columna 0 alterada en z={i}"
+        );
+        assert_eq!(
+            grid.get(last, i).kind(),
+            CellType::Wall,
+            "columna {last} alterada en z={i}"
+        );
+        assert_eq!(
+            grid.get(i, 0).kind(),
+            CellType::Wall,
+            "fila 0 alterada en x={i}"
+        );
+        assert_eq!(
+            grid.get(i, last).kind(),
+            CellType::Wall,
+            "fila {last} alterada en x={i}"
+        );
     }
 }
 
@@ -1165,9 +1209,9 @@ fn sealed_room_perimeter_and_entrances_geometry() {
                 match grid.get(x as usize, z as usize).kind() {
                     CellType::SealedWall => sealed += 1,
                     CellType::Corridor => entrances += 1,
-                    other => panic!(
-                        "seed {seed}: perímetro con tipo inesperado {other:?} en ({x},{z})"
-                    ),
+                    other => {
+                        panic!("seed {seed}: perímetro con tipo inesperado {other:?} en ({x},{z})")
+                    }
                 }
             }
         }
@@ -1225,8 +1269,14 @@ fn corridor_spine_perimeter_and_entrances_geometry() {
             LayerGrid::in_bounds(x1, z)
                 && grid.get(x1 as usize, z as usize).kind() == CellType::Corridor
         });
-        assert!(west_extends, "seed {seed}: sin carvado más allá del extremo oeste");
-        assert!(east_extends, "seed {seed}: sin carvado más allá del extremo este");
+        assert!(
+            west_extends,
+            "seed {seed}: sin carvado más allá del extremo oeste"
+        );
+        assert!(
+            east_extends,
+            "seed {seed}: sin carvado más allá del extremo este"
+        );
     }
 
     for seed in [TEST_SEED, 1, 42, 7778] {
@@ -1256,8 +1306,14 @@ fn corridor_spine_perimeter_and_entrances_geometry() {
             LayerGrid::in_bounds(x, z1)
                 && grid.get(x as usize, z1 as usize).kind() == CellType::Corridor
         });
-        assert!(north_extends, "seed {seed}: sin carvado más allá del extremo norte");
-        assert!(south_extends, "seed {seed}: sin carvado más allá del extremo sur");
+        assert!(
+            north_extends,
+            "seed {seed}: sin carvado más allá del extremo norte"
+        );
+        assert!(
+            south_extends,
+            "seed {seed}: sin carvado más allá del extremo sur"
+        );
     }
 }
 

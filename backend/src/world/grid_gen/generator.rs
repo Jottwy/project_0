@@ -569,11 +569,28 @@ pub fn generate_layer(
             RoomType::SealedRoom => {
                 stamp_sealed_room(&mut grid, x0, z0, x1, z1, zid, rules.ceiling_open);
                 let seed = zone_entrance_seed(world_seed, chunk_coord, layer_index, zone_idx);
-                carve_sealed_room_entrances(&mut grid, rules.ceiling_corridor, seed, x0, z0, x1, z1);
+                carve_sealed_room_entrances(
+                    &mut grid,
+                    rules.ceiling_corridor,
+                    seed,
+                    x0,
+                    z0,
+                    x1,
+                    z1,
+                );
             }
             RoomType::CorridorSpine => {
                 let horizontal = eff_sz_x >= eff_sz_z;
-                stamp_corridor_spine(&mut grid, x0, z0, x1, z1, zid, rules.ceiling_open, horizontal);
+                stamp_corridor_spine(
+                    &mut grid,
+                    x0,
+                    z0,
+                    x1,
+                    z1,
+                    zid,
+                    rules.ceiling_open,
+                    horizontal,
+                );
                 let seed = zone_entrance_seed(world_seed, chunk_coord, layer_index, zone_idx);
                 carve_corridor_spine_entrances(
                     &mut grid,
