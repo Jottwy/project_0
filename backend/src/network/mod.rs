@@ -134,6 +134,11 @@ pub enum NetworkEvent {
         building_id: u32,
         material_id: i32,
     },
+    /// ADR-037: a joiner asks the host to retire a placed-but-unbuilt piece it just cancelled.
+    StpDemolishRequest {
+        demolish_id: u64,
+        building_id: u32,
+    },
     /// Phase B2.5: a joiner asks the host to pick up a world carryable (host-authoritative).
     StpCarryablePickupRequest {
         carryable_id: u32,
@@ -288,6 +293,11 @@ pub struct NetworkManager {
     /// Phase B2: client-generated add ids already processed by the host, so a
     /// duplicated `stp_build_add` (reliable retransmit) advances progress exactly once.
     pub processed_stp_build_adds: std::collections::HashSet<u64>,
+    /// ADR-037: client-generated demolish ids already processed by the host, so a duplicated
+    /// `stp_demolish` (reliable retransmit) can never retire a SECOND piece — building ids are
+    /// handed out by a monotonic allocator, but this set is what stops a late retransmit from
+    /// acting twice.
+    pub processed_stp_demolishes: std::collections::HashSet<u64>,
     /// Phase B3: quantized world pose-cells already occupied by a group piece, so two
     /// players placing on the SAME socket (distinct place_ids) yield exactly one piece —
     /// the host accepts the first and rejects the rest. Key = (x,y,z,yaw) quantized.
@@ -390,6 +400,7 @@ impl NetworkManager {
             stp_buildings: Vec::new(),
             processed_stp_places: std::collections::HashSet::with_capacity(256),
             processed_stp_build_adds: std::collections::HashSet::with_capacity(256),
+            processed_stp_demolishes: std::collections::HashSet::with_capacity(256),
             occupied_stp_cells: std::collections::HashSet::with_capacity(256),
             stp_carryables: Vec::new(),
             processed_stp_carryable_drops: std::collections::HashSet::with_capacity(64),
@@ -850,6 +861,14 @@ impl NetworkManager {
                 add_id,
                 building_id,
                 material_id,
+            }],
+
+            PacketPayload::StpDemolishRequest {
+                demolish_id,
+                building_id,
+            } => vec![NetworkEvent::StpDemolishRequest {
+                demolish_id,
+                building_id,
             }],
 
             PacketPayload::StpCarryableList { carryables } => {

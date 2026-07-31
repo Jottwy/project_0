@@ -76,6 +76,8 @@ pub enum PacketType {
     StpBuildingList = 0x1A,
     StpPlaceRequest = 0x1B,
     StpBuildAddRequest = 0x1C,
+    /// ADR-037: retire a placed-but-unbuilt piece from the authoritative roster.
+    StpDemolishRequest = 0x1D,
     // Actions (0x20-0x2F)
     Interact = 0x20,
     Attack = 0x21,
@@ -139,6 +141,7 @@ impl PacketType {
             0x1A => Some(Self::StpBuildingList),
             0x1B => Some(Self::StpPlaceRequest),
             0x1C => Some(Self::StpBuildAddRequest),
+            0x1D => Some(Self::StpDemolishRequest),
             0x20 => Some(Self::Interact),
             0x21 => Some(Self::Attack),
             0x22 => Some(Self::Pickup),
@@ -390,6 +393,13 @@ pub enum PacketPayload {
         building_id: u32,
         material_id: i32,
     },
+    /// ADR-037: the sender cancelled a placed-but-unbuilt piece. Only the host acts on it;
+    /// it removes the entry from `stp_buildings` and the existing 10 Hz relay makes every
+    /// client's replicator destroy its copy through the stale-sweep it already runs.
+    StpDemolishRequest {
+        demolish_id: u64,
+        building_id: u32,
+    },
 
     // State
     PlayerUpdate {
@@ -629,6 +639,7 @@ impl PacketPayload {
             Self::StpBuildingList { .. } => PacketType::StpBuildingList as u16,
             Self::StpPlaceRequest { .. } => PacketType::StpPlaceRequest as u16,
             Self::StpBuildAddRequest { .. } => PacketType::StpBuildAddRequest as u16,
+            Self::StpDemolishRequest { .. } => PacketType::StpDemolishRequest as u16,
             Self::PlayerUpdate { .. } => PacketType::PlayerUpdate as u16,
             Self::ChunkState { .. } => PacketType::ChunkState as u16,
             Self::ChunkDelta { .. } => PacketType::ChunkDelta as u16,
@@ -709,6 +720,36 @@ mod tests {
             Some(PacketType::Ack)
         );
         assert_eq!(PacketType::from_u16(0xFF), None);
+    }
+
+    // ADR-037. Non-default values on purpose: a variant that only ever round-trips zeros would
+    // pass even if the two fields were swapped on the wire.
+    #[test]
+    fn stp_demolish_request_round_trip() {
+        let payload = PacketPayload::StpDemolishRequest {
+            demolish_id: 7_000_000_042,
+            building_id: 0x6000_0009,
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 1, 100);
+        let data = encode_packet(&header, &payload);
+        let (h2, p2) = decode_packet(&data).unwrap();
+
+        assert_eq!(h2.packet_type, PacketType::StpDemolishRequest as u16);
+        assert_eq!(
+            PacketType::from_u16(0x1D),
+            Some(PacketType::StpDemolishRequest),
+            "0x1D must decode back to the variant — the code is the wire contract"
+        );
+        match p2 {
+            PacketPayload::StpDemolishRequest {
+                demolish_id,
+                building_id,
+            } => {
+                assert_eq!(demolish_id, 7_000_000_042);
+                assert_eq!(building_id, 0x6000_0009);
+            }
+            other => panic!("wrong payload decoded: {other:?}"),
+        }
     }
 
     #[test]

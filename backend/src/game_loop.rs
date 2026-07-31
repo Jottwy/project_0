@@ -1046,6 +1046,19 @@ async fn handle_network_event(
             }
         }
 
+        // ADR-037: a joiner cancelled an unbuilt piece. Relay immediately after retiring it —
+        // the player who pressed the key is staring at the spot, so the round-trip gap matters
+        // more here than anywhere else (same reasoning as StpPlaceRequest above).
+        NetworkEvent::StpDemolishRequest {
+            demolish_id,
+            building_id,
+        } => {
+            if net.is_host {
+                process_stp_demolish(demolish_id, building_id, net);
+                sync::broadcast_stp_buildings(net).await;
+            }
+        }
+
         NetworkEvent::StpCarryablePickupRequest {
             carryable_id,
             requester_id,
@@ -2241,6 +2254,64 @@ async fn handle_action(
                 net.send_reliable(1, &payload).await;
             }
         }
+        // ADR-037: a client cancelled a placed-but-unbuilt piece. The host retires it from
+        // stp_buildings and the relay makes every client's replicator drop its copy. A joiner
+        // forwards to the host and never mutates the roster itself.
+        "stp_demolish" => {
+            let demolish_id = action
+                .data
+                .get("demolish_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let building_id = action
+                .data
+                .get("building_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u32;
+            if building_id == 0 {
+                return;
+            }
+
+            // ADR-031 follow-up, finally closed: a Sleeping Bag placement set THIS player's
+            // respawn point, so cancelling that same bag has to clear it. Read the entry BEFORE
+            // the host removes it below — and match on position, because "last placed wins"
+            // means the point may well belong to a different, still-standing bed.
+            //
+            // Runs on the canceller's own backend (host OR joiner), mirroring where `stp_place`
+            // sets it. Known gap, documented in ADR-037: ANOTHER player whose respawn point was
+            // this bed keeps a stale one — their Player lives in their own backend and the host
+            // does not own it. They respawn at a safe cell where the bed used to be, which is a
+            // stale point, not an invalid state.
+            if let Some(building) = net.stp_buildings.iter().find(|b| b.id == building_id) {
+                if building.def_id == BED_DEF_ID {
+                    if let Some(point) = player.respawn_point {
+                        const BED_MATCH_RADIUS_M: f32 = 0.5;
+                        if point.distance(Vec3::from_array(building.position)) < BED_MATCH_RADIUS_M
+                        {
+                            player.respawn_point = None;
+                            info!(
+                                "MPTRACE step=BED event=respawn_point_cleared building_id={} pos=({:.2},{:.2},{:.2})",
+                                building_id,
+                                building.position[0],
+                                building.position[1],
+                                building.position[2]
+                            );
+                        }
+                    }
+                }
+            }
+
+            if net.is_host {
+                process_stp_demolish(demolish_id, building_id, net);
+                sync::broadcast_stp_buildings(net).await;
+            } else {
+                let payload = crate::network::protocol::PacketPayload::StpDemolishRequest {
+                    demolish_id,
+                    building_id,
+                };
+                net.send_reliable(1, &payload).await;
+            }
+        }
         // Phase B2.5: the host Unity registers the authoritative carryable list (host-only;
         // a joiner sending this is ignored so it can't diverge the world).
         "set_stp_carryables" => {
@@ -3055,6 +3126,63 @@ fn process_stp_build_add(
     info!(
         "MPTRACE step=BM event=stp_build_add building_id={} material_id={} add_id={}",
         building_id, material_id, add_id
+    );
+}
+
+/// ADR-037: host retires a placed-but-unbuilt piece from the authoritative `stp_buildings`
+/// list. The 10 Hz relay stops emitting it and the stale-sweep that `StpBuildingReplicator`
+/// already runs destroys the copy on every client — so this is the whole demolish path on
+/// the backend, and not one line of destruction code is needed on the client.
+///
+/// Deduped by the client-generated `demolish_id`, mirroring `process_stp_place` /
+/// `process_stp_build_add`.
+fn process_stp_demolish(demolish_id: u64, building_id: u32, net: &mut NetworkManager) {
+    if demolish_id != 0 && !net.processed_stp_demolishes.insert(demolish_id) {
+        info!(
+            "MPTRACE step=BD event=stp_demolish_duplicate demolish_id={} ignored=true",
+            demolish_id
+        );
+        return;
+    }
+
+    let index = match net.stp_buildings.iter().position(|b| b.id == building_id) {
+        Some(i) => i,
+        None => {
+            // Not an error: two clients can cancel the same piece in the same window, and the
+            // loser simply finds it already gone.
+            info!(
+                "MPTRACE step=BD event=stp_demolish_no_building building_id={} demolish_id={} ignored=true",
+                building_id, demolish_id
+            );
+            return;
+        }
+    };
+
+    let removed = net.stp_buildings.remove(index);
+
+    // Release the pose cell that `process_stp_place` claimed. Only group pieces ever claimed
+    // one (`is_group` gates the insert there), and `group_id != 0` is exactly that condition
+    // at placement time — so the flag itself never has to be stored. Skipping this would brick
+    // the slot: placing, cancelling and re-placing on the same socket would be impossible for
+    // the rest of the session, with a silent `stp_place_cell_taken` as the only trace.
+    if removed.group_id != 0 {
+        let cell = stp_pose_cell(removed.position, removed.rotation);
+        net.occupied_stp_cells.remove(&cell);
+    }
+
+    // NOTE: `processed_stp_places` is deliberately NOT cleaned here. It is retransmit dedup,
+    // not a live-piece census — freeing the id would let a late duplicate of the original
+    // request resurrect the piece that was just cancelled.
+
+    info!(
+        "MPTRACE step=BD event=stp_demolish_removed id={} demolish_id={} def_id={} group_id={} pos=({:.2},{:.2},{:.2})",
+        building_id,
+        demolish_id,
+        removed.def_id,
+        removed.group_id,
+        removed.position[0],
+        removed.position[1],
+        removed.position[2]
     );
 }
 
@@ -5471,6 +5599,177 @@ mod tests {
         assert!(
             !dedupe.insert((1, 3)),
             "not-yet-evicted entry must stay deduped"
+        );
+    }
+
+    // ── ADR-037: stp_demolish ───────────────────────────────────────────────────
+
+    /// The headline behaviour AND the trap: freeing the pose cell. Without the release, placing,
+    /// cancelling and re-placing on the same socket is impossible for the rest of the session and
+    /// the only trace is a silent `stp_place_cell_taken`.
+    #[tokio::test]
+    async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let position = [10.0, 0.0, 20.0];
+        let rotation = 90.0;
+
+        process_stp_place(1, 111, position, rotation, 0, true, &mut net);
+        assert_eq!(net.stp_buildings.len(), 1);
+        let id = net.stp_buildings[0].id;
+        assert!(
+            net.occupied_stp_cells
+                .contains(&stp_pose_cell(position, rotation)),
+            "a group piece must claim its pose cell on placement"
+        );
+
+        process_stp_demolish(500, id, &mut net);
+
+        assert!(net.stp_buildings.is_empty(), "the piece must be retired");
+        assert!(
+            !net.occupied_stp_cells
+                .contains(&stp_pose_cell(position, rotation)),
+            "the pose cell must be released, or the slot is bricked for the session"
+        );
+
+        // The real proof: the same socket accepts a new piece again.
+        process_stp_place(2, 111, position, rotation, 0, true, &mut net);
+        assert_eq!(
+            net.stp_buildings.len(),
+            1,
+            "re-placing on the freed cell must be accepted"
+        );
+    }
+
+    /// The reliable channel has a known open infinite-retransmit bug (STATE.md), so the same
+    /// request WILL arrive twice in production. A second delivery must not eat a second piece.
+    #[tokio::test]
+    async fn stp_demolish_dedupes_under_retransmit() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, &mut net);
+        process_stp_place(2, 111, [50.0, 0.0, 50.0], 0.0, 0, false, &mut net);
+        let first = net.stp_buildings[0].id;
+
+        process_stp_demolish(900, first, &mut net);
+        assert_eq!(net.stp_buildings.len(), 1);
+
+        // Same demolish_id again: must be dropped before it can touch the survivor.
+        process_stp_demolish(900, net.stp_buildings[0].id, &mut net);
+        assert_eq!(
+            net.stp_buildings.len(),
+            1,
+            "a retransmitted demolish must not retire a second piece"
+        );
+    }
+
+    #[tokio::test]
+    async fn stp_demolish_of_unknown_building_is_ignored() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, &mut net);
+
+        // Two clients cancelling the same piece in one window: the loser finds it already gone.
+        process_stp_demolish(901, 0xDEAD_BEEF, &mut net);
+
+        assert_eq!(
+            net.stp_buildings.len(),
+            1,
+            "an unknown building id must be a no-op, not a panic or a wrong removal"
+        );
+    }
+
+    /// A free piece never claimed a cell (`is_group` gates the insert in process_stp_place), so
+    /// demolishing one must not reach into `occupied_stp_cells` and unblock a cell a DIFFERENT,
+    /// still-standing group piece is holding at the same quantized pose.
+    #[tokio::test]
+    async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let position = [30.0, 0.0, 30.0];
+
+        process_stp_place(1, 111, position, 0.0, 0, true, &mut net); // group piece: claims the cell
+        process_stp_place(2, 222, position, 0.0, 0, false, &mut net); // free piece: claims nothing
+        let free_id = net.stp_buildings[1].id;
+
+        process_stp_demolish(902, free_id, &mut net);
+
+        assert_eq!(net.stp_buildings.len(), 1);
+        assert!(
+            net.occupied_stp_cells
+                .contains(&stp_pose_cell(position, 0.0)),
+            "the group piece still standing there must keep its cell"
+        );
+    }
+
+    /// ADR-031's follow-up, closed by ADR-037: cancelling the bed that set the respawn point must
+    /// clear it. Goes through handle_action because that is where `player` is in scope.
+    #[tokio::test]
+    async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut world = World::new(42);
+        let mut player = Player::new(1, "Host");
+        let (tx, _rx) = broadcast::channel(16);
+        let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+        let bed_position = [12.0, 0.0, 34.0];
+        process_stp_place(1, BED_DEF_ID, bed_position, 0.0, 0, false, &mut net);
+        let bed_id = net.stp_buildings[0].id;
+        player.respawn_point = Some(Vec3::from_array(bed_position));
+
+        let action = crate::ipc::PlayerAction {
+            action_type: "stp_demolish".into(),
+            data: serde_json::json!({ "demolish_id": 903, "building_id": bed_id }),
+        };
+        handle_action(
+            &action,
+            &mut player,
+            &mut world,
+            &mut net,
+            &tx,
+            &mut processed,
+            0,
+        )
+        .await;
+
+        assert!(
+            player.respawn_point.is_none(),
+            "cancelling the bed the respawn point came from must clear it"
+        );
+        assert!(net.stp_buildings.is_empty());
+    }
+
+    /// "Last placed wins" (ADR-031) means the point can belong to a DIFFERENT bed that is still
+    /// standing. Cancelling an unrelated one must leave it alone.
+    #[tokio::test]
+    async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut world = World::new(42);
+        let mut player = Player::new(1, "Host");
+        let (tx, _rx) = broadcast::channel(16);
+        let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+        let live_bed = [12.0, 0.0, 34.0];
+        let doomed_bed = [80.0, 0.0, 90.0];
+        process_stp_place(1, BED_DEF_ID, doomed_bed, 0.0, 0, false, &mut net);
+        let doomed_id = net.stp_buildings[0].id;
+        player.respawn_point = Some(Vec3::from_array(live_bed));
+
+        let action = crate::ipc::PlayerAction {
+            action_type: "stp_demolish".into(),
+            data: serde_json::json!({ "demolish_id": 904, "building_id": doomed_id }),
+        };
+        handle_action(
+            &action,
+            &mut player,
+            &mut world,
+            &mut net,
+            &tx,
+            &mut processed,
+            0,
+        )
+        .await;
+
+        assert_eq!(
+            player.respawn_point,
+            Some(Vec3::from_array(live_bed)),
+            "a bed that is not the one the point came from must not clear it"
         );
     }
 }

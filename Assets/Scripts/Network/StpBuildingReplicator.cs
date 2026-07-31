@@ -25,6 +25,13 @@ namespace BackroomsSurvival.Net
     /// The only vendor-protected touch is forcing the BuildingPiece visual state (the enum is
     /// protected) via the serialized `_state` field of THIS spawned instance — no vendor source
     /// is edited. Construction PROGRESS uses the public LoadMembers API.
+    ///
+    /// ADR-037: this class is also where a LOCAL cancel is detected. The vendor's cancel-preview
+    /// key destroys the piece locally and nothing else, so the reconcile below used to respawn it
+    /// on the next frame — cancelling did nothing in multiplayer. A tracked piece that vanished
+    /// without us nulling it is now reported to the host (SendStpDemolish), which retires it from
+    /// the roster; the stale sweep already present here then destroys it everywhere. See
+    /// <see cref="HandleVanishedPiece"/> for how the two ways of vanishing are told apart.
     /// </summary>
     public sealed class StpBuildingReplicator : MonoBehaviour
     {
@@ -40,6 +47,7 @@ namespace BackroomsSurvival.Net
             public uint groupId;    // B3: the group this piece belongs to (0 = standalone)
             public bool complete;   // sticky: progress only advances, never downgrades
             public string addedKey; // last-applied progress snapshot (change detection)
+            public long demolishId; // ADR-037: non-zero once a demolish was sent for this piece
         }
 
         private readonly Dictionary<uint, Tracked> _spawned = new Dictionary<uint, Tracked>();
@@ -49,6 +57,8 @@ namespace BackroomsSurvival.Net
         private readonly Dictionary<uint, BuildingPieceGroup> _groups = new Dictionary<uint, BuildingPieceGroup>();
         // def_id → prefab-authored build requirements (the required amounts live in the prefab).
         private readonly Dictionary<int, BuildRequirement[]> _authoredByDef = new Dictionary<int, BuildRequirement[]>();
+        // ADR-037: monotonic suffix for this client's demolish ids.
+        private uint _demolishCounter;
 
         // Cached reflection for the protected serialized `_state` field + its boxed values
         // (the enum type is not nameable from outside the vendor assembly).
@@ -83,11 +93,15 @@ namespace BackroomsSurvival.Net
                 alive.Add(b.id);
                 string key = AddedKey(b.added);
 
-                if (!_spawned.TryGetValue(b.id, out var tracked) || tracked.go == null)
+                if (!_spawned.TryGetValue(b.id, out var tracked))
                 {
                     var go = SpawnBuilding(b, out bool complete);
                     if (go != null)
                         _spawned[b.id] = new Tracked { go = go, groupId = b.groupId, complete = complete, addedKey = key };
+                }
+                else if (tracked.go == null)
+                {
+                    HandleVanishedPiece(b, tracked, key, ipc);
                 }
                 else if (tracked.addedKey != key)
                 {
@@ -120,6 +134,62 @@ namespace BackroomsSurvival.Net
             if (deadGroups != null)
                 foreach (uint k in deadGroups)
                     _groups.Remove(k);
+        }
+
+        /// <summary>
+        /// ADR-037: a tracked piece's GameObject is gone while the host still lists it. Two very
+        /// different things look identical here, and telling them apart is the whole point:
+        ///
+        ///  · WE nulled the handle. <see cref="ApplyProgressUpdate"/> does exactly that on the
+        ///    completion transition, so the piece can be respawned in the CONSTRUCTED state on the
+        ///    next reconcile. Recognised by <c>complete</c> — it is set in the same breath, and the
+        ///    vendor can never cancel a finished piece anyway (CharacterConstructableBuilder
+        ///    .GetClosestConstructable skips IsConstructed), so an unfinished piece never reaches
+        ///    this branch by that route.
+        ///  · SOMEONE ELSE destroyed it — in practice the vendor cancel-preview key, which calls
+        ///    Destroy purely locally and knows nothing about the network. THAT is the bug this
+        ///    handles: the piece is still in the authoritative roster, so the old code respawned it
+        ///    a frame later and cancelling appeared to do nothing in multiplayer.
+        ///
+        /// The request is sent once and the respawn is suppressed until the host drops the entry
+        /// (the stale sweep below then clears the tracking). Respawning while the request is in
+        /// flight would flash the piece back for a whole RTT, right where the player is looking.
+        /// </summary>
+        private void HandleVanishedPiece(StpBuildingMsg b, Tracked tracked, string key, IPCClient ipc)
+        {
+            // Our own completion respawn: re-spawn in Constructed and carry on.
+            if (tracked.complete)
+            {
+                var go = SpawnBuilding(b, out bool complete);
+                if (go != null)
+                    _spawned[b.id] = new Tracked { go = go, groupId = b.groupId, complete = complete, addedKey = key };
+                return;
+            }
+
+            // Already asked the host — wait for the roster to drop it. Nothing to do.
+            if (tracked.demolishId != 0)
+                return;
+
+            // No host link: keep the pre-ADR-037 behaviour rather than swallowing the piece.
+            if (!ipc.IsConnected)
+            {
+                var go = SpawnBuilding(b, out bool complete);
+                if (go != null)
+                    _spawned[b.id] = new Tracked { go = go, groupId = b.groupId, complete = complete, addedKey = key };
+                return;
+            }
+
+            tracked.demolishId = NextDemolishId();
+            ipc.SendStpDemolish(tracked.demolishId, b.id);
+            Debug.Log($"[StpBuildingReplicator] local cancel detected id={b.id} demolish_id={tracked.demolishId} → host.");
+        }
+
+        // Globally-unique per demolish: NET_ID-prefixed counter, same scheme as the place/add ids,
+        // so two clients never collide and the host can dedup a reliable retransmit.
+        private long NextDemolishId()
+        {
+            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            return (long)Mathf.Max(1, netId) * 1000000000L + (++_demolishCounter);
         }
 
         // B3: returns the reconstructed BuildingPieceGroup for a group_id, creating it (tagged

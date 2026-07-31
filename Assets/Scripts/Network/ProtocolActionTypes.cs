@@ -14,6 +14,7 @@ namespace BackroomsSurvival.Net
         public const string StpDrop = "stp_drop";
         public const string StpPlace = "stp_place";
         public const string StpBuildAdd = "stp_build_add";
+        public const string StpDemolish = "stp_demolish";
         public const string SetStpCarryables = "set_stp_carryables";
         public const string StpCarryablePickup = "stp_carryable_pickup";
         public const string StpCarryableDrop = "stp_carryable_drop";

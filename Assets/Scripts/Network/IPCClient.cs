@@ -805,6 +805,22 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-037: tell the host the local player cancelled a placed-but-unbuilt piece (by its
+        /// B1 network instance id). The host retires it from stp_buildings and the relay makes
+        /// every client's replicator destroy its copy through the stale-sweep it already runs.
+        /// Deduped by demolishId. Without this the vendor's local-only Destroy is undone by the
+        /// next reconcile, which is the whole "cancelling does nothing in multiplayer" bug.
+        /// </summary>
+        public void SendStpDemolish(long demolishId, uint buildingId)
+        {
+            SendActionFrame(ProtocolActionTypes.StpDemolish, 2, w =>
+            {
+                w.WriteString("demolish_id"); w.WriteInt(demolishId);
+                w.WriteString("building_id"); w.WriteInt(buildingId);
+            });
+        }
+
+        /// <summary>
         /// Phase B2.5: the host registers the authoritative STP carryable list with the backend.
         /// The backend stores it, relays it to joiners, and echoes it in world_state.stp_carryables.
         /// </summary>

@@ -47,7 +47,13 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// remote corpses. v10 (ADR-028 post-E3) adds `dead:bool` to RemotePlayerState and the P2P
 /// PlayerUpdate — SERVER-derived (`player.stats.is_dead()`, not client-reported; PlayerInput
 /// unchanged), `serde(default)`, so a v9 peer decodes false (never hides the proxy).
-const WIRE_SCHEMA_VERSION: u32 = 10;
+/// v11 (ADR-037) adds the `stp_demolish` IPC action and one P2P PacketPayload variant,
+/// `StpDemolishRequest` (0x1D), so a cancelled-but-unbuilt building piece is retired from the
+/// host-authoritative roster instead of being respawned by the relay. Nothing existing changes
+/// shape. A v10 peer fails the payload parse and ignores the packet, so the canceller sees the
+/// piece come back — exactly today's behaviour, which is the degradation this bump is meant to
+/// fix rather than to introduce.
+const WIRE_SCHEMA_VERSION: u32 = 11;
 
 /// Run the IPC server until a fatal accept error.
 ///
