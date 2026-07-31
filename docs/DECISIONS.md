@@ -1153,3 +1153,33 @@ La primera implementación resolvía el RoomType una vez por tile, razonando que
 - No se toca `BackroomsLayerVisualsCreator`: el campo nuevo no lo escribe el menú, así que un re-run no lo pisa (mismo régimen que `props`). El reverso conocido sigue vigente: borrar un `.asset` y regenerarlo pierde lo autorado a mano.
 
 Tests: cliente 4/4 assemblies Roslyn en verde + **14 tests EditMode nuevos** en `WallVariantTests.cs` (regresión cero con y sin `room_zones`; selector con los dos comodines y con el default del Inspector; degradación por zona desconocida, unitaria y end-to-end; reparto ponderado en los cortes exactos; peso 0 / NaN / fall-through con `h == 1`; `prefab` null = panel de stock; conversión celda↔tile incluido el tile 4 que delataría el off-by-one; los 4 muros del perímetro de una `SealedRoom`; ruta unstyled; determinismo entre reconstrucciones). **Compile-verificados, NO ejecutados por el agente** (requieren el editor). Backend sin tocar: 411/411 sigue en verde.
+
+---
+
+## ADR-036 — Densidad de props condicionada por RoomType
+Fecha: 2026-07-31
+Estado: **DECIDIDA E IMPLEMENTADA** (Pieza 3 de la ronda de variantes de pared). Cliente puro — el wire NO cambia.
+
+### Problema
+Las `SealedRoom` de ADR-034 tienen perímetro propio y entradas carvadas a propósito, pero por dentro se sienten IGUAL que un tramo de maze: `PlaceProps` aplica un único `cfg.propDensity` plano a todo el chunk, sin distinguir "sala" de "pasillo". Una sala con puerta y muros que resulta estar tan vacía como el corredor que lleva a ella no lee como sala; lee como un hueco del laberinto que casualmente tiene marco. Y el `CorridorSpine`, cuya gracia es el pasillo largo y tenso, recibe la misma dispersión de mobiliario que cualquier otro sitio, que es justo lo que rompe esa tensión.
+
+### Decisión
+`PlaceProps` escala `cfg.propDensity` por el RoomType del TILE. **Nada más cambia**: el catálogo (`cfg.props`), la selección ponderada (`PickProp`), el sesgo de cluster, el pegado a pared (Pieza E), el tope por chunk y los salts quedan intactos. Lo único que se toca es el umbral contra el que se comparan los hashes de spawn — los hashes se calculan igual y en el mismo orden, así que un tile `Open` se decide exactamente como antes.
+
+Se usa `RoomTypeForTile`, no el `RoomTypeForPanel` de ADR-035: un prop se coloca DENTRO del tile (centro o pegado a una pared propia), no en su frontera, así que aquí el tile sí es la unidad correcta.
+
+**Valores elegidos** (constantes en `GridChunkBuilder`, no campos de `LayerVisualConfig`: es un primer pase de sensación, no una palanca de autoría por capa; `TODO(balance)` explícito):
+
+- **`Open` → 1.0.** Sin cambio, por definición. Es el fallback de todo lo desconocido.
+- **`SealedRoom` → 2.5.** Con el `propDensity` 0.18 de layer 0 sube a 0.45: ~7 de los 16 tiles de una sala de 8×8 celdas. "Habitada" sin llegar a almacén. 2.0 (0.36) apenas se distingue del baseline en una sala tan pequeña —6 tiles frente a 3, diferencia que se pierde en el ruido del hash— y 3.0 (0.54) pasa de la mitad de los tiles y lee como trastero, no como oficina abandonada.
+- **`CorridorSpine` → 0.15, NO 0.0.** Un pasillo literalmente vacío no lee como tensión, lee como zona sin terminar: el jugador que ve 30 m de corredor sin un solo objeto asume que falta contenido, no que el vacío es la intención. A 0.15 × 0.18 = 0.027 la inmensa mayoría de los spines salen vacíos de verdad y uno de cada tantos tiene un objeto suelto — y es ese objeto ocasional el que hace que el vacío del resto se lea como deliberado. Bajar a 0.0 es un cambio de una cifra si en playtest gana el vacío absoluto.
+
+### Consecuencias
+- **La escasez del `CorridorSpine` es diseño, no bug.** Un pasillo sin props no es un fallo de generación ni un chunk a medio construir. Queda escrito aquí para que un playtest futuro no lo "arregle".
+- **`MaxPropsPerChunk = 12` sigue siendo un tope duro y puede morder.** Con el `propDensity` 0.18 de producción un chunk ya roza el tope, así que en esos chunks el multiplicador NO añade props en términos absolutos: redistribuye cuáles ganan el subsampleo determinista, y la sala se lleva una PROPORCIÓN mayor de los 12. El efecto sigue siendo visible (una sala pasa de ~2 a ~4 props de los 12 del chunk), pero no es lineal con el multiplicador. No se toca el tope: es una decisión de rendimiento previa y subirlo es otra conversación.
+- **Los props nunca se apoyan en la arista de ENTRADA de una sala.** Sale gratis del mecanismo existente —el bucle de pegado a pared solo recorre los bits que están PUESTOS en `walls[tx,tz] & 0x0F`, y una entrada es justamente un bit ausente— pero nada lo fijaba. Ahora hay un test que lo clava, montado para que el tile de la entrada sea el único candidato posible.
+- **Fallback intacto.** Sin `room_zones` (backend anterior a ADR-034, chunk sin zonas, o zona `Open`) el array ni se consulta y el gate queda literalmente el de antes. Un test comprueba que una zona `Open` explícita elige LOS MISMOS TILES que no tener zonas, no solo la misma cantidad.
+- **Layers 1-3 no cambian nada hoy**: tienen `room_type_weights` default `(1,0,0)`, así que todas sus zonas son `Open` y el multiplicador es 1.0. El efecto es exclusivo de layer 0 mientras RoomType siga activo solo ahí.
+- El catálogo es el MISMO de siempre (`PropEntry` con placeholders): no hacen falta modelos nuevos para que esto se note, a diferencia de ADR-035, que queda inerte hasta que se autorice un prefab.
+
+Tests: cliente 4/4 assemblies Roslyn en verde + **6 tests EditMode nuevos** en `PropRoomTypeTests.cs`. Los recuentos esperados NO son estimaciones: salen de evaluar el mismo `Hash01` del builder sobre los 99 tiles elegibles con `propClusterBias = 0` y `propDensity = 0.04` (elegido para que los tres casos queden por debajo del tope de 12 y el test mida el multiplicador, no el tope) — baseline 4, `SealedRoom` 9, `CorridorSpine` 1, media rejilla sellada 7. **Compile-verificados, NO ejecutados por el agente** (requieren el editor). Backend sin tocar: 411/411 sigue en verde.

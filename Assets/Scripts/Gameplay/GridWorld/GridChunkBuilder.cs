@@ -403,7 +403,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             // Fase 5C: procedural props (placeholders) per tile.
             if (styled && cfg.props != null && cfg.props.Length > 0)
-                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ);
+                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, roomZones);
 
             // Fase 5A (Bug #1): tag the whole chunk to its macro-layer's Unity layer so
             // per-layer lamp culling isolates it (see GeoLayers). Lamps/luminaires added
@@ -1002,6 +1002,38 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // prop's own depth and keeps it from clipping through the panel.
         private const float PropHugInset = 1.9f;
 
+        // ── ADR-036 — densidad de props por RoomType ────────────────────────────
+        //
+        // Multiplican `cfg.propDensity` en el gate de spawn, NADA MÁS: el catálogo
+        // (`cfg.props`), la selección ponderada, el sesgo de cluster, el pegado a pared y
+        // los salts siguen exactamente como estaban. Son constantes y no campos de
+        // `LayerVisualConfig` a propósito: es un primer pase de sensación, no una palanca
+        // de autoría por capa. TODO(balance) — calibrar en playtest.
+        //
+        // SealedRoom 2.5: con el `propDensity` 0.18 de layer 0 sube a 0.45, o sea ~7 de
+        // los 16 tiles de una sala de 8×8 celdas. Es "habitada" sin llegar a almacén. 2.0
+        // (0.36) apenas se distingue del baseline en una sala tan pequeña —6 tiles frente
+        // a 3— y 3.0 (0.54) pasa de la mitad de los tiles y lee como trastero.
+        //
+        // CorridorSpine 0.15: NO cero. Un pasillo literalmente vacío lee como zona sin
+        // terminar, no como tensión. A 0.15 × 0.18 = 0.027 la mayoría de los spines salen
+        // vacíos de verdad y uno de cada tantos tiene un objeto suelto, que es lo que hace
+        // que el vacío se lea como deliberado. Poner 0.0 aquí es un cambio de una cifra si
+        // en playtest gana el vacío absoluto.
+        private const float PropDensityOpen = 1.0f;  // sin cambio — comportamiento histórico
+        private const float PropDensitySealedRoom = 2.5f;
+        private const float PropDensityCorridorSpine = 0.15f;
+
+        private static float PropDensityMultiplier(RoomZoneKind roomType)
+        {
+            switch (roomType)
+            {
+                case RoomZoneKind.SealedRoom: return PropDensitySealedRoom;
+                case RoomZoneKind.CorridorSpine: return PropDensityCorridorSpine;
+                default: return PropDensityOpen;
+            }
+        }
+
         /// <summary>Offset direction and facing yaw per wall bit, indexed by BIT POSITION
         /// of the backend edge convention (0 = N/−Z, 1 = S/+Z, 2 = E/+X, 3 = W/−X). The
         /// prop backs against that wall and faces into the room.</summary>
@@ -1026,16 +1058,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// chunk's Unity layer via SetLayerRecursively (called after) — lit only by this layer.
         /// </summary>
         private static void PlaceProps(Transform parent, byte[,] walls, LayerVisualConfig cfg,
-            LayerVisualMaterials mats, int chunkX, int chunkZ)
+            LayerVisualMaterials mats, int chunkX, int chunkZ, RoomZoneMsg[] roomZones)
         {
             float totalWeight = 0f;
             for (int i = 0; i < cfg.props.Length; i++)
                 totalWeight += Mathf.Max(0f, cfg.props[i].spawnWeight);
             if (totalWeight <= 0f) return;
 
-            float density = Mathf.Clamp01(cfg.propDensity);
+            float baseDensity = Mathf.Clamp01(cfg.propDensity);
             float bias    = Mathf.Clamp01(cfg.propClusterBias);
             int center    = Tiles / 2;
+            // ADR-036: sin zonas (backend anterior a ADR-034, o chunk sin ellas) ni se
+            // consulta el array — el gate queda literalmente el de antes.
+            bool hasZones = roomZones != null && roomZones.Length > 0;
 
             // Pass 1: collect candidate tiles (spawn test + constraints). Cluster bias blends
             // per-tile noise (uniform) with coarse 2×2-cell noise (clustered).
@@ -1055,6 +1090,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
                     float fine   = Hash01(gx, gz, PropSaltFine);
                     float coarse = Hash01(gx >> 1, gz >> 1, PropSaltCoarse);
+                    // ADR-036: el RoomType del TILE (no del panel — un prop se coloca
+                    // dentro del tile, no en su frontera) escala la densidad. Los hashes
+                    // se calculan igual y en el mismo orden que antes: lo único que cambia
+                    // es el umbral contra el que se comparan, así que un tile Open sigue
+                    // decidiéndose exactamente igual que antes de este ADR.
+                    float density = hasZones
+                        ? Mathf.Clamp01(baseDensity *
+                            PropDensityMultiplier(RoomTypeForTile(roomZones, tx, tz)))
+                        : baseDensity;
                     if (Mathf.Lerp(fine, coarse, bias) >= density) continue;
 
                     _propScratch.Add((Hash01(gx, gz, PropSaltOrder), tx, tz));
