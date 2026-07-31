@@ -19,11 +19,17 @@ namespace BackroomsSurvival.Tests
     [TestFixture]
     public class RoomZoneWireTests
     {
-        /// <summary>Escribe cx/cz/layer/walls; `zones` null ⇒ la clave room_zones NO se emite.</summary>
-        private static Dictionary<string, object> EncodeAndDecode(RoomZoneMsg[] zones)
+        /// <summary>
+        /// Escribe cx/cz/layer/walls (+ "type":"chunk_data" primero, el envelope root-tagged
+        /// real que IPCClient.Dispatch consume antes de llamar a
+        /// GridChunkDataMsg.Parse(reader, remainingPairs) — ya no hay Parse(object) contra el
+        /// que decodificar). `zones` null ⇒ la clave room_zones NO se emite.
+        /// </summary>
+        private static GridChunkDataMsg EncodeAndParse(RoomZoneMsg[] zones)
         {
             var writer = new MsgPackWriter();
-            writer.WriteMapHeader(zones == null ? 4 : 5);
+            writer.WriteMapHeader(zones == null ? 5 : 6);
+            writer.WriteString("type"); writer.WriteString("chunk_data");
             writer.WriteString("cx"); writer.WriteInt(3);
             writer.WriteString("cz"); writer.WriteInt(-7);
             writer.WriteString("layer"); writer.WriteInt(0);
@@ -51,9 +57,13 @@ namespace BackroomsSurvival.Tests
                 }
             }
 
-            var decoded = new MsgPackReader(writer.ToArray()).ReadValue() as Dictionary<string, object>;
-            Assert.IsNotNull(decoded, "el round-trip msgpack debe producir un mapa");
-            return decoded;
+            var reader = new MsgPackReader(writer.ToArray());
+            int n = reader.ReadMapHeader();
+            Assert.IsTrue(n > 0, "el round-trip msgpack debe producir un mapa");
+            var typeKey = reader.ReadKey();
+            Assert.IsTrue(MsgPackReader.Is(typeKey, "type"));
+            reader.ReadString(); // "chunk_data"
+            return GridChunkDataMsg.Parse(reader, n - 1);
         }
 
         private static RoomZoneMsg Zone(byte x0, byte z0, byte x1, byte z1, byte kind) =>
@@ -68,7 +78,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ChunkWithoutRoomZonesKeyStillParses()
         {
-            var msg = GridChunkDataMsg.Parse(EncodeAndDecode(null));
+            var msg = EncodeAndParse(null);
 
             Assert.AreEqual(3, msg.cx);
             Assert.AreEqual(-7, msg.cz);
@@ -89,7 +99,7 @@ namespace BackroomsSurvival.Tests
                 Zone(6, 14, 18, 18, (byte)RoomZoneKind.CorridorSpine),
             };
 
-            var msg = GridChunkDataMsg.Parse(EncodeAndDecode(sent));
+            var msg = EncodeAndParse(sent);
 
             Assert.AreEqual(0x0F, msg.walls[0, 0], "el bitmask no debe verse afectado");
             Assert.AreEqual(sent.Length, msg.roomZones.Length);
@@ -116,7 +126,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void UnknownKindCollapsesToOpen()
         {
-            var msg = GridChunkDataMsg.Parse(EncodeAndDecode(new[] { Zone(2, 2, 6, 6, 99) }));
+            var msg = EncodeAndParse(new[] { Zone(2, 2, 6, 6, 99) });
 
             Assert.AreEqual(1, msg.roomZones.Length);
             Assert.AreEqual(99, msg.roomZones[0].kindByte, "el byte crudo debe conservarse");

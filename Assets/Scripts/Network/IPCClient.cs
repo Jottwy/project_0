@@ -295,10 +295,12 @@ namespace BackroomsSurvival.Net
         {
             var lenBuf = new byte[4];
             // One frame buffer per connection, grown on demand, instead of a fresh byte[len] per
-            // message. Safe to reuse: MsgPackReader copies out of it (ReadStr does GetString,
-            // ReadBin copies into a new array), so nothing decoded keeps a reference to it, and
-            // the reader stops after one value — stale bytes past `len` are never looked at.
+            // message. Reused across frames along with `reader` — MsgPackReader.CheckBounds guards
+            // every read against the LOGICAL length passed to Reset(), not body.Length, so a
+            // shorter frame reusing this (possibly larger) buffer can never read stale bytes left
+            // over from a previous, longer message (see MsgPackReader's class doc comment).
             byte[] body = new byte[4096];
+            var reader = new MsgPackReader(null);
             while (_running)
             {
                 if (!ReadExactlyWithTimeout(stream, lenBuf, 4)) break;
@@ -308,24 +310,41 @@ namespace BackroomsSurvival.Net
                 if (body.Length < len) body = new byte[Mathf.NextPowerOfTwo(len)];
                 if (!ReadExactlyWithTimeout(stream, body, len)) break;
 
-                try { Dispatch(body); }
+                try { reader.Reset(body, len); Dispatch(reader); }
                 catch (Exception e) { Debug.LogWarning($"[IPCClient] Failed to decode message: {e.Message}"); }
             }
         }
 
-        private void Dispatch(byte[] body)
+        /// <summary>
+        /// Reads the {"type": ..., ...fields} envelope directly off the wire, without
+        /// materializing a Dictionary/object[]/box tree first (docs/STATE.md's "mayor coste
+        /// real de la ruta de parseo"). "type" is read as the first key: serde-derive's
+        /// internally-tagged enum codegen always serializes the tag before the variant's own
+        /// fields (it controls emission order on the Rust side), so this holds for every
+        /// ServerMessage variant, not just an observed convention. If that assumption is ever
+        /// violated the frame is logged and dropped, same as any other decode failure.
+        /// </summary>
+        private void Dispatch(MsgPackReader r)
         {
-            var root = new MsgPackReader(body).ReadValue() as Dictionary<string, object>;
-            if (root == null) return;
-            string type = IPCParse.S(root, "type");
+            int n = r.ReadMapHeader();
+            if (n <= 0) return;
+
+            var typeKey = r.ReadKey();
+            if (!MsgPackReader.Is(typeKey, "type"))
+            {
+                Debug.LogWarning("[IPCClient] Frame's first key was not \"type\" — dropped.");
+                return;
+            }
+            string type = r.ReadString();
+            int remaining = n - 1;
 
             switch (type)
             {
                 case ProtocolMessageTypes.WorldState:
-                    var ws = WorldStateMsg.Parse(root);
+                    var ws = WorldStateMsg.Parse(r, remaining);
                     if (Environment.TickCount >= _nextRemotePlayersLogTick)
                     {
-                        var ids = ws.remotePlayers.ConvertAll(r => r.id.ToString());
+                        var ids = ws.remotePlayers.ConvertAll(rp => rp.id.ToString());
                         Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count} ids=[{string.Join(",", ids)}]");
                         int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
                         Debug.Log($"MPTRACE step=J event=unity_parse_world_state self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint={serverAddress}:{port} peer_count=<unknown> remote_players_count={ws.remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
@@ -337,14 +356,14 @@ namespace BackroomsSurvival.Net
                     break;
                 case ProtocolMessageTypes.DeltaUpdate:
                     // ADR-009 §2: 20 Hz movement delta → MovementReconciler.
-                    _pendingDeltaNotify.Enqueue(MovementDeltaMsg.Parse(root));
+                    _pendingDeltaNotify.Enqueue(MovementDeltaMsg.Parse(r, remaining));
                     break;
                 case ProtocolMessageTypes.ChunkData:
                     // Fase 4.1: grid_gen chunk reply → ChunkStreamer (drained on the main thread).
-                    _pendingChunkDataNotify.Enqueue(GridChunkDataMsg.Parse(root));
+                    _pendingChunkDataNotify.Enqueue(GridChunkDataMsg.Parse(r, remaining));
                     break;
                 case ProtocolMessageTypes.Event:
-                    var gameEvent = GameEventMsg.Parse(root);
+                    var gameEvent = GameEventMsg.Parse(r, remaining);
                     Events.Enqueue(gameEvent);
                     _pendingNotify.Enqueue(gameEvent);
                     break;

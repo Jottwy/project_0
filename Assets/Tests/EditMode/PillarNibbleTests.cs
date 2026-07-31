@@ -37,7 +37,11 @@ namespace BackroomsSurvival.Tests
             byte combined = (byte)(0x0F | GridChunkBuilder.PillarMask); // 0xFF = 255, ambos nibbles
 
             var writer = new MsgPackWriter();
-            writer.WriteMapHeader(4);
+            // "type" primero, igual que el envelope real que IPCClient.Dispatch consume antes de
+            // llamar a GridChunkDataMsg.Parse(reader, remainingPairs) — root-tagged, ya no hay
+            // Parse(object) al que decodificar contra un Dictionary suelto.
+            writer.WriteMapHeader(5);
+            writer.WriteString("type"); writer.WriteString("chunk_data");
             writer.WriteString("cx"); writer.WriteInt(3);
             writer.WriteString("cz"); writer.WriteInt(-7);
             writer.WriteString("layer"); writer.WriteInt(0);
@@ -60,10 +64,12 @@ namespace BackroomsSurvival.Tests
 
             byte[] bytes = writer.ToArray();
             var reader = new MsgPackReader(bytes);
-            var decoded = reader.ReadValue() as Dictionary<string, object>;
-            Assert.IsNotNull(decoded, "el round-trip msgpack debe producir un mapa");
+            int n = reader.ReadMapHeader();
+            var typeKey = reader.ReadKey();
+            Assert.IsTrue(MsgPackReader.Is(typeKey, "type"));
+            reader.ReadString(); // "chunk_data"
 
-            var msg = GridChunkDataMsg.Parse(decoded);
+            var msg = GridChunkDataMsg.Parse(reader, n - 1);
             Assert.AreEqual(3, msg.cx);
             Assert.AreEqual(-7, msg.cz);
             Assert.AreEqual(0, msg.layer);

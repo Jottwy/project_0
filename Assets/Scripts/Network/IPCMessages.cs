@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -9,21 +10,7 @@ namespace BackroomsSurvival.Net
         // ADR-009: server-authoritative stamina, interpolated client-side at 5 Hz.
         public float stamina;
 
-        public static StatsMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var s = new StatsMsg();
-            if (d == null) return s;
-            s.health = IPCParse.F(d, "health");
-            s.hunger = IPCParse.F(d, "hunger");
-            s.thirst = IPCParse.F(d, "thirst");
-            s.sanity = IPCParse.F(d, "sanity");
-            s.stamina = IPCParse.F(d, "stamina");
-            return s;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/> — same field set, zero
-        /// intermediate Dictionary/box. Reads its own map header.</summary>
+        /// <summary>Reads its own map header — zero intermediate Dictionary/box per field.</summary>
         public static StatsMsg Parse(MsgPackReader r)
         {
             var s = new StatsMsg();
@@ -52,21 +39,6 @@ namespace BackroomsSurvival.Net
         // ADR-009: echo of the last client input_seq the server has applied.
         public uint ackInputSeq;
 
-        public static LocalPlayerMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var p = new LocalPlayerMsg();
-            if (d == null) return p;
-            p.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            p.rotation = IPCParse.F(d, "rotation");
-            p.stats = StatsMsg.Parse(IPCParse.Get(d, "stats"));
-            p.speedModifier = IPCParse.F(d, "speed_modifier");
-            p.inventoryChanged = IPCParse.B(d, "inventory_changed");
-            p.ackInputSeq = (uint)IPCParse.L(d, "ack_input_seq");
-            return p;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static LocalPlayerMsg Parse(MsgPackReader r)
         {
             var p = new LocalPlayerMsg();
@@ -98,22 +70,11 @@ namespace BackroomsSurvival.Net
         public Vector3 position;
         public Vector3 velocity;
 
-        public static MovementDeltaMsg Parse(Dictionary<string, object> d)
-        {
-            var m = new MovementDeltaMsg();
-            if (d == null) return m;
-            m.tick = (uint)IPCParse.L(d, "tick");
-            m.ackInputSeq = (uint)IPCParse.L(d, "ack_input_seq");
-            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            m.velocity = IPCParse.Vec3(IPCParse.Get(d, "velocity"));
-            return m;
-        }
-
         /// <summary>
-        /// Streaming twin of <see cref="Parse(Dictionary{string,object})"/>. Root-tagged message
-        /// (ServerMessage::DeltaUpdate, "type":"delta_update") — IPCClient.Dispatch already
-        /// consumed the map header AND the "type" pair, so this reads only the REMAINING
-        /// <paramref name="remainingPairs"/> key/value pairs, not a header of its own.
+        /// Root-tagged message (ServerMessage::DeltaUpdate, "type":"delta_update") —
+        /// IPCClient.Dispatch already consumed the map header AND the "type" pair, so this reads
+        /// only the REMAINING <paramref name="remainingPairs"/> key/value pairs, not a header of
+        /// its own.
         /// </summary>
         public static MovementDeltaMsg Parse(MsgPackReader r, int remainingPairs)
         {
@@ -175,19 +136,6 @@ namespace BackroomsSurvival.Net
         public bool ContainsCell(int cellX, int cellZ) =>
             cellX >= x0 && cellX < x1 && cellZ >= z0 && cellZ < z1;
 
-        public static RoomZoneMsg Parse(object o)
-        {
-            var z = new RoomZoneMsg();
-            if (!(o is Dictionary<string, object> d)) return z;
-            z.x0 = (byte)IPCParse.L(d, "x0");
-            z.z0 = (byte)IPCParse.L(d, "z0");
-            z.x1 = (byte)IPCParse.L(d, "x1");
-            z.z1 = (byte)IPCParse.L(d, "z1");
-            z.kindByte = (byte)IPCParse.L(d, "kind");
-            return z;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static RoomZoneMsg Parse(MsgPackReader r)
         {
             var z = new RoomZoneMsg();
@@ -235,44 +183,10 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public RoomZoneMsg[] roomZones = NoRoomZones;
 
-        public static GridChunkDataMsg Parse(Dictionary<string, object> d)
-        {
-            var m = new GridChunkDataMsg();
-            if (d == null) return m;
-            m.cx = (int)IPCParse.L(d, "cx");
-            m.cz = (int)IPCParse.L(d, "cz");
-            m.layer = (byte)IPCParse.L(d, "layer");
-            // Backend [[u8;10];10] → object[ x ] of object[ z ] of long (MsgPackReader).
-            if (IPCParse.Get(d, "walls") is object[] rows)
-            {
-                int nx = Mathf.Min(rows.Length, Tiles);
-                for (int x = 0; x < nx; x++)
-                {
-                    if (rows[x] is object[] col)
-                    {
-                        int nz = Mathf.Min(col.Length, Tiles);
-                        for (int z = 0; z < nz; z++)
-                            m.walls[x, z] = (byte)IPCParse.ToLong(col[z]);
-                    }
-                }
-            }
-            // ADR-034: campo ADITIVO con skip_serializing_if en el backend — la
-            // clave falta por completo cuando no hay zonas, y faltaba SIEMPRE
-            // antes del ADR. Ausencia ⇒ array vacío, nunca error.
-            if (IPCParse.Get(d, "room_zones") is object[] zones && zones.Length > 0)
-            {
-                m.roomZones = new RoomZoneMsg[zones.Length];
-                for (int i = 0; i < zones.Length; i++)
-                    m.roomZones[i] = RoomZoneMsg.Parse(zones[i]);
-            }
-            return m;
-        }
-
         /// <summary>
-        /// Streaming twin of <see cref="Parse(Dictionary{string,object})"/>. Root-tagged message
-        /// (ServerMessage::ChunkData, "type":"chunk_data") — reads the REMAINING
-        /// <paramref name="remainingPairs"/> pairs after IPCClient.Dispatch already consumed the
-        /// map header and the "type" pair.
+        /// Root-tagged message (ServerMessage::ChunkData, "type":"chunk_data") — reads the
+        /// REMAINING <paramref name="remainingPairs"/> pairs after IPCClient.Dispatch already
+        /// consumed the map header and the "type" pair.
         /// </summary>
         public static GridChunkDataMsg Parse(MsgPackReader r, int remainingPairs)
         {
@@ -340,30 +254,6 @@ namespace BackroomsSurvival.Net
         // hide the standing proxy while true (the corpse is the visible body).
         public bool dead;
 
-        public static RemotePlayerMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var r = new RemotePlayerMsg();
-            if (d == null) return r;
-            r.id = (int)IPCParse.L(d, "id");
-            r.name = IPCParse.S(d, "name");
-            r.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            r.rotation = IPCParse.F(d, "rotation");
-            r.animation = IPCParse.S(d, "animation");
-            r.crouch = IPCParse.B(d, "crouch");
-            r.pitch = (int)IPCParse.L(d, "pitch");
-            // ADR-022: normalize to exactly 4 slots (a v4 peer omitting the field → all zeros).
-            IPCParse.FillIntArray(IPCParse.Get(d, "equipment"), r.equipment);
-            // ADR-023: held item (a v5 peer omitting the field → 0 = empty hands).
-            r.heldItem = (int)IPCParse.L(d, "held_item");
-            // ADR-024: hit-reaction counter (a v6 peer omitting the field → 0 = never hit).
-            r.hitSeq = (int)IPCParse.L(d, "hit_seq");
-            // ADR-028 post-E3: dead flag (a v9 backend omitting the field → false = visible).
-            r.dead = IPCParse.B(d, "dead");
-            return r;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
             var r = new RemotePlayerMsg();
@@ -401,25 +291,6 @@ namespace BackroomsSurvival.Net
         public int visualFlags;
         public string[] visualHints = new string[0];
 
-        public static InterLayerVolumeMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var v = new InterLayerVolumeMsg();
-            if (d == null) return v;
-            v.volumeId = (uint)IPCParse.L(d, "volume_id");
-            v.kind = IPCParse.S(d, "kind");
-            v.baseChunk = IPCParse.IntArray2(IPCParse.Get(d, "base_chunk"));
-            v.involvedLayers = IPCParse.IntArray(IPCParse.Get(d, "involved_layers"));
-            v.footprintCellMin = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_min"));
-            v.footprintCellMax = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_max"));
-            v.safetyType = IPCParse.S(d, "safety_type");
-            v.futureAudioHint = IPCParse.S(d, "future_audio_hint");
-            v.visualFlags = (int)IPCParse.L(d, "visual_flags");
-            v.visualHints = IPCParse.StringArray(IPCParse.Get(d, "visual_hints"));
-            return v;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static InterLayerVolumeMsg Parse(MsgPackReader r)
         {
             var v = new InterLayerVolumeMsg();
@@ -454,19 +325,6 @@ namespace BackroomsSurvival.Net
         public byte dir;
         public byte kind;
 
-        public static VolumetricFaceMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var f = new VolumetricFaceMsg();
-            if (d == null) return f;
-            var cell = IPCParse.IntArray(IPCParse.Get(d, "cell"));
-            if (cell.Length >= 3) { f.x = cell[0]; f.y = cell[1]; f.z = cell[2]; }
-            f.dir = (byte)IPCParse.L(d, "dir");
-            f.kind = (byte)IPCParse.L(d, "kind");
-            return f;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static VolumetricFaceMsg Parse(MsgPackReader r)
         {
             var f = new VolumetricFaceMsg();
@@ -498,23 +356,6 @@ namespace BackroomsSurvival.Net
         public string resourceProfile = "";
         public string anomalyProfile = "";
 
-        public static LayerBandMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var b = new LayerBandMsg();
-            if (d == null) return b;
-            b.bandId = (uint)IPCParse.L(d, "band_id");
-            b.layer = (int)IPCParse.L(d, "layer");
-            b.profile = IPCParse.S(d, "profile");
-            b.profileCode = (int)IPCParse.L(d, "profile_code");
-            b.accessible = IPCParse.B(d, "accessible");
-            b.dangerProfile = IPCParse.S(d, "danger_profile");
-            b.resourceProfile = IPCParse.S(d, "resource_profile");
-            b.anomalyProfile = IPCParse.S(d, "anomaly_profile");
-            return b;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static LayerBandMsg Parse(MsgPackReader r)
         {
             var b = new LayerBandMsg();
@@ -547,23 +388,6 @@ namespace BackroomsSurvival.Net
         public int[] footprintCellMax = new int[2];
         public bool explicitAccess;
 
-        public static VerticalAccessNodeMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var n = new VerticalAccessNodeMsg();
-            if (d == null) return n;
-            n.accessId = (uint)IPCParse.L(d, "access_id");
-            n.accessType = IPCParse.S(d, "access_type");
-            n.accessTypeCode = (int)IPCParse.L(d, "access_type_code");
-            n.fromLayer = (int)IPCParse.L(d, "from_layer");
-            n.toLayer = (int)IPCParse.L(d, "to_layer");
-            n.footprintCellMin = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_min"));
-            n.footprintCellMax = IPCParse.IntArray2(IPCParse.Get(d, "footprint_cell_max"));
-            n.explicitAccess = IPCParse.B(d, "explicit");
-            return n;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static VerticalAccessNodeMsg Parse(MsgPackReader r)
         {
             var n = new VerticalAccessNodeMsg();
@@ -593,20 +417,6 @@ namespace BackroomsSurvival.Net
         public float totalHeight;
         public float neighborMaxRoomHeight;
 
-        public static BandHeightSpecMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var b = new BandHeightSpecMsg();
-            if (d == null) return b;
-            b.bandIndex = (int)IPCParse.L(d, "band_index");
-            b.layer = (int)IPCParse.L(d, "layer");
-            b.roomHeight = IPCParse.F(d, "room_height");
-            b.totalHeight = IPCParse.F(d, "total_height");
-            b.neighborMaxRoomHeight = IPCParse.F(d, "neighbor_max_room_height");
-            return b;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static BandHeightSpecMsg Parse(MsgPackReader r)
         {
             var b = new BandHeightSpecMsg();
@@ -673,46 +483,11 @@ namespace BackroomsSurvival.Net
         public List<VerticalAccessNodeMsg> verticalAccess = new List<VerticalAccessNodeMsg>();
         public List<BandHeightSpecMsg> heightBands = new List<BandHeightSpecMsg>();
 
-        public static VolumetricGridMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            if (d == null) return null;
-            var g = new VolumetricGridMsg();
-            g.active = IPCParse.B(d, "active");
-            g.columnId = (ulong)IPCParse.L(d, "column_id");
-            g.columnCoord = IPCParse.IntArray2(IPCParse.Get(d, "column_coord"));
-            g.source = IPCParse.S(d, "source");
-            var dims = IPCParse.IntArray(IPCParse.Get(d, "dims"));
-            if (dims.Length >= 3) { g.nx = dims[0]; g.ny = dims[1]; g.nz = dims[2]; }
-            g.cellSizeXZ = IPCParse.F(d, "cell_size_xz");
-            if (g.cellSizeXZ <= 0f) g.cellSizeXZ = 5f;
-            g.layerHeight = IPCParse.F(d, "layer_height");
-            if (g.layerHeight <= 0f) g.layerHeight = 7f;
-            g.originWorld = IPCParse.Vec3(IPCParse.Get(d, "origin_world"));
-            g.baseLayer = (int)IPCParse.L(d, "base_layer");
-            g.cells = IPCParse.ByteArray(IPCParse.Get(d, "cells"));
-            if (IPCParse.Get(d, "faces") is object[] fs)
-                foreach (var item in fs) g.faces.Add(VolumetricFaceMsg.Parse(item));
-            g.openCellCount = (int)IPCParse.L(d, "open_cell_count");
-            g.solidCellCount = (int)IPCParse.L(d, "solid_cell_count");
-            g.verticalConnectionCount = (int)IPCParse.L(d, "vertical_connection_count");
-            g.validVerticalOpeningCount = (int)IPCParse.L(d, "valid_vertical_opening_count");
-            g.atriumSpan = IPCParse.B(d, "atrium_span");
-            if (IPCParse.Get(d, "layer_bands") is object[] bands)
-                foreach (var item in bands) g.layerBands.Add(LayerBandMsg.Parse(item));
-            if (IPCParse.Get(d, "vertical_access") is object[] access)
-                foreach (var item in access) g.verticalAccess.Add(VerticalAccessNodeMsg.Parse(item));
-            if (IPCParse.Get(d, "height_bands") is object[] hbands)
-                foreach (var item in hbands) g.heightBands.Add(BandHeightSpecMsg.Parse(item));
-            return g;
-        }
-
         /// <summary>
-        /// Streaming twin of <see cref="Parse(object)"/>. Unlike every other nested Msg type,
-        /// this one reads its OWN nil-check (a nil value here means "no volumetric grid on this
-        /// chunk" ⇒ returns null, exactly like Parse(object) does for a non-dictionary input) —
-        /// so ChunkViewMsg.Parse can call this unconditionally on the "volumetric_grid" key
-        /// without a separate presence check first.
+        /// Unlike every other nested Msg type, this one reads its OWN nil-check (a nil value
+        /// here means "no volumetric grid on this chunk" ⇒ returns null) — so ChunkViewMsg.Parse
+        /// can call this unconditionally on the "volumetric_grid" key without a separate presence
+        /// check first.
         /// </summary>
         public static VolumetricGridMsg Parse(MsgPackReader r)
         {
@@ -846,51 +621,9 @@ namespace BackroomsSurvival.Net
         private static readonly HashSet<(int, int, int, int)> _loggedVolumeParseChunks
             = new HashSet<(int, int, int, int)>();
 
-        public static ChunkViewMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var c = new ChunkViewMsg();
-            if (d == null) return c;
-            c.chunkSchema = (int)IPCParse.L(d, "chunk_schema");
-            if (c.chunkSchema <= 0) c.chunkSchema = 1;
-            c.pos = IPCParse.IntArray2(IPCParse.Get(d, "pos"));
-            c.layer = (int)IPCParse.L(d, "layer");
-            c.layerY = IPCParse.F(d, "layer_y");
-            c.templateId = (int)IPCParse.L(d, "template_id");
-            c.rotation = (int)IPCParse.L(d, "rotation");
-            c.mirrored = IPCParse.B(d, "mirrored");
-            c.state = IPCParse.S(d, "state");
-            c.hasWorkbench = IPCParse.B(d, "has_workbench");
-            c.layoutGridSize = Mathf.Max(1, (int)IPCParse.L(d, "layout_grid_size"));
-            c.layoutCellSize = IPCParse.F(d, "layout_cell_size");
-            if (c.layoutCellSize <= 0f) c.layoutCellSize = 5f;
-            c.layoutCells = IPCParse.UShortArray(IPCParse.Get(d, "layout_cells"));
-            c.edgeOpenings = (int)IPCParse.L(d, "edge_openings");
-            c.macroId = (uint)IPCParse.L(d, "macro_id");
-            c.zoneKind = (int)IPCParse.L(d, "zone_kind");
-            c.macroLocal = IPCParse.IntArray2(IPCParse.Get(d, "macro_local"));
-            c.macroSize = IPCParse.IntArray2(IPCParse.Get(d, "macro_size"));
-            if (c.macroSize[0] <= 0) c.macroSize[0] = 1;
-            if (c.macroSize[1] <= 0) c.macroSize[1] = 1;
-            c.floorLevel = (int)IPCParse.L(d, "floor_level");
-            c.floorProfile = (int)IPCParse.L(d, "floor_profile");
-            c.ceilingProfile = (int)IPCParse.L(d, "ceiling_profile");
-            c.lightProfile = (int)IPCParse.L(d, "light_profile");
-            c.anomalyFlags = (int)IPCParse.L(d, "anomaly_flags");
-            c.verticalFlags = (int)IPCParse.L(d, "vertical_flags");
-            if (IPCParse.Get(d, "inter_layer_volumes") is object[] volumes)
-                foreach (var volume in volumes) c.interLayerVolumes.Add(InterLayerVolumeMsg.Parse(volume));
-            if (c.interLayerVolumes.Count > 0)
-                LogVolumeParseOnce(c);
-            if (IPCParse.Get(d, "volumetric_grid") != null)
-                c.volumetricGrid = VolumetricGridMsg.Parse(IPCParse.Get(d, "volumetric_grid"));
-            c.SplitPackedLayout();
-            return c;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>. Same post-fixups, same
-        /// SplitPackedLayout() call, same MPTRACE log-once — only the source of the fields
-        /// differs (token walk instead of a materialized Dictionary).</summary>
+        /// <summary>Same post-fixups, same SplitPackedLayout() call, same MPTRACE log-once as
+        /// before the boxing removal — only the source of the fields changed (token walk instead
+        /// of a materialized Dictionary).</summary>
         public static ChunkViewMsg Parse(MsgPackReader r)
         {
             var c = new ChunkViewMsg();
@@ -1065,21 +798,6 @@ namespace BackroomsSurvival.Net
         public string state = "idle";
         public float healthPct = 1f;
 
-        public static EntityViewMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var e = new EntityViewMsg();
-            if (d == null) return e;
-            e.id = (uint)IPCParse.L(d, "id");
-            e.entityType = IPCParse.S(d, "entity_type");
-            e.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            e.rotation = IPCParse.F(d, "rotation");
-            e.state = IPCParse.S(d, "state");
-            e.healthPct = IPCParse.F(d, "health_pct");
-            return e;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static EntityViewMsg Parse(MsgPackReader r)
         {
             var e = new EntityViewMsg();
@@ -1106,19 +824,6 @@ namespace BackroomsSurvival.Net
         public Vector3 position;
         public int quantity;
 
-        public static ItemViewMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var i = new ItemViewMsg();
-            if (d == null) return i;
-            i.id = (uint)IPCParse.L(d, "id");
-            i.itemType = IPCParse.S(d, "item_type");
-            i.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            i.quantity = (int)IPCParse.L(d, "quantity");
-            return i;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static ItemViewMsg Parse(MsgPackReader r)
         {
             var i = new ItemViewMsg();
@@ -1148,20 +853,6 @@ namespace BackroomsSurvival.Net
         public Vector3 position;
         public float rotation;
 
-        public static StpItemMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var m = new StpItemMsg();
-            if (d == null) return m;
-            m.id = (uint)IPCParse.L(d, "id");
-            m.defId = (int)IPCParse.L(d, "def_id");
-            m.count = (int)IPCParse.L(d, "count");
-            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            m.rotation = IPCParse.F(d, "rotation");
-            return m;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static StpItemMsg Parse(MsgPackReader r)
         {
             var m = new StpItemMsg();
@@ -1207,22 +898,6 @@ namespace BackroomsSurvival.Net
         // Phase B2 — host-authoritative construction progress (units of each material accepted).
         public List<StpBuildProgressMsg> added = new List<StpBuildProgressMsg>();
 
-        public static StpBuildingMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var m = new StpBuildingMsg();
-            if (d == null) return m;
-            m.id = (uint)IPCParse.L(d, "id");
-            m.defId = (int)IPCParse.L(d, "def_id");
-            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            m.rotation = IPCParse.F(d, "rotation");
-            m.groupId = (uint)IPCParse.L(d, "group_id");
-            if (IPCParse.Get(d, "added") is object[] ad)
-                foreach (var item in ad) m.added.Add(StpBuildProgressMsg.Parse(item));
-            return m;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static StpBuildingMsg Parse(MsgPackReader r)
         {
             var m = new StpBuildingMsg();
@@ -1256,17 +931,6 @@ namespace BackroomsSurvival.Net
         public int materialId;
         public int count;
 
-        public static StpBuildProgressMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var p = new StpBuildProgressMsg();
-            if (d == null) return p;
-            p.materialId = (int)IPCParse.L(d, "material_id");
-            p.count = (int)IPCParse.L(d, "count");
-            return p;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static StpBuildProgressMsg Parse(MsgPackReader r)
         {
             var p = new StpBuildProgressMsg();
@@ -1294,19 +958,6 @@ namespace BackroomsSurvival.Net
         public Vector3 position;
         public float rotation;
 
-        public static StpCarryableMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var m = new StpCarryableMsg();
-            if (d == null) return m;
-            m.id = (uint)IPCParse.L(d, "id");
-            m.defId = (int)IPCParse.L(d, "def_id");
-            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            m.rotation = IPCParse.F(d, "rotation");
-            return m;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static StpCarryableMsg Parse(MsgPackReader r)
         {
             var m = new StpCarryableMsg();
@@ -1344,18 +995,6 @@ namespace BackroomsSurvival.Net
         public Vector3 position;
         public float remaining;
 
-        public static StpHarvestableMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var m = new StpHarvestableMsg();
-            if (d == null) return m;
-            m.id = (uint)IPCParse.L(d, "id");
-            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            m.remaining = IPCParse.F(d, "remaining");
-            return m;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static StpHarvestableMsg Parse(MsgPackReader r)
         {
             var m = new StpHarvestableMsg();
@@ -1391,19 +1030,6 @@ namespace BackroomsSurvival.Net
         public Vector3 worldMin;
         public Vector3 worldMax;
 
-        public static VerticalDebugMarkerMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var m = new VerticalDebugMarkerMsg();
-            if (d == null) return m;
-            m.id = (uint)IPCParse.L(d, "id");
-            m.kind = IPCParse.S(d, "kind");
-            m.worldMin = IPCParse.Vec3(IPCParse.Get(d, "world_min"));
-            m.worldMax = IPCParse.Vec3(IPCParse.Get(d, "world_max"));
-            return m;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static VerticalDebugMarkerMsg Parse(MsgPackReader r)
         {
             var m = new VerticalDebugMarkerMsg();
@@ -1446,35 +1072,6 @@ namespace BackroomsSurvival.Net
         /// <summary>ADR-028 amendment: true → host-seeded supply chest (crate visual, no ragdoll).</summary>
         public bool isChest;
 
-        public static CorpseViewMsg Parse(object o)
-        {
-            var d = o as Dictionary<string, object>;
-            var m = new CorpseViewMsg();
-            if (d == null) return m;
-            m.id = (uint)IPCParse.L(d, "id");
-            m.ownerId = (uint)IPCParse.L(d, "owner_id");
-            m.ownerName = IPCParse.S(d, "owner_name");
-            m.isChest = IPCParse.B(d, "is_chest");
-            m.position = IPCParse.Vec3(IPCParse.Get(d, "position"));
-            // Normalize to exactly 4 slots (mirror of RemotePlayerMsg.equipment, ADR-022).
-            IPCParse.FillIntArray(IPCParse.Get(d, "equipment"), m.equipment);
-            m.heldItem = (int)IPCParse.L(d, "held_item");
-            if (IPCParse.Get(d, "items") is object[] stacks)
-            {
-                foreach (var entry in stacks)
-                {
-                    if (entry is not Dictionary<string, object> stack) continue;
-                    m.items.Add(new CorpseLootStack
-                    {
-                        itemId = (int)IPCParse.L(stack, "item_id"),
-                        quantity = (int)IPCParse.L(stack, "quantity"),
-                    });
-                }
-            }
-            return m;
-        }
-
-        /// <summary>Streaming twin of <see cref="Parse(object)"/>.</summary>
         public static CorpseViewMsg Parse(MsgPackReader r)
         {
             var m = new CorpseViewMsg();
@@ -1539,80 +1136,48 @@ namespace BackroomsSurvival.Net
         // ADR-028 — lootable corpses near the player (omitted when empty; v7 backend → empty).
         public List<CorpseViewMsg> visibleCorpses = new List<CorpseViewMsg>();
 
-        public static WorldStateMsg Parse(Dictionary<string, object> d)
+        /// <summary>
+        /// Root-tagged message (ServerMessage::WorldState, "type":"world_state") — reads the
+        /// REMAINING <paramref name="remainingPairs"/> pairs after IPCClient.Dispatch already
+        /// consumed the map header and the "type" pair. The single highest-volume decode in the
+        /// whole client: N chunks × up to 320 layout_cells each, at 10 Hz — this is the path the
+        /// boxing removal in docs/STATE.md targets.
+        /// </summary>
+        public static WorldStateMsg Parse(MsgPackReader r, int remainingPairs)
         {
             var ws = new WorldStateMsg();
-            if (d == null) return ws;
-            ws.tick = IPCParse.L(d, "tick");
-            ws.worldSeed = IPCParse.L(d, "world_seed");
-            ws.worldRevision = IPCParse.L(d, "world_revision");
-            ws.localPlayer = LocalPlayerMsg.Parse(IPCParse.Get(d, "local_player"));
-
-            // Every list below is grown one Add at a time from an array whose length is already
-            // known, so each one paid a log2(n) chain of backing-array reallocations per snapshot.
-            // Setting Capacity first sizes the backing array once. Same list instance, same
-            // contents, same order.
-            if (IPCParse.Get(d, "remote_players") is object[] rp)
+            for (int i = 0; i < remainingPairs; i++)
             {
-                ws.remotePlayers.Capacity = rp.Length;
-                foreach (var item in rp) ws.remotePlayers.Add(RemotePlayerMsg.Parse(item));
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "tick")) ws.tick = r.ReadInt();
+                else if (MsgPackReader.Is(k, "world_seed")) ws.worldSeed = r.ReadInt();
+                else if (MsgPackReader.Is(k, "world_revision")) ws.worldRevision = r.ReadInt();
+                else if (MsgPackReader.Is(k, "local_player")) ws.localPlayer = LocalPlayerMsg.Parse(r);
+                else if (MsgPackReader.Is(k, "remote_players")) ReadList(r, ws.remotePlayers, RemotePlayerMsg.Parse);
+                else if (MsgPackReader.Is(k, "visible_chunks")) ReadList(r, ws.visibleChunks, ChunkViewMsg.Parse);
+                else if (MsgPackReader.Is(k, "visible_entities")) ReadList(r, ws.visibleEntities, EntityViewMsg.Parse);
+                else if (MsgPackReader.Is(k, "visible_items")) ReadList(r, ws.visibleItems, ItemViewMsg.Parse);
+                else if (MsgPackReader.Is(k, "vertical_debug_markers")) ReadList(r, ws.verticalDebugMarkers, VerticalDebugMarkerMsg.Parse);
+                else if (MsgPackReader.Is(k, "stp_items")) ReadList(r, ws.stpItems, StpItemMsg.Parse);
+                else if (MsgPackReader.Is(k, "stp_buildings")) ReadList(r, ws.stpBuildings, StpBuildingMsg.Parse);
+                else if (MsgPackReader.Is(k, "stp_carryables")) ReadList(r, ws.stpCarryables, StpCarryableMsg.Parse);
+                else if (MsgPackReader.Is(k, "stp_harvestables")) ReadList(r, ws.stpHarvestables, StpHarvestableMsg.Parse);
+                else if (MsgPackReader.Is(k, "visible_corpses")) ReadList(r, ws.visibleCorpses, CorpseViewMsg.Parse);
+                else r.Skip();
             }
-
-            if (IPCParse.Get(d, "visible_chunks") is object[] vc)
-            {
-                ws.visibleChunks.Capacity = vc.Length;
-                foreach (var item in vc) ws.visibleChunks.Add(ChunkViewMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "visible_entities") is object[] ve)
-            {
-                ws.visibleEntities.Capacity = ve.Length;
-                foreach (var item in ve) ws.visibleEntities.Add(EntityViewMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "visible_items") is object[] vi)
-            {
-                ws.visibleItems.Capacity = vi.Length;
-                foreach (var item in vi) ws.visibleItems.Add(ItemViewMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "vertical_debug_markers") is object[] vm)
-            {
-                ws.verticalDebugMarkers.Capacity = vm.Length;
-                foreach (var item in vm) ws.verticalDebugMarkers.Add(VerticalDebugMarkerMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "stp_items") is object[] si)
-            {
-                ws.stpItems.Capacity = si.Length;
-                foreach (var item in si) ws.stpItems.Add(StpItemMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "stp_buildings") is object[] sb)
-            {
-                ws.stpBuildings.Capacity = sb.Length;
-                foreach (var item in sb) ws.stpBuildings.Add(StpBuildingMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "stp_carryables") is object[] sc)
-            {
-                ws.stpCarryables.Capacity = sc.Length;
-                foreach (var item in sc) ws.stpCarryables.Add(StpCarryableMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "stp_harvestables") is object[] sh)
-            {
-                ws.stpHarvestables.Capacity = sh.Length;
-                foreach (var item in sh) ws.stpHarvestables.Add(StpHarvestableMsg.Parse(item));
-            }
-
-            if (IPCParse.Get(d, "visible_corpses") is object[] cv)
-            {
-                ws.visibleCorpses.Capacity = cv.Length;
-                foreach (var item in cv) ws.visibleCorpses.Add(CorpseViewMsg.Parse(item));
-            }
-
             return ws;
+        }
+
+        /// <summary>Shared array→List helper: sets Capacity once (same reasoning as the
+        /// legacy path's comment above) then reads exactly that many elements via
+        /// <paramref name="parseOne"/>. A nil array (key present, value nil) reads as empty,
+        /// matching <c>IPCParse.Get(d, key) is object[]</c> failing for a null value.</summary>
+        private static void ReadList<T>(MsgPackReader r, List<T> dest, Func<MsgPackReader, T> parseOne)
+        {
+            int n = r.ReadArrayHeader();
+            if (n <= 0) return;
+            dest.Capacity = n;
+            for (int i = 0; i < n; i++) dest.Add(parseOne(r));
         }
     }
 
@@ -1621,12 +1186,25 @@ namespace BackroomsSurvival.Net
         public string eventType = "";
         public object data;
 
-        public static GameEventMsg Parse(Dictionary<string, object> d)
+        /// <summary>
+        /// Root-tagged message (ServerMessage::Event, "type":"event") — reads the REMAINING
+        /// <paramref name="remainingPairs"/> pairs. "data" is free-form (serde_json::Value on the
+        /// wire) and every consumer (PvpFeedbackController, StpPickupController, CorpseLootSync,
+        /// ...) expects the generic object tree via IPCParse.L/F/S/Vec3 — so unlike every other
+        /// field on the hot path, this one deliberately still materializes via
+        /// <see cref="MsgPackReader.ReadValue"/>. Events are discrete/low-frequency; there is no
+        /// boxing pressure to remove here.
+        /// </summary>
+        public static GameEventMsg Parse(MsgPackReader r, int remainingPairs)
         {
             var e = new GameEventMsg();
-            if (d == null) return e;
-            e.eventType = IPCParse.S(d, "event_type");
-            e.data = IPCParse.Get(d, "data");
+            for (int i = 0; i < remainingPairs; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "event_type")) e.eventType = r.ReadString();
+                else if (MsgPackReader.Is(k, "data")) e.data = r.ReadValue();
+                else r.Skip();
+            }
             return e;
         }
     }
