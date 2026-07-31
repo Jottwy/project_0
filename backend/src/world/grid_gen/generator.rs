@@ -43,6 +43,58 @@ pub(super) enum RoomType {
     CorridorSpine,
 }
 
+impl RoomType {
+    /// `true` para los tipos con perímetro `SealedWall` propio. `Open` no
+    /// tiene perímetro protegido — nada que alinear, el "muro" que la rodea
+    /// es maze normal y ya lo maneja `tile_walls_from_grid` como cualquier
+    /// otro tramo de pasillo.
+    pub(super) fn has_sealed_perimeter(self) -> bool {
+        matches!(self, RoomType::SealedRoom | RoomType::CorridorSpine)
+    }
+}
+
+/// Redondea `sz` al par superior más cercano.
+///
+/// El perímetro de `SealedRoom`/`CorridorSpine` es una columna/fila de 1
+/// celda (2.5 m) de grosor. `tile_walls_from_grid` (Fase 4.1, IPC) cuantiza a
+/// tiles de 5 m: una arista de tile solo se dibuja como pared si AMBAS
+/// sub-filas/columnas del tile fallan en ser transitables (`edge_open`,
+/// `tile_walls.rs`). Si el ancho/alto del rect es impar, un extremo del
+/// perímetro cae a mitad de tile — la cuantización se come esa pared y deja
+/// un hueco (la cuña triangular negra observada en playtest). Alinear SOLO el
+/// origen no basta: mueve el problema al lado opuesto. Hacen falta origen Y
+/// tamaño pares — entonces ambos extremos (x0 Y x1, o z0 Y z1) caen justo en
+/// un límite de tile.
+pub(super) fn tile_aligned_size(sz: i32) -> i32 {
+    if sz % 2 == 0 {
+        sz
+    } else {
+        sz + 1
+    }
+}
+
+/// Redondea `origin` al par más cercano dentro de `[1, max_origin]`.
+///
+/// Un origen par pone la celda x0/z0 exactamente en el borde oeste/norte de
+/// un tile de 5 m en vez de a mitad de tile — ver `tile_aligned_size` para el
+/// porqué. Prefiere subir (se aleja del borde reservado en 0); si eso excede
+/// `max_origin`, baja. El clamp final a `max_origin` cubre el caso degenerado
+/// de una zona casi del tamaño del chunk entero — no ocurre en producción hoy
+/// (layer 0 tiene una sola zona de 7-8 celdas en un chunk de 20), así que ese
+/// caso puede quedar sin origen par exacto sin que nada se rompa (el clamp de
+/// `x1`/`z1` en el llamador ya protege los límites absolutos del grid).
+pub(super) fn align_origin_to_tile(origin: i32, max_origin: i32) -> i32 {
+    if origin % 2 == 0 {
+        return origin;
+    }
+    let up = origin + 1;
+    if up <= max_origin {
+        up
+    } else {
+        (origin - 1).max(1)
+    }
+}
+
 /// Sorteo ponderado de `RoomType` contra `(open, sealed, spine)`. Solo se
 /// llama cuando los pesos NO son el default — ver el caller en Fase 4, que
 /// evita esta función (y el draw que consume) por completo en ese caso.
@@ -479,7 +531,7 @@ pub fn generate_layer(
         // sz_x == sz_z (el caso típico, ambos heredados del mismo
         // `open_zone_size` escalar) siempre da spine horizontal, un desempate
         // determinista documentado, no un bug.
-        let (eff_sz_x, eff_sz_z) = match room_type {
+        let (mut eff_sz_x, mut eff_sz_z) = match room_type {
             RoomType::Open | RoomType::SealedRoom => (sz_x, sz_z),
             RoomType::CorridorSpine => {
                 if sz_x >= sz_z {
@@ -489,13 +541,25 @@ pub fn generate_layer(
                 }
             }
         };
+        // Alineación a la retícula de tiles de 5 m (SOLO tipos con perímetro
+        // protegido). Ver `tile_aligned_size`/`align_origin_to_tile`.
+        if room_type.has_sealed_perimeter() {
+            eff_sz_x = tile_aligned_size(eff_sz_x);
+            eff_sz_z = tile_aligned_size(eff_sz_z);
+        }
 
         // Mismos dos `gen_range` (x0, z0) que el caso por defecto, mismo
-        // orden — con RoomType::Open (eff_sz == sz) esto es byte-idéntico.
+        // orden — con RoomType::Open (eff_sz == sz, sin alineación) esto es
+        // byte-idéntico. La alineación del ORIGEN se aplica DESPUÉS del sorteo,
+        // sin consumir draws extra, por la misma razón.
         let max_origin_x = (CHUNK_CELLS as i32 - 1 - eff_sz_x).max(1);
         let max_origin_z = (CHUNK_CELLS as i32 - 1 - eff_sz_z).max(1);
-        let x0 = rng.gen_range(1..=max_origin_x);
-        let z0 = rng.gen_range(1..=max_origin_z);
+        let mut x0 = rng.gen_range(1..=max_origin_x);
+        let mut z0 = rng.gen_range(1..=max_origin_z);
+        if room_type.has_sealed_perimeter() {
+            x0 = align_origin_to_tile(x0, max_origin_x);
+            z0 = align_origin_to_tile(z0, max_origin_z);
+        }
         let x1 = (x0 + eff_sz_x).min(CHUNK_CELLS as i32 - 1);
         let z1 = (z0 + eff_sz_z).min(CHUNK_CELLS as i32 - 1);
         let zid = zone_idx as u16 + 1;

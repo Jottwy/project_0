@@ -1031,6 +1031,76 @@ fn carve_explicit_entrance_never_writes_the_reserved_border() {
     }
 }
 
+/// Grid con TODO el interior (no-borde) transitable — simula "maze en todas
+/// partes", así cualquier arista que NO quede bloqueada por el perímetro
+/// `SealedWall` se delata como abierta (si el fondo fuera sólido por
+/// defecto, una arista mal alineada seguiría leyendo "pared" por accidente,
+/// porque el exterior también sería Wall — el test no probaría nada).
+fn grid_with_walkable_field() -> LayerGrid {
+    let mut grid = LayerGrid::new_solid();
+    for z in 1..(CHUNK_CELLS - 1) {
+        for x in 1..(CHUNK_CELLS - 1) {
+            grid.set(x, z, Cell::new(CellType::Corridor, 2, 0));
+        }
+    }
+    grid
+}
+
+/// La cuña triangular negra observada en playtest: sin alinear origen+tamaño
+/// a la retícula de tiles de 5 m, un extremo del perímetro `SealedWall` cae a
+/// mitad de tile y `tile_walls_from_grid` no lo ve — `edge_open` solo exige
+/// que UNA de las dos sub-filas/columnas del tile sea transitable para leer
+/// "sin pared", y con el fondo maze-en-todas-partes de arriba eso pasa en
+/// cuanto el perímetro no cubre las 2 sub-celdas completas del tile.
+///
+/// Construye el rect EXACTAMENTE como lo alinea Fase 4 hoy
+/// (`tile_aligned_size` + `align_origin_to_tile`, partiendo de un origen
+/// impar a propósito, para ejercitar de verdad el ajuste) y verifica que
+/// las 4 aristas del perímetro — TODOS los tiles que tocan, no solo uno —
+/// producen panel de pared real, no solo celda lógica `SealedWall`.
+#[test]
+fn tile_aligned_sealed_room_perimeter_renders_real_wall_panels() {
+    let max_origin = (CHUNK_CELLS as i32 - 1 - 7).max(1);
+    let sz = tile_aligned_size(7);
+    let x0 = align_origin_to_tile(3, max_origin);
+    let z0 = align_origin_to_tile(3, max_origin);
+    assert_eq!(x0 % 2, 0, "origen X debe quedar par tras el ajuste");
+    assert_eq!(z0 % 2, 0, "origen Z debe quedar par tras el ajuste");
+    assert_eq!(sz % 2, 0, "tamaño debe quedar par tras el ajuste");
+    let (x1, z1) = (x0 + sz, z0 + sz);
+
+    let mut grid = grid_with_walkable_field();
+    stamp_sealed_room(&mut grid, x0, z0, x1, z1, 1, 2);
+    let walls = tile_walls_from_grid(&grid);
+
+    let (tx_west, tx_east) = (x0 / 2 - 1, x1 / 2);
+    let (tz_north, tz_south) = (z0 / 2 - 1, z1 / 2);
+    let mut gaps = Vec::new();
+
+    for tz in (z0 / 2)..(z1 / 2) {
+        if walls[tx_west as usize][tz as usize] & WALL_E == 0 {
+            gaps.push(format!("oeste: tile ({tx_west},{tz}) sin WALL_E"));
+        }
+        if walls[tx_east as usize][tz as usize] & WALL_W == 0 {
+            gaps.push(format!("este: tile ({tx_east},{tz}) sin WALL_W"));
+        }
+    }
+    for tx in (x0 / 2)..(x1 / 2) {
+        if walls[tx as usize][tz_north as usize] & WALL_S == 0 {
+            gaps.push(format!("norte: tile ({tx},{tz_north}) sin WALL_S"));
+        }
+        if walls[tx as usize][tz_south as usize] & WALL_N == 0 {
+            gaps.push(format!("sur: tile ({tx},{tz_south}) sin WALL_N"));
+        }
+    }
+
+    assert!(
+        gaps.is_empty(),
+        "perímetro alineado con huecos de render — la cuña triangular no está arreglada:\n{}",
+        gaps.join("\n")
+    );
+}
+
 // ── RoomType — geometría de SealedRoom y CorridorSpine ───────────────────────
 
 /// Estampado + entradas de una `SealedRoom`, aisladas de `generate_layer`
