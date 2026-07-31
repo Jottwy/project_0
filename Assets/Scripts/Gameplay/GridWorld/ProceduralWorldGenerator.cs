@@ -407,8 +407,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var cfg = GetLayerVisual(layer);
             var mats = cfg != null ? GetLayerMaterials(layer) : null;
 
+            // ADR-035: los rects de sala salen del cache, no del mensaje — una
+            // reconstrucción desde _wallsCache (chunk revisitado, o reintento tras el gate
+            // de zona) tiene que ver las mismas zonas que la construcción original.
             var go = GridChunkBuilder.BuildFromWalls(walls, _prefabs, origin,
-                $"Chunk_L{layer}_{ccx}_{ccz}", layer, layerCount, cfg, mats, ccx, ccz);
+                $"Chunk_L{layer}_{ccx}_{ccz}", layer, layerCount, cfg, mats, ccx, ccz,
+                GetRoomZones(ccx, ccz, layer));
             go.transform.SetParent(transform, true);
             _loaded[key] = go;
 

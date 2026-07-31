@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay;
+using BackroomsSurvival.Net;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -274,7 +275,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public static GameObject BuildFromWalls(byte[,] walls, GridPrefabSet prefabs,
             Vector3 origin, string name, int layerIndex, int layerCount,
             LayerVisualConfig cfg = null, LayerVisualMaterials mats = null,
-            int chunkX = 0, int chunkZ = 0)
+            int chunkX = 0, int chunkZ = 0, RoomZoneMsg[] roomZones = null)
         {
             var root = new GameObject(name);
             root.transform.position = origin;
@@ -285,9 +286,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // below. ZoneRegistry is keyed by XZ chunk coord only (zone_kind ignores
             // vertical layer) — white ("no change") when the chunk hasn't been seen yet
             // (e.g. first frame of a fresh request) or carries no zone data.
-            Color zoneTint = styled && ZoneRegistry.TryGetZone(chunkX, chunkZ, out byte zoneKind)
-                ? cfg.ZoneTint(zoneKind)
-                : Color.white;
+            //
+            // ADR-035: el mismo `zoneKind` alimenta ahora la elección de MODELO de pared,
+            // así que se conserva en un local. `zoneKindQuery` es −1 cuando la zona no se
+            // conoce todavía: un set de variantes específico de zona NO casa con eso (solo
+            // uno comodín), de modo que el chunk cae al panel de siempre en vez de hornear
+            // el modelo de una zona equivocada — misma degradación que ya toma su tinte.
+            byte zoneKind = 0;
+            bool zoneKnown = styled && ZoneRegistry.TryGetZone(chunkX, chunkZ, out zoneKind);
+            Color zoneTint = zoneKnown ? cfg.ZoneTint(zoneKind) : Color.white;
+            int zoneKindQuery = zoneKnown ? zoneKind : -1;
             // When the layer draws its own per-tile ceiling, the top-layer roof slab is
             // redundant (coplanar with the ceiling) → suppress it to avoid z-fighting.
             bool roofSlab = isTopLayer && !(styled && cfg.showCeiling);
@@ -342,10 +350,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if ((b & BackendBitE) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
                     if (edges != 0)
                     {
+                        // ADR-035: `roomZones` baja entero, no un RoomType ya resuelto —
+                        // el tipo se decide POR PANEL (ver RoomTypeForPanel): un panel vive
+                        // en la frontera entre dos tiles, y los muros oeste/norte de una
+                        // sala los emite el tile de fuera.
                         if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall,
                             Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain),
-                            cfg, gx, gz);
-                        else PlaceWalls(prefabs, root.transform, edges, tx, tz);
+                            cfg, gx, gz, zoneKindQuery, roomZones);
+                        else PlaceWalls(prefabs, root.transform, edges, tx, tz,
+                            gx, gz, zoneKindQuery, roomZones);
                     }
 
                     // Medias paredes (2): dintel sobre vano. Va FUERA del `if (edges != 0)`
@@ -449,14 +462,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             => AddColliderIfMissing(Instantiate(prefabs.floorSlab, parent,
                 TileCenter(tx, tz) + new Vector3(0f, localY, 0f), 0f));
 
-        /// <summary>Independent 5×4×0.2 wall pieces on the flagged tile edges.</summary>
+        /// <summary>
+        /// Independent 5×4×0.2 wall pieces on the flagged tile edges. Unstyled path: sin
+        /// <c>cfg</c> no hay sets de variantes que consultar, así que
+        /// <see cref="ResolveWallPrefab"/> devuelve siempre <c>prefabs.wall</c> — comparte
+        /// la ruta de selección con <see cref="PlaceWallsTinted"/> sin cambiar de resultado.
+        /// </summary>
         private static void PlaceWalls(GridPrefabSet prefabs, Transform parent,
-            byte edges, int tx, int tz)
+            byte edges, int tx, int tz, int gx, int gz, int zoneKind, RoomZoneMsg[] roomZones)
         {
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
-                    AddColliderIfMissing(Instantiate(prefabs.wall, parent,
-                        TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
+                    AddColliderIfMissing(Instantiate(
+                        ResolveWallPrefab(prefabs, null, false, zoneKind, roomZones,
+                            tx, tz, gx, gz, flag),
+                        parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
         }
 
         // Logged once per session (not once per tile/chunk) so a world with many
@@ -507,6 +527,121 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static uint KneeSaltFor(byte flag) =>
             (flag == EdgeNorth || flag == EdgeSouth) ? WallSaltKneeN : WallSaltKneeE;
+
+        // ── ADR-035 — variantes de modelo de pared ──────────────────────────────
+
+        // Salts de la elección de MODELO, por carril de orientación igual que los de
+        // knee wall — así los dos paneles físicos de un tile eligen su modelo de forma
+        // independiente. Distintos de KneeSalt*/LintelSalt*/TintSalt*/MoistSalt*/PropSalt*:
+        // compartir uno haría que "este panel es knee wall" y "este panel usa el modelo B"
+        // salieran siempre juntos.
+        private const uint WallSaltVariantN = 0x5756524EU; // "WVRN" — modelo, carril en X
+        private const uint WallSaltVariantE = 0x57565245U; // "WVRE" — modelo, carril en Z
+
+        private static uint VariantSaltFor(byte flag) =>
+            (flag == EdgeNorth || flag == EdgeSouth) ? WallSaltVariantN : WallSaltVariantE;
+
+        /// <summary>
+        /// ADR-035 — prefab a instanciar para UN panel concreto. Devuelve
+        /// <c>prefabs.wall</c> siempre que no haya un set autorizado que case, así que con
+        /// <c>cfg.wallVariantSets</c> vacío (situación de hoy, sin modelos importados) el
+        /// render es byte-idéntico al previo a este ADR.
+        ///
+        /// El hash va en coords GLOBALES de tile (gx, gz) con salt por carril, misma
+        /// disciplina que knee walls y dinteles: nunca toca el <c>System.Random</c> del
+        /// jitter, así que los tintes de las Piezas A-F no se mueven.
+        /// </summary>
+        /// <paramref name="hasCfg"/> lo trae ya resuelto el llamador: `!= null` sobre un
+        /// <c>UnityEngine.Object</c> baja a código nativo, y esto corre una vez por PANEL.
+        /// El corto-circuito por <c>wallVariantSets</c> —array plano, comparación de
+        /// referencia normal— hace que en el estado sin autorar de hoy esta función no
+        /// añada NI UNA llamada nativa respecto al `Instantiate(prefabs.wall, …)` anterior.
+        private static GameObject ResolveWallPrefab(GridPrefabSet prefabs, LayerVisualConfig cfg,
+            bool hasCfg, int zoneKind, RoomZoneMsg[] roomZones,
+            int tx, int tz, int gx, int gz, byte flag)
+        {
+            if (!hasCfg || cfg.wallVariantSets == null || cfg.wallVariantSets.Length == 0)
+                return prefabs.wall;
+            // La resolución de sala va DESPUÉS del corto-circuito: sin sets autorizados no
+            // se recorre `roomZones` ni una vez por panel.
+            var variant = cfg.WallPrefabFor(zoneKind, RoomTypeForPanel(roomZones, tx, tz, flag),
+                Hash01(gx, gz, VariantSaltFor(flag)));
+            return variant != null ? variant : prefabs.wall;
+        }
+
+        /// <summary>
+        /// ADR-035 — RoomType del tile (tx, tz), o <see cref="RoomZoneKind.Open"/> cuando
+        /// ninguna zona lo cubre, el chunk no trae el campo, o el backend es anterior a
+        /// ADR-034. `Open` es el fallback correcto: es el único tipo sin perímetro sellado,
+        /// o sea el comportamiento previo a que RoomType existiera.
+        ///
+        /// ESCALA: <see cref="RoomZoneMsg"/> habla en CELDAS de 2.5 m (20 por lado) y este
+        /// builder en TILES de 5 m (10 por lado). Se consulta la sub-celda NOROESTE del
+        /// tile — <c>(2·tx, 2·tz)</c>, la misma que <c>tile_walls_from_grid</c> toma como
+        /// <c>x0/z0</c> del tile. Para SealedRoom/CorridorSpine eso es exacto y no
+        /// aproximado en la práctica: sus rects se alinean a la retícula de 5 m (origen Y
+        /// tamaño pares, fix de cuantización del ADR de RoomType), así que un tile está
+        /// entero dentro o entero fuera. La alineación tiene UN caso degenerado declarado
+        /// en el backend (`align_origin_to_tile` puede devolver un origen impar cuando la
+        /// zona es casi tan ancha como el chunk entero, imposible con los perfiles de
+        /// producción de hoy); si llegara a darse, el peor efecto es media fila de tiles
+        /// clasificada como Open, nunca una excepción.
+        ///
+        /// Primera zona que cubre el tile gana (orden de estampado). Con más de una zona
+        /// solapada — posible en perfiles con `num_open_zones > 1` y pesos no default,
+        /// hoy inexistentes en producción — el orden de `room_zones` es el desempate.
+        /// OJO: el backend estampa en ese mismo orden, así que sobre un solape la ÚLTIMA
+        /// zona es la que se ve en el grid mientras que aquí gana la primera. No se
+        /// resuelve porque el solape en sí es una limitación declarada del ADR de RoomType.
+        /// </summary>
+        // `public`, no `internal` como Hash01: EditModeTests es un ensamblado aparte sin
+        // InternalsVisibleTo, y esta conversión celda↔tile es exactamente donde un
+        // off-by-one silencioso (consultar tx en vez de 2·tx) pasaría desapercibido.
+        public static RoomZoneKind RoomTypeForTile(RoomZoneMsg[] zones, int tx, int tz)
+        {
+            if (zones == null || zones.Length == 0) return RoomZoneKind.Open;
+            int cellX = tx * 2, cellZ = tz * 2;
+            for (int i = 0; i < zones.Length; i++)
+                if (zones[i].ContainsCell(cellX, cellZ))
+                    return zones[i].Kind;
+            return RoomZoneKind.Open;
+        }
+
+        /// <summary>
+        /// RoomType del PANEL, que no es el del tile que lo instancia.
+        ///
+        /// Un panel no pertenece a un tile: vive en la FRONTERA entre dos. Por la regla de
+        /// no-duplicación, cada tile emite solo sus paneles +Z y +X, así que el muro OESTE
+        /// de una sala lo instancia el tile de fuera (<c>txMin−1</c>, como su panel +X) y
+        /// el muro NORTE el tile <c>tzMin−1</c>. Preguntar solo por el tile propietario
+        /// dejaría toda sala con dos lados con el modelo nuevo (E y S, cuyo emisor sí está
+        /// dentro) y dos con el de siempre — asimetría visible en cuanto exista un modelo.
+        ///
+        /// Regla: gana el primer RoomType NO-Open entre el tile propietario y el vecino al
+        /// otro lado del panel. `Open` no tiene perímetro propio, así que "el vecino es una
+        /// sala sellada y yo no" significa que ese muro es de la sala. Con salas selladas a
+        /// ambos lados (imposible hoy: layer 0 estampa una sola zona) gana el propietario.
+        ///
+        /// Un vecino fuera del chunk (tx+1 == Tiles) no tiene dato aquí — `room_zones` es
+        /// por chunk — y cae al tipo del propietario, que es la respuesta correcta en ese
+        /// caso: si el tile del borde está dentro de la sala, el panel es suyo; si está
+        /// fuera, no hay sala vecina que reclamarlo desde este chunk.
+        /// </summary>
+        public static RoomZoneKind RoomTypeForPanel(RoomZoneMsg[] zones, int tx, int tz, byte flag)
+        {
+            var own = RoomTypeForTile(zones, tx, tz);
+            if (own != RoomZoneKind.Open) return own;
+
+            // EdgeNorth es el panel +Z de este tile → vecino (tx, tz+1);
+            // EdgeEast es el panel +X → vecino (tx+1, tz). S y W no los emite el runtime.
+            int nx = tx, nz = tz;
+            if (flag == EdgeNorth) nz++;
+            else if (flag == EdgeEast) nx++;
+            else return own;
+
+            if (nx >= Tiles || nz >= Tiles) return own; // vecino en el chunk contiguo
+            return RoomTypeForTile(zones, nx, nz);
+        }
 
         // ── Medias paredes — dinteles sobre vano ────────────────────────────────
 
@@ -591,7 +726,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// </summary>
         private static void PlaceWallsTinted(GridPrefabSet prefabs, Transform parent,
             byte edges, int tx, int tz, Material mat, Color tint,
-            LayerVisualConfig cfg, int gx, int gz)
+            LayerVisualConfig cfg, int gx, int gz, int zoneKind, RoomZoneMsg[] roomZones)
         {
             // One aliveness check instead of two: `!= null` on a UnityEngine.Object is an
             // overloaded operator that calls into native code, not a reference compare.
@@ -602,8 +737,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
                 {
-                    var go = Instantiate(prefabs.wall, parent,
-                        TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
+                    // ADR-035: `hasCfg` ya resuelto arriba — ResolveWallPrefab no repite
+                    // el `!= null` nativo por panel. El RoomType se resuelve POR PANEL.
+                    var go = Instantiate(
+                        ResolveWallPrefab(prefabs, cfg, hasCfg, zoneKind, roomZones,
+                            tx, tz, gx, gz, flag),
+                        parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
                     if (variety > 0f && Hash01(gx, gz, KneeSaltFor(flag)) < variety)
                         go.transform.localScale = new Vector3(1f, kneeScale, 1f);
                     AddColliderIfMissing(go);

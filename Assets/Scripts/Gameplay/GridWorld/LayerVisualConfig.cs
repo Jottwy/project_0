@@ -1,3 +1,4 @@
+using BackroomsSurvival.Net;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -118,6 +119,81 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Effective lintel clearance: never low enough to block the doorway.</summary>
         public float LintelClearanceClamped => Mathf.Max(MinLintelClearance, lintelClearance);
 
+        [Header("Wall model variants (ADR-035)")]
+        [Tooltip("Sparse override list: sets of wall prefabs picked per PANEL by a " +
+                 "deterministic hash, selected by zone_kind + RoomType. Empty/null ⇒ every " +
+                 "panel uses GridPrefabSet.wall (behaviour before this field existed). The " +
+                 "FIRST matching entry wins, so put the specific ones before the wildcards.")]
+        public WallVariantSet[] wallVariantSets;
+
+        /// <summary>
+        /// Wall prefab for a panel in (<paramref name="zoneKind"/>, <paramref name="roomType"/>)
+        /// whose hash is <paramref name="h"/> ∈ [0,1), or <c>null</c> when nothing is authored
+        /// for that combination — the caller then uses <c>GridPrefabSet.wall</c>. Same shape and
+        /// spirit as <see cref="PickTint"/>: an unauthored layer keeps exactly the render it had
+        /// before this field existed.
+        ///
+        /// <paramref name="zoneKind"/> may be −1 ("unknown" — ZoneRegistry hasn't answered
+        /// yet), which never matches a zone-SPECIFIC set: a chunk built before its zone landed
+        /// falls back to the plain panel rather than baking a wrong zone's model, the same
+        /// degradation its zone tint already takes. A set marked <c>anyZoneKind</c> still
+        /// applies, by design — it claims every zone, and an unknown one is still one of them.
+        ///
+        /// FIRST match wins (not best match): the list is short and hand-ordered, and a
+        /// "most specific wins" rule would need a scoring pass that is impossible to predict
+        /// from the Inspector.
+        /// </summary>
+        public GameObject WallPrefabFor(int zoneKind, RoomZoneKind roomType, float h)
+        {
+            if (wallVariantSets == null) return null;
+            for (int i = 0; i < wallVariantSets.Length; i++)
+            {
+                if (!wallVariantSets[i].Matches(zoneKind, roomType)) continue;
+                return PickWallVariant(wallVariantSets[i].variants, h);
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Weighted pick over <paramref name="variants"/> by <paramref name="h"/> ∈ [0,1) —
+        /// same accumulate-and-compare shape as <c>GridChunkBuilder.PickProp</c>. Returns null
+        /// (⇒ caller uses the plain wall) when the set is empty or every weight is ≤ 0, and a
+        /// null <c>prefab</c> inside a variant means the same thing, so "the stock panel" can
+        /// be authored as one weighted option among the new models.
+        /// </summary>
+        private static GameObject PickWallVariant(WallVariant[] variants, float h)
+        {
+            if (variants == null || variants.Length == 0) return null;
+
+            float total = 0f;
+            for (int i = 0; i < variants.Length; i++)
+                total += SaneWeight(variants[i].weight);
+            // `!(total > 0f)`, no `total <= 0f`: con NaN AMBAS comparaciones son falsas, así
+            // que la forma negada es la única que atrapa un peso mal autorizado en vez de
+            // dejar pasar un `r` NaN que nunca cumple `r < acc`.
+            if (!(total > 0f)) return null;
+
+            float r = Mathf.Clamp01(h) * total;
+            float acc = 0f;
+            int last = -1;
+            for (int i = 0; i < variants.Length; i++)
+            {
+                float w = SaneWeight(variants[i].weight);
+                if (w <= 0f) continue; // una variante de peso 0 no debe salir NUNCA
+                last = i;
+                acc += w;
+                if (r < acc) return variants[i].prefab;
+            }
+            // Solo se alcanza con h == 1f exacto (Hash01 puede devolverlo cuando los 24 bits
+            // bajos son todos 1): cae en la última variante CON PESO, no en la última del
+            // array, que podría tener peso 0.
+            return last >= 0 ? variants[last].prefab : null;
+        }
+
+        /// <summary>Peso saneado: negativo, NaN o infinito cuentan como 0.</summary>
+        private static float SaneWeight(float w) =>
+            (w > 0f && !float.IsInfinity(w)) ? w : 0f;
+
         /// <summary>
         /// One entry of <paramref name="variants"/> chosen by <paramref name="h"/> ∈ [0,1),
         /// or <paramref name="baseTint"/> when the palette is unset. Bounds-safe, same shape
@@ -190,5 +266,69 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float      spawnWeight;     // relative weight in the per-tile pick
         public bool       canBeRotated;    // false → wall-aligned (no random yaw)
         public bool       floorOnly;       // false → may hang from the ceiling (cables)
+    }
+
+    /// <summary>
+    /// ADR-035 — one wall-model option inside a <see cref="WallVariantSet"/>. Same
+    /// (prefab, weight) shape as <see cref="PropEntry"/>, and the same null rule:
+    /// <c>prefab</c> null ⇒ the stock <c>GridPrefabSet.wall</c> panel, so "keep the old
+    /// wall 70 % of the time" is authorable without referencing the prefab.
+    ///
+    /// CONTRATO DE GEOMETRÍA: cualquier malla puesta aquí debe ser un panel de 5 m × 4 m
+    /// × 0.2 m CON EL PIVOTE EN EL SUELO, igual que Wall.prefab. Knee walls
+    /// (<c>localScale.y = KneeWallHeightClamped / 4</c>) y dinteles
+    /// (<c>localScale.y = (4 − clearance) / 4</c>, <c>position.y = clearance</c>) escalan
+    /// contra esa altura de 4 m hardcodeada, y no hay assert que lo detecte — un modelo
+    /// de otra altura o con pivote centrado las rompe EN SILENCIO.
+    /// </summary>
+    [System.Serializable]
+    public struct WallVariant
+    {
+        public GameObject prefab; // null → the stock GridPrefabSet.wall panel
+        public float      weight; // relative weight in the per-panel pick
+    }
+
+    /// <summary>
+    /// ADR-035 — un conjunto de variantes de pared con su selector. Lista DISPERSA: solo
+    /// se autoriza la combinación que de verdad quiere un modelo distinto; todo lo demás
+    /// cae al panel de siempre. No es una matriz de 12 zone_kind × 3 RoomType.
+    /// </summary>
+    [System.Serializable]
+    public struct WallVariantSet
+    {
+        [Tooltip("zone_kind al que aplica (0..11, ver ZoneTint). Se ignora si anyZoneKind " +
+                 "está marcado.")]
+        public int zoneKind;
+
+        [Tooltip("Marcado ⇒ aplica a los 12 zone_kind.")]
+        public bool anyZoneKind;
+
+        [Tooltip("RoomType al que aplica. Se ignora si anyRoomType está marcado.")]
+        public RoomZoneKind roomType;
+
+        [Tooltip("Marcado ⇒ aplica a los 3 RoomType (Open/SealedRoom/CorridorSpine).")]
+        public bool anyRoomType;
+
+        [Tooltip("Opciones de modelo con su peso relativo. Vacío ⇒ el panel de siempre.")]
+        public WallVariant[] variants;
+
+        /// <summary>
+        /// True si este set aplica a (<paramref name="zoneKindQuery"/>,
+        /// <paramref name="roomTypeQuery"/>).
+        ///
+        /// Los comodines son BOOLEANOS EXPLÍCITOS, no un valor centinela: un elemento recién
+        /// añadido desde el Inspector nace con <c>zoneKind == 0</c>, que es ZONE_NORMAL —
+        /// una zona concreta. Con un centinela "−1 = cualquiera" ese default habría aplicado
+        /// en silencio solo a ZONE_NORMAL cuando el autor casi siempre quiere "en todas".
+        /// Así el default es igual de restrictivo pero se LEE en el Inspector.
+        ///
+        /// Un <paramref name="zoneKindQuery"/> de −1 ("zona aún desconocida", ZoneRegistry
+        /// sin responder) no casa con ningún set específico, porque −1 no es un zone_kind
+        /// válido; un set marcado <c>anyZoneKind</c> SÍ aplica, y es lo correcto: dice
+        /// "cualquier zona" y una zona desconocida sigue siendo una de ellas.
+        /// </summary>
+        public bool Matches(int zoneKindQuery, RoomZoneKind roomTypeQuery) =>
+            (anyZoneKind || zoneKind == zoneKindQuery) &&
+            (anyRoomType || roomType == roomTypeQuery);
     }
 }
