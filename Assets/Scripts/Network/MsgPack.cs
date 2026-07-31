@@ -489,8 +489,9 @@ namespace BackroomsSurvival.Net
             {
                 case 0xc0: case 0xc2: case 0xc3: return; // nil, false, true
                 case 0xcc: case 0xd0: Advance(1); return;
-                case 0xcd: case 0xd1: case 0xd4: Advance(2); return; // + fixext1
-                case 0xce: case 0xd2: case 0xca: case 0xd5: Advance(4); return; // + fixext2
+                case 0xcd: case 0xd1: case 0xd4: Advance(2); return; // + fixext1 (1 type + 1 data)
+                case 0xd5: Advance(3); return; // fixext2 (1 type + 2 data) — NOT the same size as uint32/int32/float32 below
+                case 0xce: case 0xd2: case 0xca: Advance(4); return;
                 case 0xcf: case 0xd3: case 0xcb: Advance(8); return;
                 case 0xd6: Advance(5); return; // fixext4
                 case 0xd7: Advance(9); return; // fixext8
