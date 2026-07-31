@@ -56,26 +56,32 @@ fn stitch_edges(
 ) {
     let last = CHUNK_CELLS - 1;
 
+    // Cada apertura devuelve las celdas que carvó (borde + túnel interior).
+    // Se acumulan y se pasan a `repair_connectivity` como `protected`: el
+    // sellado de bolsillos no puede tocarlas aunque queden en un componente
+    // irreparable — ver el porqué en el doc-comment de `repair_connectivity`.
+    let mut carved: Vec<(usize, usize)> = Vec::new();
+
     // East border: shared with (cx+1, cz). Canonical key = this chunk.
     let p = aperture_pos(world_seed, cx, cz, EdgeAxis::Vertical, layer_index);
-    carve_aperture(grid, rules, (last, p), (-1i32, 0i32));
+    carved.extend(carve_aperture(grid, rules, (last, p), (-1i32, 0i32)));
 
     // West border: shared with (cx-1, cz). Canonical key = the western chunk.
     let p = aperture_pos(world_seed, cx - 1, cz, EdgeAxis::Vertical, layer_index);
-    carve_aperture(grid, rules, (0, p), (1, 0));
+    carved.extend(carve_aperture(grid, rules, (0, p), (1, 0)));
 
     // North border (z+1): shared with (cx, cz+1). Canonical key = this chunk.
     let p = aperture_pos(world_seed, cx, cz, EdgeAxis::Horizontal, layer_index);
-    carve_aperture(grid, rules, (p, last), (0, -1));
+    carved.extend(carve_aperture(grid, rules, (p, last), (0, -1)));
 
     // South border (z-1): shared with (cx, cz-1). Canonical key = the southern chunk.
     let p = aperture_pos(world_seed, cx, cz - 1, EdgeAxis::Horizontal, layer_index);
-    carve_aperture(grid, rules, (p, 0), (0, 1));
+    carved.extend(carve_aperture(grid, rules, (p, 0), (0, 1)));
 
     // Reconnection rule (§5) applied to the seams: the freshly carved aperture
     // corridors may still be separate components (e.g. the inward carve stopped
     // against stamped content). One repair pass attaches them to the main maze.
-    repair_connectivity(grid, rules.ceiling_corridor);
+    repair_connectivity(grid, rules.ceiling_corridor, &carved);
 }
 
 /// Deterministic aperture position along a canonical edge, in 1..CHUNK_CELLS-1
@@ -93,22 +99,32 @@ fn aperture_pos(world_seed: u64, kx: i32, kz: i32, axis: EdgeAxis, layer_index: 
 
 /// Open the border cell at `start` and carve inward (direction `dir`) through
 /// Wall cells until reaching an already-walkable cell. Stops without carving
-/// if it meets stamped/protected content (Void/Pillar/SealedWall) —
-/// "estampar gana"; the repair pass after stitching reconnects around it.
-/// `kind() != Wall` already covers SealedWall (and anything else that isn't
-/// literally plain Wall) — no separate guard needed, unlike the two carve
-/// routes in `generator.rs` that historically used `!is_walkable()`.
+/// if it meets Void/Pillar — "estampar gana". `SealedWall` is the ONE
+/// exception (see below): breached at most once per aperture, then treated
+/// like everything else. Devuelve TODAS las celdas que tocó (borde + túnel
+/// interior), para que `stitch_edges` pueda protegerlas de
+/// `repair_connectivity` — ver su doc-comment para el porqué.
+///
+/// Por qué SealedWall es distinto de Void/Pillar aquí: si el estampado de
+/// `SealedRoom`/`CorridorSpine` (Fase 4) deja su perímetro justo en la línea
+/// de costura, un `carve_aperture` que se detenga ahí abre el borde pero lo
+/// deja pegado a un perímetro protegido justo detrás — sin este breach, el
+/// único vecino interior de la apertura sería SealedWall, y la apertura
+/// nacería ya aislada. Con el breach, al menos llega a la celda Open del
+/// interior de la sala inmediatamente detrás.
 fn carve_aperture(
     grid: &mut LayerGrid,
     rules: &LayerRules,
     start: (usize, usize),
     dir: (i32, i32),
-) {
+) -> Vec<(usize, usize)> {
     let corr = Cell::new(CellType::Corridor, rules.ceiling_corridor, 0);
     grid.set(start.0, start.1, corr);
+    let mut touched = vec![start];
 
     let (mut x, mut z) = (start.0 as i32, start.1 as i32);
     let last = (CHUNK_CELLS - 1) as i32;
+    let mut sealed_breach_used = false;
     loop {
         x += dir.0;
         z += dir.1;
@@ -116,15 +132,20 @@ fn carve_aperture(
         // carve cruza el chunk entero sin tocar nada transitable, taladraría el
         // borde opuesto creando una apertura unilateral que el vecino no conoce.
         if x <= 0 || z <= 0 || x >= last || z >= last {
-            return; // el pase de reparación conecta el túnel al laberinto
+            return touched; // el pase de reparación conecta el túnel al laberinto
         }
         let cell = grid.get(x as usize, z as usize);
         if cell.is_walkable() {
-            return; // reached the maze
+            return touched; // reached the maze
         }
-        if cell.kind() != CellType::Wall {
-            return; // stamped/protected content (Void/Pillar/SealedWall): stop
+        match cell.kind() {
+            CellType::Wall => {}
+            CellType::SealedWall if !sealed_breach_used => {
+                sealed_breach_used = true;
+            }
+            _ => return touched, // Void/Pillar, o una 2ª SealedWall: estampado, para
         }
         grid.set(x as usize, z as usize, corr);
+        touched.push((x as usize, z as usize));
     }
 }

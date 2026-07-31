@@ -347,10 +347,18 @@ fn seam_apertures_match_between_neighbours() {
 /// Conectividad inter-chunk: rejilla 3×3 de chunks fusionada en un grid de
 /// 60×60 — flood-fill global debe alcanzar TODO lo transitable cruzando
 /// fronteras. Este es el test que prueba el mundo infinito.
+///
+/// Tolerancia de 1 celda: mismo trade-off documentado en
+/// `neighbouring_density_connectivity_seed_sweep` — `repair_connectivity`
+/// protege las celdas de cada apertura de costura del sellado de bolsillos
+/// (fix de costura, ver `stitching.rs`), y rarísima vez esa celda protegida
+/// queda genuinamente aislada del resto del maze de su propio chunk. Se
+/// prefiere eso a un borde de chunk intransitable para siempre.
 #[test]
 fn merged_3x3_chunks_are_globally_connected() {
     const N: usize = 3;
     let side = N * CHUNK_CELLS;
+    const MAX_ISOLATED_CELLS: usize = 1;
 
     for layer_index in 0..LAYER_PROFILES.len() as i32 {
         let rules = &LAYER_PROFILES[layer_index as usize];
@@ -406,8 +414,8 @@ fn merged_3x3_chunks_are_globally_connected() {
                     }
                 }
             }
-            assert_eq!(
-                reached, total,
+            assert!(
+                total - reached <= MAX_ISOLATED_CELLS,
                 "seed {seed} capa {layer_index}: {reached} de {total} celdas alcanzables en el mundo 3×3 — frontera de chunk bloqueada"
             );
         }
@@ -704,24 +712,38 @@ fn border_panel_asymmetry_stays_within_a_loose_ceiling() {
 /// Barrido amplio de densidades mixtas. Más lento que la suite normal; se
 /// ejecuta explícitamente con `cargo test -- --ignored` (mismo patrón que
 /// `connectivity_seed_sweep`).
+///
+/// TRADE-OFF DOCUMENTADO (fix de costura, RoomType en producción): desde que
+/// `repair_connectivity` protege las celdas de cada apertura de costura del
+/// sellado de bolsillos (`stitching.rs`/`generator.rs`, ver sus doc-comments
+/// — la costura entre chunks debe seguir siendo transitable en AMBOS lados
+/// SIEMPRE, es la garantía dura que rompía
+/// `shared_borders_keep_a_crossable_aperture_across_density_profiles`), en un
+/// puñado de seeds ese túnel protegido queda genuinamente aislado del resto
+/// del maze de su propio chunk — antes se sellaba a Wall en silencio
+/// (limpiando la conectividad global a costa de un borde intransitable
+/// permanente; el bug real). Se acepta 1 celda aislada de margen: preferimos
+/// una celda de 2.5 m sin visitar rarísima vez a un borde de chunk cerrado
+/// con muro sólido para siempre.
 #[test]
 #[ignore = "barrido amplio; correr con --ignored"]
 fn neighbouring_density_connectivity_seed_sweep() {
     const N: usize = 3;
     let side = N * CHUNK_CELLS;
+    const MAX_ISOLATED_CELLS: usize = 1;
 
     let mut failures = Vec::new();
     for seed in 0u64..200 {
         let grids = block_grids(N, checkerboard_profile, seed, 0);
         let merged = merge_grids(&grids, N);
         let (reached, total) = flood_fill_merged(&merged, side);
-        if reached != total {
+        if total - reached > MAX_ISOLATED_CELLS {
             failures.push((seed, reached, total));
         }
     }
     assert!(
         failures.is_empty(),
-        "{} seeds con componentes aisladas en bloques de densidad mixta: {:?}",
+        "{} seeds con MÁS de {MAX_ISOLATED_CELLS} celda(s) aislada(s) en bloques de densidad mixta: {:?}",
         failures.len(),
         &failures[..failures.len().min(20)]
     );
@@ -1291,7 +1313,7 @@ fn repair_connectivity_erases_a_fully_incommunicado_sealed_room() {
     let open_before = count_kind(&grid, CellType::Open);
     assert!(sealed_before > 0 && open_before > 0, "montaje degenerado");
 
-    repair_connectivity(&mut grid, 2);
+    repair_connectivity(&mut grid, 2, &[]);
 
     assert_eq!(
         count_kind(&grid, CellType::SealedWall),
@@ -1305,6 +1327,58 @@ fn repair_connectivity_erases_a_fully_incommunicado_sealed_room() {
          sellado de bolsillos (limitación conocida, ver DECISIONS.md/RoomType \
          — si esto falla, alguien cambió el comportamiento; actualiza este \
          test a propósito)"
+    );
+}
+
+/// `protected` (fix de costura, RoomType en producción): una celda transitable
+/// aislada — sin ningún Wall carvable hacia ella, mismo montaje que arriba
+/// pero SIN perímetro `SealedWall` de por medio, solo para aislar el
+/// mecanismo — se sella igual que siempre SI no está protegida, y sobrevive
+/// intacta si sí lo está. Contraste directo con la misma componente aislada
+/// en las dos ramas, para que quede claro que `protected` es lo único que
+/// cambia el resultado.
+#[test]
+fn repair_connectivity_protected_cells_survive_pocket_sealing() {
+    fn grid_with_isolated_corridor_pocket() -> LayerGrid {
+        let mut grid = LayerGrid::new_solid();
+        // Componente "principal": una fila larga, lejos del bolsillo.
+        for x in 1..15 {
+            grid.set(x, 1, Cell::new(CellType::Corridor, 2, 0));
+        }
+        // Bolsillo aislado de 1 celda, en una esquina distinta, sin ningún
+        // Wall carvable hacia el resto (todo Wall alrededor por defecto en
+        // `new_solid`, y `repair_connectivity` no puede alcanzarlo mediante
+        // BFS de Wall porque queda igual de "alcanzable por Wall interior" que
+        // cualquier otra celda de la grid — para forzar el caso IRREPARABLE
+        // se necesita encerrarlo en contenido no atravesable: Void.
+        grid.set(15, 15, Cell::new(CellType::Corridor, 2, 0));
+        for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+            let (x, z) = (15 + dx, 15 + dz);
+            grid.set(x as usize, z as usize, Cell::new(CellType::Void, 0, 0));
+        }
+        grid
+    }
+
+    // Rama SIN protección: el bolsillo se sella, mismo comportamiento de
+    // siempre (idéntico a `repair_connectivity_erases_a_fully_incommunicado_sealed_room`).
+    let mut unprotected = grid_with_isolated_corridor_pocket();
+    repair_connectivity(&mut unprotected, 2, &[]);
+    assert_eq!(
+        unprotected.get(15, 15).kind(),
+        CellType::Wall,
+        "sin `protected`, el bolsillo aislado debe sellarse (comportamiento histórico)"
+    );
+
+    // Rama CON protección: la MISMA celda, en la MISMA componente aislada,
+    // sobrevive porque está en la lista.
+    let mut protected_grid = grid_with_isolated_corridor_pocket();
+    repair_connectivity(&mut protected_grid, 2, &[(15, 15)]);
+    assert_eq!(
+        protected_grid.get(15, 15).kind(),
+        CellType::Corridor,
+        "con `protected`, la celda de costura debe sobrevivir aunque quede \
+         en un componente irreparable — es la garantía dura de que un borde \
+         de chunk nunca queda intransitable"
     );
 }
 
@@ -1337,14 +1411,23 @@ fn grid_fingerprint(grid: &LayerGrid) -> u64 {
 /// cambio alteró la secuencia de sorteos del caso por defecto, que es
 /// exactamente lo que estas constantes existen para impedir.
 ///
-/// EXCEPCIÓN DELIBERADA — layer 0 (las 4 primeras entradas): actualizadas al
-/// activar RoomType en producción (`room_type_weights: (0.5, 0.3, 0.2)`,
-/// `open_zone_size_x/z: Some(7)`, `LAYER_PROFILES[0]`). Es la única vez que
-/// esta regla "no se regenera porque el test falla" se salta a propósito: el
-/// cambio de huella ES el cambio de producto (mundos NUEVOS de layer 0 salen
-/// distintos; seeds YA jugadas antes de este commit regeneran su layer 0
-/// distinto). Documentado en DECISIONS.md. Layers 1-3 (las 12 restantes)
-/// siguen bajo la regla normal — cualquier cambio ahí sigue siendo bug.
+/// EXCEPCIÓN DELIBERADA #1 — layer 0 (las 4 primeras entradas): actualizadas
+/// al activar RoomType en producción (`room_type_weights: (0.5, 0.3, 0.2)`,
+/// `open_zone_size_x/z: Some(7)`, `LAYER_PROFILES[0]`). El cambio de huella ES
+/// el cambio de producto (mundos NUEVOS de layer 0 salen distintos; seeds YA
+/// jugadas antes de este commit regeneran su layer 0 distinto). Documentado
+/// en DECISIONS.md.
+///
+/// EXCEPCIÓN DELIBERADA #2 — `(3, 42)`: el fix de costura entre chunks
+/// (`repair_connectivity` gana un parámetro `protected`, `stitching.rs`) es
+/// GENÉRICO — corrige un bug preexistente en el pase de sellado de
+/// bolsillos que podía dejar un borde de chunk sin NINGUNA celda transitable,
+/// reproducible SIN RoomType de por medio (ver DECISIONS.md). Afecta a las 4
+/// capas por igual, no solo a layer 0; esta seed en layer 3 es la única
+/// combinación de las 12 restantes que resultó tener una apertura de costura
+/// afectada por el bug. Layers 1-3 en el resto de seeds NO cambiaron — la
+/// regla normal ("un fallo aquí es bug") sigue aplicando a cualquier huella
+/// que no sea una de estas 5 excepciones documentadas.
 const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
     ((0, 3133931653), 0x401418810ECD39FF),
     ((0, 1), 0x338FC2AE7D17E9F4),
@@ -1360,7 +1443,7 @@ const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
     ((2, 7778), 0x866CE51249E7FF3F),
     ((3, 3133931653), 0x424D9C1396AC3BB7),
     ((3, 1), 0x1290567179328DCF),
-    ((3, 42), 0x428CC16E52B3433E),
+    ((3, 42), 0x7B6A4D7D8459B265),
     ((3, 7778), 0x0C875E3B81D0BDE6),
 ];
 

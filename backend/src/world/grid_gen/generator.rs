@@ -690,7 +690,7 @@ pub fn generate_layer(
     // componentes que Fase 5 había reconectado. Se repara aquí, ANTES de Fase 7,
     // para que escaleras y pozos caigan siempre sobre un grid ya conexo.
     // Determinista: orden de escaneo del grid, sin RNG.
-    repair_connectivity(&mut grid, rules.ceiling_corridor);
+    repair_connectivity(&mut grid, rules.ceiling_corridor, &[]);
 
     // ── Phase 7 — Vertical connections ───────────────────────────────────────
     //
@@ -750,7 +750,22 @@ pub fn generate_layer(
 /// celdas dentro de un campo de voids es ruido de estampado, no espacio
 /// jugable; sellarlo preserva el invariante de conectividad total sin tocar
 /// ningún Void.
-pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
+///
+/// `protected`: celdas que el sellado de bolsillos NUNCA puede tocar, aunque
+/// queden en un componente irreparable. Hoy solo lo usa `stitch_edges`
+/// (`stitching.rs`), con el túnel completo que cada `carve_aperture` acaba de
+/// carvar — bug real encontrado con perfiles mixtos de RoomType en
+/// producción, pero NO específico de SealedWall: reproduce igual con un
+/// perfil sin RoomType (`LAYER_PROFILES[2]`, seed 51, chunk (2,1)). Causa:
+/// una apertura de borde puede acabar en un componente más pequeño que el
+/// grueso del maze del propio chunk (topología de Fase 1, nada que ver con
+/// contenido estampado) — el sellado de bolsillos, que no distingue "ruido"
+/// de "la única conexión con el chunk vecino", la sella de vuelta a Wall y
+/// ese borde queda intransitable para SIEMPRE en ambos chunks. `protected`
+/// hace explícito que la apertura de costura pesa más que la limpieza de
+/// bolsillos — Fase 4 (llamada sin apertures que proteger) sigue pasando
+/// `&[]`.
+pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8, protected: &[(usize, usize)]) {
     use std::collections::VecDeque;
 
     loop {
@@ -862,7 +877,10 @@ pub(super) fn repair_connectivity(grid: &mut LayerGrid, ceiling: u8) {
             // visitado es exactamente el conjunto de bolsillos.
             for z in 0..CHUNK_CELLS {
                 for x in 0..CHUNK_CELLS {
-                    if grid.get(x, z).is_walkable() && !visited[z * CHUNK_CELLS + x] {
+                    if grid.get(x, z).is_walkable()
+                        && !visited[z * CHUNK_CELLS + x]
+                        && !protected.contains(&(x, z))
+                    {
                         grid.set(x, z, Cell::SOLID_WALL);
                     }
                 }
