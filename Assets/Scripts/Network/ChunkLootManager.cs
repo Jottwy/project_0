@@ -78,6 +78,15 @@ namespace BackroomsSurvival.Net
         [Min(0.05f)] public float scanInterval = 0.25f;
 
         // Mirror ChunkStreamer's ring geometry so loot chunks == rendered chunks.
+        /// <summary>
+        /// Primera id que acuña el BACKEND (`STP_DROP_ID_BASE` en game_loop.rs). El espacio de
+        /// ids de STP está particionado: por debajo acuña el Unity del host, por encima el
+        /// backend (drops 0x4000_0000, construcciones 0x6000_0000, carryables 0x7000_0000).
+        /// Este lado nunca debe cruzarla — el propio backend documenta que su rango existe
+        /// "so it never collides with the low, host-Unity-assigned ids".
+        /// </summary>
+        private const uint BackendIdBase = 0x4000_0000u;
+
         private const int ViewRadius = 1;
         private const float Side = GridConstants.ChunkCells * GridConstants.CellSize; // 50 m
         // Walkable raycast — identical to StpItemSpawner/StpCarryableSpawner/ProxyGroundingHook
@@ -280,14 +289,30 @@ namespace BackroomsSurvival.Net
             {
                 if (_removedIds.Contains(it.id)) continue; // our unloaded loot leaves the broadcast
                 merged.Add(new StpItemSpec { id = it.id, defId = it.defId, count = it.count, position = it.position, rotation = it.rotation });
-                if (it.id > maxId) maxId = it.id;
+                if (it.id > maxId && it.id < BackendIdBase) maxId = it.id;
             }
             // maxId must ALSO span our live ids (echoed or not) so a fresh id below can never collide
             // with — nor overwrite the _liveItems entry of — a not-yet-echoed placement.
             foreach (var id in _liveItems.Keys)
-                if (id > maxId) maxId = id;
+                if (id > maxId && id < BackendIdBase) maxId = id;
 
             uint nextId = maxId + 1;
+            // Los ids del backend quedan FUERA del máximo, arriba. El roster es multi-autor: lleva
+            // también los drops que acuña el backend, desde 0x4000_0000 (game_loop.rs, constante
+            // STP_DROP_ID_BASE). Tomando el máximo global, una sola pieza soltada por el backend
+            // empujaba este contador dentro del rango alto y a partir de ahí Unity acuñaba ids que
+            // el backend cree suyos — el comentario del propio backend dice que ese rango existe
+            // "so it never collides with the low, host-Unity-assigned ids".
+            //
+            // Es la mitad cliente del arreglo de siembra de asignadores: sin ella, sembrar el
+            // backend desde su propio rango no basta, porque el que invade es este lado.
+            if (nextId >= BackendIdBase)
+            {
+                Debug.LogError($"[ChunkLootManager] espacio de ids del cliente agotado (nextId=0x{nextId:x8} " +
+                               $"alcanza la base del backend 0x{BackendIdBase:x8}); no se acuñan mas items este scan.");
+                _pendingPlacements.Clear();
+                return;
+            }
             int placed = 0;
             foreach (var p in _pendingPlacements)
             {
