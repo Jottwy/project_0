@@ -4151,7 +4151,7 @@ impl PhantomDriver {
     /// be. A plan is rebuilt when it is older than `PHANTOM_REPLAN_INTERVAL`, when the target has
     /// drifted `PHANTOM_REPLAN_GOAL_DRIFT` from the goal it was built for, or when it ran out.
     fn steer_heading(&mut self, i: usize, layer: u8, from: Vec3, target: Vec3, dt: f32) -> f32 {
-        use crate::world::grid_gen::{cell_of, find_path, string_pull};
+        use crate::world::grid_gen::{cell_of, find_path, segment_is_clear, string_pull};
 
         let straight = |to: Vec3| {
             (to.x - from.x)
@@ -4160,6 +4160,21 @@ impl PhantomDriver {
         };
 
         self.movers[i].nav_age += dt;
+
+        // LINE OF TRAVEL FIRST. A pathfinder must never come BETWEEN the creature and a player it
+        // can already walk straight to. Two ways that bites, both seen in play-test: a player
+        // pressed against a wall quantizes into a cell grid_gen calls solid, so the search returns
+        // best effort and the route stops a cell short — the phantom parks at ~2 m and stares,
+        // and the point-blank strike (dist < 1.5) never fires; and a route's last waypoint is a
+        // cell CENTRE, which can sit up to half a cell diagonal away from where you actually are.
+        // Checking the straight line is cheap and settles both: if it is clear, take it.
+        if segment_is_clear(&mut self.grid_cache, layer, from, target) {
+            self.movers[i].nav_waypoints.clear();
+            self.movers[i].nav_cursor = 0;
+            self.movers[i].nav_goal = None;
+            return straight(target);
+        }
+
         let stale = self.movers[i].nav_waypoints.is_empty()
             || self.movers[i].nav_cursor >= self.movers[i].nav_waypoints.len()
             || self.movers[i].nav_age >= PHANTOM_REPLAN_INTERVAL
@@ -5289,6 +5304,55 @@ mod tests {
         assert!(
             !driver.movers[0].nav_waypoints.is_empty(),
             "a route must have been planned"
+        );
+    }
+
+    /// A pathfinder must never come BETWEEN the creature and a player it can already reach in a
+    /// straight line. Play-test symptom this pins: pressed against a wall, the player's cell can
+    /// quantize into one grid_gen calls solid, the search returns best effort, the route ends a
+    /// cell short, and the phantom parks ~2 m away staring — never triggering its point-blank
+    /// strike at dist < 1.5.
+    #[tokio::test]
+    async fn clear_line_of_travel_beats_the_plan() {
+        use crate::world::grid_gen::{is_walkable_grid_gen, segment_is_clear, GridGenChunkCache};
+
+        // Find an open pair with a CLEAR line in the real world.
+        let mut probe = GridGenChunkCache::with_rules(42, crate::world::zone_density::rules_for);
+        let mut pair: Option<(Vec3, Vec3)> = None;
+        'outer: for ax in 1..19i32 {
+            for az in 1..19i32 {
+                let a = crate::world::grid_gen::cell_center((ax, az), 0.0);
+                if !is_walkable_grid_gen(&mut probe, a, 0) {
+                    continue;
+                }
+                let b = Vec3::new(a.x + 2.0, a.y, a.z);
+                if is_walkable_grid_gen(&mut probe, b, 0) && segment_is_clear(&mut probe, 0, a, b) {
+                    pair = Some((a, b));
+                    break 'outer;
+                }
+            }
+        }
+        let (from, target) = pair.expect("seed 42 must have an open pair near the origin");
+
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = net.spawn_phantom("Robapieles_Test", from.to_array());
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, 0.0, from, true);
+        // Poison it with a stale plan: the shortcut must throw it away, not follow it.
+        driver.movers[0].nav_waypoints = vec![Vec3::new(from.x - 20.0, from.y, from.z)];
+        driver.movers[0].nav_goal = Some(Vec3::new(from.x - 20.0, from.y, from.z));
+
+        let h = driver.steer_heading(0, 0, from, target, 0.1);
+        let straight = (target.x - from.x)
+            .atan2(target.z - from.z)
+            .rem_euclid(std::f32::consts::TAU);
+        assert!(
+            (h - straight).abs() < 1e-3,
+            "with a clear line the heading must be the straight bearing: {h} vs {straight}"
+        );
+        assert!(
+            driver.movers[0].nav_waypoints.is_empty(),
+            "the stale plan must be dropped, not walked"
         );
     }
 
