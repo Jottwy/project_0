@@ -24,8 +24,25 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<NetworkInitializer>();
             // EnsureComponent added it to THIS GameObject (it's in no scene/prefab), so forward
             // the inspector toggle before NetworkInitializer launches the backend (in Start).
+            //
+            // EDITOR-ONLY BY CONSTRUCTION (ADR-016): that ADR deliberately moved the phantom spawn
+            // from a hardcoded `true` to an opt-in flag so no normal build auto-spawns. The toggle
+            // is a play-test convenience, and gating it here means a scene saved with the box
+            // TICKED can be committed without ever leaking the robapieles into a release.
             var ni = GetComponent<NetworkInitializer>();
-            if (ni != null) ni.debugSpawnPhantom = _debugSpawnPhantom;
+            if (ni != null)
+            {
+#if UNITY_EDITOR
+                ni.debugSpawnPhantom = _debugSpawnPhantom;
+#else
+                ni.debugSpawnPhantom = false;
+                // Read in both branches on purpose: it keeps the field from going unused in a
+                // player build, and it answers the "why did nothing spawn?" question out loud.
+                if (_debugSpawnPhantom)
+                    Debug.Log("[GameBootstrap] Debug Spawn Phantom is ticked in the scene but IGNORED: " +
+                              "builds never auto-spawn the robapieles (ADR-016). Use the editor to play-test it.");
+#endif
+            }
             // Gate player spawn on the IPC connection (10 s offline fallback lives in
             // GameMode). Restores the always-ready default on teardown, so non-networked
             // scenes are unaffected.
