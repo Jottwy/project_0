@@ -353,6 +353,12 @@ pub struct NetworkManager {
     pub phantom_ids: std::collections::HashSet<PeerId>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
+    /// Throttle for `send_datagram`'s failure log: millis since `session_start` of the last
+    /// line emitted. Atomic (not a plain field) because the send helper takes `&self` — several
+    /// broadcast paths do. One line per second GLOBALLY: a send that fails usually keeps
+    /// failing at the broadcast cadence, and the point is to make it visible, not to become the
+    /// new noise floor.
+    last_send_error_log_ms: std::sync::atomic::AtomicU64,
     /// ADR-011: when the LOCAL player last confirmed a pickup. `broadcast_player_update`
     /// emits animation="pickup" while inside the ~1s window — a trigger flank for the proxy,
     /// NOT the gesture duration (the client owns that via the Animator exitTime).
@@ -417,6 +423,7 @@ impl NetworkManager {
             phantom_ids: std::collections::HashSet::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
+            last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
@@ -473,7 +480,7 @@ impl NetworkManager {
         };
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
         let data = encode_packet(&header, &payload);
-        let _ = self.socket.send_to(&data, addr).await;
+        self.send_datagram(&data, addr, "handshake").await;
     }
 
     pub async fn retry_pending_connection(&mut self) {
@@ -575,16 +582,23 @@ impl NetworkManager {
         let mut failed_reliable_peers = Vec::new();
 
         for pid in peer_ids {
-            if let Some(peer) = self.peers.get_mut(&pid) {
-                let (retransmits, peer_dead) = peer.collect_retransmits();
-                if peer_dead {
-                    failed_reliable_peers.push(pid);
-                    continue;
+            // El préstamo mutable de `peers` se cierra ANTES de enviar: `send_datagram` toma
+            // `&self`. Se saca la dirección y la lista de reenvíos, y se sale del scope.
+            let pending = match self.peers.get_mut(&pid) {
+                Some(peer) => {
+                    let (retransmits, peer_dead) = peer.collect_retransmits();
+                    if peer_dead {
+                        failed_reliable_peers.push(pid);
+                        continue;
+                    }
+                    Some((peer.addr, retransmits))
                 }
+                None => None,
+            };
+            if let Some((addr, retransmits)) = pending {
                 for data in retransmits {
-                    let addr = peer.addr;
                     debug!("Retransmitting {} bytes to {}", data.len(), addr);
-                    let _ = self.socket.send_to(&data, addr).await;
+                    self.send_datagram(&data, addr, "retransmit").await;
                 }
             }
         }
@@ -623,7 +637,7 @@ impl NetworkManager {
             let header =
                 PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
             let data = encode_packet(&header, payload);
-            let _ = self.socket.send_to(&data, peer.addr).await;
+            self.send_datagram(&data, peer.addr, "unreliable_to").await;
         }
     }
 
@@ -644,7 +658,7 @@ impl NetworkManager {
         if let Some(peer) = self.peers.get(&dest_peer) {
             let header = PacketHeader::new(payload.type_code(), sender_id, 0, self.timestamp());
             let data = encode_packet(&header, payload);
-            let _ = self.socket.send_to(&data, peer.addr).await;
+            self.send_datagram(&data, peer.addr, "relay_as").await;
         }
     }
 
@@ -653,7 +667,8 @@ impl NetworkManager {
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
         let data = encode_packet(&header, payload);
         for peer in self.peers.values() {
-            let _ = self.socket.send_to(&data, peer.addr).await;
+            self.send_datagram(&data, peer.addr, "broadcast_unreliable")
+                .await;
         }
     }
 
@@ -663,8 +678,13 @@ impl NetworkManager {
         let header = PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
         let data = encode_packet(&header, payload);
 
+        // Igual que en process_retransmits: se resuelve la dirección con un préstamo INMUTABLE,
+        // se envía, y solo después se vuelve a pedir el mutable para encolar el reenvío.
+        let Some(addr) = self.peers.get(&peer_id).map(|p| p.addr) else {
+            return;
+        };
+        self.send_datagram(&data, addr, "reliable").await;
         if let Some(peer) = self.peers.get_mut(&peer_id) {
-            let _ = self.socket.send_to(&data, peer.addr).await;
             peer.queue_reliable(seq, data);
         }
     }
@@ -687,10 +707,46 @@ impl NetworkManager {
             let header =
                 PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
             let data = encode_packet(&header, payload);
-            let _ = self.socket.send_to(&data, addr).await;
+            self.send_datagram(&data, addr, "broadcast_reliable").await;
             if let Some(peer) = self.peers.get_mut(&pid) {
                 peer.queue_reliable(seq, data);
             }
+        }
+    }
+
+    /// The single outgoing-datagram choke point. Every `send_to` in this file goes through
+    /// here so that a failed send can never be silent again.
+    ///
+    /// The eight call sites this replaced were all `let _ = self.socket.send_to(...)`, which
+    /// swallowed `EMSGSIZE` — the exact error produced once a full-roster payload outgrows the
+    /// 65507 B IPv4 datagram limit (`StpBuildingList` reaches it somewhere around ~800 placed
+    /// pieces). That failure is indistinguishable from packet loss: no log, no error, and no
+    /// visible relation to anything the player did. Building replication would simply stop one
+    /// day, for everyone, permanently. The payload size travels in the log because the size IS
+    /// the diagnosis.
+    ///
+    /// Takes `&self` (several broadcast paths are `&self`), hence the atomic throttle.
+    async fn send_datagram(&self, data: &[u8], addr: SocketAddr, kind: &str) {
+        let Err(e) = self.socket.send_to(data, addr).await else {
+            return;
+        };
+        use std::sync::atomic::Ordering;
+        let now_ms = self.session_start.elapsed().as_millis() as u64;
+        let last = self.last_send_error_log_ms.load(Ordering::Relaxed);
+        if now_ms.saturating_sub(last) >= 1000
+            && self
+                .last_send_error_log_ms
+                .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            warn!(
+                "MPTRACE step=SEND_FAIL event=datagram_send_failed self_id={} kind={} dest={} payload_bytes={} err={}",
+                self.local_id,
+                kind,
+                addr,
+                data.len(),
+                e
+            );
         }
     }
 
@@ -700,7 +756,7 @@ impl NetworkManager {
         let seq = 0;
         let header = PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
         let data = encode_packet(&header, payload);
-        let _ = self.socket.send_to(&data, addr).await;
+        self.send_datagram(&data, addr, "raw").await;
     }
 
     // ─── Packet handling ───
