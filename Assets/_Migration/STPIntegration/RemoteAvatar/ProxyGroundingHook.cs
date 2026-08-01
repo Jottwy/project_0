@@ -59,12 +59,30 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private float _offset;    // smoothed world-Y shift applied to Pelvis this frame
         private float _offsetVel; // SmoothDamp state
 
+        [Header("Diagnostics — invisible-mesh hunt (2026-08-01), TEMPORARY")]
+        [Tooltip("Logs Pelvis drift + cull state ~2x/s. It exists to answer ONE open question: does " +
+                 "the Pelvis accumulate while the proxy is culled? Untick (or delete this block) " +
+                 "once that is settled. Must run in a BUILD, or with the Scene View NOT framing the " +
+                 "proxy — the Scene View camera counts for isVisible and hides the bug.")]
+        [SerializeField] private bool _logCullDiagnostics = true;
+
+        /// Pelvis local Y in the vendor bind pose (MTP_PlayerViewer.prefab). A healthy proxy stays
+        /// near this; monotonic drift away from it is the accumulation bug.
+        private const float BindPosePelvisLocalY = 0.950322f;
+
+        private Animator _animator;
+        private SkinnedMeshRenderer _sampleRenderer;
+        private float _nextDiagAt;
+
         private void Awake()
         {
             // "Pelvis" — this rig has no "Hips" bone (verified in MTP_PlayerViewer.prefab; the
             // old "Hips" lookup silently no-op'd, which was the remote-proxy floating bug).
             _pelvis = FindBone("Pelvis");
             _hasRig = _pelvis != null; // no pelvis → nothing to ground
+
+            _animator = GetComponentInParent<Animator>();
+            _sampleRenderer = GetComponentInChildren<SkinnedMeshRenderer>(true);
         }
 
         // Re-arm for pool reuse: clear the offset so a recycled proxy never starts pre-shifted.
@@ -84,6 +102,28 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             if (!Mathf.Approximately(_offset, 0f))
                 _pelvis.position += new Vector3(0f, _offset, 0f);
+
+            LogCullDiagnostics();
+        }
+
+        // Reports the numbers that decide the diagnosis together: whether the Pelvis is walking away
+        // from its bind pose, whether the mesh is actually being drawn, and which culling mode the
+        // Animator ended up with. NOTE: Unity exposes no "is this Animator culled right now" flag —
+        // renderer visibility IS the signal, because CullUpdateTransforms culls the Animator exactly
+        // when its renderers stop being visible. Throttled to ~2/s so a play-test log stays readable.
+        private void LogCullDiagnostics()
+        {
+            if (!_logCullDiagnostics || Time.unscaledTime < _nextDiagAt)
+                return;
+            _nextDiagAt = Time.unscaledTime + 0.5f;
+
+            float drift = _pelvis.localPosition.y - BindPosePelvisLocalY;
+            Debug.Log(
+                $"[GROUND] pelvisLocalY={_pelvis.localPosition.y:F3} drift={drift:+0.000;-0.000} " +
+                $"(bind={BindPosePelvisLocalY:F3}) offset={_offset:F3} " +
+                $"meshVisible={(_sampleRenderer != null ? _sampleRenderer.isVisible.ToString() : "<no-smr>")} " +
+                $"updateOffscreen={(_sampleRenderer != null ? _sampleRenderer.updateWhenOffscreen.ToString() : "<no-smr>")} " +
+                $"cullMode={(_animator != null ? _animator.cullingMode.ToString() : "<no-animator>")}");
         }
 
         /// <summary>
