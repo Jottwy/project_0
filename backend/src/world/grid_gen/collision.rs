@@ -37,6 +37,14 @@ pub struct GridGenChunkCache {
     seed: u64,
     cache: HashMap<(i32, i32, u8), LayerGrid>,
     rules_fn: RulesFn,
+    /// Absolute cells made impassable by something OUTSIDE the generator — today the player's own
+    /// building pieces. Kept as an opaque set of cells on purpose: `grid_gen` must not learn what a
+    /// building is (it may not import `world/`), and whoever owns that roster fills this in.
+    ///
+    /// It lives on the CACHE rather than being threaded through every signature so that collision
+    /// and navigation cannot disagree: both already read the world through this object, so a wall
+    /// you build is a wall the pathfinder plans around, not just one the phantom bumps into.
+    blocked_cells: std::collections::HashSet<(i32, i32)>,
 }
 
 /// Resolutor de perfil por chunk: `(world_seed, cx, cz, layer) → LayerRules`.
@@ -69,7 +77,22 @@ impl GridGenChunkCache {
             seed,
             cache: HashMap::new(),
             rules_fn,
+            blocked_cells: std::collections::HashSet::new(),
         }
+    }
+
+    /// Replace the externally-blocked cell set (see `blocked_cells`). Cheap to call on a cadence:
+    /// the caller decides when its roster changed.
+    pub fn set_blocked_cells(&mut self, cells: std::collections::HashSet<(i32, i32)>) {
+        self.blocked_cells = cells;
+    }
+
+    pub fn blocked_cell_count(&self) -> usize {
+        self.blocked_cells.len()
+    }
+
+    fn is_blocked_cell(&self, gx: i32, gz: i32) -> bool {
+        self.blocked_cells.contains(&(gx, gz))
     }
 
     pub fn len(&self) -> usize {
@@ -149,6 +172,11 @@ fn world_to_grid_cell(pos: Vec3) -> (i32, i32, usize, usize) {
 
 /// Walkability of an ABSOLUTE cell, without going through a world position.
 pub(super) fn cell_is_walkable(cache: &mut GridGenChunkCache, gx: i32, gz: i32, layer: u8) -> bool {
+    // Player-built geometry first: it is not in the generator's output, so a cell the generator
+    // calls open can still be occupied by something you put there.
+    if cache.is_blocked_cell(gx, gz) {
+        return false;
+    }
     let n = CHUNK_CELLS as i32;
     cache
         .get_or_generate(gx.div_euclid(n), gz.div_euclid(n), layer)
@@ -264,6 +292,10 @@ pub fn resolve_spawn_near(seed: u64, pos: [f32; 3], rules_fn: RulesFn) -> [f32; 
 /// True if `pos` falls in a walkable grid_gen cell of `layer`. Point sample at the position's
 /// cell (per-frame phantom steps are < one 2.5 m cell, so the endpoint never skips a wall).
 pub fn is_walkable_grid_gen(cache: &mut GridGenChunkCache, pos: Vec3, layer: u8) -> bool {
+    let (gx, gz) = global_cell(pos);
+    if cache.is_blocked_cell(gx, gz) {
+        return false; // a player-built piece stands here (see `blocked_cells`)
+    }
     let (cx, cz, cell_x, cell_z) = world_to_grid_cell(pos);
     cache
         .get_or_generate(cx, cz, layer)
@@ -504,6 +536,40 @@ mod tests {
             "expected Z-only slide, got {:?}",
             r.pos
         );
+    }
+
+    /// A player-built piece must stop the phantom even though the GENERATOR calls that cell open.
+    /// Walking through a wall you just built to hide behind is the failure that reads as the game
+    /// being broken rather than as the creature being frightening.
+    #[test]
+    fn a_built_piece_blocks_a_cell_the_generator_calls_open() {
+        let mut grid = LayerGrid::new_solid();
+        for x in 3..8 {
+            grid.set(x, 5, Cell::new(CellType::Corridor, 2, 0));
+        }
+        let mut c = cache_with_grid(grid);
+        let from = cell_center(4, 5);
+        let desired = Vec3::new(from.x + 0.9, from.y, from.z);
+
+        // Open corridor: the step is taken.
+        let before = resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+        assert!(
+            before.pos.x > from.x,
+            "the corridor must be walkable to begin with"
+        );
+
+        // Build a piece in the next cell along.
+        let mut blocked = std::collections::HashSet::new();
+        blocked.insert(global_cell(Vec3::new(from.x + 2.5, from.y, from.z)));
+        c.set_blocked_cells(blocked);
+
+        let after = resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+        assert!(
+            (after.pos.x - from.x).abs() < 1e-4,
+            "a built piece must stop it, but it moved to {:?}",
+            after.pos
+        );
+        assert_eq!(c.blocked_cell_count(), 1);
     }
 
     /// The body radius must NOT seal a one-cell corridor. 0.5 m against a 2.5 m cell leaves 1.5 m

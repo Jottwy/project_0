@@ -4170,6 +4170,11 @@ struct PhantomDriver {
     /// thing that keeps the cost bound honest.
     #[cfg(test)]
     nav_replans: u32,
+    /// Size of the building roster the blocked-cell overlay was last built from.
+    built_count: usize,
+    /// Seconds until the overlay is rebuilt regardless of size. A place + a demolish in the same
+    /// window leave the count unchanged, so size alone would miss it.
+    built_resync_in: f32,
 }
 
 /// Per-phantom state: which peer, its heading (yaw, radians), the faked-pickup gesture (slice 4),
@@ -4248,7 +4253,35 @@ impl PhantomDriver {
             nav_cells: Vec::new(),
             #[cfg(test)]
             nav_replans: 0,
+            built_count: usize::MAX, // forces a build on the first step
+            built_resync_in: 0.0,
         }
+    }
+
+    /// Player-built pieces are NOT in the generator's output, so without this the phantom walks
+    /// straight through a wall you built to protect yourself — the one failure that reads as the
+    /// game being broken rather than as the creature being scary.
+    ///
+    /// Approximation, deliberately: each piece blocks the 2.5 m cell it stands in. The backend
+    /// knows a piece's `def_id`, position and rotation but NOT its size — footprints live in
+    /// Unity's building definitions — so anything exact would need a new wire field and an ADR.
+    /// One cell is right for walls and floors, which is what people actually build to hide behind.
+    ///
+    /// Feeding the CACHE means navigation inherits it for free: the phantom plans around your wall
+    /// instead of planning through it and then bumping.
+    fn sync_built_cells(&mut self, net: &NetworkManager, dt: f32) {
+        self.built_resync_in -= dt;
+        if net.stp_buildings.len() == self.built_count && self.built_resync_in > 0.0 {
+            return;
+        }
+        self.built_count = net.stp_buildings.len();
+        self.built_resync_in = 2.0;
+        let cells: std::collections::HashSet<(i32, i32)> = net
+            .stp_buildings
+            .iter()
+            .map(|b| crate::world::grid_gen::cell_of(Vec3::from_array(b.position)))
+            .collect();
+        self.grid_cache.set_blocked_cells(cells);
     }
 
     fn add(&mut self, id: PeerId, heading: f32, spawn_pos: Vec3, victim_bound: bool) {
@@ -4486,6 +4519,8 @@ impl PhantomDriver {
         // ADR-041: stimuli first — a shot reported this tick redirects the phantom before the FSM
         // gets to act on stale intentions.
         self.hear_noises(net);
+        // Your walls exist for the AI too — collision AND pathfinding, via the same cache.
+        self.sync_built_cells(net, dt);
 
         // ADR-016 slice 3b-P1 — derive each real target's XZ speed from its last-tick position
         // (peers send no velocity/move_state, so this is the uniform "is it running?" signal for
