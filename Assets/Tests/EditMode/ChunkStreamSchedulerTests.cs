@@ -18,11 +18,19 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void BuildDesiredSet_CoversRingTimesLayers()
         {
+            const int viewRadius = 1;
+            const int layerCount = 2;
             var desired = new HashSet<(int, int, int)>();
-            ChunkStreamer.BuildDesiredSet(cx: 0, cz: 0, viewRadius: 1, layerCount: 2, desired);
+            ChunkStreamer.BuildDesiredSet(cx: 0, cz: 0, viewRadius, layerCount, desired);
 
-            Assert.AreEqual(2 * 2 * 1, desired.Count);       // 3×3 ring × 2 layers
+            // The ring is a full Chebyshev SQUARE — (2r+1)² columns — replicated on every layer.
+            // Derived from the Arrange values rather than hardcoded: the literal that used to sit
+            // here said 4 while its own comment said 3×3×2, and the mismatch shipped as a red test.
+            int side = 2 * viewRadius + 1;
+            Assert.AreEqual(side * side * layerCount, desired.Count);
             Assert.IsTrue(desired.Contains((0, 0, 0)));
+            // Diagonal corner (dist² = 2 > r), on the SECOND layer: pins both that the ring is a
+            // square and not a diamond, and that every layer index is covered.
             Assert.IsTrue(desired.Contains((1, -1, 1)));
             Assert.IsFalse(desired.Contains((2, 0, 0)));     // outside radius
         }
