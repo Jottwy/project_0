@@ -163,6 +163,65 @@ fn resolve_save_path(seed: u64) -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(format!("./saves/world_{seed}.json")))
 }
 
+/// Re-siembra los cuatro asignadores de id de proceso desde los rosters recién cargados.
+/// Devuelve `(drop, building, carryable, group)` ya almacenados, solo para el log.
+///
+/// Sin esto, tras cargar una partida los cuatro `AtomicU32` arrancan otra vez en su base y el
+/// PRIMER `place` de la sesión reacuña un id que ya existe en el roster. Como `process_stp_demolish`
+/// resuelve la pieza por `position(|b| b.id == …)`, demoler la pieza nueva borra la VIEJA. Es
+/// pérdida de datos silenciosa, y ocurre hoy con un solo jugador.
+///
+/// Se siembra desde el máximo DENTRO DEL PROPIO RANGO, no desde `max(roster) + 1` a secas: los
+/// rangos están particionados a propósito (`0x4000_0000` drops, `0x6000_0000` construcciones,
+/// `0x7000_0000` carryables, y por debajo de `0x4000_0000` acuña el Unity del host). Sembrar desde
+/// el máximo global metería el asignador de drops en el rango de construcciones y garantizaría la
+/// colisión en vez de evitarla.
+fn reseed_stp_id_allocators(net: &NetworkManager) -> (u32, u32, u32, u32) {
+    use std::sync::atomic::Ordering;
+
+    /// Primer id libre del rango `[base, end)`, ignorando lo que caiga fuera.
+    fn next_free(base: u32, end: u32, ids: impl Iterator<Item = u32>) -> u32 {
+        ids.filter(|id| *id >= base && *id < end)
+            .max()
+            .map(|m| m.saturating_add(1))
+            .unwrap_or(base)
+            .max(base)
+    }
+
+    let drop_id = next_free(
+        STP_DROP_ID_BASE,
+        STP_BUILDING_ID_BASE,
+        net.stp_items.iter().map(|i| i.id),
+    );
+    let building_id = next_free(
+        STP_BUILDING_ID_BASE,
+        STP_CARRYABLE_ID_BASE,
+        net.stp_buildings.iter().map(|b| b.id),
+    );
+    let carryable_id = next_free(
+        STP_CARRYABLE_ID_BASE,
+        u32::MAX,
+        net.stp_carryables.iter().map(|c| c.id),
+    );
+    // `group_id` no vive en un rango alto: 0 significa "pieza suelta", así que el primer grupo
+    // válido es 1 y se siembra por encima del mayor grupo cargado.
+    let group_id = net
+        .stp_buildings
+        .iter()
+        .map(|b| b.group_id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(1);
+
+    NEXT_STP_DROP_ID.store(drop_id, Ordering::Relaxed);
+    NEXT_STP_BUILDING_ID.store(building_id, Ordering::Relaxed);
+    NEXT_STP_CARRYABLE_ID.store(carryable_id, Ordering::Relaxed);
+    NEXT_STP_GROUP_ID.store(group_id, Ordering::Relaxed);
+
+    (drop_id, building_id, carryable_id, group_id)
+}
+
 /// ADR-032: apply a loaded save over a freshly-generated host world. Restores corpses/chests, the
 /// corpse-id allocator (defensively above both the saved counter and any loaded id), the four
 /// host-authoritative STP rosters, and the host player's durable slice.
@@ -188,6 +247,8 @@ fn hydrate_from_save(
     net.stp_carryables = save.stp_carryables;
     net.stp_harvestables = save.stp_harvestables;
 
+    let (drop_id, building_id, carryable_id, group_id) = reseed_stp_id_allocators(net);
+
     if let Some(p) = save.host_player {
         player.stats = p.stats;
         player.position = p.position;
@@ -200,13 +261,17 @@ fn hydrate_from_save(
     }
 
     info!(
-        "ADR-032: world hydrated from save (corpses={}, buildings={}, items={}, carryables={}, harvestables={}, next_corpse_id={})",
+        "ADR-032: world hydrated from save (corpses={}, buildings={}, items={}, carryables={}, harvestables={}, next_corpse_id={}, next_drop_id=0x{:08x}, next_building_id=0x{:08x}, next_carryable_id=0x{:08x}, next_group_id={})",
         world.corpses.len(),
         net.stp_buildings.len(),
         net.stp_items.len(),
         net.stp_carryables.len(),
         net.stp_harvestables.len(),
-        next_id
+        next_id,
+        drop_id,
+        building_id,
+        carryable_id,
+        group_id
     );
 }
 
@@ -2944,8 +3009,15 @@ async fn process_pvp_hit_candidate_host(
 
 /// Monotonic id source for host-spawned dropped STP items. Starts high so it never
 /// collides with the low, host-Unity-assigned ids of the Phase 1 spawn ring.
+/// Bases de los tres rangos de id que acuña el BACKEND. Están particionados a propósito para
+/// no colisionar con los ids que acuña el Unity del host, que van por DEBAJO de la primera.
+/// `reseed_stp_id_allocators` los usa para re-sembrar dentro del rango correcto tras cargar.
+const STP_DROP_ID_BASE: u32 = 0x4000_0000;
+const STP_BUILDING_ID_BASE: u32 = 0x6000_0000;
+const STP_CARRYABLE_ID_BASE: u32 = 0x7000_0000;
+
 static NEXT_STP_DROP_ID: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0x4000_0000);
+    std::sync::atomic::AtomicU32::new(STP_DROP_ID_BASE);
 
 fn next_stp_drop_id() -> u32 {
     NEXT_STP_DROP_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -2989,7 +3061,7 @@ fn process_stp_drop(
 /// so building ids never collide with item ids (the two lists are independent, but a
 /// distinct range keeps logs unambiguous).
 static NEXT_STP_BUILDING_ID: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0x6000_0000);
+    std::sync::atomic::AtomicU32::new(STP_BUILDING_ID_BASE);
 
 fn next_stp_building_id() -> u32 {
     NEXT_STP_BUILDING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -3190,7 +3262,7 @@ fn process_stp_demolish(demolish_id: u64, building_id: u32, net: &mut NetworkMan
 /// Monotonic id source for host-spawned STP carryables. Lives in its own high range so
 /// carryable ids never collide with item/building ids.
 static NEXT_STP_CARRYABLE_ID: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(0x7000_0000);
+    std::sync::atomic::AtomicU32::new(STP_CARRYABLE_ID_BASE);
 
 fn next_stp_carryable_id() -> u32 {
     NEXT_STP_CARRYABLE_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -4522,6 +4594,72 @@ impl PhantomDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Sin re-siembra, tras cargar una partida los cuatro asignadores arrancan en su base y el
+    /// primer `place` reacuña un id que YA existe en el roster. Como `process_stp_demolish`
+    /// resuelve por `position(|b| b.id == …)`, demoler la pieza nueva borra la VIEJA.
+    ///
+    /// Se asserta sobre el valor DEVUELTO y no leyendo los `AtomicU32` después: son estáticos de
+    /// proceso y los tests corren en hilos del MISMO proceso, así que leerlos seria una carrera.
+    /// El valor devuelto es funcion pura del roster.
+    #[tokio::test]
+    async fn id_allocators_reseed_inside_their_own_range() {
+        use crate::network::protocol::{StpBuildingInfo, StpCarryableInfo, StpItemInfo};
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+        net.stp_items.push(StpItemInfo {
+            id: STP_DROP_ID_BASE + 7,
+            def_id: 1,
+            count: 1,
+            position: [0.0; 3],
+            rotation: 0.0,
+        });
+        net.stp_buildings.push(StpBuildingInfo {
+            id: STP_BUILDING_ID_BASE + 3,
+            def_id: 1,
+            position: [0.0; 3],
+            rotation: 0.0,
+            group_id: 9,
+            added: vec![],
+        });
+        net.stp_carryables.push(StpCarryableInfo {
+            id: STP_CARRYABLE_ID_BASE + 11,
+            def_id: 1,
+            position: [0.0; 3],
+            rotation: 0.0,
+        });
+
+        let (drop_id, building_id, carryable_id, group_id) = reseed_stp_id_allocators(&net);
+
+        assert_eq!(drop_id, STP_DROP_ID_BASE + 8);
+        assert_eq!(building_id, STP_BUILDING_ID_BASE + 4);
+        assert_eq!(carryable_id, STP_CARRYABLE_ID_BASE + 12);
+        assert_eq!(group_id, 10);
+    }
+
+    /// El matiz que hace que la receta ingenua `max(roster) + 1` sea INCORRECTA: los rangos estan
+    /// particionados, asi que el asignador de drops no puede mirar los ids de construcciones —
+    /// sembraria dentro del rango ajeno y garantizaria la colision en vez de evitarla.
+    #[tokio::test]
+    async fn drop_allocator_ignores_ids_from_the_building_range() {
+        use crate::network::protocol::StpItemInfo;
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        // Un id fuera de rango en la lista de items (p.ej. un roster corrupto o migrado).
+        net.stp_items.push(StpItemInfo {
+            id: STP_BUILDING_ID_BASE + 500,
+            def_id: 1,
+            count: 1,
+            position: [0.0; 3],
+            rotation: 0.0,
+        });
+
+        let (drop_id, ..) = reseed_stp_id_allocators(&net);
+
+        assert_eq!(
+            drop_id, STP_DROP_ID_BASE,
+            "un id ajeno al rango no puede arrastrar al asignador de drops fuera del suyo"
+        );
+    }
 
     // ADR-038: the reveal is derived from the FSM state, so THIS is the decision worth freezing —
     // which states break the disguise. A future state added to PhantomState without a verdict here
