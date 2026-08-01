@@ -135,7 +135,10 @@ namespace BackroomsSurvival.Net
         private TcpClient _client;
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
-        private int _nextRemotePlayersLogTick;
+        // Timestamp of the last remote_players trace, NOT a precomputed "next due" tick — see the
+        // wraparound note at its use site. Seeded so the first snapshot after connect always logs.
+        private int _lastRemotePlayersLogTick = Environment.TickCount - RemotePlayersLogIntervalMs;
+        private const int RemotePlayersLogIntervalMs = 2000;
 
         public void ConfigureEndpoint(string address, int ipcPort)
         {
@@ -289,8 +292,6 @@ namespace BackroomsSurvival.Net
             }
         }
 
-        private const int ReadTimeoutMs = 5000;
-
         private void ReadFrames(NetworkStream stream)
         {
             var lenBuf = new byte[4];
@@ -342,14 +343,18 @@ namespace BackroomsSurvival.Net
             {
                 case ProtocolMessageTypes.WorldState:
                     var ws = WorldStateMsg.Parse(r, remaining);
-                    if (Environment.TickCount >= _nextRemotePlayersLogTick)
+                    // Unchecked delta rather than `TickCount >= nextTick`: TickCount wraps every
+                    // ~24.9 days of uptime, and past the wrap the plain comparison latches — the
+                    // trace either goes silent or fires on every single snapshot. Same idiom and
+                    // same reason as ReadExactlyWithTimeout's deadline.
+                    if (unchecked(Environment.TickCount - _lastRemotePlayersLogTick) >= RemotePlayersLogIntervalMs)
                     {
                         var ids = ws.remotePlayers.ConvertAll(rp => rp.id.ToString());
                         Debug.Log($"[IPCClient] Parsed remote_players count={ws.remotePlayers.Count} ids=[{string.Join(",", ids)}]");
                         int selfId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
                         Debug.Log($"MPTRACE step=J event=unity_parse_world_state self_id={selfId} sender_id=<none> assigned_id=<none> peer_id=<none> endpoint={serverAddress}:{port} peer_count=<unknown> remote_players_count={ws.remotePlayers.Count} remote_players_ids=[{string.Join(",", ids)}]");
                         Debug.Log($"MPTRACE step=AA event=unity_parse_world_snapshot seed={ws.worldSeed} revision={ws.worldRevision} chunks={ws.visibleChunks.Count} entities={ws.visibleEntities.Count} items={ws.visibleItems.Count}");
-                        _nextRemotePlayersLogTick = Environment.TickCount + 2000;
+                        _lastRemotePlayersLogTick = Environment.TickCount;
                     }
                     _latestState = ws;
                     _pendingStateNotify.Enqueue(ws);
@@ -373,30 +378,14 @@ namespace BackroomsSurvival.Net
             }
         }
 
+        // Cached so the per-frame reads don't allocate a closure each call (ReadFrames calls
+        // ReadExactly twice per inbound message, at 10 Hz plus chunk streaming).
+        private Func<bool> _isRunning;
+
         private bool ReadExactlyWithTimeout(NetworkStream stream, byte[] buf, int count)
         {
-            int offset = 0;
-            long deadline = Environment.TickCount + ReadTimeoutMs;
-
-            while (offset < count && _running)
-            {
-                if (!stream.DataAvailable)
-                {
-                    if (Environment.TickCount >= deadline) return false;
-                    Thread.Sleep(1);
-                    continue;
-                }
-
-                int read;
-                try { read = stream.Read(buf, offset, count - offset); }
-                catch (Exception) { return false; }
-
-                if (read <= 0) return false;
-                offset += read;
-                deadline = Environment.TickCount + ReadTimeoutMs;
-            }
-
-            return offset == count;
+            _isRunning ??= () => _running;
+            return IpcStreamReader.ReadExactly(stream, buf, count, _isRunning);
         }
 
         // ─────────────────────────── Sending (main thread) ───────────────────────────
