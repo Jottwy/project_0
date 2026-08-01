@@ -22,8 +22,7 @@
 use std::collections::BinaryHeap;
 
 use super::collision::{
-    cell_is_walkable, diagonal_step_is_clear, global_cell, is_walkable_grid_gen,
-    resolve_move_grid_gen_ex, GridGenChunkCache,
+    cell_is_walkable, diagonal_step_is_clear, global_cell, is_walkable_grid_gen, GridGenChunkCache,
 };
 use super::CELL_SIZE_M;
 use crate::utils::Vec3;
@@ -348,7 +347,7 @@ pub fn string_pull(
 
 #[cfg(test)]
 mod tests {
-    use super::super::collision::default_layer_rules;
+    use super::super::collision::{default_layer_rules, resolve_move_grid_gen_ex};
     use super::*;
     use crate::world::grid_gen::{Cell, CellType, LayerGrid};
 
