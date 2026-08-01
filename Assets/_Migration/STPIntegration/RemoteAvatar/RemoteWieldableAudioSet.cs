@@ -80,6 +80,59 @@ namespace BackroomsSurvival.Migration.STPIntegration
                  "difference IS the effect.")]
         [Min(0.1f)] public float tailMinDistance = 60f;
 
+        [Header("Realism — travel time and air absorption")]
+        [Tooltip("Metres per second. Sound arrives LATE: at 200 m a shot is heard 0.58 s after it was " +
+                 "fired. This is the single strongest 'that was far away' cue there is — volume alone " +
+                 "never reads as distance, it reads as a quiet gun nearby. 343 m/s is air at 20 °C. " +
+                 "Set 0 to disable.")]
+        [Min(0f)] public float speedOfSound = 343f;
+
+        [Tooltip("Below this distance the travel delay is skipped, so nearby shots stay perfectly tight " +
+                 "to the muzzle flash instead of feeling laggy.")]
+        [Min(0f)] public float minDelayDistance = 15f;
+
+        [Tooltip("Low-pass cutoff (Hz) for a shot right next to you: fully open, all the crack.")]
+        [Range(500f, 22000f)] public float nearCutoff = 22000f;
+
+        [Tooltip("Low-pass cutoff (Hz) at maximum distance. Air eats the high frequencies, which is why " +
+                 "distant gunfire is a dull BOOM and not a quiet CRACK. This is the other half of the " +
+                 "distance illusion — lower it for a muddier, further-away feel.")]
+        [Range(200f, 22000f)] public float farCutoff = 650f;
+
+        [Tooltip("Distance at which the cutoff reaches farCutoff.")]
+        [Min(1f)] public float absorptionFullDistance = 220f;
+
+        [Tooltip("Stereo spread at maximum distance. A far shot is diffuse and hard to pin down; a near " +
+                 "one is a point. Interpolated with distance from the near 'Spread' above.")]
+        [Range(0f, 180f)] public float farSpread = 70f;
+
+        /// <summary>
+        /// Air absorption as a low-pass cutoff for a given distance. Interpolated on sqrt(t) rather
+        /// than t: real absorption bites hardest over the first stretch, and a linear ramp keeps a shot
+        /// sounding bright well past the point where it should already be muffled — which is exactly
+        /// the "it's far away but sounds close" complaint.
+        /// </summary>
+        public float CutoffForDistance(float distance)
+        {
+            float t = Mathf.Clamp01(distance / Mathf.Max(1f, absorptionFullDistance));
+            return Mathf.Lerp(nearCutoff, farCutoff, Mathf.Sqrt(t));
+        }
+
+        /// <summary>Stereo spread for a given distance (near → far).</summary>
+        public float SpreadForDistance(float distance)
+        {
+            float t = Mathf.Clamp01(distance / Mathf.Max(1f, absorptionFullDistance));
+            return Mathf.Lerp(spread, farSpread, t);
+        }
+
+        /// <summary>Seconds the sound takes to travel; 0 inside <see cref="minDelayDistance"/>.</summary>
+        public float TravelTime(float distance)
+        {
+            if (speedOfSound <= 0f || distance <= minDelayDistance)
+                return 0f;
+            return distance / speedOfSound;
+        }
+
         /// <summary>Tail clip for a held item id, falling back to the default. False when there is
         /// nothing to play — the crack alone is a valid configuration.</summary>
         public bool TryResolveTail(int itemId, out AudioClip clip)

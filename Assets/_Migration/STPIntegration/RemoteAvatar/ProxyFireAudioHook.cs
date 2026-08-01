@@ -35,9 +35,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// the tail is what survives. Both are routed through <c>AudioManager.GetMixerGroup(Sfx)</c>, so the
     /// player's own effects-volume setting still applies. Nothing inside PolymindGames is modified.
     ///
-    /// KNOWN LIMIT, declared: there is no occlusion. A shot behind a wall attenuates by distance only,
-    /// so it is heard through geometry. Fixing it means a linecast plus an AudioLowPassFilter per
-    /// source; deferred deliberately, it is a bigger feature than this hook.
+    /// PLAY-TEST FIX (2026-08-02) — "a shot from far away still sounds close". It did, and volume was
+    /// never going to fix it: a quiet, BRIGHT, instantaneous bang reads to the ear as a small gun
+    /// nearby, not as a rifle far off. Distance is carried by three cues, and only one of them was
+    /// present. The other two are now:
+    ///   • TRAVEL TIME. Sound moves at ~343 m/s, so a shot at 200 m is heard 0.58 s after it happened.
+    ///     Nothing else separates "far" from "quiet" as hard as arriving late.
+    ///   • AIR ABSORPTION. Air eats the high frequencies first, which is why distant gunfire is a dull
+    ///     BOOM and never a crisp CRACK. Modelled as a low-pass whose cutoff closes with distance,
+    ///     interpolated on sqrt so it muffles early instead of staying bright until the last metre.
+    ///   • Spread widens with distance too, so a far shot stops being a pinpoint in the stereo field.
+    /// All three are computed ONCE per shot against the listener's position — a gunshot is an impulse,
+    /// so a snapshot is correct and there is nothing to update per frame.
+    ///
+    /// KNOWN LIMIT, declared: there is still no occlusion. A shot behind a wall is attenuated and
+    /// muffled by DISTANCE only, so geometry does not block it. That needs a linecast feeding the same
+    /// filter; deferred deliberately, it is a bigger feature than this hook.
     ///
     /// A sentinel makes the FIRST observed value never fire (a late-joiner must not hear the whole
     /// history of a peer's magazine on spawn), exactly like <see cref="ProxyHitReactionHook"/>.
@@ -63,6 +76,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private int _lastSeen = Unseen;
         private AudioSource _crack;
         private AudioSource _tail;
+        private static AudioListener _listener;
 
         // Re-arm for pool reuse: a recycled proxy must not fire on its first sample, nor keep a
         // previous occupant's shot ringing.
@@ -113,20 +127,51 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (!_audioSet.TryResolve(heldItem, out var clip, out float volume))
                 return; // nothing authored for this weapon and no default → silence, never a guess
 
-            // PlayOneShot, not Play: the shots of a burst must overlap and ring out on top of each
-            // other. Play() would cut the previous shot dead at every trigger pull.
-            EnsureCrack().PlayOneShot(clip, volume);
+            // Snapshot the distance ONCE: a gunshot is an impulse, so the three distance cues are
+            // fixed at the moment it is fired and there is nothing to track per frame.
+            float distance = DistanceToListener();
+            float travel = _audioSet.TravelTime(distance);
+            float cutoff = _audioSet.CutoffForDistance(distance);
+            float spread = _audioSet.SpreadForDistance(distance);
+
+            StartCoroutine(PlayDelayed(EnsureCrack(), clip, volume, travel, cutoff, spread));
 
             if (_audioSet.TryResolveTail(heldItem, out var tailClip))
-                StartCoroutine(PlayTail(tailClip));
+            {
+                // The tail is already the far-field component, so it gets muffled harder still: the
+                // boom should read as rolling in from a distance even when the crack is nearby.
+                StartCoroutine(PlayDelayed(EnsureTail(), tailClip, _audioSet.tailVolume,
+                    travel + _audioSet.tailDelay, cutoff * 0.6f, spread));
+            }
         }
 
-        private IEnumerator PlayTail(AudioClip tailClip)
+        private IEnumerator PlayDelayed(AudioSource src, AudioClip clip, float volume, float delay,
+            float cutoff, float spread)
         {
-            float delay = _audioSet.tailDelay;
             if (delay > 0f)
                 yield return new WaitForSeconds(delay);
-            EnsureTail().PlayOneShot(tailClip, _audioSet.tailVolume);
+            if (src == null || clip == null)
+                yield break; // proxy released mid-flight (peer left while the sound was travelling)
+
+            src.spread = spread;
+            var filter = src.GetComponent<AudioLowPassFilter>();
+            if (filter != null)
+                filter.cutoffFrequency = Mathf.Clamp(cutoff, 10f, 22000f);
+
+            // PlayOneShot, not Play: the shots of a burst must overlap and ring out on top of each
+            // other. Play() would cut the previous shot dead at every trigger pull.
+            src.PlayOneShot(clip, volume);
+        }
+
+        /// <summary>Distance from this proxy to the listener. Cached statically because every proxy
+        /// asks the same question and there is exactly one listener in the scene.</summary>
+        private float DistanceToListener()
+        {
+            if (_listener == null)
+                _listener = FindFirstObjectByType<AudioListener>();
+            if (_listener == null)
+                return 0f; // no listener yet → treat as point-blank rather than guessing
+            return Vector3.Distance(transform.position, _listener.transform.position);
         }
 
         private AudioSource EnsureCrack()
@@ -162,6 +207,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
             src.maxDistance = _audioSet.maxDistance;
             src.spread = _audioSet.spread;
             src.dopplerLevel = 0f; // a gunshot is an impulse; doppler on it is pure artifact
+
+            // Air absorption. Created open (22 kHz = inaudible as a filter) and closed per shot from
+            // the firing distance — see PlayDelayed.
+            var filter = go.AddComponent<AudioLowPassFilter>();
+            filter.cutoffFrequency = 22000f;
             // No manager (a bare test scene) → still audible, just unmixed. Never an exception.
             var audio = AudioManager.Instance;
             src.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;

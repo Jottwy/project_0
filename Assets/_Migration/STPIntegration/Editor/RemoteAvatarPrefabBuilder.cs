@@ -431,6 +431,10 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_deadzoneSpeed", 0.1f);
             SetFeederFloat(so, "_walkSpeed", 1.5f);
             SetFeederFloat(so, "_runSpeed", 4.5f);
+            // Play-test tuning (2026-08-02): peers were audible from absurdly far. A footstep needs a
+            // HARD cutoff, not a thin tail that never ends — and stealth depends on it being short-range.
+            SetFeederFloat(so, "_minDistance", 1.5f);
+            SetFeederFloat(so, "_maxDistance", 22f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

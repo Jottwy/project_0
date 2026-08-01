@@ -12,10 +12,21 @@ namespace BackroomsSurvival.Migration.STPIntegration
     ///
     /// Why the vendor's own component cannot be reused: <see cref="FootstepsController"/> is a
     /// <c>CharacterBehaviour</c> with <c>[RequireCharacterComponent(IMovementControllerCC, IMotorCC)]</c>,
-    /// and a proxy (MTP_PlayerViewer variant) has neither and never will. What IS reusable is the part
-    /// that matters: <c>SurfaceManager.Instance.PlayEffectFromHit</c> is a plain static call, so the
-    /// remote footstep goes through the exact same surface database, the same clips and the same
-    /// volume curve as the local player's. Nothing inside PolymindGames is modified.
+    /// and a proxy (MTP_PlayerViewer variant) has neither and never will. What IS reusable is the
+    /// surface database: <c>GetSurfaceFromHit</c> and <c>TryGetEffectPair</c> are public, so we resolve
+    /// the EXACT clip the vendor would have played. Nothing inside PolymindGames is modified.
+    ///
+    /// PLAY-TEST FIX (2026-08-02): the audio does NOT go through <c>PlayEffectFromHit</c> any more.
+    /// That route ends in <c>AudioManager.PlayClip3D</c>, whose pooled 3D sources pin
+    /// <c>minDistance = 2</c> and leave <c>maxDistance</c> at Unity's default 500 — so a footstep still
+    /// carried a few percent of its volume across half a chunk, and remote players were audible from
+    /// absurdly far away. The volume was never the problem; the CUTOFF was. Retuning the pool was not
+    /// an option (shared with impacts and every other surface effect), so, exactly like the gunshot
+    /// hook, this one owns its source and its curve: a hard <c>maxDistance</c> that actually silences
+    /// a step instead of thinning it forever.
+    ///
+    /// A tight cutoff is also what stealth NEEDS: footsteps have to be a SHORT-range cue, or crouching
+    /// buys nothing.
     ///
     /// The step trigger is a DISTANCE accumulator, not an Animation Event. Events on the Mixamo clips
     /// would be higher fidelity (sound on the exact contact frame), but those clips are IMPORTED vendor
@@ -61,6 +72,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Speed mapped to a full-volume footstep. Above this the volume does not grow.")]
         [SerializeField, Min(0.01f)] private float _maxSpeedForVolume = 7f;
 
+        [Header("Distance curve (the fix for 'peers audible from absurdly far')")]
+        [Tooltip("Full-volume radius, in metres. Small on purpose: a footstep is an intimate sound.")]
+        [SerializeField, Min(0.1f)] private float _minDistance = 1.5f;
+
+        [Tooltip("HARD cutoff, in metres — beyond this a step is SILENT, not merely quiet. This is the " +
+                 "knob that was missing: AudioManager's pooled sources leave it at Unity's default 500, " +
+                 "so a step never actually stopped. Lower it if peers are still audible too far.")]
+        [SerializeField, Min(1f)] private float _maxDistance = 22f;
+
+        [SerializeField] private AudioRolloffMode _rolloff = AudioRolloffMode.Logarithmic;
+
         [Header("Ground probe (mirrors FootstepsController.CheckGround)")]
         [SerializeField] private LayerMask _layerMask = LayerConstants.SimpleSolidObjectsMask;
         [SerializeField, Range(0.01f, 1f)] private float _raycastDistance = 0.3f;
@@ -74,6 +96,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private Vector3 _prevPos;
         private bool _hasPrevPos;
         private float _travelled;
+        private AudioSource _source;
 
         // Re-baseline for pool reuse and for the spawn snap: the first frame after enable only
         // captures the position, so a recycled proxy never spends a previous occupant's travel.
@@ -131,9 +154,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         }
 
         /// <summary>
-        /// Probes the ground under the proxy and plays the surface's own footstep audio. Same probe
-        /// shape, same effect types and same volume curve as <see cref="FootstepsController"/> — the
-        /// point is that a remote step is indistinguishable from a local one, not merely similar.
+        /// Probes the ground under the proxy, resolves the SAME clip the vendor would play for that
+        /// surface, and plays it on this proxy's own source — same probe shape, same surface database,
+        /// same effect types and same volume curve as <see cref="FootstepsController"/>, but with a
+        /// distance curve we control.
         /// </summary>
         private void PlayStep(float speed, bool running)
         {
@@ -144,11 +168,56 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (!CheckGround(out RaycastHit hit))
                 return; // airborne (jump, fall, gap in the floor): no contact, no sound
 
+            var surface = manager.GetSurfaceFromHit(in hit);
+            var effect = running ? SurfaceEffectType.RunFootstep : SurfaceEffectType.WalkFootstep;
+            if (surface == null || !surface.TryGetEffectPair(effect, out var effectData))
+                return; // this surface has no footstep authored → silence
+
+            var resource = effectData.AudioEffect.Clip;
+            if (resource == null)
+                return;
+
             float volume = Mathf.Clamp(speed, _minSpeedForVolume, _maxSpeedForVolume)
                            / Mathf.Max(0.01f, _maxSpeedForVolume);
+            volume *= effectData.AudioEffect.Volume; // keep the surface's own authored level
 
-            var effect = running ? SurfaceEffectType.RunFootstep : SurfaceEffectType.WalkFootstep;
-            manager.PlayEffectFromHit(in hit, effect, SurfaceEffectPlayFlags.Audio, volume);
+            var src = EnsureSource();
+            if (resource is AudioClip clip)
+            {
+                // PlayOneShot so a fast run does not cut its own previous step short.
+                src.PlayOneShot(clip, volume);
+            }
+            else
+            {
+                // AudioRandomContainer (Unity 6) and friends: only the resource path can play them.
+                src.resource = resource;
+                src.volume = volume;
+                src.Play();
+            }
+        }
+
+        /// <summary>Builds this proxy's own footstep source, lazily — a peer who never moves never
+        /// allocates one. Parented to the proxy so steps track the walker.</summary>
+        private AudioSource EnsureSource()
+        {
+            if (_source != null)
+                return _source;
+
+            var go = new GameObject("ProxyFootstep");
+            go.transform.SetParent(transform, false);
+
+            _source = go.AddComponent<AudioSource>();
+            _source.playOnAwake = false;
+            _source.loop = false;
+            _source.spatialBlend = 1f;
+            _source.rolloffMode = _rolloff;
+            _source.minDistance = _minDistance;
+            _source.maxDistance = _maxDistance;
+            _source.dopplerLevel = 0f;
+
+            var audio = AudioManager.Instance;
+            _source.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            return _source;
         }
 
         // Raycast first, spherecast as fallback — the vendor's own order: the cheap probe handles
