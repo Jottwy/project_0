@@ -680,9 +680,29 @@ impl NetworkManager {
 
         // Igual que en process_retransmits: se resuelve la dirección con un préstamo INMUTABLE,
         // se envía, y solo después se vuelve a pedir el mutable para encolar el reenvío.
-        let Some(addr) = self.peers.get(&peer_id).map(|p| p.addr) else {
+        let Some(peer) = self.peers.get(&peer_id) else {
             return;
         };
+        let addr = peer.addr;
+
+        // Control de ventana. `can_queue_reliable` existía desde la Fase 3 y NO lo llamaba
+        // nadie: la cola crecía sin tope por peer, y al llegar a MAX_RETRIES el barrido la
+        // vacía ENTERA (`peer.reliable_queue.clear()`), tirando también lo que aún era
+        // recuperable. Con la ventana llena se descarta el paquete NUEVO y se dice en el log,
+        // en vez de acumular presión hasta el borrado masivo.
+        if !peer.can_queue_reliable() {
+            warn!(
+                "MPTRACE step=SEND_FAIL event=reliable_window_full self_id={} peer_id={} type=0x{:02x} in_flight={} window={} dropped_bytes={}",
+                self.local_id,
+                peer_id,
+                payload.type_code(),
+                peer.reliable_queue.len(),
+                reliability::WINDOW_SIZE,
+                data.len()
+            );
+            return;
+        }
+
         self.send_datagram(&data, addr, "reliable").await;
         if let Some(peer) = self.peers.get_mut(&peer_id) {
             peer.queue_reliable(seq, data);
@@ -2074,6 +2094,46 @@ mod tests {
         assert_eq!(net.peers[&1].addr, host_addr, "la del host no se toca");
         // Y la pose SI se aplica: rechazar la direccion no puede costar el dato.
         assert_eq!(net.peers[&2].position, [1.0, 1.8, 2.0]);
+    }
+
+    /// `can_queue_reliable` existia desde la Fase 3 y no lo llamaba nadie, asi que la cola
+    /// fiable crecia sin tope por peer. Importa porque al llegar a MAX_RETRIES el barrido la
+    /// vacia ENTERA (`peer.reliable_queue.clear()`), o sea que dejar que se llene no retrasa la
+    /// perdida: la agranda.
+    #[tokio::test]
+    async fn reliable_send_respects_the_window_instead_of_growing_unbounded() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let addr: SocketAddr = "127.0.0.1:7005".parse().unwrap();
+        let mut peer = PeerConnection::new(2, "PeerB".into(), addr);
+        for seq in 0..reliability::WINDOW_SIZE as u32 {
+            peer.queue_reliable(seq, vec![0u8; 8]);
+        }
+        net.peers.insert(2, peer);
+        assert!(
+            !net.peers[&2].can_queue_reliable(),
+            "ventana llena de partida"
+        );
+
+        net.send_reliable(2, &PacketPayload::Heartbeat).await;
+
+        assert_eq!(
+            net.peers[&2].reliable_queue.len(),
+            reliability::WINDOW_SIZE,
+            "con la ventana llena, el paquete nuevo se descarta — no se encola"
+        );
+    }
+
+    /// La contrapartida: por debajo de la ventana, un envio fiable SI se encola.
+    #[tokio::test]
+    async fn reliable_send_queues_normally_below_the_window() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let addr: SocketAddr = "127.0.0.1:7006".parse().unwrap();
+        net.peers
+            .insert(2, PeerConnection::new(2, "PeerB".into(), addr));
+
+        net.send_reliable(2, &PacketPayload::Heartbeat).await;
+
+        assert_eq!(net.peers[&2].reliable_queue.len(), 1);
     }
 
     /// La contrapartida: una direccion que NO pertenece a ningun otro peer si se adopta, para
