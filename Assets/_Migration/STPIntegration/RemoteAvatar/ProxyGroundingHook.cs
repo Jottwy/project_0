@@ -85,7 +85,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _hasRig = _pelvis != null; // no pelvis → nothing to ground
 
             _animator = GetComponentInParent<Animator>();
-            _sampleRenderer = GetComponentInChildren<SkinnedMeshRenderer>(true);
+            // NOT GetComponentInChildren(true): that returns the FIRST renderer including DISABLED
+            // ones, and the vendor rig's first child renderer is a head accessory. A disabled
+            // wardrobe piece always reports isVisible=false, so the alarm fired 34 times in one
+            // session while measuring a switched-off beard. Sample the BODY instead: the largest
+            // ENABLED renderer, re-resolved on enable because clothing toggles at runtime.
+            _sampleRenderer = ResolveBodyRenderer();
         }
 
         // Re-arm for pool reuse: clear the offset so a recycled proxy never starts pre-shifted.
@@ -93,6 +98,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             _offset = 0f;
             _offsetVel = 0f;
+            // Clothing toggles at runtime (ProxyClothingHook), so which renderer is the "body" can
+            // change between pool reuses. Re-resolve rather than trust the Awake-time pick.
+            _sampleRenderer = ResolveBodyRenderer();
+            _armedLogged = false;
         }
 
         private void LateUpdate()
@@ -174,6 +183,27 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _nextCameraProbeAt = Time.unscaledTime + 1f;
             _camera = Camera.main;
             return _camera;
+        }
+
+        /// The biggest ENABLED skinned renderer — the body, not a hat. Disabled renderers are
+        /// skipped because their `isVisible` is permanently false and would fake an anomaly.
+        private SkinnedMeshRenderer ResolveBodyRenderer()
+        {
+            SkinnedMeshRenderer best = null;
+            float bestVolume = -1f;
+            foreach (var smr in GetComponentsInChildren<SkinnedMeshRenderer>(false))
+            {
+                if (smr == null || !smr.enabled)
+                    continue;
+                Vector3 s = smr.bounds.size;
+                float volume = s.x * s.y * s.z;
+                if (volume > bestVolume)
+                {
+                    bestVolume = volume;
+                    best = smr;
+                }
+            }
+            return best;
         }
 
         private static bool InViewport(Camera cam, Vector3 world)
