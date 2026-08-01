@@ -100,6 +100,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireHitReactionHook(instance);
                 WireRevealHook(instance);
                 WireFootstepHook(instance);
+                WireLightHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -429,6 +430,23 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_deadzoneSpeed", 0.1f);
             SetFeederFloat(so, "_walkSpeed", 1.5f);
             SetFeederFloat(so, "_runSpeed", 4.5f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-042: adds the held-light hook and bakes the bone name it hangs the Light off. Only the
+        // bone is baked: the colour/intensity/range are torch-warm defaults that Joel is expected to
+        // calibrate in play-test, and re-baking must NOT stomp that calibration — same rule as the
+        // GripPoseSet asset and the ProxyRevealHook material. Idempotent, add-if-missing.
+        private static void WireLightHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyLightHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyLightHook>();
+
+            var so = new SerializedObject(hook);
+            var boneProp = so.FindProperty("_handBoneName");
+            if (boneProp != null)
+                boneProp.stringValue = "Hand.R";
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
