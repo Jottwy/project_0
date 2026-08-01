@@ -24,8 +24,9 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// feet rest on the rendered floor, [D] slice 1) + ProxyClothingHook (drives CharacterClothing
     /// from rp.equipment, ADR-022) + ProxyHeldItemHook (attaches the held wieldable's pickup mesh
     /// to Hand.R from rp.heldItem, with per-category placement + finger grip from a GripPoseSet,
-    /// ADR-023) + ProxyHitReactionHook (procedural spine recoil flinch from rp.hitSeq, ADR-024) on
-    /// the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the proxy never
+    /// ADR-023) + ProxyHitReactionHook (procedural spine recoil flinch from rp.hitSeq, ADR-024) +
+    /// ProxyRevealHook (swaps the skinned materials for the robapieles' real form while
+    /// rp.revealed, ADR-038) on the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the proxy never
     /// binds to its disabled inventory.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
@@ -97,6 +98,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireClothingHook(instance);
                 WireHeldItemHook(instance);
                 WireHitReactionHook(instance);
+                WireRevealHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -395,6 +397,17 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_magnitude", 18f);
             SetFeederFloat(so, "_recoverTime", 0.3f);
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Mirror of WireHitReactionHook for the reveal hook (ADR-038). NOTHING is baked here: the
+        // hook caches the skinned renderers at runtime, and its only serialized field is the
+        // real-form Material, deliberately LEFT UNTOUCHED — null falls back to a generated pale
+        // skinless stand-in, and once a material is authored and assigned by hand a re-bake must
+        // preserve it (same rule as the GripPoseSet asset below). Add-if-missing, nothing else.
+        private static void WireRevealHook(GameObject root)
+        {
+            if (root.GetComponent<ProxyRevealHook>() == null)
+                root.AddComponent<ProxyRevealHook>();
         }
 
         // ADR-023 Slice 2: the per-category grip config lives as a ScriptableObject (live-editable
