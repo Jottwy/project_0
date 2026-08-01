@@ -96,6 +96,15 @@ pub struct PlayerInput {
     /// local DamageReceived. Cosmetic, relayed to peers, not authoritative.
     #[serde(default)]
     pub hit_seq: u8,
+    /// ADR-042: client-reported "my active wieldable is emitting light" — any enabled `Light`
+    /// under it. Cosmetic, relayed to peers, not authoritative.
+    #[serde(default)]
+    pub light_on: bool,
+    /// ADR-042: client-reported shot counter (monotonic, wrapping); incremented on each native
+    /// `IFirearmTrigger.Shoot`. Cosmetic, relayed to peers, not authoritative — the phantom hears
+    /// through the separate `report_noise` action (ADR-041), never through this.
+    #[serde(default)]
+    pub fire_seq: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -263,6 +272,15 @@ pub struct RemotePlayerState {
     /// no counterpart in `PlayerInput`, so no client can set it.
     #[serde(default)]
     pub revealed: bool,
+    /// ADR-042: cosmetic "this peer's held wieldable is lit" flag (host-relayed) — the observer
+    /// enables a light on the proxy's held model.
+    #[serde(default)]
+    pub light_on: bool,
+    /// ADR-042: cosmetic shot counter (monotonic, wrapping; 0 = never fired), host-relayed. The
+    /// observer plays the gunshot on a DELTA, so a full-auto burst that outruns the 10 Hz relay
+    /// still lands the right number of shots.
+    #[serde(default)]
+    pub fire_seq: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

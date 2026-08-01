@@ -442,6 +442,16 @@ pub enum PacketPayload {
         /// to false (never reveals); wire-compat across the v11→v12 schema bump.
         #[serde(default)]
         revealed: bool,
+        /// ADR-042: cosmetic "the wieldable in my hands is lit" flag. Appended last +
+        /// serde(default) → a v12 peer that omits it decodes to false (never lit); wire-compat
+        /// across the v12→v13 schema bump.
+        #[serde(default)]
+        light_on: bool,
+        /// ADR-042: cosmetic shot counter (monotonic, wrapping; 0 = never fired). Appended last +
+        /// serde(default) → a v12 peer that omits it decodes to 0 (silent); wire-compat across
+        /// the v12→v13 schema bump.
+        #[serde(default)]
+        fire_seq: u8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -825,6 +835,8 @@ mod tests {
             hit_seq: 7,
             dead: true,
             revealed: true,
+            light_on: true,
+            fire_seq: 9,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -842,6 +854,8 @@ mod tests {
                 hit_seq,
                 dead,
                 revealed,
+                light_on,
+                fire_seq,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -853,6 +867,8 @@ mod tests {
                 assert_eq!(hit_seq, 7);
                 assert!(dead);
                 assert!(revealed);
+                assert!(light_on);
+                assert_eq!(fire_seq, 9);
             }
             _ => panic!("wrong variant"),
         }

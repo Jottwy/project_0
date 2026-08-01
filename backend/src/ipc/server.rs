@@ -61,7 +61,12 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// stimulus that lets a gunshot reach the robapieles. Additive and inert: a client that never sends
 /// it simply never attracts the phantom, with no error on either side. Nothing else changes shape,
 /// and it does NOT enter the P2P surface — the phantom is host-authoritative (ADR-016).
-const WIRE_SCHEMA_VERSION: u32 = 13;
+/// v14 (ADR-042) adds `light_on:bool` (the active wieldable is emitting light) and `fire_seq:u8`
+/// (a monotonic shot counter, bumped on each native `IFirearmTrigger.Shoot`) to PlayerInput,
+/// RemotePlayerState and the P2P PlayerUpdate — both client-reported and `serde(default)`, so a
+/// v13 peer decodes false/0 and simply sees a dark, silent peer. Cosmetic only: neither field
+/// feeds the phantom's perception, which hears exclusively through v13's `report_noise`.
+const WIRE_SCHEMA_VERSION: u32 = 14;
 
 /// Run the IPC server until a fatal accept error.
 ///

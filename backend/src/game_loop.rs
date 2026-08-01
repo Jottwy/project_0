@@ -703,6 +703,11 @@ pub async fn run(
             // ADR-024: record the client-reported hit-reaction counter (cosmetic; relayed to
             // peers, not validated). Incremented client-side on each local DamageReceived.
             player.hit_seq = received_input.hit_seq;
+            // ADR-042: record the client-reported held-light flag and shot counter (cosmetic;
+            // relayed to peers, not validated). The light is "any enabled Light under the active
+            // wieldable"; the counter is bumped client-side on each native IFirearmTrigger.Shoot.
+            player.light_on = received_input.light_on;
+            player.fire_seq = received_input.fire_seq;
             // ADR-025 respawn-on-demand: while DEAD the server FREEZES the authoritative pose —
             // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
             // take_damage). Any local client drift while dead is corrected by the applier's snap
@@ -1079,10 +1084,12 @@ async fn handle_network_event(
             hit_seq,
             dead,
             revealed,
+            light_on,
+            fire_seq,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -3877,6 +3884,8 @@ fn build_world_state(
             hit_seq: p.hit_seq,
             dead: p.dead,
             revealed: p.revealed,
+            light_on: p.light_on,
+            fire_seq: p.fire_seq,
         });
     }
 

@@ -52,6 +52,19 @@ pub struct Player {
     /// ever `true` lives on a `PeerConnection` written by the phantom driver.
     #[serde(default)]
     pub revealed: bool,
+    /// ADR-042: cosmetic "the wieldable in my hands is emitting light" flag. Reported by the
+    /// client as "some `Light` under the active wieldable is enabled" — deliberately GENERIC, so
+    /// a lighter/flare/flashlight works the day it exists without touching the wire. Relayed to
+    /// peers; presentation only — not validated, does not affect visibility/stealth/AI.
+    #[serde(default)]
+    pub light_on: bool,
+    /// ADR-042: cosmetic shot counter (monotonic, wrapping; 0 = never fired). Incremented by the
+    /// client on each native `IFirearmTrigger.Shoot`, relayed to peers so observers can play the
+    /// gunshot on the proxy. Same shape as `hit_seq` and for the same reason: a full-auto burst
+    /// outruns the 10 Hz pose relay, so a flag would drop shots and a counter does not. NOT an AI
+    /// stimulus — the phantom hears via `report_noise` (ADR-041), a separate channel on purpose.
+    #[serde(default)]
+    pub fire_seq: u8,
     /// ADR-028: server-side dedupe — true once this death's loot snapshot spawned a
     /// corpse. Guards against a double `report_death_loot` (the client's event
     /// fast-path + derived-edge fallback both firing) duplicating the inventory.
@@ -98,6 +111,8 @@ impl Player {
             held_item: 0,
             hit_seq: 0,
             revealed: false,
+            light_on: false,
+            fire_seq: 0,
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),

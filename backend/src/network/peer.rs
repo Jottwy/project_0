@@ -63,6 +63,14 @@ pub struct PeerConnection {
     /// see the same thing. `update_player_state` stays untouched, like the fields above — the
     /// driver writes this one next to its `update_player_state` call, not inside it.
     pub revealed: bool,
+    /// ADR-042: cosmetic "held wieldable is lit" flag, set from PlayerUpdate; relayed, not
+    /// authoritative. NOTE: set in handle_packet, NOT in update_player_state — so the phantom
+    /// (ADR-016) never carries a lit torch.
+    pub light_on: bool,
+    /// ADR-042: cosmetic shot counter (monotonic, wrapping; 0 = never fired), set from
+    /// PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
+    /// update_player_state — so the phantom (ADR-016) never fires a gun.
+    pub fire_seq: u8,
     pub connected_at: Instant,
 }
 
@@ -87,6 +95,8 @@ impl PeerConnection {
             hit_seq: 0,
             dead: false,
             revealed: false,
+            light_on: false,
+            fire_seq: 0,
             connected_at: now,
         }
     }
