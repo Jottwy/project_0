@@ -99,6 +99,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireHeldItemHook(instance);
                 WireHitReactionHook(instance);
                 WireRevealHook(instance);
+                WireFootstepHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -408,6 +409,27 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         {
             if (root.GetComponent<ProxyRevealHook>() == null)
                 root.AddComponent<ProxyRevealHook>();
+        }
+
+        // ADR-042: adds the footstep hook. It reads NO networked field — position and the world under
+        // the proxy are all it needs — so unlike its siblings there is nothing here to bind to a view;
+        // we only bake the gait/volume tuning so it starts calibrated instead of at Unity defaults.
+        // The speed bands are deliberately the SAME numbers WireLocomotionFeeder bakes: if the two
+        // drifted apart, a peer could be playing the run animation while emitting walk footsteps.
+        // Idempotent, add-if-missing.
+        private static void WireFootstepHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyFootstepHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyFootstepHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_walkStride", 0.85f);
+            SetFeederFloat(so, "_runStride", 1.35f);
+            SetFeederFloat(so, "_deadzoneSpeed", 0.1f);
+            SetFeederFloat(so, "_walkSpeed", 1.5f);
+            SetFeederFloat(so, "_runSpeed", 4.5f);
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         // ADR-023 Slice 2: the per-category grip config lives as a ScriptableObject (live-editable
