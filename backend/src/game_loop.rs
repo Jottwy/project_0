@@ -3666,10 +3666,37 @@ fn handle_spawn_world_chest(
     if !processed_interactions.insert((player_id, request_id)) {
         return Err("duplicate");
     }
+    // Dedup que sobrevive al REINICIO, no solo al retransmit. `StpChestSpawner` acuña sus
+    // request_id como `RequestIdBase + contador de instancia`, así que la secuencia es IDÉNTICA
+    // en cada lanzamiento, mientras `processed_interactions` nace vacío con cada `run()`. El
+    // dedup por request_id de arriba no puede ver eso: cada arranque volvía a sembrar los 16
+    // cofres sobre los que ya estaban en el save, inflando el mundo sin techo.
+    //
+    // Se deduplica contra los cofres YA CARGADOS, que es el estado que sí sobrevive al
+    // reinicio. Solo contra cofres: un cadáver de jugador en el mismo sitio no debe bloquear
+    // la siembra.
+    //
+    // Va DESPUÉS de `empty_loot` a propósito: esa es una regla de validez de la petición en sí
+    // (ADR-028 post-E3, un cofre vacío sería inmortal) y no depende del estado del mundo, así
+    // que debe seguir contestando lo mismo que antes de existir esta guardia.
     if crate::world::corpse::corpse_loot_is_empty(&items) {
         return Err("empty_loot");
     }
+    if world
+        .corpses
+        .values()
+        .any(|c| c.is_chest && same_chest_spot(c.position, position))
+    {
+        return Err("chest_already_seeded");
+    }
     Ok(world.spawn_chest(position, items))
+}
+
+/// Dos siembras del mismo cofre de mundo. Con tolerancia y no igualdad exacta porque la
+/// posición hace un viaje de ida y vuelta por f32 a través del wire y del save.
+fn same_chest_spot(a: Vec3, b: Vec3) -> bool {
+    const EPS: f32 = 0.5; // metros
+    (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && (a.z - b.z).abs() < EPS
 }
 
 fn parse_death_loot(
@@ -4651,6 +4678,65 @@ mod tests {
         assert_eq!(building_id, STP_BUILDING_ID_BASE + 4);
         assert_eq!(carryable_id, STP_CARRYABLE_ID_BASE + 12);
         assert_eq!(group_id, 10);
+    }
+
+    /// Los 16 cofres de mundo se re-sembraban en CADA arranque: StpChestSpawner acuña sus
+    /// request_id como `RequestIdBase + contador de instancia`, secuencia identica en cada
+    /// lanzamiento, contra un `processed_interactions` que nace vacio con cada `run()`. El dedup
+    /// por request_id no puede ver un reinicio; el dedup por posicion contra los cofres cargados,
+    /// si.
+    #[test]
+    fn world_chest_is_not_reseeded_over_one_already_loaded() {
+        let mut world = World::new(42);
+        let mut processed: HashSet<(u16, u64)> = HashSet::new();
+        let spot = Vec3::new(10.0, 0.0, 20.0);
+        let loot = vec![crate::world::corpse::CorpseStack {
+            item_id: 1,
+            quantity: 3,
+        }];
+
+        // Arranque 1: se siembra.
+        let first = handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            5000,
+            spot,
+            loot.clone(),
+            &mut processed,
+        );
+        assert!(first.is_ok(), "la primera siembra debe entrar: {first:?}");
+
+        // Arranque 2: MISMO request_id (el contador reinicia) y dedup vacio, como en un
+        // relanzamiento real del backend.
+        let mut fresh_dedupe: HashSet<(u16, u64)> = HashSet::new();
+        let second = handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            5000,
+            spot,
+            loot.clone(),
+            &mut fresh_dedupe,
+        );
+        assert_eq!(second, Err("chest_already_seeded"));
+        assert_eq!(
+            world.corpses.values().filter(|c| c.is_chest).count(),
+            1,
+            "un reinicio no puede duplicar los cofres del mundo"
+        );
+
+        // Y un cofre en OTRO sitio sigue entrando: el dedup es por posicion, no un cierre global.
+        let elsewhere = handle_spawn_world_chest(
+            &mut world,
+            true,
+            1,
+            5001,
+            Vec3::new(200.0, 0.0, 200.0),
+            loot,
+            &mut fresh_dedupe,
+        );
+        assert!(elsewhere.is_ok(), "otro cofre lejos debe poder sembrarse");
     }
 
     /// `occupied_stp_cells` es estado DERIVADO y no se persiste. Si no se reconstruye al cargar,
