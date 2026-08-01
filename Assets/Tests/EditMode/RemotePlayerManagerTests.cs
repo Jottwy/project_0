@@ -19,20 +19,31 @@ namespace BackroomsSurvival.Tests
             _managerGo = new GameObject("TestManager");
             _manager = _managerGo.AddComponent<RemotePlayerManager>();
 
-            // Crear un proxy pasa por ConfigureNameText, que escribe TMP_Text.outlineWidth; el
-            // setter de TMP toca Renderer.material y Unity, EN MODO EDITOR, emite por eso un log
-            // NATIVO de tipo Error ("Instantiating material due to calling renderer.material
-            // during edit mode..."). El Test Framework tumba cualquier test con un Error no
-            // esperado, así que los 6 tests que crean proxy morían ahí — y el único que pasaba
-            // era justamente el que NO crea proxy. En play mode ese log no se emite y TMP cachea
-            // la instancia: cero impacto de juego. No se puede declarar con LogAssert.Expect
-            // porque el mensaje lo emite el runtime nativo, no nuestro código.
-            LogAssert.ignoreFailingMessages = true;
-
             // El despawn tiene un margen DELIBERADO de 3 s (el default de producción, que no se
             // toca). Los tests de leave/rejoin comprueban la transición, no el temporizador, así
             // que aquí se pone a 0 para no dormir 3 s reales por test.
             _manager.missingRemoteGraceSeconds = 0f;
+        }
+
+        /// <summary>
+        /// Crear un proxy pasa por ConfigureNameText, que escribe <c>TMP_Text.outlineWidth</c>;
+        /// el setter de TMP toca <c>Renderer.material</c> y Unity, EN MODO EDITOR, emite por eso
+        /// un log NATIVO de tipo Error ("Instantiating material due to calling renderer.material
+        /// during edit mode..."). El Test Framework tumba cualquier test con un Error no
+        /// esperado, así que los 6 tests que crean proxy morían ahí — y el único que pasaba era
+        /// justamente el que NO crea proxy. En play mode el mensaje no se emite y TMP cachea la
+        /// instancia: cero impacto de juego. No sirve LogAssert.Expect porque lo emite el
+        /// runtime nativo, no nuestro código.
+        ///
+        /// TIENE QUE LLAMARSE DENTRO DEL CUERPO DEL TEST, no desde [SetUp]. El LogScope que
+        /// juzga el test lo crea UnityLogCheckDelegatingCommand por DENTRO del comando de
+        /// SetUp/TearDown (ver el orden de anidamiento en cualquier traza de UTF), así que nace
+        /// después de [SetUp] y con el flag ya reseteado. Ponerlo en [SetUp] no tiene efecto —
+        /// verificado: los 6 seguían rojos.
+        /// </summary>
+        private static void IgnoreEditModeMaterialLog()
+        {
+            LogAssert.ignoreFailingMessages = true;
         }
 
         [TearDown]
@@ -45,6 +56,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void InstantiatesRemotePlayerOnJoin()
         {
+            IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
                 new RemotePlayerMsg { id = 1, name = "Alice", position = Vector3.zero, rotation = 0f, animation = "idle" }
@@ -62,6 +74,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void DestroysRemotePlayerOnLeave()
         {
+            IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
                 new RemotePlayerMsg { id = 1, name = "Alice", position = Vector3.zero }
@@ -78,6 +91,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ReusesPooledPlayerOnRejoin()
         {
+            IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
                 new RemotePlayerMsg { id = 1, name = "Alice" }
@@ -100,6 +114,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void UpdatesTargetPositionForInterpolation()
         {
+            IgnoreEditModeMaterialLog();
             var target = new Vector3(10f, 0f, 20f);
             var players = new List<RemotePlayerMsg>
             {
@@ -123,6 +138,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void HandlesMultiplePlayersSimultaneously()
         {
+            IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
                 new RemotePlayerMsg { id = 1, name = "Alice" },
@@ -145,6 +161,7 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void SyncsAnimationState()
         {
+            IgnoreEditModeMaterialLog();
             var players = new List<RemotePlayerMsg>
             {
                 new RemotePlayerMsg { id = 1, name = "Alice", animation = "run" }
