@@ -22,6 +22,9 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<PoiDebugHud>();
             EnsureComponent<VerticalDebugMarkerRenderer>();
             EnsureComponent<NetworkInitializer>();
+            // ADR-041: turns a local gunshot into a noise the robapieles can hear. Hooks the
+            // vendor's own trigger event; harmless when no firearm is equipped.
+            EnsureComponent<NoiseReporter>();
             // EnsureComponent added it to THIS GameObject (it's in no scene/prefab), so forward
             // the inspector toggle before NetworkInitializer launches the backend (in Start).
             //

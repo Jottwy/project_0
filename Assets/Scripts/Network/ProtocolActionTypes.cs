@@ -50,5 +50,10 @@ namespace BackroomsSurvival.Net
         /// report_death_loot. Sent by InventoryReporter; restored via the inventory_restored
         /// event consumed by InventoryRestorer.</summary>
         public const string ReportInventory = "report_inventory";
+
+        /// ADR-041: a noise at a position, with a loudness in METRES (that radius is the whole
+        /// contract — the backend never interprets weapon types, so the weapon table stays here
+        /// where the weapon definitions live). Perception stimulus only: it mutates no game state.
+        public const string ReportNoise = "report_noise";
     }
 }

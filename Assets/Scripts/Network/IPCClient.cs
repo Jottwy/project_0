@@ -579,6 +579,23 @@ namespace BackroomsSurvival.Net
         /// authoritative inventory exists to verify against, same level as report_death_loot);
         /// no request_id — local action over the ordered IPC channel, no dedupe needed.
         /// </summary>
+        /// <summary>
+        /// ADR-041: report a noise the AI may hear — today, a gunshot. `loudness` is a RADIUS in
+        /// metres and the backend takes it at face value (clamped): keeping the weapon table on
+        /// this side avoids duplicating in Rust data that belongs to Unity's weapon definitions and
+        /// would drift the moment a weapon is added. Mutates nothing server-side, so the worst a
+        /// forged one achieves is walking the phantom to a spot.
+        /// </summary>
+        public void SendReportNoise(Vector3 position, float loudness)
+        {
+            SendActionFrame(ProtocolActionTypes.ReportNoise, 2, w =>
+            {
+                w.WriteString("position"); w.WriteArrayHeader(3);
+                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("loudness"); w.WriteFloat(loudness);
+            });
+        }
+
         public void SendConsumeItem(int itemId)
         {
             SendActionFrame(ProtocolActionTypes.ConsumeItem, 1, w =>
