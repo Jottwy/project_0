@@ -148,6 +148,25 @@ const PHANTOM_SPOTTED_SOUND_MIN: f32 = 1.0; // shorter stare when alerted by noi
 const PHANTOM_SPOTTED_SOUND_MAX: f32 = 2.0;
 // Fluidity (slice 3b-P1 follow-up): ease `heading` toward the player instead of snapping at
 // 10 Hz (which reads as lag). rad/s — STALK tracks, SPRINT tracks hard, STATUE turns its head.
+// ADR-041 — noise as a stimulus. A gunshot is the loudest thing in the game and until now it did
+// not exist for the AI at all.
+/// Hard clamp on a reported loudness. The client owns the weapon table, but a forged or buggy value
+/// must not turn one shot into a world-wide summons.
+const PHANTOM_NOISE_MAX_LOUDNESS: f32 = 600.0;
+/// Localization error as a fraction of distance. A rifle at 500 m is HEARD — physically it carries
+/// for kilometres and a long corridor acts as a waveguide — but it is not LOCATED. At 50 m this
+/// lands almost on top of you; at 500 m it lands ~40 m out and the creature has to search. That
+/// gap is the whole design: exact positions at long range would be an aimbot with a delay.
+const PHANTOM_NOISE_ERROR_FRAC: f32 = 0.08;
+/// Travel speed toward a noise: a fast walk, NOT a sprint. 500 m at 3 m/s is ~2.8 minutes of dread;
+/// covering the same ground in 55 s reads as homing.
+const PHANTOM_NOISE_TRAVEL_SPEED: f32 = 3.0;
+/// A noise goes cold after this long in transit without a fresh one. Without it the phantom would
+/// cross the map chasing a shot fired five minutes ago.
+const PHANTOM_NOISE_EXPIRY: f32 = 90.0;
+/// Patience once it ARRIVES. The 12 s of a normal SEARCH is far too short after a journey of
+/// minutes — arriving and immediately shrugging would waste the whole approach.
+const PHANTOM_NOISE_SEARCH_PATIENCE: f32 = 30.0;
 // ADR-040 perception. Sound stops being a binary "is it sprinting?" and becomes three tiers, which
 // is what makes crouching a real choice instead of a cosmetic pose.
 /// Below this planar speed you are standing still and make no noise at all.
@@ -1828,6 +1847,43 @@ async fn handle_action(
         // with corpse/chest spawns (sanitize_loot_stacks: quantity<=0 dropped, truncated to
         // MAX_CORPSE_STACKS=64 — first 64 kept). Only mirrored into RAM here; persistence picks
         // it up via PlayerSnapshot on the next save.
+        // ADR-041: the client reports a NOISE at a position with a loudness in metres (the weapon
+        // table lives in the client on purpose — keeping it in Rust would duplicate data that
+        // belongs to Unity's weapon definitions and drift the moment a weapon is added). This
+        // mutates NOTHING: not health, not inventory, not the world. It is a perception stimulus,
+        // so the worst a forged one can do is walk the phantom to a spot — the same trust level
+        // ADR-009 Option B already accepts for X/Z.
+        "report_noise" => {
+            let pos = action.data.get("position").and_then(|v| v.as_array());
+            let coords: Option<[f32; 3]> = pos.and_then(|a| {
+                if a.len() != 3 {
+                    return None;
+                }
+                let mut out = [0.0f32; 3];
+                for (i, v) in a.iter().enumerate() {
+                    out[i] = v.as_f64()? as f32;
+                }
+                out.iter().all(|c| c.is_finite()).then_some(out)
+            });
+            let loudness = action
+                .data
+                .get("loudness")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0) as f32;
+            match coords {
+                // Clamped, not trusted: a garbage loudness must not turn one shot into a
+                // world-wide summons.
+                Some(p) if loudness.is_finite() && loudness > 0.0 => {
+                    let loudness = loudness.min(PHANTOM_NOISE_MAX_LOUDNESS);
+                    info!(
+                        "MPTRACE step=PH_NOISE event=noise_reported pos=({:.1},{:.1},{:.1}) loudness={:.0}",
+                        p[0], p[1], p[2], loudness
+                    );
+                    net.pending_noises.push((p, loudness));
+                }
+                _ => debug!("report_noise ignored: malformed position or loudness"),
+            }
+        }
         "report_inventory" => {
             let mut items = parse_loot_stacks(&action.data);
             crate::world::corpse::sanitize_loot_stacks(&mut items);
@@ -3915,6 +3971,30 @@ fn target_is_crouched(net: &NetworkManager, tid: PeerId, host_crouch: bool) -> b
     net.peers.get(&tid).is_some_and(|p| p.crouch)
 }
 
+/// ADR-041 — displace a heard position by an error that grows with distance, DETERMINISTICALLY.
+///
+/// Deterministic and not per-tick random on purpose: a wandering estimate would make the phantom
+/// zigzag toward a point that keeps moving, which looks like a bug rather than like uncertainty.
+/// The same shot always resolves to the same spot for the same phantom.
+fn blur_noise(source: Vec3, dist: f32, id: PeerId) -> Vec3 {
+    let radius = dist * PHANTOM_NOISE_ERROR_FRAC;
+    if radius <= 0.01 {
+        return source;
+    }
+    let mut h = (source.x as i32 as u32).wrapping_mul(0x9E37_79B9)
+        ^ (source.z as i32 as u32).wrapping_mul(0x85EB_CA6B)
+        ^ (id as u32).wrapping_mul(0xC2B2_AE35);
+    h ^= h >> 15;
+    h = h.wrapping_mul(0x2545_F491);
+    h ^= h >> 13;
+    let angle = (h as f32 / u32::MAX as f32) * std::f32::consts::TAU;
+    Vec3::new(
+        source.x + angle.cos() * radius,
+        source.y,
+        source.z + angle.sin() * radius,
+    )
+}
+
 fn nearest_real_target(
     net: &NetworkManager,
     host_player_pos: Vec3,
@@ -4132,6 +4212,14 @@ struct PhantomMover {
     nav_goal: Option<Vec3>,
     /// Seconds since the current plan was built.
     nav_age: f32,
+    /// ADR-041 — how long this SEARCH may run. Normally `PHANTOM_SEARCH_MAX`; a noise
+    /// investigation gets a longer window, because arriving after minutes of travel and shrugging
+    /// immediately would waste the entire approach.
+    search_patience: f32,
+    /// Travel speed for the current SEARCH. A noise investigation walks; a normal search ambles.
+    search_speed: f32,
+    /// Seconds left before the noise being investigated goes cold. `None` = not a noise search.
+    noise_expiry: Option<f32>,
 }
 
 impl PhantomDriver {
@@ -4176,7 +4264,58 @@ impl PhantomDriver {
             nav_cursor: 0,
             nav_goal: None,
             nav_age: 0.0,
+            search_patience: PHANTOM_SEARCH_MAX,
+            search_speed: PHANTOM_SEARCH_SPEED,
+            noise_expiry: None,
         });
+    }
+
+    /// ADR-041 — drain the noises reported this tick and turn the ones a phantom could hear into an
+    /// investigation. Loudness IS the radius: the client decides how far its weapon carries.
+    fn hear_noises(&mut self, net: &mut NetworkManager) {
+        if net.pending_noises.is_empty() {
+            return;
+        }
+        let noises = std::mem::take(&mut net.pending_noises);
+        for (raw, loudness) in noises {
+            let source = Vec3::from_array(raw);
+            for i in 0..self.movers.len() {
+                let id = self.movers[i].id;
+                let from = match net.peers.get(&id) {
+                    Some(p) => Vec3::from_array(p.position),
+                    None => continue,
+                };
+                let dist = from.distance_xz(source);
+                if dist > loudness {
+                    continue;
+                }
+                // A committed lunge or a freeze is NOT interrupted by a noise somewhere else. It
+                // already has a target in front of it; being distractible there would read as
+                // stupidity, not as curiosity.
+                if matches!(
+                    self.movers[i].state,
+                    PhantomState::Sprint | PhantomState::Statue
+                ) {
+                    continue;
+                }
+                let goal = blur_noise(source, dist, id);
+                self.movers[i].last_known_player_pos = Some(goal);
+                self.movers[i].state = PhantomState::Search;
+                self.movers[i].state_timer = 0.0;
+                self.movers[i].search_patience = PHANTOM_NOISE_SEARCH_PATIENCE;
+                self.movers[i].search_speed = PHANTOM_NOISE_TRAVEL_SPEED;
+                self.movers[i].noise_expiry = Some(PHANTOM_NOISE_EXPIRY);
+                self.movers[i].nav_waypoints.clear(); // any old plan is irrelevant now
+                info!(
+                    "MPTRACE step=PH_NOISE event=phantom_investigates phantom_id={} dist={:.0} goal=({:.1},{:.1}) error={:.1}",
+                    id,
+                    dist,
+                    goal.x,
+                    goal.z,
+                    dist * PHANTOM_NOISE_ERROR_FRAC
+                );
+            }
+        }
     }
 
     /// ADR-040 — the heading to walk this tick: the bearing to the next waypoint of a string-pulled
@@ -4222,8 +4361,24 @@ impl PhantomDriver {
                 .is_none_or(|g| g.distance_xz(target) > PHANTOM_REPLAN_GOAL_DRIFT);
 
         if stale {
+            // ADR-041 — LONG-RANGE TRAVEL. The A* window is ±24 cells (±60 m); a noise 500 m away
+            // is far outside it, and widening the window would cost 160k cells per search instead
+            // of 2.4k. Instead the search is aimed at a SUB-GOAL on the bearing, just inside the
+            // window: the same machinery, the same cost, and the journey keeps real local obstacle
+            // avoidance the whole way instead of degrading to a blind straight line.
+            // Stay inside the window edge (2 cells of margin).
+            let reach = (crate::world::grid_gen::NAV_WINDOW_CELLS - 2) as f32
+                * crate::world::grid_gen::CELL_SIZE_M;
+            let far = from.distance_xz(target);
+            let nav_target = if far > reach {
+                let dx = (target.x - from.x) / far;
+                let dz = (target.z - from.z) / far;
+                Vec3::new(from.x + dx * reach, from.y, from.z + dz * reach)
+            } else {
+                target
+            };
             let start = cell_of(from);
-            let goal = cell_of(target);
+            let goal = cell_of(nav_target);
             find_path(
                 &mut self.grid_cache,
                 layer,
@@ -4313,6 +4468,10 @@ impl PhantomDriver {
         host_player_crouch: bool,
     ) -> PhantomAttack {
         let now = Instant::now();
+
+        // ADR-041: stimuli first — a shot reported this tick redirects the phantom before the FSM
+        // gets to act on stale intentions.
+        self.hear_noises(net);
 
         // ADR-016 slice 3b-P1 — derive each real target's XZ speed from its last-tick position
         // (peers send no velocity/move_state, so this is the uniform "is it running?" signal for
@@ -4848,17 +5007,36 @@ impl PhantomDriver {
                         }
                     };
 
-                    // Swept the spot, or out of patience → give up and forget.
-                    if self.movers[i].state_timer > PHANTOM_SEARCH_MAX
+                    // ADR-041: a noise in transit goes cold on its own clock, independent of the
+                    // arrival patience — otherwise a phantom that never reaches the spot would
+                    // walk toward a five-minute-old shot forever.
+                    let noise_cold = match self.movers[i].noise_expiry.as_mut() {
+                        Some(left) => {
+                            *left -= dt;
+                            *left <= 0.0
+                        }
+                        None => false,
+                    };
+
+                    // Swept the spot, out of patience, or the trail went cold → give up and forget.
+                    if noise_cold
+                        || self.movers[i].state_timer > self.movers[i].search_patience
                         || from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE
                     {
+                        info!(
+                            "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s cold={}",
+                            id, self.movers[i].state_timer, noise_cold
+                        );
                         self.movers[i].last_known_player_pos = None;
                         self.movers[i].state = PhantomState::Wander;
                         self.movers[i].state_timer = 0.0;
-                        info!(
-                            "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s",
-                            id, self.movers[i].state_timer
-                        );
+                        self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
+                        self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
+                        self.movers[i].noise_expiry = None;
+                        // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
+                        // never fought the journey — but without this the phantom would finish a
+                        // 500 m trip and immediately start walking all the way back to its spawn.
+                        self.movers[i].spawn_pos = from;
                         continue;
                     }
 
@@ -4869,10 +5047,11 @@ impl PhantomDriver {
                         lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
                     let h = self.movers[i].heading;
                     let dir = Vec3::new(h.sin(), 0.0, h.cos());
+                    let speed = self.movers[i].search_speed;
                     let desired = Vec3::new(
-                        from.x + dir.x * PHANTOM_SEARCH_SPEED * dt,
+                        from.x + dir.x * speed * dt,
                         from.y,
-                        from.z + dir.z * PHANTOM_SEARCH_SPEED * dt,
+                        from.z + dir.z * speed * dt,
                     );
                     let moved = resolve_move_grid_gen_ex(
                         &mut self.grid_cache,
@@ -5899,6 +6078,105 @@ mod tests {
             assert_eq!(
                 heard, expect_heard,
                 "walking at {dist} m: expected heard={expect_heard} (WALK_HEAR_RADIUS is {PHANTOM_WALK_HEAR_RADIUS})"
+            );
+        }
+    }
+
+    /// ADR-041 — a shot within earshot must start an investigation, with the LONG patience: it is
+    /// about to walk for minutes, and arriving only to shrug after 12 s would waste the approach.
+    #[tokio::test]
+    async fn a_noise_within_earshot_starts_an_investigation() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [25.0, 1.8, 25.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+
+        // 400 m away, rifle loudness 500 → heard.
+        net.pending_noises
+            .push(([from.x + 400.0, from.y, from.z], 500.0));
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(from.x + 400.0, 1.8, from.z),
+            0.0,
+            false,
+        );
+
+        assert_eq!(driver.movers[0].state, PhantomState::Search);
+        assert_eq!(
+            driver.movers[0].search_patience,
+            PHANTOM_NOISE_SEARCH_PATIENCE
+        );
+        assert!(
+            driver.movers[0].noise_expiry.is_some(),
+            "it must be able to go cold"
+        );
+        assert!(driver.movers[0].last_known_player_pos.is_some());
+    }
+
+    /// Beyond the weapon's loudness there is simply no stimulus. Loudness IS the radius.
+    #[tokio::test]
+    async fn a_noise_beyond_earshot_is_ignored() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [25.0, 1.8, 25.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+
+        net.pending_noises
+            .push(([from.x + 400.0, from.y, from.z], 60.0)); // quiet weapon, 400 m away
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(from.x + 5000.0, 1.8, from.z),
+            0.0,
+            false,
+        );
+
+        assert_eq!(driver.movers[0].state, PhantomState::Wander);
+    }
+
+    /// A committed lunge is not distractible. Turning away from the player in front of it to chase
+    /// a noise elsewhere would read as stupidity, not curiosity.
+    #[tokio::test]
+    async fn a_noise_does_not_interrupt_a_committed_sprint() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [25.0, 1.8, 25.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+        driver.movers[0].state = PhantomState::Sprint;
+
+        net.pending_noises
+            .push(([from.x + 100.0, from.y, from.z], 500.0));
+        driver.hear_noises(&mut net);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "a noise must not pull it off a committed attack"
+        );
+    }
+
+    /// The localization error is what separates "heard you" from "knows where you are". It must
+    /// scale with distance and be DETERMINISTIC — a per-tick random estimate would make the phantom
+    /// zigzag toward a target that keeps moving, which reads as a bug rather than as uncertainty.
+    #[test]
+    fn noise_localization_error_scales_with_distance_and_is_stable() {
+        let src = Vec3::new(500.0, 0.0, 500.0);
+        for dist in [10.0_f32, 100.0, 500.0] {
+            let a = blur_noise(src, dist, 0xF000);
+            let b = blur_noise(src, dist, 0xF000);
+            assert_eq!(a, b, "the same shot must always resolve to the same spot");
+            let err = ((a.x - src.x).powi(2) + (a.z - src.z).powi(2)).sqrt();
+            let expected = dist * PHANTOM_NOISE_ERROR_FRAC;
+            assert!(
+                (err - expected).abs() < 0.01,
+                "at {dist} m the error must be {expected:.2} m, got {err:.2}"
             );
         }
     }

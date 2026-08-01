@@ -57,7 +57,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// (sealed by `PhantomDriver` from its `Sprint`/`Statue` states; `PlayerInput` deliberately unchanged,
 /// so no client can set it), `serde(default)`, so a v11 peer decodes false and simply never sees the
 /// robapieles drop its disguise.
-const WIRE_SCHEMA_VERSION: u32 = 12;
+/// v13 (ADR-041) adds the `report_noise` client action (`position` + `loudness` in metres), the
+/// stimulus that lets a gunshot reach the robapieles. Additive and inert: a client that never sends
+/// it simply never attracts the phantom, with no error on either side. Nothing else changes shape,
+/// and it does NOT enter the P2P surface — the phantom is host-authoritative (ADR-016).
+const WIRE_SCHEMA_VERSION: u32 = 13;
 
 /// Run the IPC server until a fatal accept error.
 ///

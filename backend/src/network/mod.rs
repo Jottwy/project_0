@@ -303,6 +303,12 @@ pub struct NetworkManager {
     /// players placing on the SAME socket (distinct place_ids) yield exactly one piece —
     /// the host accepts the first and rejects the rest. Key = (x,y,z,yaw) quantized.
     pub occupied_stp_cells: std::collections::HashSet<(i32, i32, i32, i32)>,
+    /// ADR-041: noises reported this tick as `(position, loudness_metres)`, drained by
+    /// `PhantomDriver`. Host-only and sim-only — never serialized, never sent to a peer, never
+    /// persisted. It lives here for the same reason `processed_stp_*` does: the IPC action handler
+    /// has `net` in scope but not the driver, and threading the driver through would touch every
+    /// caller of `handle_action` for one field.
+    pub pending_noises: Vec<([f32; 3], f32)>,
     /// Phase B2.5: host-authoritative STP world carryables, replicated to peers. On the
     /// host it is set from `set_stp_carryables` and grows from drops; on joiners from the
     /// relayed `StpCarryableList` packet. build_world_state mirrors it to the client.
@@ -409,6 +415,7 @@ impl NetworkManager {
             processed_stp_build_adds: std::collections::HashSet::with_capacity(256),
             processed_stp_demolishes: std::collections::HashSet::with_capacity(256),
             occupied_stp_cells: std::collections::HashSet::with_capacity(256),
+            pending_noises: Vec::new(),
             stp_carryables: Vec::new(),
             processed_stp_carryable_drops: std::collections::HashSet::with_capacity(64),
             stp_harvestables: Vec::new(),
