@@ -3851,6 +3851,14 @@ enum PhantomState {
     Sprint,
 }
 
+/// ADR-038: the two states where the stolen skin stops holding — the phantom shows its real form.
+/// SINGLE SOURCE OF TRUTH for the reveal: anyone adding a `PhantomState` has to decide here, and
+/// the decision is covered by `phantom_reveals_only_in_sprint_and_statue`. Purely cosmetic — the
+/// flag rides the pose relay and never gates damage, detection or collision.
+fn phantom_reveals(state: PhantomState) -> bool {
+    matches!(state, PhantomState::Sprint | PhantomState::Statue)
+}
+
 /// ADR-016 slice 1 (phantom damage) — what `PhantomDriver::step` produced this tick for the HOST
 /// player. Returned to the game loop, which owns `player`/`stats`. DEUDA: host-only — a joiner's
 /// health lives in its own backend (P2P multi-backend), so this never affects joiners
@@ -4492,6 +4500,21 @@ impl PhantomDriver {
                 }
             }
         }
+
+        // ADR-038 — seal the cosmetic real-form flag from the POST-tick state, in ONE place. The
+        // FSM above has several early `continue`s (lost target, point-blank strike, gesture
+        // freeze), so a per-branch seal would silently miss paths and leave a stale disguise on
+        // exactly the frames that matter. Derived level, not a latch: the flag falls back to false
+        // on its own when the phantom returns to WANDER/STALK, so the disguise recomposes without
+        // any reset logic. Written HERE and not in `update_player_state` on purpose — that method
+        // stays untouched so the other five pose fields keep inheriting their defaults for the
+        // phantom (`.claude/rules/pose-relay-wire-rust.md`, step 6).
+        for m in &self.movers {
+            if let Some(peer) = net.peers.get_mut(&m.id) {
+                peer.revealed = phantom_reveals(m.state);
+            }
+        }
+
         attack
     }
 }
@@ -4499,6 +4522,19 @@ impl PhantomDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ADR-038: the reveal is derived from the FSM state, so THIS is the decision worth freezing —
+    // which states break the disguise. A future state added to PhantomState without a verdict here
+    // (or a careless edit to the matches!) fails this test instead of silently unmasking the
+    // robapieles while it stalks, which would kill the whole premise of ADR-016.
+    #[test]
+    fn phantom_reveals_only_in_sprint_and_statue() {
+        assert!(phantom_reveals(PhantomState::Sprint));
+        assert!(phantom_reveals(PhantomState::Statue));
+        assert!(!phantom_reveals(PhantomState::Wander));
+        assert!(!phantom_reveals(PhantomState::Spotted));
+        assert!(!phantom_reveals(PhantomState::Stalk));
+    }
 
     #[test]
     fn sanitize_reported_damage_rejects_garbage_and_clamps() {
