@@ -271,6 +271,35 @@ pub fn is_walkable_grid_gen(cache: &mut GridGenChunkCache, pos: Vec3, layer: u8)
         .is_walkable()
 }
 
+/// ADR-040 amendment — the phantom stops being a dimensionless POINT and becomes a disc of this
+/// radius. Without it the model can stand half-inside a wall panel: the point is legally on a
+/// walkable cell while the visible body is not, which reads as clipping even though collision is
+/// "correct". 0.5 m against a 2.5 m cell leaves 1.5 m of clearance in a one-cell corridor, so
+/// corridors stay comfortably passable; what it does close are the diagonal pinch points.
+pub const PHANTOM_BODY_RADIUS: f32 = 0.5;
+
+/// Does the body fit here — centre plus the four cardinal extremes?
+///
+/// SAFETY VALVE: if the body does not fit where it ALREADY IS, this degrades to a point sample.
+/// Otherwise a phantom that spawns (or is left by an earlier build) in a spot too tight for the new
+/// radius would be fully blocked in every direction and freeze on the spot forever. Being generous
+/// about leaving a bad position is always right; being generous about entering one is not.
+fn body_fits(cache: &mut GridGenChunkCache, layer: u8, pos: Vec3, from_fits: bool) -> bool {
+    if !is_walkable_grid_gen(cache, pos, layer) {
+        return false;
+    }
+    if !from_fits {
+        return true; // wedged: allow the point-level move so it can walk itself out
+    }
+    const R: f32 = PHANTOM_BODY_RADIUS;
+    for (dx, dz) in [(R, 0.0), (-R, 0.0), (0.0, R), (0.0, -R)] {
+        if !is_walkable_grid_gen(cache, Vec3::new(pos.x + dx, pos.y, pos.z + dz), layer) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Resolve a move against grid_gen with axis sliding: try the full move, then X-only, then
 /// Z-only, else stay. Horizontal-only: `from.y` is PRESERVED (the phantom keeps the Y it spawned
 /// with, which is the player's spawn Y). `layer` selects which grid_gen layer's cells to test.
@@ -310,17 +339,19 @@ pub fn resolve_move_grid_gen_ex(
     let full = Vec3::new(desired.x, y, desired.z);
     // ADR-040: the destination cell being walkable is NOT enough for a diagonal step — the cell the
     // segment actually passes through has to be walkable too.
-    let (pos, blocked, slid) = if is_walkable_grid_gen(cache, full, layer)
+    // Whether the body fits where it currently stands decides how strict we may be (see body_fits).
+    let from_fits = body_fits(cache, layer, from, true);
+    let (pos, blocked, slid) = if body_fits(cache, layer, full, from_fits)
         && diagonal_step_is_clear(cache, layer, from, full)
     {
         (full, false, false)
     } else {
         let x_only = Vec3::new(desired.x, y, from.z);
-        if is_walkable_grid_gen(cache, x_only, layer) {
+        if body_fits(cache, layer, x_only, from_fits) {
             (x_only, false, true)
         } else {
             let z_only = Vec3::new(from.x, y, desired.z);
-            if is_walkable_grid_gen(cache, z_only, layer) {
+            if body_fits(cache, layer, z_only, from_fits) {
                 (z_only, false, true)
             } else {
                 (Vec3::new(from.x, y, from.z), true, false) // fully blocked → stay
@@ -473,6 +504,51 @@ mod tests {
             "expected Z-only slide, got {:?}",
             r.pos
         );
+    }
+
+    /// The body radius must NOT seal a one-cell corridor. 0.5 m against a 2.5 m cell leaves 1.5 m
+    /// of clearance, but that is an argument, not a guarantee — this walks a corridor end to end.
+    #[test]
+    fn body_radius_does_not_seal_a_one_cell_corridor() {
+        let mut grid = LayerGrid::new_solid();
+        for z in 2..12 {
+            grid.set(4, z, Cell::new(CellType::Corridor, 2, 0));
+        }
+        let mut c = cache_with_grid(grid);
+        let mut pos = cell_center(4, 3);
+        for _ in 0..200 {
+            let desired = Vec3::new(pos.x, pos.y, pos.z + 0.9); // sprint-sized step along the corridor
+            let r = resolve_move_grid_gen_ex(&mut c, 0, pos, desired);
+            assert!(
+                !r.blocked,
+                "the corridor must stay walkable, stuck at {pos:?}"
+            );
+            pos = r.pos;
+            if pos.z >= cell_center(4, 10).z {
+                return; // walked the length of it
+            }
+        }
+        panic!("never reached the far end, stopped at {pos:?}");
+    }
+
+    /// The safety valve. A phantom standing somewhere the disc does not fit must still be able to
+    /// move OUT; otherwise the radius change would freeze anything left in a tight spot.
+    #[test]
+    fn a_wedged_body_can_still_walk_itself_out() {
+        let mut grid = LayerGrid::new_solid();
+        grid.set(5, 5, Cell::new(CellType::Corridor, 2, 0)); // a single isolated open cell…
+        for z in 5..12 {
+            grid.set(6, z, Cell::new(CellType::Corridor, 2, 0)); // …with an exit to +X
+        }
+        let mut c = cache_with_grid(grid);
+        let from = cell_center(5, 5); // the disc cannot fit here: neighbours are solid
+        let desired = Vec3::new(from.x + 0.9, from.y, from.z);
+        let r = resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+        assert!(
+            !r.blocked,
+            "a wedged phantom must degrade to point collision and be able to leave"
+        );
+        assert!(r.pos.x > from.x, "it must actually move toward the exit");
     }
 
     /// ADR-040: a spawn must land on the cell CENTRE, so the first step is never an ambiguous
