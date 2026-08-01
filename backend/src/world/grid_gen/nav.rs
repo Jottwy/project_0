@@ -21,7 +21,10 @@
 
 use std::collections::BinaryHeap;
 
-use super::collision::{cell_is_walkable, global_cell, GridGenChunkCache};
+use super::collision::{
+    cell_is_walkable, diagonal_step_is_clear, global_cell, is_walkable_grid_gen,
+    resolve_move_grid_gen_ex, GridGenChunkCache,
+};
 use super::CELL_SIZE_M;
 use crate::utils::Vec3;
 
@@ -263,6 +266,86 @@ pub fn find_path(
     stats
 }
 
+/// Sub-step used to walk a candidate shortcut. Deliberately below one cell, for the same reason the
+/// resolver's diagonal rule is complete only under that assumption.
+const SEGMENT_PROBE_STEP: f32 = CELL_SIZE_M * 0.4;
+/// How far ahead the greedy simplification may reach. Bounded so a long open room cannot turn one
+/// call into a quadratic sweep.
+const STRING_PULL_LOOKAHEAD: usize = 12;
+
+/// True if the phantom can actually walk the straight line `a → b`.
+///
+/// This does NOT reimplement the collision rule — it REPLAYS it. The segment is walked in sub-steps
+/// shorter than a cell and each one is put through exactly the same two predicates the resolver
+/// uses (`is_walkable_grid_gen` on the destination + `diagonal_step_is_clear` on the step). That is
+/// what makes the composition property structural: any shortcut this accepts is a shortcut the
+/// resolver will take, so the phantom can never get stuck on a path it planned for itself.
+pub fn segment_is_clear(cache: &mut GridGenChunkCache, layer: u8, a: Vec3, b: Vec3) -> bool {
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    let dist = (dx * dx + dz * dz).sqrt();
+    if dist < f32::EPSILON {
+        return true;
+    }
+    let steps = (dist / SEGMENT_PROBE_STEP).ceil() as i32;
+    let mut prev = a;
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let next = Vec3::new(a.x + dx * t, a.y, a.z + dz * t);
+        if !is_walkable_grid_gen(cache, next, layer)
+            || !diagonal_step_is_clear(cache, layer, prev, next)
+        {
+            return false;
+        }
+        prev = next;
+    }
+    true
+}
+
+/// Greedy string-pulling: collapse a 4-connected cell path into the fewest waypoints whose straight
+/// segments are all walkable.
+///
+/// This is NOT cosmetic polish and it is not optional. A raw 4-connected path is one waypoint per
+/// 2.5 m — roughly 36 of them across the search window — and steering through those at 10 Hz reads
+/// as a machine tracing a grid, which is precisely the tell ADR-016 forbids: the client must not be
+/// able to tell this peer is an NPC. It also recovers the diagonal shortcuts the 4-connected search
+/// gave up, so the creature moves the way a person would.
+pub fn string_pull(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    y: f32,
+    cells: &[CellCoord],
+    out: &mut Vec<Vec3>,
+) {
+    out.clear();
+    if cells.is_empty() {
+        return;
+    }
+    let mut i = 0usize;
+    while i < cells.len() {
+        let from = cell_center(cells[i], y);
+        // Reach as far as a straight line stays clear, then commit to that waypoint.
+        let limit = (i + STRING_PULL_LOOKAHEAD).min(cells.len() - 1);
+        let mut best = i + 1;
+        let mut j = limit;
+        while j > i {
+            if segment_is_clear(cache, layer, from, cell_center(cells[j], y)) {
+                best = j;
+                break;
+            }
+            j -= 1;
+        }
+        if best >= cells.len() {
+            break;
+        }
+        out.push(cell_center(cells[best], y));
+        if best == cells.len() - 1 {
+            break;
+        }
+        i = best;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::collision::default_layer_rules;
@@ -417,6 +500,62 @@ mod tests {
         let stats = find_path(&mut cache, 0, (4, 4), (4, 4), &mut scratch, &mut path);
         assert!(path.is_empty());
         assert_eq!(stats.expansions, 0);
+    }
+
+    #[test]
+    fn string_pull_collapses_a_straight_corridor_to_two_points() {
+        let mut cache = cache_with(open_grid());
+        let cells: Vec<CellCoord> = (3..=10).map(|x| (x, 5)).collect();
+        let mut out = Vec::new();
+        string_pull(&mut cache, 0, 0.0, &cells, &mut out);
+        assert_eq!(
+            out.len(),
+            1,
+            "a straight run must collapse to its far end, got {out:?}"
+        );
+        assert_eq!(out[0], cell_center((10, 5), 0.0));
+    }
+
+    /// THE composition test. Every segment string-pulling emits must be one the resolver actually
+    /// takes — otherwise the phantom plans a shortcut and then grinds to a halt on it, which looks
+    /// worse than having no pathfinder at all.
+    #[test]
+    fn string_pull_never_emits_a_segment_the_resolver_rejects() {
+        let mut g = open_grid();
+        for z in 1..20 {
+            g.set(5, z, Cell::new(CellType::Wall, 2, 0)); // wall with a gap at z = 0
+        }
+        let mut cache = cache_with(g);
+        let mut scratch = NavScratch::new();
+        let mut cells = Vec::new();
+        find_path(&mut cache, 0, (2, 10), (8, 10), &mut scratch, &mut cells);
+        assert!(!cells.is_empty());
+
+        let mut waypoints = Vec::new();
+        string_pull(&mut cache, 0, 0.0, &cells, &mut waypoints);
+        assert!(!waypoints.is_empty());
+
+        // Walk every segment at SPRINT step size through the real resolver.
+        const SPRINT_STEP: f32 = 9.0 * 6.0 / 60.0; // PHANTOM_SPRINT_SPEED * entity_dt
+        let mut pos = cell_center((2, 10), 0.0);
+        for (n, wp) in waypoints.iter().enumerate() {
+            let mut guard = 0;
+            while (pos.x - wp.x).abs() > 0.05 || (pos.z - wp.z).abs() > 0.05 {
+                let dx = wp.x - pos.x;
+                let dz = wp.z - pos.z;
+                let d = (dx * dx + dz * dz).sqrt();
+                let step = SPRINT_STEP.min(d);
+                let desired = Vec3::new(pos.x + dx / d * step, pos.y, pos.z + dz / d * step);
+                let r = resolve_move_grid_gen_ex(&mut cache, 0, pos, desired);
+                assert!(
+                    !r.blocked,
+                    "resolver refused a segment string-pulling emitted (waypoint {n}, at {pos:?} → {desired:?})"
+                );
+                pos = r.pos;
+                guard += 1;
+                assert!(guard < 500, "did not converge on waypoint {n}");
+            }
+        }
     }
 
     /// ADR-040 D-COTA: a search that reads cells directly must leave the cache bounded. Before

@@ -169,7 +169,12 @@ pub(super) fn cell_is_walkable(cache: &mut GridGenChunkCache, gx: i32, gz: i32, 
 /// in a stiff cross pattern. Since a step is shorter than one cell, exactly one boundary is crossed
 /// per axis, so the segment enters exactly ONE intermediate cell: the one whose boundary is crossed
 /// FIRST. An exact tie is the zero-width corner point and is refused.
-fn diagonal_step_is_clear(cache: &mut GridGenChunkCache, layer: u8, from: Vec3, to: Vec3) -> bool {
+pub(super) fn diagonal_step_is_clear(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    from: Vec3,
+    to: Vec3,
+) -> bool {
     let (fx, fz) = global_cell(from);
     let (tx, tz) = global_cell(to);
     if fx == tx || fz == tz {
