@@ -398,8 +398,15 @@ namespace BackroomsSurvival.Tests
         public void RoomTypeForPanelClaimsTheWallsEmittedByTheTileOutside()
         {
             var zones = new[] { Zone(4, 4, 12, 12, RoomZoneKind.SealedRoom) };
-            const byte edgeNorth = 1; // panel +Z (EdgeNorth interno del builder)
-            const byte edgeEast = 4;  // panel +X (EdgeEast)
+            // Se referencian las constantes del builder en vez de redeclararlas: los literales
+            // que había aquí (1 y 4) son EdgeSouth y EdgeWest, no EdgeNorth y EdgeEast. Con el
+            // flag equivocado, RoomTypeForPanel cae en su rama "no desplaza al vecino" y devuelve
+            // el tile propietario, así que el test fallaba por su propia transcripción. Ojo al
+            // matiz: 1 y 4 SÍ son norte y este en los bits del BACKEND (ver BitS/BitE arriba) —
+            // la traducción backend→interno la hace BuildFromWalls, y RoomTypeForPanel recibe ya
+            // el flag interno.
+            const byte edgeNorth = GridChunkBuilder.EdgeNorth; // panel +Z
+            const byte edgeEast = GridChunkBuilder.EdgeEast;   // panel +X
 
             Assert.AreEqual(RoomZoneKind.SealedRoom,
                 GridChunkBuilder.RoomTypeForPanel(zones, 1, 3, edgeEast),
