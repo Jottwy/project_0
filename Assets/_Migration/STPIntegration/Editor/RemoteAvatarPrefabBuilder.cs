@@ -101,6 +101,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireRevealHook(instance);
                 WireFootstepHook(instance);
                 WireLightHook(instance);
+                WireFireAudioHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -448,6 +449,44 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (boneProp != null)
                 boneProp.stringValue = "Hand.R";
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-042: adds the gunshot hook and binds the audio set. Same idempotence rule as the
+        // GripPoseSet: an existing asset is referenced AS-IS, never reseeded, so the clips Joel drags
+        // in survive every re-bake.
+        private static void WireFireAudioHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyFireAudioHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyFireAudioHook>();
+
+            var so = new SerializedObject(hook);
+            var setProp = so.FindProperty("_audioSet");
+            if (setProp != null)
+                setProp.objectReferenceValue = LoadOrCreateAudioSet();
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-042: the per-weapon fire clips live as a ScriptableObject, created EMPTY on purpose.
+        // Nothing in the project can mint a correct default: the clip a firearm plays is a private
+        // field on the first-person prefab (see RemoteWieldableAudioSet's doc for why neither
+        // reflection nor GetWieldableWithId is a valid route). Until a clip is dragged in, peers fire
+        // silently — declared, not hidden.
+        private const string AudioSetPath = OutputDir + "/RemoteWieldableAudioSet.asset";
+
+        private static RemoteWieldableAudioSet LoadOrCreateAudioSet()
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<RemoteWieldableAudioSet>(AudioSetPath);
+            if (existing != null)
+                return existing;
+
+            var set = ScriptableObject.CreateInstance<RemoteWieldableAudioSet>();
+            AssetDatabase.CreateAsset(set, AudioSetPath);
+            AssetDatabase.SaveAssets();
+            Debug.LogWarning("[RemoteAvatarPrefabBuilder] ADR-042: created an EMPTY " +
+                             $"{AudioSetPath}. Remote gunshots stay SILENT until a clip is assigned " +
+                             "(defaultFireClip alone is enough to make every weapon audible).");
+            return set;
         }
 
         // ADR-023 Slice 2: the per-category grip config lives as a ScriptableObject (live-editable
