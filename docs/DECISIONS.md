@@ -1327,3 +1327,14 @@ Consecuencias / qué prohíbe: cae ~5/6 del tráfico de peticiones de gameplay y
 Por qué es ADR (regla dura 7): cambia el comportamiento observable del protocolo P2P — un peer empieza a emitir ACKs donde antes no emitía ninguno, y el patrón de reenvío del emisor cambia en consecuencia. No mueve un byte de payload, pero el contrato entre peers no es solo el formato: es también qué se contesta y cuándo.
 
 Dependencias: ninguna hacia adelante. Toca el mismo camino que ADR-029 (PvP), ADR-030 (consumibles), ADR-037 (`stp_demolish`) y la Fase E de ADR-028 (cadáveres) — los cuatro dieron por fiable un envío que a efectos prácticos nunca lo fue, y ninguno necesita enmienda porque su diseño era correcto: lo que faltaba estaba en la capa de transporte, no en ellos.
+
+## Enmienda 2026-08-01 — ADR-038 pasa a VALIDADA
+Estado de ADR-038: **PROPUESTA → VALIDADA (2026-08-01)**. (Este documento es append-only: el estado no se edita en la cabecera del ADR, se enmienda aquí.)
+
+Confirmado por Joel en playtest real, no por tests: el robapieles aparece disfrazado e indistinguible de un peer, **rompe el disfraz y cambia de apariencia**, y recompone el disfraz al perder al jugador. La reversibilidad por nivel derivado (`phantom_reveals`, `Sprint`/`Statue`) funciona tal como se diseñó. Cita literal de la validación: "VALE funciona".
+
+Dos correcciones que salieron DEL playtest y no de la implementación, ambas ya en el árbol y ninguna de ellas enmienda el diseño de ADR-038:
+1. **Y del spawn del fantasma (`8745853`)** — se emitía a `floor + 0.1` mientras el cliente resta `PlayerBaseY` (1.8) a toda pose remota, así que sus pies quedaban 1.7 m bajo el suelo. Corregido a `floor + PLAYER_BASE_Y`, la convención que ya usa cualquier peer real. El test que congelaba el valor viejo tenía el comentario correcto y el número equivocado. No toca wire ni el campo `revealed`.
+2. **Culling de los proxies (`ff0bbbe`)** — bug PREEXISTENTE y ajeno a ADR-038 (afecta igual a jugadores remotos), pero lo hereda el fantasma por compartir tubería: `updateWhenOffscreen=false` + Animator en `CullUpdateTransforms` + el desplazamiento ADITIVO del Pelvis de `ProxyGroundingHook` se retroalimentan y el mesh desaparece conservando el nametag. Forzados `updateWhenOffscreen=true` y `AlwaysAnimate` al crear la vista. **Diagnóstico de confianza MEDIA, pendiente de confirmación en playtest con la instrumentación de `23c293f`** — si se cae, esta nota se enmienda.
+
+Lo que ADR-038 sigue SIN tener, para que nadie lo dé por cerrado: la forma real es un material stand-in generado en runtime, no un modelo. El swap por malla real (humanoide riggeado como Humanoid) es trabajo posterior y, como se declaró en el propio ADR, **no requiere ADR nuevo**: es presentación pura sobre el mismo campo.
