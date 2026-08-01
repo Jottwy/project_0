@@ -35,6 +35,20 @@ namespace BackroomsSurvival.Net
         [Tooltip("How often to re-scan the local rig for firearm triggers (seconds).")]
         [SerializeField, Min(0.1f)] private float _rescanInterval = 0.5f;
 
+        /// <summary>
+        /// ADR-042: monotonic shot counter (wrapping), read by <see cref="PlayerPoseTransmitter"/>
+        /// and relayed as <c>fire_seq</c> so observers can play the gunshot on this peer's proxy.
+        ///
+        /// It rides THIS component's subscription on purpose. A second scanner over the same
+        /// <see cref="IFirearmTrigger.Shoot"/> events would not just be duplication — it would be a
+        /// second 0.5 s rescan clock that can disagree with this one about which weapon is equipped.
+        /// One local event, two independent outputs: <c>report_noise</c> to our own backend (an AI
+        /// stimulus, ADR-041) and this counter to the pose relay (cosmetic, ADR-042). Static because
+        /// the transmitter lives on its own DontDestroyOnLoad object and must not depend on finding
+        /// this instance; the proxy hook carries a sentinel, so the value it starts from is irrelevant.
+        /// </summary>
+        public static byte ShotCounter { get; private set; }
+
         private readonly List<IFirearmTrigger> _subscribed = new List<IFirearmTrigger>();
         private Transform _characterRoot;
         private float _nextScanAt;
@@ -75,6 +89,11 @@ namespace BackroomsSurvival.Net
 
         private void OnShoot()
         {
+            // ADR-042: bumped BEFORE the loudness gate — a silenced weapon (loudness 0) still fires
+            // and observers must still hear it; only the AI stimulus is meant to be suppressible.
+            // Wraps at 255 by design (unchecked); the observer reads deltas, never absolutes.
+            unchecked { ShotCounter++; }
+
             if (_firearmLoudness <= 0f)
                 return;
             if (!IPCClient.TryGetInstance(out var ipc))

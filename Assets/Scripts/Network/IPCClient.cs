@@ -420,7 +420,8 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
-            int[] equipment = null, int heldItem = 0, byte hitSeq = 0)
+            int[] equipment = null, int heldItem = 0, byte hitSeq = 0, bool lightOn = false,
+            byte fireSeq = 0)
         {
             // Hardening (postmortem of the `crouch` off-by-one, ADR-020): the map header
             // count and the number of pairs written below are kept in sync by hand. We can't
@@ -430,7 +431,7 @@ namespace BackroomsSurvival.Net
             // field drifts them apart (rmp_serde would silently drop the tail, as `crouch`
             // did). Debug.Assert is [Conditional("UNITY_ASSERTIONS")] → stripped from release
             // players; the message is a const literal (zero alloc on the pose hot path).
-            const int FieldCount = 16;
+            const int FieldCount = 18;
             int fields = 0;
 
             var w = RentWriter();
@@ -466,6 +467,10 @@ namespace BackroomsSurvival.Net
             w.WriteString("held_item"); w.WriteInt(heldItem); fields++;
             // ADR-024: hit-reaction counter (monotonic, wrapping; 0 = never hit), relayed to peers.
             w.WriteString("hit_seq"); w.WriteInt(hitSeq); fields++;
+            // ADR-042: "my active wieldable is emitting light" (generic — any enabled Light under it).
+            w.WriteString("light_on"); w.WriteBool(lightOn); fields++;
+            // ADR-042: shot counter (monotonic, wrapping; 0 = never fired), relayed to peers.
+            w.WriteString("fire_seq"); w.WriteInt(fireSeq); fields++;
 
             Debug.Assert(fields == FieldCount,
                 "SendPlayerInput: field count drifted from the map header — a pair was added/removed without updating WriteMapHeader (rmp_serde would drop the tail).");

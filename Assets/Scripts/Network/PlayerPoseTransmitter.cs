@@ -50,6 +50,15 @@ namespace BackroomsSurvival.Net
         // reconciliation. Subscribed when the character resolves, unsubscribed on rig rebuild / OnDestroy.
         private IHealthManager _health;
         private byte _hitSeq;
+        // ADR-042: cached lights of the ACTIVE wieldable. We do not ask "is this a torch?" — we ask
+        // "is any Light under the equipped wieldable enabled?", which is exact rather than heuristic
+        // because LightEffect.OnEnable/OnDisable write Light.enabled directly. Consequence on
+        // purpose: a lighter/flare/flashlight works the day it exists, with no table and no wire
+        // change. The cache is keyed on the wieldable REFERENCE (re-resolved when it changes), so an
+        // equip/holster/rig-rebuild re-scans and nothing per-frame walks the hierarchy.
+        private IWieldablesControllerCC _wieldablesController;
+        private Object _lightsCachedFor;
+        private Light[] _wieldableLights = System.Array.Empty<Light>();
         private float _sendAccum;
         private uint _inputSeq;
         private uint _clientTick;
@@ -127,6 +136,11 @@ namespace BackroomsSurvival.Net
                 // ADR-024: the rig rebuild destroys the health manager — unsubscribe and drop it so we
                 // re-subscribe against the fresh character next valid frame (no leaked stale handler).
                 UnsubscribeHealth();
+                // ADR-042: the rig rebuild destroys the wieldables controller and every wieldable
+                // instance under it — drop the controller and the light cache so both re-resolve.
+                _wieldablesController = null;
+                _lightsCachedFor = null;
+                _wieldableLights = System.Array.Empty<Light>();
                 return;
             }
 
@@ -188,6 +202,13 @@ namespace BackroomsSurvival.Net
             // slot. STP's WieldableInventory applies the equip locally; we only READ (rule #3).
             int heldItem = ReadHeldItem();
 
+            // ADR-042: report whether the equipped wieldable is emitting light, and the shot counter
+            // the NoiseReporter keeps (one local Shoot event, two independent outputs — see there).
+            // Both are pure READS, like every other field here (rule #3: the transmitter reports,
+            // it never applies).
+            bool lightOn = ReadLightOn();
+            byte fireSeq = NoiseReporter.ShotCounter;
+
             // ADR-026 (enmienda 2026-07-06, Opción C): the wire's Y convention is
             // "feet + PlayerBaseY" — the same one the backend's spawn/floor-fallback and the
             // phantom natively emit, and the one RemotePlayerManager un-does on the receiving
@@ -200,7 +221,7 @@ namespace BackroomsSurvival.Net
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem, _hitSeq);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem, _hitSeq, lightOn, fireSeq);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = wirePos;
@@ -297,6 +318,53 @@ namespace BackroomsSurvival.Net
             if (index < 0 || index >= _holster.SlotsCount)
                 return 0;
             return _holster.GetItemAtIndex(index).Item?.Id ?? 0;
+        }
+
+        /// <summary>
+        /// ADR-042: true when the ACTIVE wieldable is emitting light. Deliberately item-agnostic —
+        /// we never ask "is this the torch?", we ask whether any <see cref="Light"/> under the
+        /// equipped wieldable is enabled. That is exact, not a heuristic: STP's
+        /// <c>LightEffect.OnEnable/OnDisable</c> write <c>Light.enabled</c>, so the component IS the
+        /// switch. Nothing inside PolymindGames is modified or wrapped; this is a read from outside.
+        ///
+        /// <c>GetComponentsInChildren(true)</c> includes INACTIVE children on purpose (a torch's
+        /// flame object can start disabled), so the per-frame test also has to check
+        /// <c>activeInHierarchy</c> — an enabled Light on a disabled object emits nothing.
+        /// </summary>
+        private bool ReadLightOn()
+        {
+            if (_wieldablesController == null && _character != null)
+                _wieldablesController = _character.GetCC<IWieldablesControllerCC>();
+            if (_wieldablesController == null)
+                return false;
+
+            // A DESTROYED wieldable still hands back a non-null interface reference (C# `?.` does
+            // not see Unity's fake-null), and touching `.gameObject` on it throws
+            // MissingReferenceException — so test the Unity lifetime first. NullWieldable is not a
+            // UnityEngine.Object, so it falls through and is caught by the null-gameObject branch.
+            var wieldable = _wieldablesController.ActiveWieldable;
+            bool destroyed = wieldable is Object uo && uo == null;
+            var go = (wieldable == null || destroyed) ? null : wieldable.gameObject;
+            if (go == null)
+            {
+                _lightsCachedFor = null;
+                _wieldableLights = System.Array.Empty<Light>();
+                return false;
+            }
+
+            if (!ReferenceEquals(_lightsCachedFor, go))
+            {
+                _lightsCachedFor = go;
+                _wieldableLights = go.GetComponentsInChildren<Light>(true);
+            }
+
+            for (int i = 0; i < _wieldableLights.Length; i++)
+            {
+                var l = _wieldableLights[i];
+                if (l != null && l.enabled && l.gameObject.activeInHierarchy)
+                    return true;
+            }
+            return false;
         }
 
         /// <summary>

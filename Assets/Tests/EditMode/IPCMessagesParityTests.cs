@@ -217,7 +217,7 @@ namespace BackroomsSurvival.Tests
         public void RemotePlayerMsg_AllFieldsDecodeCorrectly()
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(10);
+            w.WriteMapHeader(12);
             w.WriteString("id"); w.WriteInt(5);
             w.WriteString("name"); w.WriteString("Joel");
             w.WriteString("position"); w.WriteArrayHeader(3);
@@ -230,6 +230,8 @@ namespace BackroomsSurvival.Tests
             w.WriteInt(11); w.WriteInt(22); w.WriteInt(33); w.WriteInt(44);
             w.WriteString("held_item"); w.WriteInt(77);
             w.WriteString("hit_seq"); w.WriteInt(3);
+            w.WriteString("light_on"); w.WriteBool(true); // ADR-042
+            w.WriteString("fire_seq"); w.WriteInt(9);     // ADR-042
 
             var msg = RemotePlayerMsg.Parse(new MsgPackReader(w.ToArray()));
             Assert.AreEqual(5, msg.id);
@@ -242,6 +244,8 @@ namespace BackroomsSurvival.Tests
             CollectionAssert.AreEqual(new[] { 11, 22, 33, 44 }, msg.equipment);
             Assert.AreEqual(77, msg.heldItem);
             Assert.AreEqual(3, msg.hitSeq);
+            Assert.IsTrue(msg.lightOn); // ADR-042
+            Assert.AreEqual(9, msg.fireSeq); // ADR-042
             Assert.IsFalse(msg.dead);
         }
 
@@ -257,6 +261,10 @@ namespace BackroomsSurvival.Tests
             CollectionAssert.AreEqual(new[] { 0, 0, 0, 0 }, msg.equipment);
             Assert.AreEqual(0, msg.heldItem);
             Assert.AreEqual(0, msg.hitSeq);
+            // ADR-042: the v13→v14 compat leg. A backend that never sends these must leave the peer
+            // dark and silent, not throw and not carry a stale value.
+            Assert.IsFalse(msg.lightOn);
+            Assert.AreEqual(0, msg.fireSeq);
             Assert.IsFalse(msg.dead);
             Assert.IsFalse(msg.crouch);
         }

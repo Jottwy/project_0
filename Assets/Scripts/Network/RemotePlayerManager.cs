@@ -165,6 +165,8 @@ namespace BackroomsSurvival.Net
                 view.heldItem = rp.heldItem; // ADR-023
                 view.hitSeq = rp.hitSeq; // ADR-024
                 view.revealed = rp.revealed; // ADR-038
+                view.lightOn = rp.lightOn; // ADR-042
+                view.fireSeq = rp.fireSeq; // ADR-042
                 // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
                 // is the visible body); it reappears at the respawn position on dead→false.
                 // Change-detected so SetActive only fires on the edge.
@@ -284,6 +286,8 @@ namespace BackroomsSurvival.Net
             view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
             view.dead = false; // ADR-028 post-E3: recycled proxy starts visible (root just re-activated above)
             view.revealed = false; // ADR-038: no stale real form on a recycled proxy (hook restores its materials)
+            view.lightOn = false; // ADR-042: no stale torch glow on a recycled proxy
+            view.fireSeq = 0; // ADR-042: no stale shot counter (hook re-arms its sentinel)
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -316,6 +320,8 @@ namespace BackroomsSurvival.Net
             view.hitSeq = 0; // ADR-024
             view.dead = false; // ADR-028 post-E3: pooled SetActive(false) is the pool's, not the flag's
             view.revealed = false; // ADR-038
+            view.lightOn = false; // ADR-042
+            view.fireSeq = 0; // ADR-042
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -589,6 +595,10 @@ namespace BackroomsSurvival.Net
         // ADR-038: cosmetic real-form flag (read by ProxyRevealHook). Always false for a real
         // player — only the robapieles (ADR-016) is ever sent with it true.
         public bool revealed;
+        // ADR-042: cosmetic "held wieldable is lit" flag (read by ProxyLightHook).
+        public bool lightOn;
+        // ADR-042: cosmetic shot counter (read by ProxyFireAudioHook); 0 = never fired.
+        public int fireSeq;
         public float lastSeenTime;
     }
 

@@ -287,6 +287,11 @@ namespace BackroomsSurvival.Net
         // is in SPRINT/STATUE. Backend-derived: it has no counterpart in the outgoing PlayerInput,
         // so nothing this client writes can set it, and for a real peer it is always false.
         public bool revealed;
+        // ADR-042: cosmetic "this peer's held wieldable is lit" flag (read by ProxyLightHook).
+        public bool lightOn;
+        // ADR-042: cosmetic shot counter (monotonic, wrapping; 0 = never fired). The proxy hook
+        // plays the gunshot on a DELTA, so a burst that outruns the 10 Hz relay still lands.
+        public int fireSeq;
 
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
@@ -307,6 +312,8 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "hit_seq")) r.hitSeq = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "dead")) r.dead = reader.ReadBool();
                 else if (MsgPackReader.Is(k, "revealed")) r.revealed = reader.ReadBool();
+                else if (MsgPackReader.Is(k, "light_on")) r.lightOn = reader.ReadBool();
+                else if (MsgPackReader.Is(k, "fire_seq")) r.fireSeq = (int)reader.ReadInt();
                 else reader.Skip();
             }
             return r;
