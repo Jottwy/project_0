@@ -1143,6 +1143,27 @@ impl World {
     }
 
     /// Apply a remote chunk teleport event.
+    ///
+    /// Deliberately does NOT assign `chunk.layout`, mirroring `tick_teleportation` (the
+    /// owner-side twin above). That assignment was the ONLY difference between the two
+    /// paths, and it was wrong three ways over:
+    ///   1. `gen.layout` is the BARE expansion layout — `generator::generate_chunk` builds
+    ///      `build_chunk_layout(template_id, rotation)` and nothing else — so writing it
+    ///      erases the structure metadata (`macro_id`/`macro_local`/`macro_size`), the
+    ///      starter-spawn reservation and the level-0 edge continuity that the real
+    ///      generation path applies on top.
+    ///   2. `chunk.layout` is the SERVER collision source (`collision.rs` `LayoutSource`)
+    ///      and the spawn/respawn resolver's map (`find_safe_spawn`), whose result the
+    ///      client hard-snaps to. The RENDERED geometry comes from grid_gen keyed by
+    ///      (world_seed, cx, cz, layer) and does not move on displacement — so moving the
+    ///      layout moved collision and respawn out from under geometry that stayed put.
+    ///   3. Clearing `vertical_flags` made `chunk_is_v30a` false, so the next
+    ///      `update_ownership` re-inserted the pristine V30A chunk from the cache and
+    ///      reverted the whole displacement.
+    ///
+    /// The other fields stay deliberately in lockstep with the owner-side twin. If you are
+    /// here because the asymmetry looks like an oversight: it is not — see
+    /// `apply_remote_teleport_leaves_layout_untouched`.
     pub fn apply_remote_teleport(&mut self, old_pos: [i32; 2], new_seed: u64) {
         let pos: ChunkPos = (old_pos[0], old_pos[1]);
         if let Some(chunk) = self.chunks.get_mut(&layered_chunk_pos(pos, 0)) {
@@ -1154,7 +1175,6 @@ impl World {
             chunk.rotation = gen.rotation;
             chunk.mirrored = gen.mirrored;
             chunk.has_workbench = gen.has_workbench;
-            chunk.layout = gen.layout;
             chunk.teleport_timer = self
                 .rng
                 .gen_range(self.config.teleport_interval.0..self.config.teleport_interval.1);
@@ -1890,6 +1910,79 @@ mod tests {
         );
         assert!(!events.is_empty(), "should emit teleport event");
         assert_eq!(events[0].event_type, "chunk_teleported");
+    }
+
+    /// Regression guard for the owner/peer split in chunk displacement.
+    ///
+    /// `apply_remote_teleport` used to assign `chunk.layout = gen.layout`, which its
+    /// owner-side twin `tick_teleportation` never did. That one line moved the server
+    /// collision source AND the respawn resolver's map out from under geometry that does
+    /// not move (grid_gen is keyed by world_seed+pos, not by chunk.seed), and could revert
+    /// a V30A chunk wholesale on the next ownership pass. The two paths must mutate the
+    /// SAME field set — that is the invariant these two tests pin down.
+    #[test]
+    fn apply_remote_teleport_leaves_layout_untouched() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+
+        let before = world.chunks[&key((0, 0))].layout.clone();
+        let old_seed = world.chunks[&key((0, 0))].seed;
+
+        world.apply_remote_teleport([0, 0], old_seed.wrapping_add(0xABCD));
+
+        let chunk = &world.chunks[&key((0, 0))];
+        assert_eq!(
+            chunk.layout.cells, before.cells,
+            "layout cells are the server collision source — they must not move"
+        );
+        assert_eq!(
+            chunk.layout.vertical_flags, before.vertical_flags,
+            "clearing vertical_flags makes chunk_is_v30a false and reverts the chunk"
+        );
+        assert_eq!(
+            chunk.layout.macro_id, before.macro_id,
+            "structure metadata must survive a displacement"
+        );
+        assert_eq!(
+            chunk.layout.zone_kind, before.zone_kind,
+            "zone_kind drives tint, wall model and loot profile on the client"
+        );
+        assert_eq!(
+            chunk.layout.edge_openings, before.edge_openings,
+            "level-0 edge continuity must survive a displacement"
+        );
+        // ...but the displacement itself must still have happened.
+        assert_ne!(
+            chunk.seed, old_seed,
+            "seed must still change on a remote teleport"
+        );
+    }
+
+    /// The owner-side half of the same invariant: `tick_teleportation` must not start
+    /// touching `layout` either. Both halves are asserted so a future "let's make the twins
+    /// symmetric" edit fails here instead of shipping.
+    #[test]
+    fn tick_teleportation_leaves_layout_untouched() {
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+        if let Some(chunk) = world.chunks.get_mut(&key((0, 0))) {
+            chunk.teleport_timer = 0.5;
+        }
+
+        let before = world.chunks[&key((0, 0))].layout.clone();
+        let old_seed = world.chunks[&key((0, 0))].seed;
+
+        world.tick_teleportation(1);
+
+        let chunk = &world.chunks[&key((0, 0))];
+        assert_eq!(chunk.layout.cells, before.cells);
+        assert_eq!(chunk.layout.vertical_flags, before.vertical_flags);
+        assert_eq!(chunk.layout.macro_id, before.macro_id);
+        assert_eq!(chunk.layout.zone_kind, before.zone_kind);
+        assert_ne!(
+            chunk.seed, old_seed,
+            "the displacement must still have happened"
+        );
     }
 
     #[test]
