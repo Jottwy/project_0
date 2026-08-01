@@ -82,9 +82,6 @@ namespace BackroomsSurvival.Gameplay
         public bool enableCeilingGrid = false;
         public bool useBackendLayout = true;
         public bool enableWorldCollision = false;
-        public bool showLayoutDebug = false;
-        public bool showCellDebug = false;
-        public bool showCollisionDebug = false;
         // Volumetric "Rubik grid" V0 — render backend-authored 3D architecture.
         public bool enableVolumetricGrid = true;
         // Legacy decorative VISFIX inter-layer volumes / validation showcase /
@@ -94,7 +91,6 @@ namespace BackroomsSurvival.Gameplay
         public bool enableChunkMeshBatching = true;
         public bool enableProceduralMaterialTiling = true;
         public bool enableCrossChunkZFightNudge = true;
-        public bool showBatchDebug = false;
         public bool enableRuntimeMptraceLogs = false;
         // Realtime point lights are a major URP forward cost when ~49 chunks
         // are loaded; 2/chunk keeps the fixture rhythm at half the light count.
@@ -151,10 +147,13 @@ namespace BackroomsSurvival.Gameplay
         private Material _manilaMat;
         private Material _cleaningMat;
         private Material _warningMat;
-        private Material _v30a2DebugBoundaryMat;
-        private Material _v30a2DebugSpanMat;
-        private Material _v30a2DebugAnchorMat;
-        private Material _v30a2DebugDirectionMat;
+
+        // Fixed-color-per-templateId materials for FloorMaterialFor/WallMaterialFor/
+        // CeilingMaterialFor, precomputed once in Start() instead of cloning a new
+        // Material via Lit() on every BuildChunk/BuildVolumetricChunk call.
+        private Dictionary<int, Material> _floorMatByTemplate;
+        private Dictionary<int, Material> _wallMatByTemplate;
+        private Dictionary<int, Material> _ceilingMatByTemplate;
 
         private float _nextSnapshotLogTime;
         private long _worldSeed;
@@ -211,7 +210,6 @@ namespace BackroomsSurvival.Gameplay
         private const int VolumeVisShaftWalls = 1 << 2;
         private const int VolumeVisRailings = 1 << 3;
         private const int VolumeVisRimTrims = 1 << 4;
-        private const int VolumeVisPillarSpans = 1 << 5;
         private const int VolumeVisCeilingHints = 1 << 6;
         private const int VolumeVisUnderfloorHints = 1 << 7;
         private const int VolumeVisStackedAlignment = 1 << 8;
@@ -229,7 +227,20 @@ namespace BackroomsSurvival.Gameplay
         private const int EdgeSouth = 1 << 2;
         private const int EdgeWest = 1 << 3;
 
-        
+        // Constant arrays hoisted out of hot-path methods (CreateLighting,
+        // CreateColumnCollision/CreatePillars, the giant-pillar/showcase/volume
+        // corner-fraction loops) so each chunk build reuses the same array
+        // instance instead of allocating a fresh one.
+        private static readonly int[] LightGridA = { 1, 4, 7 };
+        private static readonly int[] LightGridB = { 2, 5, 8 };
+        private static readonly float[] LargePillarCoords = { 0.24f, 0.50f, 0.76f };
+        private static readonly float[] SmallPillarCoords = { 0.32f, 0.68f };
+        private static readonly Vector2[] GiantPillarCorners =
+            { new Vector2(0.25f, 0.25f), new Vector2(0.75f, 0.25f), new Vector2(0.25f, 0.75f), new Vector2(0.75f, 0.75f) };
+        private static readonly Vector2[] ShowcaseLayerSpanPillarCorners =
+            { new Vector2(0.10f, 0.10f), new Vector2(0.90f, 0.10f), new Vector2(0.10f, 0.90f), new Vector2(0.90f, 0.90f) };
+        private static readonly Vector2[] VolumePillarSpanCorners =
+            { new Vector2(0.18f, 0.18f), new Vector2(0.82f, 0.18f), new Vector2(0.18f, 0.82f), new Vector2(0.82f, 0.82f) };
 
         private static long Key(int x, int layer, int z)
         {
@@ -268,7 +279,6 @@ namespace BackroomsSurvival.Gameplay
 
         private void Start()
         {
-
             EnsureProceduralTextures();
             _floorMat = Lit(new Color(0.72f, 0.68f, 0.55f));
             _ceilingMat = Lit(new Color(0.88f, 0.86f, 0.80f));
@@ -301,10 +311,44 @@ namespace BackroomsSurvival.Gameplay
             _manilaMat = Lit(new Color(0.72f, 0.61f, 0.38f));
             _cleaningMat = Lit(new Color(0.50f, 0.54f, 0.42f));
             _warningMat = Lit(new Color(0.16f, 0.10f, 0.07f));
-            _v30a2DebugBoundaryMat = MaterialHelper.MakeEmissive(new Color(0.02f, 0.80f, 1.00f), 0.75f);
-            _v30a2DebugSpanMat = MaterialHelper.MakeEmissive(new Color(1.00f, 0.65f, 0.05f), 0.85f);
-            _v30a2DebugAnchorMat = MaterialHelper.MakeEmissive(new Color(0.15f, 1.00f, 0.30f), 0.85f);
-            _v30a2DebugDirectionMat = MaterialHelper.MakeEmissive(new Color(1.00f, 0.10f, 0.70f), 0.80f);
+
+            var floorTemplate9And10 = Lit(new Color(0.58f, 0.54f, 0.42f));
+            _floorMatByTemplate = new Dictionary<int, Material>
+            {
+                { 6, Lit(new Color(0.28f, 0.25f, 0.16f)) },
+                { 7, Lit(new Color(0.22f, 0.18f, 0.14f)) },
+                { 9, floorTemplate9And10 },
+                { 10, floorTemplate9And10 },
+                { 11, Lit(new Color(0.64f, 0.59f, 0.41f)) },
+                { 12, Lit(new Color(0.43f, 0.45f, 0.34f)) },
+                { 13, Lit(new Color(0.40f, 0.38f, 0.28f)) },
+                { 14, Lit(new Color(0.18f, 0.16f, 0.11f)) },
+                { 17, Lit(new Color(0.39f, 0.35f, 0.25f)) },
+            };
+
+            var wallTemplate9And10 = Lit(new Color(0.66f, 0.62f, 0.46f));
+            _wallMatByTemplate = new Dictionary<int, Material>
+            {
+                { 6, Lit(new Color(0.48f, 0.44f, 0.28f)) },
+                { 5, Lit(new Color(0.78f, 0.76f, 0.58f)) },
+                { 9, wallTemplate9And10 },
+                { 10, wallTemplate9And10 },
+                { 11, Lit(new Color(0.70f, 0.65f, 0.46f)) },
+                { 12, Lit(new Color(0.54f, 0.57f, 0.43f)) },
+                { 15, Lit(new Color(0.78f, 0.65f, 0.40f)) },
+                { 16, Lit(new Color(0.34f, 0.10f, 0.08f)) },
+                { 17, Lit(new Color(0.52f, 0.48f, 0.34f)) },
+            };
+
+            var ceilingTemplate6714 = Lit(new Color(0.42f, 0.39f, 0.28f));
+            _ceilingMatByTemplate = new Dictionary<int, Material>
+            {
+                { 6, ceilingTemplate6714 },
+                { 7, ceilingTemplate6714 },
+                { 14, ceilingTemplate6714 },
+                { 16, Lit(new Color(0.33f, 0.12f, 0.09f)) },
+                { 15, Lit(new Color(0.72f, 0.62f, 0.40f)) },
+            };
 
             if (Camera.main != null)
             {
@@ -421,8 +465,6 @@ namespace BackroomsSurvival.Gameplay
                 _lifecycle.ResetCounters();
             }
         }
-
-
 
         private GameObject BuildChunk(ChunkViewMsg cv)
         {
@@ -710,29 +752,37 @@ namespace BackroomsSurvival.Gameplay
                 serviceCells = 0, supportCells = 0, sealedCells = 0, falseCells = 0,
                 ceilingVoidCells = 0, underfloorCells = 0, transitionCellsTotal = 0,
                 anomalyCells = 0, dangerCells = 0, safeCells = 0;
-            foreach (byte c in grid.cells)
+            // These counters (and VolumetricTransitionCells' full grid walk below)
+            // only ever feed the Trace() calls further down — skip the work when
+            // runtime tracing is off so a volumetric build doesn't pay for logging
+            // nobody reads.
+            int transitionCells = 0;
+            if (enableRuntimeMptraceLogs)
             {
-                switch (c)
+                foreach (byte c in grid.cells)
                 {
-                    case VolumetricGridMsg.OccRoom: roomCells++; break;
-                    case VolumetricGridMsg.OccCorridor: corridorCells++; break;
-                    case VolumetricGridMsg.OccAtriumVoid: atriumCells++; break;
-                    case VolumetricGridMsg.OccShaft: shaftCells++; break;
-                    case VolumetricGridMsg.OccServiceSpace: serviceCells++; break;
-                    case VolumetricGridMsg.OccSupportCore: supportCells++; break;
-                    case VolumetricGridMsg.OccSealedRoom: sealedCells++; break;
-                    case VolumetricGridMsg.OccFalseSpace: falseCells++; break;
-                    case VolumetricGridMsg.OccCeilingVoid: ceilingVoidCells++; break;
-                    case VolumetricGridMsg.OccUnderfloorService: underfloorCells++; break;
-                    case VolumetricGridMsg.OccTransition: transitionCellsTotal++; break;
-                    case VolumetricGridMsg.OccAnomaly: anomalyCells++; break;
-                    case VolumetricGridMsg.OccDangerZone: dangerCells++; break;
-                    case VolumetricGridMsg.OccSafeNode: safeCells++; break;
+                    switch (c)
+                    {
+                        case VolumetricGridMsg.OccRoom: roomCells++; break;
+                        case VolumetricGridMsg.OccCorridor: corridorCells++; break;
+                        case VolumetricGridMsg.OccAtriumVoid: atriumCells++; break;
+                        case VolumetricGridMsg.OccShaft: shaftCells++; break;
+                        case VolumetricGridMsg.OccServiceSpace: serviceCells++; break;
+                        case VolumetricGridMsg.OccSupportCore: supportCells++; break;
+                        case VolumetricGridMsg.OccSealedRoom: sealedCells++; break;
+                        case VolumetricGridMsg.OccFalseSpace: falseCells++; break;
+                        case VolumetricGridMsg.OccCeilingVoid: ceilingVoidCells++; break;
+                        case VolumetricGridMsg.OccUnderfloorService: underfloorCells++; break;
+                        case VolumetricGridMsg.OccTransition: transitionCellsTotal++; break;
+                        case VolumetricGridMsg.OccAnomaly: anomalyCells++; break;
+                        case VolumetricGridMsg.OccDangerZone: dangerCells++; break;
+                        case VolumetricGridMsg.OccSafeNode: safeCells++; break;
+                    }
                 }
+                // Transition edges: walkable window-boundary cells with an open
+                // outward face (a seam to an adjacent showcase chunk or a doorway).
+                transitionCells = VolumetricTransitionCells(grid);
             }
-            // Transition edges: walkable window-boundary cells with an open
-            // outward face (a seam to an adjacent showcase chunk or a doorway).
-            int transitionCells = VolumetricTransitionCells(grid);
 
             int rendered = floors + ceilings + walls + shaftWalls + railings + rims + pillars;
             Trace($"MPTRACE step=V30C event=unity_unified_volumetric_faces_rendered chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) rendered={rendered} faces={grid.faces.Count} floors={floors} ceilings={ceilings} walls={walls + shaftWalls} railings={railings} rims={rims} pillars={pillars}");
@@ -967,7 +1017,9 @@ namespace BackroomsSurvival.Gameplay
             int walls = 0, doors = 0, arches = 0, lowWalls = 0, halfWalls = 0;
             int pillars = 0, falseDoors = 0, vertical = 0;
 
-            if (backendLayout)
+            // The counting loop below only feeds the Trace() call at the end of
+            // this method — skip it when runtime tracing is off.
+            if (backendLayout && enableRuntimeMptraceLogs)
             {
                 int grid = Mathf.Min(GridCells, cv.layoutGridSize);
                 for (int x = 0; x < grid; x++)
@@ -1003,18 +1055,11 @@ namespace BackroomsSurvival.Gameplay
             {
                 case 4: return _storageMat;
                 case 5: return _safeMat;
-                case 6: return Lit(new Color(0.28f, 0.25f, 0.16f));
-                case 7: return Lit(new Color(0.22f, 0.18f, 0.14f));
-                case 9:
-                case 10: return Lit(new Color(0.58f, 0.54f, 0.42f));
-                case 11: return Lit(new Color(0.64f, 0.59f, 0.41f));
-                case 12: return Lit(new Color(0.43f, 0.45f, 0.34f));
-                case 13: return Lit(new Color(0.40f, 0.38f, 0.28f));
-                case 14: return Lit(new Color(0.18f, 0.16f, 0.11f));
                 case 15: return _manilaMat;
                 case 16: return _redRoomMat;
-                case 17: return Lit(new Color(0.39f, 0.35f, 0.25f));
                 default:
+                    if (_floorMatByTemplate.TryGetValue(templateId, out var cached))
+                        return cached;
                     float h = profile.humidity;
                     float g = profile.grime;
                     return Lit(new Color(
@@ -1027,16 +1072,9 @@ namespace BackroomsSurvival.Gameplay
 
         private Material WallMaterialFor(int templateId, Level0Profile profile)
         {
-            if (templateId == 6) return Lit(new Color(0.48f, 0.44f, 0.28f));
             if (templateId == 7 || templateId == 14) return _darkWallMat;
-            if (templateId == 5) return Lit(new Color(0.78f, 0.76f, 0.58f));
-            if (templateId == 9 || templateId == 10) return Lit(new Color(0.66f, 0.62f, 0.46f));
-            if (templateId == 11) return Lit(new Color(0.70f, 0.65f, 0.46f));
-            if (templateId == 12) return Lit(new Color(0.54f, 0.57f, 0.43f));
             if (templateId == 13) return _humidWallMat;
-            if (templateId == 15) return Lit(new Color(0.78f, 0.65f, 0.40f));
-            if (templateId == 16) return Lit(new Color(0.34f, 0.10f, 0.08f));
-            if (templateId == 17) return Lit(new Color(0.52f, 0.48f, 0.34f));
+            if (_wallMatByTemplate.TryGetValue(templateId, out var cached)) return cached;
 
             // Sickly mono-yellow Backrooms wallpaper: high R/G, low B, gentle
             // per-chunk variation, and only mild darkening so walls never go muddy.
@@ -1056,12 +1094,8 @@ namespace BackroomsSurvival.Gameplay
 
         private Material CeilingMaterialFor(int templateId, Level0Profile profile)
         {
-            if (templateId == 6 || templateId == 7 || templateId == 14)
-                return Lit(new Color(0.42f, 0.39f, 0.28f));
-            if (templateId == 16)
-                return Lit(new Color(0.33f, 0.12f, 0.09f));
-            if (templateId == 15)
-                return Lit(new Color(0.72f, 0.62f, 0.40f));
+            if (_ceilingMatByTemplate.TryGetValue(templateId, out var cached))
+                return cached;
 
             float h = profile.humidity * 0.15f;
             return Lit(new Color(0.88f - h, 0.86f - h, 0.80f - h));
@@ -1386,7 +1420,7 @@ namespace BackroomsSurvival.Gameplay
             {
                 float h = LayerHeight + ceilingHeight;
                 int pillarCount = 0;
-                foreach (var p in new[] { new Vector2(0.25f, 0.25f), new Vector2(0.75f, 0.25f), new Vector2(0.25f, 0.75f), new Vector2(0.75f, 0.75f) })
+                foreach (var p in GiantPillarCorners)
                 {
                     Vector3 basePos = new Vector3(chunkSize * p.x, floorOffset + 0.08f, chunkSize * p.y);
                     Vector3 topPos = new Vector3(chunkSize * p.x, floorOffset + h - 0.08f, chunkSize * p.y);
@@ -1507,9 +1541,6 @@ namespace BackroomsSurvival.Gameplay
                         rendered++;
                         break;
                 }
-
-                if (IsV30A2VisfixDebugEnabled(cv))
-                    debugMarkers += CreateV30A2VisfixDebugMarkers(parent, cv, volume, floorOffset, minX, minZ, maxX, maxZ);
             }
 
             if (rendered > 0)
@@ -1523,14 +1554,6 @@ namespace BackroomsSurvival.Gameplay
         private static int CountMeshRenderers(Transform root)
         {
             return root.GetComponentsInChildren<MeshRenderer>(true).Length;
-        }
-
-        private bool IsV30A2VisfixDebugEnabled(ChunkViewMsg cv)
-        {
-            return V30A2VisfixDebugMarkersEnabled &&
-                   _worldSeed == V30A2VisfixSeed &&
-                   cv.interLayerVolumes != null &&
-                   cv.interLayerVolumes.Count > 0;
         }
 
         private bool IsV30A2VisfixShowcaseChunk(ChunkViewMsg cv)
@@ -1577,7 +1600,7 @@ namespace BackroomsSurvival.Gameplay
                 CreateSlab(parent, "V30A2_ShowcaseRail_E", new Vector3(maxX + 0.88f, floorOffset + 0.82f, centerZ), new Vector3(0.34f, 1.38f, spanZ + 1.6f), _trimMat);
             }
 
-            foreach (var p in new[] { new Vector2(0.10f, 0.10f), new Vector2(0.90f, 0.10f), new Vector2(0.10f, 0.90f), new Vector2(0.90f, 0.90f) })
+            foreach (var p in ShowcaseLayerSpanPillarCorners)
             {
                 float x = Mathf.Lerp(minX, maxX, p.x);
                 float z = Mathf.Lerp(minZ, maxZ, p.y);
@@ -1604,56 +1627,6 @@ namespace BackroomsSurvival.Gameplay
             }
 
             return CountMeshRenderers(parent) - before;
-        }
-
-        private int CreateV30A2VisfixDebugMarkers(
-            Transform parent,
-            ChunkViewMsg cv,
-            InterLayerVolumeMsg volume,
-            float floorOffset,
-            float minX,
-            float minZ,
-            float maxX,
-            float maxZ)
-        {
-            var root = new GameObject($"V30A2_DebugVolume_{volume.volumeId}_{volume.kind}");
-            root.transform.SetParent(parent, false);
-            root.transform.localPosition = Vector3.zero;
-
-            float centerX = (minX + maxX) * 0.5f;
-            float centerZ = (minZ + maxZ) * 0.5f;
-            float spanX = maxX - minX;
-            float spanZ = maxZ - minZ;
-            float y = floorOffset + 0.32f;
-            float shaftCenterY = cv.layer >= 0 ? floorOffset - LayerHeight * 0.5f : floorOffset + LayerHeight * 0.5f;
-            int count = 0;
-
-            count += CreateMarkerSlab(root.transform, "Footprint_N", new Vector3(centerX, y, minZ), new Vector3(spanX, 0.12f, 0.16f), _v30a2DebugBoundaryMat);
-            count += CreateMarkerSlab(root.transform, "Footprint_S", new Vector3(centerX, y, maxZ), new Vector3(spanX, 0.12f, 0.16f), _v30a2DebugBoundaryMat);
-            count += CreateMarkerSlab(root.transform, "Footprint_W", new Vector3(minX, y, centerZ), new Vector3(0.16f, 0.12f, spanZ), _v30a2DebugBoundaryMat);
-            count += CreateMarkerSlab(root.transform, "Footprint_E", new Vector3(maxX, y, centerZ), new Vector3(0.16f, 0.12f, spanZ), _v30a2DebugBoundaryMat);
-            count += CreateMarkerSlab(root.transform, "VerticalSpan_Center", new Vector3(centerX, shaftCenterY, centerZ), new Vector3(0.38f, LayerHeight, 0.38f), _v30a2DebugSpanMat);
-
-            foreach (var p in new[] { new Vector2(minX, minZ), new Vector2(maxX, minZ), new Vector2(minX, maxZ), new Vector2(maxX, maxZ) })
-                count += CreateMarkerSlab(root.transform, "VerticalSpan_Corner", new Vector3(p.x, shaftCenterY, p.y), new Vector3(0.24f, LayerHeight, 0.24f), _v30a2DebugSpanMat);
-
-            count += CreateMarkerSlab(root.transform, "AnchorChunk", new Vector3(centerX, floorOffset + 1.80f, centerZ), new Vector3(1.6f, 1.6f, 1.6f), _v30a2DebugAnchorMat);
-            count += CreateMarkerSlab(root.transform, "ConnectionHint", new Vector3(centerX, floorOffset + 2.55f, Mathf.Min(chunkSize - 2.0f, centerZ + spanZ * 0.33f)), new Vector3(0.50f, 0.38f, Mathf.Max(3.0f, spanZ * 0.45f)), _v30a2DebugDirectionMat);
-
-            Trace($"MPTRACE step=V30A2 event=v30a2_visfix_renderer_debug_marker_created chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) volume_id={volume.volumeId} kind={volume.kind} marker_count={count}");
-            return count;
-        }
-
-        private int CreateMarkerSlab(Transform parent, string name, Vector3 pos, Vector3 scale, Material mat)
-        {
-            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            go.name = name;
-            go.transform.SetParent(parent, false);
-            go.transform.localPosition = pos;
-            go.transform.localScale = scale;
-            go.GetComponent<Renderer>().sharedMaterial = mat != null ? mat : _warningMat;
-            Destroy(go.GetComponent<Collider>());
-            return 1;
         }
 
         private void CreateVolumeAtriumStack(Transform parent, ChunkViewMsg cv, InterLayerVolumeMsg volume, float floorOffset)
@@ -1769,7 +1742,7 @@ namespace BackroomsSurvival.Gameplay
             float spanHeight = LayerHeight + ceilingHeight;
             float centerY = cv.layer >= 0 ? floorOffset - LayerHeight * 0.5f : floorOffset + spanHeight * 0.5f;
             int count = 0;
-            foreach (var p in new[] { new Vector2(0.18f, 0.18f), new Vector2(0.82f, 0.18f), new Vector2(0.18f, 0.82f), new Vector2(0.82f, 0.82f) })
+            foreach (var p in VolumePillarSpanCorners)
             {
                 float x = Mathf.Lerp(minX, maxX, p.x);
                 float z = Mathf.Lerp(minZ, maxZ, p.y);
@@ -1976,7 +1949,7 @@ namespace BackroomsSurvival.Gameplay
             // 2.9A: stagger the grid per chunk so lighting never reads as one
             // perfect repeating pattern across the level.
             int stagger = (int)(Hash2(cv.pos[0], cv.pos[1], _worldSeed) & 1u);
-            int[] coords = stagger == 0 ? new[] { 1, 4, 7 } : new[] { 2, 5, 8 };
+            int[] coords = stagger == 0 ? LightGridA : LightGridB;
             int placed = 0;
             int idx = 0;
             foreach (int cellX in coords)
@@ -2578,9 +2551,7 @@ namespace BackroomsSurvival.Gameplay
 
         private void CreateColumnCollision(Transform parent, bool large, int layer)
         {
-            float[] coords = large
-                ? new[] { 0.24f, 0.50f, 0.76f }
-                : new[] { 0.32f, 0.68f };
+            float[] coords = large ? LargePillarCoords : SmallPillarCoords;
 
             int idx = 0;
             foreach (float x in coords)
@@ -2846,9 +2817,7 @@ namespace BackroomsSurvival.Gameplay
             Vector3 largeScale = large ? new Vector3(3.0f, pillarH, 3.0f) : new Vector3(2.2f, pillarH, 2.2f);
             Vector3 mediumScale = large ? new Vector3(2.0f, pillarH, 2.0f) : new Vector3(1.5f, pillarH, 1.5f);
 
-            float[] coords = large
-                ? new[] { 0.24f, 0.50f, 0.76f }
-                : new[] { 0.32f, 0.68f };
+            float[] coords = large ? LargePillarCoords : SmallPillarCoords;
 
             int idx = 0;
             foreach (float x in coords)
@@ -3086,7 +3055,7 @@ namespace BackroomsSurvival.Gameplay
 
         private struct EdgeRenderCounts
         {
-            public int walls, doors, arches, lowWalls, halfWalls, partitions, falseDoors, broken;
+            public int walls, doors, arches, lowWalls, halfWalls, partitions, falseDoors;
         }
 
         // Spawn-core cells / interior edges on chunk (0,0). The backend already
@@ -3192,7 +3161,6 @@ namespace BackroomsSurvival.Gameplay
             {
                 // Backend treats broken walls as passable: render a low stub only.
                 CreateEdgeWallSlab(parent, "EdgeBrokenWall", center, runsAlongZ, BrokenWallHeight, WallThickness, wallMat);
-                counts.broken++;
             }
             else
             {
@@ -3395,13 +3363,13 @@ namespace BackroomsSurvival.Gameplay
 
         private void LogEdgeChunkRenderSummary(ChunkViewMsg cv, bool edgeLayout, EdgeRenderCounts c)
         {
-            int pillars = CountCellFlag(cv, CellPillar);
+            int pillars = enableRuntimeMptraceLogs ? CountCellFlag(cv, CellPillar) : 0;
             Trace($"MPTRACE step=V27 event=unity_edge_chunk_render_summary chunk=({cv.pos[0]},{cv.layer},{cv.pos[1]}) template={cv.templateId} backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} cells={cv.cellFlags.Length} v_edges={cv.verticalEdges.Length} h_edges={cv.horizontalEdges.Length} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} partitions={c.partitions} false_doors={c.falseDoors} pillars={pillars} fallback={!edgeLayout}");
         }
 
         private void LogSpawnChunkRendered(ChunkViewMsg cv, bool edgeLayout, EdgeRenderCounts c)
         {
-            int pillars = CountCellFlag(cv, CellPillar);
+            int pillars = enableRuntimeMptraceLogs ? CountCellFlag(cv, CellPillar) : 0;
             Trace($"MPTRACE step=V27 event=unity_spawn_chunk_rendered backend_layout={cv.HasBackendLayout} has_edges={edgeLayout} walls={c.walls} doors={c.doors} arches={c.arches} lowwalls={c.lowWalls} halfwalls={c.halfWalls} pillars={pillars} fallback={!edgeLayout}");
         }
 
@@ -3785,8 +3753,9 @@ namespace BackroomsSurvival.Gameplay
             var buckets = new Dictionary<Material, List<MeshFilter>>();
             int sourceVisuals = 0;
 
-            foreach (Transform child in root.transform)
+            for (int childIdx = 0; childIdx < root.transform.childCount; childIdx++)
             {
+                Transform child = root.transform.GetChild(childIdx);
                 if (child.GetComponent<Light>() != null)
                     continue;
                 var mf = child.GetComponent<MeshFilter>();
