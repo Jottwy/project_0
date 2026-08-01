@@ -1437,6 +1437,32 @@ impl NetworkManager {
             return vec![];
         }
 
+        // Aforo. `max_players` existía en SessionConfig y en WorldConfig, y NO se consultaba en
+        // ningún sitio del árbol: el host aceptaba handshakes indefinidamente. Se aplica aquí,
+        // el único punto donde entra un peer NUEVO — las dos ramas de arriba son reconexiones de
+        // alguien ya admitido y no deben rebotar nunca.
+        //
+        // Se compara contra `real_peer_count()` para que un fantasma (ADR-016) no consuma plaza,
+        // y contra `max_players - 1` porque el host ocupa una y no está en `peers`. El valor sale
+        // de `SessionConfig::default()`, que es exactamente el que el propio HandshakeAck
+        // anuncia en `build_handshake_ack` — anunciar 50 y admitir infinitos era la incoherencia.
+        let capacity = (SessionConfig::default().max_players as usize).saturating_sub(1);
+        if self.real_peer_count() >= capacity {
+            warn!(
+                "MPTRACE step=B2 event=host_reject_handshake_session_full self_id={} sender_id={} endpoint={} real_peer_count={} capacity={}",
+                self.local_id,
+                sender_id,
+                from_addr,
+                self.real_peer_count(),
+                capacity
+            );
+            let full = PacketPayload::Disconnect {
+                reason: "session full".into(),
+            };
+            self.send_raw_to(from_addr, &full).await;
+            return vec![];
+        }
+
         let assigned_id = self.allocate_peer_id(sender_id);
 
         info!(
@@ -2121,6 +2147,48 @@ mod tests {
             reliability::WINDOW_SIZE,
             "con la ventana llena, el paquete nuevo se descarta — no se encola"
         );
+    }
+
+    /// `max_players` vivia en SessionConfig y en WorldConfig y no lo consultaba NADIE: el host
+    /// anunciaba 50 en su HandshakeAck y admitia peers indefinidamente.
+    #[tokio::test]
+    async fn handshake_is_rejected_when_the_session_is_full() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let capacity = (SessionConfig::default().max_players as usize).saturating_sub(1);
+        for i in 0..capacity {
+            let id = (i + 2) as PeerId;
+            let addr: SocketAddr = format!("127.0.0.1:{}", 8000 + i).parse().unwrap();
+            host.peers
+                .insert(id, PeerConnection::new(id, format!("P{id}"), addr));
+        }
+        assert_eq!(host.real_peer_count(), capacity);
+
+        let newcomer: SocketAddr = "127.0.0.1:9500".parse().unwrap();
+        host.handle_handshake(newcomer, 0, "TooMany".into(), "0.1.0".into())
+            .await;
+
+        assert_eq!(
+            host.real_peer_count(),
+            capacity,
+            "con el aforo lleno no se admite un peer mas"
+        );
+        assert!(
+            !host.peers.values().any(|p| p.addr == newcomer),
+            "el rechazado no puede quedar registrado"
+        );
+    }
+
+    /// La contrapartida: con sitio libre, el handshake SI admite al peer nuevo.
+    #[tokio::test]
+    async fn handshake_is_accepted_when_there_is_room() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let newcomer: SocketAddr = "127.0.0.1:9501".parse().unwrap();
+
+        host.handle_handshake(newcomer, 0, "Joiner".into(), "0.1.0".into())
+            .await;
+
+        assert_eq!(host.real_peer_count(), 1);
+        assert!(host.peers.values().any(|p| p.addr == newcomer));
     }
 
     /// La contrapartida: por debajo de la ventana, un envio fiable SI se encola.
