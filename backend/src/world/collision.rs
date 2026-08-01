@@ -25,7 +25,7 @@ pub const PLAYER_RADIUS: f32 = 0.35;
 /// MIRRORED (not wire-synced) in Unity as `GridConstants.PlayerBaseY` — the remote-proxy
 /// grounding fix subtracts it to place a feet-pivoted avatar on the rendered floor. Keep the
 /// two in lockstep; exposing it over the wire would be a protocol change (new ADR).
-const PLAYER_BASE_Y: f32 = 1.8;
+pub(crate) const PLAYER_BASE_Y: f32 = 1.8;
 const FLOOR_LEVEL_HEIGHT: f32 = 1.5;
 
 /// ADR-026 (enmienda 2026-07-06, parte 3): max |claimed.y − from.y| per processed tick for

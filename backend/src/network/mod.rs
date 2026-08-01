@@ -1681,12 +1681,17 @@ impl NetworkManager {
             position,
             crate::world::zone_density::rules_for,
         );
-        // Ground at the grid_gen floor: the spawn-time player.position.y is the world::generator
-        // value (≈1.8, above the grid_gen floor) → it would float. grid_floor_y(layer) is the
-        // rendered floor; +0.1 sits just above it (the real player's LOCAL SEND Y is ≈0).
+        // Ground at the grid_gen floor, IN THE PLAYER-PIVOT CONVENTION. A peer's relayed Y is
+        // `floor + PLAYER_BASE_Y` (collision.rs: "a standing player on layer 0, floor world Y ≈ 0,
+        // reports transform.y = PLAYER_BASE_Y"), and the client SUBTRACTS PlayerBaseY from every
+        // remote pose because the avatar pivot is at the FEET (RemotePlayerManager + GridCell.cs).
+        // The phantom is a peer, so it MUST speak that same convention: pinning it to `floor + 0.1`
+        // (as this did) made the client place its feet 1.7 m BELOW the floor — visible from the
+        // waist up. Verified in play-test 2026-08-01 (`phantom_sprint_move pos=(37.67,0.10,-21.05)`).
+        // The layer is unaffected: world_pos_to_layer(1.8) = (1.8 / 4.0) as u8 = 0.
         position[1] = crate::world::grid_gen::grid_floor_y(
             crate::world::grid_gen::world_pos_to_layer(position[1]),
-        ) + 0.1;
+        ) + crate::world::collision::PLAYER_BASE_Y;
         let id = self.allocate_phantom_id();
         // Inert, non-routable addr: nobody sends to it on the normal path, and reliable
         // broadcasts skip it explicitly. 127.0.0.1:1 is never a real peer endpoint.
@@ -2246,11 +2251,15 @@ mod tests {
         let p = &host.peers[&pid];
         assert_eq!(p.name, "Robapieles_Test");
         // XZ may be snapped to a grid_gen-walkable cell, and Y is grounded to the grid_gen floor
-        // + the player's stand height (ADR-018).
-        let expected_y = crate::world::grid_gen::grid_floor_y(0) + 0.1;
+        // + the player's stand height (ADR-018). NOTE: this assertion used to freeze `+ 0.1`,
+        // which contradicted the line above and put the phantom 1.7 m into the floor once the
+        // client subtracted PlayerBaseY from its pose (2026-08-01 play-test). The comment was
+        // right and the number was wrong.
+        let expected_y =
+            crate::world::grid_gen::grid_floor_y(0) + crate::world::collision::PLAYER_BASE_Y;
         assert_eq!(
             p.position[1], expected_y,
-            "spawn Y grounded just above the grid_gen floor"
+            "spawn Y must be the grid_gen floor + the player stand height, like any real peer"
         );
     }
 

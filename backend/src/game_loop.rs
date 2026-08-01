@@ -5091,6 +5091,27 @@ mod tests {
         assert_eq!(player.stp_inventory[0].quantity, 3);
     }
 
+    /// ADR-016: the phantom is a PEER, so its relayed Y must use the same player-pivot convention
+    /// every real peer uses (`floor + PLAYER_BASE_Y`). The client subtracts `PlayerBaseY` from EVERY
+    /// remote pose to place a feet-pivoted avatar, and it cannot special-case the phantom (it must
+    /// not know). Pinning the phantom to the bare floor sank it 1.8 m — visible from the waist up,
+    /// found in the 2026-08-01 play-test. This freezes the convention on the spawn path.
+    #[tokio::test]
+    async fn phantom_spawns_at_the_player_pivot_height() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = net.spawn_phantom("Robapieles_Test", [25.0, 1.8, 25.0]);
+
+        let y = net.peers[&pid].position[1];
+        let expected =
+            crate::world::grid_gen::grid_floor_y(0) + crate::world::collision::PLAYER_BASE_Y;
+        assert!(
+            (y - expected).abs() < 1e-4,
+            "phantom spawn Y was {y}, must be floor+PLAYER_BASE_Y = {expected}"
+        );
+        // Raising the pose must NOT change which grid_gen layer it collides against (ADR-018).
+        assert_eq!(crate::world::grid_gen::world_pos_to_layer(y), 0);
+    }
+
     #[tokio::test]
     async fn phantom_driver_walks_via_grid_cache_far_from_host() {
         // Far from the host: the phantom must resolve collision against grid_gen via the
