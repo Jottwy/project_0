@@ -19,9 +19,25 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// discharge every missed shot in one frame — two hundred simultaneous detonations. Capped and
     /// spaced, a burst reads as a burst.
     ///
-    /// Audio goes through <c>AudioManager.Instance.PlayClip3D</c> at the proxy's position, so it is
-    /// spatialised, mixed on the SFX channel and attenuated by the project's own curves — the same
-    /// path every other 3D sound in the game takes. Nothing inside PolymindGames is modified.
+    /// AUDIO USES ITS OWN SOURCES, NOT <c>AudioManager.PlayClip3D</c>, and that is not a preference.
+    /// The manager's pooled 3D sources are configured for footsteps and impacts: it pins
+    /// <c>minDistance = 2</c> and never touches <c>maxDistance</c> or <c>rolloffMode</c>, so they keep
+    /// Unity's defaults (logarithmic, 500 m). Logarithmic attenuation is roughly
+    /// <c>minDistance / distance</c>, so a 2 m radius leaves ~10 % of the volume at 20 m and ~4 % at
+    /// 50 m — a rifle that dies inside one room. Widening the curve on the source the manager RETURNS
+    /// would be worse than useless: those sources are POOLED and reused, and <c>PlayClip3D</c> only
+    /// re-stamps <c>minDistance</c>, so a changed <c>maxDistance</c>/<c>rolloffMode</c> would stay stuck
+    /// on the source and leak into every footstep and bullet impact that borrowed it next.
+    ///
+    /// So the hook owns two sources, created lazily on the proxy: a CRACK (near, directional) and an
+    /// optional TAIL (far, enveloping, larger full-volume radius, slightly delayed). That gap between
+    /// the two radii is what gives distance its depth — up close you mostly hear the crack, far away
+    /// the tail is what survives. Both are routed through <c>AudioManager.GetMixerGroup(Sfx)</c>, so the
+    /// player's own effects-volume setting still applies. Nothing inside PolymindGames is modified.
+    ///
+    /// KNOWN LIMIT, declared: there is no occlusion. A shot behind a wall attenuates by distance only,
+    /// so it is heard through geometry. Fixing it means a linecast plus an AudioLowPassFilter per
+    /// source; deferred deliberately, it is a bigger feature than this hook.
     ///
     /// A sentinel makes the FIRST observed value never fire (a late-joiner must not hear the whole
     /// history of a peer's magazine on spawn), exactly like <see cref="ProxyHitReactionHook"/>.
@@ -45,9 +61,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         private RemotePlayerManager _manager;
         private int _lastSeen = Unseen;
+        private AudioSource _crack;
+        private AudioSource _tail;
 
-        // Re-arm for pool reuse: a recycled proxy must not fire on its first sample.
-        private void OnEnable() => _lastSeen = Unseen;
+        // Re-arm for pool reuse: a recycled proxy must not fire on its first sample, nor keep a
+        // previous occupant's shot ringing.
+        private void OnEnable()
+        {
+            _lastSeen = Unseen;
+            if (_crack != null) _crack.Stop();
+            if (_tail != null) _tail.Stop();
+        }
 
         private void Update()
         {
@@ -89,11 +113,59 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (!_audioSet.TryResolve(heldItem, out var clip, out float volume))
                 return; // nothing authored for this weapon and no default → silence, never a guess
 
-            var audio = AudioManager.Instance;
-            if (audio == null)
-                return;
+            // PlayOneShot, not Play: the shots of a burst must overlap and ring out on top of each
+            // other. Play() would cut the previous shot dead at every trigger pull.
+            EnsureCrack().PlayOneShot(clip, volume);
 
-            audio.PlayClip3D(clip, transform.position, volume);
+            if (_audioSet.TryResolveTail(heldItem, out var tailClip))
+                StartCoroutine(PlayTail(tailClip));
+        }
+
+        private IEnumerator PlayTail(AudioClip tailClip)
+        {
+            float delay = _audioSet.tailDelay;
+            if (delay > 0f)
+                yield return new WaitForSeconds(delay);
+            EnsureTail().PlayOneShot(tailClip, _audioSet.tailVolume);
+        }
+
+        private AudioSource EnsureCrack()
+        {
+            if (_crack == null)
+                _crack = CreateSource("ProxyShotCrack", _audioSet.minDistance);
+            return _crack;
+        }
+
+        private AudioSource EnsureTail()
+        {
+            if (_tail == null)
+                _tail = CreateSource("ProxyShotTail", _audioSet.tailMinDistance);
+            return _tail;
+        }
+
+        /// <summary>
+        /// Builds one 3D source with the authored curve. Lazy: a peer who never fires never allocates
+        /// one. Parented to the proxy so the sound tracks the shooter while it rings out — a burst
+        /// from someone running past should sweep, not hang where the first round left.
+        /// </summary>
+        private AudioSource CreateSource(string label, float minDistance)
+        {
+            var go = new GameObject(label);
+            go.transform.SetParent(transform, false);
+
+            var src = go.AddComponent<AudioSource>();
+            src.playOnAwake = false;
+            src.loop = false;
+            src.spatialBlend = 1f; // fully 3D; at 0 the shot would be heard dead-centre at any distance
+            src.rolloffMode = _audioSet.rolloff;
+            src.minDistance = minDistance;
+            src.maxDistance = _audioSet.maxDistance;
+            src.spread = _audioSet.spread;
+            src.dopplerLevel = 0f; // a gunshot is an impulse; doppler on it is pure artifact
+            // No manager (a bare test scene) → still audible, just unmixed. Never an exception.
+            var audio = AudioManager.Instance;
+            src.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            return src;
         }
 
         /// <summary>This proxy's networked view, via the RemotePlayerManager whose child we are — the
