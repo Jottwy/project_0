@@ -283,6 +283,10 @@ namespace BackroomsSurvival.Net
         // ADR-028 post-E3: cosmetic dead flag (server-derived on the peer's own backend) —
         // hide the standing proxy while true (the corpse is the visible body).
         public bool dead;
+        // ADR-038: cosmetic "showing its real form" flag — true only while the robapieles (ADR-016)
+        // is in SPRINT/STATUE. Backend-derived: it has no counterpart in the outgoing PlayerInput,
+        // so nothing this client writes can set it, and for a real peer it is always false.
+        public bool revealed;
 
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
@@ -302,6 +306,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "held_item")) r.heldItem = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "hit_seq")) r.hitSeq = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "dead")) r.dead = reader.ReadBool();
+                else if (MsgPackReader.Is(k, "revealed")) r.revealed = reader.ReadBool();
                 else reader.Skip();
             }
             return r;

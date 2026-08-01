@@ -164,6 +164,7 @@ namespace BackroomsSurvival.Net
                 view.equipment = rp.equipment; // ADR-022 (rp is fresh per parse → no aliasing)
                 view.heldItem = rp.heldItem; // ADR-023
                 view.hitSeq = rp.hitSeq; // ADR-024
+                view.revealed = rp.revealed; // ADR-038
                 // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
                 // is the visible body); it reappears at the respawn position on dead→false.
                 // Change-detected so SetActive only fires on the edge.
@@ -282,6 +283,7 @@ namespace BackroomsSurvival.Net
             view.heldItem = 0; // ADR-023: no stale held item on a recycled proxy
             view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
             view.dead = false; // ADR-028 post-E3: recycled proxy starts visible (root just re-activated above)
+            view.revealed = false; // ADR-038: no stale real form on a recycled proxy (hook restores its materials)
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -313,6 +315,7 @@ namespace BackroomsSurvival.Net
             view.heldItem = 0; // ADR-023
             view.hitSeq = 0; // ADR-024
             view.dead = false; // ADR-028 post-E3: pooled SetActive(false) is the pool's, not the flag's
+            view.revealed = false; // ADR-038
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -553,6 +556,9 @@ namespace BackroomsSurvival.Net
         // ADR-028 post-E3: cosmetic dead flag (server-derived on the peer's backend). While true
         // the proxy root is hidden — the peer's corpse (CorpseSpawner) is the visible body.
         public bool dead;
+        // ADR-038: cosmetic real-form flag (read by ProxyRevealHook). Always false for a real
+        // player — only the robapieles (ADR-016) is ever sent with it true.
+        public bool revealed;
         public float lastSeenTime;
     }
 
