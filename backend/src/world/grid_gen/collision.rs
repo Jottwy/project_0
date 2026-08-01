@@ -114,17 +114,80 @@ impl GridGenChunkCache {
     }
 }
 
-/// World XZ → (chunk_x, chunk_z, cell_x, cell_z) in grid_gen coords. Floor division handles
-/// negative world coordinates; the cell is clamped into the 20×20 grid.
+/// World XZ → ABSOLUTE grid_gen cell index, unbounded in both directions. This is the single
+/// quantization used by everything in this module (and, from ADR-040, by the navigation): deriving
+/// the chunk-local form from it instead of re-deriving it separately is what stops a split-brain
+/// where the collision and the pathfinder disagree about which cell a position is in.
+pub(super) fn global_cell(pos: Vec3) -> (i32, i32) {
+    (
+        (pos.x / CELL_SIZE_M).floor() as i32,
+        (pos.z / CELL_SIZE_M).floor() as i32,
+    )
+}
+
+/// World XZ → (chunk_x, chunk_z, cell_x, cell_z) in grid_gen coords. Derived from `global_cell`;
+/// `div_euclid`/`rem_euclid` handle negative world coordinates and put the local cell in 0..20 by
+/// construction (the old explicit clamp is no longer reachable).
 fn world_to_grid_cell(pos: Vec3) -> (i32, i32, usize, usize) {
-    let cx = (pos.x / CHUNK_SIZE_M).floor() as i32;
-    let cz = (pos.z / CHUNK_SIZE_M).floor() as i32;
-    let local_x = pos.x - cx as f32 * CHUNK_SIZE_M;
-    let local_z = pos.z - cz as f32 * CHUNK_SIZE_M;
-    let max = CHUNK_CELLS as i32 - 1;
-    let cell_x = ((local_x / CELL_SIZE_M).floor() as i32).clamp(0, max) as usize;
-    let cell_z = ((local_z / CELL_SIZE_M).floor() as i32).clamp(0, max) as usize;
-    (cx, cz, cell_x, cell_z)
+    let (gx, gz) = global_cell(pos);
+    let n = CHUNK_CELLS as i32;
+    (
+        gx.div_euclid(n),
+        gz.div_euclid(n),
+        gx.rem_euclid(n) as usize,
+        gz.rem_euclid(n) as usize,
+    )
+}
+
+/// Walkability of an ABSOLUTE cell, without going through a world position.
+pub(super) fn cell_is_walkable(cache: &mut GridGenChunkCache, gx: i32, gz: i32, layer: u8) -> bool {
+    let n = CHUNK_CELLS as i32;
+    cache
+        .get_or_generate(gx.div_euclid(n), gz.div_euclid(n), layer)
+        .get(gx.rem_euclid(n) as usize, gz.rem_euclid(n) as usize)
+        .is_walkable()
+}
+
+/// ADR-040 D-DIAGONAL. True if a step that crosses a cell boundary on BOTH axes may be taken.
+///
+/// The old code accepted such a step on a single point sample of the DESTINATION, so a move from
+/// (i,j) to (i+1,j+1) went through whichever of (i+1,j) / (i,j+1) the segment actually passes —
+/// even when that cell is solid. That is the phantom walking through a wall, and it is frequent:
+/// 470 pinch sites over 400 chunks of the production world (59.8 % of chunks).
+///
+/// The rule is EXACT rather than conservative. Both cheap approximations are wrong in a way you
+/// would see in play: "block only if BOTH intermediates are solid" leaves the real hole open, and
+/// "require BOTH walkable" forbids legally cutting a convex corner, which makes the creature move
+/// in a stiff cross pattern. Since a step is shorter than one cell, exactly one boundary is crossed
+/// per axis, so the segment enters exactly ONE intermediate cell: the one whose boundary is crossed
+/// FIRST. An exact tie is the zero-width corner point and is refused.
+fn diagonal_step_is_clear(cache: &mut GridGenChunkCache, layer: u8, from: Vec3, to: Vec3) -> bool {
+    let (fx, fz) = global_cell(from);
+    let (tx, tz) = global_cell(to);
+    if fx == tx || fz == tz {
+        return true; // axial (or same cell): nothing between start and end
+    }
+    // Defensive: the caller guarantees sub-cell steps (frozen by
+    // `max_phantom_step_stays_under_one_cell`). A longer jump would cross several intermediates and
+    // this two-cell reasoning would be incomplete, so refuse it and let the axial slide handle it.
+    if (tx - fx).abs() > 1 || (tz - fz).abs() > 1 {
+        return false;
+    }
+    let dx = to.x - from.x;
+    let dz = to.z - from.z;
+    if dx == 0.0 || dz == 0.0 {
+        return true; // no motion on an axis → not actually diagonal
+    }
+    // The boundary crossed on each axis: the higher index when moving +, the start index when -.
+    let bx = tx.max(fx) as f32 * CELL_SIZE_M;
+    let bz = tz.max(fz) as f32 * CELL_SIZE_M;
+    let t_x = (bx - from.x) / dx;
+    let t_z = (bz - from.z) / dz;
+    if (t_x - t_z).abs() < 1e-5 {
+        return false; // exact corner crossing: zero-width gap, never legal
+    }
+    let (mx, mz) = if t_x < t_z { (tx, fz) } else { (fx, tz) };
+    cell_is_walkable(cache, mx, mz, layer)
 }
 
 /// Floor-plane Y of a grid_gen `layer` — the SAME pitch Unity renders (layer 0 = 0, layer 1 = 4,
@@ -170,7 +233,16 @@ pub fn resolve_spawn_near(seed: u64, pos: [f32; 3], rules_fn: RulesFn) -> [f32; 
     for (dx, dz) in OFFSETS {
         let cand = Vec3::new(pos[0] + dx, pos[1], pos[2] + dz);
         if is_walkable_grid_gen(&mut cache, cand, layer) {
-            return cand.to_array();
+            // ADR-040: return the CENTRE of the accepted cell, not the raw probe point. A spawn
+            // sitting on a cell boundary makes the very first diagonal step ambiguous, and the
+            // navigation plans from cell centres — starting off-centre would let a path begin with
+            // a segment its own resolver rejects.
+            let (gx, gz) = global_cell(cand);
+            return [
+                (gx as f32 + 0.5) * CELL_SIZE_M,
+                pos[1],
+                (gz as f32 + 0.5) * CELL_SIZE_M,
+            ];
         }
     }
     pos // nothing walkable nearby → keep the original (rare)
@@ -197,22 +269,48 @@ pub fn resolve_move_grid_gen(
     from: Vec3,
     desired: Vec3,
 ) -> Vec3 {
+    resolve_move_grid_gen_ex(cache, layer, from, desired).pos
+}
+
+/// Outcome of a resolved move. ADR-040: `blocked` exists because STALK and SPRINT never noticed
+/// they had been stopped — only WANDER did — so the phantom ground into walls while chasing. It is
+/// the trigger the navigation uses to replan instead of stalling.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MoveResult {
+    pub pos: Vec3,
+    /// Fully blocked: the phantom did not move at all this step.
+    pub blocked: bool,
+    /// Moved, but only along one axis — the diagonal or the full step was refused.
+    pub slid: bool,
+}
+
+/// Same as `resolve_move_grid_gen`, but reports HOW the move resolved.
+pub fn resolve_move_grid_gen_ex(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    from: Vec3,
+    desired: Vec3,
+) -> MoveResult {
     // Preserve the phantom's current Y: horizontal movement must not change height. The Y is set
     // correctly at spawn (near the player); only X/Z slide against geometry.
     let y = from.y;
     let full = Vec3::new(desired.x, y, desired.z);
-    let result = if is_walkable_grid_gen(cache, full, layer) {
-        full
+    // ADR-040: the destination cell being walkable is NOT enough for a diagonal step — the cell the
+    // segment actually passes through has to be walkable too.
+    let (pos, blocked, slid) = if is_walkable_grid_gen(cache, full, layer)
+        && diagonal_step_is_clear(cache, layer, from, full)
+    {
+        (full, false, false)
     } else {
         let x_only = Vec3::new(desired.x, y, from.z);
         if is_walkable_grid_gen(cache, x_only, layer) {
-            x_only
+            (x_only, false, true)
         } else {
             let z_only = Vec3::new(from.x, y, desired.z);
             if is_walkable_grid_gen(cache, z_only, layer) {
-                z_only
+                (z_only, false, true)
             } else {
-                Vec3::new(from.x, y, from.z) // fully blocked → stay
+                (Vec3::new(from.x, y, from.z), true, false) // fully blocked → stay
             }
         }
     };
@@ -221,7 +319,7 @@ pub fn resolve_move_grid_gen(
         (from.z / CHUNK_SIZE_M).floor() as i32,
     );
     cache.enforce_cap(center);
-    result
+    MoveResult { pos, blocked, slid }
 }
 
 #[cfg(test)]
@@ -269,6 +367,120 @@ mod tests {
         assert!(
             is_walkable_grid_gen(&mut c, result, 0),
             "resolved pos must be walkable (never inside the wall cell)"
+        );
+    }
+
+    /// ADR-040 D-DIAGONAL — THE repro. Two walkable cells touching only at a corner, both
+    /// intermediates solid. Before the fix the destination-only sample accepted this step and the
+    /// phantom crossed the wall; this is the "atraviesa paredes" the play-test reported.
+    #[test]
+    fn diagonal_step_through_solid_cell_is_blocked() {
+        let mut grid = LayerGrid::new_solid();
+        grid.set(4, 4, Cell::new(CellType::Corridor, 2, 0));
+        grid.set(5, 5, Cell::new(CellType::Corridor, 2, 0));
+        // (5,4) and (4,5) stay SOLID → the only way across is through a wall.
+        let mut c = cache_with_grid(grid);
+
+        // Start off-centre so the segment is unambiguously diagonal, and try both a slow (0.30 m)
+        // and a sprint-sized (0.90 m) step.
+        let from = Vec3::new(12.4, grid_floor_y(0), 12.4);
+        for step in [0.30_f32, 0.90] {
+            let desired = Vec3::new(from.x + step, from.y, from.z + step);
+            let r = resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+            assert!(
+                r.blocked,
+                "diagonal through a solid corner must be refused (step {step}), got {:?}",
+                r.pos
+            );
+            assert_eq!(r.pos, from, "a refused step must not move the phantom");
+        }
+    }
+
+    /// The mirror test, and the reason the rule is exact instead of conservative: cutting a CONVEX
+    /// corner is legal and must stay legal. Without this, a stricter rule would sail through review
+    /// and the creature would only ever move in a cross pattern.
+    #[test]
+    fn diagonal_around_convex_corner_still_allowed() {
+        let mut grid = LayerGrid::new_solid();
+        grid.set(4, 4, Cell::new(CellType::Corridor, 2, 0));
+        grid.set(5, 5, Cell::new(CellType::Corridor, 2, 0));
+        grid.set(5, 4, Cell::new(CellType::Corridor, 2, 0)); // the +X intermediate is OPEN
+        let mut c = cache_with_grid(grid);
+
+        // Cross the X boundary first (larger dx than dz) → the segment passes through (5,4).
+        let from = Vec3::new(12.4, grid_floor_y(0), 12.4);
+        let desired = Vec3::new(12.6, from.y, 12.55);
+        let r = resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+        assert!(
+            !r.blocked,
+            "a diagonal through an OPEN intermediate must be allowed"
+        );
+        assert!(
+            !r.slid,
+            "it must be taken in full, not degraded to an axial slide"
+        );
+        assert_eq!(r.pos, Vec3::new(desired.x, from.y, desired.z));
+    }
+
+    /// Freezes the assumption that makes the two-cell reasoning COMPLETE: a phantom step is shorter
+    /// than one cell, so it crosses at most one boundary per axis. If someone raises the sprint
+    /// speed or the entity tick period, this fails instead of silently reopening the tunnelling
+    /// hole the diagonal rule does not cover.
+    #[test]
+    fn max_phantom_step_stays_under_one_cell() {
+        const PHANTOM_SPRINT_SPEED: f32 = 9.0; // game_loop.rs
+        const ENTITY_DT: f32 = 6.0 / 60.0; // ENTITY_TICK_EVERY / TICK_HZ
+        let step = PHANTOM_SPRINT_SPEED * ENTITY_DT;
+        assert!(
+            step < CELL_SIZE_M,
+            "max step {step} m must stay under one {CELL_SIZE_M} m cell"
+        );
+    }
+
+    /// Critical regression: the diagonal rule must not break wall-sliding. A phantom pressed
+    /// against a wall still has to travel along it, or it reads as stuck.
+    #[test]
+    fn resolve_move_still_slides_along_a_wall() {
+        let mut grid = LayerGrid::new_solid();
+        for z in 3..8 {
+            grid.set(4, z, Cell::new(CellType::Corridor, 2, 0)); // open corridor along Z
+        }
+        let mut c = cache_with_grid(grid);
+        let from = cell_center(4, 5);
+        // Push diagonally into the solid +X neighbour: X must be refused, Z must still advance.
+        let desired = Vec3::new(from.x + 1.5, from.y, from.z + 0.5);
+        let r = resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+        assert!(
+            !r.blocked,
+            "must not be fully blocked — sliding along Z is available"
+        );
+        assert!(r.slid, "the move must be reported as a slide");
+        assert!(
+            (r.pos.z - desired.z).abs() < 1e-4 && (r.pos.x - from.x).abs() < 1e-4,
+            "expected Z-only slide, got {:?}",
+            r.pos
+        );
+    }
+
+    /// ADR-040: a spawn must land on the cell CENTRE, so the first step is never an ambiguous
+    /// boundary case and the navigation can plan from it.
+    #[test]
+    fn spawn_snaps_to_cell_center() {
+        let pos = Vec3::new(12.4, grid_floor_y(0), 12.4);
+        let (gx, gz) = global_cell(pos);
+        let expected_x = (gx as f32 + 0.5) * CELL_SIZE_M;
+        let expected_z = (gz as f32 + 0.5) * CELL_SIZE_M;
+        let out = resolve_spawn_near(42, pos.to_array(), default_layer_rules);
+        // Whichever offset the spiral accepts, the result must be a cell centre.
+        let (ogx, ogz) = global_cell(Vec3::new(out[0], out[1], out[2]));
+        assert!(
+            (out[0] - (ogx as f32 + 0.5) * CELL_SIZE_M).abs() < 1e-3
+                && (out[2] - (ogz as f32 + 0.5) * CELL_SIZE_M).abs() < 1e-3,
+            "spawn must sit at a cell centre, got ({}, {}) — nearest centre of its own cell is ({}, {})",
+            out[0],
+            out[2],
+            expected_x,
+            expected_z
         );
     }
 
