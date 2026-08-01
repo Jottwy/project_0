@@ -339,6 +339,7 @@ namespace BackroomsSurvival.Net
                 go = CreateDefaultAvatar();
 
             DisableLocalOnlyComponents(go);
+            ConfigureProxyRendering(go);
             go.transform.SetParent(transform, false);
 
             var view = new RemotePlayerView
@@ -352,6 +353,35 @@ namespace BackroomsSurvival.Net
             };
 
             return view;
+        }
+
+        /// <summary>
+        /// A remote proxy must never depend on Unity's culling to be correct.
+        ///
+        /// The vendor rig ships every SkinnedMeshRenderer with <c>updateWhenOffscreen = false</c>
+        /// (12 of them in MTP_PlayerViewer) and its Animator in <c>CullUpdateTransforms</c>. That
+        /// combination is fine for a locally-driven character, but a proxy is posed by hooks that
+        /// run in LateUpdate — and ProxyGroundingHook shifts the Pelvis ADDITIVELY, on the stated
+        /// assumption that "the Animator re-writes Pelvis first, so nothing accumulates". The
+        /// moment the Animator is culled it stops re-writing, that assumption breaks, and the
+        /// offset accumulates on a bone the renderer bounds are anchored to. The bounds drift out
+        /// of the frustum, which keeps the proxy culled, which keeps it drifting: the mesh
+        /// disappears and does not come back while you look at it, yet the NameTag (a runtime
+        /// MeshRenderer with its own bounds, no skinning) keeps rendering. That is exactly the
+        /// reported symptom.
+        ///
+        /// Cost is a per-frame bounds recompute for a handful of proxies. The vendor itself applies
+        /// this same pair as the standard remedy (WieldableAnimatorEditor.cs:90/99). Done in code
+        /// rather than baked into the prefab so it also covers the capsule fallback and survives
+        /// any future re-bake — and so STP's own prefab is never edited.
+        /// </summary>
+        private static void ConfigureProxyRendering(GameObject root)
+        {
+            foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                smr.updateWhenOffscreen = true;
+
+            foreach (var anim in root.GetComponentsInChildren<Animator>(true))
+                anim.cullingMode = AnimatorCullingMode.AlwaysAnimate;
         }
 
         private GameObject CreateDefaultAvatar()
