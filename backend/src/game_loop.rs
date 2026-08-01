@@ -19,7 +19,9 @@ use crate::network::{BoundedDedupeSet, NetworkEvent, NetworkManager, PeerId};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::collision::{resolve_safe_spawn, Level0Collision};
-use crate::world::grid_gen::{resolve_move_grid_gen, world_pos_to_layer, GridGenChunkCache};
+use crate::world::grid_gen::{
+    resolve_move_grid_gen, resolve_move_grid_gen_ex, world_pos_to_layer, GridGenChunkCache,
+};
 use crate::world::World;
 
 const TICK_HZ: u64 = 60;
@@ -146,6 +148,23 @@ const PHANTOM_SPOTTED_SOUND_MIN: f32 = 1.0; // shorter stare when alerted by noi
 const PHANTOM_SPOTTED_SOUND_MAX: f32 = 2.0;
 // Fluidity (slice 3b-P1 follow-up): ease `heading` toward the player instead of snapping at
 // 10 Hz (which reads as lag). rad/s — STALK tracks, SPRINT tracks hard, STATUE turns its head.
+// ADR-040 perception. Sound stops being a binary "is it sprinting?" and becomes three tiers, which
+// is what makes crouching a real choice instead of a cosmetic pose.
+/// Below this planar speed you are standing still and make no noise at all.
+const PHANTOM_WALK_NOISE_SPEED: f32 = 0.6;
+/// How far a STANDING walk carries. A run still carries `DETECT + SOUND_BONUS`.
+const PHANTOM_WALK_HEAR_RADIUS: f32 = 9.0;
+/// Crouching shrinks the VISUAL radius to this fraction — it does not make you invisible, it makes
+/// you something it has to be close to notice. Combined with the existing 120° cone, crouching
+/// behind it is genuinely safe; crouching in front of its face is not.
+const PHANTOM_CROUCH_SIGHT_FACTOR: f32 = 0.55;
+// ADR-040 Fase 4 — SEARCH.
+/// How long it hunts around the spot it last saw you before giving up and going back to wandering.
+const PHANTOM_SEARCH_MAX: f32 = 12.0;
+/// It treats the remembered spot as reached inside this radius.
+const PHANTOM_SEARCH_ARRIVE: f32 = 2.0;
+/// Speed while investigating: slower than a walk. It is looking, not commuting.
+const PHANTOM_SEARCH_SPEED: f32 = 2.2;
 // ADR-040 — replan policy. Not tuning knobs pulled from thin air: 0.6 s is ~6 entity ticks, short
 // enough that a route stays honest while you move and long enough that the amortized search cost is
 // 1.67/s. The drift threshold is under one chunk-cell pair, so the phantom re-routes when you round
@@ -733,8 +752,13 @@ pub async fn run(
             // move is resolved via ADR-017 sim-only collision, so it respects walls/floor even
             // far from the host (where world.chunks is empty). Same 10 Hz as the pose relay.
             if net.is_host {
-                let attack =
-                    phantom_driver.step(&mut net, entity_dt, player.position, player.rotation);
+                let attack = phantom_driver.step(
+                    &mut net,
+                    entity_dt,
+                    player.position,
+                    player.rotation,
+                    player.crouch,
+                );
                 // ADR-016 slice 1 — apply the phantom's attack to the HOST player. DEUDA: host
                 // only; a joiner's health lives in its own backend (Fase 7). The damage path is
                 // SEPARATE from the pickup theater (ADR-016 invariant intact).
@@ -3881,6 +3905,16 @@ fn choose_victim_name(net: &NetworkManager) -> (String, bool) {
 /// `(id, position, distance, yaw_deg)` of the closest. The `id` lets the caller look up the
 /// target's derived speed (sound detection, slice 3b-P1) and the `yaw` lets it test whether the
 /// player is looking back (STATUE). The host player is always a candidate → `Some` in practice.
+/// ADR-040 perception: is this target crouching? Remote peers carry it in `PeerConnection.crouch`
+/// (relayed since ADR-020, so no wire work was needed for stealth); the host's own player is not a
+/// peer, so its value is handed into `step`.
+fn target_is_crouched(net: &NetworkManager, tid: PeerId, host_crouch: bool) -> bool {
+    if tid == net.local_id {
+        return host_crouch;
+    }
+    net.peers.get(&tid).is_some_and(|p| p.crouch)
+}
+
 fn nearest_real_target(
     net: &NetworkManager,
     host_player_pos: Vec3,
@@ -3973,6 +4007,11 @@ enum PhantomState {
     Statue,
     /// Lunges straight at the player with a ramped speed; "attacks" (anim-only) at point blank.
     Sprint,
+    /// ADR-040 Fase 4 — lost you, and goes to look where it last saw you instead of forgetting on
+    /// the spot. This is the counterweight to the pathfinding: without it, a creature that always
+    /// routes optimally toward your exact position is a homing missile. With it, hiding works, and
+    /// the tension moves from "can it reach me" to "does it know where I went".
+    Search,
 }
 
 /// ADR-038: the two states where the stolen skin stops holding — the phantom shows its real form.
@@ -4267,6 +4306,11 @@ impl PhantomDriver {
         dt: f32,
         host_player_pos: Vec3,
         host_player_rot: f32,
+        // ADR-040 perception: the HOST player's crouch. Remote peers carry their own in
+        // `PeerConnection.crouch` (ADR-020 already relays it), but the host's local player is not a
+        // peer, so it has to be handed in. Passed explicitly rather than stashed on the driver so
+        // the input to a tick stays visible in the signature.
+        host_player_crouch: bool,
     ) -> PhantomAttack {
         let now = Instant::now();
 
@@ -4346,12 +4390,28 @@ impl PhantomDriver {
                     // direction (no cone). Sound-only detection reacts faster (a shorter stare).
                     let (detected, by_sound) = match target {
                         Some((tid, tpos, dist, _)) => {
-                            let normal = dist <= PHANTOM_DETECT_RADIUS
+                            let crouched = target_is_crouched(net, tid, host_player_crouch);
+                            // SIGHT: the cone is unchanged (behind it is behind it), but a
+                            // crouching target has to be much closer before it registers.
+                            let sight_radius = if crouched {
+                                PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
+                            } else {
+                                PHANTOM_DETECT_RADIUS
+                            };
+                            let normal = dist <= sight_radius
                                 && in_view_cone(self.movers[i].heading, from, tpos);
-                            let running = target_speeds.get(&tid).copied().unwrap_or(0.0)
-                                > PHANTOM_RUN_SPEED_THRESHOLD;
-                            let sound =
-                                running && dist <= PHANTOM_DETECT_RADIUS + PHANTOM_SOUND_BONUS;
+                            // SOUND: three tiers, and crouching mutes them all. This is the channel
+                            // that ignores the cone, so silencing it is what makes sneaking up
+                            // BEHIND the creature actually work.
+                            let speed = target_speeds.get(&tid).copied().unwrap_or(0.0);
+                            let hear_radius = if crouched || speed < PHANTOM_WALK_NOISE_SPEED {
+                                0.0
+                            } else if speed > PHANTOM_RUN_SPEED_THRESHOLD {
+                                PHANTOM_DETECT_RADIUS + PHANTOM_SOUND_BONUS
+                            } else {
+                                PHANTOM_WALK_HEAR_RADIUS
+                            };
+                            let sound = hear_radius > 0.0 && dist <= hear_radius;
                             (normal || sound, sound && !normal)
                         }
                         None => (false, false),
@@ -4530,8 +4590,13 @@ impl PhantomDriver {
                 PhantomState::Stalk => {
                     let dist_opt = target.map(|(_, _, d, _)| d);
                     if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
-                        // 3b will SEARCH `last_known_player_pos`; for 3a fall back to WANDER.
-                        self.movers[i].state = PhantomState::Wander;
+                        // ADR-040 Fase 4: it does not forget on the spot any more — it goes to look
+                        // where it last saw you. Only with no memory at all does it resume wandering.
+                        self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
+                            PhantomState::Search
+                        } else {
+                            PhantomState::Wander
+                        };
                         self.movers[i].state_timer = 0.0;
                         continue;
                     }
@@ -4675,7 +4740,14 @@ impl PhantomDriver {
                 PhantomState::Sprint => {
                     let dist_opt = target.map(|(_, _, d, _)| d);
                     if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS * 1.2) {
-                        self.movers[i].state = PhantomState::Wander;
+                        // ADR-040 Fase 4 — same as STALK: a lost lunge becomes a search, not
+                        // amnesia. This is what makes breaking line of sight a tactic rather than
+                        // an off switch.
+                        self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
+                            PhantomState::Search
+                        } else {
+                            PhantomState::Wander
+                        };
                         self.movers[i].state_timer = 0.0;
                         continue;
                     }
@@ -4738,6 +4810,84 @@ impl PhantomDriver {
                             "MPTRACE step=PH_SPRINT event=phantom_sprint_move phantom_id={} pos=({:.2},{:.2},{:.2}) speed={:.1} dist={:.2}",
                             id, resolved.x, resolved.y, resolved.z, speed, dist
                         );
+                    }
+                }
+
+                // ── SEARCH (ADR-040 Fase 4): it lost you and walks, navigating, to the last place
+                // it saw you. Slower than a walk — it is looking, not commuting. Re-acquiring you
+                // resumes the hunt; running out of patience returns it to WANDER and it FORGETS,
+                // which is what makes hiding a real escape and not just a delay. ──
+                PhantomState::Search => {
+                    // Re-acquire on sight (crouching still shrinks the radius — stealth applies
+                    // while it hunts, not only while it patrols).
+                    if let Some((tid, tpos, dist, _)) = target {
+                        let crouched = target_is_crouched(net, tid, host_player_crouch);
+                        let sight = if crouched {
+                            PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
+                        } else {
+                            PHANTOM_DETECT_RADIUS
+                        };
+                        if dist <= sight && in_view_cone(self.movers[i].heading, from, tpos) {
+                            self.movers[i].last_known_player_pos = Some(tpos);
+                            self.movers[i].state = PhantomState::Stalk;
+                            self.movers[i].state_timer = 0.0;
+                            info!(
+                                "MPTRACE step=PH_SEARCH event=phantom_reacquired phantom_id={} dist={:.2}",
+                                id, dist
+                            );
+                            continue;
+                        }
+                    }
+
+                    let goal = match self.movers[i].last_known_player_pos {
+                        Some(g) => g,
+                        None => {
+                            self.movers[i].state = PhantomState::Wander;
+                            self.movers[i].state_timer = 0.0;
+                            continue;
+                        }
+                    };
+
+                    // Swept the spot, or out of patience → give up and forget.
+                    if self.movers[i].state_timer > PHANTOM_SEARCH_MAX
+                        || from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE
+                    {
+                        self.movers[i].last_known_player_pos = None;
+                        self.movers[i].state = PhantomState::Wander;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s",
+                            id, self.movers[i].state_timer
+                        );
+                        continue;
+                    }
+
+                    let heading = self.steer_heading(i, current_layer, from, goal, dt);
+                    self.movers[i].heading_target = heading;
+                    let t = (PHANTOM_TURN_SPEED_STALK * dt).min(1.0);
+                    self.movers[i].heading =
+                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+                    let h = self.movers[i].heading;
+                    let dir = Vec3::new(h.sin(), 0.0, h.cos());
+                    let desired = Vec3::new(
+                        from.x + dir.x * PHANTOM_SEARCH_SPEED * dt,
+                        from.y,
+                        from.z + dir.z * PHANTOM_SEARCH_SPEED * dt,
+                    );
+                    let moved = resolve_move_grid_gen_ex(
+                        &mut self.grid_cache,
+                        current_layer,
+                        from,
+                        desired,
+                    );
+                    if moved.blocked {
+                        // Wedged against geometry: drop the plan so the next tick re-routes instead
+                        // of pressing into the same wall (the defect STALK/SPRINT used to have).
+                        self.movers[i].nav_waypoints.clear();
+                    }
+                    let yaw = h.to_degrees().rem_euclid(360.0);
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        peer.update_player_state(moved.pos.to_array(), yaw, "idle".into());
                     }
                 }
             }
@@ -4947,6 +5097,9 @@ mod tests {
         assert!(!phantom_reveals(PhantomState::Wander));
         assert!(!phantom_reveals(PhantomState::Spotted));
         assert!(!phantom_reveals(PhantomState::Stalk));
+        // SEARCH does NOT reveal: it has lost you, so it puts the skin back on and goes looking.
+        // A revealed creature wandering around searching would give away its own game.
+        assert!(!phantom_reveals(PhantomState::Search));
     }
 
     #[test]
@@ -5398,7 +5551,13 @@ mod tests {
         // 200 ticks (20 s sim): a WANDER pause can freeze it for up to 12 s, so this window
         // guarantees at least one walk step → the grid_gen cache is exercised deterministically.
         for _ in 0..200 {
-            driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
+            driver.step(
+                &mut net,
+                0.1,
+                Vec3::new(100_000.0, 1.8, 100_000.0),
+                0.0,
+                false,
+            );
         }
 
         // The driver exercised the grid_gen cache (proves on-demand generation far from host).
@@ -5433,7 +5592,7 @@ mod tests {
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         let player = Vec3::new(6.0, 1.8, 0.0); // 6 m ahead (+X): inside radius and cone
 
-        driver.step(&mut net, 0.1, player, 0.0);
+        driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5459,7 +5618,7 @@ mod tests {
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         let player = Vec3::new(100.0, 1.8, 0.0); // far beyond the detect/lose radius
 
-        driver.step(&mut net, 0.1, player, 0.0);
+        driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5484,7 +5643,7 @@ mod tests {
         driver.movers[0].state_timer = 10.0;
         let player = Vec3::new(6.0, 1.8, 0.0); // inside DETECT_RADIUS*1.5
 
-        driver.step(&mut net, 0.1, player, 0.0);
+        driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5508,7 +5667,7 @@ mod tests {
         driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE + 5.0;
         let player = Vec3::new(6.0, 1.8, 0.0);
 
-        driver.step(&mut net, 0.1, player, 0.0);
+        driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5542,7 +5701,13 @@ mod tests {
         // Force the gesture to be due now (instead of after the cooldown).
         driver.movers[0].next_pickup_at = Instant::now();
 
-        driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(100_000.0, 1.8, 100_000.0),
+            0.0,
+            false,
+        );
 
         // It IS faking the gesture: the presentation flank is "pickup"…
         assert_eq!(
@@ -5623,7 +5788,7 @@ mod tests {
         let player = Vec3::new(6.0, 1.8, 0.0); // close, inside STATUE_RANGE
         let player_yaw = 270.0; // faces -X, i.e. toward the phantom near the origin
 
-        driver.step(&mut net, 0.1, player, player_yaw);
+        driver.step(&mut net, 0.1, player, player_yaw, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5645,7 +5810,7 @@ mod tests {
         let player = Vec3::new(6.0, 1.8, 0.0); // close, inside LOSE_RADIUS
         let player_yaw = 90.0; // faces +X, AWAY from the phantom
 
-        driver.step(&mut net, 0.1, player, player_yaw);
+        driver.step(&mut net, 0.1, player, player_yaw, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5673,7 +5838,7 @@ mod tests {
             .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
         let player = Vec3::new(-18.0, 1.8, 0.0);
 
-        driver.step(&mut net, 0.1, player, 0.0);
+        driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -5684,6 +5849,118 @@ mod tests {
             driver.movers[0].spotted_duration <= PHANTOM_SPOTTED_SOUND_MAX,
             "sound-triggered stare must use the short window, got {}",
             driver.movers[0].spotted_duration
+        );
+    }
+
+    /// ADR-040 perception — the stealth payoff. EXACT same setup as the test above (running player
+    /// behind it, inside sound range) with one difference: crouched. Sound is the only channel that
+    /// ignores the view cone, so muting it is precisely what makes sneaking up BEHIND it work.
+    #[tokio::test]
+    async fn crouching_mutes_the_sound_channel() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver
+            .prev_target_pos
+            .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
+        let player = Vec3::new(-18.0, 1.8, 0.0);
+
+        driver.step(&mut net, 0.1, player, 0.0, true); // crouched
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Wander,
+            "a CROUCHING player behind it must not be heard, however fast they move"
+        );
+    }
+
+    /// The middle tier. Walking is audible, but only close — between the silence of crouching and
+    /// the long reach of a sprint. Without this the stealth model is a binary and posture stops
+    /// mattering.
+    #[tokio::test]
+    async fn walking_is_heard_only_close_by() {
+        // Same geometry, walking speed (2 m/s), at two distances: inside and outside WALK_HEAR.
+        for (dist, expect_heard) in [(6.0_f32, true), (14.0_f32, false)] {
+            let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+            let start = [0.0, 1.8, 0.0];
+            let pid = net.spawn_phantom("Robapieles_Test", start);
+            let mut driver = PhantomDriver::new(42);
+            driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+            // Behind it (-X) so the view cone can never be the thing that detects.
+            let player = Vec3::new(-dist, 1.8, 0.0);
+            driver
+                .prev_target_pos
+                .insert(net.local_id, Vec3::new(-dist - 0.2, 1.8, 0.0)); // 2 m/s
+            driver.step(&mut net, 0.1, player, 0.0, false);
+
+            let heard = driver.movers[0].state != PhantomState::Wander;
+            assert_eq!(
+                heard, expect_heard,
+                "walking at {dist} m: expected heard={expect_heard} (WALK_HEAR_RADIUS is {PHANTOM_WALK_HEAR_RADIUS})"
+            );
+        }
+    }
+
+    /// ADR-040 Fase 4 — losing you must lead to a SEARCH of the last known spot, not to instant
+    /// amnesia. This is the counterweight that stops the new pathfinding from turning the creature
+    /// into a homing missile.
+    #[tokio::test]
+    async fn losing_the_target_starts_a_search_not_amnesia() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [25.0, 1.8, 25.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+        driver.movers[0].state = PhantomState::Stalk;
+        driver.movers[0].last_known_player_pos = Some(Vec3::new(from.x + 5.0, from.y, from.z));
+
+        // Player far beyond LOSE_RADIUS.
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(from.x + 500.0, 1.8, from.z),
+            0.0,
+            false,
+        );
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Search,
+            "with a remembered position it must go looking, not resume wandering"
+        );
+    }
+
+    /// …and the search must END. A creature that hunts the same spot forever is as broken as one
+    /// that forgets instantly: forgetting is what makes hiding an escape rather than a delay.
+    #[tokio::test]
+    async fn search_gives_up_and_forgets_after_its_patience() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [25.0, 1.8, 25.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+        driver.movers[0].state = PhantomState::Search;
+        // A goal far away so it cannot "arrive" — only patience can end this.
+        driver.movers[0].last_known_player_pos =
+            Some(Vec3::new(from.x + 200.0, from.y, from.z + 200.0));
+        driver.movers[0].state_timer = PHANTOM_SEARCH_MAX + 1.0;
+
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(from.x + 500.0, 1.8, from.z),
+            0.0,
+            false,
+        );
+
+        assert_eq!(driver.movers[0].state, PhantomState::Wander);
+        assert!(
+            driver.movers[0].last_known_player_pos.is_none(),
+            "giving up must also FORGET, or the next search resumes a stale hunt"
         );
     }
 
@@ -5724,7 +6001,7 @@ mod tests {
         let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
         let player_yaw = 90.0; // faces +X, AWAY from the phantom (to its west) → not looking
 
-        let attack = driver.step(&mut net, 0.1, player, player_yaw);
+        let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
 
         assert!(
             matches!(attack, PhantomAttack::Kill),
@@ -5746,7 +6023,7 @@ mod tests {
         let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
         let player_yaw = 270.0; // faces -X, TOWARD the phantom → looking
 
-        let attack = driver.step(&mut net, 0.1, player, player_yaw);
+        let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
 
         assert!(
             matches!(attack, PhantomAttack::Hit(d) if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
@@ -5773,7 +6050,7 @@ mod tests {
         let ppos = net.peers[&pid].position;
         let player = Vec3::new(ppos[0] + 2.0, 1.8, ppos[2]); // within PHANTOM_KNOCKBACK_RANGE (3 m)
 
-        let attack = driver.step(&mut net, 0.1, player, 0.0);
+        let attack = driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert!(
             matches!(attack, PhantomAttack::Knockback(_, _)),
@@ -5792,7 +6069,13 @@ mod tests {
         let mut driver = PhantomDriver::new(world.seed);
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
 
-        let attack = driver.step(&mut net, 0.1, Vec3::new(100_000.0, 1.8, 100_000.0), 0.0);
+        let attack = driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(100_000.0, 1.8, 100_000.0),
+            0.0,
+            false,
+        );
 
         assert_eq!(attack, PhantomAttack::None);
     }
