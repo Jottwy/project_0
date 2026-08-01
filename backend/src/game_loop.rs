@@ -249,6 +249,21 @@ fn hydrate_from_save(
 
     let (drop_id, building_id, carryable_id, group_id) = reseed_stp_id_allocators(net);
 
+    // `occupied_stp_cells` es estado DERIVADO y no se persiste — se reconstruye aquí o queda
+    // vacío tras cargar, con lo que el dedup de celda por pose deja de proteger a todas las
+    // piezas ya existentes: la primera colocación sobre el socket de una pieza guardada se
+    // aceptaría, duplicando la construcción en ese punto. Solo cuentan las de grupo, que son
+    // las únicas que el dedup vigila (`group_id != 0`; las sueltas pueden apilarse a propósito).
+    let group_cells: Vec<(i32, i32, i32, i32)> = net
+        .stp_buildings
+        .iter()
+        .filter(|b| b.group_id != 0)
+        .map(|b| stp_pose_cell(b.position, b.rotation))
+        .collect();
+    net.occupied_stp_cells.clear();
+    net.occupied_stp_cells.extend(group_cells);
+    let rederived_cells = net.occupied_stp_cells.len();
+
     if let Some(p) = save.host_player {
         player.stats = p.stats;
         player.position = p.position;
@@ -261,7 +276,7 @@ fn hydrate_from_save(
     }
 
     info!(
-        "ADR-032: world hydrated from save (corpses={}, buildings={}, items={}, carryables={}, harvestables={}, next_corpse_id={}, next_drop_id=0x{:08x}, next_building_id=0x{:08x}, next_carryable_id=0x{:08x}, next_group_id={})",
+        "ADR-032: world hydrated from save (corpses={}, buildings={}, items={}, carryables={}, harvestables={}, next_corpse_id={}, next_drop_id=0x{:08x}, next_building_id=0x{:08x}, next_carryable_id=0x{:08x}, next_group_id={}, occupied_cells={})",
         world.corpses.len(),
         net.stp_buildings.len(),
         net.stp_items.len(),
@@ -271,7 +286,8 @@ fn hydrate_from_save(
         drop_id,
         building_id,
         carryable_id,
-        group_id
+        group_id,
+        rederived_cells
     );
 }
 
@@ -4635,6 +4651,52 @@ mod tests {
         assert_eq!(building_id, STP_BUILDING_ID_BASE + 4);
         assert_eq!(carryable_id, STP_CARRYABLE_ID_BASE + 12);
         assert_eq!(group_id, 10);
+    }
+
+    /// `occupied_stp_cells` es estado DERIVADO y no se persiste. Si no se reconstruye al cargar,
+    /// el dedup de celda por pose arranca vacio y la primera colocacion sobre el socket de una
+    /// pieza YA GUARDADA se acepta — duplicando la construccion en ese punto.
+    #[tokio::test]
+    async fn hydrate_rederives_the_occupied_cell_set_for_group_pieces_only() {
+        use crate::network::protocol::StpBuildingInfo;
+        use crate::persistence::save::SaveFile;
+
+        let mut world = World::new(42);
+        let mut player = Player::new(1, String::from("Host"));
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+        let grouped = StpBuildingInfo {
+            id: STP_BUILDING_ID_BASE,
+            def_id: 1,
+            position: [4.0, 0.0, 8.0],
+            rotation: 90.0,
+            group_id: 3, // pieza de grupo -> ocupa celda
+            added: vec![],
+        };
+        let free = StpBuildingInfo {
+            id: STP_BUILDING_ID_BASE + 1,
+            def_id: 2,
+            position: [40.0, 0.0, 80.0],
+            rotation: 0.0,
+            group_id: 0, // pieza suelta -> las sueltas pueden apilarse, no ocupan celda
+            added: vec![],
+        };
+        let expected_cell = stp_pose_cell(grouped.position, grouped.rotation);
+        let free_cell = stp_pose_cell(free.position, free.rotation);
+
+        let mut save = SaveFile::new(String::from("test"), 42u64);
+        save.stp_buildings = vec![grouped, free];
+        hydrate_from_save(&mut world, &mut player, &mut net, save);
+
+        assert!(
+            net.occupied_stp_cells.contains(&expected_cell),
+            "la celda de una pieza de grupo guardada debe quedar ocupada tras cargar"
+        );
+        assert!(
+            !net.occupied_stp_cells.contains(&free_cell),
+            "una pieza suelta no ocupa celda: apilarlas es legitimo"
+        );
+        assert_eq!(net.occupied_stp_cells.len(), 1);
     }
 
     /// El matiz que hace que la receta ingenua `max(roster) + 1` sea INCORRECTA: los rangos estan
