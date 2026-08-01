@@ -57,6 +57,12 @@ pub struct PeerConnection {
     /// its corpse lies there. NOT authoritative for any gameplay decision. NOTE: set in
     /// handle_packet, NOT in update_player_state — so the phantom (ADR-016) never hides.
     pub dead: bool,
+    /// ADR-038: cosmetic "showing its real form" flag. UNLIKE every other pose field, this one is
+    /// written for the PHANTOM on purpose: `PhantomDriver` seals it from its own state machine
+    /// (`Sprint`/`Statue`), while `handle_packet` sets it from a relayed PlayerUpdate so joiners
+    /// see the same thing. `update_player_state` stays untouched, like the fields above — the
+    /// driver writes this one next to its `update_player_state` call, not inside it.
+    pub revealed: bool,
     pub connected_at: Instant,
 }
 
@@ -80,6 +86,7 @@ impl PeerConnection {
             held_item: 0,
             hit_seq: 0,
             dead: false,
+            revealed: false,
             connected_at: now,
         }
     }

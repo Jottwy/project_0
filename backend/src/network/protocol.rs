@@ -436,6 +436,12 @@ pub enum PacketPayload {
         /// wire-compat across the v9→v10 schema bump.
         #[serde(default)]
         dead: bool,
+        /// ADR-038: cosmetic "showing its real form" flag — true only while the robapieles
+        /// (ADR-016) is in `Sprint`/`Statue`, sealed by `PhantomDriver` and relayed like any
+        /// other pose field. Appended last + serde(default) → a v11 peer that omits it decodes
+        /// to false (never reveals); wire-compat across the v11→v12 schema bump.
+        #[serde(default)]
+        revealed: bool,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -818,6 +824,7 @@ mod tests {
             held_item: 12345,
             hit_seq: 7,
             dead: true,
+            revealed: true,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -834,6 +841,7 @@ mod tests {
                 held_item,
                 hit_seq,
                 dead,
+                revealed,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -844,6 +852,7 @@ mod tests {
                 assert_eq!(held_item, 12345);
                 assert_eq!(hit_seq, 7);
                 assert!(dead);
+                assert!(revealed);
             }
             _ => panic!("wrong variant"),
         }

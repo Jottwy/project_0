@@ -258,6 +258,11 @@ pub struct RemotePlayerState {
     /// hides this peer's standing proxy while true (its corpse is the visible body).
     #[serde(default)]
     pub dead: bool,
+    /// ADR-038: cosmetic "showing its real form" flag — true only while the robapieles (ADR-016)
+    /// is in `Sprint` or `Statue`. Always false for a real player: it is BACKEND-derived and has
+    /// no counterpart in `PlayerInput`, so no client can set it.
+    #[serde(default)]
+    pub revealed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

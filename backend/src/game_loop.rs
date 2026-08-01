@@ -945,10 +945,11 @@ async fn handle_network_event(
             held_item,
             hit_seq,
             dead,
+            revealed,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -3671,6 +3672,7 @@ fn build_world_state(
             held_item: p.held_item,
             hit_seq: p.hit_seq,
             dead: p.dead,
+            revealed: p.revealed,
         });
     }
 

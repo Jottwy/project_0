@@ -53,7 +53,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// shape. A v10 peer fails the payload parse and ignores the packet, so the canceller sees the
 /// piece come back — exactly today's behaviour, which is the degradation this bump is meant to
 /// fix rather than to introduce.
-const WIRE_SCHEMA_VERSION: u32 = 11;
+/// v12 (ADR-038) adds `revealed:bool` to RemotePlayerState and the P2P PlayerUpdate — BACKEND-derived
+/// (sealed by `PhantomDriver` from its `Sprint`/`Statue` states; `PlayerInput` deliberately unchanged,
+/// so no client can set it), `serde(default)`, so a v11 peer decodes false and simply never sees the
+/// robapieles drop its disguise.
+const WIRE_SCHEMA_VERSION: u32 = 12;
 
 /// Run the IPC server until a fatal accept error.
 ///

@@ -123,6 +123,10 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         // ADR-028 post-E3: SERVER-derived (authoritative stats, ADR-025) — the one pose field
         // the client does not report.
         dead: player.stats.is_dead(),
+        // ADR-038: always false here — a real player never shows a "real form". The only
+        // `true` in the whole system is sealed by PhantomDriver onto a PeerConnection and
+        // travels via broadcast_peer_poses, not this path.
+        revealed: player.revealed,
     };
     // Both lines are on the same once-a-second window now. This runs at the full tick rate, so
     // unthrottled it was the single noisiest line in the backend log — it formatted three floats
@@ -195,6 +199,7 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
                     held_item: p.held_item,
                     hit_seq: p.hit_seq,
                     dead: p.dead,
+                    revealed: p.revealed,
                 },
             )
         })

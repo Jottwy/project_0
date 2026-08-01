@@ -45,6 +45,13 @@ pub struct Player {
     /// not validated, does not affect inventory/grants/stats/combat/hitreg.
     #[serde(default)]
     pub hit_seq: u8,
+    /// ADR-038: cosmetic "showing its real form" flag. NEVER written for a real player — the
+    /// client does not report it (it is absent from `ipc::PlayerInput` by design) and the game
+    /// loop has no seal for it, so it stays `false` for the whole session. It exists so
+    /// `broadcast_player_update` fills the pose payload from one place; the only value that is
+    /// ever `true` lives on a `PeerConnection` written by the phantom driver.
+    #[serde(default)]
+    pub revealed: bool,
     /// ADR-028: server-side dedupe — true once this death's loot snapshot spawned a
     /// corpse. Guards against a double `report_death_loot` (the client's event
     /// fast-path + derived-edge fallback both firing) duplicating the inventory.
@@ -90,6 +97,7 @@ impl Player {
             equipment: [0; 4],
             held_item: 0,
             hit_seq: 0,
+            revealed: false,
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),

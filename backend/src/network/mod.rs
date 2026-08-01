@@ -91,6 +91,7 @@ pub enum NetworkEvent {
         held_item: i32,
         hit_seq: u8,
         dead: bool,
+        revealed: bool,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -1077,6 +1078,7 @@ impl NetworkManager {
                 held_item,
                 hit_seq,
                 dead,
+                revealed,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -1090,6 +1092,7 @@ impl NetworkManager {
                     peer.held_item = held_item; // ADR-023: cosmetic held item, alongside the pose
                     peer.hit_seq = hit_seq; // ADR-024: cosmetic hit-reaction counter, alongside the pose
                     peer.dead = dead; // ADR-028 post-E3: cosmetic dead flag, alongside the pose
+                    peer.revealed = revealed; // ADR-038: cosmetic real-form flag, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -1123,6 +1126,7 @@ impl NetworkManager {
                     held_item,
                     hit_seq,
                     dead,
+                    revealed,
                 }]
             }
 
@@ -1849,6 +1853,7 @@ mod tests {
             held_item: 0,
             hit_seq: 0,
             dead: false,
+            revealed: false,
         };
         host.broadcast_unreliable(&payload).await;
 
