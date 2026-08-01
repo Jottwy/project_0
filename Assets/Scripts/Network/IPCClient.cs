@@ -404,7 +404,7 @@ namespace BackroomsSurvival.Net
         /// <summary>Send a per-frame player input packet to the backend.</summary>
         public void SendInput(Vector3 movement, Vector2 lookDelta, bool sprint, IList<string> actions = null)
         {
-            var w = new MsgPackWriter();
+            var w = RentWriter();
             int fieldCount = 5;
             w.WriteMapHeader(fieldCount);
             w.WriteString("type"); w.WriteString("input");
@@ -418,7 +418,7 @@ namespace BackroomsSurvival.Net
             w.WriteArrayHeader(n);
             for (int i = 0; i < n; i++) w.WriteString(actions[i]);
 
-            SendFrame(w.ToArray());
+            SendFrame(w);
         }
 
         /// <summary>
@@ -444,7 +444,7 @@ namespace BackroomsSurvival.Net
             const int FieldCount = 16;
             int fields = 0;
 
-            var w = new MsgPackWriter();
+            var w = RentWriter();
             w.WriteMapHeader(FieldCount);
             w.WriteString("type"); w.WriteString("input"); fields++;
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
@@ -480,7 +480,7 @@ namespace BackroomsSurvival.Net
 
             Debug.Assert(fields == FieldCount,
                 "SendPlayerInput: field count drifted from the map header — a pair was added/removed without updating WriteMapHeader (rmp_serde would drop the tail).");
-            SendFrame(w.ToArray());
+            SendFrame(w);
         }
 
         /// <summary>
@@ -495,13 +495,13 @@ namespace BackroomsSurvival.Net
         /// </summary>
         public bool SendRequestChunk(int cx, int cz, byte layer)
         {
-            var w = new MsgPackWriter();
+            var w = RentWriter();
             w.WriteMapHeader(4);
             w.WriteString("type"); w.WriteString("request_chunk");
             w.WriteString("cx"); w.WriteInt(cx);
             w.WriteString("cz"); w.WriteInt(cz);
             w.WriteString("layer"); w.WriteInt(layer);
-            return SendFrame(w.ToArray());
+            return SendFrame(w);
         }
 
         /// <summary>
@@ -523,13 +523,13 @@ namespace BackroomsSurvival.Net
         /// </summary>
         private bool SendActionFrame(string actionType, int dataFieldCount, Action<MsgPackWriter> writeData)
         {
-            var w = new MsgPackWriter();
+            var w = RentWriter();
             w.WriteMapHeader(3);
             w.WriteString("type"); w.WriteString("action");
             w.WriteString("action_type"); w.WriteString(actionType);
             w.WriteString("data"); w.WriteMapHeader(dataFieldCount);
             writeData(w);
-            return SendFrame(w.ToArray());
+            return SendFrame(w);
         }
 
         /// <summary>
@@ -559,12 +559,12 @@ namespace BackroomsSurvival.Net
         /// <summary>Send a discrete action request (craft, pickup, attack, ...).</summary>
         public void SendAction(string actionType)
         {
-            var w = new MsgPackWriter();
+            var w = RentWriter();
             w.WriteMapHeader(3);
             w.WriteString("type"); w.WriteString("action");
             w.WriteString("action_type"); w.WriteString(actionType);
             w.WriteString("data"); w.WriteNil();
-            SendFrame(w.ToArray());
+            SendFrame(w);
         }
 
         /// <summary>
@@ -928,11 +928,34 @@ namespace BackroomsSurvival.Net
         /// <summary>Send a UI lifecycle event (pause, save, quit, ...).</summary>
         public void SendUiEvent(string eventType)
         {
-            var w = new MsgPackWriter();
+            var w = RentWriter();
             w.WriteMapHeader(2);
             w.WriteString("type"); w.WriteString("ui_event");
             w.WriteString("event_type"); w.WriteString(eventType);
-            SendFrame(w.ToArray());
+            SendFrame(w);
+        }
+
+        /// <summary>
+        /// Per-thread scratch writer, reused across sends so the outbound path allocates
+        /// nothing steady-state (MsgPackWriter grows its buffer once and keeps it).
+        ///
+        /// [ThreadStatic] rather than a shared instance + lock: it makes cross-thread corruption
+        /// structurally impossible instead of merely guarded, and needs no lock around the
+        /// build. In practice every Send* runs on the main thread, so this is one writer for the
+        /// process lifetime.
+        ///
+        /// CONTRACT: a frame build must not start another one on the same thread — i.e. no
+        /// Send* call from inside a SendActionFrame `writeData` callback. No current caller does
+        /// (the callbacks only invoke w.Write*), and nesting would silently interleave two
+        /// messages into one buffer.
+        /// </summary>
+        [ThreadStatic] private static MsgPackWriter _scratchWriter;
+
+        private static MsgPackWriter RentWriter()
+        {
+            var w = _scratchWriter ??= new MsgPackWriter();
+            w.Reset();
+            return w;
         }
 
         /// <summary>
@@ -940,21 +963,19 @@ namespace BackroomsSurvival.Net
         /// written, false if dropped (no live stream, or a write error — the
         /// network thread will detect the break and reconnect). Existing callers
         /// that ignore the return are unaffected.
+        ///
+        /// The writer reserves the 4-byte length prefix at the head of its own buffer, so the
+        /// header is stamped in place and the socket write goes straight from that buffer — no
+        /// intermediate body array, no frame copy.
         /// </summary>
-        private bool SendFrame(byte[] body)
+        private bool SendFrame(MsgPackWriter w)
         {
-            var frame = new byte[4 + body.Length];
-            int len = body.Length;
-            frame[0] = (byte)(len >> 24);
-            frame[1] = (byte)(len >> 16);
-            frame[2] = (byte)(len >> 8);
-            frame[3] = (byte)len;
-            Array.Copy(body, 0, frame, 4, body.Length);
+            int frameLength = w.StampFrameHeader();
 
             lock (_sendLock)
             {
                 if (_stream == null) return false;
-                try { _stream.Write(frame, 0, frame.Length); return true; }
+                try { _stream.Write(w.FrameBuffer, 0, frameLength); return true; }
                 catch (Exception) { return false; /* the network thread will detect and reconnect */ }
             }
         }
