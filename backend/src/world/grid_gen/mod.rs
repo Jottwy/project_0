@@ -15,6 +15,7 @@ mod cell;
 mod collision;
 mod generator;
 mod layer_rules;
+mod nav;
 mod stitching;
 mod tile_walls;
 

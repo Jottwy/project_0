@@ -80,6 +80,14 @@ impl GridGenChunkCache {
         self.cache.is_empty()
     }
 
+    /// Seed a hand-authored grid so a test can reason about a known layout instead of a generated
+    /// one. Test-only: production code must always come from `get_or_generate`, or nav and render
+    /// could diverge (ADR-033).
+    #[cfg(test)]
+    pub(super) fn insert_for_test(&mut self, key: (i32, i32, u8), grid: LayerGrid) {
+        self.cache.insert(key, grid);
+    }
+
     /// The grid_gen `LayerGrid` for (cx, cz, layer), generated on first access with the same
     /// generator + EMPTY `forced_walkable` that `chunk_tile_walls` uses — so the cached grid is
     /// byte-identical to the rendered chunk's source. Since ADR-033 that identity ALSO requires
