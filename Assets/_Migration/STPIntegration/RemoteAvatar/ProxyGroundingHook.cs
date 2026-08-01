@@ -73,6 +73,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private Animator _animator;
         private SkinnedMeshRenderer _sampleRenderer;
         private float _nextDiagAt;
+        private Camera _camera;
+        private float _nextCameraProbeAt;
+        private bool _armedLogged;
 
         private void Awake()
         {
@@ -106,24 +109,77 @@ namespace BackroomsSurvival.Migration.STPIntegration
             LogCullDiagnostics();
         }
 
-        // Reports the numbers that decide the diagnosis together: whether the Pelvis is walking away
-        // from its bind pose, whether the mesh is actually being drawn, and which culling mode the
-        // Animator ended up with. NOTE: Unity exposes no "is this Animator culled right now" flag —
-        // renderer visibility IS the signal, because CullUpdateTransforms culls the Animator exactly
-        // when its renderers stop being visible. Throttled to ~2/s so a play-test log stays readable.
+        /// ALARM, not a heartbeat. The first version logged every sample, and 42 % of them read
+        /// `meshVisible=False` — which meant nothing, because `Renderer.isVisible` is false whenever
+        /// NO camera sees the proxy, and a wandering NPC is off-camera most of the time. That log
+        /// could not tell "behind you" from "in front of you and not drawn", so it could not settle
+        /// anything.
+        ///
+        /// This version fires ONLY on the contradiction: the proxy's body is inside the camera
+        /// viewport, and the renderer still reports itself invisible. That is the bug and nothing
+        /// else. Silence now means "never reproduced", which is the answer we are buying.
+        ///
+        /// One "armed" line is emitted per proxy so that silence is never confused with the
+        /// instrumentation being dead or the fix not having applied.
         private void LogCullDiagnostics()
         {
-            if (!_logCullDiagnostics || Time.unscaledTime < _nextDiagAt)
+            if (!_logCullDiagnostics || _sampleRenderer == null)
                 return;
+
+            if (!_armedLogged)
+            {
+                _armedLogged = true;
+                Debug.Log(
+                    $"[GROUND] armed on '{name}' — updateOffscreen={_sampleRenderer.updateWhenOffscreen} " +
+                    $"cullMode={(_animator != null ? _animator.cullingMode.ToString() : "<no-animator>")}. " +
+                    "From here on it only speaks when the body is ON SCREEN and the mesh is NOT drawn.");
+            }
+
+            var cam = ResolveCamera();
+            if (cam == null)
+                return;
+
+            // Feet AND head: a body framed only from the waist up still counts as "you should be
+            // seeing this". If neither point is in the viewport it is legitimately off-camera.
+            Vector3 feet = transform.position;
+            if (!InViewport(cam, feet) && !InViewport(cam, feet + Vector3.up * 1.8f))
+                return;
+            if (_sampleRenderer.isVisible)
+                return; // on screen and drawing — healthy, stay quiet
+
+            if (Time.unscaledTime < _nextDiagAt)
+                return; // rate-limit the alarm itself, never the detection
             _nextDiagAt = Time.unscaledTime + 0.5f;
 
-            float drift = _pelvis.localPosition.y - BindPosePelvisLocalY;
-            Debug.Log(
-                $"[GROUND] pelvisLocalY={_pelvis.localPosition.y:F3} drift={drift:+0.000;-0.000} " +
-                $"(bind={BindPosePelvisLocalY:F3}) offset={_offset:F3} " +
-                $"meshVisible={(_sampleRenderer != null ? _sampleRenderer.isVisible.ToString() : "<no-smr>")} " +
-                $"updateOffscreen={(_sampleRenderer != null ? _sampleRenderer.updateWhenOffscreen.ToString() : "<no-smr>")} " +
+            // Bounds are the payload: if their centre has wandered away from the body, the renderer
+            // is being culled against a box that is no longer where the character is.
+            Bounds b = _sampleRenderer.bounds;
+            Debug.LogWarning(
+                $"[GROUND-ANOMALY] on screen but not drawn — dist={Vector3.Distance(cam.transform.position, feet):F1} " +
+                $"root=({feet.x:F2},{feet.y:F2},{feet.z:F2}) " +
+                $"boundsCentre=({b.center.x:F2},{b.center.y:F2},{b.center.z:F2}) boundsSize=({b.size.x:F2},{b.size.y:F2},{b.size.z:F2}) " +
+                $"centreOffBody={Vector3.Distance(b.center, feet + Vector3.up * 0.9f):F2} " +
+                $"pelvisLocalY={_pelvis.localPosition.y:F3} drift={_pelvis.localPosition.y - BindPosePelvisLocalY:+0.000;-0.000} " +
+                $"offset={_offset:F3} updateOffscreen={_sampleRenderer.updateWhenOffscreen} " +
                 $"cullMode={(_animator != null ? _animator.cullingMode.ToString() : "<no-animator>")}");
+        }
+
+        // Camera.main walks the scene, so it is probed at most once a second and cached.
+        private Camera ResolveCamera()
+        {
+            if (_camera != null)
+                return _camera;
+            if (Time.unscaledTime < _nextCameraProbeAt)
+                return null;
+            _nextCameraProbeAt = Time.unscaledTime + 1f;
+            _camera = Camera.main;
+            return _camera;
+        }
+
+        private static bool InViewport(Camera cam, Vector3 world)
+        {
+            Vector3 v = cam.WorldToViewportPoint(world);
+            return v.z > 0f && v.x >= 0f && v.x <= 1f && v.y >= 0f && v.y <= 1f;
         }
 
         /// <summary>
