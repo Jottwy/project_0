@@ -3,6 +3,7 @@ using BackroomsSurvival.Gameplay.GridWorld;
 using BackroomsSurvival.Net;
 using NUnit.Framework;
 using UnityEngine;
+using UnityEngine.TestTools;
 
 namespace BackroomsSurvival.Tests
 {
@@ -91,6 +92,7 @@ namespace BackroomsSurvival.Tests
         [TearDown]
         public void TearDown()
         {
+            LogAssert.ignoreFailingMessages = false;
             if (_root != null) Object.DestroyImmediate(_root);
         }
 
@@ -149,6 +151,22 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void BuildFromWallsWithMissingPillarPrefabDoesNotThrow()
         {
+            // Esta rama emite un Debug.LogError DELIBERADO (GridChunkBuilder.cs:393-395,
+            // fail-loud: "ejecuta Backrooms/Create Grid Prefabs"), y el Test Framework tumba
+            // cualquier test con un Error no declarado. El test moría ahí, no en su assert.
+            //
+            // Se ignora en vez de declararlo con LogAssert.Expect, al revés que en
+            // NetworkInitializerTests, y la diferencia importa: aquel LogError sale en CADA
+            // llamada, así que Expect lo fija como contrato. Éste está guardado por el estático
+            // _loggedMissingPillarPrefab (GridChunkBuilder.cs:485, SIN reset), que solo deja
+            // loguear la PRIMERA vez en todo el dominio — un Expect fallaría con "expected but
+            // not received" en cuanto cualquier otra cosa dispare la rama antes, o al re-correr
+            // la suite sin recarga de dominio. Depender de eso sería un test intermitente.
+            //
+            // Lo que este test comprueba de verdad — que no lanza y que no instancia columnas —
+            // sigue intacto en los dos asserts de abajo.
+            LogAssert.ignoreFailingMessages = true;
+
             var prefabs = GridPrefabSet.LoadFromResources();
             prefabs.pillar = null; // simula el prefab ausente
 
