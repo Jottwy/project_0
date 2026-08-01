@@ -26,5 +26,6 @@ pub use cell::*;
 pub use collision::*;
 pub use generator::*;
 pub use layer_rules::*;
+pub use nav::*;
 pub use stitching::*;
 pub use tile_walls::*;

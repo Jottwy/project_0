@@ -146,6 +146,15 @@ const PHANTOM_SPOTTED_SOUND_MIN: f32 = 1.0; // shorter stare when alerted by noi
 const PHANTOM_SPOTTED_SOUND_MAX: f32 = 2.0;
 // Fluidity (slice 3b-P1 follow-up): ease `heading` toward the player instead of snapping at
 // 10 Hz (which reads as lag). rad/s — STALK tracks, SPRINT tracks hard, STATUE turns its head.
+// ADR-040 — replan policy. Not tuning knobs pulled from thin air: 0.6 s is ~6 entity ticks, short
+// enough that a route stays honest while you move and long enough that the amortized search cost is
+// 1.67/s. The drift threshold is under one chunk-cell pair, so the phantom re-routes when you round
+// a corner but not when you strafe.
+const PHANTOM_REPLAN_INTERVAL: f32 = 0.6;
+const PHANTOM_REPLAN_GOAL_DRIFT: f32 = 4.0;
+/// A waypoint counts as reached inside this radius. Below ~1 m the phantom can orbit a waypoint it
+/// keeps almost-touching; this is under half a cell, so it never skips a corner either.
+const PHANTOM_WAYPOINT_ARRIVE: f32 = 1.25;
 const PHANTOM_TURN_SPEED_STALK: f32 = 8.0;
 const PHANTOM_TURN_SPEED_SPRINT: f32 = 15.0;
 const PHANTOM_TURN_SPEED_STATUE: f32 = 3.0;
@@ -4023,6 +4032,16 @@ struct PhantomDriver {
     /// position delta is the only uniform "is it running?" signal. Rebuilt each tick from the
     /// current targets, so disconnected ids drop out automatically.
     prev_target_pos: HashMap<PeerId, Vec3>,
+    /// ADR-040 — A* buffers, allocated ONCE and reused by every search, so pathfinding performs no
+    /// heap work inside the tick. Lives on the driver (not per-mover) because only one search runs
+    /// at a time.
+    nav_scratch: crate::world::grid_gen::NavScratch,
+    /// Reusable cell-path buffer handed to `find_path`, for the same reason.
+    nav_cells: Vec<crate::world::grid_gen::CellCoord>,
+    /// Test-only counter: proves the replan policy holds at most one search per step, which is the
+    /// thing that keeps the cost bound honest.
+    #[cfg(test)]
+    nav_replans: u32,
 }
 
 /// Per-phantom state: which peer, its heading (yaw, radians), the faked-pickup gesture (slice 4),
@@ -4063,6 +4082,17 @@ struct PhantomMover {
     /// Smoothed turn target (yaw radians): STALK/SPRINT/STATUE ease `heading` toward this instead
     /// of snapping each tick (fluidity), so it tracks the player without 10 Hz rotational jerk.
     heading_target: f32,
+    /// ADR-040 — string-pulled route the phantom is currently walking, in world space. Empty means
+    /// "no plan": the steering falls back to heading straight at the target, which is exactly the
+    /// pre-ADR-040 behaviour, so a failed or stale plan degrades to the old code instead of freezing.
+    nav_waypoints: Vec<Vec3>,
+    /// Index of the waypoint being walked toward.
+    nav_cursor: usize,
+    /// Goal the current plan was built for. A plan is stale once the target has drifted away from
+    /// it, which is what stops the phantom from running at where you WERE.
+    nav_goal: Option<Vec3>,
+    /// Seconds since the current plan was built.
+    nav_age: f32,
 }
 
 impl PhantomDriver {
@@ -4078,6 +4108,10 @@ impl PhantomDriver {
             ),
             movers: Vec::new(),
             prev_target_pos: HashMap::new(),
+            nav_scratch: crate::world::grid_gen::NavScratch::new(),
+            nav_cells: Vec::new(),
+            #[cfg(test)]
+            nav_replans: 0,
         }
     }
 
@@ -4099,7 +4133,84 @@ impl PhantomDriver {
             wander_pause_timer: 0.0,
             is_paused: false,
             heading_target: heading,
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
         });
+    }
+
+    /// ADR-040 — the heading to walk this tick: the bearing to the next waypoint of a string-pulled
+    /// route, replanned on a policy, falling back to the straight bearing when there is no plan.
+    ///
+    /// The fallback matters as much as the pathfinding: a failed search, a target standing in a
+    /// cell grid_gen calls solid, or a goal outside the window all degrade to EXACTLY the
+    /// pre-ADR-040 behaviour rather than freezing the creature. The worst case is the old code.
+    ///
+    /// At most ONE search per call, so the per-step cost stays the bounded thing it was measured to
+    /// be. A plan is rebuilt when it is older than `PHANTOM_REPLAN_INTERVAL`, when the target has
+    /// drifted `PHANTOM_REPLAN_GOAL_DRIFT` from the goal it was built for, or when it ran out.
+    fn steer_heading(&mut self, i: usize, layer: u8, from: Vec3, target: Vec3, dt: f32) -> f32 {
+        use crate::world::grid_gen::{cell_of, find_path, string_pull};
+
+        let straight = |to: Vec3| {
+            (to.x - from.x)
+                .atan2(to.z - from.z)
+                .rem_euclid(std::f32::consts::TAU)
+        };
+
+        self.movers[i].nav_age += dt;
+        let stale = self.movers[i].nav_waypoints.is_empty()
+            || self.movers[i].nav_cursor >= self.movers[i].nav_waypoints.len()
+            || self.movers[i].nav_age >= PHANTOM_REPLAN_INTERVAL
+            || self.movers[i]
+                .nav_goal
+                .is_none_or(|g| g.distance_xz(target) > PHANTOM_REPLAN_GOAL_DRIFT);
+
+        if stale {
+            let start = cell_of(from);
+            let goal = cell_of(target);
+            find_path(
+                &mut self.grid_cache,
+                layer,
+                start,
+                goal,
+                &mut self.nav_scratch,
+                &mut self.nav_cells,
+            );
+            let cells = std::mem::take(&mut self.nav_cells);
+            string_pull(
+                &mut self.grid_cache,
+                layer,
+                from.y,
+                &cells,
+                &mut self.movers[i].nav_waypoints,
+            );
+            self.nav_cells = cells; // give the buffer back; no per-search allocation
+            self.movers[i].nav_cursor = 0;
+            self.movers[i].nav_goal = Some(target);
+            self.movers[i].nav_age = 0.0;
+            #[cfg(test)]
+            {
+                self.nav_replans += 1;
+            }
+        }
+
+        // Consume waypoints already reached. Done AFTER a possible replan so a fresh plan whose
+        // first waypoint is underfoot does not cost a wasted tick.
+        while self.movers[i].nav_cursor < self.movers[i].nav_waypoints.len() {
+            let wp = self.movers[i].nav_waypoints[self.movers[i].nav_cursor];
+            if from.distance_xz(wp) <= PHANTOM_WAYPOINT_ARRIVE {
+                self.movers[i].nav_cursor += 1;
+            } else {
+                break;
+            }
+        }
+
+        match self.movers[i].nav_waypoints.get(self.movers[i].nav_cursor) {
+            Some(wp) => straight(*wp),
+            None => straight(target), // no plan (or plan exhausted): the old straight bearing
+        }
     }
 
     /// ADR-016 (identity phase): once a real (non-phantom) peer is connected, any phantom still
@@ -4436,9 +4547,10 @@ impl PhantomDriver {
                         continue;
                     }
 
-                    let to_player = (tpos.x - from.x)
-                        .atan2(tpos.z - from.z)
-                        .rem_euclid(std::f32::consts::TAU);
+                    // ADR-040: navigated heading. Where this used to point straight at the player —
+                    // and grind into whatever wall was in between — it now follows a string-pulled
+                    // route. With no plan it falls back to the straight bearing, i.e. the old code.
+                    let to_player = self.steer_heading(i, current_layer, from, tpos, dt);
                     // Ease toward the player instead of snapping (a 10 Hz snap reads as lag);
                     // movement follows the smoothed heading → a curved, less robotic track.
                     self.movers[i].heading_target = to_player;
@@ -4554,9 +4666,9 @@ impl PhantomDriver {
                     }
                     let (_, tpos, dist, tyaw) = target.unwrap();
                     self.movers[i].last_known_player_pos = Some(tpos);
-                    let to_player = (tpos.x - from.x)
-                        .atan2(tpos.z - from.z)
-                        .rem_euclid(std::f32::consts::TAU);
+                    // ADR-040: navigated heading (see STALK). The lunge routes around geometry
+                    // instead of pinning itself to a wall between it and you.
+                    let to_player = self.steer_heading(i, current_layer, from, tpos, dt);
                     // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
                     self.movers[i].heading_target = to_player;
                     let t = (PHANTOM_TURN_SPEED_SPRINT * dt).min(1.0);
@@ -5110,6 +5222,102 @@ mod tests {
         );
         // Raising the pose must NOT change which grid_gen layer it collides against (ADR-018).
         assert_eq!(crate::world::grid_gen::world_pos_to_layer(y), 0);
+    }
+
+    /// ADR-040 Fase 3 — THE behavioural test: with a wall between it and you, the phantom must aim
+    /// somewhere OTHER than straight at you. Before this phase both STALK and SPRINT pointed at the
+    /// player unconditionally and ground into the geometry; this asserts the heading actually
+    /// bends. Deterministic: the blocked pair is discovered in the real seed-42 world, so it also
+    /// proves the navigation works against generated geometry rather than a hand-made fixture.
+    #[tokio::test]
+    async fn phantom_steers_around_geometry_instead_of_into_it() {
+        use crate::world::grid_gen::{
+            cell_center, find_path, segment_is_clear, GridGenChunkCache, NavScratch,
+        };
+
+        let mut probe = GridGenChunkCache::with_rules(42, crate::world::zone_density::rules_for);
+        let mut scratch = NavScratch::new();
+        let mut cells = Vec::new();
+
+        // Find two walkable cells whose straight line is blocked but which ARE connected.
+        let mut found: Option<(Vec3, Vec3)> = None;
+        'outer: for ax in 1..18i32 {
+            for az in 1..18i32 {
+                let a = cell_center((ax, az), 0.0);
+                if !crate::world::grid_gen::is_walkable_grid_gen(&mut probe, a, 0) {
+                    continue;
+                }
+                for bx in (ax + 2)..20i32 {
+                    for bz in (az + 2)..20i32 {
+                        let b = cell_center((bx, bz), 0.0);
+                        if !crate::world::grid_gen::is_walkable_grid_gen(&mut probe, b, 0) {
+                            continue;
+                        }
+                        if segment_is_clear(&mut probe, 0, a, b) {
+                            continue; // line of travel is open — not the case we want
+                        }
+                        find_path(&mut probe, 0, (ax, az), (bx, bz), &mut scratch, &mut cells);
+                        if !cells.is_empty() && *cells.last().unwrap() == (bx, bz) {
+                            found = Some((a, b));
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        }
+        let (from, target) =
+            found.expect("seed 42 must contain a blocked-but-connected pair near the origin");
+
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = net.spawn_phantom("Robapieles_Test", from.to_array());
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, 0.0, from, true);
+
+        let navigated = driver.steer_heading(0, 0, from, target, 0.1);
+        let straight = (target.x - from.x)
+            .atan2(target.z - from.z)
+            .rem_euclid(std::f32::consts::TAU);
+
+        let delta = (navigated - straight)
+            .abs()
+            .min(std::f32::consts::TAU - (navigated - straight).abs());
+        assert!(
+            delta > 0.05,
+            "with a wall in the way the phantom must not aim straight at the player: \
+             navigated={navigated:.3} straight={straight:.3} (from {from:?} to {target:?})"
+        );
+        assert!(
+            !driver.movers[0].nav_waypoints.is_empty(),
+            "a route must have been planned"
+        );
+    }
+
+    /// The cost bound is only honest if the replan policy actually throttles. One search per steer
+    /// call is by construction; this pins the POLICY: a static target must not be replanned every
+    /// tick just because time passed.
+    #[tokio::test]
+    async fn replan_policy_throttles_a_static_target() {
+        let start = [25.0, 1.8, 25.0];
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+
+        let target = Vec3::new(from.x + 6.0, from.y, from.z + 6.0);
+        for _ in 0..10 {
+            driver.steer_heading(0, 0, from, target, 0.1); // 10 ticks = 1.0 s
+        }
+        // 1.0 s at a 0.6 s interval is at most two windows; allow one extra for the initial plan.
+        assert!(
+            driver.nav_replans <= 3,
+            "replan policy did not throttle: {} searches in 1 s",
+            driver.nav_replans
+        );
+        assert!(
+            driver.nav_replans >= 1,
+            "it must have planned at least once"
+        );
     }
 
     #[tokio::test]
