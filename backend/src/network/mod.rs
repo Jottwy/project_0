@@ -717,9 +717,23 @@ impl NetworkManager {
         }
 
         // Update heartbeat for known peers by logical peer id. The socket address is transport only.
+        //
+        // The address is NOT adopted when it already belongs to a DIFFERENT known peer. Reason:
+        // the ADR-015 pose relay (`send_unreliable_as`) re-emits peer B's PlayerUpdate towards C
+        // from the HOST's socket while stamping `sender_id = B`. Adopting unconditionally made C
+        // overwrite `peers[B].addr` with the host's address 10x/second, so every joiner ended up
+        // believing every other joiner lived at the host — there was no direct route left to
+        // discover. Refusing only the addresses that another peer already owns keeps genuine NAT
+        // rebinding working (a new, unclaimed address is still adopted).
+        let relayed_from_other_peer = self
+            .peers
+            .iter()
+            .any(|(id, p)| *id != sender_id && p.addr == pkt.addr);
         let mut log_last_seen_update = false;
         if let Some(peer) = self.peers.get_mut(&sender_id) {
-            peer.addr = pkt.addr;
+            if !relayed_from_other_peer {
+                peer.addr = pkt.addr;
+            }
             peer.record_heartbeat();
             let should_log = self
                 .last_keepalive_trace_at
@@ -734,10 +748,11 @@ impl NetworkManager {
         }
         if log_last_seen_update {
             info!(
-                "MPTRACE step=N event=peer_last_seen_update reason=packet_received self_id={} peer_id={} endpoint={} last_seen_ms=0 peer_count={} remote_players_ids={:?}",
+                "MPTRACE step=N event=peer_last_seen_update reason=packet_received self_id={} peer_id={} endpoint={} addr_adopted={} last_seen_ms=0 peer_count={} remote_players_ids={:?}",
                 self.local_id,
                 sender_id,
                 pkt.addr,
+                !relayed_from_other_peer,
                 self.peers.len(),
                 self.peer_ids()
             );
@@ -1958,6 +1973,74 @@ mod tests {
             NetworkEvent::PeerDisconnected { id: 2, .. }
         ));
         assert_eq!(net.peer_count(), 0);
+    }
+
+    /// El relay de poses de ADR-015 reemite el `PlayerUpdate` de B hacia C desde el socket
+    /// DEL HOST, sellado con `sender_id = B`. Antes, `handle_packet` adoptaba esa `addr` sin
+    /// condición, así que C acababa creyendo que B vive en la dirección del host — diez veces
+    /// por segundo, y para todos los joiners a la vez. No quedaba ninguna ruta directa que
+    /// descubrir. Invisible con 1 host + 1 joiner, porque el relay sale por la puerta
+    /// `peers.len() < 2`.
+    #[tokio::test]
+    async fn relayed_packet_does_not_steal_the_relays_address() {
+        let mut net = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+        let host_addr: SocketAddr = "127.0.0.1:7000".parse().unwrap();
+        let peer_b_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        net.peers
+            .insert(1, PeerConnection::new(1, "Host".into(), host_addr));
+        net.peers
+            .insert(2, PeerConnection::new(2, "PeerB".into(), peer_b_addr));
+
+        // Llega la pose de B, pero por el socket del host (eso es exactamente lo que hace
+        // send_unreliable_as).
+        let relayed = IncomingPacket {
+            addr: host_addr,
+            header: PacketHeader::new(protocol::PacketType::PlayerUpdate as u16, 2, 0, 0),
+            payload: PacketPayload::PlayerUpdate {
+                position: [1.0, 1.8, 2.0],
+                rotation: 0.0,
+                animation: "idle".into(),
+                crouch: false,
+                pitch: 0,
+                equipment: [0; 4],
+                held_item: 0,
+                hit_seq: 0,
+                dead: false,
+                revealed: false,
+            },
+        };
+        net.handle_packet(relayed).await;
+
+        assert_eq!(
+            net.peers[&2].addr, peer_b_addr,
+            "la direccion de B no puede ser suplantada por la del relay"
+        );
+        assert_eq!(net.peers[&1].addr, host_addr, "la del host no se toca");
+        // Y la pose SI se aplica: rechazar la direccion no puede costar el dato.
+        assert_eq!(net.peers[&2].position, [1.0, 1.8, 2.0]);
+    }
+
+    /// La contrapartida: una direccion que NO pertenece a ningun otro peer si se adopta, para
+    /// que un re-binding de NAT genuino siga funcionando.
+    #[tokio::test]
+    async fn unclaimed_address_is_still_adopted_after_nat_rebind() {
+        let mut net = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+        let old_addr: SocketAddr = "127.0.0.1:7001".parse().unwrap();
+        let rebound_addr: SocketAddr = "127.0.0.1:7099".parse().unwrap();
+        net.peers
+            .insert(2, PeerConnection::new(2, "PeerB".into(), old_addr));
+
+        let rebound = IncomingPacket {
+            addr: rebound_addr,
+            header: PacketHeader::new(protocol::PacketType::Heartbeat as u16, 2, 0, 0),
+            payload: PacketPayload::Heartbeat,
+        };
+        net.handle_packet(rebound).await;
+
+        assert_eq!(
+            net.peers[&2].addr, rebound_addr,
+            "una direccion sin duenio debe adoptarse (re-binding de NAT)"
+        );
     }
 
     // ─── ADR-016: phantom peers ───
