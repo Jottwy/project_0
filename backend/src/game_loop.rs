@@ -4314,7 +4314,12 @@ impl PhantomDriver {
                 self.movers[i].search_patience = PHANTOM_NOISE_SEARCH_PATIENCE;
                 self.movers[i].search_speed = PHANTOM_NOISE_TRAVEL_SPEED;
                 self.movers[i].noise_expiry = Some(PHANTOM_NOISE_EXPIRY);
-                self.movers[i].nav_waypoints.clear(); // any old plan is irrelevant now
+                // The plan is deliberately NOT thrown away. A second shot is new information about
+                // the same hunt, not a new hunt: the creature should keep walking and re-aim, and
+                // the replan policy already rebuilds the route on its own when the goal drifts more
+                // than PHANTOM_REPLAN_GOAL_DRIFT. Clearing here made every shot in a burst restart
+                // the approach from scratch, which is what "it resets instead of tracking" looked
+                // like in play-test.
                 info!(
                     "MPTRACE step=PH_NOISE event=phantom_investigates phantom_id={} dist={:.0} goal=({:.1},{:.1}) error={:.1}",
                     id,
