@@ -429,5 +429,166 @@ namespace BackroomsSurvival.Tests
             var r = new MsgPackReader(truncated);
             Assert.Throws<Exception>(() => r.ReadInt());
         }
+
+        // ── C5: interning acotado de strings ──
+
+        /// <summary>
+        /// La propiedad que de verdad importa del interning: NO cambia ni un valor decodificado.
+        /// Se lee la misma secuencia dos veces — una con ReadString (sin caché) y otra con
+        /// ReadStringCached — y las cadenas resultantes tienen que ser iguales una a una.
+        /// </summary>
+        [Test]
+        public void ReadStringCachedDecodesTheSameValuesAsReadString()
+        {
+            string[] values = { "idle", "walk", "idle", "run", "walk", "idle", "", "café ☕" };
+
+            var w = new MsgPackWriter();
+            w.WriteArrayHeader(values.Length);
+            foreach (var s in values) w.WriteString(s);
+            byte[] frame = w.ToArray();
+
+            var plain = new MsgPackReader(frame);
+            plain.ReadArrayHeader();
+            var cached = new MsgPackReader(frame);
+            cached.ReadArrayHeader();
+
+            for (int i = 0; i < values.Length; i++)
+            {
+                string expected = plain.ReadString();
+                Assert.AreEqual(expected, cached.ReadStringCached(), $"índice {i}");
+                Assert.AreEqual(values[i], expected, $"índice {i}: el fixture debe round-tripear");
+            }
+        }
+
+        /// <summary>
+        /// El ahorro real: un valor repetido devuelve la MISMA instancia de string, así que un
+        /// snapshot con N entidades en el mismo estado no aloca N cadenas. ReferenceEquals es el
+        /// aserto correcto aquí — AreEqual pasaría igual sin caché y no probaría nada.
+        /// </summary>
+        [Test]
+        public void ReadStringCachedReturnsTheSameInstanceForRepeatedValues()
+        {
+            var w = new MsgPackWriter();
+            w.WriteArrayHeader(3);
+            w.WriteString("idle");
+            w.WriteString("walk");
+            w.WriteString("idle");
+
+            var r = new MsgPackReader(w.ToArray());
+            r.ReadArrayHeader();
+            string first = r.ReadStringCached();
+            string other = r.ReadStringCached();
+            string repeat = r.ReadStringCached();
+
+            Assert.AreSame(first, repeat, "un valor repetido debe reutilizar la instancia cacheada");
+            Assert.AreNotSame(first, other, "valores distintos no deben colapsar a la misma instancia");
+        }
+
+        /// <summary>
+        /// La caché es POR INSTANCIA (una por conexión IPC), nunca estática: dos readers no
+        /// comparten instancias. Es lo que garantiza que al caer la conexión la caché se va con
+        /// el reader — IPCClient.ReadFrames declara el suyo como local.
+        /// </summary>
+        [Test]
+        public void StringCacheIsPerReaderInstanceNotShared()
+        {
+            var w = new MsgPackWriter();
+            w.WriteString("idle");
+            byte[] frame = w.ToArray();
+
+            string a = new MsgPackReader(frame).ReadStringCached();
+            string b = new MsgPackReader(frame).ReadStringCached();
+
+            Assert.AreEqual(a, b);
+            Assert.AreNotSame(a, b, "dos readers distintos no comparten caché (no es estática)");
+        }
+
+        /// <summary>
+        /// Tope duro: pasado el límite deja de cachear, NUNCA crece ni desaloja. Con más valores
+        /// únicos que capacidad, los que entran siguen sirviéndose de caché y los que se quedan
+        /// fuera se decodifican frescos — pero todos con el valor correcto, que es lo innegociable.
+        /// </summary>
+        [Test]
+        public void StringCacheStopsGrowingPastItsCapacityAndStillDecodesCorrectly()
+        {
+            const int unique = 200; // muy por encima de StringCacheCapacity (64)
+            var w = new MsgPackWriter();
+            w.WriteArrayHeader(unique * 2);
+            for (int pass = 0; pass < 2; pass++)
+                for (int i = 0; i < unique; i++)
+                    w.WriteString($"value_{i}");
+
+            var r = new MsgPackReader(w.ToArray());
+            r.ReadArrayHeader();
+            for (int pass = 0; pass < 2; pass++)
+                for (int i = 0; i < unique; i++)
+                    Assert.AreEqual($"value_{i}", r.ReadStringCached(), $"pase {pass}, índice {i}");
+        }
+
+        /// <summary>
+        /// Prefijo compartido: "walk" no debe servirse como acierto de "walking" ni al revés. La
+        /// comparación es exacta byte a byte incluida la longitud.
+        /// </summary>
+        [Test]
+        public void ReadStringCachedDoesNotConfuseValuesSharingAPrefix()
+        {
+            var w = new MsgPackWriter();
+            w.WriteArrayHeader(4);
+            w.WriteString("walk");
+            w.WriteString("walking");
+            w.WriteString("walking");
+            w.WriteString("walk");
+
+            var r = new MsgPackReader(w.ToArray());
+            r.ReadArrayHeader();
+            Assert.AreEqual("walk", r.ReadStringCached());
+            Assert.AreEqual("walking", r.ReadStringCached());
+            Assert.AreEqual("walking", r.ReadStringCached());
+            Assert.AreEqual("walk", r.ReadStringCached());
+        }
+
+        /// <summary>Mismo fallback que ReadString: nil/no-string ⇒ "" y el valor consumido entero.</summary>
+        [Test]
+        public void ReadStringCachedFallsBackToEmptyForNilAndNonString()
+        {
+            var w = new MsgPackWriter();
+            w.WriteArrayHeader(3);
+            w.WriteNil();
+            w.WriteInt(42);
+            w.WriteString("ok");
+
+            var r = new MsgPackReader(w.ToArray());
+            r.ReadArrayHeader();
+            Assert.AreEqual("", r.ReadStringCached(), "nil ⇒ \"\"");
+            Assert.AreEqual("", r.ReadStringCached(), "int ⇒ \"\", consumido entero");
+            Assert.AreEqual("ok", r.ReadStringCached(), "el valor siguiente debe seguir alineado");
+        }
+
+        /// <summary>
+        /// La caché sobrevive a Reset() (mismo reader, frame siguiente de la MISMA conexión) y
+        /// sigue devolviendo el valor correcto pese a que el buffer subyacente cambió de
+        /// contenido — la caché guarda copia propia de los bytes, no un puntero al buffer.
+        /// </summary>
+        [Test]
+        public void StringCacheSurvivesResetAndDoesNotAliasTheFrameBuffer()
+        {
+            var w1 = new MsgPackWriter();
+            w1.WriteString("idle");
+            byte[] frame1 = w1.ToArray();
+
+            var w2 = new MsgPackWriter();
+            w2.WriteString("idle");
+            byte[] frame2 = w2.ToArray();
+
+            var reader = new MsgPackReader(null);
+            reader.Reset(frame1, frame1.Length);
+            string first = reader.ReadStringCached();
+
+            reader.Reset(frame2, frame2.Length);
+            string second = reader.ReadStringCached();
+
+            Assert.AreEqual("idle", second);
+            Assert.AreSame(first, second, "el acierto de caché debe cruzar frames de la misma conexión");
+        }
     }
 }

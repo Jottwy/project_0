@@ -382,6 +382,65 @@ namespace BackroomsSurvival.Net
             return s;
         }
 
+        // ── C5: bounded string interning ──────────────────────────────────────
+        //
+        // Applied by callers to exactly 5 low-cardinality fields (state/animation/entity_type/
+        // item_type/kind — a handful of repeated values decoded once per entity per snapshot).
+        // Deliberately NOT applied to name/source or anything else of open cardinality: a cache
+        // over those is a slow leak wearing a performance-fix costume — bad hit rate, unbounded
+        // growth. Per-INSTANCE (one MsgPackReader per IPC connection, never static/shared), hard
+        // cap, stops caching once full (never evicts/grows past it). No explicit clear-on-
+        // disconnect call exists because none is needed: IPCClient.ReadFrames declares its
+        // `reader` as a local, so it (and this cache) is discarded when that call returns
+        // (connection drop) and a fresh instance is built on the next reconnect. Comparison is
+        // exact byte-for-byte against the original UTF-8 bytes — never assumes ASCII, never hashes.
+        private struct CachedStr { public byte[] Bytes; public string Value; }
+        private readonly List<CachedStr> _stringCache = new List<CachedStr>();
+        private const int StringCacheCapacity = 64;
+
+        /// <summary>Reads a string value, reusing a cached managed string instance when the
+        /// decoded bytes exactly match one already seen on THIS reader. Same nil/non-string
+        /// fallback as <see cref="ReadString"/> ("").</summary>
+        public string ReadStringCached()
+        {
+            byte c = NextByte();
+            int n;
+            if (c >= 0xa0 && c <= 0xbf) n = c & 0x1f;
+            else if (c == 0xd9) n = NextByte();
+            else if (c == 0xda) n = ReadU16();
+            else if (c == 0xdb) n = (int)ReadU32();
+            else { SkipValue(c); return ""; }
+
+            CheckBounds(n);
+            int start = _pos;
+            for (int i = 0; i < _stringCache.Count; i++)
+            {
+                var entry = _stringCache[i];
+                if (entry.Bytes.Length == n && BytesEqual(entry.Bytes, _data, start, n))
+                {
+                    _pos += n;
+                    return entry.Value;
+                }
+            }
+
+            string s = Encoding.UTF8.GetString(_data, start, n);
+            _pos += n;
+            if (_stringCache.Count < StringCacheCapacity)
+            {
+                var bytes = new byte[n];
+                Array.Copy(_data, start, bytes, 0, n);
+                _stringCache.Add(new CachedStr { Bytes = bytes, Value = s });
+            }
+            return s;
+        }
+
+        private static bool BytesEqual(byte[] a, byte[] data, int offset, int n)
+        {
+            for (int i = 0; i < n; i++)
+                if (a[i] != data[offset + i]) return false;
+            return true;
+        }
+
         /// <summary>Fills <paramref name="dest"/> from a msgpack array, zeroing slots past what
         /// the wire carried — mirrors IPCParse.FillIntArray.</summary>
         public void ReadIntArrayInto(int[] dest)

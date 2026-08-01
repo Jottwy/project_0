@@ -265,7 +265,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "name")) r.name = reader.ReadString();
                 else if (MsgPackReader.Is(k, "position")) r.position = reader.ReadVec3();
                 else if (MsgPackReader.Is(k, "rotation")) r.rotation = reader.ReadFloat();
-                else if (MsgPackReader.Is(k, "animation")) r.animation = reader.ReadString();
+                else if (MsgPackReader.Is(k, "animation")) r.animation = reader.ReadStringCached();
                 else if (MsgPackReader.Is(k, "crouch")) r.crouch = reader.ReadBool();
                 else if (MsgPackReader.Is(k, "pitch")) r.pitch = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "equipment")) reader.ReadIntArrayInto(r.equipment);
@@ -299,7 +299,7 @@ namespace BackroomsSurvival.Net
             {
                 var k = r.ReadKey();
                 if (MsgPackReader.Is(k, "volume_id")) v.volumeId = (uint)r.ReadInt();
-                else if (MsgPackReader.Is(k, "kind")) v.kind = r.ReadString();
+                else if (MsgPackReader.Is(k, "kind")) v.kind = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "base_chunk")) v.baseChunk = r.ReadIntArray2();
                 else if (MsgPackReader.Is(k, "involved_layers")) v.involvedLayers = r.ReadIntArray();
                 else if (MsgPackReader.Is(k, "footprint_cell_min")) v.footprintCellMin = r.ReadIntArray2();
@@ -638,7 +638,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "template_id")) c.templateId = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "rotation")) c.rotation = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "mirrored")) c.mirrored = r.ReadBool();
-                else if (MsgPackReader.Is(k, "state")) c.state = r.ReadString();
+                else if (MsgPackReader.Is(k, "state")) c.state = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "has_workbench")) c.hasWorkbench = r.ReadBool();
                 else if (MsgPackReader.Is(k, "layout_grid_size")) c.layoutGridSize = Mathf.Max(1, (int)r.ReadInt());
                 else if (MsgPackReader.Is(k, "layout_cell_size")) c.layoutCellSize = r.ReadFloat();
@@ -806,10 +806,10 @@ namespace BackroomsSurvival.Net
             {
                 var k = r.ReadKey();
                 if (MsgPackReader.Is(k, "id")) e.id = (uint)r.ReadInt();
-                else if (MsgPackReader.Is(k, "entity_type")) e.entityType = r.ReadString();
+                else if (MsgPackReader.Is(k, "entity_type")) e.entityType = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "position")) e.position = r.ReadVec3();
                 else if (MsgPackReader.Is(k, "rotation")) e.rotation = r.ReadFloat();
-                else if (MsgPackReader.Is(k, "state")) e.state = r.ReadString();
+                else if (MsgPackReader.Is(k, "state")) e.state = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "health_pct")) e.healthPct = r.ReadFloat();
                 else r.Skip();
             }
@@ -832,7 +832,7 @@ namespace BackroomsSurvival.Net
             {
                 var k = r.ReadKey();
                 if (MsgPackReader.Is(k, "id")) i.id = (uint)r.ReadInt();
-                else if (MsgPackReader.Is(k, "item_type")) i.itemType = r.ReadString();
+                else if (MsgPackReader.Is(k, "item_type")) i.itemType = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "position")) i.position = r.ReadVec3();
                 else if (MsgPackReader.Is(k, "quantity")) i.quantity = (int)r.ReadInt();
                 else r.Skip();
@@ -1038,7 +1038,7 @@ namespace BackroomsSurvival.Net
             {
                 var k = r.ReadKey();
                 if (MsgPackReader.Is(k, "id")) m.id = (uint)r.ReadInt();
-                else if (MsgPackReader.Is(k, "kind")) m.kind = r.ReadString();
+                else if (MsgPackReader.Is(k, "kind")) m.kind = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "world_min")) m.worldMin = r.ReadVec3();
                 else if (MsgPackReader.Is(k, "world_max")) m.worldMax = r.ReadVec3();
                 else r.Skip();
