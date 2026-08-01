@@ -2059,14 +2059,14 @@ namespace BackroomsSurvival.Gameplay
                 fixtureEmission = templateId == 15 ? 0.42f : templateId == 16 ? 0.5f : 0.55f;
             }
 
-            var fixture = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var fixture = new GameObject("Cube");
             fixture.transform.SetParent(lightObj.transform, false);
             fixture.transform.localScale = new Vector3(1.65f, 0.045f, 0.22f);
-            fixture.GetComponent<Renderer>().sharedMaterial =
+            fixture.AddComponent<MeshFilter>().sharedMesh = CubeMesh;
+            fixture.AddComponent<MeshRenderer>().sharedMaterial =
                 fixtureEmission > 0f
                     ? MaterialHelper.MakeEmissive(fixtureColor, fixtureEmission)
                     : Lit(fixtureColor);
-            Destroy(fixture.GetComponent<Collider>());
 
             if (!isOff)
             {
@@ -2099,12 +2099,12 @@ namespace BackroomsSurvival.Gameplay
             lightObj.transform.SetParent(parent, false);
             lightObj.transform.localPosition = pos;
 
-            var fixture = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            var fixture = new GameObject("Cube");
             fixture.transform.SetParent(lightObj.transform, false);
             fixture.transform.localScale = new Vector3(5.8f, 0.045f, 0.24f);
-            fixture.GetComponent<Renderer>().sharedMaterial =
+            fixture.AddComponent<MeshFilter>().sharedMesh = CubeMesh;
+            fixture.AddComponent<MeshRenderer>().sharedMaterial =
                 MaterialHelper.MakeEmissive(fixtureColor, Mathf.Max(0.35f, intensity * 0.9f));
-            Destroy(fixture.GetComponent<Collider>());
 
             var light = lightObj.AddComponent<Light>();
             light.type = LightType.Point;
@@ -3731,15 +3731,33 @@ namespace BackroomsSurvival.Gameplay
             }
         }
 
+        // Captured once from Unity's built-in primitive cube (same UVs/normals as
+        // GameObject.CreatePrimitive) and shared read-only by every slab/fixture —
+        // avoids the BoxCollider alloc+Destroy that CreatePrimitive pays for on
+        // every call. Never mutate this mesh; Instantiate a copy if that's ever needed.
+        private static Mesh _cachedCubeMesh;
+        private static Mesh CubeMesh
+        {
+            get
+            {
+                if (_cachedCubeMesh == null)
+                {
+                    var temp = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                    _cachedCubeMesh = temp.GetComponent<MeshFilter>().sharedMesh;
+                    Destroy(temp);
+                }
+                return _cachedCubeMesh;
+            }
+        }
+
         private static void CreateSlab(Transform parent, string name, Vector3 pos, Vector3 scale, Material mat)
         {
-            var go = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            go.name = name;
+            var go = new GameObject(name);
             go.transform.SetParent(parent, false);
             go.transform.localPosition = pos;
             go.transform.localScale = scale;
-            go.GetComponent<Renderer>().sharedMaterial = mat;
-            Destroy(go.GetComponent<Collider>());
+            go.AddComponent<MeshFilter>().sharedMesh = CubeMesh;
+            go.AddComponent<MeshRenderer>().sharedMaterial = mat;
         }
 
         // ── Phase 2.9B: chunk-local static mesh batching ──
