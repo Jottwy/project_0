@@ -2,8 +2,32 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 
+// Client-side mirrors of the backend's IPC wire types (backend/src/ipc/mod.rs). One class per
+// `serde` struct, decoded straight off the msgpack bytes.
+//
+// ── The decode contract, once, so the 22 Parse methods below don't each restate it ──
+//
+//  * Every `Parse(MsgPackReader)` reads its OWN map header, then loops the pairs matching keys
+//    with `MsgPackReader.Is(key, "...")`. Order-independent by construction.
+//  * `else r.Skip()` on an unrecognized key is MANDATORY, not defensive padding: it is what lets
+//    a newer backend add a field without breaking this client (and what makes every
+//    `skip_serializing_if` field on the Rust side safe).
+//  * A key the wire omits leaves the field at its declared default — the C# initializer IS the
+//    fallback, so lists/arrays stay empty rather than null.
+//  * Root-tagged messages (WorldState, DeltaUpdate, ChunkData, Event) instead take
+//    `Parse(reader, remainingPairs)`: IPCClient.Dispatch has already eaten the map header and the
+//    "type" pair, so they must NOT read a header of their own.
+//  * Post-fixups (chunk_schema<=0 → 1, cell sizes <=0 → defaults, macro_size <=0 → 1) run AFTER
+//    the loop, never inside it — key order must not change the result.
+//
+// Nothing here allocates an intermediate Dictionary/object[]/box; that redesign is what closed
+// docs/STATE.md's "mayor coste real de la ruta de parseo". The one deliberate exception is
+// GameEventMsg.data — see IPCParse at the bottom of this file for why it stays a generic tree.
+
 namespace BackroomsSurvival.Net
 {
+    // ───────────────────────── Local player state ─────────────────────────
+
     public class StatsMsg
     {
         public float health, hunger, thirst, sanity;
@@ -91,6 +115,10 @@ namespace BackroomsSurvival.Net
             return m;
         }
     }
+
+    // ──────────── grid_gen chunk reply (ServerMessage::ChunkData, "chunk_data") ────────────
+    // The live streaming path: ChunkStreamer asks for one chunk, the backend answers with its
+    // 5 m tile-wall bitmask (+ ADR-034 room zones). Independent of the legacy ChunkViewMsg below.
 
     /// <summary>
     /// ADR-034 — tipo de zona estampada por la Fase 4 de grid_gen.
@@ -233,6 +261,8 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    // ───────────────────────── Remote players (pose relay) ─────────────────────────
+
     public class RemotePlayerMsg
     {
         public int id;
@@ -277,6 +307,9 @@ namespace BackroomsSurvival.Net
             return r;
         }
     }
+
+    // ─────────── Volumetric V0 "Rubik grid" (render-only, near-spawn showcase chunk) ───────────
+    // Migration scaffolding, not the live renderer — see docs/STATE.md on volumetric_grid.rs.
 
     public class InterLayerVolumeMsg
     {
@@ -614,12 +647,35 @@ namespace BackroomsSurvival.Net
         public bool HasEdgeLayout => hasEdgeLayout;
         public bool HasBackendLayout => hasBackendLayout;
 
+        // ── Dedup sets for the two log-once diagnostics below ──────────────────
+        //
+        // Both stay small by construction, so they are not a memory concern: the invalid-layout
+        // key is (grid << 20) ^ length with grid effectively always 10, i.e. a handful of
+        // distinct values; the volume key only gains an entry per volume-carrying chunk, and
+        // volumes exist on showcase chunks only.
+        //
+        // They DO need the reset below, though. Being `static` they survive an editor domain
+        // reload, so without it the first Play session consumes the "once" and every later
+        // session in the same editor process is silently deaf to these traces — the failure mode
+        // is a diagnostic that stops working exactly when you go looking for it. Same
+        // ResetStatics pattern as IPCClient and ZoneRegistry.
+        //
+        // Touched from the IPC network thread (Dispatch → WorldStateMsg.Parse → here), NOT the
+        // main thread, and deliberately unsynchronized: there is exactly one reader thread. If a
+        // second one ever parses chunks, these two Add calls need a lock.
         private static readonly HashSet<int> _loggedInvalidLayouts = new HashSet<int>();
         // Tuple key, not an interpolated string: only the Debug.Log below is deduplicated, so the
         // key itself was still being built for every volume-carrying chunk of every snapshot,
         // long after the log had gone quiet.
         private static readonly HashSet<(int, int, int, int)> _loggedVolumeParseChunks
             = new HashSet<(int, int, int, int)>();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics()
+        {
+            _loggedInvalidLayouts.Clear();
+            _loggedVolumeParseChunks.Clear();
+        }
 
         /// <summary>Same post-fixups, same SplitPackedLayout() call, same MPTRACE log-once as
         /// before the boxing removal — only the source of the fields changed (token walk instead
@@ -789,6 +845,8 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    // ───────────────────────── Entities & world items ─────────────────────────
+
     public class EntityViewMsg
     {
         public uint id;
@@ -840,6 +898,9 @@ namespace BackroomsSurvival.Net
             return i;
         }
     }
+
+    // ──────────── STP objects replicated by the host (items, buildings, carryables, ...) ────────────
+    // Each `*Msg` is what comes DOWN in world_state; each `*Spec` is what the host sends UP.
 
     /// <summary>
     /// Phase 1 — one host-authoritative STP world item replicated in world_state.stp_items.
@@ -1113,6 +1174,9 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    // ──────── Root messages: what IPCClient.Dispatch matches on the "type" tag ────────
+    // These take (reader, remainingPairs) — Dispatch already consumed the header and the tag.
+
     public class WorldStateMsg
     {
         public long tick;
@@ -1209,6 +1273,21 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// Accessors over the generic <c>Dictionary&lt;string,object&gt;</c> tree that
+    /// <see cref="MsgPackReader.ReadValue"/> produces.
+    ///
+    /// NOT DEAD CODE, despite appearances. Every message type moved to the streaming
+    /// <c>Parse(MsgPackReader)</c> path and the old <c>Parse(object)</c> overloads are gone, so
+    /// nothing in THIS file calls these any more — but <see cref="GameEventMsg.data"/> is still
+    /// a free-form object tree (<c>serde_json::Value</c> on the wire), and its consumers read it
+    /// exclusively through here: PvpFeedbackController, StpPickupController,
+    /// StpCarryablePickupController, CorpseLootSync, AuthoritativePoseApplier,
+    /// PhantomAttackHandler, InventoryRestorer.
+    ///
+    /// Events are discrete and low-frequency, so the boxing this path implies is not worth
+    /// removing — that was the explicit trade in the decoder sweep, not an oversight.
+    /// </summary>
     public static class IPCParse
     {
         public static object Get(Dictionary<string, object> d, string key)
@@ -1232,8 +1311,6 @@ namespace BackroomsSurvival.Net
         public static long L(Dictionary<string, object> d, string key) => ToLong(Get(d, key));
         public static bool B(Dictionary<string, object> d, string key) => Get(d, key) is bool b && b;
         public static string S(Dictionary<string, object> d, string key) => Get(d, key) as string ?? "";
-
-        public static int Len(object v) => v is object[] a ? a.Length : 0;
 
         public static Vector3 Vec3(object v)
         {
