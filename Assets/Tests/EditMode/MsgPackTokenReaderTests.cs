@@ -331,12 +331,27 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ReadIntArray2DefaultsToZeroZeroForShortArrays()
         {
+            // Mismo molde que ReadVec3DefaultsToZeroForNilOrShortArrays: envoltorio + los casos
+            // cortos DENTRO. La versión anterior escribía solo la cabecera del envoltorio (un
+            // byte, 0x91) y nada más, así que el ReadIntArray2 se salía del frame y el test
+            // moría por excepción sin llegar al assert — nunca ejercitó lo que dice ejercitar.
             var w = new MsgPackWriter();
-            w.WriteArrayHeader(1);
+            w.WriteArrayHeader(3);
+            w.WriteNil();               // nil ⇒ [0,0]
+            w.WriteArrayHeader(1);      // array corto (1 de 2) ⇒ [0,0], y hay que consumir su int
+            w.WriteInt(7);
+            w.WriteInt(0x2A);           // centinela: solo se lee si el cursor quedó alineado
 
             var r = new MsgPackReader(w.ToArray());
             r.ReadArrayHeader();
-            CollectionAssert.AreEqual(new[] { 0, 0 }, r.ReadIntArray2());
+            CollectionAssert.AreEqual(new[] { 0, 0 }, r.ReadIntArray2(), "nil ⇒ [0,0]");
+            CollectionAssert.AreEqual(new[] { 0, 0 }, r.ReadIntArray2(), "array de 1 ⇒ [0,0]");
+            // La propiedad que de verdad importa: un array corto tiene que CONSUMIR sus elementos
+            // antes de devolver el default. Si no, el cursor queda desalineado y todo lo que se
+            // lea después en ese frame sale corrupto en silencio — la clase de fallo que no da la
+            // cara en un test de valor de retorno. Misma técnica que
+            // SkipConsumesExactlyOneValueForEveryOpcodeIncludingExt.
+            Assert.AreEqual(0x2AL, r.ReadInt(), "el array corto dejó el cursor desalineado");
         }
 
         [Test]
