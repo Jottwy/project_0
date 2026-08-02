@@ -25,6 +25,11 @@ namespace BackroomsSurvival.Gameplay
             // ADR-041: turns a local gunshot into a noise the robapieles can hear. Hooks the
             // vendor's own trigger event; harmless when no firearm is equipped.
             EnsureComponent<NoiseReporter>();
+            // ADR-046: captura de voz. Arranca CERRADA (el micrófono es opt-in y se persiste en
+            // PlayerPrefs), así que añadir el componente no abre nada. Su pareja, RemoteVoicePlayer,
+            // NO se añade aquí: vive en Assembly-CSharp porque necesita ProxyAudioCurves, y este
+            // asmdef no puede verlo — se auto-registra, como CorpseSpawner.
+            EnsureComponent<VoiceCapture>();
             // EnsureComponent added it to THIS GameObject (it's in no scene/prefab), so forward
             // the inspector toggle before NetworkInitializer launches the backend (in Start).
             //

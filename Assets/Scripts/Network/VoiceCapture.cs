@@ -1,0 +1,318 @@
+using System;
+using Concentus;
+using Concentus.Enums;
+using UnityEngine;
+using UnityEngine.InputSystem;
+
+namespace BackroomsSurvival.Net
+{
+    /// <summary>
+    /// ADR-046 Fase 3 — captura el micrófono local, lo codifica en Opus y lo manda al backend
+    /// propio, que decide a quién llega (el filtro de proximidad autoritativo vive en el host).
+    ///
+    /// MICRÓFONO OPT-IN. Arranca CERRADO y solo se abre cuando el jugador lo enciende: es dato
+    /// personal, y un componente que empieza a grabar por su cuenta no es aceptable ni aunque
+    /// nadie llegue a oírlo. Mientras transmite hay señal visible (<see cref="IsTransmitting"/>,
+    /// que el HUD lee).
+    ///
+    /// DOS MODOS, los dos pedidos: push-to-talk (defecto) y voz abierta con detección de
+    /// actividad. PTT es el defecto porque no cuesta ancho de banda cuando nadie habla y porque
+    /// en un juego de sigilo un micro siempre abierto delata a quien está escondido sin que él
+    /// lo decida.
+    ///
+    /// CERO ALLOCS EN EL CAMINO CALIENTE: un buffer de captura, uno de PCM y uno de salida, los
+    /// tres reservados una vez. La API de Concentus 2.x es <c>Span</c>, así que se codifica
+    /// directamente sobre ellos sin copias intermedias.
+    ///
+    /// Removible: borra el archivo y nadie puede hablar. Nada más del sistema depende de él.
+    /// </summary>
+    public sealed class VoiceCapture : MonoBehaviour
+    {
+        // ── Formato. Cambiar cualquiera de los tres rompe la simetría con el reproductor ──
+
+        /// <summary>16 kHz mono: banda ancha de voz. Opus admite 8/12/16/24/48 kHz y 16 es el
+        /// punto donde la voz deja de sonar a teléfono sin pagar el doble de CPU.</summary>
+        public const int SampleRate = 16000;
+
+        /// <summary>20 ms por trama, el tamaño canónico de Opus para VOIP.</summary>
+        public const int FrameSamples = SampleRate / 50; // 320
+
+        /// <summary>Dos tramas por datagrama. A una sola, la cabecera IP/UDP (28 B) pesaría casi
+        /// tanto como la carga útil (~30-60 B); a dos, el coste relativo se parte por la mitad a
+        /// cambio de 20 ms de latencia. Medido: una trama de tono puro sale a 30 B.</summary>
+        public const int FramesPerPacket = 2;
+
+        // ── Ajustes ──
+
+        [Header("Micrófono (opt-in: arranca CERRADO)")]
+        [Tooltip("Dispositivo de captura. Vacío = el que Unity considere por defecto.")]
+        [SerializeField] private string _device = "";
+
+        [Header("Activación")]
+        [Tooltip("Voz abierta por detección de actividad. Desmarcado = push-to-talk.")]
+        [SerializeField] private bool _openMic;
+
+        [Tooltip("Tecla de push-to-talk.")]
+        [SerializeField] private Key _pushToTalkKey = Key.V;
+
+        [Tooltip("Umbral de energía RMS (0..1) por encima del cual la voz abierta transmite. Un " +
+                 "umbral fijo y bajo convierte un ventilador en emisión continua.")]
+        [Range(0f, 0.2f)]
+        [SerializeField] private float _activationThreshold = 0.02f;
+
+        [Tooltip("Segundos que sigue transmitiendo tras caer bajo el umbral. Sin esta cola, la " +
+                 "voz abierta corta el final de cada frase.")]
+        [Range(0f, 2f)]
+        [SerializeField] private float _releaseSeconds = 0.3f;
+
+        [Header("Códec")]
+        [Tooltip("Bitrate objetivo en bps. Opus es VBR: en silencio o en tono puro baja solo.")]
+        [Range(8000, 64000)]
+        [SerializeField] private int _bitrate = 24000;
+
+        [Tooltip("Complejidad del codificador (0-10). 5 cuesta ~1,2 ms por trama de 20 ms sobre " +
+                 "el Mono de Unity, medido; subirlo come presupuesto de frame por poca calidad.")]
+        [Range(0, 10)]
+        [SerializeField] private int _complexity = 5;
+
+        // ── Estado público, leído por el HUD ──
+
+        /// <summary>True mientras el micro está abierto Y saliendo audio. Es lo que el indicador
+        /// debe mostrar: "te están oyendo", no "tienes el micro encendido".</summary>
+        public bool IsTransmitting { get; private set; }
+
+        /// <summary>Micrófono habilitado por el jugador. Persistido en PlayerPrefs.</summary>
+        public bool MicEnabled
+        {
+            get => _micEnabled;
+            set
+            {
+                if (_micEnabled == value) return;
+                _micEnabled = value;
+                PlayerPrefs.SetInt(PrefMicEnabled, value ? 1 : 0);
+                if (value) StartDevice();
+                else StopDevice();
+            }
+        }
+
+        public bool OpenMic
+        {
+            get => _openMic;
+            set { _openMic = value; PlayerPrefs.SetInt(PrefOpenMic, value ? 1 : 0); }
+        }
+
+        private const string PrefMicEnabled = "voice.mic_enabled";
+        private const string PrefOpenMic = "voice.open_mic";
+
+        // ── Interior ──
+
+        private IPCClient _ipc;
+        private IOpusEncoder _encoder;
+        private AudioClip _clip;
+        private string _activeDevice;
+        private bool _micEnabled;
+
+        private float[] _capture;        // ventana leída del AudioClip del micro
+        private short[] _pcm;            // la misma ventana como PCM 16 bits
+        private byte[] _packet;          // salida codificada (FramesPerPacket tramas)
+        private int _packetBytes;        // bytes usados de _packet
+        private int _framesInPacket;
+
+        private int _readHead;           // posición ya consumida del clip circular
+        private ushort _seq;
+        private float _holdUntil;        // cola de la detección de actividad
+        private bool _warnedNoDevice;
+
+        private void Awake()
+        {
+            _capture = new float[FrameSamples];
+            _pcm = new short[FrameSamples];
+            // Techo generoso: una trama Opus a 64 kbps son 160 B; 2 tramas + cabeceras de
+            // longitud caben de sobra en 512 y el buffer se reserva UNA vez.
+            _packet = new byte[512];
+
+            _micEnabled = PlayerPrefs.GetInt(PrefMicEnabled, 0) != 0;
+            _openMic = PlayerPrefs.GetInt(PrefOpenMic, _openMic ? 1 : 0) != 0;
+        }
+
+        private void OnEnable()
+        {
+            // ADR-046: la 2.x de Concentus intenta cargar un libopus NATIVO si lo encuentra. El
+            // motivo entero de elegir códec gestionado era no depender de un binario por
+            // plataforma, así que se apaga explícitamente.
+            OpusCodecFactory.AttemptToUseNativeLibrary = false;
+            if (_micEnabled) StartDevice();
+        }
+
+        private void OnDisable() => StopDevice();
+
+        private void Update()
+        {
+            if (!_micEnabled || _clip == null)
+            {
+                IsTransmitting = false;
+                return;
+            }
+            if (_ipc == null && !IPCClient.TryGetInstance(out _ipc)) return;
+
+            // El clip del micro es CIRCULAR. Sin consumir por tramas completas y sin detectar el
+            // envolvimiento, se leen muestras rancias o repetidas y la voz suena entrecortada.
+            int writeHead = Microphone.GetPosition(_activeDevice);
+            if (writeHead < 0) return;
+
+            int available = writeHead - _readHead;
+            if (available < 0) available += _clip.samples;
+
+            // Si nos hemos quedado más de medio clip por detrás, el escritor nos ha dado la vuelta
+            // y lo que hay en medio ya es basura: saltar es preferible a reproducir audio
+            // corrupto y quedarse permanentemente atrás.
+            if (available > _clip.samples / 2)
+            {
+                _readHead = writeHead;
+                return;
+            }
+
+            while (available >= FrameSamples)
+            {
+                _clip.GetData(_capture, _readHead);
+                _readHead = (_readHead + FrameSamples) % _clip.samples;
+                available -= FrameSamples;
+                ProcessFrame();
+            }
+        }
+
+        private void ProcessFrame()
+        {
+            bool open = ShouldTransmit();
+            IsTransmitting = open;
+            if (!open)
+            {
+                // Descartar el paquete a medias: mandar media ráfaga al soltar la tecla haría que
+                // el oyente reprodujera un fragmento suelto sin su continuación.
+                _framesInPacket = 0;
+                _packetBytes = 0;
+                return;
+            }
+
+            for (int i = 0; i < FrameSamples; i++)
+            {
+                float s = _capture[i];
+                if (s > 1f) s = 1f; else if (s < -1f) s = -1f;
+                _pcm[i] = (short)(s * short.MaxValue);
+            }
+
+            // El formato del datagrama (cabecera de longitud por trama) vive en VoicePacket, que
+            // es el mismo código que usa el reproductor para deshacerlo.
+            int offset = _packetBytes;
+            int payloadStart = VoicePacket.PayloadOffset(_packet, offset);
+            if (payloadStart < 0) { _framesInPacket = 0; _packetBytes = 0; return; }
+
+            int room = _packet.Length - payloadStart;
+            int written;
+            try
+            {
+                written = _encoder.Encode(
+                    new ReadOnlySpan<short>(_pcm),
+                    FrameSamples,
+                    new Span<byte>(_packet, payloadStart, room),
+                    room);
+            }
+            catch (OpusException e)
+            {
+                Debug.LogWarning($"[VoiceCapture] Opus encode failed: {e.Message}");
+                _framesInPacket = 0;
+                _packetBytes = 0;
+                return;
+            }
+            if (written <= 0) return;
+
+            int end = VoicePacket.SealFrame(_packet, offset, written);
+            if (end < 0) { _framesInPacket = 0; _packetBytes = 0; return; }
+            _packetBytes = end;
+            _framesInPacket++;
+
+            if (_framesInPacket >= FramesPerPacket)
+            {
+                _ipc.SendVoice(_seq, _packet, _packetBytes);
+                _seq++; // envuelve a propósito: el receptor compara diferencias, no absolutos
+                _framesInPacket = 0;
+                _packetBytes = 0;
+            }
+        }
+
+        private bool ShouldTransmit()
+        {
+            if (!_openMic)
+            {
+                var kb = Keyboard.current;
+                // Input System: UnityEngine.Input.GetKey lanza con el input viejo deshabilitado.
+                return kb != null && kb[_pushToTalkKey].isPressed;
+            }
+
+            double sum = 0;
+            for (int i = 0; i < FrameSamples; i++) sum += (double)_capture[i] * _capture[i];
+            float rms = Mathf.Sqrt((float)(sum / FrameSamples));
+
+            if (rms >= _activationThreshold) _holdUntil = Time.time + _releaseSeconds;
+            return Time.time < _holdUntil;
+        }
+
+        private void StartDevice()
+        {
+            if (_clip != null) return;
+            if (Microphone.devices.Length == 0)
+            {
+                if (!_warnedNoDevice)
+                {
+                    _warnedNoDevice = true;
+                    Debug.LogWarning("[VoiceCapture] No microphone device; voice stays off.");
+                }
+                return;
+            }
+
+            _activeDevice = string.IsNullOrEmpty(_device) ? Microphone.devices[0] : _device;
+
+            // El dispositivo puede no aceptar 16 kHz. Preguntar antes y remuestrear NO está en la
+            // V1: si el rango no incluye 16 kHz se avisa y se deja apagado, que es honesto y
+            // ruidoso, en vez de capturar a otra frecuencia y sonar a ardilla.
+            Microphone.GetDeviceCaps(_activeDevice, out int minFreq, out int maxFreq);
+            bool supports = (minFreq == 0 && maxFreq == 0) || (minFreq <= SampleRate && SampleRate <= maxFreq);
+            if (!supports)
+            {
+                Debug.LogWarning($"[VoiceCapture] '{_activeDevice}' no admite {SampleRate} Hz " +
+                                 $"(rango {minFreq}-{maxFreq}); voz desactivada.");
+                return;
+            }
+
+            _encoder = OpusCodecFactory.CreateEncoder(SampleRate, 1, OpusApplication.OPUS_APPLICATION_VOIP);
+            _encoder.Bitrate = _bitrate;
+            _encoder.Complexity = _complexity;
+            _encoder.SignalType = OpusSignal.OPUS_SIGNAL_VOICE;
+            // FEC en banda + 10 % de pérdida declarada: el transporte es NO FIABLE a propósito
+            // (ADR-039), así que el códec tiene que asumir que va a perder paquetes.
+            _encoder.UseInbandFEC = true;
+            _encoder.PacketLossPercent = 10;
+            // DTX: en silencio el codificador emite tramas mínimas en vez de callar del todo, y
+            // eso mantiene vivo el estado del decodificador del otro lado.
+            _encoder.UseDTX = true;
+
+            _clip = Microphone.Start(_activeDevice, true, 1, SampleRate);
+            _readHead = 0;
+            _framesInPacket = 0;
+            _packetBytes = 0;
+            Debug.Log($"[VoiceCapture] Mic ON device='{_activeDevice}' {SampleRate} Hz, " +
+                      $"mode={(_openMic ? "open" : "push-to-talk")}");
+        }
+
+        private void StopDevice()
+        {
+            IsTransmitting = false;
+            if (_clip == null) return;
+            if (!string.IsNullOrEmpty(_activeDevice)) Microphone.End(_activeDevice);
+            _clip = null;
+            _encoder = null; // sin Dispose: IOpusEncoder no es IDisposable en 2.2.2
+            _framesInPacket = 0;
+            _packetBytes = 0;
+        }
+    }
+}
