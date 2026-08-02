@@ -1,17 +1,19 @@
 # ADR-047 — El robapieles hiere a quien ataca, y oye a quien dispara
 
-> **ESTADO: PROPUESTA — BORRADOR SIN APPENDEAR.**
-> Este archivo NO está todavía en `../DECISIONS.md`. Se redactó aparte a propósito:
-> al escribirlo, `docs/DECISIONS.md` tenía cambios **sin commitear** de una sesión
-> paralela (ADR-045/046, voz + reserva de `VoiceFrame = 0x50`), y la regla dura #11
-> exige Edit anclado sobre un archivo estable. **Antes de appendear:** confirmar que
-> la otra sesión commiteó, releer el último ADR del archivo, anclar el `old_string`
-> a él, y verificar `wc -l docs/DECISIONS.md` antes y después.
+> **ESTADO: APPENDEADO A `../DECISIONS.md` (2026-08-02) — este archivo es la FORMA LARGA, no la ley.**
+> La entrada canónica vive en `docs/DECISIONS.md` (línea 1654, `## ADR-047 — …`) y es la
+> que manda. Este documento se conserva porque lleva el diagnóstico con números de línea
+> y los bloques de código del payload, que la entrada del registro comprime.
 >
-> - Fecha de redacción: 2026-08-02
+> El append se hizo con Edit anclado al final del archivo según la regla dura #11, una vez
+> la sesión paralela de ADR-045/046 commiteó: `docs/DECISIONS.md` 1652 → 1688 líneas,
+> +36 solo inserciones, verificado antes y después.
+>
+> - Fecha de redacción: 2026-08-02 · appendeado el 2026-08-02
+> - Estado real: IMPLEMENTADA (`2a007c8`, `7171559`), **PENDIENTE DE PLAYTEST A 2 JUGADORES**
 > - Depende de: ADR-009, ADR-016, ADR-025, ADR-029, ADR-039, ADR-041, ADR-042, ADR-043
 > - Enmienda de forma acotada: ADR-041 (punto 1), ADR-043 (deuda de daño), ADR-016 (alcance de la autoridad)
-> - Coordinar el bump de `WIRE_SCHEMA_VERSION` con ADR-046
+> - `WIRE_SCHEMA_VERSION` 15 → 16 (ADR-046 leyó la constante después y tomó el 17)
 
 ## Contexto
 
