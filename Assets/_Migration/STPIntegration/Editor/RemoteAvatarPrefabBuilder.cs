@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using PolymindGames;
 using UnityEditor;
 using UnityEngine;
@@ -25,8 +26,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
     /// from rp.equipment, ADR-022) + ProxyHeldItemHook (attaches the held wieldable's pickup mesh
     /// to Hand.R from rp.heldItem, with per-category placement + finger grip from a GripPoseSet,
     /// ADR-023) + ProxyHitReactionHook (procedural spine recoil flinch from rp.hitSeq, ADR-024) +
-    /// ProxyRevealHook (swaps the skinned materials for the robapieles' real form while
-    /// rp.revealed, ADR-038) on the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the proxy never
+    /// ProxyRevealHook (shows the robapieles' real form while rp.revealed, ADR-038 — V2 hides the
+    /// disguise renderers and activates the nested "RealForm" body wired by WireRealForm) on the root. ADR-022 also sets CharacterClothing._attachToCharacter = false so the proxy never
     /// binds to its disabled inventory.
     /// REPLACE: the inherited vendor AnimatorOverrideController with the custom _Migration
     /// ProxyLocomotionController (see ProxyAnimatorControllerBuilder), built fresh each rebuild.
@@ -99,6 +100,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireHeldItemHook(instance);
                 WireHitReactionHook(instance);
                 WireRevealHook(instance);
+                WireRealForm(instance);
                 WireFootstepHook(instance);
                 WireLightHook(instance);
                 WireFireAudioHook(instance);
@@ -414,6 +416,77 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         {
             if (root.GetComponent<ProxyRevealHook>() == null)
                 root.AddComponent<ProxyRevealHook>();
+        }
+
+        // ADR-038 V2: nests the robapieles' real-form body (its own rig, its own Animator) as an
+        // INACTIVE child and hands it to the reveal hook. It has to live on the shared avatar prefab
+        // rather than on some phantom-only prefab: ADR-016's whole invariant is that the client cannot
+        // tell a phantom from a player until the backend says so, so every proxy carries the body and
+        // only a revealed one ever activates it. Inactive it costs a skeleton's worth of transforms.
+        // Rebuilt (destroy + re-instantiate) each bake so the child can never be a stale nested prefab.
+        private const string RealFormChildName = "RealForm";
+
+        private static void WireRealForm(GameObject root)
+        {
+            var existing = root.transform.Find(RealFormChildName);
+            if (existing != null)
+                Object.DestroyImmediate(existing.gameObject);
+
+            var bodyPrefab = PhantomRealFormBuilder.BuildOrGet();
+            if (bodyPrefab == null)
+            {
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] ADR-038 V2: no real-form body built; the " +
+                    "reveal falls back to the V1 material swap (see PhantomRealFormBuilder's errors).");
+                return;
+            }
+
+            var body = (GameObject)PrefabUtility.InstantiatePrefab(bodyPrefab, root.transform);
+            body.name = RealFormChildName;
+            body.transform.localPosition = Vector3.zero;
+            body.transform.localRotation = Quaternion.identity;
+            // localScale is deliberately NOT reset: it is authored on the body prefab.
+            body.SetActive(false);
+
+            var hook = root.GetComponent<ProxyRevealHook>();
+            if (hook == null)
+                return;
+
+            var so = new SerializedObject(hook);
+            var bodyProp = so.FindProperty("_realFormBody");
+            if (bodyProp != null)
+                bodyProp.objectReferenceValue = body;
+            SeedScreamClips(so);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Seeds the procedurally-generated screams, and ONLY when the array is empty — a re-bake must
+        // never overwrite clips chosen by hand, same rule as the GripPoseSet asset and the V1 reveal
+        // material. Unlike the gunshots (ADR-042, which ship empty because nothing in the project can
+        // mint a correct default), these exist in the repo, so the reveal is audible from the first bake.
+        private static void SeedScreamClips(SerializedObject hookSo)
+        {
+            var clips = hookSo.FindProperty("_screamClips");
+            if (clips == null || clips.arraySize > 0)
+                return;
+
+            var guids = AssetDatabase.FindAssets("t:AudioClip", new[] { PhantomRealFormBuilder.ScreamDir });
+            if (guids.Length == 0)
+            {
+                Debug.LogWarning($"[RemoteAvatarPrefabBuilder] No AudioClip under " +
+                    $"'{PhantomRealFormBuilder.ScreamDir}'; the reveal will be SILENT.");
+                return;
+            }
+
+            // Sorted: the baked order must not depend on FindAssets' enumeration, or two machines
+            // produce prefabs that differ for no reason.
+            foreach (var path in guids.Select(AssetDatabase.GUIDToAssetPath).OrderBy(p => p))
+            {
+                var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                if (clip == null)
+                    continue;
+                clips.InsertArrayElementAtIndex(clips.arraySize);
+                clips.GetArrayElementAtIndex(clips.arraySize - 1).objectReferenceValue = clip;
+            }
         }
 
         // ADR-042: adds the footstep hook. It reads NO networked field — position and the world under
