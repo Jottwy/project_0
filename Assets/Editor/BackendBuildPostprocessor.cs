@@ -63,7 +63,17 @@ namespace BackroomsSurvival.Editor
             string backendFolder = Path.Combine(buildFolder, "Backend");
             Directory.CreateDirectory(backendFolder);
             string destination = Path.Combine(backendFolder, ExecutableName);
-            File.Copy(source, destination, true);
+
+            // Building the player INTO Builds/ makes destination the very file ResolveSource picked
+            // (Builds/Backend/backrooms_server.exe). File.Copy onto itself throws "used by another
+            // process" on Windows, which reads as a lock and is not one: the backend is already
+            // exactly where the build needs it, so there is nothing to copy.
+            bool sameFile = string.Equals(
+                Path.GetFullPath(source), Path.GetFullPath(destination), StringComparison.OrdinalIgnoreCase);
+            if (!sameFile)
+            {
+                File.Copy(source, destination, true);
+            }
 
             // Verify rather than assume. A copy onto a path held by a running server can leave a
             // short or locked file, and that is exactly the "build looks fine, game will not
@@ -78,8 +88,8 @@ namespace BackroomsSurvival.Editor
             }
 
             Debug.Log(
-                $"[BackendBuildPostprocessor] Backend copied from {sourceLabel} " +
-                $"({sourceLength} B, {File.GetLastWriteTime(source):yyyy-MM-dd HH:mm:ss}) to {destination}");
+                $"[BackendBuildPostprocessor] Backend {(sameFile ? "already in place at" : $"copied from {sourceLabel} to")} " +
+                $"{destination} ({sourceLength} B, {File.GetLastWriteTime(source):yyyy-MM-dd HH:mm:ss})");
         }
 
         /// <summary>
