@@ -13,6 +13,10 @@ tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"          # JSON save files (human readable)
 rmp-serde = "1.3"         # MessagePack for IPC + network (compact, fast)
+# ADR-046: `Vec<u8>` alone deserializes ONLY from a msgpack array — a bin payload fails with
+# `invalid type: byte array, expected a sequence` (verified, not assumed). serde_bytes is the
+# `#[serde(with = ...)]` adapter that maps it to the bin family. No transitive dependencies.
+serde_bytes = "0.11"      # opaque byte payloads (voice frames) as msgpack bin, not int arrays
 
 # ─── Logging ───
 log = "0.4"

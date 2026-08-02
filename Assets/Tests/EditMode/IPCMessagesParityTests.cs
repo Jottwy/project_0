@@ -954,5 +954,52 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual("chunk_teleported", e.eventType);
             Assert.IsNull(e.data);
         }
+
+        // ── PeerVoiceMsg (ADR-046) ───────────────────────────────────────────
+
+        [Test]
+        public void PeerVoiceMsg_DecodesSpeakerSeqAndAudioBytes()
+        {
+            var audio = new byte[120];
+            for (int i = 0; i < audio.Length; i++) audio[i] = (byte)((i * 31 + 7) & 0xff);
+
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(4);
+            w.WriteString("type"); w.WriteString("peer_voice");
+            w.WriteString("peer_id"); w.WriteInt(4097);
+            w.WriteString("seq"); w.WriteInt(65535);
+            w.WriteString("data"); w.WriteBin(audio);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "peer_voice");
+            var v = PeerVoiceMsg.Parse(reader, remaining);
+
+            Assert.AreEqual(4097, v.peerId);
+            Assert.AreEqual(65535, v.seq, "seq debe llegar entero hasta el borde del u16");
+            Assert.AreEqual(audio, v.data, "el audio debe sobrevivir byte a byte");
+        }
+
+        /// <summary>
+        /// Un frame sin `data` (o con audio vacío) deja el array VACÍO, nunca null: el
+        /// reproductor solo tiene que tratar "esta trama no traía audio", no un caso de nulo
+        /// aparte. Y una clave desconocida de un backend más nuevo no puede romper el parseo.
+        /// </summary>
+        [Test]
+        public void PeerVoiceMsg_MissingOrUnknownKeysNeverProduceNullAudio()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(4);
+            w.WriteString("type"); w.WriteString("peer_voice");
+            w.WriteString("peer_id"); w.WriteInt(7);
+            w.WriteString("codec"); w.WriteString("un campo que este cliente no conoce");
+            w.WriteString("seq"); w.WriteInt(3);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "peer_voice");
+            var v = PeerVoiceMsg.Parse(reader, remaining);
+
+            Assert.AreEqual(7, v.peerId);
+            Assert.AreEqual(3, v.seq, "la clave desconocida debe consumirse ENTERA o esto sale mal");
+            Assert.IsNotNull(v.data);
+            Assert.IsEmpty(v.data);
+        }
     }
 }

@@ -53,6 +53,20 @@ pub enum ClientMessage {
     /// it as a 5 m tile-wall bitmask (see `ServerMessage::ChunkData`). Independent
     /// of the legacy `world/` ChunkView path.
     RequestChunk { cx: i32, cz: i32, layer: u8 },
+    /// ADR-046 — one encoded voice frame from the LOCAL player's microphone.
+    ///
+    /// A top-level variant rather than a `PlayerAction`, for the same reason as
+    /// `RequestChunk`: actions carry a `action_type` string plus a nested map, and this
+    /// travels 25 times a second while someone is speaking. `data` is opaque here — the
+    /// backend never decodes audio, it only forwards bytes.
+    Voice {
+        seq: u16,
+        /// `serde_bytes` is REQUIRED, not decoration: a bare `Vec<u8>` deserializes only from a
+        /// msgpack array and rejects the bin the client writes, with
+        /// `invalid type: byte array, expected a sequence`.
+        #[serde(default, with = "serde_bytes")]
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -141,6 +155,25 @@ pub enum ServerMessage {
     ActionResult(ActionResult),
     /// Fase 4.1 — minimal grid_gen chunk payload (reply to `RequestChunk`).
     ChunkData(GridChunkData),
+    /// ADR-046 — one encoded voice frame from a REMOTE peer, already filtered by
+    /// distance at the host. Travels on its own broadcast channel, never on the one
+    /// carrying world state (see `ipc::server::run`).
+    PeerVoice(PeerVoice),
+}
+
+/// ADR-046 — a voice frame on its way to the local Unity client. `peer_id` is the
+/// speaker, so the client can attach the audio to that peer's proxy; `seq` is what
+/// lets the receiver detect loss and reorder (the transport is deliberately
+/// unreliable). `data` is opaque: the backend never decodes audio.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PeerVoice {
+    pub peer_id: u16,
+    pub seq: u16,
+    /// See `ClientMessage::Voice::data` — same adapter, same reason, and here it also decides
+    /// what goes OUT: without it this would serialize as an array of integers, ~1.5× the bytes
+    /// and undecodable by the client's `ReadBin`.
+    #[serde(default, with = "serde_bytes")]
+    pub data: Vec<u8>,
 }
 
 /// Fase 4.1 — minimal backend-authoritative chunk: a 10×10 grid of 5 m tiles,
@@ -407,6 +440,134 @@ pub fn decode<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, rmp_serde:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-046 Fase 1 — the byte contract with `MsgPackWriter.WriteBin`, pinned against a
+    /// HAND-BUILT frame rather than a round-trip through this same serializer. A round-trip
+    /// would pass even if both halves agreed on a shape Unity does not emit; these are the
+    /// exact bytes the C# writer produces for `{type:"voice", seq, data:<bin>}`.
+    fn unity_voice_frame(seq: u16, payload: &[u8]) -> Vec<u8> {
+        let mut f = vec![0x83]; // fixmap, 3 entries
+        f.push(0xa4);
+        f.extend_from_slice(b"type");
+        f.push(0xa5);
+        f.extend_from_slice(b"voice");
+        f.push(0xa3);
+        f.extend_from_slice(b"seq");
+        f.push(0xcd); // uint16
+        f.extend_from_slice(&seq.to_be_bytes());
+        f.push(0xa4);
+        f.extend_from_slice(b"data");
+        // bin8/bin16, exactly as WriteBin chooses the width.
+        if payload.len() <= 0xff {
+            f.push(0xc4);
+            f.push(payload.len() as u8);
+        } else {
+            f.push(0xc5);
+            f.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+        }
+        f.extend_from_slice(payload);
+        f
+    }
+
+    #[test]
+    fn voice_frame_from_unity_decodes_with_its_bytes_intact() {
+        let payload: Vec<u8> = (0..120u16).map(|i| (i * 31 + 7) as u8).collect();
+        let frame = unity_voice_frame(0x1234, &payload);
+
+        match decode::<ClientMessage>(&frame).expect("Unity's bin encoding must decode") {
+            ClientMessage::Voice { seq, data } => {
+                assert_eq!(seq, 0x1234);
+                assert_eq!(data, payload, "audio bytes must survive byte for byte");
+            }
+            other => panic!("decoded as the wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn voice_frame_survives_the_bin8_to_bin16_boundary() {
+        // 255/256 is where WriteBin switches header width; a decoder that only handled bin8
+        // would work in every hand test (a voice frame is ~120 B) and break on the first
+        // burst that packs more.
+        for len in [0usize, 1, 255, 256, 1024] {
+            let payload: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
+            match decode::<ClientMessage>(&unity_voice_frame(7, &payload)).unwrap() {
+                ClientMessage::Voice { data, .. } => assert_eq!(data.len(), len, "len {len}"),
+                other => panic!("wrong variant at len {len}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn peer_voice_encodes_as_binary_not_as_an_array_of_numbers() {
+        // The difference is not cosmetic: an array of 120 integers costs ~1.5× the bytes of a
+        // 120 B bin (every value ≥ 128 needs a 2-byte uint8 token), and the client's ReadBin
+        // would reject it.
+        let msg = ServerMessage::PeerVoice(PeerVoice {
+            peer_id: 3,
+            seq: 9,
+            data: vec![0xff; 40],
+        });
+        let frame = encode(&msg).expect("PeerVoice must encode");
+        let body = &frame[4..];
+        assert!(
+            body.windows(2).any(|w| w == [0xc4, 40]),
+            "expected a bin8 header of length 40 in the encoded body"
+        );
+
+        match decode::<ServerMessage>(body).expect("PeerVoice must round-trip") {
+            ServerMessage::PeerVoice(v) => {
+                assert_eq!(v.peer_id, 3);
+                assert_eq!(v.seq, 9);
+                assert_eq!(v.data, vec![0xff; 40]);
+            }
+            other => panic!("decoded as the wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_flooded_voice_channel_cannot_drop_world_state_messages() {
+        // The whole reason ADR-046 gives voice its own broadcast channel: `state_tx` drops its
+        // OLDEST messages when it overflows, Events (`player_died`) included. This asserts the
+        // isolation directly — overrun the voice channel by 4× and check the state subscriber
+        // still receives every message, in order.
+        let (state_tx, mut state_rx) = tokio::sync::broadcast::channel::<ServerMessage>(8);
+        let (voice_tx, _voice_rx) = tokio::sync::broadcast::channel::<ServerMessage>(4);
+        let mut voice_rx = voice_tx.subscribe();
+
+        for i in 0..4u16 {
+            state_tx
+                .send(ServerMessage::Event(GameEvent {
+                    event_type: "player_died".into(),
+                    data: serde_json::json!({ "n": i }),
+                }))
+                .expect("a live subscriber exists");
+        }
+        for i in 0..16u16 {
+            let _ = voice_tx.send(ServerMessage::PeerVoice(PeerVoice {
+                peer_id: 1,
+                seq: i,
+                data: vec![0; 4],
+            }));
+        }
+
+        for i in 0..4u16 {
+            match state_rx.try_recv() {
+                Ok(ServerMessage::Event(e)) => {
+                    assert_eq!(e.event_type, "player_died");
+                    assert_eq!(e.data.get("n").and_then(|v| v.as_u64()), Some(i as u64));
+                }
+                other => panic!("world state message {i} was lost or reordered: {other:?}"),
+            }
+        }
+        // And the voice channel DID lag — otherwise this test would be proving nothing.
+        assert!(
+            matches!(
+                voice_rx.try_recv(),
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_))
+            ),
+            "the voice channel was expected to overflow; without that the isolation is untested"
+        );
+    }
 
     #[test]
     fn player_died_and_respawned_events_encode_with_type_tag() {

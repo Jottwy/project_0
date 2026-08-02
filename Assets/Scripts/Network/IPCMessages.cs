@@ -261,6 +261,46 @@ namespace BackroomsSurvival.Net
         }
     }
 
+    /// <summary>
+    /// ADR-046 — un frame de voz de un peer, ya filtrado por distancia en el host.
+    /// Root-tagged (<c>ServerMessage::PeerVoice</c>, <c>"type":"peer_voice"</c>).
+    ///
+    /// `seq` es lo que permite detectar pérdida y descartar lo que llega tarde: el transporte
+    /// es NO FIABLE a propósito (ADR-039 — un paquete de voz retransmitido llega tarde y ya no
+    /// sirve, y la cola fiable se vacía ENTERA al superar MAX_RETRIES). `data` es opaco aquí:
+    /// ni el backend ni esta clase saben qué códec lo produjo.
+    /// </summary>
+    public class PeerVoiceMsg
+    {
+        /// <summary>Instancia compartida para "sin audio" — evita alocar en un camino de 25 Hz.</summary>
+        private static readonly byte[] NoAudio = new byte[0];
+
+        public ushort peerId;
+        public ushort seq;
+
+        /// <summary>NUNCA null: un frame sin la clave deja el array VACÍO, así que el consumidor
+        /// solo trata "este frame no traía audio" y no un caso de nulo aparte.</summary>
+        public byte[] data = NoAudio;
+
+        public static PeerVoiceMsg Parse(MsgPackReader r, int remainingPairs)
+        {
+            var m = new PeerVoiceMsg();
+            for (int i = 0; i < remainingPairs; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "peer_id")) m.peerId = (ushort)r.ReadInt();
+                else if (MsgPackReader.Is(k, "seq")) m.seq = (ushort)r.ReadInt();
+                else if (MsgPackReader.Is(k, "data"))
+                {
+                    var bytes = r.ReadBin();
+                    if (bytes.Length > 0) m.data = bytes;
+                }
+                else r.Skip();
+            }
+            return m;
+        }
+    }
+
     // ───────────────────────── Remote players (pose relay) ─────────────────────────
 
     public class RemotePlayerMsg

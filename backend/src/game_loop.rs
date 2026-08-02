@@ -555,6 +555,13 @@ pub async fn run(
         dev_god_traversal
     );
 
+    // ADR-046 — voice ingress counters. Throttled to one line every 2 s for the same reason
+    // the WorldState trace is (`ipc/server.rs`): stdout is PIPED to Unity, so a per-frame log
+    // at 25 Hz would back-pressure the very path it is measuring.
+    let mut voice_frames_in: u64 = 0;
+    let mut voice_bytes_in: u64 = 0;
+    let mut next_voice_log = Instant::now();
+
     loop {
         ticker.tick().await;
 
@@ -648,6 +655,23 @@ pub async fn run(
                         walls,
                         room_zones,
                     }));
+                }
+                ClientMessage::Voice { seq, data } => {
+                    // ADR-046 Fase 1 — the IPC half only. The frame is accepted, counted and
+                    // DROPPED here; Fase 2 is what hands it to the P2P relay. Counting it
+                    // (rather than ignoring the variant) is what makes "the microphone path
+                    // works but nothing leaves this process" distinguishable from "the client
+                    // never sent anything" — the two look identical without this.
+                    voice_frames_in = voice_frames_in.wrapping_add(1);
+                    voice_bytes_in = voice_bytes_in.wrapping_add(data.len() as u64);
+                    let now = Instant::now();
+                    if now >= next_voice_log {
+                        next_voice_log = now + Duration::from_secs(2);
+                        info!(
+                            "MPTRACE step=V event=voice_frame_in seq={seq} bytes={} frames_total={voice_frames_in} bytes_total={voice_bytes_in}",
+                            data.len()
+                        );
+                    }
                 }
             }
         }

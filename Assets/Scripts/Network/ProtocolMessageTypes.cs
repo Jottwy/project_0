@@ -19,5 +19,10 @@ namespace BackroomsSurvival.Net
         public const string ChunkData = "chunk_data";
         public const string Event = "event";
         public const string ActionResult = "action_result";
+
+        /// <summary>ADR-046 — one voice frame from a remote peer, already filtered by distance
+        /// at the host. Arrives on the backend's SEPARATE voice channel, so a burst of audio
+        /// cannot evict a world-state message or an event.</summary>
+        public const string PeerVoice = "peer_voice";
     }
 }

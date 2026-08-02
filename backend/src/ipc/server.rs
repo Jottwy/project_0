@@ -81,15 +81,27 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// schema", but ADR-028 Fase E bumped v8→v9 for four P2P variants with the IPC untouched) and
 /// ADR-047 settles it in writing — adding a `PacketPayload` bumps. Coordinate with ADR-046: the
 /// CODE is the authority, whoever lands second reads this constant and takes the next number.
-const WIRE_SCHEMA_VERSION: u32 = 16;
+/// v17 (ADR-046) adds the voice path: `ClientMessage::Voice { seq, data }` inbound and
+/// `ServerMessage::PeerVoice { peer_id, seq, data }` outbound. ADR-046 deliberately wrote no fixed
+/// number into the document precisely so this could be read off the code — landed second, took 17.
+/// Additive and inert in both directions: a client that never speaks is byte-identical to a v16 one.
+const WIRE_SCHEMA_VERSION: u32 = 17;
 
 /// Run the IPC server until a fatal accept error.
 ///
 /// * `to_game`  — channel to forward decoded client messages to the game loop.
 /// * `state_tx` — broadcast of outbound world state; each connection subscribes.
+/// * `voice_tx` — ADR-046: broadcast of inbound peer voice, SEPARATE from `state_tx` and for
+///   one structural reason. `state_tx` holds 256 slots and, when it overflows, `recv()` returns
+///   `Lagged` and the oldest messages are gone — Events included, `player_died` among them (see
+///   the handler at the bottom of `write_loop`). Voice arrives at 25 Hz per speaker and would be
+///   the loudest producer on that channel, so sharing it would let a burst of audio delete a
+///   death event. On its own channel an overflow can only cost audio, which is the one payload
+///   here that is worthless once late.
 pub async fn run(
     to_game: mpsc::Sender<ClientMessage>,
     state_tx: broadcast::Sender<ServerMessage>,
+    voice_tx: broadcast::Sender<ServerMessage>,
     ipc_addr: String,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(&ipc_addr).await?;
@@ -103,11 +115,12 @@ pub async fn run(
 
         let to_game = to_game.clone();
         let state_rx = state_tx.subscribe();
+        let voice_rx = voice_tx.subscribe();
 
         tokio::spawn(async move {
             let (reader, writer) = stream.into_split();
             let mut read_task = tokio::spawn(read_loop(reader, to_game, peer));
-            let mut write_task = tokio::spawn(write_loop(writer, state_rx));
+            let mut write_task = tokio::spawn(write_loop(writer, state_rx, voice_rx));
 
             // When either half ends (disconnect/error), tear down the other.
             tokio::select! {
@@ -156,7 +169,11 @@ async fn read_loop(
 }
 
 /// Encode outbound `ServerMessage`s and write them to the socket.
-async fn write_loop(mut writer: OwnedWriteHalf, mut state_rx: broadcast::Receiver<ServerMessage>) {
+async fn write_loop(
+    mut writer: OwnedWriteHalf,
+    mut state_rx: broadcast::Receiver<ServerMessage>,
+    mut voice_rx: broadcast::Receiver<ServerMessage>,
+) {
     // Throttle for the per-WorldState diagnostic logs below. They used to fire on EVERY
     // WorldState (10 Hz × 2 lines = 20 log lines/s) INSIDE this hot path; stdout/stderr are
     // PIPED to Unity (OutputDataReceived → Debug.Log), so when Unity's main thread stalls the
@@ -165,8 +182,28 @@ async fn write_loop(mut writer: OwnedWriteHalf, mut state_rx: broadcast::Receive
     // player_died). Keeping the trace at 1 per 2 s preserves the diagnostic value at 1/40th
     // of the log pressure.
     let mut next_ws_log = std::time::Instant::now();
+    // ADR-046: voice rides its own receiver. `broadcast::Receiver::recv` is documented as
+    // cancel-safe, which is what makes it legal to poll both in a `select!` — the loser of a
+    // race has provably received nothing, so no frame is lost between iterations. `select!`
+    // picks randomly among ready branches, so neither channel can starve the other.
+    //
+    // `voice_open` exists because a closed voice channel must NOT take the connection down:
+    // the client would lose world state too, over an audio channel it may never have used.
+    // A disabled branch simply stops being polled.
+    let mut voice_open = true;
     loop {
-        match state_rx.recv().await {
+        let received = tokio::select! {
+            r = state_rx.recv() => r,
+            r = voice_rx.recv(), if voice_open => match r {
+                Err(broadcast::error::RecvError::Closed) => {
+                    voice_open = false;
+                    warn!("IPC voice channel closed; world state keeps flowing");
+                    continue;
+                }
+                other => other,
+            },
+        };
+        match received {
             Ok(msg) => match encode(&msg) {
                 Ok(frame) => {
                     if let ServerMessage::WorldState(ws) = &msg {
@@ -209,7 +246,9 @@ async fn write_loop(mut writer: OwnedWriteHalf, mut state_rx: broadcast::Receive
                 // whatever was oldest in the broadcast buffer — including Events (player_died).
                 // The throttled logging above + the 256 capacity make this rare; if it still
                 // fires, events may have been lost and TP_WATCH/DEATH_FLOW readings around this
-                // timestamp are suspect.
+                // timestamp are suspect. ADR-046 keeps voice OFF this channel so a burst of
+                // audio can never be the cause of that loss; a lagged voice channel reports
+                // here too, but the only thing it can have dropped is audio.
                 warn!("IPC write loop lagged, skipped {skipped} messages");
             }
         }

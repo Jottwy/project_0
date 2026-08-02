@@ -111,10 +111,17 @@ async fn main() {
     // an ~8 s stall (Unity scene-load/GC hitches back-pressuring the piped stdout logs).
     let (state_tx, _) = broadcast::channel::<ipc::ServerMessage>(256);
 
+    // ADR-046 — voice → Unity, on its OWN channel. Not a style choice: `state_tx` drops its
+    // OLDEST messages on overflow (Events included), and voice at 25 Hz per speaker would be
+    // the loudest producer on it. Capacity 64 rather than 256 because a voice frame that waited
+    // two seconds is worthless — a shorter queue drops it sooner instead of playing it late.
+    let (voice_tx, _) = broadcast::channel::<ipc::ServerMessage>(64);
+
     // IPC server task (Unity ↔ Rust on localhost:7777).
     let ipc_state_tx = state_tx.clone();
+    let ipc_voice_tx = voice_tx.clone();
     let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc::server::run(to_game_tx, ipc_state_tx, ipc_addr).await {
+        if let Err(e) = ipc::server::run(to_game_tx, ipc_state_tx, ipc_voice_tx, ipc_addr).await {
             error!("IPC server terminated: {e}");
         }
     });
@@ -147,6 +154,8 @@ async fn main() {
     }
 
     // Game loop task (drives the whole simulation).
+    // ADR-046 Fase 1 plumbs the voice channel only as far as the IPC writer; the game loop
+    // gains its sender in Fase 2, when the P2P relay gives it something to put in it.
     let game_handle = tokio::spawn(game_loop::run(to_game_rx, state_tx, net));
 
     // If either core task ends, the process should come down with it.

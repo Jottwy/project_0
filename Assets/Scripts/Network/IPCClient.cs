@@ -78,6 +78,24 @@ namespace BackroomsSurvival.Net
 
         public readonly ConcurrentQueue<GameEventMsg> Events = new ConcurrentQueue<GameEventMsg>();
 
+        /// <summary>
+        /// ADR-046 — frames de voz entrantes, drenados por el reproductor (Fase 4).
+        ///
+        /// Cola propia y NO la ruta de listeners de <see cref="Update"/>: el audio no quiere un
+        /// salto al hilo principal a 60 fps por delante del buffer de jitter, y un listener
+        /// invocado desde el hilo de red no puede tocar la API de Unity.
+        ///
+        /// TOPE DURO: sin consumidor —que es exactamente la situación entre la Fase 1 y la
+        /// Fase 4— una cola sin límite crece mientras alguien habla. Al pasarse se tira lo MÁS
+        /// VIEJO, que en audio en tiempo real es lo correcto de tirar.
+        /// </summary>
+        public readonly ConcurrentQueue<PeerVoiceMsg> PeerVoice = new ConcurrentQueue<PeerVoiceMsg>();
+
+        /// <summary>~4 s de voz de un hablante a 25 Hz. Suficiente para que un consumidor con
+        /// un hipo momentáneo no pierda nada, y lo bastante corto para que una cola sin drenar
+        /// no sea una fuga.</summary>
+        private const int MaxQueuedVoiceFrames = 100;
+
         public delegate void GameEventHandler(GameEventMsg ev);
         private readonly List<GameEventHandler> _eventListeners = new List<GameEventHandler>();
 
@@ -372,6 +390,12 @@ namespace BackroomsSurvival.Net
                     Events.Enqueue(gameEvent);
                     _pendingNotify.Enqueue(gameEvent);
                     break;
+                case ProtocolMessageTypes.PeerVoice:
+                    // ADR-046: encolar y recortar. El recorte va aquí y no en el consumidor
+                    // porque en la Fase 1 todavía NO HAY consumidor.
+                    PeerVoice.Enqueue(PeerVoiceMsg.Parse(r, remaining));
+                    while (PeerVoice.Count > MaxQueuedVoiceFrames && PeerVoice.TryDequeue(out _)) { }
+                    break;
                 case ProtocolMessageTypes.ActionResult:
                     // Phase 4 will consume these; ignored for now.
                     break;
@@ -498,6 +522,29 @@ namespace BackroomsSurvival.Net
             w.WriteString("cx"); w.WriteInt(cx);
             w.WriteString("cz"); w.WriteInt(cz);
             w.WriteString("layer"); w.WriteInt(layer);
+            return SendFrame(w);
+        }
+
+        /// <summary>
+        /// ADR-046 — envía UNA trama de voz codificada al backend propio.
+        ///
+        /// Toma un rango del buffer de captura reutilizado en vez de un <c>byte[]</c> a medida:
+        /// esto se llama 25 veces por segundo mientras alguien habla, y una copia por trama
+        /// sería basura pura. <paramref name="count"/> = 0 no se envía — una trama vacía
+        /// gastaría un datagrama para decir "silencio", que es justo lo que el silencio ya dice
+        /// al no mandar nada.
+        ///
+        /// Devuelve false si se descartó (sin conexión, escritura fallida, o nada que mandar).
+        /// </summary>
+        public bool SendVoice(ushort seq, byte[] data, int count)
+        {
+            if (data == null || count <= 0) return false;
+
+            var w = RentWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("voice");
+            w.WriteString("seq"); w.WriteInt(seq);
+            w.WriteString("data"); w.WriteBin(data, 0, count);
             return SendFrame(w);
         }
 
