@@ -43,7 +43,12 @@ namespace BackroomsSurvival.UI
         /// <summary>Cuando es true, la próxima tecla pulsada se asigna como push-to-talk.</summary>
         private bool _rebinding;
 
+        /// <summary>Nombres reales, tal cual los espera <c>VoiceCapture.Device</c>.</summary>
         private readonly List<string> _deviceOptions = new List<string>();
+
+        /// <summary>Los mismos, decorados con su tasa. Se pintan estos y se ASIGNAN los de arriba:
+        /// mandar la etiqueta como nombre de dispositivo no encontraría ninguno.</summary>
+        private readonly List<string> _deviceLabels = new List<string>();
 
         private void Start()
         {
@@ -153,8 +158,21 @@ namespace BackroomsSurvival.UI
             _deviceOptions.Add("(automático)");
             _deviceOptions.AddRange(VoiceCapture.Devices);
 
+            // Se etiqueta con la tasa REAL a la que se abriría cada uno. Ya no hay dispositivos
+            // "inservibles" —los que no dan 48 kHz se remuestrean— pero verlo explica por qué uno
+            // suena distinto a otro sin tener que leerse el log.
+            _deviceLabels.Clear();
+            _deviceLabels.Add("(automático)");
+            for (int i = 1; i < _deviceOptions.Count; i++)
+            {
+                int rate = VoiceCapture.PickCaptureRate(_deviceOptions[i]);
+                _deviceLabels.Add(rate == VoiceCapture.SampleRate
+                    ? $"{_deviceOptions[i]}  [{rate / 1000} kHz]"
+                    : $"{_deviceOptions[i]}  [{rate / 1000} kHz → remuestreo]");
+            }
+
             _deviceDropdown.ClearOptions();
-            _deviceDropdown.AddOptions(_deviceOptions);
+            _deviceDropdown.AddOptions(_deviceLabels);
 
             int idx = 0;
             if (vc != null && !string.IsNullOrEmpty(vc.Device))

@@ -30,12 +30,22 @@ namespace BackroomsSurvival.Net
     {
         // ── Formato. Cambiar cualquiera de los tres rompe la simetría con el reproductor ──
 
-        /// <summary>16 kHz mono: banda ancha de voz. Opus admite 8/12/16/24/48 kHz y 16 es el
-        /// punto donde la voz deja de sonar a teléfono sin pagar el doble de CPU.</summary>
-        public const int SampleRate = 16000;
+        /// <summary>
+        /// 48 kHz mono, la tasa NATIVA de Opus.
+        ///
+        /// Empezó siendo 16 kHz y hubo que cambiarlo con evidencia en la mano: **los 15 micrófonos
+        /// de la máquina de desarrollo reportan `48000-48000` y ninguno admite 16 kHz**. No es una
+        /// máquina rara — en Windows el driver expone la tasa del mezclador y esa es 48 kHz. Pedir
+        /// 16 kHz apagaba la captura en TODOS los dispositivos.
+        ///
+        /// A 48 kHz no hay remuestreo en el camino común: micro → Opus → decodificador → salida,
+        /// todo a la misma tasa. Un dispositivo que NO admita 48 kHz se captura a la suya y se
+        /// remuestrea aquí (ver <see cref="_needsResample"/>), para no dejar fuera a nadie.
+        /// </summary>
+        public const int SampleRate = 48000;
 
         /// <summary>20 ms por trama, el tamaño canónico de Opus para VOIP.</summary>
-        public const int FrameSamples = SampleRate / 50; // 320
+        public const int FrameSamples = SampleRate / 50; // 960
 
         /// <summary>Dos tramas por datagrama. A una sola, la cabecera IP/UDP (28 B) pesaría casi
         /// tanto como la carga útil (~30-60 B); a dos, el coste relativo se parte por la mitad a
@@ -184,8 +194,12 @@ namespace BackroomsSurvival.Net
         private string _activeDevice;
         private bool _micEnabled;
 
-        private float[] _capture;        // ventana leída del AudioClip del micro
-        private short[] _pcm;            // la misma ventana como PCM 16 bits
+        private float[] _capture;        // ventana leída del AudioClip del micro (tasa del APARATO)
+        private short[] _pcm;            // la misma ventana a la tasa del CÓDEC, PCM 16 bits
+        private int _captureRate = SampleRate;
+        private int _inputFrameSamples = FrameSamples;
+        private bool _needsResample;
+        private float _resampleTail;     // última muestra de la trama previa, para no chasquear
         private byte[] _packet;          // salida codificada (FramesPerPacket tramas)
         private int _packetBytes;        // bytes usados de _packet
         private int _framesInPacket;
@@ -206,11 +220,10 @@ namespace BackroomsSurvival.Net
 
         private void Awake()
         {
-            _capture = new float[FrameSamples];
             _pcm = new short[FrameSamples];
-            // Techo generoso: una trama Opus a 64 kbps son 160 B; 2 tramas + cabeceras de
-            // longitud caben de sobra en 512 y el buffer se reserva UNA vez.
-            _packet = new byte[512];
+            // Una trama Opus nunca pasa de 1275 B por definición del formato; dos de ellas más sus
+            // cabeceras de longitud caben en 4096 con holgura. Se reserva UNA vez.
+            _packet = new byte[4096];
 
             _micEnabled = PlayerPrefs.GetInt(PrefMicEnabled, 0) != 0;
             _openMic = PlayerPrefs.GetInt(PrefOpenMic, _openMic ? 1 : 0) != 0;
@@ -267,11 +280,13 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            while (available >= FrameSamples)
+            // Se consume en bloques del tamaño que dicte la TASA DEL DISPOSITIVO, no la del códec:
+            // a 44,1 kHz una trama de 20 ms son 882 muestras, no 960.
+            while (available >= _inputFrameSamples)
             {
                 _clip.GetData(_capture, _readHead);
-                _readHead = (_readHead + FrameSamples) % _clip.samples;
-                available -= FrameSamples;
+                _readHead = (_readHead + _inputFrameSamples) % _clip.samples;
+                available -= _inputFrameSamples;
                 ProcessFrame();
             }
         }
@@ -280,10 +295,10 @@ namespace BackroomsSurvival.Net
         {
             // El nivel se mide SIEMPRE, hable o no y transmita o no: es el dato que separa "el
             // micrófono no capta nada" de "capta pero no sale". Sin él, las dos averías se ven
-            // igual desde fuera.
+            // igual desde fuera. Se mide sobre la señal CAPTURADA, antes de remuestrear.
             double sum = 0;
-            for (int i = 0; i < FrameSamples; i++) sum += (double)_capture[i] * _capture[i];
-            InputLevel = Mathf.Sqrt((float)(sum / FrameSamples));
+            for (int i = 0; i < _inputFrameSamples; i++) sum += (double)_capture[i] * _capture[i];
+            InputLevel = Mathf.Sqrt((float)(sum / _inputFrameSamples));
 
             bool open = ShouldTransmit();
             IsTransmitting = open;
@@ -296,12 +311,7 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            for (int i = 0; i < FrameSamples; i++)
-            {
-                float s = _capture[i];
-                if (s > 1f) s = 1f; else if (s < -1f) s = -1f;
-                _pcm[i] = (short)(s * short.MaxValue);
-            }
+            FillPcmFromCapture();
 
             // El formato del datagrama (cabecera de longitud por trama) vive en VoicePacket, que
             // es el mismo código que usa el reproductor para deshacerlo.
@@ -374,6 +384,56 @@ namespace BackroomsSurvival.Net
                 OpenMic = !OpenMic;
                 Debug.Log($"[VoiceCapture] Modo = {(_openMic ? "VOZ ABIERTA" : "PUSH-TO-TALK")} ({_toggleModeKey})");
             }
+        }
+
+        /// <summary>
+        /// Pasa la trama capturada a PCM de 16 bits, remuestreando a <see cref="SampleRate"/> si
+        /// el dispositivo captura a otra tasa.
+        ///
+        /// El camino común NO remuestrea: casi todo micrófono de Windows entrega 48 kHz, que es
+        /// justo la tasa del códec, así que el `if` de abajo sale por la rama barata.
+        ///
+        /// Cuando sí hay que remuestrear, es interpolación lineal con **una muestra de historia
+        /// entre tramas** (`_resampleTail`). Sin esa historia, cada trama empezaría interpolando
+        /// contra un cero y se metería un chasquido cada 20 ms — 50 clics por segundo, que se oyen
+        /// como un zumbido y no como lo que son. Lineal y no un filtro polifásico porque esto es
+        /// la RAMA RARA: el aliasing que introduce está por encima de la banda de la voz y no
+        /// merece pagar un filtro que casi nadie va a ejecutar.
+        /// </summary>
+        private void FillPcmFromCapture()
+        {
+            if (!_needsResample)
+            {
+                for (int i = 0; i < FrameSamples; i++)
+                {
+                    float s = _capture[i];
+                    if (s > 1f) s = 1f; else if (s < -1f) s = -1f;
+                    _pcm[i] = (short)(s * short.MaxValue);
+                }
+                return;
+            }
+
+            double ratio = (double)_inputFrameSamples / FrameSamples;
+            for (int i = 0; i < FrameSamples; i++)
+            {
+                double src = i * ratio - 1.0; // -1: el índice 0 cae sobre la muestra de historia
+                int i0 = (int)System.Math.Floor(src);
+                float frac = (float)(src - i0);
+                float a = SampleAt(i0);
+                float b = SampleAt(i0 + 1);
+                float s = a + (b - a) * frac;
+                if (s > 1f) s = 1f; else if (s < -1f) s = -1f;
+                _pcm[i] = (short)(s * short.MaxValue);
+            }
+            _resampleTail = _capture[_inputFrameSamples - 1];
+        }
+
+        /// <summary>Índice -1 = la última muestra de la trama anterior; fuera del rango por arriba
+        /// se satura a la última, que solo puede ocurrir en la muestra final por redondeo.</summary>
+        private float SampleAt(int i)
+        {
+            if (i < 0) return _resampleTail;
+            return i < _inputFrameSamples ? _capture[i] : _capture[_inputFrameSamples - 1];
         }
 
         private bool ShouldTransmit()
@@ -481,19 +541,19 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            _activeDevice = string.IsNullOrEmpty(_device) ? Microphone.devices[0] : _device;
+            // Un dispositivo guardado que ya no existe (cascos desenchufados) no puede dejar la voz
+            // muerta en silencio: se cae al primero disponible y se dice.
+            _activeDevice = ResolveDevice();
 
-            // El dispositivo puede no aceptar 16 kHz. Preguntar antes y remuestrear NO está en la
-            // V1: si el rango no incluye 16 kHz se avisa y se deja apagado, que es honesto y
-            // ruidoso, en vez de capturar a otra frecuencia y sonar a ardilla.
-            Microphone.GetDeviceCaps(_activeDevice, out int minFreq, out int maxFreq);
-            bool supports = (minFreq == 0 && maxFreq == 0) || (minFreq <= SampleRate && SampleRate <= maxFreq);
-            if (!supports)
-            {
-                Debug.LogWarning($"[VoiceCapture] '{_activeDevice}' no admite {SampleRate} Hz " +
-                                 $"(rango {minFreq}-{maxFreq}); voz desactivada.");
-                return;
-            }
+            // NUNCA se rechaza un micrófono. La versión anterior exigía la tasa del códec y se
+            // apagaba si no la tenía; medido en la máquina de desarrollo, **los 15 dispositivos
+            // reportaban `48000-48000` y ninguno servía**. Ahora se captura a lo que el aparato
+            // dé —lo más cerca posible de la tasa del códec— y se remuestrea si hace falta.
+            _captureRate = PickCaptureRate(_activeDevice);
+            _inputFrameSamples = Mathf.Max(1, Mathf.RoundToInt(_captureRate / 50f)); // 20 ms
+            _needsResample = _captureRate != SampleRate;
+            _capture = new float[_inputFrameSamples];
+            _resampleTail = 0f;
 
             _encoder = OpusCodecFactory.CreateEncoder(SampleRate, 1, OpusApplication.OPUS_APPLICATION_VOIP);
             _encoder.Bitrate = _bitrate;
@@ -507,12 +567,51 @@ namespace BackroomsSurvival.Net
             // eso mantiene vivo el estado del decodificador del otro lado.
             _encoder.UseDTX = true;
 
-            _clip = Microphone.Start(_activeDevice, true, 1, SampleRate);
+            _clip = Microphone.Start(_activeDevice, true, 1, _captureRate);
+            if (_clip == null)
+            {
+                Debug.LogWarning($"[VoiceCapture] Microphone.Start devolvio null para " +
+                                 $"'{_activeDevice}' a {_captureRate} Hz. Revisa los permisos de " +
+                                 "microfono de Windows para esta aplicacion.");
+                return;
+            }
             _readHead = 0;
             _framesInPacket = 0;
             _packetBytes = 0;
-            Debug.Log($"[VoiceCapture] Mic ON device='{_activeDevice}' {SampleRate} Hz, " +
-                      $"mode={(_openMic ? "open" : "push-to-talk")}");
+            Debug.Log($"[VoiceCapture] Mic ON device='{_activeDevice}' captura={_captureRate} Hz" +
+                      (_needsResample ? $" -> remuestreo a {SampleRate} Hz" : " (sin remuestreo)") +
+                      $", {_inputFrameSamples} muestras/trama, " +
+                      $"modo={(_openMic ? "voz abierta" : "push-to-talk " + _pushToTalkKey)}");
+        }
+
+        /// <summary>Dispositivo pedido si existe; si no, el primero. Nunca devuelve un nombre que
+        /// el sistema ya no reconoce, porque `Microphone.Start` con uno así falla en silencio.</summary>
+        private string ResolveDevice()
+        {
+            var devices = Microphone.devices;
+            if (string.IsNullOrEmpty(_device)) return devices[0];
+            foreach (var d in devices)
+                if (d == _device) return d;
+
+            Debug.LogWarning($"[VoiceCapture] El microfono guardado '{_device}' ya no existe; " +
+                             $"usando '{devices[0]}'.");
+            return devices[0];
+        }
+
+        /// <summary>
+        /// Tasa de captura para un dispositivo: la del códec si entra en su rango, y si no la más
+        /// cercana que admita.
+        ///
+        /// `0-0` significa "sin restricción" en la API de Unity, no "no soporta nada" — tratarlo
+        /// como un rango real dejaría fuera a los dispositivos más permisivos, que son justo los
+        /// que no dan problema.
+        /// </summary>
+        public static int PickCaptureRate(string device)
+        {
+            Microphone.GetDeviceCaps(device, out int minFreq, out int maxFreq);
+            if (minFreq == 0 && maxFreq == 0) return SampleRate;
+            if (maxFreq <= 0) return SampleRate;
+            return Mathf.Clamp(SampleRate, Mathf.Max(1, minFreq), maxFreq);
         }
 
         private void StopDevice()
