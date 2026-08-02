@@ -79,6 +79,11 @@ namespace PolymindGames.WieldableSystem
             Ray ray = GetUseRay(accuracy);
             if (PhysicsUtility.SphereCastOptimized(ray, _attackRadius, _attackDistance, out var hit, LayerConstants.SolidObjectsMask, Wieldable.Character.transform, QueryTriggerInteraction.UseGlobal))
             {
+                Debug.Log(
+                    $"MPTRACE step=PVP event=stp_melee_hit collider={hit.collider.name} " +
+                    $"layer={hit.collider.gameObject.layer} layer_name={LayerMask.LayerToName(hit.collider.gameObject.layer)} " +
+                    $"root={hit.collider.transform.root.name} rigidbody={(hit.rigidbody != null ? hit.rigidbody.name : "<null>")} " +
+                    $"distance={hit.distance:F2}");
                 HandleDamageAndImpact(hit.collider, hit.rigidbody, hit.point, ray.direction * _hitForce);
                 SurfaceManager.Instance.PlayEffectFromHit(in hit, _hitDamageType.GetSurfaceEffectType(), parentEffects: hit.rigidbody != null);
 
@@ -87,6 +92,13 @@ namespace PolymindGames.WieldableSystem
                 PlayHitAnimation();
 
                 hitCallback?.Invoke();
+            }
+            else
+            {
+                Debug.Log(
+                    $"MPTRACE step=PVP event=stp_melee_no_hit mask={LayerConstants.SolidObjectsMask} " +
+                    $"origin=({ray.origin.x:F2},{ray.origin.y:F2},{ray.origin.z:F2}) " +
+                    $"dir=({ray.direction.x:F3},{ray.direction.y:F3},{ray.direction.z:F3}) radius={_attackRadius:F2} distance={_attackDistance:F2}");
             }
 
             _attackRoutine = null;
@@ -98,7 +110,13 @@ namespace PolymindGames.WieldableSystem
         private void HandleDamageAndImpact(Collider col, Rigidbody rigidB, Vector3 hitPoint, Vector3 hitForce)
         {
             // Apply damage if the object can receive damage.
-            if (col.TryGetComponent(out IDamageHandler receiver))
+            bool hasDamageHandler = col.TryGetComponent(out IDamageHandler receiver);
+            Debug.Log(
+                $"MPTRACE step=PVP event=stp_melee_damage_lookup collider={col.name} " +
+                $"layer={col.gameObject.layer} layer_name={LayerMask.LayerToName(col.gameObject.layer)} " +
+                $"root={col.transform.root.name} rigidbody={(rigidB != null ? rigidB.name : "<null>")} " +
+                $"handler_found={hasDamageHandler} handler_type={(hasDamageHandler ? receiver.GetType().Name : "<none>")}");
+            if (hasDamageHandler)
             {
                 DamageArgs args = new(_hitDamageType, Wieldable.Character, hitPoint, hitForce);
                 float damage = _hitDamageRange.GetRandomFromRange();

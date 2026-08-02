@@ -51,7 +51,13 @@ namespace PolymindGames.WieldableSystem
         private void HandleDamageAndImpact(Collider col, Rigidbody rigidB, Vector3 hitPoint, Vector3 hitForce)
         {
             // Apply damage if the object can receive damage.
-            if (col.TryGetComponent(out IDamageHandler damageHandler))
+            bool hasDamageHandler = col.TryGetComponent(out IDamageHandler damageHandler);
+            Debug.Log(
+                $"MPTRACE step=PVP event=stp_firearm_basic_damage_lookup collider={col.name} " +
+                $"layer={col.gameObject.layer} layer_name={LayerMask.LayerToName(col.gameObject.layer)} " +
+                $"root={col.transform.root.name} rigidbody={(rigidB != null ? rigidB.name : "<null>")} " +
+                $"handler_found={hasDamageHandler} handler_type={(hasDamageHandler ? damageHandler.GetType().Name : "<none>")}");
+            if (hasDamageHandler)
             {
                 DamageArgs args = new(_damageType, Wieldable.Character, hitPoint, hitForce);
                 damageHandler.HandleDamage(_damage, args);

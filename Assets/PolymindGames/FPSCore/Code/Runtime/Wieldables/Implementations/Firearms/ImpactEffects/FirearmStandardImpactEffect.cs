@@ -74,7 +74,13 @@ namespace PolymindGames.WieldableSystem
         private void HandleDamageAndImpact(Collider col, Rigidbody rigidB, float damage, Vector3 hitPoint, Vector3 hitForce)
         {
             // Apply damage to any found damage handler.
-            if (col.TryGetComponent(out IDamageHandler damageHandler))
+            bool hasDamageHandler = col.TryGetComponent(out IDamageHandler damageHandler);
+            Debug.Log(
+                $"MPTRACE step=PVP event=stp_firearm_standard_damage_lookup collider={col.name} " +
+                $"layer={col.gameObject.layer} layer_name={LayerMask.LayerToName(col.gameObject.layer)} " +
+                $"root={col.transform.root.name} rigidbody={(rigidB != null ? rigidB.name : "<null>")} " +
+                $"handler_found={hasDamageHandler} handler_type={(hasDamageHandler ? damageHandler.GetType().Name : "<none>")}");
+            if (hasDamageHandler)
                 damageHandler.HandleDamage(damage, new DamageArgs(_damageType, Wieldable.Character, hitPoint, hitForce));
 
             // Apply an impact impulse.

@@ -41,13 +41,25 @@ namespace PolymindGames.WieldableSystem
 
                 if (PhysicsUtility.RaycastOptimized(ray, _maxDistance, out RaycastHit hit, LayerConstants.SolidObjectsMask, Wieldable.Character.transform, QueryTriggerInteraction.UseGlobal))
                 {
+                    Debug.Log(
+                        $"MPTRACE step=PVP event=stp_firearm_hitscan_hit collider={hit.collider.name} " +
+                        $"layer={hit.collider.gameObject.layer} layer_name={LayerMask.LayerToName(hit.collider.gameObject.layer)} " +
+                        $"root={hit.collider.transform.root.name} rigidbody={(hit.rigidbody != null ? hit.rigidbody.name : "<null>")} " +
+                        $"distance={hit.distance:F2}");
                     effect.TriggerHitEffect(in hit, ray.direction, float.PositiveInfinity, hit.distance);
 
                     if (tracer != null)
                         tracer.Initialize(ray.origin, hit.point, _tracerSpeed);
                 }
-                else if (tracer != null)
-                    tracer.Initialize(ray.origin, ray.GetPoint(MaxTracerDistance), _tracerSpeed);
+                else
+                {
+                    Debug.Log(
+                        $"MPTRACE step=PVP event=stp_firearm_hitscan_no_hit mask={LayerConstants.SolidObjectsMask} " +
+                        $"origin=({ray.origin.x:F2},{ray.origin.y:F2},{ray.origin.z:F2}) " +
+                        $"dir=({ray.direction.x:F3},{ray.direction.y:F3},{ray.direction.z:F3}) max_distance={_maxDistance:F1}");
+                    if (tracer != null)
+                        tracer.Initialize(ray.origin, ray.GetPoint(MaxTracerDistance), _tracerSpeed);
+                }
             }
 
             var animator = Wieldable.Animator;
