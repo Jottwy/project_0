@@ -714,10 +714,38 @@ impl NetworkManager {
     pub async fn broadcast_unreliable(&self, payload: &PacketPayload) {
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
         let data = encode_packet(&header, payload);
-        for peer in self.peers.values() {
-            self.send_datagram(&data, peer.addr, "broadcast_unreliable")
+        for (_, addr) in self.broadcast_destinations() {
+            self.send_datagram(&data, addr, "broadcast_unreliable")
                 .await;
         }
+    }
+
+    /// Addresses an unreliable broadcast may legitimately be sent to: every real peer, never a
+    /// phantom. Split out — like `sync::relay_destinations` and for the same reason — so the
+    /// invariant is testable without a socket.
+    ///
+    /// This closes the LAST hole in ADR-043's rule ("DESTINATIONS exclude phantoms; SOURCES do
+    /// not"). ADR-043 applied the filter to the pose relay, ADR-046 to the voice relay and
+    /// ADR-016 to WorldSync, but `broadcast_unreliable` — the path the HOST'S OWN pose and the
+    /// peer roster take — was still addressing phantoms.
+    ///
+    /// It is not a micro-optimisation. A phantom's `addr` is the inert `127.0.0.1:1` stamped at
+    /// injection, so every datagram aimed at one is a real syscall to a dead loopback port; on
+    /// Windows the ICMP port-unreachable comes back as WSAECONNRESET **on the socket**. With the
+    /// world populated by default since ADR-043 (five phantoms, ~10 call sites, 10-20 Hz) that
+    /// poisoned the host's own socket — measured at 1,073,132 `os error 10054` lines in a single
+    /// play-test log. The symptom is precisely asymmetric and is what it cost to find: joiners saw
+    /// each other (relayed through the already-filtered path) while the HOST was invisible to
+    /// everyone, because its own pose and the roster are the two things that ride this one.
+    ///
+    /// Before ADR-043 a single phantom lived behind an env flag that defaults OFF, so the defect
+    /// was unreachable rather than absent.
+    fn broadcast_destinations(&self) -> Vec<(PeerId, SocketAddr)> {
+        self.peers
+            .values()
+            .filter(|p| !self.is_phantom(p.id))
+            .map(|p| (p.id, p.addr))
+            .collect()
     }
 
     /// Send a reliable packet to a specific peer (queued for ACK tracking).
@@ -2131,6 +2159,42 @@ mod tests {
             assert_eq!(*position, [10.0, 1.8, 20.0]);
             assert_eq!(*rotation, 45.0);
         }
+    }
+
+    /// ADR-043's rule ("a phantom is a sender, never a receiver") applied to the last broadcast
+    /// that still ignored it. A regression here is not cosmetic and does not look like a network
+    /// bug: aiming a datagram at a phantom's inert `127.0.0.1:1` floods the sender's own socket
+    /// with WSAECONNRESET, and since the host's OWN pose and the peer roster are the two things
+    /// that ride `broadcast_unreliable`, the host goes invisible to every joiner while the joiners
+    /// keep seeing each other through the already-filtered relay.
+    #[tokio::test]
+    async fn a_phantom_is_never_a_broadcast_destination() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+        let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+        joiner.initiate_connection(host_addr).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        host.process_incoming().await;
+
+        let joiner_id = *host.peers.keys().next().expect("joiner should be a peer");
+        let phantom_id = host.spawn_phantom("Victima", [2.0, 1.8, 0.0]);
+
+        let dests = host.broadcast_destinations();
+        assert!(
+            dests.iter().any(|(id, _)| *id == joiner_id),
+            "the real joiner must still receive broadcasts, got: {dests:?}"
+        );
+        assert!(
+            !dests.iter().any(|(id, _)| *id == phantom_id),
+            "a phantom must never be a broadcast destination, got: {dests:?}"
+        );
+        // Assert the ADDRESS too, not just the id: port 1 is the inert loopback port whose ICMP
+        // unreachable is the actual failure mode, so this catches a future phantom that gets a
+        // real id but keeps the dead addr.
+        assert!(
+            !dests.iter().any(|(_, addr)| addr.port() == 1),
+            "no broadcast may be aimed at the inert phantom port, got: {dests:?}"
+        );
     }
 
     #[tokio::test]
