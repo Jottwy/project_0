@@ -6,6 +6,7 @@ obj/
 Build/
 Builds/
 Builds.zip
+Builds.rar
 Logs/
 UserSettings/
 MemoryCaptures/
@@ -43,6 +44,15 @@ backend/tools/grid_viewer/target/
 
 # Rust local env
 backend/.env
+
+# Rust runtime data (partidas guardadas locales, no son fuente)
+backend/saves/
+
+# Imports de generadores 3D: cientos de MB de binarios, se regeneran desde la herramienta
+Assets/MeshyImports/
+Assets/MeshyImports.meta
+Assets/TripoModels/
+Assets/TripoModels.meta
 
 # Temporary
 *.tmp
