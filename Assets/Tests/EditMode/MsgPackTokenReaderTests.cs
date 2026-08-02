@@ -17,8 +17,10 @@ namespace BackroomsSurvival.Tests
     /// (Reset), que es lo nuevo.
     ///
     /// Todo round-trip real: MsgPackWriter para lo que sabe emitir; bytes crudos a mano para
-    /// bin/ext/fixext y las cabeceras de 32 bits (map32/array32), que MsgPackWriter no puede
-    /// producir sin frames poco prácticos para un test.
+    /// ext/fixext y las cabeceras de 32 bits (map32/array32), que MsgPackWriter no puede
+    /// producir sin frames poco prácticos para un test. (La familia bin SÍ pasó a ser emitible
+    /// desde ADR-046 Fase 0; los tests de Skip que la cubren con bytes a mano se dejan como
+    /// están, porque prueban el decoder contra un emisor ajeno y eso sigue siendo lo correcto.)
     /// </summary>
     [TestFixture]
     public class MsgPackTokenReaderTests
@@ -604,6 +606,150 @@ namespace BackroomsSurvival.Tests
 
             Assert.AreEqual("idle", second);
             Assert.AreSame(first, second, "el acierto de caché debe cruzar frames de la misma conexión");
+        }
+
+        // ── ADR-046 Fase 0: la familia bin, escribible por fin ────────────────────────
+        //
+        // Cada caso lleva CENTINELA: un entero escrito DETRÁS del payload y leído DESPUÉS.
+        // Sin él, un ReadBin que devuelve los bytes correctos pero deja el cursor descolocado
+        // pasa el test y corrompe todos los campos siguientes del frame. Verificado con
+        // mutación (`_pos += n` → `_pos += n - 1`): sin centinela el mutante sobrevive.
+
+        private static byte[] BinPattern(int n)
+        {
+            var b = new byte[n];
+            for (int i = 0; i < n; i++) b[i] = (byte)((i * 31 + 7) & 0xff);
+            return b;
+        }
+
+        [TestCase(0, 0xc4)]
+        [TestCase(1, 0xc4)]
+        [TestCase(120, 0xc4)] // el tamaño real de una trama de voz: 2 × 20 ms de Opus a ~24 kbps
+        [TestCase(255, 0xc4)]
+        [TestCase(256, 0xc5)]
+        [TestCase(65535, 0xc5)]
+        [TestCase(65536, 0xc6)]
+        public void WriteBinRoundTripsAtEveryWidthBoundary(int len, int expectedTag)
+        {
+            byte[] payload = BinPattern(len);
+
+            var w = new MsgPackWriter();
+            w.WriteBin(payload);
+            w.WriteInt(0x2A2A);
+            byte[] frame = w.ToArray();
+
+            Assert.AreEqual(expectedTag, frame[0], $"len={len} debe elegir el ancho de cabecera 0x{expectedTag:x2}");
+
+            var r = new MsgPackReader(frame);
+            Assert.AreEqual(payload, r.ReadBin(), $"payload de {len} B no sobrevivió el round-trip");
+            Assert.AreEqual(0x2A2A, r.ReadInt(), "CENTINELA: ReadBin dejó el cursor descolocado");
+        }
+
+        /// <summary>
+        /// La ruta genérica (ReadValue → el árbol de GameEventMsg.data) camina EL MISMO cursor,
+        /// así que necesita su propio centinela: una mutación del ReadBin privado sobrevive a
+        /// cualquier aserción que solo mire los bytes devueltos.
+        /// </summary>
+        [Test]
+        public void ReadValueTreeDecodesBinAndLeavesTheCursorAligned()
+        {
+            byte[] payload = BinPattern(300);
+
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(1);
+            w.WriteString("data");
+            w.WriteBin(payload);
+            w.WriteInt(0x3B3B);
+
+            var r = new MsgPackReader(w.ToArray());
+            var tree = (Dictionary<string, object>)r.ReadValue();
+            Assert.AreEqual(payload, tree["data"] as byte[], "el árbol genérico debe entregar byte[]");
+            Assert.AreEqual(0x3B3B, r.ReadInt(), "CENTINELA: la ruta genérica dejó el cursor descolocado");
+        }
+
+        /// <summary>
+        /// Un payload nulo o vacío emite un bin8 VACÍO, nunca nil: `rmp_serde` decodifica
+        /// `Vec&lt;u8&gt;` desde un bin vacío y NO desde nil, así que emitir nil convertiría
+        /// "este hablante no mandó audio en este frame" en un error de decodificación.
+        /// </summary>
+        [Test]
+        public void WriteBinEmitsEmptyBinForNullNeverNil()
+        {
+            var w = new MsgPackWriter();
+            w.WriteBin(null);
+            w.WriteInt(7);
+            byte[] frame = w.ToArray();
+
+            Assert.AreEqual(0xc4, frame[0], "debe ser bin8");
+            Assert.AreEqual(0x00, frame[1], "de longitud cero");
+            Assert.AreNotEqual(0xc0, frame[0], "nil rompería la deserialización de Vec<u8>");
+
+            var r = new MsgPackReader(frame);
+            Assert.IsEmpty(r.ReadBin());
+            Assert.AreEqual(7, r.ReadInt(), "CENTINELA");
+        }
+
+        [Test]
+        public void WriteBinSliceEmitsExactlyTheRequestedWindow()
+        {
+            byte[] source = BinPattern(64);
+
+            var w = new MsgPackWriter();
+            w.WriteBin(source, 8, 16);
+            w.WriteInt(9);
+
+            var r = new MsgPackReader(w.ToArray());
+            byte[] slice = r.ReadBin();
+            Assert.AreEqual(16, slice.Length);
+            for (int i = 0; i < 16; i++)
+                Assert.AreEqual(source[8 + i], slice[i], $"byte {i} de la ventana");
+            Assert.AreEqual(9, r.ReadInt(), "CENTINELA");
+        }
+
+        [Test]
+        public void WriteBinRejectsARangePastTheEndInsteadOfEmittingAdjacentMemory()
+        {
+            var w = new MsgPackWriter();
+            Assert.Throws<ArgumentOutOfRangeException>(() => w.WriteBin(BinPattern(64), 60, 16));
+        }
+
+        /// <summary>
+        /// Contrapartida obligatoria: un campo que el emisor codificó como OTRA cosa no puede
+        /// dejar el frame ilegible. ReadBin consume el valor entero y devuelve vacío, así que
+        /// los campos posteriores siguen decodificando — la misma tolerancia hacia delante que
+        /// da el `else r.Skip()` de IPCMessages.
+        /// </summary>
+        [Test]
+        public void ReadBinConsumesAWrongTypedValueWholeAndKeepsTheFrameReadable()
+        {
+            var ws = new MsgPackWriter();
+            ws.WriteString("not binary");
+            ws.WriteInt(1234);
+            var rs = new MsgPackReader(ws.ToArray());
+            Assert.IsEmpty(rs.ReadBin(), "un string donde se esperaba bin → vacío");
+            Assert.AreEqual(1234, rs.ReadInt(), "el valor siguiente debe seguir decodificando");
+
+            var wm = new MsgPackWriter();
+            wm.WriteMapHeader(1);
+            wm.WriteString("k");
+            wm.WriteInt(5);
+            wm.WriteInt(4321);
+            var rm = new MsgPackReader(wm.ToArray());
+            Assert.IsEmpty(rm.ReadBin(), "un map donde se esperaba bin → vacío");
+            Assert.AreEqual(4321, rm.ReadInt(), "el cuerpo del map debe consumirse ENTERO");
+        }
+
+        [Test]
+        public void ReadBinOnATruncatedFrameIsCaughtByTheBoundsCheck()
+        {
+            var w = new MsgPackWriter();
+            w.WriteBin(BinPattern(40));
+            byte[] full = w.ToArray();
+            var cut = new byte[full.Length - 10];
+            Array.Copy(full, cut, cut.Length);
+
+            var r = new MsgPackReader(cut);
+            Assert.Throws<Exception>(() => r.ReadBin(), "la cabecera promete más bytes de los que hay");
         }
     }
 }

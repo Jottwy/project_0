@@ -126,6 +126,40 @@ namespace BackroomsSurvival.Net
 
         public void WriteBool(bool v) => Add(v ? (byte)0xc3 : (byte)0xc2);
 
+        /// <summary>Opaque byte payload as the MessagePack bin family (0xc4/0xc5/0xc6), which is
+        /// what <c>rmp_serde</c> expects for a <c>#[serde(with = "serde_bytes")] Vec&lt;u8&gt;</c>.
+        ///
+        /// ADR-046 Fase 0. Until now the writer had no way to emit binary at all, so a byte payload
+        /// would have had to travel Base64'd inside a string: +33 % on the wire and a throwaway
+        /// string per frame, at the voice cadence (25 Hz per speaker).
+        ///
+        /// A null or empty payload emits an EMPTY bin8, never nil: <c>Vec&lt;u8&gt;</c> deserializes
+        /// from an empty bin and NOT from nil, so emitting nil would turn "this speaker sent no
+        /// audio this frame" into a decode error on the backend.</summary>
+        public void WriteBin(byte[] data) => WriteBin(data, 0, data?.Length ?? 0);
+
+        /// <summary>Range overload — lets a caller emit a slice of a reused capture buffer without
+        /// copying it into a right-sized array first.</summary>
+        public void WriteBin(byte[] data, int offset, int count)
+        {
+            if (data == null || count <= 0)
+            {
+                Add(0xc4);
+                Add(0);
+                return;
+            }
+            if (offset < 0 || count < 0 || offset > data.Length - count)
+                throw new ArgumentOutOfRangeException(nameof(count), $"WriteBin range [{offset},{offset + count}) outside byte[{data.Length}]");
+
+            if (count <= 0xff) { Add(0xc4); Add((byte)count); }
+            else if (count <= 0xffff) { Add(0xc5); WriteU16((ushort)count); }
+            else { Add(0xc6); WriteU32((uint)count); }
+
+            EnsureCapacity(count);
+            Array.Copy(data, offset, _buf, _pos, count);
+            _pos += count;
+        }
+
         public void WriteNil() => Add(0xc0);
 
         public void WriteInt(long n)
@@ -473,6 +507,31 @@ namespace BackroomsSurvival.Net
             string s = Encoding.UTF8.GetString(_data, _pos, n);
             _pos += n;
             return s;
+        }
+
+        /// <summary>Typed counterpart of <see cref="MsgPackWriter.WriteBin"/>: bin8/16/32 → byte[].
+        /// ADR-046 Fase 0, the read half of the same gap.
+        ///
+        /// Any other type — including nil, and including a value from a newer backend this client
+        /// does not understand — is CONSUMED via <see cref="SkipValue"/> and reported as an empty
+        /// array. Returning early without consuming would leave the cursor mid-value and corrupt
+        /// every remaining field of the frame; that misalignment is precisely the failure the
+        /// ReadIntArray2 sentinel was added to catch.</summary>
+        public byte[] ReadBin()
+        {
+            byte c = NextByte();
+            int n;
+            if (c == 0xc4) n = NextByte();
+            else if (c == 0xc5) n = ReadU16();
+            else if (c == 0xc6) n = (int)ReadU32();
+            else { SkipValue(c); return Array.Empty<byte>(); }
+
+            if (n <= 0) return Array.Empty<byte>();
+            CheckBounds(n);
+            var b = new byte[n];
+            Array.Copy(_data, _pos, b, 0, n);
+            _pos += n;
+            return b;
         }
 
         // ── C5: bounded string interning ──────────────────────────────────────
