@@ -162,16 +162,28 @@ namespace BackroomsSurvival.Tests
         public void SyncsAnimationState()
         {
             IgnoreEditModeMaterialLog();
+            // Los tres valores son el dominio REAL que emite el backend
+            // (sync.rs::broadcast_player_update): "idle" | "walk_slow" | "pickup". El fixture usaba
+            // "run" y "attack", que no se envían nunca — leerlo sugería que este canal transporta
+            // locomoción o ataque, y no transporta ninguna de las dos: la locomoción es derivada de
+            // velocidad (ADR-013) y el melee viaja en melee_seq (ADR-044).
             var players = new List<RemotePlayerMsg>
             {
-                new RemotePlayerMsg { id = 1, name = "Alice", animation = "run" }
+                new RemotePlayerMsg { id = 1, name = "Alice", animation = "idle" }
             };
             _manager.UpdateFromWorldState(players);
-            Assert.AreEqual("run", _manager.ActivePlayers[1].animationState);
+            Assert.AreEqual("idle", _manager.ActivePlayers[1].animationState);
 
-            players[0].animation = "attack";
+            players[0].animation = "walk_slow";
             _manager.UpdateFromWorldState(players);
-            Assert.AreEqual("attack", _manager.ActivePlayers[1].animationState);
+            Assert.AreEqual("walk_slow", _manager.ActivePlayers[1].animationState);
+
+            // El que de verdad tiene consumidor: ProxyPickupHook detecta el flanco de entrada en
+            // "pickup" (ADR-011). Si este campo dejara de alimentarse, el pickup de los peers se
+            // apagaría en silencio y este assert es lo único que lo delata.
+            players[0].animation = "pickup";
+            _manager.UpdateFromWorldState(players);
+            Assert.AreEqual("pickup", _manager.ActivePlayers[1].animationState);
         }
     }
 }
