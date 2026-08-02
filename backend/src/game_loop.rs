@@ -201,6 +201,20 @@ const PHANTOM_REPLAN_STRIDE: u64 = 3;
 /// A waypoint counts as reached inside this radius. Below ~1 m the phantom can orbit a waypoint it
 /// keeps almost-touching; this is under half a cell, so it never skips a corner either.
 const PHANTOM_WAYPOINT_ARRIVE: f32 = 1.25;
+/// Consecutive fully-blocked steps after which a hunting phantom is treated as WEDGED: it force-
+/// replans (ignoring the stagger) and stops trusting the straight-line shortcut.
+///
+/// 3 at 10 Hz = 0.3 s, which is under the reaction time anyone would read as hesitation, and well
+/// above the single blocked step a normal wall-slide produces while rounding a corner. Making it 1
+/// would throw away a good plan every time the creature grazed geometry.
+const PHANTOM_BLOCKED_REPLAN_TICKS: u8 = 3;
+/// Fraction of the intended step a creature must actually gain, along the direction it meant to go,
+/// for the step to count as progress. Below this it is grinding, not travelling.
+///
+/// 0.25 and not something near 1.0 because a legitimate wall-slide while rounding a corner does
+/// give up most of its forward component for a tick or two; the failure being detected is sustained
+/// near-zero progress, not a single scraped step.
+const PHANTOM_MIN_STEP_PROGRESS: f32 = 0.25;
 const PHANTOM_TURN_SPEED_STALK: f32 = 8.0;
 const PHANTOM_TURN_SPEED_SPRINT: f32 = 15.0;
 const PHANTOM_TURN_SPEED_STATUE: f32 = 3.0;
@@ -4802,6 +4816,14 @@ struct PhantomMover {
     search_speed: f32,
     /// Seconds left before the noise being investigated goes cold. `None` = not a noise search.
     noise_expiry: Option<f32>,
+    /// Consecutive steps in which the resolver advanced the creature by nothing at all, i.e. it is
+    /// pressed into geometry. Reset to 0 by any step that moves.
+    ///
+    /// Exists because STALK and SPRINT — the two states where being stuck is most visible — were
+    /// the only ones that never looked at whether their step landed. WANDER re-orients on a block
+    /// and SEARCH drops its plan; the two hunting states just kept pushing into the same corner at
+    /// 10 Hz, which is what "se queda pegado en las esquinas" looks like from the outside.
+    blocked_ticks: u8,
 }
 
 impl PhantomDriver {
@@ -5142,6 +5164,7 @@ impl PhantomDriver {
             search_patience: PHANTOM_SEARCH_MAX,
             search_speed: PHANTOM_SEARCH_SPEED,
             noise_expiry: None,
+            blocked_ticks: 0,
         });
     }
 
@@ -5215,6 +5238,41 @@ impl PhantomDriver {
     /// At most ONE search per call, so the per-step cost stays the bounded thing it was measured to
     /// be. A plan is rebuilt when it is older than `PHANTOM_REPLAN_INTERVAL`, when the target has
     /// drifted `PHANTOM_REPLAN_GOAL_DRIFT` from the goal it was built for, or when it ran out.
+    /// Record how much of the step the creature actually got, and drop the route the moment it is
+    /// wedged so the next tick re-plans instead of grinding along the same wall.
+    ///
+    /// `advance` is the realised displacement PROJECTED ON THE INTENDED DIRECTION, not the raw
+    /// distance moved, and that distinction is the whole detector. The obvious signal —
+    /// `MoveResult::blocked`, "neither axis advanced" — never fires in the case people actually
+    /// report: pressed against a wall the resolver SLIDES, so the creature keeps moving at full
+    /// speed sideways while getting no closer, forever. Projected advance reads a slide as ~0,
+    /// which is what it is worth.
+    ///
+    /// Clearing the plan HERE and not only raising the counter matters: a stale route whose next
+    /// waypoint sits on the far side of the obstacle is precisely what keeps aiming the creature at
+    /// it. `steer_heading` reads `blocked_ticks` for the rest (force the replan past the stagger,
+    /// distrust the straight line).
+    fn note_step_progress(&mut self, i: usize, advance: f32, intended: f32) {
+        // Not trying to travel (STALK holding its distance band) is not being stuck.
+        if intended <= 1e-4 {
+            self.movers[i].blocked_ticks = 0;
+            return;
+        }
+        if advance >= intended * PHANTOM_MIN_STEP_PROGRESS {
+            self.movers[i].blocked_ticks = 0;
+            return;
+        }
+        self.movers[i].blocked_ticks = self.movers[i].blocked_ticks.saturating_add(1);
+        if self.movers[i].blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS {
+            self.movers[i].nav_waypoints.clear();
+        }
+    }
+
+    /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
+    fn is_wedged(&self, i: usize) -> bool {
+        self.movers[i].blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS
+    }
+
     fn steer_heading(&mut self, i: usize, layer: u8, from: Vec3, target: Vec3, dt: f32) -> f32 {
         use crate::world::grid_gen::{cell_of, find_path, segment_is_clear, string_pull};
 
@@ -5233,7 +5291,13 @@ impl PhantomDriver {
         // and the point-blank strike (dist < 1.5) never fires; and a route's last waypoint is a
         // cell CENTRE, which can sit up to half a cell diagonal away from where you actually are.
         // Checking the straight line is cheap and settles both: if it is clear, take it.
-        if segment_is_clear(&mut self.grid_cache, layer, from, target) {
+        //
+        // …UNLESS the creature is wedged. `segment_is_clear` tests a SEGMENT, with no body radius,
+        // while the resolver moves a 0.5 m body: against an inside corner the line reads clear, the
+        // plan gets thrown away, the straight bearing walks into the corner, and the next tick does
+        // it again. That loop is the corner-sticking bug, and it is self-reinforcing precisely
+        // because the shortcut looks correct every single time. While wedged, the pathfinder wins.
+        if !self.is_wedged(i) && segment_is_clear(&mut self.grid_cache, layer, from, target) {
             self.movers[i].nav_waypoints.clear();
             self.movers[i].nav_cursor = 0;
             self.movers[i].nav_goal = None;
@@ -5248,7 +5312,12 @@ impl PhantomDriver {
         // ceil(N / stride). A mover denied its turn keeps its previous route, and one with no route
         // at all falls back to the straight bearing — i.e. exactly the pre-ADR-040 behaviour, for
         // at most 0.2 s.
-        let may_replan = (self.step_counter + i as u64).is_multiple_of(PHANTOM_REPLAN_STRIDE);
+        //
+        // A WEDGED mover skips the stagger. The stagger exists to spread a COST, and it can deny a
+        // turn for up to 0.2 s; a creature grinding into a wall is the one case where waiting out
+        // its turn is exactly wrong, and it is bounded by the same `active_cap` as everything else.
+        let may_replan = self.is_wedged(i)
+            || (self.step_counter + i as u64).is_multiple_of(PHANTOM_REPLAN_STRIDE);
         let stale = may_replan
             && (self.movers[i].nav_waypoints.is_empty()
                 || self.movers[i].nav_cursor >= self.movers[i].nav_waypoints.len()
@@ -5726,14 +5795,18 @@ impl PhantomDriver {
                     );
                     let resolved =
                         resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
+                    // Wedge detection. `intended` is 0 while STALK holds its distance band, which
+                    // `note_step_progress` reads as "not trying to travel" rather than as stuck.
+                    let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+                    self.note_step_progress(i, advance, speed * dt);
                     let yaw = heading.to_degrees().rem_euclid(360.0);
                     if let Some(peer) = net.peers.get_mut(&id) {
                         peer.update_player_state(resolved.to_array(), yaw, "idle".into());
                     }
                     if net.session_start.elapsed().as_millis() % 1000 < 120 {
                         info!(
-                            "MPTRACE step=PH_STALK event=phantom_stalk_move phantom_id={} pos=({:.2},{:.2},{:.2}) dist={:.2}",
-                            id, resolved.x, resolved.y, resolved.z, dist
+                            "MPTRACE step=PH_STALK event=phantom_stalk_move phantom_id={} pos=({:.2},{:.2},{:.2}) dist={:.2} blocked_ticks={}",
+                            id, resolved.x, resolved.y, resolved.z, dist, self.movers[i].blocked_ticks
                         );
                     }
                 }
@@ -5881,14 +5954,18 @@ impl PhantomDriver {
                     );
                     let resolved =
                         resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
+                    // A lunge always intends to travel, so any step that gains nothing toward the
+                    // player is the creature grinding along geometry.
+                    let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+                    self.note_step_progress(i, advance, speed * dt);
                     let yaw = heading.to_degrees().rem_euclid(360.0);
                     if let Some(peer) = net.peers.get_mut(&id) {
                         peer.update_player_state(resolved.to_array(), yaw, "idle".into());
                     }
                     if net.session_start.elapsed().as_millis() % 1000 < 120 {
                         info!(
-                            "MPTRACE step=PH_SPRINT event=phantom_sprint_move phantom_id={} pos=({:.2},{:.2},{:.2}) speed={:.1} dist={:.2}",
-                            id, resolved.x, resolved.y, resolved.z, speed, dist
+                            "MPTRACE step=PH_SPRINT event=phantom_sprint_move phantom_id={} pos=({:.2},{:.2},{:.2}) speed={:.1} dist={:.2} blocked_ticks={}",
+                            id, resolved.x, resolved.y, resolved.z, speed, dist, self.movers[i].blocked_ticks
                         );
                     }
                 }
@@ -7229,6 +7306,100 @@ mod tests {
             driver.movers[0].state,
             PhantomState::Stalk,
             "STATUE must release to STALK when the player looks away"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() {
+        // The unsticking machine itself. STALK and SPRINT used to ignore whether their step landed,
+        // so a creature pressed into an inside corner pushed at the same wall at 10 Hz forever —
+        // and `segment_is_clear` (a segment test, NO body radius) kept reporting the line to the
+        // player as clear, throwing away the one plan that could have routed around it.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].nav_waypoints = vec![Vec3::new(9.0, 1.8, 9.0)];
+
+        // A step that INTENDED 0.9 m and gained nothing along that direction — the signature of a
+        // wall-slide, which is what the raw `MoveResult::blocked` flag misses entirely: the
+        // resolver happily moves the creature sideways at full speed while it closes no distance.
+        let (intended, ground_out) = (0.9f32, 0.0f32);
+
+        // Grazing geometry once is NOT being wedged: a plan survives a single scraped step, which
+        // is what rounding any corner produces.
+        driver.note_step_progress(0, ground_out, intended);
+        assert!(!driver.is_wedged(0));
+        assert_eq!(
+            driver.movers[0].nav_waypoints.len(),
+            1,
+            "one scraped step must not cost a good route"
+        );
+
+        for _ in 1..PHANTOM_BLOCKED_REPLAN_TICKS {
+            driver.note_step_progress(0, ground_out, intended);
+        }
+        assert!(driver.is_wedged(0), "steps that gain nothing mean wedged");
+        assert!(
+            driver.movers[0].nav_waypoints.is_empty(),
+            "a wedged mover must drop the route that is aiming it at the wall"
+        );
+
+        // And it re-arms: one step that actually moves clears the whole condition, so the creature
+        // goes straight back to the cheap straight-line path the moment it is free.
+        driver.note_step_progress(0, intended, intended);
+        assert!(!driver.is_wedged(0));
+        assert_eq!(driver.movers[0].blocked_ticks, 0);
+
+        // And holding still on purpose (STALK inside its distance band, intended = 0) is never
+        // stuck — otherwise the creature would "unstick" itself out of its own designed pause.
+        driver.movers[0].blocked_ticks = PHANTOM_BLOCKED_REPLAN_TICKS;
+        driver.note_step_progress(0, 0.0, 0.0);
+        assert!(!driver.is_wedged(0), "a deliberate hold is not a wedge");
+    }
+
+    #[tokio::test]
+    async fn a_sprint_into_a_built_wall_registers_as_blocked() {
+        // End-to-end half of the test above, through the REAL path (`resolve_move_grid_gen_ex` →
+        // `note_step_blocked`) instead of poking the counter: a player-built piece blocks the cell
+        // (ADR-041 overlay), the lunge cannot advance, and the wedge counter climbs.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+
+        // Wall the creature in: every neighbouring cell is built on, so no direction advances.
+        use crate::network::protocol::StpBuildingInfo;
+        let here = Vec3::from_array(net.peers[&pid].position);
+        for (id, (dx, dz)) in
+            (STP_BUILDING_ID_BASE..).zip([(-2.5f32, 0.0f32), (2.5, 0.0), (0.0, -2.5), (0.0, 2.5)])
+        {
+            net.stp_buildings.push(StpBuildingInfo {
+                id,
+                def_id: 1,
+                position: [here.x + dx, here.y, here.z + dz],
+                rotation: 0.0,
+                group_id: 0,
+                added: vec![],
+            });
+        }
+
+        // Player far enough that the lunge always wants to travel, close enough to stay the target.
+        // Several ticks, not exactly `PHANTOM_BLOCKED_REPLAN_TICKS`: the creature starts at its own
+        // cell's centre and has ~1.5 m of free travel inside it before its 0.5 m body reaches the
+        // built neighbour, so the first steps legitimately advance.
+        let player = Vec3::new(here.x + 12.0, 1.8, here.z);
+        for _ in 0..30 {
+            driver.step(&mut net, 0.1, player, 0.0, false, false);
+        }
+
+        assert!(
+            driver.is_wedged(0),
+            "a lunge that cannot advance must register as wedged, got {} blocked ticks",
+            driver.movers[0].blocked_ticks
         );
     }
 
