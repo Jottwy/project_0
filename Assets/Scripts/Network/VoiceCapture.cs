@@ -231,6 +231,9 @@ namespace BackroomsSurvival.Net
         private ushort _seq;
         private float _holdUntil;        // cola de la detección de actividad
         private bool _warnedNoDevice;
+        private float _levelPeak;
+        private int _levelFrames;
+        private float _nextLevelLog;
 
         // Auto-test (monitor local)
         private bool _selfTest;
@@ -379,6 +382,22 @@ namespace BackroomsSurvival.Net
             double sum = 0;
             for (int i = 0; i < _inputFrameSamples; i++) sum += (double)_capture[i] * _capture[i];
             InputLevel = Mathf.Sqrt((float)(sum / _inputFrameSamples));
+
+            // Traza periódica del nivel. El medidor del panel ya lo enseña, pero un log es lo
+            // único que sobrevive a la sesión y lo único que se puede pedir por escrito cuando
+            // alguien reporta "no me oyen": separa "el dispositivo entrega silencio" de todo lo
+            // demás sin tener que estar delante de la pantalla.
+            if (InputLevel > _levelPeak) _levelPeak = InputLevel;
+            _levelFrames++;
+            if (Time.unscaledTime >= _nextLevelLog)
+            {
+                _nextLevelLog = Time.unscaledTime + 2f;
+                Debug.Log($"[VoiceCapture] nivel pico={_levelPeak:F4} en {_levelFrames} tramas " +
+                          $"device='{_activeDevice}' canales={_channels}" +
+                          (_levelPeak < 0.0005f ? "  <-- EL DISPOSITIVO ENTREGA SILENCIO" : ""));
+                _levelPeak = 0f;
+                _levelFrames = 0;
+            }
 
             bool open = ShouldTransmit();
             IsTransmitting = open;
