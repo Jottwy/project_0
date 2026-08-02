@@ -94,6 +94,8 @@ pub enum NetworkEvent {
         revealed: bool,
         light_on: bool,
         fire_seq: u8,
+        buttons: u16,
+        melee_seq: u8,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -1181,6 +1183,8 @@ impl NetworkManager {
                 revealed,
                 light_on,
                 fire_seq,
+                buttons,
+                melee_seq,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -1197,6 +1201,8 @@ impl NetworkManager {
                     peer.revealed = revealed; // ADR-038: cosmetic real-form flag, alongside the pose
                     peer.light_on = light_on; // ADR-042: cosmetic held-light flag, alongside the pose
                     peer.fire_seq = fire_seq; // ADR-042: cosmetic shot counter, alongside the pose
+                    peer.buttons = buttons; // ADR-044: cosmetic aim/reload bits, alongside the pose
+                    peer.melee_seq = melee_seq; // ADR-044: cosmetic swing counter, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -1233,6 +1239,8 @@ impl NetworkManager {
                     revealed,
                     light_on,
                     fire_seq,
+                    buttons,
+                    melee_seq,
                 }]
             }
 
@@ -2035,6 +2043,8 @@ mod tests {
             revealed: false,
             light_on: false,
             fire_seq: 0,
+            buttons: 0,
+            melee_seq: 0,
         };
         host.broadcast_unreliable(&payload).await;
 
@@ -2175,6 +2185,8 @@ mod tests {
                 revealed: false,
                 light_on: false,
                 fire_seq: 0,
+                buttons: 0,
+                melee_seq: 0,
             },
         };
         net.handle_packet(relayed).await;

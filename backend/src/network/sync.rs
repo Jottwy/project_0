@@ -130,6 +130,9 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         // ADR-042: both client-reported and sealed in the game loop next to `hit_seq`.
         light_on: player.light_on,
         fire_seq: player.fire_seq,
+        // ADR-044: `buttons` stops being the dead literal it was and carries the aim/reload bits.
+        buttons: player.buttons,
+        melee_seq: player.melee_seq,
     };
     // Both lines are on the same once-a-second window now. This runs at the full tick rate, so
     // unthrottled it was the single noisiest line in the backend log — it formatted three floats
@@ -229,6 +232,8 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
                     revealed: p.revealed,
                     light_on: p.light_on,
                     fire_seq: p.fire_seq,
+                    buttons: p.buttons,
+                    melee_seq: p.melee_seq,
                 },
             )
         })

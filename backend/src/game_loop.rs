@@ -737,6 +737,11 @@ pub async fn run(
             // wieldable"; the counter is bumped client-side on each native IFirearmTrigger.Shoot.
             player.light_on = received_input.light_on;
             player.fire_seq = received_input.fire_seq;
+            // ADR-044: record the client-reported sustained-state bits (bit 0 aiming, bit 1
+            // reloading) and the melee-swing counter. Cosmetic; relayed to peers, not validated,
+            // and never an input to the hit validation of ADR-029.
+            player.buttons = received_input.buttons;
+            player.melee_seq = received_input.melee_seq;
             // ADR-025 respawn-on-demand: while DEAD the server FREEZES the authoritative pose —
             // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
             // take_damage). Any local client drift while dead is corrected by the applier's snap
@@ -1151,10 +1156,12 @@ async fn handle_network_event(
             revealed,
             light_on,
             fire_seq,
+            buttons,
+            melee_seq,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -3951,6 +3958,8 @@ fn build_world_state(
             revealed: p.revealed,
             light_on: p.light_on,
             fire_seq: p.fire_seq,
+            buttons: p.buttons,
+            melee_seq: p.melee_seq,
         });
     }
 

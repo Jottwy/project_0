@@ -66,7 +66,12 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// RemotePlayerState and the P2P PlayerUpdate — both client-reported and `serde(default)`, so a
 /// v13 peer decodes false/0 and simply sees a dark, silent peer. Cosmetic only: neither field
 /// feeds the phantom's perception, which hears exclusively through v13's `report_noise`.
-const WIRE_SCHEMA_VERSION: u32 = 14;
+/// v15 (ADR-044) adds `melee_seq:u8` (a monotonic melee-swing counter) and promotes the EXISTING
+/// `buttons:u16` from a dead field to a cosmetic sustained-state bitfield (bit 0 = aiming, bit 1 =
+/// reloading) carried by RemotePlayerState and the P2P PlayerUpdate. `buttons` already lived in
+/// PlayerInput, written as a literal 0 and read by nobody, so the client frame gains ONE field, not
+/// two. Both `serde(default)`, so a v14 peer decodes 0/0 and simply never aims, reloads or swings.
+const WIRE_SCHEMA_VERSION: u32 = 15;
 
 /// Run the IPC server until a fatal accept error.
 ///

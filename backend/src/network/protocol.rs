@@ -452,6 +452,16 @@ pub enum PacketPayload {
         /// the v12→v13 schema bump.
         #[serde(default)]
         fire_seq: u8,
+        /// ADR-044: cosmetic sustained-state bits (0 = aiming, 1 = reloading). Appended last +
+        /// serde(default) → a v14 peer that omits it decodes to 0 (neither); wire-compat across
+        /// the v14→v15 schema bump.
+        #[serde(default)]
+        buttons: u16,
+        /// ADR-044: cosmetic melee-swing counter (monotonic, wrapping; 0 = never swung). Appended
+        /// last + serde(default) → a v14 peer that omits it decodes to 0; wire-compat across the
+        /// v14→v15 schema bump.
+        #[serde(default)]
+        melee_seq: u8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -837,6 +847,8 @@ mod tests {
             revealed: true,
             light_on: true,
             fire_seq: 9,
+            buttons: 0b11,
+            melee_seq: 4,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -856,6 +868,8 @@ mod tests {
                 revealed,
                 light_on,
                 fire_seq,
+                buttons,
+                melee_seq,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -869,6 +883,8 @@ mod tests {
                 assert!(revealed);
                 assert!(light_on);
                 assert_eq!(fire_seq, 9);
+                assert_eq!(buttons, 0b11);
+                assert_eq!(melee_seq, 4);
             }
             _ => panic!("wrong variant"),
         }

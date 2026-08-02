@@ -105,6 +105,11 @@ pub struct PlayerInput {
     /// through the separate `report_noise` action (ADR-041), never through this.
     #[serde(default)]
     pub fire_seq: u8,
+    /// ADR-044: client-reported melee-swing counter (monotonic, wrapping). Sampled as a RISING EDGE
+    /// of `MeleeWeapon.IsUsing` — that class exposes no swing event, unlike `IFirearmTrigger.Shoot`.
+    /// Cosmetic, relayed to peers, not authoritative: it does not feed the hit validation of ADR-029.
+    #[serde(default)]
+    pub melee_seq: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -281,6 +286,12 @@ pub struct RemotePlayerState {
     /// still lands the right number of shots.
     #[serde(default)]
     pub fire_seq: u8,
+    /// ADR-044: cosmetic sustained-state bitfield, host-relayed — bit 0 = aiming, bit 1 = reloading.
+    #[serde(default)]
+    pub buttons: u16,
+    /// ADR-044: cosmetic melee-swing counter (monotonic, wrapping; 0 = never swung), host-relayed.
+    #[serde(default)]
+    pub melee_seq: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -65,6 +65,17 @@ pub struct Player {
     /// stimulus — the phantom hears via `report_noise` (ADR-041), a separate channel on purpose.
     #[serde(default)]
     pub fire_seq: u8,
+    /// ADR-044: cosmetic sustained-state bitfield — bit 0 = aiming, bit 1 = reloading. The field
+    /// itself is NOT new (it existed in `ipc::PlayerInput`, written as a literal 0 and read by
+    /// nobody); this ADR gives it meaning and promotes it to the relay. 14 bits are free on
+    /// purpose, so the next sustained state costs no wire change. Never an input to simulation.
+    #[serde(default)]
+    pub buttons: u16,
+    /// ADR-044: cosmetic melee-swing counter (monotonic, wrapping; 0 = never swung). A counter and
+    /// not a `buttons` bit because a level bit cannot tell two chained swings from one held swing —
+    /// exactly the read that matters in a melee exchange.
+    #[serde(default)]
+    pub melee_seq: u8,
     /// ADR-028: server-side dedupe — true once this death's loot snapshot spawned a
     /// corpse. Guards against a double `report_death_loot` (the client's event
     /// fast-path + derived-edge fallback both firing) duplicating the inventory.
@@ -113,6 +124,8 @@ impl Player {
             revealed: false,
             light_on: false,
             fire_seq: 0,
+            buttons: 0,
+            melee_seq: 0,
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),

@@ -71,6 +71,14 @@ pub struct PeerConnection {
     /// PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
     /// update_player_state — so the phantom (ADR-016) never fires a gun.
     pub fire_seq: u8,
+    /// ADR-044: cosmetic sustained-state bits (aiming/reloading), set from PlayerUpdate; relayed,
+    /// not authoritative. NOTE: set in handle_packet, NOT in update_player_state — so the phantom
+    /// (ADR-016) never aims and never reloads.
+    pub buttons: u16,
+    /// ADR-044: cosmetic melee-swing counter, set from PlayerUpdate; relayed, not authoritative.
+    /// NOTE: set in handle_packet, NOT in update_player_state — so the phantom never swings a
+    /// weapon it does not carry.
+    pub melee_seq: u8,
     pub connected_at: Instant,
 }
 
@@ -97,6 +105,8 @@ impl PeerConnection {
             revealed: false,
             light_on: false,
             fire_seq: 0,
+            buttons: 0,
+            melee_seq: 0,
             connected_at: now,
         }
     }
