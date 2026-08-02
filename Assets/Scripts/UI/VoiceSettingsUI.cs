@@ -38,6 +38,8 @@ namespace BackroomsSurvival.UI
         private Text _pttLabel;
         private Toggle _micToggle;
         private Toggle _modeToggle;
+        private Toggle _gateToggle;
+        private Toggle _agcToggle;
         private Toggle _selfTestToggle;
         private Slider _thresholdSlider;
         private Text _thresholdValue;
@@ -139,7 +141,9 @@ namespace BackroomsSurvival.UI
             _levelFill.color = vc.IsTransmitting
                 ? new Color(0.4f, 0.9f, 0.45f)
                 : new Color(0.55f, 0.55f, 0.5f);
-            _levelText.text = $"nivel {level:F3}";
+            _levelText.text = vc.AutoGain
+                ? $"nivel {level:F3}   ganancia auto {vc.AutoGainValue:F1}x"
+                : $"nivel {level:F3}";
 
             if (!vc.MicEnabled)
             {
@@ -229,6 +233,8 @@ namespace BackroomsSurvival.UI
             RefreshChannels();
             _micToggle.SetIsOnWithoutNotify(vc.MicEnabled);
             _modeToggle.SetIsOnWithoutNotify(vc.OpenMic);
+            _gateToggle.SetIsOnWithoutNotify(vc.NoiseGate);
+            _agcToggle.SetIsOnWithoutNotify(vc.AutoGain);
             _selfTestToggle.SetIsOnWithoutNotify(vc.SelfTest);
             _thresholdSlider.SetValueWithoutNotify(vc.ActivationThreshold);
             _thresholdValue.text = vc.ActivationThreshold.ToString("F3");
@@ -350,6 +356,16 @@ namespace BackroomsSurvival.UI
             _modeToggle = Row(res, "Voz abierta en vez de pulsar  (F6)", ref y, on =>
             {
                 var vc = Voice(); if (vc != null) vc.OpenMic = on;
+            });
+
+            _gateToggle = Row(res, "Puerta de ruido (quita el fondo entre palabras)", ref y, on =>
+            {
+                var vc = Voice(); if (vc != null) vc.NoiseGate = on;
+            });
+
+            _agcToggle = Row(res, "Nivel automático (iguala el volumen entre jugadores)", ref y, on =>
+            {
+                var vc = Voice(); if (vc != null) vc.AutoGain = on;
             });
 
             _selfTestToggle = Row(res, "Auto-test: oírme a mí mismo", ref y, on =>

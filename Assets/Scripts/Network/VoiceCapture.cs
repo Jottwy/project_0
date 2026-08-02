@@ -84,13 +84,34 @@ namespace BackroomsSurvival.Net
         [Range(0f, 2f)]
         [SerializeField] private float _releaseSeconds = 0.3f;
 
-        [Header("Códec")]
-        [Tooltip("Bitrate objetivo en bps. Opus es VBR: en silencio o en tono puro baja solo.")]
-        [Range(8000, 64000)]
-        [SerializeField] private int _bitrate = 24000;
+        [Header("Procesado")]
+        [Tooltip("Puerta de ruido: silencia el fondo entre palabras. Con histéresis y liberación " +
+                 "suave, no un corte seco.")]
+        [SerializeField] private bool _noiseGate = true;
 
-        [Tooltip("Complejidad del codificador (0-10). 5 cuesta ~1,2 ms por trama de 20 ms sobre " +
-                 "el Mono de Unity, medido; subirlo come presupuesto de frame por poca calidad.")]
+        [Tooltip("Nivel automático (AGC): iguala el volumen entre jugadores. Solo adapta mientras " +
+                 "hay voz, nunca amplificando el silencio.")]
+        [SerializeField] private bool _autoGain = true;
+
+        [Header("Códec")]
+        /// <remarks>
+        /// 32 kbps medido sobre voz sintética (fundamental + formantes + envolvente silábica, NO
+        /// un tono puro, que comprime irrealmente bien): 80,8 B por trama = 3,9 KB/s. Frente a los
+        /// 24 kbps anteriores es +0,9 KB/s, despreciable al lado de los 2,7-4,1 Mbps por peer que
+        /// el juego ya mueve leyendo chunks.
+        /// </remarks>
+        [Tooltip("Bitrate objetivo en bps. Opus es VBR: en silencio baja solo.")]
+        [Range(8000, 64000)]
+        [SerializeField] private int _bitrate = 32000;
+
+        /// <remarks>
+        /// Barrido medido bajo el Mono de Unity a 48 kHz, ms por trama de 20 ms: complejidad 3 =
+        /// 0,79; **5 = 1,44**; 7 = 2,15; 9 = 2,45. Subir de 5 a 7 cuesta **+50 % de CPU** por una
+        /// ganancia sutil — en Opus el bitrate pesa mucho más en la calidad percibida que la
+        /// complejidad. Y esto corre en el hilo principal: 2,15 ms son el 13 % de un frame a
+        /// 60 fps, que es un precio que la calidad extra no paga.
+        /// </remarks>
+        [Tooltip("Complejidad del codificador (0-10). 5 es el punto de mejor calidad por ms.")]
         [Range(0, 10)]
         [SerializeField] private int _complexity = 5;
 
@@ -165,6 +186,27 @@ namespace BackroomsSurvival.Net
         public static string ChannelName(int channel) =>
             channel == -1 ? "automático" : channel == -2 ? "mezcla" : "canal " + (channel + 1);
 
+        public bool NoiseGate
+        {
+            get => _noiseGate;
+            set { _noiseGate = value; PlayerPrefs.SetInt(PrefGate, value ? 1 : 0); }
+        }
+
+        public bool AutoGain
+        {
+            get => _autoGain;
+            set
+            {
+                _autoGain = value;
+                PlayerPrefs.SetInt(PrefAgc, value ? 1 : 0);
+                if (!value) _dynamics.Reset();
+            }
+        }
+
+        /// <summary>Ganancia que el AGC está aplicando ahora mismo. El panel la enseña porque es
+        /// la respuesta a "¿por qué se me oye distinto que antes?".</summary>
+        public float AutoGainValue => _dynamics.Gain;
+
         public float ActivationThreshold
         {
             get => _activationThreshold;
@@ -205,6 +247,8 @@ namespace BackroomsSurvival.Net
         private const string PrefThreshold = "voice.threshold";
         private const string PrefPttKey = "voice.ptt_key";
         private const string PrefChannel = "voice.channel";
+        private const string PrefGate = "voice.gate";
+        private const string PrefAgc = "voice.agc";
 
         // ── Interior ──
 
@@ -235,6 +279,10 @@ namespace BackroomsSurvival.Net
         private int _levelFrames;
         private float _nextLevelLog;
 
+        private readonly VoiceDynamics _dynamics = new VoiceDynamics();
+
+
+
         // Auto-test (monitor local)
         private bool _selfTest;
         private IOpusDecoder _monitorDecoder;
@@ -257,6 +305,8 @@ namespace BackroomsSurvival.Net
             _activationThreshold = PlayerPrefs.GetFloat(PrefThreshold, _activationThreshold);
             _pushToTalkKey = (Key)PlayerPrefs.GetInt(PrefPttKey, (int)_pushToTalkKey);
             _channel = PlayerPrefs.GetInt(PrefChannel, _channel);
+            _noiseGate = PlayerPrefs.GetInt(PrefGate, _noiseGate ? 1 : 0) != 0;
+            _autoGain = PlayerPrefs.GetInt(PrefAgc, _autoGain ? 1 : 0) != 0;
 
             // ARRANCA HABLANDO, siempre, incluso sin micrófonos. Hasta ahora este componente solo
             // escribía al encenderse, así que "no hay VoiceCapture en la escena" y "el micro está
@@ -399,6 +449,8 @@ namespace BackroomsSurvival.Net
                 _levelFrames = 0;
             }
 
+            ApplyGateAndGain();
+
             bool open = ShouldTransmit();
             IsTransmitting = open;
             if (!open)
@@ -483,6 +535,20 @@ namespace BackroomsSurvival.Net
                 OpenMic = !OpenMic;
                 Debug.Log($"[VoiceCapture] Modo = {(_openMic ? "VOZ ABIERTA" : "PUSH-TO-TALK")} ({_toggleModeKey})");
             }
+        }
+
+        /// <summary>
+        /// Puerta de ruido y nivel automático. La lógica vive en <see cref="VoiceDynamics"/>, que
+        /// es pura y por tanto EJECUTABLE en un arnés: el procesado de audio se rompe en silencio,
+        /// así que tenerlo aquí dentro habría significado no poder afirmar nada sobre él.
+        /// </summary>
+        private void ApplyGateAndGain()
+        {
+            _dynamics.GateEnabled = _noiseGate;
+            _dynamics.AutoGainEnabled = _autoGain;
+            float dt = _inputFrameSamples / (float)_captureRate; // duración REAL de esta trama
+            _dynamics.Process(_capture, _inputFrameSamples, InputLevel, dt,
+                _activationThreshold, _releaseSeconds);
         }
 
         /// <summary>
@@ -724,6 +790,9 @@ namespace BackroomsSurvival.Net
         {
             IsTransmitting = false;
             InputLevel = 0f;
+            // Sin este reset, la ganancia adaptada al micrófono ANTERIOR se aplicaría a la primera
+            // trama del siguiente, que con un salto de sensibilidad entre aparatos satura.
+            _dynamics.Reset();
             StopMonitor();
             if (_clip == null) return;
             if (!string.IsNullOrEmpty(_activeDevice)) Microphone.End(_activeDevice);
