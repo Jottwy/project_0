@@ -45,11 +45,6 @@ namespace BackroomsSurvival.Net
         private float _nextUpdateLogTime;
         private IPCClient _ipc;
 
-        private static readonly int AnimIdle = Animator.StringToHash("Idle");
-        private static readonly int AnimWalk = Animator.StringToHash("Walk");
-        private static readonly int AnimRun = Animator.StringToHash("Run");
-        private static readonly int AnimAttack = Animator.StringToHash("Attack");
-
         public IReadOnlyDictionary<int, RemotePlayerView> ActivePlayers => _active;
         public int ActiveCount => _active.Count;
         public int PoolCount => _pool.Count;
@@ -238,8 +233,6 @@ namespace BackroomsSurvival.Net
                         ref view.yawVelocity, rotationSmoothTime, Mathf.Infinity, dt);
                 }
                 view.root.rotation = Quaternion.Euler(0f, newY, 0f);
-
-                ApplyAnimation(view);
             }
 
             if (_active.Count > 0 && Time.unscaledTime >= _nextUpdateLogTime)
@@ -357,7 +350,6 @@ namespace BackroomsSurvival.Net
             var view = new RemotePlayerView
             {
                 root = go.transform,
-                animator = go.GetComponentInChildren<Animator>(),
                 nameTag = CreateNameTag(go.transform),
                 targetPosition = go.transform.position,
                 targetRotation = go.transform.eulerAngles.y,
@@ -511,31 +503,6 @@ namespace BackroomsSurvival.Net
             return $"{displayName}\nID {id}";
         }
 
-        private static void ApplyAnimation(RemotePlayerView view)
-        {
-            if (view == null || view.animator == null)
-                return;
-
-            switch (view.animationState)
-            {
-                case "walk":
-                    view.animator.CrossFade(AnimWalk, 0.15f);
-                    break;
-
-                case "run":
-                    view.animator.CrossFade(AnimRun, 0.15f);
-                    break;
-
-                case "attack":
-                    view.animator.CrossFade(AnimAttack, 0.15f);
-                    break;
-
-                default:
-                    view.animator.CrossFade(AnimIdle, 0.15f);
-                    break;
-            }
-        }
-
         private void OnDestroy()
         {
             OnDisable();
@@ -578,12 +545,18 @@ namespace BackroomsSurvival.Net
     {
         public int id = -1;
         public Transform root;
-        public Animator animator;
         public TextMeshPro nameTag;
         public Vector3 targetPosition;
         public float targetRotation;
         // [C] SmoothDampAngle state for the yaw smoothing (degrees/sec); reset on spawn/release.
         public float yawVelocity;
+        // ADR-011: scalar transient-action channel (today only "pickup"), read by ProxyPickupHook,
+        // which edge-detects the transition into "pickup" and fires the Pickup trigger.
+        // LOCOMOTION DOES NOT GO THROUGH HERE, and there is nothing to drive from it: ADR-013 derives
+        // it from velocity into MovementSpeed, and the ADR-012 controller only has the states
+        // Movement/Jump/Pickup. There is no Idle/Walk/Run/Attack state to CrossFade to — a manager
+        // that tried it logged "Animator.GotoState: State could not be found" with a full stack
+        // trace once per proxy per frame. Do not add that back.
         public string animationState = "idle";
         // ADR-020: cosmetic crouch state for this proxy (read by ProxyCrouchHook).
         public bool crouch;
