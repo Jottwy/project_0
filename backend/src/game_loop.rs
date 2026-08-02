@@ -126,7 +126,13 @@ const PHANTOM_DETECT_HALF_FOV: f32 = std::f32::consts::FRAC_PI_3; // 60° half �
 
 // ADR-016 slice 3a — Stalker FSM (Wander / Spotted / Stalk / Sprint). Peek/Search land in 3b.
 const PHANTOM_STALK_DISTANCE: f32 = 9.0; // STALK keeps roughly this gap from the player
-const PHANTOM_SPRINT_SPEED: f32 = 9.0; // top sprint speed (vs walk 3.0)
+/// Top sprint speed (vs walk 3.0). Cut 10 % from 9.0 so chases LAST longer.
+///
+/// The number that matters is the ratio to the player, not the absolute: STP's run speed is 5.5 m/s
+/// (`FPS_Player.prefab` `_forwardSpeed`), so this goes from 1.64× to 1.47×. Outrunning it is still
+/// impossible, which is the design — what changes is the CLOSING speed, 3.5 → 2.6 m/s, so a chase
+/// starting at 15 m goes from 4.3 s to 5.8 s of being hunted.
+const PHANTOM_SPRINT_SPEED: f32 = 8.1;
 const PHANTOM_SPRINT_RAMP: f32 = 1.5; // seconds to ramp WALK → SPRINT
 const PHANTOM_SPOTTED_MIN: f32 = 3.0; // SPOTTED stare duration range (s)
 const PHANTOM_SPOTTED_MAX: f32 = 8.0;

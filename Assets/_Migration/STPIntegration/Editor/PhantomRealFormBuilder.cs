@@ -65,15 +65,21 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         private static readonly float TargetHeight = 0f;
 
         /// <summary>
-        /// Uniform scale of the revealed body. ×2 on a 1.655 m asset gives a 3.31 m creature: the thing
-        /// that stole your silhouette does not just change texture, it UNFOLDS to twice your height.
+        /// Uniform scale of the revealed body. ×1.75 on a 1.655 m asset gives a 2.90 m creature: the
+        /// thing that stole your silhouette does not just change texture, it UNFOLDS to well over your
+        /// height.
+        ///
+        /// WAS ×2 (3.31 m) and that did not fit: the rendered ceiling is 3.3 m
+        /// (ChunkRenderer.ceilingHeight), so the head grazed or poked through it in a standard
+        /// corridor. ×1.75 clears by ~0.4 m, which leaves room for the head bob and for the ceiling
+        /// props rather than merely squeaking under the slab like ×1.95 (3.23 m) would.
         ///
         /// The builder owns this field and re-stamps it on every bake, unlike the materials — a scale
-        /// that survived only until the next re-bake would be a trap. NOTE for whoever changes it: the
-        /// rendered ceiling is 3.3 m (ChunkRenderer.ceilingHeight), so ×2 is already ABOVE it and the
-        /// head grazes/pokes through; ×1.95 (3.23 m) is the tallest that clears a standard corridor.
+        /// that survived only until the next re-bake would be a trap. CHANGING IT REQUIRES A RE-BAKE
+        /// (Backrooms ▸ Build Phantom Real Form, then re-bake the remote avatar prefab): the constant
+        /// alone does nothing in a running game.
         /// </summary>
-        private const float RealFormScale = 2f;
+        private const float RealFormScale = 1.75f;
 
         [MenuItem("Backrooms/Build Phantom Real Form")]
         public static void BuildMenu() => BuildOrGet();
