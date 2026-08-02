@@ -4275,13 +4275,20 @@ struct PhantomDriver {
     built_resync_in: f32,
 }
 
+/// ADR-043 — identity of a drawn phantom: `(block, layer, index within the block)`.
+///
+/// The index is what lets a block hold more than one. Without it, `PHANTOM_DENSITY_SCALE` above 1.0
+/// would be a no-op — measured on the deployed binary: scale 8 with a cap of 24 woke exactly ONE
+/// creature, because the block, not the cap, was the limit.
+type PhantomAnchor = ((i32, i32), u8, u8);
+
 /// ADR-043 — a drawn phantom the population reconciler is considering waking up this scan.
 struct PhantomCandidate {
     /// Distance from the nearest real player, in XZ. Sorted on, so the cap keeps the creatures
     /// somebody is most likely to actually meet.
     distance: f32,
     /// `(block, layer)` it was drawn from — becomes the mover's `anchor`.
-    anchor: ((i32, i32), u8),
+    anchor: PhantomAnchor,
     /// Raw drawn position, before `spawn_phantom` snaps it to a walkable cell.
     position: [f32; 3],
 }
@@ -4298,7 +4305,7 @@ struct PhantomMover {
     /// Deliberately NOT the same thing as `spawn_pos`, which re-anchors as the creature travels
     /// (ADR-041). The anchor is where the world says it lives; `spawn_pos` is where it currently
     /// considers home.
-    anchor: Option<((i32, i32), u8)>,
+    anchor: Option<PhantomAnchor>,
     /// Which real player this one impersonates, as an index into `NetworkManager::real_peer_names`.
     /// Assigned once at spawn and never reshuffled.
     ///
@@ -4477,11 +4484,12 @@ impl PhantomDriver {
         if self.movers.len() >= self.active_cap {
             return;
         }
-        let taken: std::collections::HashSet<((i32, i32), u8)> =
+        let taken: std::collections::HashSet<PhantomAnchor> =
             self.movers.iter().filter_map(|m| m.anchor).collect();
         let mut seen_blocks: std::collections::HashSet<((i32, i32), u8)> =
             std::collections::HashSet::new();
         let mut candidates: Vec<PhantomCandidate> = Vec::new();
+        let mut drawn: Vec<[f32; 3]> = Vec::new();
 
         for p in &players {
             // ADR-043 D-ACTIVACIÓN: the player's OWN layer only. Distance in XZ alone would wake a
@@ -4498,25 +4506,32 @@ impl PhantomDriver {
             );
             for bx in bx0..=bx1 {
                 for bz in bz0..=bz1 {
-                    let key = ((bx, bz), layer);
-                    if taken.contains(&key) || !seen_blocks.insert(key) {
-                        continue; // already simulated, or already offered by another player
+                    if !seen_blocks.insert(((bx, bz), layer)) {
+                        continue; // already offered by another player this scan
                     }
-                    let Some(pos) =
-                        phantom_spawn::draw(net.world_seed, (bx, bz), layer, self.density_scale)
-                    else {
-                        continue;
-                    };
-                    // The block is a coarse filter; the radius is the real test, and it is measured
-                    // against the drawn spot rather than the block, or a corner of a 200 m block
-                    // would count as "near" from 280 m away.
-                    let d = p.distance_xz(Vec3::from_array(pos));
-                    if d <= PHANTOM_ACTIVATE_RADIUS {
-                        candidates.push(PhantomCandidate {
-                            distance: d,
-                            anchor: key,
-                            position: pos,
-                        });
+                    phantom_spawn::draw_into(
+                        net.world_seed,
+                        (bx, bz),
+                        layer,
+                        self.density_scale,
+                        &mut drawn,
+                    );
+                    for (index, pos) in drawn.iter().copied().enumerate() {
+                        let key = ((bx, bz), layer, index as u8);
+                        if taken.contains(&key) {
+                            continue; // this one is already awake
+                        }
+                        // The block is a coarse filter; the radius is the real test, and it is
+                        // measured against the drawn spot rather than the block, or a corner of a
+                        // 200 m block would count as "near" from 280 m away.
+                        let d = p.distance_xz(Vec3::from_array(pos));
+                        if d <= PHANTOM_ACTIVATE_RADIUS {
+                            candidates.push(PhantomCandidate {
+                                distance: d,
+                                anchor: key,
+                                position: pos,
+                            });
+                        }
                     }
                 }
             }
@@ -4562,7 +4577,7 @@ impl PhantomDriver {
         heading: f32,
         spawn_pos: Vec3,
         victim_bound: bool,
-        anchor: Option<((i32, i32), u8)>,
+        anchor: Option<PhantomAnchor>,
     ) {
         let now = Instant::now();
         let victim_slot = self.next_victim_slot;
