@@ -55,6 +55,15 @@ namespace BackroomsSurvival.Net
         [Tooltip("Tecla de push-to-talk.")]
         [SerializeField] private Key _pushToTalkKey = Key.V;
 
+        [Tooltip("Enciende y apaga el micrófono. Existe porque todavía NO hay pantalla de " +
+                 "opciones y el micrófono es opt-in: sin esto no habría forma de encenderlo en " +
+                 "una build. F3 y F4 ya están cogidas (NetworkDebugHud, ajustes gráficos).")]
+        [SerializeField] private Key _toggleMicKey = Key.F5;
+
+        [Tooltip("Alterna push-to-talk / voz abierta en caliente, para poder comparar los dos " +
+                 "modos dentro de la misma partida en vez de relanzar.")]
+        [SerializeField] private Key _toggleModeKey = Key.F6;
+
         [Tooltip("Umbral de energía RMS (0..1) por encima del cual la voz abierta transmite. Un " +
                  "umbral fijo y bajo convierte un ventilador en emisión continua.")]
         [Range(0f, 0.2f)]
@@ -148,6 +157,8 @@ namespace BackroomsSurvival.Net
 
         private void Update()
         {
+            PollHotkeys();
+
             if (!_micEnabled || _clip == null)
             {
                 IsTransmitting = false;
@@ -237,6 +248,34 @@ namespace BackroomsSurvival.Net
                 _seq++; // envuelve a propósito: el receptor compara diferencias, no absolutos
                 _framesInPacket = 0;
                 _packetBytes = 0;
+            }
+        }
+
+        /// <summary>
+        /// El ÚNICO camino para encender el micrófono hasta que exista pantalla de opciones. Va
+        /// antes de la puerta de `_micEnabled` en <see cref="Update"/> a propósito: si estuviera
+        /// después, la tecla de encendido no funcionaría precisamente cuando está apagado.
+        ///
+        /// Se loguea cada cambio porque en una build no hay inspector donde mirar el estado, y
+        /// "no me oyen" es indistinguible de "tengo el micro cerrado" sin esa línea.
+        /// </summary>
+        private void PollHotkeys()
+        {
+            var kb = Keyboard.current;
+            if (kb == null) return;
+
+            if (kb[_toggleMicKey].wasPressedThisFrame)
+            {
+                MicEnabled = !MicEnabled;
+                Debug.Log($"[VoiceCapture] Microfono {(MicEnabled ? "ENCENDIDO" : "APAGADO")} " +
+                          $"({_toggleMicKey}); modo={(_openMic ? "voz abierta" : "push-to-talk")}" +
+                          (MicEnabled && !_openMic ? $", manten {_pushToTalkKey} para hablar" : ""));
+            }
+
+            if (kb[_toggleModeKey].wasPressedThisFrame)
+            {
+                OpenMic = !OpenMic;
+                Debug.Log($"[VoiceCapture] Modo = {(_openMic ? "VOZ ABIERTA" : "PUSH-TO-TALK")} ({_toggleModeKey})");
             }
         }
 
