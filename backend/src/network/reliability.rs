@@ -54,6 +54,11 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x4A          // PvpHitCandidate           (ADR-029)
         | 0x4B          // PvpDamageGrant            (ADR-029)
         | 0x4C          // PvpHitRejected            (ADR-029)
+        | 0x4D          // PhantomAttackGrant        (ADR-047)
+        // 0x4E NoiseReport is DELIBERATELY absent: it is sent with `send_unreliable_to`, so
+        // listing it would break this function's "si y solo si" invariant in the other
+        // direction. A transient stimulus must not occupy the 32-slot reliable window; a lost
+        // noise self-heals on the next shot.
     )
 }
 
@@ -64,9 +69,9 @@ mod tests {
     /// Los 16 tipos que ADR-039 incorporó. La lista se derivó cruzando los sitios de
     /// `send_reliable`/`broadcast_reliable` (18 en `game_loop.rs`/`sync.rs`) contra lo que esta
     /// función reconocía. Al añadir un envío fiable de un tipo nuevo, va aquí Y en `is_reliable`.
-    const GAMEPLAY_REQUEST_FAMILY: [u16; 16] = [
+    const GAMEPLAY_REQUEST_FAMILY: [u16; 17] = [
         0x17, 0x18, 0x19, 0x1B, 0x1C, 0x1D, 0x41, 0x42, 0x43, 0x45, 0x47, 0x48, 0x49, 0x4A, 0x4B,
-        0x4C,
+        0x4C, 0x4D,
     ];
 
     /// Los cinco rosters completos. Van a 10 Hz, son idempotentes y se auto-curan: hacerlos
@@ -116,5 +121,19 @@ mod tests {
         for code in [0x05u16, 0x10, 0x11, 0x07, 0xF0] {
             assert!(!is_reliable(code), "0x{code:02x} no debe ser fiable");
         }
+    }
+
+    /// ADR-047: `NoiseReport` (0x4E) se envia con `send_unreliable_to`, asi que meterlo aqui
+    /// romperia el "si y solo si" de ADR-039 por el otro lado — el receptor ACKearia algo que el
+    /// emisor no encola, y nadie retransmitiria nunca. La mitad negativa del invariante importa
+    /// tanto como la positiva, y sin este test la clasificacion se puede "arreglar" al reves.
+    #[test]
+    fn the_noise_stimulus_stays_unreliable() {
+        assert!(
+            !is_reliable(0x4E),
+            "0x4E NoiseReport se envia sin fiabilidad a proposito (ADR-047 D3): un estimulo \
+             transitorio no debe ocupar la ventana de 32, y un ruido perdido se auto-cura con \
+             el siguiente disparo"
+        );
     }
 }

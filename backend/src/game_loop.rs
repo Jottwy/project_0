@@ -228,6 +228,12 @@ const PHANTOM_DEACTIVATE_RADIUS: f32 = 200.0;
 /// the mutual-eviction thrash the cache cap was raised to remove — the two constants are one
 /// decision (see `GRID_CACHE_MAX_CHUNKS`).
 const PHANTOM_ACTIVE_CAP: usize = 6;
+/// ADR-047 D5 — how many sleeping robapieles ONE noise may wake, on top of the global
+/// `PHANTOM_ACTIVE_CAP`. Two, not "everything in earshot": a 500 m gunshot sweeps ~785.000 m², so
+/// an uncapped wake would summon a crowd from a single trigger pull and spend the step budget
+/// ADR-043 measured. Two is enough for the noise to mean something and few enough that the worst
+/// case of a shot stays a number you can state.
+const PHANTOM_NOISE_ACTIVATE_MAX: usize = 2;
 
 /// ADR-032: where the host reads/writes its world save. `SAVE_PATH` env overrides; default is
 /// `./saves/world_{seed}.json`.
@@ -842,6 +848,10 @@ pub async fn run(
                 // them, so one that just woke up gets a full tick instead of standing still for
                 // 100 ms at the edge of view — the frame a player is most likely to be looking.
                 phantom_driver.sync_population(&mut net, player.position, entity_dt);
+                // ADR-047 D5: a noise reported this tick may wake sleepers near its SOURCE, which
+                // is what makes ADR-041's long-distance travel reachable at all. Must run every
+                // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
+                phantom_driver.wake_for_noises(&mut net);
                 let attacks = phantom_driver.step(
                     &mut net,
                     entity_dt,
@@ -849,20 +859,82 @@ pub async fn run(
                     player.rotation,
                     player.crouch,
                 );
-                // ADR-016 slice 1 — apply the phantom attacks to the HOST player. DEUDA: host
-                // only; a joiner's health lives in its own backend (Fase 7). The damage path is
-                // SEPARATE from the pickup theater (ADR-016 invariant intact).
+                // ADR-047 — this loop ROUTES; it no longer assumes the victim. Each attack names
+                // whose health it is for, and the only branch that applies damage is the one where
+                // that victim IS this backend's own local player. ADR-025 makes the split
+                // mandatory, not stylistic: a joiner's health lives in the joiner's own backend
+                // and the host physically does not have it.
                 //
-                // ADR-043: several attackers per tick now. Once the player is down, the remaining
-                // attacks of the SAME tick are dropped — a corpse taking two more hits would emit
-                // duplicate `phantom_kill`/`phantom_hit` events for a player who is already dead,
-                // and the client's death chain is not idempotent.
+                // The damage path stays SEPARATE from the pickup theater (ADR-016 invariant).
+                //
+                // ADR-043: several attackers per tick. Once a player is down, further attacks
+                // AGAINST THAT SAME PLAYER in the tick are dropped — a corpse taking two more hits
+                // would emit duplicate `phantom_kill`/`phantom_hit` for someone already dead, and
+                // the client's death chain is not idempotent. ADR-047 scopes that skip to the
+                // victim: the old code `break`-ed the WHOLE loop on the host's death, so a dead
+                // host would have swallowed a blow aimed at a live joiner.
                 for attack in attacks {
-                    if player.stats.is_dead() && !dev_invincible {
-                        break;
+                    let victim_is_local = attack.victim == net.local_id;
+
+                    if !victim_is_local {
+                        // ADR-047 — the victim's health is owned by another backend (ADR-025), so
+                        // the DECISION travels and the mutation stays home. Same authority split
+                        // as ADR-029's PvP grant.
+                        //
+                        // The peer is checked HERE and not left to `send_reliable`, which returns
+                        // silently when the peer is gone (network/mod.rs) — a blow swallowed
+                        // without a word is exactly the failure mode that hid the original bug for
+                        // so long. And it is DISCARDED, never redirected to the local player: that
+                        // redirection IS the bug, and re-adding it as a "fallback" would rename it.
+                        if !net.peers.contains_key(&attack.victim) {
+                            warn!(
+                                "MPTRACE step=PH_ATTACK event=phantom_attack_undeliverable victim_id={} kind={} reason=victim_has_no_channel",
+                                attack.victim,
+                                phantom_attack_kind_name(attack.kind)
+                            );
+                            continue;
+                        }
+                        // A peer already down does not get hit again: `dead` is relayed
+                        // (ADR-028 post-E3), so the host can pre-filter without asking.
+                        if net.peers.get(&attack.victim).is_some_and(|p| p.dead) {
+                            info!(
+                                "MPTRACE step=PH_ATTACK event=phantom_attack_skipped victim_id={} reason=victim_dead",
+                                attack.victim
+                            );
+                            continue;
+                        }
+
+                        let request_id = net.next_phantom_attack_request_id;
+                        net.next_phantom_attack_request_id =
+                            net.next_phantom_attack_request_id.wrapping_add(1);
+                        let (kind_code, damage, impulse) = match attack.kind {
+                            PhantomAttackKind::Hit(dmg) => (0u8, dmg, [0.0, 0.0]),
+                            PhantomAttackKind::Kill => (1u8, 0.0, [0.0, 0.0]),
+                            PhantomAttackKind::Knockback(dx, dz) => (2u8, 0.0, [dx, dz]),
+                        };
+                        let grant = PacketPayload::PhantomAttackGrant {
+                            request_id,
+                            victim_id: attack.victim as u32,
+                            kind: kind_code,
+                            damage,
+                            impulse,
+                        };
+                        info!(
+                            "MPTRACE step=PH_ATTACK event=phantom_attack_granted victim_id={} kind={} request_id={}",
+                            attack.victim,
+                            phantom_attack_kind_name(attack.kind),
+                            request_id
+                        );
+                        net.send_reliable(attack.victim, &grant).await;
+                        continue;
                     }
-                    match *attack {
-                        PhantomAttack::Kill => {
+
+                    if player.stats.is_dead() && !dev_invincible {
+                        continue; // scoped to THIS victim (see above), not a whole-loop break
+                    }
+
+                    match attack.kind {
+                        PhantomAttackKind::Kill => {
                             let death_pos = player.position.to_array();
                             if !dev_invincible {
                                 player.stats.take_damage(100.0); // → is_dead → death/respawn
@@ -872,7 +944,7 @@ pub async fn run(
                                 data: serde_json::json!({ "pos": death_pos }),
                             }));
                         }
-                        PhantomAttack::Hit(dmg) => {
+                        PhantomAttackKind::Hit(dmg) => {
                             if !dev_invincible {
                                 player.stats.take_damage(dmg);
                             }
@@ -881,7 +953,7 @@ pub async fn run(
                                 data: serde_json::json!({ "damage": dmg }),
                             }));
                         }
-                        PhantomAttack::Knockback(dx, dz) => {
+                        PhantomAttackKind::Knockback(dx, dz) => {
                             // Client-only: it applies the impulse (SetVelocity). Mutating
                             // player.position here would be overwritten by the next
                             // client-authoritative input (ADR-009), so the backend only signals.
@@ -1645,6 +1717,105 @@ async fn handle_network_event(
             }
         }
 
+        // ─── ADR-047: the robapieles reaches across backends ───
+        NetworkEvent::PhantomAttackGrant {
+            request_id,
+            victim_id,
+            kind,
+            damage,
+            impulse,
+        } => {
+            // We are the victim's own backend (the host addressed this to us because OUR local
+            // player is the one that got hit) — apply it here, never anywhere else. Same shape as
+            // the PvP mismatch guard above.
+            if victim_id != net.local_id as u32 {
+                warn!(
+                    "MPTRACE step=PH_ATTACK event=phantom_attack_grant_victim_mismatch self_id={} got_victim={} request_id={}",
+                    net.local_id, victim_id, request_id
+                );
+                return;
+            }
+            if let Err(reason) = accept_phantom_attack_grant(
+                &player.stats,
+                &mut net.processed_phantom_grants,
+                request_id,
+                tick,
+            ) {
+                info!(
+                    "MPTRACE step=PH_ATTACK event=phantom_attack_grant_blocked reason={reason} request_id={request_id}"
+                );
+                return;
+            }
+
+            // The SAME three IPC events the host emits for its own player, so the client side
+            // (`PhantomAttackHandler`) needs no changes at all to work inside a joiner process.
+            match kind {
+                1 => {
+                    let death_pos = player.position.to_array();
+                    player.stats.take_damage(100.0);
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=kill request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_kill".into(),
+                        data: serde_json::json!({ "pos": death_pos }),
+                    }));
+                }
+                2 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=knockback request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_knockback".into(),
+                        data: serde_json::json!({ "dx": impulse[0], "dz": impulse[1] }),
+                    }));
+                }
+                _ => {
+                    // Unknown kinds decode as a plain hit rather than being dropped: a future
+                    // sender adding one should still land damage on an older victim backend.
+                    if !damage.is_finite() || damage <= 0.0 {
+                        warn!(
+                            "MPTRACE step=PH_ATTACK event=phantom_attack_grant_blocked reason=invalid_damage request_id={request_id}"
+                        );
+                        return;
+                    }
+                    player.stats.take_damage(damage);
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=hit damage={damage:.1} health={:.2} request_id={request_id}",
+                        player.stats.health
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_hit".into(),
+                        data: serde_json::json!({ "damage": damage }),
+                    }));
+                }
+            }
+        }
+
+        NetworkEvent::NoiseReported { position, loudness } => {
+            // Only the host simulates phantoms, so only the host has anything to do with a noise.
+            if !net.is_host {
+                warn!(
+                    "MPTRACE step=PH_NOISE event=noise_report_not_host note=dropped_no_simulator"
+                );
+                return;
+            }
+            // Re-sanitised through the SAME gate as the local IPC action — a peer is never
+            // trusted, and two parallel validations would drift.
+            match sanitize_noise(position, loudness) {
+                Some((pos, clamped)) => {
+                    info!(
+                        "MPTRACE step=PH_NOISE event=noise_reported_p2p pos=({:.1},{:.1},{:.1}) loudness={:.0}",
+                        pos[0], pos[1], pos[2], clamped
+                    );
+                    net.pending_noises.push((pos, clamped));
+                }
+                None => {
+                    warn!("MPTRACE step=PH_NOISE event=noise_report_rejected reason=malformed")
+                }
+            }
+        }
+
         NetworkEvent::PvpHitRejected {
             request_id,
             attacker_id,
@@ -1978,18 +2149,32 @@ async fn handle_action(
                 .get("loudness")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0) as f32;
-            match coords {
-                // Clamped, not trusted: a garbage loudness must not turn one shot into a
-                // world-wide summons.
-                Some(p) if loudness.is_finite() && loudness > 0.0 => {
-                    let loudness = loudness.min(PHANTOM_NOISE_MAX_LOUDNESS);
-                    info!(
-                        "MPTRACE step=PH_NOISE event=noise_reported pos=({:.1},{:.1},{:.1}) loudness={:.0}",
-                        p[0], p[1], p[2], loudness
-                    );
-                    net.pending_noises.push((p, loudness));
+            match coords.and_then(|p| sanitize_noise(p, loudness)) {
+                Some((p, loudness)) => {
+                    if net.is_host {
+                        info!(
+                            "MPTRACE step=PH_NOISE event=noise_reported pos=({:.1},{:.1},{:.1}) loudness={:.0}",
+                            p[0], p[1], p[2], loudness
+                        );
+                        net.pending_noises.push((p, loudness));
+                    } else {
+                        // ADR-047 — we are a joiner: nothing here simulates a robapieles, so
+                        // pushing to `pending_noises` would be a write nobody ever reads (it was
+                        // also a monotonic leak: `hear_noises` only ever runs on the host). Forward
+                        // it to the host, the only backend that can act on it. UNRELIABLE by
+                        // design — see the payload's doc.
+                        info!(
+                            "MPTRACE step=PH_NOISE event=noise_forwarded_to_host pos=({:.1},{:.1},{:.1}) loudness={:.0}",
+                            p[0], p[1], p[2], loudness
+                        );
+                        let report = PacketPayload::NoiseReport {
+                            position: p,
+                            loudness,
+                        };
+                        net.send_unreliable_to(1, &report).await; // 1 = host, as every other joiner→host send here
+                    }
                 }
-                _ => debug!("report_noise ignored: malformed position or loudness"),
+                None => debug!("report_noise ignored: malformed position or loudness"),
             }
         }
         "report_inventory" => {
@@ -3049,6 +3234,32 @@ fn apply_pvp_damage_grant(
     }
     stats.take_damage(damage);
     Ok(stats.health)
+}
+
+/// ADR-047 — the victim backend's own veto over a robapieles' blow, extracted so it can be tested
+/// without standing up a game loop. Sibling of `apply_pvp_damage_grant`, deliberately NOT a reuse
+/// of it: ADR-016 keeps the phantom on its own layer, and the two dedupe keys differ (the host is
+/// the sole minter of these ids, so a bare `request_id` is unique; PvP needs the attacker too).
+///
+/// The re-checks are not paranoia about the host — they are the only place these can happen at
+/// all. `invuln_until_tick` is never relayed, so the host could not have consulted ours.
+fn accept_phantom_attack_grant(
+    stats: &crate::player::stats::PlayerStats,
+    dedupe: &mut BoundedDedupeSet<u64>,
+    request_id: u64,
+    tick: u64,
+) -> Result<(), &'static str> {
+    // Dedupe FIRST: a reliable retransmit must never double a blow.
+    if !dedupe.insert(request_id) {
+        return Err("duplicate");
+    }
+    if stats.invuln_until_tick > tick as u32 {
+        return Err("victim_invulnerable");
+    }
+    if stats.is_dead() {
+        return Err("victim_dead");
+    }
+    Ok(())
 }
 
 /// Host-side entry point for a PvP hit candidate, whether it came directly from OUR own
@@ -4220,13 +4431,31 @@ fn phantom_reveals(state: PhantomState) -> bool {
     matches!(state, PhantomState::Sprint | PhantomState::Statue)
 }
 
-/// ADR-016 slice 1 (phantom damage) — what `PhantomDriver::step` produced this tick for the HOST
-/// player. Returned to the game loop, which owns `player`/`stats`. DEUDA: host-only — a joiner's
-/// health lives in its own backend (P2P multi-backend), so this never affects joiners
-/// (cross-backend damage authority is Fase 7). The damage path is SEPARATE from the pickup
-/// theater (ADR-016 invariant intact).
+/// ADR-016 slice 1 (phantom damage) — what `PhantomDriver::step` produced this tick, and for
+/// WHOM. Returned to the game loop, which routes each one to the backend that owns that player's
+/// health (ADR-047).
+///
+/// ADR-047 — `victim` is part of the TYPE, not an optional extra. The three construction sites
+/// cannot compile without naming it, and the two `let (_, tpos, …)` bindings that used to throw
+/// the target id away stop compiling too. That is the whole point: `nearest_real_target` has
+/// always been able to pick a REMOTE peer, and the old victim-less enum left the consumer with
+/// nothing to branch on, so every hit landed on the host's own player — a phantom chasing a
+/// joiner damaged the host. A type that cannot express the broken state beats a guard someone
+/// can delete.
+///
+/// The damage path stays SEPARATE from the pickup theater (ADR-016 invariant intact).
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum PhantomAttack {
+struct PhantomAttack {
+    /// Whose health this is for. May be this backend's own local player or a remote peer; the
+    /// consumer routes on it and NEVER falls back to the local player (see ADR-047 D1).
+    victim: PeerId,
+    kind: PhantomAttackKind,
+}
+
+/// ADR-016 slice 1 — what kind of blow landed. Split out of `PhantomAttack` so the victim can be
+/// mandatory without repeating it per variant.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum PhantomAttackKind {
     // ADR-043: there is no `None` variant. "Nothing happened this tick" is an EMPTY list now that
     // `step` returns one entry per attacker. Keeping the variant would leave something nothing
     // constructs any more — a trap, because `attack == None` would silently never fire.
@@ -4238,6 +4467,33 @@ enum PhantomAttack {
     /// mutates the player pose for this — it's client-authoritative and would be overwritten by
     /// the next input (ADR-009), so the backend only signals the direction/force.
     Knockback(f32, f32),
+}
+
+/// ADR-047 — THE single gate every noise passes through, whichever door it came in by: the local
+/// IPC `report_noise` action, or a joiner's `NoiseReport` packet. Two parallel validations is how
+/// a trusted path and an untrusted one drift apart, so there is exactly one.
+///
+/// Clamped, not trusted (ADR-041): a garbage loudness must not turn one shot into a world-wide
+/// summons. Returns the sanitised pair, or `None` if the report is unusable.
+fn sanitize_noise(position: [f32; 3], loudness: f32) -> Option<([f32; 3], f32)> {
+    if !position.iter().all(|c| c.is_finite()) {
+        return None;
+    }
+    if !loudness.is_finite() || loudness <= 0.0 {
+        return None;
+    }
+    Some((position, loudness.min(PHANTOM_NOISE_MAX_LOUDNESS)))
+}
+
+/// ADR-047 — stable, greppable name for an attack kind, used in the MPTRACE lines that make a
+/// mis-routed or undeliverable blow VISIBLE. The original bug survived this long precisely because
+/// no impossible path logged anything.
+fn phantom_attack_kind_name(kind: PhantomAttackKind) -> &'static str {
+    match kind {
+        PhantomAttackKind::Hit(_) => "hit",
+        PhantomAttackKind::Kill => "kill",
+        PhantomAttackKind::Knockback(_, _) => "knockback",
+    }
 }
 
 /// Host-only driver for phantom peers (the robapieles). Each phantom wanders: it steps along
@@ -4602,6 +4858,105 @@ impl PhantomDriver {
         }
     }
 
+    /// ADR-047 D5 — a noise WAKES population, it does not only steer the already-awake.
+    ///
+    /// The contradiction this closes: ADR-041 designs a 500 m gunshot whose point is a ~2,8 min
+    /// journey toward you, but only simulated phantoms can hear (`hear_noises` iterates `movers`)
+    /// and ADR-043 only ever wakes them within `PHANTOM_ACTIVATE_RADIUS` = 150 m of a player.
+    /// Past that the creature is a hash nobody has asked yet, so the long approach could not
+    /// happen at all. Neither ADR noticed the other.
+    ///
+    /// Runs BEFORE the 1 Hz reconcile gate and on every entity tick, because `hear_noises` drains
+    /// `pending_noises` on the very next `step` — waiting for the reconcile would find the queue
+    /// already empty. It reads the queue WITHOUT draining it, exactly like `sync_population` runs
+    /// before `step` so a freshly woken creature gets a full tick (ADR-043's own ordering choice).
+    /// The one it wakes goes to SEARCH in that same `step`, so the next reconcile will not retire
+    /// it — ADR-043's "only retire in WANDER" rule already protects a traveller.
+    ///
+    /// TWO caps, and they are the load-bearing part: `PHANTOM_NOISE_ACTIVATE_MAX` per noise, and
+    /// the global `active_cap` on top. A 500 m radius sweeps ~785.000 m²; without them one shot
+    /// would wake everything inside it and blow the step budget ADR-043 measured and protected.
+    fn wake_for_noises(&mut self, net: &mut NetworkManager) {
+        if net.pending_noises.is_empty() || self.movers.len() >= self.active_cap {
+            return;
+        }
+        // Cloned so the spawn below can borrow `net` mutably. Only allocates on a tick where
+        // somebody actually made a noise, which is rare by construction.
+        let noises = net.pending_noises.clone();
+        let mut taken: std::collections::HashSet<PhantomAnchor> =
+            self.movers.iter().filter_map(|m| m.anchor).collect();
+        let mut drawn: Vec<[f32; 3]> = Vec::new();
+
+        for (raw, loudness) in noises {
+            if self.movers.len() >= self.active_cap {
+                return;
+            }
+            let source = Vec3::from_array(raw);
+            // The noise's OWN layer: same reason as ADR-043's per-layer activation, and it agrees
+            // with the layer test `hear_noises` applies — waking something that then cannot hear
+            // the noise would be pure cost.
+            let layer = world_pos_to_layer(source.y);
+            let (bx0, bz0) = phantom_spawn::block_of(source.x - loudness, source.z - loudness);
+            let (bx1, bz1) = phantom_spawn::block_of(source.x + loudness, source.z + loudness);
+
+            let mut candidates: Vec<PhantomCandidate> = Vec::new();
+            for bx in bx0..=bx1 {
+                for bz in bz0..=bz1 {
+                    phantom_spawn::draw_into(
+                        net.world_seed,
+                        (bx, bz),
+                        layer,
+                        self.density_scale,
+                        &mut drawn,
+                    );
+                    for (index, pos) in drawn.iter().copied().enumerate() {
+                        let key = ((bx, bz), layer, index as u8);
+                        if taken.contains(&key) {
+                            continue; // already awake, or already claimed by an earlier noise
+                        }
+                        let d = source.distance_xz(Vec3::from_array(pos));
+                        if d <= loudness {
+                            candidates.push(PhantomCandidate {
+                                distance: d,
+                                anchor: key,
+                                position: pos,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Nearest to the SOURCE first: the ones that would plausibly have heard it loudest.
+            candidates.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+            candidates.truncate(PHANTOM_NOISE_ACTIVATE_MAX);
+            for cand in candidates {
+                if self.movers.len() >= self.active_cap {
+                    break;
+                }
+                let (victim_name, victim_bound) =
+                    choose_victim_name_for(net, self.next_victim_slot);
+                let id = net.spawn_phantom(&victim_name, cand.position);
+                let spawn_pos = net
+                    .peers
+                    .get(&id)
+                    .map(|p| Vec3::from_array(p.position))
+                    .unwrap_or_else(|| Vec3::from_array(cand.position));
+                taken.insert(cand.anchor);
+                info!(
+                    "MPTRACE step=PH_NOISE event=phantom_woken_by_noise phantom_id={} dist={:.0} loudness={:.0}",
+                    id, cand.distance, loudness
+                );
+                self.add_anchored(
+                    id,
+                    PHANTOM_INITIAL_HEADING,
+                    spawn_pos,
+                    victim_bound,
+                    Some(cand.anchor),
+                );
+            }
+        }
+    }
+
     fn add(&mut self, id: PeerId, heading: f32, spawn_pos: Vec3, victim_bound: bool) {
         self.add_anchored(id, heading, spawn_pos, victim_bound, None);
     }
@@ -4657,12 +5012,19 @@ impl PhantomDriver {
         let noises = std::mem::take(&mut net.pending_noises);
         for (raw, loudness) in noises {
             let source = Vec3::from_array(raw);
+            let source_layer = world_pos_to_layer(source.y);
             for i in 0..self.movers.len() {
                 let id = self.movers[i].id;
                 let from = match net.peers.get(&id) {
                     Some(p) => Vec3::from_array(p.position),
                     None => continue,
                 };
+                // ADR-047 D7 — distance is measured in XZ (`distance_xz`), so without a layer test
+                // a shot on layer 0 summoned creatures from every floor stacked above and below it.
+                // Same reasoning as the per-layer comparison `sync_population` already does.
+                if world_pos_to_layer(from.y) != source_layer {
+                    continue;
+                }
                 let dist = from.distance_xz(source);
                 if dist > loudness {
                     continue;
@@ -5239,7 +5601,9 @@ impl PhantomDriver {
                         self.movers[i].state_timer = 0.0;
                         continue;
                     }
-                    let (_, tpos, dist, tyaw) = target.unwrap();
+                    // ADR-047: `tid` is BOUND, not discarded. It used to be `_` here and in SPRINT,
+                    // and that discard is where the mis-routed damage came from.
+                    let (tid, tpos, dist, tyaw) = target.unwrap();
                     self.movers[i].last_known_player_pos = Some(tpos);
 
                     // Tired of the game → lunge (checked before the look test so the timeout always
@@ -5250,10 +5614,13 @@ impl PhantomDriver {
                         let dz = tpos.z - from.z;
                         let len = (dx * dx + dz * dz).sqrt();
                         if dist < PHANTOM_KNOCKBACK_RANGE && len > 0.001 {
-                            self.attacks.push(PhantomAttack::Knockback(
-                                dx / len * PHANTOM_KNOCKBACK_FORCE,
-                                dz / len * PHANTOM_KNOCKBACK_FORCE,
-                            ));
+                            self.attacks.push(PhantomAttack {
+                                victim: tid,
+                                kind: PhantomAttackKind::Knockback(
+                                    dx / len * PHANTOM_KNOCKBACK_FORCE,
+                                    dz / len * PHANTOM_KNOCKBACK_FORCE,
+                                ),
+                            });
                         }
                         self.movers[i].state = PhantomState::Sprint;
                         self.movers[i].state_timer = 0.0;
@@ -5306,7 +5673,8 @@ impl PhantomDriver {
                         self.movers[i].state_timer = 0.0;
                         continue;
                     }
-                    let (_, tpos, dist, tyaw) = target.unwrap();
+                    // ADR-047: `tid` BOUND (see STATUE) — the strike below must name its victim.
+                    let (tid, tpos, dist, tyaw) = target.unwrap();
                     self.movers[i].last_known_player_pos = Some(tpos);
                     // ADR-040: navigated heading (see STALK). The lunge routes around geometry
                     // instead of pinning itself to a wall between it and you.
@@ -5326,16 +5694,22 @@ impl PhantomDriver {
                         self.movers[i].state = PhantomState::Stalk; // bounce off after the strike
                         self.movers[i].state_timer = 0.0;
                         if player_is_looking_at(tpos, tyaw, from) {
-                            self.attacks.push(PhantomAttack::Hit(PHANTOM_ATTACK_DAMAGE));
+                            self.attacks.push(PhantomAttack {
+                                victim: tid,
+                                kind: PhantomAttackKind::Hit(PHANTOM_ATTACK_DAMAGE),
+                            });
                             info!(
-                                "MPTRACE step=PH_SPRINT event=phantom_hit phantom_id={} dmg={:.0}",
-                                id, PHANTOM_ATTACK_DAMAGE
+                                "MPTRACE step=PH_SPRINT event=phantom_hit phantom_id={} victim_id={} dmg={:.0}",
+                                id, tid, PHANTOM_ATTACK_DAMAGE
                             );
                         } else {
-                            self.attacks.push(PhantomAttack::Kill);
+                            self.attacks.push(PhantomAttack {
+                                victim: tid,
+                                kind: PhantomAttackKind::Kill,
+                            });
                             info!(
-                                "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} note=from_behind",
-                                id
+                                "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} victim_id={} note=from_behind",
+                                id, tid
                             );
                         }
                         let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
@@ -6990,8 +7364,156 @@ mod tests {
 
         assert_eq!(
             attack,
-            [PhantomAttack::Kill],
-            "behind-attack must KILL, got {attack:?}"
+            [PhantomAttack {
+                victim: net.local_id,
+                kind: PhantomAttackKind::Kill
+            }],
+            "behind-attack must KILL the local player, got {attack:?}"
+        );
+    }
+
+    /// ADR-047 — THE bug Joel reported: a robapieles chasing a JOINER used to damage the HOST.
+    /// `nearest_real_target` has always been able to pick a remote peer, but the attack carried no
+    /// victim, so the consumer had nothing to branch on and every blow landed locally.
+    ///
+    /// The assert is on the VICTIM, not on the kind: the kind was never wrong.
+    #[tokio::test]
+    async fn phantom_attacking_a_joiner_names_the_joiner_not_the_host() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+
+        // A real joiner, point-blank on the phantom. The host's own player is far away — the
+        // configuration that used to send the host's health down for no visible reason.
+        let joiner_id: u16 = 2;
+        let addr: std::net::SocketAddr = "127.0.0.1:9002".parse().unwrap();
+        let mut joiner =
+            crate::network::peer::PeerConnection::new(joiner_id, "Joiner".into(), addr);
+        let ppos = net.peers[&pid].position;
+        joiner.position = [ppos[0] + 1.0, 1.8, ppos[2]]; // ~1 m: inside the 1.5 m strike
+        joiner.rotation = 90.0; // faces +X, AWAY from the phantom → attacked from behind
+        net.peers.insert(joiner_id, joiner);
+
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+
+        let host_far = Vec3::new(ppos[0] + 500.0, 1.8, ppos[2]);
+        let attacks = driver.step(&mut net, 0.1, host_far, 0.0, false);
+
+        assert_eq!(attacks.len(), 1, "expected one strike, got {attacks:?}");
+        assert_eq!(
+            attacks[0].victim, joiner_id,
+            "the blow must name the JOINER it actually hit, not the host ({}); got {attacks:?}",
+            net.local_id
+        );
+        assert_ne!(
+            attacks[0].victim, net.local_id,
+            "regression: the host is being named as victim for a joiner's beating"
+        );
+    }
+
+    /// ADR-047 D7 — `hear_noises` measures distance in XZ, so before the layer test a shot on
+    /// layer 0 summoned every creature stacked above and below it.
+    #[tokio::test]
+    async fn a_noise_does_not_travel_between_layers() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, stand_on(0), 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+
+        // Same XZ spot, a different floor, well inside the audible radius.
+        net.pending_noises
+            .push(([from.x, stand_on(1), from.z], 500.0));
+        driver.hear_noises(&mut net);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Wander,
+            "a shot one floor up must not be heard through the ceiling"
+        );
+        assert!(
+            driver.movers[0].last_known_player_pos.is_none(),
+            "and it must leave no goal behind either"
+        );
+    }
+
+    /// ADR-047 D7 — the sentinel half: the SAME noise on the SAME layer still lands. Without it,
+    /// a layer test that rejected everything would pass the test above.
+    #[tokio::test]
+    async fn a_noise_on_the_same_layer_is_still_heard() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, stand_on(0), 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        let from = Vec3::from_array(net.peers[&pid].position);
+        driver.add(pid, 0.0, from, true);
+
+        net.pending_noises
+            .push(([from.x + 100.0, from.y, from.z], 500.0));
+        driver.hear_noises(&mut net);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Search,
+            "a shot on our own floor must start an investigation"
+        );
+    }
+
+    /// ADR-047 D5 — the contradiction between ADR-041 (a 500 m gunshot worth a long journey) and
+    /// ADR-043 (only creatures within 150 m of a player exist at all). Before this, a distant shot
+    /// reached nobody: not because it was inaudible, but because there was nothing there yet.
+    #[tokio::test]
+    async fn a_distant_shot_wakes_a_sleeper_that_no_player_is_near() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = PhantomDriver::new(42);
+        // Nobody has been anywhere: no phantom is simulated.
+        assert!(driver.movers.is_empty());
+
+        // A rifle, far beyond PHANTOM_ACTIVATE_RADIUS (150 m).
+        net.pending_noises
+            .push(([400.0, stand_on(0), 400.0], 500.0));
+        driver.wake_for_noises(&mut net);
+
+        assert!(
+            !driver.movers.is_empty(),
+            "a 500 m shot must be able to wake somebody near where it was fired"
+        );
+        assert!(
+            driver.movers.len() <= PHANTOM_NOISE_ACTIVATE_MAX,
+            "one shot must not summon a crowd: {} woken, cap is {PHANTOM_NOISE_ACTIVATE_MAX}",
+            driver.movers.len()
+        );
+        // The queue is NOT consumed here — `hear_noises` owns the drain, and the one just woken
+        // has to still find the noise waiting for it on this same tick.
+        assert_eq!(
+            net.pending_noises.len(),
+            1,
+            "wake_for_noises must peek, never drain"
+        );
+    }
+
+    /// ADR-047 D5 — the global cap still binds. Without this, the per-noise cap alone would let a
+    /// burst of shots walk the population straight past `active_cap`.
+    #[tokio::test]
+    async fn waking_by_noise_still_respects_the_global_cap() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = PhantomDriver::new(42);
+        driver.active_cap = 1;
+
+        for i in 0..4 {
+            net.pending_noises
+                .push(([400.0 + i as f32 * 50.0, stand_on(0), 400.0], 500.0));
+        }
+        driver.wake_for_noises(&mut net);
+
+        assert!(
+            driver.movers.len() <= 1,
+            "active_cap=1 but {} are awake",
+            driver.movers.len()
         );
     }
 
@@ -7012,8 +7534,9 @@ mod tests {
         let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
 
         assert!(
-            matches!(attack, [PhantomAttack::Hit(d)] if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
-            "frontal attack must HIT for {PHANTOM_ATTACK_DAMAGE}, got {attack:?}"
+            matches!(attack, [PhantomAttack { victim, kind: PhantomAttackKind::Hit(d) }]
+                if *victim == net.local_id && (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
+            "frontal attack must HIT the local player for {PHANTOM_ATTACK_DAMAGE}, got {attack:?}"
         );
         assert_eq!(
             driver.movers[0].state,
@@ -7039,8 +7562,9 @@ mod tests {
         let attack = driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert!(
-            matches!(attack, [PhantomAttack::Knockback(_, _)]),
-            "point-blank STATUE timeout must shove, got {attack:?}"
+            matches!(attack, [PhantomAttack { victim, kind: PhantomAttackKind::Knockback(_, _) }]
+                if *victim == net.local_id),
+            "point-blank STATUE timeout must shove the local player, got {attack:?}"
         );
         assert_eq!(driver.movers[0].state, PhantomState::Sprint);
     }
@@ -7103,7 +7627,8 @@ mod tests {
         );
         assert!(
             attacks.iter().all(
-                |a| matches!(a, PhantomAttack::Hit(d) if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3)
+                |a| matches!(a, PhantomAttack { kind: PhantomAttackKind::Hit(d), .. }
+                    if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3)
             ),
             "both must be frontal hits, got {attacks:?}"
         );
@@ -7426,6 +7951,53 @@ mod tests {
         let dup = apply_pvp_damage_grant(&mut stats, &mut dedupe, 1, 100, 30.0, 0);
         assert_eq!(dup, Err("duplicate"));
         assert_eq!(stats.health, health_before - 30.0);
+    }
+
+    /// ADR-047 — the victim backend's veto. A retransmitted grant is the realistic case: 0x4D is
+    /// reliable, so the same blow WILL arrive twice whenever an ACK is lost.
+    #[test]
+    fn a_retransmitted_phantom_grant_lands_once() {
+        let stats = crate::player::stats::PlayerStats::default();
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+
+        assert_eq!(
+            accept_phantom_attack_grant(&stats, &mut dedupe, 77, 0),
+            Ok(())
+        );
+        assert_eq!(
+            accept_phantom_attack_grant(&stats, &mut dedupe, 77, 0),
+            Err("duplicate"),
+            "a reliable retransmit must not land a second time"
+        );
+        // A DIFFERENT blow from the same phantom in the same second still counts — deduping by
+        // anything coarser than the request id would silently eat real hits.
+        assert_eq!(
+            accept_phantom_attack_grant(&stats, &mut dedupe, 78, 0),
+            Ok(())
+        );
+    }
+
+    /// ADR-047 — respawn invulnerability is re-checked on the VICTIM's backend because that is the
+    /// only backend that has it: `invuln_until_tick` is never relayed, so the host cannot consult
+    /// a joiner's. Without this a joiner could be killed inside its own spawn protection.
+    #[test]
+    fn a_phantom_grant_cannot_pierce_respawn_invulnerability() {
+        let stats = crate::player::stats::PlayerStats {
+            invuln_until_tick: 500,
+            ..Default::default()
+        };
+        let mut dedupe = BoundedDedupeSet::with_capacity(64);
+
+        assert_eq!(
+            accept_phantom_attack_grant(&stats, &mut dedupe, 1, 100),
+            Err("victim_invulnerable")
+        );
+        // …and it lands once the window has passed. Note the DIFFERENT request_id: the rejected
+        // one was already consumed by the dedupe, which is deliberate — the host retries nothing.
+        assert_eq!(
+            accept_phantom_attack_grant(&stats, &mut dedupe, 2, 600),
+            Ok(())
+        );
     }
 
     #[test]

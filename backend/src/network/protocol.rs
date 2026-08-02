@@ -111,6 +111,11 @@ pub enum PacketType {
     PvpHitCandidate = 0x4A,
     PvpDamageGrant = 0x4B,
     PvpHitRejected = 0x4C,
+    // ADR-047: the robapieles reaches across backends. 0x4D carries a phantom's blow to the
+    // backend that owns the victim's health; 0x4E carries a joiner's gunshot back to the host,
+    // the only backend that simulates phantoms. 0x4F is left free; 0x50 is reserved (ADR-046).
+    PhantomAttackGrant = 0x4D,
+    NoiseReport = 0x4E,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -170,6 +175,8 @@ impl PacketType {
             0x4A => Some(Self::PvpHitCandidate),
             0x4B => Some(Self::PvpDamageGrant),
             0x4C => Some(Self::PvpHitRejected),
+            0x4D => Some(Self::PhantomAttackGrant),
+            0x4E => Some(Self::NoiseReport),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -636,6 +643,39 @@ pub enum PacketPayload {
         reason: String,
     },
 
+    /// ADR-047. Host -> victim backend (reliable): a robapieles landed a blow on the player that
+    /// backend owns. The host is the ONLY simulator of phantoms (ADR-016), but ADR-025 makes the
+    /// victim's own backend the only writer of its health — so the decision travels and the
+    /// mutation stays home, exactly like `PvpDamageGrant`.
+    ///
+    /// NO phantom id, deliberately: ADR-016 §1's hard invariant is that the "this is a phantom"
+    /// mark never crosses the wire, and nothing consumes an attacker here — `PhantomAttackHandler`
+    /// reads none of its three events for it. A field with no reader is a bad price for weakening
+    /// an invariant.
+    ///
+    /// `kind`: 0 = hit (`damage`), 1 = kill, 2 = knockback (`impulse`, m/s, client-applied).
+    /// `request_id` is minted by the host and is the dedupe key on its own.
+    PhantomAttackGrant {
+        request_id: u64,
+        victim_id: u32,
+        kind: u8,
+        damage: f32,
+        impulse: [f32; 2],
+    },
+
+    /// ADR-047. Joiner -> host (UNRELIABLE): a noise happened at `position`, audible for
+    /// `loudness` metres. What travels is a NOISE IN A PLACE, never a player's position — that
+    /// distinction is the whole design of ADR-041, so there is no player id here.
+    ///
+    /// Unreliable on purpose: a transient stimulus must not occupy the 32-slot reliable window
+    /// (an automatic weapon would fill it, and blowing `MAX_RETRIES` purges the peer's entire
+    /// reliable queue, taking pickups/corpses/PvP with it). A lost noise self-heals on the next
+    /// shot.
+    NoiseReport {
+        position: [f32; 3],
+        loudness: f32,
+    },
+
     // Reliability
     Ack {
         acked_sequence: u32,
@@ -695,6 +735,8 @@ impl PacketPayload {
             Self::PvpHitCandidate { .. } => PacketType::PvpHitCandidate as u16,
             Self::PvpDamageGrant { .. } => PacketType::PvpDamageGrant as u16,
             Self::PvpHitRejected { .. } => PacketType::PvpHitRejected as u16,
+            Self::PhantomAttackGrant { .. } => PacketType::PhantomAttackGrant as u16,
+            Self::NoiseReport { .. } => PacketType::NoiseReport as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
@@ -1222,6 +1264,76 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    /// ADR-047. Every field carries a DISTINCT non-default value on purpose: a round-trip of
+    /// zeros passes just as happily with two fields swapped.
+    #[test]
+    fn phantom_attack_grant_round_trip() {
+        let payload = PacketPayload::PhantomAttackGrant {
+            request_id: 77,
+            victim_id: 1004,
+            kind: 2,
+            damage: 35.0,
+            impulse: [2.5, -1.5],
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 9, 100);
+        assert_eq!(
+            payload.type_code(),
+            0x4D,
+            "the opcode is part of the contract"
+        );
+        let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
+        match decoded {
+            PacketPayload::PhantomAttackGrant {
+                request_id,
+                victim_id,
+                kind,
+                damage,
+                impulse,
+            } => {
+                assert_eq!(request_id, 77);
+                assert_eq!(victim_id, 1004);
+                assert_eq!(kind, 2);
+                assert_eq!(damage, 35.0);
+                assert_eq!(impulse, [2.5, -1.5]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// ADR-047. Asymmetric position on purpose (see above).
+    #[test]
+    fn noise_report_round_trip() {
+        let payload = PacketPayload::NoiseReport {
+            position: [12.5, 1.8, -404.25],
+            loudness: 500.0,
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 9, 100);
+        assert_eq!(
+            payload.type_code(),
+            0x4E,
+            "the opcode is part of the contract"
+        );
+        let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
+        match decoded {
+            PacketPayload::NoiseReport { position, loudness } => {
+                assert_eq!(position, [12.5, 1.8, -404.25]);
+                assert_eq!(loudness, 500.0);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// ADR-047 keeps 0x50 free: ADR-046 reserves it for `VoiceFrame`. If a future gameplay packet
+    /// silently takes it, two features would decode each other's bytes — this centinela turns that
+    /// into a red test instead of a field report.
+    #[test]
+    fn the_voice_opcode_stays_unclaimed_by_gameplay() {
+        assert!(
+            PacketType::from_u16(0x50).is_none(),
+            "0x50 esta reservado para VoiceFrame (ADR-046); ADR-047 se detuvo en 0x4E a proposito"
+        );
     }
 
     #[test]

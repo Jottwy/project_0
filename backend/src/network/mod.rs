@@ -233,6 +233,21 @@ pub enum NetworkEvent {
         victim_id: u32,
         reason: String,
     },
+    /// ADR-047: a robapieles simulated by the host struck OUR local player. We are the victim's
+    /// own backend — apply it here via `PlayerStats::take_damage`, never anywhere else.
+    PhantomAttackGrant {
+        request_id: u64,
+        victim_id: u32,
+        kind: u8,
+        damage: f32,
+        impulse: [f32; 2],
+    },
+    /// ADR-047: a joiner reported a noise to us (the host). Only the host simulates phantoms, so
+    /// this is the sole way a joiner's gunshot can ever reach one.
+    NoiseReported {
+        position: [f32; 3],
+        loudness: f32,
+    },
     WorldSyncReceived {
         world_seed: u64,
         world_revision: u64,
@@ -349,6 +364,14 @@ pub struct NetworkManager {
     /// retransmit of the grant never doubles the damage. This is the LOAD-BEARING defensive
     /// dedupe — the victim's own backend is the final authority over its own health.
     pub processed_pvp_grants: BoundedDedupeSet<(u32, u64)>,
+    /// ADR-047 (victim-side, host or joiner): `request_id`s of `PhantomAttackGrant` already
+    /// applied to this backend's own `PlayerStats`, so a reliable retransmit never doubles a
+    /// robapieles' blow. A bare `u64` is enough where PvP needs a pair: the host is the sole
+    /// minter of these ids, so they are unique without an attacker to disambiguate them.
+    pub processed_phantom_grants: BoundedDedupeSet<u64>,
+    /// ADR-047 (host-only): monotonic minter for the `request_id` above. Never reset — a restart
+    /// gets a fresh backend and a fresh dedupe set, so the two stay consistent.
+    pub next_phantom_attack_request_id: u64,
     /// ADR-014 (host-only): reserved pickups awaiting their deferred removal.
     /// item_id → (requester_id, remove_at). The item stays in `stp_items` (visible) until
     /// remove_at, but a second request for a reserved item is rejected — the reservation is the
@@ -430,6 +453,8 @@ impl NetworkManager {
             next_corpse_request_id: 1,
             processed_pvp_hits: BoundedDedupeSet::with_capacity(512),
             processed_pvp_grants: BoundedDedupeSet::with_capacity(512),
+            processed_phantom_grants: BoundedDedupeSet::with_capacity(512),
+            next_phantom_attack_request_id: 1,
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
             incoming_rx: rx,
@@ -1145,6 +1170,27 @@ impl NetworkManager {
                 victim_id,
                 reason,
             }],
+
+            // ADR-047 — decode only. Every authority check (are we really the victim? is this a
+            // retransmit? are we invulnerable?) lives in game_loop.rs, the same split the PvP
+            // family above uses.
+            PacketPayload::PhantomAttackGrant {
+                request_id,
+                victim_id,
+                kind,
+                damage,
+                impulse,
+            } => vec![NetworkEvent::PhantomAttackGrant {
+                request_id,
+                victim_id,
+                kind,
+                damage,
+                impulse,
+            }],
+
+            PacketPayload::NoiseReport { position, loudness } => {
+                vec![NetworkEvent::NoiseReported { position, loudness }]
+            }
 
             PacketPayload::StpPickupGranted {
                 item_id,

@@ -71,7 +71,17 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// reloading) carried by RemotePlayerState and the P2P PlayerUpdate. `buttons` already lived in
 /// PlayerInput, written as a literal 0 and read by nobody, so the client frame gains ONE field, not
 /// two. Both `serde(default)`, so a v14 peer decodes 0/0 and simply never aims, reloads or swings.
-const WIRE_SCHEMA_VERSION: u32 = 15;
+/// v16 (ADR-047) adds TWO P2P packet types and changes NO client-facing field: `PhantomAttackGrant`
+/// (0x4D, host → the victim's backend, reliable) and `NoiseReport` (0x4E, joiner → host,
+/// unreliable). Until now the robapieles could neither hurt anyone but the host — it damaged the
+/// HOST even while attacking a joiner, because the attack carried no victim — nor hear a joiner's
+/// gunshot at all.
+///
+/// A P2P-only change bumps this counter: the log contradicted itself (ADR-039 called it "the IPC
+/// schema", but ADR-028 Fase E bumped v8→v9 for four P2P variants with the IPC untouched) and
+/// ADR-047 settles it in writing — adding a `PacketPayload` bumps. Coordinate with ADR-046: the
+/// CODE is the authority, whoever lands second reads this constant and takes the next number.
+const WIRE_SCHEMA_VERSION: u32 = 16;
 
 /// Run the IPC server until a fatal accept error.
 ///
