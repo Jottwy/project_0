@@ -186,6 +186,57 @@ pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
         .collect()
 }
 
+/// ADR-046 — how far a voice carries, in metres. Sits between the two peer sounds that already
+/// exist: a footstep dies at 22 m and a pain grunt at 28 m (`ProxyFootstepHook`,
+/// `ProxyDamageAudioHook`), so a voice reaching 25 m is louder than a step and about as far as a
+/// cry. The client fades to true silence at exactly this distance with the hard-cutoff curve.
+pub const VOICE_RADIUS_M: f32 = 25.0;
+
+/// Extra distance the host will still relay over. Hysteresis, not slack: peer positions land at
+/// 10 Hz, so a listener walking the boundary would otherwise have the voice cut mid-word every
+/// time a pose update crossed the line. Frames inside the margin arrive and are attenuated to
+/// silence by the client's curve, which costs a few bytes and sounds like nothing.
+pub const VOICE_RELAY_MARGIN_M: f32 = 6.0;
+
+fn distance_sq(a: [f32; 3], b: [f32; 3]) -> f32 {
+    let (dx, dy, dz) = (a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+    dx * dx + dy * dy + dz * dz
+}
+
+/// True when `a` and `b` are close enough for voice to travel between them.
+///
+/// 3D and not XZ on purpose: the layers are stacked vertically, so plain euclidean distance
+/// already keeps a speaker on layer 1 from being heard by someone standing above them. ADR-043
+/// needed an explicit layer comparison because it was culling by XZ; here the Y term does it.
+pub fn within_voice_range(a: [f32; 3], b: [f32; 3]) -> bool {
+    let reach = VOICE_RADIUS_M + VOICE_RELAY_MARGIN_M;
+    distance_sq(a, b) <= reach * reach
+}
+
+/// ADR-046 — who gets a copy of `speaker`'s voice, decided by the HOST.
+///
+/// Three exclusions, each for its own reason:
+/// * the speaker (nobody is relayed their own voice, same rule as the pose relay),
+/// * phantoms, whose `addr` is the inert `127.0.0.1:1` — the destination filter ADR-043 added,
+/// * peers out of earshot. THAT one is not an optimisation: it is the only thing stopping a
+///   modified client from decoding a conversation happening across the level. A filter that
+///   lived only in the listener would be a filter the listener can remove.
+///
+/// A DEAD peer is excluded too (ADR-046: the dead neither speak nor listen). The client stops
+/// capturing on death as well, but that half only saves bandwidth — this half is the authority,
+/// and it is what a patched client cannot get around.
+pub(crate) fn voice_destinations(net: &NetworkManager, speaker: PeerId) -> Vec<PeerId> {
+    let Some(origin) = net.peers.get(&speaker).map(|p| p.position) else {
+        return Vec::new();
+    };
+    net.peers
+        .values()
+        .filter(|p| p.id != speaker && !net.is_phantom(p.id) && !p.dead)
+        .filter(|p| within_voice_range(origin, p.position))
+        .map(|p| p.id)
+        .collect()
+}
+
 /// ADR-015: host-as-server relay of per-peer POSE (rotation + animation included).
 /// The roster relay (`broadcast_peer_roster` / `PeerList`) carries only POSITION, so a
 /// joiner — which only connects to the host — never learns the rotation or animation of
@@ -471,4 +522,102 @@ pub fn build_anchor_list(_world: &World) -> Vec<AnchorInfo> {
 /// Build StabilizerInfo list for handshake (placeholder).
 pub fn build_stabilizer_list(_world: &World) -> Vec<StabilizerInfo> {
     Vec::new()
+}
+
+#[cfg(test)]
+mod voice_tests {
+    use super::*;
+    use crate::network::peer::PeerConnection;
+
+    async fn host_with_peers(peers: &[(PeerId, [f32; 3], bool)]) -> NetworkManager {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        for (id, pos, dead) in peers {
+            let addr = (std::net::Ipv4Addr::LOCALHOST, 40000 + *id).into();
+            let mut conn = PeerConnection::new(*id, format!("P{id}"), addr);
+            conn.update_player_state(*pos, 0.0, "idle".into());
+            conn.dead = *dead;
+            net.peers.insert(*id, conn);
+        }
+        net
+    }
+
+    #[tokio::test]
+    async fn voice_reaches_the_near_peer_and_not_the_far_one() {
+        // 10 m away hears; 200 m away does not. Without this the relay is a broadcast wearing a
+        // proximity label, and someone across the level decodes your conversation.
+        let net = host_with_peers(&[
+            (2, [0.0, 1.8, 0.0], false),
+            (3, [10.0, 1.8, 0.0], false),
+            (4, [200.0, 1.8, 0.0], false),
+        ])
+        .await;
+
+        let dests = voice_destinations(&net, 2);
+        assert!(dests.contains(&3), "un peer a 10 m tiene que oir");
+        assert!(!dests.contains(&4), "un peer a 200 m NO puede oir");
+        assert!(!dests.contains(&2), "a nadie se le reenvia su propia voz");
+    }
+
+    #[tokio::test]
+    async fn the_margin_is_hysteresis_and_the_cut_is_where_it_says() {
+        // Justo dentro del margen: SÍ se relaya (el cliente lo atenuará hasta el silencio).
+        // Un metro más allá del margen: no. Fija los dos lados del borde, no solo el cómodo.
+        let inside = VOICE_RADIUS_M + VOICE_RELAY_MARGIN_M - 0.5;
+        let outside = VOICE_RADIUS_M + VOICE_RELAY_MARGIN_M + 1.0;
+        let net = host_with_peers(&[
+            (2, [0.0, 1.8, 0.0], false),
+            (3, [inside, 1.8, 0.0], false),
+            (4, [outside, 1.8, 0.0], false),
+        ])
+        .await;
+
+        let dests = voice_destinations(&net, 2);
+        assert!(dests.contains(&3), "dentro del margen se sigue relayando");
+        assert!(!dests.contains(&4), "pasado el margen se corta");
+    }
+
+    #[tokio::test]
+    async fn distance_is_measured_in_3d_so_the_layer_below_cannot_hear() {
+        // Las capas están apiladas en Y (4 m por capa). Un filtro por XZ metería en el mismo
+        // canal de voz a alguien que está literalmente bajo tus pies y no puede ni verte.
+        let net = host_with_peers(&[
+            (2, [0.0, 1.8, 0.0], false),
+            (3, [1.0, 1.8, 0.0], false),
+            (4, [1.0, 1.8 + 40.0, 0.0], false),
+        ])
+        .await;
+
+        let dests = voice_destinations(&net, 2);
+        assert!(dests.contains(&3), "mismo plano, a 1 m: oye");
+        assert!(
+            !dests.contains(&4),
+            "a 40 m EN VERTICAL no oye — con filtro XZ estaria a 1 m"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_dead_do_not_listen_and_a_phantom_is_never_a_destination() {
+        let mut net = host_with_peers(&[
+            (2, [0.0, 1.8, 0.0], false),
+            (3, [5.0, 1.8, 0.0], true), // muerto, y a tiro de piedra
+        ])
+        .await;
+        // Un fantasma pegado al hablante: su addr es el 127.0.0.1:1 inerte de ADR-043.
+        let phantom_id = net.spawn_phantom("Victima", [2.0, 1.8, 0.0]);
+
+        let dests = voice_destinations(&net, 2);
+        assert!(!dests.contains(&3), "un muerto no oye a los vivos");
+        assert!(
+            !dests.contains(&phantom_id),
+            "un fantasma nunca es destino: su addr es un puerto muerto de loopback"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_speaker_relays_to_nobody() {
+        // Sin posición del hablante no hay forma de decidir quién está cerca. Contestar "todos"
+        // seria justo el fallo abierto que este filtro existe para impedir.
+        let net = host_with_peers(&[(2, [0.0, 1.8, 0.0], false)]).await;
+        assert!(voice_destinations(&net, 9999).is_empty());
+    }
 }

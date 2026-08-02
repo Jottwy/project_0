@@ -116,6 +116,8 @@ pub enum PacketType {
     // the only backend that simulates phantoms. 0x4F is left free; 0x50 is reserved (ADR-046).
     PhantomAttackGrant = 0x4D,
     NoiseReport = 0x4E,
+    // ADR-046: proximity voice. Claims the slot ADR-047 reserved above.
+    VoiceFrame = 0x50,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -177,6 +179,7 @@ impl PacketType {
             0x4C => Some(Self::PvpHitRejected),
             0x4D => Some(Self::PhantomAttackGrant),
             0x4E => Some(Self::NoiseReport),
+            0x50 => Some(Self::VoiceFrame),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -676,6 +679,28 @@ pub enum PacketPayload {
         loudness: f32,
     },
 
+    /// ADR-046 — one encoded voice frame, relayed by the host on behalf of the speaker
+    /// (`send_unreliable_as`, the same ADR-015 mechanism the pose relay uses).
+    ///
+    /// There is NO speaker id in the payload: the header's `sender_id` already carries it, and
+    /// a second copy inside would be a field a modified client could disagree with — it could
+    /// claim to be someone else's voice.
+    ///
+    /// There is no position either. The listener already receives the speaker's pose at 10 Hz
+    /// and attaches the audio to that peer's proxy, so shipping coordinates alongside every
+    /// frame would be paying for a value the receiver already has, 25 times a second — the same
+    /// reasoning that kept footsteps off the wire in ADR-042.
+    ///
+    /// Unreliable, and this one is not a preference: a retransmitted voice frame arrives after
+    /// the moment it belonged to, and blowing `MAX_RETRIES` purges the peer's ENTIRE reliable
+    /// queue (ADR-039), taking pickups, corpses and PvP verdicts with it. A lost frame is
+    /// covered by the decoder's packet-loss concealment.
+    VoiceFrame {
+        seq: u16,
+        #[serde(with = "serde_bytes")]
+        data: Vec<u8>,
+    },
+
     // Reliability
     Ack {
         acked_sequence: u32,
@@ -737,6 +762,7 @@ impl PacketPayload {
             Self::PvpHitRejected { .. } => PacketType::PvpHitRejected as u16,
             Self::PhantomAttackGrant { .. } => PacketType::PhantomAttackGrant as u16,
             Self::NoiseReport { .. } => PacketType::NoiseReport as u16,
+            Self::VoiceFrame { .. } => PacketType::VoiceFrame as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
@@ -1325,14 +1351,64 @@ mod tests {
         }
     }
 
-    /// ADR-047 keeps 0x50 free: ADR-046 reserves it for `VoiceFrame`. If a future gameplay packet
-    /// silently takes it, two features would decode each other's bytes — this centinela turns that
-    /// into a red test instead of a field report.
+    /// ADR-047 dejó 0x50 libre reservándolo para ADR-046, que ya lo ha COBRADO. El centinela
+    /// cambia de lado sin perder su trabajo: antes fijaba "que nadie lo ocupe", ahora fija "lo
+    /// ocupa la voz y solo la voz". Si un paquete de gameplay futuro se lo quedara, dos
+    /// funcionalidades decodificarían los bytes de la otra.
     #[test]
-    fn the_voice_opcode_stays_unclaimed_by_gameplay() {
+    fn the_voice_opcode_belongs_to_voice_and_to_nothing_else() {
+        assert_eq!(
+            PacketType::from_u16(0x50),
+            Some(PacketType::VoiceFrame),
+            "0x50 es VoiceFrame (ADR-046)"
+        );
+        assert_eq!(
+            PacketPayload::VoiceFrame {
+                seq: 0,
+                data: Vec::new()
+            }
+            .type_code(),
+            0x50,
+            "el payload y el opcode no pueden discrepar"
+        );
         assert!(
-            PacketType::from_u16(0x50).is_none(),
-            "0x50 esta reservado para VoiceFrame (ADR-046); ADR-047 se detuvo en 0x4E a proposito"
+            PacketType::from_u16(0x4F).is_none(),
+            "0x4F sigue libre: ADR-047 se detuvo en 0x4E a proposito"
+        );
+    }
+
+    /// ADR-046 — el audio viaja como BIN de msgpack, no como array de enteros. La diferencia no
+    /// es cosmética: cada byte ≥ 128 costaría dos en un array, así que ~1,5× el ancho de banda de
+    /// todo el sistema de voz. Y hay un byte de 0xFF en la muestra justamente para que un
+    /// serializador que se pase a array falle aquí y no en producción.
+    #[test]
+    fn voice_frame_round_trips_as_binary() {
+        let audio: Vec<u8> = (0..120u16).map(|i| (i * 31 + 7) as u8).collect();
+        let payload = PacketPayload::VoiceFrame {
+            seq: 65535,
+            data: audio.clone(),
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 0, 100);
+        let wire = encode_packet(&header, &payload);
+        let (_, decoded) = decode_packet(&wire).unwrap();
+        match decoded {
+            PacketPayload::VoiceFrame { seq, data } => {
+                assert_eq!(seq, 65535, "el seq debe llegar entero al borde del u16");
+                assert_eq!(data, audio, "el audio debe sobrevivir byte a byte");
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// Una trama de voz no puede ser fiable. ADR-039 lo dejó medido: al superar `MAX_RETRIES` el
+    /// barrido hace `reliable_queue.clear()` y vacía la cola ENTERA del peer, llevándose pickups,
+    /// cadáveres y veredictos de PvP. Y un paquete de voz reenviado llega después del momento al
+    /// que pertenecía, así que la retransmisión no compra nada a cambio.
+    #[test]
+    fn voice_never_enters_the_reliable_queue() {
+        assert!(
+            !crate::network::reliability::is_reliable(0x50),
+            "VoiceFrame jamas debe ser fiable (ADR-039/ADR-046)"
         );
     }
 

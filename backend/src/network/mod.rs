@@ -248,6 +248,18 @@ pub enum NetworkEvent {
         position: [f32; 3],
         loudness: f32,
     },
+    /// ADR-046: a voice frame arrived from `speaker`. On a joiner the host has already decided
+    /// we are close enough to hear it; on the host this is a peer talking, and the host is the
+    /// one that decides who else gets a copy.
+    ///
+    /// `speaker` comes from the packet HEADER, never from the payload — on a relayed frame it is
+    /// the id the host stamped via `send_unreliable_as`, which is exactly the peer whose proxy
+    /// the audio belongs to.
+    VoiceReceived {
+        speaker: PeerId,
+        seq: u16,
+        data: Vec<u8>,
+    },
     WorldSyncReceived {
         world_seed: u64,
         world_revision: u64,
@@ -1190,6 +1202,14 @@ impl NetworkManager {
 
             PacketPayload::NoiseReport { position, loudness } => {
                 vec![NetworkEvent::NoiseReported { position, loudness }]
+            }
+
+            PacketPayload::VoiceFrame { seq, data } => {
+                vec![NetworkEvent::VoiceReceived {
+                    speaker: sender_id,
+                    seq,
+                    data,
+                }]
             }
 
             PacketPayload::StpPickupGranted {
@@ -2465,6 +2485,90 @@ mod tests {
         assert!(
             host.peers.contains_key(&ghost_a) && host.peers.contains_key(&ghost_b),
             "phantoms must remain relay SOURCES"
+        );
+    }
+
+    /// ADR-046 — la voz de un joiner llega al host y se atribuye al hablante SEGÚN LA CABECERA,
+    /// no según nada que venga dentro del payload. Esa distinción es de seguridad: si el id del
+    /// hablante viajara en el cuerpo, un cliente modificado podría firmar su audio como si fuera
+    /// otro jugador. Sockets reales, no simulacro.
+    #[tokio::test]
+    async fn voice_from_a_joiner_arrives_attributed_to_the_header_sender() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+        let mut joiner = NetworkManager::bind(0, 1004, 0, false).await.unwrap();
+        joiner.initiate_connection(host_addr).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        host.process_incoming().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        joiner.process_incoming().await;
+        assert_eq!(joiner.local_id, 1004);
+
+        let audio: Vec<u8> = (0..120u16).map(|i| (i * 31 + 7) as u8).collect();
+        joiner
+            .send_unreliable_to(
+                1,
+                &PacketPayload::VoiceFrame {
+                    seq: 4242,
+                    data: audio.clone(),
+                },
+            )
+            .await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let events = host.process_incoming().await;
+        let got = events
+            .iter()
+            .find_map(|e| match e {
+                NetworkEvent::VoiceReceived { speaker, seq, data } => Some((*speaker, *seq, data)),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("host no recibio la voz del joiner, eventos: {events:?}"));
+
+        assert_eq!(got.0, 1004, "el hablante sale del sender_id de la cabecera");
+        assert_eq!(got.1, 4242);
+        assert_eq!(got.2, &audio, "el audio cruza el socket byte a byte");
+    }
+
+    /// La otra mitad del viaje: el host RELAYA la voz de un tercero sellada con el id de ESE
+    /// tercero (`send_unreliable_as`, el mecanismo de ADR-015). Sin el sellado, un joiner
+    /// atribuiría al host todo lo que dice cualquier otro jugador y el audio se pegaría al proxy
+    /// equivocado. Aquí el host habla EN NOMBRE del peer 1007, que ni siquiera tiene socket.
+    #[tokio::test]
+    async fn a_relayed_voice_frame_is_attributed_to_the_speaker_not_to_the_host() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+        let mut joiner = NetworkManager::bind(0, 1004, 0, false).await.unwrap();
+        joiner.initiate_connection(host_addr).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        host.process_incoming().await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        joiner.process_incoming().await;
+
+        const OTHER_SPEAKER: PeerId = 1007;
+        host.send_unreliable_as(
+            OTHER_SPEAKER,
+            joiner.local_id,
+            &PacketPayload::VoiceFrame {
+                seq: 5,
+                data: vec![9; 60],
+            },
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        let events = joiner.process_incoming().await;
+        let speaker = events
+            .iter()
+            .find_map(|e| match e {
+                NetworkEvent::VoiceReceived { speaker, .. } => Some(*speaker),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("el joiner no recibio la voz relayada: {events:?}"));
+
+        assert_eq!(
+            speaker, OTHER_SPEAKER,
+            "la voz relayada debe atribuirse al hablante, no al host que la reenvia"
         );
     }
 }

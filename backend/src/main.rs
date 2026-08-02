@@ -154,9 +154,7 @@ async fn main() {
     }
 
     // Game loop task (drives the whole simulation).
-    // ADR-046 Fase 1 plumbs the voice channel only as far as the IPC writer; the game loop
-    // gains its sender in Fase 2, when the P2P relay gives it something to put in it.
-    let game_handle = tokio::spawn(game_loop::run(to_game_rx, state_tx, net));
+    let game_handle = tokio::spawn(game_loop::run(to_game_rx, state_tx, voice_tx, net));
 
     // If either core task ends, the process should come down with it.
     tokio::select! {

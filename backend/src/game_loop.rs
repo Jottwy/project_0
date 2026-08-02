@@ -394,6 +394,9 @@ fn hydrate_from_save(
 pub async fn run(
     mut from_clients: mpsc::Receiver<ClientMessage>,
     to_clients: broadcast::Sender<ServerMessage>,
+    // ADR-046 — the voice channel, separate from `to_clients` for the reason spelled out in
+    // `ipc::server::run`: that one drops its oldest messages on overflow, events included.
+    to_clients_voice: broadcast::Sender<ServerMessage>,
     mut net: NetworkManager,
 ) {
     let mut player = Player::new(net.local_id, &net.local_name);
@@ -657,18 +660,60 @@ pub async fn run(
                     }));
                 }
                 ClientMessage::Voice { seq, data } => {
-                    // ADR-046 Fase 1 — the IPC half only. The frame is accepted, counted and
-                    // DROPPED here; Fase 2 is what hands it to the P2P relay. Counting it
-                    // (rather than ignoring the variant) is what makes "the microphone path
-                    // works but nothing leaves this process" distinguishable from "the client
-                    // never sent anything" — the two look identical without this.
+                    // ADR-046 Fase 2 — our own microphone, on its way out.
                     voice_frames_in = voice_frames_in.wrapping_add(1);
                     voice_bytes_in = voice_bytes_in.wrapping_add(data.len() as u64);
+
+                    // The dead do not speak. The client also stops capturing, but that half is
+                    // the one a patched client can delete.
+                    let mut sent_to = 0usize;
+                    if !player.stats.is_dead() && !data.is_empty() {
+                        let me = [player.position.x, player.position.y, player.position.z];
+                        let payload = PacketPayload::VoiceFrame {
+                            seq,
+                            data: data.clone(),
+                        };
+                        if net.is_host {
+                            // We ARE the relay: one copy per listener in earshot of us.
+                            let dests: Vec<u16> = net
+                                .peers
+                                .values()
+                                .filter(|p| !net.is_phantom(p.id) && !p.dead)
+                                .filter(|p| {
+                                    crate::network::sync::within_voice_range(me, p.position)
+                                })
+                                .map(|p| p.id)
+                                .collect();
+                            for dest in dests {
+                                net.send_unreliable_to(dest, &payload).await;
+                                sent_to += 1;
+                            }
+                        } else {
+                            // A joiner's only real link is the host, which owns the decision of
+                            // who else hears this. Sending to `peers` at large would spray
+                            // datagrams at addresses a joiner cannot reach anyway.
+                            //
+                            // The pre-check is NOT the security filter (that one lives on the
+                            // host) — it just stops us paying upstream for a frame nobody is
+                            // close enough to receive. The roster carries peer POSITION, so we
+                            // can answer "is anyone near me?" without asking.
+                            let anyone_near = net.peers.values().any(|p| {
+                                !net.is_phantom(p.id)
+                                    && !p.dead
+                                    && crate::network::sync::within_voice_range(me, p.position)
+                            });
+                            if anyone_near {
+                                net.send_unreliable_to(1, &payload).await; // 1 = host
+                                sent_to = 1;
+                            }
+                        }
+                    }
+
                     let now = Instant::now();
                     if now >= next_voice_log {
                         next_voice_log = now + Duration::from_secs(2);
                         info!(
-                            "MPTRACE step=V event=voice_frame_in seq={seq} bytes={} frames_total={voice_frames_in} bytes_total={voice_bytes_in}",
+                            "MPTRACE step=V event=voice_frame_out seq={seq} bytes={} dests={sent_to} frames_total={voice_frames_in} bytes_total={voice_bytes_in}",
                             data.len()
                         );
                     }
@@ -727,6 +772,7 @@ pub async fn run(
                 &mut world,
                 &mut net,
                 &to_clients,
+                &to_clients_voice,
                 &mut processed_interactions,
                 tick,
             )
@@ -1126,6 +1172,7 @@ pub async fn run(
                     &mut world,
                     &mut net,
                     &to_clients,
+                    &to_clients_voice,
                     &mut processed_interactions,
                     tick,
                 )
@@ -1216,12 +1263,20 @@ fn env_tuning<T: std::str::FromStr + std::fmt::Display>(name: &str, default: T) 
     }
 }
 
+// El octavo parámetro es el canal de voz de ADR-046, que existe precisamente para NO ir
+// mezclado con `to_clients`. Agruparlos en un struct desharía esa separación en la firma justo
+// donde importa que se lea. Mismo criterio que los `too_many_arguments` ya presentes en
+// `persistence/save.rs` y `grid_gen/generator.rs`.
+#[allow(clippy::too_many_arguments)]
 async fn handle_network_event(
     event: NetworkEvent,
     player: &mut Player,
     world: &mut World,
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
+    // ADR-046 — voice out to Unity. Deliberately NOT `to_clients`: that channel evicts its
+    // OLDEST messages on overflow, `player_died` among them.
+    to_clients_voice: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut HashSet<(u16, u64)>,
     tick: u64,
 ) {
@@ -1838,6 +1893,52 @@ async fn handle_network_event(
                     warn!("MPTRACE step=PH_NOISE event=noise_report_rejected reason=malformed")
                 }
             }
+        }
+
+        NetworkEvent::VoiceReceived { speaker, seq, data } => {
+            // ADR-046. Two jobs, and only the host has the first one.
+            //
+            // A dead speaker is dropped at the door. The client already stops capturing on
+            // death, but that is the half a patched client can remove; this is the half it
+            // cannot.
+            if net.peers.get(&speaker).map(|p| p.dead).unwrap_or(false) {
+                return;
+            }
+
+            if net.is_host {
+                // 1) Relay to every other peer within earshot OF THE SPEAKER, stamped with the
+                //    speaker's id — the same ADR-015 mechanism the pose relay uses, so the
+                //    receiving side needs no special case at all.
+                let payload = PacketPayload::VoiceFrame {
+                    seq,
+                    data: data.clone(),
+                };
+                for dest in crate::network::sync::voice_destinations(net, speaker) {
+                    net.send_unreliable_as(speaker, dest, &payload).await;
+                }
+                // 2) And decide whether the HOST'S OWN player hears it. On a joiner this
+                //    question is already answered — the host would not have sent the frame —
+                //    but on the host nobody has asked it yet.
+                let me = [player.position.x, player.position.y, player.position.z];
+                let heard = net
+                    .peers
+                    .get(&speaker)
+                    .map(|p| crate::network::sync::within_voice_range(me, p.position))
+                    .unwrap_or(false);
+                if !heard || player.stats.is_dead() {
+                    return;
+                }
+            } else if player.stats.is_dead() {
+                // The dead do not listen either. The host cannot enforce this half for us: it
+                // knows our `dead` flag from the pose relay, but our own is the fresher truth.
+                return;
+            }
+
+            let _ = to_clients_voice.send(ServerMessage::PeerVoice(crate::ipc::PeerVoice {
+                peer_id: speaker,
+                seq,
+                data,
+            }));
         }
 
         NetworkEvent::PvpHitRejected {
