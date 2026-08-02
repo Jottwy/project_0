@@ -30,6 +30,9 @@ namespace BackroomsSurvival.Gameplay
             // NO se añade aquí: vive en Assembly-CSharp porque necesita ProxyAudioCurves, y este
             // asmdef no puede verlo — se auto-registra, como CorpseSpawner.
             EnsureComponent<VoiceCapture>();
+            // Panel de ajustes de voz (F7): dispositivo, medidor de nivel y auto-test. Es lo que
+            // hace diagnosticable "no me oyen" sin leerse un log de 40 MB.
+            EnsureComponent<BackroomsSurvival.UI.VoiceSettingsUI>();
             // EnsureComponent added it to THIS GameObject (it's in no scene/prefab), so forward
             // the inspector toggle before NetworkInitializer launches the backend (in Start).
             //

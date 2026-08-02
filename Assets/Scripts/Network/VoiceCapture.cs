@@ -110,8 +110,71 @@ namespace BackroomsSurvival.Net
             set { _openMic = value; PlayerPrefs.SetInt(PrefOpenMic, value ? 1 : 0); }
         }
 
+        /// <summary>Micrófonos que ve el sistema. Se consulta en vivo y no se cachea: enchufar
+        /// unos cascos USB con la partida abierta cambia esta lista.</summary>
+        public static string[] Devices => Microphone.devices;
+
+        /// <summary>Dispositivo elegido; vacío = el primero que reporte Unity. Cambiarlo reabre la
+        /// captura en caliente, sin relanzar.</summary>
+        public string Device
+        {
+            get => _device;
+            set
+            {
+                if (_device == value) return;
+                _device = value ?? "";
+                PlayerPrefs.SetString(PrefDevice, _device);
+                if (_micEnabled) { StopDevice(); StartDevice(); }
+            }
+        }
+
+        /// <summary>Nombre del dispositivo REALMENTE abierto (puede no ser <see cref="Device"/> si
+        /// éste está vacío o ya no existe). Vacío mientras la captura está parada.</summary>
+        public string ActiveDevice => _clip != null ? _activeDevice : "";
+
+        /// <summary>Nivel de entrada de la última trama capturada, 0..1 (RMS). Es lo que pinta el
+        /// medidor: si esto no se mueve al hablar, el problema está ANTES del códec.</summary>
+        public float InputLevel { get; private set; }
+
+        public float ActivationThreshold
+        {
+            get => _activationThreshold;
+            set { _activationThreshold = Mathf.Clamp(value, 0f, 0.2f); PlayerPrefs.SetFloat(PrefThreshold, _activationThreshold); }
+        }
+
+        public Key PushToTalkKey
+        {
+            get => _pushToTalkKey;
+            set { _pushToTalkKey = value; PlayerPrefs.SetInt(PrefPttKey, (int)value); }
+        }
+
+        /// <summary>
+        /// AUTO-TEST: te oyes a ti mismo. La trama recién codificada se decodifica y se reproduce
+        /// en local, así que probar la voz deja de necesitar un segundo jugador.
+        ///
+        /// QUÉ CUBRE Y QUÉ NO, porque un test que miente es peor que ninguno: cubre micrófono,
+        /// captura, codificación, decodificación y salida de audio. **NO cubre** la red, ni el
+        /// filtro de proximidad del host, ni el <c>AudioSource</c> en el proxy, ni la curva de
+        /// corte duro — todo eso vive en `RemoteVoicePlayer` y sigue exigiendo dos jugadores.
+        /// Si te oyes aquí y no te oyen allí, el fallo está en esa mitad y no en el micro.
+        /// </summary>
+        public bool SelfTest
+        {
+            get => _selfTest;
+            set
+            {
+                if (_selfTest == value) return;
+                _selfTest = value;
+                if (!value) StopMonitor();
+                Debug.Log($"[VoiceCapture] Auto-test {(value ? "ACTIVADO: te oyes a ti mismo" : "desactivado")}");
+            }
+        }
+
         private const string PrefMicEnabled = "voice.mic_enabled";
         private const string PrefOpenMic = "voice.open_mic";
+        private const string PrefDevice = "voice.device";
+        private const string PrefThreshold = "voice.threshold";
+        private const string PrefPttKey = "voice.ptt_key";
 
         // ── Interior ──
 
@@ -132,6 +195,15 @@ namespace BackroomsSurvival.Net
         private float _holdUntil;        // cola de la detección de actividad
         private bool _warnedNoDevice;
 
+        // Auto-test (monitor local)
+        private bool _selfTest;
+        private IOpusDecoder _monitorDecoder;
+        private AudioSource _monitorSource;
+        private short[] _monitorRing;
+        private short[] _monitorFrame;
+        private int _monitorWrite;
+        private int _monitorRead;
+
         private void Awake()
         {
             _capture = new float[FrameSamples];
@@ -142,6 +214,18 @@ namespace BackroomsSurvival.Net
 
             _micEnabled = PlayerPrefs.GetInt(PrefMicEnabled, 0) != 0;
             _openMic = PlayerPrefs.GetInt(PrefOpenMic, _openMic ? 1 : 0) != 0;
+            _device = PlayerPrefs.GetString(PrefDevice, _device ?? "");
+            _activationThreshold = PlayerPrefs.GetFloat(PrefThreshold, _activationThreshold);
+            _pushToTalkKey = (Key)PlayerPrefs.GetInt(PrefPttKey, (int)_pushToTalkKey);
+
+            // ARRANCA HABLANDO, siempre, incluso sin micrófonos. Hasta ahora este componente solo
+            // escribía al encenderse, así que "no hay VoiceCapture en la escena" y "el micro está
+            // apagado" producían EXACTAMENTE el mismo log: nada. Esa ambigüedad costó un playtest.
+            var devices = Microphone.devices;
+            Debug.Log($"[VoiceCapture] Listo. Microfonos detectados: {devices.Length}" +
+                      (devices.Length > 0 ? " -> " + string.Join(" | ", devices) : " (NINGUNO)") +
+                      $". Micro={(_micEnabled ? "ON" : "OFF")} ({_toggleMicKey} lo alterna), " +
+                      $"modo={(_openMic ? "voz abierta" : "push-to-talk " + _pushToTalkKey)}.");
         }
 
         private void OnEnable()
@@ -194,6 +278,13 @@ namespace BackroomsSurvival.Net
 
         private void ProcessFrame()
         {
+            // El nivel se mide SIEMPRE, hable o no y transmita o no: es el dato que separa "el
+            // micrófono no capta nada" de "capta pero no sale". Sin él, las dos averías se ven
+            // igual desde fuera.
+            double sum = 0;
+            for (int i = 0; i < FrameSamples; i++) sum += (double)_capture[i] * _capture[i];
+            InputLevel = Mathf.Sqrt((float)(sum / FrameSamples));
+
             bool open = ShouldTransmit();
             IsTransmitting = open;
             if (!open)
@@ -239,6 +330,12 @@ namespace BackroomsSurvival.Net
 
             int end = VoicePacket.SealFrame(_packet, offset, written);
             if (end < 0) { _framesInPacket = 0; _packetBytes = 0; return; }
+
+            // Auto-test: decodifica ESTA trama, la recién codificada, y la manda al monitor. Se
+            // hace aquí y no sobre el datagrama entero para que lo que oyes sea exactamente lo que
+            // sale del codificador, sin que el empaquetado pueda tapar un fallo suyo.
+            if (_selfTest) MonitorFrame(payloadStart, written);
+
             _packetBytes = end;
             _framesInPacket++;
 
@@ -288,12 +385,87 @@ namespace BackroomsSurvival.Net
                 return kb != null && kb[_pushToTalkKey].isPressed;
             }
 
-            double sum = 0;
-            for (int i = 0; i < FrameSamples; i++) sum += (double)_capture[i] * _capture[i];
-            float rms = Mathf.Sqrt((float)(sum / FrameSamples));
-
-            if (rms >= _activationThreshold) _holdUntil = Time.time + _releaseSeconds;
+            // `InputLevel` ya lo calculó ProcessFrame para esta misma trama.
+            if (InputLevel >= _activationThreshold) _holdUntil = Time.time + _releaseSeconds;
             return Time.time < _holdUntil;
+        }
+
+        // ── Auto-test: el lazo local micro → códec → altavoz ──────────────────────────
+        //
+        // Deliberadamente 2D y con su propio anillo, en vez de reutilizar el `Speaker` de
+        // RemoteVoicePlayer: aquel cuelga de un proxy de peer y aquí no hay proxy que colgar.
+        // La contrapartida está escrita en el doc de SelfTest — esto NO prueba el camino del
+        // proxy ni la curva de distancia.
+
+        private void MonitorFrame(int payloadStart, int written)
+        {
+            EnsureMonitor();
+            if (_monitorSource == null) return;
+
+            int samples;
+            try
+            {
+                samples = _monitorDecoder.Decode(
+                    new ReadOnlySpan<byte>(_packet, payloadStart, written),
+                    new Span<short>(_monitorFrame), FrameSamples, false);
+            }
+            catch (OpusException e)
+            {
+                Debug.LogWarning($"[VoiceCapture] Auto-test: fallo al decodificar: {e.Message}");
+                return;
+            }
+            if (samples <= 0) return;
+
+            for (int i = 0; i < samples; i++)
+            {
+                _monitorRing[_monitorWrite] = _monitorFrame[i];
+                _monitorWrite = _monitorWrite + 1 == _monitorRing.Length ? 0 : _monitorWrite + 1;
+            }
+            if (!_monitorSource.isPlaying) _monitorSource.Play();
+        }
+
+        private void EnsureMonitor()
+        {
+            if (_monitorSource != null) return;
+
+            _monitorDecoder = OpusCodecFactory.CreateDecoder(SampleRate, 1);
+            _monitorFrame = new short[FrameSamples];
+            _monitorRing = new short[FrameSamples * 25]; // ~0,5 s
+            _monitorWrite = 0;
+            _monitorRead = 0;
+
+            var go = new GameObject("VoiceSelfTest");
+            go.transform.SetParent(transform, false);
+            _monitorSource = go.AddComponent<AudioSource>();
+            _monitorSource.spatialBlend = 0f; // 2D: es TU voz, no viene de ningún sitio del mundo
+            _monitorSource.loop = true;
+            _monitorSource.playOnAwake = false;
+            _monitorSource.clip = AudioClip.Create("VoiceSelfTest", SampleRate, 1, SampleRate,
+                true, OnMonitorRead);
+        }
+
+        /// <summary>Hilo de AUDIO. Cero asignaciones, cero API de Unity.</summary>
+        private void OnMonitorRead(float[] data)
+        {
+            int have = _monitorWrite - _monitorRead;
+            if (have < 0) have += _monitorRing.Length;
+
+            for (int i = 0; i < data.Length; i++)
+            {
+                if (have <= 0) { data[i] = 0f; continue; }
+                data[i] = _monitorRing[_monitorRead] / (float)short.MaxValue;
+                _monitorRead = _monitorRead + 1 == _monitorRing.Length ? 0 : _monitorRead + 1;
+                have--;
+            }
+        }
+
+        private void StopMonitor()
+        {
+            if (_monitorSource == null) return;
+            _monitorSource.Stop();
+            Destroy(_monitorSource.gameObject);
+            _monitorSource = null;
+            _monitorDecoder = null;
         }
 
         private void StartDevice()
@@ -346,6 +518,8 @@ namespace BackroomsSurvival.Net
         private void StopDevice()
         {
             IsTransmitting = false;
+            InputLevel = 0f;
+            StopMonitor();
             if (_clip == null) return;
             if (!string.IsNullOrEmpty(_activeDevice)) Microphone.End(_activeDevice);
             _clip = null;

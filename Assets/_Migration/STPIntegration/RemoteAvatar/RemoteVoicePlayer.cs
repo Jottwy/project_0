@@ -73,6 +73,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private const int RingFrames = 50;
 
         private IPCClient _ipc;
+        private RemotePlayerManager _manager;
         private readonly Dictionary<int, Speaker> _speakers = new Dictionary<int, Speaker>();
         private readonly HashSet<int> _muted = new HashSet<int>();
         private readonly List<int> _scratchIds = new List<int>();
@@ -122,7 +123,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             // Sin proxy no hay dónde colgar el audio. Se descarta en vez de inventar una fuente
             // en el aire: el peer está fuera del rango de streaming, o sea más lejos que la voz.
-            var mgr = FindObjectOfType<RemotePlayerManager>();
+            // Cacheado: esto se pregunta por cada peer que empieza a hablar, y `FindObjectOfType`
+            // (además de estar obsoleto en Unity 6) recorre la escena entera.
+            if (_manager == null) _manager = FindFirstObjectByType<RemotePlayerManager>();
+            var mgr = _manager;
             if (mgr == null) return null;
             if (!mgr.ActivePlayers.TryGetValue(peerId, out var view) || view?.root == null) return null;
 
