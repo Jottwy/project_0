@@ -103,6 +103,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireLightHook(instance);
                 WireFireAudioHook(instance);
                 WireDamageAudioHook(instance);
+                WireMeleeHook(instance);
+                WireStanceHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -469,6 +471,38 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var setProp = so.FindProperty("_audioSet");
             if (setProp != null)
                 setProp.objectReferenceValue = LoadOrCreateAudioSet();
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-044: adds the melee-swing hook. Bones (UpperArm.R / LowerArm.R on the MaleSurvivor rig)
+        // are resolved by name at runtime; only the arc tuning is baked. Idempotent.
+        private static void WireMeleeHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyMeleeHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyMeleeHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_magnitude", 70f);
+            SetFeederFloat(so, "_duration", 0.35f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-044: adds the aim/reload stance hook. Same shape as WireMeleeHook — bones by name at
+        // runtime, only the pose tuning baked. Nothing here declares which BIT means what: that lives
+        // once in RemoteButtons, so the builder cannot drift from the transmitter. Idempotent.
+        private static void WireStanceHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyStanceHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyStanceHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_aimArmRaise", 38f);
+            SetFeederFloat(so, "_aimForearmTuck", 22f);
+            SetFeederFloat(so, "_reloadArmDrop", 30f);
+            SetFeederFloat(so, "_reloadOffHandSwing", 45f);
+            SetFeederFloat(so, "_blendTime", 0.18f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
