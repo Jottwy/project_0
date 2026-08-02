@@ -1,0 +1,138 @@
+================================================================================
+BACKROOMS SURVIVAL MMO — AVISOS DE TERCEROS
+================================================================================
+
+Este fichero es el manifiesto de atribucion de los componentes de terceros
+vendorizados en este repositorio. Varias de sus licencias exigen que el aviso de
+copyright y el disclaimer acompanen a la DISTRIBUCION BINARIA, no solo al codigo
+fuente, asi que este fichero tiene que viajar dentro de la build del juego para
+que la obligacion quede cumplida.
+
+ESTADO: el fichero existe; su COPIA A LA BUILD todavia NO esta cableada.
+Hasta que lo este, la obligacion de atribucion sigue sin cumplirse en cualquier
+player que se distribuya.
+
+Ultima revision: 2026-08-02
+
+--------------------------------------------------------------------------------
+INVENTARIO
+--------------------------------------------------------------------------------
+
+  Componente                     Ubicacion                              Licencia
+  -----------------------------  -------------------------------------  ------------------
+  Concentus 2.2.2                Assets/Plugins/Concentus/              BSD 3-Clause
+  Facepunch.Steamworks           Assets/Plugins/Facepunch.Steamworks/   MIT (ver aviso)
+  Steamworks SDK (Valve)         AUSENTE DEL ARBOL                      ver aviso
+
+================================================================================
+1. CONCENTUS 2.2.2
+================================================================================
+
+Puerto gestionado a C# del codec de audio Opus. Se usa para la captura y
+reproduccion del chat de voz por proximidad (ADR-046).
+
+  Fichero:   Assets/Plugins/Concentus/Concentus.dll  (383 KB, .NETStandard 2.0)
+  Licencia:  Assets/Plugins/Concentus/LICENSE.txt  (vendorizada, texto completo)
+  Upstream:  https://github.com/lostromb/concentus
+  Opus:      referencia v1.5.2, https://gitlab.xiph.org/xiph/opus/-/tags/v1.5.2
+
+Texto de la licencia, reproducido literalmente:
+
+--------------------------------------------------------------------------------
+Copyright (c) by various holding parties, including (but not limited to):
+Skype Limited, Xiph.Org Foundation, CSIRO, Microsoft Corporation,
+Jean-Marc Valin, Gregory Maxwell, Mark Borgerding, Timothy B. Terriberry,
+Logan Stromberg. All rights are reserved by their respective holders.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+* Redistributions of source code must retain the above copyright notice, this
+  list of conditions and the following disclaimer.
+
+* Redistributions in binary form must reproduce the above copyright notice,
+  this list of conditions and the following disclaimer in the documentation
+  and/or other materials provided with the distribution.
+
+* Neither the name of Internet Society, IETF or IETF Trust, nor the
+   names of specific contributors, may be used to endorse or promote
+   products derived from this software without specific prior written
+   permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+This repository and its redistributable packages contain independently compiled
+versions of the Opus C reference library, which is maintained by Xiph.org and
+the Opus open-source contributors. The source code for these libraries is
+freely available at https://gitlab.xiph.org/xiph/opus/-/tags/v1.5.2, and all
+binaries are being redistributed to you under the same terms of the general
+Opus license dictated above.
+--------------------------------------------------------------------------------
+
+Nota tecnica, no legal: el ensamblado vendorizado es GESTIONADO (metadatos CLR
+verificados en el binario), o sea el puerto C# puro. NO se redistribuye ninguna
+biblioteca nativa de Opus.
+
+================================================================================
+2. FACEPUNCH.STEAMWORKS
+================================================================================
+
+Envoltorio C# de la API de Steamworks. Lo usa el spike de lobby por Steam
+(SteamLobbyManager), que hoy es una ruta OPCIONAL: si no inicializa, se apaga
+sola y el Host/Join manual no se ve afectado.
+
+  Ficheros:  Assets/Plugins/Facepunch.Steamworks/
+             Facepunch.Steamworks.{Win32,Win64,Posix}.{dll,pdb,xml}
+  Upstream:  https://github.com/Facepunch/Facepunch.Steamworks
+  Licencia:  MIT
+
+  AVISO — EL FICHERO DE LICENCIA NO ESTA VENDORIZADO. La carpeta contiene solo
+  binarios, sus PDB y su documentacion XML; no hay LICENSE ni copia del aviso
+  MIT. La atribucion de arriba procede del proyecto upstream, no de un fichero
+  presente en este arbol. La MIT exige que "the above copyright notice and this
+  permission notice shall be included in all copies or substantial portions of
+  the Software", asi que ANTES DE DISTRIBUIR hay que traerse el LICENSE del
+  repositorio upstream, vendorizarlo junto a los DLL y pegar aqui su texto
+  literal, igual que se ha hecho con Concentus.
+
+================================================================================
+3. STEAMWORKS SDK (VALVE CORPORATION) — AUSENTE
+================================================================================
+
+  NO ESTA EN EL ARBOL, y su ausencia no es un descuido de atribucion sino un
+  defecto funcional que conviene dejar escrito aqui porque se descubre mirando
+  esta misma carpeta:
+
+  Assets/Plugins/Facepunch.Steamworks/redistributable_bin/ existe, esta VACIA, y
+  su unico rastro en git es un .meta huerfano. No hay ningun steam_api*.dll en
+  todo el repositorio. Facepunch.Steamworks es un envoltorio P/Invoke sobre esa
+  biblioteca nativa, asi que sin ella la ruta de Steam NO PUEDE funcionar: falla
+  al inicializar y degrada al camino que ya esta previsto. Eso explica, sin
+  necesidad de mas diagnostico, por que el spike de Steam nunca ha pasado un
+  playtest pese a tener sus tests en verde.
+
+  El Steamworks SDK NO es software libre: se distribuye bajo el Steamworks SDK
+  Access Agreement de Valve, con sus propias condiciones de redistribucion.
+  Vendorizarlo es una decision con implicaciones legales propias y NO se ha
+  tomado aqui. Cuando se tome, este apartado se reescribe con los terminos que
+  corresponda.
+
+================================================================================
+4. PAQUETES DE UNITY Y ASSETS DE TIENDA
+================================================================================
+
+Los paquetes gestionados por el Package Manager y los assets de tienda
+(PolymindGames / Survival Template Pro, el plugin de editor de Meshy, etc.)
+traen sus propios terminos y, cuando aplica, su propio fichero de avisos —por
+ejemplo Assets/ai.meshy/Third-Party Notices.txt. Este manifiesto NO los
+reemplaza ni los resume; cubre unicamente lo vendorizado a mano bajo
+Assets/Plugins/.
