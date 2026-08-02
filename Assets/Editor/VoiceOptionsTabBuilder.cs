@@ -57,9 +57,13 @@ namespace BackroomsSurvival.EditorTools
                 if (category == null || toggle == null || dropdown == null || slider == null) return;
 
                 AddRow(audioPanel, category, "VOZ DE PROXIMIDAD", out _);
+                // Fila PROPIA para el estado en vivo. La version anterior reutilizaba la
+                // etiqueta de otra fila, y salia un "microfono apagado" donde deberia poner
+                // "Microfono": una fila no puede ser dos cosas a la vez.
+                var statusRow = AddRow(audioPanel, category, "...", out _);
 
                 AddRow(audioPanel, dropdown, "Micrófono", out var micGo);
-                var chanRow = AddRow(audioPanel, dropdown, "Canal del micrófono", out var chanGo);
+                AddRow(audioPanel, dropdown, "Canal del micrófono", out var chanGo);
                 AddRow(audioPanel, toggle, "Activar micrófono", out var micOnGo);
                 AddRow(audioPanel, toggle, "Voz abierta (en vez de pulsar)", out var openGo);
                 AddRow(audioPanel, toggle, "Puerta de ruido", out var gateGo);
@@ -81,9 +85,9 @@ namespace BackroomsSurvival.EditorTools
                 Bind(ui, "_autoGainToggle", agcGo.GetComponentInChildren<Toggle>(true));
                 Bind(ui, "_thresholdSlider", thrGo.GetComponentInChildren<Slider>(true));
 
-                // El estado en vivo va en la etiqueta de la fila del micrófono: es donde el ojo ya
-                // está mirando cuando algo no suena.
-                Bind(ui, "_statusText", LabelOf(chanRow));
+                Bind(ui, "_statusText", LabelOf(statusRow));
+
+                MakeScrollable(audioPanel);
 
                 PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
                 AssetDatabase.Refresh();
@@ -93,10 +97,104 @@ namespace BackroomsSurvival.EditorTools
             finally { PrefabUtility.UnloadPrefabContents(root); }
         }
 
+        /// <summary>
+        /// Envuelve TODAS las filas del panel —las de volumen del vendor incluidas— en un
+        /// ScrollRect. Al añadir siete filas el contenido dejó de caber y la última acababa
+        /// pisando los botones de abajo.
+        ///
+        /// El VerticalLayoutGroup se MUEVE del panel al contenido: si se quedara en el panel,
+        /// intentaría colocar el viewport como si fuera una fila más y aplastaría el scroll. Y el
+        /// contenido lleva ContentSizeFitter vertical para que su altura la dicte la suma de las
+        /// filas, que es lo que el ScrollRect necesita para tener recorrido.
+        /// </summary>
+        private static void MakeScrollable(Transform panel)
+        {
+            if (panel.Find(Mark + "Viewport") != null) return; // ya envuelto
+
+            var viewport = new GameObject(Mark + "Viewport", typeof(RectTransform)).transform;
+            viewport.SetParent(panel, false);
+            Stretch((RectTransform)viewport);
+            viewport.gameObject.AddComponent<RectMask2D>();
+
+            var content = new GameObject(Mark + "Content", typeof(RectTransform)).transform;
+            content.SetParent(viewport, false);
+            var crt = (RectTransform)content;
+            crt.anchorMin = new Vector2(0f, 1f);
+            crt.anchorMax = new Vector2(1f, 1f);
+            crt.pivot = new Vector2(0.5f, 1f);
+            crt.offsetMin = Vector2.zero;
+            crt.offsetMax = Vector2.zero;
+
+            foreach (var row in panel.Cast<Transform>().ToList())
+            {
+                if (row == viewport) continue;
+                row.SetParent(content, false);
+            }
+
+            var layout = panel.GetComponent<VerticalLayoutGroup>();
+            if (layout != null)
+            {
+                var moved = content.gameObject.AddComponent<VerticalLayoutGroup>();
+                moved.padding = layout.padding;
+                moved.spacing = layout.spacing;
+                moved.childAlignment = layout.childAlignment;
+                moved.childForceExpandWidth = layout.childForceExpandWidth;
+                moved.childForceExpandHeight = layout.childForceExpandHeight;
+                moved.childControlWidth = layout.childControlWidth;
+                moved.childControlHeight = layout.childControlHeight;
+                Object.DestroyImmediate(layout, true);
+            }
+
+            var fitter = content.gameObject.AddComponent<ContentSizeFitter>();
+            fitter.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            var scroll = panel.gameObject.AddComponent<ScrollRect>();
+            scroll.horizontal = false;
+            scroll.vertical = true;
+            scroll.movementType = ScrollRect.MovementType.Clamped;
+            scroll.scrollSensitivity = 28f;
+            scroll.viewport = (RectTransform)viewport;
+            scroll.content = crt;
+        }
+
+        private static void Stretch(RectTransform rt)
+        {
+            rt.anchorMin = Vector2.zero;
+            rt.anchorMax = Vector2.one;
+            rt.offsetMin = Vector2.zero;
+            rt.offsetMax = Vector2.zero;
+        }
+
         /// <summary>Retira lo de pasadas anteriores: las filas marcadas y, además, el panel y la
         /// pestaña que creaba la primera versión de este script y que nunca llegaron a verse.</summary>
         private static void CleanUp(Transform root, Transform audioPanel)
         {
+            // DESENVOLVER PRIMERO. El viewport se llama "Voice_..." igual que las filas nuevas, y
+            // borrarlo sin sacar antes su contenido se llevaria por delante los cinco sliders de
+            // volumen DEL VENDOR, que desde la pasada anterior viven dentro.
+            var content = audioPanel.Find(Mark + "Viewport/" + Mark + "Content");
+            if (content != null)
+            {
+                foreach (var row in content.Cast<Transform>().ToList())
+                    row.SetParent(audioPanel, false);
+
+                var moved = content.GetComponent<VerticalLayoutGroup>();
+                if (moved != null && audioPanel.GetComponent<VerticalLayoutGroup>() == null)
+                {
+                    var back = audioPanel.gameObject.AddComponent<VerticalLayoutGroup>();
+                    back.padding = moved.padding;
+                    back.spacing = moved.spacing;
+                    back.childAlignment = moved.childAlignment;
+                    back.childForceExpandWidth = moved.childForceExpandWidth;
+                    back.childForceExpandHeight = moved.childForceExpandHeight;
+                    back.childControlWidth = moved.childControlWidth;
+                    back.childControlHeight = moved.childControlHeight;
+                }
+            }
+
+            var oldScroll = audioPanel.GetComponent<ScrollRect>();
+            if (oldScroll != null) Object.DestroyImmediate(oldScroll, true);
+
             foreach (var t in audioPanel.Cast<Transform>().ToList())
                 if (t.name.StartsWith(Mark)) Object.DestroyImmediate(t.gameObject);
 

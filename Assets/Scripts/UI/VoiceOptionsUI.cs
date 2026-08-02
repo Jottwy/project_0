@@ -102,14 +102,14 @@ namespace BackroomsSurvival.UI
             if (_statusText != null)
             {
                 _statusText.text = vc == null
-                    ? "voz no disponible en esta escena"
+                    ? "Voz no disponible en esta escena"
                     : !vc.MicEnabled
-                        ? "micrófono apagado"
+                        ? "Micrófono apagado"
                         : string.IsNullOrEmpty(vc.ActiveDevice)
-                            ? "encendido pero SIN captura — mira la consola"
+                            ? "Encendido pero SIN captura — mira la consola"
                             : vc.IsTransmitting
                                 ? $"TRANSMITIENDO — nivel {vc.InputLevel:F3}"
-                                : $"escuchando — nivel {vc.InputLevel:F3}";
+                                : $"Escuchando — nivel {vc.InputLevel:F3}";
             }
 
             if (vc == null) return;
@@ -154,13 +154,7 @@ namespace BackroomsSurvival.UI
             _devices.AddRange(VoiceCapture.Devices);
 
             var labels = new List<string> { "Automático" };
-            for (int i = 1; i < _devices.Count; i++)
-            {
-                int rate = VoiceCapture.PickCaptureRate(_devices[i]);
-                labels.Add(rate == VoiceCapture.SampleRate
-                    ? _devices[i]
-                    : $"{_devices[i]} ({rate / 1000} kHz)");
-            }
+            for (int i = 1; i < _devices.Count; i++) labels.Add(ShortName(_devices[i]));
 
             _deviceDropdown.ClearOptions();
             _deviceDropdown.AddOptions(labels);
@@ -175,6 +169,22 @@ namespace BackroomsSurvival.UI
             }
             _deviceDropdown.SetValueWithoutNotify(idx);
             _deviceDropdown.RefreshShownValue();
+        }
+
+        /// <summary>
+        /// Windows nombra los micrófonos repitiendo el aparato dentro de un paréntesis
+        /// ("OBSBOT Tiny2 Microphone (5- OBSBOT Tiny2 Audio)"). La fila del vendor tiene UNA línea
+        /// útil, así que ese nombre completo se monta encima del siguiente y el desplegable se
+        /// vuelve ilegible. Se corta el paréntesis, que es justo la parte redundante, y se acota
+        /// la longitud. El nombre COMPLETO se sigue usando para abrir el dispositivo: lo que se
+        /// recorta es solo lo que se pinta.
+        /// </summary>
+        private static string ShortName(string device)
+        {
+            if (string.IsNullOrEmpty(device)) return device;
+            int paren = device.IndexOf('(');
+            string s = paren > 0 ? device.Substring(0, paren).Trim() : device.Trim();
+            return s.Length <= 34 ? s : s.Substring(0, 33) + "…";
         }
 
         private void RefreshChannels()
