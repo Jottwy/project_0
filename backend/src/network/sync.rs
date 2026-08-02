@@ -170,6 +170,19 @@ pub async fn broadcast_peer_roster(net: &NetworkManager, player: &Player) {
     net.broadcast_unreliable(&payload).await;
 }
 
+/// ADR-043 — peers a relayed pose may legitimately be ADDRESSED to: every real peer, never a
+/// phantom. Split out of `broadcast_peer_poses` so the invariant is testable without a socket:
+/// the alternative (asserting on datagrams) would need a live UDP endpoint per phantom, which is
+/// exactly the thing that does not exist — a phantom's `addr` is the inert `127.0.0.1:1` stamped
+/// at injection (`NetworkManager::spawn_phantom`).
+pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
+    net.peers
+        .keys()
+        .copied()
+        .filter(|id| !net.is_phantom(*id))
+        .collect()
+}
+
 /// ADR-015: host-as-server relay of per-peer POSE (rotation + animation included).
 /// The roster relay (`broadcast_peer_roster` / `PeerList`) carries only POSITION, so a
 /// joiner — which only connects to the host — never learns the rotation or animation of
@@ -185,7 +198,18 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
     }
     // Snapshot ids + poses up front so we don't hold a borrow of net.peers across the
     // awaits below (and so a peer is never echoed its own pose).
-    let peer_ids: Vec<PeerId> = net.peers.keys().copied().collect();
+    //
+    // ADR-043: DESTINATIONS exclude phantoms; SOURCES do not. A phantom is a sender, never a
+    // receiver — its `addr` is the inert `127.0.0.1:1` stamped at injection, so every datagram
+    // aimed at one was a real syscall to a dead loopback port (and on Windows, an ICMP
+    // port-unreachable that comes back as WSAECONNRESET on the socket). With a populated world
+    // that was the dominant cost of the relay: at P total peers of which N are phantoms, the
+    // wasted fraction is N×(P−1) datagrams per call at 10 Hz. Same packets, same senders, fewer
+    // destinations — no real peer can observe the difference.
+    let dest_ids = relay_destinations(net);
+    if dest_ids.is_empty() {
+        return; // only phantoms present: nobody to inform
+    }
     let poses: Vec<(PeerId, PacketPayload)> = net
         .peers
         .values()
@@ -211,7 +235,7 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
         .collect();
 
     for (src_id, payload) in &poses {
-        for &dest_id in &peer_ids {
+        for &dest_id in &dest_ids {
             if dest_id == *src_id {
                 continue; // never echo a peer its own pose
             }
@@ -220,15 +244,18 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
     }
 
     // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
-    // the relay's datagram rate so the host log can be measured in play-test. Datagrams
-    // per call = P×(P−1); per second ≈ ×10 (NET_BROADCAST_EVERY = 10 Hz).
+    // the relay's datagram rate so the host log can be measured in play-test. Since ADR-043
+    // the cost is P×D (minus the self-echoes), where P counts every pose relayed and D only
+    // the REAL destinations — both are logged because their ratio is the phantom overhead.
     if net.session_start.elapsed().as_millis() % 1000 < 120 {
-        let p = peer_ids.len();
-        let per_call = p * p.saturating_sub(1);
+        let p = poses.len();
+        let d = dest_ids.len();
+        let per_call = p * d - d.min(p); // each real destination skips its own pose
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} relay_datagrams_per_call={} approx_per_sec={}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={}",
             net.local_id,
             p,
+            d,
             per_call,
             per_call * 10
         );

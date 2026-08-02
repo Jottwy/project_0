@@ -2337,4 +2337,34 @@ mod tests {
             "phantom must be skipped by reliable broadcast"
         );
     }
+
+    #[tokio::test]
+    async fn pose_relay_addresses_real_peers_only_but_still_relays_phantom_poses() {
+        // ADR-043 — the UNRELIABLE relay used to send to phantoms too (unlike the reliable one
+        // above), and a phantom's addr is the inert 127.0.0.1:1, so every such datagram was a
+        // syscall into a dead loopback port. Both halves are asserted, because dropping phantoms
+        // as SOURCES too would be the easy over-correction and would make them invisible.
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let real_id = 2;
+        let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+        host.peers
+            .insert(real_id, PeerConnection::new(real_id, "Real".into(), addr));
+        let ghost_a = host.spawn_phantom("Robapieles_A", [0.0, 1.8, 0.0]);
+        let ghost_b = host.spawn_phantom("Robapieles_B", [40.0, 1.8, 40.0]);
+
+        let dests = super::sync::relay_destinations(&host);
+
+        assert_eq!(
+            dests,
+            vec![real_id],
+            "only real peers may be addressed, got {dests:?}"
+        );
+        // …and the counterpart: the phantoms are still in `peers`, so the relay's SOURCE loop
+        // still emits their poses to that real peer. Without this the creature stops existing
+        // for every joiner.
+        assert!(
+            host.peers.contains_key(&ghost_a) && host.peers.contains_key(&ghost_b),
+            "phantoms must remain relay SOURCES"
+        );
+    }
 }
