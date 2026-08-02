@@ -167,6 +167,8 @@ namespace BackroomsSurvival.Net
                 view.revealed = rp.revealed; // ADR-038
                 view.lightOn = rp.lightOn; // ADR-042
                 view.fireSeq = rp.fireSeq; // ADR-042
+                view.buttons = rp.buttons; // ADR-044
+                view.meleeSeq = rp.meleeSeq; // ADR-044
                 // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
                 // is the visible body); it reappears at the respawn position on dead→false.
                 // Change-detected so SetActive only fires on the edge.
@@ -288,6 +290,8 @@ namespace BackroomsSurvival.Net
             view.revealed = false; // ADR-038: no stale real form on a recycled proxy (hook restores its materials)
             view.lightOn = false; // ADR-042: no stale torch glow on a recycled proxy
             view.fireSeq = 0; // ADR-042: no stale shot counter (hook re-arms its sentinel)
+            view.buttons = 0; // ADR-044: a recycled proxy is neither aiming nor reloading
+            view.meleeSeq = 0; // ADR-044: no stale swing counter (hook re-arms its sentinel)
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -322,6 +326,8 @@ namespace BackroomsSurvival.Net
             view.revealed = false; // ADR-038
             view.lightOn = false; // ADR-042
             view.fireSeq = 0; // ADR-042
+            view.buttons = 0; // ADR-044
+            view.meleeSeq = 0; // ADR-044
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -599,6 +605,10 @@ namespace BackroomsSurvival.Net
         public bool lightOn;
         // ADR-042: cosmetic shot counter (read by ProxyFireAudioHook); 0 = never fired.
         public int fireSeq;
+        // ADR-044: cosmetic sustained-state bits (read by ProxyStanceHook) — see RemoteButtons.
+        public int buttons;
+        // ADR-044: cosmetic melee-swing counter (read by ProxyMeleeHook); 0 = never swung.
+        public int meleeSeq;
         public float lastSeenTime;
     }
 

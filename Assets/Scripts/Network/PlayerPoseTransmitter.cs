@@ -2,6 +2,7 @@ using BackroomsSurvival.Gameplay.GridWorld;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using PolymindGames.MovementSystem;
+using PolymindGames.WieldableSystem;
 using UnityEngine;
 
 namespace BackroomsSurvival.Net
@@ -59,6 +60,14 @@ namespace BackroomsSurvival.Net
         private IWieldablesControllerCC _wieldablesController;
         private Object _lightsCachedFor;
         private Light[] _wieldableLights = System.Array.Empty<Light>();
+        // ADR-044: melee swings are SAMPLED, not subscribed — the only place in this family where
+        // that is true, and it is forced: MeleeWeapon exposes no swing event (its public surface is
+        // IsUsing, UseBlocker and Use), unlike IFirearmTrigger.Shoot. Adding one would mean editing
+        // vendor code, which is forbidden. Sampling the rising edge at 30 Hz is correct by MARGIN,
+        // not by luck: an attack cycle lasts on the order of half a second, more than an order of
+        // magnitude above the 33 ms sampling period.
+        private bool _wasSwinging;
+        private byte _meleeSeq;
         private float _sendAccum;
         private uint _inputSeq;
         private uint _clientTick;
@@ -141,6 +150,9 @@ namespace BackroomsSurvival.Net
                 _wieldablesController = null;
                 _lightsCachedFor = null;
                 _wieldableLights = System.Array.Empty<Light>();
+                // ADR-044: the wieldable instance died with the rig. Clear the swing edge so the
+                // first sample against the fresh weapon cannot be read as a swing that never happened.
+                _wasSwinging = false;
                 return;
             }
 
@@ -209,6 +221,11 @@ namespace BackroomsSurvival.Net
             bool lightOn = ReadLightOn();
             byte fireSeq = NoiseReporter.ShotCounter;
 
+            // ADR-044: sustained states as a bitfield (aiming/reloading) + the sampled melee edge.
+            // Reads only — STP owns the local effect (rule #3).
+            int buttons = ReadButtons();
+            SampleMeleeSwing();
+
             // ADR-026 (enmienda 2026-07-06, Opción C): the wire's Y convention is
             // "feet + PlayerBaseY" — the same one the backend's spawn/floor-fallback and the
             // phantom natively emit, and the one RemotePlayerManager un-does on the receiving
@@ -221,7 +238,8 @@ namespace BackroomsSurvival.Net
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
-                ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw, 0, crouch, _equipment, heldItem, _hitSeq, lightOn, fireSeq);
+                ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw,
+                    (ushort)buttons, crouch, _equipment, heldItem, _hitSeq, lightOn, fireSeq, _meleeSeq);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = wirePos;
@@ -365,6 +383,68 @@ namespace BackroomsSurvival.Net
                     return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// ADR-044: the peer's SUSTAINED cosmetic states, packed into the (until now dead) `buttons`
+        /// field. Both are plain property reads off the active wieldable — <c>IsAiming</c> on the
+        /// firearm's aim handler and <c>IsReloading</c> on the firearm itself — so nothing is
+        /// subscribed and nothing can go stale across a weapon swap or a rig rebuild.
+        ///
+        /// Non-firearms report neither, which is correct rather than a gap: a torch has no sights
+        /// and no magazine, so the honest answer for both bits is false.
+        /// </summary>
+        private int ReadButtons()
+        {
+            var wieldable = ActiveWieldable();
+            if (wieldable is not IFirearm firearm)
+                return 0;
+
+            int bits = 0;
+            var aim = firearm.AimHandler;
+            if (aim != null && aim.IsAiming)
+                bits |= RemoteButtons.Aiming;
+            // Via the magazine, not the concrete Firearm: `IsReloading` lives on
+            // IFirearmReloadableMagazine, and going through the interface keeps this working for any
+            // IFirearm implementation, not just the vendor's concrete class.
+            var magazine = firearm.ReloadableMagazine;
+            if (magazine != null && magazine.IsReloading)
+                bits |= RemoteButtons.Reloading;
+            return bits;
+        }
+
+        /// <summary>
+        /// ADR-044: bumps the melee counter on the RISING edge of <c>MeleeWeapon.IsUsing</c>. The one
+        /// sampled signal in the family — see the field comment for why an event is not available.
+        /// The edge is cleared whenever the wieldable is not a melee weapon, so holstering mid-swing
+        /// and re-equipping cannot manufacture a phantom second swing.
+        /// </summary>
+        private void SampleMeleeSwing()
+        {
+            var melee = ActiveWieldable() as MeleeWeapon;
+            bool swinging = melee != null && melee.IsUsing;
+
+            if (swinging && !_wasSwinging)
+                unchecked { _meleeSeq++; }
+
+            _wasSwinging = swinging;
+        }
+
+        /// <summary>The live active wieldable, or null. Shares the controller cache with
+        /// <see cref="ReadLightOn"/> and applies the same destroyed-instance guard: a destroyed
+        /// wieldable still hands back a non-null interface reference, and C# `?.` does not see
+        /// Unity's fake-null.</summary>
+        private IWieldable ActiveWieldable()
+        {
+            if (_wieldablesController == null && _character != null)
+                _wieldablesController = _character.GetCC<IWieldablesControllerCC>();
+            if (_wieldablesController == null)
+                return null;
+
+            var wieldable = _wieldablesController.ActiveWieldable;
+            if (wieldable is Object uo && uo == null)
+                return null;
+            return wieldable;
         }
 
         /// <summary>

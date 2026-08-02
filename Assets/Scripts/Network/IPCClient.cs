@@ -421,7 +421,7 @@ namespace BackroomsSurvival.Net
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
             int[] equipment = null, int heldItem = 0, byte hitSeq = 0, bool lightOn = false,
-            byte fireSeq = 0)
+            byte fireSeq = 0, byte meleeSeq = 0)
         {
             // Hardening (postmortem of the `crouch` off-by-one, ADR-020): the map header
             // count and the number of pairs written below are kept in sync by hand. We can't
@@ -431,7 +431,7 @@ namespace BackroomsSurvival.Net
             // field drifts them apart (rmp_serde would silently drop the tail, as `crouch`
             // did). Debug.Assert is [Conditional("UNITY_ASSERTIONS")] → stripped from release
             // players; the message is a const literal (zero alloc on the pose hot path).
-            const int FieldCount = 18;
+            const int FieldCount = 19;
             int fields = 0;
 
             var w = RentWriter();
@@ -455,6 +455,7 @@ namespace BackroomsSurvival.Net
             w.WriteString("move_state"); w.WriteInt(moveState); fields++;
             w.WriteString("look"); w.WriteArrayHeader(2);
             w.WriteFloat(pitch); w.WriteFloat(yaw); fields++;
+            // ADR-044: no longer the dead literal 0 it was until now — bit 0 = aiming, bit 1 = reloading.
             w.WriteString("buttons"); w.WriteInt(buttons); fields++;
             // ADR-020: cosmetic crouch state, relayed to peers (not authoritative).
             w.WriteString("crouch"); w.WriteBool(crouch); fields++;
@@ -471,6 +472,8 @@ namespace BackroomsSurvival.Net
             w.WriteString("light_on"); w.WriteBool(lightOn); fields++;
             // ADR-042: shot counter (monotonic, wrapping; 0 = never fired), relayed to peers.
             w.WriteString("fire_seq"); w.WriteInt(fireSeq); fields++;
+            // ADR-044: melee-swing counter (monotonic, wrapping; 0 = never swung), relayed to peers.
+            w.WriteString("melee_seq"); w.WriteInt(meleeSeq); fields++;
 
             Debug.Assert(fields == FieldCount,
                 "SendPlayerInput: field count drifted from the map header — a pair was added/removed without updating WriteMapHeader (rmp_serde would drop the tail).");

@@ -292,6 +292,10 @@ namespace BackroomsSurvival.Net
         // ADR-042: cosmetic shot counter (monotonic, wrapping; 0 = never fired). The proxy hook
         // plays the gunshot on a DELTA, so a burst that outruns the 10 Hz relay still lands.
         public int fireSeq;
+        // ADR-044: cosmetic sustained-state bits — bit 0 = aiming, bit 1 = reloading.
+        public int buttons;
+        // ADR-044: cosmetic melee-swing counter (monotonic, wrapping; 0 = never swung).
+        public int meleeSeq;
 
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
@@ -314,6 +318,8 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "revealed")) r.revealed = reader.ReadBool();
                 else if (MsgPackReader.Is(k, "light_on")) r.lightOn = reader.ReadBool();
                 else if (MsgPackReader.Is(k, "fire_seq")) r.fireSeq = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "buttons")) r.buttons = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "melee_seq")) r.meleeSeq = (int)reader.ReadInt();
                 else reader.Skip();
             }
             return r;

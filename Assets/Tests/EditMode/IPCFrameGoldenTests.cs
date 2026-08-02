@@ -15,7 +15,7 @@ namespace BackroomsSurvival.Tests
     ///      de entrada, el de acción con `data` map, el de acción con `data` NIL (byte distinto,
     ///      0xc0 vs 0x80 — la distinción que documenta SendActionFrame), request_chunk, ui_event,
     ///      y los payloads anidados más anchos (report_death_loot, pvp_hit_candidate,
-    ///      set_stp_items). Incluye `player_input` con sus 18 campos, que es el único frame que
+    ///      set_stp_items). Incluye `player_input` con sus 19 campos, que es el único frame que
     ///      **cruza la frontera fixmap→map16** (0x80|n solo llega a n=15) — exactamente el borde
     ///      que el comentario de SendPlayerInput señala como fuente del bug de `crouch`.
     ///  (b) RAMAS DE CODIFICACIÓN — cada rama de WriteInt/WriteFloat/WriteString/WriteMapHeader/
@@ -96,22 +96,27 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// El frame de pose a 30 Hz. 18 campos ⇒ cabecera map16 (`de 0012`), NO fixmap: es el
+        /// El frame de pose a 30 Hz. 19 campos ⇒ cabecera map16 (`de 0013`), NO fixmap: es el
         /// único frame del cliente que cruza esa frontera, y desalinear ahí es exactamente el
         /// modo de fallo del bug histórico de `crouch` (rmp_serde descarta la cola en silencio).
         ///
-        /// GOLDEN REGENERADO en ADR-042 (16 → 18 campos, `light_on` + `fire_seq`). STATE.md exige
-        /// que romper un golden sea DELIBERADO Y DOCUMENTADO: lo está, en el propio ADR-042
-        /// ("Consecuencias"). El valor nuevo se acuñó con un arnés headless contra el `MsgPack.cs`
-        /// REAL del repo, y ese arnés reprodujo primero el golden viejo (len 238,
-        /// hash 0x66588337895127b0) byte a byte antes de emitir el nuevo — sin esa comprobación
-        /// previa, una constante nueva sólo dice que el writer coincide consigo mismo.
+        /// GOLDEN REGENERADO dos veces: ADR-042 (16 → 18, `light_on` + `fire_seq`) y ADR-044
+        /// (18 → 19, `melee_seq`). STATE.md exige que romper un golden sea DELIBERADO Y DOCUMENTADO:
+        /// lo está, en las "Consecuencias" de ambos ADRs. Cada valor se acuñó con un arnés headless
+        /// contra el `MsgPack.cs` REAL del repo, y el arnés reprodujo primero los goldens ANTERIORES
+        /// byte a byte (len 238 / 0x66588337895127b0 y len 258 / 0x30f307f1c05701f0) antes de emitir
+        /// el nuevo — sin esa comprobación previa, una constante nueva sólo dice que el writer
+        /// coincide consigo mismo.
+        ///
+        /// OJO con `buttons`: ADR-044 le da significado (bits de apuntar/recargar) pero aquí se deja
+        /// en 0 A PROPÓSITO, para que el único delta contra el golden de ADR-042 sea el campo nuevo.
+        /// Su fidelidad de valor la fija el round-trip de abajo, que es donde corresponde.
         /// </summary>
         [Test]
         public void PlayerInputFrameBytesAreStableAndUseMap16Header()
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(18);
+            w.WriteMapHeader(19);
             w.WriteString("type"); w.WriteString("input");
             w.WriteString("movement"); w.WriteArrayHeader(3);
             w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
@@ -136,13 +141,14 @@ namespace BackroomsSurvival.Tests
             w.WriteString("hit_seq"); w.WriteInt(3);
             w.WriteString("light_on"); w.WriteBool(true); // ADR-042
             w.WriteString("fire_seq"); w.WriteInt(5);     // ADR-042
+            w.WriteString("melee_seq"); w.WriteInt(6);    // ADR-044
 
             byte[] bytes = w.ToArray();
-            Assert.AreEqual(0xde, bytes[0], "18 campos deben emitir cabecera map16 (0xde), no fixmap");
+            Assert.AreEqual(0xde, bytes[0], "19 campos deben emitir cabecera map16 (0xde), no fixmap");
             Assert.AreEqual(0x00, bytes[1]);
-            Assert.AreEqual(0x12, bytes[2], "el conteo del map16 debe ser 18");
+            Assert.AreEqual(0x13, bytes[2], "el conteo del map16 debe ser 19");
 
-            AssertGoldenHash("player_input", w, 258, 0x30f307f1c05701f0UL);
+            AssertGoldenHash("player_input", w, 269, 0xff1bd09a3c966ee6UL);
         }
 
         [Test]
@@ -439,16 +445,19 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// El frame de pose completo sobrevive el round-trip con los 18 campos intactos — la
+        /// El frame de pose completo sobrevive el round-trip con los 19 campos intactos — la
         /// regresión que el bug de `crouch` (cola descartada en silencio) habría disparado.
-        /// `fire_seq` es AHORA el último par del mapa, así que es el que un desalineado de
-        /// cabecera perdería primero: el centinela vive donde más duele (ADR-042).
+        /// `melee_seq` es AHORA el último par del mapa, así que es el que un desalineado de
+        /// cabecera perdería primero: el centinela vive donde más duele (ADR-044).
+        ///
+        /// Aquí `buttons` SÍ va con valor (0b11, los dos bits de ADR-044 a la vez): un bitfield mal
+        /// serializado suele sobrevivir con un solo bit puesto y fallar en cuanto hay dos.
         /// </summary>
         [Test]
-        public void FrozenPlayerInputFrameRoundTripsAllEighteenFields()
+        public void FrozenPlayerInputFrameRoundTripsAllNineteenFields()
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(18);
+            w.WriteMapHeader(19);
             w.WriteString("type"); w.WriteString("input");
             w.WriteString("movement"); w.WriteArrayHeader(3);
             w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
@@ -465,7 +474,7 @@ namespace BackroomsSurvival.Tests
             w.WriteString("move_state"); w.WriteInt(1);
             w.WriteString("look"); w.WriteArrayHeader(2);
             w.WriteFloat(-12.5f); w.WriteFloat(90f);
-            w.WriteString("buttons"); w.WriteInt(0);
+            w.WriteString("buttons"); w.WriteInt(3); // ADR-044: los dos bits a la vez
             w.WriteString("crouch"); w.WriteBool(true);
             w.WriteString("equipment"); w.WriteArrayHeader(4);
             w.WriteInt(11); w.WriteInt(-22); w.WriteInt(333); w.WriteInt(0);
@@ -473,10 +482,11 @@ namespace BackroomsSurvival.Tests
             w.WriteString("hit_seq"); w.WriteInt(3);
             w.WriteString("light_on"); w.WriteBool(true); // ADR-042
             w.WriteString("fire_seq"); w.WriteInt(5);     // ADR-042
+            w.WriteString("melee_seq"); w.WriteInt(6);    // ADR-044
 
             var decoded = new MsgPackReader(w.ToArray()).ReadValue() as Dictionary<string, object>;
             Assert.IsNotNull(decoded);
-            Assert.AreEqual(18, decoded.Count, "los 18 pares deben sobrevivir (ninguna cola descartada)");
+            Assert.AreEqual(19, decoded.Count, "los 19 pares deben sobrevivir (ninguna cola descartada)");
             Assert.AreEqual("input", IPCParse.S(decoded, "type"));
             Assert.AreEqual(1234, IPCParse.L(decoded, "input_seq"));
             Assert.AreEqual(5678, IPCParse.L(decoded, "client_tick"));
@@ -485,8 +495,11 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(77, IPCParse.L(decoded, "held_item"));
             Assert.AreEqual(3, IPCParse.L(decoded, "hit_seq"));
             Assert.IsTrue(IPCParse.B(decoded, "light_on"), "ADR-042: light_on debe sobrevivir");
-            Assert.AreEqual(5, IPCParse.L(decoded, "fire_seq"),
-                "ADR-042: fire_seq es el ÚLTIMO par — es el primero que se pierde si la cabecera desalinea");
+            Assert.AreEqual(5, IPCParse.L(decoded, "fire_seq"), "ADR-042: fire_seq debe sobrevivir");
+            Assert.AreEqual(3, IPCParse.L(decoded, "buttons"),
+                "ADR-044: los DOS bits (apuntar + recargar) deben sobrevivir juntos");
+            Assert.AreEqual(6, IPCParse.L(decoded, "melee_seq"),
+                "ADR-044: melee_seq es el ÚLTIMO par — el primero que se pierde si la cabecera desalinea");
             Assert.AreEqual(new UnityEngine.Vector3(10.5f, 1.8f, -3.25f), IPCParse.Vec3(IPCParse.Get(decoded, "position")));
 
             var equipment = IPCParse.IntArray(IPCParse.Get(decoded, "equipment"));
