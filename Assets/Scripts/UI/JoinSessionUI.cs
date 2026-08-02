@@ -34,6 +34,7 @@ namespace BackroomsSurvival.UI
         private InputField _nameField;
         private Button _hostButton;
         private Button _joinButton;
+        private Button _steamInviteButton;
         private Button _disconnectButton;
         private Text _titleText;
         private Text _statusText;
@@ -160,6 +161,10 @@ namespace BackroomsSurvival.UI
                     (init.StatusMessage.StartsWith("Error") || init.StatusMessage.StartsWith("Timeout") ||
                      init.StatusMessage.StartsWith("Backend exited")))
                 {
+                    // El arranque falló DESPUÉS de haber publicado el lobby: dejarlo abierto
+                    // anunciaría un ip:puerto muerto a quien acepte el invite. No-op si no
+                    // hay Steam o no hay lobby, así que el flujo manual no lo nota.
+                    SteamLobbyManager.Instance?.LeaveLobby();
                     SetState(PanelState.Disconnected, init.StatusMessage);
                     ShowMenu(init.StatusMessage);
                     SetUiInteractable(true);
@@ -238,10 +243,102 @@ namespace BackroomsSurvival.UI
             ApplySelectedLocalConfigToUi(init, updateServerPort: false);
         }
 
+        /// <summary>
+        /// Botón "Invite via Steam". Si aún no se es host, arranca el host por el MISMO
+        /// camino que <see cref="OnHostClicked"/> (StartAsHost) y solo después publica el
+        /// lobby: el puerto que se publica tiene que ser el ya seleccionado. Si ya se es
+        /// host, se limita a crear/refrescar el lobby y abrir el overlay.
+        /// El botón Host clásico no se toca ni se desvía.
+        /// </summary>
+        private void OnSteamInviteClicked()
+        {
+            var steam = SteamLobbyManager.Instance;
+            if (steam == null || !SteamLobbyManager.IsAvailable)
+            {
+                Debug.LogWarning("[JoinSessionUI] Steam invite ignored: Steam unavailable.");
+                SetState(PanelState.ManualEditing, "Steam unavailable");
+                return;
+            }
+
+            CancelAutoHostBecauseUserInteracted();
+            var init = EnsureInitializer();
+
+            if (init.CurrentRole == NetworkInitializer.Role.Joiner)
+            {
+                Debug.LogWarning("[JoinSessionUI] Steam invite ignored: this instance is a joiner.");
+                SetState(PanelState.ManualEditing, "Only the host can invite");
+                return;
+            }
+
+            string ip = (_ipField == null || string.IsNullOrWhiteSpace(_ipField.text)) ? "127.0.0.1" : _ipField.text;
+
+            if (init.CurrentRole != NetworkInitializer.Role.Host)
+            {
+                Debug.Log("[JoinSessionUI] Steam invite: no host yet, starting one first");
+                Debug.Log("[JoinSessionUI] role efectivo=host (steam invite)");
+                string playerName = SteamLobbyManager.SanitizePlayerName(SteamLobbyManager.SteamPersonaName);
+                int hostListenPort = ParseHostPortFromUi(7778);
+                SetState(PanelState.StartingHost, "Starting host + Steam lobby...");
+                ShowMenu("Starting host + Steam lobby...");
+                SetUiInteractable(false);
+                init.StartAsHost(playerName, hostListenPort);
+                ApplySelectedLocalConfigToUi(init, updateServerPort: true);
+            }
+
+            // LastSelectedNetPort es el puerto UDP realmente elegido por SelectLaunchConfig,
+            // que puede diferir del tecleado si estaba ocupado. Publicar el tecleado dejaría
+            // el lobby apuntando a un puerto muerto.
+            int connectPort = init.LastSelectedNetPort > 0 ? init.LastSelectedNetPort : ParseHostPortFromUi(7778);
+            Debug.Log($"[JoinSessionUI] Steam lobby publish {ip}:{connectPort}");
+            steam.CreateLobbyAndOpenInvite(ip, connectPort);
+        }
+
+        /// <summary>
+        /// Entrada del auto-join de Steam. Devuelve false si no hay panel vivo, para que
+        /// <see cref="SteamLobbyManager"/> caiga en StartAsJoiner directo — el destino es
+        /// el mismo método en ambos casos, nunca un segundo camino de conexión.
+        /// </summary>
+        public static bool TryBeginSteamJoin(string ip, int port, string playerName)
+        {
+            if (_instance == null) return false;
+            _instance.BeginSteamJoin(ip, port, playerName);
+            return true;
+        }
+
+        private void BeginSteamJoin(string ip, int port, string playerName)
+        {
+            CancelAutoHostBecauseUserInteracted();
+            var init = EnsureInitializer();
+
+            if (init.CurrentRole != NetworkInitializer.Role.None)
+            {
+                Debug.LogWarning($"[JoinSessionUI] Steam join ignored: {init.CurrentRole} session already active.");
+                return;
+            }
+
+            // Reflejar en los campos lo que llegó por el lobby: el humano ve de dónde
+            // salieron los valores, y un Disconnect + Join manual reintenta lo mismo.
+            if (_ipField != null) _ipField.SetTextWithoutNotify(ip);
+            if (_portField != null) _portField.SetTextWithoutNotify(port.ToString());
+            if (_nameField != null) _nameField.SetTextWithoutNotify(playerName);
+
+            Debug.Log("[JoinSessionUI] role efectivo=joiner (steam)");
+            Debug.Log($"[JoinSessionUI] CONNECT_TO={ip}:{port}");
+
+            SetState(PanelState.Joining, "Joining via Steam...");
+            ShowMenu("Joining via Steam...");
+            SetUiInteractable(false);
+            init.StartAsJoiner(ip, port, playerName);
+            ApplySelectedLocalConfigToUi(init, updateServerPort: false);
+        }
+
         private void OnDisconnectClicked()
         {
             var init = NetworkInitializer.Instance;
             if (init != null) init.Shutdown();
+            // El lobby publica un ip:puerto que acaba de morir; dejarlo abierto invitaría
+            // a un backend inexistente.
+            SteamLobbyManager.Instance?.LeaveLobby();
             SetState(PanelState.Disconnected, "Disconnected");
             ShowMenu("Disconnected");
             SetUiInteractable(true);
@@ -459,6 +556,7 @@ namespace BackroomsSurvival.UI
 
             if (_hostButton != null) _hostButton.interactable = value;
             if (_joinButton != null) _joinButton.interactable = value;
+            if (_steamInviteButton != null) _steamInviteButton.interactable = value;
             if (_disconnectButton != null) _disconnectButton.interactable = value;
             if (_ipField != null) _ipField.interactable = value;
             if (_portField != null) _portField.interactable = value;
@@ -500,6 +598,9 @@ namespace BackroomsSurvival.UI
             if (_nameField != null) _nameField.gameObject.SetActive(visible);
             if (_hostButton != null) _hostButton.gameObject.SetActive(visible);
             if (_joinButton != null) _joinButton.gameObject.SetActive(visible);
+            // Sin Steam el botón nunca reaparece, aunque el resto de controles vuelvan.
+            if (_steamInviteButton != null)
+                _steamInviteButton.gameObject.SetActive(visible && SteamLobbyManager.IsAvailable);
             if (_disconnectButton != null) _disconnectButton.gameObject.SetActive(false);
         }
 
@@ -593,6 +694,17 @@ namespace BackroomsSurvival.UI
                 new Color(0.20f, 0.40f, 0.70f));
             RegisterButtonCallbacks(_joinButton);
             _joinButton.onClick.AddListener(OnJoinClicked);
+
+            // Steam invite button — camino ADITIVO, fila propia bajo Host/Join. Solo
+            // aparece si SteamClient.Init tuvo éxito; sin Steam el panel queda idéntico
+            // al de siempre.
+            _steamInviteButton = CreateButton(_panel.transform, "SteamInviteBtn", "Invite via Steam",
+                new Color(0.10f, 0.36f, 0.46f));
+            var steamLayout = _steamInviteButton.GetComponent<LayoutElement>();
+            if (steamLayout != null) steamLayout.preferredWidth = InputWidth;
+            RegisterButtonCallbacks(_steamInviteButton);
+            _steamInviteButton.onClick.AddListener(OnSteamInviteClicked);
+            _steamInviteButton.gameObject.SetActive(SteamLobbyManager.IsAvailable);
 
             // Disconnect button (hidden initially)
             _disconnectButton = CreateButton(_panel.transform, "DisconnectBtn", "Disconnect",

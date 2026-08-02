@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _id: -1675071772
   _parentGroup: {fileID: 11400000, guid: b1970f2739dcc914ba6e1ef988026446, type: 2}
-  _icon: {fileID: 21300000, guid: 730304b6f465c9a44bc96e79f37f3750, type: 3}
+  _icon: {fileID: 21300000, guid: 766cfa9ca3aa9e544a3b9c454efe1d4d, type: 3}
   _prefab: {fileID: 933667068247387671, guid: cdcf44059f6a23048a8ab24d405428b1, type: 3}
   _description: "A bare 5 \xD7 4 metal panel. Snaps flush to the floor grid \u2014
     no frame, no foundation."
