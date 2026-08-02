@@ -161,6 +161,21 @@ const PHANTOM_STRIKE_RECOVERY: f32 = 2.5;
 /// is a beat, not a reprieve, and anything past ~1 s starts reading as the AI having frozen.
 const PHANTOM_HESITATE_MIN: f32 = 0.3;
 const PHANTOM_HESITATE_MAX: f32 = 0.85;
+/// How far the creature can REACH to strike (m), as opposed to how close its body can travel.
+///
+/// The two used to be one number (1.5 m) and that is the "pegado a la pared no puede hacer nada"
+/// bug: press yourself against geometry and the 0.5 m body cannot occupy the cells that would bring
+/// it inside 1.5 m, so it parked at ~2 m and stared forever. ADR-040's straight-line rule fixed the
+/// PATHFINDER half of that; this is the other half. An arm has reach, a body has volume — treating
+/// "can I get there" and "can I hit you" as the same question is what was wrong.
+///
+/// Gated on a clear segment, so the extra reach never becomes a strike through a wall.
+const PHANTOM_ATTACK_REACH: f32 = 2.4;
+/// A lunge that has been grinding this many ticks without landing anything gives up and re-stalks
+/// (2.5 s at 10 Hz). Belt and braces next to the reach fix: geometry the resolver hates in a way
+/// nobody predicted must never leave the creature pinned to a wall forever, which is the state that
+/// reads as the game being broken rather than as the creature being bad at doorways.
+const PHANTOM_SPRINT_GIVEUP_TICKS: u8 = 25;
 const PHANTOM_STATUE_MAX: f32 = 6.0; // max seconds frozen → then it lunges (SPRINT)
 const PHANTOM_RUN_SPEED_THRESHOLD: f32 = 4.5; // target speed (m/s) read as "running" (above walk)
 const PHANTOM_SOUND_BONUS: f32 = 8.0; // extra detect radius (m) when the player is running
@@ -6083,6 +6098,22 @@ impl PhantomDriver {
                     let (tid, tpos, dist, tyaw) = target.unwrap();
                     self.movers[i].last_known_player_pos = Some(tpos);
 
+                    // Ground down against geometry for seconds without landing anything: stop
+                    // pushing and go back to stalking. The creature re-approaches from somewhere
+                    // else instead of standing in the corner, which is the visible failure.
+                    if self.movers[i].blocked_ticks >= PHANTOM_SPRINT_GIVEUP_TICKS {
+                        self.movers[i].state = PhantomState::Stalk;
+                        self.movers[i].state_timer = 0.0;
+                        self.movers[i].blocked_ticks = 0;
+                        self.movers[i].struck = false;
+                        self.movers[i].strike_recover = 0.0;
+                        info!(
+                            "MPTRACE step=PH_STALK event=phantom_sprint_gave_up phantom_id={} reason=wedged",
+                            id
+                        );
+                        continue;
+                    }
+
                     // The post-strike commitment has run out: NOW it bounces off. Deferring this is
                     // the whole point — see `PHANTOM_STRIKE_RECOVERY`.
                     //
@@ -6137,7 +6168,16 @@ impl PhantomDriver {
                     // tick. The bounce is what made the real form appear and vanish around a single
                     // frame of contact; now it charges through, still revealed, and the second
                     // condition stops it re-striking inside that window.
-                    if dist < 1.5 && self.movers[i].strike_recover <= 0.0 {
+                    // REACH, not travel distance, and a clear line so the extra reach cannot strike
+                    // through geometry. See `PHANTOM_ATTACK_REACH`.
+                    let in_reach = dist < PHANTOM_ATTACK_REACH
+                        && crate::world::grid_gen::segment_is_clear(
+                            &mut self.grid_cache,
+                            current_layer,
+                            from,
+                            tpos,
+                        );
+                    if in_reach && self.movers[i].strike_recover <= 0.0 {
                         self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
                         self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
                         self.movers[i].struck = true;
@@ -7109,11 +7149,14 @@ mod tests {
             PhantomState::Spotted,
             "a player in radius + cone must trip WANDER → SPOTTED"
         );
-        // Entering SPOTTED arms a randomized stare window in [SPOTTED_MIN, SPOTTED_MAX].
+        // Entering SPOTTED arms a randomized stare window in [SPOTTED_MIN, SPOTTED_MAX], SCALED by
+        // this creature's temperament — the bound is derived from its own trait rather than from
+        // the bare constants, which is the whole point of personalities existing.
         let dur = driver.movers[0].spotted_duration;
+        let s = driver.movers[0].traits.spotted_scale;
         assert!(
-            (PHANTOM_SPOTTED_MIN..=PHANTOM_SPOTTED_MAX).contains(&dur),
-            "spotted_duration must be seeded in range, got {dur}"
+            dur >= PHANTOM_SPOTTED_MIN * s - 1e-3 && dur <= PHANTOM_SPOTTED_MAX * s + 1e-3,
+            "spotted_duration must be seeded in range (scale {s:.2}), got {dur}"
         );
     }
 
@@ -7619,8 +7662,10 @@ mod tests {
         // Several ticks, not exactly `PHANTOM_BLOCKED_REPLAN_TICKS`: the creature starts at its own
         // cell's centre and has ~1.5 m of free travel inside it before its 0.5 m body reaches the
         // built neighbour, so the first steps legitimately advance.
+        // Fewer than `PHANTOM_SPRINT_GIVEUP_TICKS`, or the lunge would disengage on its own and
+        // clear the very counter this asserts on — that give-up is tested separately.
         let player = Vec3::new(here.x + 12.0, 1.8, here.z);
-        for _ in 0..30 {
+        for _ in 0..20 {
             driver.step(&mut net, 0.1, player, 0.0, false, false);
         }
 
@@ -7684,6 +7729,97 @@ mod tests {
                 "{name} temperament is a difficulty knob, not variance: mean {mean:.2}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_strike_reaches_further_than_the_body_can_travel() {
+        // "Te pegas a una pared y se queda sin poder hacer nada": the strike used to need the same
+        // 1.5 m the 0.5 m BODY had to travel to, so a player flat against geometry could not be
+        // reached at all and the creature stood at ~2 m staring. Reach and travel are now separate.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        let here = Vec3::from_array(net.peers[&pid].position);
+        // Beyond the OLD 1.5 m, inside the new reach — the exact band that used to be a dead zone.
+        // The direction is CHOSEN for a clear line rather than assumed: picking east blindly put
+        // a seed-42 wall between the two and the test measured geometry, not reach.
+        let player = [(2.0f32, 0.0f32), (-2.0, 0.0), (0.0, 2.0), (0.0, -2.0)]
+            .into_iter()
+            .map(|(dx, dz)| Vec3::new(here.x + dx, 1.8, here.z + dz))
+            .find(|p| crate::world::grid_gen::segment_is_clear(&mut driver.grid_cache, 0, here, *p))
+            .expect("no open direction at 2 m from a walkable cell");
+        // Yaw facing back at the phantom, so it is a Hit and not a Kill — either proves the reach,
+        // but pinning it keeps the assert readable.
+        let player_yaw = (here.x - player.x)
+            .atan2(here.z - player.z)
+            .to_degrees()
+            .rem_euclid(360.0);
+
+        let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, false);
+
+        assert_eq!(
+            attacks.len(),
+            1,
+            "a player at 2 m with a clear line must be reachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn extra_reach_never_strikes_through_a_wall() {
+        // NEGATIVE CONTROL for the reach: widening it must not let the creature hit you through
+        // geometry, which is why the strike is gated on a clear segment and not on distance alone.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        let here = Vec3::from_array(net.peers[&pid].position);
+
+        // Build a wall in the cell between them, then stand just past it, inside the reach.
+        use crate::network::protocol::StpBuildingInfo;
+        net.stp_buildings.push(StpBuildingInfo {
+            id: STP_BUILDING_ID_BASE,
+            def_id: 1,
+            position: [here.x + 2.5, here.y, here.z],
+            rotation: 0.0,
+            group_id: 0,
+            added: vec![],
+        });
+        let player = Vec3::new(here.x + 2.3, 1.8, here.z);
+
+        let attacks = driver.step(&mut net, 0.1, player, 270.0, false, false);
+
+        assert!(
+            attacks.is_empty(),
+            "reach must not pass through a built wall, got {attacks:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_wedged_lunge_eventually_gives_up_instead_of_grinding_forever() {
+        // Backstop for geometry nobody predicted: a lunge must never end up pinned to a wall for
+        // good. It re-stalks and comes back from somewhere else.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        driver.movers[0].blocked_ticks = PHANTOM_SPRINT_GIVEUP_TICKS;
+        let here = Vec3::from_array(net.peers[&pid].position);
+        let player = Vec3::new(here.x + 12.0, 1.8, here.z);
+
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
+
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Stalk,
+            "a lunge that cannot make progress must disengage"
+        );
     }
 
     #[tokio::test]
@@ -7806,8 +7942,11 @@ mod tests {
             PhantomState::Spotted,
             "a running player within sound range must be heard → SPOTTED"
         );
+        // The SHORT window, scaled by temperament (see the sight test above). What matters is that
+        // sound picks the short band, not that every creature reacts in the same time.
         assert!(
-            driver.movers[0].spotted_duration <= PHANTOM_SPOTTED_SOUND_MAX,
+            driver.movers[0].spotted_duration
+                <= PHANTOM_SPOTTED_SOUND_MAX * driver.movers[0].traits.spotted_scale + 1e-3,
             "sound-triggered stare must use the short window, got {}",
             driver.movers[0].spotted_duration
         );
