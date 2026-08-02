@@ -191,6 +191,13 @@ const PHANTOM_SEARCH_SPEED: f32 = 2.2;
 // a corner but not when you strafe.
 const PHANTOM_REPLAN_INTERVAL: f32 = 0.6;
 const PHANTOM_REPLAN_GOAL_DRIFT: f32 = 4.0;
+/// ADR-043 — how many steps the replans of the active movers are spread over, capping the searches
+/// in any one step at ceil(N / stride). 3 against `PHANTOM_ACTIVE_CAP` = 6 means at most 2.
+///
+/// Needed because `PHANTOM_REPLAN_INTERVAL` is a fixed 0.6 s: movers that woke on the same tick
+/// keep their `nav_age` in phase forever and all come due together, so the cost is a burst, not
+/// the average.
+const PHANTOM_REPLAN_STRIDE: u64 = 3;
 /// A waypoint counts as reached inside this radius. Below ~1 m the phantom can orbit a waypoint it
 /// keeps almost-touching; this is under half a cell, so it never skips a corner either.
 const PHANTOM_WAYPOINT_ARRIVE: f32 = 1.25;
@@ -4231,10 +4238,20 @@ struct PhantomDriver {
     nav_scratch: crate::world::grid_gen::NavScratch,
     /// Reusable cell-path buffer handed to `find_path`, for the same reason.
     nav_cells: Vec<crate::world::grid_gen::CellCoord>,
-    /// Test-only counter: proves the replan policy holds at most one search per step, which is the
-    /// thing that keeps the cost bound honest.
-    #[cfg(test)]
-    nav_replans: u32,
+    /// Cumulative A\* searches. Proves the replan policy holds the cost bound; ADR-043 promotes it
+    /// out of `#[cfg(test)]` because the same number is what the host's step instrumentation logs,
+    /// and a load test needs to see it in a real session, not only in a unit test.
+    nav_replans: u64,
+    /// ADR-043 — steps taken, the phase source for the replan stagger. Wrapping: it is only ever
+    /// read modulo the stride.
+    step_counter: u64,
+    /// ADR-043 — WORST step duration (µs) since the last report, reset on every report.
+    ///
+    /// The peak and not a sample, because the thing worth knowing is whether a step ever blew the
+    /// budget, and `MissedTickBehavior::Skip` guarantees that an overrun is invisible otherwise: it
+    /// drops ticks silently, `dt` stays a hardcoded 0.1 s, and the only symptom is the AI running
+    /// in slow motion — which in play-test looks like a design choice, not like a fault.
+    step_peak_us: u64,
     /// ADR-043 — every attack produced this tick, one entry per mover that landed one. A single
     /// return value made the LAST attacker of the tick win and silently dropped the rest, which
     /// with a populated world is two creatures reaching you together and only one of them
@@ -4359,8 +4376,9 @@ impl PhantomDriver {
             prev_target_pos: HashMap::new(),
             nav_scratch: crate::world::grid_gen::NavScratch::new(),
             nav_cells: Vec::new(),
-            #[cfg(test)]
             nav_replans: 0,
+            step_counter: 0,
+            step_peak_us: 0,
             attacks: Vec::new(),
             population_sync_in: 0.0, // reconcile on the very first entity tick
             next_victim_slot: 0,
@@ -4665,12 +4683,22 @@ impl PhantomDriver {
             return straight(target);
         }
 
-        let stale = self.movers[i].nav_waypoints.is_empty()
-            || self.movers[i].nav_cursor >= self.movers[i].nav_waypoints.len()
-            || self.movers[i].nav_age >= PHANTOM_REPLAN_INTERVAL
-            || self.movers[i]
-                .nav_goal
-                .is_none_or(|g| g.distance_xz(target) > PHANTOM_REPLAN_GOAL_DRIFT);
+        // ADR-043 — REPLAN STAGGER, the lever ADR-040 wrote down for the day there were several.
+        // `PHANTOM_REPLAN_INTERVAL` is 0.6 s = 6 steps, so movers that woke on the same tick keep
+        // their `nav_age` in phase and every one of them comes due on the SAME step: the cost is
+        // not the average, it is N searches in one 100 ms slot. Offsetting the permission by the
+        // mover index spreads them over `PHANTOM_REPLAN_STRIDE` steps, capping the burst at
+        // ceil(N / stride). A mover denied its turn keeps its previous route, and one with no route
+        // at all falls back to the straight bearing — i.e. exactly the pre-ADR-040 behaviour, for
+        // at most 0.2 s.
+        let may_replan = (self.step_counter + i as u64).is_multiple_of(PHANTOM_REPLAN_STRIDE);
+        let stale = may_replan
+            && (self.movers[i].nav_waypoints.is_empty()
+                || self.movers[i].nav_cursor >= self.movers[i].nav_waypoints.len()
+                || self.movers[i].nav_age >= PHANTOM_REPLAN_INTERVAL
+                || self.movers[i]
+                    .nav_goal
+                    .is_none_or(|g| g.distance_xz(target) > PHANTOM_REPLAN_GOAL_DRIFT));
 
         if stale {
             // ADR-041 — LONG-RANGE TRAVEL. The A* window is ±24 cells (±60 m); a noise 500 m away
@@ -4711,10 +4739,7 @@ impl PhantomDriver {
             self.movers[i].nav_cursor = 0;
             self.movers[i].nav_goal = Some(target);
             self.movers[i].nav_age = 0.0;
-            #[cfg(test)]
-            {
-                self.nav_replans += 1;
-            }
+            self.nav_replans += 1;
         }
 
         // Consume waypoints already reached. Done AFTER a possible replan so a fresh plan whose
@@ -4781,6 +4806,7 @@ impl PhantomDriver {
         host_player_crouch: bool,
     ) -> &[PhantomAttack] {
         let now = Instant::now();
+        self.step_counter = self.step_counter.wrapping_add(1);
 
         // ADR-041: stimuli first — a shot reported this tick redirects the phantom before the FSM
         // gets to act on stale intentions.
@@ -5401,6 +5427,28 @@ impl PhantomDriver {
             if let Some(peer) = net.peers.get_mut(&m.id) {
                 peer.revealed = phantom_reveals(m.state);
             }
+        }
+
+        // ADR-043 — the measurement the whole populated world rests on. Before this, ADR-040's
+        // "2 ms per step" budget, ADR-041's 23.5 µs per chunk and the cost of an A* search were all
+        // documented numbers with NO code behind them: no constant, no assert, no benchmark in the
+        // tree. "How many creatures does the world hold" was therefore unanswerable except by
+        // opinion. These five counters make it a reading.
+        //
+        // `step_us` is the PEAK since the last report, not this step: the throttle samples ~1 step
+        // in 10, so an instantaneous value would miss precisely the spike worth seeing.
+        self.step_peak_us = self.step_peak_us.max(now.elapsed().as_micros() as u64);
+        if net.session_start.elapsed().as_millis() % 1000 < 120 {
+            info!(
+                "MPTRACE step=PH_BUDGET event=phantom_step_budget movers={} step_peak_us={} searches={} chunk_regens={} cached_chunks={} body_valve={}",
+                self.movers.len(),
+                self.step_peak_us,
+                self.nav_replans,
+                self.grid_cache.generated_count(),
+                self.grid_cache.len(),
+                self.grid_cache.degraded_body_check_count()
+            );
+            self.step_peak_us = 0;
         }
 
         &self.attacks
@@ -6031,6 +6079,54 @@ mod tests {
             driver.nav_replans >= 1,
             "it must have planned at least once"
         );
+    }
+
+    #[tokio::test]
+    async fn replan_stagger_spreads_the_searches_of_a_populated_world() {
+        // ADR-043 — the lever ADR-040 wrote down. `PHANTOM_REPLAN_INTERVAL` is a fixed 0.6 s, so
+        // movers that woke on the same tick keep their `nav_age` in phase and every one of them
+        // comes due on the SAME step: the cost is a burst of N searches in one 100 ms slot, not the
+        // average. The stagger caps that burst at ceil(N / stride).
+        //
+        // Asserting on the WORST step, not the total: throttling the average while still bursting
+        // is exactly the failure this exists to prevent.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 8);
+        let here = Vec3::new(0.0, stand_on(0), 0.0);
+        driver.sync_population(&mut net, here, 0.1);
+        let n = driver.movers.len();
+        assert!(n >= 2, "need a crowd to stagger, got {n}");
+
+        // Force every one of them to want a route to a goal it cannot walk straight to, so the
+        // only thing standing between them and a search is the stagger.
+        let mut worst = 0u64;
+        for _ in 0..30 {
+            driver.step_counter = driver.step_counter.wrapping_add(1);
+            let before = driver.nav_replans;
+            for i in 0..driver.movers.len() {
+                let from = Vec3::from_array(net.peers[&driver.movers[i].id].position);
+                let goal = Vec3::new(from.x + 45.0, from.y, from.z + 45.0);
+                driver.movers[i].nav_age = PHANTOM_REPLAN_INTERVAL; // due right now
+                driver.steer_heading(i, 0, from, goal, 0.1);
+            }
+            worst = worst.max(driver.nav_replans - before);
+        }
+
+        // Asserted against N, NOT against `ceil(N / PHANTOM_REPLAN_STRIDE)`: deriving the bound
+        // from the same constant the code uses makes the test move with the mutation and pass
+        // whatever the stride is (verified — with the stride at 1 the ceil form still passed). The
+        // property that actually matters is that the burst is strictly smaller than "all of them
+        // at once", and that is what a stride of 1 breaks.
+        assert!(
+            worst < n as u64,
+            "{n} movers all replanned in the same step ({worst}); the stagger is not spreading them"
+        );
+        let allowed = n.div_ceil(PHANTOM_REPLAN_STRIDE as usize) as u64;
+        assert!(
+            worst <= allowed,
+            "{n} movers burst {worst} searches in one step; the stride allows {allowed}"
+        );
+        assert!(driver.nav_replans > 0, "nothing replanned at all");
     }
 
     #[tokio::test]

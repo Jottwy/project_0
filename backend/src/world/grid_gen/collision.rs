@@ -65,6 +65,13 @@ pub struct GridGenChunkCache {
     /// only way to SEE that thrash: the cache stays at its cap either way, so `len()` looks
     /// identical whether the contents are stable or churning completely every tick.
     generated: u64,
+    /// ADR-043 — how many times the body-radius check has had to fall back to POINT sampling
+    /// because the creature did not fit where it already stood (`resolve_move_grid_gen_ex`'s safety
+    /// valve). The valve is not optional — without it a phantom in a tight spot is blocked in all
+    /// four directions forever — but while it is engaged the body radius is off, which is the
+    /// leading suspect for the intermittent wall-scraping. Counting it is what turns that from a
+    /// hunch into something a single play-test can confirm or clear.
+    degraded_body_checks: u64,
 }
 
 /// Resolutor de perfil por chunk: `(world_seed, cx, cz, layer) → LayerRules`.
@@ -99,6 +106,7 @@ impl GridGenChunkCache {
             rules_fn,
             blocked_cells: std::collections::HashSet::new(),
             generated: 0,
+            degraded_body_checks: 0,
         }
     }
 
@@ -106,6 +114,11 @@ impl GridGenChunkCache {
     /// step instrumentation so a populated world can be measured instead of guessed.
     pub fn generated_count(&self) -> u64 {
         self.generated
+    }
+
+    /// Cumulative body-radius fallbacks to point sampling (see `degraded_body_checks`).
+    pub fn degraded_body_check_count(&self) -> u64 {
+        self.degraded_body_checks
     }
 
     /// Replace the externally-blocked cell set (see `blocked_cells`). Cheap to call on a cadence:
@@ -402,6 +415,12 @@ pub fn resolve_move_grid_gen_ex(
     // segment actually passes through has to be walkable too.
     // Whether the body fits where it currently stands decides how strict we may be (see body_fits).
     let from_fits = body_fits(cache, layer, from, true);
+    if !from_fits {
+        // ADR-043 instrumentation: the safety valve is engaged for this whole resolve, so the body
+        // radius is off and the creature is moving as a point. Counted, not logged, because it can
+        // fire many times a second — the throttled step report reads the counter.
+        cache.degraded_body_checks += 1;
+    }
     let (pos, blocked, slid) = if body_fits(cache, layer, full, from_fits)
         && diagonal_step_is_clear(cache, layer, from, full)
     {
