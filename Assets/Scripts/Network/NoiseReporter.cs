@@ -26,10 +26,43 @@ namespace BackroomsSurvival.Net
     /// </summary>
     public sealed class NoiseReporter : MonoBehaviour
     {
+        /// <summary>
+        /// ADR-041 §2 / ADR-047 D6: one row per ranged weapon. The table lives HERE, on the Unity
+        /// side, because loudness belongs with the weapon definitions — putting it in Rust would
+        /// duplicate that data and drift the moment a weapon is added.
+        /// </summary>
+        [System.Serializable]
+        private struct WeaponLoudness
+        {
+            [Tooltip("Wieldable GameObject name, matched case-insensitively as a prefix (Unity's " +
+                     "\"(Clone)\" suffix is stripped before comparing).")]
+            public string WieldableName;
+
+            [Min(0f)] public float Loudness;
+        }
+
         [Header("Loudness (metres of audible radius)")]
-        [Tooltip("Default radius for a firearm shot. A rifle carries for kilometres in the open, " +
-                 "and a long corridor acts as a waveguide, so 500 m is conservative rather than " +
-                 "generous. The backend clamps it.")]
+        /// <remarks>
+        /// Defaults live in code, not only in the inspector, and that is deliberate:
+        /// <c>GameBootstrap.EnsureComponent&lt;NoiseReporter&gt;()</c> adds this component at
+        /// RUNTIME, so there is no authored instance for anyone to fill in. A serialized-only table
+        /// would silently be empty in every real session. Authoring still wins if the component is
+        /// ever placed in a scene by hand.
+        /// </remarks>
+        [Tooltip("Per-weapon audible radius. Anything not listed falls back to the default below.")]
+        [SerializeField]
+        private WeaponLoudness[] _weaponLoudness =
+        {
+            // .30-30 lever rifle: carries for kilometres in the open, and a long corridor acts as
+            // a waveguide. The backend clamps it (PHANTOM_NOISE_MAX_LOUDNESS).
+            new WeaponLoudness { WieldableName = "STP_Wieldable_Marlin336", Loudness = 500f },
+            // A bow is the STEALTH option and used to shout exactly as loud as the rifle, which
+            // made the quiet weapon pointless. A bowstring is a soft snap, not a report.
+            new WeaponLoudness { WieldableName = "STP_Wieldable_WoodenBow", Loudness = 25f },
+        };
+
+        [Tooltip("Radius used when the equipped weapon is not in the table above. Firearm-loud on " +
+                 "purpose: a new gun that nobody remembered to list should still be heard.")]
         [SerializeField, Min(0f)] private float _firearmLoudness = 500f;
 
         [Tooltip("How often to re-scan the local rig for firearm triggers (seconds).")]
@@ -51,6 +84,8 @@ namespace BackroomsSurvival.Net
 
         private readonly List<IFirearmTrigger> _subscribed = new List<IFirearmTrigger>();
         private Transform _characterRoot;
+        private ICharacter _character;
+        private IWieldablesControllerCC _wieldablesController;
         private float _nextScanAt;
 
         private void OnDisable() => Unsubscribe();
@@ -63,7 +98,8 @@ namespace BackroomsSurvival.Net
                 return;
             _nextScanAt = Time.unscaledTime + Mathf.Max(0.1f, _rescanInterval);
 
-            var root = ResolveCharacterRoot();
+            var character = ResolveCharacter();
+            var root = character?.transform;
             if (root == null)
             {
                 Unsubscribe(); // rig gone (death, rebuild): drop stale handlers
@@ -74,6 +110,9 @@ namespace BackroomsSurvival.Net
                 Unsubscribe();
                 _characterRoot = root;
             }
+            // Assigned AFTER any Unsubscribe: that call clears the cached rig, so setting these
+            // first would have them wiped on the very tick the new rig appeared.
+            _character = character;
 
             // Subscribe to any trigger we are not already on. Only the equipped weapon raises
             // Shoot, so covering all of them costs nothing and needs no equip tracking.
@@ -94,22 +133,71 @@ namespace BackroomsSurvival.Net
             // Wraps at 255 by design (unchecked); the observer reads deltas, never absolutes.
             unchecked { ShotCounter++; }
 
-            if (_firearmLoudness <= 0f)
+            float loudness = ResolveLoudness();
+            if (loudness <= 0f)
                 return;
             if (!IPCClient.TryGetInstance(out var ipc))
                 return;
             // The muzzle is close enough to the player for a stimulus whose whole point is that it
             // is imprecise; using the character position avoids reaching into weapon internals.
             var at = _characterRoot != null ? _characterRoot.position : transform.position;
-            ipc.SendReportNoise(at, _firearmLoudness);
+            ipc.SendReportNoise(at, loudness);
         }
 
-        private Transform ResolveCharacterRoot()
+        /// <summary>
+        /// ADR-047 D6: the audible radius of the weapon that just fired.
+        ///
+        /// Read from the ACTIVE wieldable rather than from the trigger that raised the event: STP's
+        /// <see cref="IFirearmTrigger.Shoot"/> is a parameterless <c>UnityAction</c>, so the sender
+        /// is not available, and the equipped wieldable is the one that fired by definition. Same
+        /// read-only path <c>PlayerPoseTransmitter.ReadLightOn</c> already uses (rule #3: we report,
+        /// we never apply).
+        /// </summary>
+        private float ResolveLoudness()
+        {
+            if (_weaponLoudness == null || _weaponLoudness.Length == 0)
+                return _firearmLoudness;
+
+            if (_wieldablesController == null && _character != null)
+                _wieldablesController = _character.GetCC<IWieldablesControllerCC>();
+            if (_wieldablesController == null)
+                return _firearmLoudness;
+
+            // A DESTROYED wieldable still hands back a non-null interface reference (C# `?.` does
+            // not see Unity's fake-null), and touching `.gameObject` on it throws — so test the
+            // Unity lifetime first, exactly as PlayerPoseTransmitter does.
+            var wieldable = _wieldablesController.ActiveWieldable;
+            bool destroyed = wieldable is Object uo && uo == null;
+            var go = (wieldable == null || destroyed) ? null : wieldable.gameObject;
+            if (go == null)
+                return _firearmLoudness;
+
+            string name = go.name;
+            for (int i = 0; i < _weaponLoudness.Length; i++)
+            {
+                var row = _weaponLoudness[i];
+                if (!string.IsNullOrEmpty(row.WieldableName) &&
+                    name.StartsWith(row.WieldableName, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    return row.Loudness;
+                }
+            }
+
+            return _firearmLoudness;
+        }
+
+        /// <summary>
+        /// The LOCAL character. `GetComponentInParent` finds nothing in the normal wiring — this
+        /// component is added at runtime onto GameBootstrap's own object, which is not under the
+        /// player — so the GameMode fallback is the path that actually resolves. It is kept first
+        /// anyway for the case where someone drops this component on the rig by hand.
+        /// </summary>
+        private ICharacter ResolveCharacter()
         {
             var character = GetComponentInParent<ICharacter>();
             if (character == null && GameMode.HasInstance)
                 character = GameMode.Instance.LocalPlayer;
-            return character?.transform;
+            return character;
         }
 
         private void Unsubscribe()
@@ -121,6 +209,10 @@ namespace BackroomsSurvival.Net
             }
             _subscribed.Clear();
             _characterRoot = null;
+            // Dropped together with the rig they were resolved from: a rebuild (death, respawn)
+            // hands out new component instances, and a cached one would be stale or destroyed.
+            _character = null;
+            _wieldablesController = null;
         }
     }
 }
