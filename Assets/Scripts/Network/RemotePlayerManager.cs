@@ -550,13 +550,15 @@ namespace BackroomsSurvival.Net
         public float targetRotation;
         // [C] SmoothDampAngle state for the yaw smoothing (degrees/sec); reset on spawn/release.
         public float yawVelocity;
-        // ADR-011: scalar transient-action channel (today only "pickup"), read by ProxyPickupHook,
-        // which edge-detects the transition into "pickup" and fires the Pickup trigger.
+        // ADR-011: scalar transient-action channel, read by ProxyPickupHook, which edge-detects the
+        // transition into "pickup" and fires the Pickup trigger. The domain the backend actually
+        // emits is exactly "idle" | "walk_slow" | "pickup" (sync.rs::broadcast_player_update).
         // LOCOMOTION DOES NOT GO THROUGH HERE, and there is nothing to drive from it: ADR-013 derives
         // it from velocity into MovementSpeed, and the ADR-012 controller only has the states
-        // Movement/Jump/Pickup. There is no Idle/Walk/Run/Attack state to CrossFade to — a manager
-        // that tried it logged "Animator.GotoState: State could not be found" with a full stack
-        // trace once per proxy per frame. Do not add that back.
+        // Movement/Jump/Pickup. Do not re-add a CrossFade switch over this string: it would be dead
+        // twice over — no Idle/Walk/Run/Attack state exists to fade to, and three of those four
+        // strings are never sent in the first place. The manager that tried it logged
+        // "Animator.GotoState: State could not be found" with a full stack trace, per proxy, per frame.
         public string animationState = "idle";
         // ADR-020: cosmetic crouch state for this proxy (read by ProxyCrouchHook).
         public bool crouch;
