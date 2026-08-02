@@ -157,6 +157,10 @@ const PHANTOM_STATUE_COOLDOWN: f32 = 6.0;
 /// window. Longer than `PHANTOM_PICKUP_GESTURE` (1 s) on purpose: the gesture freeze must finish
 /// INSIDE the commitment, or the bounce would land the instant the pose unfroze.
 const PHANTOM_STRIKE_RECOVERY: f32 = 2.5;
+/// A hesitating lunge holds still for this long (s) before it actually comes. Short on purpose: it
+/// is a beat, not a reprieve, and anything past ~1 s starts reading as the AI having frozen.
+const PHANTOM_HESITATE_MIN: f32 = 0.3;
+const PHANTOM_HESITATE_MAX: f32 = 0.85;
 const PHANTOM_STATUE_MAX: f32 = 6.0; // max seconds frozen → then it lunges (SPRINT)
 const PHANTOM_RUN_SPEED_THRESHOLD: f32 = 4.5; // target speed (m/s) read as "running" (above walk)
 const PHANTOM_SOUND_BONUS: f32 = 8.0; // extra detect radius (m) when the player is running
@@ -4492,6 +4496,72 @@ fn blur_noise(source: Vec3, dist: f32, id: PeerId) -> Vec3 {
 /// Returns `None` when nobody is alive. Every FSM branch already handles a missing target (WANDER
 /// stops detecting, the hunt states fall to SEARCH/WANDER), so losing the target reads as "it lost
 /// you" — it walks to where it killed you and gives up. No new state, no special case.
+/// Separates the personality draw from every other consumer of the world seed, for the same reason
+/// `PHANTOM_DRAW_SALT` exists: without it a creature's temperament would correlate with WHERE it
+/// lives, and "the ones in the pillar halls are always the aggressive ones" is a pattern players
+/// would learn long before anyone traced it to a shared hash stream.
+const PHANTOM_TRAIT_SALT: u64 = 0x5EED_C0DE_B0DA_1701;
+
+/// Per-creature temperament. Every robapieles used to run on the same five constants, so a
+/// populated world was N copies of one animal: identical stare, identical patience, identical
+/// trigger. These multipliers make one a predator that commits almost instantly and the next a
+/// thing that trails you down a corridor without ever deciding.
+///
+/// DERIVED FROM THE SEED AND THE ANCHOR, never rolled at spawn. That is what keeps it consistent
+/// with everything else about a drawn phantom (`phantom_spawn`): two players meet the SAME
+/// character, and one that despawns and comes back is still itself rather than a re-roll. A
+/// hand-placed debug phantom has no anchor, so it falls back to its id.
+///
+/// The ranges straddle 1.0 on purpose — this is VARIANCE, not a difficulty knob. Widening them
+/// makes encounters more varied; shifting their centre is what would make the game harder.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PhantomTraits {
+    /// Scales the SPOTTED stare. Low = notices you and moves on it almost at once.
+    spotted_scale: f32,
+    /// Scales STALK patience. Low = runs out of patience fast.
+    patience_scale: f32,
+    /// Scales the unpredictable-lunge roll. High = erratic, lunges for no reason.
+    impulse_scale: f32,
+    /// Scales how long it will hold a STATUE freeze before giving up on the game.
+    statue_scale: f32,
+    /// Chance that a lunge opens with a beat of stillness instead of leaving immediately.
+    hesitate_chance: f32,
+}
+
+impl PhantomTraits {
+    fn derive(world_seed: u64, anchor: Option<PhantomAnchor>, id: PeerId) -> Self {
+        let key = match anchor {
+            Some(((bx, bz), layer, index)) => {
+                ((bx as i64 as u64) << 40)
+                    ^ ((bz as i64 as u64) << 16)
+                    ^ ((layer as u64) << 8)
+                    ^ index as u64
+            }
+            None => id as u64,
+        };
+        // splitmix64 finaliser: cheap, and it decorrelates the low bits, which matters because the
+        // five traits below are read from five different 16-bit slices of the SAME word.
+        let mut z = world_seed ^ PHANTOM_TRAIT_SALT ^ key.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+
+        let unit = |shift: u32| ((z >> shift) & 0xFFFF) as f32 / 65535.0;
+        let span = |shift: u32, lo: f32, hi: f32| lo + unit(shift) * (hi - lo);
+        // Every range is centred on 1.0 (midpoint = mean for a uniform draw). Asserted, because
+        // getting this wrong silently retunes the whole game: the first version had impulse at
+        // 0.30..2.20, whose mean is 1.25, i.e. every creature in the world 25 % twitchier than the
+        // constant says — a difficulty change disguised as variance.
+        Self {
+            spotted_scale: span(0, 0.45, 1.55),
+            patience_scale: span(13, 0.40, 1.60),
+            impulse_scale: span(26, 0.30, 1.70),
+            statue_scale: span(39, 0.60, 1.40),
+            hesitate_chance: span(48, 0.0, 0.55),
+        }
+    }
+}
+
 fn nearest_real_target(
     net: &NetworkManager,
     host_player_pos: Vec3,
@@ -4713,6 +4783,9 @@ fn phantom_attack_kind_name(kind: PhantomAttackKind) -> &'static str {
 /// `PeerConnection` (the render source). (world::collision's `SimChunkCache` is unchanged but no
 /// longer has a production consumer; it remains for tests / future world::generator entities.)
 struct PhantomDriver {
+    /// Needed by `PhantomTraits::derive`, which runs in `add_anchored` where `NetworkManager` (the
+    /// usual home of `world_seed`) is not in hand.
+    world_seed: u64,
     grid_cache: GridGenChunkCache,
     movers: Vec<PhantomMover>,
     /// Last-tick XZ position of each real target (host + peers), keyed by id. Used to derive each
@@ -4871,11 +4944,19 @@ struct PhantomMover {
     /// bounces to STALK, and when the lunge loses its target mid-recovery — otherwise the NEXT
     /// lunge would inherit it and disengage on its first tick.
     struck: bool,
+    /// This creature's temperament, fixed for as long as it exists and reproducible from the seed.
+    traits: PhantomTraits,
+    /// Seconds of stillness left at the START of a lunge. `revealed` is already true in SPRINT
+    /// (ADR-038), so the beat lands AFTER the disguise drops and the scream: it reveals, screams,
+    /// hangs there for a moment, and only then comes at you. Without it, reveal and charge are the
+    /// same instant and there is nothing to read.
+    hesitate_timer: f32,
 }
 
 impl PhantomDriver {
     fn new(world_seed: u64) -> Self {
         Self {
+            world_seed,
             // ADR-033: el fantasma colisiona contra la MISMA densidad por zona que
             // se renderiza. Es el consumidor que hereda el cambio sin divergencia
             // (a diferencia del jugador real, que sigue contra world::generator —
@@ -5215,6 +5296,8 @@ impl PhantomDriver {
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             struck: false,
+            traits: PhantomTraits::derive(self.world_seed, anchor, id),
+            hesitate_timer: 0.0,
         });
     }
 
@@ -5316,6 +5399,26 @@ impl PhantomDriver {
         if self.movers[i].blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS {
             self.movers[i].nav_waypoints.clear();
         }
+    }
+
+    /// Commit this mover to a lunge, from whichever state decided on one.
+    ///
+    /// A single door into SPRINT because the entry now carries state (the hesitation roll) and
+    /// three copies of that would drift: a lunge entered through the copy someone forgot to update
+    /// would silently never hesitate, and nothing would fail.
+    fn enter_sprint(&mut self, i: usize) {
+        self.movers[i].state = PhantomState::Sprint;
+        self.movers[i].state_timer = 0.0;
+        // Rolled per lunge, not per creature: `hesitate_chance` is the temperament, this is what it
+        // does THIS time. A creature that always paused would be as readable as one that never did.
+        self.movers[i].hesitate_timer =
+            match rand::random::<f32>() < self.movers[i].traits.hesitate_chance {
+                true => {
+                    PHANTOM_HESITATE_MIN
+                        + rand::random::<f32>() * (PHANTOM_HESITATE_MAX - PHANTOM_HESITATE_MIN)
+                }
+                false => 0.0,
+            };
     }
 
     /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
@@ -5616,7 +5719,10 @@ impl PhantomDriver {
                         } else {
                             (PHANTOM_SPOTTED_MIN, PHANTOM_SPOTTED_MAX)
                         };
-                        self.movers[i].spotted_duration = lo + rand::random::<f32>() * (hi - lo);
+                        // Scaled by temperament: the same sighting makes one creature react almost
+                        // at once and another hold the stare for the best part of ten seconds.
+                        self.movers[i].spotted_duration = (lo + rand::random::<f32>() * (hi - lo))
+                            * self.movers[i].traits.spotted_scale;
                         self.movers[i].is_paused = false;
                         info!(
                             "MPTRACE step=PH_SPOTTED event=phantom_spotted phantom_id={} dur={:.1} by_sound={}",
@@ -5761,10 +5867,12 @@ impl PhantomDriver {
                         );
                         continue;
                     }
-                    // Unpredictable lunge mid-stare (scarier when imprevisible).
-                    if rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE {
-                        self.movers[i].state = PhantomState::Sprint;
-                        self.movers[i].state_timer = 0.0;
+                    // Unpredictable lunge mid-stare (scarier when imprevisible), scaled by how
+                    // erratic this particular creature is.
+                    if rand::random::<f32>()
+                        < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].traits.impulse_scale
+                    {
+                        self.enter_sprint(i);
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
                             id
@@ -5810,11 +5918,14 @@ impl PhantomDriver {
                         continue;
                     }
 
-                    if self.movers[i].state_timer > PHANTOM_STALK_PATIENCE
-                        || rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0
+                    if self.movers[i].state_timer
+                        > PHANTOM_STALK_PATIENCE * self.movers[i].traits.patience_scale
+                        || rand::random::<f32>()
+                            < PHANTOM_SPRINT_RANDOM_CHANCE
+                                * 2.0
+                                * self.movers[i].traits.impulse_scale
                     {
-                        self.movers[i].state = PhantomState::Sprint;
-                        self.movers[i].state_timer = 0.0;
+                        self.enter_sprint(i);
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} dist={:.2}",
                             id, dist
@@ -5891,7 +6002,9 @@ impl PhantomDriver {
                     // Tired of the game → lunge (checked before the look test so the timeout always
                     // wins once it elapses). If point-blank, also SHOVE the player — the client
                     // applies the impulse (SetVelocity); the backend only signals the direction.
-                    if self.movers[i].state_timer >= PHANTOM_STATUE_MAX {
+                    if self.movers[i].state_timer
+                        >= PHANTOM_STATUE_MAX * self.movers[i].traits.statue_scale
+                    {
                         let dx = tpos.x - from.x;
                         let dz = tpos.z - from.z;
                         let len = (dx * dx + dz * dz).sqrt();
@@ -5904,8 +6017,7 @@ impl PhantomDriver {
                                 ),
                             });
                         }
-                        self.movers[i].state = PhantomState::Sprint;
-                        self.movers[i].state_timer = 0.0;
+                        self.enter_sprint(i);
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_statue_timeout knockback={}",
                             id,
@@ -5989,6 +6101,25 @@ impl PhantomDriver {
                         );
                         continue;
                     }
+                    // The beat before it comes. It is already revealed and has already screamed
+                    // (both ride SPRINT, ADR-038), so this is the moment where you see WHAT it is
+                    // before it moves — which is also what makes the reveal readable at all.
+                    // Faces you while it holds, so it never reads as the AI having frozen.
+                    if self.movers[i].hesitate_timer > 0.0 {
+                        self.movers[i].hesitate_timer -= dt;
+                        let to_player = (tpos.x - from.x)
+                            .atan2(tpos.z - from.z)
+                            .rem_euclid(std::f32::consts::TAU);
+                        self.movers[i].heading_target = to_player;
+                        let t = (PHANTOM_TURN_SPEED_SPRINT * dt).min(1.0);
+                        self.movers[i].heading = lerp_heading(self.movers[i].heading, to_player, t);
+                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            peer.update_player_state(from.to_array(), yaw, "idle".into());
+                        }
+                        continue;
+                    }
+
                     // ADR-040: navigated heading (see STALK). The lunge routes around geometry
                     // instead of pinning itself to a wall between it and you.
                     let to_player = self.steer_heading(i, current_layer, from, tpos, dt);
@@ -7042,6 +7173,10 @@ mod tests {
         let mut driver = PhantomDriver::new(world.seed);
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         // Force a STALK whose patience has already run out, player inside LOSE_RADIUS.
+        // Patience is now scaled by temperament, so the threshold is pinned to the base constant
+        // rather than assumed: this test is about the transition, not about which creature drew a
+        // long fuse.
+        driver.movers[0].traits.patience_scale = 1.0;
         driver.movers[0].state = PhantomState::Stalk;
         driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE + 5.0;
         let player = Vec3::new(6.0, 1.8, 0.0);
@@ -7493,6 +7628,99 @@ mod tests {
             driver.is_wedged(0),
             "a lunge that cannot advance must register as wedged, got {} blocked ticks",
             driver.movers[0].blocked_ticks
+        );
+    }
+
+    #[test]
+    fn traits_are_reproducible_per_creature_and_differ_between_them() {
+        // Same promise as the spawn draw: two players meet the SAME character, and one that
+        // despawns and comes back is still itself. That is why temperament is DERIVED and never
+        // rolled — a roll at spawn would re-cast the creature every time it woke up.
+        let a = ((3, -7), 0u8, 0u8);
+        let b = ((3, -7), 0u8, 1u8); // same block, second creature in it
+        let c = ((4, -7), 0u8, 0u8);
+
+        assert_eq!(
+            PhantomTraits::derive(42, Some(a), 0xF000),
+            PhantomTraits::derive(42, Some(a), 0xF00A),
+            "temperament must follow the ANCHOR, not the id it happens to be given this session"
+        );
+        assert_ne!(
+            PhantomTraits::derive(42, Some(a), 0xF000),
+            PhantomTraits::derive(42, Some(b), 0xF000)
+        );
+        assert_ne!(
+            PhantomTraits::derive(42, Some(a), 0xF000),
+            PhantomTraits::derive(42, Some(c), 0xF000)
+        );
+        assert_ne!(
+            PhantomTraits::derive(42, Some(a), 0xF000),
+            PhantomTraits::derive(7778, Some(a), 0xF000),
+            "a different seed is a different world, personalities included"
+        );
+
+        // Spread is real, and centred: over many creatures the world must not drift harder or
+        // softer than the constants say. Mean within 15 % of 1.0 across the four scale traits.
+        let mut n = 0.0f32;
+        let (mut sp, mut pa, mut im, mut st) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+        for bx in -10..10 {
+            for bz in -10..10 {
+                let t = PhantomTraits::derive(42, Some(((bx, bz), 0, 0)), 0xF000);
+                sp += t.spotted_scale;
+                pa += t.patience_scale;
+                im += t.impulse_scale;
+                st += t.statue_scale;
+                n += 1.0;
+            }
+        }
+        for (name, mean) in [
+            ("spotted", sp / n),
+            ("patience", pa / n),
+            ("impulse", im / n),
+            ("statue", st / n),
+        ] {
+            assert!(
+                (mean - 1.0).abs() < 0.15,
+                "{name} temperament is a difficulty knob, not variance: mean {mean:.2}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_hesitating_lunge_holds_still_before_it_comes() {
+        // The beat between "it stops looking like a player" and "it is on you". Reveal and scream
+        // both ride SPRINT (ADR-038), so without this they land on the same instant the creature
+        // starts closing and there is nothing to read.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        driver.movers[0].hesitate_timer = 0.5;
+        let here = Vec3::from_array(net.peers[&pid].position);
+        let player = Vec3::new(here.x + 10.0, 1.8, here.z);
+
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
+
+        let after = Vec3::from_array(net.peers[&pid].position);
+        assert!(
+            after.distance_xz(here) < 1e-3,
+            "a hesitating lunge must not travel, moved to {after:?}"
+        );
+        assert!(
+            phantom_reveals(driver.movers[0].state),
+            "…and it holds its real form while it hesitates"
+        );
+
+        // It is a beat, not a stall: once it expires the creature closes.
+        for _ in 0..8 {
+            driver.step(&mut net, 0.1, player, 0.0, false, false);
+        }
+        let moved = Vec3::from_array(net.peers[&pid].position);
+        assert!(
+            moved.distance_xz(here) > 0.5,
+            "the hesitation must END and the lunge continue"
         );
     }
 
