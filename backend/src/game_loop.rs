@@ -141,6 +141,22 @@ const PHANTOM_SPRINT_RANDOM_CHANCE: f32 = 0.008; // per-tick unpredictable lunge
 // position delta — peers send no velocity/move_state). NO wire/IPC change.
 const PHANTOM_STATUE_RANGE: f32 = 20.0; // only freezes if the watching player is within this (m)
 const PHANTOM_STATUE_LOOK_HALF_FOV: f32 = std::f32::consts::FRAC_PI_6; // 30° half → 60° player cone
+/// Wider cone to LEAVE the freeze than to enter it (45° half → 90°). Hysteresis, not a retune: a
+/// single edge at 10 Hz made a player standing on the boundary toggle STATUE↔STALK every tick, and
+/// each toggle is a full reveal + scream (ADR-038 derives `revealed` from the state).
+const PHANTOM_STATUE_RELEASE_HALF_FOV: f32 = std::f32::consts::FRAC_PI_4;
+/// After releasing a freeze, the creature will not freeze again for this long (s). The cone
+/// hysteresis handles jitter; this handles the deliberate look-away-look-back, which otherwise
+/// re-armed the whole reveal on demand.
+const PHANTOM_STATUE_COOLDOWN: f32 = 6.0;
+/// How long a lunge stays committed after landing its blow (s), before bouncing back to STALK.
+///
+/// It used to bounce on the SAME tick, so the real form appeared and vanished around a single
+/// frame of contact — the disguise recomposing mid-strike is exactly the "cambia y desvanbio todo
+/// el rato" flicker. Now it charges through, still revealed, and cannot strike again inside the
+/// window. Longer than `PHANTOM_PICKUP_GESTURE` (1 s) on purpose: the gesture freeze must finish
+/// INSIDE the commitment, or the bounce would land the instant the pose unfroze.
+const PHANTOM_STRIKE_RECOVERY: f32 = 2.5;
 const PHANTOM_STATUE_MAX: f32 = 6.0; // max seconds frozen → then it lunges (SPRINT)
 const PHANTOM_RUN_SPEED_THRESHOLD: f32 = 4.5; // target speed (m/s) read as "running" (above walk)
 const PHANTOM_SOUND_BONUS: f32 = 8.0; // extra detect radius (m) when the player is running
@@ -4510,6 +4526,28 @@ fn nearest_real_target(
 /// available per-peer (and is discarded for the host), so this is the horizontal cone only:
 /// looking up/down does not count. No geometry occlusion (consistent with D1=(a)).
 fn player_is_looking_at(player_pos: Vec3, player_yaw: f32, phantom_pos: Vec3) -> bool {
+    player_is_looking_at_within(
+        player_pos,
+        player_yaw,
+        phantom_pos,
+        PHANTOM_STATUE_LOOK_HALF_FOV,
+    )
+}
+
+/// `player_is_looking_at` with an explicit cone, so ENTERING and LEAVING the freeze can use
+/// different ones.
+///
+/// A single hard edge at 10 Hz is a flicker generator: standing where the creature sits exactly on
+/// the cone boundary, the smallest mouse drift toggled STATUE↔STALK every tick — and since
+/// `revealed` is derived from the state (ADR-038), every one of those toggles was a full reveal,
+/// disguise-drop and SCREAM. Widening the release cone means you have to look meaningfully AWAY to
+/// release it, not merely jitter.
+fn player_is_looking_at_within(
+    player_pos: Vec3,
+    player_yaw: f32,
+    phantom_pos: Vec3,
+    half_fov: f32,
+) -> bool {
     let dx = phantom_pos.x - player_pos.x;
     let dz = phantom_pos.z - player_pos.z;
     let len = (dx * dx + dz * dz).sqrt();
@@ -4519,7 +4557,7 @@ fn player_is_looking_at(player_pos: Vec3, player_yaw: f32, phantom_pos: Vec3) ->
     let yaw = player_yaw.to_radians();
     // Player forward unit dir (Unity yaw): (sin, cos). dot with the unit to-phantom vector.
     let dot = (yaw.sin() * dx + yaw.cos() * dz) / len;
-    dot >= PHANTOM_STATUE_LOOK_HALF_FOV.cos()
+    dot >= half_fov.cos()
 }
 
 /// ADR-016 (fluidity): angularly ease `current` heading toward `target` (both yaw radians) by
@@ -4824,6 +4862,15 @@ struct PhantomMover {
     /// and SEARCH drops its plan; the two hunting states just kept pushing into the same corner at
     /// 10 Hz, which is what "se queda pegado en las esquinas" looks like from the outside.
     blocked_ticks: u8,
+    /// Seconds left of the post-strike commitment. While positive the lunge holds (still revealed)
+    /// and cannot land a second blow; at zero it bounces to STALK.
+    strike_recover: f32,
+    /// Seconds left before this one may freeze into STATUE again.
+    statue_cooldown: f32,
+    /// This lunge has already landed its blow and is running out its commitment. Cleared when it
+    /// bounces to STALK, and when the lunge loses its target mid-recovery — otherwise the NEXT
+    /// lunge would inherit it and disengage on its first tick.
+    struck: bool,
 }
 
 impl PhantomDriver {
@@ -5165,6 +5212,9 @@ impl PhantomDriver {
             search_speed: PHANTOM_SEARCH_SPEED,
             noise_expiry: None,
             blocked_ticks: 0,
+            strike_recover: 0.0,
+            statue_cooldown: 0.0,
+            struck: false,
         });
     }
 
@@ -5496,6 +5546,11 @@ impl PhantomDriver {
                 from,
             );
             self.movers[i].state_timer += dt;
+            // Ticked HERE, above the gesture freeze, and not inside the SPRINT branch: the freeze
+            // `continue`s past the whole FSM for a second after a strike, so a timer advanced down
+            // there would stall exactly across the window it exists to cover.
+            self.movers[i].strike_recover = (self.movers[i].strike_recover - dt).max(0.0);
+            self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - dt).max(0.0);
 
             // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
             // are PURE THEATER — only the `animation` field. While active, freeze in place holding
@@ -5742,7 +5797,10 @@ impl PhantomDriver {
 
                     // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
                     // close → freeze. Entered only from STALK; a committed SPRINT is never frozen.
-                    if dist < PHANTOM_STATUE_RANGE && player_is_looking_at(tpos, tyaw, from) {
+                    if dist < PHANTOM_STATUE_RANGE
+                        && self.movers[i].statue_cooldown <= 0.0
+                        && player_is_looking_at(tpos, tyaw, from)
+                    {
                         self.movers[i].state = PhantomState::Statue;
                         self.movers[i].state_timer = 0.0;
                         info!(
@@ -5855,10 +5913,18 @@ impl PhantomDriver {
                         );
                         continue;
                     }
-                    // Player looked away → resume stalking.
-                    if !player_is_looking_at(tpos, tyaw, from) {
+                    // Player looked away → resume stalking. WIDER cone than the one that froze it
+                    // (hysteresis): you have to look meaningfully away, not merely jitter on the
+                    // boundary, and the cooldown stops an immediate re-freeze.
+                    if !player_is_looking_at_within(
+                        tpos,
+                        tyaw,
+                        from,
+                        PHANTOM_STATUE_RELEASE_HALF_FOV,
+                    ) {
                         self.movers[i].state = PhantomState::Stalk;
                         self.movers[i].state_timer = 0.0;
+                        self.movers[i].statue_cooldown = PHANTOM_STATUE_COOLDOWN;
                         info!(
                             "MPTRACE step=PH_STALK event=phantom_statue_release phantom_id={}",
                             id
@@ -5895,11 +5961,34 @@ impl PhantomDriver {
                             PhantomState::Wander
                         };
                         self.movers[i].state_timer = 0.0;
+                        // Losing the target ends the commitment with it, or the next lunge would
+                        // inherit `struck` and disengage on its first tick.
+                        self.movers[i].struck = false;
+                        self.movers[i].strike_recover = 0.0;
                         continue;
                     }
                     // ADR-047: `tid` BOUND (see STATUE) — the strike below must name its victim.
                     let (tid, tpos, dist, tyaw) = target.unwrap();
                     self.movers[i].last_known_player_pos = Some(tpos);
+
+                    // The post-strike commitment has run out: NOW it bounces off. Deferring this is
+                    // the whole point — see `PHANTOM_STRIKE_RECOVERY`.
+                    //
+                    // A LEVEL (`struck` + expired timer), not the edge of the timer: the gesture
+                    // freeze at the top of the loop `continue`s past this branch for a whole second
+                    // after the blow, and it runs on `Instant` while the timer runs on `dt`. An
+                    // edge that lands on a frozen tick would be swallowed and the lunge would never
+                    // disengage at all.
+                    if self.movers[i].struck && self.movers[i].strike_recover <= 0.0 {
+                        self.movers[i].struck = false;
+                        self.movers[i].state = PhantomState::Stalk;
+                        self.movers[i].state_timer = 0.0;
+                        info!(
+                            "MPTRACE step=PH_STALK event=phantom_strike_recovered phantom_id={}",
+                            id
+                        );
+                        continue;
+                    }
                     // ADR-040: navigated heading (see STALK). The lunge routes around geometry
                     // instead of pinning itself to a wall between it and you.
                     let to_player = self.steer_heading(i, current_layer, from, tpos, dt);
@@ -5913,10 +6002,14 @@ impl PhantomDriver {
                     // Point-blank "attack". The pickup gesture is the VISUAL only (ADR-016
                     // invariant — the DAMAGE rides the separate PhantomAttack channel, never the
                     // pickup path). Front (player looking) = non-lethal hit; behind = kill.
-                    if dist < 1.5 {
+                    // The lunge STAYS COMMITTED after the blow instead of bouncing on the same
+                    // tick. The bounce is what made the real form appear and vanish around a single
+                    // frame of contact; now it charges through, still revealed, and the second
+                    // condition stops it re-striking inside that window.
+                    if dist < 1.5 && self.movers[i].strike_recover <= 0.0 {
                         self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
-                        self.movers[i].state = PhantomState::Stalk; // bounce off after the strike
-                        self.movers[i].state_timer = 0.0;
+                        self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
+                        self.movers[i].struck = true;
                         if player_is_looking_at(tpos, tyaw, from) {
                             self.attacks.push(PhantomAttack {
                                 victim: tid,
@@ -7903,7 +7996,13 @@ mod tests {
 
     #[tokio::test]
     async fn phantom_sprint_hits_from_front() {
-        // Point-blank SPRINT while the player IS looking → non-lethal Hit, bounces to STALK.
+        // Point-blank SPRINT while the player IS looking → non-lethal Hit.
+        //
+        // This test used to assert the bounce to STALK on the SAME tick as the blow. That was the
+        // flicker: `revealed` is derived from the state (ADR-038), so a lunge that ended the
+        // instant it connected dropped the disguise and put it back on around one frame of contact.
+        // The lunge now holds for `PHANTOM_STRIKE_RECOVERY` and the bounce is asserted below, in
+        // `a_strike_does_not_end_the_lunge_on_the_same_tick`.
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let start = [0.0, 1.8, 0.0];
         let pid = net.spawn_phantom("Robapieles_Test", start);
@@ -7924,8 +8023,89 @@ mod tests {
         );
         assert_eq!(
             driver.movers[0].state,
-            PhantomState::Stalk,
-            "must bounce to STALK after a hit"
+            PhantomState::Sprint,
+            "the lunge stays committed through its own strike"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_strike_does_not_end_the_lunge_on_the_same_tick() {
+        // ADR-038 derives `revealed` from the STATE, so anything that makes the state flap makes
+        // the real form flap with it — disguise off, scream, disguise back on, around a single
+        // frame of contact. The fix is in the FSM and NOT a latch on the flag: ADR-038 point 2 is
+        // explicit that `revealed` is a derived level, and its rejected alternative (C) is a latch.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        let ppos = net.peers[&pid].position;
+        let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]);
+        let player_yaw = 270.0; // looking at it → a Hit, not a Kill
+
+        let first = driver
+            .step(&mut net, 0.1, player, player_yaw, false, false)
+            .len();
+        assert_eq!(first, 1, "the blow still lands");
+
+        // The 1 s gesture freeze runs on `Instant`, so inside a test (microseconds of real time) it
+        // never expires and would swallow every remaining tick. Ending it by hand is what a second
+        // of wall-clock does in production; it is also why the bounce below is a LEVEL and not the
+        // edge of the timer.
+        driver.movers[0].pickup_until = None;
+
+        // Through the whole commitment the creature stays revealed and never strikes twice.
+        let mut extra = 0;
+        let ticks = (PHANTOM_STRIKE_RECOVERY / 0.1).floor() as i32 - 2;
+        for _ in 0..ticks {
+            extra += driver
+                .step(&mut net, 0.1, player, player_yaw, false, false)
+                .len();
+            assert!(
+                phantom_reveals(driver.movers[0].state),
+                "the real form must not flicker back mid-commitment"
+            );
+        }
+        assert_eq!(extra, 0, "no second blow inside the recovery window");
+
+        // …and then it bounces off, exactly as it always did — just later.
+        for _ in 0..4 {
+            driver.step(&mut net, 0.1, player, player_yaw, false, false);
+        }
+        // Not `== Stalk`: it disengages INTO Stalk and, with the player still staring at it from a
+        // metre away, freezes into Statue on that very tick — which is the designed follow-on, not
+        // a flicker. What must be true is that the lunge ended and the commitment was consumed.
+        assert_ne!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "the commitment must END, or the lunge would never disengage"
+        );
+        assert!(
+            !driver.movers[0].struck,
+            "the spent commitment must not carry into the next lunge"
+        );
+    }
+
+    #[tokio::test]
+    async fn statue_uses_a_wider_cone_to_release_than_to_freeze() {
+        // Hysteresis. With one hard edge, a player standing on the boundary toggled STATUE↔STALK
+        // every tick at 10 Hz, and every toggle was a full reveal + scream.
+        let phantom = Vec3::new(0.0, 1.8, 0.0);
+        let player = Vec3::new(0.0, 1.8, -10.0); // 10 m south, so yaw 0 (+Z) looks straight at it
+
+        // A yaw between the two cones: outside the 30° that freezes, inside the 45° that holds.
+        let between = (PHANTOM_STATUE_LOOK_HALF_FOV.to_degrees()
+            + PHANTOM_STATUE_RELEASE_HALF_FOV.to_degrees())
+            / 2.0;
+
+        assert!(
+            !player_is_looking_at(player, between, phantom),
+            "must be too far off-axis to START a freeze"
+        );
+        assert!(
+            player_is_looking_at_within(player, between, phantom, PHANTOM_STATUE_RELEASE_HALF_FOV),
+            "…yet still count as watching, so an existing freeze HOLDS"
         );
     }
 
