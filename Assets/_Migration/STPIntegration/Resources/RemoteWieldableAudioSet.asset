@@ -1,0 +1,25 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 3cb5b8678ed254c42b3a5e62a855859e, type: 3}
+  m_Name: RemoteWieldableAudioSet
+  m_EditorClassIdentifier: 
+  defaultFireClip: {fileID: 8300000, guid: 6b1bdcf5ec2cc444c949b40378f6baa1, type: 3}
+  defaultVolume: 1
+  entries: []
+  minDistance: 15
+  maxDistance: 500
+  rolloff: 0
+  spread: 15
+  defaultTailClip: {fileID: 0}
+  tailVolume: 0.8
+  tailDelay: 0.08
+  tailMinDistance: 60
