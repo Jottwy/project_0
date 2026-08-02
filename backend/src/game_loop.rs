@@ -353,6 +353,13 @@ fn hydrate_from_save(
 
     if let Some(p) = save.host_player {
         player.stats = p.stats;
+        // `invuln_until_tick` es un tick ABSOLUTO del contador del game loop, y ese contador
+        // arranca en 0 en cada lanzamiento del proceso. Restaurarlo tal cual concede
+        // invulnerabilidad PvP durante tantos ticks como llevara la sesión que lo guardó
+        // (medido en un save real: 21716 ticks ≈ 6 min a 60 Hz; en una sesión larga, horas).
+        // Se sanea a 0: la invulnerabilidad de ADR-029 protege el instante del respawn, no
+        // sobrevive a un reinicio del backend por diseño.
+        player.stats.invuln_until_tick = 0;
         player.position = p.position;
         player.rotation = p.rotation;
         player.inventory = p.inventory;
@@ -5650,6 +5657,44 @@ mod tests {
             "una pieza suelta no ocupa celda: apilarlas es legitimo"
         );
         assert_eq!(net.occupied_stp_cells.len(), 1);
+    }
+
+    /// `invuln_until_tick` es un tick ABSOLUTO y el contador de ticks arranca en 0 en cada
+    /// proceso. Restaurarlo tal cual concedia invulnerabilidad PvP durante toda la duracion de
+    /// la sesion que lo guardo (medido en un save real: 21716 ticks ~ 6 min a 60 Hz).
+    #[tokio::test]
+    async fn hydrate_clears_the_absolute_invulnerability_tick() {
+        use crate::persistence::save::{build_save, SaveMeta};
+
+        let mut world = World::new(42);
+        let mut player = Player::new(1, String::from("Host"));
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+        let mut snapshot_player = Player::new(1, String::from("Host"));
+        snapshot_player.stats.health = 73.0;
+        snapshot_player.stats.invuln_until_tick = 21_716;
+
+        let save = build_save(
+            "test",
+            &world,
+            &snapshot_player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+        );
+        hydrate_from_save(&mut world, &mut player, &mut net, save);
+
+        assert_eq!(
+            player.stats.invuln_until_tick, 0,
+            "la invulnerabilidad de respawn no puede sobrevivir a un reinicio del backend"
+        );
+        // Contrapartida: el resto del snapshot de stats SI se restaura — el saneo es quirurgico.
+        assert!(
+            (player.stats.health - 73.0).abs() < 1e-4,
+            "sanear el tick de invulnerabilidad no puede tirar el resto de stats"
+        );
     }
 
     /// El matiz que hace que la receta ingenua `max(roster) + 1` sea INCORRECTA: los rangos estan
