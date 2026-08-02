@@ -22,6 +22,7 @@ use crate::world::collision::{resolve_safe_spawn, Level0Collision};
 use crate::world::grid_gen::{
     resolve_move_grid_gen, resolve_move_grid_gen_ex, world_pos_to_layer, GridGenChunkCache,
 };
+use crate::world::phantom_spawn;
 use crate::world::World;
 
 const TICK_HZ: u64 = 60;
@@ -202,6 +203,25 @@ const PHANTOM_ATTACK_DAMAGE: f32 = 35.0; // frontal SPRINT hit (non-lethal; boun
 const PHANTOM_KNOCKBACK_RANGE: f32 = 3.0; // STATUE→SPRINT shove only within this (m)
 const PHANTOM_KNOCKBACK_FORCE: f32 = 3.0; // shove speed (m/s); client applies via SetVelocity
 
+// ─── ADR-043 — population: which of the world's robapieles are actually simulated ───
+/// How often the active population is reconciled with the draw. 1 Hz, not the 10 Hz entity tick:
+/// the set of nearby blocks changes at walking pace (a 200 m block takes ~40 s to cross), so ten
+/// scans a second would repeat the same answer nine times.
+const PHANTOM_POPULATION_SYNC_INTERVAL: f32 = 1.0;
+/// A drawn phantom wakes up when a real player is within this of it (m).
+const PHANTOM_ACTIVATE_RADIUS: f32 = 150.0;
+/// …and only sleeps again past THIS (m). The gap is hysteresis, and it is not decoration: with a
+/// single threshold, a player standing near it would spawn and despawn the same creature every
+/// second, which on the client is an avatar blinking in and out at the edge of view distance.
+const PHANTOM_DEACTIVATE_RADIUS: f32 = 200.0;
+/// Hard cap on simultaneously simulated phantoms. Nearest to a player wins when it binds.
+///
+/// Sized against the chunk cache, not guessed: `GRID_CACHE_MAX_CHUNKS` (256) holds ~16 movers'
+/// A\* working sets, so this leaves better than 2× headroom. Raising it past that headroom returns
+/// the mutual-eviction thrash the cache cap was raised to remove — the two constants are one
+/// decision (see `GRID_CACHE_MAX_CHUNKS`).
+const PHANTOM_ACTIVE_CAP: usize = 6;
+
 /// ADR-032: where the host reads/writes its world save. `SAVE_PATH` env overrides; default is
 /// `./saves/world_{seed}.json`.
 fn resolve_save_path(seed: u64) -> std::path::PathBuf {
@@ -376,9 +396,11 @@ pub async fn run(
     // keeps collision off (world-migration debt) while the player can still die (so the phantom
     // can kill). Set DEV_INVINCIBLE to disable death/respawn for debugging. Default OFF.
     let dev_invincible = env_flag_enabled("DEV_INVINCIBLE");
-    // ADR-016: debug-only spawn of the phantom (the robapieles). OFF unless DEBUG_SPAWN_PHANTOM
-    // is set in the env — a normal build never auto-spawns one (no leftover scaffolding). Kept as
-    // the explicit spawn trigger for the identity/tell phases and future play-tests.
+    // ADR-016 + ADR-043: this is NO LONGER the existence switch for the robapieles. Since ADR-043
+    // the world populates itself from the seed and a normal build has creatures in it; what this
+    // flag still does — and the only thing it does — is drop ONE extra phantom right next to the
+    // host at boot, which is what you want when debugging a specific behaviour instead of walking
+    // until you meet one. It is exempt from the population reconciler (`anchor: None`).
     let debug_spawn_phantom = env_flag_enabled("DEBUG_SPAWN_PHANTOM");
 
     let mut ticker = interval(TICK_DURATION);
@@ -451,7 +473,7 @@ pub async fn run(
                 player.position.y,
                 player.position.z,
             ];
-            let (victim_name, victim_bound) = choose_victim_name(&net);
+            let (victim_name, victim_bound) = choose_victim_name_for(&net, 0);
             let phantom_id = net.spawn_phantom(&victim_name, phantom_pos);
             phantom_driver.add(
                 phantom_id,
@@ -776,6 +798,10 @@ pub async fn run(
             // move is resolved via ADR-017 sim-only collision, so it respects walls/floor even
             // far from the host (where world.chunks is empty). Same 10 Hz as the pose relay.
             if net.is_host {
+                // ADR-043: reconcile which of the world's robapieles are simulated BEFORE stepping
+                // them, so one that just woke up gets a full tick instead of standing still for
+                // 100 ms at the edge of view — the frame a player is most likely to be looking.
+                phantom_driver.sync_population(&mut net, player.position, entity_dt);
                 let attacks = phantom_driver.step(
                     &mut net,
                     entity_dt,
@@ -1028,6 +1054,29 @@ fn env_flag_enabled(name: &str) -> bool {
                 || value.eq_ignore_ascii_case("on")
         })
         .unwrap_or(false)
+}
+
+/// ADR-043 — a tuning knob read from the env, falling back to `default` when unset OR unparseable.
+///
+/// Fails SOFT and loud, unlike the fail-loud config elsewhere: this is a load-test lever, and a
+/// typo in a shell variable must not stop the game from starting. The warning is what makes the
+/// difference between a lever that silently did nothing and one you can see did nothing.
+fn env_tuning<T: std::str::FromStr + std::fmt::Display>(name: &str, default: T) -> T {
+    match std::env::var(name) {
+        Err(_) => default,
+        Ok(raw) => match raw.trim().parse::<T>() {
+            Ok(v) => {
+                info!("MPTRACE step=CFG event=tuning_override name={name} value={v}");
+                v
+            }
+            Err(_) => {
+                warn!(
+                    "MPTRACE step=CFG event=tuning_unparseable name={name} raw={raw} using_default={default}"
+                );
+                default
+            }
+        },
+    }
 }
 
 async fn handle_network_event(
@@ -3963,14 +4012,20 @@ fn build_world_state(
 /// unique id — the id mismatch is the intended subtle tell #1). Returns `(name, bound)`: `bound`
 /// is true when a real victim was found, false → host-name fallback (solo), which
 /// `rebind_unbound_victims` later upgrades to a real peer once one connects.
-fn choose_victim_name(net: &NetworkManager) -> (String, bool) {
-    match net
-        .peers
-        .values()
-        .find(|p| !net.phantom_ids.contains(&p.id))
-    {
-        Some(p) => (p.name.clone(), true),
-        None => (net.local_name.clone(), false),
+///
+/// ADR-043 — `slot` spreads the victims across the real peers instead of every creature wearing
+/// the same face. It used to be a bare `.find()` over `peers`, which was harmless with one phantom
+/// and self-defeating with a populated world: two of them in sight at once, both called the same
+/// thing, and the whole point of ADR-016's disguise evaporates. With more phantoms than players
+/// names still repeat — unavoidable, and fine, because they are spread across the map.
+///
+/// The list comes from `real_peer_names` (id-ordered) rather than from iterating `peers` directly,
+/// because `HashMap` order is arbitrary and would re-cast everyone from tick to tick.
+fn choose_victim_name_for(net: &NetworkManager, slot: usize) -> (String, bool) {
+    let names = net.real_peer_names();
+    match names.is_empty() {
+        true => (net.local_name.clone(), false),
+        false => (names[slot % names.len()].clone(), true),
     }
 }
 
@@ -4185,6 +4240,17 @@ struct PhantomDriver {
     /// with a populated world is two creatures reaching you together and only one of them
     /// counting. Owned by the driver and cleared per step so the fan-out costs no allocation.
     attacks: Vec<PhantomAttack>,
+    /// ADR-043 — seconds until the active population is reconciled against the draw again.
+    population_sync_in: f32,
+    /// ADR-043 — monotonic counter handing each new mover its `victim_slot`. Monotonic and not
+    /// `movers.len()` on purpose: indices shift when a creature deactivates, and reusing one would
+    /// silently re-cast a survivor as somebody else the next time a neighbour despawned.
+    next_victim_slot: usize,
+    /// ADR-043 — density multiplier applied to the draw (`PHANTOM_DENSITY_SCALE`). Held here so
+    /// the pure draw stays a pure function of its arguments.
+    density_scale: f32,
+    /// ADR-043 — max simultaneously simulated phantoms (`PHANTOM_ACTIVE_CAP`, env-overridable).
+    active_cap: usize,
     /// Size of the building roster the blocked-cell overlay was last built from.
     built_count: usize,
     /// Seconds until the overlay is rebuilt regardless of size. A place + a demolish in the same
@@ -4192,10 +4258,37 @@ struct PhantomDriver {
     built_resync_in: f32,
 }
 
+/// ADR-043 — a drawn phantom the population reconciler is considering waking up this scan.
+struct PhantomCandidate {
+    /// Distance from the nearest real player, in XZ. Sorted on, so the cap keeps the creatures
+    /// somebody is most likely to actually meet.
+    distance: f32,
+    /// `(block, layer)` it was drawn from — becomes the mover's `anchor`.
+    anchor: ((i32, i32), u8),
+    /// Raw drawn position, before `spawn_phantom` snaps it to a walkable cell.
+    position: [f32; 3],
+}
+
 /// Per-phantom state: which peer, its heading (yaw, radians), the faked-pickup gesture (slice 4),
 /// the "stare" tell (tell phase), and the victim-name binding (identity phase).
 struct PhantomMover {
     id: PeerId,
+    /// ADR-043 — the `(block, layer)` this creature was drawn from, or `None` for one placed by
+    /// hand (`DEBUG_SPAWN_PHANTOM`). The population reconciler uses it as the identity of a drawn
+    /// phantom: it is what stops the same block spawning a second copy on the next scan, and
+    /// `None` is what keeps a hand-placed one exempt from being reconciled away.
+    ///
+    /// Deliberately NOT the same thing as `spawn_pos`, which re-anchors as the creature travels
+    /// (ADR-041). The anchor is where the world says it lives; `spawn_pos` is where it currently
+    /// considers home.
+    anchor: Option<((i32, i32), u8)>,
+    /// Which real player this one impersonates, as an index into `NetworkManager::real_peer_names`.
+    /// Assigned once at spawn and never reshuffled.
+    ///
+    /// Before ADR-043 the victim was resolved with a single `.find()` over `peers` and handed to
+    /// EVERY mover, so a populated world was N avatars all wearing the same name — the disguise
+    /// ADR-016 exists to protect, defeating itself the moment two were in sight.
+    victim_slot: usize,
     heading: f32,
     /// Spawn position; the observation leash (PHANTOM_WANDER_RADIUS) re-aims the heading here
     /// when the phantom drifts too far, so it stays in view during play-test.
@@ -4269,6 +4362,13 @@ impl PhantomDriver {
             #[cfg(test)]
             nav_replans: 0,
             attacks: Vec::new(),
+            population_sync_in: 0.0, // reconcile on the very first entity tick
+            next_victim_slot: 0,
+            // ADR-043 — the load-test levers. Read ONCE at construction, not per tick: a value
+            // that could change mid-session would make the world's population depend on when you
+            // looked, and the draw's whole promise is that it does not.
+            density_scale: env_tuning("PHANTOM_DENSITY_SCALE", 1.0f32).max(0.0),
+            active_cap: env_tuning("PHANTOM_ACTIVE_CAP", PHANTOM_ACTIVE_CAP),
             built_count: usize::MAX, // forces a build on the first step
             built_resync_in: 0.0,
         }
@@ -4300,10 +4400,159 @@ impl PhantomDriver {
         self.grid_cache.set_blocked_cells(cells);
     }
 
+    /// ADR-043 — reconcile the SIMULATED population against the world's draw, once a second.
+    ///
+    /// The world holds infinitely many robapieles and simulates a handful: the ones a real player
+    /// could plausibly meet. Everything else is a hash that has not been asked yet. Without this
+    /// gate the host would pay full AI — pathfinding included — for creatures nobody can see, and
+    /// the step budget goes with it.
+    ///
+    /// Deactivation is deliberately NOT the mirror image of activation:
+    /// - the radii differ (hysteresis), so a player loitering at the boundary does not make an
+    ///   avatar blink in and out on every client;
+    /// - only a phantom in WANDER may be put away. One that is stalking, searching or charging has
+    ///   left its anchor by definition, and deleting it would teleport it back there the moment it
+    ///   re-activated — which reads as a bug, not as having lost it. Escaping already has its own
+    ///   designed mechanic: SEARCH and its 12 s surrender (ADR-040).
+    fn sync_population(&mut self, net: &mut NetworkManager, host_player_pos: Vec3, dt: f32) {
+        self.population_sync_in -= dt;
+        if self.population_sync_in > 0.0 {
+            return;
+        }
+        self.population_sync_in = PHANTOM_POPULATION_SYNC_INTERVAL;
+
+        // Every REAL player: the host's own local player (which is not a peer) plus real peers.
+        // Collected up front so no borrow of `net` survives into the mutation below.
+        let players: Vec<Vec3> = std::iter::once(host_player_pos)
+            .chain(
+                net.peers
+                    .iter()
+                    .filter(|(id, _)| !net.is_phantom(**id))
+                    .map(|(_, p)| Vec3::from_array(p.position)),
+            )
+            .collect();
+
+        // ── Put away the ones nobody is near any more ──
+        let mut retired: Vec<PeerId> = Vec::new();
+        for m in &self.movers {
+            if m.anchor.is_none() || m.state != PhantomState::Wander {
+                continue; // hand-placed, or busy with a player — see the doc comment
+            }
+            let Some(peer) = net.peers.get(&m.id) else {
+                continue;
+            };
+            let here = Vec3::from_array(peer.position);
+            let layer = world_pos_to_layer(here.y);
+            let far = players.iter().all(|p| {
+                world_pos_to_layer(p.y) != layer || p.distance_xz(here) > PHANTOM_DEACTIVATE_RADIUS
+            });
+            if far {
+                retired.push(m.id);
+            }
+        }
+        for id in &retired {
+            net.despawn_phantom(*id);
+        }
+        self.movers.retain(|m| !retired.contains(&m.id));
+
+        // ── Wake up the ones somebody walked near ──
+        if self.movers.len() >= self.active_cap {
+            return;
+        }
+        let taken: std::collections::HashSet<((i32, i32), u8)> =
+            self.movers.iter().filter_map(|m| m.anchor).collect();
+        let mut seen_blocks: std::collections::HashSet<((i32, i32), u8)> =
+            std::collections::HashSet::new();
+        let mut candidates: Vec<PhantomCandidate> = Vec::new();
+
+        for p in &players {
+            // ADR-043 D-ACTIVACIÓN: the player's OWN layer only. Distance in XZ alone would wake a
+            // creature standing on layer 1 directly under your feet — paying AI for something that
+            // can neither reach you nor be seen by you.
+            let layer = world_pos_to_layer(p.y);
+            let (bx0, bz0) = phantom_spawn::block_of(
+                p.x - PHANTOM_ACTIVATE_RADIUS,
+                p.z - PHANTOM_ACTIVATE_RADIUS,
+            );
+            let (bx1, bz1) = phantom_spawn::block_of(
+                p.x + PHANTOM_ACTIVATE_RADIUS,
+                p.z + PHANTOM_ACTIVATE_RADIUS,
+            );
+            for bx in bx0..=bx1 {
+                for bz in bz0..=bz1 {
+                    let key = ((bx, bz), layer);
+                    if taken.contains(&key) || !seen_blocks.insert(key) {
+                        continue; // already simulated, or already offered by another player
+                    }
+                    let Some(pos) =
+                        phantom_spawn::draw(net.world_seed, (bx, bz), layer, self.density_scale)
+                    else {
+                        continue;
+                    };
+                    // The block is a coarse filter; the radius is the real test, and it is measured
+                    // against the drawn spot rather than the block, or a corner of a 200 m block
+                    // would count as "near" from 280 m away.
+                    let d = p.distance_xz(Vec3::from_array(pos));
+                    if d <= PHANTOM_ACTIVATE_RADIUS {
+                        candidates.push(PhantomCandidate {
+                            distance: d,
+                            anchor: key,
+                            position: pos,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Nearest first, so when the cap binds it keeps the creatures a player is most likely to
+        // actually run into rather than whichever block the scan happened to reach first.
+        candidates.sort_by(|a, b| a.distance.total_cmp(&b.distance));
+        for cand in candidates {
+            if self.movers.len() >= self.active_cap {
+                break;
+            }
+            let (victim_name, victim_bound) = choose_victim_name_for(net, self.next_victim_slot);
+            let id = net.spawn_phantom(&victim_name, cand.position);
+            // The SNAPPED position is the anchor for the leash, not the raw draw: `spawn_phantom`
+            // may have moved it up to 7.5 m to find a walkable cell, and leashing it to a spot
+            // inside a wall would have it pressing against that wall forever.
+            let spawn_pos = net
+                .peers
+                .get(&id)
+                .map(|p| Vec3::from_array(p.position))
+                .unwrap_or_else(|| Vec3::from_array(cand.position));
+            self.add_anchored(
+                id,
+                PHANTOM_INITIAL_HEADING,
+                spawn_pos,
+                victim_bound,
+                Some(cand.anchor),
+            );
+        }
+    }
+
     fn add(&mut self, id: PeerId, heading: f32, spawn_pos: Vec3, victim_bound: bool) {
+        self.add_anchored(id, heading, spawn_pos, victim_bound, None);
+    }
+
+    /// `add`, plus the `(block, layer)` the world drew this one from (ADR-043). The un-anchored
+    /// `add` remains for the hand-placed debug phantom, which must stay exempt from the population
+    /// reconciler — it was put somewhere on purpose and nothing should tidy it away.
+    fn add_anchored(
+        &mut self,
+        id: PeerId,
+        heading: f32,
+        spawn_pos: Vec3,
+        victim_bound: bool,
+        anchor: Option<((i32, i32), u8)>,
+    ) {
         let now = Instant::now();
+        let victim_slot = self.next_victim_slot;
+        self.next_victim_slot = self.next_victim_slot.wrapping_add(1);
         self.movers.push(PhantomMover {
             id,
+            anchor,
+            victim_slot,
             heading,
             spawn_pos,
             pickup_until: None,
@@ -4490,19 +4739,20 @@ impl PhantomDriver {
     /// its OWN unique id (never the victim's id, which would collide the client's `_active[id]`).
     /// The rename rides the existing roster/PeerList + ADR-015 relay (no schema). One-shot per
     /// phantom; cheap no-op once all are bound or no real peer exists.
+    /// ADR-043 — each unbound phantom takes the victim of ITS OWN `victim_slot`, not one name
+    /// resolved once and stamped on all of them. That old shape was invisible with a single debug
+    /// phantom and self-defeating with a populated world: several creatures in view, all wearing
+    /// the same name, which is precisely the disguise giving itself away.
     fn rebind_unbound_victims(&mut self, net: &mut NetworkManager) {
         if self.movers.iter().all(|m| m.victim_bound) {
             return;
         }
-        let victim_name = net
-            .peers
-            .values()
-            .find(|p| !net.phantom_ids.contains(&p.id))
-            .map(|p| p.name.clone());
-        let Some(victim_name) = victim_name else {
+        let names = net.real_peer_names();
+        if names.is_empty() {
             return;
-        };
+        }
         for m in self.movers.iter_mut().filter(|m| !m.victim_bound) {
+            let victim_name = names[m.victim_slot % names.len()].clone();
             if let Some(peer) = net.peers.get_mut(&m.id) {
                 peer.name = victim_name.clone();
             }
@@ -5975,13 +6225,216 @@ mod tests {
         );
     }
 
+    // ─── ADR-043: population — which of the world's robapieles are actually simulated ───
+
+    /// A driver whose knobs are fixed in code, so a stray `PHANTOM_*` in the developer's shell
+    /// cannot quietly change what these tests are asserting.
+    fn population_driver(seed: u64, cap: usize) -> PhantomDriver {
+        let mut d = PhantomDriver::new(seed);
+        d.density_scale = 1.0;
+        d.active_cap = cap;
+        d
+    }
+
+    /// Standing height on `layer`, in the player-pivot convention every peer pose uses.
+    fn stand_on(layer: u8) -> f32 {
+        crate::world::grid_gen::grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y
+    }
+
+    #[tokio::test]
+    async fn population_wakes_phantoms_near_a_player_and_none_when_alone_far_away() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 8);
+
+        driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1);
+        let near_spawn = driver.movers.len();
+        assert!(
+            near_spawn > 0,
+            "a player standing in the world must have neighbours"
+        );
+        assert!(
+            driver.movers.iter().all(|m| m.anchor.is_some()),
+            "drawn phantoms must record the block they came from"
+        );
+        // Every awake one is genuinely within the activation radius — the block is only a coarse
+        // filter, and a 200 m block reaches well past 150 m from its far corner.
+        for m in &driver.movers {
+            let here = Vec3::from_array(net.peers[&m.id].position);
+            assert!(
+                here.distance_xz(Vec3::new(0.0, 0.0, 0.0)) <= PHANTOM_ACTIVATE_RADIUS + 10.0,
+                "woke one at {here:?}, outside the activation radius"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn population_ignores_blocks_on_another_layer() {
+        // ADR-043 D-ACTIVACIÓN. Layers 1-3 draw empty today, so a player standing on one must wake
+        // nothing at all — and crucially, must not wake the LAYER 0 creatures underneath it just
+        // because they are close in XZ. That is the failure the layer filter exists to prevent.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 8);
+
+        driver.sync_population(&mut net, Vec3::new(0.0, stand_on(1), 0.0), 0.1);
+
+        assert!(
+            driver.movers.is_empty(),
+            "a player on layer 1 woke {} phantoms",
+            driver.movers.len()
+        );
+        // Control: the very same XZ on layer 0 does wake some, so the assert above is the layer
+        // filter working and not simply an empty neighbourhood.
+        let mut driver0 = population_driver(42, 8);
+        driver0.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1);
+        assert!(!driver0.movers.is_empty(), "control: layer 0 must populate");
+    }
+
+    #[tokio::test]
+    async fn population_never_exceeds_the_active_cap() {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 1);
+
+        for _ in 0..5 {
+            driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 1.0);
+        }
+
+        assert!(
+            driver.movers.len() <= 1,
+            "cap of 1 held {} movers",
+            driver.movers.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_settled_block_is_not_spawned_twice() {
+        // The anchor is the identity of a drawn phantom. Without it every scan would re-draw the
+        // same block and stack duplicates on the same spot until the cap stopped it.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 8);
+        let here = Vec3::new(0.0, stand_on(0), 0.0);
+
+        driver.sync_population(&mut net, here, 0.1);
+        let first = driver.movers.len();
+        for _ in 0..4 {
+            driver.sync_population(&mut net, here, 1.0);
+        }
+
+        assert_eq!(
+            driver.movers.len(),
+            first,
+            "repeat scans duplicated the population"
+        );
+        let anchors: std::collections::HashSet<_> =
+            driver.movers.iter().filter_map(|m| m.anchor).collect();
+        assert_eq!(anchors.len(), first, "two movers share one anchor block");
+    }
+
+    #[tokio::test]
+    async fn walking_away_puts_a_wanderer_away_but_never_a_pursuer() {
+        // ADR-043 D5, and the reason deactivation is not the mirror of activation: a phantom that
+        // is chasing has LEFT its anchor, so despawning it would teleport it home the moment it
+        // woke again — read as a bug, not as having escaped. Losing it already has its own
+        // designed mechanic (SEARCH + the 12 s surrender, ADR-040).
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 8);
+        let here = Vec3::new(0.0, stand_on(0), 0.0);
+        driver.sync_population(&mut net, here, 0.1);
+        assert!(driver.movers.len() >= 2, "need at least two to compare");
+
+        // One keeps wandering, one is on your heels.
+        driver.movers[0].state = PhantomState::Wander;
+        driver.movers[1].state = PhantomState::Stalk;
+        let wanderer = driver.movers[0].id;
+        let pursuer = driver.movers[1].id;
+
+        // The player leaves — far past the deactivation radius.
+        let far = Vec3::new(5_000.0, stand_on(0), 5_000.0);
+        driver.sync_population(&mut net, far, 1.0);
+
+        assert!(
+            !driver.movers.iter().any(|m| m.id == wanderer),
+            "the wanderer should have been put away"
+        );
+        assert!(
+            !net.peers.contains_key(&wanderer) && !net.is_phantom(wanderer),
+            "despawn must clear BOTH peers and phantom_ids, or the id leaks"
+        );
+        assert!(
+            driver.movers.iter().any(|m| m.id == pursuer),
+            "a pursuing phantom must survive the player walking away"
+        );
+    }
+
+    #[tokio::test]
+    async fn hysteresis_stops_a_phantom_blinking_at_the_boundary() {
+        // Between the two radii nothing may change. With a single threshold, a player loitering
+        // there would spawn and despawn the same creature every second — on the client, an avatar
+        // flickering in and out at the edge of view distance.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut driver = population_driver(42, 8);
+        driver.sync_population(&mut net, Vec3::new(0.0, stand_on(0), 0.0), 0.1);
+        assert!(!driver.movers.is_empty());
+
+        // Measure the band against ONE specific creature: standing `band` metres from the origin
+        // says nothing about a phantom that was drawn 120 m the other way.
+        let watched = driver.movers[0].id;
+        let its_pos = Vec3::from_array(net.peers[&watched].position);
+        let band = (PHANTOM_ACTIVATE_RADIUS + PHANTOM_DEACTIVATE_RADIUS) * 0.5;
+        let loiter = Vec3::new(its_pos.x + band, stand_on(0), its_pos.z);
+        assert!(
+            loiter.distance_xz(its_pos) > PHANTOM_ACTIVATE_RADIUS
+                && loiter.distance_xz(its_pos) < PHANTOM_DEACTIVATE_RADIUS,
+            "test setup is not inside the dead band"
+        );
+
+        driver.sync_population(&mut net, loiter, 1.0);
+
+        assert!(
+            driver.movers.iter().any(|m| m.id == watched),
+            "a phantom was retired from inside the hysteresis band"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantoms_spread_their_victims_across_real_peers() {
+        // ADR-043 fixes the one-name-for-everyone bug: harmless with a single debug phantom, and
+        // the disguise defeating itself the moment two of them are in view at once.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        for (id, name) in [(2u16, "Joel"), (3, "Ana"), (4, "Iker")] {
+            let addr: std::net::SocketAddr = format!("127.0.0.1:{}", 9000 + id).parse().unwrap();
+            net.peers.insert(
+                id,
+                crate::network::peer::PeerConnection::new(id, name.into(), addr),
+            );
+        }
+        let mut driver = PhantomDriver::new(42);
+        let start = [0.0, 1.8, 0.0];
+        for _ in 0..3 {
+            let slot = driver.next_victim_slot;
+            let (name, bound) = choose_victim_name_for(&net, slot);
+            let id = net.spawn_phantom(&name, start);
+            driver.add(id, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), bound);
+        }
+
+        let worn: std::collections::HashSet<String> = driver
+            .movers
+            .iter()
+            .map(|m| net.peers[&m.id].name.clone())
+            .collect();
+        assert_eq!(
+            worn.len(),
+            3,
+            "three phantoms, three real victims, but they wore {worn:?}"
+        );
+    }
+
     #[tokio::test]
     async fn phantom_clones_victim_name_but_keeps_its_own_id() {
         // ADR-016 identity phase: the phantom impersonates a real peer's NAME but never its id.
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
 
         // No real peers yet → spawn falls back to the host name, unbound.
-        let (name0, bound0) = choose_victim_name(&net);
+        let (name0, bound0) = choose_victim_name_for(&net, 0);
         assert_eq!(name0, net.local_name, "solo fallback is the host name");
         assert!(!bound0, "fallback spawn must be unbound");
         let pid = net.spawn_phantom(&name0, [0.0, 1.8, 0.0]);

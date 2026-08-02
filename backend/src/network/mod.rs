@@ -1729,6 +1729,48 @@ impl NetworkManager {
         id
     }
 
+    /// ADR-043: remove an injected phantom — the counterpart of `spawn_phantom`, needed once the
+    /// world populates itself and creatures come and go with the player.
+    ///
+    /// Only a phantom can be removed through here; passing a real peer id is a no-op rather than a
+    /// silent disconnect, because a bug in the population logic must not be able to evict players.
+    ///
+    /// No `Disconnect` is sent: the peer never handshook, so there is nobody to tell. Clients drop
+    /// the avatar on their own — `RemotePlayerManager` despawns a remote it stops hearing from
+    /// after `missingRemoteGraceSeconds` (3 s). Deactivation only ever happens well outside view
+    /// distance, so that grace period is never seen.
+    pub fn despawn_phantom(&mut self, id: PeerId) -> bool {
+        if !self.phantom_ids.remove(&id) {
+            return false;
+        }
+        self.peers.remove(&id);
+        info!(
+            "MPTRACE step=PH event=phantom_despawned self_id={} phantom_id={} peer_count={} real_peer_count={}",
+            self.local_id,
+            id,
+            self.peers.len(),
+            self.real_peer_count()
+        );
+        true
+    }
+
+    /// ADR-043: names of the REAL peers, ordered by id so the ordering is stable across ticks.
+    ///
+    /// `peers` is a `HashMap`, so iterating it gives an arbitrary order that can change between
+    /// runs; anything that assigns identities from this list would otherwise shuffle them for free.
+    pub fn real_peer_names(&self) -> Vec<String> {
+        let mut ids: Vec<PeerId> = self
+            .peers
+            .keys()
+            .copied()
+            .filter(|id| !self.phantom_ids.contains(id))
+            .collect();
+        ids.sort_unstable();
+        ids.into_iter()
+            .filter_map(|id| self.peers.get(&id).map(|p| p.name.clone()))
+            .collect()
+    }
+
     /// ADR-016: refresh injected phantoms' heartbeat so `check_timeouts` never reaps them
     /// (they receive no real packets). Called each heartbeat-tick by the host before the
     /// timeout scan. A no-op where `phantom_ids` is empty (e.g. on joiners).
