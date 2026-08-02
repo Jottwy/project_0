@@ -102,6 +102,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireFootstepHook(instance);
                 WireLightHook(instance);
                 WireFireAudioHook(instance);
+                WireDamageAudioHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -468,6 +469,40 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var setProp = so.FindProperty("_audioSet");
             if (setProp != null)
                 setProp.objectReferenceValue = LoadOrCreateAudioSet();
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-044: adds the pain-grunt hook and bakes FPSCore's own damage clips into it. Unlike the
+        // gunshot (ADR-042), this one CAN be seeded automatically: the clips already ship with the
+        // project, so the effect works from the first bake with nothing to author. Only seeded when
+        // the array is EMPTY — a re-bake must never overwrite clips chosen by hand, same rule as the
+        // GripPoseSet asset and the ProxyRevealHook material.
+        private const string DamageClipDir = "Assets/PolymindGames/FPSCore/Audio/SFX/Damage";
+
+        private static void WireDamageAudioHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyDamageAudioHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyDamageAudioHook>();
+
+            var so = new SerializedObject(hook);
+            var clips = so.FindProperty("_hurtClips");
+            if (clips != null && clips.arraySize == 0)
+            {
+                string[] names = { "FPS_Human_GenericDamage1", "FPS_Human_GenericDamage2", "FPS_Human_GenericDamage3" };
+                foreach (var name in names)
+                {
+                    var clip = AssetDatabase.LoadAssetAtPath<AudioClip>($"{DamageClipDir}/{name}.wav");
+                    if (clip == null)
+                    {
+                        Debug.LogWarning($"[RemoteAvatarPrefabBuilder] ADR-044: missing {name}.wav — " +
+                                         "remote pain grunts will be that much less varied.");
+                        continue;
+                    }
+                    clips.InsertArrayElementAtIndex(clips.arraySize);
+                    clips.GetArrayElementAtIndex(clips.arraySize - 1).objectReferenceValue = clip;
+                }
+            }
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

@@ -89,6 +89,21 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Fallback rolloff when Hard Cutoff is off.")]
         [SerializeField] private AudioRolloffMode _rolloff = AudioRolloffMode.Logarithmic;
 
+        [Header("Fall impact (ADR-044, mirrors FootstepsController.PlayFallImpactEffects)")]
+        [Tooltip("Downward speed (m/s) below which a landing is silent — stepping off a kerb should " +
+                 "not thud.")]
+        [SerializeField, Min(0f)] private float _minFallImpactSpeed = 4f;
+
+        [Tooltip("Downward speed mapped to a full-volume landing.")]
+        [SerializeField, Min(0.01f)] private float _maxFallImpactSpeed = 11f;
+
+        [Tooltip("Vertical speed at which the proxy counts as airborne (falling).")]
+        [SerializeField, Min(0f)] private float _airborneSpeed = 2f;
+
+        [Tooltip("Single-frame VERTICAL jump (m) treated as a teleport — a layer change or a respawn " +
+                 "must never be heard as a landing from orbit.")]
+        [SerializeField, Min(0f)] private float _verticalTeleportDistance = 2.5f;
+
         [Header("Ground probe (mirrors FootstepsController.CheckGround)")]
         [SerializeField] private LayerMask _layerMask = LayerConstants.SimpleSolidObjectsMask;
         [SerializeField, Range(0.01f, 1f)] private float _raycastDistance = 0.3f;
@@ -103,6 +118,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool _hasPrevPos;
         private float _travelled;
         private AudioSource _source;
+        private bool _airborne;
+        private float _peakFallSpeed;
 
         // Re-baseline for pool reuse and for the spawn snap: the first frame after enable only
         // captures the position, so a recycled proxy never spends a previous occupant's travel.
@@ -110,6 +127,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             _hasPrevPos = false;
             _travelled = 0f;
+            _airborne = false;
+            _peakFallSpeed = 0f;
         }
 
         private void LateUpdate()
@@ -125,17 +144,25 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             Vector3 delta = pos - _prevPos;
             float planarDist = new Vector3(delta.x, 0f, delta.z).magnitude;
+            float verticalDelta = delta.y;
             _prevPos = pos;
 
             // Teleport: discard the jump entirely. Adding it would fire several steps at once.
             if (planarDist > _teleportDistance)
             {
                 _travelled = 0f;
+                _airborne = false;
+                _peakFallSpeed = 0f;
                 return;
             }
 
             float dt = Time.deltaTime;
             float speed = dt > 0f ? planarDist / dt : 0f;
+
+            // ADR-044: landing runs BEFORE the standing-still gate on purpose. A peer dropping
+            // straight down has a planar speed of ~0, so anything behind that gate would never see
+            // the landing at all — the impact would be silent precisely when the fall was vertical.
+            TrackFall(verticalDelta, dt);
 
             // Standing still: drop the partial stride so a peer who stops and starts again does not
             // land a step the instant they move.
@@ -157,6 +184,77 @@ namespace BackroomsSurvival.Migration.STPIntegration
             // stutter rather than as running.
             _travelled -= stride;
             PlayStep(speed, running);
+        }
+
+        /// <summary>
+        /// ADR-044: reconstructs the peer's fall from the proxy's vertical motion and plays the
+        /// surface's own landing thud, mirroring <c>FootstepsController.PlayFallImpactEffects</c>
+        /// (same thresholds, same volume ramp, same surface database).
+        ///
+        /// The peak downward speed is REMEMBERED across the fall rather than read at the moment of
+        /// contact: the frame where the proxy touches down has already been decelerated by the
+        /// interpolation in RemotePlayerManager, so sampling only at impact would report a gentle
+        /// landing for every drop, however long.
+        /// </summary>
+        private void TrackFall(float verticalDelta, float dt)
+        {
+            // A layer change or respawn moves the avatar metres in one frame. Never a fall.
+            if (Mathf.Abs(verticalDelta) > _verticalTeleportDistance)
+            {
+                _airborne = false;
+                _peakFallSpeed = 0f;
+                return;
+            }
+
+            float vy = dt > 0f ? verticalDelta / dt : 0f;
+
+            if (vy < -_airborneSpeed)
+            {
+                _airborne = true;
+                _peakFallSpeed = Mathf.Max(_peakFallSpeed, -vy);
+                return;
+            }
+
+            if (!_airborne)
+                return;
+
+            // Descent stopped → contact.
+            _airborne = false;
+            float impact = _peakFallSpeed;
+            _peakFallSpeed = 0f;
+
+            if (impact < _minFallImpactSpeed)
+                return; // a small hop is not a thud
+
+            if (!CheckGround(out RaycastHit hit))
+                return; // stopped mid-air (ledge grab, network jitter): no contact, no sound
+
+            var manager = SurfaceManager.Instance;
+            if (manager == null)
+                return;
+
+            var surface = manager.GetSurfaceFromHit(in hit);
+            if (surface == null || !surface.TryGetEffectPair(SurfaceEffectType.FallImpact, out var data))
+                return;
+
+            var resource = data.AudioEffect.Clip;
+            if (resource == null)
+                return;
+
+            // Vendor's own ramp: the span between the two thresholds is the normalising range.
+            float volume = Mathf.Min(1f,
+                impact / Mathf.Max(0.01f, _maxFallImpactSpeed - _minFallImpactSpeed));
+            volume *= data.AudioEffect.Volume;
+
+            var src = EnsureSource();
+            if (resource is AudioClip clip)
+                src.PlayOneShot(clip, volume);
+            else
+            {
+                src.resource = resource;
+                src.volume = volume;
+                src.Play();
+            }
         }
 
         /// <summary>
