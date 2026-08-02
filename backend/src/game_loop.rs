@@ -4577,6 +4577,18 @@ impl PhantomTraits {
     }
 }
 
+/// How much closer a NEW candidate must be before a creature abandons the one it is already on.
+///
+/// Recomputing "nearest" every tick with no commitment is what made two players a problem: standing
+/// at similar range, the target flipped between them at 10 Hz, so the heading jittered,
+/// `last_known_player_pos` jumped back and forth and the A* plan was thrown away every single tick.
+/// It also made "it has chosen YOU" unreadable, which is most of the tension in a chase.
+const PHANTOM_TARGET_SWITCH_MARGIN: f32 = 0.7;
+/// Distance penalty (m) applied per OTHER creature already hunting a candidate, when acquiring or
+/// switching. Not a hard rule — a player who is genuinely much closer still gets picked — but with
+/// six creatures and two players it is the difference between 3/3 and everything on one person.
+const PHANTOM_CROWDING_PENALTY: f32 = 12.0;
+
 fn nearest_real_target(
     net: &NetworkManager,
     host_player_pos: Vec3,
@@ -4584,24 +4596,66 @@ fn nearest_real_target(
     host_player_dead: bool,
     from: Vec3,
 ) -> Option<(PeerId, Vec3, f32, f32)> {
-    let mut best = match host_player_dead {
-        true => None,
-        false => Some((
-            net.local_id,
-            host_player_pos,
-            from.distance_xz(host_player_pos),
-            host_player_rot,
-        )),
+    choose_target(
+        net,
+        host_player_pos,
+        host_player_rot,
+        host_player_dead,
+        from,
+        None,
+        &HashMap::new(),
+    )
+}
+
+/// Pick who this creature hunts: the nearest living player, but STICKY, and biased away from
+/// players other creatures are already on.
+///
+/// `current` is who it hunted last tick. It keeps that target unless the target is gone/dead or
+/// another is closer by more than `PHANTOM_TARGET_SWITCH_MARGIN` — the true distance is used for
+/// the incumbent so a creature never talks itself out of the player it is standing next to.
+///
+/// `pursuers` counts how many OTHER creatures are on each id; it only ever penalises CANDIDATES, so
+/// it can break a tie at acquisition without ever yanking a committed hunter off its prey.
+fn choose_target(
+    net: &NetworkManager,
+    host_player_pos: Vec3,
+    host_player_rot: f32,
+    host_player_dead: bool,
+    from: Vec3,
+    current: Option<PeerId>,
+    pursuers: &HashMap<PeerId, usize>,
+) -> Option<(PeerId, Vec3, f32, f32)> {
+    let mut best: Option<(PeerId, Vec3, f32, f32)> = None;
+    let mut best_score = f32::INFINITY;
+
+    let mut consider = |id: PeerId, pos: Vec3, rot: f32| {
+        let d = from.distance_xz(pos);
+        let is_current = current == Some(id);
+        // The incumbent is scored on raw distance (no crowding penalty, no margin): it already has
+        // this player, so the question is only whether somebody else is CLEARLY better.
+        let score = match is_current {
+            true => d,
+            false => {
+                d + PHANTOM_TARGET_SWITCH_MARGIN.mul_add(
+                    current.is_some() as i32 as f32,
+                    PHANTOM_CROWDING_PENALTY * pursuers.get(&id).copied().unwrap_or(0) as f32,
+                )
+            }
+        };
+        if score < best_score {
+            best_score = score;
+            best = Some((id, pos, d, rot));
+        }
     };
+
+    if !host_player_dead {
+        consider(net.local_id, host_player_pos, host_player_rot);
+    }
     for p in net.peers.values() {
         if net.phantom_ids.contains(&p.id) || p.dead {
             continue;
         }
-        let pos = Vec3::from_array(p.position);
-        let d = from.distance_xz(pos);
-        if best.is_none_or(|(_, _, bd, _)| d < bd) {
-            best = Some((p.id, pos, d, p.rotation));
-        }
+        consider(p.id, Vec3::from_array(p.position), p.rotation);
     }
     best
 }
@@ -4961,6 +5015,9 @@ struct PhantomMover {
     struck: bool,
     /// This creature's temperament, fixed for as long as it exists and reproducible from the seed.
     traits: PhantomTraits,
+    /// Who this creature is hunting, carried between ticks so the choice is STICKY. `None` = has
+    /// not committed to anyone (patrolling, or its target died/left).
+    target_id: Option<PeerId>,
     /// Seconds of stillness left at the START of a lunge. `revealed` is already true in SPRINT
     /// (ADR-038), so the beat lands AFTER the disguise drops and the scream: it reveals, screams,
     /// hangs there for a moment, and only then comes at you. Without it, reveal and charge are the
@@ -5313,6 +5370,7 @@ impl PhantomDriver {
             struck: false,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
             hesitate_timer: 0.0,
+            target_id: None,
         });
     }
 
@@ -5656,13 +5714,30 @@ impl PhantomDriver {
 
             // Nearest REAL player (the host's own local player + any real peer). D1=(a): distance
             // + a forward view cone only, NO geometry line-of-sight (collision = grid_gen world).
-            let target = nearest_real_target(
+            // Who the OTHER creatures are already on. Rebuilt per mover (≤ `active_cap` = 6, so it
+            // is a handful of increments) and excluding this one, because a creature must never
+            // penalise a player for its own presence — that alone would make it drift off you.
+            let mut pursuers: HashMap<PeerId, usize> = HashMap::new();
+            for (j, m) in self.movers.iter().enumerate() {
+                if j == i {
+                    continue;
+                }
+                if let Some(t) = m.target_id {
+                    *pursuers.entry(t).or_insert(0) += 1;
+                }
+            }
+            let target = choose_target(
                 net,
                 host_player_pos,
                 host_player_rot,
                 host_player_dead,
                 from,
+                self.movers[i].target_id,
+                &pursuers,
             );
+            // Remembered for next tick: this is what makes the choice sticky instead of a fresh
+            // "nearest" every 100 ms.
+            self.movers[i].target_id = target.map(|(tid, _, _, _)| tid);
             self.movers[i].state_timer += dt;
             // Ticked HERE, above the gesture freeze, and not inside the SPRINT branch: the freeze
             // `continue`s past the whole FSM for a second after a strike, so a timer advanced down
@@ -7729,6 +7804,77 @@ mod tests {
                 "{name} temperament is a difficulty knob, not variance: mean {mean:.2}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_committed_hunter_does_not_flip_between_two_equidistant_players() {
+        // Two players at similar range used to make the target flip every tick at 10 Hz: jittering
+        // heading, `last_known_player_pos` bouncing between two places, and the A* plan thrown away
+        // on each one. It also made "it has chosen YOU" unreadable, which is most of a chase.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let from = Vec3::new(0.0, 1.8, 0.0);
+        let host = Vec3::new(10.0, 1.8, 0.0);
+        let joiner_id = 1001;
+        net.peers.insert(
+            joiner_id,
+            crate::network::peer::PeerConnection::new(
+                joiner_id,
+                "Joiner".into(),
+                (std::net::Ipv4Addr::LOCALHOST, 40000).into(),
+            ),
+        );
+        // A HAIR closer than the host — under the switch margin, so it must not steal a committed
+        // hunter, and must be picked when nothing is committed yet.
+        net.peers.get_mut(&joiner_id).unwrap().position = [9.8, 1.8, 0.0];
+
+        let none = HashMap::new();
+        let first = choose_target(&net, host, 0.0, false, from, None, &none).unwrap();
+        assert_eq!(first.0, joiner_id, "uncommitted, it takes the nearest");
+
+        // Committed to the HOST, the marginally-closer joiner is not enough to pull it away.
+        let held = choose_target(&net, host, 0.0, false, from, Some(net.local_id), &none).unwrap();
+        assert_eq!(
+            held.0, net.local_id,
+            "a hair closer must not break commitment"
+        );
+
+        // …but a decisively closer player does. Commitment is stickiness, not blindness.
+        net.peers.get_mut(&joiner_id).unwrap().position = [2.0, 1.8, 0.0];
+        let switched =
+            choose_target(&net, host, 0.0, false, from, Some(net.local_id), &none).unwrap();
+        assert_eq!(switched.0, joiner_id, "a clearly closer player must win");
+    }
+
+    #[tokio::test]
+    async fn creatures_spread_across_players_instead_of_dogpiling_one() {
+        // Six creatures all running the same "nearest" rule converge on the same person, so in a
+        // two-player game one player gets the whole map's attention and the other gets none.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let from = Vec3::new(0.0, 1.8, 0.0);
+        let host = Vec3::new(10.0, 1.8, 0.0);
+        let joiner_id = 1001;
+        net.peers.insert(
+            joiner_id,
+            crate::network::peer::PeerConnection::new(
+                joiner_id,
+                "Joiner".into(),
+                (std::net::Ipv4Addr::LOCALHOST, 40000).into(),
+            ),
+        );
+        net.peers.get_mut(&joiner_id).unwrap().position = [14.0, 1.8, 0.0]; // further away
+
+        // Nobody hunting: the nearer host wins on distance alone.
+        let alone = choose_target(&net, host, 0.0, false, from, None, &HashMap::new()).unwrap();
+        assert_eq!(alone.0, net.local_id);
+
+        // With two others already on the host, a fresh creature goes for the lonely player even
+        // though he is 4 m further.
+        let crowded = HashMap::from([(net.local_id, 2usize)]);
+        let spread = choose_target(&net, host, 0.0, false, from, None, &crowded).unwrap();
+        assert_eq!(
+            spread.0, joiner_id,
+            "crowding must send a new hunter to the player nobody is on"
+        );
     }
 
     #[tokio::test]
