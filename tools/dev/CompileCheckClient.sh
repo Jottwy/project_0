@@ -58,11 +58,21 @@ check_one() {
   DEF="$(grep -oP '(?<=<DefineConstants>)[^<]+' "$CSPROJ" | head -1)"
   [ -n "$DEF" ] && printf -- '-define:%s\n' "$DEF" >> "$RSP"
 
-  case "$ASM" in
-    BackroomsSurvival) find "$PROJ/Assets/Scripts" -name '*.cs' ;;
-    *) grep -oP '(?<=<Compile Include=")[^"]+' "$CSPROJ" | sed 's#\\#/#g' \
-         | while read -r s; do case "$s" in /*|?:*) echo "$s";; *) echo "$PROJ/$s";; esac; done ;;
-  esac | sed 's#\\#/#g' | while read -r s; do printf '"%s"\n' "$s" >> "$RSP"; done
+  # EXTRA_SRC: newline- or space-separated extra .cs paths (repo-relative or absolute), appended to
+  # whatever the csproj lists. Needed because <Compile Include> is a snapshot Unity only refreshes
+  # on import, so a file created since the last editor run is INVISIBLE here — a "0 errors" that
+  # never saw the file at all. That exact blind spot shipped an unchecked ProxyRevealHook once.
+  # Duplicates are dropped, so passing a file the csproj already lists is harmless.
+  {
+    case "$ASM" in
+      BackroomsSurvival) find "$PROJ/Assets/Scripts" -name '*.cs' ;;
+      *) grep -oP '(?<=<Compile Include=")[^"]+' "$CSPROJ" | sed 's#\\#/#g' \
+           | while read -r s; do case "$s" in /*|?:*) echo "$s";; *) echo "$PROJ/$s";; esac; done ;;
+    esac
+    for s in ${EXTRA_SRC:-}; do
+      case "$s" in /*|?:*) echo "$s";; *) echo "$PROJ/$s";; esac
+    done
+  } | sed 's#\\#/#g' | sort -u | while read -r s; do printf '"%s"\n' "$s" >> "$RSP"; done
 
   printf -- '-target:library\n-nostdlib+\n-langversion:9.0\n-unsafe-\n-out:"%s/%s_check.dll"\n' "$OUT" "$ASM" >> "$RSP"
 
