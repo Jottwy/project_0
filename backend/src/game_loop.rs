@@ -776,46 +776,55 @@ pub async fn run(
             // move is resolved via ADR-017 sim-only collision, so it respects walls/floor even
             // far from the host (where world.chunks is empty). Same 10 Hz as the pose relay.
             if net.is_host {
-                let attack = phantom_driver.step(
+                let attacks = phantom_driver.step(
                     &mut net,
                     entity_dt,
                     player.position,
                     player.rotation,
                     player.crouch,
                 );
-                // ADR-016 slice 1 — apply the phantom's attack to the HOST player. DEUDA: host
+                // ADR-016 slice 1 — apply the phantom attacks to the HOST player. DEUDA: host
                 // only; a joiner's health lives in its own backend (Fase 7). The damage path is
                 // SEPARATE from the pickup theater (ADR-016 invariant intact).
-                match attack {
-                    PhantomAttack::Kill => {
-                        let death_pos = player.position.to_array();
-                        if !dev_invincible {
-                            player.stats.take_damage(100.0); // → is_dead → existing death/respawn
+                //
+                // ADR-043: several attackers per tick now. Once the player is down, the remaining
+                // attacks of the SAME tick are dropped — a corpse taking two more hits would emit
+                // duplicate `phantom_kill`/`phantom_hit` events for a player who is already dead,
+                // and the client's death chain is not idempotent.
+                for attack in attacks {
+                    if player.stats.is_dead() && !dev_invincible {
+                        break;
+                    }
+                    match *attack {
+                        PhantomAttack::Kill => {
+                            let death_pos = player.position.to_array();
+                            if !dev_invincible {
+                                player.stats.take_damage(100.0); // → is_dead → death/respawn
+                            }
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_kill".into(),
+                                data: serde_json::json!({ "pos": death_pos }),
+                            }));
                         }
-                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
-                            event_type: "phantom_kill".into(),
-                            data: serde_json::json!({ "pos": death_pos }),
-                        }));
-                    }
-                    PhantomAttack::Hit(dmg) => {
-                        if !dev_invincible {
-                            player.stats.take_damage(dmg);
+                        PhantomAttack::Hit(dmg) => {
+                            if !dev_invincible {
+                                player.stats.take_damage(dmg);
+                            }
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_hit".into(),
+                                data: serde_json::json!({ "damage": dmg }),
+                            }));
                         }
-                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
-                            event_type: "phantom_hit".into(),
-                            data: serde_json::json!({ "damage": dmg }),
-                        }));
+                        PhantomAttack::Knockback(dx, dz) => {
+                            // Client-only: it applies the impulse (SetVelocity). Mutating
+                            // player.position here would be overwritten by the next
+                            // client-authoritative input (ADR-009), so the backend only signals.
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_knockback".into(),
+                                data: serde_json::json!({ "dx": dx, "dz": dz }),
+                            }));
+                        }
                     }
-                    PhantomAttack::Knockback(dx, dz) => {
-                        // Client-only: it applies the impulse (SetVelocity). Mutating
-                        // player.position here would be overwritten by the next client-authoritative
-                        // input (ADR-009), so the backend only signals the shove.
-                        let _ = to_clients.send(ServerMessage::Event(GameEvent {
-                            event_type: "phantom_knockback".into(),
-                            data: serde_json::json!({ "dx": dx, "dz": dz }),
-                        }));
-                    }
-                    PhantomAttack::None => {}
                 }
             }
         }
@@ -4118,8 +4127,9 @@ fn phantom_reveals(state: PhantomState) -> bool {
 /// theater (ADR-016 invariant intact).
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum PhantomAttack {
-    /// Nothing happened this tick.
-    None,
+    // ADR-043: there is no `None` variant. "Nothing happened this tick" is an EMPTY list now that
+    // `step` returns one entry per attacker. Keeping the variant would leave something nothing
+    // constructs any more — a trap, because `attack == None` would silently never fire.
     /// Frontal point-blank hit: non-lethal `damage` to health; the phantom bounces back to STALK.
     Hit(f32),
     /// Point-blank from BEHIND: lethal (the loop applies 100 dmg → the existing death/respawn).
@@ -4170,6 +4180,11 @@ struct PhantomDriver {
     /// thing that keeps the cost bound honest.
     #[cfg(test)]
     nav_replans: u32,
+    /// ADR-043 — every attack produced this tick, one entry per mover that landed one. A single
+    /// return value made the LAST attacker of the tick win and silently dropped the rest, which
+    /// with a populated world is two creatures reaching you together and only one of them
+    /// counting. Owned by the driver and cleared per step so the fan-out costs no allocation.
+    attacks: Vec<PhantomAttack>,
     /// Size of the building roster the blocked-cell overlay was last built from.
     built_count: usize,
     /// Seconds until the overlay is rebuilt regardless of size. A place + a demolish in the same
@@ -4253,6 +4268,7 @@ impl PhantomDriver {
             nav_cells: Vec::new(),
             #[cfg(test)]
             nav_replans: 0,
+            attacks: Vec::new(),
             built_count: usize::MAX, // forces a build on the first step
             built_resync_in: 0.0,
         }
@@ -4513,7 +4529,7 @@ impl PhantomDriver {
         // peer, so it has to be handed in. Passed explicitly rather than stashed on the driver so
         // the input to a tick stays visible in the signature.
         host_player_crouch: bool,
-    ) -> PhantomAttack {
+    ) -> &[PhantomAttack] {
         let now = Instant::now();
 
         // ADR-041: stimuli first — a shot reported this tick redirects the phantom before the FSM
@@ -4550,9 +4566,11 @@ impl PhantomDriver {
         }
         self.prev_target_pos = cur_positions.into_iter().collect();
 
-        // ADR-016 slice 1 — the attack produced this tick; the game loop applies it to the host.
-        // One phantom today; with several, the last attacker this tick wins (host-only debt).
-        let mut attack = PhantomAttack::None;
+        // ADR-016 slice 1 / ADR-043 — every attack produced this tick, in mover order; the game
+        // loop applies them to the host. A single slot used to mean the last attacker won, so two
+        // creatures reaching you together counted as one — invisible with the one debug phantom,
+        // wrong the moment the world is populated.
+        self.attacks.clear();
         for i in 0..self.movers.len() {
             let id = self.movers[i].id;
             let from = match net.peers.get(&id) {
@@ -4903,10 +4921,10 @@ impl PhantomDriver {
                         let dz = tpos.z - from.z;
                         let len = (dx * dx + dz * dz).sqrt();
                         if dist < PHANTOM_KNOCKBACK_RANGE && len > 0.001 {
-                            attack = PhantomAttack::Knockback(
+                            self.attacks.push(PhantomAttack::Knockback(
                                 dx / len * PHANTOM_KNOCKBACK_FORCE,
                                 dz / len * PHANTOM_KNOCKBACK_FORCE,
-                            );
+                            ));
                         }
                         self.movers[i].state = PhantomState::Sprint;
                         self.movers[i].state_timer = 0.0;
@@ -4979,13 +4997,13 @@ impl PhantomDriver {
                         self.movers[i].state = PhantomState::Stalk; // bounce off after the strike
                         self.movers[i].state_timer = 0.0;
                         if player_is_looking_at(tpos, tyaw, from) {
-                            attack = PhantomAttack::Hit(PHANTOM_ATTACK_DAMAGE);
+                            self.attacks.push(PhantomAttack::Hit(PHANTOM_ATTACK_DAMAGE));
                             info!(
                                 "MPTRACE step=PH_SPRINT event=phantom_hit phantom_id={} dmg={:.0}",
                                 id, PHANTOM_ATTACK_DAMAGE
                             );
                         } else {
-                            attack = PhantomAttack::Kill;
+                            self.attacks.push(PhantomAttack::Kill);
                             info!(
                                 "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} note=from_behind",
                                 id
@@ -5135,7 +5153,7 @@ impl PhantomDriver {
             }
         }
 
-        attack
+        &self.attacks
     }
 }
 
@@ -6330,8 +6348,9 @@ mod tests {
 
         let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
 
-        assert!(
-            matches!(attack, PhantomAttack::Kill),
+        assert_eq!(
+            attack,
+            [PhantomAttack::Kill],
             "behind-attack must KILL, got {attack:?}"
         );
     }
@@ -6353,7 +6372,7 @@ mod tests {
         let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
 
         assert!(
-            matches!(attack, PhantomAttack::Hit(d) if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
+            matches!(attack, [PhantomAttack::Hit(d)] if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3),
             "frontal attack must HIT for {PHANTOM_ATTACK_DAMAGE}, got {attack:?}"
         );
         assert_eq!(
@@ -6380,7 +6399,7 @@ mod tests {
         let attack = driver.step(&mut net, 0.1, player, 0.0, false);
 
         assert!(
-            matches!(attack, PhantomAttack::Knockback(_, _)),
+            matches!(attack, [PhantomAttack::Knockback(_, _)]),
             "point-blank STATUE timeout must shove, got {attack:?}"
         );
         assert_eq!(driver.movers[0].state, PhantomState::Sprint);
@@ -6404,7 +6423,50 @@ mod tests {
             false,
         );
 
-        assert_eq!(attack, PhantomAttack::None);
+        assert!(
+            attack.is_empty(),
+            "idle step must attack nobody, got {attack:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_step_reports_every_attacker_not_just_the_last() {
+        // ADR-043 — the fan-out this whole slice exists for. TWO phantoms strike the same player
+        // in the SAME step; before the fan-out the second overwrote the first and one of the two
+        // creatures hit you for free. Mutation check: reverting `step` to a single slot makes this
+        // assert see 1 instead of 2.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+
+        // Both phantoms are seeded on the same cell, so both end up point-blank on the player.
+        let start = [0.0, 1.8, 0.0];
+        let a = net.spawn_phantom("Robapieles_A", start);
+        let b = net.spawn_phantom("Robapieles_B", start);
+        for id in [a, b] {
+            driver.add(id, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        }
+        for m in driver.movers.iter_mut() {
+            m.state = PhantomState::Sprint;
+        }
+
+        // Player ~1 m east of where the snap actually put them, facing them → frontal Hit each.
+        let ppos = net.peers[&a].position;
+        let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]);
+
+        let attacks = driver.step(&mut net, 0.1, player, 270.0, false);
+
+        assert_eq!(
+            attacks.len(),
+            2,
+            "both attackers of the tick must be reported, got {attacks:?}"
+        );
+        assert!(
+            attacks.iter().all(
+                |a| matches!(a, PhantomAttack::Hit(d) if (d - PHANTOM_ATTACK_DAMAGE).abs() < 1e-3)
+            ),
+            "both must be frontal hits, got {attacks:?}"
+        );
     }
 
     // ─── ADR-029 V0: PvP validation order + victim-applied damage ───
