@@ -30,6 +30,8 @@ namespace BackroomsSurvival.UI
 
         private VoiceCapture _voice;
         private Dropdown _deviceDropdown;
+        private Dropdown _channelDropdown;
+        private Text _channelLabel;
         private Text _statusText;
         private Text _levelText;
         private Image _levelFill;
@@ -42,6 +44,10 @@ namespace BackroomsSurvival.UI
 
         /// <summary>Cuando es true, la próxima tecla pulsada se asigna como push-to-talk.</summary>
         private bool _rebinding;
+
+        /// <summary>Canales que el desplegable está mostrando ahora mismo, para reconstruirlo solo
+        /// cuando cambian de verdad y no en cada frame.</summary>
+        private int _shownChannels = -1;
 
         /// <summary>Nombres reales, tal cual los espera <c>VoiceCapture.Device</c>.</summary>
         private readonly List<string> _deviceOptions = new List<string>();
@@ -73,7 +79,15 @@ namespace BackroomsSurvival.UI
             if (kb.f7Key.wasPressedThisFrame) SetVisible(!_visible);
             else if (_visible && kb.escapeKey.wasPressedThisFrame) SetVisible(false);
 
-            if (_visible) RefreshLive();
+            if (_visible)
+            {
+                RefreshLive();
+                // Los canales solo se conocen DESPUÉS de abrir el dispositivo, así que el
+                // desplegable no puede construirse solo al mostrar el panel.
+                var vc0 = Voice();
+                int ch = vc0 != null ? vc0.Channels : 1;
+                if (ch != _shownChannels) { _shownChannels = ch; RefreshChannels(); }
+            }
         }
 
         private void CaptureRebind(Keyboard kb)
@@ -185,10 +199,34 @@ namespace BackroomsSurvival.UI
             _deviceDropdown.SetValueWithoutNotify(idx);
         }
 
+        /// <summary>
+        /// El selector de canal solo aparece cuando el dispositivo tiene más de uno. En un micro
+        /// normal sería ruido; en una interfaz de audio ("Analogue 1 + 2") es LA opción que decide
+        /// si se oye algo, porque el micrófono suele estar en una sola de sus dos entradas.
+        /// </summary>
+        private void RefreshChannels()
+        {
+            var vc = Voice();
+            int ch = vc != null ? vc.Channels : 1;
+            bool multi = ch > 1;
+            _channelDropdown.gameObject.SetActive(multi);
+            _channelLabel.gameObject.SetActive(multi);
+            if (!multi) return;
+
+            var opts = new List<string> { "automático (el más fuerte)", "mezcla de todos" };
+            for (int c = 0; c < ch; c++) opts.Add("canal " + (c + 1));
+            _channelDropdown.ClearOptions();
+            _channelDropdown.AddOptions(opts);
+
+            int sel = vc.Channel == -1 ? 0 : vc.Channel == -2 ? 1 : Mathf.Clamp(vc.Channel + 2, 0, opts.Count - 1);
+            _channelDropdown.SetValueWithoutNotify(sel);
+        }
+
         private void RefreshFromComponent()
         {
             var vc = Voice();
             if (vc == null) return;
+            RefreshChannels();
             _micToggle.SetIsOnWithoutNotify(vc.MicEnabled);
             _modeToggle.SetIsOnWithoutNotify(vc.OpenMic);
             _selfTestToggle.SetIsOnWithoutNotify(vc.SelfTest);
@@ -282,6 +320,26 @@ namespace BackroomsSurvival.UI
                 vc.Device = i <= 0 ? "" : _deviceOptions[i];
             });
             y -= 36f;
+
+            // ── Canal (solo relevante en dispositivos multicanal, y ahí es DECISIVO)
+            _channelLabel = Label(_panel.transform, "Canal", new Vector2(14f, y), 14, FontStyle.Normal, 120f, TextAnchor.MiddleLeft);
+            var chGo = DefaultControls.CreateDropdown(res);
+            chGo.transform.SetParent(_panel.transform, false);
+            var chrt = (RectTransform)chGo.transform;
+            chrt.anchorMin = chrt.anchorMax = chrt.pivot = new Vector2(0f, 1f);
+            chrt.anchoredPosition = new Vector2(120f, y);
+            chrt.sizeDelta = new Vector2(286f, 26f);
+            _channelDropdown = chGo.GetComponent<Dropdown>();
+            _channelDropdown.onValueChanged.AddListener(i =>
+            {
+                var vc = Voice();
+                if (vc == null) return;
+                // 0 = automático (-1), 1 = mezcla (-2), 2.. = canal fijo empezando en 0
+                vc.Channel = i == 0 ? -1 : i == 1 ? -2 : i - 2;
+                // Reabrir para que el cambio se note ya, sin esperar a otro toggle.
+                if (vc.MicEnabled) { vc.MicEnabled = false; vc.MicEnabled = true; }
+            });
+            y -= 34f;
 
             // ── Interruptores
             _micToggle = Row(res, "Micrófono encendido  (F5)", ref y, on =>

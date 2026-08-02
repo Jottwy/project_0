@@ -146,6 +146,25 @@ namespace BackroomsSurvival.Net
         /// medidor: si esto no se mueve al hablar, el problema está ANTES del códec.</summary>
         public float InputLevel { get; private set; }
 
+        /// <summary>Canales que expone el dispositivo abierto. 1 mientras no hay captura.</summary>
+        public int Channels => _clip != null ? _channels : 1;
+
+        /// <summary>
+        /// Qué se hace con un dispositivo de varios canales: <c>-1</c> automático (se queda con el
+        /// más fuerte muestra a muestra), <c>-2</c> mezcla de todos, <c>≥0</c> un canal fijo.
+        ///
+        /// El automático es el defecto porque resuelve sin configuración el caso que motivó todo
+        /// esto: una interfaz de audio con el micrófono en UNA de sus dos entradas.
+        /// </summary>
+        public int Channel
+        {
+            get => _channel;
+            set { _channel = value; PlayerPrefs.SetInt(PrefChannel, value); }
+        }
+
+        public static string ChannelName(int channel) =>
+            channel == -1 ? "automático" : channel == -2 ? "mezcla" : "canal " + (channel + 1);
+
         public float ActivationThreshold
         {
             get => _activationThreshold;
@@ -185,6 +204,7 @@ namespace BackroomsSurvival.Net
         private const string PrefDevice = "voice.device";
         private const string PrefThreshold = "voice.threshold";
         private const string PrefPttKey = "voice.ptt_key";
+        private const string PrefChannel = "voice.channel";
 
         // ── Interior ──
 
@@ -194,8 +214,11 @@ namespace BackroomsSurvival.Net
         private string _activeDevice;
         private bool _micEnabled;
 
-        private float[] _capture;        // ventana leída del AudioClip del micro (tasa del APARATO)
+        private float[] _interleaved;    // tal cual lo entrega el dispositivo: muestras × canales
+        private float[] _capture;        // ya en UN canal, a la tasa del APARATO
         private short[] _pcm;            // la misma ventana a la tasa del CÓDEC, PCM 16 bits
+        private int _channels = 1;
+        private int _channel = -1;       // -1 automático (canal más fuerte), -2 mezcla, ≥0 fijo
         private int _captureRate = SampleRate;
         private int _inputFrameSamples = FrameSamples;
         private bool _needsResample;
@@ -230,6 +253,7 @@ namespace BackroomsSurvival.Net
             _device = PlayerPrefs.GetString(PrefDevice, _device ?? "");
             _activationThreshold = PlayerPrefs.GetFloat(PrefThreshold, _activationThreshold);
             _pushToTalkKey = (Key)PlayerPrefs.GetInt(PrefPttKey, (int)_pushToTalkKey);
+            _channel = PlayerPrefs.GetInt(PrefChannel, _channel);
 
             // ARRANCA HABLANDO, siempre, incluso sin micrófonos. Hasta ahora este componente solo
             // escribía al encenderse, así que "no hay VoiceCapture en la escena" y "el micro está
@@ -282,12 +306,68 @@ namespace BackroomsSurvival.Net
 
             // Se consume en bloques del tamaño que dicte la TASA DEL DISPOSITIVO, no la del códec:
             // a 44,1 kHz una trama de 20 ms son 882 muestras, no 960.
+            //
+            // `available`, `_readHead` y `_clip.samples` están en MUESTRAS POR CANAL; el buffer de
+            // `GetData`, en cambio, se llena INTERCALADO y por eso mide `muestras × canales`.
+            // Confundir las dos unidades es exactamente el bug que rompía las interfaces estéreo.
             while (available >= _inputFrameSamples)
             {
-                _clip.GetData(_capture, _readHead);
+                _clip.GetData(_interleaved, _readHead);
                 _readHead = (_readHead + _inputFrameSamples) % _clip.samples;
                 available -= _inputFrameSamples;
+                DownmixToMono();
                 ProcessFrame();
+            }
+        }
+
+        /// <summary>
+        /// Pasa la trama intercalada del dispositivo a un canal.
+        ///
+        /// EXISTE POR UNA AVERÍA REAL, no por completitud: una interfaz de audio expone sus
+        /// entradas como un dispositivo ESTÉREO ("Analogue 1 + 2"), y leer `L,R,L,R` como si
+        /// fueran muestras seguidas da el doble de tono y, con el micrófono en una sola entrada,
+        /// una de cada dos muestras a cero. No suena mal: no suena a nada. Un dispositivo virtual
+        /// mono por delante lo tapaba, y por eso "funcionaba con Voicemod".
+        ///
+        /// El modo por defecto es MÁS FUERTE POR MUESTRA y no la media, y la diferencia importa
+        /// justo en el caso que motivó esto: con el micro en la entrada 1 y la 2 en silencio, la
+        /// media entrega la mitad de nivel, mientras que el máximo entrega el canal bueno intacto.
+        /// Para un micrófono estéreo de verdad las dos opciones son equivalentes al oído.
+        /// </summary>
+        private void DownmixToMono()
+        {
+            int ch = _channels;
+            if (ch <= 1)
+            {
+                System.Array.Copy(_interleaved, _capture, _inputFrameSamples);
+                return;
+            }
+
+            int pick = _channel; // -1 = automático (más fuerte), -2 = mezcla, ≥0 = canal fijo
+            for (int i = 0; i < _inputFrameSamples; i++)
+            {
+                int b = i * ch;
+                float v;
+                if (pick >= 0)
+                {
+                    v = _interleaved[b + Mathf.Min(pick, ch - 1)];
+                }
+                else if (pick == -2)
+                {
+                    float sum = 0f;
+                    for (int c = 0; c < ch; c++) sum += _interleaved[b + c];
+                    v = sum / ch;
+                }
+                else
+                {
+                    v = _interleaved[b];
+                    for (int c = 1; c < ch; c++)
+                    {
+                        float s = _interleaved[b + c];
+                        if (s < 0f ? -s > (v < 0f ? -v : v) : s > (v < 0f ? -v : v)) v = s;
+                    }
+                }
+                _capture[i] = v;
             }
         }
 
@@ -575,11 +655,18 @@ namespace BackroomsSurvival.Net
                                  "microfono de Windows para esta aplicacion.");
                 return;
             }
+            // El número de canales NO se puede saber antes de abrir: `GetDeviceCaps` solo informa
+            // de frecuencias. Por eso se lee aquí y los buffers se dimensionan después.
+            _channels = Mathf.Max(1, _clip.channels);
+            _interleaved = new float[_inputFrameSamples * _channels];
+
             _readHead = 0;
             _framesInPacket = 0;
             _packetBytes = 0;
             Debug.Log($"[VoiceCapture] Mic ON device='{_activeDevice}' captura={_captureRate} Hz" +
                       (_needsResample ? $" -> remuestreo a {SampleRate} Hz" : " (sin remuestreo)") +
+                      $", canales={_channels}" +
+                      (_channels > 1 ? $" (mezcla={ChannelName(_channel)})" : "") +
                       $", {_inputFrameSamples} muestras/trama, " +
                       $"modo={(_openMic ? "voz abierta" : "push-to-talk " + _pushToTalkKey)}");
         }
