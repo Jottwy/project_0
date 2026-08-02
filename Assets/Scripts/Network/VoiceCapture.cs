@@ -132,18 +132,61 @@ namespace BackroomsSurvival.Net
                 PlayerPrefs.SetInt(PrefMicEnabled, value ? 1 : 0);
                 if (value) StartDevice();
                 else StopDevice();
+                MirrorToOptions();
             }
         }
 
         public bool OpenMic
         {
             get => _openMic;
-            set { _openMic = value; PlayerPrefs.SetInt(PrefOpenMic, value ? 1 : 0); }
+            set { _openMic = value; PlayerPrefs.SetInt(PrefOpenMic, value ? 1 : 0); MirrorToOptions(); }
         }
 
         /// <summary>Micrófonos que ve el sistema. Se consulta en vivo y no se cachea: enchufar
         /// unos cascos USB con la partida abierta cambia esta lista.</summary>
         public static string[] Devices => Microphone.devices;
+
+        /// <summary>
+        /// Vuelca los ajustes del menú del juego sobre este componente. Lo llama
+        /// <c>VoiceOptions.Apply()</c>.
+        ///
+        /// El MICRÓFONO se aplica el ÚLTIMO a propósito: su setter reabre la captura, y hacerlo
+        /// antes de fijar canal y modo reabriría el dispositivo con los valores viejos y otra vez
+        /// con los nuevos — dos aperturas por cada cambio de cualquier ajuste.
+        /// </summary>
+        public void ApplyOptions(object options)
+        {
+            if (options is not Gameplay.VoiceOptions o) return;
+            // Sin esta guarda, cada setter escribiria de vuelta en las opciones, eso llamaria a
+            // Apply() otra vez y entrariamos en bucle. La direccion aqui es UNA: opciones ->
+            // componente.
+            _applyingOptions = true;
+            try { ApplyOptionsCore(o); } finally { _applyingOptions = false; }
+        }
+
+        private void ApplyOptionsCore(Gameplay.VoiceOptions o)
+        {
+            _openMic = o.OpenMic.Value;
+            _noiseGate = o.NoiseGate.Value;
+            _autoGain = o.AutoGain.Value;
+            _activationThreshold = Mathf.Clamp(o.ActivationThreshold.Value, 0f, 0.2f);
+            _pushToTalkKey = (Key)o.PushToTalkKey.Value;
+            bool channelChanged = _channel != o.Channel.Value;
+            _channel = o.Channel.Value;
+
+            bool want = o.MicEnabled.Value;
+            if (want != _micEnabled)
+            {
+                MicEnabled = want;
+            }
+            else if (want && channelChanged)
+            {
+                // Cambiar de canal exige reabrir: el número de canales y el buffer intercalado se
+                // fijan al abrir el dispositivo.
+                StopDevice();
+                StartDevice();
+            }
+        }
 
         /// <summary>Dispositivo elegido; vacío = el primero que reporte Unity. Cambiarlo reabre la
         /// captura en caliente, sin relanzar.</summary>
@@ -180,7 +223,7 @@ namespace BackroomsSurvival.Net
         public int Channel
         {
             get => _channel;
-            set { _channel = value; PlayerPrefs.SetInt(PrefChannel, value); }
+            set { _channel = value; PlayerPrefs.SetInt(PrefChannel, value); MirrorToOptions(); }
         }
 
         public static string ChannelName(int channel) =>
@@ -189,7 +232,7 @@ namespace BackroomsSurvival.Net
         public bool NoiseGate
         {
             get => _noiseGate;
-            set { _noiseGate = value; PlayerPrefs.SetInt(PrefGate, value ? 1 : 0); }
+            set { _noiseGate = value; PlayerPrefs.SetInt(PrefGate, value ? 1 : 0); MirrorToOptions(); }
         }
 
         public bool AutoGain
@@ -200,6 +243,7 @@ namespace BackroomsSurvival.Net
                 _autoGain = value;
                 PlayerPrefs.SetInt(PrefAgc, value ? 1 : 0);
                 if (!value) _dynamics.Reset();
+                MirrorToOptions();
             }
         }
 
@@ -210,13 +254,13 @@ namespace BackroomsSurvival.Net
         public float ActivationThreshold
         {
             get => _activationThreshold;
-            set { _activationThreshold = Mathf.Clamp(value, 0f, 0.2f); PlayerPrefs.SetFloat(PrefThreshold, _activationThreshold); }
+            set { _activationThreshold = Mathf.Clamp(value, 0f, 0.2f); PlayerPrefs.SetFloat(PrefThreshold, _activationThreshold); MirrorToOptions(); }
         }
 
         public Key PushToTalkKey
         {
             get => _pushToTalkKey;
-            set { _pushToTalkKey = value; PlayerPrefs.SetInt(PrefPttKey, (int)value); }
+            set { _pushToTalkKey = value; PlayerPrefs.SetInt(PrefPttKey, (int)value); MirrorToOptions(); }
         }
 
         /// <summary>
@@ -280,6 +324,27 @@ namespace BackroomsSurvival.Net
         private float _nextLevelLog;
 
         private readonly VoiceDynamics _dynamics = new VoiceDynamics();
+        private bool _applyingOptions;
+
+        /// <summary>
+        /// Refleja en las opciones del juego un cambio hecho por tecla o por el panel de
+        /// diagnostico, para que el menu no muestre algo distinto de lo que esta pasando. No
+        /// llama a Save(): guardar en disco por cada pulsacion de F5 seria escribir un fichero
+        /// por tecla; el sistema del vendor ya persiste al aplicar desde el menu.
+        /// </summary>
+        private void MirrorToOptions()
+        {
+            if (_applyingOptions) return;
+            var o = Gameplay.VoiceOptions.Instance;
+            if (o == null) return;
+            o.MicEnabled.SetValue(_micEnabled);
+            o.OpenMic.SetValue(_openMic);
+            o.NoiseGate.SetValue(_noiseGate);
+            o.AutoGain.SetValue(_autoGain);
+            o.ActivationThreshold.SetValue(_activationThreshold);
+            o.PushToTalkKey.SetValue((int)_pushToTalkKey);
+            o.Channel.SetValue(_channel);
+        }
 
 
 
