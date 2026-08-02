@@ -221,7 +221,7 @@ namespace BackroomsSurvival.UI
             SetState(PanelState.StartingHost, "Starting host...");
             ShowMenu("Starting host...");
             SetUiInteractable(false);
-            init.StartAsHost(playerName, hostListenPort);
+            init.StartAsHostOnPort(playerName, hostListenPort);
             ApplySelectedLocalConfigToUi(init, updateServerPort: true);
         }
 
@@ -281,7 +281,7 @@ namespace BackroomsSurvival.UI
                 SetState(PanelState.StartingHost, "Starting host + Steam lobby...");
                 ShowMenu("Starting host + Steam lobby...");
                 SetUiInteractable(false);
-                init.StartAsHost(playerName, hostListenPort);
+                init.StartAsHostOnPort(playerName, hostListenPort);
                 ApplySelectedLocalConfigToUi(init, updateServerPort: true);
             }
 

@@ -25,9 +25,9 @@ namespace BackroomsSurvival.Net
 
         private void Start()
         {
-            // There is NO StartAsHost(host, port) overload. Signatures are:
+            // There is NO StartAsHost(host, port) entry point. Signatures are:
             //   StartAsHost(string playerName, int worldSeed = 42)
-            //   StartAsHost(string playerName, int hostListenPort, int worldSeed = 42)
+            //   StartAsHostOnPort(string playerName, int hostListenPort, int worldSeed = 42)
             // The IPC endpoint = NetworkInitializer.ipcPort + the IPC client address
             // (127.0.0.1 by default, or the IPC_ADDR env). So map _port onto ipcPort and
             // host with a single-arg call — passing _port as hostListenPort would set the

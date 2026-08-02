@@ -36,6 +36,9 @@ namespace BackroomsSurvival.Net
         public int LastSelectedIpcPort { get; private set; }
         public int LastSelectedNetPort { get; private set; }
         public int LastSelectedNetId { get; private set; }
+        /// <summary>World seed handed to the backend as WORLD_SEED. Observable so the
+        /// port-passed-as-seed regression stays covered by a test.</summary>
+        public int LastSelectedWorldSeed { get; private set; }
         public string LastSelectedIpcAddress { get; private set; } = "127.0.0.1";
         public string LastEffectiveRole { get; private set; } = "none";
         public string LastConnectTo { get; private set; } = "<none>";
@@ -71,7 +74,15 @@ namespace BackroomsSurvival.Net
             StartAsHost(playerName, worldSeed, false);
         }
 
-        public void StartAsHost(string playerName, int hostListenPort, int worldSeed = 42)
+        /// <summary>
+        /// Host on an explicit P2P listen port. Deliberately NOT an overload of
+        /// <see cref="StartAsHost(string,int)"/>: a two-arg call would bind to that one instead
+        /// (C# prefers the candidate that fills no optional parameter), so the port was silently
+        /// passed as <c>worldSeed</c> — it never reached NET_PORT, and it renamed the save file
+        /// to <c>world_{port}.json</c>, making a changed port look like a lost world.
+        /// A distinct name makes that mistake impossible to re-introduce.
+        /// </summary>
+        public void StartAsHostOnPort(string playerName, int hostListenPort, int worldSeed = 42)
         {
             StartAsHost(playerName, worldSeed, false, hostListenPort);
         }
@@ -90,6 +101,7 @@ namespace BackroomsSurvival.Net
         {
             CurrentRole = Role.Host;
             StatusMessage = "Starting backend...";
+            LastSelectedWorldSeed = worldSeed;
             string sessionMode = ReadSessionMode();
             if (sessionMode != null && sessionMode.Equals("join", StringComparison.OrdinalIgnoreCase))
                 Debug.LogWarning("[NetworkInitializer] SESSION_MODE=join is set, but manual Host was requested; effective role=host");
