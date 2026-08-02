@@ -9,6 +9,8 @@ pub mod generator;
 pub mod graph;
 pub mod grid_gen;
 pub mod levels;
+/// ADR-043 — deterministic, lazy draw of where the world's robapieles live.
+pub mod phantom_spawn;
 pub mod volumetric_grid;
 /// ADR-033: `zone_kind` → `LayerRules` para las rutas grid_gen de render y
 /// robapieles. Vive aquí (no en `grid_gen`) porque lee `world/`.
