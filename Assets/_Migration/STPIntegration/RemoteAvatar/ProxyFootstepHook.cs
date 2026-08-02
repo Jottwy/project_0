@@ -76,11 +76,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Full-volume radius, in metres. Small on purpose: a footstep is an intimate sound.")]
         [SerializeField, Min(0.1f)] private float _minDistance = 1.5f;
 
-        [Tooltip("HARD cutoff, in metres — beyond this a step is SILENT, not merely quiet. This is the " +
-                 "knob that was missing: AudioManager's pooled sources leave it at Unity's default 500, " +
-                 "so a step never actually stopped. Lower it if peers are still audible too far.")]
+        [Tooltip("HARD cutoff, in metres — beyond this a step is genuinely SILENT. Lower it if peers " +
+                 "are still audible too far.")]
         [SerializeField, Min(1f)] private float _maxDistance = 22f;
 
+        [Tooltip("Use a custom rolloff curve that actually reaches zero. Unity's Logarithmic mode does " +
+                 "NOT silence at maxDistance — it stops attenuating there and holds that level for " +
+                 "ever (minDistance/maxDistance, ~7 % here), which is why steps followed peers across " +
+                 "the level. Turn off only to compare against the old behaviour.")]
+        [SerializeField] private bool _hardCutoff = true;
+
+        [Tooltip("Fallback rolloff when Hard Cutoff is off.")]
         [SerializeField] private AudioRolloffMode _rolloff = AudioRolloffMode.Logarithmic;
 
         [Header("Ground probe (mirrors FootstepsController.CheckGround)")]
@@ -210,10 +216,18 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _source.playOnAwake = false;
             _source.loop = false;
             _source.spatialBlend = 1f;
-            _source.rolloffMode = _rolloff;
-            _source.minDistance = _minDistance;
-            _source.maxDistance = _maxDistance;
             _source.dopplerLevel = 0f;
+
+            if (_hardCutoff)
+            {
+                ProxyAudioCurves.ApplyHardCutoff(_source, _minDistance, _maxDistance);
+            }
+            else
+            {
+                _source.rolloffMode = _rolloff;
+                _source.minDistance = _minDistance;
+                _source.maxDistance = _maxDistance;
+            }
 
             var audio = AudioManager.Instance;
             _source.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;

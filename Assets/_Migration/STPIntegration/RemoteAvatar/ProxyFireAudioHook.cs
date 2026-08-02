@@ -76,6 +76,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private int _lastSeen = Unseen;
         private AudioSource _crack;
         private AudioSource _tail;
+        private AudioSource _echo;
         private static AudioListener _listener;
 
         // Re-arm for pool reuse: a recycled proxy must not fire on its first sample, nor keep a
@@ -85,6 +86,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _lastSeen = Unseen;
             if (_crack != null) _crack.Stop();
             if (_tail != null) _tail.Stop();
+            if (_echo != null) _echo.Stop();
         }
 
         private void Update()
@@ -136,12 +138,39 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             StartCoroutine(PlayDelayed(EnsureCrack(), clip, volume, travel, cutoff, spread));
 
-            if (_audioSet.TryResolveTail(heldItem, out var tailClip))
+            bool hasTail = _audioSet.TryResolveTail(heldItem, out var tailClip);
+            if (hasTail)
             {
                 // The tail is already the far-field component, so it gets muffled harder still: the
                 // boom should read as rolling in from a distance even when the crack is nearby.
                 StartCoroutine(PlayDelayed(EnsureTail(), tailClip, _audioSet.tailVolume,
                     travel + _audioSet.tailDelay, cutoff * 0.6f, spread));
+            }
+
+            // Corridor slap-back. Reflections carry the tail clip when there is one (a boom bounces
+            // better than a crack) and otherwise re-use the shot itself.
+            float echo = _audioSet.EchoStrength(distance);
+            if (_audioSet.echoTaps > 0 && echo > 0.01f)
+            {
+                var echoClip = hasTail ? tailClip : clip;
+                float level = volume * echo;
+                float tapCutoff = cutoff;
+                float delay = travel + _audioSet.echoFirstDelay;
+
+                for (int tap = 0; tap < _audioSet.echoTaps; tap++)
+                {
+                    level *= _audioSet.echoFalloff;
+                    tapCutoff *= _audioSet.echoCutoffScale;
+                    if (level < 0.01f)
+                        break; // inaudible: stop spawning coroutines nobody will hear
+
+                    // Reflections arrive from the room, not from the shooter, so they are played as
+                    // wide as the source allows — a slap-back that is still a pinpoint reads as a
+                    // stutter in the sample rather than as a space.
+                    StartCoroutine(PlayDelayed(EnsureEcho(), echoClip, level, delay, tapCutoff,
+                        Mathf.Max(spread, 90f)));
+                    delay += _audioSet.echoSpacing;
+                }
             }
         }
 
@@ -157,6 +186,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             var filter = src.GetComponent<AudioLowPassFilter>();
             if (filter != null)
                 filter.cutoffFrequency = Mathf.Clamp(cutoff, 10f, 22000f);
+
+            // Per-shot detune. Caveat, accepted: PlayOneShot voices already ringing on this source
+            // follow the new pitch, so a burst bends very slightly. At ±5 % that is inaudible, and the
+            // alternative — one AudioSource per voice — costs far more than the artifact is worth.
+            float v = _audioSet != null ? _audioSet.pitchVariation : 0f;
+            src.pitch = v > 0f ? 1f + Random.Range(-v, v) : 1f;
 
             // PlayOneShot, not Play: the shots of a burst must overlap and ring out on top of each
             // other. Play() would cut the previous shot dead at every trigger pull.
@@ -188,6 +223,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return _tail;
         }
 
+        // Reflections get their own source so their spread and cutoff never fight the direct sound.
+        private AudioSource EnsureEcho()
+        {
+            if (_echo == null)
+                _echo = CreateSource("ProxyShotEcho", _audioSet.tailMinDistance);
+            return _echo;
+        }
+
         /// <summary>
         /// Builds one 3D source with the authored curve. Lazy: a peer who never fires never allocates
         /// one. Parented to the proxy so the sound tracks the shooter while it rings out — a burst
@@ -202,9 +245,18 @@ namespace BackroomsSurvival.Migration.STPIntegration
             src.playOnAwake = false;
             src.loop = false;
             src.spatialBlend = 1f; // fully 3D; at 0 the shot would be heard dead-centre at any distance
-            src.rolloffMode = _audioSet.rolloff;
-            src.minDistance = minDistance;
-            src.maxDistance = _audioSet.maxDistance;
+
+            if (_audioSet.hardCutoff)
+            {
+                ProxyAudioCurves.ApplyHardCutoff(src, minDistance, _audioSet.maxDistance);
+            }
+            else
+            {
+                src.rolloffMode = _audioSet.rolloff;
+                src.minDistance = minDistance;
+                src.maxDistance = _audioSet.maxDistance;
+            }
+
             src.spread = _audioSet.spread;
             src.dopplerLevel = 0f; // a gunshot is an impulse; doppler on it is pure artifact
 

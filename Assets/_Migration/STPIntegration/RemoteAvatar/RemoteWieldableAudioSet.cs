@@ -56,8 +56,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
                  "the phantom, so what the AI hears and what players hear agree.")]
         [Min(1f)] public float maxDistance = 500f;
 
-        [Tooltip("Logarithmic is the physical curve and the right default. Linear reads flat and fake: " +
-                 "it stays too loud mid-range and then cuts out.")]
+        [Tooltip("Use a custom rolloff curve that genuinely reaches zero at Max Distance. Unity's " +
+                 "Logarithmic mode does NOT silence there — it stops attenuating and holds " +
+                 "minDistance/maxDistance for ever, so a shot stayed faintly audible at any range. " +
+                 "Turn off only to compare against the old behaviour.")]
+        public bool hardCutoff = true;
+
+        [Tooltip("Fallback rolloff when Hard Cutoff is off.")]
         public AudioRolloffMode rolloff = AudioRolloffMode.Logarithmic;
 
         [Tooltip("Stereo spread in degrees. A little widening keeps a distant shot from feeling like a " +
@@ -132,6 +137,42 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return 0f;
             return distance / speedOfSound;
         }
+
+        [Header("Echo — corridor slap-back")]
+        [Tooltip("Extra reflections replayed after the shot. This is the 'it echoed down the hall' cue. " +
+                 "Discrete taps rather than a reverb filter on purpose: the Backrooms are long hard " +
+                 "corridors, which produce distinct slap-back rather than a smooth room tail — and taps " +
+                 "cost nothing, while a live AudioReverbFilter per proxy would run every frame whether " +
+                 "anyone is shooting or not. 0 disables the echo.")]
+        [Range(0, 4)] public int echoTaps = 2;
+
+        [Tooltip("Distance at which echo reaches full strength. Below it the taps fade in, so a shot " +
+                 "next to your ear stays dry and immediate.")]
+        [Min(1f)] public float echoFullDistance = 60f;
+
+        [Tooltip("Delay of the first reflection. ~0.12 s is a wall about 20 m away.")]
+        [Range(0.02f, 1f)] public float echoFirstDelay = 0.13f;
+
+        [Tooltip("Extra delay added per additional tap.")]
+        [Range(0.02f, 1f)] public float echoSpacing = 0.17f;
+
+        [Tooltip("Volume of the first reflection relative to the shot. Each further tap multiplies by " +
+                 "this again, so reflections die away instead of machine-gunning.")]
+        [Range(0.05f, 0.9f)] public float echoFalloff = 0.45f;
+
+        [Tooltip("How much duller each reflection is than the one before. Every bounce off a wall eats " +
+                 "high frequencies, so a late reflection should be noticeably darker.")]
+        [Range(0.2f, 1f)] public float echoCutoffScale = 0.55f;
+
+        [Header("Variation")]
+        [Tooltip("Per-shot random pitch spread. Without it a burst is the identical sample stamped N " +
+                 "times, which the ear hears instantly as a loop rather than as gunfire.")]
+        [Range(0f, 0.2f)] public float pitchVariation = 0.05f;
+
+        /// <summary>Echo strength for a distance: 0 point-blank (dry), 1 at
+        /// <see cref="echoFullDistance"/> and beyond.</summary>
+        public float EchoStrength(float distance)
+            => Mathf.Clamp01(distance / Mathf.Max(1f, echoFullDistance));
 
         /// <summary>Tail clip for a held item id, falling back to the default. False when there is
         /// nothing to play — the crack alone is a valid configuration.</summary>
