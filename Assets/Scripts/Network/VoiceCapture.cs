@@ -205,7 +205,9 @@ namespace BackroomsSurvival.Net
 
         /// <summary>Nombre del dispositivo REALMENTE abierto (puede no ser <see cref="Device"/> si
         /// éste está vacío o ya no existe). Vacío mientras la captura está parada.</summary>
-        public string ActiveDevice => _clip != null ? _activeDevice : "";
+        public string ActiveDevice =>
+            _winmm != null && _winmm.IsRunning ? _winmm.DeviceName
+            : _clip != null ? _activeDevice : "";
 
         /// <summary>Nivel de entrada de la última trama capturada, 0..1 (RMS). Es lo que pinta el
         /// medidor: si esto no se mueve al hablar, el problema está ANTES del códec.</summary>
@@ -337,6 +339,18 @@ namespace BackroomsSurvival.Net
         private readonly VoiceDynamics _dynamics = new VoiceDynamics();
         private bool _applyingOptions;
 
+        // Backend alternativo. Ver ApplySilenceFallback() para POR QUE existe.
+        private WinMmCapture _winmm;
+        private short[] _winmmScratch;
+        private int _silentFrames;
+        private int _winmmFill;
+        private bool _fallbackTried;
+
+        /// <summary>Tramas seguidas de silencio DIGITAL EXACTO que se toleran antes de cambiar de
+        /// backend. 150 son 3 s: suficiente para no confundir a alguien que simplemente no habla
+        /// —el silencio real de una sala nunca es 0,0000 exacto— y poco para no hacer esperar.</summary>
+        private const int SilentFramesBeforeFallback = 150;
+
         /// <summary>
         /// Refleja en las opciones del juego un cambio hecho por tecla o por el panel de
         /// diagnostico, para que el menu no muestre algo distinto de lo que esta pasando. No
@@ -418,6 +432,12 @@ namespace BackroomsSurvival.Net
             }
             if (_ipc == null && !IPCClient.TryGetInstance(out _ipc)) return;
 
+            if (_winmm != null && _winmm.IsRunning)
+            {
+                PumpWinMm();
+                return;
+            }
+
             // El clip del micro es CIRCULAR. Sin consumir por tramas completas y sin detectar el
             // envolvimiento, se leen muestras rancias o repetidas y la voz suena entrecortada.
             int writeHead = Microphone.GetPosition(_activeDevice);
@@ -446,6 +466,85 @@ namespace BackroomsSurvival.Net
                 _clip.GetData(_interleaved, _readHead);
                 _readHead = (_readHead + _inputFrameSamples) % _clip.samples;
                 available -= _inputFrameSamples;
+                DownmixToMono();
+                ProcessFrame();
+            }
+        }
+
+        /// <summary>
+        /// Cambia a <see cref="WinMmCapture"/> cuando el dispositivo entrega SILENCIO DIGITAL
+        /// EXACTO durante varios segundos.
+        ///
+        /// El caso es real y medido: una interfaz de audio expone sus entradas como un endpoint
+        /// estéreo ("Analogue 1 + 2") y `Microphone.Start` **no admite pedir número de canales**.
+        /// Unity negocia mono, el driver le devuelve ceros, y la propia prueba de Windows sobre el
+        /// mismo aparato da 99 % de volumen. No hay parámetro que tocar desde la API de Unity.
+        ///
+        /// La condición es CERO EXACTO y no "bajo": el ruido de una sala real, por callada que
+        /// esté, nunca da 0,0000 en 150 tramas seguidas. Un micrófono silenciado por hardware sí
+        /// lo daría, y en ese caso el cambio de backend es inofensivo — la señal sigue sin existir
+        /// y lo único que se pierde es una línea de log.
+        ///
+        /// Se intenta UNA sola vez por sesión de captura: si el otro backend tampoco da señal, el
+        /// problema no es el backend, y reintentar en bucle solo llenaría el log.
+        /// </summary>
+        private void ApplySilenceFallback()
+        {
+            if (_fallbackTried || !WinMmCapture.IsSupported) return;
+            if (InputLevel > 0f) { _silentFrames = 0; return; }
+            if (++_silentFrames < SilentFramesBeforeFallback) return;
+
+            _fallbackTried = true;
+            Debug.LogWarning($"[VoiceCapture] '{_activeDevice}' lleva {_silentFrames} tramas de " +
+                             "silencio digital exacto; Microphone no puede negociar sus canales. " +
+                             "Cambiando a captura WinMM.");
+
+            // Dos canales por defecto: es la configuración de las interfaces de audio, que son
+            // justo los aparatos donde `Microphone` falla. La mezcla a mono ya la hace
+            // DownmixToMono con el modo "canal más fuerte", que resuelve el micro en UNA entrada.
+            int channels = Mathf.Max(2, _channels);
+            var winmm = new WinMmCapture();
+            if (!winmm.Start(_activeDevice, SampleRate, channels))
+            {
+                winmm.Dispose();
+                Debug.LogWarning("[VoiceCapture] La captura WinMM tampoco pudo abrir el dispositivo.");
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(_activeDevice)) Microphone.End(_activeDevice);
+            _clip = null;
+
+            _winmm = winmm;
+            _captureRate = winmm.SampleRate;
+            _channels = winmm.Channels;
+            _needsResample = _captureRate != SampleRate;
+            _inputFrameSamples = Mathf.Max(1, Mathf.RoundToInt(_captureRate / 50f));
+            _capture = new float[_inputFrameSamples];
+            _interleaved = new float[_inputFrameSamples * _channels];
+            _winmmScratch = new short[_inputFrameSamples * _channels * 4];
+            _winmmFill = 0;
+            _resampleTail = 0f;
+            _dynamics.Reset();
+        }
+
+        /// <summary>Drena el backend WinMM y procesa las tramas completas que salgan.</summary>
+        private void PumpWinMm()
+        {
+            int need = _inputFrameSamples * _channels;
+            int got = _winmm.Read(_winmmScratch, _winmmScratch.Length - _winmmFill);
+            _winmmFill += got;
+
+            while (_winmmFill >= need)
+            {
+                // 16 bits con signo a -1..1, tal como los entrega el driver: intercalados.
+                for (int i = 0; i < need; i++)
+                    _interleaved[i] = _winmmScratch[i] / (float)short.MaxValue;
+
+                // Lo que sobra se desplaza al principio. Con 4 tramas de holgura esto copia unos
+                // pocos cientos de muestras y solo cuando el driver entrega de más.
+                _winmmFill -= need;
+                if (_winmmFill > 0) Array.Copy(_winmmScratch, need, _winmmScratch, 0, _winmmFill);
+
                 DownmixToMono();
                 ProcessFrame();
             }
@@ -510,6 +609,8 @@ namespace BackroomsSurvival.Net
             double sum = 0;
             for (int i = 0; i < _inputFrameSamples; i++) sum += (double)_capture[i] * _capture[i];
             InputLevel = Mathf.Sqrt((float)(sum / _inputFrameSamples));
+
+            ApplySilenceFallback();
 
             // Traza periódica del nivel. El medidor del panel ya lo enseña, pero un log es lo
             // único que sobrevive a la sesión y lo único que se puede pedir por escrito cuando
@@ -871,6 +972,10 @@ namespace BackroomsSurvival.Net
             // Sin este reset, la ganancia adaptada al micrófono ANTERIOR se aplicaría a la primera
             // trama del siguiente, que con un salto de sensibilidad entre aparatos satura.
             _dynamics.Reset();
+            if (_winmm != null) { _winmm.Dispose(); _winmm = null; }
+            _winmmFill = 0;
+            _silentFrames = 0;
+            _fallbackTried = false;
             StopMonitor();
             if (_clip == null) return;
             if (!string.IsNullOrEmpty(_activeDevice)) Microphone.End(_activeDevice);
