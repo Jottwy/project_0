@@ -928,6 +928,7 @@ pub async fn run(
                     player.position,
                     player.rotation,
                     player.crouch,
+                    player.stats.is_dead(),
                 );
                 // ADR-047 — this loop ROUTES; it no longer assumes the victim. Each attack names
                 // whose health it is for, and the only branch that applies damage is the one where
@@ -4449,20 +4450,36 @@ fn blur_noise(source: Vec3, dist: f32, id: PeerId) -> Vec3 {
     )
 }
 
+/// A DEAD player is not a target. `dead` is relayed for peers (ADR-028 post-E3) and the host's own
+/// flag is handed into `step`, for the same reason `crouch` is: the local player is not a peer.
+///
+/// Without this the creature kept hunting a corpse — and because `sync_population` only ever retires
+/// a phantom in WANDER, one locked onto a dead player stayed anchored over the body, freezing and
+/// lunging at it, until that player respawned. The damage router already skipped the dead victim
+/// (so nothing was ever applied), which is exactly why the bug was invisible in the logs and visible
+/// on screen: the blows were dropped one layer BELOW the behaviour that produced them.
+///
+/// Returns `None` when nobody is alive. Every FSM branch already handles a missing target (WANDER
+/// stops detecting, the hunt states fall to SEARCH/WANDER), so losing the target reads as "it lost
+/// you" — it walks to where it killed you and gives up. No new state, no special case.
 fn nearest_real_target(
     net: &NetworkManager,
     host_player_pos: Vec3,
     host_player_rot: f32,
+    host_player_dead: bool,
     from: Vec3,
 ) -> Option<(PeerId, Vec3, f32, f32)> {
-    let mut best = Some((
-        net.local_id,
-        host_player_pos,
-        from.distance_xz(host_player_pos),
-        host_player_rot,
-    ));
+    let mut best = match host_player_dead {
+        true => None,
+        false => Some((
+            net.local_id,
+            host_player_pos,
+            from.distance_xz(host_player_pos),
+            host_player_rot,
+        )),
+    };
     for p in net.peers.values() {
-        if net.phantom_ids.contains(&p.id) {
+        if net.phantom_ids.contains(&p.id) || p.dead {
             continue;
         }
         let pos = Vec3::from_array(p.position);
@@ -5344,6 +5361,9 @@ impl PhantomDriver {
         // peer, so it has to be handed in. Passed explicitly rather than stashed on the driver so
         // the input to a tick stays visible in the signature.
         host_player_crouch: bool,
+        // The host player's own death, handed in for the same reason as its crouch: it is not a
+        // peer, so `nearest_real_target` cannot read it off the roster.
+        host_player_dead: bool,
     ) -> &[PhantomAttack] {
         let now = Instant::now();
         self.step_counter = self.step_counter.wrapping_add(1);
@@ -5399,7 +5419,13 @@ impl PhantomDriver {
 
             // Nearest REAL player (the host's own local player + any real peer). D1=(a): distance
             // + a forward view cone only, NO geometry line-of-sight (collision = grid_gen world).
-            let target = nearest_real_target(net, host_player_pos, host_player_rot, from);
+            let target = nearest_real_target(
+                net,
+                host_player_pos,
+                host_player_rot,
+                host_player_dead,
+                from,
+            );
             self.movers[i].state_timer += dt;
 
             // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
@@ -6739,6 +6765,7 @@ mod tests {
                 Vec3::new(100_000.0, 1.8, 100_000.0),
                 0.0,
                 false,
+                false,
             );
         }
 
@@ -6774,7 +6801,7 @@ mod tests {
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         let player = Vec3::new(6.0, 1.8, 0.0); // 6 m ahead (+X): inside radius and cone
 
-        driver.step(&mut net, 0.1, player, 0.0, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -6800,7 +6827,7 @@ mod tests {
         driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
         let player = Vec3::new(100.0, 1.8, 0.0); // far beyond the detect/lose radius
 
-        driver.step(&mut net, 0.1, player, 0.0, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -6825,7 +6852,7 @@ mod tests {
         driver.movers[0].state_timer = 10.0;
         let player = Vec3::new(6.0, 1.8, 0.0); // inside DETECT_RADIUS*1.5
 
-        driver.step(&mut net, 0.1, player, 0.0, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -6849,7 +6876,7 @@ mod tests {
         driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE + 5.0;
         let player = Vec3::new(6.0, 1.8, 0.0);
 
-        driver.step(&mut net, 0.1, player, 0.0, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -6888,6 +6915,7 @@ mod tests {
             0.1,
             Vec3::new(100_000.0, 1.8, 100_000.0),
             0.0,
+            false,
             false,
         );
 
@@ -7173,7 +7201,7 @@ mod tests {
         let player = Vec3::new(6.0, 1.8, 0.0); // close, inside STATUE_RANGE
         let player_yaw = 270.0; // faces -X, i.e. toward the phantom near the origin
 
-        driver.step(&mut net, 0.1, player, player_yaw, false);
+        driver.step(&mut net, 0.1, player, player_yaw, false, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -7195,13 +7223,69 @@ mod tests {
         let player = Vec3::new(6.0, 1.8, 0.0); // close, inside LOSE_RADIUS
         let player_yaw = 90.0; // faces +X, AWAY from the phantom
 
-        driver.step(&mut net, 0.1, player, player_yaw, false);
+        driver.step(&mut net, 0.1, player, player_yaw, false, false);
 
         assert_eq!(
             driver.movers[0].state,
             PhantomState::Stalk,
             "STATUE must release to STALK when the player looks away"
         );
+    }
+
+    #[tokio::test]
+    async fn phantom_stops_hunting_a_dead_player() {
+        // The bug this exists for, reported from play-test: kill the player and the creature keeps
+        // lunging at the corpse until they respawn. The damage ROUTER already skipped a dead victim,
+        // so nothing was ever applied and no log ever complained — the behaviour that produced the
+        // blows lived one layer above the guard that dropped them.
+        //
+        // `sync_population` only retires a phantom in WANDER, so one locked onto a corpse also
+        // stayed anchored over it indefinitely. Losing the target is what releases both.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        // Point-blank relative to the phantom's actual (snapped) spawn pos — `spawn_phantom` moves
+        // it to a walkable cell, so the raw `start` is not where it stands.
+        let ppos = net.peers[&pid].position;
+        let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east, inside the 1.5 m strike
+        let player_yaw = 270.0; // faces -X, i.e. looking straight at it
+
+        let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, true);
+
+        assert!(
+            attacks.is_empty(),
+            "a dead player must not be struck: {attacks:?}"
+        );
+        assert_ne!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "with nobody alive to chase, the lunge must end"
+        );
+    }
+
+    #[tokio::test]
+    async fn phantom_still_strikes_a_living_player_at_point_blank() {
+        // NEGATIVE CONTROL for the test above: same setup, host ALIVE. Without this, deleting the
+        // strike entirely would leave `phantom_stops_hunting_a_dead_player` green.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let world = World::new(42);
+        let mut driver = PhantomDriver::new(world.seed);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        let ppos = net.peers[&pid].position;
+        let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]);
+        let player_yaw = 270.0;
+
+        let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, false);
+
+        assert_eq!(attacks.len(), 1, "a living player at point blank gets hit");
+        assert_eq!(attacks[0].victim, net.local_id);
     }
 
     #[tokio::test]
@@ -7223,7 +7307,7 @@ mod tests {
             .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
         let player = Vec3::new(-18.0, 1.8, 0.0);
 
-        driver.step(&mut net, 0.1, player, 0.0, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
 
         assert_eq!(
             driver.movers[0].state,
@@ -7252,7 +7336,7 @@ mod tests {
             .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
         let player = Vec3::new(-18.0, 1.8, 0.0);
 
-        driver.step(&mut net, 0.1, player, 0.0, true); // crouched
+        driver.step(&mut net, 0.1, player, 0.0, true, false); // crouched
 
         assert_eq!(
             driver.movers[0].state,
@@ -7278,7 +7362,7 @@ mod tests {
             driver
                 .prev_target_pos
                 .insert(net.local_id, Vec3::new(-dist - 0.2, 1.8, 0.0)); // 2 m/s
-            driver.step(&mut net, 0.1, player, 0.0, false);
+            driver.step(&mut net, 0.1, player, 0.0, false, false);
 
             let heard = driver.movers[0].state != PhantomState::Wander;
             assert_eq!(
@@ -7307,6 +7391,7 @@ mod tests {
             0.1,
             Vec3::new(from.x + 400.0, 1.8, from.z),
             0.0,
+            false,
             false,
         );
 
@@ -7339,6 +7424,7 @@ mod tests {
             0.1,
             Vec3::new(from.x + 5000.0, 1.8, from.z),
             0.0,
+            false,
             false,
         );
 
@@ -7408,6 +7494,7 @@ mod tests {
             Vec3::new(from.x + 500.0, 1.8, from.z),
             0.0,
             false,
+            false,
         );
 
         assert_eq!(
@@ -7438,6 +7525,7 @@ mod tests {
             0.1,
             Vec3::new(from.x + 500.0, 1.8, from.z),
             0.0,
+            false,
             false,
         );
 
@@ -7485,7 +7573,7 @@ mod tests {
         let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
         let player_yaw = 90.0; // faces +X, AWAY from the phantom (to its west) → not looking
 
-        let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
+        let attack = driver.step(&mut net, 0.1, player, player_yaw, false, false);
 
         assert_eq!(
             attack,
@@ -7525,7 +7613,7 @@ mod tests {
         driver.movers[0].state = PhantomState::Sprint;
 
         let host_far = Vec3::new(ppos[0] + 500.0, 1.8, ppos[2]);
-        let attacks = driver.step(&mut net, 0.1, host_far, 0.0, false);
+        let attacks = driver.step(&mut net, 0.1, host_far, 0.0, false, false);
 
         assert_eq!(attacks.len(), 1, "expected one strike, got {attacks:?}");
         assert_eq!(
@@ -7656,7 +7744,7 @@ mod tests {
         let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
         let player_yaw = 270.0; // faces -X, TOWARD the phantom → looking
 
-        let attack = driver.step(&mut net, 0.1, player, player_yaw, false);
+        let attack = driver.step(&mut net, 0.1, player, player_yaw, false, false);
 
         assert!(
             matches!(attack, [PhantomAttack { victim, kind: PhantomAttackKind::Hit(d) }]
@@ -7684,7 +7772,7 @@ mod tests {
         let ppos = net.peers[&pid].position;
         let player = Vec3::new(ppos[0] + 2.0, 1.8, ppos[2]); // within PHANTOM_KNOCKBACK_RANGE (3 m)
 
-        let attack = driver.step(&mut net, 0.1, player, 0.0, false);
+        let attack = driver.step(&mut net, 0.1, player, 0.0, false, false);
 
         assert!(
             matches!(attack, [PhantomAttack { victim, kind: PhantomAttackKind::Knockback(_, _) }]
@@ -7709,6 +7797,7 @@ mod tests {
             0.1,
             Vec3::new(100_000.0, 1.8, 100_000.0),
             0.0,
+            false,
             false,
         );
 
@@ -7743,7 +7832,7 @@ mod tests {
         let ppos = net.peers[&a].position;
         let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]);
 
-        let attacks = driver.step(&mut net, 0.1, player, 270.0, false);
+        let attacks = driver.step(&mut net, 0.1, player, 270.0, false, false);
 
         assert_eq!(
             attacks.len(),
