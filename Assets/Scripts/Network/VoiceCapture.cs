@@ -171,6 +171,7 @@ namespace BackroomsSurvival.Net
             _autoGain = o.AutoGain.Value;
             _activationThreshold = Mathf.Clamp(o.ActivationThreshold.Value, 0f, 0.2f);
             _pushToTalkKey = (Key)o.PushToTalkKey.Value;
+            _toggleMicKey = (Key)o.ToggleMicKey.Value;
             bool channelChanged = _channel != o.Channel.Value;
             _channel = o.Channel.Value;
 
@@ -263,6 +264,15 @@ namespace BackroomsSurvival.Net
             set { _pushToTalkKey = value; PlayerPrefs.SetInt(PrefPttKey, (int)value); MirrorToOptions(); }
         }
 
+        /// <summary>Tecla que enciende y apaga el micrófono. SEPARADA de la de hablar a propósito:
+        /// una se mantiene pulsada durante una frase y la otra se pulsa una vez cada media hora, y
+        /// compartirlas haría imposible tener el micro abierto sin hablar.</summary>
+        public Key ToggleMicKey
+        {
+            get => _toggleMicKey;
+            set { _toggleMicKey = value; PlayerPrefs.SetInt(PrefToggleKey, (int)value); MirrorToOptions(); }
+        }
+
         /// <summary>
         /// AUTO-TEST: te oyes a ti mismo. La trama recién codificada se decodifica y se reproduce
         /// en local, así que probar la voz deja de necesitar un segundo jugador.
@@ -291,6 +301,7 @@ namespace BackroomsSurvival.Net
         private const string PrefThreshold = "voice.threshold";
         private const string PrefPttKey = "voice.ptt_key";
         private const string PrefChannel = "voice.channel";
+        private const string PrefToggleKey = "voice.toggle_key";
         private const string PrefGate = "voice.gate";
         private const string PrefAgc = "voice.agc";
 
@@ -343,6 +354,7 @@ namespace BackroomsSurvival.Net
             o.AutoGain.SetValue(_autoGain);
             o.ActivationThreshold.SetValue(_activationThreshold);
             o.PushToTalkKey.SetValue((int)_pushToTalkKey);
+            o.ToggleMicKey.SetValue((int)_toggleMicKey);
             o.Channel.SetValue(_channel);
         }
 
@@ -369,6 +381,7 @@ namespace BackroomsSurvival.Net
             _device = PlayerPrefs.GetString(PrefDevice, _device ?? "");
             _activationThreshold = PlayerPrefs.GetFloat(PrefThreshold, _activationThreshold);
             _pushToTalkKey = (Key)PlayerPrefs.GetInt(PrefPttKey, (int)_pushToTalkKey);
+            _toggleMicKey = (Key)PlayerPrefs.GetInt(PrefToggleKey, (int)_toggleMicKey);
             _channel = PlayerPrefs.GetInt(PrefChannel, _channel);
             _noiseGate = PlayerPrefs.GetInt(PrefGate, _noiseGate ? 1 : 0) != 0;
             _autoGain = PlayerPrefs.GetInt(PrefAgc, _autoGain ? 1 : 0) != 0;

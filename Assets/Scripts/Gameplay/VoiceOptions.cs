@@ -48,6 +48,10 @@ namespace BackroomsSurvival.Gameplay
         private Option<int> _pushToTalkKey = new Option<int>((int)UnityEngine.InputSystem.Key.V);
 
         [SerializeField]
+        [Tooltip("Tecla que ENCIENDE Y APAGA el micrófono, distinta de la de hablar. 60 = F5.")]
+        private Option<int> _toggleMicKey = new Option<int>((int)UnityEngine.InputSystem.Key.F5);
+
+        [SerializeField]
         [Tooltip("Canal de un micrófono multicanal: -1 automático, -2 mezcla, ≥0 canal fijo.")]
         private Option<int> _channel = new Option<int>(-1);
 
@@ -57,6 +61,7 @@ namespace BackroomsSurvival.Gameplay
         public Option<bool> AutoGain => _autoGain;
         public Option<float> ActivationThreshold => _activationThreshold;
         public Option<int> PushToTalkKey => _pushToTalkKey;
+        public Option<int> ToggleMicKey => _toggleMicKey;
         public Option<int> Channel => _channel;
 
         /// <summary>

@@ -69,6 +69,9 @@ namespace BackroomsSurvival.EditorTools
                 AddRow(audioPanel, toggle, "Puerta de ruido", out var gateGo);
                 AddRow(audioPanel, toggle, "Nivel automático", out var agcGo);
                 AddRow(audioPanel, slider, "Sensibilidad de voz abierta", out var thrGo);
+                AddRow(audioPanel, dropdown, "Tecla para hablar (mantener)", out var pttGo);
+                AddRow(audioPanel, dropdown, "Tecla para activar/desactivar", out var togGo);
+                AddRow(audioPanel, toggle, "Probar mi micrófono (oírme a mí)", out var selfGo);
 
                 var ui = audioPanel.GetComponent<VoiceOptionsUI>();
                 if (ui == null) ui = audioPanel.gameObject.AddComponent<VoiceOptionsUI>();
@@ -84,6 +87,9 @@ namespace BackroomsSurvival.EditorTools
                 Bind(ui, "_noiseGateToggle", gateGo.GetComponentInChildren<Toggle>(true));
                 Bind(ui, "_autoGainToggle", agcGo.GetComponentInChildren<Toggle>(true));
                 Bind(ui, "_thresholdSlider", thrGo.GetComponentInChildren<Slider>(true));
+                Bind(ui, "_pttKeyDropdown", pttGo.GetComponentInChildren<TMP_Dropdown>(true));
+                Bind(ui, "_toggleKeyDropdown", togGo.GetComponentInChildren<TMP_Dropdown>(true));
+                Bind(ui, "_selfTestToggle", selfGo.GetComponentInChildren<Toggle>(true));
 
                 Bind(ui, "_statusText", LabelOf(statusRow));
 

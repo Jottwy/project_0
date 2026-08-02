@@ -4,6 +4,7 @@ using BackroomsSurvival.Net;
 using PolymindGames.UserInterface;
 using TMPro;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace BackroomsSurvival.UI
@@ -44,6 +45,22 @@ namespace BackroomsSurvival.UI
         [SerializeField] private Toggle _noiseGateToggle;
         [SerializeField] private Toggle _autoGainToggle;
         [SerializeField] private Slider _thresholdSlider;
+        [SerializeField] private Toggle _selfTestToggle;
+        [SerializeField] private TMP_Dropdown _pttKeyDropdown;
+        [SerializeField] private TMP_Dropdown _toggleKeyDropdown;
+
+        /// <summary>
+        /// Teclas ofrecidas para hablar y para activar. Es una lista CURADA y no el enum entero:
+        /// UnityEngine.InputSystem.Key tiene cientos de valores y un desplegable con todos es
+        /// inservible. Están las que la gente usa de verdad para hablar —laterales, alcanzables
+        /// con la mano izquierda sin soltar el movimiento— más las de función para el interruptor.
+        /// </summary>
+        private static readonly Key[] KeyChoices =
+        {
+            Key.V, Key.B, Key.C, Key.X, Key.Z, Key.T, Key.G, Key.H, Key.R, Key.F,
+            Key.CapsLock, Key.LeftAlt, Key.LeftCtrl, Key.LeftShift, Key.Tab, Key.Backquote,
+            Key.F1, Key.F2, Key.F5, Key.F6, Key.F7, Key.F8, Key.F9, Key.F10, Key.F11, Key.F12,
+        };
 
         private readonly List<string> _devices = new List<string>();
         private VoiceCapture _capture;
@@ -84,6 +101,25 @@ namespace BackroomsSurvival.UI
                 _channelDropdown.onValueChanged.AddListener(i =>
                     UserOptions.Channel.SetValue(i == 0 ? -1 : i == 1 ? -2 : i - 2));
 
+            FillKeys(_pttKeyDropdown);
+            FillKeys(_toggleKeyDropdown);
+            if (_pttKeyDropdown != null)
+                _pttKeyDropdown.onValueChanged.AddListener(i =>
+                    UserOptions.PushToTalkKey.SetValue((int)KeyChoices[Mathf.Clamp(i, 0, KeyChoices.Length - 1)]));
+            if (_toggleKeyDropdown != null)
+                _toggleKeyDropdown.onValueChanged.AddListener(i =>
+                    UserOptions.ToggleMicKey.SetValue((int)KeyChoices[Mathf.Clamp(i, 0, KeyChoices.Length - 1)]));
+
+            // El auto-test NO pasa por las opciones ni por "Aplicar": es una prueba momentanea, y
+            // guardarlo significaria volver a entrar en la partida oyendote a ti mismo sin
+            // acordarte de por que. Se manda directo al componente, como el microfono.
+            if (_selfTestToggle != null)
+                _selfTestToggle.onValueChanged.AddListener(v =>
+                {
+                    var vc = Capture();
+                    if (vc != null) vc.SelfTest = v;
+                });
+
             // El micrófono se aplica AL INSTANTE y no pasa por "Aplicar": cambiar de dispositivo es
             // una acción de prueba —quieres oír si ese sirve— y obligar a confirmar convertiría
             // "probar los 15 micros" en 15 confirmaciones.
@@ -109,7 +145,9 @@ namespace BackroomsSurvival.UI
                             ? "Encendido pero SIN captura — mira la consola"
                             : vc.IsTransmitting
                                 ? $"TRANSMITIENDO — nivel {vc.InputLevel:F3}"
-                                : $"Escuchando — nivel {vc.InputLevel:F3}";
+                                : vc.SelfTest
+                                    ? $"Auto-test: te oyes a ti — nivel {vc.InputLevel:F3}"
+                                    : $"Escuchando — nivel {vc.InputLevel:F3}";
             }
 
             if (vc == null) return;
@@ -140,8 +178,35 @@ namespace BackroomsSurvival.UI
             if (_thresholdSlider != null)
                 _thresholdSlider.SetValueWithoutNotify(UserOptions.ActivationThreshold * 500f);
 
+            SelectKey(_pttKeyDropdown, UserOptions.PushToTalkKey);
+            SelectKey(_toggleKeyDropdown, UserOptions.ToggleMicKey);
+
+            var capture = Capture();
+            if (_selfTestToggle != null && capture != null)
+                _selfTestToggle.SetIsOnWithoutNotify(capture.SelfTest);
+
             RefreshDevices();
             RefreshChannels();
+        }
+
+        private static void FillKeys(TMP_Dropdown dd)
+        {
+            if (dd == null) return;
+            var names = new List<string>(KeyChoices.Length);
+            foreach (var k in KeyChoices) names.Add(k.ToString());
+            dd.ClearOptions();
+            dd.AddOptions(names);
+        }
+
+        /// <summary>Una tecla guardada que no esta en la lista curada (un ajuste viejo, o editado a
+        /// mano) cae a la primera en vez de dejar el desplegable en un indice que no corresponde a
+        /// lo que el juego esta usando de verdad.</summary>
+        private static void SelectKey(TMP_Dropdown dd, int keyCode)
+        {
+            if (dd == null) return;
+            int idx = System.Array.IndexOf(KeyChoices, (Key)keyCode);
+            dd.SetValueWithoutNotify(idx >= 0 ? idx : 0);
+            dd.RefreshShownValue();
         }
 
         private void RefreshDevices()
