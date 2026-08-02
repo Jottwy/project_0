@@ -237,6 +237,19 @@ fn resolve_save_path(seed: u64) -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(format!("./saves/world_{seed}.json")))
 }
 
+/// Metadatos a persistir en ESTE guardado: la fecha de creación original más el tiempo jugado
+/// acumulado, al que se suma lo que lleva corriendo la sesión actual. `tick` arranca en 0 en
+/// cada lanzamiento del proceso, así que es exactamente la duración de esta sesión.
+fn save_meta_now(
+    base: &crate::persistence::save::SaveMeta,
+    tick: u64,
+) -> crate::persistence::save::SaveMeta {
+    crate::persistence::save::SaveMeta {
+        created_at: base.created_at.clone(),
+        play_time_seconds: base.play_time_seconds.saturating_add(tick / TICK_HZ),
+    }
+}
+
 /// Re-siembra los cuatro asignadores de id de proceso desde los rosters recién cargados.
 /// Devuelve `(drop, building, carryable, group)` ya almacenados, solo para el log.
 ///
@@ -394,6 +407,13 @@ pub async fn run(
         world = World::new(save.world_seed);
         session_name = save.session_name.clone();
     }
+    // Continuidad de metadatos: sin esto `created_at` se re-estampa en cada guardado y
+    // `play_time_seconds` se escribe siempre 0. Se captura ANTES de que `hydrate_from_save`
+    // consuma el `SaveFile`.
+    let save_meta_base = loaded_save
+        .as_ref()
+        .map(crate::persistence::save::SaveMeta::from_loaded)
+        .unwrap_or_default();
 
     let dt = 1.0 / TICK_HZ as f32;
     let entity_dt = dt * ENTITY_TICK_EVERY as f32;
@@ -545,6 +565,7 @@ pub async fn run(
                                 &session_name,
                                 &world,
                                 &player,
+                                &save_meta_now(&save_meta_base, tick),
                                 &net.stp_items,
                                 &net.stp_buildings,
                                 &net.stp_carryables,
@@ -1042,6 +1063,7 @@ pub async fn run(
                 &session_name,
                 &world,
                 &player,
+                &save_meta_now(&save_meta_base, tick),
                 &net.stp_items,
                 &net.stp_buildings,
                 &net.stp_carryables,

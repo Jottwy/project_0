@@ -90,6 +90,31 @@ pub struct SaveFile {
     pub stp_harvestables: Vec<StpHarvestableInfo>,
 }
 
+/// ADR-032: metadatos que deben SOBREVIVIR a un ciclo de carga.
+///
+/// Los dos campos que transporta existen en el schema desde el primer día y ninguno decía la
+/// verdad: `SaveFile::new` re-estampa `created_at` en CADA guardado (así que la fecha real de
+/// creación del mundo se perdía en el primer autosave) y `play_time_seconds` se escribía como
+/// literal `0`. No cambia el schema — cambia quién los escribe.
+#[derive(Debug, Clone, Default)]
+pub struct SaveMeta {
+    /// Fecha de creación del mundo ORIGINAL. `None` = mundo nuevo → se estampa ahora.
+    pub created_at: Option<String>,
+    /// Total acumulado INCLUIDA la sesión en curso. Lo calcula el llamante, que es el único
+    /// que sabe cuánto lleva corriendo (aquí no hay acceso al contador de ticks).
+    pub play_time_seconds: u64,
+}
+
+impl SaveMeta {
+    /// Continuidad a partir de un save recién cargado.
+    pub fn from_loaded(save: &SaveFile) -> Self {
+        Self {
+            created_at: Some(save.created_at.clone()),
+            play_time_seconds: save.play_time_seconds,
+        }
+    }
+}
+
 impl SaveFile {
     pub fn new(session_name: impl Into<String>, world_seed: u64) -> Self {
         let now = chrono::Utc::now().to_rfc3339();
@@ -205,6 +230,7 @@ pub fn build_save(
     session_name: &str,
     world: &World,
     player: &Player,
+    meta: &SaveMeta,
     stp_items: &[StpItemInfo],
     stp_buildings: &[StpBuildingInfo],
     stp_carryables: &[StpCarryableInfo],
@@ -215,6 +241,12 @@ pub fn build_save(
     corpses.sort_unstable_by_key(|c| c.id);
 
     let mut save = SaveFile::new(session_name, world.seed);
+    // `SaveFile::new` estampa `created_at = now`, que es lo correcto para un mundo NUEVO y lo
+    // incorrecto para uno cargado: se sobrescribe con la fecha original cuando la hay.
+    if let Some(created_at) = &meta.created_at {
+        save.created_at = created_at.clone();
+    }
+    save.play_time_seconds = meta.play_time_seconds;
     save.host_player = Some(PlayerSnapshot::from_player(player));
     save.corpses = corpses;
     save.next_corpse_id = world.next_corpse_id();
@@ -232,6 +264,7 @@ pub fn save_world<P: AsRef<Path>>(
     session_name: &str,
     world: &World,
     player: &Player,
+    meta: &SaveMeta,
     stp_items: &[StpItemInfo],
     stp_buildings: &[StpBuildingInfo],
     stp_carryables: &[StpCarryableInfo],
@@ -241,6 +274,7 @@ pub fn save_world<P: AsRef<Path>>(
         session_name,
         world,
         player,
+        meta,
         stp_items,
         stp_buildings,
         stp_carryables,
@@ -344,6 +378,7 @@ mod tests {
             "test-session",
             &world,
             &player,
+            &SaveMeta::default(),
             &items,
             &buildings,
             &carryables,
@@ -470,10 +505,32 @@ mod tests {
         let path = scratch_path("double_save");
 
         player.stats.health = 50.0;
-        save_world(&path, "s", &world, &player, &[], &[], &[], &[]).expect("first save");
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("first save");
 
         player.stats.health = 88.0; // state changed between the two saves
-        save_world(&path, "s", &world, &player, &[], &[], &[], &[]).expect("second save");
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("second save");
 
         let loaded = load_or_fresh(&path).expect("file must still be valid after a double save");
         let hp = loaded.host_player.expect("host player present");
@@ -482,6 +539,64 @@ mod tests {
             "last write must win, got {}",
             hp.stats.health
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `created_at` se re-estampaba en CADA guardado (`SaveFile::new`), asi que la fecha real de
+    /// creacion del mundo moria en el primer autosave, y `play_time_seconds` se escribia literal
+    /// `0`. Ambos campos ya existian en el schema; lo que cambia es quien los escribe.
+    #[test]
+    fn save_meta_carries_creation_date_and_accumulated_play_time() {
+        let world = seeded_world();
+        let player = Player::new(1, "Host");
+        let path = scratch_path("save_meta");
+
+        // Guardado 1: mundo NUEVO. `created_at` se estampa ahora, tiempo jugado 0.
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+        )
+        .expect("first save");
+        let first = load_or_fresh(&path).expect("first save must load");
+        assert!(
+            !first.created_at.is_empty(),
+            "un mundo nuevo debe estampar su fecha de creacion"
+        );
+        assert_eq!(first.play_time_seconds, 0);
+
+        // Guardado 2: continuidad desde el cargado + 300 s de sesion.
+        let mut meta = SaveMeta::from_loaded(&first);
+        meta.play_time_seconds += 300;
+        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[]).expect("second save");
+
+        let second = load_or_fresh(&path).expect("second save must load");
+        assert_eq!(
+            second.created_at, first.created_at,
+            "la fecha de creacion debe sobrevivir a un ciclo guardar/cargar"
+        );
+        assert_eq!(second.play_time_seconds, 300);
+
+        // Guardado 3: el tiempo ACUMULA en vez de reiniciarse cada sesion.
+        let mut meta = SaveMeta::from_loaded(&second);
+        meta.play_time_seconds += 120;
+        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[]).expect("third save");
+
+        let third = load_or_fresh(&path).expect("third save must load");
+        assert_eq!(third.play_time_seconds, 420);
+        assert_eq!(third.created_at, first.created_at);
+        // Contrapartida: `last_saved` NO se congela — es la fecha del guardado, no la de creacion.
+        assert_ne!(
+            third.last_saved, third.created_at,
+            "last_saved debe seguir avanzando aunque created_at se preserve"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 
