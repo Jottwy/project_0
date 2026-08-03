@@ -21,6 +21,13 @@ namespace BackroomsSurvival.Net
         private readonly Dictionary<uint, ICharacter> _pending = new Dictionary<uint, ICharacter>();
         private IPCClient _ipc;
 
+        // Tracks the local player's current carry type/count via CarryableController's own public
+        // events, since ICarryableControllerCC doesn't expose ActiveDefinition. Used to refuse a
+        // pickup request locally instead of letting the host grant (and remove from world) an item
+        // the client can't actually carry, which used to strand an orphaned pickup and lose it.
+        private ICarryableControllerCC _carryCc;
+        private CarryableDefinition _activeCarryDef;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
         {
@@ -33,21 +40,54 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>Called by a StpCarryablePickupGate when the local player interacts.</summary>
-        public static void RequestPickup(uint carryableId, ICharacter recoger)
+        public static void RequestPickup(uint carryableId, int defId, ICharacter recoger)
         {
             if (_instance != null)
-                _instance.Request(carryableId, recoger);
+                _instance.Request(carryableId, defId, recoger);
         }
 
-        private void Request(uint carryableId, ICharacter recoger)
+        private void Request(uint carryableId, int defId, ICharacter recoger)
         {
             if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
                 return;
+
+            if (recoger.TryGetCC(out ICarryableControllerCC carry))
+            {
+                TrackCarryState(carry);
+
+                var def = CarryableDefinition.GetWithId(defId);
+                bool atCapacity = carry.CarryCount > 0 && (_activeCarryDef != def || carry.CarryCount >= def.MaxCarryCount);
+                if (def != null && atCapacity)
+                {
+                    Debug.Log($"[StpCarryablePickupController] pickup refused locally: already carrying {carry.CarryCount}/{_activeCarryDef?.MaxCarryCount} of '{_activeCarryDef?.Name}'.");
+                    return;
+                }
+            }
 
             _pending[carryableId] = recoger;
             ipc.SendStpCarryablePickup(carryableId);
             Debug.Log($"[StpCarryablePickupController] requested pickup carryable_id={carryableId}");
         }
+
+        private void TrackCarryState(ICarryableControllerCC carry)
+        {
+            if (_carryCc == carry)
+                return;
+
+            if (_carryCc != null)
+            {
+                _carryCc.ObjectCarryStarted -= OnCarryStarted;
+                _carryCc.ObjectCarryStopped -= OnCarryStopped;
+            }
+
+            _carryCc = carry;
+            _activeCarryDef = null;
+            carry.ObjectCarryStarted += OnCarryStarted;
+            carry.ObjectCarryStopped += OnCarryStopped;
+        }
+
+        private void OnCarryStarted(CarryableDefinition def) => _activeCarryDef = def;
+        private void OnCarryStopped() => _activeCarryDef = null;
 
         private void Update()
         {
@@ -92,7 +132,15 @@ namespace BackroomsSurvival.Net
             // Fresh in-hand instance (snaps to the hand socket on carry). It has NO
             // NetworkCarryableInstance, so when later dropped the drop watcher will adopt it.
             var pickup = Instantiate(def.Pickup);
-            carry.TryCarryObject(pickup);
+            if (!carry.TryCarryObject(pickup))
+            {
+                // Local capacity changed between the request and the grant (race). The host
+                // already removed the world object, so this is unrecoverable either way — at
+                // least don't leak an orphaned, un-carried pickup instance in the scene.
+                Debug.LogWarning($"[StpCarryablePickupController] grant for carryable_id={carryableId} couldn't be carried locally (capacity race); destroying orphaned instance.");
+                Destroy(pickup.gameObject);
+                return;
+            }
             Debug.Log($"[StpCarryablePickupController] carried '{def.Name}' in hand (carryable_id={carryableId}).");
         }
 
@@ -100,6 +148,11 @@ namespace BackroomsSurvival.Net
         {
             if (_ipc != null)
                 _ipc.RemoveEventListener(OnGameEvent);
+            if (_carryCc != null)
+            {
+                _carryCc.ObjectCarryStarted -= OnCarryStarted;
+                _carryCc.ObjectCarryStopped -= OnCarryStopped;
+            }
             if (_instance == this)
                 _instance = null;
         }

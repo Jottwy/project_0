@@ -106,6 +106,7 @@ namespace BackroomsSurvival.Net
 
             var gate = go.AddComponent<StpCarryablePickupGate>();
             gate.carryableId = c.id;
+            gate.defId = c.defId;
 
             Debug.Log($"[StpCarryableReplicator] spawned id={c.id} def_id={c.defId} '{def.Name}' at {c.position:F1}");
             return go;

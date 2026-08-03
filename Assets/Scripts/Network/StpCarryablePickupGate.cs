@@ -14,6 +14,7 @@ namespace BackroomsSurvival.Net
     public sealed class StpCarryablePickupGate : MonoBehaviour
     {
         public uint carryableId;
+        public int defId;
 
         private IInteractable _interactable;
         private bool _subscribed;
@@ -45,7 +46,7 @@ namespace BackroomsSurvival.Net
             if (character == null || !character.IsLocalPlayer())
                 return;
 
-            StpCarryablePickupController.RequestPickup(carryableId, character);
+            StpCarryablePickupController.RequestPickup(carryableId, defId, character);
         }
     }
 }
