@@ -545,8 +545,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices == null)
                 return;
 
-            if (voices.arraySize < 4)
-                voices.arraySize = 4;
+            if (voices.arraySize < 6)
+                voices.arraySize = 6;
 
             // Bank → filename prefix. SELECTED BY PREFIX AND NOT "everything in the folder", which
             // is what this did while only the screams existed: the moment a second voice landed in
@@ -560,8 +560,10 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             {
                 "PhantomScream_",        // 0 reveal
                 "PhantomScream_",        // 1 search shriek (placeholder, same family)
-                "PhantomVoice_Grunt",    // 2 noise reaction
+                "PhantomVoice_Grunt",    // 2 noise reaction, close by
                 "PhantomVoice_Breath",   // 3 stalking breath
+                "PhantomVoice_Answer",   // 4 the long-range answer to a gunshot
+                "PhantomVoice_Sated",    // 5 after a kill
             };
 
             for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)

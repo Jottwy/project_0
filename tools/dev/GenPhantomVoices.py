@@ -219,6 +219,82 @@ def heavy_step(seed, dur=0.42, thump=58.0, slap=0.55, drag=0.0):
     return out
 
 
+def far_roar(seed, dur=3.2, f0=52.0, growl=0.16):
+    """The answer from far away. What you hear a second after a shot, from somewhere out there.
+
+    Built to survive DISTANCE, which is a different job from the close-up scream: the energy sits
+    LOW (air eats treble long before bass), it is long enough to arrive as a shape rather than a
+    click, and it swells before it falls so it reads as approaching even when it is not.
+
+    Deliberately vague in space — that is the design. At this range you learn that something
+    answered, not where it is.
+    """
+    rnd = random.Random(seed)
+    n = int(dur * SR)
+    # Low formants only. Anything above ~1.2 kHz would not survive the distance anyway, and putting
+    # it there just makes the clip sound close.
+    forms = [BiquadBP(140.0, 5.0), BiquadBP(430.0, 7.0), BiquadBP(900.0, 9.0)]
+    weights = [1.0, 0.6, 0.22]
+    sub = BiquadBP(70.0, 3.0)
+
+    out = []
+    phase = 0.0
+    for i in range(n):
+        t = i / n
+        # Swell in, hold, long fall — an arc, not an envelope.
+        env = math.sin(math.pi * min(1.0, t * 1.12)) ** 0.75
+
+        f = f0 * (1.0 + 0.16 * math.sin(math.pi * t))        # rises then settles
+        f *= 1.0 + rnd.uniform(-0.015, 0.015)
+        f *= 1.0 + growl * math.sin(2.0 * math.pi * 23.0 * i / SR)  # chest roughness
+
+        phase += f / SR
+        if phase >= 1.0:
+            phase -= 1.0
+        pulse = math.exp(-16.0 * phase) * 2.0 - 0.30
+        pulse += rnd.uniform(-0.035, 0.035)
+
+        s = sum(w * fl.step(pulse) for fl, w in zip(forms, weights))
+        s += sub.step(pulse) * 1.5                            # the part that actually travels
+        out.append(soft_clip(s * 0.5) * env)
+    return out
+
+
+def sated(seed, dur=1.9, f0=68.0):
+    """After it has killed. Lower, wetter, unhurried — it is done with you.
+
+    Falls in pitch the whole way and never swells: the opposite shape to `far_roar`, so the two
+    can never be confused even though both are low. That contrast is the information.
+    """
+    rnd = random.Random(seed)
+    n = int(dur * SR)
+    forms = [BiquadBP(220.0, 5.0), BiquadBP(560.0, 8.0)]
+    weights = [1.0, 0.42]
+    wet = BiquadBP(1900.0, 1.1)
+
+    # Built ONCE. Calling adsr() inside the loop rebuilds the whole envelope per sample, which is
+    # O(n²) — at 44.1 kHz that is ~11 billion operations for a two-second clip and the generator
+    # simply never returns. Cost me a hung background job to notice.
+    env = adsr(n, 0.05, 0.25, 0.6, dur * 0.55)
+
+    out = []
+    phase = 0.0
+    for i in range(n):
+        t = i / n
+        f = f0 * (1.0 - 0.34 * t)                             # sinks the whole way
+        f *= 1.0 + rnd.uniform(-0.03, 0.03)
+        phase += f / SR
+        if phase >= 1.0:
+            phase -= 1.0
+        pulse = math.exp(-22.0 * phase) * 2.0 - 0.26
+
+        s = sum(w * fl.step(pulse) for fl, w in zip(forms, weights))
+        # A breathy, liquid layer that fades in as it settles — the "wet" part.
+        s += wet.step(rnd.uniform(-1.0, 1.0)) * 0.30 * t
+        out.append(soft_clip(s * 0.7) * env[i])
+    return out
+
+
 def main():
     if not os.path.isdir(os.path.abspath(OUT_DIR)):
         raise SystemExit("audio dir not found: %s" % os.path.abspath(OUT_DIR))
@@ -242,6 +318,19 @@ def main():
     write_wav("PhantomStep_B.wav", heavy_step(3302, 0.48, 51.0, 0.42, drag=0.35), peak=0.53)
     write_wav("PhantomStep_C.wav", heavy_step(3303, 0.38, 64.0, 0.62, drag=0.00), peak=0.57)
     write_wav("PhantomStep_D.wav", heavy_step(3304, 0.52, 46.0, 0.38, drag=0.55), peak=0.51)
+
+    # The long-range answer to a gunshot. Headroom left on purpose: it is played through a very wide
+    # curve and the client lifts it, so mastering it hot would clip the one sound that has to arrive
+    # clean from hundreds of metres away.
+    write_wav("PhantomVoice_Answer_A.wav", far_roar(4401, 3.2, 52.0, 0.16), peak=0.62)
+    write_wav("PhantomVoice_Answer_B.wav", far_roar(4402, 4.0, 44.0, 0.22), peak=0.60)
+    write_wav("PhantomVoice_Answer_C.wav", far_roar(4403, 2.7, 61.0, 0.11), peak=0.64)
+
+    # After a kill. Falls the whole way and never swells — the exact opposite shape to the answer
+    # roar, so the two can never be confused even though both sit low.
+    write_wav("PhantomVoice_Sated_A.wav", sated(5501, 1.9, 68.0), peak=0.70)
+    write_wav("PhantomVoice_Sated_B.wav", sated(5502, 2.4, 58.0), peak=0.68)
+    write_wav("PhantomVoice_Sated_C.wav", sated(5503, 1.6, 76.0), peak=0.72)
 
 
 if __name__ == "__main__":

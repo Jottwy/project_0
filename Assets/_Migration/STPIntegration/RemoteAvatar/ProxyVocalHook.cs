@@ -42,7 +42,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private const int KindSearchShriek = 1;
         private const int KindNoiseGrunt = 2;
         private const int KindStalkBreath = 3;
-        private const int KindCount = 4;
+        /// The long-range answer to a gunshot. Gets its OWN curve, far wider than anything else here.
+        private const int KindDistantAnswer = 4;
+        /// After a kill.
+        private const int KindSated = 5;
+        private const int KindCount = 6;
 
         // No counter can hold this, so the first sample is always "no change" and never a trigger.
         private const int NoSample = int.MinValue;
@@ -80,6 +84,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
                  "clip an octave down reads as a much larger animal.")]
         [SerializeField, Range(0.5f, 1f)] private float _revealedPitch = 0.82f;
 
+        [Header("The distant answer (kind 4)")]
+        [Tooltip("Full-volume radius for the answer roar (m). Huge, because this sound's whole job " +
+                 "is to arrive from where a rifle shot arrives from.")]
+        [SerializeField, Min(1f)] private float _answerMinDistance = 70f;
+
+        [Tooltip("Hard cutoff for the answer roar (m). Matched to the rifle's own audible range " +
+                 "(NoiseReporter: 500 m). It still ENDS — but out here, that end is far away.")]
+        [SerializeField, Min(1f)] private float _answerMaxDistance = 500f;
+
+        [Tooltip("Pitch multiplier for the answer roar. Deep: low frequencies are what actually " +
+                 "survive distance, and it is also what makes the thing sound enormous.")]
+        [SerializeField, Range(0.4f, 1f)] private float _answerPitch = 0.7f;
+
+        [Tooltip("Volume multiplier for the answer roar. The clips are mastered with headroom for it.")]
+        [SerializeField, Range(1f, 3f)] private float _answerVolume = 1.7f;
+
         [System.Serializable]
         private struct VoiceBank
         {
@@ -89,13 +109,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private RemotePlayerManager _manager;
         private AudioSource _source;
         private int _lastSeq = NoSample;
-        private bool _rangeIsRevealed;
+        private RangeMode _rangeMode = RangeMode.Normal;
 
         // Re-arm for pool reuse: a recycled proxy must not scream for its previous occupant, and
         // must not inherit its counter either.
         private void OnEnable()
         {
             _lastSeq = NoSample;
+            _rangeMode = RangeMode.Normal;
             if (_source != null)
                 _source.Stop();
         }
@@ -143,24 +164,42 @@ namespace BackroomsSurvival.Migration.STPIntegration
             // is rare — the per-frame path above never asks.
             bool revealed = ResolveRevealed();
             var src = EnsureSource();
-            ApplyRange(revealed);
 
             float pitch = _pitchVariation > 0f
                 ? 1f + Random.Range(-_pitchVariation, _pitchVariation)
                 : 1f;
+
+            // The answer roar ignores `revealed` entirely: it is emitted BY a creature that is still
+            // wearing a stolen face, from far enough away that you will never see which player it
+            // came out of. That is the whole scare — something answered your gunshot, and any of the
+            // figures out there could have been it.
+            if (kind == KindDistantAnswer)
+            {
+                ApplyRange(RangeMode.Answer);
+                src.pitch = pitch * _answerPitch;
+                src.PlayOneShot(clip, _answerVolume);
+                return;
+            }
+
+            ApplyRange(revealed ? RangeMode.Revealed : RangeMode.Normal);
             src.pitch = revealed ? pitch * _revealedPitch : pitch;
             src.PlayOneShot(clip, revealed ? _revealedVolume : 1f);
         }
 
+        private enum RangeMode { Normal, Revealed, Answer }
+
         /// <summary>Swap the distance curve, and only on a change — see ProxyFootstepHook.</summary>
-        private void ApplyRange(bool revealed)
+        private void ApplyRange(RangeMode mode)
         {
-            if (_rangeIsRevealed == revealed && _source != null)
+            if (_rangeMode == mode && _source != null)
                 return;
-            _rangeIsRevealed = revealed;
-            ProxyAudioCurves.ApplyHardCutoff(_source,
-                revealed ? _revealedMinDistance : _minDistance,
-                revealed ? _revealedMaxDistance : _maxDistance);
+            _rangeMode = mode;
+
+            float min = _minDistance, max = _maxDistance;
+            if (mode == RangeMode.Revealed) { min = _revealedMinDistance; max = _revealedMaxDistance; }
+            else if (mode == RangeMode.Answer) { min = _answerMinDistance; max = _answerMaxDistance; }
+
+            ProxyAudioCurves.ApplyHardCutoff(_source, min, max);
         }
 
         /// <summary>Is this proxy showing its real form? Own lookup, so the hook stays removable.</summary>
@@ -234,6 +273,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             KindSearchShriek => "SearchShriek",
             KindNoiseGrunt => "NoiseGrunt",
             KindStalkBreath => "StalkBreath",
+            KindDistantAnswer => "DistantAnswer",
+            KindSated => "Sated",
             _ => "Unknown",
         };
     }
