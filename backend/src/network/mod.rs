@@ -1292,10 +1292,6 @@ impl NetworkManager {
                 carry_def,
                 carry_count,
             } => {
-                info!(
-                    "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
-                    sender_id, position[0], position[1], position[2]
-                );
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.update_player_state(position, rotation, animation.clone());
                     peer.crouch = crouch; // ADR-020: cosmetic crouch, alongside the pose
@@ -1322,6 +1318,14 @@ impl NetworkManager {
                 if should_log {
                     self.last_transform_trace_at
                         .insert(sender_id, Instant::now());
+                    // Shares the MPTRACE 1 s window on purpose: this used to fire on EVERY
+                    // PlayerUpdate (10 Hz per peer), and the MPTRACE line below is a strict
+                    // superset of it. stdout/stderr are PIPED to Unity (see ipc/server.rs), so a
+                    // per-packet log is backpressure on the game, not just noise.
+                    info!(
+                        "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
+                        sender_id, position[0], position[1], position[2]
+                    );
                     info!(
                         "MPTRACE step=S event=receive_player_update self_id={} peer_id={} sender_id={} endpoint={} peer_count={} pos=({:.2},{:.2},{:.2}) rot={:.2}",
                         self.local_id,
