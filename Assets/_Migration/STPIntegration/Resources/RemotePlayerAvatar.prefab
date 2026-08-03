@@ -154,6 +154,9 @@ PrefabInstance:
       addedObject: {fileID: 2080175989512201626}
     - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
       insertIndex: -1
+      addedObject: {fileID: 8481799145628359163}
+    - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
+      insertIndex: -1
       addedObject: {fileID: 4336350721642035510}
     - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
       insertIndex: -1
@@ -348,6 +351,32 @@ MonoBehaviour:
   _screamMaxDistance: 45
   _screamPitchVariation: 0.14
   _realFormMaterial: {fileID: 0}
+--- !u!114 &8481799145628359163
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 720040130759283984}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ebc7f3c0da22fa4478f5d9061ec00508, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _voices:
+  - Clips:
+    - {fileID: 8300000, guid: 95e32a53a448ae84ca505da914f21f76, type: 3}
+    - {fileID: 8300000, guid: 4869920db2527834fa049b03ee47f5f8, type: 3}
+    - {fileID: 8300000, guid: 1dc58dfc434cd4744af0ca03f904ebf2, type: 3}
+  - Clips:
+    - {fileID: 8300000, guid: 95e32a53a448ae84ca505da914f21f76, type: 3}
+    - {fileID: 8300000, guid: 4869920db2527834fa049b03ee47f5f8, type: 3}
+    - {fileID: 8300000, guid: 1dc58dfc434cd4744af0ca03f904ebf2, type: 3}
+  - Clips: []
+  - Clips: []
+  _minDistance: 4
+  _maxDistance: 45
+  _pitchVariation: 0.14
 --- !u!114 &4336350721642035510
 MonoBehaviour:
   m_ObjectHideFlags: 0
