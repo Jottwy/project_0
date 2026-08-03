@@ -85,6 +85,11 @@ pub struct PeerConnection {
     /// NOTE: set in handle_packet, NOT in update_player_state — so the phantom never swings a
     /// weapon it does not carry.
     pub melee_seq: u8,
+    /// ADR-049: cosmetic carry state, set from PlayerUpdate; relayed, not authoritative.
+    /// NOTE: set in handle_packet, NOT in update_player_state — so the phantom never appears to
+    /// haul building material it does not have.
+    pub carry_def: i32,
+    pub carry_count: u8,
     pub connected_at: Instant,
 }
 
@@ -115,6 +120,8 @@ impl PeerConnection {
             fire_seq: 0,
             buttons: 0,
             melee_seq: 0,
+            carry_def: 0,
+            carry_count: 0,
             connected_at: now,
         }
     }

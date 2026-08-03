@@ -124,6 +124,14 @@ pub struct PlayerInput {
     /// Cosmetic, relayed to peers, not authoritative: it does not feed the hit validation of ADR-029.
     #[serde(default)]
     pub melee_seq: u8,
+    /// ADR-049: client-reported carry state — `carry_def` is the `CarryableDefinition` id being
+    /// hauled (0 = empty hands), `carry_count` how many units. A LEVEL, not a counter. Client-origin
+    /// on purpose: `process_stp_carryable_pickup` keeps no per-player carry state to derive it from,
+    /// and the field concedes nothing — no material, no placement, no collision.
+    #[serde(default)]
+    pub carry_def: i32,
+    #[serde(default)]
+    pub carry_count: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -331,6 +339,12 @@ pub struct RemotePlayerState {
     /// ADR-044: cosmetic melee-swing counter (monotonic, wrapping; 0 = never swung), host-relayed.
     #[serde(default)]
     pub melee_seq: u8,
+    /// ADR-049: cosmetic carry state, host-relayed. `ProxyCarryHook` renders `carry_count` copies of
+    /// `carry_def`'s pickup on the peer's left hand.
+    #[serde(default)]
+    pub carry_def: i32,
+    #[serde(default)]
+    pub carry_count: u8,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

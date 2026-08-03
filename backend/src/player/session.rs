@@ -84,6 +84,14 @@ pub struct Player {
     /// exactly the read that matters in a melee exchange.
     #[serde(default)]
     pub melee_seq: u8,
+    /// ADR-049: cosmetic carry state — which `CarryableDefinition` this player is hauling (0 = empty
+    /// hands) and how many units. A LEVEL, not a counter: carrying is a sustained state, so a dropped
+    /// datagram corrects itself on the next one. Client-reported, like `equipment` and `held_item` —
+    /// the backend keeps no per-player carry state to derive it from.
+    #[serde(default)]
+    pub carry_def: i32,
+    #[serde(default)]
+    pub carry_count: u8,
     /// ADR-028: server-side dedupe — true once this death's loot snapshot spawned a
     /// corpse. Guards against a double `report_death_loot` (the client's event
     /// fast-path + derived-edge fallback both firing) duplicating the inventory.
@@ -136,6 +144,8 @@ impl Player {
             fire_seq: 0,
             buttons: 0,
             melee_seq: 0,
+            carry_def: 0,
+            carry_count: 0,
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),

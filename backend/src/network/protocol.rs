@@ -480,6 +480,15 @@ pub enum PacketPayload {
         /// ADR-048: which voice the last bump was. Read ONLY together with `vocal_seq`.
         #[serde(default)]
         vocal_kind: u8,
+        /// ADR-049: cosmetic carry state — the `CarryableDefinition` id this peer is hauling
+        /// (0 = empty hands) and how many units. A LEVEL, not a counter: a dropped datagram is
+        /// corrected by the next one, so there is nothing to sequence. Appended last +
+        /// serde(default) → a v18 peer that omits them decodes to (0, 0) (empty-handed);
+        /// wire-compat across the v18→v19 schema bump.
+        #[serde(default)]
+        carry_def: i32,
+        #[serde(default)]
+        carry_count: u8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -927,6 +936,8 @@ mod tests {
             melee_seq: 4,
             vocal_seq: 6,
             vocal_kind: 2,
+            carry_def: -1208217892,
+            carry_count: 3,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -950,6 +961,8 @@ mod tests {
                 melee_seq,
                 vocal_seq,
                 vocal_kind,
+                carry_def,
+                carry_count,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -969,6 +982,11 @@ mod tests {
                 assert_eq!(vocal_seq, 6);
                 assert_eq!(vocal_kind, 2);
                 assert_eq!(melee_seq, 4);
+                // ADR-049: same discipline, and `carry_def` is deliberately a real negative
+                // definition id — the ids are Random.Range over the whole i32 range, so a test that
+                // only ever saw small positives would not catch a width or sign mistake on the wire.
+                assert_eq!(carry_def, -1208217892);
+                assert_eq!(carry_count, 3);
             }
             _ => panic!("wrong variant"),
         }

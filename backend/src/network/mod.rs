@@ -99,6 +99,9 @@ pub enum NetworkEvent {
         /// ADR-048: cosmetic vocalisation counter + which voice it was.
         vocal_seq: u8,
         vocal_kind: u8,
+        /// ADR-049: cosmetic carry state — definition id being hauled and how many units.
+        carry_def: i32,
+        carry_count: u8,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -1284,6 +1287,8 @@ impl NetworkManager {
                 melee_seq,
                 vocal_seq,
                 vocal_kind,
+                carry_def,
+                carry_count,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -1304,6 +1309,8 @@ impl NetworkManager {
                     peer.melee_seq = melee_seq; // ADR-044: cosmetic swing counter, alongside the pose
                     peer.vocal_seq = vocal_seq; // ADR-048: cosmetic vocalisation counter, alongside the pose
                     peer.vocal_kind = vocal_kind; // ADR-048: which voice the last bump was
+                    peer.carry_def = carry_def; // ADR-049: cosmetic carry state, alongside the pose
+                    peer.carry_count = carry_count; // ADR-049: plain assignments, not a struct literal — a dropped line relays 0 forever
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -1344,6 +1351,8 @@ impl NetworkManager {
                     melee_seq,
                     vocal_seq,
                     vocal_kind,
+                    carry_def,
+                    carry_count,
                 }]
             }
 
@@ -2150,6 +2159,8 @@ mod tests {
             fire_seq: 0,
             buttons: 0,
             melee_seq: 0,
+            carry_def: 0,
+            carry_count: 0,
         };
         host.broadcast_unreliable(&payload).await;
 
@@ -2292,6 +2303,62 @@ mod tests {
         assert_eq!(net.peer_count(), 0);
     }
 
+    /// ADR-049. El único test de toda la cadena que caza el modo de fallo que el compilador NO ve.
+    ///
+    /// La rama `PlayerUpdate` de `handle_packet` sella catorce campos cosméticos en el peer con
+    /// asignaciones sueltas, no con un literal de struct. Olvidar una compila limpio, pasa clippy y
+    /// pasa el resto de la suite — y deja el campo a 0 para siempre, que es exactamente el bug que
+    /// ADR-049 existe para cerrar: el peer sigue sin verse cargando nada. El round-trip de
+    /// `protocol.rs` tampoco lo caza, porque prueba el códec y no el sellado.
+    ///
+    /// Valor no-default y NEGATIVO a propósito: los `def_id` se acuñan con `Random.Range` sobre todo
+    /// el rango de i32, así que un test con un positivo pequeño no distinguiría un error de signo.
+    #[tokio::test]
+    async fn player_update_carries_carry_state_to_the_peer() {
+        let mut net = NetworkManager::bind(0, 3, 42, false).await.unwrap();
+        let peer_addr: SocketAddr = "127.0.0.1:7100".parse().unwrap();
+        net.peers
+            .insert(2, PeerConnection::new(2, "PeerB".into(), peer_addr));
+
+        assert_eq!(net.peers[&2].carry_def, 0, "arranca con las manos vacias");
+        assert_eq!(net.peers[&2].carry_count, 0);
+
+        let packet = IncomingPacket {
+            addr: peer_addr,
+            header: PacketHeader::new(protocol::PacketType::PlayerUpdate as u16, 2, 0, 0),
+            payload: PacketPayload::PlayerUpdate {
+                position: [1.0, 1.8, 2.0],
+                rotation: 0.0,
+                animation: "idle".into(),
+                crouch: false,
+                pitch: 0,
+                equipment: [0; 4],
+                held_item: 0,
+                hit_seq: 0,
+                dead: false,
+                revealed: false,
+                vocal_seq: 0,
+                vocal_kind: 0,
+                light_on: false,
+                fire_seq: 0,
+                buttons: 0,
+                melee_seq: 0,
+                carry_def: -1208217892,
+                carry_count: 3,
+            },
+        };
+        net.handle_packet(packet).await;
+
+        assert_eq!(
+            net.peers[&2].carry_def, -1208217892,
+            "el sello de carry_def en handle_packet no ha corrido"
+        );
+        assert_eq!(
+            net.peers[&2].carry_count, 3,
+            "el sello de carry_count en handle_packet no ha corrido"
+        );
+    }
+
     /// El relay de poses de ADR-015 reemite el `PlayerUpdate` de B hacia C desde el socket
     /// DEL HOST, sellado con `sender_id = B`. Antes, `handle_packet` adoptaba esa `addr` sin
     /// condición, así que C acababa creyendo que B vive en la dirección del host — diez veces
@@ -2330,6 +2397,8 @@ mod tests {
                 fire_seq: 0,
                 buttons: 0,
                 melee_seq: 0,
+                carry_def: 0,
+                carry_count: 0,
             },
         };
         net.handle_packet(relayed).await;

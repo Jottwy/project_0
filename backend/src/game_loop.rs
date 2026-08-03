@@ -971,6 +971,11 @@ pub async fn run(
             // and never an input to the hit validation of ADR-029.
             player.buttons = received_input.buttons;
             player.melee_seq = received_input.melee_seq;
+            // ADR-049: record the client-reported carry state. THIS BLOCK IS PLAIN ASSIGNMENTS, NOT A
+            // STRUCT LITERAL — omitting a line here compiles clean, passes the tests, and silently
+            // relays 0 forever. Covered by the `peer.carry_def` test in network/mod.rs.
+            player.carry_def = received_input.carry_def;
+            player.carry_count = received_input.carry_count;
             // ADR-025 respawn-on-demand: while DEAD the server FREEZES the authoritative pose —
             // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
             // take_damage). Any local client drift while dead is corrected by the applier's snap
@@ -1466,10 +1471,12 @@ async fn handle_network_event(
             melee_seq,
             vocal_seq,
             vocal_kind,
+            carry_def,
+            carry_count,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}, vocal_seq={}, vocal_kind={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq, vocal_seq, vocal_kind
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}, vocal_seq={}, vocal_kind={}, carry={}x{}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq, vocal_seq, vocal_kind, carry_count, carry_def
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -4455,6 +4462,8 @@ fn build_world_state(
             fire_seq: p.fire_seq,
             buttons: p.buttons,
             melee_seq: p.melee_seq,
+            carry_def: p.carry_def,
+            carry_count: p.carry_count,
         });
     }
 

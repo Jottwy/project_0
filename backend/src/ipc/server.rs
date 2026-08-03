@@ -89,7 +89,13 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// PlayerUpdate — BACKEND-derived like `revealed`, absent from `PlayerInput`, so no client writer
 /// changes and the C6 goldens stay valid. Additive and inert: a creature that never vocalises is
 /// byte-identical to a v17 one, and a v17 receiver decodes both to 0 and simply hears nothing.
-const WIRE_SCHEMA_VERSION: u32 = 18;
+/// v19 (ADR-049) adds `carry_def:i32` + `carry_count:u8` to PlayerInput, RemotePlayerState and the
+/// P2P PlayerUpdate. Unlike v18 these ARE client-reported — the backend keeps no per-player carry
+/// state to derive them from — so this is the first pose bump in a while that touches the C# writer:
+/// `SendPlayerInput` goes from 19 to 21 fields and its golden is regenerated ON PURPOSE. Additive
+/// and inert otherwise: a player who never carries is byte-identical to a v18 one, and a v18
+/// receiver decodes both to 0 and simply sees empty hands.
+const WIRE_SCHEMA_VERSION: u32 = 19;
 
 /// Run the IPC server until a fatal accept error.
 ///
