@@ -126,13 +126,15 @@ const PHANTOM_DETECT_HALF_FOV: f32 = std::f32::consts::FRAC_PI_3; // 60° half �
 
 // ADR-016 slice 3a — Stalker FSM (Wander / Spotted / Stalk / Sprint). Peek/Search land in 3b.
 const PHANTOM_STALK_DISTANCE: f32 = 9.0; // STALK keeps roughly this gap from the player
-/// Top sprint speed (vs walk 3.0). Cut 10 % from 9.0 so chases LAST longer.
+/// Top sprint speed (vs walk 3.0). Cut 10 % twice, 9.0 → 8.1 → 7.29, so chases LAST.
 ///
 /// The number that matters is the ratio to the player, not the absolute: STP's run speed is 5.5 m/s
-/// (`FPS_Player.prefab` `_forwardSpeed`), so this goes from 1.64× to 1.47×. Outrunning it is still
-/// impossible, which is the design — what changes is the CLOSING speed, 3.5 → 2.6 m/s, so a chase
-/// starting at 15 m goes from 4.3 s to 5.8 s of being hunted.
-const PHANTOM_SPRINT_SPEED: f32 = 8.1;
+/// (`FPS_Player.prefab` `_forwardSpeed`), so this is now 1.33× (was 1.64×). Outrunning it is still
+/// impossible, which is the design — what changes is the CLOSING speed: 3.5 → 1.79 m/s, so a chase
+/// starting at 15 m goes from 4.3 s to **8.4 s** of being hunted with it behind you.
+///
+/// Below ~1.2× this stops being a chase and becomes an escort, so this is close to the floor.
+const PHANTOM_SPRINT_SPEED: f32 = 7.29;
 const PHANTOM_SPRINT_RAMP: f32 = 1.5; // seconds to ramp WALK → SPRINT
 const PHANTOM_SPOTTED_MIN: f32 = 3.0; // SPOTTED stare duration range (s)
 const PHANTOM_SPOTTED_MAX: f32 = 8.0;
@@ -182,6 +184,14 @@ const PHANTOM_ATTACK_REACH: f32 = 2.4;
 /// nobody predicted must never leave the creature pinned to a wall forever, which is the state that
 /// reads as the game being broken rather than as the creature being bad at doorways.
 const PHANTOM_SPRINT_GIVEUP_TICKS: u8 = 25;
+/// Seconds a lunge will keep coming with NO clear line to its target before it gives up and
+/// searches. Halved while the target is crouched.
+///
+/// This is the hiding mechanic and the number that decides whether cover is worth using. Too short
+/// and any doorway shakes it; too long and hiding is pointless. 5 s is long enough that you have to
+/// commit to a hiding place rather than jink around a pillar, and short enough that a real corner
+/// saves you.
+const PHANTOM_SPRINT_BLIND_SECONDS: f32 = 5.0;
 
 // ── ADR-048: the creature's voice ────────────────────────────────────────────────────────────────
 /// The disguise dropping — emitted on entering SPRINT. Migrated here from the client, which used to
@@ -196,6 +206,38 @@ const VOCAL_NOISE_GRUNT: u8 = 2;
 /// Low, quiet, rhythmic — what a corridor sounds like when it is occupied and the thing in it has
 /// not decided yet. Emitted while STALKing, on its own slow timer.
 const VOCAL_STALK_BREATH: u8 = 3;
+/// THE ANSWER. Emitted the instant it hears a shot from FAR away, and played on a curve as wide as
+/// the shot itself: you fire, and a second later something enormous answers from out there. It does
+/// not tell you where — that is the point. You learn that you are not alone, not where it is.
+const VOCAL_DISTANT_ANSWER: u8 = 4;
+/// After a kill. Falls the whole way, unhurried: it is done with you.
+const VOCAL_SATED_ROAR: u8 = 5;
+/// A noise heard from beyond this (m) answers with the long roar instead of the close-up grunt.
+/// Under it the creature is near enough that a grunt reads as "it is RIGHT THERE", which is scarier
+/// at that range than a roar would be.
+const PHANTOM_ANSWER_MIN_DISTANCE: f32 = 60.0;
+
+// ── Rage: a gunshot does not just attract it, it angers it ───────────────────────────────────────
+/// How long a heard shot keeps a creature enraged (s).
+const PHANTOM_RAGE_SECONDS: f32 = 45.0;
+/// A shot closer than this enrages it MUCH harder — firing next to one is a mistake you feel.
+const PHANTOM_RAGE_CLOSE_DISTANCE: f32 = 35.0;
+/// Patience multiplier while enraged: it runs out of it more than twice as fast.
+const PHANTOM_RAGE_PATIENCE: f32 = 0.4;
+/// Unpredictable-lunge multiplier while enraged.
+const PHANTOM_RAGE_IMPULSE: f32 = 2.5;
+/// Movement multiplier while enraged. Small on purpose: rage should change what it DECIDES far more
+/// than how fast it moves, or the speed tuning below becomes meaningless.
+const PHANTOM_RAGE_SPEED: f32 = 1.15;
+
+// ── After a kill it is sated ─────────────────────────────────────────────────────────────────────
+/// How long a creature stays docile after killing someone (s). This is the breathing room a player
+/// gets on respawn, and the reason hiding and dying both lead somewhere instead of into a loop.
+const PHANTOM_CALM_SECONDS: f32 = 60.0;
+/// Patience multiplier while sated: it will shadow you for a very long time before committing.
+const PHANTOM_CALM_PATIENCE: f32 = 3.0;
+/// Unpredictable-lunge multiplier while sated.
+const PHANTOM_CALM_IMPULSE: f32 = 0.15;
 /// The breath uses a SHORT shared cooldown: it is ambience, so it must not sit on the budget and
 /// swallow the scream of a lunge that starts two seconds later. It still cannot fire DURING one
 /// (the shared cooldown is what stops that), which is the asymmetry worth having.
@@ -230,7 +272,7 @@ const PHANTOM_NOISE_MAX_LOUDNESS: f32 = 600.0;
 const PHANTOM_NOISE_ERROR_FRAC: f32 = 0.08;
 /// Travel speed toward a noise: a fast walk, NOT a sprint. 500 m at 3 m/s is ~2.8 minutes of dread;
 /// covering the same ground in 55 s reads as homing.
-const PHANTOM_NOISE_TRAVEL_SPEED: f32 = 3.0;
+const PHANTOM_NOISE_TRAVEL_SPEED: f32 = 4.5;
 /// A noise goes cold after this long in transit without a fresh one. Without it the phantom would
 /// cross the map chasing a shot fired five minutes ago.
 const PHANTOM_NOISE_EXPIRY: f32 = 90.0;
@@ -4579,6 +4621,10 @@ struct PhantomTraits {
     statue_scale: f32,
     /// Chance that a lunge opens with a beat of stillness instead of leaving immediately.
     hesitate_chance: f32,
+    /// A HUNTER. Roughly one in eight, and fixed for that creature forever, so the danger of a place
+    /// is learnable: the thing that lives by the flooded stair is always the one that does not wait.
+    /// It barely stalks, never freezes to play the statue game, and does not hesitate.
+    is_hunter: bool,
 }
 
 impl PhantomTraits {
@@ -4611,6 +4657,10 @@ impl PhantomTraits {
             impulse_scale: span(26, 0.30, 1.70),
             statue_scale: span(39, 0.60, 1.40),
             hesitate_chance: span(48, 0.0, 0.55),
+            // Its own bit slice, so making a creature a hunter does not also drag its four scales
+            // toward one end — the two axes have to stay independent or "hunter" would just mean
+            // "the aggressive tail of the distribution" and the variety would collapse.
+            is_hunter: unit(9) < 0.125,
         }
     }
 }
@@ -5047,10 +5097,6 @@ struct PhantomMover {
     strike_recover: f32,
     /// Seconds left before this one may freeze into STATUE again.
     statue_cooldown: f32,
-    /// This lunge has already landed its blow and is running out its commitment. Cleared when it
-    /// bounces to STALK, and when the lunge loses its target mid-recovery — otherwise the NEXT
-    /// lunge would inherit it and disengage on its first tick.
-    struck: bool,
     /// This creature's temperament, fixed for as long as it exists and reproducible from the seed.
     traits: PhantomTraits,
     /// Who this creature is hunting, carried between ticks so the choice is STICKY. `None` = has
@@ -5069,6 +5115,15 @@ struct PhantomMover {
     vocal_kind: u8,
     /// Seconds until this creature may vocalise again.
     vocal_cooldown: f32,
+    /// Seconds of RAGE left. Set by hearing a shot — a gunshot does not merely attract this thing,
+    /// it angers it — and much longer/harder when the shot went off close by.
+    enraged_for: f32,
+    /// Seconds of SATIETY left. Set by killing someone: it goes docile, which is the breathing room
+    /// the victim gets on respawn and what stops death from looping straight back into death.
+    calm_for: f32,
+    /// Seconds this lunge has spent with no clear line to its target. THE hiding mechanic: a sprint
+    /// no longer ends on a timer, it ends when you break line of sight or outrun it.
+    sprint_blind_for: f32,
     /// Seconds until the next stalking breath. Randomised per breath rather than fixed: a
     /// metronomic one would become a clock the player can read, and the whole point of this sound
     /// is that you cannot tell how close it is or what it is about to do.
@@ -5422,7 +5477,6 @@ impl PhantomDriver {
             blocked_ticks: 0,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
-            struck: false,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
             hesitate_timer: 0.0,
             target_id: None,
@@ -5430,6 +5484,9 @@ impl PhantomDriver {
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_cooldown: 0.0,
+            enraged_for: 0.0,
+            calm_for: 0.0,
+            sprint_blind_for: 0.0,
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
             // otherwise breathe in unison, which reads as one big thing rather than as several.
             breath_in: PHANTOM_BREATH_MIN
@@ -5479,9 +5536,35 @@ impl PhantomDriver {
                 self.movers[i].search_patience = PHANTOM_NOISE_SEARCH_PATIENCE;
                 self.movers[i].search_speed = PHANTOM_NOISE_TRAVEL_SPEED;
                 self.movers[i].noise_expiry = Some(PHANTOM_NOISE_EXPIRY);
-                // ADR-048: it answers the noise. Still wearing a stolen face while it does — that
-                // is the whole reason the voice does NOT ride `revealed`.
-                self.try_vocalize(i, VOCAL_NOISE_GRUNT);
+
+                // THE THEATRE STOPS. Reported from play-test: you shoot, they start coming, and
+                // then one stops dead to mime picking something up. The fake-pickup and stare
+                // freezes are checked at the TOP of the step loop, so they hold in EVERY state —
+                // a creature that began a gesture in WANDER kept performing it for a full second
+                // after being told to come for you, and with the gesture on a 6 s cycle it looked
+                // like the trip kept resetting. A hunt cancels the act.
+                self.movers[i].pickup_until = None;
+                self.movers[i].stare_until = None;
+
+                // A gunshot does not just attract this thing, it ANGERS it — and firing close to
+                // one is a mistake you get to feel. Rage is refreshed, never accumulated: two shots
+                // do not make it twice as angry, they keep it angry twice as long.
+                let close = dist <= PHANTOM_RAGE_CLOSE_DISTANCE;
+                self.movers[i].enraged_for = match close {
+                    true => PHANTOM_RAGE_SECONDS * 2.0,
+                    false => PHANTOM_RAGE_SECONDS,
+                };
+                // Rage burns off satiety: a full creature that gets shot at stops being full.
+                self.movers[i].calm_for = 0.0;
+
+                // Far away it ANSWERS, and that answer is the whole point of the mechanic: you fire,
+                // and something enormous replies from out there. Close by, a grunt reads better —
+                // at that range "it is RIGHT THERE" beats "it is somewhere".
+                let voice = match dist >= PHANTOM_ANSWER_MIN_DISTANCE {
+                    true => VOCAL_DISTANT_ANSWER,
+                    false => VOCAL_NOISE_GRUNT,
+                };
+                self.try_vocalize(i, voice);
                 // The plan is deliberately NOT thrown away. A second shot is new information about
                 // the same hunt, not a new hunt: the creature should keep walking and re-aim, and
                 // the replan policy already rebuilds the route on its own when the goal drifts more
@@ -5553,8 +5636,10 @@ impl PhantomDriver {
         self.try_vocalize(i, VOCAL_REVEAL);
         // Rolled per lunge, not per creature: `hesitate_chance` is the temperament, this is what it
         // does THIS time. A creature that always paused would be as readable as one that never did.
+        // A hunter does not hesitate, and neither does something you just shot at.
+        let may_hesitate = !self.movers[i].traits.is_hunter && self.movers[i].enraged_for <= 0.0;
         self.movers[i].hesitate_timer =
-            match rand::random::<f32>() < self.movers[i].traits.hesitate_chance {
+            match may_hesitate && rand::random::<f32>() < self.movers[i].traits.hesitate_chance {
                 true => {
                     PHANTOM_HESITATE_MIN
                         + rand::random::<f32>() * (PHANTOM_HESITATE_MAX - PHANTOM_HESITATE_MIN)
@@ -5581,6 +5666,51 @@ impl PhantomDriver {
         }
         self.movers[i].pending_vocal = Some(kind);
         self.movers[i].vocal_cooldown = cooldown;
+    }
+
+    /// How long this creature will shadow you before committing, RIGHT NOW (s).
+    ///
+    /// Temperament, hunter-ness, rage and satiety all land here rather than being multiplied in at
+    /// the call site. Four separate multiplications scattered through the FSM is how one of them
+    /// ends up forgotten in a branch and a creature quietly behaves like a different animal.
+    fn patience_of(&self, i: usize) -> f32 {
+        let m = &self.movers[i];
+        let mut p = PHANTOM_STALK_PATIENCE * m.traits.patience_scale;
+        if m.traits.is_hunter {
+            p *= 0.25; // a hunter does not shadow you, it arrives
+        }
+        if m.enraged_for > 0.0 {
+            p *= PHANTOM_RAGE_PATIENCE;
+        }
+        if m.calm_for > 0.0 {
+            p *= PHANTOM_CALM_PATIENCE;
+        }
+        p
+    }
+
+    /// Per-tick chance multiplier for an unpredictable lunge, right now.
+    fn impulse_of(&self, i: usize) -> f32 {
+        let m = &self.movers[i];
+        let mut k = m.traits.impulse_scale;
+        if m.traits.is_hunter {
+            k *= 3.0;
+        }
+        if m.enraged_for > 0.0 {
+            k *= PHANTOM_RAGE_IMPULSE;
+        }
+        if m.calm_for > 0.0 {
+            k *= PHANTOM_CALM_IMPULSE;
+        }
+        k
+    }
+
+    /// Movement multiplier, right now. Only rage moves it — see `PHANTOM_RAGE_SPEED` for why the
+    /// effect is deliberately small.
+    fn speed_of(&self, i: usize) -> f32 {
+        match self.movers[i].enraged_for > 0.0 {
+            true => PHANTOM_RAGE_SPEED,
+            false => 1.0,
+        }
     }
 
     /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
@@ -5834,6 +5964,8 @@ impl PhantomDriver {
             self.movers[i].strike_recover = (self.movers[i].strike_recover - dt).max(0.0);
             self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - dt).max(0.0);
             self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - dt).max(0.0);
+            self.movers[i].enraged_for = (self.movers[i].enraged_for - dt).max(0.0);
+            self.movers[i].calm_for = (self.movers[i].calm_for - dt).max(0.0);
 
             // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
             // are PURE THEATER — only the `animation` field. While active, freeze in place holding
@@ -6049,9 +6181,7 @@ impl PhantomDriver {
                     }
                     // Unpredictable lunge mid-stare (scarier when imprevisible), scaled by how
                     // erratic this particular creature is.
-                    if rand::random::<f32>()
-                        < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].traits.impulse_scale
-                    {
+                    if rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * self.impulse_of(i) {
                         self.enter_sprint(i);
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
@@ -6094,7 +6224,10 @@ impl PhantomDriver {
 
                     // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
                     // close → freeze. Entered only from STALK; a committed SPRINT is never frozen.
+                    // A hunter never plays the statue game — it is not pretending to be scenery,
+                    // it is coming. That single exclusion is most of what makes one feel different.
                     if dist < PHANTOM_STATUE_RANGE
+                        && !self.movers[i].traits.is_hunter
                         && self.movers[i].statue_cooldown <= 0.0
                         && player_is_looking_at(tpos, tyaw, from)
                     {
@@ -6107,12 +6240,9 @@ impl PhantomDriver {
                         continue;
                     }
 
-                    if self.movers[i].state_timer
-                        > PHANTOM_STALK_PATIENCE * self.movers[i].traits.patience_scale
+                    if self.movers[i].state_timer > self.patience_of(i)
                         || rand::random::<f32>()
-                            < PHANTOM_SPRINT_RANDOM_CHANCE
-                                * 2.0
-                                * self.movers[i].traits.impulse_scale
+                            < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.impulse_of(i)
                     {
                         self.enter_sprint(i);
                         info!(
@@ -6262,10 +6392,9 @@ impl PhantomDriver {
                             PhantomState::Wander
                         };
                         self.movers[i].state_timer = 0.0;
-                        // Losing the target ends the commitment with it, or the next lunge would
-                        // inherit `struck` and disengage on its first tick.
-                        self.movers[i].struck = false;
+                        // Losing the target ends the commitment with it.
                         self.movers[i].strike_recover = 0.0;
+                        self.movers[i].sprint_blind_for = 0.0;
                         continue;
                     }
                     // ADR-047: `tid` BOUND (see STATUE) — the strike below must name its victim.
@@ -6279,8 +6408,8 @@ impl PhantomDriver {
                         self.movers[i].state = PhantomState::Stalk;
                         self.movers[i].state_timer = 0.0;
                         self.movers[i].blocked_ticks = 0;
-                        self.movers[i].struck = false;
                         self.movers[i].strike_recover = 0.0;
+                        self.movers[i].sprint_blind_for = 0.0;
                         info!(
                             "MPTRACE step=PH_STALK event=phantom_sprint_gave_up phantom_id={} reason=wedged",
                             id
@@ -6288,23 +6417,46 @@ impl PhantomDriver {
                         continue;
                     }
 
-                    // The post-strike commitment has run out: NOW it bounces off. Deferring this is
-                    // the whole point — see `PHANTOM_STRIKE_RECOVERY`.
+                    // A COMMITTED HUNT ENDS WHEN YOU ESCAPE IT, NOT ON A CLOCK.
                     //
-                    // A LEVEL (`struck` + expired timer), not the edge of the timer: the gesture
-                    // freeze at the top of the loop `continue`s past this branch for a whole second
-                    // after the blow, and it runs on `Instant` while the timer runs on `dt`. An
-                    // edge that lands on a frozen tick would be swallowed and the lunge would never
-                    // disengage at all.
-                    if self.movers[i].struck && self.movers[i].strike_recover <= 0.0 {
-                        self.movers[i].struck = false;
-                        self.movers[i].state = PhantomState::Stalk;
-                        self.movers[i].state_timer = 0.0;
-                        info!(
-                            "MPTRACE step=PH_STALK event=phantom_strike_recovered phantom_id={}",
-                            id
-                        );
-                        continue;
+                    // It used to bounce back to STALK a couple of seconds after each blow, which is
+                    // what "ataca, no ataca" looked like from the outside: the thing that was on you
+                    // suddenly strolled again for no reason you could see or influence. Now the
+                    // lunge holds, and the two ways out are both things the PLAYER does — outrun it
+                    // (the LOSE_RADIUS check above) or break its line (below). That is what makes
+                    // finding a place to hide worth anything.
+                    //
+                    // No clear line to you = going blind. `segment_is_clear` is the same test the
+                    // steering already trusts, so a corner that stops the creature seeing you is
+                    // exactly the corner the geometry says it is.
+                    let has_line = crate::world::grid_gen::segment_is_clear(
+                        &mut self.grid_cache,
+                        current_layer,
+                        from,
+                        tpos,
+                    );
+                    if has_line {
+                        self.movers[i].sprint_blind_for = 0.0;
+                    } else {
+                        self.movers[i].sprint_blind_for += dt;
+                        // Crouching cuts the grace roughly in half: staying low behind cover loses
+                        // it faster than standing behind cover, which is the payoff stealth already
+                        // gets everywhere else (ADR-040 perception).
+                        let blind_limit = match target_is_crouched(net, tid, host_player_crouch) {
+                            true => PHANTOM_SPRINT_BLIND_SECONDS * 0.5,
+                            false => PHANTOM_SPRINT_BLIND_SECONDS,
+                        };
+                        if self.movers[i].sprint_blind_for >= blind_limit {
+                            self.movers[i].sprint_blind_for = 0.0;
+                            self.movers[i].strike_recover = 0.0;
+                            self.movers[i].state = PhantomState::Search;
+                            self.movers[i].state_timer = 0.0;
+                            info!(
+                                "MPTRACE step=PH_SEARCH event=phantom_lost_the_line phantom_id={} note=player_broke_line_of_sight",
+                                id
+                            );
+                            continue;
+                        }
                     }
                     // The beat before it comes. It is already revealed and has already screamed
                     // (both ride SPRINT, ADR-038), so this is the moment where you see WHAT it is
@@ -6354,7 +6506,6 @@ impl PhantomDriver {
                     if in_reach && self.movers[i].strike_recover <= 0.0 {
                         self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
                         self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
-                        self.movers[i].struck = true;
                         if player_is_looking_at(tpos, tyaw, from) {
                             self.attacks.push(PhantomAttack {
                                 victim: tid,
@@ -6369,6 +6520,24 @@ impl PhantomDriver {
                                 victim: tid,
                                 kind: PhantomAttackKind::Kill,
                             });
+                            // SATED. It stops hunting, goes docile for a minute and roars once —
+                            // and the roar is doing real work, not decoration: it is the only way
+                            // the player who just died learns, on respawn, that the thing which
+                            // killed them is not still coming. Without it a death loops straight
+                            // back into a death and hiding never gets to matter.
+                            //
+                            // Rage does not survive a kill: whatever it was angry about is settled.
+                            self.movers[i].calm_for = PHANTOM_CALM_SECONDS;
+                            self.movers[i].enraged_for = 0.0;
+                            self.movers[i].state = PhantomState::Wander;
+                            self.movers[i].state_timer = 0.0;
+                            self.movers[i].last_known_player_pos = None;
+                            self.movers[i].nav_waypoints.clear();
+                            // Re-anchor, or the observation leash would walk it all the way back to
+                            // where it woke up (the same fix ADR-041 needed after a long journey).
+                            self.movers[i].spawn_pos = from;
+                            self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
+                            self.try_vocalize(i, VOCAL_SATED_ROAR);
                             info!(
                                 "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} victim_id={} note=from_behind",
                                 id, tid
@@ -6382,8 +6551,9 @@ impl PhantomDriver {
                     }
 
                     let ramp = (self.movers[i].state_timer / PHANTOM_SPRINT_RAMP).clamp(0.0, 1.0);
-                    let speed =
-                        PHANTOM_WALK_SPEED + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp;
+                    let speed = (PHANTOM_WALK_SPEED
+                        + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp)
+                        * self.speed_of(i);
                     let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
                     let desired = Vec3::new(
                         from.x + dir.x * speed * dt,
@@ -6494,7 +6664,7 @@ impl PhantomDriver {
                         lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
                     let h = self.movers[i].heading;
                     let dir = Vec3::new(h.sin(), 0.0, h.cos());
-                    let speed = self.movers[i].search_speed;
+                    let speed = self.movers[i].search_speed * self.speed_of(i);
                     let desired = Vec3::new(
                         from.x + dir.x * speed * dt,
                         from.y,
@@ -8008,6 +8178,155 @@ mod tests {
         );
     }
 
+    #[test]
+    fn hunters_are_rare_reproducible_and_independent_of_temperament() {
+        // ~1 in 8, fixed per creature forever, so the danger of a PLACE is learnable. And drawn from
+        // its own bit slice: if being a hunter also dragged the four scales toward one end, "hunter"
+        // would just mean "the aggressive tail of the distribution" and the variety would collapse
+        // into one axis.
+        let mut hunters = 0.0f32;
+        let mut n = 0.0f32;
+        let (mut hunter_patience, mut normal_patience) = (0.0f32, 0.0f32);
+        let (mut hn, mut nn) = (0.0f32, 0.0f32);
+        for bx in -16..16 {
+            for bz in -16..16 {
+                let t = PhantomTraits::derive(42, Some(((bx, bz), 0, 0)), 0xF000);
+                n += 1.0;
+                if t.is_hunter {
+                    hunters += 1.0;
+                    hunter_patience += t.patience_scale;
+                    hn += 1.0;
+                } else {
+                    normal_patience += t.patience_scale;
+                    nn += 1.0;
+                }
+            }
+        }
+        let rate = hunters / n;
+        assert!(
+            (0.08..0.18).contains(&rate),
+            "hunter rate should sit near 1 in 8, got {rate:.3}"
+        );
+
+        // Same creature, same answer — the whole point of deriving instead of rolling.
+        let a = PhantomTraits::derive(42, Some(((3, -7), 0, 0)), 0xF000);
+        assert_eq!(
+            a.is_hunter,
+            PhantomTraits::derive(42, Some(((3, -7), 0, 0)), 0xBEEF).is_hunter
+        );
+
+        // Independence: a hunter's patience scale is not systematically different.
+        let (hp, np) = (hunter_patience / hn.max(1.0), normal_patience / nn.max(1.0));
+        assert!(
+            (hp - np).abs() < 0.2,
+            "hunter-ness leaked into temperament: hunter mean {hp:.2} vs normal {np:.2}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_distant_shot_is_answered_and_a_close_one_only_grunted() {
+        // The mechanic Joel asked for: you fire, and a second later something enormous replies from
+        // out there. Close by a grunt reads better — "it is RIGHT THERE" beats "it is somewhere".
+        for (dist, want) in [(300.0f32, VOCAL_DISTANT_ANSWER), (10.0, VOCAL_NOISE_GRUNT)] {
+            let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+            let start = [0.0, 1.8, 0.0];
+            let pid = net.spawn_phantom("Robapieles_Test", start);
+            let mut driver = PhantomDriver::new(42);
+            driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+            let here = Vec3::from_array(net.peers[&pid].position);
+            net.pending_noises
+                .push(([here.x + dist, here.y, here.z], 500.0));
+
+            driver.step(
+                &mut net,
+                0.1,
+                Vec3::new(here.x + dist, 1.8, here.z),
+                0.0,
+                false,
+                false,
+            );
+
+            assert_eq!(
+                net.peers[&pid].vocal_kind, want,
+                "a shot at {dist} m picked the wrong voice"
+            );
+            assert!(net.peers[&pid].vocal_seq != 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn hearing_a_shot_cancels_the_theatre_and_enrages() {
+        // Reported from play-test: "si disparas y estan viniendo, a veces se paran a recoger un
+        // objeto y resetean el viaje". The fake-pickup and stare freezes are checked at the TOP of
+        // the step loop, so they held in EVERY state — a creature that began a gesture in WANDER
+        // kept performing it for a full second after being told to come.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].pickup_until = Some(Instant::now() + Duration::from_secs(30));
+        driver.movers[0].stare_until = Some(Instant::now() + Duration::from_secs(30));
+        let here = Vec3::from_array(net.peers[&pid].position);
+        net.pending_noises
+            .push(([here.x + 20.0, here.y, here.z], 500.0));
+
+        driver.hear_noises(&mut net);
+
+        assert!(
+            driver.movers[0].pickup_until.is_none(),
+            "a hunt cancels the act"
+        );
+        assert!(driver.movers[0].stare_until.is_none());
+        assert_eq!(driver.movers[0].state, PhantomState::Search);
+        // …and a shot 20 m away is the CLOSE case: doubly enraged.
+        assert!(
+            driver.movers[0].enraged_for > PHANTOM_RAGE_SECONDS,
+            "a shot fired close must enrage harder, got {}",
+            driver.movers[0].enraged_for
+        );
+        // Rage shortens its patience and sharpens its trigger.
+        assert!(driver.patience_of(0) < PHANTOM_STALK_PATIENCE);
+        assert!(driver.impulse_of(0) > driver.movers[0].traits.impulse_scale);
+    }
+
+    #[tokio::test]
+    async fn a_kill_leaves_it_sated_and_it_roars_once() {
+        // Joel's call: it calms down after a kill BUT roars on finishing. The roar is doing real
+        // work — it is the only way the player who just died learns, on respawn, that the thing
+        // which killed them is not still coming. Without it, death loops straight into death.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        driver.movers[0].enraged_for = 30.0; // it was angry going in
+        let here = Vec3::from_array(net.peers[&pid].position);
+        let player = Vec3::new(here.x + 1.0, 1.8, here.z);
+
+        // Facing +X, i.e. AWAY from the creature to its west → killed from behind.
+        let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false);
+
+        assert!(
+            attacks.iter().any(|a| a.kind == PhantomAttackKind::Kill),
+            "expected a kill, got {attacks:?}"
+        );
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Wander,
+            "it stops hunting"
+        );
+        assert!(driver.movers[0].calm_for > 0.0, "it is sated");
+        assert_eq!(
+            driver.movers[0].enraged_for, 0.0,
+            "a kill settles whatever it was angry about"
+        );
+        assert_eq!(net.peers[&pid].vocal_kind, VOCAL_SATED_ROAR);
+        // Satiety makes it markedly less willing to commit again.
+        assert!(driver.patience_of(0) > PHANTOM_STALK_PATIENCE);
+    }
+
     #[tokio::test]
     async fn a_real_peer_never_vocalises() {
         // The disguise cuts both ways: the field must not become a way to tell a phantom from a
@@ -8823,21 +9142,56 @@ mod tests {
         }
         assert_eq!(extra, 0, "no second blow inside the recovery window");
 
-        // …and then it bounces off, exactly as it always did — just later.
-        for _ in 0..4 {
+        // …AND IT KEEPS COMING. The lunge used to bounce back to STALK a couple of seconds after
+        // each blow, which is what "ataca, no ataca" looked like from the outside. A committed hunt
+        // now ends only when the PLAYER ends it — outrun it, or break its line of sight.
+        for _ in 0..40 {
             driver.step(&mut net, 0.1, player, player_yaw, false, false);
         }
-        // Not `== Stalk`: it disengages INTO Stalk and, with the player still staring at it from a
-        // metre away, freezes into Statue on that very tick — which is the designed follow-on, not
-        // a flicker. What must be true is that the lunge ended and the commitment was consumed.
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "a hunt with a clear line to a reachable player must NOT let go on its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn breaking_the_line_of_sight_ends_a_committed_hunt() {
+        // The other half of the rule above, and the reason hiding is worth anything: a lunge that
+        // cannot see you gives up after PHANTOM_SPRINT_BLIND_SECONDS. Without this test the change
+        // above would be indistinguishable from "the creature never stops", which is a worse game.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Sprint;
+        let here = Vec3::from_array(net.peers[&pid].position);
+
+        // Wall the player off: a built piece between them blocks the segment (ADR-041 overlay), so
+        // the creature is inside LOSE_RADIUS but blind — exactly "he found somewhere to hide".
+        use crate::network::protocol::StpBuildingInfo;
+        for (i, d) in [2.5f32, 5.0].iter().enumerate() {
+            net.stp_buildings.push(StpBuildingInfo {
+                id: STP_BUILDING_ID_BASE + i as u32,
+                def_id: 1,
+                position: [here.x + d, here.y, here.z],
+                rotation: 0.0,
+                group_id: 0,
+                added: vec![],
+            });
+        }
+        let player = Vec3::new(here.x + 9.0, 1.8, here.z);
+
+        let ticks = ((PHANTOM_SPRINT_BLIND_SECONDS / 0.1) as i32) + 5;
+        for _ in 0..ticks {
+            driver.step(&mut net, 0.1, player, 0.0, false, false);
+        }
+
         assert_ne!(
             driver.movers[0].state,
             PhantomState::Sprint,
-            "the commitment must END, or the lunge would never disengage"
-        );
-        assert!(
-            !driver.movers[0].struck,
-            "the spent commitment must not carry into the next lunge"
+            "a hunt that has lost its line must break off, or hiding means nothing"
         );
     }
 
