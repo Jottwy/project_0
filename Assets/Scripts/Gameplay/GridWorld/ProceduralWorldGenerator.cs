@@ -506,14 +506,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             into.Clear();
             into.AddRange(keys);
-            into.Sort((a, b) =>
+            // El comparador NO puede ser un lambda aquí: captura cx, cz y nearestFirst, así que
+            // Roslyn no lo puede cachear y materializa un display class + un delegate en CADA
+            // llamada — y ProcessBudget llama dos veces por frame mientras hay streaming.
+            // Instancia reutilizada con los tres parámetros como campos: mismo orden total, cero
+            // asignaciones. No es reentrante, pero OrderByDistance nunca se anida.
+            _comparer.cx = cx;
+            _comparer.cz = cz;
+            _comparer.nearestFirst = nearestFirst;
+            into.Sort(_comparer);
+        }
+
+        private static readonly DistanceComparer _comparer = new DistanceComparer();
+
+        /// <summary>Comparador de <see cref="OrderByDistance"/>, extraído a clase para no asignar
+        /// un delegate por llamada. El desempate (capa, x, z) es idéntico al del lambda que
+        /// sustituye, y hace el orden TOTAL: sin él, dos claves a la misma distancia quedarían en
+        /// un orden que depende del algoritmo de Sort.</summary>
+        private sealed class DistanceComparer : IComparer<(int, int, int)>
+        {
+            public int cx;
+            public int cz;
+            public bool nearestFirst;
+
+            public int Compare((int, int, int) a, (int, int, int) b)
             {
                 int cmp = Dist2(a, cx, cz).CompareTo(Dist2(b, cx, cz));
                 if (cmp == 0) cmp = a.Item3.CompareTo(b.Item3);
                 if (cmp == 0) cmp = a.Item1.CompareTo(b.Item1);
                 if (cmp == 0) cmp = a.Item2.CompareTo(b.Item2);
                 return nearestFirst ? cmp : -cmp;
-            });
+            }
         }
 
         private static long Dist2((int, int, int) k, int cx, int cz)
