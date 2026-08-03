@@ -57,6 +57,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
         };
 
         private readonly Dictionary<uint, GameObject> _spawned = new Dictionary<uint, GameObject>();
+
+        // Scratch reutilizado por LateUpdate, que corre cada frame de toda la partida (el
+        // componente es singleton con DontDestroyOnLoad). Ninguno escapa del método:
+        // `_aliveScratch` solo recibe Add/Contains y `_staleScratch` se llena y se vacía dentro
+        // de la misma llamada, así que reaprovechar los buckets no cambia nada observable.
+        private readonly HashSet<uint> _aliveScratch = new HashSet<uint>();
+        private readonly List<uint> _staleScratch = new List<uint>();
         private GameObject _template;
         private bool _templateResolved;
 
@@ -97,10 +104,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (state == null)
                 return;
 
-            var alive = new HashSet<uint>();
+            _aliveScratch.Clear();
             foreach (var corpse in state.visibleCorpses)
             {
-                alive.Add(corpse.id);
+                _aliveScratch.Add(corpse.id);
                 // Re-spawn if missing (first sight) or destroyed (e.g. scene reload) — mirrors
                 // StpItemReplicator. Position never changes after spawn; CONTENTS can (ADR-028
                 // Fase E2: another peer looting this corpse arrives only through this roster
@@ -122,10 +129,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 }
             }
 
-            var stale = new List<uint>();
+            _staleScratch.Clear();
             foreach (var kv in _spawned)
             {
-                if (!alive.Contains(kv.Key))
+                if (!_aliveScratch.Contains(kv.Key))
                 {
                     if (kv.Value != null)
                     {
@@ -145,10 +152,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
                             col.enabled = false;
                         Destroy(kv.Value, DespawnGraceSeconds);
                     }
-                    stale.Add(kv.Key);
+                    _staleScratch.Add(kv.Key);
                 }
             }
-            foreach (uint k in stale)
+            foreach (uint k in _staleScratch)
                 _spawned.Remove(k);
         }
 
