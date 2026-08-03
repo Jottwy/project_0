@@ -1,5 +1,19 @@
 //! Volumetric "Rubik grid" world model V0 (backend-authored 3D architecture).
 //!
+//! ── REACH INVENTORY (auditoría 2026-08-03; este módulo es andamiaje de migración y NO se
+//!    toca hasta la Fase 5, `docs/STATE.md`). Escrito aquí para que el corte esté hecho el día
+//!    que se decida: ──
+//!
+//!  * Las columnas SOLO se sirven con `WORLD_SEED=7778`. La única ruta es
+//!    `World::volumetric_grid_view_for`, que exige `is_showcase || ENABLE_LEVEL0_VOLUMETRIC_COLUMNS`;
+//!    la constante es `false` e `is_showcase` compara contra `SHOWCASE_SEED`, mientras `main.rs`
+//!    lee `WORLD_SEED` con `.unwrap_or(42)`. En una partida normal, nada de esto se sirve.
+//!  * Lo ÚNICO que corre incondicionalmente en toda generación es
+//!    `log_level0_adapter_fix_once`, y construye una `VolumetricColumn` completa por CADA chunk
+//!    de la capa 0 solo para emitir siete líneas de log una vez por proceso.
+//!  * El bloque `SpawnVolumeReportV0` … `log_v30d_multilayer_once` (~255 líneas) no tiene NINGÚN
+//!    llamador en el crate, tests incluidos. Es el primer candidato de corte de la Fase 5.
+//!
 //! This module replaces the old decorative "flat layers + holes + props"
 //! verticality pipeline (the Phase 3.0A2 `inter_layer_volumes` VISFIX overlay)
 //! with a real volumetric cell model. Architecture is authored as a 3D grid of

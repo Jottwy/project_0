@@ -1,6 +1,14 @@
 //! State synchronization: broadcast functions that convert game state to protocol
 //! payloads and send them via the NetworkManager.
 //! See ARCHITECTURE_V1.md §5.4 and §3.2.
+//!
+//! SIX FUNCTIONS HERE HAVE NO CALL SITES, and they are unfinished features rather than cruft —
+//! the anchor/stabilizer chain was designed and wired up to the wire format but never plugged
+//! into the loop. Do not "clean them up" without deciding the feature first:
+//!   `build_session_config`, `send_chunk_transfer`, `broadcast_anchor`, `broadcast_stabilizer`,
+//!   `build_anchor_list`, `build_stabilizer_list`.
+//! They are invisible to the compiler because the crate carries `#![allow(dead_code)]`
+//! (`main.rs`); to see them, comment that out and read `cargo test --no-run`.
 
 use crate::player::session::Player;
 use crate::utils::{world_to_chunk, Vec3};
