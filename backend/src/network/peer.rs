@@ -11,11 +11,14 @@ use super::PeerId;
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A reliable packet awaiting acknowledgement.
+///
+/// Deliberately carries NO destination: `NetworkManager::process_retransmits` resolves it from
+/// the live `PeerConnection::addr` at resend time, so a peer that re-binds behind NAT drags its
+/// pending queue to the new address instead of retransmitting into the void.
 #[derive(Debug, Clone)]
 pub struct ReliablePacket {
     pub sequence: u32,
     pub data: Vec<u8>,
-    pub dest: SocketAddr,
     pub sent_at: Instant,
     pub retries: u8,
     pub next_retry_at: Instant,
@@ -30,7 +33,6 @@ pub struct PeerConnection {
     pub latency_ms: u16,
     pub last_heartbeat: Instant,
     pub reliable_queue: VecDeque<ReliablePacket>,
-    pub sequence_counter: u32,
     // Remote player state (updated by PlayerUpdate packets)
     pub position: [f32; 3],
     pub rotation: f32,
@@ -90,7 +92,6 @@ pub struct PeerConnection {
     /// haul building material it does not have.
     pub carry_def: i32,
     pub carry_count: u8,
-    pub connected_at: Instant,
 }
 
 impl PeerConnection {
@@ -103,7 +104,6 @@ impl PeerConnection {
             latency_ms: 0,
             last_heartbeat: now,
             reliable_queue: VecDeque::new(),
-            sequence_counter: 0,
             position: [0.0, 1.8, 0.0],
             rotation: 0.0,
             animation: "idle".into(),
@@ -122,13 +122,7 @@ impl PeerConnection {
             melee_seq: 0,
             carry_def: 0,
             carry_count: 0,
-            connected_at: now,
         }
-    }
-
-    pub fn next_sequence(&mut self) -> u32 {
-        self.sequence_counter = self.sequence_counter.wrapping_add(1);
-        self.sequence_counter
     }
 
     pub fn record_heartbeat(&mut self) {
@@ -150,7 +144,6 @@ impl PeerConnection {
         self.reliable_queue.push_back(ReliablePacket {
             sequence,
             data,
-            dest: self.addr,
             sent_at: now,
             retries: 0,
             next_retry_at: now + Duration::from_millis(backoff_ms),
@@ -217,14 +210,6 @@ mod tests {
     fn new_peer_not_timed_out() {
         let peer = PeerConnection::new(1, "Test".into(), test_addr());
         assert!(!peer.is_timed_out());
-    }
-
-    #[test]
-    fn sequence_increments() {
-        let mut peer = PeerConnection::new(1, "Test".into(), test_addr());
-        assert_eq!(peer.next_sequence(), 1);
-        assert_eq!(peer.next_sequence(), 2);
-        assert_eq!(peer.next_sequence(), 3);
     }
 
     #[test]
