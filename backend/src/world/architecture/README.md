@@ -5,8 +5,11 @@
 Converts `template_id + rotation` into a populated `ChunkLayoutV1`.
 Also owns spawn-safety rules and edge-opening finalization.
 
-Extracted from `generator.rs` in **MIG-1** (migration 1). Generator re-exports everything
-from here for backward compatibility — call sites in `generator.rs` are thin wrappers.
+Extracted from `generator.rs` in **MIG-1** (migration 1). `architecture/mod.rs` is now the
+canonical facade (it re-exports `build_chunk_layout` and the `TEMPLATE_*` constants) and
+`generator.rs` consumes from it — since MIG-2 the generator no longer re-exports
+`build_chunk_layout` itself. The `pub(crate) use` lines still in `generator.rs` are targeted
+bridges for individual call sites, not a facade.
 
 ---
 
@@ -54,7 +57,7 @@ Safe-cell validation and spawn-area reservation.
 pub fn item_cell_blocked(layout: &ChunkLayoutV1, x: usize, z: usize) -> bool
 pub fn world_to_cell(layout, chunk_pos, world_x, world_z) -> (usize, usize)
 pub fn relocate_contents_to_safe_cells(chunk: &mut Chunk, ...)
-pub fn reserve_starter_spawn_area(layout: &mut ChunkLayoutV1)
+pub fn reserve_starter_spawn_area(chunks: &mut [(StructureV0, Chunk)])
 pub fn template_is_vertical(template_id: u8) -> bool
 ```
 
@@ -71,7 +74,7 @@ Edge-opening finalization (Phase 2.7 edge-wall model).
 
 ```rust
 pub fn perimeter_openings(layout: &ChunkLayoutV1) -> u8   // edge_openings bitmask
-pub fn finalize_level0_edges(chunks: &mut [Chunk], structures: &[StructureV0])
+pub fn finalize_level0_edges(chunks: &mut [(StructureV0, Chunk)])
 pub fn edge_delta(edge: u8) -> ChunkPos
 pub fn opposite_edge(edge: u8) -> u8
 // (test-only) boundary_opening_cells, edge_is_opening
