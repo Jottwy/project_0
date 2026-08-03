@@ -312,20 +312,23 @@ pub(crate) fn traversable_neighbors(
 }
 
 /// Returns all node IDs reachable from `start_id` via traversable edges
-/// (undirected BFS). Always includes the start node itself. Result is sorted.
+/// (undirected, iterative DFS). Always includes the start node itself. Result is sorted.
 /// Returns empty Vec if the start node does not exist in the graph.
+///
+/// Depth-first is not a choice, it is just what a `Vec`-as-stack gives: visit ORDER is
+/// irrelevant here because the answer is a set that gets sorted before returning.
 pub(crate) fn reachable_from(graph: &RegionGraph, start_id: SpatialNodeId) -> Vec<SpatialNodeId> {
     if graph.find_node(start_id).is_none() {
         return Vec::new();
     }
     let mut visited: HashSet<SpatialNodeId> = HashSet::new();
-    let mut queue: Vec<SpatialNodeId> = vec![start_id];
+    let mut stack: Vec<SpatialNodeId> = vec![start_id];
     visited.insert(start_id);
 
-    while let Some(current) = queue.pop() {
+    while let Some(current) = stack.pop() {
         for neighbor in traversable_neighbors(graph, current) {
             if visited.insert(neighbor) {
-                queue.push(neighbor);
+                stack.push(neighbor);
             }
         }
     }
