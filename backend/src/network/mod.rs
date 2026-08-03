@@ -1,4 +1,6 @@
-//! P2P networking domain (UDP mesh).
+//! Networking domain over UDP. Topology is a host-as-server STAR, not a mesh: a joiner only
+//! connects to the host, and the host re-emits each peer's pose to the others (ADR-015 relay,
+//! `sync::broadcast_peer_poses`). See docs/NETWORK_ARCHITECTURE_CURRENT.md.
 //!
 //! `NetworkManager` owns the UDP socket, tracks peer connections, handles the
 //! reliability layer, and produces `NetworkEvent`s for the game loop.

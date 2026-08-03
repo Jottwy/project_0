@@ -1,7 +1,8 @@
 //! Backrooms Survival — distributed P2P co-op survival horror backend.
 //!
 //! Phases 1-2 (Foundation + World): IPC, game loop, world sim, entity AI.
-//! Phase 3 (Networking): UDP P2P mesh with reliability layer.
+//! Phase 3 (Networking): UDP host-as-server star with reliability layer (NOT a mesh —
+//! joiners connect only to the host, which relays their poses to each other, ADR-015).
 //!
 //! Environment variables:
 //!   NET_PORT    — UDP port for P2P networking (default: 7778)

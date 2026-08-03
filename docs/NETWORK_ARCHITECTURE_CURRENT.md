@@ -37,7 +37,8 @@ Each game client is a Unity application paired with a local Rust backend process
 ### IPC (TCP)
 
 - Local TCP connection between Unity and its Rust backend.
-- Carries JSON-encoded messages in both directions.
+- Carries MessagePack messages in both directions, each framed by a 4-byte big-endian length
+  prefix (`ipc/mod.rs:1-7`; the C# side parses it in `Assets/Scripts/Network/MsgPack.cs`).
 - Unity -> Backend: commands (host, join, player input).
 - Backend -> Unity: world state snapshots (positions, remote players, game state).
 - Each client uses a distinct IPC port to avoid conflicts when running multiple instances on one machine.

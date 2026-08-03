@@ -24,7 +24,7 @@ pub struct ReliablePacket {
     pub next_retry_at: Instant,
 }
 
-/// State for a single connected peer in the mesh.
+/// State for a single peer connected to this backend (host-as-server star, not a mesh).
 #[derive(Debug)]
 pub struct PeerConnection {
     pub id: PeerId,
