@@ -198,6 +198,19 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (ragdoll != null)
             {
                 ragdoll.EnableRagdoll();
+                // The robapieles THROWS you. Only the client whose own player was just killed by a
+                // revealed creature has a pending impulse, and only for the body at that spot within
+                // a few seconds (PhantomAttackHandler matches on position AND time), so every other
+                // corpse — and every other client's view of this one — settles exactly as before.
+                //
+                // Local by design, not an oversight: ADR-028 already has each client run its own
+                // ragdoll physics against its own rendered geometry, so corpses never agreed pose
+                // for pose. An impulse adds no divergence that was not already accepted.
+                if (BackroomsSurvival.Gameplay.PhantomAttackHandler.TryTakeCorpseThrow(
+                        go.transform.position, out var impulse))
+                {
+                    ThrowRagdoll(ragdoll, impulse);
+                }
                 // Fase D fix #2b: bound how far physics can carry the visual body from death_pos.
                 go.AddComponent<CorpseRagdollFreezer>().Initialize(ragdoll.Bones);
             }
@@ -334,6 +347,30 @@ namespace BackroomsSurvival.Migration.STPIntegration
         // `_hasRig=false` → the whole hook goes inert, no warning) — its calibration play-test was
         // marked PENDING in STATE.md and may never have actually run. Flagged, NOT fixed here (out
         // of Fase D scope — that hook is unrelated to corpses); worth a follow-up check.
+        /// <summary>
+        /// Push a freshly-enabled ragdoll, so a kill launches the body instead of dropping it.
+        ///
+        /// Every bone gets the velocity rather than one AddForce on the hips: a ragdoll whose limbs
+        /// start at rest while its pelvis leaves at 6 m/s snaps its own joints and reads as a glitch.
+        /// Uniform velocity throws the whole body and lets the joints sort out the tumble.
+        ///
+        /// `CorpseRagdollFreezer` (added right after) still bounds how far this can carry the body,
+        /// so the throw cannot put a lootable corpse somewhere the server never said it was.
+        /// </summary>
+        private static void ThrowRagdoll(CharacterRagdoll ragdoll, Vector3 impulse)
+        {
+            var bones = ragdoll.Bones;
+            if (bones == null)
+                return;
+
+            for (int i = 0; i < bones.Length; i++)
+            {
+                var rb = bones[i] != null ? bones[i].GetComponent<Rigidbody>() : null;
+                if (rb != null && !rb.isKinematic)
+                    rb.linearVelocity = impulse;
+            }
+        }
+
         private void WireLoot(GameObject go, CorpseViewMsg corpse, GameObject heldItemInstance)
         {
             Transform hips = FindBoneByName(go.transform, "Pelvis");

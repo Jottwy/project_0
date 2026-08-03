@@ -37,6 +37,30 @@ namespace BackroomsSurvival.Gameplay
         private const float HoldTime = 2.0f;
         private const float FadeOutTime = 0.5f;
 
+        // ── The grab (kill only) ──────────────────────────────────────────────────────────────
+        // How long the camera is held on the thing that killed you before the fade starts. Short:
+        // this is a beat of recognition, not a cutscene, and the player has already lost control.
+        private const float GrabTime = 0.9f;
+        // How far the killer may be and still be credited with the grab (m). The backend strikes
+        // inside PHANTOM_ATTACK_REACH (2.4 m); the slack absorbs the 10 Hz pose relay and the fact
+        // that the local player is client-authoritative and has kept moving since.
+        private const float GrabSearchRadius = 4.5f;
+        // Distance the player is dragged to, so the creature is not visibly hugging thin air.
+        private const float GrabHoldDistance = 1.3f;
+        // Drag speed toward the killer (m/s), applied through the motor rather than by writing the
+        // transform: position is client-authoritative (ADR-009) and a direct write would be fought
+        // by the next motor step.
+        private const float GrabPullSpeed = 4.0f;
+        // How fast the view swings onto the killer. NOT a snap — an instant camera cut on death is
+        // nauseating, and it also hides the one thing this sequence exists to show.
+        private const float GrabLookLerp = 9.0f;
+        // Impulse handed to the corpse ragdoll, away from the killer.
+        private const float CorpseThrowSpeed = 6.5f;
+        // A corpse spawning further than this from the recorded death spot is somebody else's.
+        private const float CorpseMatchRadius = 4.0f;
+        // …and one arriving later than this is a different death entirely.
+        private const float CorpseMatchWindow = 6.0f;
+
         // Hit feedback.
         private const float HitShakeTime = 0.3f;
         private const float HitShakeMag = 0.6f;    // degrees of additive camera jitter per frame
@@ -65,6 +89,42 @@ namespace BackroomsSurvival.Gameplay
         private bool _dying;
         private float _deathElapsed;
         private IMovementControllerCC _deathBlock;
+
+        // The grab: who took you, and how long is left of being held by it.
+        private Transform _grabber;
+        private float _grabTimer;
+
+        /// <summary>
+        /// The shove the corpse should be thrown with, handed to <c>CorpseSpawner</c> across the
+        /// assembly boundary (it lives in Assembly-CSharp, which auto-references this one; the
+        /// reverse is impossible, which is why the handoff is a static read and not a call).
+        ///
+        /// A STATIC and not an event because the two are not alive at the same time: the corpse is
+        /// spawned by the backend and reconciled into the world some frames later, by which point
+        /// this component is mid-fade. The consumer matches on position AND time so it can never
+        /// apply your death's impulse to somebody else's body.
+        /// </summary>
+        public static Vector3 PendingCorpseThrow { get; private set; }
+        public static Vector3 PendingCorpseThrowAt { get; private set; }
+        public static float PendingCorpseThrowTime { get; private set; } = float.NegativeInfinity;
+
+        /// <summary>
+        /// Consume the pending throw if `where` is the body from that death. Returns false — and
+        /// leaves the ragdoll to settle on its own — for any corpse that does not match, which is
+        /// the correct behaviour for every corpse this client did not just produce.
+        /// </summary>
+        public static bool TryTakeCorpseThrow(Vector3 where, out Vector3 impulse)
+        {
+            impulse = Vector3.zero;
+            if (Time.time - PendingCorpseThrowTime > CorpseMatchWindow)
+                return false;
+            if ((where - PendingCorpseThrowAt).sqrMagnitude > CorpseMatchRadius * CorpseMatchRadius)
+                return false;
+
+            impulse = PendingCorpseThrow;
+            PendingCorpseThrowTime = float.NegativeInfinity; // one body per death
+            return true;
+        }
 
         // Transient hit feedback timers.
         private float _shakeTimer;
@@ -103,7 +163,9 @@ namespace BackroomsSurvival.Gameplay
                 _ipc.AddEventListener(OnGameEvent);
             }
 
-            if (_dying)
+            if (_grabTimer > 0f)
+                TickGrab();
+            else if (_dying)
                 TickDeath();
             if (_shakeTimer > 0f)
                 TickShake();
@@ -150,6 +212,17 @@ namespace BackroomsSurvival.Gameplay
             _dying = true;
             _deathElapsed = 0f;
 
+            // Who took you. Resolved CLIENT-SIDE from what is already on screen — the killer is a
+            // rendered remote avatar whose `revealed` flag is up — so the grab costs NOTHING on the
+            // wire. The backend would have to carry the phantom's id and pose to tell us the same
+            // thing, and that is a protocol change (and an ADR) for information the client can see.
+            _grabber = ResolveGrabber();
+            if (_grabber != null)
+            {
+                _grabTimer = GrabTime;
+                RecordCorpseThrow(_grabber);
+            }
+
             var movement = ResolveMovement();
             if (movement != null)
             {
@@ -157,6 +230,115 @@ namespace BackroomsSurvival.Gameplay
                     movement.AddStateBlocker(this, BlockedStates[i]);
                 _deathBlock = movement;
             }
+        }
+
+        /// <summary>
+        /// Held by the thing that killed you: the view swings onto it and you are dragged to arm's
+        /// length, so the last second of the round is spent looking at what took you instead of at
+        /// whatever direction you happened to be running.
+        ///
+        /// DECLARED LIMIT: there is no authored grab animation. The creature holds the strike pose
+        /// the backend already puts it in and stays revealed through it (`PHANTOM_STRIKE_RECOVERY`),
+        /// so what reads is "it has you", not "it is performing a grab". A real animation needs the
+        /// creature and the player aligned by a shared clip, which is authoring work, not code.
+        /// </summary>
+        private void TickGrab()
+        {
+            _grabTimer -= Time.unscaledDeltaTime;
+
+            // The grabber can vanish mid-hold (it despawns, the pool recycles it). Fall straight
+            // through to the ordinary fade rather than freezing on nothing.
+            if (_grabber == null)
+            {
+                _grabTimer = 0f;
+                return;
+            }
+
+            var cam = ResolveCam();
+            if (cam != null)
+            {
+                // Aim at the upper chest rather than the pivot: the pivot is at the feet, and a
+                // camera pointed at the floor is the opposite of the shot this exists to get.
+                var focus = _grabber.position + Vector3.up * 1.6f;
+                var to = focus - cam.transform.position;
+                if (to.sqrMagnitude > 1e-4f)
+                {
+                    cam.transform.rotation = Quaternion.Slerp(
+                        cam.transform.rotation,
+                        Quaternion.LookRotation(to.normalized, Vector3.up),
+                        1f - Mathf.Exp(-GrabLookLerp * Time.unscaledDeltaTime));
+                }
+            }
+
+            // Dragged in to arm's length, through the motor (ADR-009: a transform write would be
+            // overwritten by the next motor step).
+            var motor = ResolveMotor();
+            if (motor != null)
+            {
+                var flat = _grabber.position - motor.transform.position;
+                flat.y = 0f;
+                float d = flat.magnitude;
+                motor.SetVelocity(d > GrabHoldDistance && d > 1e-3f
+                    ? flat / d * GrabPullSpeed
+                    : Vector3.zero);
+            }
+
+            if (_grabTimer <= 0f)
+                _grabTimer = 0f; // the fade takes over next frame
+        }
+
+        /// <summary>
+        /// The nearest REVEALED remote avatar within reach — i.e. the only thing on screen that can
+        /// have killed you. A revealed proxy is a robapieles mid-lunge by construction (ADR-038),
+        /// and a real player is never revealed, so this can never mistake a teammate for the killer.
+        /// </summary>
+        private Transform ResolveGrabber()
+        {
+            var managers = FindObjectsByType<RemotePlayerManager>(
+                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+            var cam = ResolveCam();
+            var origin = cam != null ? cam.transform.position : transform.position;
+
+            Transform best = null;
+            float bestSq = GrabSearchRadius * GrabSearchRadius;
+            for (int m = 0; m < managers.Length; m++)
+            {
+                foreach (var kvp in managers[m].ActivePlayers)
+                {
+                    var view = kvp.Value;
+                    if (view == null || !view.revealed || view.root == null)
+                        continue;
+                    float sq = (view.root.position - origin).sqrMagnitude;
+                    if (sq < bestSq)
+                    {
+                        bestSq = sq;
+                        best = view.root;
+                    }
+                }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Stage the impulse the corpse will be thrown with: away from the killer, and upward, so
+        /// the body leaves rather than crumpling on the spot.
+        ///
+        /// Consistent with ADR-028's existing design, NOT a new divergence: corpse ragdolls already
+        /// settle independently on every client (each one runs its own physics against its own
+        /// rendered geometry), so a locally-applied impulse adds no synchrony that was ever there.
+        /// </summary>
+        private void RecordCorpseThrow(Transform grabber)
+        {
+            var motor = ResolveMotor();
+            var at = motor != null ? motor.transform.position : transform.position;
+            var away = at - grabber.position;
+            away.y = 0f;
+            if (away.sqrMagnitude < 1e-4f)
+                away = -grabber.forward; // on top of each other: thrown off its front
+
+            PendingCorpseThrow = (away.normalized + Vector3.up * 0.55f).normalized * CorpseThrowSpeed;
+            PendingCorpseThrowAt = at;
+            PendingCorpseThrowTime = Time.time;
         }
 
         private void TickDeath()
@@ -186,6 +368,8 @@ namespace BackroomsSurvival.Gameplay
         private void EndDeath()
         {
             _dying = false;
+            _grabber = null;
+            _grabTimer = 0f;
             if (_fadeImage != null)
                 _fadeImage.color = new Color(0f, 0f, 0f, 0f);
             if (_diedText != null)
