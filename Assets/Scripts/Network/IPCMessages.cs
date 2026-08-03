@@ -336,6 +336,13 @@ namespace BackroomsSurvival.Net
         public int buttons;
         // ADR-044: cosmetic melee-swing counter (monotonic, wrapping; 0 = never swung).
         public int meleeSeq;
+        // ADR-048: cosmetic vocalisation counter (monotonic, wrapping; 0 = never vocalised, and it
+        // never wraps back onto 0). ProxyVocalHook plays a sound on a DELTA, never on a level —
+        // a scream modelled as a flag is a scream lost with the first dropped datagram.
+        public int vocalSeq;
+        // ADR-048: which voice the last bump was. 0 reveal, 1 search-shriek, 2 noise-grunt,
+        // 3 stalking-breath. Meaningless on its own — only read together with vocalSeq.
+        public int vocalKind;
 
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
@@ -360,6 +367,8 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "fire_seq")) r.fireSeq = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "buttons")) r.buttons = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "melee_seq")) r.meleeSeq = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "vocal_seq")) r.vocalSeq = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "vocal_kind")) r.vocalKind = (int)reader.ReadInt();
                 else reader.Skip();
             }
             return r;

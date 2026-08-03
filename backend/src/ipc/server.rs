@@ -85,7 +85,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// `ServerMessage::PeerVoice { peer_id, seq, data }` outbound. ADR-046 deliberately wrote no fixed
 /// number into the document precisely so this could be read off the code — landed second, took 17.
 /// Additive and inert in both directions: a client that never speaks is byte-identical to a v16 one.
-const WIRE_SCHEMA_VERSION: u32 = 17;
+/// v18 (ADR-048) adds `vocal_seq:u8` + `vocal_kind:u8` to RemotePlayerState and the P2P
+/// PlayerUpdate — BACKEND-derived like `revealed`, absent from `PlayerInput`, so no client writer
+/// changes and the C6 goldens stay valid. Additive and inert: a creature that never vocalises is
+/// byte-identical to a v17 one, and a v17 receiver decodes both to 0 and simply hears nothing.
+const WIRE_SCHEMA_VERSION: u32 = 18;
 
 /// Run the IPC server until a fatal accept error.
 ///

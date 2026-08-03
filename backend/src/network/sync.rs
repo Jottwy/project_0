@@ -127,6 +127,8 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         // `true` in the whole system is sealed by PhantomDriver onto a PeerConnection and
         // travels via broadcast_peer_poses, not this path.
         revealed: player.revealed,
+        vocal_seq: player.vocal_seq,
+        vocal_kind: player.vocal_kind,
         // ADR-042: both client-reported and sealed in the game loop next to `hit_seq`.
         light_on: player.light_on,
         fire_seq: player.fire_seq,
@@ -281,6 +283,8 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
                     hit_seq: p.hit_seq,
                     dead: p.dead,
                     revealed: p.revealed,
+                    vocal_seq: p.vocal_seq,
+                    vocal_kind: p.vocal_kind,
                     light_on: p.light_on,
                     fire_seq: p.fire_seq,
                     buttons: p.buttons,

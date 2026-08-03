@@ -164,6 +164,8 @@ namespace BackroomsSurvival.Net
                 view.fireSeq = rp.fireSeq; // ADR-042
                 view.buttons = rp.buttons; // ADR-044
                 view.meleeSeq = rp.meleeSeq; // ADR-044
+                view.vocalSeq = rp.vocalSeq; // ADR-048
+                view.vocalKind = rp.vocalKind; // ADR-048
                 // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
                 // is the visible body); it reappears at the respawn position on dead→false.
                 // Change-detected so SetActive only fires on the edge.
@@ -281,6 +283,8 @@ namespace BackroomsSurvival.Net
             view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
             view.dead = false; // ADR-028 post-E3: recycled proxy starts visible (root just re-activated above)
             view.revealed = false; // ADR-038: no stale real form on a recycled proxy (hook restores its materials)
+            view.vocalSeq = 0; // ADR-048: no stale scream counter (hook re-arms its sentinel)
+            view.vocalKind = 0; // ADR-048
             view.lightOn = false; // ADR-042: no stale torch glow on a recycled proxy
             view.fireSeq = 0; // ADR-042: no stale shot counter (hook re-arms its sentinel)
             view.buttons = 0; // ADR-044: a recycled proxy is neither aiming nor reloading
@@ -317,6 +321,8 @@ namespace BackroomsSurvival.Net
             view.hitSeq = 0; // ADR-024
             view.dead = false; // ADR-028 post-E3: pooled SetActive(false) is the pool's, not the flag's
             view.revealed = false; // ADR-038
+            view.vocalSeq = 0; // ADR-048
+            view.vocalKind = 0; // ADR-048
             view.lightOn = false; // ADR-042
             view.fireSeq = 0; // ADR-042
             view.buttons = 0; // ADR-044
@@ -576,6 +582,11 @@ namespace BackroomsSurvival.Net
         // ADR-038: cosmetic real-form flag (read by ProxyRevealHook). Always false for a real
         // player — only the robapieles (ADR-016) is ever sent with it true.
         public bool revealed;
+        // ADR-048: cosmetic vocalisation counter (read by ProxyVocalHook); 0 = never vocalised.
+        // Always 0 for a real player — only the robapieles (ADR-016) is ever sent with it set.
+        public int vocalSeq;
+        // ADR-048: which voice the last bump was. Only meaningful alongside vocalSeq.
+        public int vocalKind;
         // ADR-042: cosmetic "held wieldable is lit" flag (read by ProxyLightHook).
         public bool lightOn;
         // ADR-042: cosmetic shot counter (read by ProxyFireAudioHook); 0 = never fired.

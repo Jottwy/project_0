@@ -52,6 +52,14 @@ pub struct Player {
     /// ever `true` lives on a `PeerConnection` written by the phantom driver.
     #[serde(default)]
     pub revealed: bool,
+    /// ADR-048: monotonic vocalisation counter. Same shape and same reason as `revealed` above —
+    /// never written for a real player, absent from `ipc::PlayerInput` by design, and only ever
+    /// non-zero on a `PeerConnection` written by the phantom driver.
+    #[serde(default)]
+    pub vocal_seq: u8,
+    /// ADR-048: WHICH voice the last `vocal_seq` bump was. See the ADR for the table.
+    #[serde(default)]
+    pub vocal_kind: u8,
     /// ADR-042: cosmetic "the wieldable in my hands is emitting light" flag. Reported by the
     /// client as "some `Light` under the active wieldable is enabled" — deliberately GENERIC, so
     /// a lighter/flare/flashlight works the day it exists without touching the wire. Relayed to
@@ -122,6 +130,8 @@ impl Player {
             held_item: 0,
             hit_seq: 0,
             revealed: false,
+            vocal_seq: 0,
+            vocal_kind: 0,
             light_on: false,
             fire_seq: 0,
             buttons: 0,

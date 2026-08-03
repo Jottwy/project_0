@@ -180,6 +180,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             Scream();
         }
 
+        // ADR-048 point 6: the scream is now EMITTED by the backend as `vocal_kind = 0` and played
+        // by ProxyVocalHook, so every client hears it at the same instant instead of each one
+        // inferring it from its own reception of the `revealed` level. This hook keeps the VISUAL
+        // and yields the AUDIO. The clips below stay as the fallback for a prefab that has not been
+        // re-baked with the new hook yet — wire ProxyVocalHook and leave `_screamClips` empty.
+
         private void RestoreBody()
         {
             if (_hidden != null)

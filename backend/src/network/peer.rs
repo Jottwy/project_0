@@ -63,6 +63,12 @@ pub struct PeerConnection {
     /// see the same thing. `update_player_state` stays untouched, like the fields above — the
     /// driver writes this one next to its `update_player_state` call, not inside it.
     pub revealed: bool,
+    /// ADR-048: monotonic vocalisation counter, written by `PhantomDriver` (host) and by
+    /// `handle_packet` from a relayed PlayerUpdate (joiner), exactly like `revealed`. A REAL peer
+    /// never bumps it, so it stays 0 and its proxy never makes a sound.
+    pub vocal_seq: u8,
+    /// ADR-048: which voice the last bump was. Meaningless on its own — always read with `vocal_seq`.
+    pub vocal_kind: u8,
     /// ADR-042: cosmetic "held wieldable is lit" flag, set from PlayerUpdate; relayed, not
     /// authoritative. NOTE: set in handle_packet, NOT in update_player_state — so the phantom
     /// (ADR-016) never carries a lit torch.
@@ -103,6 +109,8 @@ impl PeerConnection {
             hit_seq: 0,
             dead: false,
             revealed: false,
+            vocal_seq: 0,
+            vocal_kind: 0,
             light_on: false,
             fire_seq: 0,
             buttons: 0,

@@ -100,6 +100,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireHeldItemHook(instance);
                 WireHitReactionHook(instance);
                 WireRevealHook(instance);
+                WireVocalHook(instance);
                 WireRealForm(instance);
                 WireFootstepHook(instance);
                 WireLightHook(instance);
@@ -416,6 +417,61 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         {
             if (root.GetComponent<ProxyRevealHook>() == null)
                 root.AddComponent<ProxyRevealHook>();
+        }
+
+        /// <summary>
+        /// ADR-048: the creature's voice, driven by the <c>vocal_seq</c> counter instead of by the
+        /// reveal flag — the whole point being that it can vocalise WITHOUT dropping its disguise,
+        /// which ADR-038 forbids expressing through <c>revealed</c>.
+        ///
+        /// Wires bank 0 (reveal scream) from the same clips <see cref="PhantomRealFormBuilder"/>
+        /// already generates, so the migrated scream keeps working with no new audio to author. The
+        /// other three banks are left EMPTY on purpose: an unauthored voice is silent, never a
+        /// missing-reference error, so the search shriek and the noise grunt light up the day
+        /// somebody drops clips in without touching code.
+        /// </summary>
+        private static void WireVocalHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyVocalHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyVocalHook>();
+
+            var screams = LoadScreamClips();
+            if (screams.Length == 0)
+                return;
+
+            var so = new SerializedObject(hook);
+            var voices = so.FindProperty("_voices");
+            if (voices == null)
+                return;
+
+            if (voices.arraySize < 4)
+                voices.arraySize = 4;
+
+            // Bank 0 = reveal. Index into the struct's `Clips` array.
+            var clips = voices.GetArrayElementAtIndex(0).FindPropertyRelative("Clips");
+            if (clips == null)
+                return;
+
+            clips.arraySize = screams.Length;
+            for (int i = 0; i < screams.Length; i++)
+                clips.GetArrayElementAtIndex(i).objectReferenceValue = screams[i];
+
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static AudioClip[] LoadScreamClips()
+        {
+            var guids = AssetDatabase.FindAssets("t:AudioClip", new[] { PhantomRealFormBuilder.ScreamDir });
+            var clips = new System.Collections.Generic.List<AudioClip>(guids.Length);
+            foreach (var guid in guids)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                if (clip != null)
+                    clips.Add(clip);
+            }
+            return clips.ToArray();
         }
 
         // ADR-038 V2: nests the robapieles' real-form body (its own rig, its own Animator) as an

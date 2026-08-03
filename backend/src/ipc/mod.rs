@@ -310,6 +310,12 @@ pub struct RemotePlayerState {
     /// no counterpart in `PlayerInput`, so no client can set it.
     #[serde(default)]
     pub revealed: bool,
+    /// ADR-048: monotonic vocalisation counter (backend→Unity). `ProxyVocalHook` fires on a change.
+    #[serde(default)]
+    pub vocal_seq: u8,
+    /// ADR-048: which voice. 0 reveal-scream, 1 search-shriek, 2 noise-grunt, 3 stalking-breath.
+    #[serde(default)]
+    pub vocal_kind: u8,
     /// ADR-042: cosmetic "this peer's held wieldable is lit" flag (host-relayed) — the observer
     /// enables a light on the proxy's held model.
     #[serde(default)]

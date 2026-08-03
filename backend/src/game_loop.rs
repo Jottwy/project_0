@@ -182,6 +182,24 @@ const PHANTOM_ATTACK_REACH: f32 = 2.4;
 /// nobody predicted must never leave the creature pinned to a wall forever, which is the state that
 /// reads as the game being broken rather than as the creature being bad at doorways.
 const PHANTOM_SPRINT_GIVEUP_TICKS: u8 = 25;
+
+// ── ADR-048: the creature's voice ────────────────────────────────────────────────────────────────
+/// The disguise dropping — emitted on entering SPRINT. Migrated here from the client, which used to
+/// infer it from the `revealed` edge: now every client hears it at the same instant instead of each
+/// one deducing it from its own reception of the level.
+const VOCAL_REVEAL: u8 = 0;
+/// A shriek while HUNTING A NOISE and closing on somebody it has not seen. This is the one the
+/// disguise must survive — it is still wearing a stolen face while it makes it.
+const VOCAL_SEARCH_SHRIEK: u8 = 1;
+/// A grunt of reaction the moment it hears something worth walking toward. Also disguised.
+const VOCAL_NOISE_GRUNT: u8 = 2;
+/// Minimum seconds between ANY two vocalisations from the same creature. In the BACKEND on purpose
+/// (ADR-048 point 7): a limit living in the client is a limit the client can remove, and the cost
+/// of a creature screaming at 10 Hz is paid by everyone who can hear it.
+const PHANTOM_VOCAL_COOLDOWN: f32 = 6.0;
+/// How close a searching creature has to get to a player before it shrieks (m). Wider than the
+/// sight radius (15 m) is the point: you hear it coming before it can possibly have seen you.
+const PHANTOM_VOCAL_SEARCH_RANGE: f32 = 18.0;
 const PHANTOM_STATUE_MAX: f32 = 6.0; // max seconds frozen → then it lunges (SPRINT)
 const PHANTOM_RUN_SPEED_THRESHOLD: f32 = 4.5; // target speed (m/s) read as "running" (above walk)
 const PHANTOM_SOUND_BONUS: f32 = 8.0; // extra detect radius (m) when the player is running
@@ -1394,10 +1412,12 @@ async fn handle_network_event(
             fire_seq,
             buttons,
             melee_seq,
+            vocal_seq,
+            vocal_kind,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}, vocal_seq={}, vocal_kind={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq, vocal_seq, vocal_kind
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -4377,6 +4397,8 @@ fn build_world_state(
             hit_seq: p.hit_seq,
             dead: p.dead,
             revealed: p.revealed,
+            vocal_seq: p.vocal_seq,
+            vocal_kind: p.vocal_kind,
             light_on: p.light_on,
             fire_seq: p.fire_seq,
             buttons: p.buttons,
@@ -5024,6 +5046,19 @@ struct PhantomMover {
     /// Who this creature is hunting, carried between ticks so the choice is STICKY. `None` = has
     /// not committed to anyone (patrolling, or its target died/left).
     target_id: Option<PeerId>,
+    /// ADR-048 — a vocalisation decided THIS tick, sealed at the end of the step alongside
+    /// `revealed`. Staged rather than written where it is decided for exactly the reason ADR-038
+    /// gives for the reveal seal: the FSM has many early `continue`s, so a per-branch write would
+    /// silently miss paths, and `hear_noises` runs before the FSM even starts.
+    pending_vocal: Option<u8>,
+    /// Monotonic wrapping counter, mirrored onto the peer each tick. NEVER lands back on 0 after
+    /// its first bump: 0 is the client's "has never vocalised" sentinel, and wrapping onto it would
+    /// silently swallow one scream every 255.
+    vocal_seq: u8,
+    /// Which voice the last bump was.
+    vocal_kind: u8,
+    /// Seconds until this creature may vocalise again.
+    vocal_cooldown: f32,
     /// Seconds of stillness left at the START of a lunge. `revealed` is already true in SPRINT
     /// (ADR-038), so the beat lands AFTER the disguise drops and the scream: it reveals, screams,
     /// hangs there for a moment, and only then comes at you. Without it, reveal and charge are the
@@ -5377,6 +5412,10 @@ impl PhantomDriver {
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
             hesitate_timer: 0.0,
             target_id: None,
+            pending_vocal: None,
+            vocal_seq: 0,
+            vocal_kind: 0,
+            vocal_cooldown: 0.0,
         });
     }
 
@@ -5422,6 +5461,9 @@ impl PhantomDriver {
                 self.movers[i].search_patience = PHANTOM_NOISE_SEARCH_PATIENCE;
                 self.movers[i].search_speed = PHANTOM_NOISE_TRAVEL_SPEED;
                 self.movers[i].noise_expiry = Some(PHANTOM_NOISE_EXPIRY);
+                // ADR-048: it answers the noise. Still wearing a stolen face while it does — that
+                // is the whole reason the voice does NOT ride `revealed`.
+                self.try_vocalize(i, VOCAL_NOISE_GRUNT);
                 // The plan is deliberately NOT thrown away. A second shot is new information about
                 // the same hunt, not a new hunt: the creature should keep walking and re-aim, and
                 // the replan policy already rebuilds the route on its own when the goal drifts more
@@ -5488,6 +5530,9 @@ impl PhantomDriver {
     fn enter_sprint(&mut self, i: usize) {
         self.movers[i].state = PhantomState::Sprint;
         self.movers[i].state_timer = 0.0;
+        // ADR-048 point 6: the reveal-scream is now EMITTED, not inferred by each client from the
+        // `revealed` edge, so everyone hears it at the same instant.
+        self.try_vocalize(i, VOCAL_REVEAL);
         // Rolled per lunge, not per creature: `hesitate_chance` is the temperament, this is what it
         // does THIS time. A creature that always paused would be as readable as one that never did.
         self.movers[i].hesitate_timer =
@@ -5498,6 +5543,20 @@ impl PhantomDriver {
                 }
                 false => 0.0,
             };
+    }
+
+    /// ADR-048 — stage a vocalisation, if this creature is not still catching its breath.
+    ///
+    /// Silently drops the request when on cooldown rather than queueing it: a scream that arrives
+    /// six seconds after the thing that caused it is worse than no scream, because the player will
+    /// place it wrong. Also drops a SECOND request in the same tick — the first one wins, so a
+    /// creature that hears a noise and lunges on the same tick screams once, not twice.
+    fn try_vocalize(&mut self, i: usize, kind: u8) {
+        if self.movers[i].vocal_cooldown > 0.0 || self.movers[i].pending_vocal.is_some() {
+            return;
+        }
+        self.movers[i].pending_vocal = Some(kind);
+        self.movers[i].vocal_cooldown = PHANTOM_VOCAL_COOLDOWN;
     }
 
     /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
@@ -5750,6 +5809,7 @@ impl PhantomDriver {
             // there would stall exactly across the window it exists to cover.
             self.movers[i].strike_recover = (self.movers[i].strike_recover - dt).max(0.0);
             self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - dt).max(0.0);
+            self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - dt).max(0.0);
 
             // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
             // are PURE THEATER — only the `animation` field. While active, freeze in place holding
@@ -6320,6 +6380,17 @@ impl PhantomDriver {
                 // resumes the hunt; running out of patience returns it to WANDER and it FORGETS,
                 // which is what makes hiding a real escape and not just a delay. ──
                 PhantomState::Search => {
+                    // ADR-048 — IT SHRIEKS AS IT CLOSES ON YOU, without having seen you. The range
+                    // is deliberately WIDER than its sight (18 m vs 15), so following a shot toward
+                    // your position announces itself before it can possibly have spotted anything.
+                    // Disguise intact: this is the sound of the thing that still looks like a
+                    // player. The cooldown keeps it to one per approach rather than a siren.
+                    if let Some((_, _, dist, _)) = target {
+                        if dist <= PHANTOM_VOCAL_SEARCH_RANGE {
+                            self.try_vocalize(i, VOCAL_SEARCH_SHRIEK);
+                        }
+                    }
+
                     // Re-acquire on sight (crouching still shrinks the radius — stealth applies
                     // while it hunts, not only while it patrols).
                     if let Some((tid, tpos, dist, _)) = target {
@@ -6423,9 +6494,28 @@ impl PhantomDriver {
         // any reset logic. Written HERE and not in `update_player_state` on purpose — that method
         // stays untouched so the other five pose fields keep inheriting their defaults for the
         // phantom (`.claude/rules/pose-relay-wire-rust.md`, step 6).
-        for m in &self.movers {
+        //
+        // ADR-048 seals the VOICE in the same place and for the same reason. `hear_noises` runs
+        // before the FSM and the FSM itself has many early `continue`s, so a write at the decision
+        // site would miss paths; staging it and sealing here cannot.
+        for m in &mut self.movers {
             if let Some(peer) = net.peers.get_mut(&m.id) {
                 peer.revealed = phantom_reveals(m.state);
+                if let Some(kind) = m.pending_vocal.take() {
+                    // Wrapping, but never back onto 0: the client treats 0 as "has never
+                    // vocalised", so landing there would silently swallow one scream every 255.
+                    m.vocal_seq = match m.vocal_seq.wrapping_add(1) {
+                        0 => 1,
+                        n => n,
+                    };
+                    m.vocal_kind = kind;
+                    info!(
+                        "MPTRACE step=PH_VOCAL event=phantom_vocalised phantom_id={} kind={} seq={}",
+                        m.id, kind, m.vocal_seq
+                    );
+                }
+                peer.vocal_seq = m.vocal_seq;
+                peer.vocal_kind = m.vocal_kind;
             }
         }
 
@@ -7810,6 +7900,83 @@ mod tests {
                 "{name} temperament is a difficulty knob, not variance: mean {mean:.2}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_searching_creature_shrieks_without_dropping_its_disguise() {
+        // ADR-048's whole reason to exist. The creature is following a noise, closes on somebody it
+        // has NOT seen, and vocalises — while `revealed` stays false, because ADR-038 forbids
+        // deriving the reveal from anything but Sprint/Statue and the design wants the thing that
+        // still looks like a player to be the thing making the sound.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        let here = Vec3::from_array(net.peers[&pid].position);
+        driver.movers[0].state = PhantomState::Search;
+        driver.movers[0].last_known_player_pos = Some(Vec3::new(here.x + 60.0, 1.8, here.z));
+        // Inside the shriek range but well outside the 15 m sight cone behind it.
+        let player = Vec3::new(here.x - 16.0, 1.8, here.z);
+
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
+
+        let peer = &net.peers[&pid];
+        assert_ne!(peer.vocal_seq, 0, "closing on a player must make a sound");
+        assert_eq!(peer.vocal_kind, VOCAL_SEARCH_SHRIEK);
+        assert!(
+            !peer.revealed,
+            "the disguise MUST survive the shriek — that is the point of the field"
+        );
+
+        // Cooldown: it does not turn into a siren while it keeps approaching.
+        let seq = peer.vocal_seq;
+        for _ in 0..10 {
+            driver.step(&mut net, 0.1, player, 0.0, false, false);
+        }
+        assert_eq!(
+            net.peers[&pid].vocal_seq, seq,
+            "the cooldown must hold it to one cry per approach"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_peer_never_vocalises() {
+        // The disguise cuts both ways: the field must not become a way to tell a phantom from a
+        // player. A real peer's counter is only ever written from ITS OWN relayed pose, and it has
+        // no path that bumps one.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let joiner_id = 1001;
+        net.peers.insert(
+            joiner_id,
+            crate::network::peer::PeerConnection::new(
+                joiner_id,
+                "Joiner".into(),
+                (std::net::Ipv4Addr::LOCALHOST, 40000).into(),
+            ),
+        );
+        let mut driver = PhantomDriver::new(42);
+
+        driver.step(&mut net, 0.1, Vec3::new(0.0, 1.8, 0.0), 0.0, false, false);
+
+        assert_eq!(net.peers[&joiner_id].vocal_seq, 0);
+        assert_eq!(net.peers[&joiner_id].vocal_kind, 0);
+    }
+
+    #[test]
+    fn a_wrapping_vocal_counter_never_lands_on_the_silent_sentinel() {
+        // 0 means "has never vocalised" to the client's sentinel, so wrapping onto it would swallow
+        // exactly one scream every 255 — the kind of bug that shows up once in a long session and
+        // is never reproduced.
+        let mut seq: u8 = 254;
+        for _ in 0..4 {
+            seq = match seq.wrapping_add(1) {
+                0 => 1,
+                n => n,
+            };
+            assert_ne!(seq, 0);
+        }
+        assert_eq!(seq, 3, "255 → 1 → 2 → 3");
     }
 
     #[tokio::test]

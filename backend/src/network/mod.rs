@@ -96,6 +96,9 @@ pub enum NetworkEvent {
         fire_seq: u8,
         buttons: u16,
         melee_seq: u8,
+        /// ADR-048: cosmetic vocalisation counter + which voice it was.
+        vocal_seq: u8,
+        vocal_kind: u8,
     },
     WorldInteractRequest {
         requester_id: PeerId,
@@ -1279,6 +1282,8 @@ impl NetworkManager {
                 fire_seq,
                 buttons,
                 melee_seq,
+                vocal_seq,
+                vocal_kind,
             } => {
                 info!(
                     "Received player update from peer id={} pos=({:.2}, {:.2}, {:.2})",
@@ -1297,6 +1302,8 @@ impl NetworkManager {
                     peer.fire_seq = fire_seq; // ADR-042: cosmetic shot counter, alongside the pose
                     peer.buttons = buttons; // ADR-044: cosmetic aim/reload bits, alongside the pose
                     peer.melee_seq = melee_seq; // ADR-044: cosmetic swing counter, alongside the pose
+                    peer.vocal_seq = vocal_seq; // ADR-048: cosmetic vocalisation counter, alongside the pose
+                    peer.vocal_kind = vocal_kind; // ADR-048: which voice the last bump was
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -1335,6 +1342,8 @@ impl NetworkManager {
                     fire_seq,
                     buttons,
                     melee_seq,
+                    vocal_seq,
+                    vocal_kind,
                 }]
             }
 
@@ -2135,6 +2144,8 @@ mod tests {
             hit_seq: 0,
             dead: false,
             revealed: false,
+            vocal_seq: 0,
+            vocal_kind: 0,
             light_on: false,
             fire_seq: 0,
             buttons: 0,
@@ -2313,6 +2324,8 @@ mod tests {
                 hit_seq: 0,
                 dead: false,
                 revealed: false,
+                vocal_seq: 0,
+                vocal_kind: 0,
                 light_on: false,
                 fire_seq: 0,
                 buttons: 0,

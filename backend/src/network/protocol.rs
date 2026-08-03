@@ -472,6 +472,14 @@ pub enum PacketPayload {
         /// v14→v15 schema bump.
         #[serde(default)]
         melee_seq: u8,
+        /// ADR-048: cosmetic vocalisation counter (monotonic, wrapping; 0 = never vocalised).
+        /// Appended last + serde(default) → a v17 peer that omits it decodes to 0 (silent);
+        /// wire-compat across the v17→v18 schema bump.
+        #[serde(default)]
+        vocal_seq: u8,
+        /// ADR-048: which voice the last bump was. Read ONLY together with `vocal_seq`.
+        #[serde(default)]
+        vocal_kind: u8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -917,6 +925,8 @@ mod tests {
             fire_seq: 9,
             buttons: 0b11,
             melee_seq: 4,
+            vocal_seq: 6,
+            vocal_kind: 2,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -938,6 +948,8 @@ mod tests {
                 fire_seq,
                 buttons,
                 melee_seq,
+                vocal_seq,
+                vocal_kind,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -952,6 +964,10 @@ mod tests {
                 assert!(light_on);
                 assert_eq!(fire_seq, 9);
                 assert_eq!(buttons, 0b11);
+                // ADR-048: non-default on BOTH, so a field silently dropped from the wire fails
+                // here rather than looking like a creature that simply never vocalised.
+                assert_eq!(vocal_seq, 6);
+                assert_eq!(vocal_kind, 2);
                 assert_eq!(melee_seq, 4);
             }
             _ => panic!("wrong variant"),
