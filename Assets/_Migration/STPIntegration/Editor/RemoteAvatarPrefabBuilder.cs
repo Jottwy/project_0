@@ -448,14 +448,22 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices.arraySize < 4)
                 voices.arraySize = 4;
 
-            // Bank 0 = reveal. Index into the struct's `Clips` array.
-            var clips = voices.GetArrayElementAtIndex(0).FindPropertyRelative("Clips");
-            if (clips == null)
-                return;
+            // Banks 0 (reveal) and 1 (search shriek) both get the existing screams. Bank 1 is a
+            // PLACEHOLDER on purpose: the search shriek is the whole reason ADR-048 exists, and
+            // shipping it wired-but-silent would mean the first play-test could not tell "the
+            // feature is broken" from "nobody has authored the clip yet". Bank 2 (noise grunt) and
+            // 3 (stalking breath) are left empty — those want a quieter, lower voice than a shriek,
+            // and a wrong sound is worse than none. An empty bank is silent, never an error.
+            for (int bank = 0; bank <= 1; bank++)
+            {
+                var clips = voices.GetArrayElementAtIndex(bank).FindPropertyRelative("Clips");
+                if (clips == null)
+                    continue;
 
-            clips.arraySize = screams.Length;
-            for (int i = 0; i < screams.Length; i++)
-                clips.GetArrayElementAtIndex(i).objectReferenceValue = screams[i];
+                clips.arraySize = screams.Length;
+                for (int i = 0; i < screams.Length; i++)
+                    clips.GetArrayElementAtIndex(i).objectReferenceValue = screams[i];
+            }
 
             so.ApplyModifiedPropertiesWithoutUndo();
         }
