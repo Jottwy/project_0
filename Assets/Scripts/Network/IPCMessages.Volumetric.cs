@@ -17,13 +17,13 @@ namespace BackroomsSurvival.Net
         public uint volumeId;
         public string kind = "";
         public int[] baseChunk = new int[2];
-        public int[] involvedLayers = new int[0];
+        public int[] involvedLayers = Array.Empty<int>();
         public int[] footprintCellMin = new int[2];
         public int[] footprintCellMax = new int[2];
         public string safetyType = "";
         public string futureAudioHint = "";
         public int visualFlags;
-        public string[] visualHints = new string[0];
+        public string[] visualHints = Array.Empty<string>();
 
         public static InterLayerVolumeMsg Parse(MsgPackReader r)
         {
@@ -206,7 +206,7 @@ namespace BackroomsSurvival.Net
         public float layerHeight = 7f;
         public Vector3 originWorld;
         public int baseLayer;
-        public byte[] cells = new byte[0];
+        public byte[] cells = Array.Empty<byte>();
         public List<VolumetricFaceMsg> faces = new List<VolumetricFaceMsg>();
         public int openCellCount;
         public int solidCellCount;

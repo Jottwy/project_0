@@ -22,7 +22,7 @@ namespace BackroomsSurvival.Net
         public bool hasWorkbench;
         public int layoutGridSize = 10;
         public float layoutCellSize = 5f;
-        public ushort[] layoutCells = new ushort[0];
+        public ushort[] layoutCells = Array.Empty<ushort>();
         public int edgeOpenings;
         public uint macroId;
         public int zoneKind;
@@ -42,9 +42,9 @@ namespace BackroomsSurvival.Net
 
         // Phase 2.7B — split views of the packed layout_cells array.
         // Packing (gridSize g): [cells (g*g)] [edges_v ((g+1)*g)] [edges_h (g*(g+1))].
-        public ushort[] cellFlags = new ushort[0];
-        public byte[] verticalEdges = new byte[0];
-        public byte[] horizontalEdges = new byte[0];
+        public ushort[] cellFlags = Array.Empty<ushort>();
+        public byte[] verticalEdges = Array.Empty<byte>();
+        public byte[] horizontalEdges = Array.Empty<byte>();
         public bool hasBackendLayout;
         public bool hasEdgeLayout;
 
@@ -162,9 +162,9 @@ namespace BackroomsSurvival.Net
         {
             hasBackendLayout = false;
             hasEdgeLayout = false;
-            cellFlags = new ushort[0];
-            verticalEdges = new byte[0];
-            horizontalEdges = new byte[0];
+            cellFlags = Array.Empty<ushort>();
+            verticalEdges = Array.Empty<byte>();
+            horizontalEdges = Array.Empty<byte>();
 
             int g = layoutGridSize;
             if (g <= 0 || layoutCells == null)
