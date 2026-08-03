@@ -54,6 +54,14 @@ namespace BackroomsSurvival.Gameplay
         // How fast the view swings onto the killer. NOT a snap — an instant camera cut on death is
         // nauseating, and it also hides the one thing this sequence exists to show.
         private const float GrabLookLerp = 9.0f;
+        // Struggle tremor at the END of the hold (degrees). Grows with t², because a CONSTANT shake
+        // reads as a broken camera and an accelerating one reads as something winding up.
+        private const float GrabShakeMax = 2.2f;
+        // Slow camera roll while held (degrees) — the horizon tipping is what sells losing your feet.
+        private const float GrabRollMax = 9f;
+        // Fraction of the hold after which you are lifted off the floor.
+        private const float GrabLiftStart = 0.55f;
+        private const float GrabLiftSpeed = 3.2f;
         // Impulse handed to the corpse ragdoll, away from the killer.
         private const float CorpseThrowSpeed = 6.5f;
         // A corpse spawning further than this from the recorded death spot is somebody else's.
@@ -104,6 +112,21 @@ namespace BackroomsSurvival.Gameplay
         /// this component is mid-fade. The consumer matches on position AND time so it can never
         /// apply your death's impulse to somebody else's body.
         /// </summary>
+        /// <summary>
+        /// The proxy currently holding the local player, or null. Read by <c>ProxyGrabHook</c>,
+        /// which lives in Assembly-CSharp and therefore cannot be called from here (the reference
+        /// only goes the other way) — so the creature-side animation PULLS this state rather than
+        /// being pushed it. Same handoff shape as the corpse throw below, and for the same reason.
+        /// </summary>
+        public static Transform ActiveGrabber { get; private set; }
+
+        /// <summary>0 → 1 across the grab, so the creature's reach can ramp with it.</summary>
+        public static float GrabProgress01 { get; private set; }
+
+        /// <summary>Where the creature's hands should converge: the victim's head/chest, in world
+        /// space. Fed from the camera, which IS the local player's head.</summary>
+        public static Vector3 GrabVictimPoint { get; private set; }
+
         public static Vector3 PendingCorpseThrow { get; private set; }
         public static Vector3 PendingCorpseThrowAt { get; private set; }
         public static float PendingCorpseThrowTime { get; private set; } = float.NegativeInfinity;
@@ -220,6 +243,8 @@ namespace BackroomsSurvival.Gameplay
             if (_grabber != null)
             {
                 _grabTimer = GrabTime;
+                ActiveGrabber = _grabber;
+                GrabProgress01 = 0f;
                 RecordCorpseThrow(_grabber);
             }
 
@@ -251,8 +276,13 @@ namespace BackroomsSurvival.Gameplay
             if (_grabber == null)
             {
                 _grabTimer = 0f;
+                ActiveGrabber = null;
                 return;
             }
+
+            float t = 1f - Mathf.Clamp01(_grabTimer / GrabTime); // 0 → 1 across the hold
+            GrabProgress01 = t;
+            ActiveGrabber = _grabber;
 
             var cam = ResolveCam();
             if (cam != null)
@@ -268,23 +298,48 @@ namespace BackroomsSurvival.Gameplay
                         Quaternion.LookRotation(to.normalized, Vector3.up),
                         1f - Mathf.Exp(-GrabLookLerp * Time.unscaledDeltaTime));
                 }
+
+                GrabVictimPoint = cam.transform.position;
+
+                // Struggle: a tremor that GROWS as it holds you, plus a slow roll. Growing is the
+                // whole trick — a constant shake reads as a broken camera, an accelerating one
+                // reads as something winding up. It rides on top of the look-at above, so the
+                // creature stays framed while the frame itself comes apart.
+                float shake = GrabShakeMax * t * t;
+                cam.transform.rotation *= Quaternion.Euler(
+                    Random.Range(-shake, shake),
+                    Random.Range(-shake, shake),
+                    Mathf.Sin(t * 9f) * GrabRollMax * t);
             }
 
-            // Dragged in to arm's length, through the motor (ADR-009: a transform write would be
-            // overwritten by the next motor step).
             var motor = ResolveMotor();
             if (motor != null)
             {
+                // Dragged in to arm's length, through the motor (ADR-009: a transform write would
+                // be overwritten by the next motor step).
                 var flat = _grabber.position - motor.transform.position;
                 flat.y = 0f;
                 float d = flat.magnitude;
-                motor.SetVelocity(d > GrabHoldDistance && d > 1e-3f
+                var pull = d > GrabHoldDistance && d > 1e-3f
                     ? flat / d * GrabPullSpeed
-                    : Vector3.zero);
+                    : Vector3.zero;
+
+                // …and LIFTED off the floor for the last stretch, so the throw that follows starts
+                // from a body already off balance instead of from someone standing calmly.
+                if (t > GrabLiftStart)
+                {
+                    float lift = (t - GrabLiftStart) / Mathf.Max(1e-3f, 1f - GrabLiftStart);
+                    pull.y = GrabLiftSpeed * lift;
+                }
+                motor.SetVelocity(pull);
             }
 
             if (_grabTimer <= 0f)
-                _grabTimer = 0f; // the fade takes over next frame
+            {
+                _grabTimer = 0f;   // the fade takes over next frame
+                ActiveGrabber = null;
+                GrabProgress01 = 0f;
+            }
         }
 
         /// <summary>
@@ -370,6 +425,8 @@ namespace BackroomsSurvival.Gameplay
             _dying = false;
             _grabber = null;
             _grabTimer = 0f;
+            ActiveGrabber = null;
+            GrabProgress01 = 0f;
             if (_fadeImage != null)
                 _fadeImage.color = new Color(0f, 0f, 0f, 0f);
             if (_diedText != null)
