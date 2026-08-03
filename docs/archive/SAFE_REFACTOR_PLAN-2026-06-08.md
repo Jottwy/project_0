@@ -1,3 +1,7 @@
+> **ARCHIVADO 2026-08-03.** Documento historico, NO vigente. Su clasificacion R0 ("no tocar,
+> Codex itera") congelaba modulos que llevan dos meses estables, asi que seguirlo hoy bloquea
+> trabajo por razones caducadas. El plan vivo es [AUDIT-2026-08-03.md](../AUDIT-2026-08-03.md).
+
 # Safe Refactor Plan
 
 > Date: 2026-06-08

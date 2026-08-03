@@ -5,7 +5,7 @@
 ## Fuente de verdad (leer en este orden al iniciar sesión)
 1. [STATE.md](STATE.md) — estado vivo: qué está hecho, qué sigue, riesgos abiertos. Léelo SIEMPRE primero.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — arquitectura validada, capas y contratos.
-3. [DECISIONS.md](DECISIONS.md) — registro ADR completo (ADR-001..032 + enmiendas). ES LEY, append-only.
+3. [DECISIONS.md](DECISIONS.md) — registro ADR completo (ADR-001..049 + enmiendas). ES LEY, append-only.
 4. [CONVENTIONS.md](CONVENTIONS.md) — convenciones C# / Rust / protocolo / git.
 
 ## ADRs
@@ -14,10 +14,20 @@
 ## Sistemas (documentación operativa por subsistema)
 - [systems/damage-sync.md](systems/damage-sync.md) — [G] Player Damage Sync (ADR-024): hit-reaction cosmético `hit_seq` en la pose relay.
 
+## Limpieza y refactor
+- [AUDIT-2026-08-03.md](AUDIT-2026-08-03.md) — barrido de auditoría vigente: qué se limpió, qué
+  queda por tier, y qué está bloqueado esperando decisión humana. Empieza aquí antes de "mejorar"
+  nada por tu cuenta.
+
 ## Otros documentos de referencia
-- [NETWORK_ARCHITECTURE_CURRENT.md](NETWORK_ARCHITECTURE_CURRENT.md)
 - [STRUCTURES.md](STRUCTURES.md)
 - [REMOTEPLAYERS_GATE.md](REMOTEPLAYERS_GATE.md)
-- [SAFE_REFACTOR_PLAN.md](SAFE_REFACTOR_PLAN.md)
+
+> Los tres siguientes llevan `CURRENT` en el nombre pero están **congelados en 2026-06-08**. Se
+> mantienen porque su análisis sigue siendo útil; su inventario de ficheros y su estado NO lo son.
+- [NETWORK_ARCHITECTURE_CURRENT.md](NETWORK_ARCHITECTURE_CURRENT.md)
 - [STABILITY_AUDIT_CURRENT.md](STABILITY_AUDIT_CURRENT.md)
 - [ARCHITECTURE_RISK_REVIEW.md](ARCHITECTURE_RISK_REVIEW.md)
+
+## Archivo
+- [archive/](archive/) — documentos retirados, con cabecera que dice por qué. No son fuente de verdad.
