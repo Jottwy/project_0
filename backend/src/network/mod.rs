@@ -865,7 +865,7 @@ impl NetworkManager {
 
     // ─── Packet handling ───
 
-    async fn handle_packet(&mut self, pkt: IncomingPacket) -> Vec<NetworkEvent> {
+    async fn handle_packet(&mut self, pkt: IncomingPacket) -> Option<NetworkEvent> {
         let sender_id = pkt.header.sender_id;
 
         // Send ACK for reliable packets.
@@ -950,11 +950,10 @@ impl NetworkManager {
 
             PacketPayload::Heartbeat => {
                 // Already updated heartbeat above.
-                vec![]
+                None
             }
 
             PacketPayload::Disconnect { reason } => {
-                let mut events = Vec::new();
                 if let Some(peer) = self.peers.remove(&sender_id) {
                     info!(
                         "Peer {} ({}) disconnected: {}",
@@ -968,12 +967,13 @@ impl NetworkManager {
                         self.peers.len(),
                         self.peer_ids()
                     );
-                    events.push(NetworkEvent::PeerDisconnected {
+                    Some(NetworkEvent::PeerDisconnected {
                         id: sender_id,
                         reason,
-                    });
+                    })
+                } else {
+                    None
                 }
-                events
             }
 
             PacketPayload::PeerList { peers } => {
@@ -996,21 +996,21 @@ impl NetworkManager {
                         self.peers.insert(info.id, conn);
                     }
                 }
-                vec![]
+                None
             }
 
             PacketPayload::StpItemList { items } => {
                 // Host-authoritative STP item roster: joiners mirror it verbatim so
                 // their build_world_state replicates the same items. (Phase 1.)
                 self.stp_items = items;
-                vec![]
+                None
             }
 
             PacketPayload::StpBuildingList { buildings } => {
                 // Host-authoritative STP building roster: joiners mirror it verbatim so
                 // their build_world_state replicates the same pieces. (Phase B1.)
                 self.stp_buildings = buildings;
-                vec![]
+                None
             }
 
             PacketPayload::StpPlaceRequest {
@@ -1020,90 +1020,90 @@ impl NetworkManager {
                 rotation,
                 group_id,
                 is_group,
-            } => vec![NetworkEvent::StpPlaceRequest {
+            } => Some(NetworkEvent::StpPlaceRequest {
                 place_id,
                 def_id,
                 position,
                 rotation,
                 group_id,
                 is_group,
-            }],
+            }),
 
             PacketPayload::StpBuildAddRequest {
                 add_id,
                 building_id,
                 material_id,
-            } => vec![NetworkEvent::StpBuildAddRequest {
+            } => Some(NetworkEvent::StpBuildAddRequest {
                 add_id,
                 building_id,
                 material_id,
-            }],
+            }),
 
             PacketPayload::StpDemolishRequest {
                 demolish_id,
                 building_id,
-            } => vec![NetworkEvent::StpDemolishRequest {
+            } => Some(NetworkEvent::StpDemolishRequest {
                 demolish_id,
                 building_id,
-            }],
+            }),
 
             PacketPayload::StpCarryableList { carryables } => {
                 // Host-authoritative carryable roster: joiners mirror it verbatim. (B2.5)
                 self.stp_carryables = carryables;
-                vec![]
+                None
             }
 
             PacketPayload::StpCarryablePickupRequest {
                 carryable_id,
                 requester_id,
-            } => vec![NetworkEvent::StpCarryablePickupRequest {
+            } => Some(NetworkEvent::StpCarryablePickupRequest {
                 carryable_id,
                 requester_id,
-            }],
+            }),
 
             PacketPayload::StpCarryablePickupGranted {
                 carryable_id,
                 def_id,
-            } => vec![NetworkEvent::StpCarryablePickupGranted {
+            } => Some(NetworkEvent::StpCarryablePickupGranted {
                 carryable_id,
                 def_id,
-            }],
+            }),
 
             PacketPayload::StpCarryableDropRequest {
                 drop_id,
                 def_id,
                 position,
                 rotation,
-            } => vec![NetworkEvent::StpCarryableDropRequest {
+            } => Some(NetworkEvent::StpCarryableDropRequest {
                 drop_id,
                 def_id,
                 position,
                 rotation,
-            }],
+            }),
 
             PacketPayload::StpHarvestableList { harvestables } => {
                 // Host-authoritative harvestable health roster: joiners mirror it. (B2.6)
                 self.stp_harvestables = harvestables;
-                vec![]
+                None
             }
 
             PacketPayload::StpHarvestHitRequest {
                 hit_id,
                 harvestable_id,
                 amount,
-            } => vec![NetworkEvent::StpHarvestHitRequest {
+            } => Some(NetworkEvent::StpHarvestHitRequest {
                 hit_id,
                 harvestable_id,
                 amount,
-            }],
+            }),
 
             PacketPayload::StpPickupRequest {
                 item_id,
                 requester_id,
-            } => vec![NetworkEvent::StpPickupRequest {
+            } => Some(NetworkEvent::StpPickupRequest {
                 item_id,
                 requester_id,
-            }],
+            }),
 
             // ADR-028 Fase E: corpse relay — 1:1 payload→event mapping; all the authority
             // logic (dedupe, spawn/take, verdict relay, mirroring) lives in game_loop, which
@@ -1116,7 +1116,7 @@ impl NetworkManager {
                 equipment,
                 held_item,
                 items,
-            } => vec![NetworkEvent::CorpseSpawnRequest {
+            } => Some(NetworkEvent::CorpseSpawnRequest {
                 request_id,
                 requester_id,
                 owner_name,
@@ -1124,7 +1124,7 @@ impl NetworkManager {
                 equipment,
                 held_item,
                 items,
-            }],
+            }),
 
             PacketPayload::CorpseTakeRequest {
                 request_id,
@@ -1133,14 +1133,14 @@ impl NetworkManager {
                 item_index,
                 quantity,
                 requester_pos,
-            } => vec![NetworkEvent::CorpseTakeRequest {
+            } => Some(NetworkEvent::CorpseTakeRequest {
                 request_id,
                 requester_id,
                 corpse_id,
                 item_index,
                 quantity,
                 requester_pos,
-            }],
+            }),
 
             PacketPayload::CorpseTakeResult {
                 request_id,
@@ -1151,7 +1151,7 @@ impl NetworkManager {
                 quantity,
                 corpse_empty,
                 reason,
-            } => vec![NetworkEvent::CorpseTakeResult {
+            } => Some(NetworkEvent::CorpseTakeResult {
                 request_id,
                 accepted,
                 corpse_id,
@@ -1160,10 +1160,10 @@ impl NetworkManager {
                 quantity,
                 corpse_empty,
                 reason,
-            }],
+            }),
 
             PacketPayload::CorpseList { corpses } => {
-                vec![NetworkEvent::CorpseListReceived { corpses }]
+                Some(NetworkEvent::CorpseListReceived { corpses })
             }
 
             // ADR-029 V0: PvP relay — 1:1 payload→event mapping; all authority logic
@@ -1179,7 +1179,7 @@ impl NetworkManager {
                 direction,
                 client_tick,
                 hit_position,
-            } => vec![NetworkEvent::PvpHitCandidate {
+            } => Some(NetworkEvent::PvpHitCandidate {
                 request_id,
                 attacker_id,
                 victim_id,
@@ -1189,7 +1189,7 @@ impl NetworkManager {
                 direction,
                 client_tick,
                 hit_position,
-            }],
+            }),
 
             PacketPayload::PvpDamageGrant {
                 request_id,
@@ -1198,26 +1198,26 @@ impl NetworkManager {
                 weapon_id,
                 damage,
                 reason,
-            } => vec![NetworkEvent::PvpDamageGrant {
+            } => Some(NetworkEvent::PvpDamageGrant {
                 request_id,
                 attacker_id,
                 victim_id,
                 weapon_id,
                 damage,
                 reason,
-            }],
+            }),
 
             PacketPayload::PvpHitRejected {
                 request_id,
                 attacker_id,
                 victim_id,
                 reason,
-            } => vec![NetworkEvent::PvpHitRejected {
+            } => Some(NetworkEvent::PvpHitRejected {
                 request_id,
                 attacker_id,
                 victim_id,
                 reason,
-            }],
+            }),
 
             // ADR-047 — decode only. Every authority check (are we really the victim? is this a
             // retransmit? are we invulnerable?) lives in game_loop.rs, the same split the PvP
@@ -1228,35 +1228,33 @@ impl NetworkManager {
                 kind,
                 damage,
                 impulse,
-            } => vec![NetworkEvent::PhantomAttackGrant {
+            } => Some(NetworkEvent::PhantomAttackGrant {
                 request_id,
                 victim_id,
                 kind,
                 damage,
                 impulse,
-            }],
+            }),
 
             PacketPayload::NoiseReport { position, loudness } => {
-                vec![NetworkEvent::NoiseReported { position, loudness }]
+                Some(NetworkEvent::NoiseReported { position, loudness })
             }
 
-            PacketPayload::VoiceFrame { seq, data } => {
-                vec![NetworkEvent::VoiceReceived {
-                    speaker: sender_id,
-                    seq,
-                    data,
-                }]
-            }
+            PacketPayload::VoiceFrame { seq, data } => Some(NetworkEvent::VoiceReceived {
+                speaker: sender_id,
+                seq,
+                data,
+            }),
 
             PacketPayload::StpPickupGranted {
                 item_id,
                 def_id,
                 count,
-            } => vec![NetworkEvent::StpPickupGranted {
+            } => Some(NetworkEvent::StpPickupGranted {
                 item_id,
                 def_id,
                 count,
-            }],
+            }),
 
             PacketPayload::StpDropRequest {
                 drop_id,
@@ -1264,13 +1262,13 @@ impl NetworkManager {
                 count,
                 position,
                 rotation,
-            } => vec![NetworkEvent::StpDropRequest {
+            } => Some(NetworkEvent::StpDropRequest {
                 drop_id,
                 def_id,
                 count,
                 position,
                 rotation,
-            }],
+            }),
 
             PacketPayload::PlayerUpdate {
                 position,
@@ -1339,7 +1337,7 @@ impl NetworkManager {
                         rotation
                     );
                 }
-                vec![NetworkEvent::RemotePlayerUpdate {
+                Some(NetworkEvent::RemotePlayerUpdate {
                     id: sender_id,
                     position,
                     rotation,
@@ -1359,7 +1357,7 @@ impl NetworkManager {
                     vocal_kind,
                     carry_def,
                     carry_count,
-                }]
+                })
             }
 
             PacketPayload::WorldSync {
@@ -1376,84 +1374,82 @@ impl NetworkManager {
                     chunks.iter().map(|c| c.entities.len()).sum::<usize>(),
                     chunks.iter().map(|c| c.items.len()).sum::<usize>()
                 );
-                vec![NetworkEvent::WorldSyncReceived {
+                Some(NetworkEvent::WorldSyncReceived {
                     world_seed,
                     world_revision,
                     chunks,
-                }]
+                })
             }
 
             PacketPayload::ChunkState { data } => {
                 // Treat as a chunk transfer for now.
-                vec![NetworkEvent::ChunkTransferReceived {
+                Some(NetworkEvent::ChunkTransferReceived {
                     from: sender_id,
                     data,
-                }]
+                })
             }
 
-            PacketPayload::ChunkTransfer { data } => {
-                vec![NetworkEvent::ChunkTransferReceived {
-                    from: sender_id,
-                    data,
-                }]
-            }
+            PacketPayload::ChunkTransfer { data } => Some(NetworkEvent::ChunkTransferReceived {
+                from: sender_id,
+                data,
+            }),
 
             PacketPayload::ChunkTransferAck { pos } => {
-                vec![NetworkEvent::ChunkTransferAckReceived {
+                Some(NetworkEvent::ChunkTransferAckReceived {
                     from: sender_id,
                     pos,
-                }]
+                })
             }
 
             PacketPayload::ChunkTeleport {
                 old_pos,
                 new_pos,
                 new_seed,
-            } => vec![NetworkEvent::ChunkTeleportReceived {
+            } => Some(NetworkEvent::ChunkTeleportReceived {
                 old_pos,
                 new_pos,
                 new_seed,
-            }],
+            }),
 
             PacketPayload::AnchorBroadcast {
                 chunk_pos,
                 durability,
                 installed_by,
-            } => vec![NetworkEvent::AnchorBroadcastReceived {
+            } => Some(NetworkEvent::AnchorBroadcastReceived {
                 chunk_pos,
                 durability,
                 installed_by,
-            }],
+            }),
 
             PacketPayload::StabilizerBroadcast {
                 chunk_pos,
                 tier,
                 remaining_hours,
-            } => vec![NetworkEvent::StabilizerBroadcastReceived {
+            } => Some(NetworkEvent::StabilizerBroadcastReceived {
                 chunk_pos,
                 tier,
                 remaining_hours,
-            }],
+            }),
 
             PacketPayload::Ack { acked_sequence } => {
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.process_ack(acked_sequence);
                 }
-                vec![]
+                None
             }
 
             PacketPayload::Nack {
                 requested_sequence: _,
             } => {
                 // Future: retransmit the requested packet.
-                vec![]
+                None
             }
 
             PacketPayload::Ping { send_time } => {
                 // Respond with the same timestamp so the sender can measure RTT.
                 let pong = PacketPayload::Ping { send_time };
                 self.send_raw_to(pkt.addr, &pong).await;
-                vec![]
+                None
             }
 
             // Action packets — forward to game loop as-is.
@@ -1474,14 +1470,14 @@ impl NetworkManager {
                     target_kind,
                     interaction_type
                 );
-                vec![NetworkEvent::WorldInteractRequest {
+                Some(NetworkEvent::WorldInteractRequest {
                     requester_id,
                     request_id,
                     target_id,
                     target_kind,
                     interaction_type,
                     player_position,
-                }]
+                })
             }
 
             PacketPayload::Attack { .. }
@@ -1493,7 +1489,7 @@ impl NetworkManager {
             | PacketPayload::ChunkDelta { .. }
             | PacketPayload::EntityUpdate { .. } => {
                 // These will be processed when full action handling is wired up.
-                vec![]
+                None
             }
         }
     }
@@ -1504,10 +1500,10 @@ impl NetworkManager {
         sender_id: PeerId,
         player_name: String,
         _version: String,
-    ) -> Vec<NetworkEvent> {
+    ) -> Option<NetworkEvent> {
         if !self.is_host {
             // Only the host accepts handshakes.
-            return vec![];
+            return None;
         }
 
         if let Some(existing) = self.peers.get(&sender_id) {
@@ -1541,7 +1537,7 @@ impl NetworkManager {
                 self.peer_ids()
             );
             self.send_raw_to(from_addr, &ack_payload).await;
-            return vec![];
+            return None;
         }
 
         if let Some(existing) = self.peers.values().find(|p| p.addr == from_addr) {
@@ -1575,7 +1571,7 @@ impl NetworkManager {
                 self.peer_ids()
             );
             self.send_raw_to(from_addr, &ack_payload).await;
-            return vec![];
+            return None;
         }
 
         // Aforo. `max_players` existía en SessionConfig y en WorldConfig, y NO se consultaba en
@@ -1601,7 +1597,7 @@ impl NetworkManager {
                 reason: "session full".into(),
             };
             self.send_raw_to(from_addr, &full).await;
-            return vec![];
+            return None;
         }
 
         let assigned_id = self.allocate_peer_id(sender_id);
@@ -1643,10 +1639,10 @@ impl NetworkManager {
         );
         self.send_raw_to(from_addr, &ack_payload).await;
 
-        vec![NetworkEvent::PeerConnected {
+        Some(NetworkEvent::PeerConnected {
             id: assigned_id,
             name: player_name,
-        }]
+        })
     }
 
     fn handle_handshake_ack(
@@ -1656,9 +1652,9 @@ impl NetworkManager {
         assigned_id: PeerId,
         world_seed: u64,
         peers: Vec<PeerInfo>,
-    ) -> Vec<NetworkEvent> {
+    ) -> Option<NetworkEvent> {
         if self.is_host {
-            return vec![]; // Host doesn't receive handshake acks.
+            return None; // Host doesn't receive handshake acks.
         }
 
         info!(
@@ -1699,10 +1695,10 @@ impl NetworkManager {
             self.peer_ids()
         );
 
-        vec![NetworkEvent::PeerConnected {
+        Some(NetworkEvent::PeerConnected {
             id: sender_id,
             name: "Host".into(),
-        }]
+        })
     }
 
     pub fn peer_count(&self) -> usize {
