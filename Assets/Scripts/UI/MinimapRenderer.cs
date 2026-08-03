@@ -18,6 +18,12 @@ namespace BackroomsSurvival.UI
         private Image _playerDot;
         private readonly Dictionary<long, Image> _chunkCells = new Dictionary<long, Image>();
 
+        // Scratch reutilizado por LateUpdate. Ninguno de los dos escapa del método ni se
+        // enumera en un orden observable (`_alive` solo recibe Add/Contains), así que
+        // reaprovechar los buckets no puede cambiar nada salvo el número de allocs.
+        private readonly HashSet<long> _alive = new HashSet<long>();
+        private readonly List<long> _stale = new List<long>();
+
         private static readonly Color ChunkRandom = new Color(0.55f, 0.50f, 0.40f, 0.8f);
         private static readonly Color ChunkStabilized = new Color(0.40f, 0.70f, 0.40f, 0.8f);
         private static readonly Color ChunkAnchored = new Color(0.40f, 0.60f, 0.90f, 0.8f);
@@ -98,12 +104,12 @@ namespace BackroomsSurvival.UI
             int playerCx = Mathf.FloorToInt(playerPos.x / 50f);
             int playerCz = Mathf.FloorToInt(playerPos.z / 50f);
 
-            var alive = new HashSet<long>();
+            _alive.Clear();
 
             foreach (var cv in state.visibleChunks)
             {
                 long key = Key(cv.pos[0], cv.pos[1]);
-                alive.Add(key);
+                _alive.Add(key);
 
                 if (!_chunkCells.TryGetValue(key, out var cell))
                 {
@@ -129,16 +135,16 @@ namespace BackroomsSurvival.UI
             }
 
             // Hide stale cells.
-            var stale = new List<long>();
+            _stale.Clear();
             foreach (var kv in _chunkCells)
             {
-                if (!alive.Contains(kv.Key))
+                if (!_alive.Contains(kv.Key))
                 {
                     kv.Value.gameObject.SetActive(false);
-                    stale.Add(kv.Key);
+                    _stale.Add(kv.Key);
                 }
             }
-            foreach (long k in stale) _chunkCells.Remove(k);
+            foreach (long k in _stale) _chunkCells.Remove(k);
 
             // Sub-chunk offset for the player dot.
             float subX = (playerPos.x / 50f - playerCx) - 0.5f;
