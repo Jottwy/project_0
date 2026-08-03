@@ -436,22 +436,27 @@ pub fn generate_layer(
     grid.set(1, 1, corr(rules.ceiling_corridor));
 
     while let Some(&((cx, cz), dir, run_len)) = stack.last() {
-        let unvisited: Vec<(i32, i32)> = [(-2i32, 0i32), (2, 0), (0, -2), (0, 2)]
-            .iter()
-            .filter_map(|&(dx, dz)| {
-                let (nx, nz) = (cx + dx, cz + dz);
-                if nx >= 1
-                    && nz >= 1
-                    && nx <= NODE_MAX
-                    && nz <= NODE_MAX
-                    && grid.get(nx as usize, nz as usize).is_solid()
-                {
-                    Some((nx, nz))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        // Buffer en PILA, no un Vec: este bucle corre cientos de veces por chunk y
+        // `generate_layer` se ejecuta en cada generación (render y colisión/navegación del
+        // robapieles). Como mucho caben cuatro vecinos, así que el tamaño es fijo.
+        // El orden de llenado y el número de elementos son idénticos a los del `Vec` que
+        // sustituye: mismo array de offsets, mismo filtro, mismo orden ⇒ mismo índice sorteado
+        // por el RNG y por tanto el mismo mundo. Las huellas doradas de Fase 1 lo asertan.
+        let mut unvisited = [(0i32, 0i32); 4];
+        let mut unvisited_len = 0usize;
+        for &(dx, dz) in &[(-2i32, 0i32), (2, 0), (0, -2), (0, 2)] {
+            let (nx, nz) = (cx + dx, cz + dz);
+            if nx >= 1
+                && nz >= 1
+                && nx <= NODE_MAX
+                && nz <= NODE_MAX
+                && grid.get(nx as usize, nz as usize).is_solid()
+            {
+                unvisited[unvisited_len] = (nx, nz);
+                unvisited_len += 1;
+            }
+        }
+        let unvisited = &unvisited[..unvisited_len];
 
         if unvisited.is_empty() {
             stack.pop();
@@ -463,7 +468,7 @@ pub fn generate_layer(
         // garantiza que todo perfil que no active el sesgo siga generando un
         // grid byte-idéntico. Ningún draw extra se consume en esa rama.
         let (nx, nz) = if rules.straight_bias > 0.0 {
-            pick_biased_toward_straight(&unvisited, (cx, cz), dir, rules.straight_bias, &mut rng)
+            pick_biased_toward_straight(unvisited, (cx, cz), dir, rules.straight_bias, &mut rng)
         } else {
             unvisited[rng.gen_range(0..unvisited.len())]
         };
