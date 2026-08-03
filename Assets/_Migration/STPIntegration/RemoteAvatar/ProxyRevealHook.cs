@@ -106,6 +106,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _hashCrouched = Animator.StringToHash("Crouched");
             if (_realFormBody != null)
                 _bodyAnimator = _realFormBody.GetComponentInChildren<Animator>(true);
+
+            // SAFETY NET, and it is not theoretical: a bake once serialised a null controller onto
+            // the nested body and the revealed creature T-posed through a whole play-test while the
+            // console filled with "Animator is not playing an AnimatorController". The body runs the
+            // SAME controller as the disguise by design (that is the entire reason the reveal costs
+            // no animation work), so borrowing it here makes the runtime immune to that bake.
+            if (_bodyAnimator != null && _bodyAnimator.runtimeAnimatorController == null
+                && _vendorAnimator != null)
+            {
+                _bodyAnimator.runtimeAnimatorController = _vendorAnimator.runtimeAnimatorController;
+            }
         }
 
         // Re-arm for pool reuse: a recycled proxy must never start wearing the real form, nor keep a

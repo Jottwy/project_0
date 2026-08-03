@@ -165,14 +165,38 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         // ProxyControllerBinder holds a serialized RuntimeAnimatorController reference (never stripped) and
         // assigns it in Awake (binding independent of the variant override). Editor Play already worked via
         // the override; this adds the build guarantee.
+        /// <summary>
+        /// The proxy controller asset, forcing a synchronous import when the AssetDatabase has not
+        /// caught up yet.
+        ///
+        /// EARNED THE HARD WAY: `WireAnimatorController` runs FIRST in the bake and rebuilds the
+        /// controller with `DeleteAsset` + `CreateAnimatorControllerAtPath`. Every later step that
+        /// asks for the controller can therefore get NULL — not because the build failed, but
+        /// because the database has not re-imported it inside the same frame. Two things then get
+        /// a null stamped onto them (the runtime binder, and the nested real-form body), and the
+        /// symptom does not show until something T-poses in a play-test. It is intermittent, which
+        /// is why an earlier bake of the very same code produced a clean prefab.
+        /// </summary>
+        private static RuntimeAnimatorController LoadProxyController()
+        {
+            var c = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
+                ProxyAnimatorControllerBuilder.OutputPath);
+            if (c != null)
+                return c;
+
+            AssetDatabase.ImportAsset(ProxyAnimatorControllerBuilder.OutputPath,
+                ImportAssetOptions.ForceSynchronousImport);
+            return AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
+                ProxyAnimatorControllerBuilder.OutputPath);
+        }
+
         private static void WireControllerBinder(GameObject root)
         {
             var animator = root.GetComponent<Animator>();
-            var controller = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
-                ProxyAnimatorControllerBuilder.OutputPath);
+            var controller = LoadProxyController();
             if (controller == null)
-                Debug.LogWarning("[RemoteAvatarPrefabBuilder] Proxy controller asset not found for the " +
-                    "runtime binder; a build may T-pose. Did the controller build succeed?");
+                Debug.LogError("[RemoteAvatarPrefabBuilder] Proxy controller asset not found for the " +
+                    "runtime binder; the BUILD will T-pose. Did the controller build succeed?");
 
             var binder = root.GetComponent<ProxyControllerBinder>();
             if (binder == null)
@@ -183,7 +207,10 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (animProp != null)
                 animProp.objectReferenceValue = animator;
             var ctrlProp = so.FindProperty("_controller");
-            if (ctrlProp != null)
+            // Never write a null OVER a good reference: a transient database miss would silently
+            // undo the one guarantee this binder exists to provide, and the failure would only
+            // surface in a player build.
+            if (ctrlProp != null && controller != null)
                 ctrlProp.objectReferenceValue = controller;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
@@ -547,6 +574,34 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             body.transform.localRotation = Quaternion.identity;
             // localScale is deliberately NOT reset: it is authored on the body prefab.
             body.SetActive(false);
+
+            // RE-STAMP THE BODY'S CONTROLLER. This is the T-pose fix.
+            //
+            // PhantomRealForm.prefab has the right controller on its own asset, but instantiating it
+            // HERE — after WireAnimatorController deleted and recreated that controller — resolved
+            // the reference to null on the instance, and SaveAsPrefabAsset then serialised the null
+            // as an override (`m_Controller: {fileID: 0}`) that OVERRIDES the good value underneath.
+            // The revealed creature came out in T-pose while every real player animated fine, which
+            // is exactly the shape of the bug reported in play-test.
+            //
+            // `GetComponentInChildren<Animator>(true)` is the SAME lookup ProxyRevealHook uses to
+            // find `_bodyAnimator`, deliberately: two different lookups here would be two things
+            // that can disagree about which Animator is the body's.
+            var bodyAnimator = body.GetComponentInChildren<Animator>(true);
+            if (bodyAnimator != null)
+            {
+                var bodyController = LoadProxyController();
+                if (bodyController == null)
+                {
+                    Debug.LogError("[RemoteAvatarPrefabBuilder] ADR-038 V2: no proxy controller for the " +
+                        "real-form body — the revealed creature WILL T-pose.");
+                }
+                else
+                {
+                    bodyAnimator.runtimeAnimatorController = bodyController;
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(bodyAnimator);
+                }
+            }
 
             var hook = root.GetComponent<ProxyRevealHook>();
             if (hook == null)
