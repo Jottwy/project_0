@@ -4310,11 +4310,6 @@ fn json_vec3(value: &serde_json::Value, key: &str) -> Option<[f32; 3]> {
     ])
 }
 
-/// ADR-028: parse the client-reported death-loot snapshot from `report_death_loot`
-/// action data: `{ equipment: [i32;4], held_item: i32, items: [{item_id, quantity}] }`.
-/// Malformed or missing fields degrade to empty (never poison the corpse with junk);
-/// out-of-range stacks are skipped. Length/zero-quantity hygiene is enforced again by
-/// `spawn_corpse` (single choke point).
 /// ADR-028 amendment (world chests): the pure gate+seed step behind the "spawn_world_chest"
 /// action, extracted so host-gate/dedupe/empty-loot rules are unit-testable without a live
 /// NetworkManager. Dedupe rides the SAME `processed_interactions` set `world_interact` uses,
@@ -4367,6 +4362,11 @@ fn same_chest_spot(a: Vec3, b: Vec3) -> bool {
     (a.x - b.x).abs() < EPS && (a.y - b.y).abs() < EPS && (a.z - b.z).abs() < EPS
 }
 
+/// ADR-028: parse the client-reported death-loot snapshot from `report_death_loot`
+/// action data: `{ equipment: [i32;4], held_item: i32, items: [{item_id, quantity}] }`.
+/// Malformed or missing fields degrade to empty (never poison the corpse with junk);
+/// out-of-range stacks are skipped. Length/zero-quantity hygiene is enforced again by
+/// `spawn_corpse` (single choke point).
 fn parse_death_loot(
     data: &serde_json::Value,
 ) -> ([i32; 4], i32, Vec<crate::world::corpse::CorpseStack>) {
@@ -4810,9 +4810,10 @@ fn in_view_cone(heading: f32, from: Vec3, target: Vec3) -> bool {
 }
 
 /// ADR-016 slice 3a — the robapieles' behavioral FSM. Drives how it relates to the nearest real
-/// player. PEEK/SEARCH (corner-peeking, last-known-position hunting) arrive in slice 3b; until
-/// then their would-be transitions fall back to `Wander`. PURELY BEHAVIORAL — no wire flag; the
-/// state is observable only by watching, never by reading packets.
+/// player. Six live states: `Wander`, `Spotted`, `Stalk`, `Statue`, `Sprint` and `Search`
+/// (last-known-position hunting, ADR-040). Corner-PEEKING was planned alongside SEARCH and is
+/// the only piece still unbuilt — there is no `Peek` variant. PURELY BEHAVIORAL — no wire flag;
+/// the state is observable only by watching, never by reading packets.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PhantomState {
     /// Erratic patrol: walks its heading, pauses to "look at walls", fakes pickups, does the
@@ -4916,9 +4917,9 @@ fn phantom_attack_kind_name(kind: PhantomAttackKind) -> &'static str {
 /// also FAKES a pickup (slice 4): it freezes and
 /// flips its animation field to "pickup" for ~1s, then resumes. It does a behavioral TELL #2
 /// (an unnatural, near-metronomic "stare"), and clones a real peer's NAME (victim identity;
-/// keeps its own id). Slice 2: it also DETECTS the nearest real player (distance + forward cone,
-/// no geometry LOS — D1=(a)) and CHASES them at CHASE_SPEED, dropping the wander/stare/pickup
-/// theater until it loses them past LOSE_RADIUS.
+/// keeps its own id). It DETECTS the nearest real player (distance + forward cone, no geometry
+/// LOS — D1=(a)) and hunts through the six-state FSM below, which replaced slice 2's `chasing`
+/// bool: the lunge runs at `PHANTOM_SPRINT_SPEED` and the theater is dropped while hunting.
 ///
 /// SAFETY INVARIANT (ADR-016 slice 4): the faked pickup is PURE THEATER — it touches ONLY the
 /// phantom's `animation` field (via `update_player_state`). It NEVER calls `process_stp_pickup`,
