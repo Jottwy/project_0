@@ -142,13 +142,23 @@ namespace BackroomsSurvival.Tests
             w.WriteString("light_on"); w.WriteBool(true); // ADR-042
             w.WriteString("fire_seq"); w.WriteInt(5);     // ADR-042
             w.WriteString("melee_seq"); w.WriteInt(6);    // ADR-044
+            // ADR-049: el par de carga. `carry_def` NEGATIVO a propósito — los def_id se acuñan con
+            // Random.Range sobre todo el rango de i32, así que un golden con un positivo pequeño no
+            // fijaría la codificación de los negativos, que es la mitad de los ids reales.
+            w.WriteString("carry_def"); w.WriteInt(-1208217892);
+            w.WriteString("carry_count"); w.WriteInt(3);
 
             byte[] bytes = w.ToArray();
-            Assert.AreEqual(0xde, bytes[0], "19 campos deben emitir cabecera map16 (0xde), no fixmap");
+            Assert.AreEqual(0xde, bytes[0], "21 campos deben emitir cabecera map16 (0xde), no fixmap");
             Assert.AreEqual(0x00, bytes[1]);
-            Assert.AreEqual(0x13, bytes[2], "el conteo del map16 debe ser 19");
+            Assert.AreEqual(0x15, bytes[2], "el conteo del map16 debe ser 21");
 
-            AssertGoldenHash("player_input", w, 269, 0xff1bd09a3c966ee6UL);
+            // ADR-049 declara esta regeneración: al pasar de 19 a 21 campos cambian longitud y hash,
+            // y el cambio es deliberado, no una regresión colada. Los valores viejos eran
+            // 269 / 0xff1bd09a3c966ee6; los nuevos se obtuvieron con un arnés headless contra el
+            // MsgPackWriter REAL que primero reproduce el golden viejo byte a byte — sin esa
+            // comprobación previa una constante nueva sólo diría que el writer coincide consigo mismo.
+            AssertGoldenHash("player_input", w, 297, 0x962776e96f18d65eUL);
         }
 
         [Test]

@@ -68,6 +68,14 @@ namespace BackroomsSurvival.Net
         // magnitude above the 33 ms sampling period.
         private bool _wasSwinging;
         private byte _meleeSeq;
+        // ADR-049: carry state is HYBRID, and both halves are forced by the vendor's public surface.
+        // The definition comes from the ObjectCarryStarted/Stopped EVENTS because
+        // CarryableController.ActiveDefinition is private and ICarryableControllerCC does not expose
+        // it. The count is SAMPLED because there is no per-unit event at all — TryCarryObject stacks
+        // silently. Sampling the count is safe by margin: picking up is a deliberate human action,
+        // orders of magnitude slower than the 30 Hz send.
+        private ICarryableControllerCC _carryController;
+        private int _carryDef;
         private float _sendAccum;
         private uint _inputSeq;
         private uint _clientTick;
@@ -153,6 +161,10 @@ namespace BackroomsSurvival.Net
                 // ADR-044: the wieldable instance died with the rig. Clear the swing edge so the
                 // first sample against the fresh weapon cannot be read as a swing that never happened.
                 _wasSwinging = false;
+                // ADR-049: the carry controller died with the rig too. Unsubscribe and forget the
+                // cached definition — CarryableController.OnBehaviourDestroy does NOT raise
+                // ObjectCarryStopped, so without this the id would survive its own controller.
+                UnsubscribeCarry();
                 return;
             }
 
@@ -238,8 +250,10 @@ namespace BackroomsSurvival.Net
             bool sent = false;
             if (IPCClient.TryGetInstance(out var ipc) && ipc.IsConnected)
             {
+                byte carryCount = SampleCarryCount();
                 ipc.SendPlayerInput(_inputSeq, _clientTick, wirePos, vel, moveState, pitch, yaw,
-                    (ushort)buttons, crouch, _equipment, heldItem, _hitSeq, lightOn, fireSeq, _meleeSeq);
+                    (ushort)buttons, crouch, _equipment, heldItem, _hitSeq, lightOn, fireSeq, _meleeSeq,
+                    _carryDef, carryCount);
                 _inputSeq++;
                 _clientTick++;
                 LastSent = wirePos;
@@ -430,6 +444,54 @@ namespace BackroomsSurvival.Net
             _wasSwinging = swinging;
         }
 
+        /// <summary>
+        /// ADR-049: how many carryables are on the local player's shoulder right now, resolving and
+        /// subscribing to the controller on the way if needed.
+        ///
+        /// The count is read live and the definition arrives by event, so the two can disagree for
+        /// exactly one case: a late subscribe, where the player was already carrying before this
+        /// component resolved the controller and the "started" event has therefore already passed.
+        /// That reports (0, 0) rather than a count with no id — a peer briefly empty-handed is a
+        /// cosmetic miss, an id invented to fill the gap is a wrong model in someone's hands.
+        /// </summary>
+        private byte SampleCarryCount()
+        {
+            if (_carryController == null && _character != null)
+            {
+                _carryController = _character.GetCC<ICarryableControllerCC>();
+                if (_carryController != null)
+                {
+                    _carryController.ObjectCarryStarted += OnCarryStarted;
+                    _carryController.ObjectCarryStopped += OnCarryStopped;
+                }
+            }
+
+            if (_carryController == null || _carryDef == 0)
+                return 0;
+
+            int count = _carryController.CarryCount;
+            return count <= 0 ? (byte)0 : (byte)Mathf.Min(count, byte.MaxValue);
+        }
+
+        private void OnCarryStarted(CarryableDefinition definition) =>
+            _carryDef = definition != null ? definition.Id : 0;
+
+        private void OnCarryStopped() => _carryDef = 0;
+
+        /// <summary>Drops the carry subscription and the cached id together — they are only ever
+        /// valid as a pair, and the vendor does not raise "stopped" when its controller dies.</summary>
+        private void UnsubscribeCarry()
+        {
+            if (_carryController != null)
+            {
+                _carryController.ObjectCarryStarted -= OnCarryStarted;
+                _carryController.ObjectCarryStopped -= OnCarryStopped;
+                _carryController = null;
+            }
+
+            _carryDef = 0;
+        }
+
         /// <summary>The live active wieldable, or null. Shares the controller cache with
         /// <see cref="ReadLightOn"/> and applies the same destroyed-instance guard: a destroyed
         /// wieldable still hands back a non-null interface reference, and C# `?.` does not see
@@ -476,6 +538,7 @@ namespace BackroomsSurvival.Net
         private void OnDestroy()
         {
             UnsubscribeHealth(); // ADR-024: never leak the DamageReceived handler past teardown.
+            UnsubscribeCarry(); // ADR-049: same, for the two carry events.
             if (_instance == this)
                 _instance = null;
         }

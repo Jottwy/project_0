@@ -343,6 +343,11 @@ namespace BackroomsSurvival.Net
         // ADR-048: which voice the last bump was. 0 reveal, 1 search-shriek, 2 noise-grunt,
         // 3 stalking-breath. Meaningless on its own — only read together with vocalSeq.
         public int vocalKind;
+        // ADR-049: cosmetic carry state — the CarryableDefinition id on this peer's shoulder
+        // (0 = empty hands) and how many units. A LEVEL, unlike the counters above: ProxyCarryHook
+        // rebuilds its visuals when either value changes, never on a delta.
+        public int carryDef;
+        public int carryCount;
 
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
@@ -369,6 +374,8 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "melee_seq")) r.meleeSeq = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "vocal_seq")) r.vocalSeq = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "vocal_kind")) r.vocalKind = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "carry_def")) r.carryDef = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "carry_count")) r.carryCount = (int)reader.ReadInt();
                 else reader.Skip();
             }
             return r;

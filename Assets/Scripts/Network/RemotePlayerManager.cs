@@ -166,6 +166,8 @@ namespace BackroomsSurvival.Net
                 view.meleeSeq = rp.meleeSeq; // ADR-044
                 view.vocalSeq = rp.vocalSeq; // ADR-048
                 view.vocalKind = rp.vocalKind; // ADR-048
+                view.carryDef = rp.carryDef; // ADR-049
+                view.carryCount = rp.carryCount; // ADR-049
                 // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
                 // is the visible body); it reappears at the respawn position on dead→false.
                 // Change-detected so SetActive only fires on the edge.
@@ -289,6 +291,8 @@ namespace BackroomsSurvival.Net
             view.fireSeq = 0; // ADR-042: no stale shot counter (hook re-arms its sentinel)
             view.buttons = 0; // ADR-044: a recycled proxy is neither aiming nor reloading
             view.meleeSeq = 0; // ADR-044: no stale swing counter (hook re-arms its sentinel)
+            view.carryDef = 0; // ADR-049: a recycled proxy must not inherit the last owner's planks
+            view.carryCount = 0; // ADR-049
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -327,6 +331,8 @@ namespace BackroomsSurvival.Net
             view.fireSeq = 0; // ADR-042
             view.buttons = 0; // ADR-044
             view.meleeSeq = 0; // ADR-044
+            view.carryDef = 0; // ADR-049
+            view.carryCount = 0; // ADR-049
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -595,6 +601,11 @@ namespace BackroomsSurvival.Net
         public int buttons;
         // ADR-044: cosmetic melee-swing counter (read by ProxyMeleeHook); 0 = never swung.
         public int meleeSeq;
+        // ADR-049: cosmetic carry state (read by ProxyCarryHook) — the CarryableDefinition id on the
+        // shoulder, 0 = empty hands, and how many units. A LEVEL: the hook rebuilds when either
+        // changes, so unlike the counters above there is no sentinel and no delta.
+        public int carryDef;
+        public int carryCount;
         public float lastSeenTime;
     }
 

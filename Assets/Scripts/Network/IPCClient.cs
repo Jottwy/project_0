@@ -445,7 +445,7 @@ namespace BackroomsSurvival.Net
         public void SendPlayerInput(uint inputSeq, uint clientTick, Vector3 position,
             Vector3 velocity, byte moveState, float pitch, float yaw, ushort buttons, bool crouch = false,
             int[] equipment = null, int heldItem = 0, byte hitSeq = 0, bool lightOn = false,
-            byte fireSeq = 0, byte meleeSeq = 0)
+            byte fireSeq = 0, byte meleeSeq = 0, int carryDef = 0, byte carryCount = 0)
         {
             // Hardening (postmortem of the `crouch` off-by-one, ADR-020): the map header
             // count and the number of pairs written below are kept in sync by hand. We can't
@@ -455,7 +455,7 @@ namespace BackroomsSurvival.Net
             // field drifts them apart (rmp_serde would silently drop the tail, as `crouch`
             // did). Debug.Assert is [Conditional("UNITY_ASSERTIONS")] → stripped from release
             // players; the message is a const literal (zero alloc on the pose hot path).
-            const int FieldCount = 19;
+            const int FieldCount = 21;
             int fields = 0;
 
             var w = RentWriter();
@@ -498,6 +498,11 @@ namespace BackroomsSurvival.Net
             w.WriteString("fire_seq"); w.WriteInt(fireSeq); fields++;
             // ADR-044: melee-swing counter (monotonic, wrapping; 0 = never swung), relayed to peers.
             w.WriteString("melee_seq"); w.WriteInt(meleeSeq); fields++;
+            // ADR-049: carry state — which CarryableDefinition is on the shoulder (0 = empty hands)
+            // and how many units. A LEVEL, not a counter: nothing to sequence, a dropped frame is
+            // corrected by the next one.
+            w.WriteString("carry_def"); w.WriteInt(carryDef); fields++;
+            w.WriteString("carry_count"); w.WriteInt(carryCount); fields++;
 
             Debug.Assert(fields == FieldCount,
                 "SendPlayerInput: field count drifted from the map header — a pair was added/removed without updating WriteMapHeader (rmp_serde would drop the tail).");
