@@ -489,7 +489,7 @@ namespace BackroomsSurvival.Net
             int selectedNetPort = requestedNetPort;
             if (selectedNetPort == selectedIpcPort || !PortUtility.IsUdpPortAvailable(selectedNetPort))
             {
-                int start = selectedNetPort == selectedIpcPort ? selectedNetPort + 1 : selectedNetPort + 1;
+                int start = selectedNetPort + 1;
                 int free = PortUtility.FindFreeUdpPort(start);
                 while (free == selectedIpcPort)
                     free = PortUtility.FindFreeUdpPort(free + 1);
@@ -593,12 +593,6 @@ namespace BackroomsSurvival.Net
         }
 
         private static string ReadSessionMode() => Environment.GetEnvironmentVariable("SESSION_MODE");
-
-        private static bool IsAutoSoloEnvironment(string sessionMode)
-        {
-            return string.IsNullOrWhiteSpace(sessionMode) &&
-                   string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CONNECT_TO"));
-        }
 
         private static bool HasEnv(string name) => !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name));
 
