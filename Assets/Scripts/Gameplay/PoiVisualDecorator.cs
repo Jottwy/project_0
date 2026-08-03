@@ -4,6 +4,17 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay
 {
     /// <summary>
+    /// NEVER CALLED. Phase 3.2D was left half-built: 3.2C shipped (its <c>PoiDebugHud</c> is alive,
+    /// started from <c>GameBootstrap</c>) and this one never got wired. The intended hook was
+    /// <c>ChunkRenderer.BuildChunk</c>, which is itself inert today.
+    ///
+    /// Unlike a MonoBehaviour, the "no references" claim is airtight here: this is a
+    /// <c>public static class</c>, so it cannot hang off a GameObject or a UnityEvent. There is no
+    /// path to it other than a direct call, and no direct call exists in the repository.
+    ///
+    /// Retiring it belongs with the ChunkRenderer decision (see docs/AUDIT-2026-08-03.md), not
+    /// before: both are staging for the same unfinished phase.
+    ///
     /// Phase 3.2D — POI Visual Identity V1.
     ///
     /// Adds lightweight, deterministic visual markers to POI chunks based only

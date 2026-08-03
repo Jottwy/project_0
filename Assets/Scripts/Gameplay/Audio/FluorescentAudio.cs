@@ -4,6 +4,10 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.Audio
 {
     /// <summary>
+    /// NOT INSTANTIATED TODAY: its only consumer is <see cref="BackroomsAudioSystem"/>, which is
+    /// itself disabled on purpose (see the reason in that file's header). Neither GUID appears in
+    /// any scene, prefab or asset. Both come back together or not at all.
+    ///
     /// Per-lamp 3D fluorescent hum. Added to each "FluorescentLight" GameObject;
     /// in Awake it attaches a looping spatial AudioSource (plus a short reverb
     /// filter) that plays a procedurally-synthesised mains hum.

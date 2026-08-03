@@ -5,6 +5,19 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.Audio
 {
     /// <summary>
+    /// NOT INSTANTIATED TODAY — and that is a decision, not an oversight. This whole subsystem
+    /// (this file plus <see cref="FluorescentAudio"/>) never runs: its only entry point is the
+    /// COMMENTED-OUT <c>gameObject.AddComponent&lt;BackroomsAudioSystem&gt;()</c> in
+    /// <c>GridTestWorld.cs</c>, and its GUID appears in no scene, prefab or asset.
+    ///
+    /// Why it is off: <see cref="ConsolidateListener"/> remounts the AudioListener on the player
+    /// ROOT and destroys every other one — including the STP player camera's. The root does not
+    /// follow camera pitch, so lamp panning, flicker direction and the distance low-pass all end
+    /// up mis-oriented. GridTestWorld documents the same bug at the commented call site.
+    ///
+    /// Condition to switch it back on: make ConsolidateListener stop destroying the player
+    /// camera's AudioListener. Until then, reading this file as live code is a wasted grep.
+    ///
     /// Global Backrooms audio director (singleton). On Start it consolidates the
     /// AudioListener onto the Player and adds a Hallway reverb zone. Each frame it
     /// keeps the lamp sources matched to the inspector knobs, muffles the mix
