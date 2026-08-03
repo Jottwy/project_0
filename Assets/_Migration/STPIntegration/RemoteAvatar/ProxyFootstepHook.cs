@@ -1,3 +1,4 @@
+using BackroomsSurvival.Net; // RemotePlayerManager — the reveal flag rides the pose relay
 using PolymindGames;
 using PolymindGames.SurfaceSystem;
 using UnityEngine;
@@ -105,6 +106,25 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [SerializeField, Min(0f)] private float _verticalTeleportDistance = 2.5f;
 
         [Header("Ground probe (mirrors FootstepsController.CheckGround)")]
+        [Header("Revealed creature (ADR-038 / ADR-048)")]
+        [Tooltip("Footfalls used INSTEAD of the surface's own while this proxy is revealed. Empty ⇒ " +
+                 "it keeps the human steps and only the range and volume below change.")]
+        [SerializeField] private AudioClip[] _revealedSteps;
+
+        [Tooltip("Volume multiplier while revealed. It is heavier than you and it is not hiding any more.")]
+        [SerializeField, Range(1f, 4f)] private float _revealedVolume = 2.1f;
+
+        [Tooltip("Full-volume radius while revealed (m). Wider than a human's, so the sound arrives " +
+                 "before the thing does.")]
+        [SerializeField, Min(0.1f)] private float _revealedMinDistance = 6f;
+
+        [Tooltip("Hard cutoff while revealed (m). MUST still end: a footfall audible across the map " +
+                 "stops being dread and becomes a tracker — the exact failure ADR-042 cost a playtest for.")]
+        [SerializeField, Min(1f)] private float _revealedMaxDistance = 55f;
+
+        [Tooltip("Random pitch spread per heavy step, so four clips do not read as four clips.")]
+        [SerializeField, Range(0f, 0.3f)] private float _revealedPitchVariation = 0.09f;
+
         [SerializeField] private LayerMask _layerMask = LayerConstants.SimpleSolidObjectsMask;
         [SerializeField, Range(0.01f, 1f)] private float _raycastDistance = 0.3f;
         [SerializeField, Range(0.01f, 0.5f)] private float _raycastRadius = 0.3f;
@@ -118,6 +138,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool _hasPrevPos;
         private float _travelled;
         private AudioSource _source;
+        private RemotePlayerManager _manager;
+        // Tri-state via the source being null: forces the first ApplyRange to actually apply.
+        private bool _rangeIsRevealed;
         private bool _airborne;
         private float _peakFallSpeed;
 
@@ -265,6 +288,36 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// </summary>
         private void PlayStep(float speed, bool running)
         {
+            // ── The revealed creature does not walk like a person ──────────────────────────────
+            // Resolved HERE and not per frame: a step is a rare event, and the view lookup is a
+            // dictionary walk. Every real player takes the cheap branch below forever.
+            bool revealed = ResolveRevealed();
+            ApplyRange(revealed);
+
+            if (revealed && _revealedSteps != null && _revealedSteps.Length > 0)
+            {
+                if (!CheckGround(out _))
+                    return; // still needs contact: it must not thud through the air
+
+                var heavy = _revealedSteps[Random.Range(0, _revealedSteps.Length)];
+                if (heavy == null)
+                    return;
+
+                // Deliberately NOT surface-derived. The point is that this thing sounds the same
+                // whatever it is walking on — it is not wearing the floor's shoes, and a footfall
+                // that changes with the carpet reads as a player, which is exactly the tell the
+                // reveal is supposed to have dropped.
+                float heavyVol = Mathf.Clamp(speed, _minSpeedForVolume, _maxSpeedForVolume)
+                                 / Mathf.Max(0.01f, _maxSpeedForVolume);
+                var heavySrc = EnsureSource();
+                heavySrc.pitch = 1f + Random.Range(-_revealedPitchVariation, _revealedPitchVariation);
+                // NOT clamped to 1: the clips are mastered at ~0.55 peak precisely so this multiply
+                // has headroom. Clamping here would have silently cancelled the whole boost at run
+                // speed, where `heavyVol` is already 1.
+                heavySrc.PlayOneShot(heavy, heavyVol * _revealedVolume);
+                return;
+            }
+
             var manager = SurfaceManager.Instance;
             if (manager == null)
                 return; // no surface database in this scene → silence, never an exception
@@ -302,6 +355,57 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
         /// <summary>Builds this proxy's own footstep source, lazily — a peer who never moves never
         /// allocates one. Parented to the proxy so steps track the walker.</summary>
+        /// <summary>
+        /// This proxy's networked reveal flag, via the RemotePlayerManager view whose root is us.
+        /// Same lookup shape as ProxyRevealHook and ProxyVocalHook — each hook resolves its own so
+        /// that any of them can be deleted without breaking the others (they are removable by
+        /// design), and none of them is on a per-frame path here anyway.
+        /// </summary>
+        private bool ResolveRevealed()
+        {
+            if (_manager == null)
+                _manager = GetComponentInParent<RemotePlayerManager>();
+            if (_manager == null)
+                return false;
+
+            foreach (var kvp in _manager.ActivePlayers)
+            {
+                var view = kvp.Value;
+                if (view != null && view.root == transform)
+                    return view.revealed;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Swap the distance curve between human and creature ranges, and ONLY on a change.
+        /// Re-applying an AnimationCurve every step would allocate for nothing, and the source is
+        /// shared with the fall-impact path so it has to be correct there too.
+        /// </summary>
+        private void ApplyRange(bool revealed)
+        {
+            if (_rangeIsRevealed == revealed && _source != null)
+                return;
+
+            _rangeIsRevealed = revealed;
+            var src = EnsureSource();
+            float min = revealed ? _revealedMinDistance : _minDistance;
+            float max = revealed ? _revealedMaxDistance : _maxDistance;
+
+            if (_hardCutoff)
+            {
+                ProxyAudioCurves.ApplyHardCutoff(src, min, max);
+            }
+            else
+            {
+                src.rolloffMode = _rolloff;
+                src.minDistance = min;
+                src.maxDistance = max;
+            }
+            if (!revealed)
+                src.pitch = 1f; // the disguise never pitches its steps
+        }
+
         private AudioSource EnsureSource()
         {
             if (_source != null)

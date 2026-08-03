@@ -104,6 +104,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireGrabHook(instance);
                 WireRealForm(instance);
                 WireFootstepHook(instance);
+                SeedRevealedSteps(instance);
                 WireLightHook(instance);
                 WireFireAudioHook(instance);
                 WireDamageAudioHook(instance);
@@ -490,6 +491,36 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         {
             if (root.GetComponent<ProxyGrabHook>() == null)
                 root.AddComponent<ProxyGrabHook>();
+        }
+
+        /// <summary>
+        /// The revealed creature's own footfalls. Seeded here rather than left to the inspector for
+        /// the same reason as the voice banks: a wired-but-silent feature cannot be told apart from
+        /// a broken one during a play-test.
+        /// </summary>
+        private static void SeedRevealedSteps(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyFootstepHook>();
+            if (hook == null)
+                return;
+
+            var steps = LoadVoiceClips("PhantomStep_");
+            if (steps.Length == 0)
+            {
+                Debug.LogWarning("[RemoteAvatarPrefabBuilder] No PhantomStep_* clips in " +
+                    PhantomRealFormBuilder.ScreamDir + " — the revealed creature keeps human footsteps.");
+                return;
+            }
+
+            var so = new SerializedObject(hook);
+            var arr = so.FindProperty("_revealedSteps");
+            if (arr == null)
+                return;
+
+            arr.arraySize = steps.Length;
+            for (int i = 0; i < steps.Length; i++)
+                arr.GetArrayElementAtIndex(i).objectReferenceValue = steps[i];
+            so.ApplyModifiedPropertiesWithoutUndo();
         }
 
         /// <summary>

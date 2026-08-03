@@ -177,6 +177,48 @@ def breath(seed, dur, cycles=2, centre=(700.0, 1700.0), rumble=95.0):
 
 # ── Bake ─────────────────────────────────────────────────────────────────────────────────────────
 
+def heavy_step(seed, dur=0.42, thump=58.0, slap=0.55, drag=0.0):
+    """The revealed creature's own footfall. Not a louder human step — a different EVENT.
+
+    Three layers, because a single one always reads as a click or as a drum:
+      * THUMP  — a low sine dropping in pitch (a mass landing, not a note). The pitch drop is what
+                 makes it feel heavy; a fixed one sounds like a kick drum.
+      * SLAP   — a short broadband transient through a mid band-pass: the actual contact.
+      * TAIL   — a quiet resonant ring, so it sounds like it happened in a corridor.
+    `drag` adds a filtered-noise scrape after the impact — bare feet that do not lift cleanly.
+    """
+    rnd = random.Random(seed)
+    n = int(dur * SR)
+    slap_bp = BiquadBP(1500.0, 1.4)
+    tail_bp = BiquadBP(240.0, 7.0)
+    drag_bp = BiquadBP(2600.0, 1.0)
+
+    out = []
+    phase = 0.0
+    for i in range(n):
+        t = i / n
+
+        # Body: 58 Hz falling to ~60 % of it over the first third, then gone.
+        f = thump * (1.0 - 0.40 * min(1.0, t * 3.0))
+        phase += f / SR
+        body = math.sin(2.0 * math.pi * phase) * math.exp(-13.0 * t)
+
+        # Contact: loudest in the first ~25 ms.
+        tr = rnd.uniform(-1.0, 1.0) * math.exp(-70.0 * t)
+        contact = slap_bp.step(tr) * slap
+
+        # Room.
+        tail = tail_bp.step(rnd.uniform(-1.0, 1.0)) * 0.22 * math.exp(-7.0 * t)
+
+        s = body * 1.15 + contact + tail
+        if drag > 0.0:
+            # Starts after the impact and fades — the foot peeling off the floor.
+            scrape = drag_bp.step(rnd.uniform(-1.0, 1.0))
+            s += scrape * drag * max(0.0, math.sin(math.pi * min(1.0, t * 1.7))) * 0.5
+        out.append(soft_clip(s * 0.8))
+    return out
+
+
 def main():
     if not os.path.isdir(os.path.abspath(OUT_DIR)):
         raise SystemExit("audio dir not found: %s" % os.path.abspath(OUT_DIR))
@@ -190,6 +232,16 @@ def main():
     write_wav("PhantomVoice_Breath_A.wav", breath(2201, 3.4, 2, (640.0, 1600.0)), peak=0.46)
     write_wav("PhantomVoice_Breath_B.wav", breath(2202, 4.1, 3, (720.0, 1850.0)), peak=0.42)
     write_wav("PhantomVoice_Breath_C.wav", breath(2203, 2.9, 2, (560.0, 1400.0)), peak=0.50)
+
+    # Four, not three: footfalls repeat far more often than screams, so the loop is easier to hear.
+    #
+    # PEAK ~0.55 AND NOT ~0.9, ON PURPOSE: the hook multiplies these by `_revealedVolume` (~1.7) to
+    # make the creature louder than a person. Normalised to 0.9 like the screams, that multiply
+    # would clip on every single footfall — the loudness has to have somewhere to go.
+    write_wav("PhantomStep_A.wav", heavy_step(3301, 0.42, 58.0, 0.55, drag=0.00), peak=0.55)
+    write_wav("PhantomStep_B.wav", heavy_step(3302, 0.48, 51.0, 0.42, drag=0.35), peak=0.53)
+    write_wav("PhantomStep_C.wav", heavy_step(3303, 0.38, 64.0, 0.62, drag=0.00), peak=0.57)
+    write_wav("PhantomStep_D.wav", heavy_step(3304, 0.52, 46.0, 0.38, drag=0.55), peak=0.51)
 
 
 if __name__ == "__main__":
