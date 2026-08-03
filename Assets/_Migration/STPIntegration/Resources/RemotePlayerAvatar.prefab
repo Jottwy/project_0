@@ -195,7 +195,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _animator: {fileID: 1662395652399180242}
-  _controller: {fileID: 0}
+  _controller: {fileID: 9100000, guid: 47a9a9af7f6e2104794c9006f77fd481, type: 2}
 --- !u!114 &3841630871874195104
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -350,12 +350,20 @@ MonoBehaviour:
   - {fileID: 8300000, guid: 95e32a53a448ae84ca505da914f21f76, type: 3}
   - {fileID: 8300000, guid: 4869920db2527834fa049b03ee47f5f8, type: 3}
   - {fileID: 8300000, guid: 1dc58dfc434cd4744af0ca03f904ebf2, type: 3}
+  - {fileID: 8300000, guid: 052cc203a12b86d4b9dfd92f7048c421, type: 3}
+  - {fileID: 8300000, guid: 438e7f5943ba1a0429cd71198ececaf1, type: 3}
+  - {fileID: 8300000, guid: 9900672248513a6488e2251cbe39a0cb, type: 3}
+  - {fileID: 8300000, guid: 5b33e48709c3be2478706a339dc8081b, type: 3}
+  - {fileID: 8300000, guid: 404efbd65e1357d41a4efb0ec96fe528, type: 3}
+  - {fileID: 8300000, guid: c6f4a55150d4e8f469cfa6acb12dbc7b, type: 3}
+  - {fileID: 8300000, guid: 21c274e72cb494148bb7a43953b5ea1e, type: 3}
   - {fileID: 8300000, guid: 8d3748f0d84d29749b23153f9b83cd6e, type: 3}
   - {fileID: 8300000, guid: 85cde96b6b72257479593b72ac7bf399, type: 3}
   - {fileID: 8300000, guid: db9d684c13a6ef14a9674961db450f1c, type: 3}
   - {fileID: 8300000, guid: 98e4f7a579c46b54a8e7e627e3a46693, type: 3}
   - {fileID: 8300000, guid: 975306a4b8850224db3da821b393329d, type: 3}
   - {fileID: 8300000, guid: 067459f3d7849ce4b9c6d7b5b6c7bbe6, type: 3}
+  - {fileID: 8300000, guid: 2dc2dc5e14032c747b153a7fb13ac463, type: 3}
   _screamMinDistance: 4
   _screamMaxDistance: 45
   _screamPitchVariation: 0.14
@@ -389,9 +397,23 @@ MonoBehaviour:
     - {fileID: 8300000, guid: 8d3748f0d84d29749b23153f9b83cd6e, type: 3}
     - {fileID: 8300000, guid: 85cde96b6b72257479593b72ac7bf399, type: 3}
     - {fileID: 8300000, guid: db9d684c13a6ef14a9674961db450f1c, type: 3}
+  - Clips:
+    - {fileID: 8300000, guid: 404efbd65e1357d41a4efb0ec96fe528, type: 3}
+    - {fileID: 8300000, guid: c6f4a55150d4e8f469cfa6acb12dbc7b, type: 3}
+    - {fileID: 8300000, guid: 21c274e72cb494148bb7a43953b5ea1e, type: 3}
+  - Clips:
+    - {fileID: 8300000, guid: 2dc2dc5e14032c747b153a7fb13ac463, type: 3}
   _minDistance: 4
   _maxDistance: 45
   _pitchVariation: 0.14
+  _revealedMinDistance: 9
+  _revealedMaxDistance: 70
+  _revealedVolume: 1
+  _revealedPitch: 0.82
+  _answerMinDistance: 70
+  _answerMaxDistance: 500
+  _answerPitch: 0.7
+  _answerVolume: 1.7
 --- !u!114 &6084438203561207299
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -436,6 +458,15 @@ MonoBehaviour:
   _maxFallImpactSpeed: 11
   _airborneSpeed: 2
   _verticalTeleportDistance: 2.5
+  _revealedSteps:
+  - {fileID: 8300000, guid: 052cc203a12b86d4b9dfd92f7048c421, type: 3}
+  - {fileID: 8300000, guid: 438e7f5943ba1a0429cd71198ececaf1, type: 3}
+  - {fileID: 8300000, guid: 9900672248513a6488e2251cbe39a0cb, type: 3}
+  - {fileID: 8300000, guid: 5b33e48709c3be2478706a339dc8081b, type: 3}
+  _revealedVolume: 2.1
+  _revealedMinDistance: 6
+  _revealedMaxDistance: 55
+  _revealedPitchVariation: 0.09
   _layerMask:
     serializedVersion: 2
     m_Bits: 49153
@@ -548,10 +579,6 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 9019069102963433204}
     m_Modifications:
-    - target: {fileID: 4301060855677232376, guid: 4004404406410d14193415ce336d4b40, type: 3}
-      propertyPath: m_Controller
-      value: 
-      objectReference: {fileID: 0}
     - target: {fileID: 7357628860918604856, guid: 4004404406410d14193415ce336d4b40, type: 3}
       propertyPath: m_Name
       value: RealForm

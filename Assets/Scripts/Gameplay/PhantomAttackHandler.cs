@@ -101,6 +101,11 @@ namespace BackroomsSurvival.Gameplay
         // The grab: who took you, and how long is left of being held by it.
         private Transform _grabber;
         private float _grabTimer;
+        // The camera transform the grab borrowed, and the rotation to hand back. Cached at the
+        // start rather than reconstructed at the end: by then the rig may have moved and there
+        // would be nothing correct left to restore to.
+        private Transform _camRestore;
+        private Quaternion _camRotationAtGrab;
 
         /// <summary>
         /// The shove the corpse should be thrown with, handed to <c>CorpseSpawner</c> across the
@@ -245,6 +250,15 @@ namespace BackroomsSurvival.Gameplay
                 _grabTimer = GrabTime;
                 ActiveGrabber = _grabber;
                 GrabProgress01 = 0f;
+
+                // Borrow the camera, and remember what to give back (see EndGrab).
+                var grabCam = ResolveCam();
+                if (grabCam != null)
+                {
+                    _camRestore = grabCam.transform;
+                    _camRotationAtGrab = _camRestore.localRotation;
+                }
+
                 RecordCorpseThrow(_grabber);
             }
 
@@ -275,8 +289,7 @@ namespace BackroomsSurvival.Gameplay
             // through to the ordinary fade rather than freezing on nothing.
             if (_grabber == null)
             {
-                _grabTimer = 0f;
-                ActiveGrabber = null;
+                EndGrab();
                 return;
             }
 
@@ -335,11 +348,36 @@ namespace BackroomsSurvival.Gameplay
             }
 
             if (_grabTimer <= 0f)
+                EndGrab(); // the fade takes over next frame
+        }
+
+        /// <summary>
+        /// Put the camera back exactly as it was and stop everything the grab was driving.
+        ///
+        /// THE BUG THIS EXISTS FOR, reported after a play-test death: "respawneo y la camara esta
+        /// mal posicionada o deformada". The grab rolls the camera on its Z axis to tip the horizon,
+        /// and NOTHING in the game ever writes camera roll — STP's look handler owns yaw and pitch
+        /// only. So the last tilt of the struggle simply stayed on, through the fade, through the
+        /// respawn, for the rest of the session. A borrowed transform has to be given back.
+        ///
+        /// The motor is zeroed for the same reason: the lift that gets the body off its feet would
+        /// otherwise still be in flight when the respawn teleport lands, and shove the fresh player.
+        /// </summary>
+        private void EndGrab()
+        {
+            _grabTimer = 0f;
+            ActiveGrabber = null;
+            GrabProgress01 = 0f;
+
+            if (_camRestore != null)
             {
-                _grabTimer = 0f;   // the fade takes over next frame
-                ActiveGrabber = null;
-                GrabProgress01 = 0f;
+                _camRestore.localRotation = _camRotationAtGrab;
+                _camRestore = null;
             }
+
+            var motor = ResolveMotor();
+            if (motor != null)
+                motor.SetVelocity(Vector3.zero);
         }
 
         /// <summary>
@@ -424,9 +462,9 @@ namespace BackroomsSurvival.Gameplay
         {
             _dying = false;
             _grabber = null;
-            _grabTimer = 0f;
-            ActiveGrabber = null;
-            GrabProgress01 = 0f;
+            // Belt and braces: the death can end through paths the grab never saw (a re-kill during
+            // the fade, the component being destroyed), and a camera left rolled is forever.
+            EndGrab();
             if (_fadeImage != null)
                 _fadeImage.color = new Color(0f, 0f, 0f, 0f);
             if (_diedText != null)
