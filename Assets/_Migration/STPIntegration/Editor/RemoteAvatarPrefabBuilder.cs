@@ -133,9 +133,22 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         // Replace the inherited vendor AnimatorOverrideController with the custom _Migration
         // controller (built fresh here so a rebuild always re-points the variant at the current
         // GUID). Keeps ProxyLocomotionFeeder's SetFloat("MovementSpeed") path intact.
+        /// <summary>
+        /// The controller object handed back by the rebuild, kept for the rest of THIS bake.
+        ///
+        /// This is the whole fix. `WireAnimatorController` runs first and works because it uses the
+        /// object `BuildOrRebuild()` RETURNS; every later step asked the AssetDatabase for it by
+        /// path instead, and got null — the asset was deleted and recreated moments earlier and the
+        /// database does not have it back inside the same frame. Even a forced synchronous import
+        /// does not rescue it. So the later steps must be handed the same object, not sent to look
+        /// it up again.
+        /// </summary>
+        private static RuntimeAnimatorController _bakedController;
+
         private static void WireAnimatorController(GameObject root)
         {
             var controller = ProxyAnimatorControllerBuilder.BuildOrRebuild();
+            _bakedController = controller; // may be null; LoadProxyController falls back to the DB
             if (controller == null)
             {
                 Debug.LogWarning("[RemoteAvatarPrefabBuilder] Proxy controller not built; " +
@@ -179,6 +192,13 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         /// </summary>
         private static RuntimeAnimatorController LoadProxyController()
         {
+            // The object from this bake FIRST. Measured, not assumed: with only the path lookups
+            // below, this bake still serialised `m_Controller: {fileID: 0}` onto the nested body
+            // and null onto the runtime binder, while the root Animator — the one step that uses
+            // the returned object — came out correct.
+            if (_bakedController != null)
+                return _bakedController;
+
             var c = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
                 ProxyAnimatorControllerBuilder.OutputPath);
             if (c != null)
@@ -220,22 +240,37 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         // points its Animator at the custom controller, and re-saves only if it wasn't already bound.
         private static void EnsureControllerBound()
         {
-            var controller = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
-                ProxyAnimatorControllerBuilder.OutputPath);
+            var controller = LoadProxyController();
             var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(OutputPath);
             if (controller == null || prefab == null)
-                return;
-
-            var animator = prefab.GetComponentInChildren<Animator>(true);
-            if (animator == null)
-                return;
-
-            if (animator.runtimeAnimatorController != controller)
             {
+                Debug.LogError("[RemoteAvatarPrefabBuilder] Cannot verify the saved prefab's Animator " +
+                    "binding — the proxy WILL T-pose. controller=" + (controller == null ? "null" : "ok") +
+                    " prefab=" + (prefab == null ? "null" : "ok"));
+                return;
+            }
+
+            // EVERY Animator, not just the first. This used to take `GetComponentInChildren` and so
+            // only ever checked the ROOT (the disguise) — which is exactly why a null on the nested
+            // real-form body survived the bake and T-posed the revealed creature through a play-test.
+            // Both bodies run the SAME controller by design (ADR-038 V2: the reveal costs no
+            // animation work precisely because the real form retargets the proxy's own clips), so
+            // binding all of them is the correct rule and not a blunt instrument.
+            var animators = prefab.GetComponentsInChildren<Animator>(true);
+            int fixedUp = 0;
+            foreach (var animator in animators)
+            {
+                if (animator == null || animator.runtimeAnimatorController == controller)
+                    continue;
                 animator.runtimeAnimatorController = controller;
+                fixedUp++;
+            }
+
+            if (fixedUp > 0)
+            {
                 PrefabUtility.SavePrefabAsset(prefab);
-                Debug.Log("[RemoteAvatarPrefabBuilder] Re-bound the variant Animator to the custom " +
-                          "ProxyLocomotionController on the saved asset (the instance assignment had not stuck).");
+                Debug.Log($"[RemoteAvatarPrefabBuilder] Re-bound {fixedUp} Animator(s) on the saved asset " +
+                          "to ProxyLocomotionController (the instance assignment had not stuck).");
             }
         }
 
