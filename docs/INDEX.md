@@ -11,6 +11,10 @@
 ## ADRs
 - [adr/](adr/) — ADRs nuevos a partir de hoy (stub o copia enlazando a `DECISIONS.md`). Los ADR-001..032 existentes siguen solo en `DECISIONS.md` (no movidos, ver [adr/README.md](adr/README.md)).
 
+## Herramientas
+- [EDITOR-MENUS.md](EDITOR-MENUS.md) — qué hace cada una de las 22 entradas de menú del Editor,
+  cuáles son idempotentes y cuáles rehacen assets. Léelo antes de ejecutar un bake.
+
 ## Sistemas (documentación operativa por subsistema)
 - [systems/damage-sync.md](systems/damage-sync.md) — [G] Player Damage Sync (ADR-024): hit-reaction cosmético `hit_seq` en la pose relay.
 

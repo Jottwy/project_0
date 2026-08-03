@@ -1,0 +1,87 @@
+# EDITOR-MENUS.md — Qué hace cada menú del Editor
+
+> Catálogo de las 22 entradas `[MenuItem]` del proyecto. Antes existía solo disperso en
+> `STATE.md`, así que la única forma de saber qué hacía un menú era abrir su fichero.
+>
+> Ninguna de estas entradas es código muerto aunque nadie las referencie: las invoca Unity por
+> atributo, y varias también `-executeMethod` desde línea de comandos.
+
+## Aviso que vale por todo el fichero
+
+**`-executeMethod` exige el editor CERRADO.** Con el editor abierto el proceso falla por el lock
+de `Temp/UnityLockfile` (que además `tasklist` no siempre delata). Desde el editor abierto, usa
+el menú.
+
+## Bake de prefabs (`Backrooms/Build …`)
+
+Reconstruyen assets. Son los que más daño hacen si se ejecutan a destiempo.
+
+| Menú | Fichero |
+|---|---|
+| `Backrooms/Build Remote Avatar Prefab` | `_Migration/STPIntegration/Editor/RemoteAvatarPrefabBuilder.cs` |
+| `Backrooms/Build Corpse Avatar Prefab` | `_Migration/STPIntegration/Editor/CorpseAvatarPrefabBuilder.cs` |
+| `Backrooms/Build Phantom Real Form` | `_Migration/STPIntegration/Editor/PhantomRealFormBuilder.cs` |
+| `Backrooms/Build Proxy Animator Controller` | `_Migration/STPIntegration/Editor/ProxyAnimatorControllerBuilder.cs` |
+
+**Trampa documentada, y costó dos regresiones en playtest:** el paso que construye el
+AnimatorController corre PRIMERO y lo rehace con `DeleteAsset` + `CreateAnimatorControllerAtPath`.
+Cualquier paso posterior que pida el controller **por ruta** (`LoadAssetAtPath`) recibe `null`,
+porque el AssetDatabase no lo ha reimportado dentro del mismo frame — y un `ImportAsset` síncrono
+no lo rescata. **Es intermitente**, así que un bake limpio no prueba nada. Ver `docs/STATE.md`
+("NO tocar") para las dos guardas que hoy lo mitigan.
+
+**Verificar un bake por `grep` del nombre de componente sobre el `.prefab` da CERO siempre.**
+Unity serializa componentes por GUID de script, no por nombre: hay que buscar el bloque
+`MonoBehaviour` por su `m_Script` o por sus campos.
+
+## Creadores de assets (`Backrooms/Create …`)
+
+Patrón **crear-si-falta**: no re-siembran un asset existente, así que re-ejecutarlos es seguro y
+no pisa valores ya ajustados a mano.
+
+| Menú | Fichero |
+|---|---|
+| `Backrooms/Create Building Pieces` | `Editor/BackroomsBuildingPieceCreator.cs` |
+| `Backrooms/Create Carryables` | `Editor/BackroomsCarryableCreator.cs` |
+| `Backrooms/Create Grid Prefabs` | `Editor/GridPrefabCreator.cs` |
+| `Backrooms/Create Layer Visuals` | `Editor/BackroomsLayerVisualsCreator.cs` |
+| `Backrooms/Create Zone Loot Table` | `Editor/ZoneLootTableCreator.cs` |
+| `Backrooms/Create Chunk Template` | `Editor/BackroomsEditorMenu.cs` |
+| `Backrooms/Create JoinSession Prefab` | `Editor/JoinSessionPrefabCreator.cs` |
+
+> `Create JoinSession Prefab` está marcado en la auditoría como **copia divergida** de
+> `JoinSessionUI.BuildUI`: produce un prefab que no coincide con lo que el runtime construye.
+> Ver `docs/AUDIT-2026-08-03.md`.
+
+## Escenas de prueba
+
+Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
+
+| Menú | Fichero |
+|---|---|
+| `Backrooms/Create Grid Render Test Scene` | `Editor/GridTestSceneCreator.cs` |
+| `Backrooms/Create Vertical Shaft Test` | `Editor/VerticalShaftTestMenu.cs` |
+| `Backrooms/Create Vertical Shaft Grid Test` | `Editor/VerticalShaftTestMenu.cs` |
+| `Backrooms/Setup Network Flow` | `Editor/NetworkFlowSetup.cs` |
+
+## Herramientas y diagnóstico
+
+| Menú | Fichero | Nota |
+|---|---|---|
+| `Backrooms/Chunk Editor` | `Editor/BackroomsChunkEditor.cs` | ventana propia |
+| `Backrooms/Validate Structures` | `Editor/StructureValidator.cs` | solo lectura |
+| `Backrooms/Diagnostics/Measure Building Meshes` | `Editor/BackroomsMeshProbe.cs` | solo lectura |
+| `Backrooms/Generate Textures` | `Editor/TextureGenerator.cs` | escribe texturas |
+| `Tools/Backrooms/Fix Runtime Materials` | `Editor/BackroomsRuntimeMaterialInstaller.cs` | **fuera del menú `Backrooms/`**, único que cuelga de `Tools/` |
+| `Backrooms/Build/Compile and deploy backend now` | `Editor/BackendBuildPreprocessor.cs` | compila Rust y copia el exe a `Builds/Backend/` |
+| `Backrooms/Build/Inyectar ajustes de Voz en la pestaña Audio` | `Editor/VoiceOptionsTabBuilder.cs` | modifica el prefab de opciones de STP |
+
+## Deuda anotada
+
+- `Tools/Backrooms/Fix Runtime Materials` es el único que no cuelga de la raíz `Backrooms/`.
+  Unificarlo es trivial pero cambia dónde lo busca la gente; no se hizo por eso.
+- Cinco creadores llevan `EnsureFolder` **duplicado carácter por carácter**
+  (`BackroomsBuildingPieceCreator`, `BackroomsCarryableCreator`, `GridPrefabCreator`,
+  `ZoneLootTableCreator`, `BackroomsLayerVisualsCreator`). Al unificarlo, **no** lo "mejores" a
+  recursivo: `BackroomsCarryableCreator` asegura el padre a mano antes que el hijo, y una versión
+  recursiva sí cambiaría comportamiento. Tier B en `docs/AUDIT-2026-08-03.md`.
