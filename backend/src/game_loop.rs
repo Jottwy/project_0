@@ -4686,24 +4686,6 @@ const PHANTOM_TARGET_SWITCH_MARGIN: f32 = 0.7;
 /// six creatures and two players it is the difference between 3/3 and everything on one person.
 const PHANTOM_CROWDING_PENALTY: f32 = 12.0;
 
-fn nearest_real_target(
-    net: &NetworkManager,
-    host_player_pos: Vec3,
-    host_player_rot: f32,
-    host_player_dead: bool,
-    from: Vec3,
-) -> Option<(PeerId, Vec3, f32, f32)> {
-    choose_target(
-        net,
-        host_player_pos,
-        host_player_rot,
-        host_player_dead,
-        from,
-        None,
-        &HashMap::new(),
-    )
-}
-
 /// Pick who this creature hunts: the nearest living player, but STICKY, and biased away from
 /// players other creatures are already on.
 ///
@@ -4867,7 +4849,7 @@ fn phantom_reveals(state: PhantomState) -> bool {
 ///
 /// ADR-047 — `victim` is part of the TYPE, not an optional extra. The three construction sites
 /// cannot compile without naming it, and the two `let (_, tpos, …)` bindings that used to throw
-/// the target id away stop compiling too. That is the whole point: `nearest_real_target` has
+/// the target id away stop compiling too. That is the whole point: `choose_target` has
 /// always been able to pick a REMOTE peer, and the old victim-less enum left the consumer with
 /// nothing to branch on, so every hit landed on the host's own player — a phantom chasing a
 /// joiner damaged the host. A type that cannot express the broken state beats a guard someone
@@ -5885,7 +5867,7 @@ impl PhantomDriver {
         // the input to a tick stays visible in the signature.
         host_player_crouch: bool,
         // The host player's own death, handed in for the same reason as its crouch: it is not a
-        // peer, so `nearest_real_target` cannot read it off the roster.
+        // peer, so `choose_target` cannot read it off the roster.
         host_player_dead: bool,
     ) -> &[PhantomAttack] {
         let now = Instant::now();

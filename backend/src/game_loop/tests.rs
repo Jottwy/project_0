@@ -2168,7 +2168,7 @@ async fn phantom_sprint_kills_from_behind() {
 }
 
 /// ADR-047 — THE bug Joel reported: a robapieles chasing a JOINER used to damage the HOST.
-/// `nearest_real_target` has always been able to pick a remote peer, but the attack carried no
+/// `choose_target` has always been able to pick a remote peer, but the attack carried no
 /// victim, so the consumer had nothing to branch on and every blow landed locally.
 ///
 /// The assert is on the VICTIM, not on the kind: the kind was never wrong.
