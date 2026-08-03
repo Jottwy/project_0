@@ -164,7 +164,10 @@ fn rules_for_zone(zone_kind: u8, layer: u8) -> LayerRules {
     // Los valores son del orden de "El Caos" (LAYER_PROFILES[2]: 4 zonas de 7,
     // pilares 0.6), el perfil más abierto YA calibrado en Fase 2 — no se inventa
     // un régimen nuevo. `open_zone_size >= 6` es REQUISITO para que la Fase 4 de
-    // `generate_layer` siembre pilares (generator.rs:212).
+    // `generate_layer` siembre pilares (el umbral `eff_sz_x.min(eff_sz_z) >= 6` en
+    // `grid_gen::generator::generate_layer`). Referencia por SÍMBOLO y no por número
+    // de línea a propósito: los números se pudren en el primer commit, y además hay
+    // dos `generator.rs` en el árbol y este módulo importa de los dos.
     let mut rules = base.clone();
     rules.num_open_zones = rules.num_open_zones.max(4);
     rules.open_zone_size = rules.open_zone_size.max(7);
