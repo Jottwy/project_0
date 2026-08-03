@@ -98,6 +98,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireGroundingHook(instance);
                 WireClothingHook(instance);
                 WireHeldItemHook(instance);
+                WireCarryHook(instance); // ADR-049 — after the held-item hook, whose hand it defers to
                 WireHitReactionHook(instance);
                 WireRevealHook(instance);
                 WireVocalHook(instance);
@@ -454,6 +455,27 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var gripProp = so.FindProperty("_gripPoses");
             if (gripProp != null)
                 gripProp.objectReferenceValue = gripPoses;
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-049: mirror of WireHeldItemHook for the carry hook. Left hand, matching
+        // WieldableCarrySettings.TargetSocket on the carryable definitions and staying clear of the
+        // right hand that WireHeldItemHook just claimed. Idempotent, add-if-missing.
+        private static void WireCarryHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyCarryHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyCarryHook>();
+
+            var carryPoses = LoadOrCreateCarryPoseSet();
+
+            var so = new SerializedObject(hook);
+            var boneProp = so.FindProperty("_handBoneName");
+            if (boneProp != null)
+                boneProp.stringValue = "Hand.L";
+            var posesProp = so.FindProperty("_carryPoses");
+            if (posesProp != null)
+                posesProp.objectReferenceValue = carryPoses;
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
@@ -856,6 +878,31 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             Debug.LogWarning("[RemoteAvatarPrefabBuilder] ADR-042: created an EMPTY " +
                              $"{AudioSetPath}. Remote gunshots stay SILENT until a clip is assigned " +
                              "(defaultFireClip alone is enough to make every weapon audible).");
+            return set;
+        }
+
+        // ADR-049: same contract as the grip set — the stack placement lives as a ScriptableObject so
+        // it is live-editable during Play, and a re-bake REUSES an existing asset instead of
+        // re-seeding it. Calibrating four plank offsets by hand and then losing them to the next bake
+        // is exactly the trap the grip set already avoids.
+        private const string CarryPoseSetPath = OutputDir + "/CarryPoseSet.asset";
+
+        private static CarryPoseSet LoadOrCreateCarryPoseSet()
+        {
+            var existing = AssetDatabase.LoadAssetAtPath<CarryPoseSet>(CarryPoseSetPath);
+            if (existing != null)
+                return existing;
+
+            // The field initialisers on CarryPoseSet already stack four planks a hand's width apart,
+            // which is visible out of the box and wrong in the details — the point is that it renders
+            // something to calibrate against, not that the numbers are right.
+            var set = ScriptableObject.CreateInstance<CarryPoseSet>();
+
+            if (!Directory.Exists(OutputDir))
+                Directory.CreateDirectory(OutputDir);
+            AssetDatabase.CreateAsset(set, CarryPoseSetPath);
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[RemoteAvatarPrefabBuilder] Created default CarryPoseSet at '{CarryPoseSetPath}'.");
             return set;
         }
 

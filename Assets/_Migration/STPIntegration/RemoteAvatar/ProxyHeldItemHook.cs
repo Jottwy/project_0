@@ -57,6 +57,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private GameObject _instance;
         private int _applied = Unset;
         private string _category = "";
+        // ADR-049: the carry hook owns the peer's hands while there are planks in them.
+        private ProxyCarryHook _carryHook;
 
         private Transform[] _thumbBones;
         private Transform[] _fingerBones;
@@ -67,6 +69,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             var bones = BuildBoneMap();
             bones.TryGetValue(_handBoneName, out _hand);
+            _carryHook = GetComponent<ProxyCarryHook>();
             CacheFingerChain(bones, ThumbBoneNames, out _thumbBones, out _thumbBind);
             CacheFingerChain(bones, FingerBoneNames, out _fingerBones, out _fingerBind);
         }
@@ -84,6 +87,20 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             if (_hand == null)
                 return;
+
+            // ADR-049: planks win. A peer cannot be shouldering a stack of drywall and presenting a
+            // rifle at the same time, and the carryable's own controller blocks the equivalent
+            // locally. `_applied` is reset rather than kept so the held model rebuilds the moment the
+            // planks are put down. Update order between the two hooks is undefined, so a single frame
+            // of overlap is possible on the transition — both re-evaluate every frame and it closes
+            // itself; anything tighter would mean coupling their execution order for one frame.
+            if (_carryHook != null && _carryHook.IsCarrying)
+            {
+                ClearInstance();
+                _category = "";
+                _applied = Unset;
+                return;
+            }
 
             if (!TryResolveHeld(out int id) || id == _applied)
                 return;
