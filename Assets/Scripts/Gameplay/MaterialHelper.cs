@@ -66,6 +66,11 @@ namespace BackroomsSurvival.Gameplay
             return mat;
         }
 
+        /// <summary>
+        /// NOT CALLED BY ANYTHING TODAY (verified repo-wide). Kept on purpose, not by oversight:
+        /// <c>Assets/Resources/BackroomsRuntimeMaterials/BR_UI.mat</c> exists to feed it, so
+        /// deleting the method would orphan that asset. Retire the two together or neither.
+        /// </summary>
         public static Material MakeUi(Color color)
         {
             Material mat = Clone(GetUiBase(), "Runtime_UI");
@@ -315,7 +320,7 @@ namespace BackroomsSurvival.Gameplay
             mat.color = color;
         }
 
-        public static void ForceOpaque(Material mat)
+        private static void ForceOpaque(Material mat)
         {
             if (mat == null)
                 return;
@@ -345,7 +350,7 @@ namespace BackroomsSurvival.Gameplay
             mat.renderQueue = -1;
         }
 
-        public static void SetAlphaBlend(Material mat)
+        private static void SetAlphaBlend(Material mat)
         {
             if (mat == null)
                 return;
@@ -376,15 +381,6 @@ namespace BackroomsSurvival.Gameplay
             mat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
 
             mat.renderQueue = (int)RenderQueue.Transparent;
-        }
-
-        public static void ClearCache()
-        {
-            _litBase = null;
-            _unlitBase = null;
-            _transparentBase = null;
-            _emissiveBase = null;
-            _uiBase = null;
         }
 
         private enum RuntimeMaterialKind
