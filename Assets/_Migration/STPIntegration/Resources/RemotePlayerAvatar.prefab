@@ -148,6 +148,9 @@ PrefabInstance:
       addedObject: {fileID: 2547967705480638121}
     - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
       insertIndex: -1
+      addedObject: {fileID: 3957242827228156587}
+    - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
+      insertIndex: -1
       addedObject: {fileID: 9098020770973089683}
     - targetCorrespondingSourceObject: {fileID: 4393350218367588728, guid: 9c77748e311350b4b829d3b6fedbe177, type: 3}
       insertIndex: -1
@@ -318,6 +321,21 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _handBoneName: Hand.R
   _gripPoses: {fileID: 11400000, guid: 749ffa4a868c54d489c2f090683f30aa, type: 2}
+--- !u!114 &3957242827228156587
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 720040130759283984}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c905ca4aed45c47439702ec07933188e, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _handBoneName: Hand.L
+  _carryPoses: {fileID: 11400000, guid: 7a4e8940920b5514c953d65259252b97, type: 2}
+  _maxModels: 8
 --- !u!114 &9098020770973089683
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -364,6 +382,8 @@ MonoBehaviour:
   - {fileID: 8300000, guid: 975306a4b8850224db3da821b393329d, type: 3}
   - {fileID: 8300000, guid: 067459f3d7849ce4b9c6d7b5b6c7bbe6, type: 3}
   - {fileID: 8300000, guid: 2dc2dc5e14032c747b153a7fb13ac463, type: 3}
+  - {fileID: 8300000, guid: 346794137c128334f8d1a442f5dbb955, type: 3}
+  - {fileID: 8300000, guid: 5caf3f338b7a5804d934a94027ff2c53, type: 3}
   _screamMinDistance: 4
   _screamMaxDistance: 45
   _screamPitchVariation: 0.14
@@ -403,6 +423,8 @@ MonoBehaviour:
     - {fileID: 8300000, guid: 21c274e72cb494148bb7a43953b5ea1e, type: 3}
   - Clips:
     - {fileID: 8300000, guid: 2dc2dc5e14032c747b153a7fb13ac463, type: 3}
+    - {fileID: 8300000, guid: 346794137c128334f8d1a442f5dbb955, type: 3}
+    - {fileID: 8300000, guid: 5caf3f338b7a5804d934a94027ff2c53, type: 3}
   _minDistance: 4
   _maxDistance: 45
   _pitchVariation: 0.14
