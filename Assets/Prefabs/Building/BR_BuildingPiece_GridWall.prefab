@@ -69,6 +69,8 @@ MonoBehaviour:
     m_Center: {x: 0.0024325848, y: 2.0331686, z: 0.0003375113}
     m_Extent: {x: 2.3746572, y: 1.6704868, z: 0.25661775}
   _buildRange: 7
+  _gridColumns: 5
+  _gridRows: 4
 --- !u!114 &6076849277145044320
 MonoBehaviour:
   m_ObjectHideFlags: 0
