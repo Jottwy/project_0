@@ -18,10 +18,11 @@ namespace BackroomsSurvival.Net
     /// Gating: a joiner's placement does NOT persist locally — the host validates and the
     /// relay drives every spawn, so all instances stay identical. Self-bootstraps; removable.
     ///
-    /// Grid walls (<see cref="GridWallBuildingPiece"/>) get two extras, both consequences of that
-    /// same round-trip and both scoped to this piece type only: the slot is reserved locally while
+    /// Grid walls (<see cref="GridWallBuildingPiece"/>) and their infill panels
+    /// (<see cref="GridPanelBuildingPiece"/>) get two extras, both consequences of that same
+    /// round-trip and both scoped to those two piece types only: the slot is reserved locally while
     /// the request is in flight (<see cref="GridWallReservations"/>), and the preview is re-armed so
-    /// panels can be chained without reopening the survival book (<see cref="RearmPreview"/>).
+    /// pieces can be chained without reopening the survival book (<see cref="RearmPreview"/>).
     /// </summary>
     public sealed class StpBuildingPlacementWatcher : MonoBehaviour
     {
@@ -136,10 +137,12 @@ namespace BackroomsSurvival.Net
             ipc.SendStpPlace(placeId, defId, pos, yaw, groupId, isGroup);
             Debug.Log($"[StpBuildingPlacementWatcher] placed def_id={defId} place_id={placeId} group_id={groupId} is_group={isGroup} pos={pos:F2} → host.");
 
-            // A grid wall is standalone, so the host does not pose-cell dedup it and the slot stays
-            // physically empty for the whole round-trip. Hold it locally until the replicated wall
-            // arrives, or a fast second placement lands a duplicate in the same slot.
-            if (placed is GridWallBuildingPiece)
+            // A grid wall and its infill panels are standalone, so the host does not pose-cell dedup
+            // them and the slot stays physically empty for the whole round-trip. Hold it locally
+            // until the replicated piece arrives, or a fast second placement lands a duplicate in the
+            // same slot. The panel needs this at least as badly as the wall: a frame's cells are 1 m
+            // apart, so chaining drywall is a burst of placements with no pause between them.
+            if (placed is GridWallBuildingPiece or GridPanelBuildingPiece)
             {
                 GridWallReservations.Reserve(pos, yaw);
                 // Deferred a frame on purpose — see RearmPreview.
@@ -155,14 +158,14 @@ namespace BackroomsSurvival.Net
         ///
         /// The vendor only re-arms automatically for <see cref="GroupBuildingPiece"/>
         /// (CharacterBuildController.HandleSuccessfulPlacement passes
-        /// <c>createNew: _buildingPiece is GroupBuildingPiece</c>), and that class is sealed, so a
-        /// grid wall cannot inherit the behaviour — it ends build mode after every single panel and
-        /// the survival book has to be reopened for the next one. Hence this hook, which runs from
-        /// the ObjectPlaced event, i.e. AFTER the controller has already torn build mode down; the
-        /// SetBuildingPiece call below pushes the input context straight back.
+        /// <c>createNew: _buildingPiece is GroupBuildingPiece</c>), and that class is sealed, so
+        /// neither a grid wall nor a grid panel can inherit the behaviour — it ends build mode after
+        /// every single piece and the survival book has to be reopened for the next one. Hence this
+        /// hook, which runs from the ObjectPlaced event, i.e. AFTER the controller has already torn
+        /// build mode down; the SetBuildingPiece call below pushes the input context straight back.
         ///
-        /// Restricted to grid walls on purpose: re-arming the free pieces (campfire, sleeping bag)
-        /// would change vendor behaviour nobody asked to change.
+        /// Restricted to the two grid-snapped types on purpose: re-arming the free pieces (campfire,
+        /// sleeping bag) would change vendor behaviour nobody asked to change.
         ///
         /// Deferred one frame by the caller. Re-arming inline would run while the place action is
         /// still dispatching its own callbacks: SetBuildingPiece pops and re-pushes the building
