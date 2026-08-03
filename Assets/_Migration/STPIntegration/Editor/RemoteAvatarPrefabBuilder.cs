@@ -101,6 +101,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireHitReactionHook(instance);
                 WireRevealHook(instance);
                 WireVocalHook(instance);
+                WireGrabHook(instance);
                 WireRealForm(instance);
                 WireFootstepHook(instance);
                 WireLightHook(instance);
@@ -420,6 +421,16 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
         }
 
         /// <summary>
+        /// The procedural grab: both arms reach for whoever it is killing. All defaults live in the
+        /// component, so there is nothing to wire beyond adding it — same shape as WireRevealHook.
+        /// </summary>
+        private static void WireGrabHook(GameObject root)
+        {
+            if (root.GetComponent<ProxyGrabHook>() == null)
+                root.AddComponent<ProxyGrabHook>();
+        }
+
+        /// <summary>
         /// ADR-048: the creature's voice, driven by the <c>vocal_seq</c> counter instead of by the
         /// reveal flag — the whole point being that it can vocalise WITHOUT dropping its disguise,
         /// which ADR-038 forbids expressing through <c>revealed</c>.
@@ -436,10 +447,6 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (hook == null)
                 hook = root.AddComponent<ProxyVocalHook>();
 
-            var screams = LoadScreamClips();
-            if (screams.Length == 0)
-                return;
-
             var so = new SerializedObject(hook);
             var voices = so.FindProperty("_voices");
             if (voices == null)
@@ -448,33 +455,63 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices.arraySize < 4)
                 voices.arraySize = 4;
 
-            // Banks 0 (reveal) and 1 (search shriek) both get the existing screams. Bank 1 is a
-            // PLACEHOLDER on purpose: the search shriek is the whole reason ADR-048 exists, and
-            // shipping it wired-but-silent would mean the first play-test could not tell "the
-            // feature is broken" from "nobody has authored the clip yet". Bank 2 (noise grunt) and
-            // 3 (stalking breath) are left empty — those want a quieter, lower voice than a shriek,
-            // and a wrong sound is worse than none. An empty bank is silent, never an error.
-            for (int bank = 0; bank <= 1; bank++)
+            // Bank → filename prefix. SELECTED BY PREFIX AND NOT "everything in the folder", which
+            // is what this did while only the screams existed: the moment a second voice landed in
+            // the same directory, a blanket load would have put grunts and breaths into the reveal
+            // scream too. The folder is a folder, not a bank.
+            //
+            // Bank 1 (search shriek) still points at the screams DELIBERATELY: it is the same kind
+            // of sound and shipping it silent would make the first play-test unable to tell "the
+            // feature is broken" from "nobody authored a clip".
+            var banks = new[]
             {
+                "PhantomScream_",        // 0 reveal
+                "PhantomScream_",        // 1 search shriek (placeholder, same family)
+                "PhantomVoice_Grunt",    // 2 noise reaction
+                "PhantomVoice_Breath",   // 3 stalking breath
+            };
+
+            for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)
+            {
+                var found = LoadVoiceClips(banks[bank]);
                 var clips = voices.GetArrayElementAtIndex(bank).FindPropertyRelative("Clips");
                 if (clips == null)
                     continue;
 
-                clips.arraySize = screams.Length;
-                for (int i = 0; i < screams.Length; i++)
-                    clips.GetArrayElementAtIndex(i).objectReferenceValue = screams[i];
+                // An unauthored bank is left EMPTY rather than filled with something approximate:
+                // an empty bank is silent, and silence is honest. A wrong sound is not.
+                clips.arraySize = found.Length;
+                for (int i = 0; i < found.Length; i++)
+                    clips.GetArrayElementAtIndex(i).objectReferenceValue = found[i];
+
+                if (found.Length == 0)
+                    Debug.LogWarning($"[RemoteAvatarPrefabBuilder] ADR-048 voice bank {bank} " +
+                        $"('{banks[bank]}*') has no clips in {PhantomRealFormBuilder.ScreamDir} — that voice is silent.");
             }
 
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        private static AudioClip[] LoadScreamClips()
+        /// <summary>
+        /// Every AudioClip in the voice folder whose FILE NAME starts with `prefix`, sorted so a
+        /// re-bake never reshuffles the array (FindAssets order is not guaranteed, and a diff that
+        /// churns on every bake hides the one that matters).
+        /// </summary>
+        private static AudioClip[] LoadVoiceClips(string prefix)
         {
             var guids = AssetDatabase.FindAssets("t:AudioClip", new[] { PhantomRealFormBuilder.ScreamDir });
-            var clips = new System.Collections.Generic.List<AudioClip>(guids.Length);
+            var paths = new System.Collections.Generic.List<string>(guids.Length);
             foreach (var guid in guids)
             {
                 var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (System.IO.Path.GetFileName(path).StartsWith(prefix, System.StringComparison.Ordinal))
+                    paths.Add(path);
+            }
+            paths.Sort(System.StringComparer.Ordinal);
+
+            var clips = new System.Collections.Generic.List<AudioClip>(paths.Count);
+            foreach (var path in paths)
+            {
                 var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
                 if (clip != null)
                     clips.Add(clip);

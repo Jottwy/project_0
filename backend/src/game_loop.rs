@@ -193,6 +193,16 @@ const VOCAL_REVEAL: u8 = 0;
 const VOCAL_SEARCH_SHRIEK: u8 = 1;
 /// A grunt of reaction the moment it hears something worth walking toward. Also disguised.
 const VOCAL_NOISE_GRUNT: u8 = 2;
+/// Low, quiet, rhythmic — what a corridor sounds like when it is occupied and the thing in it has
+/// not decided yet. Emitted while STALKing, on its own slow timer.
+const VOCAL_STALK_BREATH: u8 = 3;
+/// The breath uses a SHORT shared cooldown: it is ambience, so it must not sit on the budget and
+/// swallow the scream of a lunge that starts two seconds later. It still cannot fire DURING one
+/// (the shared cooldown is what stops that), which is the asymmetry worth having.
+const PHANTOM_BREATH_COOLDOWN: f32 = 1.5;
+/// Seconds between stalking breaths, randomised per breath inside this band.
+const PHANTOM_BREATH_MIN: f32 = 7.0;
+const PHANTOM_BREATH_MAX: f32 = 15.0;
 /// Minimum seconds between ANY two vocalisations from the same creature. In the BACKEND on purpose
 /// (ADR-048 point 7): a limit living in the client is a limit the client can remove, and the cost
 /// of a creature screaming at 10 Hz is paid by everyone who can hear it.
@@ -5059,6 +5069,10 @@ struct PhantomMover {
     vocal_kind: u8,
     /// Seconds until this creature may vocalise again.
     vocal_cooldown: f32,
+    /// Seconds until the next stalking breath. Randomised per breath rather than fixed: a
+    /// metronomic one would become a clock the player can read, and the whole point of this sound
+    /// is that you cannot tell how close it is or what it is about to do.
+    breath_in: f32,
     /// Seconds of stillness left at the START of a lunge. `revealed` is already true in SPRINT
     /// (ADR-038), so the beat lands AFTER the disguise drops and the scream: it reveals, screams,
     /// hangs there for a moment, and only then comes at you. Without it, reveal and charge are the
@@ -5416,6 +5430,10 @@ impl PhantomDriver {
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_cooldown: 0.0,
+            // Staggered at birth, not zeroed: several creatures waking on the same tick would
+            // otherwise breathe in unison, which reads as one big thing rather than as several.
+            breath_in: PHANTOM_BREATH_MIN
+                + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN),
         });
     }
 
@@ -5552,11 +5570,17 @@ impl PhantomDriver {
     /// place it wrong. Also drops a SECOND request in the same tick — the first one wins, so a
     /// creature that hears a noise and lunges on the same tick screams once, not twice.
     fn try_vocalize(&mut self, i: usize, kind: u8) {
+        self.try_vocalize_for(i, kind, PHANTOM_VOCAL_COOLDOWN);
+    }
+
+    /// `try_vocalize` with an explicit cooldown, so an AMBIENT voice does not spend the same budget
+    /// as a dramatic one. A breath must not be able to mute the scream of a lunge two seconds later.
+    fn try_vocalize_for(&mut self, i: usize, kind: u8, cooldown: f32) {
         if self.movers[i].vocal_cooldown > 0.0 || self.movers[i].pending_vocal.is_some() {
             return;
         }
         self.movers[i].pending_vocal = Some(kind);
-        self.movers[i].vocal_cooldown = PHANTOM_VOCAL_COOLDOWN;
+        self.movers[i].vocal_cooldown = cooldown;
     }
 
     /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
@@ -6058,6 +6082,15 @@ impl PhantomDriver {
                     }
                     let (_, tpos, dist, tyaw) = target.unwrap();
                     self.movers[i].last_known_player_pos = Some(tpos);
+
+                    // ADR-048 voice 3 — it breathes while it shadows you. Ambient, so it takes the
+                    // SHORT cooldown and can never mute the scream of the lunge that follows.
+                    self.movers[i].breath_in -= dt;
+                    if self.movers[i].breath_in <= 0.0 {
+                        self.movers[i].breath_in = PHANTOM_BREATH_MIN
+                            + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN);
+                        self.try_vocalize_for(i, VOCAL_STALK_BREATH, PHANTOM_BREATH_COOLDOWN);
+                    }
 
                     // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
                     // close → freeze. Entered only from STALK; a committed SPRINT is never frozen.
@@ -7937,6 +7970,41 @@ mod tests {
         assert_eq!(
             net.peers[&pid].vocal_seq, seq,
             "the cooldown must hold it to one cry per approach"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_stalker_breathes_and_the_breath_never_mutes_a_scream() {
+        // Voice 3 is ambience, so it takes a SHORT cooldown. The asymmetry is the point: a breath
+        // must not sit on the budget and swallow the scream of a lunge two seconds later, but it
+        // must still be unable to fire during one.
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Stalk;
+        driver.movers[0].statue_cooldown = 999.0;
+        // STALK rolls for an unpredictable lunge every tick (~2.7 % at the top of the temperament
+        // range), and a lunge emits the REVEAL scream instead — a ~1-in-37 flake that passes alone
+        // and fails in a full run. Pinned to 0 so this test is about the breath and nothing else.
+        driver.movers[0].traits.impulse_scale = 0.0;
+        driver.movers[0].breath_in = 0.05; // due almost immediately
+        let here = Vec3::from_array(net.peers[&pid].position);
+        let player = Vec3::new(here.x + 9.0, 1.8, here.z);
+
+        driver.step(&mut net, 0.1, player, 90.0, false, false);
+
+        assert_eq!(net.peers[&pid].vocal_kind, VOCAL_STALK_BREATH);
+        assert_ne!(net.peers[&pid].vocal_seq, 0);
+        assert!(
+            !net.peers[&pid].revealed,
+            "breathing must never drop the disguise"
+        );
+        // The ambient cooldown is the short one, so the budget frees up quickly.
+        assert!(
+            driver.movers[0].vocal_cooldown <= PHANTOM_BREATH_COOLDOWN,
+            "a breath must not spend the full dramatic-voice cooldown"
         );
     }
 
