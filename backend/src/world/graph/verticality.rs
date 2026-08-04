@@ -1,3 +1,9 @@
+//! Capa paralela de verticalidad (Fase 6.5). Invariante: nunca se fusiona en
+//! `RegionGraph.nodes`, nunca es traversal y no aporta geometria de colision ni
+//! de render — ver los doc-comments de `RegionGraph::vertical_connections` y
+//! `RegionGraph::virtual_vertical_nodes` en `region_graph.rs`, y
+//! `graph/README.md`.
+
 use serde::{Deserialize, Serialize};
 
 use super::coords::Chunk3DCoord;
