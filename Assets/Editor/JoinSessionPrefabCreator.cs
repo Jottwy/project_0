@@ -5,6 +5,39 @@ using UnityEngine.UI;
 
 namespace BackroomsSurvival.EditorTools
 {
+    /// <summary>
+    /// ANDAMIAJE DIVERGIDO — leer antes de tocar o de usar el menu.
+    ///
+    /// (a) NADIE CONSUME LO QUE ESCRIBE. El artefacto es Assets/Prefabs/UI/JoinSessionPanel.prefab,
+    ///     GUID 5313103ec630f924b962c5cc1e119c36, y ese GUID aparece en UN solo fichero del repo:
+    ///     su propio .meta (sin assetBundleName, y no cuelga de ninguna carpeta Resources/).
+    ///     JoinSessionUI NO carga ningun prefab: construye el panel por codigo en
+    ///     JoinSessionUI.BuildUI (Assets/Scripts/UI/JoinSessionUI.Build.cs).
+    ///
+    /// (b) ES UNA INSTANTANEA QUE YA DIVERGIO. La FUENTE DE VERDAD del panel es
+    ///     JoinSessionUI.Build.cs (jerarquia y cableado) + JoinSessionUI.Widgets.cs (fabricas
+    ///     CreateLabel/CreateInputField/CreateButton). Este fichero es una copia antigua de las
+    ///     dos y hoy produce un panel DISTINTO. Diferencias comprobadas:
+    ///       1. Placeholders: "Server IP" / "Port" aqui, "Host IP / Join IP" y
+    ///          "Host Port / Join Port" en Build.cs.
+    ///       2. No hay boton "Invite via Steam" (Build.cs lo crea y lo activa segun
+    ///          SteamLobbyManager.IsAvailable).
+    ///       3. Falta input.targetGraphic = bg (Widgets.cs si lo asigna).
+    ///       4. Falta input.interactable = true.
+    ///       5. Falta textComp.supportRichText = false en el texto del InputField.
+    ///       6. Faltan los raycastTarget = false del texto y del placeholder del InputField.
+    ///       7. Falta el ColorBlock del Button (normal/highlighted/pressed/selected); aqui solo
+    ///          se asigna targetGraphic.
+    ///       8. El ButtonRow lleva aqui un LayoutElement extra que el runtime no crea.
+    ///       9. El DisconnectBtn queda activo; el runtime lo crea desactivado.
+    ///     Las seis constantes de layout de abajo estan duplicadas de JoinSessionUI: coinciden en
+    ///     valor pero no en nombre (Padding aqui, PanelPadding alli). Nada las mantiene en sync.
+    ///
+    /// (c) DECISION PENDIENTE, no la tomes de paso: o se retira este menu junto con el prefab
+    ///     huerfano, o se hace que JoinSessionUI cargue el prefab en vez de construir la UI por
+    ///     codigo (que es el trabajo que este fichero insinua). Hasta entonces, NO uses este
+    ///     prefab como referencia de como es el panel real. Ver docs/EDITOR-MENUS.md.
+    /// </summary>
     public static class JoinSessionPrefabCreator
     {
         private const float InputWidth = 300f;
