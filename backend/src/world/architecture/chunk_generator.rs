@@ -1,3 +1,25 @@
+//! Per-chunk deterministic primitives: seeding, layout assembly, and the stable ID
+//! stream that names everything a generated chunk contains.
+//!
+//! WHY the IDs are hashes and not counters: chunk content is never handed out as the
+//! single copy of a truth. Every peer — and the backend itself on a restart — rebuilds
+//! the same chunk from `world_seed` + `ChunkPos` (+ layer) alone, and the entity / item /
+//! volume / structure IDs have to come out identical with zero coordination, because
+//! nothing in the system ever reconciles two divergent numberings. A counter would depend
+//! on generation ORDER (which chunk was built first, how many were built before); a hash
+//! of `(seed, position, index)` does not, so a chunk can be regenerated in isolation.
+//!
+//! WHAT BREAKS if a constant, a salt or a mixing step below is "improved": the whole world
+//! is silently relabelled. Same seed, different IDs. The `level0_golden_slice` fixtures
+//! fail on purpose (that is exactly what they are for), the IDs already sent to Unity stop
+//! matching the ones regenerated afterwards, and `structure_id` in particular is not just
+//! an ID — it becomes `chunk.layout.macro_id` and the `SpatialNodeId` of the Level 0
+//! RegionGraph, so renumbering it rewires the graph too. Treat this module like a wire
+//! format: additive only, never re-tuned.
+//!
+//! `next_entity_id` / `next_entity_id_pub` is the one deliberate exception, and it is
+//! marked as such below.
+
 use rand::rngs::StdRng;
 use rand::Rng;
 
@@ -20,16 +42,31 @@ use crate::world::chunk::{
 
 use crate::world::chunk::LAYOUT_GRID_SIZE;
 
+/// The ONE non-deterministic ID source in this module: a process-local counter.
+///
+/// It exists for entities created at RUNTIME (`world/mod.rs`), which by definition are not
+/// derivable from the world seed — there is no `(pos, index)` to hash. The trade-off is
+/// accepted deliberately: such an ID is only meaningful inside the session that minted it
+/// and is NOT reproducible by another peer regenerating the same world.
 static NEXT_ENTITY_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
 
 fn next_entity_id() -> u32 {
     NEXT_ENTITY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
+/// Public face of the runtime counter (see `NEXT_ENTITY_ID`). Starts at 1 so 0 stays free
+/// as the "absent" sentinel, same convention the stable IDs below keep with `.max(1)`.
 pub fn next_entity_id_pub() -> u32 {
     next_entity_id()
 }
 
+/// Root seed of a chunk: a pure hash of `world_seed` and the chunk's `(x, z)`.
+///
+/// Everything deterministic inside a chunk descends from this value, which is why it must
+/// stay a FUNCTION OF POSITION ONLY — never of generation order, of a global counter, or of
+/// how many chunks were produced before it. That property is what lets any peer regenerate
+/// chunk `(x, z)` on its own and land on the same layout, the same RNG stream and therefore
+/// the same contents.
 pub fn chunk_seed(world_seed: u64, pos: ChunkPos) -> u64 {
     let mut h = world_seed ^ 0x9E37_79B9_7F4A_7C15;
     h = h.wrapping_add((pos.0 as u64).wrapping_mul(0xFF51_AFD7_ED55_8CCD));
@@ -39,6 +76,13 @@ pub fn chunk_seed(world_seed: u64, pos: ChunkPos) -> u64 {
     h
 }
 
+/// Per-layer variant of `chunk_seed`.
+///
+/// Layer 0 returns `chunk_seed` UNCHANGED, on purpose: the flat single-layer world predates
+/// verticality, so re-mixing layer 0 would move every existing seed's output and invalidate
+/// the golden fixtures for nothing. Non-zero layers get a salted, re-mixed value so a chunk
+/// stacked above or below `(x, z)` does not inherit the RNG stream of `(x, z)` itself and
+/// come out as its clone.
 pub fn chunk_seed_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u64 {
     if layer == 0 {
         return chunk_seed(world_seed, pos);
@@ -145,6 +189,16 @@ pub fn build_chunk_layout(template_id: u8, rotation: u16) -> ChunkLayoutV1 {
 
 // ─── MIG-5a: deterministic ID helpers (moved from generator.rs) ───
 
+/// Shared core of the stable-ID family: mixes `world_seed ^ salt` with the chunk position
+/// and a per-object `index` into a non-zero, positive `u32`.
+///
+/// The `salt` is the only thing keeping the families apart — without it the entity and the
+/// item with the same `index` in the same chunk would get the SAME id. Each caller below
+/// therefore owns a frozen salt constant; the values are arbitrary, but changing one
+/// renumbers that entire family across every seed.
+///
+/// The 31-bit mask keeps the result inside positive `i32` range (Unity reads these as C#
+/// `int`), and `.max(1)` keeps 0 free as the absent/empty sentinel used on the wire.
 fn stable_u32(world_seed: u64, pos: ChunkPos, salt: u64, index: u32) -> u32 {
     let mut h = chunk_seed(world_seed ^ salt, pos);
     h ^= (index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
@@ -152,14 +206,33 @@ fn stable_u32(world_seed: u64, pos: ChunkPos, salt: u64, index: u32) -> u32 {
     ((h & 0x7FFF_FFFF) as u32).max(1)
 }
 
+/// Deterministic ID of an entity generated inside chunk `pos` (`levels/level_0/content.rs`).
+///
+/// `index` is the entity's ordinal WITHIN its chunk, so the ID holds as long as the
+/// generator emits the same entities in the same order for that chunk — that ordering is
+/// part of the contract, not an implementation detail. Two peers generating the chunk
+/// independently agree on the ID without ever exchanging it, which is what makes an entity
+/// referable across the IPC/P2P boundary.
 pub(crate) fn stable_entity_id(world_seed: u64, pos: ChunkPos, index: u32) -> u32 {
     stable_u32(world_seed, pos, 0xE17E_0001, index)
 }
 
+/// Deterministic ID of an item generated inside chunk `pos` (`levels/level_0/content.rs`).
+///
+/// Same reasoning as `stable_entity_id`, with a DIFFERENT salt so entity #3 and item #3 of
+/// the same chunk cannot collide. `index` is the item's ordinal within the chunk, so
+/// inserting a spawn in the middle of that sequence renumbers every item after it.
 pub(crate) fn stable_item_id(world_seed: u64, pos: ChunkPos, index: u32) -> u32 {
     stable_u32(world_seed, pos, 0x17E0_0002, index)
 }
 
+/// Deterministic ID of an inter-layer volume (`levels/level_0/v30a_showcase.rs`).
+///
+/// `layer` enters the salt because volumes of different layers live at the SAME `(x, z)`:
+/// position + index alone would hand the volume above and the volume below the same ID.
+/// This is also why that showcase module can advertise itself as RNG-free — its IDs come
+/// from here (pure hash), so it consumes nothing from the chunk's RNG stream and cannot
+/// shift the draws made after it.
 pub(crate) fn stable_volume_id(
     world_seed: u64,
     pos: ChunkPos,
@@ -172,6 +245,13 @@ pub(crate) fn stable_volume_id(
     stable_u32(world_seed, pos, 0xA30A_2002 ^ layer_salt, index)
 }
 
+/// Deterministic ID of a Level 0 structure (`levels/level_0/builder.rs`, `visfix_7778.rs`).
+///
+/// A structure is world-level, not per-chunk, so there is no real position to hash: the
+/// `(index, -index)` pair is a synthetic coordinate whose only job is to spread consecutive
+/// ordinals apart in the mix. The value travels much further than generation — it is copied
+/// into `chunk.layout.macro_id` and becomes the `SpatialNodeId` of the RegionGraph node, so
+/// changing this function renumbers the graph and every macro-id-based lookup with it.
 pub(crate) fn structure_id(world_seed: u64, index: u32) -> u32 {
     stable_u32(
         world_seed,
@@ -181,6 +261,13 @@ pub(crate) fn structure_id(world_seed: u64, index: u32) -> u32 {
     )
 }
 
+/// In-place Fisher-Yates shuffle driven by the caller's `StdRng`.
+///
+/// The DRAW PATTERN, not just the result, is part of the world's identity: this consumes
+/// exactly one `gen_range(0..=i)` per step, back to front, from the caller's own RNG
+/// (`Level0Builder::rng`). Swapping in `SliceRandom::shuffle` or any other implementation
+/// would consume that stream differently and shift EVERY subsequent draw made by the same
+/// `rng`, changing layouts for seeds this change never meant to touch.
 pub(crate) fn fisher_yates(slice: &mut [usize], rng: &mut StdRng) {
     for i in (1..slice.len()).rev() {
         let j = rng.gen_range(0..=i);
