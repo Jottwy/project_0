@@ -1817,6 +1817,117 @@ impl PhantomDriver {
         }
     }
 
+    /// SEARCH (ADR-040 Fase 4) — it lost you and walks, navigating, to the last place it saw you.
+    /// Slower than a walk: it is looking, not commuting. Re-acquiring you resumes the hunt; running
+    /// out of patience returns it to WANDER and it FORGETS, which is what makes hiding a real escape
+    /// and not just a delay.
+    fn tick_search(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+        // ADR-048 — IT SHRIEKS AS IT CLOSES ON YOU, without having seen you. The range
+        // is deliberately WIDER than its sight (18 m vs 15), so following a shot toward
+        // your position announces itself before it can possibly have spotted anything.
+        // Disguise intact: this is the sound of the thing that still looks like a
+        // player. The cooldown keeps it to one per approach rather than a siren.
+        if let Some((_, _, dist, _)) = target {
+            if dist <= PHANTOM_VOCAL_SEARCH_RANGE {
+                self.movers[i].try_vocalize(VOCAL_SEARCH_SHRIEK);
+            }
+        }
+
+        // Re-acquire on sight (crouching still shrinks the radius — stealth applies
+        // while it hunts, not only while it patrols).
+        if let Some((tid, tpos, dist, _)) = target {
+            let crouched = target_is_crouched(ctx.net, tid, ctx.host_crouch);
+            let sight = if crouched {
+                PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
+            } else {
+                PHANTOM_DETECT_RADIUS
+            };
+            if dist <= sight && in_view_cone(self.movers[i].heading, from, tpos) {
+                self.movers[i].last_known_player_pos = Some(tpos);
+                self.movers[i].state = PhantomState::Stalk;
+                self.movers[i].state_timer = 0.0;
+                info!(
+                    "MPTRACE step=PH_SEARCH event=phantom_reacquired phantom_id={} dist={:.2}",
+                    id, dist
+                );
+                return;
+            }
+        }
+
+        let goal = match self.movers[i].last_known_player_pos {
+            Some(g) => g,
+            None => {
+                self.movers[i].state = PhantomState::Wander;
+                self.movers[i].state_timer = 0.0;
+                return;
+            }
+        };
+
+        // ADR-041: a noise in transit goes cold on its own clock, independent of the
+        // arrival patience — otherwise a phantom that never reaches the spot would
+        // walk toward a five-minute-old shot forever.
+        let noise_cold = match self.movers[i].noise_expiry.as_mut() {
+            Some(left) => {
+                *left -= ctx.dt;
+                *left <= 0.0
+            }
+            None => false,
+        };
+
+        // Swept the spot, out of patience, or the trail went cold → give up and forget.
+        if noise_cold
+            || self.movers[i].state_timer > self.movers[i].search_patience
+            || from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE
+        {
+            info!(
+                "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s cold={}",
+                id, self.movers[i].state_timer, noise_cold
+            );
+            self.movers[i].last_known_player_pos = None;
+            self.movers[i].state = PhantomState::Wander;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
+            self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
+            self.movers[i].noise_expiry = None;
+            // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
+            // never fought the journey — but without this the phantom would finish a
+            // 500 m trip and immediately start walking all the way back to its spawn.
+            self.movers[i].spawn_pos = from;
+            return;
+        }
+
+        let heading = self.steer_heading(i, layer, from, goal, ctx.dt);
+        self.movers[i].heading_target = heading;
+        let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let h = self.movers[i].heading;
+        let dir = Vec3::new(h.sin(), 0.0, h.cos());
+        let speed = self.movers[i].search_speed * self.movers[i].speed_scale();
+        let desired = Vec3::new(
+            from.x + dir.x * speed * ctx.dt,
+            from.y,
+            from.z + dir.z * speed * ctx.dt,
+        );
+        let moved = resolve_move_grid_gen_ex(&mut self.grid_cache, layer, from, desired);
+        if moved.blocked {
+            // Wedged against geometry: drop the plan so the next tick re-routes instead
+            // of pressing into the same wall (the defect STALK/SPRINT used to have).
+            self.movers[i].nav_waypoints.clear();
+        }
+        let yaw = h.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(moved.pos.to_array(), yaw, "idle".into());
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -2452,110 +2563,16 @@ impl PhantomDriver {
                 // it saw you. Slower than a walk — it is looking, not commuting. Re-acquiring you
                 // resumes the hunt; running out of patience returns it to WANDER and it FORGETS,
                 // which is what makes hiding a real escape and not just a delay. ──
-                PhantomState::Search => {
-                    // ADR-048 — IT SHRIEKS AS IT CLOSES ON YOU, without having seen you. The range
-                    // is deliberately WIDER than its sight (18 m vs 15), so following a shot toward
-                    // your position announces itself before it can possibly have spotted anything.
-                    // Disguise intact: this is the sound of the thing that still looks like a
-                    // player. The cooldown keeps it to one per approach rather than a siren.
-                    if let Some((_, _, dist, _)) = target {
-                        if dist <= PHANTOM_VOCAL_SEARCH_RANGE {
-                            self.movers[i].try_vocalize(VOCAL_SEARCH_SHRIEK);
-                        }
-                    }
-
-                    // Re-acquire on sight (crouching still shrinks the radius — stealth applies
-                    // while it hunts, not only while it patrols).
-                    if let Some((tid, tpos, dist, _)) = target {
-                        let crouched = target_is_crouched(net, tid, host_player_crouch);
-                        let sight = if crouched {
-                            PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
-                        } else {
-                            PHANTOM_DETECT_RADIUS
-                        };
-                        if dist <= sight && in_view_cone(self.movers[i].heading, from, tpos) {
-                            self.movers[i].last_known_player_pos = Some(tpos);
-                            self.movers[i].state = PhantomState::Stalk;
-                            self.movers[i].state_timer = 0.0;
-                            info!(
-                                "MPTRACE step=PH_SEARCH event=phantom_reacquired phantom_id={} dist={:.2}",
-                                id, dist
-                            );
-                            continue;
-                        }
-                    }
-
-                    let goal = match self.movers[i].last_known_player_pos {
-                        Some(g) => g,
-                        None => {
-                            self.movers[i].state = PhantomState::Wander;
-                            self.movers[i].state_timer = 0.0;
-                            continue;
-                        }
-                    };
-
-                    // ADR-041: a noise in transit goes cold on its own clock, independent of the
-                    // arrival patience — otherwise a phantom that never reaches the spot would
-                    // walk toward a five-minute-old shot forever.
-                    let noise_cold = match self.movers[i].noise_expiry.as_mut() {
-                        Some(left) => {
-                            *left -= dt;
-                            *left <= 0.0
-                        }
-                        None => false,
-                    };
-
-                    // Swept the spot, out of patience, or the trail went cold → give up and forget.
-                    if noise_cold
-                        || self.movers[i].state_timer > self.movers[i].search_patience
-                        || from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE
-                    {
-                        info!(
-                            "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s cold={}",
-                            id, self.movers[i].state_timer, noise_cold
-                        );
-                        self.movers[i].last_known_player_pos = None;
-                        self.movers[i].state = PhantomState::Wander;
-                        self.movers[i].state_timer = 0.0;
-                        self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
-                        self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
-                        self.movers[i].noise_expiry = None;
-                        // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
-                        // never fought the journey — but without this the phantom would finish a
-                        // 500 m trip and immediately start walking all the way back to its spawn.
-                        self.movers[i].spawn_pos = from;
-                        continue;
-                    }
-
-                    let heading = self.steer_heading(i, current_layer, from, goal, dt);
-                    self.movers[i].heading_target = heading;
-                    let t = (PHANTOM_TURN_SPEED_STALK * dt).min(1.0);
-                    self.movers[i].heading =
-                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
-                    let h = self.movers[i].heading;
-                    let dir = Vec3::new(h.sin(), 0.0, h.cos());
-                    let speed = self.movers[i].search_speed * self.movers[i].speed_scale();
-                    let desired = Vec3::new(
-                        from.x + dir.x * speed * dt,
-                        from.y,
-                        from.z + dir.z * speed * dt,
-                    );
-                    let moved = resolve_move_grid_gen_ex(
-                        &mut self.grid_cache,
-                        current_layer,
-                        from,
-                        desired,
-                    );
-                    if moved.blocked {
-                        // Wedged against geometry: drop the plan so the next tick re-routes instead
-                        // of pressing into the same wall (the defect STALK/SPRINT used to have).
-                        self.movers[i].nav_waypoints.clear();
-                    }
-                    let yaw = h.to_degrees().rem_euclid(360.0);
-                    if let Some(peer) = net.peers.get_mut(&id) {
-                        peer.update_player_state(moved.pos.to_array(), yaw, "idle".into());
-                    }
-                }
+                PhantomState::Search => self.tick_search(
+                    mt,
+                    &mut TickCtx {
+                        net: &mut *net,
+                        dt,
+                        now,
+                        target_speeds: &target_speeds,
+                        host_crouch: host_player_crouch,
+                    },
+                ),
             }
         }
 
