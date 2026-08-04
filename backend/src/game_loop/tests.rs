@@ -220,7 +220,17 @@ async fn drop_allocator_ignores_ids_from_the_building_range() {
 #[test]
 fn phantom_reveals_only_in_sprint_and_statue() {
     assert!(phantom_reveals(PhantomState::Sprint));
-    assert!(phantom_reveals(PhantomState::Statue));
+    // ADR-051 point 1 — STATUE NO LONGER REVEALS, and this reversal is the play-test's doing.
+    // It is entered by LOOKING at the creature from close by, with hunger playing no part, so a
+    // sated one — the kind built to follow you and copy you — tore out of its skin because you
+    // turned to look at it, and put it back on when you turned away. It now stares WEARING the
+    // face, which is worse.
+    assert!(!phantom_reveals(PhantomState::Statue));
+    // …and the warning does not reveal either: what makes that beat work is that the thing
+    // screaming at you still looks like one of your own (ADR-051 point 2).
+    assert!(!phantom_reveals(PhantomState::Unmasking));
+    // The unmasked hunt does, and never re-dresses until it loses you (point 5).
+    assert!(phantom_reveals(PhantomState::Hunting));
     assert!(!phantom_reveals(PhantomState::Wander));
     assert!(!phantom_reveals(PhantomState::Spotted));
     assert!(!phantom_reveals(PhantomState::Stalk));
@@ -248,15 +258,19 @@ fn phantom_reveals_only_in_sprint_and_statue() {
         PhantomState::Search,
         PhantomState::Flee,
         PhantomState::Grab,
+        PhantomState::Unmasking,
+        PhantomState::Hunting,
     ] {
         // Exhaustive `match` with no wildcard: adding a variant stops compiling right here.
         let expected = match state {
-            PhantomState::Sprint | PhantomState::Statue | PhantomState::Grab => true,
+            PhantomState::Sprint | PhantomState::Grab | PhantomState::Hunting => true,
             PhantomState::Wander
             | PhantomState::Spotted
             | PhantomState::Stalk
+            | PhantomState::Statue
             | PhantomState::Search
-            | PhantomState::Flee => false,
+            | PhantomState::Flee
+            | PhantomState::Unmasking => false,
         };
         assert_eq!(
             phantom_reveals(state),
@@ -1853,8 +1867,15 @@ async fn a_wedged_lunge_eventually_gives_up_instead_of_grinding_forever() {
 
     assert_eq!(
         driver.movers[0].state,
-        PhantomState::Stalk,
+        PhantomState::Hunting,
         "a lunge that cannot make progress must disengage"
+    );
+    // ADR-051 point 5: disengaging is NOT re-dressing. It backs off from the wall it could not get
+    // through and keeps hunting you with the skin off — the flicker this replaced was the creature
+    // dropping into a clothed `Stalk` after every failed lunge.
+    assert!(
+        phantom_reveals(driver.movers[0].state),
+        "a failed lunge must not hand the disguise back"
     );
 }
 
@@ -2577,7 +2598,25 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
             if *victim == net.local_id),
         "point-blank STATUE timeout must shove the local player, got {attack:?}"
     );
+    // ADR-051 points 2-3: a hungry creature bored of the statue game does NOT charge straight away
+    // any more — it comes apart first, still wearing the face, screaming. The charge is what
+    // happens at the end of that beat.
+    assert_eq!(driver.movers[0].state, PhantomState::Unmasking);
+    assert!(
+        !net.peers[&pid].revealed,
+        "the warning must still look like a player, or it stops being a warning"
+    );
+    assert_eq!(net.peers[&pid].vocal_kind, VOCAL_UNMASK_SCREAM);
+
+    // …and at the end of it the skin tears and it comes.
+    for _ in 0..((PHANTOM_UNMASK_SECONDS / 0.1) as i32 + 2) {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
     assert_eq!(driver.movers[0].state, PhantomState::Sprint);
+    assert!(
+        net.peers[&pid].revealed,
+        "the tear is the false→true edge the client decorates"
+    );
 }
 
 /// Sets up a creature holding the host player, i.e. the tick right after a blow from behind.
@@ -2664,7 +2703,10 @@ async fn struggling_free_costs_the_creature_its_meal() {
             .any(|a| a.kind == PhantomAttackKind::GrabRelease),
         "expected a release, got {attacks:?}"
     );
-    assert_eq!(driver.movers[0].state, PhantomState::Stalk);
+    // ADR-051 point 5: shaking it off does not hand the skin back either. You are still being
+    // hunted, now by something you can see.
+    assert_eq!(driver.movers[0].state, PhantomState::Hunting);
+    assert!(phantom_reveals(driver.movers[0].state));
     assert_eq!(
         driver.movers[0].hunger, 0.0,
         "shaking it off must NOT feed it"
@@ -2980,6 +3022,100 @@ async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
         net.peers[&pid].revealed,
         "still revealed the whole way through: it never stopped charging"
     );
+}
+
+#[tokio::test]
+async fn a_sated_creature_stares_at_you_without_ever_breaking_its_skin() {
+    // ADR-051 points 1 and 4 — THE PLAY-TEST BUG. Reported as "a veces me está copiando y se rompe
+    // la piel". `Statue` used to reveal, and `Statue` is entered by LOOKING at the creature from
+    // close by with hunger playing no part, so a sated one tore out of its skin because you turned
+    // your head, and dressed again when you turned away. The disguise was falling to a camera
+    // angle. Now: stare at a full one as long as you like — it stares back, wearing your friend's
+    // face, and nothing comes off.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 1.0; // just fed: it is here to follow and copy, not to eat
+    driver.movers[0].state = PhantomState::Stalk;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    // 6 m and looking straight at it — the exact setup that triggers STATUE.
+    let player = Vec3::new(here.x + 6.0, 1.8, here.z);
+
+    let mut saw_statue = false;
+    for _ in 0..200 {
+        driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
+        saw_statue |= driver.movers[0].state == PhantomState::Statue;
+        assert!(
+            !net.peers[&pid].revealed,
+            "a sated creature must NEVER break its skin, it was in {:?}",
+            driver.movers[0].state
+        );
+        assert_ne!(driver.movers[0].state, PhantomState::Unmasking);
+    }
+    assert!(
+        saw_statue,
+        "the test is vacuous unless it actually entered STATUE"
+    );
+}
+
+#[tokio::test]
+async fn the_skin_only_breaks_after_the_warning_and_never_grows_back_mid_hunt() {
+    // ADR-051 points 2, 3 and 5 — the sequence Joel described: it stares, it goes still and
+    // screams WITH THE FACE ON, and only then does the skin tear and it comes for you. And once
+    // torn, a failed lunge does not hand it back.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 0.0; // starving: this one has decided
+    driver.movers[0].state = PhantomState::Statue;
+    driver.movers[0].state_timer = PHANTOM_STATUE_MAX + 1.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 8.0, 1.8, here.z);
+
+    // The warning: still dressed, still screaming.
+    driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
+    assert_eq!(driver.movers[0].state, PhantomState::Unmasking);
+    assert!(!net.peers[&pid].revealed, "the warning wears the face");
+
+    // Through the beat: it must NOT reveal early, or the warning stops being one.
+    let beat = (PHANTOM_UNMASK_SECONDS / 0.1) as i32 - 2;
+    for _ in 0..beat {
+        driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
+        assert!(!net.peers[&pid].revealed, "revealed BEFORE the tear");
+    }
+
+    // The tear.
+    for _ in 0..4 {
+        driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
+    }
+    assert!(net.peers[&pid].revealed, "the skin must break at the end");
+
+    // And it stays off: force the lunge to fail and confirm it lands in a REVEALED state rather
+    // than dropping back into a clothed Stalk.
+    driver.movers[0].blocked_ticks = PHANTOM_SPRINT_GIVEUP_TICKS;
+    driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
+    assert_eq!(driver.movers[0].state, PhantomState::Hunting);
+    assert!(
+        net.peers[&pid].revealed,
+        "a failed lunge must not grow the skin back"
+    );
+
+    // The ONLY way back into the disguise: losing you.
+    let far = Vec3::new(here.x + 500.0, 1.8, here.z);
+    driver.step(&mut net, 0.1, far, 270.0, false, false, 0);
+    assert!(
+        matches!(
+            driver.movers[0].state,
+            PhantomState::Search | PhantomState::Wander
+        ),
+        "losing contact is what re-dresses it, got {:?}",
+        driver.movers[0].state
+    );
+    assert!(!net.peers[&pid].revealed, "…and then the skin is back on");
 }
 
 #[tokio::test]

@@ -566,8 +566,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices == null)
                 return;
 
-            if (voices.arraySize < 8)
-                voices.arraySize = 8;
+            if (voices.arraySize < 9)
+                voices.arraySize = 9;
 
             // Bank → filename prefix. SELECTED BY PREFIX AND NOT "everything in the folder", which
             // is what this did while only the screams existed: the moment a second voice landed in
@@ -591,6 +591,11 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 // into the audio folder and re-bake, and they light up with no code change.
                 "PhantomVoice_Moan",     // 6 the hungry moan
                 "PhantomVoice_Winded",   // 7 out of breath mid-charge
+                // ADR-051. Points at the SCREAMS deliberately, the same way bank 1 does: the sound
+                // of something coming apart is the same family, and shipping the warning silent
+                // would make the first play-test unable to tell "the tell is broken" from "nobody
+                // authored a clip". Swap for its own family when one exists.
+                "PhantomScream_",        // 8 the warning, a beat before the skin tears
             };
 
             for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)
