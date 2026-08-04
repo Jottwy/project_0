@@ -88,6 +88,28 @@ pub(super) const PHANTOM_STALK_CLOSE_SPEED: f32 = 4.6;
 /// Below ~1.2× this stops being a chase and becomes an escort, so this is close to the floor.
 pub(super) const PHANTOM_SPRINT_SPEED: f32 = 7.29;
 pub(super) const PHANTOM_SPRINT_RAMP: f32 = 1.5; // seconds to ramp WALK → SPRINT
+
+// ── ADR-050 point 5: THE CHASE HAS A PULSE ───────────────────────────────────────────────────────
+//
+// A chase from 15 m lasted 8,4 s and was a straight line at a constant speed: it either reached you
+// or it did not, and nothing happened in between that you could read or use. Lowering the top speed
+// was the obvious fix and is rejected in ADR-050 (A) — at 1.2× the player's run it stops being a
+// hunt and becomes an escort. Instead the speed stays and the ENDURANCE is finite: it comes at you
+// flat out, blows, has to slow to a heavy walk while it gets its breath back, and comes again.
+//
+// The same 15 m now takes ~25-30 s and has a shape: it closes, you hear it fail, you buy ground,
+// it starts again. That gap is where a door, a corner or a decision fits.
+//
+// CRITICAL: being winded is NOT an exit from the chase. The two ways out stay exactly what they
+// were — outrun it past LOSE_RADIUS, or break its line of sight — because a lunge that ends on a
+// timer is what the 2026-08-03 pass deliberately removed.
+/// Seconds of flat-out running before it has to breathe.
+pub(super) const PHANTOM_SPRINT_BURST_SECONDS: f32 = 5.0;
+/// Seconds of heavy-walking recovery before the next burst.
+pub(super) const PHANTOM_SPRINT_RECOVER_SECONDS: f32 = 3.0;
+/// Speed (m/s) while winded. Below the player's run (5.5) on purpose — this is the window where
+/// ground is bought back — but above a walk, so it is still visibly coming.
+pub(super) const PHANTOM_SPRINT_WINDED_SPEED: f32 = 3.5;
 pub(super) const PHANTOM_SPOTTED_MIN: f32 = 3.0; // SPOTTED stare duration range (s)
 pub(super) const PHANTOM_SPOTTED_MAX: f32 = 8.0;
 pub(super) const PHANTOM_STALK_PATIENCE: f32 = 25.0; // seconds stalking before it lunges
@@ -171,6 +193,9 @@ pub(super) const VOCAL_SATED_ROAR: u8 = 5;
 /// otherwise pure behaviour, and it is deliberately not a warning of an imminent charge — it says
 /// the animal in front of you is now the kind that eats, not that it moves in three seconds.
 pub(super) const VOCAL_HUNGRY_MOAN: u8 = 6;
+/// ADR-050 — the sound of it running out of breath mid-charge. Does real work: it is how the player
+/// learns, without a UI, that the next few seconds are the ones to spend running.
+pub(super) const VOCAL_WINDED: u8 = 7;
 /// A noise heard from beyond this (m) answers with the long roar instead of the close-up grunt.
 /// Under it the creature is near enough that a grunt reads as "it is RIGHT THERE", which is scarier
 /// at that range than a roar would be.
@@ -984,6 +1009,12 @@ pub(super) struct PhantomMover {
     /// metronomic one would become a clock the player can read, and the whole point of this sound
     /// is that you cannot tell how close it is or what it is about to do.
     pub(super) breath_in: f32,
+    /// ADR-050 — seconds of flat-out running left in this burst. Refilled on entering SPRINT and
+    /// after every recovery; spent only while actually charging (not while hesitating or winded).
+    pub(super) stamina: f32,
+    /// ADR-050 — seconds of heavy-walking recovery left. `> 0` means blown: it keeps coming, but
+    /// slowly, and this is the window the player is meant to spend.
+    pub(super) winded_for: f32,
     /// Seconds of stillness left at the START of a lunge. `revealed` is already true in SPRINT
     /// (ADR-038), so the beat lands AFTER the disguise drops and the scream: it reveals, screams,
     /// hangs there for a moment, and only then comes at you. Without it, reveal and charge are the
@@ -1100,6 +1131,10 @@ impl PhantomMover {
     pub(super) fn enter_sprint(&mut self) {
         self.state = PhantomState::Sprint;
         self.state_timer = 0.0;
+        // ADR-050 point 5: a fresh charge always opens with a full burst, whatever the last one
+        // left behind. Re-entering SPRINT is a new decision, not a continuation.
+        self.stamina = PHANTOM_SPRINT_BURST_SECONDS;
+        self.winded_for = 0.0;
         // ADR-048 point 6: the reveal-scream is now EMITTED, not inferred by each client from the
         // `revealed` edge, so everyone hears it at the same instant.
         self.try_vocalize(VOCAL_REVEAL);
@@ -1535,6 +1570,8 @@ impl PhantomDriver {
             enraged_for: 0.0,
             hunger: derive_hunger(self.world_seed, anchor, id),
             sprint_blind_for: 0.0,
+            stamina: PHANTOM_SPRINT_BURST_SECONDS,
+            winded_for: 0.0,
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
             // otherwise breathe in unison, which reads as one big thing rather than as several.
             breath_in: PHANTOM_BREATH_MIN
@@ -2545,9 +2582,40 @@ impl PhantomDriver {
             return;
         }
 
+        // ADR-050 point 5 — BURST AND RECOVERY. Spent only here, past the hesitation and the strike:
+        // a creature holding its beat or landing a blow is not sprinting, and charging it for the
+        // stamina would make a lunge that connects blow out sooner than one that misses.
+        let winded = if self.movers[i].winded_for > 0.0 {
+            self.movers[i].winded_for -= ctx.dt;
+            if self.movers[i].winded_for <= 0.0 {
+                self.movers[i].winded_for = 0.0;
+                self.movers[i].stamina = PHANTOM_SPRINT_BURST_SECONDS;
+            }
+            true
+        } else {
+            self.movers[i].stamina -= ctx.dt;
+            if self.movers[i].stamina <= 0.0 {
+                self.movers[i].stamina = 0.0;
+                self.movers[i].winded_for = PHANTOM_SPRINT_RECOVER_SECONDS;
+                // It is already revealed and mid-chase, so this one is allowed to interrupt the
+                // ambient budget: the player has to hear the charge fail or the window is invisible.
+                self.movers[i].try_vocalize(VOCAL_WINDED);
+                info!(
+                    "MPTRACE step=PH_SPRINT event=phantom_winded phantom_id={} dist={:.1}",
+                    id, dist
+                );
+                true
+            } else {
+                false
+            }
+        };
+
         let ramp = (self.movers[i].state_timer / PHANTOM_SPRINT_RAMP).clamp(0.0, 1.0);
-        let speed = (PHANTOM_WALK_SPEED + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp)
-            * self.movers[i].speed_scale();
+        let top = match winded {
+            true => PHANTOM_SPRINT_WINDED_SPEED,
+            false => PHANTOM_WALK_SPEED + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp,
+        };
+        let speed = top * self.movers[i].speed_scale();
         let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
         let desired = Vec3::new(
             from.x + dir.x * speed * ctx.dt,
