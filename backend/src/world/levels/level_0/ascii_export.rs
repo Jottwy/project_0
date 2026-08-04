@@ -97,10 +97,10 @@ fn render_chunk_maze(layout: &ChunkLayoutV1) -> String {
             let cx = 2 * x + 1;
             let cz = 2 * z + 1;
             rows[cz][cx] = cell_symbol(layout.cell_flags(x, z), layout.zone_kind);
-            rows[cz][2 * x] = v_edge_char(layout.edge_v(x, z));
-            rows[cz][2 * x + 2] = v_edge_char(layout.edge_v(x + 1, z));
-            rows[2 * z][cx] = h_edge_char(layout.edge_h(x, z));
-            rows[2 * z + 2][cx] = h_edge_char(layout.edge_h(x, z + 1));
+            rows[cz][2 * x] = edge_char(layout.edge_v(x, z));
+            rows[cz][2 * x + 2] = edge_char(layout.edge_v(x + 1, z));
+            rows[2 * z][cx] = edge_char(layout.edge_h(x, z));
+            rows[2 * z + 2][cx] = edge_char(layout.edge_h(x, z + 1));
         }
     }
     let mut s = String::new();
@@ -111,15 +111,12 @@ fn render_chunk_maze(layout: &ChunkLayoutV1) -> String {
     s
 }
 
-fn v_edge_char(kind: u8) -> char {
-    match kind {
-        EDGE_KIND_DOOR => 'd',
-        EDGE_KIND_ARCH => 'a',
-        _ => ' ',
-    }
-}
-
-fn h_edge_char(kind: u8) -> char {
+/// Symbol for one cell edge, vertical or horizontal alike: the orientation is
+/// already carried by the position in the maze grid, not by the character, so
+/// both directions share this alphabet on purpose. If a future revision ever
+/// needs distinct symbols per orientation, split it again here — the golden
+/// slices (`level0_golden_slice.rs`) pin every char this returns.
+fn edge_char(kind: u8) -> char {
     match kind {
         EDGE_KIND_DOOR => 'd',
         EDGE_KIND_ARCH => 'a',
