@@ -1,4 +1,8 @@
 use super::*;
+// ADR-016 — la IA del robapieles se mudó a `game_loop::phantom`. Glob explícito (y no solo el
+// `use super::*` de arriba) porque el padre solo re-importa la superficie que él consume, y estas
+// pruebas ejercitan los internos: `PhantomMover`, `PhantomState`, las constantes de tuning.
+use super::phantom::*;
 
 /// Sin re-siembra, tras cargar una partida los cuatro asignadores arrancan en su base y el
 /// primer `place` reacuña un id que YA existe en el roster. Como `process_stp_demolish`
