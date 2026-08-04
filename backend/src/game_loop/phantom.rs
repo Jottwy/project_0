@@ -1024,6 +1024,46 @@ impl PhantomMover {
     }
 }
 
+/// The per-TICK half of what a state arm needs: what is the same for every mover this step.
+///
+/// Grouped instead of passed as five parameters because six state methods would each repeat the
+/// same five, and a sixth input would become a six-site edit — which is how one arm ends up reading
+/// a stale copy of something the others already updated.
+///
+/// Deliberately does NOT carry `host_player_pos`/`_rot`/`_dead`: those feed `choose_target` in the
+/// preamble and never reach an arm. Measured before writing this down, not assumed — they appear
+/// exactly zero times inside the FSM.
+struct TickCtx<'a> {
+    net: &'a mut NetworkManager,
+    dt: f32,
+    now: Instant,
+    /// Planar speed of every real target this tick, for ADR-040's sound tiers. Derived from the
+    /// position delta because peers send no velocity.
+    target_speeds: &'a HashMap<PeerId, f32>,
+    /// The HOST player's crouch. Remote peers carry their own on `PeerConnection` (ADR-020 relays
+    /// it), but the host's local player is not a peer, so it has to be handed in.
+    host_crouch: bool,
+}
+
+/// The per-MOVER half: what the preamble already resolved about THIS creature before dispatching.
+///
+/// `Copy` — five scalars and a tuple — so an arm destructures it without ceremony and nothing here
+/// can drift out of sync with the mover it describes.
+#[derive(Clone, Copy)]
+struct MoverTick {
+    /// Index into `PhantomDriver::movers`. Still an index rather than a `&mut PhantomMover` because
+    /// the arms also need `&mut self` for the driver's nav buffers and the attack fan-out; handing
+    /// out the mover would borrow the driver twice.
+    i: usize,
+    id: PeerId,
+    /// Where the creature is right now, read off its own peer.
+    from: Vec3,
+    /// grid_gen layer derived from its own Y, so collision works on any level with no hardcoding.
+    layer: u8,
+    /// Who it committed to this tick: `(id, position, distance, yaw)`. `None` = nobody in range.
+    target: Option<(PeerId, Vec3, f32, f32)>,
+}
+
 impl PhantomDriver {
     pub(super) fn new(world_seed: u64) -> Self {
         Self {
@@ -1638,6 +1678,67 @@ impl PhantomDriver {
         }
     }
 
+    // ─── The FSM, one method per state ───────────────────────────────────────────────────────────
+    //
+    // Each takes the mover's tick facts and the shared per-tick context, and is dispatched from the
+    // `match` at the bottom of `step`. They return instead of `continue`-ing, which is exactly
+    // equivalent: that `match` is the LAST statement in the loop body, so there has never been any
+    // code after it for a `continue` to skip. Anything added after the match in `step` would break
+    // that equivalence silently — put it in the post-loop pass instead.
+
+    /// SPOTTED — it has seen you, and stares. Frozen, facing you, for a randomised window before it
+    /// commits to the shadow: to STALK when the stare runs out, back to WANDER if you got far
+    /// enough away, or straight into a lunge on an unpredictable roll.
+    fn tick_spotted(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            target,
+            ..
+        } = mt;
+        let still = match target {
+            Some((_, _, dist, _)) => dist <= PHANTOM_DETECT_RADIUS * 1.5,
+            None => false,
+        };
+        if !still {
+            self.movers[i].state = PhantomState::Wander;
+            self.movers[i].state_timer = 0.0;
+            return;
+        }
+        let (_, tpos, _dist, _) = target.unwrap(); // still ⇒ Some
+        let heading = (tpos.x - from.x)
+            .atan2(tpos.z - from.z)
+            .rem_euclid(std::f32::consts::TAU);
+        self.movers[i].heading = heading;
+
+        // Stare done → STALK (checked before the random lunge so it's deterministic
+        // once the window passes).
+        if self.movers[i].state_timer >= self.movers[i].spotted_duration {
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            info!(
+                "MPTRACE step=PH_STALK event=phantom_stalk phantom_id={}",
+                id
+            );
+            return;
+        }
+        // Unpredictable lunge mid-stare (scarier when imprevisible), scaled by how
+        // erratic this particular creature is.
+        if rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].impulse() {
+            self.movers[i].enter_sprint();
+            info!(
+                "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
+                id
+            );
+            return;
+        }
+        let yaw = heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(from.to_array(), yaw, "idle".into());
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -1765,6 +1866,13 @@ impl PhantomDriver {
 
             // ADR-016 slice 3a — Stalker FSM. `state` is Copy, so the match holds no borrow.
             let state = self.movers[i].state;
+            let mt = MoverTick {
+                i,
+                id,
+                from,
+                layer: current_layer,
+                target,
+            };
             match state {
                 // ── WANDER: erratic patrol + detection. Keeps the slice-4 fake-pickup imitation,
                 // the metronomic stare tell, organic "look at a wall" pauses, and the play-test
@@ -1930,50 +2038,16 @@ impl PhantomDriver {
                 // ── SPOTTED: frozen stare. Faces the player; exits to STALK once the stare window
                 // elapses (deterministic), may unpredictably SPRINT mid-stare; loses the player
                 // (past DETECT_RADIUS*1.5) → WANDER. ──
-                PhantomState::Spotted => {
-                    let still = match target {
-                        Some((_, _, dist, _)) => dist <= PHANTOM_DETECT_RADIUS * 1.5,
-                        None => false,
-                    };
-                    if !still {
-                        self.movers[i].state = PhantomState::Wander;
-                        self.movers[i].state_timer = 0.0;
-                        continue;
-                    }
-                    let (_, tpos, _dist, _) = target.unwrap(); // still ⇒ Some
-                    let heading = (tpos.x - from.x)
-                        .atan2(tpos.z - from.z)
-                        .rem_euclid(std::f32::consts::TAU);
-                    self.movers[i].heading = heading;
-
-                    // Stare done → STALK (checked before the random lunge so it's deterministic
-                    // once the window passes).
-                    if self.movers[i].state_timer >= self.movers[i].spotted_duration {
-                        self.movers[i].state = PhantomState::Stalk;
-                        self.movers[i].state_timer = 0.0;
-                        info!(
-                            "MPTRACE step=PH_STALK event=phantom_stalk phantom_id={}",
-                            id
-                        );
-                        continue;
-                    }
-                    // Unpredictable lunge mid-stare (scarier when imprevisible), scaled by how
-                    // erratic this particular creature is.
-                    if rand::random::<f32>()
-                        < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].impulse()
-                    {
-                        self.movers[i].enter_sprint();
-                        info!(
-                            "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
-                            id
-                        );
-                        continue;
-                    }
-                    let yaw = heading.to_degrees().rem_euclid(360.0);
-                    if let Some(peer) = net.peers.get_mut(&id) {
-                        peer.update_player_state(from.to_array(), yaw, "idle".into());
-                    }
-                }
+                PhantomState::Spotted => self.tick_spotted(
+                    mt,
+                    &mut TickCtx {
+                        net: &mut *net,
+                        dt,
+                        now,
+                        target_speeds: &target_speeds,
+                        host_crouch: host_player_crouch,
+                    },
+                ),
 
                 // ── STALK: shadow the player at a held gap. Patience (or an unpredictable roll) →
                 // SPRINT; lost past LOSE_RADIUS → WANDER (slice 3b: SEARCH the last-known pos). ──
