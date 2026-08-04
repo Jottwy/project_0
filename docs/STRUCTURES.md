@@ -1,16 +1,38 @@
 # Superstructures — Authoring Guide
 
+> ## NO CONSUMIDO HOY
+>
+> El generador edge-based **no coloca superestructuras**. El método que las
+> estampaba (`TryPlaceStructures`) ya no existe en el árbol: un grep de ese
+> nombre sobre `Assets/` devuelve una sola aparición, y es un comentario en
+> `Assets/Editor/StructureValidator.cs:29-31`. Lo dice el propio código en
+> `Assets/Scripts/Gameplay/GridWorld/ProceduralWorldGenerator.cs:30-33`:
+> «Kept as the authoring contract (validated by ... StructureValidator). The
+> edge-based generator below does not place structures; the type documents the
+> format.»
+>
+> El JSON, el tipo `StructureDefinition`
+> (`ProceduralWorldGenerator.cs:36-43`) y el validador siguen vivos como
+> **contrato de autoría**, pero autorar una pieza NO la hace aparecer en el
+> mundo. El mapeo carácter → `GridCellType` tampoco existe ya en código: hoy
+> los cinco caracteres solo los fija `StructureValidator.ValidCells`
+> (`Assets/Editor/StructureValidator.cs:32-33`).
+>
+> Todo lo que este documento cuenta sobre *cuándo* y *cómo* se estampa una
+> pieza (§4, §5 y parte de §6) describe el generador retirado, no el actual.
+
 Las **superestructuras** son patrones de tiles fijos que el generador procedural
-intenta estampar sobre cada chunk antes de colocar pits y pilares. Permiten
+intentaba estampar sobre cada chunk antes de colocar pits y pilares. Permiten
 inyectar piezas reconocibles del Backrooms (atrios, cruces de pasillos, pozos
 verticales) en un mundo por lo demás aleatorio, **sin tocar código**: todo vive
 en un JSON editable por diseño.
 
 - **Fuente:** `Assets/Resources/Structures/default_structures.json`
-- **Consumidor:** `WorldGenerator.TryPlaceStructures` en
-  `Assets/Scripts/Gameplay/GridWorld/ProceduralWorldGenerator.cs`
+- **Consumidor:** ninguno hoy. `Assets/Scripts/Gameplay/GridWorld/ProceduralWorldGenerator.cs`
+  solo declara el tipo `StructureDefinition` (:36-43) como esquema del JSON.
 - **Validador:** menú `Backrooms/Validate Structures`
-  (`Assets/Editor/StructureValidator.cs`)
+  (`Assets/Editor/StructureValidator.cs`) — el único código vivo que lee el
+  formato.
 
 > Tras editar el JSON, ejecuta **siempre** `Backrooms/Validate Structures`.
 > El generador descarta en silencio celdas malformadas; el validador no.
@@ -42,8 +64,11 @@ aleatoria dentro del chunk y escribe cada celda del patrón sobre los tiles.
 ## 2. Caracteres válidos
 
 Cada celda del `pattern` es un string de **un solo carácter**. Solo estos cinco
-son válidos (mapean 1:1 con el `switch` de `TryPlaceStructures` →
-`GridCellType`):
+son válidos; los fija `StructureValidator.ValidCells`
+(`Assets/Editor/StructureValidator.cs:32-33`), hoy la única definición viva del
+juego de caracteres. La columna `GridCellType` es intención de diseño — el enum
+sigue existiendo (`Assets/Scripts/Gameplay/GridWorld/GridCell.cs:13-23`), pero ya
+no hay código que traduzca de carácter a tipo de celda:
 
 | Char | GridCellType | Caminable | Significado |
 |------|--------------|-----------|-------------|
@@ -53,9 +78,9 @@ son válidos (mapean 1:1 con el `switch` de `TryPlaceStructures` →
 | `P`  | Pillar       | no        | Columna sólida. Decorativa pero bloquea. |
 | `T`  | Pit          | sí        | Pozo: conecta verticalmente con la layer de abajo (forced-walkable). |
 
-> **No existe carácter para `Void`, `Stair` ni `Anomaly`.** El generador solo
-> reconoce `W C O P T`; cualquier otro carácter es descartado silenciosamente y
-> el validador lo marca como error. Ver §6 (Limitaciones).
+> **No existe carácter para `Void`, `Stair` ni `Anomaly`.** El juego de
+> caracteres es `W C O P T`; cualquier otro lo marca el validador como error
+> (`StructureValidator.cs:171-173`). Ver §6 (Limitaciones).
 
 ---
 
@@ -165,12 +190,14 @@ Consecuencias:
 
 ## 6. Limitaciones conocidas
 
-- **Tamaño máximo nominal: 10×10 tiles** (el chunk es 10×10). El validador
-  rechaza patrones mayores.
-- **Tamaño práctico máximo: 8×8 tiles.** `TryPlaceStructures` ancla la pieza con
-  un borde de 1 tile y exige `Tiles - cols - 1 >= 1`, es decir
-  `cols, rows ≤ 8`. Un patrón de 9 o 10 de lado pasa el validador pero **nunca
-  se coloca**. Mantén las piezas en ≤ 8×8.
+- **Tamaño máximo nominal: 10×10 tiles** (el chunk es 10×10). Es el único
+  límite que se comprueba hoy: `StructureValidator.ChunkTiles = 10`
+  (`Assets/Editor/StructureValidator.cs:35-36`) y el rechazo en
+  `StructureValidator.cs:179-181`.
+- **Tamaño práctico máximo: 8×8 tiles (histórico).** El colocador retirado
+  anclaba la pieza con un borde de 1 tile y exigía `Tiles - cols - 1 >= 1`, es
+  decir `cols, rows ≤ 8`. Ese código ya no existe, así que hoy nada impone el
+  8×8; se mantiene como convención de autoría por si el colocador vuelve.
 - **Sin recorte ni colisión entre piezas:** dos estructuras pueden solaparse en
   el mismo chunk; la segunda sobrescribe a la primera. No hay garantía de
   exclusión mutua.
