@@ -34,8 +34,8 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            EnsureFolder("Assets/Resources");
-            EnsureFolder(Folder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources");
+            BackroomsEditorFolders.EnsureFolder(Folder);
 
             var table = ScriptableObject.CreateInstance<ZoneLootTable>();
             table.profiles = ChunkLootRoll.DefaultZoneLootProfiles();
@@ -45,13 +45,6 @@ namespace BackroomsSurvival.EditorTools
             EditorUtility.FocusProjectWindow();
             Selection.activeObject = table;
             Debug.Log($"[ZoneLootTableCreator] Created '{AssetPath}' with {table.profiles.Length} default zone profiles.");
-        }
-
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path)) return;
-            int slash = path.LastIndexOf('/');
-            AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
         }
     }
 }

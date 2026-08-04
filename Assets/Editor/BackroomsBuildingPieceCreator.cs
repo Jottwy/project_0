@@ -410,11 +410,11 @@ namespace BackroomsSurvival.EditorTools
 
         private static void EnsureFolders()
         {
-            EnsureFolder("Assets/Prefabs");
-            EnsureFolder(PrefabFolder);
-            EnsureFolder("Assets/Resources");
-            EnsureFolder("Assets/Resources/Definitions");
-            EnsureFolder(DefinitionFolder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Prefabs");
+            BackroomsEditorFolders.EnsureFolder(PrefabFolder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources");
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources/Definitions");
+            BackroomsEditorFolders.EnsureFolder(DefinitionFolder);
         }
 
         private static BuildingPieceDefinition CreateDefinition(string path,
@@ -545,15 +545,6 @@ namespace BackroomsSurvival.EditorTools
         {
             if (value != null)
                 serialized.FindProperty(path).objectReferenceValue = value;
-        }
-
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path))
-                return;
-
-            int slash = path.LastIndexOf('/');
-            AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
         }
     }
 }

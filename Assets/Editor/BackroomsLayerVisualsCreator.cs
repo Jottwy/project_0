@@ -30,8 +30,8 @@ namespace BackroomsSurvival.EditorTools
         [MenuItem("Backrooms/Create Layer Visuals")]
         public static void CreateAll()
         {
-            EnsureFolder("Assets/Resources");
-            EnsureFolder(Folder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources");
+            BackroomsEditorFolders.EnsureFolder(Folder);
 
             var carpet  = Tex("CarpetBeige");
             var paper   = Tex("WallpaperYellow");
@@ -135,13 +135,6 @@ namespace BackroomsSurvival.EditorTools
             set(cfg);
             if (isNew) AssetDatabase.CreateAsset(cfg, path);
             else EditorUtility.SetDirty(cfg);
-        }
-
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path)) return;
-            int slash = path.LastIndexOf('/');
-            AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
         }
     }
 }

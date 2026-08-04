@@ -80,8 +80,10 @@ Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
 
 - `Tools/Backrooms/Fix Runtime Materials` es el único que no cuelga de la raíz `Backrooms/`.
   Unificarlo es trivial pero cambia dónde lo busca la gente; no se hizo por eso.
-- Cinco creadores llevan `EnsureFolder` **duplicado carácter por carácter**
-  (`BackroomsBuildingPieceCreator`, `BackroomsCarryableCreator`, `GridPrefabCreator`,
-  `ZoneLootTableCreator`, `BackroomsLayerVisualsCreator`). Al unificarlo, **no** lo "mejores" a
-  recursivo: `BackroomsCarryableCreator` asegura el padre a mano antes que el hijo, y una versión
-  recursiva sí cambiaría comportamiento. Tier B en `docs/AUDIT-2026-08-03.md`.
+- `EnsureFolder` ya NO está duplicado: los cinco creadores (`BackroomsBuildingPieceCreator`,
+  `BackroomsCarryableCreator`, `GridPrefabCreator`, `ZoneLootTableCreator`,
+  `BackroomsLayerVisualsCreator`) llaman a `Editor/BackroomsEditorFolders.cs`. La advertencia sigue
+  en pie: **no** lo "mejores" a recursivo — `BackroomsCarryableCreator` asegura el padre a mano antes
+  que el hijo, y una versión recursiva sí cambiaría comportamiento. `EnsureFolders()` (plural) sigue
+  siendo de cada creador: su lista de carpetas es parte de su contrato, y el de
+  `BackroomsRuntimeMaterialInstaller` / `TextureGenerator` ni siquiera parte la ruta.

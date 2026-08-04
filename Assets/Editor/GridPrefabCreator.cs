@@ -29,9 +29,9 @@ namespace BackroomsSurvival.EditorTools
         [MenuItem("Backrooms/Create Grid Prefabs")]
         public static void CreateAll()
         {
-            EnsureFolder("Assets/Resources");
-            EnsureFolder(PrefabFolder);
-            EnsureFolder(MaterialFolder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources");
+            BackroomsEditorFolders.EnsureFolder(PrefabFolder);
+            BackroomsEditorFolders.EnsureFolder(MaterialFolder);
 
             // Wall uses a custom shader with polygon Offset so its double-sided
             // side faces lose depth ties to the coplanar floor/ceiling panel edges
@@ -200,14 +200,6 @@ namespace BackroomsSurvival.EditorTools
             string path = $"{PrefabFolder}/{name}.prefab";
             PrefabUtility.SaveAsPrefabAsset(root, path);
             Object.DestroyImmediate(root);
-        }
-
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path))
-                return;
-            int slash = path.LastIndexOf('/');
-            AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
         }
     }
 }

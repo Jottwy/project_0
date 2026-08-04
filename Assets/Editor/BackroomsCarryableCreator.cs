@@ -154,11 +154,11 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            EnsureFolder("Assets/Prefabs");
-            EnsureFolder(PrefabFolder);
-            EnsureFolder("Assets/Resources");
-            EnsureFolder("Assets/Resources/Definitions");
-            EnsureFolder(DefinitionFolder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Prefabs");
+            BackroomsEditorFolders.EnsureFolder(PrefabFolder);
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources");
+            BackroomsEditorFolders.EnsureFolder("Assets/Resources/Definitions");
+            BackroomsEditorFolders.EnsureFolder(DefinitionFolder);
 
             // The definition and the prefab reference each other, so the definition is created first
             // with an empty pickup slot and wired up once the prefab exists.
@@ -359,15 +359,6 @@ namespace BackroomsSurvival.EditorTools
 
             database.SetPrefabs_Editor(SaveableDatabase.FindAllSaveableObjectPrefabs());
             EditorUtility.SetDirty(database);
-        }
-
-        private static void EnsureFolder(string path)
-        {
-            if (AssetDatabase.IsValidFolder(path))
-                return;
-
-            int slash = path.LastIndexOf('/');
-            AssetDatabase.CreateFolder(path.Substring(0, slash), path.Substring(slash + 1));
         }
     }
 }
