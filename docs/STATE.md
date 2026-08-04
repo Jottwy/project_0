@@ -2,6 +2,19 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-05 (madrugada — **primer play-test de ADR-050: tres bugs y ADR-051, la rotura de piel como evento avisado**)
+- COMMITS: `d25bb17` (bugs), `22de855` (ADR-051). `cargo test` **547/547**, cuatro assemblies C# a 0, binario **re-desplegado**.
+
+1. **TRES BUGS DEL PLAY-TEST, todos míos.** (a) El forcejeo del agarre **nunca funcionó**: usé `UnityEngine.Input` y este proyecto tiene el input handling en el **Input System package**, así que la clase legacy LANZA en cada lectura — 1427 `InvalidOperationException` en el `Editor.log`, y los ocho agarres de la partida acabaron en `grab_expired`, ninguno en `grab_broken`. (b) **Controles rotos tras respawn**: dos criaturas abrieron agarre sobre la misma víctima en el mismo segundo (23:11:53, ids 61440 y 61441) y `StartLiveGrab` no tenía guarda de reentrada, así que ponía dos tandas de `AddStateBlocker` y solo se quitaba una. (c) **Entidades en la cara al reconectar**: la activación solo tenía techo; ahora `PHANTOM_MIN_SPAWN_DISTANCE` = 35 m pone suelo, re-comprobado **después** del snap a celda caminable (que puede tirar de un sorteo de 36 m hasta 28).
+
+2. **ADR-051 — LA PIEL SE ROMPE, NO SE CAE.** `Statue` **deja de revelar**: se entraba mirando a la criatura de cerca, con el hambre sin participar, así que una saciada se destapaba porque girabas la cámara. Ese era el "a veces me está copiando y se rompe la piel". Ahora se queda quieta mirándote **vestida**.
+
+3. **Secuencia nueva**: hambrienta + observada → **`Unmasking`** (inmóvil, encarada, gritando, **sin revelar aún**) → la piel se rompe de golpe con **sangre y destello** → `Sprint`. El aviso solo entra por debajo del umbral de saciedad: **sin hambre no hay rotura**.
+
+4. **`Hunting`**: a donde vuelve un `Sprint` que no mató. Antes volvía a `Stalk`, que va vestido, y por eso la piel iba y venía en cada embestida fallida. De `Hunting` solo se sale perdiendo al jugador. **No es latch**: `revealed` se sigue derivando del estado; lo que persiste es el ESTADO, que es lo que el invariante 1 nombra como la forma correcta.
+
+5. **PENDIENTE, decidido pero SIN implementar** (Joel eligió ambas): el **rastreo predictivo** (que proyecte hacia dónde ibas y barra varios puntos, en vez de ir al último punto exacto) y **insistir enfurece** (dispararle mientras huye la revuelve aunque esté saciada). Siguen valiendo las palancas `env_tuning` y el rescate por terceros de la tanda anterior.
+
 - Fecha: 2026-08-04 (noche — **rediseño del robapieles: ADR-050, 9 commits, del "está un poco y ataca" al hambre como motor**)
 - COMMITS: `c8aa8e4` (ADR-050), `28156da`, `3c4fb22`, `bce1b2a`, `2fc66bf` (tanda 1), `d04f895` (hambre), `eb730f8` (aguante), `0dd5020` (saciado/Flee), `3c9559f` (agarre backend), `1c56a77` (agarre cliente). **Wire 19 → 20** (`docs/systems/ipc-wire-schema.md` tiene la entrada v20). `cargo test` **544/544**, fmt y clippy limpios, cuatro assemblies C# a 0 errores. **Binario release RE-DESPLEGADO** a `Builds/Backend/` (símbolos verificados con `grep -aoc`).
 
