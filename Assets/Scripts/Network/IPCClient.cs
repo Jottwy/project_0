@@ -414,6 +414,36 @@ namespace BackroomsSurvival.Net
 
         // ─────────────────────────── Sending (main thread) ───────────────────────────
 
+        /// <summary>
+        /// Escribe un Vector3 como el array msgpack de 3 floats [x, y, z] que espera el backend.
+        /// La CLAVE la escribe el sitio de llamada: el orden de claves del mapa es contrato de
+        /// wire y tiene que seguir viendose en linea. Byte a byte identico a las copias a mano
+        /// que sustituye - mismo WriteArrayHeader(3) y los mismos tres WriteFloat en el mismo
+        /// orden x, y, z.
+        /// </summary>
+        private static void WriteVec3(MsgPackWriter w, Vector3 v)
+        {
+            w.WriteArrayHeader(3);
+            w.WriteFloat(v.x); w.WriteFloat(v.y); w.WriteFloat(v.z);
+        }
+
+        /// <summary>
+        /// Escribe la lista de stacks de loot como array de mapas {item_id, quantity} - la forma
+        /// compartida por report_death_loot, report_inventory y spawn_world_chest. La clave
+        /// ("items") la escribe el sitio de llamada, igual que en WriteVec3. Conserva el
+        /// `items?.Count ?? 0` tolerante a null de las tres copias: lista nula = array vacio.
+        /// </summary>
+        private static void WriteLootStacks(MsgPackWriter w, IReadOnlyList<CorpseLootStack> items)
+        {
+            w.WriteArrayHeader(items?.Count ?? 0);
+            for (int i = 0; i < (items?.Count ?? 0); i++)
+            {
+                w.WriteMapHeader(2);
+                w.WriteString("item_id"); w.WriteInt(items[i].itemId);
+                w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+            }
+        }
+
         /// <summary>Send a per-frame player input packet to the backend.</summary>
         public void SendInput(Vector3 movement, Vector2 lookDelta, bool sprint, IList<string> actions = null)
         {
@@ -421,8 +451,7 @@ namespace BackroomsSurvival.Net
             int fieldCount = 5;
             w.WriteMapHeader(fieldCount);
             w.WriteString("type"); w.WriteString("input");
-            w.WriteString("movement"); w.WriteArrayHeader(3);
-            w.WriteFloat(movement.x); w.WriteFloat(movement.y); w.WriteFloat(movement.z);
+            w.WriteString("movement"); WriteVec3(w, movement);
             w.WriteString("look_delta"); w.WriteArrayHeader(2);
             w.WriteFloat(lookDelta.x); w.WriteFloat(lookDelta.y);
             w.WriteString("sprint"); w.WriteBool(sprint);
@@ -463,8 +492,7 @@ namespace BackroomsSurvival.Net
             w.WriteString("type"); w.WriteString("input"); fields++;
             // Legacy fields kept zeroed (the server ignores them when input_seq != 0,
             // but they are non-optional in the wire schema and must be present).
-            w.WriteString("movement"); w.WriteArrayHeader(3);
-            w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f); fields++;
+            w.WriteString("movement"); WriteVec3(w, Vector3.zero); fields++;
             w.WriteString("look_delta"); w.WriteArrayHeader(2);
             w.WriteFloat(0f); w.WriteFloat(0f); fields++;
             w.WriteString("sprint"); w.WriteBool(moveState == 2); fields++;
@@ -472,10 +500,8 @@ namespace BackroomsSurvival.Net
             // ADR-009 prediction fields.
             w.WriteString("input_seq"); w.WriteInt(inputSeq); fields++;
             w.WriteString("client_tick"); w.WriteInt(clientTick); fields++;
-            w.WriteString("position"); w.WriteArrayHeader(3);
-            w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z); fields++;
-            w.WriteString("velocity"); w.WriteArrayHeader(3);
-            w.WriteFloat(velocity.x); w.WriteFloat(velocity.y); w.WriteFloat(velocity.z); fields++;
+            w.WriteString("position"); WriteVec3(w, position); fields++;
+            w.WriteString("velocity"); WriteVec3(w, velocity); fields++;
             w.WriteString("move_state"); w.WriteInt(moveState); fields++;
             w.WriteString("look"); w.WriteArrayHeader(2);
             w.WriteFloat(pitch); w.WriteFloat(yaw); fields++;
@@ -650,8 +676,7 @@ namespace BackroomsSurvival.Net
         {
             SendActionFrame(ProtocolActionTypes.ReportNoise, 2, w =>
             {
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("position"); WriteVec3(w, position);
                 w.WriteString("loudness"); w.WriteFloat(loudness);
             });
         }
@@ -680,13 +705,7 @@ namespace BackroomsSurvival.Net
                 for (int i = 0; i < 4; i++)
                     w.WriteInt(equipment != null && i < equipment.Length ? equipment[i] : 0);
                 w.WriteString("held_item"); w.WriteInt(heldItem);
-                w.WriteString("items"); w.WriteArrayHeader(items?.Count ?? 0);
-                for (int i = 0; i < (items?.Count ?? 0); i++)
-                {
-                    w.WriteMapHeader(2);
-                    w.WriteString("item_id"); w.WriteInt(items[i].itemId);
-                    w.WriteString("quantity"); w.WriteInt(items[i].quantity);
-                }
+                w.WriteString("items"); WriteLootStacks(w, items);
             });
         }
 
@@ -706,13 +725,7 @@ namespace BackroomsSurvival.Net
         {
             SendActionFrame(ProtocolActionTypes.ReportInventory, 1, w =>
             {
-                w.WriteString("items"); w.WriteArrayHeader(items?.Count ?? 0);
-                for (int i = 0; i < (items?.Count ?? 0); i++)
-                {
-                    w.WriteMapHeader(2);
-                    w.WriteString("item_id"); w.WriteInt(items[i].itemId);
-                    w.WriteString("quantity"); w.WriteInt(items[i].quantity);
-                }
+                w.WriteString("items"); WriteLootStacks(w, items);
             });
         }
 
@@ -721,15 +734,8 @@ namespace BackroomsSurvival.Net
             SendActionFrame(ProtocolActionTypes.SpawnWorldChest, 3, w =>
             {
                 w.WriteString("request_id"); w.WriteInt(requestId);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
-                w.WriteString("items"); w.WriteArrayHeader(items?.Count ?? 0);
-                for (int i = 0; i < (items?.Count ?? 0); i++)
-                {
-                    w.WriteMapHeader(2);
-                    w.WriteString("item_id"); w.WriteInt(items[i].itemId);
-                    w.WriteString("quantity"); w.WriteInt(items[i].quantity);
-                }
+                w.WriteString("position"); WriteVec3(w, position);
+                w.WriteString("items"); WriteLootStacks(w, items);
             });
         }
 
@@ -769,13 +775,10 @@ namespace BackroomsSurvival.Net
                 w.WriteString("victim_id"); w.WriteInt(victimId);
                 w.WriteString("weapon_id"); w.WriteInt(weaponId);
                 w.WriteString("damage"); w.WriteFloat(damage);
-                w.WriteString("origin"); w.WriteArrayHeader(3);
-                w.WriteFloat(origin.x); w.WriteFloat(origin.y); w.WriteFloat(origin.z);
-                w.WriteString("direction"); w.WriteArrayHeader(3);
-                w.WriteFloat(direction.x); w.WriteFloat(direction.y); w.WriteFloat(direction.z);
+                w.WriteString("origin"); WriteVec3(w, origin);
+                w.WriteString("direction"); WriteVec3(w, direction);
                 w.WriteString("client_tick"); w.WriteInt(clientTick);
-                w.WriteString("hit_position"); w.WriteArrayHeader(3);
-                w.WriteFloat(hitPosition.x); w.WriteFloat(hitPosition.y); w.WriteFloat(hitPosition.z);
+                w.WriteString("hit_position"); WriteVec3(w, hitPosition);
             });
             if (!sent)
             {
@@ -795,8 +798,7 @@ namespace BackroomsSurvival.Net
                 w.WriteString("target_id"); w.WriteInt(targetId);
                 w.WriteString("target_kind"); w.WriteString(targetKind);
                 w.WriteString("interaction_type"); w.WriteString(interactionType);
-                w.WriteString("player_position"); w.WriteArrayHeader(3);
-                w.WriteFloat(playerPosition.x); w.WriteFloat(playerPosition.y); w.WriteFloat(playerPosition.z);
+                w.WriteString("player_position"); WriteVec3(w, playerPosition);
             });
         }
 
@@ -816,8 +818,7 @@ namespace BackroomsSurvival.Net
                     w.WriteString("id"); w.WriteInt(it.id);
                     w.WriteString("def_id"); w.WriteInt(it.defId);
                     w.WriteString("count"); w.WriteInt(it.count);
-                    w.WriteString("position"); w.WriteArrayHeader(3);
-                    w.WriteFloat(it.position.x); w.WriteFloat(it.position.y); w.WriteFloat(it.position.z);
+                    w.WriteString("position"); WriteVec3(w, it.position);
                     w.WriteString("rotation"); w.WriteFloat(it.rotation);
                 }
             });
@@ -848,8 +849,7 @@ namespace BackroomsSurvival.Net
                 w.WriteString("drop_id"); w.WriteInt(dropId);
                 w.WriteString("def_id"); w.WriteInt(defId);
                 w.WriteString("count"); w.WriteInt(count);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("position"); WriteVec3(w, position);
                 w.WriteString("rotation"); w.WriteFloat(rotation);
             });
         }
@@ -865,8 +865,7 @@ namespace BackroomsSurvival.Net
             {
                 w.WriteString("place_id"); w.WriteInt(placeId);
                 w.WriteString("def_id"); w.WriteInt(defId);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("position"); WriteVec3(w, position);
                 w.WriteString("rotation"); w.WriteFloat(rotation);
                 w.WriteString("group_id"); w.WriteInt(groupId);
                 w.WriteString("is_group"); w.WriteBool(isGroup);
@@ -920,8 +919,7 @@ namespace BackroomsSurvival.Net
                     w.WriteMapHeader(4);
                     w.WriteString("id"); w.WriteInt(c.id);
                     w.WriteString("def_id"); w.WriteInt(c.defId);
-                    w.WriteString("position"); w.WriteArrayHeader(3);
-                    w.WriteFloat(c.position.x); w.WriteFloat(c.position.y); w.WriteFloat(c.position.z);
+                    w.WriteString("position"); WriteVec3(w, c.position);
                     w.WriteString("rotation"); w.WriteFloat(c.rotation);
                 }
             });
@@ -950,8 +948,7 @@ namespace BackroomsSurvival.Net
             {
                 w.WriteString("drop_id"); w.WriteInt(dropId);
                 w.WriteString("def_id"); w.WriteInt(defId);
-                w.WriteString("position"); w.WriteArrayHeader(3);
-                w.WriteFloat(position.x); w.WriteFloat(position.y); w.WriteFloat(position.z);
+                w.WriteString("position"); WriteVec3(w, position);
                 w.WriteString("rotation"); w.WriteFloat(rotation);
             });
         }
@@ -970,8 +967,7 @@ namespace BackroomsSurvival.Net
                     var h = harvestables[i];
                     w.WriteMapHeader(2);
                     w.WriteString("id"); w.WriteInt(h.id);
-                    w.WriteString("position"); w.WriteArrayHeader(3);
-                    w.WriteFloat(h.position.x); w.WriteFloat(h.position.y); w.WriteFloat(h.position.z);
+                    w.WriteString("position"); WriteVec3(w, h.position);
                 }
             });
         }
