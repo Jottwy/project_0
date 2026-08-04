@@ -2531,10 +2531,7 @@ impl PhantomDriver {
         host_dead: bool,
     ) -> Option<MoverTick> {
         let id = self.movers[i].id;
-        let from = match ctx.net.peers.get(&id) {
-            Some(p) => Vec3::from_array(p.position),
-            None => return None, // phantom no longer present
-        };
+        let from = Vec3::from_array(ctx.net.peers.get(&id)?.position);
         // The grid_gen layer to collide against, derived from the phantom's own Y (works on
         // every layer without a hardcoded layer).
         let current_layer = world_pos_to_layer(from.y);
