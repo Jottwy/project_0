@@ -241,14 +241,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return 1f - Mathf.Clamp01((absGap - _groundSnapMax) / span);
         }
 
-        private Transform FindBone(string boneName)
-        {
-            foreach (var t in GetComponentsInChildren<Transform>(true))
-            {
-                if (t.name == boneName)
-                    return t;
-            }
-            return null;
-        }
+        private Transform FindBone(string boneName) => ProxyRigUtil.FindBone(transform, boneName);
     }
 }

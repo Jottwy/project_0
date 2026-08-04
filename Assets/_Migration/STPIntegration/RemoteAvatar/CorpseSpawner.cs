@@ -550,8 +550,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return null;
 
             var instance = Instantiate(pickup.gameObject, hand, false);
-            NeutralizeToVisualOnly(instance);
-            SetLayerRecursive(instance, hand.gameObject.layer);
+            ProxyRigUtil.NeutralizeToVisualOnly(instance);
+            ProxyRigUtil.SetLayerRecursive(instance, hand.gameObject.layer);
 
             string category = def.ParentGroup != null ? def.ParentGroup.Name : "";
             var grip = ResolveGripPoseSet()?.Resolve(category);
@@ -577,32 +577,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return _gripPoses;
         }
 
-        private static Transform FindBoneByName(Transform root, string name)
-        {
-            foreach (var tr in root.GetComponentsInChildren<Transform>(true))
-            {
-                if (tr.name == name)
-                    return tr;
-            }
-            return null;
-        }
-
-        private static void NeutralizeToVisualOnly(GameObject go)
-        {
-            foreach (var rb in go.GetComponentsInChildren<Rigidbody>(true))
-                Destroy(rb);
-            foreach (var col in go.GetComponentsInChildren<Collider>(true))
-                Destroy(col);
-            foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
-                Destroy(mb);
-        }
-
-        private static void SetLayerRecursive(GameObject go, int layer)
-        {
-            go.layer = layer;
-            foreach (Transform child in go.transform)
-                SetLayerRecursive(child.gameObject, layer);
-        }
+        private static Transform FindBoneByName(Transform root, string name) =>
+            ProxyRigUtil.FindBone(root, name);
 
         private GameObject ResolveTemplate()
         {

@@ -181,21 +181,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return view.meleeSeq;
         }
 
-        private static void ApplyBend(Transform bone, float degrees, Vector3 axis)
-        {
-            if (bone == null || Mathf.Approximately(degrees, 0f))
-                return;
-            bone.rotation = Quaternion.AngleAxis(degrees, axis) * bone.rotation;
-        }
+        private static void ApplyBend(Transform bone, float degrees, Vector3 axis) =>
+            ProxyRigUtil.ApplyBend(bone, degrees, axis);
 
-        private Transform FindBone(string boneName)
-        {
-            foreach (var t in GetComponentsInChildren<Transform>(true))
-            {
-                if (t.name == boneName)
-                    return t;
-            }
-            return null;
-        }
+        private Transform FindBone(string boneName) => ProxyRigUtil.FindBone(transform, boneName);
     }
 }

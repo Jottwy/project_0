@@ -162,12 +162,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             ApplyBend(_forearmL, -_forearmFold * w, axis);
         }
 
-        private static void ApplyBend(Transform bone, float degrees, Vector3 axis)
-        {
-            if (bone == null || Mathf.Approximately(degrees, 0f))
-                return;
-            bone.rotation = Quaternion.AngleAxis(degrees, axis) * bone.rotation;
-        }
+        private static void ApplyBend(Transform bone, float degrees, Vector3 axis) =>
+            ProxyRigUtil.ApplyBend(bone, degrees, axis);
 
         /// <summary>Placement of the stack, re-applied every frame so editing the CarryPoseSet
         /// calibrates live during Play.</summary>
@@ -203,7 +199,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 var go = Instantiate(pickup.gameObject, _hand, false);
                 NeutralizeToVisualOnly(go);
-                SetLayerRecursive(go, _hand.gameObject.layer);
+                ProxyRigUtil.SetLayerRecursive(go, _hand.gameObject.layer);
                 _instances.Add(go);
             }
         }
@@ -220,25 +216,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// </summary>
         private static void NeutralizeToVisualOnly(GameObject go)
         {
-            foreach (var rb in go.GetComponentsInChildren<Rigidbody>(true))
-                Destroy(rb);
-            foreach (var col in go.GetComponentsInChildren<Collider>(true))
-                Destroy(col);
-            foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
-                Destroy(mb);
+            ProxyRigUtil.NeutralizeToVisualOnly(go);
             foreach (var renderer in go.GetComponentsInChildren<Renderer>(true))
                 renderer.shadowCastingMode = ShadowCastingMode.Off;
         }
 
         private static Vector3 SafeScale(Vector3 s) =>
             (s.x == 0f && s.y == 0f && s.z == 0f) ? Vector3.one : s;
-
-        private static void SetLayerRecursive(GameObject go, int layer)
-        {
-            go.layer = layer;
-            foreach (Transform child in go.transform)
-                SetLayerRecursive(child.gameObject, layer);
-        }
 
         private void ClearInstances()
         {

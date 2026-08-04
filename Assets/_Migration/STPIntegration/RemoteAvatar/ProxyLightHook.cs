@@ -115,14 +115,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return true;
         }
 
-        private Transform FindBone(string boneName)
-        {
-            foreach (var t in GetComponentsInChildren<Transform>(true))
-            {
-                if (t.name == boneName)
-                    return t;
-            }
-            return null;
-        }
+        private Transform FindBone(string boneName) => ProxyRigUtil.FindBone(transform, boneName);
     }
 }

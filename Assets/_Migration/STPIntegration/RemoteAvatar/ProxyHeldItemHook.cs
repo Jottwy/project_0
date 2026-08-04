@@ -146,22 +146,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return null; // unknown item / no world model → empty hands (graceful)
 
             var go = Instantiate(pickup.gameObject, _hand, false);
-            NeutralizeToVisualOnly(go);
-            SetLayerRecursive(go, _hand.gameObject.layer);
+            ProxyRigUtil.NeutralizeToVisualOnly(go);
+            ProxyRigUtil.SetLayerRecursive(go, _hand.gameObject.layer);
             return go; // placement is applied in LateUpdate (live-calibratable)
-        }
-
-        // Strip every non-visual component so the pickup becomes an inert prop: no physics, no
-        // interaction, no pooling. MeshFilter/MeshRenderer/LODGroup are not MonoBehaviours, so
-        // they survive; the static mesh (with LODs) is exactly what we want to render.
-        private static void NeutralizeToVisualOnly(GameObject go)
-        {
-            foreach (var rb in go.GetComponentsInChildren<Rigidbody>(true))
-                Destroy(rb);
-            foreach (var col in go.GetComponentsInChildren<Collider>(true))
-                Destroy(col);
-            foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
-                Destroy(mb);
         }
 
         private static void ApplyCurl(Transform[] bones, Quaternion[] bind, float curlDeg, Vector3 axis)
@@ -180,13 +167,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             // A zero/uninitialized scale would hide the model; fall back to unit scale.
             return (s.x == 0f && s.y == 0f && s.z == 0f) ? Vector3.one : s;
-        }
-
-        private static void SetLayerRecursive(GameObject go, int layer)
-        {
-            go.layer = layer;
-            foreach (Transform child in go.transform)
-                SetLayerRecursive(child.gameObject, layer);
         }
 
         private void ClearInstance()
