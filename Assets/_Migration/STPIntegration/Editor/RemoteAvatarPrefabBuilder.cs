@@ -1,7 +1,6 @@
 #if UNITY_EDITOR
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using PolymindGames;
 using UnityEditor;
 using UnityEngine;
@@ -701,38 +700,31 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var bodyProp = so.FindProperty("_realFormBody");
             if (bodyProp != null)
                 bodyProp.objectReferenceValue = body;
-            SeedScreamClips(so);
+            ClearScreamClips(so);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
-        // Seeds the procedurally-generated screams, and ONLY when the array is empty — a re-bake must
-        // never overwrite clips chosen by hand, same rule as the GripPoseSet asset and the V1 reveal
-        // material. Unlike the gunshots (ADR-042, which ship empty because nothing in the project can
-        // mint a correct default), these exist in the repo, so the reveal is audible from the first bake.
-        private static void SeedScreamClips(SerializedObject hookSo)
+        // ADR-050: the bake CLEARS this array instead of seeding it, and that inversion is the fix
+        // for a duplicated scream.
+        //
+        // ADR-048 moved the reveal sound to the backend: it emits `vocal_kind = 0` on entering
+        // SPRINT and ProxyVocalHook plays it, so every client hears it at the same instant instead
+        // of each one inferring it from its own reception of the `revealed` level. ProxyRevealHook
+        // kept its own Scream() as a fallback for prefabs not yet re-baked with the vocal hook, and
+        // its comment asks for `_screamClips` to be left EMPTY once that hook is wired — but this
+        // builder never applied it. WireVocalHook and WireRevealHook run in the same bake, three
+        // lines apart, and the baked prefab ended up with 5 clips here and the same three GUIDs in
+        // ProxyVocalHook's bank 0. Result: on the ordinary reveal path (Stalk into Sprint) BOTH
+        // sources fired on the same transition, from two AudioSources with different cutoffs.
+        //
+        // Clearing rather than "seed only when empty" on purpose: what is in there today is
+        // machine-seeded, not chosen by hand, so there is no authored decision to protect.
+        private static void ClearScreamClips(SerializedObject hookSo)
         {
             var clips = hookSo.FindProperty("_screamClips");
-            if (clips == null || clips.arraySize > 0)
+            if (clips == null || clips.arraySize == 0)
                 return;
-
-            var guids = AssetDatabase.FindAssets("t:AudioClip", new[] { PhantomRealFormBuilder.ScreamDir });
-            if (guids.Length == 0)
-            {
-                Debug.LogWarning($"[RemoteAvatarPrefabBuilder] No AudioClip under " +
-                    $"'{PhantomRealFormBuilder.ScreamDir}'; the reveal will be SILENT.");
-                return;
-            }
-
-            // Sorted: the baked order must not depend on FindAssets' enumeration, or two machines
-            // produce prefabs that differ for no reason.
-            foreach (var path in guids.Select(AssetDatabase.GUIDToAssetPath).OrderBy(p => p))
-            {
-                var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
-                if (clip == null)
-                    continue;
-                clips.InsertArrayElementAtIndex(clips.arraySize);
-                clips.GetArrayElementAtIndex(clips.arraySize - 1).objectReferenceValue = clip;
-            }
+            clips.ClearArray();
         }
 
         // ADR-042: adds the footstep hook. It reads NO networked field — position and the world under
