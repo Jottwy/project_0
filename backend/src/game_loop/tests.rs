@@ -227,6 +227,39 @@ fn phantom_reveals_only_in_sprint_and_statue() {
     // SEARCH does NOT reveal: it has lost you, so it puts the skin back on and goes looking.
     // A revealed creature wandering around searching would give away its own game.
     assert!(!phantom_reveals(PhantomState::Search));
+    // ADR-050 point 7 — FLEE does NOT reveal either, and this one is a decision rather than an
+    // omission. A peer that bolts when a gun goes off next to it is precisely what a real player
+    // would do, so keeping the skin on means you never quite know whether you startled a teammate
+    // or the thing wearing his face. That ambiguity is what ADR-016 exists to protect.
+    assert!(!phantom_reveals(PhantomState::Flee));
+
+    // And the guard that makes this test worth having: `phantom_reveals` is a `matches!`, so a
+    // variant added later would default to "does not reveal" and every assertion above would still
+    // pass without ever mentioning it. Enumerating exhaustively here is what forces the decision.
+    for state in [
+        PhantomState::Wander,
+        PhantomState::Spotted,
+        PhantomState::Stalk,
+        PhantomState::Statue,
+        PhantomState::Sprint,
+        PhantomState::Search,
+        PhantomState::Flee,
+    ] {
+        // Exhaustive `match` with no wildcard: adding a variant stops compiling right here.
+        let expected = match state {
+            PhantomState::Sprint | PhantomState::Statue => true,
+            PhantomState::Wander
+            | PhantomState::Spotted
+            | PhantomState::Stalk
+            | PhantomState::Search
+            | PhantomState::Flee => false,
+        };
+        assert_eq!(
+            phantom_reveals(state),
+            expected,
+            "{state:?} disagrees with the declared reveal set"
+        );
+    }
 }
 
 #[test]
@@ -731,6 +764,7 @@ async fn phantom_driver_walks_via_grid_cache_far_from_host() {
             0.0,
             false,
             false,
+            0,
         );
     }
 
@@ -766,7 +800,7 @@ async fn phantom_transitions_wander_to_spotted_in_radius() {
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let player = Vec3::new(6.0, 1.8, 0.0); // 6 m ahead (+X): inside radius and cone
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -795,7 +829,7 @@ async fn phantom_stays_wander_when_player_beyond_radius() {
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     let player = Vec3::new(100.0, 1.8, 0.0); // far beyond the detect/lose radius
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -820,7 +854,7 @@ async fn phantom_spotted_to_stalk_after_duration() {
     driver.movers[0].state_timer = 10.0;
     let player = Vec3::new(6.0, 1.8, 0.0); // inside DETECT_RADIUS*1.5
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -852,7 +886,7 @@ async fn phantom_sprints_after_patience_exceeded() {
     driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE + 5.0;
     let player = Vec3::new(6.0, 1.8, 0.0);
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -891,7 +925,7 @@ async fn phantom_fake_pickup_touches_only_animation_not_real_state() {
     // is watching without being detected — which is exactly the case the gesture exists for.
     let audience = Vec3::new(spawn_pos[0], spawn_pos[1], spawn_pos[2] + 20.0);
 
-    driver.step(&mut net, 0.1, audience, 0.0, false, false);
+    driver.step(&mut net, 0.1, audience, 0.0, false, false, 0);
 
     // It IS faking the gesture: the presentation flank is "pickup"…
     assert_eq!(
@@ -1175,7 +1209,7 @@ async fn phantom_statue_freezes_when_player_looks() {
     let player = Vec3::new(6.0, 1.8, 0.0); // close, inside STATUE_RANGE
     let player_yaw = 270.0; // faces -X, i.e. toward the phantom near the origin
 
-    driver.step(&mut net, 0.1, player, player_yaw, false, false);
+    driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -1197,7 +1231,7 @@ async fn phantom_statue_releases_to_stalk_when_player_looks_away() {
     let player = Vec3::new(6.0, 1.8, 0.0); // close, inside LOSE_RADIUS
     let player_yaw = 90.0; // faces +X, AWAY from the phantom
 
-    driver.step(&mut net, 0.1, player, player_yaw, false, false);
+    driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -1298,7 +1332,7 @@ async fn a_sprint_into_a_built_wall_registers_as_blocked() {
     // clear the very counter this asserts on — that give-up is tested separately.
     let player = Vec3::new(here.x + 12.0, 1.8, here.z);
     for _ in 0..20 {
-        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
     }
 
     assert!(
@@ -1380,7 +1414,7 @@ async fn a_searching_creature_shrieks_without_dropping_its_disguise() {
     // Inside the shriek range but well outside the 15 m sight cone behind it.
     let player = Vec3::new(here.x - 16.0, 1.8, here.z);
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     let peer = &net.peers[&pid];
     assert_ne!(peer.vocal_seq, 0, "closing on a player must make a sound");
@@ -1393,7 +1427,7 @@ async fn a_searching_creature_shrieks_without_dropping_its_disguise() {
     // Cooldown: it does not turn into a siren while it keeps approaching.
     let seq = peer.vocal_seq;
     for _ in 0..10 {
-        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
     }
     assert_eq!(
         net.peers[&pid].vocal_seq, seq,
@@ -1426,7 +1460,7 @@ async fn a_stalker_breathes_and_the_breath_never_mutes_a_scream() {
     let here = Vec3::from_array(net.peers[&pid].position);
     let player = Vec3::new(here.x + 9.0, 1.8, here.z);
 
-    driver.step(&mut net, 0.1, player, 90.0, false, false);
+    driver.step(&mut net, 0.1, player, 90.0, false, false, 0);
 
     assert_eq!(net.peers[&pid].vocal_kind, VOCAL_STALK_BREATH);
     assert_ne!(net.peers[&pid].vocal_seq, 0);
@@ -1507,6 +1541,7 @@ async fn a_distant_shot_is_answered_and_a_close_one_only_grunted() {
             0.0,
             false,
             false,
+            0,
         );
 
         assert_eq!(
@@ -1574,7 +1609,7 @@ async fn a_kill_leaves_it_sated_and_it_roars_once() {
     let player = Vec3::new(here.x + 1.0, 1.8, here.z);
 
     // Facing +X, i.e. AWAY from the creature to its west → killed from behind.
-    let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false);
+    let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false, 0);
 
     assert!(
         attacks.iter().any(|a| a.kind == PhantomAttackKind::Kill),
@@ -1621,7 +1656,15 @@ async fn a_real_peer_never_vocalises() {
     );
     let mut driver = PhantomDriver::new(42);
 
-    driver.step(&mut net, 0.1, Vec3::new(0.0, 1.8, 0.0), 0.0, false, false);
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(0.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
 
     assert_eq!(net.peers[&joiner_id].vocal_seq, 0);
     assert_eq!(net.peers[&joiner_id].vocal_kind, 0);
@@ -1740,7 +1783,7 @@ async fn a_strike_reaches_further_than_the_body_can_travel() {
         .to_degrees()
         .rem_euclid(360.0);
 
-    let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, false);
+    let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
 
     assert_eq!(
         attacks.len(),
@@ -1773,7 +1816,7 @@ async fn extra_reach_never_strikes_through_a_wall() {
     });
     let player = Vec3::new(here.x + 2.3, 1.8, here.z);
 
-    let attacks = driver.step(&mut net, 0.1, player, 270.0, false, false);
+    let attacks = driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
 
     assert!(
         attacks.is_empty(),
@@ -1795,7 +1838,7 @@ async fn a_wedged_lunge_eventually_gives_up_instead_of_grinding_forever() {
     let here = Vec3::from_array(net.peers[&pid].position);
     let player = Vec3::new(here.x + 12.0, 1.8, here.z);
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -1819,7 +1862,7 @@ async fn a_hesitating_lunge_holds_still_before_it_comes() {
     let here = Vec3::from_array(net.peers[&pid].position);
     let player = Vec3::new(here.x + 10.0, 1.8, here.z);
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     let after = Vec3::from_array(net.peers[&pid].position);
     assert!(
@@ -1833,7 +1876,7 @@ async fn a_hesitating_lunge_holds_still_before_it_comes() {
 
     // It is a beat, not a stall: once it expires the creature closes.
     for _ in 0..8 {
-        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
     }
     let moved = Vec3::from_array(net.peers[&pid].position);
     assert!(
@@ -1864,7 +1907,7 @@ async fn phantom_stops_hunting_a_dead_player() {
     let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east, inside the 1.5 m strike
     let player_yaw = 270.0; // faces -X, i.e. looking straight at it
 
-    let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, true);
+    let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, true, 0);
 
     assert!(
         attacks.is_empty(),
@@ -1892,7 +1935,7 @@ async fn phantom_still_strikes_a_living_player_at_point_blank() {
     let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]);
     let player_yaw = 270.0;
 
-    let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, false);
+    let attacks = driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
 
     assert_eq!(attacks.len(), 1, "a living player at point blank gets hit");
     assert_eq!(attacks[0].victim, net.local_id);
@@ -1917,7 +1960,7 @@ async fn phantom_sound_detection_hears_running_player_outside_cone() {
         .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
     let player = Vec3::new(-18.0, 1.8, 0.0);
 
-    driver.step(&mut net, 0.1, player, 0.0, false, false);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert_eq!(
         driver.movers[0].state,
@@ -1949,7 +1992,7 @@ async fn crouching_mutes_the_sound_channel() {
         .insert(net.local_id, Vec3::new(-19.0, 1.8, 0.0));
     let player = Vec3::new(-18.0, 1.8, 0.0);
 
-    driver.step(&mut net, 0.1, player, 0.0, true, false); // crouched
+    driver.step(&mut net, 0.1, player, 0.0, true, false, 0); // crouched
 
     assert_eq!(
         driver.movers[0].state,
@@ -1975,7 +2018,7 @@ async fn walking_is_heard_only_close_by() {
         driver
             .prev_target_pos
             .insert(net.local_id, Vec3::new(-dist - 0.2, 1.8, 0.0)); // 2 m/s
-        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
         let heard = driver.movers[0].state != PhantomState::Wander;
         assert_eq!(
@@ -2006,6 +2049,7 @@ async fn a_noise_within_earshot_starts_an_investigation() {
         0.0,
         false,
         false,
+        0,
     );
 
     assert_eq!(driver.movers[0].state, PhantomState::Search);
@@ -2039,6 +2083,7 @@ async fn a_noise_beyond_earshot_is_ignored() {
         0.0,
         false,
         false,
+        0,
     );
 
     assert_eq!(driver.movers[0].state, PhantomState::Wander);
@@ -2108,6 +2153,7 @@ async fn losing_the_target_starts_a_search_not_amnesia() {
         0.0,
         false,
         false,
+        0,
     );
 
     assert_eq!(
@@ -2140,6 +2186,7 @@ async fn search_gives_up_and_forgets_after_its_patience() {
         0.0,
         false,
         false,
+        0,
     );
 
     assert_eq!(driver.movers[0].state, PhantomState::Wander);
@@ -2186,7 +2233,7 @@ async fn phantom_sprint_kills_from_behind() {
     let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
     let player_yaw = 90.0; // faces +X, AWAY from the phantom (to its west) → not looking
 
-    let attack = driver.step(&mut net, 0.1, player, player_yaw, false, false);
+    let attack = driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
 
     assert_eq!(
         attack,
@@ -2225,7 +2272,7 @@ async fn phantom_attacking_a_joiner_names_the_joiner_not_the_host() {
     driver.movers[0].state = PhantomState::Sprint;
 
     let host_far = Vec3::new(ppos[0] + 500.0, 1.8, ppos[2]);
-    let attacks = driver.step(&mut net, 0.1, host_far, 0.0, false, false);
+    let attacks = driver.step(&mut net, 0.1, host_far, 0.0, false, false, 0);
 
     assert_eq!(attacks.len(), 1, "expected one strike, got {attacks:?}");
     assert_eq!(
@@ -2362,7 +2409,7 @@ async fn phantom_sprint_hits_from_front() {
     let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]); // ~1 m east: point-blank
     let player_yaw = 270.0; // faces -X, TOWARD the phantom → looking
 
-    let attack = driver.step(&mut net, 0.1, player, player_yaw, false, false);
+    let attack = driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
 
     assert!(
         matches!(attack, [PhantomAttack { victim, kind: PhantomAttackKind::Hit(d) }]
@@ -2393,7 +2440,7 @@ async fn a_strike_does_not_end_the_lunge_on_the_same_tick() {
     let player_yaw = 270.0; // looking at it → a Hit, not a Kill
 
     let first = driver
-        .step(&mut net, 0.1, player, player_yaw, false, false)
+        .step(&mut net, 0.1, player, player_yaw, false, false, 0)
         .len();
     assert_eq!(first, 1, "the blow still lands");
 
@@ -2408,7 +2455,7 @@ async fn a_strike_does_not_end_the_lunge_on_the_same_tick() {
     let ticks = (PHANTOM_STRIKE_RECOVERY / 0.1).floor() as i32 - 2;
     for _ in 0..ticks {
         extra += driver
-            .step(&mut net, 0.1, player, player_yaw, false, false)
+            .step(&mut net, 0.1, player, player_yaw, false, false, 0)
             .len();
         assert!(
             phantom_reveals(driver.movers[0].state),
@@ -2421,7 +2468,7 @@ async fn a_strike_does_not_end_the_lunge_on_the_same_tick() {
     // each blow, which is what "ataca, no ataca" looked like from the outside. A committed hunt
     // now ends only when the PLAYER ends it — outrun it, or break its line of sight.
     for _ in 0..40 {
-        driver.step(&mut net, 0.1, player, player_yaw, false, false);
+        driver.step(&mut net, 0.1, player, player_yaw, false, false, 0);
     }
     assert_eq!(
         driver.movers[0].state,
@@ -2460,7 +2507,7 @@ async fn breaking_the_line_of_sight_ends_a_committed_hunt() {
 
     let ticks = ((PHANTOM_SPRINT_BLIND_SECONDS / 0.1) as i32) + 5;
     for _ in 0..ticks {
-        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
     }
 
     assert_ne!(
@@ -2510,7 +2557,7 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
     let ppos = net.peers[&pid].position;
     let player = Vec3::new(ppos[0] + 2.0, 1.8, ppos[2]); // within PHANTOM_KNOCKBACK_RANGE (3 m)
 
-    let attack = driver.step(&mut net, 0.1, player, 0.0, false, false);
+    let attack = driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
 
     assert!(
         matches!(attack, [PhantomAttack { victim, kind: PhantomAttackKind::Knockback(_, _) }]
@@ -2518,6 +2565,187 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
         "point-blank STATUE timeout must shove the local player, got {attack:?}"
     );
     assert_eq!(driver.movers[0].state, PhantomState::Sprint);
+}
+
+#[tokio::test]
+async fn the_same_shot_scares_a_full_creature_and_summons_a_hungry_one() {
+    // ADR-050 point 6 — the clearest reading of the hunger model the player ever gets, and it costs
+    // nothing: no UI, no wire, just which way the thing runs.
+    async fn shot_near(hunger: f32) -> (PhantomState, Option<Vec3>) {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].hunger = hunger;
+        let here = Vec3::from_array(net.peers[&pid].position);
+        // 20 m away: inside PHANTOM_RAGE_MAX_DISTANCE (70), so both branches are reachable and the
+        // only thing deciding between them is how full the creature is.
+        net.pending_noises
+            .push(([here.x + 20.0, here.y, here.z], 500.0));
+        driver.hear_noises(&mut net);
+        (driver.movers[0].state, driver.movers[0].flee_goal)
+    }
+
+    let (sated_state, flee_goal) = shot_near(1.0).await;
+    assert_eq!(
+        sated_state,
+        PhantomState::Flee,
+        "a creature that has just eaten bolts from a gunshot"
+    );
+    // And it runs AWAY: the noise came from +X, so the goal must be on the -X side.
+    let goal = flee_goal.expect("a fleeing creature needs somewhere to run");
+    assert!(
+        goal.x < 0.0,
+        "it must flee AWAY from the shot, goal was {goal:?}"
+    );
+
+    let (hungry_state, _) = shot_near(0.0).await;
+    assert_eq!(
+        hungry_state,
+        PhantomState::Search,
+        "a hungry one comes to look instead"
+    );
+}
+
+#[tokio::test]
+async fn a_burst_of_fire_does_not_restart_the_same_scare_forever() {
+    // ADR-050 names this as one of the four sites the compiler cannot catch. `hear_noises` skips
+    // states that must not be distracted, and FLEE has to be on that list: a burst is MANY noises,
+    // so without it every shot after the first would re-arm the timer and re-aim the goal at a
+    // creature already running, and it would flee forever and never settle.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 1.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+
+    net.pending_noises
+        .push(([here.x + 20.0, here.y, here.z], 500.0));
+    driver.hear_noises(&mut net);
+    assert_eq!(driver.movers[0].state, PhantomState::Flee);
+    let first_goal = driver.movers[0].flee_goal.unwrap();
+
+    // Keep firing while it runs. Half the scare's worth of ticks, with a fresh shot on each.
+    for _ in 0..30 {
+        let p = Vec3::from_array(net.peers[&pid].position);
+        net.pending_noises.push(([p.x + 20.0, p.y, p.z], 500.0));
+        driver.hear_noises(&mut net);
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(1e5, 1.8, 1e5),
+            0.0,
+            false,
+            false,
+            0,
+        );
+    }
+    assert_eq!(
+        driver.movers[0].flee_goal,
+        Some(first_goal),
+        "later shots must not re-aim a scare already in progress"
+    );
+    // 30 ticks of 0.1 accumulate to 2.9999993, not 3.0 — the point is that the clock was never
+    // rewound, not its exact value.
+    assert!(
+        driver.movers[0].state_timer > 2.9,
+        "…nor rewind its clock: the timer must have kept running, got {}",
+        driver.movers[0].state_timer
+    );
+
+    // And it does settle, rather than fleeing forever.
+    for _ in 0..40 {
+        driver.step(
+            &mut net,
+            0.1,
+            Vec3::new(1e5, 1.8, 1e5),
+            0.0,
+            false,
+            false,
+            0,
+        );
+    }
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Wander,
+        "the scare has to end on its own"
+    );
+    assert_eq!(
+        driver.movers[0].flee_goal, None,
+        "and clear up after itself"
+    );
+}
+
+#[tokio::test]
+async fn a_sated_creature_wears_your_pose_a_beat_late() {
+    // ADR-050 point 8. The delay IS the effect: a perfect mirror reads as a network bug, something
+    // that crouches a beat after you do reads as being imitated. Rides `seal_cosmetics`, the site
+    // already established for the driver to write cosmetics, so there is no wire and no client code.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 1.0; // sated: it follows and copies
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].statue_cooldown = 999.0; // keep it out of STATUE; this is about the pose
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 10.0, 1.8, here.z);
+
+    // The host's own local player is the target. Crouching is relayed for peers but handed in for
+    // the host, so this drives it through the parameter.
+    driver.step(&mut net, 0.1, player, 0.0, true, false, 0);
+    assert!(
+        !net.peers[&pid].crouch,
+        "it must NOT mirror instantly — the lag is the whole effect"
+    );
+
+    // Past the delay, it is wearing the pose.
+    for _ in 0..12 {
+        driver.step(&mut net, 0.1, player, 0.0, true, false, 0);
+    }
+    assert!(
+        net.peers[&pid].crouch,
+        "after PHANTOM_MIMIC_DELAY it copies you"
+    );
+
+    // Stand up: it follows you back up, also a beat late.
+    for _ in 0..12 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+    assert!(!net.peers[&pid].crouch, "and it copies you standing too");
+}
+
+#[tokio::test]
+async fn a_hungry_creature_does_not_imitate_anyone() {
+    // The counterpart of the test above, and the reason it is a separate one: imitation is a
+    // SATED-band behaviour. A hungry creature that copied your pose would be spending the disguise
+    // on the band where it is about to stop mattering.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 0.0;
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].statue_cooldown = 999.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 10.0, 1.8, here.z);
+
+    for _ in 0..30 {
+        driver.step(&mut net, 0.1, player, 0.0, true, false, 0);
+    }
+    assert!(
+        !net.peers[&pid].crouch,
+        "a hungry creature keeps its own posture"
+    );
+    assert_eq!(
+        net.peers[&pid].held_item, 0,
+        "and its own empty hands (ADR-016's default for the phantom)"
+    );
 }
 
 #[tokio::test]
@@ -2547,7 +2775,7 @@ async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
     // stamina and nothing else.
     macro_rules! chase_tick {
         () => {{
-            driver.step(&mut net, 0.1, player, 0.0, false, false);
+            driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
             driver.movers[0].sprint_blind_for = 0.0;
             let p = Vec3::from_array(net.peers[&pid].position);
             player = Vec3::new(p.x + 12.0, 1.8, p.z);
@@ -2612,7 +2840,7 @@ async fn a_sated_creature_never_charges_however_long_its_patience_ran() {
 
     // Many ticks, so the per-tick roll gets every chance it would ever get.
     for _ in 0..200 {
-        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
         assert_ne!(
             driver.movers[0].state,
             PhantomState::Sprint,
@@ -2678,7 +2906,7 @@ async fn hunger_drains_even_while_the_fsm_is_skipped() {
     let away = Vec3::new(100_000.0, 1.8, 100_000.0);
 
     for _ in 0..100 {
-        driver.step(&mut net, 0.1, away, 0.0, false, false);
+        driver.step(&mut net, 0.1, away, 0.0, false, false, 0);
     }
 
     let expected = 1.0 - 10.0 / PHANTOM_HUNGER_DRAIN_SECONDS;
@@ -2710,6 +2938,7 @@ async fn phantom_idle_step_returns_no_attack() {
         0.0,
         false,
         false,
+        0,
     );
 
     assert!(
@@ -2743,7 +2972,7 @@ async fn phantom_step_reports_every_attacker_not_just_the_last() {
     let ppos = net.peers[&a].position;
     let player = Vec3::new(ppos[0] + 1.0, 1.8, ppos[2]);
 
-    let attacks = driver.step(&mut net, 0.1, player, 270.0, false, false);
+    let attacks = driver.step(&mut net, 0.1, player, 270.0, false, false, 0);
 
     assert_eq!(
         attacks.len(),

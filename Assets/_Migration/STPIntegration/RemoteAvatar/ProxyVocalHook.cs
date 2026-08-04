@@ -46,7 +46,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private const int KindDistantAnswer = 4;
         /// After a kill.
         private const int KindSated = 5;
-        private const int KindCount = 6;
+        /// ADR-050: the hungry moan. The only reading the player gets of the hunger model, and
+        /// deliberately not a warning of an imminent charge — it says the animal in front of you is
+        /// now the kind that eats, not that it moves in three seconds.
+        private const int KindHungryMoan = 6;
+        /// ADR-050: out of breath mid-charge. This one IS actionable — it marks the window where
+        /// the creature drops to a heavy walk and ground can be bought back.
+        private const int KindWinded = 7;
+        private const int KindCount = 8;
 
         // No counter can hold this, so the first sample is always "no change" and never a trigger.
         private const int NoSample = int.MinValue;
@@ -246,6 +253,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             KindStalkBreath => "StalkBreath",
             KindDistantAnswer => "DistantAnswer",
             KindSated => "Sated",
+            KindHungryMoan => "HungryMoan",
+            KindWinded => "Winded",
             _ => "Unknown",
         };
     }

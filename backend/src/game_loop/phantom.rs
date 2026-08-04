@@ -78,6 +78,17 @@ pub(super) const PHANTOM_STALK_DISTANCE: f32 = 9.0; // STALK keeps roughly this 
 /// animation fidelity (the client reads it as walking, ADR-013) and says nothing about pursuit.
 /// 4.6 keeps the pressure on without ever catching you: the lunge is still what closes distance.
 pub(super) const PHANTOM_STALK_CLOSE_SPEED: f32 = 4.6;
+/// ADR-050 point 8 — the gap a SATED creature holds instead of `PHANTOM_STALK_DISTANCE`. It is not
+/// hunting you, it is accompanying you, and 9 m reads as being harassed where this reads as being
+/// followed. The difference matters because the sated band is the one meant to be unnerving rather
+/// than threatening.
+pub(super) const PHANTOM_FOLLOW_DISTANCE: f32 = 14.0;
+/// ADR-050 point 8 — seconds by which a sated creature lags the pose it is copying.
+///
+/// The delay IS the effect. A perfect mirror reads as a network bug; something that crouches a beat
+/// after you crouch reads as being imitated, which is the single most unsettling thing a thing
+/// wearing a stolen face can do.
+pub(super) const PHANTOM_MIMIC_DELAY: f32 = 0.8;
 /// Top sprint speed (vs walk 3.0). Cut 10 % twice, 9.0 → 8.1 → 7.29, so chases LAST.
 ///
 /// The number that matters is the ratio to the player, not the absolute: STP's run speed is 5.5 m/s
@@ -196,6 +207,17 @@ pub(super) const VOCAL_HUNGRY_MOAN: u8 = 6;
 /// ADR-050 — the sound of it running out of breath mid-charge. Does real work: it is how the player
 /// learns, without a UI, that the next few seconds are the ones to spend running.
 pub(super) const VOCAL_WINDED: u8 = 7;
+
+// ── ADR-050 point 6: the flight response ─────────────────────────────────────────────────────────
+/// Seconds a startled creature spends putting distance between itself and whatever made the noise.
+pub(super) const PHANTOM_FLEE_SECONDS: f32 = 6.0;
+/// Speed (m/s) while bolting. Faster than a walk and slower than a charge: it is leaving, not
+/// racing, and it must still be catchable-up-to so the player can see what happened.
+pub(super) const PHANTOM_FLEE_SPEED: f32 = 6.0;
+/// How far ahead of itself a fleeing creature aims. It steers to a point this far along the vector
+/// AWAY from the noise, so the existing navigation carries it around geometry instead of pressing
+/// it into the first wall behind it.
+pub(super) const PHANTOM_FLEE_LOOKAHEAD: f32 = 25.0;
 /// A noise heard from beyond this (m) answers with the long roar instead of the close-up grunt.
 /// Under it the creature is near enough that a grunt reads as "it is RIGHT THERE", which is scarier
 /// at that range than a roar would be.
@@ -719,6 +741,12 @@ pub(super) enum PhantomState {
     /// routes optimally toward your exact position is a homing missile. With it, hiding works, and
     /// the tension moves from "can it reach me" to "does it know where I went".
     Search,
+    /// ADR-050 point 6 — IT GOT SCARED. A gunshot close to a creature that has already eaten sends
+    /// it away from the noise instead of toward it. The same trigger pull produces two different
+    /// animals depending on how full the one that heard it is, and that is the clearest reading of
+    /// the hunger model the player ever gets: you fire, and either something comes, or something
+    /// bolts.
+    Flee,
 }
 
 /// ADR-038: the two states where the stolen skin stops holding — the phantom shows its real form.
@@ -1009,6 +1037,16 @@ pub(super) struct PhantomMover {
     /// metronomic one would become a clock the player can read, and the whole point of this sound
     /// is that you cannot tell how close it is or what it is about to do.
     pub(super) breath_in: f32,
+    /// ADR-050 point 8 — the pose being copied while sated, and how long until it is worn.
+    /// `(crouch, held_item, seconds_left)`. A tiny one-slot buffer rather than a queue: at 10 Hz a
+    /// queue would hold eight samples to reproduce a lag anyone can get from one.
+    pub(super) mimic_pending: Option<(bool, i32, f32)>,
+    /// What it is wearing right now, i.e. the last pending sample whose delay ran out.
+    pub(super) mimic_worn: (bool, i32),
+    /// ADR-050 — where a startled creature is running TO. Resolved once on the scare, from the
+    /// noise position, and held: recomputing it per tick against a stimulus that no longer exists
+    /// would make it wander in a circle instead of clearing the area.
+    pub(super) flee_goal: Option<Vec3>,
     /// ADR-050 — seconds of flat-out running left in this burst. Refilled on entering SPRINT and
     /// after every recovery; spent only while actually charging (not while hesitating or winded).
     pub(super) stamina: f32,
@@ -1192,6 +1230,11 @@ struct TickCtx<'a> {
     /// The HOST player's crouch. Remote peers carry their own on `PeerConnection` (ADR-020 relays
     /// it), but the host's local player is not a peer, so it has to be handed in.
     host_crouch: bool,
+    /// ADR-050 point 8 — the HOST player's held item, handed in for exactly the same reason as its
+    /// crouch: imitation reads the target's pose off `PeerConnection`, and the host does not have
+    /// one. Without this a sated creature would copy remote joiners and stand there empty-handed
+    /// next to the host, which is the one case a solo play-test can actually see.
+    host_held_item: i32,
 }
 
 /// The per-MOVER half: what the preamble already resolved about THIS creature before dispatching.
@@ -1572,6 +1615,9 @@ impl PhantomDriver {
             sprint_blind_for: 0.0,
             stamina: PHANTOM_SPRINT_BURST_SECONDS,
             winded_for: 0.0,
+            flee_goal: None,
+            mimic_pending: None,
+            mimic_worn: (false, 0),
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
             // otherwise breathe in unison, which reads as one big thing rather than as several.
             breath_in: PHANTOM_BREATH_MIN
@@ -1608,13 +1654,53 @@ impl PhantomDriver {
                 // A committed lunge or a freeze is NOT interrupted by a noise somewhere else. It
                 // already has a target in front of it; being distractible there would read as
                 // stupidity, not as curiosity.
+                //
+                // ADR-050: `Flee` joins that list, and it is load-bearing rather than tidy. A burst
+                // of fire is many noises: without this, every shot after the first would restart the
+                // scare timer and re-aim the goal at a creature already running, so it would flee
+                // forever and never settle. The ADR calls this out as one of the four sites the
+                // compiler cannot catch.
                 if matches!(
                     self.movers[i].state,
-                    PhantomState::Sprint | PhantomState::Statue
+                    PhantomState::Sprint | PhantomState::Statue | PhantomState::Flee
                 ) {
                     continue;
                 }
                 let goal = blur_noise(source, dist, id);
+
+                // ADR-050 point 6 — THE SAME SHOT MAKES TWO DIFFERENT ANIMALS. A creature that has
+                // already eaten and hears a gun go off nearby bolts; a hungry one comes to look.
+                // This is the clearest reading of the hunger model the player ever gets, and it is
+                // free: no UI, no wire, just which way the thing runs.
+                if self.movers[i].is_sated() && dist <= PHANTOM_RAGE_MAX_DISTANCE {
+                    let away = Vec3::new(from.x - source.x, 0.0, from.z - source.z);
+                    let len = (away.x * away.x + away.z * away.z).sqrt();
+                    // Standing exactly on the noise: pick its current heading rather than dividing
+                    // by zero. Any direction is away when the shot came from underfoot.
+                    let dir = match len > 0.01 {
+                        true => Vec3::new(away.x / len, 0.0, away.z / len),
+                        false => {
+                            let h = self.movers[i].heading;
+                            Vec3::new(h.sin(), 0.0, h.cos())
+                        }
+                    };
+                    self.movers[i].flee_goal = Some(Vec3::new(
+                        from.x + dir.x * PHANTOM_FLEE_LOOKAHEAD,
+                        from.y,
+                        from.z + dir.z * PHANTOM_FLEE_LOOKAHEAD,
+                    ));
+                    self.movers[i].state = PhantomState::Flee;
+                    self.movers[i].state_timer = 0.0;
+                    self.movers[i].nav_waypoints.clear();
+                    self.movers[i].pickup_until = None;
+                    self.movers[i].stare_until = None;
+                    info!(
+                        "MPTRACE step=PH_FLEE event=phantom_startled phantom_id={} dist={:.0} hunger={:.2}",
+                        id, dist, self.movers[i].hunger
+                    );
+                    continue;
+                }
+
                 self.movers[i].last_known_player_pos = Some(goal);
                 self.movers[i].state = PhantomState::Search;
                 self.movers[i].state_timer = 0.0;
@@ -2103,6 +2189,64 @@ impl PhantomDriver {
         }
     }
 
+    /// FLEE (ADR-050 point 6) — it got startled and is clearing the area. Runs to a point away from
+    /// whatever made the noise for `PHANTOM_FLEE_SECONDS`, then re-anchors where it ended up and
+    /// goes back to patrolling. It does NOT reveal: a peer that bolts from a gunshot is exactly what
+    /// a real player would do, and keeping the disguise on means you never quite know whether you
+    /// just startled a teammate or the thing wearing his face.
+    fn tick_flee(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i, id, from, layer, ..
+        } = mt;
+
+        // Done being scared: settle here rather than walking all the way home. Same re-anchor
+        // `tick_search` and the post-kill path do, and for the same reason.
+        if self.movers[i].state_timer >= PHANTOM_FLEE_SECONDS {
+            self.movers[i].state = PhantomState::Wander;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].flee_goal = None;
+            self.movers[i].spawn_pos = from;
+            self.movers[i].nav_waypoints.clear();
+            info!(
+                "MPTRACE step=PH_FLEE event=phantom_calmed_down phantom_id={} pos=({:.1},{:.1})",
+                id, from.x, from.z
+            );
+            return;
+        }
+
+        // No goal means nothing to run from — should not happen, but a creature standing still in
+        // FLEE would read as a freeze, so fall back to patrolling rather than to nothing.
+        let Some(goal) = self.movers[i].flee_goal else {
+            self.movers[i].state = PhantomState::Wander;
+            self.movers[i].state_timer = 0.0;
+            return;
+        };
+
+        let heading = self.steer_heading(i, layer, from, goal, ctx.dt);
+        self.movers[i].heading_target = heading;
+        let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let h = self.movers[i].heading;
+        let dir = Vec3::new(h.sin(), 0.0, h.cos());
+        let speed = PHANTOM_FLEE_SPEED * self.movers[i].speed_scale();
+        let desired = Vec3::new(
+            from.x + dir.x * speed * ctx.dt,
+            from.y,
+            from.z + dir.z * speed * ctx.dt,
+        );
+        let moved = resolve_move_grid_gen_ex(&mut self.grid_cache, layer, from, desired);
+        if moved.blocked {
+            // Cornered. Drop the route so the next tick re-plans instead of grinding: an animal
+            // pressed into a dead end should look for another way out, not vibrate against it.
+            self.movers[i].nav_waypoints.clear();
+        }
+        let yaw = h.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(moved.pos.to_array(), yaw, "idle".into());
+        }
+    }
+
     /// STALK — it shadows the player at a held gap, breathing. Patience (or an unpredictable roll)
     /// runs out into a SPRINT; being looked at from close by freezes it into STATUE; losing the
     /// player past `LOSE_RADIUS` sends it to SEARCH the last-known spot, or to WANDER with no
@@ -2195,10 +2339,17 @@ impl PhantomDriver {
         let heading = self.movers[i].heading;
         // Maintain STALK_DISTANCE: close in if too far, ease back if too near (it
         // backs away while still facing you — unsettling), else hold.
-        let (move_dir, speed) = if dist > PHANTOM_STALK_DISTANCE + 2.0 {
+        // ADR-050 point 8: a sated creature accompanies you at arm's length instead of breathing
+        // down your neck. Same state, same code — a wider band is the whole difference between
+        // being followed and being hunted.
+        let band = match self.movers[i].is_sated() {
+            true => PHANTOM_FOLLOW_DISTANCE,
+            false => PHANTOM_STALK_DISTANCE,
+        };
+        let (move_dir, speed) = if dist > band + 2.0 {
             // ADR-050 point 16: closing is faster than wandering, or running away always worked.
             (heading, PHANTOM_STALK_CLOSE_SPEED)
-        } else if dist < PHANTOM_STALK_DISTANCE {
+        } else if dist < band {
             (
                 (heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU),
                 PHANTOM_WALK_SPEED * 0.6,
@@ -2643,6 +2794,13 @@ impl PhantomDriver {
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
     /// blocked step re-orients the heading so the phantom never stalls at a wall.
+    // The five `host_player_*` parameters are the local player, which is NOT a peer and so cannot
+    // be read off the roster. They are passed explicitly rather than stashed on the driver so the
+    // inputs to a tick stay visible in the signature — the same reasoning `TickCtx` documents for
+    // deliberately NOT carrying them. Grouping them into a struct would satisfy the lint and is
+    // worth doing the next time this signature is opened for another reason; it is not worth
+    // touching forty-six call sites for on its own.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn step(
         &mut self,
         net: &mut NetworkManager,
@@ -2657,6 +2815,8 @@ impl PhantomDriver {
         // The host player's own death, handed in for the same reason as its crouch: it is not a
         // peer, so `choose_target` cannot read it off the roster.
         host_player_dead: bool,
+        // ADR-050 point 8: and its held item, for the imitation. Same reason again.
+        host_player_held_item: i32,
     ) -> &[PhantomAttack] {
         let now = Instant::now();
         self.step_counter = self.step_counter.wrapping_add(1);
@@ -2709,6 +2869,7 @@ impl PhantomDriver {
                 now,
                 target_speeds: &target_speeds,
                 host_crouch: host_player_crouch,
+                host_held_item: host_player_held_item,
             };
             // `None` = this creature is done for the tick: it has no peer any more, or it is frozen
             // mid-gesture. Both used to be `continue`s in the middle of the preamble.
@@ -2733,6 +2894,7 @@ impl PhantomDriver {
                 PhantomState::Statue => self.tick_statue(mt, &mut ctx),
                 PhantomState::Sprint => self.tick_sprint(mt, &mut ctx),
                 PhantomState::Search => self.tick_search(mt, &mut ctx),
+                PhantomState::Flee => self.tick_flee(mt, &mut ctx),
             }
         }
 
@@ -2807,6 +2969,45 @@ impl PhantomDriver {
         // it mimed a pickup.
         self.movers[i].hunger =
             (self.movers[i].hunger - ctx.dt / PHANTOM_HUNGER_DRAIN_SECONDS).max(0.0);
+        // ADR-050 point 8 — IMITATION. Sampled HERE and not in `seal_cosmetics` because the target
+        // may be the host's own local player, which is not a peer: reading it off `net.peers` found
+        // nothing and a sated creature stood there copying no one. This is the same reason
+        // `host_crouch` is handed into the tick at all.
+        let observed = match (self.movers[i].is_sated(), target.map(|(tid, _, _, _)| tid)) {
+            (true, Some(tid)) if tid == ctx.net.local_id => {
+                Some((ctx.host_crouch, ctx.host_held_item))
+            }
+            (true, Some(tid)) => ctx.net.peers.get(&tid).map(|p| (p.crouch, p.held_item)),
+            _ => None,
+        };
+        match observed {
+            Some(pose) => match self.movers[i].mimic_pending {
+                // Only restart the clock when the target actually DID something. Re-arming it every
+                // tick against an unchanged pose would mean the delay never elapses and the
+                // creature ends up copying nothing at all.
+                Some((crouch, held, _)) if (crouch, held) == pose => {}
+                _ => self.movers[i].mimic_pending = Some((pose.0, pose.1, PHANTOM_MIMIC_DELAY)),
+            },
+            // Out of the sated band, or nobody to copy: drop the act. Both fields fall back to
+            // their defaults, so the disguise recomposes with no reset logic — the same discipline
+            // that makes `revealed` a derived level rather than a latch (STATE.md invariant 1).
+            None => {
+                self.movers[i].mimic_pending = None;
+                self.movers[i].mimic_worn = (false, 0);
+            }
+        }
+        // When the beat elapses, what was observed becomes what is worn, and `seal_cosmetics` puts
+        // it on the wire.
+        if let Some((crouch, held, left)) = self.movers[i].mimic_pending {
+            let left = left - ctx.dt;
+            self.movers[i].mimic_pending = match left <= 0.0 {
+                true => {
+                    self.movers[i].mimic_worn = (crouch, held);
+                    None
+                }
+                false => Some((crouch, held, left)),
+            };
+        }
 
         // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
         // are PURE THEATER — only the `animation` field. While active, freeze in place holding
@@ -2864,6 +3065,8 @@ impl PhantomDriver {
         for m in &mut self.movers {
             if let Some(peer) = net.peers.get_mut(&m.id) {
                 peer.revealed = phantom_reveals(m.state);
+                peer.crouch = m.mimic_worn.0;
+                peer.held_item = m.mimic_worn.1;
                 if let Some(kind) = m.pending_vocal.take() {
                     // Wrapping, but never back onto 0: the client treats 0 as "has never
                     // vocalised", so landing there would silently swallow one scream every 255.

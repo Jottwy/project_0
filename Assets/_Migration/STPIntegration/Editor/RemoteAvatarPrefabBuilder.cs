@@ -566,8 +566,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices == null)
                 return;
 
-            if (voices.arraySize < 6)
-                voices.arraySize = 6;
+            if (voices.arraySize < 8)
+                voices.arraySize = 8;
 
             // Bank → filename prefix. SELECTED BY PREFIX AND NOT "everything in the folder", which
             // is what this did while only the screams existed: the moment a second voice landed in
@@ -585,6 +585,12 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 "PhantomVoice_Breath",   // 3 stalking breath
                 "PhantomVoice_Answer",   // 4 the long-range answer to a gunshot
                 "PhantomVoice_Sated",    // 5 after a kill
+                // ADR-050. Both ship UNAUTHORED: there is no clip family in the repo for either, and
+                // the rule above applies — an empty bank is silent, and silence is honest where a
+                // borrowed sound would be a lie. Drop `PhantomVoice_Moan*` / `PhantomVoice_Winded*`
+                // into the audio folder and re-bake, and they light up with no code change.
+                "PhantomVoice_Moan",     // 6 the hungry moan
+                "PhantomVoice_Winded",   // 7 out of breath mid-charge
             };
 
             for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)

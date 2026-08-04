@@ -38,6 +38,11 @@ pub struct PeerConnection {
     pub rotation: f32,
     pub animation: String,
     /// ADR-020: cosmetic crouch state, set from PlayerUpdate; relayed, not authoritative.
+    ///
+    /// ADR-050 point 8: `update_player_state` still does not touch it, but this is no longer a
+    /// field the phantom merely inherits the default of — `PhantomDriver::seal_cosmetics` writes it
+    /// deliberately while SATED, copying the pose of whoever it is following a beat late. Same
+    /// escape hatch `revealed` uses: written next to `update_player_state`, never inside it.
     pub crouch: bool,
     /// ADR-021: cosmetic camera pitch (degrees, −90..90, quantized to 1°), set from
     /// PlayerUpdate; relayed, not authoritative.
@@ -47,8 +52,11 @@ pub struct PeerConnection {
     /// update_player_state — so the phantom (ADR-016) keeps default clothing.
     pub equipment: [i32; 4],
     /// ADR-023: cosmetic held item ID (0 = empty hands), set from PlayerUpdate; relayed, not
-    /// authoritative. NOTE: set in handle_packet, NOT in update_player_state — so the phantom
-    /// (ADR-016) keeps empty hands.
+    /// authoritative. NOTE: set in handle_packet, NOT in update_player_state.
+    ///
+    /// ADR-050 point 8: the phantom no longer keeps empty hands unconditionally. While SATED,
+    /// `PhantomDriver::seal_cosmetics` copies the held item of whoever it is following, a beat
+    /// late; outside that band it falls back to 0 on its own, with no reset logic. See `crouch`.
     pub held_item: i32,
     /// ADR-024: cosmetic hit-reaction counter (monotonic, wrapping; 0 = never hit), set from
     /// PlayerUpdate; relayed, not authoritative. NOTE: set in handle_packet, NOT in
