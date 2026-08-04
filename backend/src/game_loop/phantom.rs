@@ -2470,81 +2470,8 @@ impl PhantomDriver {
         // wrong the moment the world is populated.
         self.attacks.clear();
         for i in 0..self.movers.len() {
-            let id = self.movers[i].id;
-            let from = match net.peers.get(&id) {
-                Some(p) => Vec3::from_array(p.position),
-                None => continue, // phantom no longer present
-            };
-            // The grid_gen layer to collide against, derived from the phantom's own Y (works on
-            // every layer without a hardcoded layer).
-            let current_layer = world_pos_to_layer(from.y);
-
-            // Nearest REAL player (the host's own local player + any real peer). D1=(a): distance
-            // + a forward view cone only, NO geometry line-of-sight (collision = grid_gen world).
-            // Who the OTHER creatures are already on. Rebuilt per mover (≤ `active_cap` = 6, so it
-            // is a handful of increments) and excluding this one, because a creature must never
-            // penalise a player for its own presence — that alone would make it drift off you.
-            let mut pursuers: HashMap<PeerId, usize> = HashMap::new();
-            for (j, m) in self.movers.iter().enumerate() {
-                if j == i {
-                    continue;
-                }
-                if let Some(t) = m.target_id {
-                    *pursuers.entry(t).or_insert(0) += 1;
-                }
-            }
-            let target = choose_target(
-                net,
-                host_player_pos,
-                host_player_rot,
-                host_player_dead,
-                from,
-                self.movers[i].target_id,
-                &pursuers,
-            );
-            // Remembered for next tick: this is what makes the choice sticky instead of a fresh
-            // "nearest" every 100 ms.
-            self.movers[i].target_id = target.map(|(tid, _, _, _)| tid);
-            self.movers[i].state_timer += dt;
-            // Ticked HERE, above the gesture freeze, and not inside the SPRINT branch: the freeze
-            // `continue`s past the whole FSM for a second after a strike, so a timer advanced down
-            // there would stall exactly across the window it exists to cover.
-            self.movers[i].strike_recover = (self.movers[i].strike_recover - dt).max(0.0);
-            self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - dt).max(0.0);
-            self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - dt).max(0.0);
-            self.movers[i].enraged_for = (self.movers[i].enraged_for - dt).max(0.0);
-            self.movers[i].calm_for = (self.movers[i].calm_for - dt).max(0.0);
-
-            // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
-            // are PURE THEATER — only the `animation` field. While active, freeze in place holding
-            // "pickup" (the trigger flank the proxy edge-detects, ADR-011). NOTHING real is
-            // touched: no process_stp_pickup, no pending_pickups, no stp_items, no grant. ──
-            if self.movers[i]
-                .pickup_until
-                .is_some_and(|until| now >= until)
-            {
-                self.movers[i].pickup_until = None;
-            }
-            if self.movers[i].pickup_until.is_some() {
-                let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                if let Some(peer) = net.peers.get_mut(&id) {
-                    peer.update_player_state(from.to_array(), yaw, "pickup".into());
-                }
-                continue;
-            }
-
-            // ADR-016 slice 3a — Stalker FSM. `state` is Copy, so the match holds no borrow.
-            let state = self.movers[i].state;
-            let mt = MoverTick {
-                i,
-                id,
-                from,
-                layer: current_layer,
-                target,
-            };
-            // One context for the whole dispatch. Built here, inside the loop, and NOT above
-            // it: the seal pass and the step-cost trace below still read `net` directly, so the
-            // reborrow has to end with the iteration.
+            // Built here and not above the loop: the seal pass and the step-cost trace below still
+            // read `net` directly, so the reborrow has to end with the iteration.
             let mut ctx = TickCtx {
                 net: &mut *net,
                 dt,
@@ -2552,6 +2479,20 @@ impl PhantomDriver {
                 target_speeds: &target_speeds,
                 host_crouch: host_player_crouch,
             };
+            // `None` = this creature is done for the tick: it has no peer any more, or it is frozen
+            // mid-gesture. Both used to be `continue`s in the middle of the preamble.
+            let Some(mt) = self.resolve_mover_tick(
+                i,
+                &mut ctx,
+                host_player_pos,
+                host_player_rot,
+                host_player_dead,
+            ) else {
+                continue;
+            };
+            // ADR-016 slice 3a — Stalker FSM. Bound to a local because `state` is Copy, so the
+            // match holds no borrow of `self` across the arms.
+            let state = self.movers[i].state;
             // Each arm is documented on its own method; the transitions between them are the
             // `state = …` writes inside those methods, not anything this dispatch decides.
             match state {
@@ -2564,18 +2505,116 @@ impl PhantomDriver {
             }
         }
 
-        // ADR-038 — seal the cosmetic real-form flag from the POST-tick state, in ONE place. The
-        // state methods above have several early exits (lost target, point-blank strike, gesture
-        // freeze), so a per-branch seal would silently miss paths and leave a stale disguise on
-        // exactly the frames that matter. Derived level, not a latch: the flag falls back to false
-        // on its own when the phantom returns to WANDER/STALK, so the disguise recomposes without
-        // any reset logic. Written HERE and not in `update_player_state` on purpose — that method
-        // stays untouched so the other five pose fields keep inheriting their defaults for the
-        // phantom (`.claude/rules/pose-relay-wire-rust.md`, step 6).
-        //
-        // ADR-048 seals the VOICE in the same place and for the same reason. `hear_noises` runs
-        // before the FSM and the state methods themselves have many early exits, so a write at the
-        // decision site would miss paths; staging it and sealing here cannot.
+        self.seal_cosmetics(net);
+        self.report_step_cost(net, now);
+
+        &self.attacks
+    }
+
+    /// Everything that has to happen to a creature BEFORE its state gets a say: read its pose off
+    /// its peer, work out which layer it collides against, pick who it is hunting, age its timers,
+    /// and hold the gesture freeze.
+    ///
+    /// `None` means the tick is over for this one — either its peer is gone, or it is frozen
+    /// mid-gesture and the FSM must not run. Those were the two `continue`s buried in the middle of
+    /// the old preamble, and an `Option` is what lets them stay skips now that the code is a call.
+    ///
+    /// `host_pos`/`host_rot`/`host_dead` are parameters and not `TickCtx` fields on purpose: they
+    /// feed `choose_target` here and never reach a state arm, so putting them in the context would
+    /// advertise an input the arms do not have.
+    fn resolve_mover_tick(
+        &mut self,
+        i: usize,
+        ctx: &mut TickCtx<'_>,
+        host_pos: Vec3,
+        host_rot: f32,
+        host_dead: bool,
+    ) -> Option<MoverTick> {
+        let id = self.movers[i].id;
+        let from = match ctx.net.peers.get(&id) {
+            Some(p) => Vec3::from_array(p.position),
+            None => return None, // phantom no longer present
+        };
+        // The grid_gen layer to collide against, derived from the phantom's own Y (works on
+        // every layer without a hardcoded layer).
+        let current_layer = world_pos_to_layer(from.y);
+
+        // Nearest REAL player (the host's own local player + any real peer). D1=(a): distance
+        // + a forward view cone only, NO geometry line-of-sight (collision = grid_gen world).
+        // Who the OTHER creatures are already on. Rebuilt per mover (≤ `active_cap` = 6, so it
+        // is a handful of increments) and excluding this one, because a creature must never
+        // penalise a player for its own presence — that alone would make it drift off you.
+        let mut pursuers: HashMap<PeerId, usize> = HashMap::new();
+        for (j, m) in self.movers.iter().enumerate() {
+            if j == i {
+                continue;
+            }
+            if let Some(t) = m.target_id {
+                *pursuers.entry(t).or_insert(0) += 1;
+            }
+        }
+        let target = choose_target(
+            ctx.net,
+            host_pos,
+            host_rot,
+            host_dead,
+            from,
+            self.movers[i].target_id,
+            &pursuers,
+        );
+        // Remembered for next tick: this is what makes the choice sticky instead of a fresh
+        // "nearest" every 100 ms.
+        self.movers[i].target_id = target.map(|(tid, _, _, _)| tid);
+        self.movers[i].state_timer += ctx.dt;
+        // Ticked HERE, above the gesture freeze, and not inside the SPRINT branch: the freeze
+        // skips the whole FSM for a second after a strike, so a timer advanced down
+        // there would stall exactly across the window it exists to cover.
+        self.movers[i].strike_recover = (self.movers[i].strike_recover - ctx.dt).max(0.0);
+        self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - ctx.dt).max(0.0);
+        self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - ctx.dt).max(0.0);
+        self.movers[i].enraged_for = (self.movers[i].enraged_for - ctx.dt).max(0.0);
+        self.movers[i].calm_for = (self.movers[i].calm_for - ctx.dt).max(0.0);
+
+        // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
+        // are PURE THEATER — only the `animation` field. While active, freeze in place holding
+        // "pickup" (the trigger flank the proxy edge-detects, ADR-011). NOTHING real is
+        // touched: no process_stp_pickup, no pending_pickups, no stp_items, no grant. ──
+        if self.movers[i]
+            .pickup_until
+            .is_some_and(|until| ctx.now >= until)
+        {
+            self.movers[i].pickup_until = None;
+        }
+        if self.movers[i].pickup_until.is_some() {
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(from.to_array(), yaw, "pickup".into());
+            }
+            return None;
+        }
+
+        Some(MoverTick {
+            i,
+            id,
+            from,
+            layer: current_layer,
+            target,
+        })
+    }
+
+    /// ADR-038 — seal the cosmetic real-form flag from the POST-tick state, in ONE place. The
+    /// state methods have several early exits (lost target, point-blank strike, gesture freeze), so
+    /// a per-branch seal would silently miss paths and leave a stale disguise on exactly the frames
+    /// that matter. Derived level, not a latch: the flag falls back to false on its own when the
+    /// phantom returns to WANDER/STALK, so the disguise recomposes without any reset logic. Written
+    /// HERE and not in `update_player_state` on purpose — that method stays untouched so the other
+    /// five pose fields keep inheriting their defaults for the phantom
+    /// (`.claude/rules/pose-relay-wire-rust.md`, step 6).
+    ///
+    /// ADR-048 seals the VOICE in the same place and for the same reason. `hear_noises` runs before
+    /// the FSM and the state methods themselves have many early exits, so a write at the decision
+    /// site would miss paths; staging it and sealing here cannot.
+    fn seal_cosmetics(&mut self, net: &mut NetworkManager) {
         for m in &mut self.movers {
             if let Some(peer) = net.peers.get_mut(&m.id) {
                 peer.revealed = phantom_reveals(m.state);
@@ -2596,16 +2635,20 @@ impl PhantomDriver {
                 peer.vocal_kind = m.vocal_kind;
             }
         }
+    }
 
-        // ADR-043 — the measurement the whole populated world rests on. Before this, ADR-040's
-        // "2 ms per step" budget, ADR-041's 23.5 µs per chunk and the cost of an A* search were all
-        // documented numbers with NO code behind them: no constant, no assert, no benchmark in the
-        // tree. "How many creatures does the world hold" was therefore unanswerable except by
-        // opinion. These five counters make it a reading.
-        //
-        // `step_us` is the PEAK since the last report, not this step: the throttle samples ~1 step
-        // in 10, so an instantaneous value would miss precisely the spike worth seeing.
-        self.step_peak_us = self.step_peak_us.max(now.elapsed().as_micros() as u64);
+    /// ADR-043 — the measurement the whole populated world rests on. Before this, ADR-040's
+    /// "2 ms per step" budget, ADR-041's 23.5 µs per chunk and the cost of an A* search were all
+    /// documented numbers with NO code behind them: no constant, no assert, no benchmark in the
+    /// tree. "How many creatures does the world hold" was therefore unanswerable except by
+    /// opinion. These five counters make it a reading.
+    ///
+    /// `step_us` is the PEAK since the last report, not this step: the throttle samples ~1 step
+    /// in 10, so an instantaneous value would miss precisely the spike worth seeing.
+    fn report_step_cost(&mut self, net: &NetworkManager, tick_start: Instant) {
+        self.step_peak_us = self
+            .step_peak_us
+            .max(tick_start.elapsed().as_micros() as u64);
         if net.session_start.elapsed().as_millis() % 1000 < 120 {
             info!(
                 "MPTRACE step=PH_BUDGET event=phantom_step_budget movers={} step_peak_us={} searches={} chunk_regens={} cached_chunks={} body_valve={}",
@@ -2618,7 +2661,5 @@ impl PhantomDriver {
             );
             self.step_peak_us = 0;
         }
-
-        &self.attacks
     }
 }
