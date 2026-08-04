@@ -69,6 +69,15 @@ pub(super) const PHANTOM_DETECT_HALF_FOV: f32 = std::f32::consts::FRAC_PI_3; // 
 
 // ADR-016 slice 3a — Stalker FSM (Wander / Spotted / Stalk / Sprint). Peek/Search land in 3b.
 pub(super) const PHANTOM_STALK_DISTANCE: f32 = 9.0; // STALK keeps roughly this gap from the player
+/// ADR-050 point 16 — speed (m/s) used by STALK to CLOSE the gap, as opposed to the walk it uses
+/// for everything else.
+///
+/// STALK used to close at `PHANTOM_WALK_SPEED` (3.0) against STP's 5.5 m/s run, so running in a
+/// straight line escaped a stalker every single time and the fase never got to resolve into
+/// anything. That 3.0 was inherited from the wander constant, whose comment justifies the value by
+/// animation fidelity (the client reads it as walking, ADR-013) and says nothing about pursuit.
+/// 4.6 keeps the pressure on without ever catching you: the lunge is still what closes distance.
+pub(super) const PHANTOM_STALK_CLOSE_SPEED: f32 = 4.6;
 /// Top sprint speed (vs walk 3.0). Cut 10 % twice, 9.0 → 8.1 → 7.29, so chases LAST.
 ///
 /// The number that matters is the ratio to the player, not the absolute: STP's run speed is 5.5 m/s
@@ -288,6 +297,15 @@ pub(super) const PHANTOM_TURN_SPEED_STATUE: f32 = 3.0;
 // ADR-016 slice 1 (phantom damage) — host-only (joiners = Fase 7 debt). Damage flows through the
 // PhantomAttack channel, NEVER the pickup path (ADR-016 invariant).
 pub(super) const PHANTOM_ATTACK_DAMAGE: f32 = 35.0; // frontal SPRINT hit (non-lethal; bounces to STALK)
+/// ADR-050 point 11 — the cone that decides a FRONTAL blow (survivable) from one taken from behind
+/// (lethal). Its own constant, and wider than what it replaced.
+///
+/// This used to reuse `PHANTOM_STATUE_LOOK_HALF_FOV` (±30°), and that reuse was a coincidence of
+/// implementation rather than a decision: no ADR ever justified that width for this question. The
+/// consequence was a 31° turn of the head separating "you take 35 and live" from "you die with no
+/// warning". Freezing when watched and being caught facing away are different questions and now
+/// have different numbers.
+pub(super) const PHANTOM_KILL_CONE_HALF_FOV: f32 = std::f32::consts::FRAC_PI_3; // 60° half → 120°
 pub(super) const PHANTOM_KNOCKBACK_RANGE: f32 = 3.0; // STATUE→SPRINT shove only within this (m)
 pub(super) const PHANTOM_KNOCKBACK_FORCE: f32 = 3.0; // shove speed (m/s); client applies via SetVelocity
 
@@ -2039,7 +2057,8 @@ impl PhantomDriver {
         // Maintain STALK_DISTANCE: close in if too far, ease back if too near (it
         // backs away while still facing you — unsettling), else hold.
         let (move_dir, speed) = if dist > PHANTOM_STALK_DISTANCE + 2.0 {
-            (heading, PHANTOM_WALK_SPEED)
+            // ADR-050 point 16: closing is faster than wandering, or running away always worked.
+            (heading, PHANTOM_STALK_CLOSE_SPEED)
         } else if dist < PHANTOM_STALK_DISTANCE {
             (
                 (heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU),
@@ -2378,7 +2397,9 @@ impl PhantomDriver {
         if in_reach && self.movers[i].strike_recover <= 0.0 {
             self.movers[i].pickup_until = Some(ctx.now + PHANTOM_PICKUP_GESTURE);
             self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
-            if player_is_looking_at(tpos, tyaw, from) {
+            // ADR-050 point 11: its OWN cone, not the one STATUE freezes on. See
+            // `PHANTOM_KILL_CONE_HALF_FOV` for why sharing that constant was a defect.
+            if player_is_looking_at_within(tpos, tyaw, from, PHANTOM_KILL_CONE_HALF_FOV) {
                 self.attacks.push(PhantomAttack {
                     victim: tid,
                     kind: PhantomAttackKind::Hit(PHANTOM_ATTACK_DAMAGE),
