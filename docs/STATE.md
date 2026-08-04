@@ -2,6 +2,27 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-04 (noche — **rediseño del robapieles: ADR-050, 9 commits, del "está un poco y ataca" al hambre como motor**)
+- COMMITS: `c8aa8e4` (ADR-050), `28156da`, `3c4fb22`, `bce1b2a`, `2fc66bf` (tanda 1), `d04f895` (hambre), `eb730f8` (aguante), `0dd5020` (saciado/Flee), `3c9559f` (agarre backend), `1c56a77` (agarre cliente). **Wire 19 → 20** (`docs/systems/ipc-wire-schema.md` tiene la entrada v20). `cargo test` **544/544**, fmt y clippy limpios, cuatro assemblies C# a 0 errores. **Binario release RE-DESPLEGADO** a `Builds/Backend/` (símbolos verificados con `grep -aoc`).
+
+1. **EL DIAGNÓSTICO QUE LO ORIGINÓ.** El motor de la agresión era un dado: en `tick_stalk` la ruleta valía 1,6 %/tick a 10 Hz, o sea embestida a los ~6,2 s de media contra una paciencia de 25 s ⇒ **la paciencia decidía el 2 % de los acechos y el azar el 98 %**. Y un 36 % de los avistamientos se saltaban STALK entero. "Está un poco y ataca" era la implementación literal.
+
+2. **HAMBRE (`hunger`, 0..1)** es ahora el estado lento que gobierna todo. Host-only, backend-only, **NUNCA cruza el wire ni derivado**. Drena en 420 s, se llena a 1,0 al matar (absorbe y sustituye a `calm_for`). **Valor inicial DERIVADO del anchor+seed** como `PhantomTraits`, repartido por todo el rango para que el mundo no tenga horas de comida sincronizadas. Tres bandas: saciada (>0,66) no embiste jamás, inquieta, hambrienta (<0,33). La ruleta se multiplica por `(1 - hunger)` y encima hay **gate duro** en Stalk/Spotted/Statue.
+
+3. **LA PERSECUCIÓN TIENE PULSO.** Velocidad punta intacta (7,29); lo finito es el aguante: ráfaga de 5 s, 3 s a 3,5 m/s jadeando, otra vez. De 8,4 s a ~25-30 s desde 15 m. **Quedarse sin aire NO es salida de SPRINT** — las dos salidas siguen siendo del jugador, y hay test que lo asserta tick a tick.
+
+4. **MODO SACIADO = el creepy que faltaba.** Te sigue a 14 m sin poder atacarte, y **te imita**: copia `crouch` y `held_item` con 0,8 s de retardo desde `seal_cosmetics`. Cero wire, cero código de cliente. Ojo: el muestreo vive en `resolve_mover_tick`, no en `seal_cosmetics`, porque el objetivo puede ser el host, que **no es un peer**.
+
+5. **`PhantomState::Flee` y `PhantomState::Grab`.** Un disparo cercano a una saciada la manda lejos 6 s (**no revela**: un peer que huye de un tiro es lo que haría un jugador real). `Grab` **sí revela**. Los cuatro sitios que ADR-050 dejó por escrito están atendidos, y el test de `phantom_reveals` ahora enumera con `match` exhaustivo para que una variante nueva **no compile** hasta decidirse.
+
+6. **LA MUERTE DEJÓ DE SER ATÓMICA.** Por la espalda ya no mata: `GrabStart` te sujeta 2,5 s VIVO y forcejeas (espacio/click) para salir. Canal nuevo `report_struggle` + `StruggleReport` (**0x4F**, el opcode que ADR-047 reservó). Romper el agarre **no le da de comer**.
+
+7. **DOS FALLOS REALES QUE DESTAPARON LOS TESTS**, ambos del mismo sitio: el congelado del gesto en `resolve_mover_tick` devuelve `None` y **salta la FSM entera**. (a) En WANDER era una ventana ciega de 1 s cada 6 s, cronometrable desde fuera. (b) Durante el agarre impedía que `tick_grab` corriese el primer segundo, así que **un forcejeo inmediato se ignoraba en silencio** — que es justo lo que hace cualquiera al ser agarrado.
+
+8. **PENDIENTE Y DECLARADO:** las palancas `env_tuning` de los umbrales de hambre/ráfaga/agarre **no se expusieron** (los `const` viven en sitios sin `&self`); el rescate de un agarrado **por otro jugador** queda fuera (dato que hoy no existe en el wire, ADR propio); los bancos de voz 6 (`PhantomVoice_Moan*`) y 7 (`PhantomVoice_Winded*`) van **vacíos a propósito** — no hay clips en el repo, y un banco vacío es silencio honesto. **RE-BAKE de `RemotePlayerAvatar.prefab` OBLIGATORIO** antes de jugar: sin él no suenan las voces nuevas y el grito de revelación **sigue sonando doble**.
+
+9. **PRÓXIMO PASO ÚNICO: PLAY-TEST.** Nada de esta tanda lo ha visto un humano en juego. Calibrar con `PHANTOM_DENSITY_SCALE` alto para forzar encuentros.
+
 - Fecha: 2026-08-04 (tooling: CI Rust y poda de permisos)
 - Hecho: CI Rust añadido para `main` y `migration/worldgraph-v1`; Unity/C# permanece en compile-check local por licencia. `cargo add` requiere aprobación humana y `cargo run` queda permitido solo en `backend/`; los cuatro allowlists locales siguen separados e ignorados.
 - Validación: workflow parseado con PyYAML temporal; cuatro allowlists JSON válidos; fallback C# sin proyecto sale 0 con nota y `stderr` vacío; fmt + Clippy `--all-targets -D warnings` limpios; `cargo test` 531 passed, 4 ignored, 0 failed.
