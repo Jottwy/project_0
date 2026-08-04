@@ -789,6 +789,7 @@ pub async fn run(
                     player.rotation,
                     player.crouch,
                     player.stats.is_dead(),
+                    player.held_item,
                 );
                 // ADR-047 — this loop ROUTES; it no longer assumes the victim. Each attack names
                 // whose health it is for, and the only branch that applies damage is the one where
