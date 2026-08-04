@@ -1928,6 +1928,117 @@ impl PhantomDriver {
         }
     }
 
+    /// STALK — it shadows the player at a held gap, breathing. Patience (or an unpredictable roll)
+    /// runs out into a SPRINT; being looked at from close by freezes it into STATUE; losing the
+    /// player past `LOSE_RADIUS` sends it to SEARCH the last-known spot, or to WANDER with no
+    /// memory at all.
+    fn tick_stalk(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+        let dist_opt = target.map(|(_, _, d, _)| d);
+        if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
+            // ADR-040 Fase 4: it does not forget on the spot any more — it goes to look
+            // where it last saw you. Only with no memory at all does it resume wandering.
+            self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
+                PhantomState::Search
+            } else {
+                PhantomState::Wander
+            };
+            self.movers[i].state_timer = 0.0;
+            return;
+        }
+        let (_, tpos, dist, tyaw) = target.unwrap();
+        self.movers[i].last_known_player_pos = Some(tpos);
+
+        // ADR-048 voice 3 — it breathes while it shadows you. Ambient, so it takes the
+        // SHORT cooldown and can never mute the scream of the lunge that follows.
+        self.movers[i].breath_in -= ctx.dt;
+        if self.movers[i].breath_in <= 0.0 {
+            self.movers[i].breath_in = PHANTOM_BREATH_MIN
+                + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN);
+            self.movers[i].try_vocalize_for(VOCAL_STALK_BREATH, PHANTOM_BREATH_COOLDOWN);
+        }
+
+        // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
+        // close → freeze. Entered only from STALK; a committed SPRINT is never frozen.
+        // A hunter never plays the statue game — it is not pretending to be scenery,
+        // it is coming. That single exclusion is most of what makes one feel different.
+        if dist < PHANTOM_STATUE_RANGE
+            && !self.movers[i].traits.is_hunter
+            && self.movers[i].statue_cooldown <= 0.0
+            && player_is_looking_at(tpos, tyaw, from)
+        {
+            self.movers[i].state = PhantomState::Statue;
+            self.movers[i].state_timer = 0.0;
+            info!(
+                "MPTRACE step=PH_STATUE event=phantom_statue phantom_id={} dist={:.2}",
+                id, dist
+            );
+            return;
+        }
+
+        if self.movers[i].state_timer > self.movers[i].patience()
+            || rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse()
+        {
+            self.movers[i].enter_sprint();
+            info!(
+                "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} dist={:.2}",
+                id, dist
+            );
+            return;
+        }
+
+        // ADR-040: navigated heading. Where this used to point straight at the player —
+        // and grind into whatever wall was in between — it now follows a string-pulled
+        // route. With no plan it falls back to the straight bearing, i.e. the old code.
+        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
+        // Ease toward the player instead of snapping (a 10 Hz snap reads as lag);
+        // movement follows the smoothed heading → a curved, less robotic track.
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let heading = self.movers[i].heading;
+        // Maintain STALK_DISTANCE: close in if too far, ease back if too near (it
+        // backs away while still facing you — unsettling), else hold.
+        let (move_dir, speed) = if dist > PHANTOM_STALK_DISTANCE + 2.0 {
+            (heading, PHANTOM_WALK_SPEED)
+        } else if dist < PHANTOM_STALK_DISTANCE {
+            (
+                (heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU),
+                PHANTOM_WALK_SPEED * 0.6,
+            )
+        } else {
+            (heading, 0.0)
+        };
+        let dir = Vec3::new(move_dir.sin(), 0.0, move_dir.cos());
+        let desired = Vec3::new(
+            from.x + dir.x * speed * ctx.dt,
+            from.y,
+            from.z + dir.z * speed * ctx.dt,
+        );
+        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        // Wedge detection. `intended` is 0 while STALK holds its distance band, which
+        // `note_step_progress` reads as "not trying to travel" rather than as stuck.
+        let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+        self.movers[i].note_step_progress(advance, speed * ctx.dt);
+        let yaw = heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+        }
+        if ctx.net.session_start.elapsed().as_millis() % 1000 < 120 {
+            info!(
+                "MPTRACE step=PH_STALK event=phantom_stalk_move phantom_id={} pos=({:.2},{:.2},{:.2}) dist={:.2} blocked_ticks={}",
+                id, resolved.x, resolved.y, resolved.z, dist, self.movers[i].blocked_ticks
+            );
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -2240,108 +2351,16 @@ impl PhantomDriver {
 
                 // ── STALK: shadow the player at a held gap. Patience (or an unpredictable roll) →
                 // SPRINT; lost past LOSE_RADIUS → WANDER (slice 3b: SEARCH the last-known pos). ──
-                PhantomState::Stalk => {
-                    let dist_opt = target.map(|(_, _, d, _)| d);
-                    if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
-                        // ADR-040 Fase 4: it does not forget on the spot any more — it goes to look
-                        // where it last saw you. Only with no memory at all does it resume wandering.
-                        self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
-                            PhantomState::Search
-                        } else {
-                            PhantomState::Wander
-                        };
-                        self.movers[i].state_timer = 0.0;
-                        continue;
-                    }
-                    let (_, tpos, dist, tyaw) = target.unwrap();
-                    self.movers[i].last_known_player_pos = Some(tpos);
-
-                    // ADR-048 voice 3 — it breathes while it shadows you. Ambient, so it takes the
-                    // SHORT cooldown and can never mute the scream of the lunge that follows.
-                    self.movers[i].breath_in -= dt;
-                    if self.movers[i].breath_in <= 0.0 {
-                        self.movers[i].breath_in = PHANTOM_BREATH_MIN
-                            + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN);
-                        self.movers[i]
-                            .try_vocalize_for(VOCAL_STALK_BREATH, PHANTOM_BREATH_COOLDOWN);
-                    }
-
-                    // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
-                    // close → freeze. Entered only from STALK; a committed SPRINT is never frozen.
-                    // A hunter never plays the statue game — it is not pretending to be scenery,
-                    // it is coming. That single exclusion is most of what makes one feel different.
-                    if dist < PHANTOM_STATUE_RANGE
-                        && !self.movers[i].traits.is_hunter
-                        && self.movers[i].statue_cooldown <= 0.0
-                        && player_is_looking_at(tpos, tyaw, from)
-                    {
-                        self.movers[i].state = PhantomState::Statue;
-                        self.movers[i].state_timer = 0.0;
-                        info!(
-                            "MPTRACE step=PH_STATUE event=phantom_statue phantom_id={} dist={:.2}",
-                            id, dist
-                        );
-                        continue;
-                    }
-
-                    if self.movers[i].state_timer > self.movers[i].patience()
-                        || rand::random::<f32>()
-                            < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse()
-                    {
-                        self.movers[i].enter_sprint();
-                        info!(
-                            "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} dist={:.2}",
-                            id, dist
-                        );
-                        continue;
-                    }
-
-                    // ADR-040: navigated heading. Where this used to point straight at the player —
-                    // and grind into whatever wall was in between — it now follows a string-pulled
-                    // route. With no plan it falls back to the straight bearing, i.e. the old code.
-                    let to_player = self.steer_heading(i, current_layer, from, tpos, dt);
-                    // Ease toward the player instead of snapping (a 10 Hz snap reads as lag);
-                    // movement follows the smoothed heading → a curved, less robotic track.
-                    self.movers[i].heading_target = to_player;
-                    let t = (PHANTOM_TURN_SPEED_STALK * dt).min(1.0);
-                    self.movers[i].heading =
-                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
-                    let heading = self.movers[i].heading;
-                    // Maintain STALK_DISTANCE: close in if too far, ease back if too near (it
-                    // backs away while still facing you — unsettling), else hold.
-                    let (move_dir, speed) = if dist > PHANTOM_STALK_DISTANCE + 2.0 {
-                        (heading, PHANTOM_WALK_SPEED)
-                    } else if dist < PHANTOM_STALK_DISTANCE {
-                        (
-                            (heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU),
-                            PHANTOM_WALK_SPEED * 0.6,
-                        )
-                    } else {
-                        (heading, 0.0)
-                    };
-                    let dir = Vec3::new(move_dir.sin(), 0.0, move_dir.cos());
-                    let desired = Vec3::new(
-                        from.x + dir.x * speed * dt,
-                        from.y,
-                        from.z + dir.z * speed * dt,
-                    );
-                    let resolved =
-                        resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
-                    // Wedge detection. `intended` is 0 while STALK holds its distance band, which
-                    // `note_step_progress` reads as "not trying to travel" rather than as stuck.
-                    let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
-                    self.movers[i].note_step_progress(advance, speed * dt);
-                    let yaw = heading.to_degrees().rem_euclid(360.0);
-                    if let Some(peer) = net.peers.get_mut(&id) {
-                        peer.update_player_state(resolved.to_array(), yaw, "idle".into());
-                    }
-                    if net.session_start.elapsed().as_millis() % 1000 < 120 {
-                        info!(
-                            "MPTRACE step=PH_STALK event=phantom_stalk_move phantom_id={} pos=({:.2},{:.2},{:.2}) dist={:.2} blocked_ticks={}",
-                            id, resolved.x, resolved.y, resolved.z, dist, self.movers[i].blocked_ticks
-                        );
-                    }
-                }
+                PhantomState::Stalk => self.tick_stalk(
+                    mt,
+                    &mut TickCtx {
+                        net: &mut *net,
+                        dt,
+                        now,
+                        target_speeds: &target_speeds,
+                        host_crouch: host_player_crouch,
+                    },
+                ),
 
                 // ── STATUE: weeping-angel freeze. Dead still while the player keeps looking. They
                 // look away → STALK (resumes the hunt, never back to WANDER); tires after
