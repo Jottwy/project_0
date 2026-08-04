@@ -46,13 +46,16 @@ pub(super) const PHANTOM_THEATRE_RANGE: f32 = 30.0;
 /// subtler. PURELY BEHAVIORAL — no wire flag; observable only by watching, never by reading packets.
 pub(super) const PHANTOM_STARE_INTERVAL: Duration = Duration::from_secs(30);
 pub(super) const PHANTOM_STARE_DURATION: Duration = Duration::from_millis(2500);
-/// ADR-016 — OBSERVATION LEASH (TEMPORARY, play-test only): keep the phantom within this radius
-/// (m) of its spawn so it stays in view to observe the cloned name, the stare, and two same-named
-/// players. If it drifts past this, its heading is re-aimed at the spawn instead of wandering off.
-/// NOT the final behavior: the robapieles must roam freely — free wander returns once the
-/// world→backend migration fixes collision (today it phases through visibly-rendered walls).
-/// Calibrable.
-pub(super) const PHANTOM_WANDER_RADIUS: f32 = 9.0;
+/// ADR-016 — TERRITORY: how far (m) from its anchor a patrolling creature will wander before its
+/// heading is re-aimed home. Only acts in WANDER; the hunting states ignore it entirely.
+///
+/// ADR-050 point 14: this was 9 m and declared TEMPORARY in its own comment — a play-test crutch
+/// so the creature stayed on screen, conditioned on the world→backend collision migration landing.
+/// That migration landed three ADRs ago (018 collision, 026 player spawn, 040 navigation), and at
+/// 9 m the creatures did not patrol, they orbited: a ring of sentries pinned to their spawn cells.
+/// 45 m is a territory it can actually walk — big enough to leave and come back to a corridor,
+/// small enough that a creature drawn for a block stays roughly in that block.
+pub(super) const PHANTOM_WANDER_RADIUS: f32 = 45.0;
 
 // ADR-016 slice 2 — detection + chase. D1=(a): distance + a forward view cone ONLY, with NO
 // geometry line-of-sight. The phantom's collision is against the BACKEND world, not the
@@ -164,6 +167,12 @@ pub(super) const PHANTOM_ANSWER_MIN_DISTANCE: f32 = 60.0;
 pub(super) const PHANTOM_RAGE_SECONDS: f32 = 45.0;
 /// A shot closer than this enrages it MUCH harder — firing next to one is a mistake you feel.
 pub(super) const PHANTOM_RAGE_CLOSE_DISTANCE: f32 = 35.0;
+/// ADR-050 point 12 — HEARING AND BEING ANGERED ARE NOT THE SAME RADIUS. A rifle carries 500 m
+/// (`NoiseReporter`), and rage used to ride that same distance, so ONE trigger pull put every awake
+/// creature in the world into a 45-90 s rage with its patience cut to 40 % — a single shot was a
+/// server-wide event. Past this, a noise still ATTRACTS (it walks over to look, which is the whole
+/// of ADR-041) but does not anger. Close, it does both.
+pub(super) const PHANTOM_RAGE_MAX_DISTANCE: f32 = 70.0;
 /// Patience multiplier while enraged: it runs out of it more than twice as fast.
 pub(super) const PHANTOM_RAGE_PATIENCE: f32 = 0.4;
 /// Unpredictable-lunge multiplier while enraged.
@@ -212,12 +221,17 @@ pub(super) const PHANTOM_NOISE_MAX_LOUDNESS: f32 = 600.0;
 /// lands almost on top of you; at 500 m it lands ~40 m out and the creature has to search. That
 /// gap is the whole design: exact positions at long range would be an aimbot with a delay.
 pub(super) const PHANTOM_NOISE_ERROR_FRAC: f32 = 0.08;
-/// Travel speed toward a noise: a fast walk, NOT a sprint. 500 m at 3 m/s is ~2.8 minutes of dread;
-/// covering the same ground in 55 s reads as homing.
+/// Travel speed toward a noise: a fast walk, NOT a sprint. 500 m at this speed is ~1.9 minutes of
+/// dread; covering the same ground at a run would read as homing.
 pub(super) const PHANTOM_NOISE_TRAVEL_SPEED: f32 = 4.5;
 /// A noise goes cold after this long in transit without a fresh one. Without it the phantom would
 /// cross the map chasing a shot fired five minutes ago.
-pub(super) const PHANTOM_NOISE_EXPIRY: f32 = 90.0;
+///
+/// ADR-050 point 13: this was 90 s, which at 4.5 m/s is 405 m of reach against a rifle audible at
+/// 500 m — every creature between those two numbers set off, walked for a minute and a half and
+/// gave up short. ADR-041's long approach was not reachable at all. 130 s covers the loudest
+/// weapon in the game with margin for the detour a real route takes around geometry.
+pub(super) const PHANTOM_NOISE_EXPIRY: f32 = 130.0;
 /// Patience once it ARRIVES. The 12 s of a normal SEARCH is far too short after a journey of
 /// minutes — arriving and immediately shrugging would waste the whole approach.
 pub(super) const PHANTOM_NOISE_SEARCH_PATIENCE: f32 = 30.0;
@@ -1494,13 +1508,20 @@ impl PhantomDriver {
                 // A gunshot does not just attract this thing, it ANGERS it — and firing close to
                 // one is a mistake you get to feel. Rage is refreshed, never accumulated: two shots
                 // do not make it twice as angry, they keep it angry twice as long.
-                let close = dist <= PHANTOM_RAGE_CLOSE_DISTANCE;
-                self.movers[i].enraged_for = match close {
-                    true => PHANTOM_RAGE_SECONDS * 2.0,
-                    false => PHANTOM_RAGE_SECONDS,
-                };
-                // Rage burns off satiety: a full creature that gets shot at stops being full.
-                self.movers[i].calm_for = 0.0;
+                //
+                // ADR-050 point 12: only within `PHANTOM_RAGE_MAX_DISTANCE`. Farther out the shot
+                // still redirects it (the SEARCH above already happened) but leaves it calm — being
+                // enraged by something half a kilometre away is what turned one trigger pull into a
+                // world-wide event.
+                if dist <= PHANTOM_RAGE_MAX_DISTANCE {
+                    let close = dist <= PHANTOM_RAGE_CLOSE_DISTANCE;
+                    self.movers[i].enraged_for = match close {
+                        true => PHANTOM_RAGE_SECONDS * 2.0,
+                        false => PHANTOM_RAGE_SECONDS,
+                    };
+                    // Rage burns off satiety: a full creature that gets shot at stops being full.
+                    self.movers[i].calm_for = 0.0;
+                }
 
                 // Far away it ANSWERS, and that answer is the whole point of the mechanic: you fire,
                 // and something enormous replies from out there. Close by, a grunt reads better —
