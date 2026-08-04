@@ -1739,6 +1739,84 @@ impl PhantomDriver {
         }
     }
 
+    /// STATUE — the weeping-angel freeze. Dead still while the player keeps looking. They look away
+    /// → STALK (it resumes the hunt, never back to WANDER); it tires after `PHANTOM_STATUE_MAX` →
+    /// SPRINT, shoving the player if point-blank; loses them past `LOSE_RADIUS` → WANDER. Never
+    /// reached mid-SPRINT: a committed lunge is not frozen.
+    fn tick_statue(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            target,
+            ..
+        } = mt;
+        let lost = match target {
+            Some((_, _, dist, _)) => dist > PHANTOM_LOSE_RADIUS,
+            None => true,
+        };
+        if lost {
+            self.movers[i].state = PhantomState::Wander;
+            self.movers[i].state_timer = 0.0;
+            return;
+        }
+        // ADR-047: `tid` is BOUND, not discarded. It used to be `_` here and in SPRINT,
+        // and that discard is where the mis-routed damage came from.
+        let (tid, tpos, dist, tyaw) = target.unwrap();
+        self.movers[i].last_known_player_pos = Some(tpos);
+
+        // Tired of the game → lunge (checked before the look test so the timeout always
+        // wins once it elapses). If point-blank, also SHOVE the player — the client
+        // applies the impulse (SetVelocity); the backend only signals the direction.
+        if self.movers[i].state_timer >= PHANTOM_STATUE_MAX * self.movers[i].traits.statue_scale {
+            let dx = tpos.x - from.x;
+            let dz = tpos.z - from.z;
+            let len = (dx * dx + dz * dz).sqrt();
+            if dist < PHANTOM_KNOCKBACK_RANGE && len > 0.001 {
+                self.attacks.push(PhantomAttack {
+                    victim: tid,
+                    kind: PhantomAttackKind::Knockback(
+                        dx / len * PHANTOM_KNOCKBACK_FORCE,
+                        dz / len * PHANTOM_KNOCKBACK_FORCE,
+                    ),
+                });
+            }
+            self.movers[i].enter_sprint();
+            info!(
+                "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_statue_timeout knockback={}",
+                id,
+                dist < PHANTOM_KNOCKBACK_RANGE
+            );
+            return;
+        }
+        // Player looked away → resume stalking. WIDER cone than the one that froze it
+        // (hysteresis): you have to look meaningfully away, not merely jitter on the
+        // boundary, and the cooldown stops an immediate re-freeze.
+        if !player_is_looking_at_within(tpos, tyaw, from, PHANTOM_STATUE_RELEASE_HALF_FOV) {
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].statue_cooldown = PHANTOM_STATUE_COOLDOWN;
+            info!(
+                "MPTRACE step=PH_STALK event=phantom_statue_release phantom_id={}",
+                id
+            );
+            return;
+        }
+        // Frozen in place, but it SLOWLY turns its head toward you (creepier than a
+        // fixed facing): position held, only the heading eases toward the player.
+        let to_player = (tpos.x - from.x)
+            .atan2(tpos.z - from.z)
+            .rem_euclid(std::f32::consts::TAU);
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_STATUE * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(from.to_array(), yaw, "idle".into());
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -2158,79 +2236,16 @@ impl PhantomDriver {
                 // look away → STALK (resumes the hunt, never back to WANDER); tires after
                 // STATUE_MAX → SPRINT; loses the player past LOSE_RADIUS → WANDER. Never reached
                 // mid-SPRINT (a committed lunge is not frozen). ──
-                PhantomState::Statue => {
-                    let lost = match target {
-                        Some((_, _, dist, _)) => dist > PHANTOM_LOSE_RADIUS,
-                        None => true,
-                    };
-                    if lost {
-                        self.movers[i].state = PhantomState::Wander;
-                        self.movers[i].state_timer = 0.0;
-                        continue;
-                    }
-                    // ADR-047: `tid` is BOUND, not discarded. It used to be `_` here and in SPRINT,
-                    // and that discard is where the mis-routed damage came from.
-                    let (tid, tpos, dist, tyaw) = target.unwrap();
-                    self.movers[i].last_known_player_pos = Some(tpos);
-
-                    // Tired of the game → lunge (checked before the look test so the timeout always
-                    // wins once it elapses). If point-blank, also SHOVE the player — the client
-                    // applies the impulse (SetVelocity); the backend only signals the direction.
-                    if self.movers[i].state_timer
-                        >= PHANTOM_STATUE_MAX * self.movers[i].traits.statue_scale
-                    {
-                        let dx = tpos.x - from.x;
-                        let dz = tpos.z - from.z;
-                        let len = (dx * dx + dz * dz).sqrt();
-                        if dist < PHANTOM_KNOCKBACK_RANGE && len > 0.001 {
-                            self.attacks.push(PhantomAttack {
-                                victim: tid,
-                                kind: PhantomAttackKind::Knockback(
-                                    dx / len * PHANTOM_KNOCKBACK_FORCE,
-                                    dz / len * PHANTOM_KNOCKBACK_FORCE,
-                                ),
-                            });
-                        }
-                        self.movers[i].enter_sprint();
-                        info!(
-                            "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_statue_timeout knockback={}",
-                            id,
-                            dist < PHANTOM_KNOCKBACK_RANGE
-                        );
-                        continue;
-                    }
-                    // Player looked away → resume stalking. WIDER cone than the one that froze it
-                    // (hysteresis): you have to look meaningfully away, not merely jitter on the
-                    // boundary, and the cooldown stops an immediate re-freeze.
-                    if !player_is_looking_at_within(
-                        tpos,
-                        tyaw,
-                        from,
-                        PHANTOM_STATUE_RELEASE_HALF_FOV,
-                    ) {
-                        self.movers[i].state = PhantomState::Stalk;
-                        self.movers[i].state_timer = 0.0;
-                        self.movers[i].statue_cooldown = PHANTOM_STATUE_COOLDOWN;
-                        info!(
-                            "MPTRACE step=PH_STALK event=phantom_statue_release phantom_id={}",
-                            id
-                        );
-                        continue;
-                    }
-                    // Frozen in place, but it SLOWLY turns its head toward you (creepier than a
-                    // fixed facing): position held, only the heading eases toward the player.
-                    let to_player = (tpos.x - from.x)
-                        .atan2(tpos.z - from.z)
-                        .rem_euclid(std::f32::consts::TAU);
-                    self.movers[i].heading_target = to_player;
-                    let t = (PHANTOM_TURN_SPEED_STATUE * dt).min(1.0);
-                    self.movers[i].heading =
-                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
-                    let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                    if let Some(peer) = net.peers.get_mut(&id) {
-                        peer.update_player_state(from.to_array(), yaw, "idle".into());
-                    }
-                }
+                PhantomState::Statue => self.tick_statue(
+                    mt,
+                    &mut TickCtx {
+                        net: &mut *net,
+                        dt,
+                        now,
+                        target_speeds: &target_speeds,
+                        host_crouch: host_player_crouch,
+                    },
+                ),
 
                 // ── SPRINT: ramp WALK→SPRINT straight at the player. Point-blank → anim-only
                 // "attack" (ADR-016 invariant) then STALK; lost past LOSE_RADIUS*1.2 → WANDER
