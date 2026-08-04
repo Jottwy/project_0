@@ -53,7 +53,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// ADR-050: out of breath mid-charge. This one IS actionable — it marks the window where
         /// the creature drops to a heavy walk and ground can be bought back.
         private const int KindWinded = 7;
-        private const int KindCount = 8;
+        /// ADR-051: the scream WHILE it comes apart, a beat before the skin actually tears. Distinct
+        /// from KindReveal, which now lands on the tear itself — this one still comes out of
+        /// something wearing a player's face, and that is what makes it work.
+        private const int KindUnmaskScream = 8;
+        private const int KindCount = 9;
 
         // No counter can hold this, so the first sample is always "no change" and never a trigger.
         private const int NoSample = int.MinValue;
@@ -255,6 +259,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             KindSated => "Sated",
             KindHungryMoan => "HungryMoan",
             KindWinded => "Winded",
+            KindUnmaskScream => "UnmaskScream",
             _ => "Unknown",
         };
     }

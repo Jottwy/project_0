@@ -208,6 +208,19 @@ pub(super) const VOCAL_HUNGRY_MOAN: u8 = 6;
 /// learns, without a UI, that the next few seconds are the ones to spend running.
 pub(super) const VOCAL_WINDED: u8 = 7;
 
+// ── ADR-051: the skin comes off as an EVENT, not as a level ──────────────────────────────────────
+/// How long it stands there screaming before it tears out of the skin.
+///
+/// This is the tell, and its length is the design: long enough that you have time to understand
+/// what is about to happen and start running, short enough that it never becomes a free escape. A
+/// creature that unmasked instantly was a jump cut; one that announces it for a beat and a half is
+/// a threat you watched arrive.
+pub(super) const PHANTOM_UNMASK_SECONDS: f32 = 1.6;
+/// ADR-051 — the scream while it comes apart. Its own voice because it is not the reveal scream
+/// (`VOCAL_REVEAL`, which now lands a beat later, on the tear itself) — this one is still coming
+/// out of something that looks like a player.
+pub(super) const VOCAL_UNMASK_SCREAM: u8 = 8;
+
 // ── ADR-050 point 9: the grab ────────────────────────────────────────────────────────────────────
 /// How long the victim has to break free before the grab becomes a kill.
 ///
@@ -775,6 +788,17 @@ pub(super) enum PhantomState {
     /// `PHANTOM_GRAB_SECONDS` you are held and ALIVE, and struggling free is the way out. This is
     /// the only state whose exit the victim controls directly.
     Grab,
+    /// ADR-051 point 2 — THE WARNING. Hungry, watched, and about to tear out of the stolen skin: it
+    /// stands dead still, facing you, screaming, for `PHANTOM_UNMASK_SECONDS`.
+    ///
+    /// It does NOT reveal here, and that is the whole point of the state existing. What makes this
+    /// second and a half work is that the thing screaming at you still looks like one of your own.
+    Unmasking,
+    /// ADR-051 point 5 — the unmasked hunt. Where a `Sprint` that failed to kill goes, instead of
+    /// back to `Stalk`. Stalks you like `Stalk` does but REVEALED, and never puts the skin back on:
+    /// the only way out is losing you, which is what makes the disguise falling a one-way door for
+    /// as long as the chase lasts.
+    Hunting,
 }
 
 /// ADR-038: the two states where the stolen skin stops holding — the phantom shows its real form.
@@ -782,11 +806,22 @@ pub(super) enum PhantomState {
 /// the decision is covered by `phantom_reveals_only_in_sprint_and_statue`. Purely cosmetic — the
 /// flag rides the pose relay and never gates damage, detection or collision.
 pub(super) fn phantom_reveals(state: PhantomState) -> bool {
-    // ADR-050 point 10: `Grab` reveals. Unlike `Flee` (point 7), there is no ambiguity left to
-    // protect here — it is holding you at arm's length and you are about to see what it is.
+    // ADR-050 point 10: `Grab` reveals — it is holding you at arm's length and there is no
+    // ambiguity left to protect.
+    //
+    // ADR-051 points 1 and 2 — TWO CHANGES FROM THE PLAY-TEST, both about when the skin comes off:
+    //
+    // `Statue` is OUT. It used to reveal, and `Statue` is entered by LOOKING AT the creature from
+    // close by, with hunger playing no part — so a sated one, the kind ADR-050 built to follow you
+    // around and copy you, tore out of its skin just because you turned to look at it, and put it
+    // back on when you turned away. The disguise was falling to a camera angle instead of to an
+    // intention. It now freezes and stares WEARING the skin, which is worse for you.
+    //
+    // `Unmasking` is also out, deliberately: that state is the warning, and it only works while the
+    // thing screaming at you still looks like one of your own.
     matches!(
         state,
-        PhantomState::Sprint | PhantomState::Statue | PhantomState::Grab
+        PhantomState::Sprint | PhantomState::Grab | PhantomState::Hunting
     )
 }
 
@@ -1735,12 +1770,18 @@ impl PhantomDriver {
                 // ADR-050: `Grab` too, and for the starkest reason on the list — a creature that
                 // let go of the player it is killing because somebody fired a gun across the map
                 // would be dropping the one thing it committed to.
+                // ADR-051: `Unmasking` and `Hunting` join the list. The first is a committed beat
+                // that a distant gunshot must not cancel halfway through; the second is a creature
+                // that has already torn out of its skin for YOU and has no business wandering off
+                // to investigate a noise.
                 if matches!(
                     self.movers[i].state,
                     PhantomState::Sprint
                         | PhantomState::Statue
                         | PhantomState::Flee
                         | PhantomState::Grab
+                        | PhantomState::Unmasking
+                        | PhantomState::Hunting
                 ) {
                     continue;
                 }
@@ -2107,8 +2148,9 @@ impl PhantomDriver {
             }
             // ADR-050 point 4: a SATED creature still gets bored of the game and still shoves you
             // if you are close enough — but it does not follow the shove with a charge. It goes
-            // back to shadowing. Being knocked on your back by something that then simply resumes
-            // walking behind you is the single most unsettling thing this state can do.
+            // back to shadowing, WEARING THE SKIN (ADR-051 point 4: no hunger, no unmasking, no
+            // matter how long you stared at it). Being knocked on your back by something that then
+            // simply resumes walking behind you is the most unsettling thing this state can do.
             if self.movers[i].is_sated() {
                 self.movers[i].state = PhantomState::Stalk;
                 self.movers[i].state_timer = 0.0;
@@ -2120,10 +2162,17 @@ impl PhantomDriver {
                 );
                 return;
             }
-            self.movers[i].enter_sprint();
+            // ADR-051 points 2-3: hungry and still being watched → it does not charge yet. It comes
+            // APART first: still, screaming, still wearing the face, for a beat and a half. The
+            // charge is what happens at the end of that.
+            self.movers[i].state = PhantomState::Unmasking;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
+            self.movers[i].try_vocalize(VOCAL_UNMASK_SCREAM);
             info!(
-                "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_statue_timeout knockback={}",
+                "MPTRACE step=PH_UNMASK event=phantom_unmask_begins phantom_id={} hunger={:.2} knockback={}",
                 id,
+                self.movers[i].hunger,
                 dist < PHANTOM_KNOCKBACK_RANGE
             );
             return;
@@ -2267,6 +2316,130 @@ impl PhantomDriver {
         }
     }
 
+    /// UNMASKING (ADR-051 point 2) — the warning. Dead still, facing you, screaming, and STILL
+    /// WEARING THE SKIN. At the end of it the skin tears and it comes straight at you.
+    ///
+    /// It cannot move and it cannot hit you here, and both are load-bearing: if the warning could
+    /// reach you it would be a feint, and a feint is something players learn to ignore. Losing you
+    /// during it puts the skin back on and nothing happened.
+    fn tick_unmasking(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            target,
+            ..
+        } = mt;
+
+        // You got away mid-warning: it never tears. Back to hunting you clothed.
+        let lost = match target {
+            Some((_, _, dist, _)) => dist > PHANTOM_LOSE_RADIUS,
+            None => true,
+        };
+        if lost {
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            return;
+        }
+        let (_, tpos, _, _) = target.unwrap();
+        self.movers[i].last_known_player_pos = Some(tpos);
+
+        if self.movers[i].state_timer >= PHANTOM_UNMASK_SECONDS {
+            // THE TEAR. Straight into the lunge, which is the first state that reveals — so the
+            // `false→true` edge the client decorates lands exactly here, on this frame.
+            self.movers[i].enter_sprint();
+            info!(
+                "MPTRACE step=PH_UNMASK event=phantom_skin_breaks phantom_id={} hunger={:.2}",
+                id, self.movers[i].hunger
+            );
+            return;
+        }
+
+        // Stares straight through you while it comes apart. Faster head turn than STATUE: this is
+        // not curiosity any more.
+        let to_player = (tpos.x - from.x)
+            .atan2(tpos.z - from.z)
+            .rem_euclid(std::f32::consts::TAU);
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
+        self.movers[i].heading = lerp_heading(self.movers[i].heading, to_player, t);
+        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(from.to_array(), yaw, "idle".into());
+        }
+    }
+
+    /// HUNTING (ADR-051 point 5) — the unmasked chase between lunges.
+    ///
+    /// Identical shadowing to `Stalk`, with one difference that is the entire reason it exists: it
+    /// is REVEALED and it never re-dresses. A failed lunge used to drop back into `Stalk`, which is
+    /// a clothed state, so the skin flickered back on after every miss — "se cambia de piel todo el
+    /// rato". Now the disguise falling is a one-way door until you break contact.
+    fn tick_hunting(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+        let dist_opt = target.map(|(_, _, d, _)| d);
+        if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
+            // THE ONLY WAY THE SKIN GOES BACK ON: it lost you. Both destinations are clothed
+            // states, so the recomposition rides the state change and never a flag (invariant 1).
+            self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
+                PhantomState::Search
+            } else {
+                PhantomState::Wander
+            };
+            self.movers[i].state_timer = 0.0;
+            info!(
+                "MPTRACE step=PH_HUNT event=phantom_redresses phantom_id={} note=lost_contact",
+                id
+            );
+            return;
+        }
+        let (_, tpos, dist, _) = target.unwrap();
+        self.movers[i].last_known_player_pos = Some(tpos);
+
+        // No patience gate and no STATUE here: it is past pretending. It re-lunges as soon as the
+        // strike recovery is spent, which is what makes an unmasked creature relentless rather than
+        // merely visible.
+        if self.movers[i].strike_recover <= 0.0 && self.movers[i].winded_for <= 0.0 {
+            self.movers[i].enter_sprint();
+            info!(
+                "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_hunting dist={:.1}",
+                id, dist
+            );
+            return;
+        }
+
+        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let heading = self.movers[i].heading;
+        // Circles at strike distance while it recovers, rather than backing off politely.
+        let (move_dir, speed) = match dist > PHANTOM_STALK_DISTANCE {
+            true => (heading, PHANTOM_STALK_CLOSE_SPEED),
+            false => (heading, 0.0),
+        };
+        let dir = Vec3::new(move_dir.sin(), 0.0, move_dir.cos());
+        let desired = Vec3::new(
+            from.x + dir.x * speed * ctx.dt,
+            from.y,
+            from.z + dir.z * speed * ctx.dt,
+        );
+        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+        self.movers[i].note_step_progress(advance, speed * ctx.dt);
+        let yaw = heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+        }
+    }
+
     /// GRAB (ADR-050 point 9) — it has hold of you, and the death is on a clock you can beat.
     ///
     /// This state is where the kill actually lives now. It used to be atomic: the blow from behind
@@ -2292,7 +2465,9 @@ impl PhantomDriver {
                 victim,
                 kind: PhantomAttackKind::GrabRelease,
             });
-            self.movers[i].state = PhantomState::Stalk;
+            // ADR-051 point 5: it does not get the skin back for having been shaken off. You are
+            // still being hunted, and now by something you can see.
+            self.movers[i].state = PhantomState::Hunting;
             self.movers[i].state_timer = 0.0;
             self.movers[i].grab_victim = None;
             self.movers[i].grab_timer = 0.0;
@@ -2749,7 +2924,10 @@ impl PhantomDriver {
         // pushing and go back to stalking. The creature re-approaches from somewhere
         // else instead of standing in the corner, which is the visible failure.
         if self.movers[i].blocked_ticks >= PHANTOM_SPRINT_GIVEUP_TICKS {
-            self.movers[i].state = PhantomState::Stalk;
+            // ADR-051 point 5: back to HUNTING, not to Stalk. Stalk is a clothed state, and
+            // dropping into it after every failed lunge is precisely what made the skin flicker on
+            // and off through a chase.
+            self.movers[i].state = PhantomState::Hunting;
             self.movers[i].state_timer = 0.0;
             self.movers[i].blocked_ticks = 0;
             self.movers[i].strike_recover = 0.0;
@@ -3039,6 +3217,8 @@ impl PhantomDriver {
                 PhantomState::Search => self.tick_search(mt, &mut ctx),
                 PhantomState::Flee => self.tick_flee(mt, &mut ctx),
                 PhantomState::Grab => self.tick_grab(mt, &mut ctx),
+                PhantomState::Unmasking => self.tick_unmasking(mt, &mut ctx),
+                PhantomState::Hunting => self.tick_hunting(mt, &mut ctx),
             }
         }
 

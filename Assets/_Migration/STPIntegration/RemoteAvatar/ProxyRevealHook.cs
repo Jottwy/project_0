@@ -85,6 +85,15 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private Material _runtimeFallback;
         private bool _lastRevealed;
 
+        // ADR-051 point 7 — the skin-break burst. Built lazily on the first reveal and reused.
+        private const int BreakParticleCount = 90;
+        private const float BreakFlashTime = 0.22f;
+        private const float BreakFlashIntensity = 6f;
+        private bool _breakVfxBuilt;
+        private ParticleSystem _breakParticles;
+        private Light _breakFlash;
+        private float _breakFlashLeft;
+
         private Animator _vendorAnimator;
         private Animator _bodyAnimator;
         private int _hashMovementSpeed;
@@ -147,6 +156,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             // Only a revealed phantom pays for this; every real player stops at the comparison above.
             if (revealed)
                 MirrorLocomotion();
+
+            // Outside the `revealed` guard on purpose: the flash outlives the frame that started it
+            // and has to keep decaying even if the creature re-dresses mid-fade.
+            TickBreakFlash();
         }
 
         /// <summary>
@@ -188,7 +201,101 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             _realFormBody.SetActive(true);
             MirrorLocomotion(); // seed the pose in the same frame, so it never appears mid-idle
+            BurstSkinBreak();
             Scream();
+        }
+
+        /// <summary>
+        /// ADR-051 point 7 — THE SKIN DOES NOT SWAP, IT BREAKS. A burst of blood and a flash of
+        /// light on the reveal edge, so the mesh substitution reads as something tearing its way
+        /// out rather than as a model popping.
+        ///
+        /// Built in code and not from an authored prefab for the same reason `PhantomRealFormBuilder`
+        /// generates its stand-in material: there is no VFX asset in the repo, and a hook that
+        /// depends on one nobody made is a hook that silently does nothing. Everything here is
+        /// created once, lazily, and reused — a reveal is not a moment to be allocating.
+        /// </summary>
+        private void BurstSkinBreak()
+        {
+            EnsureBreakVfx();
+            if (_breakParticles != null)
+            {
+                // At the chest, not the pivot: the pivot is at the feet and the burst would come
+                // out of the floor.
+                _breakParticles.transform.position = transform.position + Vector3.up * 1.4f;
+                _breakParticles.Emit(BreakParticleCount);
+            }
+            if (_breakFlash != null)
+            {
+                _breakFlash.transform.position = transform.position + Vector3.up * 1.4f;
+                _breakFlashLeft = BreakFlashTime;
+                _breakFlash.enabled = true;
+            }
+        }
+
+        private void EnsureBreakVfx()
+        {
+            if (_breakVfxBuilt)
+                return;
+            _breakVfxBuilt = true;
+
+            var go = new GameObject("SkinBreakVfx");
+            go.transform.SetParent(transform, false);
+
+            _breakParticles = go.AddComponent<ParticleSystem>();
+            var main = _breakParticles.main;
+            main.duration = 1f;
+            main.loop = false;
+            main.playOnAwake = false;
+            main.startLifetime = new ParticleSystem.MinMaxCurve(0.35f, 0.9f);
+            main.startSpeed = new ParticleSystem.MinMaxCurve(2.5f, 7f);
+            main.startSize = new ParticleSystem.MinMaxCurve(0.05f, 0.16f);
+            main.startColor = new ParticleSystem.MinMaxGradient(
+                new Color(0.45f, 0.02f, 0.02f), new Color(0.75f, 0.06f, 0.04f));
+            main.gravityModifier = 1.6f;
+            main.simulationSpace = ParticleSystemSimulationSpace.World;
+            main.maxParticles = BreakParticleCount * 2;
+
+            var emission = _breakParticles.emission;
+            emission.enabled = false; // burst-only, driven by Emit()
+            var shape = _breakParticles.shape;
+            shape.shapeType = ParticleSystemShapeType.Sphere;
+            shape.radius = 0.25f;
+
+            var renderer = go.GetComponent<ParticleSystemRenderer>();
+            if (renderer != null)
+            {
+                // Sprites-Default is always present at runtime and needs no asset in the repo.
+                var shader = Shader.Find("Sprites/Default");
+                if (shader != null)
+                    renderer.material = new Material(shader);
+                renderer.renderMode = ParticleSystemRenderMode.Billboard;
+            }
+
+            var lightGo = new GameObject("SkinBreakFlash");
+            lightGo.transform.SetParent(transform, false);
+            _breakFlash = lightGo.AddComponent<Light>();
+            _breakFlash.type = LightType.Point;
+            _breakFlash.color = new Color(1f, 0.35f, 0.25f);
+            _breakFlash.range = 9f;
+            _breakFlash.intensity = 0f;
+            _breakFlash.enabled = false;
+        }
+
+        /// <summary>Decays the flash. A constant light would turn every revealed creature into a
+        /// lamp, which is the opposite of what the hard-cutoff audio curves exist to avoid.</summary>
+        private void TickBreakFlash()
+        {
+            if (_breakFlash == null || _breakFlashLeft <= 0f)
+                return;
+            _breakFlashLeft -= Time.deltaTime;
+            if (_breakFlashLeft <= 0f)
+            {
+                _breakFlash.intensity = 0f;
+                _breakFlash.enabled = false;
+                return;
+            }
+            _breakFlash.intensity = BreakFlashIntensity * (_breakFlashLeft / BreakFlashTime);
         }
 
         // ADR-048 point 6: the scream is now EMITTED by the backend as `vocal_kind = 0` and played
