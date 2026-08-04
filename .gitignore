@@ -45,6 +45,10 @@ backend/tools/grid_viewer/target/
 # Rust local env
 backend/.env
 
+# Claude Code local state
+**/.claude/settings.local.json
+**/.claude/.session-touched-*
+
 # Rust runtime data (partidas guardadas locales, no son fuente)
 backend/saves/
 
