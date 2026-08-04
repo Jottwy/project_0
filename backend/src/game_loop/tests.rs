@@ -882,14 +882,12 @@ async fn phantom_fake_pickup_touches_only_animation_not_real_state() {
     // Force the gesture to be due now (instead of after the cooldown).
     driver.movers[0].next_pickup_at = Instant::now();
 
-    driver.step(
-        &mut net,
-        0.1,
-        Vec3::new(100_000.0, 1.8, 100_000.0),
-        0.0,
-        false,
-        false,
-    );
+    // ADR-050 point 15: the theatre needs an AUDIENCE. 20 m is inside `PHANTOM_THEATRE_RANGE`
+    // (30) but outside sight (15), and the host sits at 90° to the initial heading anyway, so it
+    // is watching without being detected — which is exactly the case the gesture exists for.
+    let audience = Vec3::new(spawn_pos[0], spawn_pos[1], spawn_pos[2] + 20.0);
+
+    driver.step(&mut net, 0.1, audience, 0.0, false, false);
 
     // It IS faking the gesture: the presentation flank is "pickup"…
     assert_eq!(

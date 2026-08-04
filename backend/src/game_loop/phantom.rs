@@ -28,8 +28,17 @@ pub(super) const PHANTOM_INITIAL_HEADING: f32 = std::f32::consts::FRAC_PI_2;
 /// input-locked while picking up. PURE presentation — no real pickup state is ever touched.
 pub(super) const PHANTOM_PICKUP_GESTURE: Duration = Duration::from_millis(1000);
 /// ADR-016 slice 4: cooldown between faked pickups while patrolling (theater — no item needed).
-/// Calibrable; small enough to see it recur in play-test.
-pub(super) const PHANTOM_PICKUP_INTERVAL: Duration = Duration::from_secs(6);
+///
+/// ADR-050 point 15: 6 s was one gesture every six seconds, each freezing the creature for a
+/// full second. Between this, the stare tell and the organic pauses, WANDER spent more than half
+/// its time standing still, which reads as a broken AI rather than as a player pottering about.
+/// The gesture is also gated on somebody being near enough to SEE it (`PHANTOM_THEATRE_RANGE`):
+/// miming for an empty corridor is cost with no audience.
+pub(super) const PHANTOM_PICKUP_INTERVAL: Duration = Duration::from_secs(25);
+/// ADR-050: how close a real player has to be for the fake-pickup theatre to be worth performing.
+/// Wider than the sight radius on purpose — it should already be miming when you round the corner,
+/// not start the instant it notices you.
+pub(super) const PHANTOM_THEATRE_RANGE: f32 = 30.0;
 /// ADR-016 (tell phase): behavioral tell #2 — the phantom periodically goes UNNATURALLY STILL
 /// (a "stare"): it stops dead, holding idle + a fixed facing for `PHANTOM_STARE_DURATION`, on a
 /// near-perfect `PHANTOM_STARE_INTERVAL` cadence. Subtle (rare, brief) but learnable — humans
@@ -72,7 +81,9 @@ pub(super) const PHANTOM_SPOTTED_MAX: f32 = 8.0;
 pub(super) const PHANTOM_STALK_PATIENCE: f32 = 25.0; // seconds stalking before it lunges
 pub(super) const PHANTOM_WANDER_PAUSE_MIN: f32 = 3.0; // WANDER "looking at a wall" pause range (s)
 pub(super) const PHANTOM_WANDER_PAUSE_MAX: f32 = 12.0;
-pub(super) const PHANTOM_WANDER_PAUSE_CHANCE: f32 = 0.007; // per-tick (≈20% over 3 s at 10 Hz)
+// ADR-050 point 15: 0.007/tick fires every ~14 s for an average 7,5 s pause, i.e. it stood still
+// about a third of WANDER on this timer alone, on top of the gesture and the stare. Halved.
+pub(super) const PHANTOM_WANDER_PAUSE_CHANCE: f32 = 0.003; // per-tick (≈9% over 3 s at 10 Hz)
 pub(super) const PHANTOM_SPRINT_RANDOM_CHANCE: f32 = 0.008; // per-tick unpredictable lunge
 
 // ADR-016 slice 3b-P1 — STATUE (weeping-angel: freezes while observed) + sound detection.
@@ -2106,18 +2117,26 @@ impl PhantomDriver {
         // Slice 4: start a faked-pickup gesture when the cooldown elapsed. Stamp the
         // "pickup" flank now and freeze; the top-of-loop gesture freeze holds the pose
         // for the rest of the window. (Anim-only — ADR-016 invariant.)
+        // ADR-050 point 15: only perform it when somebody could plausibly be watching. The cooldown
+        // is still armed either way, so a creature that spent its whole cycle alone does not owe a
+        // burst of gestures the moment a player finally walks in.
+        let has_audience = target.is_some_and(|(_, _, dist, _)| dist <= PHANTOM_THEATRE_RANGE);
         if ctx.now >= self.movers[i].next_pickup_at {
-            self.movers[i].pickup_until = Some(ctx.now + PHANTOM_PICKUP_GESTURE);
+            // Re-arm whether or not it performs, so a creature that spent its whole cooldown alone
+            // does not owe a gesture the instant somebody walks in.
             self.movers[i].next_pickup_at = ctx.now + PHANTOM_PICKUP_INTERVAL;
-            info!(
-                "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
-                id
-            );
-            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-            if let Some(peer) = ctx.net.peers.get_mut(&id) {
-                peer.update_player_state(from.to_array(), yaw, "pickup".into());
+            if has_audience {
+                self.movers[i].pickup_until = Some(ctx.now + PHANTOM_PICKUP_GESTURE);
+                info!(
+                    "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
+                    id
+                );
+                let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                    peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                }
+                return;
             }
-            return;
         }
 
         // Tell #2: metronomic unnatural stillness (the tell is its regularity).
@@ -2584,6 +2603,19 @@ impl PhantomDriver {
             .is_some_and(|until| ctx.now >= until)
         {
             self.movers[i].pickup_until = None;
+        }
+        // ADR-050 point 15 — THE ACT DOES NOT SURVIVE SEEING YOU. This freeze returns `None`, which
+        // skips the WHOLE FSM, so while it was miming the creature could not detect anything: a
+        // blind second every six, cronometrable from outside and free to walk past. A patrolling
+        // creature drops the gesture the moment a player is close enough to matter, exactly like
+        // `hear_noises` already drops it for a noise. Scoped to WANDER on purpose: in SPRINT this
+        // same field holds the STRIKE animation, and cancelling that would delete the blow's pose.
+        if self.movers[i].state == PhantomState::Wander
+            && self.movers[i].pickup_until.is_some()
+            && target.is_some_and(|(_, _, dist, _)| dist <= PHANTOM_DETECT_RADIUS)
+        {
+            self.movers[i].pickup_until = None;
+            self.movers[i].stare_until = None;
         }
         if self.movers[i].pickup_until.is_some() {
             let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
