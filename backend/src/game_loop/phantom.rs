@@ -2209,6 +2209,205 @@ impl PhantomDriver {
         }
     }
 
+    /// SPRINT — the committed lunge: ramps WALK→SPRINT straight at the player and strikes at reach.
+    /// The two ways out are both things the PLAYER does, not a clock: outrun it past
+    /// `LOSE_RADIUS * 1.2`, or break its line of sight for `PHANTOM_SPRINT_BLIND_SECONDS` (halved
+    /// while crouching). A strike from the front is a non-lethal hit; from behind it is a kill, and
+    /// a kill leaves the creature sated.
+    fn tick_sprint(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+        let dist_opt = target.map(|(_, _, d, _)| d);
+        if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS * 1.2) {
+            // ADR-040 Fase 4 — same as STALK: a lost lunge becomes a search, not
+            // amnesia. This is what makes breaking line of sight a tactic rather than
+            // an off switch.
+            self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
+                PhantomState::Search
+            } else {
+                PhantomState::Wander
+            };
+            self.movers[i].state_timer = 0.0;
+            // Losing the target ends the commitment with it.
+            self.movers[i].strike_recover = 0.0;
+            self.movers[i].sprint_blind_for = 0.0;
+            return;
+        }
+        // ADR-047: `tid` BOUND (see STATUE) — the strike below must name its victim.
+        let (tid, tpos, dist, tyaw) = target.unwrap();
+        self.movers[i].last_known_player_pos = Some(tpos);
+
+        // Ground down against geometry for seconds without landing anything: stop
+        // pushing and go back to stalking. The creature re-approaches from somewhere
+        // else instead of standing in the corner, which is the visible failure.
+        if self.movers[i].blocked_ticks >= PHANTOM_SPRINT_GIVEUP_TICKS {
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].blocked_ticks = 0;
+            self.movers[i].strike_recover = 0.0;
+            self.movers[i].sprint_blind_for = 0.0;
+            info!(
+                "MPTRACE step=PH_STALK event=phantom_sprint_gave_up phantom_id={} reason=wedged",
+                id
+            );
+            return;
+        }
+
+        // A COMMITTED HUNT ENDS WHEN YOU ESCAPE IT, NOT ON A CLOCK.
+        //
+        // It used to bounce back to STALK a couple of seconds after each blow, which is
+        // what "ataca, no ataca" looked like from the outside: the thing that was on you
+        // suddenly strolled again for no reason you could see or influence. Now the
+        // lunge holds, and the two ways out are both things the PLAYER does — outrun it
+        // (the LOSE_RADIUS check above) or break its line (below). That is what makes
+        // finding a place to hide worth anything.
+        //
+        // No clear line to you = going blind. `segment_is_clear` is the same test the
+        // steering already trusts, so a corner that stops the creature seeing you is
+        // exactly the corner the geometry says it is.
+        let has_line =
+            crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+        if has_line {
+            self.movers[i].sprint_blind_for = 0.0;
+        } else {
+            self.movers[i].sprint_blind_for += ctx.dt;
+            // Crouching cuts the grace roughly in half: staying low behind cover loses
+            // it faster than standing behind cover, which is the payoff stealth already
+            // gets everywhere else (ADR-040 perception).
+            let blind_limit = match target_is_crouched(ctx.net, tid, ctx.host_crouch) {
+                true => PHANTOM_SPRINT_BLIND_SECONDS * 0.5,
+                false => PHANTOM_SPRINT_BLIND_SECONDS,
+            };
+            if self.movers[i].sprint_blind_for >= blind_limit {
+                self.movers[i].sprint_blind_for = 0.0;
+                self.movers[i].strike_recover = 0.0;
+                self.movers[i].state = PhantomState::Search;
+                self.movers[i].state_timer = 0.0;
+                info!(
+                    "MPTRACE step=PH_SEARCH event=phantom_lost_the_line phantom_id={} note=player_broke_line_of_sight",
+                    id
+                );
+                return;
+            }
+        }
+        // The beat before it comes. It is already revealed and has already screamed
+        // (both ride SPRINT, ADR-038), so this is the moment where you see WHAT it is
+        // before it moves — which is also what makes the reveal readable at all.
+        // Faces you while it holds, so it never reads as the AI having frozen.
+        if self.movers[i].hesitate_timer > 0.0 {
+            self.movers[i].hesitate_timer -= ctx.dt;
+            let to_player = (tpos.x - from.x)
+                .atan2(tpos.z - from.z)
+                .rem_euclid(std::f32::consts::TAU);
+            self.movers[i].heading_target = to_player;
+            let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
+            self.movers[i].heading = lerp_heading(self.movers[i].heading, to_player, t);
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(from.to_array(), yaw, "idle".into());
+            }
+            return;
+        }
+
+        // ADR-040: navigated heading (see STALK). The lunge routes around geometry
+        // instead of pinning itself to a wall between it and you.
+        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
+        // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let heading = self.movers[i].heading;
+
+        // Point-blank "attack". The pickup gesture is the VISUAL only (ADR-016
+        // invariant — the DAMAGE rides the separate PhantomAttack channel, never the
+        // pickup path). Front (player looking) = non-lethal hit; behind = kill.
+        // The lunge STAYS COMMITTED after the blow instead of bouncing on the same
+        // tick. The bounce is what made the real form appear and vanish around a single
+        // frame of contact; now it charges through, still revealed, and the second
+        // condition stops it re-striking inside that window.
+        // REACH, not travel distance, and a clear line so the extra reach cannot strike
+        // through geometry. See `PHANTOM_ATTACK_REACH`.
+        let in_reach = dist < PHANTOM_ATTACK_REACH
+            && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+        if in_reach && self.movers[i].strike_recover <= 0.0 {
+            self.movers[i].pickup_until = Some(ctx.now + PHANTOM_PICKUP_GESTURE);
+            self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
+            if player_is_looking_at(tpos, tyaw, from) {
+                self.attacks.push(PhantomAttack {
+                    victim: tid,
+                    kind: PhantomAttackKind::Hit(PHANTOM_ATTACK_DAMAGE),
+                });
+                info!(
+                    "MPTRACE step=PH_SPRINT event=phantom_hit phantom_id={} victim_id={} dmg={:.0}",
+                    id, tid, PHANTOM_ATTACK_DAMAGE
+                );
+            } else {
+                self.attacks.push(PhantomAttack {
+                    victim: tid,
+                    kind: PhantomAttackKind::Kill,
+                });
+                // SATED. It stops hunting, goes docile for a minute and roars once —
+                // and the roar is doing real work, not decoration: it is the only way
+                // the player who just died learns, on respawn, that the thing which
+                // killed them is not still coming. Without it a death loops straight
+                // back into a death and hiding never gets to matter.
+                //
+                // Rage does not survive a kill: whatever it was angry about is settled.
+                self.movers[i].calm_for = PHANTOM_CALM_SECONDS;
+                self.movers[i].enraged_for = 0.0;
+                self.movers[i].state = PhantomState::Wander;
+                self.movers[i].state_timer = 0.0;
+                self.movers[i].last_known_player_pos = None;
+                self.movers[i].nav_waypoints.clear();
+                // Re-anchor, or the observation leash would walk it all the way back to
+                // where it woke up (the same fix ADR-041 needed after a long journey).
+                self.movers[i].spawn_pos = from;
+                self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
+                self.movers[i].try_vocalize(VOCAL_SATED_ROAR);
+                info!(
+                    "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} victim_id={} note=from_behind",
+                    id, tid
+                );
+            }
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(from.to_array(), yaw, "pickup".into());
+            }
+            return;
+        }
+
+        let ramp = (self.movers[i].state_timer / PHANTOM_SPRINT_RAMP).clamp(0.0, 1.0);
+        let speed = (PHANTOM_WALK_SPEED + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp)
+            * self.movers[i].speed_scale();
+        let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+        let desired = Vec3::new(
+            from.x + dir.x * speed * ctx.dt,
+            from.y,
+            from.z + dir.z * speed * ctx.dt,
+        );
+        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        // A lunge always intends to travel, so any step that gains nothing toward the
+        // player is the creature grinding along geometry.
+        let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+        self.movers[i].note_step_progress(advance, speed * ctx.dt);
+        let yaw = heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+        }
+        if ctx.net.session_start.elapsed().as_millis() % 1000 < 120 {
+            info!(
+                "MPTRACE step=PH_SPRINT event=phantom_sprint_move phantom_id={} pos=({:.2},{:.2},{:.2}) speed={:.1} dist={:.2} blocked_ticks={}",
+                id, resolved.x, resolved.y, resolved.z, speed, dist, self.movers[i].blocked_ticks
+            );
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -2403,203 +2602,16 @@ impl PhantomDriver {
                 // ── SPRINT: ramp WALK→SPRINT straight at the player. Point-blank → anim-only
                 // "attack" (ADR-016 invariant) then STALK; lost past LOSE_RADIUS*1.2 → WANDER
                 // (slice 3b: SEARCH — it doesn't give up easily mid-lunge). ──
-                PhantomState::Sprint => {
-                    let dist_opt = target.map(|(_, _, d, _)| d);
-                    if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS * 1.2) {
-                        // ADR-040 Fase 4 — same as STALK: a lost lunge becomes a search, not
-                        // amnesia. This is what makes breaking line of sight a tactic rather than
-                        // an off switch.
-                        self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
-                            PhantomState::Search
-                        } else {
-                            PhantomState::Wander
-                        };
-                        self.movers[i].state_timer = 0.0;
-                        // Losing the target ends the commitment with it.
-                        self.movers[i].strike_recover = 0.0;
-                        self.movers[i].sprint_blind_for = 0.0;
-                        continue;
-                    }
-                    // ADR-047: `tid` BOUND (see STATUE) — the strike below must name its victim.
-                    let (tid, tpos, dist, tyaw) = target.unwrap();
-                    self.movers[i].last_known_player_pos = Some(tpos);
-
-                    // Ground down against geometry for seconds without landing anything: stop
-                    // pushing and go back to stalking. The creature re-approaches from somewhere
-                    // else instead of standing in the corner, which is the visible failure.
-                    if self.movers[i].blocked_ticks >= PHANTOM_SPRINT_GIVEUP_TICKS {
-                        self.movers[i].state = PhantomState::Stalk;
-                        self.movers[i].state_timer = 0.0;
-                        self.movers[i].blocked_ticks = 0;
-                        self.movers[i].strike_recover = 0.0;
-                        self.movers[i].sprint_blind_for = 0.0;
-                        info!(
-                            "MPTRACE step=PH_STALK event=phantom_sprint_gave_up phantom_id={} reason=wedged",
-                            id
-                        );
-                        continue;
-                    }
-
-                    // A COMMITTED HUNT ENDS WHEN YOU ESCAPE IT, NOT ON A CLOCK.
-                    //
-                    // It used to bounce back to STALK a couple of seconds after each blow, which is
-                    // what "ataca, no ataca" looked like from the outside: the thing that was on you
-                    // suddenly strolled again for no reason you could see or influence. Now the
-                    // lunge holds, and the two ways out are both things the PLAYER does — outrun it
-                    // (the LOSE_RADIUS check above) or break its line (below). That is what makes
-                    // finding a place to hide worth anything.
-                    //
-                    // No clear line to you = going blind. `segment_is_clear` is the same test the
-                    // steering already trusts, so a corner that stops the creature seeing you is
-                    // exactly the corner the geometry says it is.
-                    let has_line = crate::world::grid_gen::segment_is_clear(
-                        &mut self.grid_cache,
-                        current_layer,
-                        from,
-                        tpos,
-                    );
-                    if has_line {
-                        self.movers[i].sprint_blind_for = 0.0;
-                    } else {
-                        self.movers[i].sprint_blind_for += dt;
-                        // Crouching cuts the grace roughly in half: staying low behind cover loses
-                        // it faster than standing behind cover, which is the payoff stealth already
-                        // gets everywhere else (ADR-040 perception).
-                        let blind_limit = match target_is_crouched(net, tid, host_player_crouch) {
-                            true => PHANTOM_SPRINT_BLIND_SECONDS * 0.5,
-                            false => PHANTOM_SPRINT_BLIND_SECONDS,
-                        };
-                        if self.movers[i].sprint_blind_for >= blind_limit {
-                            self.movers[i].sprint_blind_for = 0.0;
-                            self.movers[i].strike_recover = 0.0;
-                            self.movers[i].state = PhantomState::Search;
-                            self.movers[i].state_timer = 0.0;
-                            info!(
-                                "MPTRACE step=PH_SEARCH event=phantom_lost_the_line phantom_id={} note=player_broke_line_of_sight",
-                                id
-                            );
-                            continue;
-                        }
-                    }
-                    // The beat before it comes. It is already revealed and has already screamed
-                    // (both ride SPRINT, ADR-038), so this is the moment where you see WHAT it is
-                    // before it moves — which is also what makes the reveal readable at all.
-                    // Faces you while it holds, so it never reads as the AI having frozen.
-                    if self.movers[i].hesitate_timer > 0.0 {
-                        self.movers[i].hesitate_timer -= dt;
-                        let to_player = (tpos.x - from.x)
-                            .atan2(tpos.z - from.z)
-                            .rem_euclid(std::f32::consts::TAU);
-                        self.movers[i].heading_target = to_player;
-                        let t = (PHANTOM_TURN_SPEED_SPRINT * dt).min(1.0);
-                        self.movers[i].heading = lerp_heading(self.movers[i].heading, to_player, t);
-                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                        if let Some(peer) = net.peers.get_mut(&id) {
-                            peer.update_player_state(from.to_array(), yaw, "idle".into());
-                        }
-                        continue;
-                    }
-
-                    // ADR-040: navigated heading (see STALK). The lunge routes around geometry
-                    // instead of pinning itself to a wall between it and you.
-                    let to_player = self.steer_heading(i, current_layer, from, tpos, dt);
-                    // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
-                    self.movers[i].heading_target = to_player;
-                    let t = (PHANTOM_TURN_SPEED_SPRINT * dt).min(1.0);
-                    self.movers[i].heading =
-                        lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
-                    let heading = self.movers[i].heading;
-
-                    // Point-blank "attack". The pickup gesture is the VISUAL only (ADR-016
-                    // invariant — the DAMAGE rides the separate PhantomAttack channel, never the
-                    // pickup path). Front (player looking) = non-lethal hit; behind = kill.
-                    // The lunge STAYS COMMITTED after the blow instead of bouncing on the same
-                    // tick. The bounce is what made the real form appear and vanish around a single
-                    // frame of contact; now it charges through, still revealed, and the second
-                    // condition stops it re-striking inside that window.
-                    // REACH, not travel distance, and a clear line so the extra reach cannot strike
-                    // through geometry. See `PHANTOM_ATTACK_REACH`.
-                    let in_reach = dist < PHANTOM_ATTACK_REACH
-                        && crate::world::grid_gen::segment_is_clear(
-                            &mut self.grid_cache,
-                            current_layer,
-                            from,
-                            tpos,
-                        );
-                    if in_reach && self.movers[i].strike_recover <= 0.0 {
-                        self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
-                        self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
-                        if player_is_looking_at(tpos, tyaw, from) {
-                            self.attacks.push(PhantomAttack {
-                                victim: tid,
-                                kind: PhantomAttackKind::Hit(PHANTOM_ATTACK_DAMAGE),
-                            });
-                            info!(
-                                "MPTRACE step=PH_SPRINT event=phantom_hit phantom_id={} victim_id={} dmg={:.0}",
-                                id, tid, PHANTOM_ATTACK_DAMAGE
-                            );
-                        } else {
-                            self.attacks.push(PhantomAttack {
-                                victim: tid,
-                                kind: PhantomAttackKind::Kill,
-                            });
-                            // SATED. It stops hunting, goes docile for a minute and roars once —
-                            // and the roar is doing real work, not decoration: it is the only way
-                            // the player who just died learns, on respawn, that the thing which
-                            // killed them is not still coming. Without it a death loops straight
-                            // back into a death and hiding never gets to matter.
-                            //
-                            // Rage does not survive a kill: whatever it was angry about is settled.
-                            self.movers[i].calm_for = PHANTOM_CALM_SECONDS;
-                            self.movers[i].enraged_for = 0.0;
-                            self.movers[i].state = PhantomState::Wander;
-                            self.movers[i].state_timer = 0.0;
-                            self.movers[i].last_known_player_pos = None;
-                            self.movers[i].nav_waypoints.clear();
-                            // Re-anchor, or the observation leash would walk it all the way back to
-                            // where it woke up (the same fix ADR-041 needed after a long journey).
-                            self.movers[i].spawn_pos = from;
-                            self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
-                            self.movers[i].try_vocalize(VOCAL_SATED_ROAR);
-                            info!(
-                                "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} victim_id={} note=from_behind",
-                                id, tid
-                            );
-                        }
-                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                        if let Some(peer) = net.peers.get_mut(&id) {
-                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
-                        }
-                        continue;
-                    }
-
-                    let ramp = (self.movers[i].state_timer / PHANTOM_SPRINT_RAMP).clamp(0.0, 1.0);
-                    let speed = (PHANTOM_WALK_SPEED
-                        + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp)
-                        * self.movers[i].speed_scale();
-                    let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
-                    let desired = Vec3::new(
-                        from.x + dir.x * speed * dt,
-                        from.y,
-                        from.z + dir.z * speed * dt,
-                    );
-                    let resolved =
-                        resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
-                    // A lunge always intends to travel, so any step that gains nothing toward the
-                    // player is the creature grinding along geometry.
-                    let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
-                    self.movers[i].note_step_progress(advance, speed * dt);
-                    let yaw = heading.to_degrees().rem_euclid(360.0);
-                    if let Some(peer) = net.peers.get_mut(&id) {
-                        peer.update_player_state(resolved.to_array(), yaw, "idle".into());
-                    }
-                    if net.session_start.elapsed().as_millis() % 1000 < 120 {
-                        info!(
-                            "MPTRACE step=PH_SPRINT event=phantom_sprint_move phantom_id={} pos=({:.2},{:.2},{:.2}) speed={:.1} dist={:.2} blocked_ticks={}",
-                            id, resolved.x, resolved.y, resolved.z, speed, dist, self.movers[i].blocked_ticks
-                        );
-                    }
-                }
+                PhantomState::Sprint => self.tick_sprint(
+                    mt,
+                    &mut TickCtx {
+                        net: &mut *net,
+                        dt,
+                        now,
+                        target_speeds: &target_speeds,
+                        host_crouch: host_player_crouch,
+                    },
+                ),
 
                 // ── SEARCH (ADR-040 Fase 4): it lost you and walks, navigating, to the last place
                 // it saw you. Slower than a walk — it is looking, not commuting. Re-acquiring you
