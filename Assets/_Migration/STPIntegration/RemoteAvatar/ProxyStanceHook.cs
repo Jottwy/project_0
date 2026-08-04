@@ -122,18 +122,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// us — the same lookup as every other hook here.</summary>
         private int ResolveButtons()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return 0;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.buttons;
-            }
-            return 0;
+            return view.buttons;
         }
 
         private static void ApplyBend(Transform bone, float degrees, Vector3 axis)

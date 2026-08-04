@@ -175,18 +175,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// is us — the same lookup as every other hook here.</summary>
         private int ResolveMeleeSeq()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return _lastSeen == Unseen ? 0 : _lastSeen;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.meleeSeq;
-            }
-            return _lastSeen == Unseen ? 0 : _lastSeen;
+            return view.meleeSeq;
         }
 
         private static void ApplyBend(Transform bone, float degrees, Vector3 axis)

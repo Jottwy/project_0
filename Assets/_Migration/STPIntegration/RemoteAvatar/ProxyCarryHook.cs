@@ -257,23 +257,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             carryDef = 0;
             carryCount = 0;
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                {
-                    carryDef = view.carryDef;
-                    carryCount = view.carryCount;
-                    return true;
-                }
-            }
-
-            return false;
+            carryDef = view.carryDef;
+            carryCount = view.carryCount;
+            return true;
         }
     }
 }

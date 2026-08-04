@@ -92,18 +92,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>This proxy's networked hit counter, via the RemotePlayerManager view whose root is us.</summary>
         private int ResolveHitSeq()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return _lastSeen == Unseen ? 0 : _lastSeen;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.hitSeq;
-            }
-            return _lastSeen == Unseen ? 0 : _lastSeen;
+            return view.hitSeq;
         }
 
         private static void ApplyBend(Transform bone, float degrees, Vector3 axis)

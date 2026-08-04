@@ -73,18 +73,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>This proxy's network animation string, via the RemotePlayerManager view whose root is us.</summary>
         private string ResolveAnimationState()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return null;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.animationState;
-            }
-            return null;
+            return view.animationState;
         }
 
 #if UNITY_EDITOR

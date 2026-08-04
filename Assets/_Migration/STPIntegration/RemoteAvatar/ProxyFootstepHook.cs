@@ -363,18 +363,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// </summary>
         private bool ResolveRevealed()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.revealed;
-            }
-            return false;
+            return view.revealed;
         }
 
         /// <summary>

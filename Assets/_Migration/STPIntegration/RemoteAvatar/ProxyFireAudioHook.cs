@@ -273,23 +273,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>This proxy's networked view, via the RemotePlayerManager whose child we are — the
         /// same lookup as every other hook here, so RemotePlayerManager needs no knowledge of us.</summary>
         private bool TryResolveView(out RemotePlayerView view)
-        {
-            view = null;
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
-                return false;
-
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var v = kvp.Value;
-                if (v != null && v.root == transform)
-                {
-                    view = v;
-                    return true;
-                }
-            }
-            return false;
-        }
+            => ProxyViewLookup.TryResolve(transform, ref _manager, out view);
     }
 }

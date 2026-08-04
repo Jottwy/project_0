@@ -222,21 +222,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool TryResolveHeld(out int heldItem)
         {
             heldItem = 0;
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                {
-                    heldItem = view.heldItem;
-                    return true;
-                }
-            }
-            return false;
+            heldItem = view.heldItem;
+            return true;
         }
     }
 }

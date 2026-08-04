@@ -205,18 +205,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>Is this proxy showing its real form? Own lookup, so the hook stays removable.</summary>
         private bool ResolveRevealed()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.revealed;
-            }
-            return false;
+            return view.revealed;
         }
 
         private AudioSource EnsureSource()
@@ -248,22 +240,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             seq = 0;
             kind = 0;
 
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                {
-                    seq = view.vocalSeq;
-                    kind = view.vocalKind;
-                    return true;
-                }
-            }
-            return false;
+            seq = view.vocalSeq;
+            kind = view.vocalKind;
+            return true;
         }
 
         /// <summary>Kind ids, exposed so the prefab builder can label the banks it wires.</summary>

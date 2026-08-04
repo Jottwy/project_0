@@ -85,18 +85,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>This proxy's networked pitch (degrees), via the RemotePlayerManager view whose root is us.</summary>
         private float ResolvePitch()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return 0f;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.pitch;
-            }
-            return 0f;
+            return view.pitch;
         }
 
         // Spine lean: zero below the threshold, ramping to ±_maxSpineLean at ±90°.

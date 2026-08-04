@@ -108,21 +108,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool TryResolveLightOn(out bool lightOn)
         {
             lightOn = false;
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                {
-                    lightOn = view.lightOn;
-                    return true;
-                }
-            }
-            return false;
+            lightOn = view.lightOn;
+            return true;
         }
 
         private Transform FindBone(string boneName)

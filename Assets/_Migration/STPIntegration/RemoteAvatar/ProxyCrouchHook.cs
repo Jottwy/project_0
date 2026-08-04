@@ -61,18 +61,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>This proxy's networked crouch flag, via the RemotePlayerManager view whose root is us.</summary>
         private bool ResolveCrouch()
         {
-            if (_manager == null)
-                _manager = GetComponentInParent<RemotePlayerManager>();
-            if (_manager == null)
+            if (!ProxyViewLookup.TryResolve(transform, ref _manager, out var view))
                 return false;
 
-            foreach (var kvp in _manager.ActivePlayers)
-            {
-                var view = kvp.Value;
-                if (view != null && view.root == transform)
-                    return view.crouch;
-            }
-            return false;
+            return view.crouch;
         }
 
         // True only if the controller actually exposes a "Crouched" float param (the builder omits it
