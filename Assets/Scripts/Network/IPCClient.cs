@@ -658,14 +658,6 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// ADR-030: report a consumed item (eat/drink) to the authoritative backend so
-        /// hunger/thirst/health restore by a fixed, server-owned amount (StatInterpolator's
-        /// managers are disabled — ADR-009 L2 — so without this report the survival stats can
-        /// only ever go down between respawns). Trust-the-client for possession (no
-        /// authoritative inventory exists to verify against, same level as report_death_loot);
-        /// no request_id — local action over the ordered IPC channel, no dedupe needed.
-        /// </summary>
-        /// <summary>
         /// ADR-041: report a noise the AI may hear — today, a gunshot. `loudness` is a RADIUS in
         /// metres and the backend takes it at face value (clamped): keeping the weapon table on
         /// this side avoids duplicating in Rust data that belongs to Unity's weapon definitions and
@@ -681,6 +673,14 @@ namespace BackroomsSurvival.Net
             });
         }
 
+        /// <summary>
+        /// ADR-030: report a consumed item (eat/drink) to the authoritative backend so
+        /// hunger/thirst/health restore by a fixed, server-owned amount (StatInterpolator's
+        /// managers are disabled — ADR-009 L2 — so without this report the survival stats can
+        /// only ever go down between respawns). Trust-the-client for possession (no
+        /// authoritative inventory exists to verify against, same level as report_death_loot);
+        /// no request_id — local action over the ordered IPC channel, no dedupe needed.
+        /// </summary>
         public void SendConsumeItem(int itemId)
         {
             SendActionFrame(ProtocolActionTypes.ConsumeItem, 1, w =>
@@ -710,13 +710,6 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// ADR-028 amendment (world chests): seed one host-authoritative supply chest. Host-only
-        /// server-side (a joiner's send is a logged no-op — joiners mirror chests via CorpseList);
-        /// deduped by (player, request_id) against client re-sends after reconnect. Position is
-        /// raycast against the RENDERED world by the caller (StpChestSpawner); loot is picked
-        /// client-side (trust-the-client, same level as SendReportDeathLoot).
-        /// </summary>
-        /// <summary>
         /// ADR-032 amendment: report the CURRENT real STP inventory (debounced on-change by
         /// InventoryReporter) so the backend can persist it. Same items shape as
         /// SendReportDeathLoot; the backend applies the shared corpse hygiene (cap 64, qty>0).
@@ -729,6 +722,13 @@ namespace BackroomsSurvival.Net
             });
         }
 
+        /// <summary>
+        /// ADR-028 amendment (world chests): seed one host-authoritative supply chest. Host-only
+        /// server-side (a joiner's send is a logged no-op — joiners mirror chests via CorpseList);
+        /// deduped by (player, request_id) against client re-sends after reconnect. Position is
+        /// raycast against the RENDERED world by the caller (StpChestSpawner); loot is picked
+        /// client-side (trust-the-client, same level as SendReportDeathLoot).
+        /// </summary>
         public void SendSpawnWorldChest(long requestId, Vector3 position, System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
         {
             SendActionFrame(ProtocolActionTypes.SpawnWorldChest, 3, w =>

@@ -105,7 +105,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
                  "must never be heard as a landing from orbit.")]
         [SerializeField, Min(0f)] private float _verticalTeleportDistance = 2.5f;
 
-        [Header("Ground probe (mirrors FootstepsController.CheckGround)")]
         [Header("Revealed creature (ADR-038 / ADR-048)")]
         [Tooltip("Footfalls used INSTEAD of the surface's own while this proxy is revealed. Empty ⇒ " +
                  "it keeps the human steps and only the range and volume below change.")]
@@ -125,6 +124,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Random pitch spread per heavy step, so four clips do not read as four clips.")]
         [SerializeField, Range(0f, 0.3f)] private float _revealedPitchVariation = 0.09f;
 
+        [Header("Ground probe (mirrors FootstepsController.CheckGround)")]
         [SerializeField] private LayerMask _layerMask = LayerConstants.SimpleSolidObjectsMask;
         [SerializeField, Range(0.01f, 1f)] private float _raycastDistance = 0.3f;
         [SerializeField, Range(0.01f, 0.5f)] private float _raycastRadius = 0.3f;
@@ -353,8 +353,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
             }
         }
 
-        /// <summary>Builds this proxy's own footstep source, lazily — a peer who never moves never
-        /// allocates one. Parented to the proxy so steps track the walker.</summary>
         /// <summary>
         /// This proxy's networked reveal flag, via the RemotePlayerManager view whose root is us.
         /// Same lookup shape as ProxyRevealHook and ProxyVocalHook — each hook resolves its own so
@@ -389,6 +387,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 src.pitch = 1f; // the disguise never pitches its steps
         }
 
+        /// <summary>Builds this proxy's own footstep source, lazily — a peer who never moves never
+        /// allocates one. Parented to the proxy so steps track the walker.</summary>
         private AudioSource EnsureSource()
         {
             if (_source != null)

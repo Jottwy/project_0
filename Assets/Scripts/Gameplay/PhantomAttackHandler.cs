@@ -108,16 +108,6 @@ namespace BackroomsSurvival.Gameplay
         private Quaternion _camRotationAtGrab;
 
         /// <summary>
-        /// The shove the corpse should be thrown with, handed to <c>CorpseSpawner</c> across the
-        /// assembly boundary (it lives in Assembly-CSharp, which auto-references this one; the
-        /// reverse is impossible, which is why the handoff is a static read and not a call).
-        ///
-        /// A STATIC and not an event because the two are not alive at the same time: the corpse is
-        /// spawned by the backend and reconciled into the world some frames later, by which point
-        /// this component is mid-fade. The consumer matches on position AND time so it can never
-        /// apply your death's impulse to somebody else's body.
-        /// </summary>
-        /// <summary>
         /// The proxy currently holding the local player, or null. Read by <c>ProxyGrabHook</c>,
         /// which lives in Assembly-CSharp and therefore cannot be called from here (the reference
         /// only goes the other way) — so the creature-side animation PULLS this state rather than
@@ -132,6 +122,16 @@ namespace BackroomsSurvival.Gameplay
         /// space. Fed from the camera, which IS the local player's head.</summary>
         public static Vector3 GrabVictimPoint { get; private set; }
 
+        /// <summary>
+        /// The shove the corpse should be thrown with, handed to <c>CorpseSpawner</c> across the
+        /// assembly boundary (it lives in Assembly-CSharp, which auto-references this one; the
+        /// reverse is impossible, which is why the handoff is a static read and not a call).
+        ///
+        /// A STATIC and not an event because the two are not alive at the same time: the corpse is
+        /// spawned by the backend and reconciled into the world some frames later, by which point
+        /// this component is mid-fade. The consumer matches on position AND time so it can never
+        /// apply your death's impulse to somebody else's body.
+        /// </summary>
         public static Vector3 PendingCorpseThrow { get; private set; }
         public static Vector3 PendingCorpseThrowAt { get; private set; }
         public static float PendingCorpseThrowTime { get; private set; } = float.NegativeInfinity;

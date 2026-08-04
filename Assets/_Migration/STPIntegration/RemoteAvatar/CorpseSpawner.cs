@@ -342,18 +342,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
             typeof(Workstation).GetNestedType("InspectionSettings", BindingFlags.NonPublic)
                 ?.GetField("Event", BindingFlags.Instance | BindingFlags.Public);
 
-        // Fase D: wires the corpse into the SAME dual-inventory widget storage crates use (see
-        // class doc for why this needs a real StorageStation instance, reflection-fed). The
-        // interaction stack (collider/Interactable/StorageStation) lives on the ragdoll's pelvis
-        // bone (see InteractBoxSize doc), not the root — it must physically track the fallen body.
-        //
-        // Bone name is "Pelvis", NOT "Hips" — verified directly in MTP_PlayerViewer.prefab (the
-        // base of RemotePlayerAvatar/CorpseAvatar); "Hips" doesn't exist anywhere in that rig.
-        // Found the hard way: ProxyGroundingHook.cs ([D] grounding, ADR-025-adjacent) also searches
-        // for "Hips" and would have silently no-op'd the same way (FindBone returns null →
-        // `_hasRig=false` → the whole hook goes inert, no warning) — its calibration play-test was
-        // marked PENDING in STATE.md and may never have actually run. Flagged, NOT fixed here (out
-        // of Fase D scope — that hook is unrelated to corpses); worth a follow-up check.
         /// <summary>
         /// Push a freshly-enabled ragdoll, so a kill launches the body instead of dropping it.
         ///
@@ -378,6 +366,18 @@ namespace BackroomsSurvival.Migration.STPIntegration
             }
         }
 
+        // Fase D: wires the corpse into the SAME dual-inventory widget storage crates use (see
+        // class doc for why this needs a real StorageStation instance, reflection-fed). The
+        // interaction stack (collider/Interactable/StorageStation) lives on the ragdoll's pelvis
+        // bone (see InteractBoxSize doc), not the root — it must physically track the fallen body.
+        //
+        // Bone name is "Pelvis", NOT "Hips" — verified directly in MTP_PlayerViewer.prefab (the
+        // base of RemotePlayerAvatar/CorpseAvatar); "Hips" doesn't exist anywhere in that rig.
+        // Found the hard way: ProxyGroundingHook.cs ([D] grounding, ADR-025-adjacent) also searches
+        // for "Hips" and would have silently no-op'd the same way (FindBone returns null →
+        // `_hasRig=false` → the whole hook goes inert, no warning) — its calibration play-test was
+        // marked PENDING in STATE.md and may never have actually run. Flagged, NOT fixed here (out
+        // of Fase D scope — that hook is unrelated to corpses); worth a follow-up check.
         private void WireLoot(GameObject go, CorpseViewMsg corpse, GameObject heldItemInstance)
         {
             Transform hips = FindBoneByName(go.transform, "Pelvis");
