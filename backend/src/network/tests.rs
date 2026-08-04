@@ -1,6 +1,10 @@
 use super::*;
 use std::time::Duration;
 
+// `SessionConfig` ya no lo importa `mod.rs` (lo consume `handlers.rs`), y `use super::*`
+// solo alcanza lo que está en el ámbito de `mod.rs`.
+use super::protocol::SessionConfig;
+
 /// Get the loopback address for a NetworkManager (replaces 0.0.0.0 with 127.0.0.1).
 fn loopback_addr(net: &NetworkManager) -> SocketAddr {
     let mut addr = net.local_addr();
