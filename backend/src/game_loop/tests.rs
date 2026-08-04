@@ -1225,7 +1225,7 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
     // Grazing geometry once is NOT being wedged: a plan survives a single scraped step, which
     // is what rounding any corner produces.
     driver.note_step_progress(0, ground_out, intended);
-    assert!(!driver.is_wedged(0));
+    assert!(!driver.movers[0].is_wedged());
     assert_eq!(
         driver.movers[0].nav_waypoints.len(),
         1,
@@ -1235,7 +1235,10 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
     for _ in 1..PHANTOM_BLOCKED_REPLAN_TICKS {
         driver.note_step_progress(0, ground_out, intended);
     }
-    assert!(driver.is_wedged(0), "steps that gain nothing mean wedged");
+    assert!(
+        driver.movers[0].is_wedged(),
+        "steps that gain nothing mean wedged"
+    );
     assert!(
         driver.movers[0].nav_waypoints.is_empty(),
         "a wedged mover must drop the route that is aiming it at the wall"
@@ -1244,14 +1247,17 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
     // And it re-arms: one step that actually moves clears the whole condition, so the creature
     // goes straight back to the cheap straight-line path the moment it is free.
     driver.note_step_progress(0, intended, intended);
-    assert!(!driver.is_wedged(0));
+    assert!(!driver.movers[0].is_wedged());
     assert_eq!(driver.movers[0].blocked_ticks, 0);
 
     // And holding still on purpose (STALK inside its distance band, intended = 0) is never
     // stuck — otherwise the creature would "unstick" itself out of its own designed pause.
     driver.movers[0].blocked_ticks = PHANTOM_BLOCKED_REPLAN_TICKS;
     driver.note_step_progress(0, 0.0, 0.0);
-    assert!(!driver.is_wedged(0), "a deliberate hold is not a wedge");
+    assert!(
+        !driver.movers[0].is_wedged(),
+        "a deliberate hold is not a wedge"
+    );
 }
 
 #[tokio::test]
@@ -1294,7 +1300,7 @@ async fn a_sprint_into_a_built_wall_registers_as_blocked() {
     }
 
     assert!(
-        driver.is_wedged(0),
+        driver.movers[0].is_wedged(),
         "a lunge that cannot advance must register as wedged, got {} blocked ticks",
         driver.movers[0].blocked_ticks
     );
@@ -1536,8 +1542,8 @@ async fn hearing_a_shot_cancels_the_theatre_and_enrages() {
         driver.movers[0].enraged_for
     );
     // Rage shortens its patience and sharpens its trigger.
-    assert!(driver.patience_of(0) < PHANTOM_STALK_PATIENCE);
-    assert!(driver.impulse_of(0) > driver.movers[0].traits.impulse_scale);
+    assert!(driver.movers[0].patience() < PHANTOM_STALK_PATIENCE);
+    assert!(driver.movers[0].impulse() > driver.movers[0].traits.impulse_scale);
 }
 
 #[tokio::test]
@@ -1574,7 +1580,7 @@ async fn a_kill_leaves_it_sated_and_it_roars_once() {
     );
     assert_eq!(net.peers[&pid].vocal_kind, VOCAL_SATED_ROAR);
     // Satiety makes it markedly less willing to commit again.
-    assert!(driver.patience_of(0) > PHANTOM_STALK_PATIENCE);
+    assert!(driver.movers[0].patience() > PHANTOM_STALK_PATIENCE);
 }
 
 #[tokio::test]

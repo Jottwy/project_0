@@ -1,13 +1,13 @@
-//! ADR-016 / 038 / 040 / 041 / 043 / 047 / 048 — el robapieles (`phantom`): la IA host-only que
-//! camina los peers falsos, los persigue, los oye y los hace pegar.
+//! ADR-016 / 038 / 040 / 041 / 043 / 047 / 048 — the robapieles (`phantom`): the host-only AI that
+//! walks the fake peers, hunts them, hears for them and lets them strike.
 //!
-//! Extraído TAL CUAL de `game_loop.rs` (movimiento puro, cero cambio de lógica). El módulo es
-//! privado a `game_loop`; la visibilidad `pub(super)` reproduce exactamente el acceso que estos
-//! items tenían cuando vivían en el mismo módulo, incluido el que necesita `game_loop::tests`.
+//! Lifted VERBATIM out of `game_loop.rs`. The module is private to `game_loop`; `pub(super)`
+//! reproduces exactly the access these items had while they shared one module, including what
+//! `game_loop::tests` needs.
 //!
-//! El game loop consume una superficie mínima: `PhantomDriver::{new, add,
-//! rebind_unbound_victims, sync_population, wake_for_noises, step}` y el `&[PhantomAttack]` que
-//! `step` devuelve. Todo lo demás es interno.
+//! The game loop consumes a minimal surface: `PhantomDriver::{new, add, rebind_unbound_victims,
+//! sync_population, wake_for_noises, step}` and the `&[PhantomAttack]` that `step` returns.
+//! Everything else is internal.
 
 use super::*;
 
@@ -893,6 +893,62 @@ pub(super) struct PhantomMover {
     pub(super) hesitate_timer: f32,
 }
 
+/// The creature's temperament, resolved to the number the FSM actually needs, RIGHT NOW.
+///
+/// These live on the mover and not on `PhantomDriver` because they read NOTHING but this mover.
+/// They took an `i: usize` only because everything used to share one `impl`, and that index is what
+/// forced `self.patience_of(i)` on a loop that already had the mover in hand — the caller ended up
+/// reaching back through the driver to ask a creature about itself.
+impl PhantomMover {
+    /// How long this creature will shadow you before committing (s).
+    ///
+    /// Temperament, hunter-ness, rage and satiety all land here rather than being multiplied in at
+    /// the call site. Four separate multiplications scattered through the FSM is how one of them
+    /// ends up forgotten in a branch and a creature quietly behaves like a different animal.
+    pub(super) fn patience(&self) -> f32 {
+        let mut p = PHANTOM_STALK_PATIENCE * self.traits.patience_scale;
+        if self.traits.is_hunter {
+            p *= 0.25; // a hunter does not shadow you, it arrives
+        }
+        if self.enraged_for > 0.0 {
+            p *= PHANTOM_RAGE_PATIENCE;
+        }
+        if self.calm_for > 0.0 {
+            p *= PHANTOM_CALM_PATIENCE;
+        }
+        p
+    }
+
+    /// Per-tick chance multiplier for an unpredictable lunge.
+    pub(super) fn impulse(&self) -> f32 {
+        let mut k = self.traits.impulse_scale;
+        if self.traits.is_hunter {
+            k *= 3.0;
+        }
+        if self.enraged_for > 0.0 {
+            k *= PHANTOM_RAGE_IMPULSE;
+        }
+        if self.calm_for > 0.0 {
+            k *= PHANTOM_CALM_IMPULSE;
+        }
+        k
+    }
+
+    /// Movement MULTIPLIER — not a speed, despite sitting next to `search_speed`. Only rage moves
+    /// it; see `PHANTOM_RAGE_SPEED` for why the effect is deliberately small.
+    pub(super) fn speed_scale(&self) -> f32 {
+        match self.enraged_for > 0.0 {
+            true => PHANTOM_RAGE_SPEED,
+            false => 1.0,
+        }
+    }
+
+    /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
+    pub(super) fn is_wedged(&self) -> bool {
+        self.blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS
+    }
+}
+
 impl PhantomDriver {
     pub(super) fn new(world_seed: u64) -> Self {
         Self {
@@ -1431,56 +1487,6 @@ impl PhantomDriver {
         self.movers[i].vocal_cooldown = cooldown;
     }
 
-    /// How long this creature will shadow you before committing, RIGHT NOW (s).
-    ///
-    /// Temperament, hunter-ness, rage and satiety all land here rather than being multiplied in at
-    /// the call site. Four separate multiplications scattered through the FSM is how one of them
-    /// ends up forgotten in a branch and a creature quietly behaves like a different animal.
-    pub(super) fn patience_of(&self, i: usize) -> f32 {
-        let m = &self.movers[i];
-        let mut p = PHANTOM_STALK_PATIENCE * m.traits.patience_scale;
-        if m.traits.is_hunter {
-            p *= 0.25; // a hunter does not shadow you, it arrives
-        }
-        if m.enraged_for > 0.0 {
-            p *= PHANTOM_RAGE_PATIENCE;
-        }
-        if m.calm_for > 0.0 {
-            p *= PHANTOM_CALM_PATIENCE;
-        }
-        p
-    }
-
-    /// Per-tick chance multiplier for an unpredictable lunge, right now.
-    pub(super) fn impulse_of(&self, i: usize) -> f32 {
-        let m = &self.movers[i];
-        let mut k = m.traits.impulse_scale;
-        if m.traits.is_hunter {
-            k *= 3.0;
-        }
-        if m.enraged_for > 0.0 {
-            k *= PHANTOM_RAGE_IMPULSE;
-        }
-        if m.calm_for > 0.0 {
-            k *= PHANTOM_CALM_IMPULSE;
-        }
-        k
-    }
-
-    /// Movement multiplier, right now. Only rage moves it — see `PHANTOM_RAGE_SPEED` for why the
-    /// effect is deliberately small.
-    pub(super) fn speed_of(&self, i: usize) -> f32 {
-        match self.movers[i].enraged_for > 0.0 {
-            true => PHANTOM_RAGE_SPEED,
-            false => 1.0,
-        }
-    }
-
-    /// Is this mover pressed into geometry right now? Drives the two overrides in `steer_heading`.
-    pub(super) fn is_wedged(&self, i: usize) -> bool {
-        self.movers[i].blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS
-    }
-
     pub(super) fn steer_heading(
         &mut self,
         i: usize,
@@ -1512,7 +1518,9 @@ impl PhantomDriver {
         // plan gets thrown away, the straight bearing walks into the corner, and the next tick does
         // it again. That loop is the corner-sticking bug, and it is self-reinforcing precisely
         // because the shortcut looks correct every single time. While wedged, the pathfinder wins.
-        if !self.is_wedged(i) && segment_is_clear(&mut self.grid_cache, layer, from, target) {
+        if !self.movers[i].is_wedged()
+            && segment_is_clear(&mut self.grid_cache, layer, from, target)
+        {
             self.movers[i].nav_waypoints.clear();
             self.movers[i].nav_cursor = 0;
             self.movers[i].nav_goal = None;
@@ -1531,7 +1539,7 @@ impl PhantomDriver {
         // A WEDGED mover skips the stagger. The stagger exists to spread a COST, and it can deny a
         // turn for up to 0.2 s; a creature grinding into a wall is the one case where waiting out
         // its turn is exactly wrong, and it is bounded by the same `active_cap` as everything else.
-        let may_replan = self.is_wedged(i)
+        let may_replan = self.movers[i].is_wedged()
             || (self.step_counter + i as u64).is_multiple_of(PHANTOM_REPLAN_STRIDE);
         let stale = may_replan
             && (self.movers[i].nav_waypoints.is_empty()
@@ -1951,7 +1959,9 @@ impl PhantomDriver {
                     }
                     // Unpredictable lunge mid-stare (scarier when imprevisible), scaled by how
                     // erratic this particular creature is.
-                    if rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * self.impulse_of(i) {
+                    if rand::random::<f32>()
+                        < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].impulse()
+                    {
                         self.enter_sprint(i);
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
@@ -2010,9 +2020,9 @@ impl PhantomDriver {
                         continue;
                     }
 
-                    if self.movers[i].state_timer > self.patience_of(i)
+                    if self.movers[i].state_timer > self.movers[i].patience()
                         || rand::random::<f32>()
-                            < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.impulse_of(i)
+                            < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse()
                     {
                         self.enter_sprint(i);
                         info!(
@@ -2323,7 +2333,7 @@ impl PhantomDriver {
                     let ramp = (self.movers[i].state_timer / PHANTOM_SPRINT_RAMP).clamp(0.0, 1.0);
                     let speed = (PHANTOM_WALK_SPEED
                         + (PHANTOM_SPRINT_SPEED - PHANTOM_WALK_SPEED) * ramp)
-                        * self.speed_of(i);
+                        * self.movers[i].speed_scale();
                     let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
                     let desired = Vec3::new(
                         from.x + dir.x * speed * dt,
@@ -2434,7 +2444,7 @@ impl PhantomDriver {
                         lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
                     let h = self.movers[i].heading;
                     let dir = Vec3::new(h.sin(), 0.0, h.cos());
-                    let speed = self.movers[i].search_speed * self.speed_of(i);
+                    let speed = self.movers[i].search_speed * self.movers[i].speed_scale();
                     let desired = Vec3::new(
                         from.x + dir.x * speed * dt,
                         from.y,

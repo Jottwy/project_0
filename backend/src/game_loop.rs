@@ -25,10 +25,10 @@ use crate::world::grid_gen::{
 use crate::world::phantom_spawn;
 use crate::world::World;
 
-/// ADR-016 — la IA del robapieles. Vive en su propio módulo (privado a este) porque es un sistema
-/// entero, no un ayudante del bucle: `PhantomDriver` no toca ningún local de `run`, recibe todo lo
-/// que necesita por argumento y devuelve `&[PhantomAttack]`. Lo que sigue es TODA la superficie que
-/// el bucle consume de él.
+/// ADR-016 — the robapieles AI. It lives in its own (private) module because it is a whole system
+/// and not a helper of this loop: `PhantomDriver` touches no local of `run`, takes everything it
+/// needs as an argument and returns `&[PhantomAttack]`. What follows is the ENTIRE surface the loop
+/// consumes from it.
 mod phantom;
 use phantom::{
     choose_victim_name_for, phantom_attack_kind_name, sanitize_noise, PhantomAttackKind,
