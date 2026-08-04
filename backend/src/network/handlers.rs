@@ -69,7 +69,33 @@ impl NetworkManager {
             );
         }
 
-        match pkt.payload {
+        // Payload → event dispatch. `dispatch_payload!` exists for ONE reason: seventeen of
+        // these arms were the same copy — destructure `PacketPayload::X`, rebuild
+        // `NetworkEvent::X` from the same fields under the same names. A `macro_rules!` cannot
+        // expand into match arms, only into a whole `match`, so the invocation alternates
+        // `{ arms written out verbatim }` with `[ the 1:1 variants ]` and every arm keeps the
+        // exact position it had when each one was spelled out by hand.
+        //
+        // A `[ ... ]` entry expands to EXACTLY
+        //     PacketPayload::X { a, b } => Some(NetworkEvent::X { a, b }),
+        // so an arm belongs there only when it does nothing else. Anything that touches `self`,
+        // logs, renames the variant (`CorpseList` → `CorpseListReceived`, the whole `*Received`
+        // family) or fills a field from the HEADER instead of the payload (`VoiceFrame`'s
+        // `speaker`, `ChunkTransfer`'s `from`) stays written out inside a `{ ... }` group.
+        macro_rules! dispatch_payload {
+            ($({ $($verbatim:tt)* } [ $($variant:ident { $($field:ident),* $(,)? }),* $(,)? ])*) => {
+                match pkt.payload {
+                    $(
+                        $($verbatim)*
+                        $(PacketPayload::$variant { $($field),* } =>
+                            Some(NetworkEvent::$variant { $($field),* }),)*
+                    )*
+                }
+            };
+        }
+
+        dispatch_payload!(
+        {
             PacketPayload::Handshake {
                 player_name,
                 version,
@@ -164,39 +190,13 @@ impl NetworkManager {
                 None
             }
 
-            PacketPayload::StpPlaceRequest {
-                place_id,
-                def_id,
-                position,
-                rotation,
-                group_id,
-                is_group,
-            } => Some(NetworkEvent::StpPlaceRequest {
-                place_id,
-                def_id,
-                position,
-                rotation,
-                group_id,
-                is_group,
-            }),
-
-            PacketPayload::StpBuildAddRequest {
-                add_id,
-                building_id,
-                material_id,
-            } => Some(NetworkEvent::StpBuildAddRequest {
-                add_id,
-                building_id,
-                material_id,
-            }),
-
-            PacketPayload::StpDemolishRequest {
-                demolish_id,
-                building_id,
-            } => Some(NetworkEvent::StpDemolishRequest {
-                demolish_id,
-                building_id,
-            }),
+        }
+        [
+            StpPlaceRequest { place_id, def_id, position, rotation, group_id, is_group },
+            StpBuildAddRequest { add_id, building_id, material_id },
+            StpDemolishRequest { demolish_id, building_id },
+        ]
+        {
 
             PacketPayload::StpCarryableList { carryables } => {
                 // Host-authoritative carryable roster: joiners mirror it verbatim. (B2.5)
@@ -204,33 +204,13 @@ impl NetworkManager {
                 None
             }
 
-            PacketPayload::StpCarryablePickupRequest {
-                carryable_id,
-                requester_id,
-            } => Some(NetworkEvent::StpCarryablePickupRequest {
-                carryable_id,
-                requester_id,
-            }),
-
-            PacketPayload::StpCarryablePickupGranted {
-                carryable_id,
-                def_id,
-            } => Some(NetworkEvent::StpCarryablePickupGranted {
-                carryable_id,
-                def_id,
-            }),
-
-            PacketPayload::StpCarryableDropRequest {
-                drop_id,
-                def_id,
-                position,
-                rotation,
-            } => Some(NetworkEvent::StpCarryableDropRequest {
-                drop_id,
-                def_id,
-                position,
-                rotation,
-            }),
+        }
+        [
+            StpCarryablePickupRequest { carryable_id, requester_id },
+            StpCarryablePickupGranted { carryable_id, def_id },
+            StpCarryableDropRequest { drop_id, def_id, position, rotation },
+        ]
+        {
 
             PacketPayload::StpHarvestableList { harvestables } => {
                 // Host-authoritative harvestable health roster: joiners mirror it. (B2.6)
@@ -238,154 +218,41 @@ impl NetworkManager {
                 None
             }
 
-            PacketPayload::StpHarvestHitRequest {
-                hit_id,
-                harvestable_id,
-                amount,
-            } => Some(NetworkEvent::StpHarvestHitRequest {
-                hit_id,
-                harvestable_id,
-                amount,
-            }),
-
-            PacketPayload::StpPickupRequest {
-                item_id,
-                requester_id,
-            } => Some(NetworkEvent::StpPickupRequest {
-                item_id,
-                requester_id,
-            }),
-
+        }
+        [
+            StpHarvestHitRequest { hit_id, harvestable_id, amount },
+            StpPickupRequest { item_id, requester_id },
             // ADR-028 Fase E: corpse relay — 1:1 payload→event mapping; all the authority
             // logic (dedupe, spawn/take, verdict relay, mirroring) lives in game_loop, which
             // owns World (corpses live in world.corpses, not in NetworkManager).
-            PacketPayload::CorpseSpawnRequest {
-                request_id,
-                requester_id,
-                owner_name,
-                position,
-                equipment,
-                held_item,
-                items,
-            } => Some(NetworkEvent::CorpseSpawnRequest {
-                request_id,
-                requester_id,
-                owner_name,
-                position,
-                equipment,
-                held_item,
-                items,
-            }),
-
-            PacketPayload::CorpseTakeRequest {
-                request_id,
-                requester_id,
-                corpse_id,
-                item_index,
-                quantity,
-                requester_pos,
-            } => Some(NetworkEvent::CorpseTakeRequest {
-                request_id,
-                requester_id,
-                corpse_id,
-                item_index,
-                quantity,
-                requester_pos,
-            }),
-
-            PacketPayload::CorpseTakeResult {
-                request_id,
-                accepted,
-                corpse_id,
-                item_index,
-                item_id,
-                quantity,
-                corpse_empty,
-                reason,
-            } => Some(NetworkEvent::CorpseTakeResult {
-                request_id,
-                accepted,
-                corpse_id,
-                item_index,
-                item_id,
-                quantity,
-                corpse_empty,
-                reason,
-            }),
+            CorpseSpawnRequest { request_id, requester_id, owner_name, position, equipment,
+                held_item, items },
+            CorpseTakeRequest { request_id, requester_id, corpse_id, item_index, quantity,
+                requester_pos },
+            CorpseTakeResult { request_id, accepted, corpse_id, item_index, item_id, quantity,
+                corpse_empty, reason },
+        ]
+        {
 
             PacketPayload::CorpseList { corpses } => {
                 Some(NetworkEvent::CorpseListReceived { corpses })
             }
 
+        }
+        [
             // ADR-029 V0: PvP relay — 1:1 payload→event mapping; all authority logic
             // (dedupe, validation order, grant/reject dispatch) lives in game_loop, which
             // owns Player/PlayerStats (health lives there, not in NetworkManager).
-            PacketPayload::PvpHitCandidate {
-                request_id,
-                attacker_id,
-                victim_id,
-                weapon_id,
-                damage,
-                origin,
-                direction,
-                client_tick,
-                hit_position,
-            } => Some(NetworkEvent::PvpHitCandidate {
-                request_id,
-                attacker_id,
-                victim_id,
-                weapon_id,
-                damage,
-                origin,
-                direction,
-                client_tick,
-                hit_position,
-            }),
-
-            PacketPayload::PvpDamageGrant {
-                request_id,
-                attacker_id,
-                victim_id,
-                weapon_id,
-                damage,
-                reason,
-            } => Some(NetworkEvent::PvpDamageGrant {
-                request_id,
-                attacker_id,
-                victim_id,
-                weapon_id,
-                damage,
-                reason,
-            }),
-
-            PacketPayload::PvpHitRejected {
-                request_id,
-                attacker_id,
-                victim_id,
-                reason,
-            } => Some(NetworkEvent::PvpHitRejected {
-                request_id,
-                attacker_id,
-                victim_id,
-                reason,
-            }),
-
+            PvpHitCandidate { request_id, attacker_id, victim_id, weapon_id, damage, origin,
+                direction, client_tick, hit_position },
+            PvpDamageGrant { request_id, attacker_id, victim_id, weapon_id, damage, reason },
+            PvpHitRejected { request_id, attacker_id, victim_id, reason },
             // ADR-047 — decode only. Every authority check (are we really the victim? is this a
             // retransmit? are we invulnerable?) lives in game_loop.rs, the same split the PvP
             // family above uses.
-            PacketPayload::PhantomAttackGrant {
-                request_id,
-                victim_id,
-                kind,
-                damage,
-                impulse,
-            } => Some(NetworkEvent::PhantomAttackGrant {
-                request_id,
-                victim_id,
-                kind,
-                damage,
-                impulse,
-            }),
+            PhantomAttackGrant { request_id, victim_id, kind, damage, impulse },
+        ]
+        {
 
             PacketPayload::NoiseReport { position, loudness } => {
                 Some(NetworkEvent::NoiseReported { position, loudness })
@@ -397,29 +264,12 @@ impl NetworkManager {
                 data,
             }),
 
-            PacketPayload::StpPickupGranted {
-                item_id,
-                def_id,
-                count,
-            } => Some(NetworkEvent::StpPickupGranted {
-                item_id,
-                def_id,
-                count,
-            }),
-
-            PacketPayload::StpDropRequest {
-                drop_id,
-                def_id,
-                count,
-                position,
-                rotation,
-            } => Some(NetworkEvent::StpDropRequest {
-                drop_id,
-                def_id,
-                count,
-                position,
-                rotation,
-            }),
+        }
+        [
+            StpPickupGranted { item_id, def_id, count },
+            StpDropRequest { drop_id, def_id, count, position, rotation },
+        ]
+        {
 
             PacketPayload::PlayerUpdate {
                 position,
@@ -643,6 +493,8 @@ impl NetworkManager {
                 None
             }
         }
+        []
+        )
     }
 
     pub(super) async fn handle_handshake(
