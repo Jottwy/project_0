@@ -3,6 +3,7 @@ using BackroomsSurvival.Net;
 using PolymindGames;
 using PolymindGames.MovementSystem;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace BackroomsSurvival.Gameplay
@@ -72,9 +73,24 @@ namespace BackroomsSurvival.Gameplay
         private const int StruggleTarget = 8;
         // Struggle decays while you are not pressing, so pacing yourself does not work.
         private const float StruggleDecayPerSecond = 2.2f;
-        // Keys that count as struggling. Space and the left mouse button both, because in the two
+        // What counts as struggling: space or the left mouse button, both, because in the two
         // seconds after something grabs you nobody reads a prompt.
-        private static readonly KeyCode[] StruggleKeys = { KeyCode.Space, KeyCode.Mouse0 };
+        //
+        // READ THROUGH THE INPUT SYSTEM PACKAGE, never `UnityEngine.Input`. This project has active
+        // input handling set to the package, so the legacy class THROWS on every read
+        // (`InvalidOperationException: You are trying to read Input using the UnityEngine.Input
+        // class…`). The first version of this shipped with `Input.GetKeyDown` and the play-test log
+        // holds 1427 of those: the exception aborted the struggle tick before it could count a
+        // press, so all eight grabs in that session ended in `grab_expired` and the escape hatch
+        // silently did not exist. `BackroomsGraphicsSettings` two files over already did it right.
+        private static bool StrugglePressedThisFrame()
+        {
+            var kb = Keyboard.current;
+            if (kb != null && kb.spaceKey.wasPressedThisFrame)
+                return true;
+            var mouse = Mouse.current;
+            return mouse != null && mouse.leftButton.wasPressedThisFrame;
+        }
 
         // Impulse handed to the corpse ragdoll, away from the killer.
         private const float CorpseThrowSpeed = 6.5f;
@@ -282,6 +298,19 @@ namespace BackroomsSurvival.Gameplay
             if (_dying)
                 return; // already gone; a grab means nothing now
 
+            // TWO CREATURES CAN GRAB YOU IN THE SAME TICK — seen in the play-test log at 23:11:53,
+            // phantom 61440 and 61441 both opening on victim 1. Without this guard the second call
+            // added a SECOND set of locomotion blockers under the same key, and the single
+            // `EndLiveGrab` that follows only removes one set: the player respawns unable to walk.
+            // Re-grabbing while already held just refreshes the window; the backend is the one
+            // tracking who actually has you.
+            if (_heldAlive)
+            {
+                _heldWindow = window > 0.05f ? window : _heldWindow;
+                _grabTimer = _heldWindow;
+                return;
+            }
+
             EnsureUi();
             _heldAlive = true;
             // Guard the window: a malformed or missing field must not produce an instant death or an
@@ -342,11 +371,8 @@ namespace BackroomsSurvival.Gameplay
 
             // Struggle. Decays while idle, so pacing yourself does not work.
             _struggle = Mathf.Max(0f, _struggle - StruggleDecayPerSecond * Time.unscaledDeltaTime);
-            for (int i = 0; i < StruggleKeys.Length; i++)
-            {
-                if (Input.GetKeyDown(StruggleKeys[i]))
-                    _struggle += 1f;
-            }
+            if (StrugglePressedThisFrame())
+                _struggle += 1f;
 
             if (_struggleText != null)
             {
