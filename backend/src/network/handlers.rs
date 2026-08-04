@@ -258,6 +258,12 @@ impl NetworkManager {
                 Some(NetworkEvent::NoiseReported { position, loudness })
             }
 
+            // ADR-050 point 9. The sender IS the victim — the transport already knows who that is,
+            // so the packet carries nothing and there is no field to validate or forge.
+            PacketPayload::StruggleReport => {
+                Some(NetworkEvent::StruggleReported { victim: sender_id })
+            }
+
             PacketPayload::VoiceFrame { seq, data } => Some(NetworkEvent::VoiceReceived {
                 speaker: sender_id,
                 seq,

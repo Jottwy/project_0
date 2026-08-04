@@ -21,11 +21,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// ADR-009 wire schema revision — the number Unity and the backend agree on.
 ///
-/// The full v2→v19 changelog (what each bump added, why, and how the previous version
+/// The full v2→v20 changelog (what each bump added, why, and how the previous version
 /// degrades) lives in `docs/systems/ipc-wire-schema.md`, together with the rule that a
 /// P2P-only change bumps this counter too. Bumping this constant means appending an entry
 /// there in the same commit — and the CODE is the authority on the number, not the ADR.
-const WIRE_SCHEMA_VERSION: u32 = 19;
+const WIRE_SCHEMA_VERSION: u32 = 20;
 
 /// Run the IPC server until a fatal accept error.
 ///
