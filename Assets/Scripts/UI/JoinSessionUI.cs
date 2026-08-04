@@ -515,6 +515,12 @@ namespace BackroomsSurvival.UI
             }
         }
 
+        /// <summary>
+        /// Muestra el panel y, de paso, RE-HABILITA toda la interaccion. El efecto lateral es
+        /// deliberado (lo necesitan los caminos Idle/Disconnected), pero no lo dice el nombre:
+        /// quien quiera el panel visible y BLOQUEADO tiene que llamar SetUiInteractable(false)
+        /// DESPUES de ShowMenu. Ver el comentario junto a SetUiInteractable(true), mas abajo.
+        /// </summary>
         public void ShowMenu(string message)
         {
             if (_panel != null) _panel.SetActive(true);
@@ -527,7 +533,18 @@ namespace BackroomsSurvival.UI
             if (_statusText != null) _statusText.text = message ?? "";
             Cursor.visible = true;
             Cursor.lockState = CursorLockMode.None;
+            // A PROPOSITO: los caminos que vuelven al menu (Update -> Disconnected, Update ->
+            // error de arranque y OnDisconnectClicked) quieren el panel usable y se apoyan en
+            // esta linea. Los que NO lo quieren tienen que deshacerlo ELLOS con
+            // SetUiInteractable(false) inmediatamente despues de ShowMenu; hoy lo hacen los seis
+            // arranques de host/join: los dos de Start (SESSION_MODE=host y CONNECT_TO),
+            // OnHostClicked, OnJoinClicked, OnSteamInviteClicked y BeginSteamJoin.
             SetUiInteractable(true);
+            // OJO, ESTE LOG NO ES EVIDENCIA DEL ESTADO FINAL DEL PANEL: se emite justo despues
+            // de la linea de arriba, o sea ANTES de la correccion del llamante. En TODOS los
+            // arranques de host/join imprime interactable=True y el panel acaba en False.
+            // (SetState tampoco ayuda a leerlo: sale antes del switch si _statusText es null,
+            // asi que sus ramas de interactividad solo corren una vez BuildUI ha creado el panel.)
             Debug.Log(
                 $"[JoinSessionUI] UI shown interactable={_panelCanvasGroup?.interactable} " +
                 $"blocksRaycasts={_panelCanvasGroup?.blocksRaycasts}");
