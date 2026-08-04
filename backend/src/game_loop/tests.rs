@@ -2521,6 +2521,75 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
 }
 
 #[tokio::test]
+async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
+    // ADR-050 point 5. The chase gets a pulse — flat out, blown, heavy walk, flat out again — and
+    // the LAST assertion is the load-bearing one: running out of breath must never be an exit from
+    // SPRINT. A lunge that ends on a timer is exactly what the 2026-08-03 pass removed, and this is
+    // the obvious way to reintroduce it by accident.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.movers[0].stamina = PHANTOM_SPRINT_BURST_SECONDS;
+    driver.movers[0].hesitate_timer = 0.0;
+    // A TREADMILL: the player is re-placed 12 m ahead of the creature every tick, which is what a
+    // sustained chase looks like from the stamina's point of view. The alternatives both measure
+    // the wrong thing — a static target is caught in two seconds (so the test becomes about the
+    // strike and the wedge detector), and a player fleeing in a straight line walks through walls
+    // the creature has to go around, so it drops out of LOSE_RADIUS on geometry rather than on
+    // speed. 12 m is clear of the 2.4 m strike reach and well inside the 30 m leash.
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let mut player = Vec3::new(here.x + 12.0, 1.8, here.z);
+    // Losing the line through generated geometry is a DIFFERENT exit with its own test
+    // (`breaking_the_line_of_sight_ends_a_committed_hunt`). Pinned out so this one is about the
+    // stamina and nothing else.
+    macro_rules! chase_tick {
+        () => {{
+            driver.step(&mut net, 0.1, player, 0.0, false, false);
+            driver.movers[0].sprint_blind_for = 0.0;
+            let p = Vec3::from_array(net.peers[&pid].position);
+            player = Vec3::new(p.x + 12.0, 1.8, p.z);
+        }};
+    }
+
+    // Burst: 5,5 s at 10 Hz, i.e. just past `PHANTOM_SPRINT_BURST_SECONDS`.
+    for _ in 0..55 {
+        chase_tick!();
+    }
+    assert_eq!(driver.movers[0].state, PhantomState::Sprint);
+    assert!(
+        driver.movers[0].winded_for > 0.0,
+        "5 s of flat-out running must blow it, stamina was {}",
+        driver.movers[0].stamina
+    );
+    assert_eq!(
+        net.peers[&pid].vocal_kind, VOCAL_WINDED,
+        "and the player has to HEAR the charge fail, or the window is invisible"
+    );
+
+    // Recovery: it keeps coming, and comes back to a full burst on the far side.
+    for _ in 0..40 {
+        chase_tick!();
+        assert_eq!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "being winded must NEVER end the hunt — only the player can"
+        );
+    }
+    assert_eq!(driver.movers[0].winded_for, 0.0, "it got its breath back");
+    assert!(
+        driver.movers[0].stamina > 0.0,
+        "and the next burst is armed"
+    );
+    assert!(
+        net.peers[&pid].revealed,
+        "still revealed the whole way through: it never stopped charging"
+    );
+}
+
+#[tokio::test]
 async fn a_sated_creature_never_charges_however_long_its_patience_ran() {
     // ADR-050 point 4 — THE GATE, and the single most important assertion of the redesign. This is
     // the exact setup of `phantom_sprints_after_patience_exceeded`, which lunges, with the ONE
