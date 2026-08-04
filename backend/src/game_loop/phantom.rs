@@ -947,6 +947,81 @@ impl PhantomMover {
     pub(super) fn is_wedged(&self) -> bool {
         self.blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS
     }
+
+    /// Record how much of the step the creature actually got, and drop the route the moment it is
+    /// wedged so the next tick re-plans instead of grinding along the same wall.
+    ///
+    /// `advance` is the realised displacement PROJECTED ON THE INTENDED DIRECTION, not the raw
+    /// distance moved, and that distinction is the whole detector. The obvious signal —
+    /// `MoveResult::blocked`, "neither axis advanced" — never fires in the case people actually
+    /// report: pressed against a wall the resolver SLIDES, so the creature keeps moving at full
+    /// speed sideways while getting no closer, forever. Projected advance reads a slide as ~0,
+    /// which is what it is worth.
+    ///
+    /// Clearing the plan HERE and not only raising the counter matters: a stale route whose next
+    /// waypoint sits on the far side of the obstacle is precisely what keeps aiming the creature at
+    /// it. `steer_heading` reads `blocked_ticks` for the rest (force the replan past the stagger,
+    /// distrust the straight line).
+    pub(super) fn note_step_progress(&mut self, advance: f32, intended: f32) {
+        // Not trying to travel (STALK holding its distance band) is not being stuck.
+        if intended <= 1e-4 {
+            self.blocked_ticks = 0;
+            return;
+        }
+        if advance >= intended * PHANTOM_MIN_STEP_PROGRESS {
+            self.blocked_ticks = 0;
+            return;
+        }
+        self.blocked_ticks = self.blocked_ticks.saturating_add(1);
+        if self.blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS {
+            self.nav_waypoints.clear();
+        }
+    }
+
+    /// Commit this mover to a lunge, from whichever state decided on one.
+    ///
+    /// A single door into SPRINT because the entry now carries state (the hesitation roll) and
+    /// three copies of that would drift: a lunge entered through the copy someone forgot to update
+    /// would silently never hesitate, and nothing would fail.
+    pub(super) fn enter_sprint(&mut self) {
+        self.state = PhantomState::Sprint;
+        self.state_timer = 0.0;
+        // ADR-048 point 6: the reveal-scream is now EMITTED, not inferred by each client from the
+        // `revealed` edge, so everyone hears it at the same instant.
+        self.try_vocalize(VOCAL_REVEAL);
+        // Rolled per lunge, not per creature: `hesitate_chance` is the temperament, this is what it
+        // does THIS time. A creature that always paused would be as readable as one that never did.
+        // A hunter does not hesitate, and neither does something you just shot at.
+        let may_hesitate = !self.traits.is_hunter && self.enraged_for <= 0.0;
+        self.hesitate_timer =
+            match may_hesitate && rand::random::<f32>() < self.traits.hesitate_chance {
+                true => {
+                    PHANTOM_HESITATE_MIN
+                        + rand::random::<f32>() * (PHANTOM_HESITATE_MAX - PHANTOM_HESITATE_MIN)
+                }
+                false => 0.0,
+            };
+    }
+
+    /// ADR-048 — stage a vocalisation, if this creature is not still catching its breath.
+    ///
+    /// Silently drops the request when on cooldown rather than queueing it: a scream that arrives
+    /// six seconds after the thing that caused it is worse than no scream, because the player will
+    /// place it wrong. Also drops a SECOND request in the same tick — the first one wins, so a
+    /// creature that hears a noise and lunges on the same tick screams once, not twice.
+    pub(super) fn try_vocalize(&mut self, kind: u8) {
+        self.try_vocalize_for(kind, PHANTOM_VOCAL_COOLDOWN);
+    }
+
+    /// `try_vocalize` with an explicit cooldown, so an AMBIENT voice does not spend the same budget
+    /// as a dramatic one. A breath must not be able to mute the scream of a lunge two seconds later.
+    pub(super) fn try_vocalize_for(&mut self, kind: u8, cooldown: f32) {
+        if self.vocal_cooldown > 0.0 || self.pending_vocal.is_some() {
+            return;
+        }
+        self.pending_vocal = Some(kind);
+        self.vocal_cooldown = cooldown;
+    }
 }
 
 impl PhantomDriver {
@@ -1383,7 +1458,7 @@ impl PhantomDriver {
                     true => VOCAL_DISTANT_ANSWER,
                     false => VOCAL_NOISE_GRUNT,
                 };
-                self.try_vocalize(i, voice);
+                self.movers[i].try_vocalize(voice);
                 // The plan is deliberately NOT thrown away. A second shot is new information about
                 // the same hunt, not a new hunt: the creature should keep walking and re-aim, and
                 // the replan policy already rebuilds the route on its own when the goal drifts more
@@ -1412,81 +1487,6 @@ impl PhantomDriver {
     /// At most ONE search per call, so the per-step cost stays the bounded thing it was measured to
     /// be. A plan is rebuilt when it is older than `PHANTOM_REPLAN_INTERVAL`, when the target has
     /// drifted `PHANTOM_REPLAN_GOAL_DRIFT` from the goal it was built for, or when it ran out.
-    /// Record how much of the step the creature actually got, and drop the route the moment it is
-    /// wedged so the next tick re-plans instead of grinding along the same wall.
-    ///
-    /// `advance` is the realised displacement PROJECTED ON THE INTENDED DIRECTION, not the raw
-    /// distance moved, and that distinction is the whole detector. The obvious signal —
-    /// `MoveResult::blocked`, "neither axis advanced" — never fires in the case people actually
-    /// report: pressed against a wall the resolver SLIDES, so the creature keeps moving at full
-    /// speed sideways while getting no closer, forever. Projected advance reads a slide as ~0,
-    /// which is what it is worth.
-    ///
-    /// Clearing the plan HERE and not only raising the counter matters: a stale route whose next
-    /// waypoint sits on the far side of the obstacle is precisely what keeps aiming the creature at
-    /// it. `steer_heading` reads `blocked_ticks` for the rest (force the replan past the stagger,
-    /// distrust the straight line).
-    pub(super) fn note_step_progress(&mut self, i: usize, advance: f32, intended: f32) {
-        // Not trying to travel (STALK holding its distance band) is not being stuck.
-        if intended <= 1e-4 {
-            self.movers[i].blocked_ticks = 0;
-            return;
-        }
-        if advance >= intended * PHANTOM_MIN_STEP_PROGRESS {
-            self.movers[i].blocked_ticks = 0;
-            return;
-        }
-        self.movers[i].blocked_ticks = self.movers[i].blocked_ticks.saturating_add(1);
-        if self.movers[i].blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS {
-            self.movers[i].nav_waypoints.clear();
-        }
-    }
-
-    /// Commit this mover to a lunge, from whichever state decided on one.
-    ///
-    /// A single door into SPRINT because the entry now carries state (the hesitation roll) and
-    /// three copies of that would drift: a lunge entered through the copy someone forgot to update
-    /// would silently never hesitate, and nothing would fail.
-    pub(super) fn enter_sprint(&mut self, i: usize) {
-        self.movers[i].state = PhantomState::Sprint;
-        self.movers[i].state_timer = 0.0;
-        // ADR-048 point 6: the reveal-scream is now EMITTED, not inferred by each client from the
-        // `revealed` edge, so everyone hears it at the same instant.
-        self.try_vocalize(i, VOCAL_REVEAL);
-        // Rolled per lunge, not per creature: `hesitate_chance` is the temperament, this is what it
-        // does THIS time. A creature that always paused would be as readable as one that never did.
-        // A hunter does not hesitate, and neither does something you just shot at.
-        let may_hesitate = !self.movers[i].traits.is_hunter && self.movers[i].enraged_for <= 0.0;
-        self.movers[i].hesitate_timer =
-            match may_hesitate && rand::random::<f32>() < self.movers[i].traits.hesitate_chance {
-                true => {
-                    PHANTOM_HESITATE_MIN
-                        + rand::random::<f32>() * (PHANTOM_HESITATE_MAX - PHANTOM_HESITATE_MIN)
-                }
-                false => 0.0,
-            };
-    }
-
-    /// ADR-048 — stage a vocalisation, if this creature is not still catching its breath.
-    ///
-    /// Silently drops the request when on cooldown rather than queueing it: a scream that arrives
-    /// six seconds after the thing that caused it is worse than no scream, because the player will
-    /// place it wrong. Also drops a SECOND request in the same tick — the first one wins, so a
-    /// creature that hears a noise and lunges on the same tick screams once, not twice.
-    pub(super) fn try_vocalize(&mut self, i: usize, kind: u8) {
-        self.try_vocalize_for(i, kind, PHANTOM_VOCAL_COOLDOWN);
-    }
-
-    /// `try_vocalize` with an explicit cooldown, so an AMBIENT voice does not spend the same budget
-    /// as a dramatic one. A breath must not be able to mute the scream of a lunge two seconds later.
-    pub(super) fn try_vocalize_for(&mut self, i: usize, kind: u8, cooldown: f32) {
-        if self.movers[i].vocal_cooldown > 0.0 || self.movers[i].pending_vocal.is_some() {
-            return;
-        }
-        self.movers[i].pending_vocal = Some(kind);
-        self.movers[i].vocal_cooldown = cooldown;
-    }
-
     pub(super) fn steer_heading(
         &mut self,
         i: usize,
@@ -1962,7 +1962,7 @@ impl PhantomDriver {
                     if rand::random::<f32>()
                         < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].impulse()
                     {
-                        self.enter_sprint(i);
+                        self.movers[i].enter_sprint();
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
                             id
@@ -1999,7 +1999,8 @@ impl PhantomDriver {
                     if self.movers[i].breath_in <= 0.0 {
                         self.movers[i].breath_in = PHANTOM_BREATH_MIN
                             + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN);
-                        self.try_vocalize_for(i, VOCAL_STALK_BREATH, PHANTOM_BREATH_COOLDOWN);
+                        self.movers[i]
+                            .try_vocalize_for(VOCAL_STALK_BREATH, PHANTOM_BREATH_COOLDOWN);
                     }
 
                     // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
@@ -2024,7 +2025,7 @@ impl PhantomDriver {
                         || rand::random::<f32>()
                             < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse()
                     {
-                        self.enter_sprint(i);
+                        self.movers[i].enter_sprint();
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} dist={:.2}",
                             id, dist
@@ -2066,7 +2067,7 @@ impl PhantomDriver {
                     // Wedge detection. `intended` is 0 while STALK holds its distance band, which
                     // `note_step_progress` reads as "not trying to travel" rather than as stuck.
                     let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
-                    self.note_step_progress(i, advance, speed * dt);
+                    self.movers[i].note_step_progress(advance, speed * dt);
                     let yaw = heading.to_degrees().rem_euclid(360.0);
                     if let Some(peer) = net.peers.get_mut(&id) {
                         peer.update_player_state(resolved.to_array(), yaw, "idle".into());
@@ -2116,7 +2117,7 @@ impl PhantomDriver {
                                 ),
                             });
                         }
-                        self.enter_sprint(i);
+                        self.movers[i].enter_sprint();
                         info!(
                             "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_statue_timeout knockback={}",
                             id,
@@ -2317,7 +2318,7 @@ impl PhantomDriver {
                             // where it woke up (the same fix ADR-041 needed after a long journey).
                             self.movers[i].spawn_pos = from;
                             self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
-                            self.try_vocalize(i, VOCAL_SATED_ROAR);
+                            self.movers[i].try_vocalize(VOCAL_SATED_ROAR);
                             info!(
                                 "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} victim_id={} note=from_behind",
                                 id, tid
@@ -2345,7 +2346,7 @@ impl PhantomDriver {
                     // A lunge always intends to travel, so any step that gains nothing toward the
                     // player is the creature grinding along geometry.
                     let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
-                    self.note_step_progress(i, advance, speed * dt);
+                    self.movers[i].note_step_progress(advance, speed * dt);
                     let yaw = heading.to_degrees().rem_euclid(360.0);
                     if let Some(peer) = net.peers.get_mut(&id) {
                         peer.update_player_state(resolved.to_array(), yaw, "idle".into());
@@ -2370,7 +2371,7 @@ impl PhantomDriver {
                     // player. The cooldown keeps it to one per approach rather than a siren.
                     if let Some((_, _, dist, _)) = target {
                         if dist <= PHANTOM_VOCAL_SEARCH_RANGE {
-                            self.try_vocalize(i, VOCAL_SEARCH_SHRIEK);
+                            self.movers[i].try_vocalize(VOCAL_SEARCH_SHRIEK);
                         }
                     }
 

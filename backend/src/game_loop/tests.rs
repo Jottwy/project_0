@@ -1224,7 +1224,7 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
 
     // Grazing geometry once is NOT being wedged: a plan survives a single scraped step, which
     // is what rounding any corner produces.
-    driver.note_step_progress(0, ground_out, intended);
+    driver.movers[0].note_step_progress(ground_out, intended);
     assert!(!driver.movers[0].is_wedged());
     assert_eq!(
         driver.movers[0].nav_waypoints.len(),
@@ -1233,7 +1233,7 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
     );
 
     for _ in 1..PHANTOM_BLOCKED_REPLAN_TICKS {
-        driver.note_step_progress(0, ground_out, intended);
+        driver.movers[0].note_step_progress(ground_out, intended);
     }
     assert!(
         driver.movers[0].is_wedged(),
@@ -1246,14 +1246,14 @@ async fn a_wedged_hunter_drops_its_route_and_stops_trusting_the_straight_line() 
 
     // And it re-arms: one step that actually moves clears the whole condition, so the creature
     // goes straight back to the cheap straight-line path the moment it is free.
-    driver.note_step_progress(0, intended, intended);
+    driver.movers[0].note_step_progress(intended, intended);
     assert!(!driver.movers[0].is_wedged());
     assert_eq!(driver.movers[0].blocked_ticks, 0);
 
     // And holding still on purpose (STALK inside its distance band, intended = 0) is never
     // stuck — otherwise the creature would "unstick" itself out of its own designed pause.
     driver.movers[0].blocked_ticks = PHANTOM_BLOCKED_REPLAN_TICKS;
-    driver.note_step_progress(0, 0.0, 0.0);
+    driver.movers[0].note_step_progress(0.0, 0.0);
     assert!(
         !driver.movers[0].is_wedged(),
         "a deliberate hold is not a wedge"
