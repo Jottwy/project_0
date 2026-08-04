@@ -672,22 +672,8 @@ impl NetworkManager {
                 self.peers.len(),
                 self.peer_ids()
             );
-            let ack_payload = self.build_handshake_ack(existing.id);
-            info!(
-                "Sending handshake ACK to {} assigned_id={}",
-                from_addr, existing.id
-            );
-            info!(
-                "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
-                self.local_id,
-                sender_id,
-                existing.id,
-                existing.id,
-                from_addr,
-                self.peers.len(),
-                self.peer_ids()
-            );
-            self.send_raw_to(from_addr, &ack_payload).await;
+            self.send_handshake_ack(from_addr, sender_id, existing.id)
+                .await;
             return None;
         }
 
@@ -706,22 +692,8 @@ impl NetworkManager {
                 self.peers.len(),
                 self.peer_ids()
             );
-            let ack_payload = self.build_handshake_ack(existing.id);
-            info!(
-                "Sending handshake ACK to {} assigned_id={}",
-                from_addr, existing.id
-            );
-            info!(
-                "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
-                self.local_id,
-                sender_id,
-                existing.id,
-                existing.id,
-                from_addr,
-                self.peers.len(),
-                self.peer_ids()
-            );
-            self.send_raw_to(from_addr, &ack_payload).await;
+            self.send_handshake_ack(from_addr, sender_id, existing.id)
+                .await;
             return None;
         }
 
@@ -773,22 +745,8 @@ impl NetworkManager {
         );
 
         // Send HandshakeAck with world info.
-        let ack_payload = self.build_handshake_ack(assigned_id);
-        info!(
-            "Sending handshake ACK to {} assigned_id={}",
-            from_addr, assigned_id
-        );
-        info!(
-            "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
-            self.local_id,
-            sender_id,
-            assigned_id,
-            assigned_id,
-            from_addr,
-            self.peers.len(),
-            self.peer_ids()
-        );
-        self.send_raw_to(from_addr, &ack_payload).await;
+        self.send_handshake_ack(from_addr, sender_id, assigned_id)
+            .await;
 
         Some(NetworkEvent::PeerConnected {
             id: assigned_id,
@@ -893,6 +851,42 @@ impl NetworkManager {
             anchors: vec![],
             stabilizers: vec![],
         }
+    }
+
+    /// Send the `HandshakeAck` for `assigned_id` to `from_addr`, preceded by the two log lines
+    /// that have always accompanied it (`Sending handshake ACK` + `MPTRACE step=D`).
+    ///
+    /// Serves the same three handshake paths as `build_handshake_ack` (new peer / duplicate by
+    /// id / duplicate by endpoint): each kept a byte-identical copy of this tail, differing only
+    /// in the NAME of the id passed (`existing.id` vs `assigned_id`). The order is verbatim —
+    /// payload first (so its peer snapshot predates the logs), then the two logs, then the
+    /// datagram — and both logs still read `self.peers`/`self.peer_ids()` at send time, so the
+    /// new-peer path keeps reporting the roster WITH the peer just inserted.
+    ///
+    /// `&self` because `build_handshake_ack` and `send_raw_to` are both `&self`; that is what
+    /// lets the two duplicate branches call it while still holding their `&PeerConnection`.
+    async fn send_handshake_ack(
+        &self,
+        from_addr: SocketAddr,
+        sender_id: PeerId,
+        assigned_id: PeerId,
+    ) {
+        let ack_payload = self.build_handshake_ack(assigned_id);
+        info!(
+            "Sending handshake ACK to {} assigned_id={}",
+            from_addr, assigned_id
+        );
+        info!(
+            "MPTRACE step=D event=host_send_handshake_ack self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
+            self.local_id,
+            sender_id,
+            assigned_id,
+            assigned_id,
+            from_addr,
+            self.peers.len(),
+            self.peer_ids()
+        );
+        self.send_raw_to(from_addr, &ack_payload).await;
     }
 
     fn allocate_peer_id(&mut self, requested_id: PeerId) -> PeerId {
