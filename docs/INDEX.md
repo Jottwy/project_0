@@ -8,6 +8,12 @@
 3. [DECISIONS.md](DECISIONS.md) — registro ADR completo. ES LEY, append-only.
 4. [CONVENTIONS.md](CONVENTIONS.md) — convenciones C# / Rust / protocolo / git.
 
+## Histórico (NO es fuente de verdad del estado actual)
+- [SESSION-LOG.md](SESSION-LOG.md) — las sesiones anteriores de `STATE.md`, movidas VERBATIM el
+  2026-08-04 (20 entradas, 2026-08-03 → 2026-07-07). Se sacaron porque `STATE.md` es lectura
+  obligatoria en cada arranque y el diario era el 55 % de su peso. Consúltalo para saber **por qué**
+  algo quedó como quedó; para saber **cómo está hoy**, `STATE.md`.
+
 ## ADRs
 - [adr/INDEX.md](adr/INDEX.md) — índice de los ficheros ADR individuales; el registro completo sigue en `DECISIONS.md`.
 
