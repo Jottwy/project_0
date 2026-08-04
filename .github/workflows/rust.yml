@@ -1,0 +1,30 @@
+# Unity is excluded because CI has no licensed Editor; C# validation remains local via compile-check.
+name: Rust
+
+on:
+  push:
+    branches:
+      - main
+      - migration/worldgraph-v1
+  pull_request:
+    branches:
+      - main
+      - migration/worldgraph-v1
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: backend -> target
+      - name: Check formatting
+        run: cargo fmt --all --manifest-path backend/Cargo.toml -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --manifest-path backend/Cargo.toml -- -D warnings
+      - name: Run tests
+        run: cargo test --manifest-path backend/Cargo.toml

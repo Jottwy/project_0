@@ -2,6 +2,11 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-04 (tooling: CI Rust y poda de permisos)
+- Hecho: CI Rust añadido para `main` y `migration/worldgraph-v1`; Unity/C# permanece en compile-check local por licencia. `cargo add` requiere aprobación humana y `cargo run` queda permitido solo en `backend/`; los cuatro allowlists locales siguen separados e ignorados.
+- Validación: workflow parseado con PyYAML temporal; cuatro allowlists JSON válidos; fallback C# sin proyecto sale 0 con nota y `stderr` vacío; fmt + Clippy `--all-targets -D warnings` limpios; `cargo test` 531 passed, 4 ignored, 0 failed.
+- Próximo paso de tooling: comprobar el primer run remoto y decidir sobre los permisos mutantes amplios inventariados; no se podaron sin aprobación específica.
+
 - Fecha: 2026-08-04 (tarde — **la IA del robapieles sale de `game_loop.rs`: 11 commits, refactor puro, CERO cambio de comportamiento**)
 - COMMITS: `661d170`, `fe11cba`, `58c8a69`, `0d3040d`, `5b10204`, `9181095`, `50372d3`, `7811e3c`, `3ee9d52`, `9b7c357`, `9d1f9ba`. Wire **sin tocar** (sigue en 18). `cargo test --locked` **531/531 en los once**, `fmt` y `clippy --all-targets` limpios. **Sin ADR nuevo: no toca wire, formato de chunk ni schema de guardado** — solo layout de módulos. **Backend release NO re-desplegado**: es refactor, `Builds/Backend/` sigue siendo el de la mañana y eso es correcto.
 

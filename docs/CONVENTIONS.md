@@ -31,3 +31,5 @@
 - Validación escalonada y sensible a las rutas tocadas por sesión: por edición solo formato Rust; al cierre, suites completas de las superficies Rust/C# afectadas.
 - El hook Stop es informativo y nunca bloquea; `/checkpoint` es el gate que rechaza el commit cuando falla una validación aplicable.
 - Si falta el ledger de sesión, se usa `git diff --name-only` declarando que el alcance puede ser impreciso.
+- CI Rust activo en GitHub para `main` y `migration/worldgraph-v1`; Unity queda fuera por licencia y C# se valida localmente mediante compile-check.
+- Permisos locales: `cargo add` requiere aprobación humana siempre; `cargo run` solo se permite desde `backend/`.
