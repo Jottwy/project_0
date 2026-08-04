@@ -844,6 +844,10 @@ async fn phantom_sprints_after_patience_exceeded() {
     // rather than assumed: this test is about the transition, not about which creature drew a
     // long fuse.
     driver.movers[0].traits.patience_scale = 1.0;
+    // ADR-050: and pinned HUNGRY for the same reason the patience scale is pinned. A sated creature
+    // does not charge however long its patience ran, so without this the test would be asserting
+    // whatever `derive_hunger` happened to draw for this id.
+    driver.movers[0].hunger = 0.0;
     driver.movers[0].state = PhantomState::Stalk;
     driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE + 5.0;
     let player = Vec3::new(6.0, 1.8, 0.0);
@@ -1413,6 +1417,11 @@ async fn a_stalker_breathes_and_the_breath_never_mutes_a_scream() {
     // range), and a lunge emits the REVEAL scream instead — a ~1-in-37 flake that passes alone
     // and fails in a full run. Pinned to 0 so this test is about the breath and nothing else.
     driver.movers[0].traits.impulse_scale = 0.0;
+    // ADR-050: the breath slot carries the HUNGRY MOAN instead once it drops past
+    // `PHANTOM_HUNGER_HUNTING`, so this test pins the band it is about. Mid-band, not sated: at
+    // full it would also stop rolling for lunges, which would make the impulse pin above pass for
+    // the wrong reason.
+    driver.movers[0].hunger = 0.5;
     driver.movers[0].breath_in = 0.05; // due almost immediately
     let here = Vec3::from_array(net.peers[&pid].position);
     let player = Vec3::new(here.x + 9.0, 1.8, here.z);
@@ -1521,6 +1530,11 @@ async fn hearing_a_shot_cancels_the_theatre_and_enrages() {
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].pickup_until = Some(Instant::now() + Duration::from_secs(30));
     driver.movers[0].stare_until = Some(Instant::now() + Duration::from_secs(30));
+    // ADR-050: this test is about RAGE, so the hunger axis is pinned out of it. Both assertions
+    // below read `patience()`/`impulse()`, which now compose hunger too — a sated creature would
+    // invert both (satiety multiplies patience by 3 and impulse by 0.15) and the test would be
+    // measuring the wrong axis.
+    driver.movers[0].hunger = 0.0;
     let here = Vec3::from_array(net.peers[&pid].position);
     net.pending_noises
         .push(([here.x + 20.0, here.y, here.z], 500.0));
@@ -1571,7 +1585,10 @@ async fn a_kill_leaves_it_sated_and_it_roars_once() {
         PhantomState::Wander,
         "it stops hunting"
     );
-    assert!(driver.movers[0].calm_for > 0.0, "it is sated");
+    // ADR-050: eating fills it right up, which is the same job `calm_for` used to do as a 60 s
+    // one-shot — now as a point on a cycle that drains back down on its own.
+    assert_eq!(driver.movers[0].hunger, 1.0, "eating fills it");
+    assert!(driver.movers[0].is_sated(), "it is sated");
     assert_eq!(
         driver.movers[0].enraged_for, 0.0,
         "a kill settles whatever it was angry about"
@@ -1579,6 +1596,12 @@ async fn a_kill_leaves_it_sated_and_it_roars_once() {
     assert_eq!(net.peers[&pid].vocal_kind, VOCAL_SATED_ROAR);
     // Satiety makes it markedly less willing to commit again.
     assert!(driver.movers[0].patience() > PHANTOM_STALK_PATIENCE);
+    // And ADR-050's hard gate: full, it cannot open a lunge at all, whatever the dice say.
+    assert_eq!(
+        driver.movers[0].impulse(),
+        0.0,
+        "a creature that just ate does not roll for lunges"
+    );
 }
 
 #[tokio::test]
@@ -2480,6 +2503,10 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
     driver.movers[0].state = PhantomState::Statue;
     driver.movers[0].state_timer = PHANTOM_STATUE_MAX + 1.0;
+    // ADR-050: pinned hungry. A sated creature bored of the statue game still SHOVES you but goes
+    // back to shadowing instead of charging, so without this the tail assertion would be measuring
+    // whichever band `derive_hunger` drew.
+    driver.movers[0].hunger = 0.0;
     let ppos = net.peers[&pid].position;
     let player = Vec3::new(ppos[0] + 2.0, 1.8, ppos[2]); // within PHANTOM_KNOCKBACK_RANGE (3 m)
 
@@ -2491,6 +2518,110 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
         "point-blank STATUE timeout must shove the local player, got {attack:?}"
     );
     assert_eq!(driver.movers[0].state, PhantomState::Sprint);
+}
+
+#[tokio::test]
+async fn a_sated_creature_never_charges_however_long_its_patience_ran() {
+    // ADR-050 point 4 — THE GATE, and the single most important assertion of the redesign. This is
+    // the exact setup of `phantom_sprints_after_patience_exceeded`, which lunges, with the ONE
+    // difference that this creature has just eaten. "It hangs around a bit and then attacks" was
+    // the reported feel, and the cause was that nothing but a dice roll gated the charge.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let world = World::new(42);
+    let mut driver = PhantomDriver::new(world.seed);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].traits.patience_scale = 1.0;
+    driver.movers[0].traits.impulse_scale = 1.7; // the twitchiest temperament in the range
+    driver.movers[0].hunger = 1.0; // just fed
+    driver.movers[0].statue_cooldown = 999.0; // keep it out of STATUE so this is about the charge
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].state_timer = PHANTOM_STALK_PATIENCE * 10.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 6.0, 1.8, here.z);
+
+    // Many ticks, so the per-tick roll gets every chance it would ever get.
+    for _ in 0..200 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false);
+        assert_ne!(
+            driver.movers[0].state,
+            PhantomState::Sprint,
+            "a sated creature must never charge, whatever the dice or the clock say"
+        );
+    }
+    assert!(!net.peers[&pid].revealed, "and it never drops the disguise");
+}
+
+#[tokio::test]
+async fn hunger_is_reproducible_per_creature_and_spread_across_the_population() {
+    // Same discipline as `traits_are_reproducible_per_creature_and_differ_between_them`: derived
+    // from the anchor, never rolled, so two players meet the same creature at the same point of its
+    // cycle and one that despawns and returns is still itself.
+    let anchor = Some(((3i32, -7i32), 0u8, 0u8));
+    assert_eq!(
+        derive_hunger(42, anchor, 0xF001),
+        derive_hunger(42, anchor, 0xF999),
+        "hunger must come from the ANCHOR, not from whichever peer id it got this time"
+    );
+    assert_ne!(
+        derive_hunger(42, anchor, 0xF001),
+        derive_hunger(7778, anchor, 0xF001),
+        "a different seed is a different world"
+    );
+
+    // And the population must hold animals at every point of the cycle AT ONCE. Seeding them near
+    // one value would give the world synchronised feeding hours, where everything everywhere turns
+    // dangerous together.
+    let mut sated = 0;
+    let mut hungry = 0;
+    for bx in 0..20i32 {
+        for bz in 0..20i32 {
+            let h = derive_hunger(42, Some(((bx, bz), 0, 0)), 0xF000);
+            assert!((0.0..=1.0).contains(&h), "hunger out of range: {h}");
+            if h > PHANTOM_HUNGER_SATED {
+                sated += 1;
+            }
+            if h < PHANTOM_HUNGER_HUNTING {
+                hungry += 1;
+            }
+        }
+    }
+    assert!(
+        sated > 40 && hungry > 40,
+        "the draw must populate both ends of the cycle, got {sated} sated / {hungry} hungry of 400"
+    );
+}
+
+#[tokio::test]
+async fn hunger_drains_even_while_the_fsm_is_skipped() {
+    // The gesture freeze returns `None` from `resolve_mover_tick` and skips the whole FSM, so a
+    // timer ticked inside a state arm would stall across exactly that window. Hunger is ticked in
+    // the preamble with the other timers for that reason.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 1.0;
+    // Frozen mid-gesture for the whole run, and far from any player so nothing cancels it.
+    driver.movers[0].pickup_until = Some(Instant::now() + Duration::from_secs(60));
+    let away = Vec3::new(100_000.0, 1.8, 100_000.0);
+
+    for _ in 0..100 {
+        driver.step(&mut net, 0.1, away, 0.0, false, false);
+    }
+
+    let expected = 1.0 - 10.0 / PHANTOM_HUNGER_DRAIN_SECONDS;
+    assert!(
+        (driver.movers[0].hunger - expected).abs() < 1e-3,
+        "10 s of gesture freeze must still cost 10 s of hunger, got {}",
+        driver.movers[0].hunger
+    );
+    assert!(
+        driver.movers[0].pickup_until.is_some(),
+        "and the freeze itself is untouched — nobody was near enough to cancel it"
+    );
 }
 
 #[tokio::test]
