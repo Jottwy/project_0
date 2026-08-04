@@ -277,22 +277,7 @@ namespace BackroomsSurvival.Net
             view.targetPosition = view.root != null ? view.root.position : Vector3.zero;
             view.targetRotation = view.root != null ? view.root.eulerAngles.y : 0f;
             view.yawVelocity = 0f; // [C] no carry-over from a recycled view
-            view.animationState = "idle";
-            view.crouch = false;
-            view.pitch = 0f;
-            view.equipment = new int[4]; // ADR-022: no stale clothing on a recycled proxy
-            view.heldItem = 0; // ADR-023: no stale held item on a recycled proxy
-            view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
-            view.dead = false; // ADR-028 post-E3: recycled proxy starts visible (root just re-activated above)
-            view.revealed = false; // ADR-038: no stale real form on a recycled proxy (hook restores its materials)
-            view.vocalSeq = 0; // ADR-048: no stale scream counter (hook re-arms its sentinel)
-            view.vocalKind = 0; // ADR-048
-            view.lightOn = false; // ADR-042: no stale torch glow on a recycled proxy
-            view.fireSeq = 0; // ADR-042: no stale shot counter (hook re-arms its sentinel)
-            view.buttons = 0; // ADR-044: a recycled proxy is neither aiming nor reloading
-            view.meleeSeq = 0; // ADR-044: no stale swing counter (hook re-arms its sentinel)
-            view.carryDef = 0; // ADR-049: a recycled proxy must not inherit the last owner's planks
-            view.carryCount = 0; // ADR-049
+            ResetCosmetics(view); // ADR-022..ADR-049: recycled proxy starts clean (root just re-activated above)
             view.lastSeenTime = Time.unscaledTime;
 
             if (view.root != null)
@@ -317,22 +302,7 @@ namespace BackroomsSurvival.Net
                 return;
 
             view.id = -1;
-            view.animationState = "idle";
-            view.crouch = false;
-            view.pitch = 0f;
-            view.equipment = new int[4]; // ADR-022
-            view.heldItem = 0; // ADR-023
-            view.hitSeq = 0; // ADR-024
-            view.dead = false; // ADR-028 post-E3: pooled SetActive(false) is the pool's, not the flag's
-            view.revealed = false; // ADR-038
-            view.vocalSeq = 0; // ADR-048
-            view.vocalKind = 0; // ADR-048
-            view.lightOn = false; // ADR-042
-            view.fireSeq = 0; // ADR-042
-            view.buttons = 0; // ADR-044
-            view.meleeSeq = 0; // ADR-044
-            view.carryDef = 0; // ADR-049
-            view.carryCount = 0; // ADR-049
+            ResetCosmetics(view); // ADR-022..ADR-049
             view.targetPosition = Vector3.zero;
             view.targetRotation = 0f;
             view.yawVelocity = 0f; // [C]
@@ -344,6 +314,39 @@ namespace BackroomsSurvival.Net
                 view.root.gameObject.SetActive(false);
 
             _pool.Enqueue(view);
+        }
+
+        /// <summary>
+        /// Returns the 16 cosmetic relay fields of a pooled view to their defaults. Single shared
+        /// point for the two reset sites required by the pose-relay convention (rule #5, reset on
+        /// Acquire/Release): Acquire uses it so a proxy recycled out of the pool carries nothing
+        /// over, Release uses it so a proxy handed back to the pool stores nothing stale.
+        ///
+        /// PLAIN FIELD-BY-FIELD ASSIGNMENTS ON PURPOSE — do not collapse this into an object or
+        /// struct initializer: a dropped line relays 0 forever.
+        ///
+        /// Deliberately does NOT touch id, root, nameTag, targetPosition, targetRotation,
+        /// yawVelocity or lastSeenTime: those differ between the two call sites and stay assigned
+        /// there.
+        /// </summary>
+        private static void ResetCosmetics(RemotePlayerView view)
+        {
+            view.animationState = "idle";
+            view.crouch = false;
+            view.pitch = 0f;
+            view.equipment = new int[4]; // ADR-022: no stale clothing on a recycled proxy
+            view.heldItem = 0; // ADR-023: no stale held item on a recycled proxy
+            view.hitSeq = 0; // ADR-024: no stale hit counter on a recycled proxy (hook re-arms its sentinel)
+            view.dead = false; // ADR-028 post-E3: the pooled SetActive(false) is the pool's, not the flag's
+            view.revealed = false; // ADR-038: no stale real form on a recycled proxy (hook restores its materials)
+            view.vocalSeq = 0; // ADR-048: no stale scream counter (hook re-arms its sentinel)
+            view.vocalKind = 0; // ADR-048
+            view.lightOn = false; // ADR-042: no stale torch glow on a recycled proxy
+            view.fireSeq = 0; // ADR-042: no stale shot counter (hook re-arms its sentinel)
+            view.buttons = 0; // ADR-044: a recycled proxy is neither aiming nor reloading
+            view.meleeSeq = 0; // ADR-044: no stale swing counter (hook re-arms its sentinel)
+            view.carryDef = 0; // ADR-049: a recycled proxy must not inherit the last owner's planks
+            view.carryCount = 0; // ADR-049
         }
 
         private RemotePlayerView CreateView()
