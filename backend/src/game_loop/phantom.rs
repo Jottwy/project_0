@@ -2039,6 +2039,176 @@ impl PhantomDriver {
         }
     }
 
+    /// WANDER — erratic patrol and the detection gate. Keeps the slice-4 fake-pickup imitation, the
+    /// metronomic stare tell, the organic "looking at a wall" pauses and the play-test observation
+    /// leash. Detection is sight (distance + forward cone, shrunk by crouch) OR sound (three speed
+    /// tiers, no cone, muted by crouch) — the sound channel is what makes sneaking up BEHIND one
+    /// work at all.
+    fn tick_wander(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+        // Detection: normally distance + forward cone. A RUNNING target (speed from
+        // delta) is HEARD — detected from farther (DETECT + SOUND_BONUS) AND from any
+        // direction (no cone). Sound-only detection reacts faster (a shorter stare).
+        let (detected, by_sound) = match target {
+            Some((tid, tpos, dist, _)) => {
+                let crouched = target_is_crouched(ctx.net, tid, ctx.host_crouch);
+                // SIGHT: the cone is unchanged (behind it is behind it), but a
+                // crouching target has to be much closer before it registers.
+                let sight_radius = if crouched {
+                    PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
+                } else {
+                    PHANTOM_DETECT_RADIUS
+                };
+                let normal =
+                    dist <= sight_radius && in_view_cone(self.movers[i].heading, from, tpos);
+                // SOUND: three tiers, and crouching mutes them all. This is the channel
+                // that ignores the cone, so silencing it is what makes sneaking up
+                // BEHIND the creature actually work.
+                let speed = ctx.target_speeds.get(&tid).copied().unwrap_or(0.0);
+                let hear_radius = if crouched || speed < PHANTOM_WALK_NOISE_SPEED {
+                    0.0
+                } else if speed > PHANTOM_RUN_SPEED_THRESHOLD {
+                    PHANTOM_DETECT_RADIUS + PHANTOM_SOUND_BONUS
+                } else {
+                    PHANTOM_WALK_HEAR_RADIUS
+                };
+                let sound = hear_radius > 0.0 && dist <= hear_radius;
+                (normal || sound, sound && !normal)
+            }
+            None => (false, false),
+        };
+        if detected {
+            self.movers[i].state = PhantomState::Spotted;
+            self.movers[i].state_timer = 0.0;
+            let (lo, hi) = if by_sound {
+                (PHANTOM_SPOTTED_SOUND_MIN, PHANTOM_SPOTTED_SOUND_MAX)
+            } else {
+                (PHANTOM_SPOTTED_MIN, PHANTOM_SPOTTED_MAX)
+            };
+            // Scaled by temperament: the same sighting makes one creature react almost
+            // at once and another hold the stare for the best part of ten seconds.
+            self.movers[i].spotted_duration =
+                (lo + rand::random::<f32>() * (hi - lo)) * self.movers[i].traits.spotted_scale;
+            self.movers[i].is_paused = false;
+            info!(
+                "MPTRACE step=PH_SPOTTED event=phantom_spotted phantom_id={} dur={:.1} by_sound={}",
+                id, self.movers[i].spotted_duration, by_sound
+            );
+            return;
+        }
+
+        // Slice 4: start a faked-pickup gesture when the cooldown elapsed. Stamp the
+        // "pickup" flank now and freeze; the top-of-loop gesture freeze holds the pose
+        // for the rest of the window. (Anim-only — ADR-016 invariant.)
+        if ctx.now >= self.movers[i].next_pickup_at {
+            self.movers[i].pickup_until = Some(ctx.now + PHANTOM_PICKUP_GESTURE);
+            self.movers[i].next_pickup_at = ctx.now + PHANTOM_PICKUP_INTERVAL;
+            info!(
+                "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
+                id
+            );
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(from.to_array(), yaw, "pickup".into());
+            }
+            return;
+        }
+
+        // Tell #2: metronomic unnatural stillness (the tell is its regularity).
+        if self.movers[i]
+            .stare_until
+            .is_some_and(|until| ctx.now >= until)
+        {
+            self.movers[i].stare_until = None;
+        }
+        if self.movers[i].stare_until.is_none() && ctx.now >= self.movers[i].next_stare_at {
+            self.movers[i].stare_until = Some(ctx.now + PHANTOM_STARE_DURATION);
+            self.movers[i].next_stare_at = ctx.now + PHANTOM_STARE_INTERVAL;
+            info!(
+                "MPTRACE step=PH6 event=phantom_tell_stare phantom_id={} note=behavioral_tell_unnatural_stillness",
+                id
+            );
+        }
+        if self.movers[i].stare_until.is_some() {
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(from.to_array(), yaw, "idle".into());
+            }
+            return;
+        }
+
+        // Organic pause: stand still "looking at a wall". Count down if paused; else a
+        // small per-tick chance to start one. On resume, turn to a new heading.
+        if self.movers[i].is_paused {
+            self.movers[i].wander_pause_timer -= ctx.dt;
+            if self.movers[i].wander_pause_timer <= 0.0 {
+                self.movers[i].is_paused = false;
+                let turn = PHANTOM_TURN_MIN
+                    + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
+                self.movers[i].heading =
+                    (self.movers[i].heading + turn).rem_euclid(std::f32::consts::TAU);
+            } else {
+                let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                    peer.update_player_state(from.to_array(), yaw, "idle".into());
+                }
+                return;
+            }
+        } else if rand::random::<f32>() < PHANTOM_WANDER_PAUSE_CHANCE {
+            self.movers[i].is_paused = true;
+            self.movers[i].wander_pause_timer = PHANTOM_WANDER_PAUSE_MIN
+                + rand::random::<f32>() * (PHANTOM_WANDER_PAUSE_MAX - PHANTOM_WANDER_PAUSE_MIN);
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(from.to_array(), yaw, "idle".into());
+            }
+            return;
+        }
+
+        // Observation leash (WANDER-only, play-test crutch): re-aim toward spawn if it
+        // drifted past the radius so it stays in view. STALK/SPRINT ignore it.
+        if from.distance_xz(self.movers[i].spawn_pos) > PHANTOM_WANDER_RADIUS {
+            let dx = self.movers[i].spawn_pos.x - from.x;
+            let dz = self.movers[i].spawn_pos.z - from.z;
+            if dx * dx + dz * dz > f32::EPSILON {
+                self.movers[i].heading = dx.atan2(dz).rem_euclid(std::f32::consts::TAU);
+            }
+        }
+
+        // Walk the heading; a full block (neither axis advanced) re-orients so it
+        // never stalls at a wall. A slide keeps the heading and hugs the wall.
+        let heading = self.movers[i].heading;
+        let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+        let desired = Vec3::new(
+            from.x + dir.x * PHANTOM_WALK_SPEED * ctx.dt,
+            from.y,
+            from.z + dir.z * PHANTOM_WALK_SPEED * ctx.dt,
+        );
+        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let blocked = (resolved.x - from.x).abs() < 1e-4 && (resolved.z - from.z).abs() < 1e-4;
+        if blocked {
+            let turn =
+                PHANTOM_TURN_MIN + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
+            self.movers[i].heading = (heading + turn).rem_euclid(std::f32::consts::TAU);
+        }
+        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+        }
+        if ctx.net.session_start.elapsed().as_millis() % 1000 < 120 {
+            info!(
+                "MPTRACE step=PH2 event=phantom_move phantom_id={} pos=({:.2},{:.2},{:.2}) yaw={:.1} blocked={} grid_chunks={}",
+                id, resolved.x, resolved.y, resolved.z, yaw, blocked, self.grid_cache.len()
+            );
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -2177,163 +2347,16 @@ impl PhantomDriver {
                 // ── WANDER: erratic patrol + detection. Keeps the slice-4 fake-pickup imitation,
                 // the metronomic stare tell, organic "look at a wall" pauses, and the play-test
                 // observation leash. Detecting the player (radius + cone) → SPOTTED. ──
-                PhantomState::Wander => {
-                    // Detection: normally distance + forward cone. A RUNNING target (speed from
-                    // delta) is HEARD — detected from farther (DETECT + SOUND_BONUS) AND from any
-                    // direction (no cone). Sound-only detection reacts faster (a shorter stare).
-                    let (detected, by_sound) = match target {
-                        Some((tid, tpos, dist, _)) => {
-                            let crouched = target_is_crouched(net, tid, host_player_crouch);
-                            // SIGHT: the cone is unchanged (behind it is behind it), but a
-                            // crouching target has to be much closer before it registers.
-                            let sight_radius = if crouched {
-                                PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
-                            } else {
-                                PHANTOM_DETECT_RADIUS
-                            };
-                            let normal = dist <= sight_radius
-                                && in_view_cone(self.movers[i].heading, from, tpos);
-                            // SOUND: three tiers, and crouching mutes them all. This is the channel
-                            // that ignores the cone, so silencing it is what makes sneaking up
-                            // BEHIND the creature actually work.
-                            let speed = target_speeds.get(&tid).copied().unwrap_or(0.0);
-                            let hear_radius = if crouched || speed < PHANTOM_WALK_NOISE_SPEED {
-                                0.0
-                            } else if speed > PHANTOM_RUN_SPEED_THRESHOLD {
-                                PHANTOM_DETECT_RADIUS + PHANTOM_SOUND_BONUS
-                            } else {
-                                PHANTOM_WALK_HEAR_RADIUS
-                            };
-                            let sound = hear_radius > 0.0 && dist <= hear_radius;
-                            (normal || sound, sound && !normal)
-                        }
-                        None => (false, false),
-                    };
-                    if detected {
-                        self.movers[i].state = PhantomState::Spotted;
-                        self.movers[i].state_timer = 0.0;
-                        let (lo, hi) = if by_sound {
-                            (PHANTOM_SPOTTED_SOUND_MIN, PHANTOM_SPOTTED_SOUND_MAX)
-                        } else {
-                            (PHANTOM_SPOTTED_MIN, PHANTOM_SPOTTED_MAX)
-                        };
-                        // Scaled by temperament: the same sighting makes one creature react almost
-                        // at once and another hold the stare for the best part of ten seconds.
-                        self.movers[i].spotted_duration = (lo + rand::random::<f32>() * (hi - lo))
-                            * self.movers[i].traits.spotted_scale;
-                        self.movers[i].is_paused = false;
-                        info!(
-                            "MPTRACE step=PH_SPOTTED event=phantom_spotted phantom_id={} dur={:.1} by_sound={}",
-                            id, self.movers[i].spotted_duration, by_sound
-                        );
-                        continue;
-                    }
-
-                    // Slice 4: start a faked-pickup gesture when the cooldown elapsed. Stamp the
-                    // "pickup" flank now and freeze; the top-of-loop gesture freeze holds the pose
-                    // for the rest of the window. (Anim-only — ADR-016 invariant.)
-                    if now >= self.movers[i].next_pickup_at {
-                        self.movers[i].pickup_until = Some(now + PHANTOM_PICKUP_GESTURE);
-                        self.movers[i].next_pickup_at = now + PHANTOM_PICKUP_INTERVAL;
-                        info!(
-                            "MPTRACE step=PH4 event=phantom_fake_pickup phantom_id={} note=animation_field_only_no_real_pickup",
-                            id
-                        );
-                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                        if let Some(peer) = net.peers.get_mut(&id) {
-                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
-                        }
-                        continue;
-                    }
-
-                    // Tell #2: metronomic unnatural stillness (the tell is its regularity).
-                    if self.movers[i].stare_until.is_some_and(|until| now >= until) {
-                        self.movers[i].stare_until = None;
-                    }
-                    if self.movers[i].stare_until.is_none() && now >= self.movers[i].next_stare_at {
-                        self.movers[i].stare_until = Some(now + PHANTOM_STARE_DURATION);
-                        self.movers[i].next_stare_at = now + PHANTOM_STARE_INTERVAL;
-                        info!(
-                            "MPTRACE step=PH6 event=phantom_tell_stare phantom_id={} note=behavioral_tell_unnatural_stillness",
-                            id
-                        );
-                    }
-                    if self.movers[i].stare_until.is_some() {
-                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                        if let Some(peer) = net.peers.get_mut(&id) {
-                            peer.update_player_state(from.to_array(), yaw, "idle".into());
-                        }
-                        continue;
-                    }
-
-                    // Organic pause: stand still "looking at a wall". Count down if paused; else a
-                    // small per-tick chance to start one. On resume, turn to a new heading.
-                    if self.movers[i].is_paused {
-                        self.movers[i].wander_pause_timer -= dt;
-                        if self.movers[i].wander_pause_timer <= 0.0 {
-                            self.movers[i].is_paused = false;
-                            let turn = PHANTOM_TURN_MIN
-                                + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
-                            self.movers[i].heading =
-                                (self.movers[i].heading + turn).rem_euclid(std::f32::consts::TAU);
-                        } else {
-                            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                            if let Some(peer) = net.peers.get_mut(&id) {
-                                peer.update_player_state(from.to_array(), yaw, "idle".into());
-                            }
-                            continue;
-                        }
-                    } else if rand::random::<f32>() < PHANTOM_WANDER_PAUSE_CHANCE {
-                        self.movers[i].is_paused = true;
-                        self.movers[i].wander_pause_timer = PHANTOM_WANDER_PAUSE_MIN
-                            + rand::random::<f32>()
-                                * (PHANTOM_WANDER_PAUSE_MAX - PHANTOM_WANDER_PAUSE_MIN);
-                        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                        if let Some(peer) = net.peers.get_mut(&id) {
-                            peer.update_player_state(from.to_array(), yaw, "idle".into());
-                        }
-                        continue;
-                    }
-
-                    // Observation leash (WANDER-only, play-test crutch): re-aim toward spawn if it
-                    // drifted past the radius so it stays in view. STALK/SPRINT ignore it.
-                    if from.distance_xz(self.movers[i].spawn_pos) > PHANTOM_WANDER_RADIUS {
-                        let dx = self.movers[i].spawn_pos.x - from.x;
-                        let dz = self.movers[i].spawn_pos.z - from.z;
-                        if dx * dx + dz * dz > f32::EPSILON {
-                            self.movers[i].heading = dx.atan2(dz).rem_euclid(std::f32::consts::TAU);
-                        }
-                    }
-
-                    // Walk the heading; a full block (neither axis advanced) re-orients so it
-                    // never stalls at a wall. A slide keeps the heading and hugs the wall.
-                    let heading = self.movers[i].heading;
-                    let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
-                    let desired = Vec3::new(
-                        from.x + dir.x * PHANTOM_WALK_SPEED * dt,
-                        from.y,
-                        from.z + dir.z * PHANTOM_WALK_SPEED * dt,
-                    );
-                    let resolved =
-                        resolve_move_grid_gen(&mut self.grid_cache, current_layer, from, desired);
-                    let blocked =
-                        (resolved.x - from.x).abs() < 1e-4 && (resolved.z - from.z).abs() < 1e-4;
-                    if blocked {
-                        let turn = PHANTOM_TURN_MIN
-                            + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
-                        self.movers[i].heading = (heading + turn).rem_euclid(std::f32::consts::TAU);
-                    }
-                    let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                    if let Some(peer) = net.peers.get_mut(&id) {
-                        peer.update_player_state(resolved.to_array(), yaw, "idle".into());
-                    }
-                    if net.session_start.elapsed().as_millis() % 1000 < 120 {
-                        info!(
-                            "MPTRACE step=PH2 event=phantom_move phantom_id={} pos=({:.2},{:.2},{:.2}) yaw={:.1} blocked={} grid_chunks={}",
-                            id, resolved.x, resolved.y, resolved.z, yaw, blocked, self.grid_cache.len()
-                        );
-                    }
-                }
+                PhantomState::Wander => self.tick_wander(
+                    mt,
+                    &mut TickCtx {
+                        net: &mut *net,
+                        dt,
+                        now,
+                        target_speeds: &target_speeds,
+                        host_crouch: host_player_crouch,
+                    },
+                ),
 
                 // ── SPOTTED: frozen stare. Faces the player; exits to STALK once the stare window
                 // elapses (deterministic), may unpredictably SPRINT mid-stare; loses the player
