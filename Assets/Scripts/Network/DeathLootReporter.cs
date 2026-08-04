@@ -210,30 +210,24 @@ namespace BackroomsSurvival.Net
 
             Unsubscribe();
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
+            var m = LocalPlayerLocator.Find<CharacterControllerMotor>();
+            if (m == null)
             {
-                var m = motors[i];
-                if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-
-                _motor = m;
-                _character = m.GetComponentInParent<ICharacter>();
-                _health = _character?.HealthManager;
-                if (_health != null)
-                {
-                    _health.Death += OnDeath;
-                    _health.Respawn += OnRespawn;
-                }
-                else
-                    Debug.LogWarning($"[DeathLootReporter] motor {m.GetInstanceID()} found but character/HealthManager is NULL — death-loot report inactive until rig rebuild");
+                _motor = null;
+                _character = null;
                 return;
             }
 
-            _motor = null;
-            _character = null;
+            _motor = m;
+            _character = m.GetComponentInParent<ICharacter>();
+            _health = _character?.HealthManager;
+            if (_health != null)
+            {
+                _health.Death += OnDeath;
+                _health.Respawn += OnRespawn;
+            }
+            else
+                Debug.LogWarning($"[DeathLootReporter] motor {m.GetInstanceID()} found but character/HealthManager is NULL — death-loot report inactive until rig rebuild");
         }
 
         private void Unsubscribe()

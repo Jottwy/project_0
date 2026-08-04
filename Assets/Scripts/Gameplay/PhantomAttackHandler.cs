@@ -527,34 +527,10 @@ namespace BackroomsSurvival.Gameplay
         }
 
         private IMovementControllerCC ResolveMovement()
-        {
-            var controllers = FindObjectsByType<PlayerMovementController>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < controllers.Length; i++)
-            {
-                if (controllers[i].GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-                return controllers[i];
-            }
-
-            return null;
-        }
+            => LocalPlayerLocator.Find<PlayerMovementController>();
 
         private CharacterControllerMotor ResolveMotor()
-        {
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
-            {
-                if (motors[i].GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-                return motors[i];
-            }
-
-            return null;
-        }
+            => LocalPlayerLocator.Find<CharacterControllerMotor>();
 
         // ── Lazily-built overlay UI (mirrors SanityEffects) ────────────────────────────────────────
 

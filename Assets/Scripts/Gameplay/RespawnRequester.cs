@@ -302,33 +302,27 @@ namespace BackroomsSurvival.Gameplay
 
             Unsubscribe();
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
+            var m = LocalPlayerLocator.Find<CharacterControllerMotor>();
+            if (m == null)
             {
-                var m = motors[i];
-                if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-
-                _motor = m;
-                var character = m.GetComponentInParent<ICharacter>();
-                _health = character?.HealthManager;
-                if (_health != null)
-                {
-                    _health.Respawn += OnRespawn;
-                    _health.Death += OnDeath;
-                }
-                else
-                {
-                    // With _motor set and _health null this component never retries (Update
-                    // early-outs) → a silent no-subscribe. Loud so it can never hide again.
-                    Debug.LogWarning($"[RespawnRequester] motor {m.GetInstanceID()} found but character/HealthManager is NULL — respawn bridge inactive until rig rebuild");
-                }
+                _motor = null;
                 return;
             }
 
-            _motor = null;
+            _motor = m;
+            var character = m.GetComponentInParent<ICharacter>();
+            _health = character?.HealthManager;
+            if (_health != null)
+            {
+                _health.Respawn += OnRespawn;
+                _health.Death += OnDeath;
+            }
+            else
+            {
+                // With _motor set and _health null this component never retries (Update
+                // early-outs) → a silent no-subscribe. Loud so it can never hide again.
+                Debug.LogWarning($"[RespawnRequester] motor {m.GetInstanceID()} found but character/HealthManager is NULL — respawn bridge inactive until rig rebuild");
+            }
         }
 
         private void Unsubscribe()

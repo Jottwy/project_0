@@ -352,16 +352,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_looterCharacter != null)
                 return _looterCharacter;
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-            for (int i = 0; i < motors.Length; i++)
-            {
-                var m = motors[i];
-                if (m.GetComponentInParent<BackroomsSurvival.Net.RemotePlayerManager>() != null)
-                    continue;
-
+            var m = LocalPlayerLocator.Find<CharacterControllerMotor>();
+            if (m != null)
                 _looterCharacter = m.GetComponentInParent<ICharacter>();
-                break;
-            }
             return _looterCharacter;
         }
 

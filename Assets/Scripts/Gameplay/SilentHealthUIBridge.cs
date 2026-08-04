@@ -93,17 +93,11 @@ namespace BackroomsSurvival.Gameplay
             if (_motor == null)
             {
                 _health = null;
-                var motors = FindObjectsByType<CharacterControllerMotor>(
-                    FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-                for (int i = 0; i < motors.Length; i++)
+                var m = LocalPlayerLocator.Find<CharacterControllerMotor>();
+                if (m != null)
                 {
-                    var m = motors[i];
-                    if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                        continue; // remote avatar, not the local player
-
                     _motor = m;
                     _health = m.GetComponentInParent<ICharacter>()?.HealthManager;
-                    break;
                 }
             }
 

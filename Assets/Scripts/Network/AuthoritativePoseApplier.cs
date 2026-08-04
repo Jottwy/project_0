@@ -307,27 +307,15 @@ namespace BackroomsSurvival.Net
         /// <summary>
         /// Finds the LOCAL motor live (mirror of PlayerPoseTransmitter.ResolveMotor). Unity's
         /// overloaded == reports a destroyed motor as null, so a rig rebuild forces a re-find;
-        /// remote avatars (under a RemotePlayerManager) are excluded.
+        /// remote avatars (under a RemotePlayerManager) are excluded — shared scan in
+        /// <see cref="LocalPlayerLocator.Find{T}"/>.
         /// </summary>
         private void ResolveMotor()
         {
             if (_motor != null)
                 return;
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
-            {
-                var m = motors[i];
-                if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-
-                _motor = m;
-                return;
-            }
-
-            _motor = null;
+            _motor = LocalPlayerLocator.Find<CharacterControllerMotor>();
         }
 
         private void OnDestroy()

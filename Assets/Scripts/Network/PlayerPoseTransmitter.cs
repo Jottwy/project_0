@@ -266,27 +266,15 @@ namespace BackroomsSurvival.Net
         /// <summary>
         /// Finds the LOCAL motor live. Revalidates the cache (Unity's overloaded == reports a
         /// destroyed motor as null, so a rig rebuild forces a re-find) and excludes remote
-        /// avatars (anything under a RemotePlayerManager hierarchy).
+        /// avatars (anything under a RemotePlayerManager hierarchy) — shared scan in
+        /// <see cref="LocalPlayerLocator.Find{T}"/>.
         /// </summary>
         private void ResolveMotor()
         {
             if (_motor != null)
                 return;
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
-            {
-                var m = motors[i];
-                if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-
-                _motor = m;
-                return;
-            }
-
-            _motor = null;
+            _motor = LocalPlayerLocator.Find<CharacterControllerMotor>();
         }
 
         /// <summary>

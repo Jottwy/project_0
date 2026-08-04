@@ -168,22 +168,16 @@ namespace BackroomsSurvival.Net
             if (_motor != null)
                 return;
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
+            var m = LocalPlayerLocator.Find<CharacterControllerMotor>();
+            if (m == null)
             {
-                var m = motors[i];
-                if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                    continue;
-
-                _motor = m;
-                _character = m.GetComponentInParent<ICharacter>();
+                _motor = null;
+                _character = null;
                 return;
             }
 
-            _motor = null;
-            _character = null;
+            _motor = m;
+            _character = m.GetComponentInParent<ICharacter>();
         }
 
         private void OnDestroy()

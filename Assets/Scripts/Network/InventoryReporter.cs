@@ -148,42 +148,36 @@ namespace BackroomsSurvival.Net
 
             Unsubscribe();
 
-            var motors = FindObjectsByType<CharacterControllerMotor>(
-                FindObjectsInactive.Exclude, FindObjectsSortMode.None);
-
-            for (int i = 0; i < motors.Length; i++)
+            var m = LocalPlayerLocator.Find<CharacterControllerMotor>();
+            if (m == null)
             {
-                var m = motors[i];
-                if (m.GetComponentInParent<RemotePlayerManager>() != null)
-                    continue; // remote avatar, not the local player
-
-                _motor = m;
-                _character = m.GetComponentInParent<ICharacter>();
-
-                var containers = _character?.Inventory?.Containers;
-                if (containers == null)
-                {
-                    Debug.LogWarning($"[InventoryReporter] motor {m.GetInstanceID()} found but inventory is NULL — inventory report inactive until rig rebuild");
-                    return;
-                }
-
-                for (int c = 0; c < containers.Count; c++)
-                {
-                    var container = containers[c];
-                    if (container == null)
-                        continue;
-                    container.SlotChanged += OnSlotChanged;
-                    _subscribed.Add(container);
-                }
-
-                // Baseline report so the backend knows the starting inventory without
-                // waiting for the first change (arms the debounce like a change would).
-                OnSlotChanged(default, default);
+                _motor = null;
+                _character = null;
                 return;
             }
 
-            _motor = null;
-            _character = null;
+            _motor = m;
+            _character = m.GetComponentInParent<ICharacter>();
+
+            var containers = _character?.Inventory?.Containers;
+            if (containers == null)
+            {
+                Debug.LogWarning($"[InventoryReporter] motor {m.GetInstanceID()} found but inventory is NULL — inventory report inactive until rig rebuild");
+                return;
+            }
+
+            for (int c = 0; c < containers.Count; c++)
+            {
+                var container = containers[c];
+                if (container == null)
+                    continue;
+                container.SlotChanged += OnSlotChanged;
+                _subscribed.Add(container);
+            }
+
+            // Baseline report so the backend knows the starting inventory without
+            // waiting for the first change (arms the debounce like a change would).
+            OnSlotChanged(default, default);
         }
 
         private void Unsubscribe()
