@@ -166,6 +166,11 @@ pub(super) const VOCAL_STALK_BREATH: u8 = 3;
 pub(super) const VOCAL_DISTANT_ANSWER: u8 = 4;
 /// After a kill. Falls the whole way, unhurried: it is done with you.
 pub(super) const VOCAL_SATED_ROAR: u8 = 5;
+/// ADR-050 — THE HUNGRY MOAN. Low, and it means something specific: this one has gone past
+/// shadowing you and is deciding when. It is the only reading the player gets of a state that is
+/// otherwise pure behaviour, and it is deliberately not a warning of an imminent charge — it says
+/// the animal in front of you is now the kind that eats, not that it moves in three seconds.
+pub(super) const VOCAL_HUNGRY_MOAN: u8 = 6;
 /// A noise heard from beyond this (m) answers with the long roar instead of the close-up grunt.
 /// Under it the creature is near enough that a grunt reads as "it is RIGHT THERE", which is scarier
 /// at that range than a roar would be.
@@ -190,14 +195,33 @@ pub(super) const PHANTOM_RAGE_IMPULSE: f32 = 2.5;
 /// than how fast it moves, or the speed tuning below becomes meaningless.
 pub(super) const PHANTOM_RAGE_SPEED: f32 = 1.15;
 
-// ── After a kill it is sated ─────────────────────────────────────────────────────────────────────
-/// How long a creature stays docile after killing someone (s). This is the breathing room a player
-/// gets on respawn, and the reason hiding and dying both lead somewhere instead of into a loop.
-pub(super) const PHANTOM_CALM_SECONDS: f32 = 60.0;
+// ── ADR-050: HUNGER, the slow state that governs everything else ─────────────────────────────────
+//
+// This replaces the post-kill `calm_for` timer, which was already half of this idea (60 s of
+// docility after eating) but as a one-shot rather than as a cycle. The problem it solves is bigger
+// than satiety, though: the creature used to decide whether to charge you with a per-tick dice
+// roll, and at 1.6 %/tick against a 25 s patience that roll ended ~98 % of all stalks. Nothing
+// about an encounter was legible, because nothing about it was a decision — "it hangs around a bit
+// and then attacks" was the literal implementation.
+//
+// Hunger is host-only and backend-only. It NEVER crosses the wire, not even derived: ADR-016 §1's
+// invariant holds, and the player is meant to read it by watching behaviour, not from a HUD.
+/// Seconds from fully sated to famished. Long on purpose — this is the creature's day, not a
+/// cooldown, and a player should be able to meet the same one twice and find it different.
+pub(super) const PHANTOM_HUNGER_DRAIN_SECONDS: f32 = 420.0;
+/// Above this it will NOT charge, whatever its patience does. It follows, watches and imitates.
+pub(super) const PHANTOM_HUNGER_SATED: f32 = 0.66;
+/// Below this it hunts in earnest.
+pub(super) const PHANTOM_HUNGER_HUNTING: f32 = 0.33;
 /// Patience multiplier while sated: it will shadow you for a very long time before committing.
 pub(super) const PHANTOM_CALM_PATIENCE: f32 = 3.0;
 /// Unpredictable-lunge multiplier while sated.
 pub(super) const PHANTOM_CALM_IMPULSE: f32 = 0.15;
+/// Separates the hunger draw from every other consumer of the seed, for the same reason
+/// `PHANTOM_TRAIT_SALT` and `PHANTOM_DRAW_SALT` exist: without it, how hungry a creature is would
+/// correlate with where it lives, and "the ones by the flooded stair are always starving" is a
+/// pattern players would learn long before anyone traced it to a shared hash stream.
+pub(super) const PHANTOM_HUNGER_SALT: u64 = 0x4A11_BEEF_5A7E_D000;
 /// The breath uses a SHORT shared cooldown: it is ambience, so it must not sit on the budget and
 /// swallow the scream of a lunge that starts two seconds later. It still cannot fire DURING one
 /// (the shared cooldown is what stops that), which is the asymmetry worth having.
@@ -356,6 +380,33 @@ pub(super) fn choose_victim_name_for(net: &NetworkManager, slot: usize) -> (Stri
         true => (net.local_name.clone(), false),
         false => (names[slot % names.len()].clone(), true),
     }
+}
+
+/// ADR-050 — how full a creature is when the world first simulates it, DERIVED and never rolled.
+///
+/// Same discipline as `PhantomTraits::derive` and for the same reason: two players who meet this
+/// creature must meet it at the same point of its cycle, and one that despawns because everybody
+/// walked away and comes back later has to still be itself rather than a fresh roll. A hand-placed
+/// debug phantom has no anchor, so it falls back to its id.
+///
+/// Spread over the WHOLE range, not centred: the population must contain animals at every point of
+/// the cycle at once. Seeding them all near one value would give the world synchronised "feeding
+/// hours", where every creature everywhere turns dangerous at the same time.
+pub(super) fn derive_hunger(world_seed: u64, anchor: Option<PhantomAnchor>, id: PeerId) -> f32 {
+    let key = match anchor {
+        Some(((bx, bz), layer, index)) => {
+            ((bx as i64 as u64) << 40)
+                ^ ((bz as i64 as u64) << 16)
+                ^ ((layer as u64) << 8)
+                ^ index as u64
+        }
+        None => id as u64,
+    };
+    let mut z = world_seed ^ PHANTOM_HUNGER_SALT ^ key.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f32 / (1u64 << 53) as f32
 }
 
 /// ADR-016 — nearest REAL target (non-phantom) to `from` in XZ: the host's own local player
@@ -919,9 +970,13 @@ pub(super) struct PhantomMover {
     /// Seconds of RAGE left. Set by hearing a shot — a gunshot does not merely attract this thing,
     /// it angers it — and much longer/harder when the shot went off close by.
     pub(super) enraged_for: f32,
-    /// Seconds of SATIETY left. Set by killing someone: it goes docile, which is the breathing room
-    /// the victim gets on respawn and what stops death from looping straight back into death.
-    pub(super) calm_for: f32,
+    /// ADR-050 — HOW FULL IT IS, 0.0 famished .. 1.0 just fed. The slow state that governs whether
+    /// this is an animal that follows you or one that eats you.
+    ///
+    /// Drains on its own clock and refills to 1.0 on a kill, which is the breathing room the victim
+    /// gets on respawn and what stops a death from looping straight back into another one — the job
+    /// `calm_for` used to do, now as a cycle instead of as a one-shot timer.
+    pub(super) hunger: f32,
     /// Seconds this lunge has spent with no clear line to its target. THE hiding mechanic: a sprint
     /// no longer ends on a timer, it ends when you break line of sight or outrun it.
     pub(super) sprint_blind_for: f32,
@@ -956,10 +1011,21 @@ impl PhantomMover {
         if self.enraged_for > 0.0 {
             p *= PHANTOM_RAGE_PATIENCE;
         }
-        if self.calm_for > 0.0 {
+        if self.is_sated() {
             p *= PHANTOM_CALM_PATIENCE;
         }
         p
+    }
+
+    /// ADR-050 — is it too full to hunt? The single question the whole redesign turns on, asked in
+    /// one place so no branch can drift into its own idea of "sated".
+    pub(super) fn is_sated(&self) -> bool {
+        self.hunger > PHANTOM_HUNGER_SATED
+    }
+
+    /// ADR-050 — is it hungry enough to be actively dangerous?
+    pub(super) fn is_hunting_hungry(&self) -> bool {
+        self.hunger < PHANTOM_HUNGER_HUNTING
     }
 
     /// Per-tick chance multiplier for an unpredictable lunge.
@@ -971,10 +1037,15 @@ impl PhantomMover {
         if self.enraged_for > 0.0 {
             k *= PHANTOM_RAGE_IMPULSE;
         }
-        if self.calm_for > 0.0 {
+        if self.is_sated() {
             k *= PHANTOM_CALM_IMPULSE;
         }
-        k
+        // ADR-050 point 4 — THE DICE STOP BEING THE ENGINE. Scaling by how empty it is means a full
+        // creature effectively never rolls a lunge and a starving one rolls as often as it used to.
+        // The roll goes from being the CAUSE of an attack to being the seasoning on one, which is
+        // the whole difference between "it hangs around and then attacks" and a decision the player
+        // can read coming.
+        k * (1.0 - self.hunger)
     }
 
     /// Movement MULTIPLIER — not a speed, despite sitting next to `search_speed`. Only rage moves
@@ -1462,7 +1533,7 @@ impl PhantomDriver {
             vocal_kind: 0,
             vocal_cooldown: 0.0,
             enraged_for: 0.0,
-            calm_for: 0.0,
+            hunger: derive_hunger(self.world_seed, anchor, id),
             sprint_blind_for: 0.0,
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
             // otherwise breathe in unison, which reads as one big thing rather than as several.
@@ -1537,8 +1608,6 @@ impl PhantomDriver {
                         true => PHANTOM_RAGE_SECONDS * 2.0,
                         false => PHANTOM_RAGE_SECONDS,
                     };
-                    // Rage burns off satiety: a full creature that gets shot at stops being full.
-                    self.movers[i].calm_for = 0.0;
                 }
 
                 // Far away it ANSWERS, and that answer is the whole point of the mechanic: you fire,
@@ -1774,8 +1843,12 @@ impl PhantomDriver {
             return;
         }
         // Unpredictable lunge mid-stare (scarier when imprevisible), scaled by how
-        // erratic this particular creature is.
-        if rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].impulse() {
+        // erratic this particular creature is. ADR-050 point 4: never while sated —
+        // the same gate STALK applies, or a full creature could still open with a
+        // charge and the whole hunger model would be invisible on first contact.
+        if !self.movers[i].is_sated()
+            && rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * self.movers[i].impulse()
+        {
             self.movers[i].enter_sprint();
             info!(
                 "MPTRACE step=PH_SPRINT event=phantom_sprint phantom_id={} note=from_spotted_random",
@@ -1830,6 +1903,21 @@ impl PhantomDriver {
                         dz / len * PHANTOM_KNOCKBACK_FORCE,
                     ),
                 });
+            }
+            // ADR-050 point 4: a SATED creature still gets bored of the game and still shoves you
+            // if you are close enough — but it does not follow the shove with a charge. It goes
+            // back to shadowing. Being knocked on your back by something that then simply resumes
+            // walking behind you is the single most unsettling thing this state can do.
+            if self.movers[i].is_sated() {
+                self.movers[i].state = PhantomState::Stalk;
+                self.movers[i].state_timer = 0.0;
+                self.movers[i].statue_cooldown = PHANTOM_STATUE_COOLDOWN;
+                info!(
+                    "MPTRACE step=PH_STALK event=phantom_statue_bored_sated phantom_id={} knockback={}",
+                    id,
+                    dist < PHANTOM_KNOCKBACK_RANGE
+                );
+                return;
             }
             self.movers[i].enter_sprint();
             info!(
@@ -2011,7 +2099,15 @@ impl PhantomDriver {
         if self.movers[i].breath_in <= 0.0 {
             self.movers[i].breath_in = PHANTOM_BREATH_MIN
                 + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN);
-            self.movers[i].try_vocalize_for(VOCAL_STALK_BREATH, PHANTOM_BREATH_COOLDOWN);
+            // ADR-050: the same slot carries a different sound depending on how empty it is. This
+            // is the ONLY channel through which hunger reaches the player, so it rides the ambient
+            // rhythm rather than announcing itself — you notice the corridor started sounding
+            // wrong, not that a state machine changed band.
+            let voice = match self.movers[i].is_hunting_hungry() {
+                true => VOCAL_HUNGRY_MOAN,
+                false => VOCAL_STALK_BREATH,
+            };
+            self.movers[i].try_vocalize_for(voice, PHANTOM_BREATH_COOLDOWN);
         }
 
         // STATUE (weeping angel): the player is looking at it (horizontal cone) and is
@@ -2032,8 +2128,14 @@ impl PhantomDriver {
             return;
         }
 
-        if self.movers[i].state_timer > self.movers[i].patience()
-            || rand::random::<f32>() < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse()
+        // ADR-050 point 4 — THE HARD GATE. A sated creature does not charge, and no amount of
+        // elapsed patience changes that: it shadows you, breathes, and waits to get hungry. This is
+        // the line that removes "it attacks out of nowhere", because when it finally does come, the
+        // reason existed for minutes beforehand and was visible in how it behaved.
+        if !self.movers[i].is_sated()
+            && (self.movers[i].state_timer > self.movers[i].patience()
+                || rand::random::<f32>()
+                    < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse())
         {
             self.movers[i].enter_sprint();
             info!(
@@ -2420,7 +2522,7 @@ impl PhantomDriver {
                 // back into a death and hiding never gets to matter.
                 //
                 // Rage does not survive a kill: whatever it was angry about is settled.
-                self.movers[i].calm_for = PHANTOM_CALM_SECONDS;
+                self.movers[i].hunger = 1.0;
                 self.movers[i].enraged_for = 0.0;
                 self.movers[i].state = PhantomState::Wander;
                 self.movers[i].state_timer = 0.0;
@@ -2631,7 +2733,12 @@ impl PhantomDriver {
         self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - ctx.dt).max(0.0);
         self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - ctx.dt).max(0.0);
         self.movers[i].enraged_for = (self.movers[i].enraged_for - ctx.dt).max(0.0);
-        self.movers[i].calm_for = (self.movers[i].calm_for - ctx.dt).max(0.0);
+        // ADR-050: hunger drains on its own slow clock, wherever the FSM happens to be. Ticked here
+        // with the other timers and not inside a state arm for the same reason they are: the gesture
+        // freeze skips the whole FSM, and a creature would otherwise stop getting hungry every time
+        // it mimed a pickup.
+        self.movers[i].hunger =
+            (self.movers[i].hunger - ctx.dt / PHANTOM_HUNGER_DRAIN_SECONDS).max(0.0);
 
         // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
         // are PURE THEATER — only the `animation` field. While active, freeze in place holding
