@@ -2983,6 +2983,47 @@ async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
 }
 
 #[tokio::test]
+async fn nothing_ever_wakes_up_in_your_face() {
+    // Reported from play-test: "cuando me salgo y vuelvo a entrar las entidades spawnean en mi
+    // cara". Reconnecting is the worst case — no creature is awake, so the whole neighbourhood is
+    // eligible on one tick — but walking into a fresh block has the same hole.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut driver = population_driver(42, 24);
+    // Dense, so the draw definitely has something anchored near wherever we stand.
+    driver.density_scale = 40.0;
+
+    // Sweep a grid of arrival points: any one of them could be the unlucky spot.
+    for gx in 0..6i32 {
+        for gz in 0..6i32 {
+            let here = Vec3::new(gx as f32 * 37.0, stand_on(0), gz as f32 * 37.0);
+            // Only the ones that wake up on THIS arrival are under test. One that woke legitimately
+            // far from a previous point and is now nearby is not a spawn in your face — it is a
+            // creature that walked, which is exactly what it is supposed to do.
+            let before: std::collections::HashSet<PeerId> =
+                driver.movers.iter().map(|m| m.id).collect();
+            driver.population_sync_in = 0.0; // force a reconcile on this arrival
+            driver.sync_population(&mut net, here, 0.1);
+
+            for m in driver.movers.iter().filter(|m| !before.contains(&m.id)) {
+                let Some(peer) = net.peers.get(&m.id) else {
+                    continue;
+                };
+                let d = here.distance_xz(Vec3::from_array(peer.position));
+                assert!(
+                    d >= PHANTOM_MIN_SPAWN_DISTANCE - 0.01,
+                    "a creature woke {d:.1} m from the player at {here:?} — floor is \
+                     {PHANTOM_MIN_SPAWN_DISTANCE}"
+                );
+            }
+        }
+    }
+    assert!(
+        !driver.movers.is_empty(),
+        "the floor must not empty the world — it only pushes spawns outward"
+    );
+}
+
+#[tokio::test]
 async fn a_sated_creature_never_charges_however_long_its_patience_ran() {
     // ADR-050 point 4 — THE GATE, and the single most important assertion of the redesign. This is
     // the exact setup of `phantom_sprints_after_patience_exceeded`, which lunges, with the ONE

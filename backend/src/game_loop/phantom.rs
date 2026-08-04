@@ -403,6 +403,18 @@ pub(super) const PHANTOM_ACTIVATE_RADIUS: f32 = 150.0;
 /// single threshold, a player standing near it would spawn and despawn the same creature every
 /// second, which on the client is an avatar blinking in and out at the edge of view distance.
 pub(super) const PHANTOM_DEACTIVATE_RADIUS: f32 = 200.0;
+/// ADR-050 — NOTHING WAKES UP THIS CLOSE TO A PLAYER (m).
+///
+/// Reported from play-test: "cuando me salgo y vuelvo a entrar en la partida las entidades
+/// spawnean en mi cara". The activation scan only had an upper bound, so on the first tick of a
+/// session — when no creature is awake yet and the whole neighbourhood is eligible at once —
+/// anything the draw had anchored a few metres from where you happen to reconnect materialised
+/// on top of you. Mid-session it is rarer but the same hole: walk into a fresh block and its
+/// creature can pop in at arm's length.
+///
+/// A creature ALREADY awake is unaffected; this gates waking only, so it can still walk right up
+/// to you. What it stops is one appearing there out of nothing.
+pub(super) const PHANTOM_MIN_SPAWN_DISTANCE: f32 = 35.0;
 /// Hard cap on simultaneously simulated phantoms. Nearest to a player wins when it binds.
 ///
 /// Sized against the chunk cache, not guessed: `GRID_CACHE_MAX_CHUNKS` (256) holds ~16 movers'
@@ -1459,7 +1471,14 @@ impl PhantomDriver {
                         // measured against the drawn spot rather than the block, or a corner of a
                         // 200 m block would count as "near" from 280 m away.
                         let d = p.distance_xz(Vec3::from_array(pos));
-                        if d <= PHANTOM_ACTIVATE_RADIUS {
+                        // ADR-050: a floor as well as a ceiling — see PHANTOM_MIN_SPAWN_DISTANCE.
+                        // Measured against EVERY player, not just this one, or a creature could
+                        // still wake in somebody else's face while being far enough from you.
+                        if d <= PHANTOM_ACTIVATE_RADIUS
+                            && players.iter().all(|q| {
+                                q.distance_xz(Vec3::from_array(pos)) >= PHANTOM_MIN_SPAWN_DISTANCE
+                            })
+                        {
                             candidates.push(PhantomCandidate {
                                 distance: d,
                                 anchor: key,
@@ -1488,6 +1507,17 @@ impl PhantomDriver {
                 .get(&id)
                 .map(|p| Vec3::from_array(p.position))
                 .unwrap_or_else(|| Vec3::from_array(cand.position));
+            // …and that snap is exactly why the minimum distance has to be re-checked HERE rather
+            // than only on the drawn spot: a draw sitting a safe 36 m away can be pulled to 28 m by
+            // the search for a walkable cell, which is back inside the radius this exists to keep
+            // clear. Cheaper to undo the spawn than to guess the resolver's margin.
+            if players
+                .iter()
+                .any(|p| p.distance_xz(spawn_pos) < PHANTOM_MIN_SPAWN_DISTANCE)
+            {
+                net.despawn_phantom(id);
+                continue;
+            }
             self.add_anchored(
                 id,
                 PHANTOM_INITIAL_HEADING,
