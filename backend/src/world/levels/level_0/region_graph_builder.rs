@@ -281,6 +281,27 @@ fn is_structure_accessible(t: StructureType) -> bool {
 }
 
 // ─── Spatial queries ───
+//
+// AUDIT BATTERY — LEE ESTO ANTES DE BORRAR NADA DE AQUÍ ABAJO.
+//
+// Parte de lo que sigue es producción y parte es la batería de auditoría del grafo:
+// consultas cuyos únicos llamadores HOY son los tests de `region_graph_builder/tests.rs`
+// (y, para `level0_proven_structure_connections`, también `generator/tests.rs`). NO son
+// código muerto: son la forma en que se asertan, semilla a semilla, los invariantes del
+// RegionGraph — orden ascendente, determinismo entre ejecuciones, simetría de
+// `is_connected`, conectividad desde el nodo starter y recuentos por `SpatialNodeKind`.
+//
+// El crate lleva un `#![allow(dead_code)]` global (`main.rs`), así que el compilador NUNCA
+// te va a avisar de que no tienen llamador de producción. De ahí esta nota.
+//
+// Alcanzables desde PRODUCCIÓN hoy (`world/mod.rs`, diagnóstico MPTRACE RG1/RG2/RG3 tras
+// generar el mundo): `audit_level0_region_graph`, `starter_node_id`, `reachable_from` y,
+// transitivamente (la llama `reachable_from`), `traversable_neighbors`.
+//
+// Sólo de auditoría hoy: las ocho marcadas `AUDIT-ONLY` más abajo. En la misma situación
+// está el wrapper `build_level0_region_graph` del principio del fichero: producción usa
+// `build_level0_region_graph_from_generated`, y la variante que sólo recibe la semilla
+// vuelve a generar el mundo entero, cosa que sólo hacen los tests.
 
 /// Returns all nodes directly reachable from `node_id` via a single traversable
 /// edge (undirected). Result is sorted. Returns empty Vec if the node does not
@@ -340,6 +361,9 @@ pub(crate) fn reachable_from(graph: &RegionGraph, start_id: SpatialNodeId) -> Ve
 
 /// Returns true if `from` and `to` are in the same traversable-edge connected
 /// component. Returns false if either node ID does not exist in the graph.
+///
+/// AUDIT-ONLY (ver la nota AUDIT BATTERY al inicio de esta sección): sus únicos llamadores
+/// hoy son los tests. No borrar en una limpieza de código muerto.
 pub(crate) fn is_connected(graph: &RegionGraph, from: SpatialNodeId, to: SpatialNodeId) -> bool {
     if graph.find_node(from).is_none() || graph.find_node(to).is_none() {
         return false;
@@ -374,9 +398,14 @@ pub(crate) fn starter_node_id(graph: &RegionGraph) -> Option<SpatialNodeId> {
     candidates.into_iter().next()
 }
 
-// ─── Level 0 node selection helpers ───
+// ─── Level 0 node selection helpers (AUDIT-ONLY: ver la nota AUDIT BATTERY arriba) ───
+//
+// Las seis funciones de esta sección no tienen llamador de producción hoy; existen para que
+// los tests puedan interrogar el grafo por criterio. Se mantienen a propósito.
 
 /// Returns all node IDs in the graph, sorted ascending.
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests. No borrar en una limpieza.
 pub(crate) fn level0_node_ids(graph: &RegionGraph) -> Vec<SpatialNodeId> {
     let mut ids: Vec<SpatialNodeId> = graph.nodes.iter().map(|n| n.id).collect();
     ids.sort_unstable();
@@ -384,6 +413,8 @@ pub(crate) fn level0_node_ids(graph: &RegionGraph) -> Vec<SpatialNodeId> {
 }
 
 /// Returns node IDs where `node.accessible == true`, sorted ascending.
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests. No borrar en una limpieza.
 pub(crate) fn level0_accessible_node_ids(graph: &RegionGraph) -> Vec<SpatialNodeId> {
     let mut ids: Vec<SpatialNodeId> = graph
         .nodes
@@ -397,6 +428,10 @@ pub(crate) fn level0_accessible_node_ids(graph: &RegionGraph) -> Vec<SpatialNode
 
 /// Returns all node IDs reachable from the Level 0 starter node via traversable
 /// edges, sorted ascending. Returns empty Vec if the starter node is missing.
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests. Ojo, no confundir con
+/// `reachable_from` + `starter_node_id`, que sí corren en producción (traza MPTRACE RG2):
+/// este wrapper es la versión que los tests usan para comprobar que ambos concuerdan.
 pub(crate) fn level0_reachable_node_ids_from_starter(graph: &RegionGraph) -> Vec<SpatialNodeId> {
     match starter_node_id(graph) {
         Some(starter) => reachable_from(graph, starter),
@@ -405,6 +440,8 @@ pub(crate) fn level0_reachable_node_ids_from_starter(graph: &RegionGraph) -> Vec
 }
 
 /// Returns node IDs whose `kind` matches `kind` exactly, sorted ascending.
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests. No borrar en una limpieza.
 pub(crate) fn level0_node_ids_by_kind(
     graph: &RegionGraph,
     kind: SpatialNodeKind,
@@ -421,6 +458,8 @@ pub(crate) fn level0_node_ids_by_kind(
 
 /// Returns node IDs for recognized safe structure types (`ManilaRoom`),
 /// sorted ascending.
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests. No borrar en una limpieza.
 pub(crate) fn level0_safe_node_ids(graph: &RegionGraph) -> Vec<SpatialNodeId> {
     let mut ids: Vec<SpatialNodeId> = graph
         .nodes
@@ -434,6 +473,8 @@ pub(crate) fn level0_safe_node_ids(graph: &RegionGraph) -> Vec<SpatialNodeId> {
 
 /// Returns node IDs for recognized danger structure types (`DangerPocket`),
 /// sorted ascending.
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests. No borrar en una limpieza.
 pub(crate) fn level0_danger_node_ids(graph: &RegionGraph) -> Vec<SpatialNodeId> {
     let mut ids: Vec<SpatialNodeId> = graph
         .nodes
@@ -508,6 +549,12 @@ pub(crate) fn level0_proven_structure_connections_from_generated(
 ///
 /// Wrapper: generates chunk data then delegates to
 /// [`level0_proven_structure_connections_from_generated`].
+///
+/// AUDIT-ONLY: sus únicos llamadores hoy son los tests (`region_graph_builder/tests.rs` y
+/// `generator/tests.rs`, que la importa vía el re-export `#[cfg(test)]` de `generator.rs`).
+/// Producción llama a `level0_proven_structure_connections_from_generated` con los chunks ya
+/// generados; este wrapper vuelve a generar el mundo entero, que es justo lo que los tests
+/// quieren para comprobar que ambas rutas coinciden. No borrar en una limpieza.
 pub(crate) fn level0_proven_structure_connections(world_seed: u64) -> Vec<(u32, u32)> {
     let generated = generate_initial_structure_chunks(world_seed);
     level0_proven_structure_connections_from_generated(&generated)
