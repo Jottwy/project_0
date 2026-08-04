@@ -40,9 +40,19 @@ def main():
     command = str((payload.get("tool_input") or {}).get("command", ""))
     for segment in re.split(r"[\r\n;&|]+", command):
         subcommand, args = git_command(tokens(segment))
-        if subcommand == "add" and any(arg in {"-A", "--all", ".", ":/"} for arg in args):
+        mass_add = any(
+            arg in {"-A", "--all", ".", ":/"}
+            or (arg.startswith("-") and not arg.startswith("--") and "A" in arg[1:])
+            for arg in args
+        )
+        commit_all = any(
+            arg == "--all"
+            or (arg.startswith("-") and not arg.startswith("--") and "a" in arg[1:])
+            for arg in args
+        )
+        if subcommand == "add" and mass_add:
             reason = "git add masivo puede incluir cambios de otras sesiones"
-        elif subcommand == "commit" and any(arg in {"-a", "--all"} for arg in args):
+        elif subcommand == "commit" and commit_all:
             reason = "git commit --all puede incluir cambios no revisados"
         else:
             continue

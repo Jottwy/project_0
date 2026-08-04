@@ -1,3 +1,6 @@
+> **DEPRECADO (2026-08-04).** Documento histórico. La fuente de verdad es
+> [`CLAUDE.md`](../../CLAUDE.md).
+
 # CLAUDE CODE — BACKROOMS SURVIVAL IMPLEMENTATION GUIDE
 
 > Feed this file to Claude Code as project context.

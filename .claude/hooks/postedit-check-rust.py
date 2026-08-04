@@ -48,7 +48,7 @@ def main():
         append_ledger(payload.get("session_id"), paths)
         return 0
 
-    repo_root = payload.get("cwd") or REPO_ROOT
+    repo_root = REPO_ROOT
     command = [
         "cargo", "+stable-x86_64-pc-windows-gnu", "fmt",
         "--manifest-path", "backend/Cargo.toml", "--all", "--", "--check",

@@ -5,11 +5,11 @@
 ## Fuente de verdad (leer en este orden al iniciar sesión)
 1. [STATE.md](STATE.md) — estado vivo: qué está hecho, qué sigue, riesgos abiertos. Léelo SIEMPRE primero.
 2. [ARCHITECTURE.md](ARCHITECTURE.md) — arquitectura validada, capas y contratos.
-3. [DECISIONS.md](DECISIONS.md) — registro ADR completo (ADR-001..049 + enmiendas). ES LEY, append-only.
+3. [DECISIONS.md](DECISIONS.md) — registro ADR completo. ES LEY, append-only.
 4. [CONVENTIONS.md](CONVENTIONS.md) — convenciones C# / Rust / protocolo / git.
 
 ## ADRs
-- [adr/](adr/) — ADRs nuevos a partir de hoy (stub o copia enlazando a `DECISIONS.md`). Los ADR-001..032 existentes siguen solo en `DECISIONS.md` (no movidos, ver [adr/README.md](adr/README.md)).
+- [adr/INDEX.md](adr/INDEX.md) — índice de los ficheros ADR individuales; el registro completo sigue en `DECISIONS.md`.
 
 ## Herramientas
 - [EDITOR-MENUS.md](EDITOR-MENUS.md) — qué hace cada una de las 22 entradas de menú del Editor,
@@ -36,3 +36,4 @@
 
 ## Archivo
 - [archive/](archive/) — documentos retirados, con cabecera que dice por qué. No son fuente de verdad.
+- [legacy/CLAUDE_CODE_INSTRUCTIONS.md](legacy/CLAUDE_CODE_INSTRUCTIONS.md) — guía inicial de implementación, deprecada y conservada solo como histórico.

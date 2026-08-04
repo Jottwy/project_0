@@ -58,16 +58,24 @@ def run_check(label, command, repo_root, timeout):
 def validate_csharp(paths, repo_root):
     project = os.path.join(repo_root, "Assembly-CSharp.csproj")
     dotnet = shutil.which("dotnet")
+    script = os.path.join(repo_root, "tools", "dev", "CompileCheckClient.sh")
+    bash = shutil.which("bash")
+    if bash and os.path.isfile(script):
+        run_check("C# compile-check", [bash, script], repo_root, 300)
+    elif dotnet and os.path.isfile(project):
+        print("[stop-validation] C# compile-check: Bash no disponible; usando dotnet build --no-restore.")
+        run_check("C# compile-check", [dotnet, "build", "Assembly-CSharp.csproj", "--no-restore"], repo_root, 300)
+    else:
+        print("[stop-validation] C# compile-check: OMITIDO; no hay Bash/script ni proyecto dotnet compatible.")
+
     if not dotnet or not os.path.isfile(project):
-        print("[stop-validation] C#: OMITIDO; no hay dotnet + Assembly-CSharp.csproj generado compatible.")
+        print("[stop-validation] C# dotnet format: OMITIDO; no hay dotnet + Assembly-CSharp.csproj generado compatible.")
         return
     relative = []
     for path in paths:
         absolute = path if os.path.isabs(path) else os.path.join(repo_root, path)
         relative.append(os.path.relpath(absolute, repo_root))
-    command = [dotnet, "format", "Assembly-CSharp.csproj", "--verify-no-changes"]
-    for path in relative:
-        command.extend(["--include", path])
+    command = [dotnet, "format", "Assembly-CSharp.csproj", "--verify-no-changes", "--include"] + relative
     run_check("C# dotnet format", command, repo_root, 300)
 
 
@@ -79,7 +87,7 @@ def main():
     if payload.get("stop_hook_active"):
         return 0
 
-    repo_root = payload.get("cwd") or REPO_ROOT
+    repo_root = os.environ.get("CLAUDE_HOOK_REPO_ROOT", REPO_ROOT)
     paths, ledger, _ = read_scope(payload, repo_root)
     try:
         rust_touched = any(path.endswith(".rs") for path in paths)

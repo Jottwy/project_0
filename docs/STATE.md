@@ -2,6 +2,11 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-04 (tooling — harness de desarrollo endurecido)
+- Hecho: staging masivo bloqueado; hooks por edición reducidos a formato Rust + ledger por sesión; Stop informativo y sensible a superficies; `/checkpoint` convertido en gate; settings locales ignorados; guía inicial movida a `docs/legacy/`; índice ADR reconciliado sin rangos hardcodeados. CI Rust omitido porque el repositorio no tiene remote GitHub configurado.
+- Validación: `cargo fmt --all -- --check` medido en 430 ms; guard/matchers y Stop probados con payloads JSON; fmt + Clippy `--all-targets -D warnings` limpios; `cargo test` 531 passed, 4 ignored, 0 failed.
+- Próximo paso de tooling: decidir si se mantienen separados o se consolidan los permisos locales de los cuatro directorios `.claude/`. El próximo paso funcional del proyecto permanece sin cambios más abajo.
+
 - Fecha: 2026-08-03 (mañana — **la tanda de comportamiento del robapieles, y dos regresiones propias cazadas en playtest**)
 - COMMITS: `845ff23`, `2be49bb`, `a559352`, `56d0021`(re-bake), `e95940d`, más los de audio (`8f3d298`, y el de los rugidos). Backend release desplegado en `Builds/Backend/` a las **3:48:54 (5.083.304 B)**. Wire sigue en **18** (ADR-048, sin cambios nuevos de protocolo). Backend `cargo test` **531/531** tres veces seguidas, clippy `--all-targets -D warnings` limpio, `fmt` limpio. Cliente Roslyn **0 errores en los cuatro ensamblados**.
 
