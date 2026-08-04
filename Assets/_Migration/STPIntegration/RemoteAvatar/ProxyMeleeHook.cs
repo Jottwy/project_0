@@ -155,19 +155,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_source != null)
                 return _source;
 
-            var go = new GameObject("ProxyMeleeWhoosh");
-            go.transform.SetParent(transform, false);
-            go.transform.localPosition = new Vector3(0f, 1.2f, 0f); // chest height, where the arc is
-
-            _source = go.AddComponent<AudioSource>();
-            _source.playOnAwake = false;
-            _source.loop = false;
-            _source.spatialBlend = 1f;
-            _source.dopplerLevel = 0f;
-            ProxyAudioCurves.ApplyHardCutoff(_source, _minDistance, _maxDistance);
-
-            var audio = AudioManager.Instance;
-            _source.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            _source = ProxyAudioSourceFactory.CreateHardCutoffSource(transform, "ProxyMeleeWhoosh",
+                _minDistance, _maxDistance,
+                new Vector3(0f, 1.2f, 0f)); // chest height, where the arc is
             return _source;
         }
 

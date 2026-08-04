@@ -384,16 +384,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             float min = revealed ? _revealedMinDistance : _minDistance;
             float max = revealed ? _revealedMaxDistance : _maxDistance;
 
-            if (_hardCutoff)
-            {
-                ProxyAudioCurves.ApplyHardCutoff(src, min, max);
-            }
-            else
-            {
-                src.rolloffMode = _rolloff;
-                src.minDistance = min;
-                src.maxDistance = max;
-            }
+            ProxyAudioSourceFactory.ApplyRolloff(src, _hardCutoff, _rolloff, min, max);
             if (!revealed)
                 src.pitch = 1f; // the disguise never pitches its steps
         }
@@ -403,28 +394,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_source != null)
                 return _source;
 
-            var go = new GameObject("ProxyFootstep");
-            go.transform.SetParent(transform, false);
-
-            _source = go.AddComponent<AudioSource>();
-            _source.playOnAwake = false;
-            _source.loop = false;
-            _source.spatialBlend = 1f;
-            _source.dopplerLevel = 0f;
-
-            if (_hardCutoff)
-            {
-                ProxyAudioCurves.ApplyHardCutoff(_source, _minDistance, _maxDistance);
-            }
-            else
-            {
-                _source.rolloffMode = _rolloff;
-                _source.minDistance = _minDistance;
-                _source.maxDistance = _maxDistance;
-            }
-
-            var audio = AudioManager.Instance;
-            _source.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            _source = ProxyAudioSourceFactory.CreateChildSource(transform, "ProxyFootstep");
+            ProxyAudioSourceFactory.ApplyRolloff(_source, _hardCutoff, _rolloff,
+                _minDistance, _maxDistance);
+            ProxyAudioSourceFactory.RouteToSfx(_source);
             return _source;
         }
 

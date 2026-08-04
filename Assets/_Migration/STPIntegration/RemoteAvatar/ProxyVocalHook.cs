@@ -218,19 +218,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             // Parented to the proxy so the voice tracks the thing that made it: a cry that hangs
             // where the creature WAS points the player at empty corridor.
-            var go = new GameObject("PhantomVoice");
-            go.transform.SetParent(transform, false);
-
-            _source = go.AddComponent<AudioSource>();
-            _source.playOnAwake = false;
-            _source.loop = false;
-            _source.spatialBlend = 1f; // at 0 it would be dead-centre at any distance
-            _source.dopplerLevel = 0f;
-            ProxyAudioCurves.ApplyHardCutoff(_source, _minDistance, _maxDistance);
-
-            // No manager (a bare test scene) → still audible, just unmixed. Never an exception.
-            var audio = AudioManager.Instance;
-            _source.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            _source = ProxyAudioSourceFactory.CreateHardCutoffSource(transform, "PhantomVoice",
+                _minDistance, _maxDistance);
             return _source;
         }
 

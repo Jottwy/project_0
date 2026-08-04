@@ -246,16 +246,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             src.loop = false;
             src.spatialBlend = 1f; // fully 3D; at 0 the shot would be heard dead-centre at any distance
 
-            if (_audioSet.hardCutoff)
-            {
-                ProxyAudioCurves.ApplyHardCutoff(src, minDistance, _audioSet.maxDistance);
-            }
-            else
-            {
-                src.rolloffMode = _audioSet.rolloff;
-                src.minDistance = minDistance;
-                src.maxDistance = _audioSet.maxDistance;
-            }
+            ProxyAudioSourceFactory.ApplyRolloff(src, _audioSet.hardCutoff, _audioSet.rolloff,
+                minDistance, _audioSet.maxDistance);
 
             src.spread = _audioSet.spread;
             src.dopplerLevel = 0f; // a gunshot is an impulse; doppler on it is pure artifact

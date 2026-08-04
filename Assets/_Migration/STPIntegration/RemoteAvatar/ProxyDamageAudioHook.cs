@@ -118,19 +118,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_source != null)
                 return _source;
 
-            var go = new GameObject("ProxyDamageVoice");
-            go.transform.SetParent(transform, false);
-            go.transform.localPosition = new Vector3(0f, 1.5f, 0f); // roughly head height, not the feet
-
-            _source = go.AddComponent<AudioSource>();
-            _source.playOnAwake = false;
-            _source.loop = false;
-            _source.spatialBlend = 1f;
-            _source.dopplerLevel = 0f;
-            ProxyAudioCurves.ApplyHardCutoff(_source, _minDistance, _maxDistance);
-
-            var audio = AudioManager.Instance;
-            _source.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            _source = ProxyAudioSourceFactory.CreateHardCutoffSource(transform, "ProxyDamageVoice",
+                _minDistance, _maxDistance,
+                new Vector3(0f, 1.5f, 0f)); // roughly head height, not the feet
             return _source;
         }
 

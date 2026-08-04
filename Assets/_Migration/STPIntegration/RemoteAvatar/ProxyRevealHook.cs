@@ -262,19 +262,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             // Parented to the proxy so the scream tracks the thing that made it: a shriek that hangs
             // where the lunge STARTED points the player at empty corridor.
-            var go = new GameObject("PhantomScream");
-            go.transform.SetParent(transform, false);
-
-            _screamSource = go.AddComponent<AudioSource>();
-            _screamSource.playOnAwake = false;
-            _screamSource.loop = false;
-            _screamSource.spatialBlend = 1f; // at 0 it would be dead-centre at any distance
-            _screamSource.dopplerLevel = 0f;
-            ProxyAudioCurves.ApplyHardCutoff(_screamSource, _screamMinDistance, _screamMaxDistance);
-
-            // No manager (a bare test scene) → still audible, just unmixed. Never an exception.
-            var audio = AudioManager.Instance;
-            _screamSource.outputAudioMixerGroup = audio != null ? audio.GetMixerGroup(AudioChannel.Sfx) : null;
+            _screamSource = ProxyAudioSourceFactory.CreateHardCutoffSource(transform, "PhantomScream",
+                _screamMinDistance, _screamMaxDistance);
             return _screamSource;
         }
 
