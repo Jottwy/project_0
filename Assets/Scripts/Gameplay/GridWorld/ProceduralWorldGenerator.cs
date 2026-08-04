@@ -48,16 +48,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
     public sealed class ChunkStreamer : MonoBehaviour
     {
-        public long      seed       = 42;
         public int       layerCount = 4;
         public int       viewRadius = 1;
         public Transform playerTransform;
-
-        [Header("Layer configs (0..3)")]
-        // Fase 4.2: vestigial. The WorldGenerator that consumed these was removed;
-        // ChunkStreamer no longer reads layerConfigs, but GridTestWorld still assigns
-        // it, so the field (and the LayerConfig type) are retained for that wiring.
-        public LayerConfig[] layerConfigs = new LayerConfig[4];
 
         [Header("Fase 5A — per-layer visuals + lighting (set by GridTestWorld)")]
         public LayerVisualConfig[] layerVisuals = new LayerVisualConfig[4];
@@ -138,6 +131,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private readonly HashSet<(int, int, int)> _desired = new HashSet<(int, int, int)>();
         private readonly List<(int, int, int)> _drainScratch = new List<(int, int, int)>();
 
+        // Chunk side in metres (50 m). Same quantity as GridChunkBuilder's
+        // `float span = Tiles * Ts;` (GridChunkBuilder.cs:949): 10 tiles × 5 m. Both
+        // derive from GridConstants, which mirrors backend/src/world/grid_gen/cell.rs,
+        // so neither can drift without the Rust contract drifting first.
         private const float Side = GridConstants.ChunkCells * GridConstants.CellSize;
 
         private void Start()
@@ -419,7 +416,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Fase 5A: light here (layer + coords known); GridTestWorld no longer lights.
             if (lighting != null && cfg != null && mats != null)
             {
-                int tiles = GridConstants.ChunkCells / 2;
+                // Tile count and light height are the BUILDER's geometry, not ours:
+                // TilesPerChunk is GridChunkBuilder.Tiles (= ChunkCells / 2), and
+                // CellHeight * 2f is the same expression as its WallPrefabHeight
+                // (GridChunkBuilder.cs:109, 2f * Ch). The height is left as the literal
+                // expression on purpose — aliasing it would move a number for no gain.
+                int tiles = GridChunkBuilder.TilesPerChunk;
                 lighting.PlaceFluorescentLights(go.transform, tiles, tiles,
                     GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
                     cfg, mats.lamp, ccx, ccz, layer, walls);

@@ -110,6 +110,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const int Size = GridConstants.ChunkCells;
         // A render tile is a 2×2 block of cells → 10×10 tiles per chunk.
         private const int Tiles = Size / 2;
+        // Public alias of Tiles: the single source of truth for "how many render tiles fit
+        // along a chunk side", so callers outside the builder (ChunkStreamer, when it lights
+        // a chunk) stop re-deriving ChunkCells / 2 on their own. Same compile-time value;
+        // every internal use keeps reading Tiles, untouched.
+        public const int TilesPerChunk = Tiles;
 
         // Tile-edge flags: which side of a tile a wall or lip sits on.
         public const byte EdgeSouth = 1; // -z

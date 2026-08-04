@@ -32,8 +32,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public int viewRadius = 1;
 
         // DEPRECATED (Fase 4.2): LayerConfig drove the removed client-side WorldGenerator
-        // and no longer affects anything. Kept only so existing scene/prefab wiring that
-        // references these fields doesn't break. Use layerVisualConfigs (Fase 5A) instead.
+        // and no longer affects anything. NO code reads these four fields any more (the
+        // ChunkStreamer.layerConfigs they used to feed is gone); they are kept only so the
+        // values already serialized in BackroomsWithSTP.unity and in the two GridTestWorld
+        // prefabs are not lost. Use layerVisualConfigs (Fase 5A) instead.
         [Header("Layer Configs (DEPRECATED — no effect; see Layer Visuals)")]
         public LayerConfig layerConfig0;
         public LayerConfig layerConfig1;
@@ -148,13 +150,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             streamerGo.transform.SetParent(transform, false);
 
             _streamer = streamerGo.AddComponent<ChunkStreamer>();
-            _streamer.seed       = seed;
             _streamer.layerCount = onlyLayer >= 0 ? 1 : layerCount;
             _streamer.viewRadius = viewRadius;
-            _streamer.layerConfigs = new LayerConfig[]
-            {
-                layerConfig0, layerConfig1, layerConfig2, layerConfig3
-            };
             _streamer.playerTransform = player;
             // Fase 5A: per-layer visuals + lighting are driven by the streamer.
             _streamer.layerVisuals = ResolveLayerVisuals();
