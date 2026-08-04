@@ -2542,96 +2542,30 @@ impl PhantomDriver {
                 layer: current_layer,
                 target,
             };
+            // One context for the whole dispatch. Built here, inside the loop, and NOT above
+            // it: the seal pass and the step-cost trace below still read `net` directly, so the
+            // reborrow has to end with the iteration.
+            let mut ctx = TickCtx {
+                net: &mut *net,
+                dt,
+                now,
+                target_speeds: &target_speeds,
+                host_crouch: host_player_crouch,
+            };
+            // Each arm is documented on its own method; the transitions between them are the
+            // `state = …` writes inside those methods, not anything this dispatch decides.
             match state {
-                // ── WANDER: erratic patrol + detection. Keeps the slice-4 fake-pickup imitation,
-                // the metronomic stare tell, organic "look at a wall" pauses, and the play-test
-                // observation leash. Detecting the player (radius + cone) → SPOTTED. ──
-                PhantomState::Wander => self.tick_wander(
-                    mt,
-                    &mut TickCtx {
-                        net: &mut *net,
-                        dt,
-                        now,
-                        target_speeds: &target_speeds,
-                        host_crouch: host_player_crouch,
-                    },
-                ),
-
-                // ── SPOTTED: frozen stare. Faces the player; exits to STALK once the stare window
-                // elapses (deterministic), may unpredictably SPRINT mid-stare; loses the player
-                // (past DETECT_RADIUS*1.5) → WANDER. ──
-                PhantomState::Spotted => self.tick_spotted(
-                    mt,
-                    &mut TickCtx {
-                        net: &mut *net,
-                        dt,
-                        now,
-                        target_speeds: &target_speeds,
-                        host_crouch: host_player_crouch,
-                    },
-                ),
-
-                // ── STALK: shadow the player at a held gap. Patience (or an unpredictable roll) →
-                // SPRINT; lost past LOSE_RADIUS → WANDER (slice 3b: SEARCH the last-known pos). ──
-                PhantomState::Stalk => self.tick_stalk(
-                    mt,
-                    &mut TickCtx {
-                        net: &mut *net,
-                        dt,
-                        now,
-                        target_speeds: &target_speeds,
-                        host_crouch: host_player_crouch,
-                    },
-                ),
-
-                // ── STATUE: weeping-angel freeze. Dead still while the player keeps looking. They
-                // look away → STALK (resumes the hunt, never back to WANDER); tires after
-                // STATUE_MAX → SPRINT; loses the player past LOSE_RADIUS → WANDER. Never reached
-                // mid-SPRINT (a committed lunge is not frozen). ──
-                PhantomState::Statue => self.tick_statue(
-                    mt,
-                    &mut TickCtx {
-                        net: &mut *net,
-                        dt,
-                        now,
-                        target_speeds: &target_speeds,
-                        host_crouch: host_player_crouch,
-                    },
-                ),
-
-                // ── SPRINT: ramp WALK→SPRINT straight at the player. Point-blank → anim-only
-                // "attack" (ADR-016 invariant) then STALK; lost past LOSE_RADIUS*1.2 → WANDER
-                // (slice 3b: SEARCH — it doesn't give up easily mid-lunge). ──
-                PhantomState::Sprint => self.tick_sprint(
-                    mt,
-                    &mut TickCtx {
-                        net: &mut *net,
-                        dt,
-                        now,
-                        target_speeds: &target_speeds,
-                        host_crouch: host_player_crouch,
-                    },
-                ),
-
-                // ── SEARCH (ADR-040 Fase 4): it lost you and walks, navigating, to the last place
-                // it saw you. Slower than a walk — it is looking, not commuting. Re-acquiring you
-                // resumes the hunt; running out of patience returns it to WANDER and it FORGETS,
-                // which is what makes hiding a real escape and not just a delay. ──
-                PhantomState::Search => self.tick_search(
-                    mt,
-                    &mut TickCtx {
-                        net: &mut *net,
-                        dt,
-                        now,
-                        target_speeds: &target_speeds,
-                        host_crouch: host_player_crouch,
-                    },
-                ),
+                PhantomState::Wander => self.tick_wander(mt, &mut ctx),
+                PhantomState::Spotted => self.tick_spotted(mt, &mut ctx),
+                PhantomState::Stalk => self.tick_stalk(mt, &mut ctx),
+                PhantomState::Statue => self.tick_statue(mt, &mut ctx),
+                PhantomState::Sprint => self.tick_sprint(mt, &mut ctx),
+                PhantomState::Search => self.tick_search(mt, &mut ctx),
             }
         }
 
         // ADR-038 — seal the cosmetic real-form flag from the POST-tick state, in ONE place. The
-        // FSM above has several early `continue`s (lost target, point-blank strike, gesture
+        // state methods above have several early exits (lost target, point-blank strike, gesture
         // freeze), so a per-branch seal would silently miss paths and leave a stale disguise on
         // exactly the frames that matter. Derived level, not a latch: the flag falls back to false
         // on its own when the phantom returns to WANDER/STALK, so the disguise recomposes without
@@ -2640,8 +2574,8 @@ impl PhantomDriver {
         // phantom (`.claude/rules/pose-relay-wire-rust.md`, step 6).
         //
         // ADR-048 seals the VOICE in the same place and for the same reason. `hear_noises` runs
-        // before the FSM and the FSM itself has many early `continue`s, so a write at the decision
-        // site would miss paths; staging it and sealing here cannot.
+        // before the FSM and the state methods themselves have many early exits, so a write at the
+        // decision site would miss paths; staging it and sealing here cannot.
         for m in &mut self.movers {
             if let Some(peer) = net.peers.get_mut(&m.id) {
                 peer.revealed = phantom_reveals(m.state);
