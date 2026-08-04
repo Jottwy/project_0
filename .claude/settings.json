@@ -6,27 +6,40 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/guard-decisions-write.py"
+            "command": "python .claude/hooks/guard-decisions-write.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python .claude/hooks/pretool-git-staging-guard.py",
+            "timeout": 5
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Edit",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/postedit-check-csharp.py"
+            "command": "python .claude/hooks/postedit-check-csharp.py",
+            "timeout": 5
           }
         ]
       },
       {
-        "matcher": "Edit",
+        "matcher": "Edit|Write",
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/postedit-check-rust.py"
+            "command": "python .claude/hooks/postedit-check-rust.py",
+            "timeout": 120
           }
         ]
       }
@@ -36,7 +49,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python .claude/hooks/stop-progress-reminder.py"
+            "command": "python .claude/hooks/stop-progress-reminder.py",
+            "timeout": 600
           }
         ]
       }

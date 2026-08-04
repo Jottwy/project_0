@@ -1,16 +1,34 @@
 #!/usr/bin/env python3
-"""PostToolUse check, lado C# del piloto ADR-024. Corre dotnet format en modo
-verificacion (no reescribe) solo sobre el archivo tocado, solo si cae dentro
-de Assets/_Migration/STPIntegration/RemoteAvatar/. Fuera de ese alcance,
-no-op silencioso. Cero llamadas a modelo.
-"""
+"""Record edited C# paths; complete validation runs at Stop/checkpoint."""
 import json
 import os
-import subprocess
 import sys
 
-SCOPE = "Assets/_Migration/STPIntegration/RemoteAvatar/"
-CSPROJ = "Assembly-CSharp.csproj"
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+LEDGER_ROOT = os.environ.get("CLAUDE_HOOK_LEDGER_ROOT", REPO_ROOT)
+
+
+def edited_paths(tool_input):
+    paths = []
+    if tool_input.get("file_path"):
+        paths.append(tool_input["file_path"])
+    for edit in tool_input.get("edits", []) or []:
+        if edit.get("file_path"):
+            paths.append(edit["file_path"])
+    return [str(path).replace("\\", "/") for path in paths]
+
+
+def append_ledger(session_id, paths):
+    if not session_id:
+        return
+    safe_id = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in str(session_id))
+    ledger = os.path.join(LEDGER_ROOT, ".claude", f".session-touched-{safe_id}")
+    try:
+        with open(ledger, "a", encoding="utf-8") as handle:
+            for path in paths:
+                handle.write(path + "\n")
+    except OSError as error:
+        sys.stderr.write(f"[postedit-check-csharp] aviso: no se pudo escribir el ledger: {error}\n")
 
 
 def main():
@@ -18,40 +36,19 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:
         return 0
-
-    if payload.get("tool_name") != "Edit":
+    if payload.get("tool_name") not in {"Edit", "Write"}:
         return 0
 
-    tool_input = payload.get("tool_input", {}) or {}
-    file_path = str(tool_input.get("file_path", "")).replace("\\", "/")
-
-    if SCOPE not in file_path or not file_path.endswith(".cs"):
-        return 0  # fuera del piloto, no-op
-
-    repo_root = payload.get("cwd") or os.getcwd()
-    if not os.path.isfile(os.path.join(repo_root, CSPROJ)):
-        sys.stderr.write(f"[postedit-check-csharp] aviso: no encuentro {CSPROJ} en {repo_root}, salto el check.\n")
-        return 0
-
-    rel_path = file_path
-    result = subprocess.run(
-        ["dotnet", "format", CSPROJ, "--verify-no-changes", "--include", rel_path],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-
-    if result.returncode != 0:
-        sys.stderr.write(
-            f"[postedit-check-csharp] dotnet format detecto problemas en {rel_path}:\n"
-            f"{result.stdout}\n{result.stderr}\n"
-            "Corrige el formato (o corre `dotnet format Assembly-CSharp.csproj --include <archivo>` sin --verify-no-changes) antes de cerrar.\n"
-        )
-        return 2
-
+    paths = edited_paths(payload.get("tool_input", {}) or {})
+    if paths:
+        append_ledger(payload.get("session_id"), paths)
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        status = main()
+    except Exception as error:
+        sys.stderr.write(f"[postedit-check-csharp] aviso inesperado; se permite la edicion: {error}\n")
+        status = 0
+    sys.exit(2 if status == 2 else 0)

@@ -74,4 +74,9 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        status = main()
+    except Exception as error:
+        sys.stderr.write(f"[guard-decisions-write] aviso inesperado; operacion permitida: {error}\n")
+        status = 0
+    sys.exit(2 if status == 2 else 0)
