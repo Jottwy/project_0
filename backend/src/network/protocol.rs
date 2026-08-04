@@ -125,6 +125,19 @@ pub enum PacketType {
 }
 
 impl PacketType {
+    /// Mitad INVERSA del contrato de wire: `PacketPayload::type_code()` escribe el opcode,
+    /// esto lo lee de vuelta.
+    ///
+    /// NO es codigo muerto pese a tener CERO llamadores de produccion. El crate lleva un
+    /// `#![allow(dead_code)]` global (main.rs), asi que nada avisa, y sus unicos consumidores
+    /// son los centinelas de opcode: `stp_demolish_request_round_trip` fija 0x1D (ADR-037) y
+    /// `the_voice_opcode_belongs_to_voice_and_to_nothing_else` fija que 0x50 es VoiceFrame
+    /// (ADR-046) y que 0x4F sigue libre (ADR-047). Borrar esta funcion en una limpieza de
+    /// codigo muerto se lleva por delante esas garantias.
+    ///
+    /// Los brazos de abajo son una tabla paralela a los discriminantes de `PacketType` y a los
+    /// de `PacketPayload::type_code()`. Nada obliga a que las tres coincidan; hoy coinciden.
+    /// Un opcode nuevo se anade en LAS TRES.
     pub fn from_u16(v: u16) -> Option<Self> {
         match v {
             0x00 => Some(Self::Discover),
