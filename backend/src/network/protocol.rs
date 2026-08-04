@@ -113,9 +113,13 @@ pub enum PacketType {
     PvpHitRejected = 0x4C,
     // ADR-047: the robapieles reaches across backends. 0x4D carries a phantom's blow to the
     // backend that owns the victim's health; 0x4E carries a joiner's gunshot back to the host,
-    // the only backend that simulates phantoms. 0x4F is left free; 0x50 is reserved (ADR-046).
+    // the only backend that simulates phantoms. 0x50 is reserved (ADR-046).
+    //
+    // ADR-050 claims 0x4F, the slot ADR-047 deliberately stopped short of: a joiner's struggle out
+    // of a grab, travelling the same joiner→host direction and for the same reason as 0x4E.
     PhantomAttackGrant = 0x4D,
     NoiseReport = 0x4E,
+    StruggleReport = 0x4F,
     // ADR-046: proximity voice. Claims the slot ADR-047 reserved above.
     VoiceFrame = 0x50,
     // Reliability (0xF0-0xFF)
@@ -192,6 +196,7 @@ impl PacketType {
             0x4C => Some(Self::PvpHitRejected),
             0x4D => Some(Self::PhantomAttackGrant),
             0x4E => Some(Self::NoiseReport),
+            0x4F => Some(Self::StruggleReport),
             0x50 => Some(Self::VoiceFrame),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
@@ -708,6 +713,17 @@ pub enum PacketPayload {
         position: [f32; 3],
         loudness: f32,
     },
+    /// ADR-050 point 9 — a joiner broke out of a grab. Travels joiner→host, like `NoiseReport` and
+    /// for the same reason: the host is the only backend that simulates phantoms.
+    ///
+    /// CARRIES NOTHING, and that is the security property rather than an oversight. The victim is
+    /// the sender, which the transport already knows, so there is no field to forge: the worst a
+    /// modified client can do is claim to have escaped a grab that does not exist, which drains
+    /// into an empty set. Compare `NoiseReport`, which does carry a position and needs clamping.
+    ///
+    /// RELIABLE, unlike the noise: a dropped noise self-heals on the next shot, a dropped struggle
+    /// is a death the player earned their way out of.
+    StruggleReport,
 
     /// ADR-046 — one encoded voice frame, relayed by the host on behalf of the speaker
     /// (`send_unreliable_as`, the same ADR-015 mechanism the pose relay uses).
@@ -792,6 +808,7 @@ impl PacketPayload {
             Self::PvpHitRejected { .. } => PacketType::PvpHitRejected as u16,
             Self::PhantomAttackGrant { .. } => PacketType::PhantomAttackGrant as u16,
             Self::NoiseReport { .. } => PacketType::NoiseReport as u16,
+            Self::StruggleReport => PacketType::StruggleReport as u16,
             Self::VoiceFrame { .. } => PacketType::VoiceFrame as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
@@ -1418,9 +1435,18 @@ mod tests {
             0x50,
             "el payload y el opcode no pueden discrepar"
         );
-        assert!(
-            PacketType::from_u16(0x4F).is_none(),
-            "0x4F sigue libre: ADR-047 se detuvo en 0x4E a proposito"
+        // ADR-050 reclama 0x4F, el hueco en el que ADR-047 se detuvo a proposito. Lo que este test
+        // protege sigue siendo lo mismo: que 0x4F y 0x50 son cosas DISTINTAS y ninguna invade a la
+        // otra. Que 0x4F dejara de estar libre siempre fue el final previsto de esa reserva.
+        assert_eq!(
+            PacketType::from_u16(0x4F),
+            Some(PacketType::StruggleReport),
+            "0x4F es StruggleReport (ADR-050)"
+        );
+        assert_eq!(
+            PacketPayload::StruggleReport.type_code(),
+            0x4F,
+            "el payload y el opcode no pueden discrepar"
         );
     }
 

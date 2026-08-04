@@ -843,6 +843,12 @@ pub async fn run(
                             PhantomAttackKind::Hit(dmg) => (0u8, dmg, [0.0, 0.0]),
                             PhantomAttackKind::Kill => (1u8, 0.0, [0.0, 0.0]),
                             PhantomAttackKind::Knockback(dx, dz) => (2u8, 0.0, [dx, dz]),
+                            // ADR-050 point 9. The grab window rides `damage`, which is the only
+                            // spare f32 in the payload — no layout change, per ADR-047's spare-kind
+                            // clause. It is NOT damage and the victim side must not apply it as
+                            // such; kind 3 has its own arm there.
+                            PhantomAttackKind::GrabStart(window) => (3u8, window, [0.0, 0.0]),
+                            PhantomAttackKind::GrabRelease => (4u8, 0.0, [0.0, 0.0]),
                         };
                         let grant = PacketPayload::PhantomAttackGrant {
                             request_id,
@@ -892,6 +898,21 @@ pub async fn run(
                             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                                 event_type: "phantom_knockback".into(),
                                 data: serde_json::json!({ "dx": dx, "dz": dz }),
+                            }));
+                        }
+                        // ADR-050 point 9: NO health is touched by either of these. The grab is a
+                        // window, not a blow — the kill that may follow arrives as a separate
+                        // `Kill` from `tick_grab` once the timer expires.
+                        PhantomAttackKind::GrabStart(window) => {
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_grab_start".into(),
+                                data: serde_json::json!({ "window": window }),
+                            }));
+                        }
+                        PhantomAttackKind::GrabRelease => {
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_grab_release".into(),
+                                data: serde_json::json!({}),
                             }));
                         }
                     }
@@ -1715,6 +1736,28 @@ async fn handle_network_event(
                         data: serde_json::json!({ "dx": impulse[0], "dz": impulse[1] }),
                     }));
                 }
+                // ADR-050 point 9. These MUST be explicit arms rather than falling through to the
+                // `_` below, which treats an unknown kind as a hit: the grab window rides `damage`,
+                // so kind 3 would land 2.5 points of damage on the victim instead of opening the
+                // escape window. Neither touches health.
+                3 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=grab_start window={damage:.1} request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_grab_start".into(),
+                        data: serde_json::json!({ "window": damage }),
+                    }));
+                }
+                4 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=grab_release request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_grab_release".into(),
+                        data: serde_json::json!({}),
+                    }));
+                }
                 _ => {
                     // Unknown kinds decode as a plain hit rather than being dropped: a future
                     // sender adding one should still land damage on an older victim backend.
@@ -1735,6 +1778,22 @@ async fn handle_network_event(
                     }));
                 }
             }
+        }
+
+        NetworkEvent::StruggleReported { victim } => {
+            // Same host-only gate as the noise below, and for the same reason: nothing on a joiner
+            // simulates a phantom, so nothing there can release one.
+            if !net.is_host {
+                warn!(
+                    "MPTRACE step=PH_GRAB event=struggle_report_not_host note=dropped_no_simulator"
+                );
+                return;
+            }
+            // Nothing to sanitise: the payload is empty and the victim is the sender, which the
+            // transport authenticated by address. A struggle from somebody nobody is holding drains
+            // into an empty set on the next tick and does nothing.
+            info!("MPTRACE step=PH_GRAB event=struggle_reported_p2p victim_id={victim}");
+            net.pending_struggles.insert(victim);
         }
 
         NetworkEvent::NoiseReported { position, loudness } => {
@@ -2166,6 +2225,27 @@ async fn handle_action(
                     }
                 }
                 None => debug!("report_noise ignored: malformed position or loudness"),
+            }
+        }
+        // ADR-050 point 9: the victim reports STRUGGLING out of a grab. Carries no payload at all —
+        // the identity is "whoever's backend this is", so there is nothing to forge. A struggle
+        // from a player nobody is holding drains into an empty set and does nothing.
+        //
+        // Molded on `report_noise` above, including the host/joiner split: only the host simulates
+        // phantoms, so a joiner forwards it instead of writing to a queue nobody reads. RELIABLE,
+        // unlike the noise: a dropped noise is a missed stimulus, a dropped struggle is a death the
+        // player earned their way out of.
+        "report_struggle" => {
+            if net.is_host {
+                info!(
+                    "MPTRACE step=PH_GRAB event=struggle_reported victim_id={}",
+                    net.local_id
+                );
+                net.pending_struggles.insert(net.local_id);
+            } else {
+                info!("MPTRACE step=PH_GRAB event=struggle_forwarded_to_host");
+                let report = PacketPayload::StruggleReport;
+                net.send_reliable(1, &report).await; // 1 = host
             }
         }
         "report_inventory" => {

@@ -232,6 +232,9 @@ fn phantom_reveals_only_in_sprint_and_statue() {
     // would do, so keeping the skin on means you never quite know whether you startled a teammate
     // or the thing wearing his face. That ambiguity is what ADR-016 exists to protect.
     assert!(!phantom_reveals(PhantomState::Flee));
+    // ADR-050 point 10 — GRAB does reveal, and the contrast with FLEE is the point. There is no
+    // ambiguity left to protect when it is holding you at arm's length.
+    assert!(phantom_reveals(PhantomState::Grab));
 
     // And the guard that makes this test worth having: `phantom_reveals` is a `matches!`, so a
     // variant added later would default to "does not reveal" and every assertion above would still
@@ -244,10 +247,11 @@ fn phantom_reveals_only_in_sprint_and_statue() {
         PhantomState::Sprint,
         PhantomState::Search,
         PhantomState::Flee,
+        PhantomState::Grab,
     ] {
         // Exhaustive `match` with no wildcard: adding a variant stops compiling right here.
         let expected = match state {
-            PhantomState::Sprint | PhantomState::Statue => true,
+            PhantomState::Sprint | PhantomState::Statue | PhantomState::Grab => true,
             PhantomState::Wander
             | PhantomState::Spotted
             | PhantomState::Stalk
@@ -1608,13 +1612,20 @@ async fn a_kill_leaves_it_sated_and_it_roars_once() {
     let here = Vec3::from_array(net.peers[&pid].position);
     let player = Vec3::new(here.x + 1.0, 1.8, here.z);
 
-    // Facing +X, i.e. AWAY from the creature to its west → killed from behind.
-    let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false, 0);
-
-    assert!(
-        attacks.iter().any(|a| a.kind == PhantomAttackKind::Kill),
-        "expected a kill, got {attacks:?}"
-    );
+    // Facing +X, i.e. AWAY from the creature to its west → taken from behind.
+    // ADR-050 point 9: that opens a GRAB, and the kill lands when its window runs out. Run the
+    // window through so this test still measures what it is about — what a kill leaves behind.
+    let mut killed = false;
+    for _ in 0..((PHANTOM_GRAB_SECONDS / 0.1) as i32 + 3) {
+        killed = driver
+            .step(&mut net, 0.1, player, 90.0, false, false, 0)
+            .iter()
+            .any(|a| a.kind == PhantomAttackKind::Kill);
+        if killed {
+            break;
+        }
+    }
+    assert!(killed, "expected the grab to become a kill");
     assert_eq!(
         driver.movers[0].state,
         PhantomState::Wander,
@@ -2218,9 +2229,11 @@ fn lerp_heading_eases_toward_target_via_shorter_arc() {
 }
 
 #[tokio::test]
-async fn phantom_sprint_kills_from_behind() {
-    // ADR-016 slice 1: a point-blank SPRINT while the player is NOT looking (phantom behind)
-    // → lethal Kill. Deterministic.
+async fn phantom_sprint_grabs_from_behind() {
+    // ADR-016 slice 1 + ADR-050 point 9: a point-blank SPRINT while the player is NOT looking
+    // (phantom behind) used to be an instant lethal `Kill`. It is now a `GrabStart` — the death
+    // still comes, but from `tick_grab` once its window expires, and the victim is alive until
+    // then. See `a_grab_that_runs_out_of_time_kills_and_feeds` for the other half.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
     let pid = net.spawn_phantom("Robapieles_Test", start);
@@ -2239,9 +2252,9 @@ async fn phantom_sprint_kills_from_behind() {
         attack,
         [PhantomAttack {
             victim: net.local_id,
-            kind: PhantomAttackKind::Kill
+            kind: PhantomAttackKind::GrabStart(PHANTOM_GRAB_SECONDS)
         }],
-        "behind-attack must KILL the local player, got {attack:?}"
+        "behind-attack must GRAB the local player, got {attack:?}"
     );
 }
 
@@ -2565,6 +2578,158 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
         "point-blank STATUE timeout must shove the local player, got {attack:?}"
     );
     assert_eq!(driver.movers[0].state, PhantomState::Sprint);
+}
+
+/// Sets up a creature holding the host player, i.e. the tick right after a blow from behind.
+/// Returns the driver and net with the grab already open.
+async fn grabbed_setup() -> (NetworkManager, PhantomDriver, PeerId, Vec3) {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 0.0;
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.movers[0].hesitate_timer = 0.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    // Point-blank and facing +X, i.e. AWAY from the creature to its west → taken from behind.
+    let player = Vec3::new(here.x + 1.0, 1.8, here.z);
+    let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false, 0);
+    assert!(
+        attacks
+            .iter()
+            .any(|a| matches!(a.kind, PhantomAttackKind::GrabStart(_))),
+        "expected a grab, got {attacks:?}"
+    );
+    (net, driver, pid, player)
+}
+
+#[tokio::test]
+async fn a_blow_from_behind_grabs_instead_of_killing_outright() {
+    // ADR-050 point 9 — the whole reason the grab exists. This used to be an instant 100 damage
+    // applied in the same tick it was decided, with the client's animation running afterwards as a
+    // 0.9 s epilogue that read no input: there was no instant at which you were held and alive, so
+    // there was nothing to escape from.
+    let (net, driver, pid, _) = grabbed_setup().await;
+    assert_eq!(driver.movers[0].state, PhantomState::Grab);
+    assert_eq!(driver.movers[0].grab_victim, Some(net.local_id));
+    assert!(driver.movers[0].grab_timer > 0.0, "the clock is running");
+    // ADR-050 point 10: unlike FLEE, this one reveals — it is holding you at arm's length.
+    assert!(
+        net.peers[&pid].revealed,
+        "a creature holding you has nothing left to hide"
+    );
+}
+
+#[tokio::test]
+async fn a_grab_that_runs_out_of_time_kills_and_feeds() {
+    // The death did not disappear, it moved: `tick_grab` owns it now.
+    let (mut net, mut driver, pid, player) = grabbed_setup().await;
+
+    // Stop ON the kill: in production the victim is dead and respawns elsewhere, but this test's
+    // player is a fixed point 1 m away, so extra ticks would just have it notice them again.
+    let mut killed = false;
+    for _ in 0..((PHANTOM_GRAB_SECONDS / 0.1) as i32 + 3) {
+        killed = driver
+            .step(&mut net, 0.1, player, 90.0, false, false, 0)
+            .iter()
+            .any(|a| a.kind == PhantomAttackKind::Kill);
+        if killed {
+            break;
+        }
+    }
+    assert!(killed, "the grab must become a kill when nobody breaks it");
+    assert_eq!(driver.movers[0].state, PhantomState::Wander);
+    assert_eq!(driver.movers[0].hunger, 1.0, "and it feeds");
+    assert_eq!(driver.movers[0].grab_victim, None);
+    assert_eq!(
+        net.peers[&pid].vocal_kind, VOCAL_SATED_ROAR,
+        "the roar still rides the kill — it is how the respawning victim learns it is not coming"
+    );
+}
+
+#[tokio::test]
+async fn struggling_free_costs_the_creature_its_meal() {
+    // The other end of point 9. Breaking out must not feed it: you won the exchange, not the
+    // fight, and it is still hungry and still there.
+    let (mut net, mut driver, _, player) = grabbed_setup().await;
+    let victim = net.local_id;
+
+    net.pending_struggles.insert(victim);
+    let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false, 0);
+
+    assert!(
+        attacks
+            .iter()
+            .any(|a| a.kind == PhantomAttackKind::GrabRelease),
+        "expected a release, got {attacks:?}"
+    );
+    assert_eq!(driver.movers[0].state, PhantomState::Stalk);
+    assert_eq!(
+        driver.movers[0].hunger, 0.0,
+        "shaking it off must NOT feed it"
+    );
+    assert!(
+        driver.movers[0].strike_recover > 0.0,
+        "and it owes a recovery, or the failed grab becomes another one immediately"
+    );
+    assert!(
+        net.pending_struggles.is_empty(),
+        "the report is consumed, not left to release the next grab too"
+    );
+
+    // Run it out: with the window gone, no kill can arrive from this grab any more.
+    let mut killed = false;
+    for _ in 0..40 {
+        killed |= driver
+            .step(&mut net, 0.1, player, 90.0, false, false, 0)
+            .iter()
+            .any(|a| a.kind == PhantomAttackKind::Kill);
+    }
+    assert!(!killed, "a broken grab must never still land its kill");
+}
+
+#[tokio::test]
+async fn one_players_struggle_does_not_free_another() {
+    // `pending_struggles` is keyed BY VICTIM rather than being a flag, and this is why: with two
+    // creatures holding two players, a flag would let either report release both.
+    let (mut net, mut driver, _, player) = grabbed_setup().await;
+
+    // Somebody else entirely reports a struggle.
+    net.pending_struggles.insert(4242);
+    let attacks = driver.step(&mut net, 0.1, player, 90.0, false, false, 0);
+
+    assert!(
+        !attacks
+            .iter()
+            .any(|a| a.kind == PhantomAttackKind::GrabRelease),
+        "a stranger's struggle must not open this grab"
+    );
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Grab,
+        "it still has you"
+    );
+}
+
+#[tokio::test]
+async fn a_gunshot_across_the_map_does_not_make_it_let_go() {
+    // ADR-050 lists `hear_noises` as one of the four sites the compiler cannot catch. A creature
+    // that dropped the player it is killing because somebody fired somewhere else would be
+    // abandoning the one thing it committed to.
+    let (mut net, mut driver, pid, _) = grabbed_setup().await;
+    let here = Vec3::from_array(net.peers[&pid].position);
+
+    net.pending_noises
+        .push(([here.x + 300.0, here.y, here.z], 500.0));
+    driver.hear_noises(&mut net);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Grab,
+        "a noise must not interrupt a grab"
+    );
+    assert!(driver.movers[0].grab_victim.is_some());
 }
 
 #[tokio::test]

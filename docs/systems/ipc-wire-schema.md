@@ -154,7 +154,7 @@ BACKEND-derived like `revealed`, absent from `PlayerInput`, so no client writer 
 the C6 goldens stay valid. Additive and inert: a creature that never vocalises is
 byte-identical to a v17 one, and a v17 receiver decodes both to 0 and simply hears nothing.
 
-### v19 (ADR-049) — actual
+### v19 (ADR-049)
 
 Adds `carry_def:i32` + `carry_count:u8` to `PlayerInput`, `RemotePlayerState` and the P2P
 `PlayerUpdate`. Unlike v18 these ARE client-reported — the backend keeps no per-player carry
@@ -162,3 +162,24 @@ state to derive them from — so this is the first pose bump in a while that tou
 writer: `SendPlayerInput` goes from 19 to 21 fields and its golden is regenerated ON PURPOSE.
 Additive and inert otherwise: a player who never carries is byte-identical to a v18 one, and
 a v18 receiver decodes both to 0 and simply sees empty hands.
+
+### v20 (ADR-050) — actual
+
+No pose field changes at all. Adds one inbound IPC action, two outbound IPC events and one
+P2P packet type, all of them for the grab:
+
+- `report_struggle` (client → its own backend). NO PAYLOAD: the victim is the sender, which
+  the transport already knows, so unlike `report_noise` there is nothing to clamp or forge.
+- `phantom_grab_start { window: f32 }` and `phantom_grab_release` (backend → client), which
+  join `phantom_hit` / `phantom_kill` / `phantom_knockback`. `window` is how many seconds the
+  victim has to break out, so the client stops holding its own copy of that number.
+- `StruggleReport` (0x4F, joiner → host, **reliable**). Claims the opcode ADR-047 reserved
+  and stopped short of. Reliable where `NoiseReport` is not: a dropped noise self-heals on the
+  next shot, a dropped struggle is a death the player earned their way out of.
+
+`PhantomAttackGrant` (0x4D) gains kinds 3 and 4 with **no layout change** — `kind` was always
+a `u8` with 3..255 spare, and ADR-047 wrote that spare down on purpose. The grab window rides
+the existing `damage` field, so a v19 victim backend, whose `_` arm treats unknown kinds as a
+hit, would apply 2.5 damage instead of opening a window: the v20 backend has explicit arms for
+both. Degradation is therefore NOT silent across this bump for a mixed-version session, which
+is why it is a bump and not a quiet addition.

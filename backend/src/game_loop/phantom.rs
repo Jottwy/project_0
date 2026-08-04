@@ -208,6 +208,18 @@ pub(super) const VOCAL_HUNGRY_MOAN: u8 = 6;
 /// learns, without a UI, that the next few seconds are the ones to spend running.
 pub(super) const VOCAL_WINDED: u8 = 7;
 
+// ── ADR-050 point 9: the grab ────────────────────────────────────────────────────────────────────
+/// How long the victim has to break free before the grab becomes a kill.
+///
+/// 2.5 s is long enough to be a scene you can act inside and short enough that it never becomes a
+/// negotiation. The client is told this number rather than holding its own copy, so there is one
+/// owner of it (the old `GrabTime` const in `PhantomAttackHandler` was a second, silent one).
+pub(super) const PHANTOM_GRAB_SECONDS: f32 = 2.5;
+/// Seconds of stalking cooldown a creature eats after being shaken off, so a failed grab cannot
+/// immediately become another one. It is still hungry — that is the point — but you get the room to
+/// run that surviving is supposed to buy.
+pub(super) const PHANTOM_GRAB_RECOVERY: f32 = 4.0;
+
 // ── ADR-050 point 6: the flight response ─────────────────────────────────────────────────────────
 /// Seconds a startled creature spends putting distance between itself and whatever made the noise.
 pub(super) const PHANTOM_FLEE_SECONDS: f32 = 6.0;
@@ -747,6 +759,10 @@ pub(super) enum PhantomState {
     /// the hunger model the player ever gets: you fire, and either something comes, or something
     /// bolts.
     Flee,
+    /// ADR-050 point 9 — it has hold of you and is killing you, but not instantly: for
+    /// `PHANTOM_GRAB_SECONDS` you are held and ALIVE, and struggling free is the way out. This is
+    /// the only state whose exit the victim controls directly.
+    Grab,
 }
 
 /// ADR-038: the two states where the stolen skin stops holding — the phantom shows its real form.
@@ -754,7 +770,12 @@ pub(super) enum PhantomState {
 /// the decision is covered by `phantom_reveals_only_in_sprint_and_statue`. Purely cosmetic — the
 /// flag rides the pose relay and never gates damage, detection or collision.
 pub(super) fn phantom_reveals(state: PhantomState) -> bool {
-    matches!(state, PhantomState::Sprint | PhantomState::Statue)
+    // ADR-050 point 10: `Grab` reveals. Unlike `Flee` (point 7), there is no ambiguity left to
+    // protect here — it is holding you at arm's length and you are about to see what it is.
+    matches!(
+        state,
+        PhantomState::Sprint | PhantomState::Statue | PhantomState::Grab
+    )
 }
 
 /// ADR-016 slice 1 (phantom damage) — what `PhantomDriver::step` produced this tick, and for
@@ -793,6 +814,17 @@ pub(super) enum PhantomAttackKind {
     /// mutates the player pose for this — it's client-authoritative and would be overwritten by
     /// the next input (ADR-009), so the backend only signals the direction/force.
     Knockback(f32, f32),
+    /// ADR-050 point 9 — IT HAS YOU, AND YOU ARE STILL ALIVE. Carries how many seconds the victim
+    /// has to break out.
+    ///
+    /// Before this, a blow from behind was `Kill`: the backend applied 100 damage in the same tick
+    /// it decided, and the client's grab animation ran afterwards as an epilogue for 0.9 s without
+    /// reading a single input. There was no instant at which you were held and alive, so there was
+    /// nothing to escape from. Now the death is deferred and the window is real.
+    GrabStart(f32),
+    /// ADR-050 point 9 — you got it off you. The creature returns to stalking and does NOT feed, so
+    /// it is still hungry and still around: you won, but only this exchange.
+    GrabRelease,
 }
 
 /// ADR-047 — THE single gate every noise passes through, whichever door it came in by: the local
@@ -819,6 +851,8 @@ pub(super) fn phantom_attack_kind_name(kind: PhantomAttackKind) -> &'static str 
         PhantomAttackKind::Hit(_) => "hit",
         PhantomAttackKind::Kill => "kill",
         PhantomAttackKind::Knockback(_, _) => "knockback",
+        PhantomAttackKind::GrabStart(_) => "grab_start",
+        PhantomAttackKind::GrabRelease => "grab_release",
     }
 }
 
@@ -1037,6 +1071,12 @@ pub(super) struct PhantomMover {
     /// metronomic one would become a clock the player can read, and the whole point of this sound
     /// is that you cannot tell how close it is or what it is about to do.
     pub(super) breath_in: f32,
+    /// ADR-050 point 9 — seconds left before the grab becomes a kill, and WHO is being held.
+    /// The victim is part of the state rather than re-resolved per tick: `choose_target` could
+    /// legitimately pick somebody closer mid-grab, and killing a player the creature is not
+    /// actually holding is exactly the class of mis-routing ADR-047 was written to close.
+    pub(super) grab_timer: f32,
+    pub(super) grab_victim: Option<PeerId>,
     /// ADR-050 point 8 — the pose being copied while sated, and how long until it is worn.
     /// `(crouch, held_item, seconds_left)`. A tiny one-slot buffer rather than a queue: at 10 Hz a
     /// queue would hold eight samples to reproduce a lag anyone can get from one.
@@ -1616,6 +1656,8 @@ impl PhantomDriver {
             stamina: PHANTOM_SPRINT_BURST_SECONDS,
             winded_for: 0.0,
             flee_goal: None,
+            grab_timer: 0.0,
+            grab_victim: None,
             mimic_pending: None,
             mimic_worn: (false, 0),
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
@@ -1660,9 +1702,15 @@ impl PhantomDriver {
                 // scare timer and re-aim the goal at a creature already running, so it would flee
                 // forever and never settle. The ADR calls this out as one of the four sites the
                 // compiler cannot catch.
+                // ADR-050: `Grab` too, and for the starkest reason on the list — a creature that
+                // let go of the player it is killing because somebody fired a gun across the map
+                // would be dropping the one thing it committed to.
                 if matches!(
                     self.movers[i].state,
-                    PhantomState::Sprint | PhantomState::Statue | PhantomState::Flee
+                    PhantomState::Sprint
+                        | PhantomState::Statue
+                        | PhantomState::Flee
+                        | PhantomState::Grab
                 ) {
                     continue;
                 }
@@ -2189,6 +2237,82 @@ impl PhantomDriver {
         }
     }
 
+    /// GRAB (ADR-050 point 9) — it has hold of you, and the death is on a clock you can beat.
+    ///
+    /// This state is where the kill actually lives now. It used to be atomic: the blow from behind
+    /// applied 100 damage in the same tick it was decided, and the client's grab was an epilogue
+    /// that ran afterwards for 0.9 s and read no input at all — there was never an instant where
+    /// you were held and alive, so there was nothing to escape. Here the creature holds still on
+    /// top of the victim and one of three things happens: the victim struggles free
+    /// (`net.pending_struggles`, ADR-050's `report_struggle`), the timer runs out and it feeds, or
+    /// the victim goes away and it lets go.
+    fn tick_grab(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick { i, id, from, .. } = mt;
+
+        let Some(victim) = self.movers[i].grab_victim else {
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            return;
+        };
+
+        // BROKE FREE. Drained per victim, so one player's struggle can never release the creature
+        // holding somebody else.
+        if ctx.net.pending_struggles.remove(&victim) {
+            self.attacks.push(PhantomAttack {
+                victim,
+                kind: PhantomAttackKind::GrabRelease,
+            });
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].grab_victim = None;
+            self.movers[i].grab_timer = 0.0;
+            // It does NOT feed. Still hungry, still there — you won the exchange, not the fight.
+            // The recovery is what buys the room to run that surviving is supposed to be worth.
+            self.movers[i].strike_recover = PHANTOM_GRAB_RECOVERY;
+            self.movers[i].statue_cooldown = PHANTOM_GRAB_RECOVERY;
+            info!(
+                "MPTRACE step=PH_GRAB event=phantom_grab_broken phantom_id={} victim_id={}",
+                id, victim
+            );
+            return;
+        }
+
+        self.movers[i].grab_timer -= ctx.dt;
+        if self.movers[i].grab_timer <= 0.0 {
+            self.attacks.push(PhantomAttack {
+                victim,
+                kind: PhantomAttackKind::Kill,
+            });
+            // SATED. Everything the old inline kill did, moved here with it: it stops hunting, goes
+            // docile, re-anchors where it ended up, and roars once. The roar is doing real work —
+            // it is the only way the player who just died learns, on respawn, that the thing which
+            // killed them is not still coming. Rage does not survive a kill either.
+            self.movers[i].hunger = 1.0;
+            self.movers[i].enraged_for = 0.0;
+            self.movers[i].state = PhantomState::Wander;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].grab_victim = None;
+            self.movers[i].last_known_player_pos = None;
+            self.movers[i].nav_waypoints.clear();
+            self.movers[i].spawn_pos = from;
+            self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
+            self.movers[i].try_vocalize(VOCAL_SATED_ROAR);
+            info!(
+                "MPTRACE step=PH_GRAB event=phantom_kill phantom_id={} victim_id={} note=grab_expired",
+                id, victim
+            );
+            return;
+        }
+
+        // Holding. It does not move and it does not re-target: the pose is frozen on the victim,
+        // and `revealed` is true throughout (ADR-050 point 10), so what the player is looking at
+        // for these seconds is the real thing.
+        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(from.to_array(), yaw, "pickup".into());
+        }
+    }
+
     /// FLEE (ADR-050 point 6) — it got startled and is clearing the area. Runs to a point away from
     /// whatever made the noise for `PHANTOM_FLEE_SECONDS`, then re-anchors where it ended up and
     /// goes back to patrolling. It does NOT reveal: a peer that bolts from a gunshot is exactly what
@@ -2699,31 +2823,20 @@ impl PhantomDriver {
                     id, tid, PHANTOM_ATTACK_DAMAGE
                 );
             } else {
+                // ADR-050 point 9: from behind it TAKES HOLD instead of killing outright. The death
+                // still comes, but `tick_grab` owns it now, and until then the victim is alive and
+                // can do something about it.
                 self.attacks.push(PhantomAttack {
                     victim: tid,
-                    kind: PhantomAttackKind::Kill,
+                    kind: PhantomAttackKind::GrabStart(PHANTOM_GRAB_SECONDS),
                 });
-                // SATED. It stops hunting, goes docile for a minute and roars once —
-                // and the roar is doing real work, not decoration: it is the only way
-                // the player who just died learns, on respawn, that the thing which
-                // killed them is not still coming. Without it a death loops straight
-                // back into a death and hiding never gets to matter.
-                //
-                // Rage does not survive a kill: whatever it was angry about is settled.
-                self.movers[i].hunger = 1.0;
-                self.movers[i].enraged_for = 0.0;
-                self.movers[i].state = PhantomState::Wander;
+                self.movers[i].state = PhantomState::Grab;
                 self.movers[i].state_timer = 0.0;
-                self.movers[i].last_known_player_pos = None;
-                self.movers[i].nav_waypoints.clear();
-                // Re-anchor, or the observation leash would walk it all the way back to
-                // where it woke up (the same fix ADR-041 needed after a long journey).
-                self.movers[i].spawn_pos = from;
-                self.movers[i].vocal_cooldown = 0.0; // this one always gets to be heard
-                self.movers[i].try_vocalize(VOCAL_SATED_ROAR);
+                self.movers[i].grab_timer = PHANTOM_GRAB_SECONDS;
+                self.movers[i].grab_victim = Some(tid);
                 info!(
-                    "MPTRACE step=PH_SPRINT event=phantom_kill phantom_id={} victim_id={} note=from_behind",
-                    id, tid
+                    "MPTRACE step=PH_GRAB event=phantom_grab_start phantom_id={} victim_id={} window={:.1}",
+                    id, tid, PHANTOM_GRAB_SECONDS
                 );
             }
             let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
@@ -2895,6 +3008,7 @@ impl PhantomDriver {
                 PhantomState::Sprint => self.tick_sprint(mt, &mut ctx),
                 PhantomState::Search => self.tick_search(mt, &mut ctx),
                 PhantomState::Flee => self.tick_flee(mt, &mut ctx),
+                PhantomState::Grab => self.tick_grab(mt, &mut ctx),
             }
         }
 
@@ -3035,7 +3149,14 @@ impl PhantomDriver {
             self.movers[i].pickup_until = None;
             self.movers[i].stare_until = None;
         }
-        if self.movers[i].pickup_until.is_some() {
+        // ADR-050 point 9 — GRAB IS EXEMPT FROM THE FREEZE, and this is not tidiness. The strike
+        // that opens a grab sets `pickup_until` for its own animation, and this freeze skips the
+        // WHOLE FSM: `tick_grab` would not run for that first second, so the escape window would
+        // not tick down and — far worse — a struggle reported in that second would never be
+        // drained. Mashing the instant it grabs you is the most natural thing a player can do, and
+        // it would have been silently ignored. `tick_grab` holds its own pose anyway, so nothing
+        // is lost by exempting it.
+        if self.movers[i].pickup_until.is_some() && self.movers[i].state != PhantomState::Grab {
             let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
             if let Some(peer) = ctx.net.peers.get_mut(&id) {
                 peer.update_player_state(from.to_array(), yaw, "pickup".into());

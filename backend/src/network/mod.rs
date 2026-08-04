@@ -175,6 +175,14 @@ pub struct NetworkManager {
     /// it is not in `PeerInfo` (P2P) nor `RemotePlayerState` (IPC); pure host-side state. A
     /// joiner therefore cannot tell a phantom from a real peer (and its own set stays empty).
     pub phantom_ids: std::collections::HashSet<PeerId>,
+    /// ADR-050 point 9 — victims who reported struggling out of a grab this tick, drained by
+    /// `PhantomDriver::tick_grab`.
+    ///
+    /// A SET keyed by victim and not a flag or a queue: mashing produces many reports for the same
+    /// grab and only the first can matter, and one player breaking free must never release the
+    /// creature holding somebody else. Host-only — it is the only backend that simulates phantoms,
+    /// so a joiner's struggle arrives here as a `StruggleReport` packet.
+    pub pending_struggles: std::collections::HashSet<PeerId>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     /// Throttle for `send_datagram`'s failure log: millis since `session_start` of the last
@@ -248,6 +256,7 @@ impl NetworkManager {
             next_phantom_attack_request_id: 1,
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
+            pending_struggles: std::collections::HashSet::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),

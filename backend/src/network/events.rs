@@ -193,6 +193,11 @@ pub enum NetworkEvent {
         position: [f32; 3],
         loudness: f32,
     },
+    /// ADR-050 point 9: a joiner broke out of a grab. Only the host simulates phantoms, so this is
+    /// the sole way a joiner's struggle can reach the creature holding it.
+    StruggleReported {
+        victim: PeerId,
+    },
     /// ADR-046: a voice frame arrived from `speaker`. On a joiner the host has already decided
     /// we are close enough to hear it; on the host this is a peer talking, and the host is the
     /// one that decides who else gets a copy.
