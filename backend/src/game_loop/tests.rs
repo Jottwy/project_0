@@ -2622,6 +2622,13 @@ async fn phantom_statue_timeout_knocks_back_point_blank() {
         net.peers[&pid].revealed,
         "the tear is the false→true edge the client decorates"
     );
+    // REGRESSION — the tear used to be SILENT. `enter_sprint` emits VOCAL_REVEAL, but this state
+    // screams on entry and the shared vocal budget (6 s) outlasts the unmask beat (1.6 s), so the
+    // scream at the climax of the sequence was swallowed every single time.
+    assert_eq!(
+        net.peers[&pid].vocal_kind, VOCAL_REVEAL,
+        "the skin breaking has to be HEARD, not just seen"
+    );
 }
 
 /// Sets up a creature holding the host player, i.e. the tick right after a blow from behind.
@@ -2971,8 +2978,10 @@ async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
     let pid = net.spawn_phantom("Robapieles_Test", start);
     let mut driver = PhantomDriver::new(42);
     driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
-    driver.movers[0].state = PhantomState::Sprint;
-    driver.movers[0].stamina = PHANTOM_SPRINT_BURST_SECONDS;
+    // Entered through the REAL door, not by assigning the state: `enter_sprint` emits the reveal
+    // scream, and that scream holding the shared vocal budget is exactly what used to swallow the
+    // gasp below. A test that skipped it passed while the game was silent.
+    driver.movers[0].enter_sprint();
     driver.movers[0].hesitate_timer = 0.0;
     // A TREADMILL: the player is re-placed 12 m ahead of the creature every tick, which is what a
     // sustained chase looks like from the stamina's point of view. The alternatives both measure
@@ -3004,6 +3013,9 @@ async fn a_charge_blows_and_recovers_without_ever_ending_the_hunt() {
         "5 s of flat-out running must blow it, stamina was {}",
         driver.movers[0].stamina
     );
+    // REGRESSION — this was inaudible in practice: the burst (5 s) is shorter than the shared vocal
+    // budget (6 s), so the REVEAL scream that opens every lunge was still holding the slot when the
+    // creature blew, and the gasp got dropped nearly every time.
     assert_eq!(
         net.peers[&pid].vocal_kind, VOCAL_WINDED,
         "and the player has to HEAR the charge fail, or the window is invisible"
@@ -3179,6 +3191,67 @@ fn it_remembers_where_you_hid_and_checks_there_before_giving_up() {
     assert!(
         m.recall_hideout(here).is_none(),
         "out of checks means give up — otherwise a search never ends"
+    );
+}
+
+#[tokio::test]
+async fn an_unmasked_hunter_recovers_its_breath_and_does_not_ping_pong_into_sprint() {
+    // TWO REGRESSIONS AT ONCE, both introduced by ADR-051 adding `Hunting` between SPRINT and the
+    // rest of the FSM, and both of which made a creature stop being a threat.
+    //
+    // 1) `winded_for` was ticked ONLY inside `tick_sprint`. A lunge that gave up wedged left SPRINT
+    //    while still out of breath, nothing decremented the timer any more, and `tick_hunting`'s
+    //    re-lunge gate (`winded_for <= 0.0`) could never open again: it circled you forever,
+    //    visible and harmless.
+    // 2) The give-up cleared `strike_recover`, and `tick_hunting` re-lunges the moment that is
+    //    spent — so it bounced Sprint→Hunting→Sprint every tick, screaming VOCAL_REVEAL on each
+    //    bounce because `enter_sprint` vocalises.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].hunger = 0.0;
+    driver.movers[0].state = PhantomState::Hunting;
+    // Exactly the state a wedged give-up leaves behind: out of breath, in Hunting.
+    driver.movers[0].winded_for = PHANTOM_SPRINT_RECOVER_SECONDS;
+    driver.movers[0].strike_recover = 0.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 8.0, 1.8, here.z);
+
+    // (1) The breath has to come back even though we never enter SPRINT.
+    for _ in 0..((PHANTOM_SPRINT_RECOVER_SECONDS / 0.1) as i32 + 2) {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+    assert_eq!(
+        driver.movers[0].winded_for, 0.0,
+        "the recovery timer must drain outside SPRINT too, or it circles you forever"
+    );
+
+    // (2) And from a real give-up, it must NOT be back in SPRINT on the next tick.
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.movers[0].blocked_ticks = PHANTOM_SPRINT_GIVEUP_TICKS;
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert_eq!(driver.movers[0].state, PhantomState::Hunting);
+    assert!(
+        driver.movers[0].strike_recover > 0.0,
+        "giving up must cost something, or it grinds into the same wall forever"
+    );
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Hunting,
+        "it must circle for a beat before coming again, not bounce on the next tick"
+    );
+
+    // …and it DOES come again once that beat is spent — the fix must not make it passive.
+    for _ in 0..((PHANTOM_STRIKE_RECOVERY / 0.1) as i32 + 2) {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Sprint,
+        "an unmasked hunter has to keep coming"
     );
 }
 

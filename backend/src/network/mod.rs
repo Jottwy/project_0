@@ -192,6 +192,14 @@ pub struct NetworkManager {
     ///
     /// Host-only in practice: only the host relays voice and only the host simulates phantoms.
     pub voice_echo: std::collections::HashMap<PeerId, Vec<u8>>,
+    /// ADR-053 — sequence number for the echoes, and it has to be its OWN monotonic counter.
+    ///
+    /// The first version borrowed `next_phantom_attack_request_id`, which only moves when a blow is
+    /// routed to a REMOTE victim — so in a solo session it sits at 0 forever, every echo went out
+    /// with the same `seq`, and the client's jitter buffer (which orders and de-duplicates BY seq,
+    /// exactly as a voice stream should) would treat the second one onwards as a repeat and drop
+    /// it. The creature would have said your words back exactly once per session.
+    pub voice_echo_seq: u16,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     /// Throttle for `send_datagram`'s failure log: millis since `session_start` of the last
@@ -267,6 +275,7 @@ impl NetworkManager {
             phantom_ids: std::collections::HashSet::new(),
             pending_struggles: std::collections::HashSet::new(),
             voice_echo: std::collections::HashMap::new(),
+            voice_echo_seq: 0,
             incoming_rx: rx,
             session_start: Instant::now(),
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),

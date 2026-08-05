@@ -810,10 +810,12 @@ pub async fn run(
                     let Some(data) = net.voice_echo.get(&victim_id).cloned() else {
                         continue;
                     };
+                    // Its OWN counter — see `voice_echo_seq`. Borrowing the attack-request id meant
+                    // every echo of a solo session shipped with seq 0 and the client's jitter
+                    // buffer dropped all but the first as duplicates.
+                    net.voice_echo_seq = net.voice_echo_seq.wrapping_add(1);
                     let payload = PacketPayload::VoiceFrame {
-                        // Any monotonic source will do: the client compares differences per
-                        // speaker, and this speaker only ever emits in these rare bursts.
-                        seq: net.next_phantom_attack_request_id as u16,
+                        seq: net.voice_echo_seq,
                         data,
                     };
                     for dest in crate::network::sync::voice_destinations(&net, phantom_id) {
