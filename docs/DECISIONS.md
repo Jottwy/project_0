@@ -1926,3 +1926,36 @@ Alternativas rechazadas:
 Consecuencias / qué prohíbe: hablar por voz pasa a tener coste táctico, y eso es el objetivo — el chat de proximidad se vuelve una decisión. PROHÍBE interpretar contenido, guardar audio o mandar audio a ningún servicio: lo único que cruza es un float de metros. PROHÍBE subir el rango de la voz hasta el de un arma. Riesgo aceptado: un cliente modificado puede mentir sobre su volumen, exactamente como ya puede mentir sobre la sonoridad de su arma (ADR-041), y el peor caso es idéntico — mover una criatura a un sitio.
 
 Por qué es ADR (regla dura 2): cambia el contrato de una mecánica ya registrada. ADR-046 diseñó la voz como canal de comunicación sin consecuencia de juego, y esto le añade una. Y ADR-041 enumeró las fuentes de ruido; esta es la segunda.
+
+## ADR-053 — Memoria: recuerda dónde te escondiste, y te devuelve tu propia voz
+Estado: PROPUESTA (2026-08-05). Añade estado por criatura al driver y una fuente de `VoiceFrame`. NO toca wire, NO añade opcode y NO bumpea el schema: la voz reusa `send_unreliable_as`, que ADR-046 ya construyó para relayar a un hablante.
+
+Contexto: Joel preguntó si se podía meter machine learning para que la criatura "aprenda". La respuesta honesta es que RL de verdad no —millones de episodios, simulador headless, reward shaping, y al final una caja negra que no se puede depurar ni calibrar, sustituyendo un FSM que hoy se lee entero en los logs— pero que lo que la pregunta persigue de verdad sí, y sale barato: **memoria por criatura**. Lo que la gente llama un monstruo listo casi siempre es un monstruo que se acuerda.
+
+PRINCIPIO DIRECTOR: **memoria, no modelo.** Todo lo de aquí es una lista corta y unas cuantas comparaciones. Es depurable, es determinista de leer en una traza, y cualquier constante se puede mover a mano. Un modelo daría la misma sensación por dos órdenes de magnitud más de coste y quitaría el mando.
+
+Decisión — ESCONDITES:
+1. Cada criatura lleva `hideouts`, hasta `PHANTOM_HIDEOUT_MEMORY` (4) posiciones donde terminó una cacería SUYA. Al rendirse una búsqueda, el sitio se archiva.
+2. Antes de rendirse, y solo **al llegar** al punto que buscaba, consulta la lista: si hay un escondite recordado dentro de `PHANTOM_HIDEOUT_RECALL_RADIUS` (40 m) y le quedan visitas, se desvía allí. Agotar la paciencia o perder el rastro **siguen terminando la caza**, así que un desvío nunca hace la búsqueda ilimitada.
+3. `PHANTOM_HIDEOUT_CHECKS_PER_HUNT` = 2. Es la diferencia entre "se sabe tus escondites" y "peina el edificio", y solo lo primero da miedo; lo segundo hace que esconderse no sirva de nada, que es justo lo que ADR-040 protegió.
+4. FUSIÓN por `PHANTOM_HIDEOUT_MERGE_RADIUS` (6 m) y desalojo del más viejo: cuatro huecos no se llenan con cuatro esquinas de la misma habitación, y la lista sigue hábitos recientes, no antiguos.
+5. LOS RUIDOS NO SE RECUERDAN. El objetivo de una investigación es un disparo desenfocado, no un sitio que elegiste; archivarlo llenaría la memoria de ruido del mapa.
+6. ES POR CRIATURA Y MUERE CON ELLA. No hay memoria compartida ni global: la que vive junto a la escalera inundada aprende tus costumbres, la de tres bloques más allá no. Esa asimetría es la mecánica.
+
+Decisión — LA VOZ ROBADA:
+7. El host guarda **un** fragmento Opus por hablante (`voice_echo`), sobrescrito por lo siguiente que digas. Un buffer rodante sería un registro de audio por jugador viviendo en memoria del servidor sin efecto añadido. El backend **nunca decodifica**: no tiene códec y no lo quiere.
+8. Cada tanto (`PHANTOM_ECHO_MIN`..`MAX`, 45-110 s, escalonado al nacer para que varias no hagan coro) una criatura devuelve ese fragmento. Sale por `send_unreliable_as` estampado con el id DEL FANTASMA, así que el cliente lo reproduce en el proxy de la criatura sin una línea de código nuevo: ya sabe poner la voz de un peer en su posición.
+9. DOS PUERTAS, y son el efecto entero: solo **disfrazada** y solo a partir de `PHANTOM_ECHO_MIN_DISTANCE` (12 m). El terror es una voz que conoces saliendo de un pasillo, de una figura que todavía parece tu compañero. Desde algo ya destapado y encima de ti sería ruido, y taparía los sonidos que sí importan.
+10. Sin fragmento archivado no hay eco. Una criatura no puede inventarse una voz.
+
+Alcance: `PhantomMover` += `hideouts`, `hideouts_checked`, `echo_cooldown`. `PhantomDriver` += `voice_echoes`, drenado por el bucle, que es quien tiene los sockets. `NetworkManager` += `voice_echo`. Cero wire.
+
+Alternativas rechazadas:
+- (A) Aprendizaje por refuerzo. RECHAZADA: coste de entrenamiento e inferencia, imposibilidad de depurar, y pérdida del control sobre el comportamiento. El sitio honesto para un modelo aquí sería offline y para ELEGIR CONSTANTES, nunca para sustituir el FSM.
+- (B) Memoria compartida entre criaturas. RECHAZADA: convierte el mundo en un enjambre con conocimiento perfecto y borra la identidad por criatura que ADR-043 y ADR-016 construyeron.
+- (C) Guardar varios segundos de voz por jugador. RECHAZADA: es un registro de audio en memoria del servidor a cambio de un efecto que un fragmento ya da.
+- (D) Distorsionar el audio en el backend. RECHAZADA: exigiría decodificar y recodificar Opus en el servidor. Si se quiere distorsión, es del cliente, que ya tiene el códec y las curvas.
+
+Consecuencias / qué prohíbe: reusar un escondite pasa a ser mala idea, que es el objetivo. PROHÍBE que la memoria se comparta, se persista o crezca sin tope. PROHÍBE que un desvío pueda hacer una búsqueda ilimitada. PROHÍBE que el backend decodifique, almacene más de un fragmento o mande audio a ningún sitio que no sea el relay de proximidad que ya existe. Riesgo aceptado: la voz robada puede sonar cuando el jugador no la espera y no sabrá que fue la criatura — eso no es un fallo.
+
+Por qué es ADR (regla dura 2): cambia el contrato de escape que ADR-040 fijó (esconderse dejaba de funcionar del todo, ahora funciona una vez) y añade una fuente de `VoiceFrame` que no es un micrófono, lo que ADR-046 no contemplaba.

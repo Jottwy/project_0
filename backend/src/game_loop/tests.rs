@@ -3118,6 +3118,114 @@ async fn the_skin_only_breaks_after_the_warning_and_never_grows_back_mid_hunt() 
     assert!(!net.peers[&pid].revealed, "…and then the skin is back on");
 }
 
+#[test]
+fn it_remembers_where_you_hid_and_checks_there_before_giving_up() {
+    // ADR-053 — the cheap, legible half of "let it learn": no model, a list of four places. Unit
+    // test on the memory itself, because the FSM path around it is timing-heavy and this is where
+    // the actual rules live.
+    let mut driver = PhantomDriver::new(42);
+    driver.add(0xF001, PHANTOM_INITIAL_HEADING, Vec3::ZERO, true);
+    let m = &mut driver.movers[0];
+
+    // Places where hunts ended get filed…
+    m.remember_hideout(Vec3::new(10.0, 1.8, 0.0));
+    m.remember_hideout(Vec3::new(60.0, 1.8, 0.0));
+    assert_eq!(m.hideouts.len(), 2);
+
+    // …and a second hunt ending in the SAME corner refreshes it instead of eating a slot, or four
+    // slots fill with four corners of one room.
+    m.remember_hideout(Vec3::new(13.0, 1.8, 0.0)); // within PHANTOM_HIDEOUT_MERGE_RADIUS of the first
+    assert_eq!(
+        m.hideouts.len(),
+        2,
+        "nearby spots must merge, not accumulate"
+    );
+
+    // Oldest out once full: the list tracks recent habits, not ancient ones.
+    for x in [200.0, 260.0, 320.0, 380.0] {
+        m.remember_hideout(Vec3::new(x, 1.8, 0.0));
+    }
+    assert_eq!(m.hideouts.len(), PHANTOM_HIDEOUT_MEMORY);
+    assert!(
+        !m.hideouts.iter().any(|h| h.x < 100.0),
+        "the oldest memories must be the ones evicted"
+    );
+
+    // Recall picks the NEAREST worth a detour, ignores the spot it is standing on, and ignores
+    // memories from the other side of the level.
+    // Memories now: 200, 260, 320, 380.
+    let here = Vec3::new(205.0, 1.8, 0.0);
+    let got = m.recall_hideout(here).expect("something is in range");
+    assert_eq!(got.x, 200.0, "nearest first");
+    // Standing ON the only memory in range: nothing to detour to. It just searched here, and
+    // walking one metre to re-search the same spot would be a creature stuck in a loop.
+    assert!(
+        m.recall_hideout(Vec3::new(321.0, 1.8, 0.0)).is_none(),
+        "the spot underfoot does not count as a detour"
+    );
+    assert!(
+        m.recall_hideout(Vec3::new(10_000.0, 1.8, 0.0)).is_none(),
+        "a memory 10 km away is not a detour, it is a different hunt"
+    );
+
+    // And the per-hunt budget is what keeps hiding a real escape: it checks a couple of places,
+    // not the whole building.
+    m.hideouts_checked = PHANTOM_HIDEOUT_CHECKS_PER_HUNT;
+    assert!(
+        m.recall_hideout(here).is_none(),
+        "out of checks means give up — otherwise a search never ends"
+    );
+}
+
+#[tokio::test]
+async fn it_throws_your_own_voice_back_at_you_but_only_while_disguised() {
+    // ADR-053 — it already steals the name, the face and the posture; the voice was what was left.
+    // The two gates ARE the effect: from something already revealed and on top of you it would be
+    // noise, and the horror is specifically a voice you know coming out of a figure down a
+    // corridor that still looks like your friend.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    // Something we said is on file, which is what makes an echo possible at all.
+    net.voice_echo.insert(net.local_id, vec![0xAA, 0xBB, 0xCC]);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 20.0, 1.8, here.z); // past PHANTOM_ECHO_MIN_DISTANCE
+
+    // Due now, and dressed.
+    driver.movers[0].echo_cooldown = 0.0;
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert_eq!(
+        driver.voice_echoes,
+        vec![(pid, net.local_id)],
+        "a disguised creature at a distance must give your voice back"
+    );
+    assert!(
+        driver.movers[0].echo_cooldown > 0.0,
+        "and then shut up for a long while"
+    );
+
+    // Revealed: no echo. It is past pretending, and this would step on the sounds that matter.
+    driver.voice_echoes.clear();
+    driver.movers[0].echo_cooldown = 0.0;
+    driver.movers[0].state = PhantomState::Hunting;
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert!(
+        driver.voice_echoes.is_empty(),
+        "an unmasked creature does not do voices"
+    );
+
+    // Nothing on file: nothing to give back. A creature cannot invent a voice.
+    net.voice_echo.clear();
+    driver.voice_echoes.clear();
+    driver.movers[0].echo_cooldown = 0.0;
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert!(driver.voice_echoes.is_empty());
+}
+
 #[tokio::test]
 async fn nothing_ever_wakes_up_in_your_face() {
     // Reported from play-test: "cuando me salgo y vuelvo a entrar las entidades spawnean en mi

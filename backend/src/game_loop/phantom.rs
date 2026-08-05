@@ -398,6 +398,47 @@ pub(super) const PHANTOM_WEDGE_HYSTERESIS_TICKS: u8 = 12;
 /// goes looking for another way round. SPRINT has had this since ADR-040
 /// (`PHANTOM_SPRINT_GIVEUP_TICKS`); STALK never did, which is exactly how a creature reached 255.
 pub(super) const PHANTOM_STALK_GIVEUP_TICKS: u8 = 40;
+
+// ── ADR-053: it gives your own voice back ────────────────────────────────────────────────────────
+//
+// It already steals the name, the face and the posture. The voice was the one thing left, and it
+// costs almost nothing because the whole path exists: the host relays voice, `send_unreliable_as`
+// can stamp a frame with somebody else's id, and the client plays whatever a proxy emits at that
+// proxy's position. So the creature says your own words back at you, from wherever it is standing.
+//
+// The backend never decodes a byte of it — no codec, no interpretation, no storage beyond one
+// scrap that the next thing you say overwrites.
+/// Seconds between echoes from one creature, randomised inside the band. Long: this must land as
+/// "…did I just hear myself?" and not as a parrot. Anything frequent turns it into a mechanic the
+/// player calibrates against instead of a thing that happens to them.
+pub(super) const PHANTOM_ECHO_MIN: f32 = 45.0;
+pub(super) const PHANTOM_ECHO_MAX: f32 = 110.0;
+/// It only does this while DRESSED and at a distance — see `maybe_echo_voice`.
+pub(super) const PHANTOM_ECHO_MIN_DISTANCE: f32 = 12.0;
+
+// ── ADR-053: it remembers where you hid ──────────────────────────────────────────────────────────
+//
+// The cheap, legible half of "let it learn". No model and no training: a creature keeps a short
+// list of the places a hunt of ITS OWN ended, and checks them before giving up next time. That is
+// the whole mechanism, and it produces the thing people actually mean by a smart monster — the
+// second time you use the same corner, it looks there first.
+//
+// It is per-creature and lives on the mover, so it dies when that creature is retired and it is
+// never shared: the one that lives by the flooded stair learns your habits, the one three blocks
+// over does not. That asymmetry is the point.
+/// How many hiding places one creature carries. Four, not forty: a creature that remembers
+/// everywhere you have ever been stops being a hunter and becomes a checklist, and the search would
+/// never end.
+pub(super) const PHANTOM_HIDEOUT_MEMORY: usize = 4;
+/// How far from a search's own goal a remembered spot may be and still be worth a detour (m).
+/// Beyond this it is a memory of a different part of the level and chasing it would read as random.
+pub(super) const PHANTOM_HIDEOUT_RECALL_RADIUS: f32 = 40.0;
+/// Two remembered spots checked per hunt, at most. This is the difference between "it knows your
+/// hiding places" and "it sweeps the building", and only the first one is frightening.
+pub(super) const PHANTOM_HIDEOUT_CHECKS_PER_HUNT: u8 = 2;
+/// A new hiding place closer than this to one already remembered just refreshes it. Without it the
+/// four slots fill with four corners of the same room.
+pub(super) const PHANTOM_HIDEOUT_MERGE_RADIUS: f32 = 6.0;
 /// Fraction of the intended step a creature must actually gain, along the direction it meant to go,
 /// for the step to count as progress. Below this it is grinding, not travelling.
 ///
@@ -974,6 +1015,9 @@ pub(super) struct PhantomDriver {
     /// drops ticks silently, `dt` stays a hardcoded 0.1 s, and the only symptom is the AI running
     /// in slow motion — which in play-test looks like a design choice, not like a fault.
     pub(super) step_peak_us: u64,
+    /// ADR-053 — `(phantom, victim)` pairs whose stolen voice should be played back this tick.
+    /// Produced by the driver, drained by the game loop, which is the half that owns the sockets.
+    pub(super) voice_echoes: Vec<(PeerId, PeerId)>,
     /// ADR-043 — every attack produced this tick, one entry per mover that landed one. A single
     /// return value made the LAST attacker of the tick win and silently dropped the rest, which
     /// with a populated world is two creatures reaching you together and only one of them
@@ -1099,6 +1143,11 @@ pub(super) struct PhantomMover {
     /// Ticks left of "keep following the route even though nothing is blocking right now".
     /// See `PHANTOM_WEDGE_HYSTERESIS_TICKS`.
     pub(super) wedge_cooldown: u8,
+    /// ADR-053 — places where a hunt of this creature's ended. Checked before giving up on the
+    /// next one, which is what makes reusing a hiding place a bad idea.
+    pub(super) hideouts: Vec<Vec3>,
+    /// How many remembered spots the CURRENT hunt has already been to. Reset on entering SEARCH.
+    pub(super) hideouts_checked: u8,
     /// Seconds left of the post-strike commitment. While positive the lunge holds (still revealed)
     /// and cannot land a second blow; at zero it bounces to STALK.
     pub(super) strike_recover: f32,
@@ -1139,6 +1188,8 @@ pub(super) struct PhantomMover {
     /// metronomic one would become a clock the player can read, and the whole point of this sound
     /// is that you cannot tell how close it is or what it is about to do.
     pub(super) breath_in: f32,
+    /// ADR-053 — seconds until this creature may throw your own voice back at you again.
+    pub(super) echo_cooldown: f32,
     /// ADR-050 point 9 — seconds left before the grab becomes a kill, and WHO is being held.
     /// The victim is part of the state rather than re-resolved per tick: `choose_target` could
     /// legitimately pick somebody closer mid-grab, and killing a player the creature is not
@@ -1317,6 +1368,41 @@ impl PhantomMover {
     /// six seconds after the thing that caused it is worse than no scream, because the player will
     /// place it wrong. Also drops a SECOND request in the same tick — the first one wins, so a
     /// creature that hears a noise and lunges on the same tick screams once, not twice.
+    /// ADR-053 — file a place where a hunt ended. Merges into a nearby memory rather than adding a
+    /// new one, so four slots do not fill with four corners of the same room, and evicts oldest
+    /// first so the list tracks recent habits instead of ancient ones.
+    pub(super) fn remember_hideout(&mut self, spot: Vec3) {
+        if let Some(existing) = self
+            .hideouts
+            .iter_mut()
+            .find(|h| h.distance_xz(spot) <= PHANTOM_HIDEOUT_MERGE_RADIUS)
+        {
+            *existing = spot; // same place, fresher fix
+            return;
+        }
+        if self.hideouts.len() >= PHANTOM_HIDEOUT_MEMORY {
+            self.hideouts.remove(0);
+        }
+        self.hideouts.push(spot);
+    }
+
+    /// ADR-053 — the nearest remembered spot worth a detour from `near`, if this hunt has any
+    /// checks left. `None` means give up, which is what keeps hiding a real escape.
+    pub(super) fn recall_hideout(&self, near: Vec3) -> Option<Vec3> {
+        if self.hideouts_checked >= PHANTOM_HIDEOUT_CHECKS_PER_HUNT {
+            return None;
+        }
+        self.hideouts
+            .iter()
+            .copied()
+            // Not the spot it is already standing on: it just searched here.
+            .filter(|h| {
+                let d = h.distance_xz(near);
+                d > PHANTOM_SEARCH_ARRIVE && d <= PHANTOM_HIDEOUT_RECALL_RADIUS
+            })
+            .min_by(|a, b| a.distance_xz(near).total_cmp(&b.distance_xz(near)))
+    }
+
     pub(super) fn try_vocalize(&mut self, kind: u8) {
         self.try_vocalize_for(kind, PHANTOM_VOCAL_COOLDOWN);
     }
@@ -1397,6 +1483,7 @@ impl PhantomDriver {
             step_counter: 0,
             step_peak_us: 0,
             attacks: Vec::new(),
+            voice_echoes: Vec::new(),
             population_sync_in: 0.0, // reconcile on the very first entity tick
             next_victim_slot: 0,
             // ADR-043 — the load-test levers. Read ONCE at construction, not per tick: a value
@@ -1741,6 +1828,8 @@ impl PhantomDriver {
             noise_expiry: None,
             blocked_ticks: 0,
             wedge_cooldown: 0,
+            hideouts: Vec::new(),
+            hideouts_checked: 0,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
@@ -1758,6 +1847,9 @@ impl PhantomDriver {
             flee_goal: None,
             grab_timer: 0.0,
             grab_victim: None,
+            // Staggered at birth like the breath, so several creatures never echo in chorus.
+            echo_cooldown: PHANTOM_ECHO_MIN
+                + rand::random::<f32>() * (PHANTOM_ECHO_MAX - PHANTOM_ECHO_MIN),
             mimic_pending: None,
             mimic_worn: (false, 0),
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
@@ -2279,6 +2371,7 @@ impl PhantomDriver {
                 self.movers[i].last_known_player_pos = Some(tpos);
                 self.movers[i].state = PhantomState::Stalk;
                 self.movers[i].state_timer = 0.0;
+                self.movers[i].hideouts_checked = 0; // see the give-up path
                 info!(
                     "MPTRACE step=PH_SEARCH event=phantom_reacquired phantom_id={} dist={:.2}",
                     id, dist
@@ -2307,18 +2400,45 @@ impl PhantomDriver {
             None => false,
         };
 
+        // ADR-053 — BEFORE GIVING UP, CHECK WHERE YOU HID LAST TIME. Only on arrival: running out
+        // of patience or losing the trail still ends the hunt, so a detour can never make a search
+        // unbounded. This is the whole "it learns" mechanic — no model, a list of four places.
+        let arrived = from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE;
+        if arrived && self.movers[i].noise_expiry.is_none() {
+            if let Some(spot) = self.movers[i].recall_hideout(from) {
+                self.movers[i].hideouts_checked += 1;
+                self.movers[i].last_known_player_pos = Some(spot);
+                self.movers[i].nav_waypoints.clear();
+                // Fresh patience for the detour, or a long walk here would eat the whole window
+                // and it would arrive only to give up on the doorstep.
+                self.movers[i].state_timer = 0.0;
+                info!(
+                    "MPTRACE step=PH_SEARCH event=phantom_checks_hideout phantom_id={} spot=({:.1},{:.1}) checked={}",
+                    id, spot.x, spot.z, self.movers[i].hideouts_checked
+                );
+                return;
+            }
+        }
+
         // Swept the spot, out of patience, or the trail went cold → give up and forget.
-        if noise_cold
-            || self.movers[i].state_timer > self.movers[i].search_patience
-            || from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE
-        {
+        if noise_cold || self.movers[i].state_timer > self.movers[i].search_patience || arrived {
+            // ADR-053: file where this hunt died. Next time it starts here instead of ending here.
+            // Noise investigations are excluded — that goal is a blurred gunshot, not a place you
+            // chose to hide, and remembering it would fill the list with map noise.
+            if self.movers[i].noise_expiry.is_none() {
+                self.movers[i].remember_hideout(goal);
+            }
             info!(
-                "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s cold={}",
-                id, self.movers[i].state_timer, noise_cold
+                "MPTRACE step=PH_SEARCH event=phantom_gives_up phantom_id={} searched_for={:.1}s cold={} hideouts={}",
+                id, self.movers[i].state_timer, noise_cold, self.movers[i].hideouts.len()
             );
             self.movers[i].last_known_player_pos = None;
             self.movers[i].state = PhantomState::Wander;
             self.movers[i].state_timer = 0.0;
+            // Both exits of SEARCH clear the per-hunt counter, so the NEXT hunt gets its own
+            // detours. Done on the way out rather than on the way in because SEARCH is entered
+            // from five places and one of them would eventually be forgotten.
+            self.movers[i].hideouts_checked = 0;
             self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
             self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
             self.movers[i].noise_expiry = None;
@@ -3352,6 +3472,31 @@ impl PhantomDriver {
         // it mimed a pickup.
         self.movers[i].hunger =
             (self.movers[i].hunger - ctx.dt / PHANTOM_HUNGER_DRAIN_SECONDS).max(0.0);
+        // ADR-053 — IT SAYS YOUR OWN WORDS BACK. Decided in the preamble because every state can do
+        // it and the FSM arms are full of early exits, exactly like the reveal seal.
+        self.movers[i].echo_cooldown = (self.movers[i].echo_cooldown - ctx.dt).max(0.0);
+        if self.movers[i].echo_cooldown <= 0.0 {
+            // Reset either way: a creature that had no chance to do it does not bank one up.
+            self.movers[i].echo_cooldown =
+                PHANTOM_ECHO_MIN + rand::random::<f32>() * (PHANTOM_ECHO_MAX - PHANTOM_ECHO_MIN);
+            // DRESSED and AT A DISTANCE. Both are what make it work: the horror is a voice you know
+            // coming out of a corridor, from a figure that still looks like your friend. From
+            // something already revealed and on top of you it would just be noise, and while it is
+            // hunting it would step on the sounds that matter.
+            let far_enough = target.is_some_and(|(_, _, d, _)| d >= PHANTOM_ECHO_MIN_DISTANCE);
+            if far_enough && !phantom_reveals(self.movers[i].state) {
+                if let Some((tid, _, _, _)) = target {
+                    if ctx.net.voice_echo.contains_key(&tid) {
+                        self.voice_echoes.push((id, tid));
+                        info!(
+                            "MPTRACE step=PH_ECHO event=phantom_repeats_you phantom_id={} victim_id={}",
+                            id, tid
+                        );
+                    }
+                }
+            }
+        }
+
         // ADR-050 point 8 — IMITATION. Sampled HERE and not in `seal_cosmetics` because the target
         // may be the host's own local player, which is not a peer: reading it off `net.peers` found
         // nothing and a sated creature stood there copying no one. This is the same reason

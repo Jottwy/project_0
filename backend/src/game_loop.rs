@@ -523,6 +523,11 @@ pub async fn run(
                     // the one a patched client can delete.
                     let mut sent_to = 0usize;
                     if !player.stats.is_dead() && !data.is_empty() {
+                        // ADR-053: our own voice is stealable too — and on a solo session it is the
+                        // ONLY voice there is, so without this the mimicry would never fire.
+                        if net.is_host {
+                            net.voice_echo.insert(net.local_id, data.clone());
+                        }
                         let me = [player.position.x, player.position.y, player.position.z];
                         let payload = PacketPayload::VoiceFrame {
                             seq,
@@ -782,15 +787,56 @@ pub async fn run(
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
                 phantom_driver.wake_for_noises(&mut net);
-                let attacks = phantom_driver.step(
-                    &mut net,
-                    entity_dt,
-                    player.position,
-                    player.rotation,
-                    player.crouch,
-                    player.stats.is_dead(),
-                    player.held_item,
-                );
+                // Copied out rather than borrowed so the driver is free again immediately — the
+                // voice echoes below need it mutably, and an attack is two `Copy` words.
+                let attacks: Vec<_> = phantom_driver
+                    .step(
+                        &mut net,
+                        entity_dt,
+                        player.position,
+                        player.rotation,
+                        player.crouch,
+                        player.stats.is_dead(),
+                        player.held_item,
+                    )
+                    .to_vec();
+
+                // ADR-053 — IT SAYS YOUR OWN WORDS BACK AT YOU. The driver decides who and when;
+                // this is the half that owns the sockets. `send_unreliable_as` stamps the frame
+                // with the PHANTOM's id, which is the whole trick: the client already plays a
+                // peer's voice at that peer's position, so the words come out of the figure down
+                // the corridor with no client code at all.
+                for (phantom_id, victim_id) in std::mem::take(&mut phantom_driver.voice_echoes) {
+                    let Some(data) = net.voice_echo.get(&victim_id).cloned() else {
+                        continue;
+                    };
+                    let payload = PacketPayload::VoiceFrame {
+                        // Any monotonic source will do: the client compares differences per
+                        // speaker, and this speaker only ever emits in these rare bursts.
+                        seq: net.next_phantom_attack_request_id as u16,
+                        data,
+                    };
+                    for dest in crate::network::sync::voice_destinations(&net, phantom_id) {
+                        net.send_unreliable_as(phantom_id, dest, &payload).await;
+                    }
+                    // …and the host's own player, who is not a peer and therefore not in that list.
+                    if let Some(ph) = net.peers.get(&phantom_id) {
+                        let me = [player.position.x, player.position.y, player.position.z];
+                        if crate::network::sync::within_voice_range(me, ph.position)
+                            && !player.stats.is_dead()
+                        {
+                            if let PacketPayload::VoiceFrame { seq, data } = &payload {
+                                let _ = to_clients.send(ServerMessage::PeerVoice(
+                                    crate::ipc::PeerVoice {
+                                        peer_id: phantom_id,
+                                        seq: *seq,
+                                        data: data.clone(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
                 // ADR-047 — this loop ROUTES; it no longer assumes the victim. Each attack names
                 // whose health it is for, and the only branch that applies damage is the one where
                 // that victim IS this backend's own local player. ADR-025 makes the split
@@ -1831,6 +1877,11 @@ async fn handle_network_event(
             }
 
             if net.is_host {
+                // ADR-053: keep the last scrap so a robapieles can give it back later. Only the
+                // host, because only the host simulates them.
+                if !data.is_empty() {
+                    net.voice_echo.insert(speaker, data.clone());
+                }
                 // 1) Relay to every other peer within earshot OF THE SPEAKER, stamped with the
                 //    speaker's id — the same ADR-015 mechanism the pose relay uses, so the
                 //    receiving side needs no special case at all.
