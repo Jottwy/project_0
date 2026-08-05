@@ -1900,3 +1900,29 @@ Alternativas rechazadas:
 Consecuencias / qué prohíbe: PROHÍBE que ningún estado nuevo revele sin decidirlo en `phantom_reveals` y nombrarlo en su test. PROHÍBE volver a un estado vestido desde `Hunting` por cualquier vía que no sea perder al jugador. PROHÍBE que `Unmasking` haga daño o se mueva: si pudiera golpear, el aviso sería una finta y el jugador aprendería a ignorarlo. Coste: una criatura hambrienta que te observa tarda ahora `PHANTOM_UNMASK_SECONDS` más en llegar a ti, y eso es deliberado — es el tiempo que se te da para irte.
 
 Por qué es ADR (regla dura 2): cambia el conjunto de estados que revelan, que ADR-038 fijó por decisión explícita y nominal de Joel, y añade el compromiso de no-recomposición que ese mismo ADR había rechazado en su alternativa (C). Se acepta ahora porque la forma es distinta —estado del FSM, no latch del flag— y porque el play-test dio el dato que en su momento no existía.
+
+## ADR-052 — Tu voz te delata: la energía del micro como fuente del carril de ruido de ADR-041
+Estado: PROPUESTA (2026-08-05). Añade una fuente al estímulo de ruido de ADR-041. NO toca wire, NO toca el protocolo de voz de ADR-046 y NO añade opcode: reutiliza `report_noise` tal cual.
+
+Contexto: ADR-046 metió chat de voz por proximidad y ADR-041 metió el ruido como estímulo, y hasta ahora eran dos sistemas que no se miraban. El resultado es que en una casa con una criatura acechando podías gritarle a un compañero sin consecuencia alguna, mientras que un disparo la traía desde 500 m. El canal de comunicación más natural del juego era el único que no existía para la IA.
+
+PRINCIPIO DIRECTOR: **se oye la energía, nunca el contenido.** No hay reconocimiento de voz, no hay transcripción, no sale audio del proceso y no se guarda nada: se mide el RMS de la ventana PCM que el codificador iba a comprimir de todos modos y se manda un número de metros por el carril que ya existe. La criatura no sabe qué has dicho; sabe que alguien ha hecho ruido ahí.
+
+Decisión:
+1. LA MEDIDA VIVE EN EL CLIENTE, en `VoiceCapture`, justo después de `FillPcmFromCapture()`. Es el único sitio donde el PCM ya está formado, así que el coste es un recorrido de una ventana que ya se iba a recorrer. Misma lógica que ADR-041 usa para poner la tabla de sonoridad de las armas en Unity: el dato pertenece a donde se produce.
+2. TRES TRAMOS, no un interruptor. Por debajo de `VoiceNoiseFloor` (RMS 0,012) **no se reporta nada** — un micro abierto en una habitación en silencio no puede ser un cebo permanente. De ahí a `VoiceShoutRms` (0,28) el radio interpola entre `VoiceQuietRange` (14 m) y `VoiceShoutRange` (45 m). Susurrar es seguro, hablar te ubica en tu habitación, gritar te ubica en el pasillo entero.
+3. MUY POR DEBAJO DE UN DISPARO, a propósito: 45 m contra los 500 m del rifle. La voz te ubica en tu zona, el arma te ubica en el mapa. Si la voz se acercara al arma, hablar dejaría de ser una decisión y pasaría a ser un error.
+4. ENFRIAMIENTO DE 0,6 s. La ventana de codificación son milisegundos; sin esto, hablar generaría decenas de estímulos por segundo por el mero hecho de estar hablando, y `pending_noises` sería una manguera.
+5. HEREDA TODO EL CARRIL, y eso es el 90 % del valor: como entra por `report_noise`, la voz ya atrae de lejos, ya enfurece dentro de `PHANTOM_RAGE_MAX_DISTANCE`, ya asusta a una criatura saciada (ADR-050 punto 6), ya despierta durmientes (ADR-047 D5) y ya respeta la separación por capa. Cero código de IA nuevo.
+6. LA POSICIÓN ES LA CÁMARA, que es la cabeza del jugador local — el mismo origen que usa el agarre. Sin cámara no se reporta.
+
+Alcance: `VoiceCapture` únicamente, en un bloque acotado y removible (borrar la llamada devuelve el chat de voz exactamente a como estaba). Ni Rust ni protocolo se tocan.
+
+Alternativas rechazadas:
+- (A) Reconocimiento de voz para que entienda lo que dices. RECHAZADA por ahora: latencia, coste por llamada, privacidad y, sobre todo, cambia el género del juego. La versión que no entiende nada da la mayor parte del miedo por una fracción del coste, y no cierra la puerta a la otra.
+- (B) Derivarlo en el backend desde los frames Opus que el host ya relaya. RECHAZADA: obligaría a DECODIFICAR audio en el servidor para medir su energía — CPU por jugador y por trama, en el proceso que menos margen tiene — cuando el cliente tiene el PCM sin comprimir gratis en la mano.
+- (C) Un interruptor push-to-talk que reporte siempre lo mismo. RECHAZADA: convierte el micro en un botón de "atraer criatura" y elimina lo único interesante, que es que el VOLUMEN sea la palanca.
+
+Consecuencias / qué prohíbe: hablar por voz pasa a tener coste táctico, y eso es el objetivo — el chat de proximidad se vuelve una decisión. PROHÍBE interpretar contenido, guardar audio o mandar audio a ningún servicio: lo único que cruza es un float de metros. PROHÍBE subir el rango de la voz hasta el de un arma. Riesgo aceptado: un cliente modificado puede mentir sobre su volumen, exactamente como ya puede mentir sobre la sonoridad de su arma (ADR-041), y el peor caso es idéntico — mover una criatura a un sitio.
+
+Por qué es ADR (regla dura 2): cambia el contrato de una mecánica ya registrada. ADR-046 diseñó la voz como canal de comunicación sin consecuencia de juego, y esto le añade una. Y ADR-041 enumeró las fuentes de ruido; esta es la segunda.
