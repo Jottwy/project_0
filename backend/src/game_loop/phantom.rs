@@ -2530,6 +2530,13 @@ impl PhantomDriver {
         if self.movers[i].state_timer >= self.unmask_seconds {
             // THE TEAR. Straight into the lunge, which is the first state that reveals — so the
             // `false→true` edge the client decorates lands exactly here, on this frame.
+            //
+            // BUG FIX — the tear was SILENT. `enter_sprint` emits `VOCAL_REVEAL`, but this state
+            // screams on entry and `PHANTOM_VOCAL_COOLDOWN` is 6 s against an unmask beat of 1.6,
+            // so the shared budget swallowed the scream every single time: the climax of the whole
+            // sequence made no sound. Cleared here for the same reason the kill clears it — some
+            // sounds are the event, not ambience.
+            self.movers[i].vocal_cooldown = 0.0;
             self.movers[i].enter_sprint();
             info!(
                 "MPTRACE step=PH_UNMASK event=phantom_skin_breaks phantom_id={} hunger={:.2}",
@@ -3131,7 +3138,13 @@ impl PhantomDriver {
             self.movers[i].state = PhantomState::Hunting;
             self.movers[i].state_timer = 0.0;
             self.movers[i].blocked_ticks = 0;
-            self.movers[i].strike_recover = 0.0;
+            // BUG FIX — this used to clear `strike_recover`, and `tick_hunting` re-lunges the
+            // instant that timer is spent. So a lunge that gave up wedged went straight back into
+            // SPRINT on the very next tick, ground into the same wall for another 25 ticks, gave
+            // up again… a Sprint↔Hunting loop that never reached the player and screamed
+            // `VOCAL_REVEAL` on every bounce, because `enter_sprint` vocalises. Giving up has to
+            // COST something: it circles for a beat and comes at you from somewhere else.
+            self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
             self.movers[i].sprint_blind_for = 0.0;
             info!(
                 "MPTRACE step=PH_STALK event=phantom_sprint_gave_up phantom_id={} reason=wedged",
@@ -3258,20 +3271,22 @@ impl PhantomDriver {
         // ADR-050 point 5 — BURST AND RECOVERY. Spent only here, past the hesitation and the strike:
         // a creature holding its beat or landing a blow is not sprinting, and charging it for the
         // stamina would make a lunge that connects blow out sooner than one that misses.
+        // The countdown itself lives in `resolve_mover_tick` with the other timers — see the fix
+        // note there. This only READS it, or the recovery would drain twice as fast in SPRINT as
+        // in any other state.
         let winded = if self.movers[i].winded_for > 0.0 {
-            self.movers[i].winded_for -= ctx.dt;
-            if self.movers[i].winded_for <= 0.0 {
-                self.movers[i].winded_for = 0.0;
-                self.movers[i].stamina = PHANTOM_SPRINT_BURST_SECONDS;
-            }
             true
         } else {
             self.movers[i].stamina -= ctx.dt;
             if self.movers[i].stamina <= 0.0 {
                 self.movers[i].stamina = 0.0;
                 self.movers[i].winded_for = PHANTOM_SPRINT_RECOVER_SECONDS;
-                // It is already revealed and mid-chase, so this one is allowed to interrupt the
-                // ambient budget: the player has to hear the charge fail or the window is invisible.
+                // BUG FIX — this was inaudible in practice. The burst lasts
+                // `PHANTOM_SPRINT_BURST_SECONDS` (5 s) and the shared vocal budget is 6 s, so the
+                // REVEAL scream that opens every lunge still had a second to run when the creature
+                // blew: the gasp was dropped nearly every time, and the recovery window it exists
+                // to announce was invisible. It is the event, so it clears the budget first.
+                self.movers[i].vocal_cooldown = 0.0;
                 self.movers[i].try_vocalize(VOCAL_WINDED);
                 info!(
                     "MPTRACE step=PH_SPRINT event=phantom_winded phantom_id={} dist={:.1}",
@@ -3382,6 +3397,9 @@ impl PhantomDriver {
         // creatures reaching you together counted as one — invisible with the one debug phantom,
         // wrong the moment the world is populated.
         self.attacks.clear();
+        // Same discipline as `attacks`: cleared per step so a consumer that misses one tick cannot
+        // leave the driver growing a list forever.
+        self.voice_echoes.clear();
         for i in 0..self.movers.len() {
             // Built here and not above the loop: the seal pass and the step-cost trace below still
             // read `net` directly, so the reborrow has to end with the iteration.
@@ -3491,6 +3509,18 @@ impl PhantomDriver {
         self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - ctx.dt).max(0.0);
         self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - ctx.dt).max(0.0);
         self.movers[i].enraged_for = (self.movers[i].enraged_for - ctx.dt).max(0.0);
+        // BUG FIX — `winded_for` used to be ticked ONLY inside `tick_sprint`, which was fine while
+        // SPRINT was the only state that could hold it. ADR-051 added `Hunting`, and a lunge that
+        // gives up wedged leaves SPRINT *while still out of breath*: nothing downstream decremented
+        // the timer, so it froze above zero forever, `tick_hunting`'s re-lunge gate
+        // (`winded_for <= 0.0`) could never open, and the creature circled you permanently visible
+        // and permanently harmless. Ticked here with its siblings, it drains wherever the FSM is.
+        if self.movers[i].winded_for > 0.0 {
+            self.movers[i].winded_for = (self.movers[i].winded_for - ctx.dt).max(0.0);
+            if self.movers[i].winded_for == 0.0 {
+                self.movers[i].stamina = PHANTOM_SPRINT_BURST_SECONDS;
+            }
+        }
         // ADR-050: hunger drains on its own slow clock, wherever the FSM happens to be. Ticked here
         // with the other timers and not inside a state arm for the same reason they are: the gesture
         // freeze skips the whole FSM, and a creature would otherwise stop getting hungry every time
@@ -3592,7 +3622,16 @@ impl PhantomDriver {
         // drained. Mashing the instant it grabs you is the most natural thing a player can do, and
         // it would have been silently ignored. `tick_grab` holds its own pose anyway, so nothing
         // is lost by exempting it.
-        if self.movers[i].pickup_until.is_some() && self.movers[i].state != PhantomState::Grab {
+        // `Unmasking` is exempt for the same reason as `Grab`: the freeze skips the WHOLE FSM, so a
+        // leftover gesture would run out the warning beat without `tick_unmasking` ever executing —
+        // the creature would stand in a pickup pose and then simply be revealed, with the tell the
+        // state exists to deliver never happening. Both states hold their own pose anyway.
+        if self.movers[i].pickup_until.is_some()
+            && !matches!(
+                self.movers[i].state,
+                PhantomState::Grab | PhantomState::Unmasking
+            )
+        {
             let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
             if let Some(peer) = ctx.net.peers.get_mut(&id) {
                 peer.update_player_state(from.to_array(), yaw, "pickup".into());
