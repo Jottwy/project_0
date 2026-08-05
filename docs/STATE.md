@@ -2,6 +2,23 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-05 (madrugada, 2ª tanda — **ADR-052 la voz te delata, ADR-053 memoria y voz robada, + fricción de paredes**)
+- COMMITS: `9d1f9c4`, `f8a5274`, `1c5a1eb`. **549/549 tests**, clippy limpio, C# a 0, binario re-desplegado.
+
+1. **DEL ANÁLISIS DEL `Editor.log`**, lo que funcionaba: 359 `phantom_investigates` (el ruido es el estímulo dominante), 211 vocalizaciones, 76 `statue`, 16 `winded` (el aguante corre), 17 `statue_bored_sated` (el gate de hambre se activó de verdad), 30 `reacquired`, 12 `woken_by_noise`.
+
+2. **LO QUE ESTABA ROTO, y era una sola causa**: **17 de 38 embestidas acabaron wedged (45 %)** y `blocked_ticks` llegó a **255** en `stalk_move` (un `u8` saturado = 25 s sin avanzar). No es una pared, es una **oscilación**: `segment_is_clear` prueba una línea SIN radio de cuerpo mientras el resolver mueve 0,5 m, así que contra una esquina interior el atajo se lee libre → tira el plan → camina contra la esquina → 3 ticks bloqueados → gana el pathfinder → un paso bueno → **vuelve al mismo atajo**. `PHANTOM_WEDGE_HYSTERESIS_TICKS` (12) le da el volante al pathfinder un rato tras desatascarse. Y **STALK gana salida por atasco** (`PHANTOM_STALK_GIVEUP_TICKS`), que nunca tuvo: solo SPRINT la tenía, y por eso se llegaba a 255.
+
+3. **ADR-052 — TU VOZ TE DELATA.** RMS de la ventana PCM que el códec ya iba a comprimir, mandado por `report_noise`. Susurrar no reporta, hablar te ubica en tu habitación (14 m), gritar en el pasillo (45 m). **No se interpreta nada**: sin reconocimiento, sin transcripción, sin audio saliendo del proceso. Hereda gratis todo el carril de ADR-041.
+
+4. **ADR-053 — MEMORIA.** Cada criatura recuerda hasta 4 sitios donde terminó una cacería suya y los revisa **antes** de rendirse (máx. 2 desvíos por caza, o esconderse dejaría de servir). Es por criatura y muere con ella. **Y te devuelve tu voz**: el host guarda UN fragmento Opus por hablante y la criatura lo reemite vía `send_unreliable_as` estampado con su propio id, así que sale del proxy sin una línea de cliente. Solo **disfrazada** y a **≥12 m**.
+
+5. **SOBRE MACHINE LEARNING** (preguntado explícitamente): RL de verdad **descartado y razonado en ADR-053 alternativa (A)** — coste, imposibilidad de depurar, y pérdida de control sobre un FSM que hoy se lee entero en los logs. El sitio honesto para un modelo sería **offline y para elegir constantes**, nunca para sustituir el FSM. Lo que la pregunta perseguía se resolvió con memoria.
+
+6. **PALANCAS**: `PHANTOM_HUNGER_DRAIN_SECONDS`, `PHANTOM_HUNGER_SATED` y `PHANTOM_UNMASK_SECONDS` ya son `env_tuning`, blindadas en `population_driver`.
+
+7. **PENDIENTE**: el rastreo predictivo (proyectar hacia dónde ibas) e "insistir enfurece", ambos decididos por Joel y aún sin implementar. Y sigue faltando el **re-bake** del prefab y los clips de las voces 6/7 (`PhantomVoice_Moan*`, `PhantomVoice_Winded*`).
+
 - Fecha: 2026-08-05 (madrugada — **primer play-test de ADR-050: tres bugs y ADR-051, la rotura de piel como evento avisado**)
 - COMMITS: `d25bb17` (bugs), `22de855` (ADR-051). `cargo test` **547/547**, cuatro assemblies C# a 0, binario **re-desplegado**.
 
