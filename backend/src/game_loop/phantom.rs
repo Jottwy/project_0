@@ -380,6 +380,24 @@ pub(super) const PHANTOM_WAYPOINT_ARRIVE: f32 = 1.25;
 /// above the single blocked step a normal wall-slide produces while rounding a corner. Making it 1
 /// would throw away a good plan every time the creature grazed geometry.
 pub(super) const PHANTOM_BLOCKED_REPLAN_TICKS: u8 = 3;
+/// ADR-051 follow-up — how many ticks the pathfinder KEEPS the wheel after the creature stops
+/// being wedged.
+///
+/// Play-test, first session: `blocked_ticks` in `stalk_move` reached **255** (a saturated `u8`, so
+/// twenty-five seconds of getting nowhere) and the sprint gave up wedged 17 times out of 38. The
+/// cause is an oscillation, not a wall. `segment_is_clear` tests a LINE with no body radius while
+/// the resolver moves a 0.5 m body, so against an inside corner: the line reads clear → the plan is
+/// thrown away → the straight bearing walks into the corner → three blocked ticks → the pathfinder
+/// takes over → one good step un-wedges it → **straight back to the line that put it there**.
+///
+/// Holding the route for a moment after recovering breaks the cycle: it gets far enough round the
+/// corner that the shortcut is genuinely clear next time it is offered. That is what reads as
+/// running THROUGH a corridor instead of hunting for the middle of it.
+pub(super) const PHANTOM_WEDGE_HYSTERESIS_TICKS: u8 = 12;
+/// Consecutive blocked steps after which a STALKING creature stops trying to hold its band and
+/// goes looking for another way round. SPRINT has had this since ADR-040
+/// (`PHANTOM_SPRINT_GIVEUP_TICKS`); STALK never did, which is exactly how a creature reached 255.
+pub(super) const PHANTOM_STALK_GIVEUP_TICKS: u8 = 40;
 /// Fraction of the intended step a creature must actually gain, along the direction it meant to go,
 /// for the step to count as progress. Below this it is grinding, not travelling.
 ///
@@ -1078,6 +1096,9 @@ pub(super) struct PhantomMover {
     /// and SEARCH drops its plan; the two hunting states just kept pushing into the same corner at
     /// 10 Hz, which is what "se queda pegado en las esquinas" looks like from the outside.
     pub(super) blocked_ticks: u8,
+    /// Ticks left of "keep following the route even though nothing is blocking right now".
+    /// See `PHANTOM_WEDGE_HYSTERESIS_TICKS`.
+    pub(super) wedge_cooldown: u8,
     /// Seconds left of the post-strike commitment. While positive the lunge holds (still revealed)
     /// and cannot land a second blow; at zero it bounces to STALK.
     pub(super) strike_recover: f32,
@@ -1218,6 +1239,14 @@ impl PhantomMover {
         self.blocked_ticks >= PHANTOM_BLOCKED_REPLAN_TICKS
     }
 
+    /// Should the PATHFINDER keep the wheel this tick? True while wedged, and for
+    /// `PHANTOM_WEDGE_HYSTERESIS_TICKS` after recovering — see that constant for the oscillation
+    /// this exists to break. Without the tail, one good step hands control straight back to the
+    /// straight-line shortcut that caused the wedge.
+    pub(super) fn prefers_route(&self) -> bool {
+        self.is_wedged() || self.wedge_cooldown > 0
+    }
+
     /// Record how much of the step the creature actually got, and drop the route the moment it is
     /// wedged so the next tick re-plans instead of grinding along the same wall.
     ///
@@ -1239,6 +1268,11 @@ impl PhantomMover {
             return;
         }
         if advance >= intended * PHANTOM_MIN_STEP_PROGRESS {
+            // Recovered — but the route keeps the wheel for a while yet, or the shortcut that
+            // wedged it takes over again on the very next tick.
+            if self.is_wedged() {
+                self.wedge_cooldown = PHANTOM_WEDGE_HYSTERESIS_TICKS;
+            }
             self.blocked_ticks = 0;
             return;
         }
@@ -1706,6 +1740,7 @@ impl PhantomDriver {
             search_speed: PHANTOM_SEARCH_SPEED,
             noise_expiry: None,
             blocked_ticks: 0,
+            wedge_cooldown: 0,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
@@ -1919,7 +1954,10 @@ impl PhantomDriver {
         // plan gets thrown away, the straight bearing walks into the corner, and the next tick does
         // it again. That loop is the corner-sticking bug, and it is self-reinforcing precisely
         // because the shortcut looks correct every single time. While wedged, the pathfinder wins.
-        if !self.movers[i].is_wedged()
+        // …and the cooldown keeps it that way for a moment after recovering, or one good step hands
+        // control straight back to the shortcut that wedged it (see PHANTOM_WEDGE_HYSTERESIS_TICKS).
+        self.movers[i].wedge_cooldown = self.movers[i].wedge_cooldown.saturating_sub(1);
+        if !self.movers[i].prefers_route()
             && segment_is_clear(&mut self.grid_cache, layer, from, target)
         {
             self.movers[i].nav_waypoints.clear();
@@ -1940,7 +1978,7 @@ impl PhantomDriver {
         // A WEDGED mover skips the stagger. The stagger exists to spread a COST, and it can deny a
         // turn for up to 0.2 s; a creature grinding into a wall is the one case where waiting out
         // its turn is exactly wrong, and it is bounded by the same `active_cap` as everything else.
-        let may_replan = self.movers[i].is_wedged()
+        let may_replan = self.movers[i].prefers_route()
             || (self.step_counter + i as u64).is_multiple_of(PHANTOM_REPLAN_STRIDE);
         let stale = may_replan
             && (self.movers[i].nav_waypoints.is_empty()
@@ -2602,6 +2640,24 @@ impl PhantomDriver {
         }
         let (_, tpos, dist, tyaw) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
+
+        // ADR-051 follow-up — STALK GETS AN ESCAPE HATCH. Play-test: `blocked_ticks` hit 255 here,
+        // a saturated u8, i.e. twenty-five seconds pressed into geometry with no way out. SPRINT
+        // has had `PHANTOM_SPRINT_GIVEUP_TICKS` since ADR-040; this state never did, so a creature
+        // that wedged while shadowing you stayed wedged until you walked out of LOSE_RADIUS.
+        // Going to SEARCH is the honest answer: it knows roughly where you are and has to find
+        // another way, which is exactly what a thing stuck behind a wall should do.
+        if self.movers[i].blocked_ticks >= PHANTOM_STALK_GIVEUP_TICKS {
+            self.movers[i].blocked_ticks = 0;
+            self.movers[i].nav_waypoints.clear();
+            self.movers[i].state = PhantomState::Search;
+            self.movers[i].state_timer = 0.0;
+            info!(
+                "MPTRACE step=PH_SEARCH event=phantom_stalk_gave_up phantom_id={} reason=wedged",
+                id
+            );
+            return;
+        }
 
         // ADR-048 voice 3 — it breathes while it shadows you. Ambient, so it takes the
         // SHORT cooldown and can never mute the scream of the lunge that follows.
