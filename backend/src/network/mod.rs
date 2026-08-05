@@ -183,6 +183,15 @@ pub struct NetworkManager {
     /// creature holding somebody else. Host-only — it is the only backend that simulates phantoms,
     /// so a joiner's struggle arrives here as a `StruggleReport` packet.
     pub pending_struggles: std::collections::HashSet<PeerId>,
+    /// ADR-053 — the last thing each real player said, kept so a robapieles can say it back.
+    ///
+    /// ONE packet per speaker, overwritten: this is a stolen scrap of voice, not a recording, and
+    /// a rolling buffer would be a per-player audio log living in server memory for no extra
+    /// effect. Opus bytes are passed through untouched — the backend never decodes them (it has no
+    /// codec and wants none), so the "distortion" is the client's job.
+    ///
+    /// Host-only in practice: only the host relays voice and only the host simulates phantoms.
+    pub voice_echo: std::collections::HashMap<PeerId, Vec<u8>>,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     /// Throttle for `send_datagram`'s failure log: millis since `session_start` of the last
@@ -257,6 +266,7 @@ impl NetworkManager {
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
             pending_struggles: std::collections::HashSet::new(),
+            voice_echo: std::collections::HashMap::new(),
             incoming_rx: rx,
             session_start: Instant::now(),
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),
