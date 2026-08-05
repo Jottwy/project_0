@@ -971,6 +971,11 @@ async fn phantom_fake_pickup_touches_only_animation_not_real_state() {
 /// cannot quietly change what these tests are asserting.
 fn population_driver(seed: u64, cap: usize) -> PhantomDriver {
     let mut d = PhantomDriver::new(seed);
+    // ADR-053: the calibration knobs get the same shielding as the population ones — a stray
+    // `PHANTOM_HUNGER_SATED` in the developer's shell must not quietly change what a test asserts.
+    d.hunger_drain_seconds = PHANTOM_HUNGER_DRAIN_SECONDS;
+    d.sated_threshold = PHANTOM_HUNGER_SATED;
+    d.unmask_seconds = PHANTOM_UNMASK_SECONDS;
     d.density_scale = 1.0;
     d.active_cap = cap;
     d

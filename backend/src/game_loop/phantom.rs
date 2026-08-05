@@ -1034,6 +1034,16 @@ pub(super) struct PhantomDriver {
     pub(super) density_scale: f32,
     /// ADR-043 — max simultaneously simulated phantoms (`PHANTOM_ACTIVE_CAP`, env-overridable).
     pub(super) active_cap: usize,
+    /// ADR-050/051 — the three knobs worth turning between play-tests, read once at construction
+    /// like the two above and for the same reason ADR-043 gives: a value that changed mid-session
+    /// would make the creature's behaviour depend on when you looked.
+    ///
+    /// These live on the driver rather than being `const` because they are the ones whose right
+    /// value is a matter of feel, and feel is calibrated by playing, not by recompiling. Everything
+    /// else stays a constant on purpose — a knob nobody turns is just a slower constant.
+    pub(super) hunger_drain_seconds: f32,
+    pub(super) sated_threshold: f32,
+    pub(super) unmask_seconds: f32,
     /// Size of the building roster the blocked-cell overlay was last built from.
     pub(super) built_count: usize,
     /// Seconds until the overlay is rebuilt regardless of size. A place + a demolish in the same
@@ -1190,6 +1200,8 @@ pub(super) struct PhantomMover {
     pub(super) breath_in: f32,
     /// ADR-053 — seconds until this creature may throw your own voice back at you again.
     pub(super) echo_cooldown: f32,
+    /// Copy of the driver's calibration knob, so `is_sated` needs no driver. See that method.
+    pub(super) sated_threshold: f32,
     /// ADR-050 point 9 — seconds left before the grab becomes a kill, and WHO is being held.
     /// The victim is part of the state rather than re-resolved per tick: `choose_target` could
     /// legitimately pick somebody closer mid-grab, and killing a player the creature is not
@@ -1247,8 +1259,12 @@ impl PhantomMover {
 
     /// ADR-050 — is it too full to hunt? The single question the whole redesign turns on, asked in
     /// one place so no branch can drift into its own idea of "sated".
+    ///
+    /// The threshold is copied onto the mover at birth rather than read off the driver: this is
+    /// called from `PhantomMover` methods that have no driver in hand, and threading one through
+    /// would put a `&PhantomDriver` in the signature of half the type for a single float.
     pub(super) fn is_sated(&self) -> bool {
-        self.hunger > PHANTOM_HUNGER_SATED
+        self.hunger > self.sated_threshold
     }
 
     /// ADR-050 — is it hungry enough to be actively dangerous?
@@ -1491,6 +1507,14 @@ impl PhantomDriver {
             // looked, and the draw's whole promise is that it does not.
             density_scale: env_tuning("PHANTOM_DENSITY_SCALE", 1.0f32).max(0.0),
             active_cap: env_tuning("PHANTOM_ACTIVE_CAP", PHANTOM_ACTIVE_CAP),
+            hunger_drain_seconds: env_tuning(
+                "PHANTOM_HUNGER_DRAIN_SECONDS",
+                PHANTOM_HUNGER_DRAIN_SECONDS,
+            )
+            .max(1.0),
+            sated_threshold: env_tuning("PHANTOM_HUNGER_SATED", PHANTOM_HUNGER_SATED)
+                .clamp(0.0, 1.0),
+            unmask_seconds: env_tuning("PHANTOM_UNMASK_SECONDS", PHANTOM_UNMASK_SECONDS).max(0.0),
             built_count: usize::MAX, // forces a build on the first step
             built_resync_in: 0.0,
         }
@@ -1850,6 +1874,7 @@ impl PhantomDriver {
             // Staggered at birth like the breath, so several creatures never echo in chorus.
             echo_cooldown: PHANTOM_ECHO_MIN
                 + rand::random::<f32>() * (PHANTOM_ECHO_MAX - PHANTOM_ECHO_MIN),
+            sated_threshold: self.sated_threshold,
             mimic_pending: None,
             mimic_worn: (false, 0),
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
@@ -2502,7 +2527,7 @@ impl PhantomDriver {
         let (_, tpos, _, _) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
 
-        if self.movers[i].state_timer >= PHANTOM_UNMASK_SECONDS {
+        if self.movers[i].state_timer >= self.unmask_seconds {
             // THE TEAR. Straight into the lunge, which is the first state that reveals — so the
             // `false→true` edge the client decorates lands exactly here, on this frame.
             self.movers[i].enter_sprint();
@@ -3471,7 +3496,7 @@ impl PhantomDriver {
         // freeze skips the whole FSM, and a creature would otherwise stop getting hungry every time
         // it mimed a pickup.
         self.movers[i].hunger =
-            (self.movers[i].hunger - ctx.dt / PHANTOM_HUNGER_DRAIN_SECONDS).max(0.0);
+            (self.movers[i].hunger - ctx.dt / self.hunger_drain_seconds).max(0.0);
         // ADR-053 — IT SAYS YOUR OWN WORDS BACK. Decided in the preamble because every state can do
         // it and the FSM arms are full of early exits, exactly like the reveal seal.
         self.movers[i].echo_cooldown = (self.movers[i].echo_cooldown - ctx.dt).max(0.0);
