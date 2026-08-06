@@ -407,6 +407,7 @@ impl NetworkManager {
 
         for id in timed_out {
             if let Some(peer) = self.peers.remove(&id) {
+                self.purge_peer_state(id);
                 info!("Peer {} ({}) timed out", peer.name, peer.addr);
                 info!(
                     "MPTRACE step=L event=peer_removed reason=heartbeat_timeout self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} remote_players_ids={:?}",

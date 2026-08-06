@@ -435,6 +435,63 @@ async fn peer_timeout_detection() {
     assert_eq!(net.peer_count(), 0);
 }
 
+/// `PeerId` gets reused after a disconnect (`allocate_peer_id` just hands out the next free
+/// number), so any PeerId-keyed state that outlives the disconnect would silently apply to
+/// whichever different player inherits the number next. Covers both call sites of
+/// `purge_peer_state` implicitly (timeout here; the `Disconnect`-packet arm in `handlers.rs`
+/// calls the same one-line helper) and includes a negative control — a peer that stays
+/// connected must keep its state untouched, or a purge-everything bug would pass silently.
+#[tokio::test]
+async fn peer_timeout_purges_orphaned_peer_keyed_state() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    let gone_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut gone = PeerConnection::new(2, "Gone".into(), gone_addr);
+    gone.last_heartbeat = Instant::now() - Duration::from_secs(10);
+    net.peers.insert(2, gone);
+    net.voice_echo.insert(2, vec![1, 2, 3]);
+    net.pending_struggles.insert(2);
+    net.processed_corpse_requests.insert((2, 7));
+    net.last_keepalive_trace_at.insert(2, Instant::now());
+    net.last_transform_trace_at.insert(2, Instant::now());
+
+    let staying_addr: SocketAddr = "127.0.0.1:9998".parse().unwrap();
+    net.peers
+        .insert(3, PeerConnection::new(3, "Staying".into(), staying_addr));
+    net.voice_echo.insert(3, vec![9]);
+    net.pending_struggles.insert(3);
+    net.processed_corpse_requests.insert((3, 9));
+    net.last_keepalive_trace_at.insert(3, Instant::now());
+    net.last_transform_trace_at.insert(3, Instant::now());
+
+    let events = net.check_timeouts();
+    assert_eq!(events.len(), 1);
+
+    assert!(
+        !net.voice_echo.contains_key(&2),
+        "voice_echo del peer desconectado debe purgarse"
+    );
+    assert!(
+        !net.pending_struggles.contains(&2),
+        "pending_struggles del peer desconectado debe purgarse"
+    );
+    assert!(
+        !net.processed_corpse_requests.contains(&(2, 7)),
+        "processed_corpse_requests del peer desconectado debe purgarse"
+    );
+    assert!(!net.last_keepalive_trace_at.contains_key(&2));
+    assert!(!net.last_transform_trace_at.contains_key(&2));
+
+    assert!(
+        net.voice_echo.contains_key(&3),
+        "el peer que sigue conectado no debe perder su estado"
+    );
+    assert!(net.pending_struggles.contains(&3));
+    assert!(net.processed_corpse_requests.contains(&(3, 9)));
+    assert!(net.last_keepalive_trace_at.contains_key(&3));
+    assert!(net.last_transform_trace_at.contains_key(&3));
+}
+
 /// ADR-049. El único test de toda la cadena que caza el modo de fallo que el compilador NO ve.
 ///
 /// La rama `PlayerUpdate` de `handle_packet` sella catorce campos cosméticos en el peer con

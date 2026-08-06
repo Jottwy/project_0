@@ -140,6 +140,7 @@ impl NetworkManager {
 
             PacketPayload::Disconnect { reason } => {
                 if let Some(peer) = self.peers.remove(&sender_id) {
+                    self.purge_peer_state(sender_id);
                     info!(
                         "Peer {} ({}) disconnected: {}",
                         peer.name, peer.addr, reason
@@ -688,6 +689,21 @@ impl NetworkManager {
 
     pub fn peer_count(&self) -> usize {
         self.peers.len()
+    }
+
+    /// Orphan cleanup on disconnect (explicit `Disconnect` packet or heartbeat timeout).
+    /// `PeerId` is reused after a peer leaves (`allocate_peer_id` just hands out the next free
+    /// number), so any state keyed by `PeerId` that outlives the disconnect would silently
+    /// apply to whichever different player inherits the number next. `pending_pickups` is
+    /// excluded on purpose — it self-purges on its own ~400ms deadline regardless of connection
+    /// (ADR-014 drain in `game_loop.rs`), so there is nothing here for it to leak.
+    pub(super) fn purge_peer_state(&mut self, id: PeerId) {
+        self.voice_echo.remove(&id);
+        self.pending_struggles.remove(&id);
+        self.processed_corpse_requests
+            .retain(|(peer, _)| *peer != id);
+        self.last_keepalive_trace_at.remove(&id);
+        self.last_transform_trace_at.remove(&id);
     }
 
     pub fn peer_ids(&self) -> Vec<PeerId> {
