@@ -398,8 +398,14 @@ pub async fn broadcast_stp_harvestables(net: &NetworkManager) {
 }
 
 /// Send nearby chunk states to all peers (for chunks the local player owns).
+///
+/// Host-only. `chunk.owner` is stamped with the RECEIVER's own local_id on every apply
+/// path (`update_ownership`, `apply_chunk_sync`), so before this guard a joiner calling
+/// this too made every overlapping backend reclaim the other's chunks every 200ms —
+/// last-writer-wins with no arbiter, ping-ponging `owner` and re-seeding entities/items
+/// on both sides.
 pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_pos: Vec3) {
-    if net.peers.is_empty() {
+    if !net.is_host || net.peers.is_empty() {
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
@@ -636,5 +642,74 @@ mod voice_tests {
         // seria justo el fallo abierto que este filtro existe para impedir.
         let net = host_with_peers(&[(2, [0.0, 1.8, 0.0], false)]).await;
         assert!(voice_destinations(&net, 9999).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod chunk_broadcast_tests {
+    use super::*;
+    use crate::network::peer::PeerConnection;
+    use crate::network::NetworkEvent;
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    fn loopback_addr(net: &NetworkManager) -> SocketAddr {
+        let mut addr = net.local_addr();
+        addr.set_ip(std::net::Ipv4Addr::LOCALHOST.into());
+        addr
+    }
+
+    // P0-1: a non-host must never broadcast chunk states — see the doc-comment on
+    // `broadcast_chunk_states`. Wired as a positive+negative pair over real sockets so a
+    // regression that silences the function entirely (e.g. an early return that always
+    // fires) cannot pass by accident.
+    #[tokio::test]
+    async fn only_the_host_broadcasts_chunk_states() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let host_addr = loopback_addr(&host);
+        let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        let joiner_addr = loopback_addr(&joiner);
+
+        host.peers
+            .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
+        joiner
+            .peers
+            .insert(1, PeerConnection::new(1, "Host".into(), host_addr));
+
+        let pos = Vec3::new(0.0, 1.8, 0.0);
+
+        let mut joiner_world = World::new(42);
+        joiner_world.update_ownership(pos, joiner.local_id);
+        assert!(
+            joiner_world
+                .chunks
+                .values()
+                .any(|c| c.owner == Some(joiner.local_id)),
+            "setup bug: the joiner needs an owned chunk in range or this test is vacuous"
+        );
+
+        broadcast_chunk_states(&joiner, &joiner_world, pos).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let host_events = host.process_incoming().await;
+        assert!(
+            !host_events
+                .iter()
+                .any(|e| matches!(e, NetworkEvent::ChunkTransferReceived { .. })),
+            "a non-host must never emit ChunkState, got: {host_events:?}"
+        );
+
+        // Positive control: same call, same range, only `is_host` differs — proves the
+        // silence above is the guard firing, not an unrelated setup mistake.
+        let mut host_world = World::new(42);
+        host_world.update_ownership(pos, host.local_id);
+        broadcast_chunk_states(&host, &host_world, pos).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let joiner_events = joiner.process_incoming().await;
+        assert!(
+            joiner_events
+                .iter()
+                .any(|e| matches!(e, NetworkEvent::ChunkTransferReceived { .. })),
+            "positive control failed: the host should still broadcast, got: {joiner_events:?}"
+        );
     }
 }
