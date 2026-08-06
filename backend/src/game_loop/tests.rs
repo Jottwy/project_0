@@ -216,6 +216,23 @@ fn resolve_phantom_density_scale_agrees_when_save_and_launch_match() {
     assert_eq!(resolve_phantom_density_scale(1.0, Some(&save)), 1.0);
 }
 
+// P0-3: antes, un `world_seed` divergente entre el save y el env de lanzamiento era un warn +
+// adopción silenciosa del valor del save — la misma clase de degradación silenciosa que este
+// commit existe para cerrar. Ahora es un `save_world_seed_conflicts` que el call site en `run()`
+// convierte en salida fatal; aquí se testea solo la decisión, sin matar el proceso de test.
+
+#[test]
+fn save_world_seed_conflicts_when_save_and_launch_disagree() {
+    let save = crate::persistence::save::SaveFile::new("s", 42);
+    assert!(save_world_seed_conflicts(&save, 99));
+}
+
+#[test]
+fn save_world_seed_does_not_conflict_when_they_agree() {
+    let save = crate::persistence::save::SaveFile::new("s", 42);
+    assert!(!save_world_seed_conflicts(&save, 42));
+}
+
 /// El matiz que hace que la receta ingenua `max(roster) + 1` sea INCORRECTA: los rangos estan
 /// particionados, asi que el asignador de drops no puede mirar los ids de construcciones —
 /// sembraria dentro del rango ajeno y garantizaria la colision en vez de evitarla.
