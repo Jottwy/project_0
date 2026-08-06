@@ -2,6 +2,17 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-06 (4ª tanda) — **Gap de wire-schema en P0-2 encontrado y corregido antes de anclar ADR-054 + ADR-032**
+- Acción: ADR-054 y enmienda ADR-032 anclados en `docs/DECISIONS.md` (líneas finales); gap de wire-schema v20→21 corregido en `backend/src/ipc/server.rs`; entrada v21 nueva en `docs/systems/ipc-wire-schema.md` con nota explícita. `cargo test` **560/560** (mismo conteo que P0-3 — el bump es solo constante + comentario + doc, sin tests nuevos), fmt y clippy `--all-targets -D warnings` limpios.
+
+1. **GAP DETECTADO ANTES DE ANCLAR ADR-054:** Commit `fc1ab70` (P0-2) añadió `phantom_density_scale: f32` a `PacketPayload::HandshakeAck` (payload P2P) razonando *"additive, nada que romper"*. El razonamiento era cierto por precedente: bumps anteriores (v3→v19) fueron todos aditivos y ninguno re-contó. **Pero ADR-047 (fijador de wire-schema) establece explícitamente que CUALQUIER cambio P2P bumpea**, aditivo o no. Se corrigió antes de anclar: `WIRE_SCHEMA_VERSION` v20→21 en `backend/src/ipc/server.rs`, entrada v21 nueva en `docs/systems/ipc-wire-schema.md` (con nota del porqué del gap para que sesiones futuras no repitan la misma desviación), y el párrafo de ADR-054 que decía "no hay versión de wire que romper" se enmiendó al anclar.
+
+2. **VERIFICACIÓN POST-FIX:** `cargo test` 560/560 passed, 0 failed, 4 ignored (gap no impacta; es versionado, no ruptura); `cargo fmt --all -- --check` limpio; `cargo clippy --all-targets -- -D warnings` limpio. Backend NO re-desplegado todavía (fix de servidor + wire P2P, espera a siguiente sesión).
+
+3. **ENMIENDA ADR-032 (lock exclusivo del save..., P0-3):** Verificada contra código antes de anclar — `backend/Cargo.toml` tiene `fd-lock`, `backend/src/persistence/lock.rs` existe con `open_for_locking`/`try_acquire`/`acquire_or_exit`, `backend/src/game_loop.rs` tiene `save_world_seed_conflicts` y la adquisición host-only antes de `load_or_fresh`. Coincide exactamente con la propuesta redactada en P0-3 — anclada sin cambios.
+
+4. **REFERENCIA EN DECISIONS.md:** ADR-054 ancla línea final del archivo; enmienda ADR-032 ancla bajo "### Enmienda ADR-032 (lock exclusivo del save...)" al final también. `wc -l` pre-anchor 1961, post-anchor 1987, verificado sin truncado.
+
 - Fecha: 2026-08-06 (3ª tanda) — **P0-3, la más grave de las tres: lock exclusivo del save + `world_seed` en conflicto pasa a error duro**
 - COMMIT: `bdde108`. `cargo test` **560/560** (555 + 5 nuevos), fmt y clippy `--all-targets -D warnings` limpios. Backend NO re-desplegado (fix de servidor, sin wire).
 
@@ -9,7 +20,7 @@
 2. **Mecanismo.** Lock exclusivo OS-level (`flock`/`LockFileEx` vía `fd-lock`) en `<save_path>.lock` — nunca el save mismo, para no interferir con el `tmp+rename` de `save_to`. Host-only, adquirido ANTES de `load_or_fresh` (para no leer nunca un save que otro proceso está escribiendo ahora mismo), mantenido como variable local de todo `run()` para que viva el proceso entero. Al fallar: `FATAL` explícito con ruta + pid y `std::process::exit(1)` — nunca degradación silenciosa, nunca ruta alternativa. El warn+adopción silenciosa de `world_seed` divergente (game_loop.rs:271-277 de antes) pasa a la misma disciplina: `save_world_seed_conflicts` + error duro.
 3. **VERIFICADO A MANO (no solo tests), 4 escenarios reales lanzando el binario:** host solo arranca y genera mundo normal; **segundo host con el mismo seed y el primero vivo en el mismo cwd sale con el `FATAL` y exit 1**; joiner arranca limpio compartiendo cwd con el host (confirma que el lock nunca se dispara entre ellos); **kill duro del host (`Stop-Process -Force`, equivalente a `kill -9`) + relanzamiento con el mismo seed arranca limpio** — el kernel libera el lock, nunca queda un mundo inaccesible. Un detalle honesto: en Windows, el diagnóstico de "pid que tiene el lock" degrada a `unknown` cuando el segundo proceso intenta LEER el fichero mientras el primero lo tiene bloqueado en exclusiva (sharing violation) — la garantía central (rechazar, nunca corromper) queda intacta; solo el dato informativo del pid es mejor-esfuerzo en ese caso concreto.
 4. **HALLAZGO FUERA DE ALCANCE, reportado y NO tocado (pedido explícito de la tarea):** `SaveConfig` está muerto en las **4** columnas, no solo `entity_scaling` como se pensó en P0-1/P0-2 — `max_players`/`teleport_interval_min`/`teleport_interval_max` también se hardcodean al escribir y jamás se leen al cargar.
-5. **PENDIENTE — enmienda de ADR-032 propuesta, redactada, NO escrita en DECISIONS.md** (instrucción explícita): texto abajo, a la espera de que Joel la valide.
+5. **ANCLADO — enmienda de ADR-032 en docs/DECISIONS.md** (líneas finales): propuesta redactada en P0-3, anclada sin cambios tras verificación contra el código real en 4ª tanda. Texto original de propuesta abajo para registro histórico.
 
 ### Enmienda a ADR-032 propuesta (texto para revisión — NO está en DECISIONS.md)
 
@@ -32,7 +43,7 @@
 3. **Mecanismo — mismo precedente que `world_seed`, sin tocarlo.** `NetworkManager.phantom_density_scale`, leído una vez en `main.rs` tras `bind()` (no como parámetro de `bind()`, para no tocar ~20 call sites de test); `resolve_phantom_density_scale` (game_loop.rs, función pura) hace que un save cargado gane con warn, igual que `world_seed`; viaja en `HandshakeAck` (campo nuevo, `serde(default = "..." )` a 1.0 — no `default` a secas, que daría 0.0 = "sin fantasmas"); el joiner adopta el valor del host con warn si diverge. `PhantomDriver::new` ya no lee env para este campo — default neutro `1.0` (idéntico para los ~55 call sites de test que no lo tocan), el caller lo sobreescribe desde `net.phantom_density_scale` tras construir.
 4. **DIRECCIÓN AJUSTADA respecto a la preferida:** campo escalar, no `WorldParams` — solo calificó 1 parámetro de los 5, así que envolver uno solo en un struct habría sido la abstracción prematura que el propio CLAUDE.md prohíbe. Dicho explícito antes de implementar, no decidido en silencio.
 5. **Tests nuevos (4):** round-trip de `HandshakeAck` con valor no-default; adopción sobre sockets reales que además demuestra que el sorteo COINCIDE una vez adoptado (con control negativo: mismo seed, densidad distinta, sorteo distinto — o el test sería vacío); 3 unitarios de `resolve_phantom_density_scale`; round-trip de persistencia extendido.
-6. **PENDIENTE — ADR propuesto, redactado, NO escrito en DECISIONS.md** (instrucción explícita de la tarea): texto abajo, a la espera de que Joel lo valide y lo ancle él o pida que se ancle.
+6. **ANCLADO — ADR-054 en docs/DECISIONS.md** (líneas finales): propuesta redactada en P0-2, anclada en 4ª tanda tras detectar y corregir gap de wire-schema (v20→v21, ADR-047 compliance). Texto original de propuesta abajo para registro histórico.
 
 ### ADR propuesto (texto para revisión — NO está en DECISIONS.md)
 

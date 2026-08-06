@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v19
+# IPC wire schema — changelog v2 → v21
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **19**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **21**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -163,7 +163,7 @@ writer: `SendPlayerInput` goes from 19 to 21 fields and its golden is regenerate
 Additive and inert otherwise: a player who never carries is byte-identical to a v18 one, and
 a v18 receiver decodes both to 0 and simply sees empty hands.
 
-### v20 (ADR-050) — actual
+### v20 (ADR-050)
 
 No pose field changes at all. Adds one inbound IPC action, two outbound IPC events and one
 P2P packet type, all of them for the grab:
@@ -183,3 +183,19 @@ the existing `damage` field, so a v19 victim backend, whose `_` arm treats unkno
 hit, would apply 2.5 damage instead of opening a window: the v20 backend has explicit arms for
 both. Degradation is therefore NOT silent across this bump for a mixed-version session, which
 is why it is a bump and not a quiet addition.
+
+### v21 (ADR-054) — actual
+
+Adds `phantom_density_scale: f32` to `PacketPayload::HandshakeAck` (P2P, host → joiner),
+`#[serde(default = "default_phantom_density_scale")]` to 1.0 = no scaling. Same precedent as
+`world_seed` in the same packet: the phantom population draw (`phantom_spawn::draw_into`) is a
+pure function of `world_seed` AND this scalar, so a joiner deriving it from its own process env
+instead of the host's would compute a different population from the same seed. A v20 peer omits
+the field and decodes 1.0, so an old-vs-new session degrades to "no density scaling applied" —
+cosmetic, never an error.
+
+Landed in `fc1ab70` without this bump — the commit reasoned "additive, nothing to break", which
+is true of every prior pose-relay field addition (v3 through v19) and none of those skipped the
+counter for that reason. The rule this changelog states at the top (a P2P-only change bumps the
+counter too, regardless of whether the shape change is additive) applies here exactly as it did
+there; this entry and the `WIRE_SCHEMA_VERSION` bump close that gap.
