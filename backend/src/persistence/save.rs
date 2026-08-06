@@ -88,6 +88,16 @@ pub struct SaveFile {
     pub stp_carryables: Vec<StpCarryableInfo>,
     #[serde(default)]
     pub stp_harvestables: Vec<StpHarvestableInfo>,
+    /// P0-2: density multiplier for the phantom population draw, same precedence rule as
+    /// `world_seed` — a loaded save wins over the launch-time env. `#[serde(default = "...")]`
+    /// (not bare `default`) because f32's zero default would mean "no phantoms ever", not
+    /// "unset"; a save written before this field existed must load as 1.0 (no scaling).
+    #[serde(default = "default_phantom_density_scale")]
+    pub phantom_density_scale: f32,
+}
+
+fn default_phantom_density_scale() -> f32 {
+    1.0
 }
 
 /// ADR-032: metadatos que deben SOBREVIVIR a un ciclo de carga.
@@ -138,6 +148,7 @@ impl SaveFile {
             stp_buildings: Vec::new(),
             stp_carryables: Vec::new(),
             stp_harvestables: Vec::new(),
+            phantom_density_scale: 1.0,
         }
     }
 
@@ -235,6 +246,7 @@ pub fn build_save(
     stp_buildings: &[StpBuildingInfo],
     stp_carryables: &[StpCarryableInfo],
     stp_harvestables: &[StpHarvestableInfo],
+    phantom_density_scale: f32,
 ) -> SaveFile {
     let mut corpses: Vec<CorpseData> = world.corpses.values().cloned().collect();
     // Stable ordering for a deterministic file (mirrors visible_corpse_views' sort rationale).
@@ -254,6 +266,7 @@ pub fn build_save(
     save.stp_buildings = stp_buildings.to_vec();
     save.stp_carryables = stp_carryables.to_vec();
     save.stp_harvestables = stp_harvestables.to_vec();
+    save.phantom_density_scale = phantom_density_scale;
     save
 }
 
@@ -269,6 +282,7 @@ pub fn save_world<P: AsRef<Path>>(
     stp_buildings: &[StpBuildingInfo],
     stp_carryables: &[StpCarryableInfo],
     stp_harvestables: &[StpHarvestableInfo],
+    phantom_density_scale: f32,
 ) -> std::io::Result<()> {
     let mut save = build_save(
         session_name,
@@ -279,6 +293,7 @@ pub fn save_world<P: AsRef<Path>>(
         stp_buildings,
         stp_carryables,
         stp_harvestables,
+        phantom_density_scale,
     );
     save.save_to(path)
 }
@@ -383,11 +398,14 @@ mod tests {
             &buildings,
             &carryables,
             &harvestables,
+            2.5,
         )
         .expect("save should succeed");
 
         let loaded = load_or_fresh(&path).expect("freshly written save must load");
         assert_eq!(loaded.world_seed, 42);
+        // P0-2: persists alongside world_seed, same precedence rule.
+        assert!((loaded.phantom_density_scale - 2.5).abs() < 1e-4);
         assert_eq!(loaded.corpses.len(), 2);
         assert!(loaded.corpses.iter().any(|c| c.is_chest));
         assert!(loaded
@@ -515,6 +533,7 @@ mod tests {
             &[],
             &[],
             &[],
+            1.0,
         )
         .expect("first save");
 
@@ -529,6 +548,7 @@ mod tests {
             &[],
             &[],
             &[],
+            1.0,
         )
         .expect("second save");
 
@@ -562,6 +582,7 @@ mod tests {
             &[],
             &[],
             &[],
+            1.0,
         )
         .expect("first save");
         let first = load_or_fresh(&path).expect("first save must load");
@@ -574,7 +595,8 @@ mod tests {
         // Guardado 2: continuidad desde el cargado + 300 s de sesion.
         let mut meta = SaveMeta::from_loaded(&first);
         meta.play_time_seconds += 300;
-        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[]).expect("second save");
+        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[], 1.0)
+            .expect("second save");
 
         let second = load_or_fresh(&path).expect("second save must load");
         assert_eq!(
@@ -586,7 +608,8 @@ mod tests {
         // Guardado 3: el tiempo ACUMULA en vez de reiniciarse cada sesion.
         let mut meta = SaveMeta::from_loaded(&second);
         meta.play_time_seconds += 120;
-        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[]).expect("third save");
+        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[], 1.0)
+            .expect("third save");
 
         let third = load_or_fresh(&path).expect("third save must load");
         assert_eq!(third.play_time_seconds, 420);

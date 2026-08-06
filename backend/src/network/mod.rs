@@ -214,6 +214,11 @@ pub struct NetworkManager {
     pub last_pickup_at: Option<Instant>,
     next_peer_id: PeerId,
     pub world_seed: u64,
+    /// P0-2: density multiplier for the phantom population draw. Same shape as `world_seed` —
+    /// read once from env at boot (or from a loaded save, which wins), travels in the
+    /// HandshakeAck, and the joiner adopts the host's value. Defaults to 1.0 (no scaling) so
+    /// every existing test constructing a `NetworkManager` directly keeps today's behavior.
+    pub phantom_density_scale: f32,
     global_sequence: u32,
     pub local_name: String,
     pending_connect_addr: Option<SocketAddr>,
@@ -282,6 +287,7 @@ impl NetworkManager {
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
+            phantom_density_scale: 1.0,
             global_sequence: 0,
             local_name: format!("Player{local_id}"),
             pending_connect_addr: None,

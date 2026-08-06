@@ -123,7 +123,15 @@ impl NetworkManager {
                 peers,
                 anchors: _,
                 stabilizers: _,
-            } => self.handle_handshake_ack(pkt.addr, sender_id, assigned_id, world_seed, peers),
+                phantom_density_scale,
+            } => self.handle_handshake_ack(
+                pkt.addr,
+                sender_id,
+                assigned_id,
+                world_seed,
+                peers,
+                phantom_density_scale,
+            ),
 
             PacketPayload::Heartbeat => {
                 // Already updated heartbeat above.
@@ -619,6 +627,7 @@ impl NetworkManager {
         assigned_id: PeerId,
         world_seed: u64,
         peers: Vec<PeerInfo>,
+        phantom_density_scale: f32,
     ) -> Option<NetworkEvent> {
         if self.is_host {
             return None; // Host doesn't receive handshake acks.
@@ -646,6 +655,15 @@ impl NetworkManager {
         // Update our local ID to the one assigned by the host.
         self.local_id = assigned_id;
         self.world_seed = world_seed;
+        // P0-2: the host's value always wins — same precedent as world_seed above. Our own
+        // env-derived value never reaches PhantomDriver (nothing consumes it before this).
+        if self.phantom_density_scale != phantom_density_scale {
+            warn!(
+                "P0-2: local PHANTOM_DENSITY_SCALE {} differs from host's {}; adopting host's value",
+                self.phantom_density_scale, phantom_density_scale
+            );
+        }
+        self.phantom_density_scale = phantom_density_scale;
         self.pending_connect_addr = None;
 
         // Add the host as a peer.
@@ -708,6 +726,7 @@ impl NetworkManager {
                 .collect(),
             anchors: vec![],
             stabilizers: vec![],
+            phantom_density_scale: self.phantom_density_scale,
         }
     }
 

@@ -175,6 +175,7 @@ async fn hydrate_clears_the_absolute_invulnerability_tick() {
         &[],
         &[],
         &[],
+        1.0,
     );
     hydrate_from_save(&mut world, &mut player, &mut net, save);
 
@@ -187,6 +188,32 @@ async fn hydrate_clears_the_absolute_invulnerability_tick() {
         (player.stats.health - 73.0).abs() < 1e-4,
         "sanear el tick de invulnerabilidad no puede tirar el resto de stats"
     );
+}
+
+// P0-2: `resolve_phantom_density_scale` es la misma regla de precedencia que world_seed
+// (game_loop.rs:270-280) extraída a función pura, precisamente para poder testearla sin
+// levantar el loop entero — mismo motivo que llevó a mover el gate de `broadcast_chunk_states`
+// DENTRO de la función en P0-1.
+
+#[test]
+fn resolve_phantom_density_scale_keeps_launch_value_without_a_save() {
+    assert_eq!(resolve_phantom_density_scale(3.0, None), 3.0);
+}
+
+#[test]
+fn resolve_phantom_density_scale_the_save_wins_when_it_differs_from_launch_env() {
+    let mut save = crate::persistence::save::SaveFile::new("s", 42);
+    save.phantom_density_scale = 5.0;
+    // El env de lanzamiento (3.0) NUNCA debe pisar lo persistido — env divergente al cargar no
+    // pisa los params, misma regla que world_seed.
+    assert_eq!(resolve_phantom_density_scale(3.0, Some(&save)), 5.0);
+}
+
+#[test]
+fn resolve_phantom_density_scale_agrees_when_save_and_launch_match() {
+    let mut save = crate::persistence::save::SaveFile::new("s", 42);
+    save.phantom_density_scale = 1.0;
+    assert_eq!(resolve_phantom_density_scale(1.0, Some(&save)), 1.0);
 }
 
 /// El matiz que hace que la receta ingenua `max(roster) + 1` sea INCORRECTA: los rangos estan
