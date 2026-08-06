@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -96,6 +96,16 @@ fn resolve_save_path(seed: u64) -> std::path::PathBuf {
     std::env::var("SAVE_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from(format!("./saves/world_{seed}.json")))
+}
+
+/// P0-3: `true` when a loaded save's `world_seed` disagrees with the launch-time WORLD_SEED.
+/// Extracted so the caller's fatal-exit decision is testable without actually exiting the
+/// process — same reason `resolve_phantom_density_scale` above is its own function.
+fn save_world_seed_conflicts(
+    save: &crate::persistence::save::SaveFile,
+    launch_world_seed: u64,
+) -> bool {
+    save.world_seed != launch_world_seed
 }
 
 /// P0-2: same precedent as `world_seed`'s adoption below — a loaded save wins over the
@@ -281,6 +291,32 @@ pub async fn run(
     // (and player position) win. Non-host backends never load/save — world state isn't
     // authoritative there (joiners adopt the host's world via WorldSync).
     let save_path = resolve_save_path(net.world_seed);
+
+    // P0-3: exclusive lock on the world save, held for the whole process — host-only, same
+    // reason loading/saving already are (a joiner never touches persistence, see the checkpoint
+    // entry for why that's load-bearing here). Acquired BEFORE `load_or_fresh` so this backend
+    // never even reads a save another live host might be mid-write on.
+    let mut world_lock = if net.is_host {
+        Some(
+            crate::persistence::lock::open_for_locking(&save_path).unwrap_or_else(|e| {
+                eprintln!(
+                    "FATAL: cannot open world lock file for {} ({e}). Refusing to start.",
+                    save_path.display()
+                );
+                error!(
+                    "P0-3: could not open world lock file for {}: {e}",
+                    save_path.display()
+                );
+                std::process::exit(1);
+            }),
+        )
+    } else {
+        None
+    };
+    let _world_lock_guard = world_lock
+        .as_mut()
+        .map(|lock| crate::persistence::lock::acquire_or_exit(lock, &save_path));
+
     let mut session_name = net.local_name.clone();
     let mut loaded_save = if net.is_host {
         crate::persistence::save::load_or_fresh(&save_path)
@@ -288,11 +324,23 @@ pub async fn run(
         None
     };
     if let Some(save) = &loaded_save {
-        if save.world_seed != net.world_seed {
-            warn!(
-                "ADR-032: save world_seed {} differs from launch WORLD_SEED {}; adopting saved seed",
+        // P0-3: a mismatch used to be a warn + silent adopt. That degradation is exactly what
+        // this task exists to close — two things disagreeing about which world this is must
+        // refuse to start, not quietly merge into whichever one the code happened to load.
+        if save_world_seed_conflicts(save, net.world_seed) {
+            eprintln!(
+                "FATAL: save at {} has world_seed={} but this launch requested WORLD_SEED={}. \
+                 Refusing to start — set WORLD_SEED={} or use a different SAVE_PATH.",
+                save_path.display(),
+                save.world_seed,
+                net.world_seed,
+                save.world_seed
+            );
+            error!(
+                "P0-3: save world_seed {} != launch WORLD_SEED {}; refusing to start",
                 save.world_seed, net.world_seed
             );
+            std::process::exit(1);
         }
         net.world_seed = save.world_seed;
         world = World::new(save.world_seed);
