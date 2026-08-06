@@ -19,6 +19,73 @@ async fn bind_and_local_addr() {
     assert_ne!(addr.port(), 0);
 }
 
+// P0-2: the joiner's own PHANTOM_DENSITY_SCALE never mattered to the draw before this (only the
+// host ever calls it), but it must not survive the handshake either — the host's value always
+// wins, same precedent as world_seed. Proven end-to-end: two DIFFERING local values, real
+// handshake, then the same deterministic draw over both post-adoption values must agree — which
+// it would NOT if the joiner had kept its own.
+#[tokio::test]
+async fn joiner_adopts_the_hosts_phantom_density_scale_and_it_changes_the_draw() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.phantom_density_scale = 8.0;
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.phantom_density_scale = 1.0; // differs from the host's on purpose
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    assert_eq!(
+        joiner.phantom_density_scale, 8.0,
+        "the joiner must adopt the host's value, not keep its own"
+    );
+
+    // The draw is a pure function of its arguments (world_seed, block, layer, density_scale) —
+    // see phantom_spawn::draw_into's doc-comment. With BOTH sides now agreeing on the value,
+    // both must draw the identical population for the same block/layer.
+    let mut host_drawn = Vec::new();
+    crate::world::phantom_spawn::draw_into(
+        host.world_seed,
+        (0, 0),
+        0,
+        host.phantom_density_scale,
+        &mut host_drawn,
+    );
+    let mut joiner_drawn = Vec::new();
+    crate::world::phantom_spawn::draw_into(
+        joiner.world_seed,
+        (0, 0),
+        0,
+        joiner.phantom_density_scale,
+        &mut joiner_drawn,
+    );
+    assert_eq!(
+        host_drawn, joiner_drawn,
+        "same world_seed + same adopted density_scale must draw the same population"
+    );
+
+    // Negative control: the joiner's OWN pre-adoption value would have drawn something
+    // different — otherwise the assertion above would be vacuous (both empty, or a value this
+    // block/layer's density happens not to affect).
+    let mut joiner_drawn_with_own_value = Vec::new();
+    crate::world::phantom_spawn::draw_into(
+        joiner.world_seed,
+        (0, 0),
+        0,
+        1.0,
+        &mut joiner_drawn_with_own_value,
+    );
+    assert_ne!(
+        host_drawn, joiner_drawn_with_own_value,
+        "setup bug: density_scale 8.0 vs 1.0 must draw a different population at (0,0)/layer 0, \
+         or this test cannot tell adoption apart from coincidence"
+    );
+}
+
 #[tokio::test]
 async fn two_peers_handshake_and_sync() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();

@@ -353,6 +353,10 @@ pub struct ItemSyncData {
     pub position: [f32; 3],
 }
 
+fn default_phantom_density_scale() -> f32 {
+    1.0
+}
+
 // ─── Packet payload (MessagePack body after the 12-byte header) ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,6 +374,13 @@ pub enum PacketPayload {
         peers: Vec<PeerInfo>,
         anchors: Vec<AnchorInfo>,
         stabilizers: Vec<StabilizerInfo>,
+        /// P0-2: density multiplier for the phantom population draw (`PHANTOM_DENSITY_SCALE`),
+        /// travels alongside `world_seed` for the same reason — the draw is a pure function of
+        /// both, so a joiner with a differing local env would derive a different population.
+        /// Appended last + serde(default) → a peer built before P0-2 omits it and decodes to
+        /// 1.0 (no scaling, same as the env var's own default).
+        #[serde(default = "default_phantom_density_scale")]
+        phantom_density_scale: f32,
     },
     WorldSync {
         world_seed: u64,
@@ -930,6 +941,7 @@ mod tests {
             }],
             anchors: vec![],
             stabilizers: vec![],
+            phantom_density_scale: 2.5,
         };
         let header = PacketHeader::new(payload.type_code(), 1, 1, 200);
         let data = encode_packet(&header, &payload);
@@ -938,10 +950,12 @@ mod tests {
             PacketPayload::HandshakeAck {
                 assigned_id,
                 world_seed,
+                phantom_density_scale,
                 ..
             } => {
                 assert_eq!(assigned_id, 2);
                 assert_eq!(world_seed, 42);
+                assert_eq!(phantom_density_scale, 2.5);
             }
             _ => panic!("wrong variant"),
         }

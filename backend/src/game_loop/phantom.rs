@@ -1029,8 +1029,13 @@ pub(super) struct PhantomDriver {
     /// `movers.len()` on purpose: indices shift when a creature deactivates, and reusing one would
     /// silently re-cast a survivor as somebody else the next time a neighbour despawned.
     pub(super) next_victim_slot: usize,
-    /// ADR-043 — density multiplier applied to the draw (`PHANTOM_DENSITY_SCALE`). Held here so
-    /// the pure draw stays a pure function of its arguments.
+    /// ADR-043 — density multiplier applied to the draw. Held here so the pure draw stays a pure
+    /// function of its arguments. P0-2: no longer read from env here — `new` sets the neutral
+    /// default (1.0) and the caller overwrites it from `net.phantom_density_scale` right after
+    /// construction, so the value can travel in the HandshakeAck and the save file instead of
+    /// being fixed per-process (a joiner's own env never reached this before P0-2 either, since
+    /// only the host ever calls the population draw — but the value is meant to be a property of
+    /// the world, not of whichever machine happens to be host).
     pub(super) density_scale: f32,
     /// ADR-043 — max simultaneously simulated phantoms (`PHANTOM_ACTIVE_CAP`, env-overridable).
     pub(super) active_cap: usize,
@@ -1505,7 +1510,9 @@ impl PhantomDriver {
             // ADR-043 — the load-test levers. Read ONCE at construction, not per tick: a value
             // that could change mid-session would make the world's population depend on when you
             // looked, and the draw's whole promise is that it does not.
-            density_scale: env_tuning("PHANTOM_DENSITY_SCALE", 1.0f32).max(0.0),
+            // P0-2: density_scale's neutral default — the caller (game_loop::run) overwrites it
+            // right after construction from net.phantom_density_scale. See the field's doc-comment.
+            density_scale: 1.0,
             active_cap: env_tuning("PHANTOM_ACTIVE_CAP", PHANTOM_ACTIVE_CAP),
             hunger_drain_seconds: env_tuning(
                 "PHANTOM_HUNGER_DRAIN_SECONDS",

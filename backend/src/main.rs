@@ -136,6 +136,15 @@ async fn main() {
     let net_name = std::env::var("NET_NAME").unwrap_or_else(|_| format!("Player{net_id}"));
     net.local_name = net_name;
 
+    // P0-2: launch-time value for the phantom population draw. A loaded save overrides this
+    // (game_loop::run, same precedent as world_seed); the joiner side adopts the host's value
+    // from the HandshakeAck regardless of what it read here.
+    net.phantom_density_scale = std::env::var("PHANTOM_DENSITY_SCALE")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(1.0)
+        .max(0.0);
+
     info!(
         "Networking: NET_PORT={}, NET_ID={}, host={}, seed={}",
         net_port, net_id, is_host, world_seed

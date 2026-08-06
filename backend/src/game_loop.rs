@@ -98,6 +98,26 @@ fn resolve_save_path(seed: u64) -> std::path::PathBuf {
         .unwrap_or_else(|_| std::path::PathBuf::from(format!("./saves/world_{seed}.json")))
 }
 
+/// P0-2: same precedent as `world_seed`'s adoption below — a loaded save wins over the
+/// launch-time env, with a warn when they differ. Pure so it's testable without driving the
+/// whole loop (see the tick-gate note on `broadcast_chunk_states` from P0-1 for why that matters
+/// here: nothing in `run()` exercises this in isolation otherwise).
+fn resolve_phantom_density_scale(
+    launch_value: f32,
+    loaded_save: Option<&crate::persistence::save::SaveFile>,
+) -> f32 {
+    let Some(save) = loaded_save else {
+        return launch_value;
+    };
+    if save.phantom_density_scale != launch_value {
+        warn!(
+            "P0-2: save phantom_density_scale {} differs from launch PHANTOM_DENSITY_SCALE {}; adopting saved value",
+            save.phantom_density_scale, launch_value
+        );
+    }
+    save.phantom_density_scale
+}
+
 /// Metadatos a persistir en ESTE guardado: la fecha de creación original más el tiempo jugado
 /// acumulado, al que se suma lo que lleva corriendo la sesión actual. `tick` arranca en 0 en
 /// cada lanzamiento del proceso, así que es exactamente la duración de esta sesión.
@@ -278,6 +298,8 @@ pub async fn run(
         world = World::new(save.world_seed);
         session_name = save.session_name.clone();
     }
+    net.phantom_density_scale =
+        resolve_phantom_density_scale(net.phantom_density_scale, loaded_save.as_ref());
     // Continuidad de metadatos: sin esto `created_at` se re-estampa en cada guardado y
     // `play_time_seconds` se escribe siempre 0. Se captura ANTES de que `hydrate_from_save`
     // consuma el `SaveFile`.
@@ -324,6 +346,8 @@ pub async fn run(
     // ADR-016 slice 2: host-only driver that walks phantom peers (the robapieles) each
     // entity tick, resolving collision via ADR-017's sim-only chunk cache.
     let mut phantom_driver = PhantomDriver::new(net.world_seed);
+    // P0-2: the value this backend would use if it hosts, resolved above (env, save-overridden).
+    phantom_driver.density_scale = net.phantom_density_scale;
     // ADR-032 (snap de sesión restaurada): armed by the hydration branch below. The
     // "session_restored" event CANNOT be emitted at hydration time — Unity's IPC client hasn't
     // connected yet (broadcast to zero receivers = dropped) — so it is deferred until the first
@@ -448,6 +472,7 @@ pub async fn run(
                                 &net.stp_buildings,
                                 &net.stp_carryables,
                                 &net.stp_harvestables,
+                                net.phantom_density_scale,
                             ) {
                                 Ok(()) => info!(
                                     "ADR-032: save-on-shutdown written to {}",
@@ -1149,6 +1174,7 @@ pub async fn run(
                 &net.stp_buildings,
                 &net.stp_carryables,
                 &net.stp_harvestables,
+                net.phantom_density_scale,
             ) {
                 Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
                 Err(e) => warn!("ADR-032: autosave failed: {e}"),
