@@ -119,6 +119,53 @@ async fn two_peers_handshake_and_sync() {
     assert_ne!(joiner.local_id, 0, "joiner should have an assigned ID");
 }
 
+/// ADR-045 Fase 2: the host knows its `world_seed` from its own launch args at construction; a
+/// joiner does not until the host tells it via `HandshakeAck`. `world_seed_known` exists so
+/// player-file resolution (`game_loop::run`) can poll a plain field instead of inferring the
+/// moment from an event — this fixes the STARTING value both roles construct with.
+#[tokio::test]
+async fn world_seed_known_starts_true_for_host_false_for_joiner() {
+    let host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    assert!(
+        host.world_seed_known,
+        "the host already knows its own seed at construction"
+    );
+
+    let joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(
+        !joiner.world_seed_known,
+        "a joiner does not know the world's seed until the host's HandshakeAck arrives"
+    );
+}
+
+/// Contrapartida sobre sockets reales: tras un handshake completo, el JOINER debe tener
+/// `world_seed_known == true` — es la señal exacta que `game_loop::run` espera antes de intentar
+/// resolver la ruta del fichero de jugador de ADR-045 Fase 2.
+#[tokio::test]
+async fn handshake_ack_marks_world_seed_known_for_the_joiner() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(!joiner.world_seed_known);
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    assert!(
+        joiner.world_seed_known,
+        "world_seed_known must flip to true once the joiner has processed the HandshakeAck"
+    );
+    assert_eq!(
+        joiner.world_seed, 42,
+        "and it must carry the host's actual seed"
+    );
+}
+
 // ADR-028 Fase E: the corpse relay's three network hops over real sockets —
 // (1) joiner → host CorpseSpawnRequest (reliable), (2) host → all CorpseList
 // broadcast (mirror), (3) host → requester CorpseTakeResult (reliable) surfacing

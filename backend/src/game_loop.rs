@@ -200,6 +200,29 @@ fn reseed_stp_id_allocators(net: &NetworkManager) -> (u32, u32, u32, u32) {
     (drop_id, building_id, carryable_id, group_id)
 }
 
+/// ADR-032 / ADR-045 Fase 2: apply a `PlayerSnapshot` onto a live `Player`. Extracted so it is the
+/// SAME call whether the snapshot came from the world save's embedded `host_player` (ADR-032) or
+/// from a per-player file (ADR-045 Fase 2) — calling it a second time with the player-file
+/// snapshot after `hydrate_from_save` already called it with `host_player` is what makes "the
+/// player file wins when it exists" true for free: it is simply the last `apply` winning, no
+/// priority logic needed anywhere.
+fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::PlayerSnapshot) {
+    player.stats = snap.stats;
+    // `invuln_until_tick` is an ABSOLUTE tick of the game loop's own counter, which restarts at 0
+    // on every process launch. Restoring it as-is would grant PvP invulnerability for as many
+    // ticks as the session that saved it had been running (measured on a real save: 21716 ticks ≈
+    // 6 min at 60 Hz; hours in a long session). Sanitized to 0: ADR-029's invulnerability protects
+    // the instant of a respawn, it does not survive a backend restart by design.
+    player.stats.invuln_until_tick = 0;
+    player.position = snap.position;
+    player.rotation = snap.rotation;
+    player.inventory = snap.inventory;
+    player.equipment = snap.equipment;
+    player.held_item = snap.held_item;
+    player.respawn_point = snap.respawn_point;
+    player.stp_inventory = snap.stp_inventory;
+}
+
 /// ADR-032: apply a loaded save over a freshly-generated host world. Restores corpses/chests, the
 /// corpse-id allocator (defensively above both the saved counter and any loaded id), the four
 /// host-authoritative STP rosters, and the host player's durable slice.
@@ -243,21 +266,7 @@ fn hydrate_from_save(
     let rederived_cells = net.occupied_stp_cells.len();
 
     if let Some(p) = save.host_player {
-        player.stats = p.stats;
-        // `invuln_until_tick` es un tick ABSOLUTO del contador del game loop, y ese contador
-        // arranca en 0 en cada lanzamiento del proceso. Restaurarlo tal cual concede
-        // invulnerabilidad PvP durante tantos ticks como llevara la sesión que lo guardó
-        // (medido en un save real: 21716 ticks ≈ 6 min a 60 Hz; en una sesión larga, horas).
-        // Se sanea a 0: la invulnerabilidad de ADR-029 protege el instante del respawn, no
-        // sobrevive a un reinicio del backend por diseño.
-        player.stats.invuln_until_tick = 0;
-        player.position = p.position;
-        player.rotation = p.rotation;
-        player.inventory = p.inventory;
-        player.equipment = p.equipment;
-        player.held_item = p.held_item;
-        player.respawn_point = p.respawn_point;
-        player.stp_inventory = p.stp_inventory;
+        apply_player_snapshot(player, p);
     }
 
     info!(
@@ -316,6 +325,31 @@ pub async fn run(
     let _world_lock_guard = world_lock
         .as_mut()
         .map(|lock| crate::persistence::lock::acquire_or_exit(lock, &save_path));
+
+    // ADR-045 Fase 2: per-player save file. Unlike `world_lock` above this cannot be resolved at
+    // this point — it needs `identity_key` (arrives async via the `set_identity` IPC action) AND
+    // `world_seed` (already known for a host; a joiner only has it after the HandshakeAck) — so
+    // resolution happens later, inside the tick loop, the first tick both are available.
+    //
+    // `_player_lock_guard` is `'static`: a plain `RwLockWriteGuard<'a, File>` borrows from an
+    // `RwLock<File>` local, and the borrow checker cannot see that the tick loop's runtime guard
+    // (`player_file_resolve_attempted`) makes the acquisition run at most once — it has to assume
+    // ANY iteration could reassign that local, which would invalidate a guard already borrowed
+    // from a PRIOR iteration. `Box::leak` sidesteps this honestly rather than fighting it: this
+    // lock is genuinely meant to live for the rest of the process (exactly like `world_lock`,
+    // which sidesteps the same problem by being acquired before any loop exists at all), so
+    // leaking the tiny `RwLock<File>` once is the correct shape for that intent, not a workaround.
+    //
+    // Two-piece state, deliberately NOT collapsed to one flag:
+    //  - `player_file_resolve_attempted`: tried exactly once — never retried, success or not (a
+    //    contested lock is a standing fact about this identity_key+world_seed combo, not a
+    //    transient one worth polling 60x/second forever).
+    //  - `player_save_path`: `Some` ONLY on a successful lock acquisition — this, not the attempt
+    //    flag, is what autosave/save_and_shutdown gate on, so a failed/contested resolution can
+    //    never write to a path it does not hold the lock for.
+    let mut player_file_resolve_attempted = false;
+    let mut player_save_path: Option<std::path::PathBuf> = None;
+    let mut _player_lock_guard: Option<fd_lock::RwLockWriteGuard<'static, std::fs::File>> = None;
 
     let mut session_name = net.local_name.clone();
     let mut loaded_save = if net.is_host {
@@ -531,6 +565,18 @@ pub async fn run(
                         } else {
                             info!("ADR-032: save-on-shutdown on non-host — nothing to persist, exiting");
                         }
+                        // ADR-045 Fase 2: same graceful save-on-quit, extended to the per-player
+                        // file — host AND joiner, whichever this backend is. No `net.is_host`
+                        // gate, mirroring the autosave above.
+                        if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
+                            match crate::persistence::player_save::save_player(path, key, &player) {
+                                Ok(()) => info!(
+                                    "ADR-045: player save-on-shutdown written to {}",
+                                    path.display()
+                                ),
+                                Err(e) => warn!("ADR-045: player save-on-shutdown failed: {e}"),
+                            }
+                        }
                         std::process::exit(0);
                     }
                     // ADR-045 Fase 1: the client's own identity key, session-transient (never
@@ -722,6 +768,58 @@ pub async fn run(
                 tick,
             )
             .await;
+        }
+
+        // ADR-045 Fase 2: resolve the per-player save file, exactly once, the first tick both
+        // ingredients are available — `net.world_seed_known` (always true for a host; a joiner
+        // gets it from the HandshakeAck this same `process_incoming()` may just have processed)
+        // and `player.identity_key` (set by the `set_identity` handler above, whichever tick it
+        // arrives on). `player_file_resolve_attempted` guards this from ever running twice,
+        // success or not — see the doc comment on the locals above for why that is a SEPARATE
+        // flag from `player_save_path`.
+        if !player_file_resolve_attempted && net.world_seed_known {
+            if let Some(key) = player.identity_key.clone() {
+                player_file_resolve_attempted = true;
+                let path =
+                    crate::persistence::player_save::resolve_player_save_path(net.world_seed, &key);
+                match crate::persistence::lock::open_for_locking(&path) {
+                    Ok(lock) => {
+                        // Leaked on purpose — see the doc comment on `_player_lock_guard` above.
+                        let leaked: &'static mut fd_lock::RwLock<std::fs::File> =
+                            Box::leak(Box::new(lock));
+                        match crate::persistence::lock::try_acquire(leaked) {
+                            Ok(guard) => {
+                                _player_lock_guard = Some(guard);
+                                if let Some(file) =
+                                    crate::persistence::player_save::load_or_fresh(&path)
+                                {
+                                    apply_player_snapshot(&mut player, file.snapshot);
+                                    pending_restore_snap = true;
+                                    info!("ADR-045: player file hydrated from {}", path.display());
+                                } else {
+                                    info!(
+                                        "ADR-045: no existing player file at {} — starting fresh",
+                                        path.display()
+                                    );
+                                }
+                                player_save_path = Some(path);
+                            }
+                            Err(e) => warn!(
+                                "ADR-045: lock on {} held by another process ({e}) — this \
+                                 session will not persist a player file this run (same \
+                                 identity_key + world_seed already in use elsewhere). Playing \
+                                 without save.",
+                                path.display()
+                            ),
+                        }
+                    }
+                    Err(e) => warn!(
+                        "ADR-045: could not open player lock file for {} ({e}) — playing \
+                         without save.",
+                        path.display()
+                    ),
+                }
+            }
         }
 
         // ADR-016 (identity phase): once a real peer is connected, an unbound phantom adopts
@@ -1238,6 +1336,20 @@ pub async fn run(
             ) {
                 Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
                 Err(e) => warn!("ADR-032: autosave failed: {e}"),
+            }
+        }
+
+        // ADR-045 Fase 2: per-player autosave, same cadence as the world autosave above but
+        // WITHOUT the `net.is_host` gate — unlike the world save, a joiner owns and writes its
+        // own player file too. Gated on `player_save_path` alone: `None` covers both "not
+        // resolved yet" and "resolution failed/lost the lock" (see the locals' doc comment) —
+        // either way, nothing to write to.
+        if tick > 0 && tick.is_multiple_of(AUTOSAVE_EVERY) {
+            if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
+                match crate::persistence::player_save::save_player(path, key, &player) {
+                    Ok(()) => info!("ADR-045: player autosave written to {}", path.display()),
+                    Err(e) => warn!("ADR-045: player autosave failed: {e}"),
+                }
             }
         }
 
