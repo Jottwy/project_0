@@ -724,6 +724,129 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
     assert_eq!(player.stp_inventory[0].quantity, 3);
 }
 
+// ADR-045 Fase 3: a Fase-3-aware client's report_inventory ALSO populates inventory_v2, in
+// the SAME action — no new IPC action name. container/slot/props round-trip; a legacy entry
+// mixed into the same array (no container/slot) is skipped from v2 but still lands in
+// stp_inventory (both parses read the same array independently).
+#[tokio::test]
+async fn report_inventory_with_container_and_slot_also_populates_inventory_v2() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+    let action = crate::ipc::PlayerAction {
+        action_type: "report_inventory".into(),
+        data: serde_json::json!({ "items": [
+            {
+                "item_id": -52379, "quantity": 2, "container": 1, "slot": 5,
+                "props": [{ "id": 10, "value": 0.75 }],
+            },
+            { "item_id": 999, "quantity": 1 }, // legacy shape, no container/slot
+        ] }),
+    };
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net,
+        &tx,
+        &mut processed,
+        0,
+    )
+    .await;
+
+    // Legacy parse sees BOTH entries (container/slot/props are extra keys it ignores).
+    assert_eq!(player.stp_inventory.len(), 2);
+    // v2 parse keeps only the entry that actually carries container+slot.
+    assert_eq!(player.inventory_v2.len(), 1);
+    let stack = &player.inventory_v2[0];
+    assert_eq!(stack.item_id, -52379);
+    assert_eq!(stack.quantity, 2);
+    assert_eq!(stack.container, 1);
+    assert_eq!(stack.slot, 5);
+    assert_eq!(stack.props.len(), 1);
+    assert_eq!(stack.props[0].id, 10);
+    assert!((stack.props[0].value - 0.75).abs() < 1e-9);
+}
+
+// ADR-045 Fase 3, requisito explícito de Joel: un cliente pre-Fase-3 (o uno Fase-3 que aún
+// no reportó nada v2) deja inventory_v2 vacío y NO rompe report_inventory — mismo camino que
+// siempre existió.
+#[tokio::test]
+async fn report_inventory_legacy_only_leaves_inventory_v2_empty() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, _rx) = broadcast::channel(16);
+    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+    let action = crate::ipc::PlayerAction {
+        action_type: "report_inventory".into(),
+        data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
+    };
+    handle_action(
+        &action,
+        &mut player,
+        &mut world,
+        &mut net,
+        &tx,
+        &mut processed,
+        0,
+    )
+    .await;
+
+    assert_eq!(player.stp_inventory.len(), 1);
+    assert!(
+        player.inventory_v2.is_empty(),
+        "legacy-shaped report must not fabricate v2 entries"
+    );
+}
+
+// ADR-045 Fase 3: sanitize_inventory_v2_stacks drops zero-quantity entries and truncates to
+// MAX_CORPSE_STACKS — same hygiene contract as sanitize_loot_stacks, own function because the
+// backing type differs.
+#[test]
+fn sanitize_inventory_v2_stacks_drops_zeroes_then_truncates_to_cap() {
+    let mut items = vec![crate::player::InventoryStackV2 {
+        item_id: -1,
+        quantity: 0,
+        container: 0,
+        slot: 0,
+        props: vec![],
+    }];
+    for i in 0..(crate::world::corpse::MAX_CORPSE_STACKS as i32 + 6) {
+        items.push(crate::player::InventoryStackV2 {
+            item_id: i,
+            quantity: 1,
+            container: 0,
+            slot: i as u8,
+            props: vec![],
+        });
+    }
+    sanitize_inventory_v2_stacks(&mut items);
+    assert_eq!(items.len(), crate::world::corpse::MAX_CORPSE_STACKS);
+    assert!(items.iter().all(|s| s.quantity > 0));
+    assert_eq!(
+        items[0].item_id, 0,
+        "zero-qty stack must not consume a cap slot"
+    );
+}
+
+// ADR-045 Fase 3: malformed/missing payload degrades to empty, never a panic — same contract
+// parse_death_loot/parse_loot_stacks already have.
+#[test]
+fn parse_inventory_v2_stacks_degrades_to_empty_on_malformed_payload() {
+    assert!(parse_inventory_v2_stacks(&serde_json::json!({})).is_empty());
+    assert!(parse_inventory_v2_stacks(&serde_json::json!({ "items": "not an array" })).is_empty());
+    // Missing "slot" on an otherwise-complete v2 entry disqualifies it (not a partial stack).
+    let items = parse_inventory_v2_stacks(&serde_json::json!({
+        "items": [{ "item_id": 1, "quantity": 1, "container": 0 }]
+    }));
+    assert!(items.is_empty());
+}
+
 /// ADR-016: the phantom is a PEER, so its relayed Y must use the same player-pivot convention
 /// every real peer uses (`floor + PLAYER_BASE_Y`). The client subtracts `PlayerBaseY` from EVERY
 /// remote pose to place a feet-pivoted avatar, and it cannot special-case the phantom (it must

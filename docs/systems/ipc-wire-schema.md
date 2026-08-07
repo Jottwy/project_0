@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v22
+# IPC wire schema — changelog v2 → v23
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **22**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **23**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -208,3 +208,17 @@ same shape as `report_noise`'s v13 bump, itself IPC-only and still counted. Addi
 client that never sends it leaves `Player::identity_key` at `None` forever, and the backend simply
 never resolves a per-player save file for that session (ADR-045 Fase 2) — same degradation
 `report_noise` already established for an IPC-only addition.
+
+### v23 (ADR-045 Fase 3) — actual
+
+Widens two existing IPC-only messages, no new action/event name. `report_inventory`'s `items`
+entries gain optional `container: u8`, `slot: u8`, `props: [{id: i32, value: f64}]` — a
+pre-Fase-3 client's plain `{item_id, quantity}` entries lack `container`/`slot`, so the backend's
+new `parse_inventory_v2_stacks` parser skips them (`?` short-circuit) and `Player::inventory_v2`
+stays empty for that session; `parse_loot_stacks` keeps populating `stp_inventory` exactly as
+before, unaffected. `inventory_restored`'s `items` entries gain the SAME three fields, sent by
+the backend when `inventory_v2` is non-empty; when it is empty (every save from Fases 1+2, or a
+session with a pre-Fase-3 client either side) the event falls back to the original flat
+`{item_id, quantity}` shape, byte-for-byte what Fases 1+2 already emit. Both directions
+therefore degrade to exactly today's behavior when either side of the connection predates Fase
+3 — additive, `serde(default)`-equivalent (the JSON parser simply doesn't find the new keys).

@@ -827,7 +827,39 @@ pub async fn run(
             // client's fresh-session containers over that ambiguity would destroy STP starter
             // items for no gain (accepted degradation: a genuinely-naked persisted state falls
             // back to whatever STP grants a fresh session).
-            if !player.stp_inventory.is_empty() {
+            // ADR-045 Fase 3: inventory_v2 (container/slot/props) takes priority when the
+            // client has ever sent the richer report_inventory shape; a save written under
+            // Fases 1+2 only (or by a pre-Fase-3 client that never sends it) falls back to the
+            // flat stp_inventory restore, UNCHANGED from before this fase existed — the two
+            // are never merged, and neither being non-empty implies the other is.
+            if !player.inventory_v2.is_empty() {
+                info!(
+                    "ADR-045: emitting inventory_restored v2 ({} stacks)",
+                    player.inventory_v2.len()
+                );
+                let items: Vec<serde_json::Value> = player
+                    .inventory_v2
+                    .iter()
+                    .map(|s| {
+                        let props: Vec<serde_json::Value> = s
+                            .props
+                            .iter()
+                            .map(|p| serde_json::json!({ "id": p.id, "value": p.value }))
+                            .collect();
+                        serde_json::json!({
+                            "item_id": s.item_id,
+                            "quantity": s.quantity,
+                            "container": s.container,
+                            "slot": s.slot,
+                            "props": props,
+                        })
+                    })
+                    .collect();
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "inventory_restored".into(),
+                    data: serde_json::json!({ "items": items }),
+                }));
+            } else if !player.stp_inventory.is_empty() {
                 info!(
                     "ADR-032: emitting inventory_restored ({} stacks)",
                     player.stp_inventory.len()
@@ -2606,6 +2638,16 @@ async fn handle_action(
             crate::world::corpse::sanitize_loot_stacks(&mut items);
             debug!("report_inventory: {} stacks", items.len());
             player.stp_inventory = items;
+
+            // ADR-045 Fase 3: same report, richer companion parse. Empty on a pre-Fase-3
+            // client (no container/slot on any entry) — that is fine, the emission site falls
+            // back to the flat restore above when this stays empty.
+            let mut items_v2 = parse_inventory_v2_stacks(&action.data);
+            sanitize_inventory_v2_stacks(&mut items_v2);
+            if !items_v2.is_empty() {
+                debug!("report_inventory: {} v2 stacks", items_v2.len());
+            }
+            player.inventory_v2 = items_v2;
         }
         // ADR-030: the client reports eating/drinking an item (STP's own local Hunger/Thirst
         // managers are disabled by StatInterpolator, ADR-009 L2, so without this the survival
@@ -4567,6 +4609,56 @@ fn parse_loot_stacks(data: &serde_json::Value) -> Vec<crate::world::corpse::Corp
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// ADR-045 Fase 3: richer companion of `parse_loot_stacks` — reads the SAME `report_inventory`
+/// `items` array, but only keeps entries that carry `container`+`slot` (a Fase-3-aware client).
+/// A pre-Fase-3 client's plain `{item_id, quantity}` entries have neither key, so `?` short-
+/// circuits them out here; they still populate `stp_inventory` via `parse_loot_stacks`,
+/// unchanged. `props` is optional even on a v2 entry (an item with no instance properties).
+fn parse_inventory_v2_stacks(data: &serde_json::Value) -> Vec<crate::player::InventoryStackV2> {
+    data.get("items")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let item_id = json_i32(entry, "item_id")?;
+                    let quantity = json_i32(entry, "quantity")?;
+                    let container =
+                        json_u32(entry, "container").and_then(|v| u8::try_from(v).ok())?;
+                    let slot = json_u32(entry, "slot").and_then(|v| u8::try_from(v).ok())?;
+                    let props = entry
+                        .get("props")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|p| {
+                                    let id = json_i32(p, "id")?;
+                                    let value = p.get("value").and_then(|v| v.as_f64())?;
+                                    Some(crate::player::session::ItemPropertyValue { id, value })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(crate::player::InventoryStackV2 {
+                        item_id,
+                        quantity,
+                        container,
+                        slot,
+                        props,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ADR-045 Fase 3: same hygiene as `sanitize_loot_stacks` (zero-quantity drop, cap truncate),
+/// kept as its own function because the two stacks share only their JSON key names, not a
+/// backing type — `InventoryStackV2` is not `CorpseStack`.
+fn sanitize_inventory_v2_stacks(items: &mut Vec<crate::player::InventoryStackV2>) {
+    items.retain(|s| s.quantity > 0);
+    items.truncate(crate::world::corpse::MAX_CORPSE_STACKS);
 }
 
 /// ADR-025 Slice B: sanitize a client-reported damage amount. Missing/NaN/∞/negative → 0
