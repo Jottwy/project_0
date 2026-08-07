@@ -48,7 +48,9 @@ pub struct PlayerSnapshot {
 }
 
 impl PlayerSnapshot {
-    fn from_player(p: &Player) -> Self {
+    /// `pub(crate)`: also built by `persistence::player_save` (ADR-045 Fase 2) from a `Player`
+    /// that has no `World`/STP rosters around it, so it cannot reuse `build_save`.
+    pub(crate) fn from_player(p: &Player) -> Self {
         Self {
             stats: p.stats.clone(),
             position: p.position,
@@ -182,13 +184,16 @@ impl SaveFile {
 }
 
 /// Major-version component of a semver string ("0.1.0" → "0"). Used to gate compatibility.
-fn major_of(version: &str) -> &str {
+/// `pub(crate)`: `persistence::player_save` (ADR-045 Fase 2) reuses this exact gate instead of
+/// duplicating it.
+pub(crate) fn major_of(version: &str) -> &str {
     version.split('.').next().unwrap_or(version)
 }
 
 /// ADR-032 robustness: back up an unusable save so a fresh world can be started without losing the
-/// old file. Best-effort — a failed rename is logged, never propagated.
-fn backup_unusable(path: &Path) {
+/// old file. Best-effort — a failed rename is logged, never propagated. `pub(crate)`: reused by
+/// `persistence::player_save` (ADR-045 Fase 2) for the same never-hard-fail contract.
+pub(crate) fn backup_unusable(path: &Path) {
     let mut bak = path.as_os_str().to_owned();
     bak.push(".bak");
     let bak = std::path::PathBuf::from(bak);

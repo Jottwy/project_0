@@ -1,6 +1,7 @@
 //! Persistence domain: JSON save/load and (Phase 5) distributed save merge.
 
 pub mod lock;
+pub mod player_save;
 pub mod save;
 
 /// ADR-045 Fase 1: cap on a sanitized identity key, generous for a `"uuid:{guid}"` (41 chars) or
