@@ -220,6 +220,108 @@ fn apply_player_snapshot_prefers_the_last_applied_snapshot() {
     assert_eq!(player.position, Vec3::new(9.0, 1.8, 9.0));
 }
 
+#[test]
+fn movement_suppressed_none_never_suppresses() {
+    assert!(!movement_suppressed(0, None));
+    assert!(!movement_suppressed(1_000_000, None));
+}
+
+/// Fija el orden dentro del tick: el punto de fallo real del bug era armar la ventana en el
+/// tick de EMISION de `session_restored` en vez del tick de HIDRATACION — `apply_movement`
+/// corre DESPUES del bloque de hidratacion dentro del MISMO tick en `run()`, asi que armar un
+/// tick tarde deja pasar el primer clobber. Este test fija la aritmetica de fronteras exacta
+/// que `run()` depende: suprimido en el tick de hidratacion (el que importa), suprimido en el
+/// de emision (un tick despues), y liberado justo al llegar a `until`, no antes ni despues.
+#[test]
+fn movement_suppressed_protects_from_the_hydration_tick_through_the_window() {
+    let hydrate_tick = 500u64;
+    let until = hydrate_tick + RESTORE_SNAP_SUPPRESS_TICKS;
+
+    assert!(
+        movement_suppressed(hydrate_tick, Some(until)),
+        "el tick de hidratacion, MISMO tick que el clobber que este fix existe para evitar"
+    );
+    assert!(
+        movement_suppressed(hydrate_tick + 1, Some(until)),
+        "el tick en que session_restored se emite de verdad (uno despues de hidratar)"
+    );
+    assert!(movement_suppressed(until - 1, Some(until)));
+    assert!(
+        !movement_suppressed(until, Some(until)),
+        "al llegar a `until` el cliente ya tuvo toda la ventana para recibir + aplicar el snap"
+    );
+    assert!(!movement_suppressed(until + 100, Some(until)));
+}
+
+/// Extremo a extremo con las funciones REALES de produccion (no una reimplementacion en el
+/// test): hidrata una posicion, confirma que un input de cliente con la posicion RECLAMADA
+/// PREVIA a la restauracion no la pisa mientras la ventana esta armada, y que — control
+/// negativo — la MISMA llamada SI la pisa en cuanto la ventana expira. Sin el control negativo
+/// este test pasaria igual aunque `apply_movement` nunca tocara `position` por cualquier otro
+/// motivo. `god_traversal=true` evita necesitar geometria de colision real — el fix no toca ese
+/// camino, `apply_client_authoritative_move` lo ejecuta igual con o sin colision.
+#[test]
+fn restore_snap_window_blocks_the_stale_client_position_then_admits_it_after_expiry() {
+    let world = World::new(42);
+    let hydrate_tick = 200u64;
+    let suppressed_until = Some(hydrate_tick + RESTORE_SNAP_SUPPRESS_TICKS);
+    let dt = 1.0 / 60.0;
+
+    let mut player = Player::new(1, "Joiner");
+    let hydrated_position = Vec3::new(10.0, 1.8, 10.0);
+    player.position = hydrated_position; // lo que apply_player_snapshot acaba de fijar
+
+    let stale_client_input = PlayerInput {
+        position: [999.0, 1.8, 999.0],
+        input_seq: 1,
+        ..Default::default()
+    };
+
+    // Mismo tick que la hidratacion — el clobber exacto que el fix evita.
+    if !movement_suppressed(hydrate_tick, suppressed_until) {
+        apply_movement(
+            &mut player,
+            &stale_client_input,
+            dt,
+            &world,
+            hydrate_tick,
+            true,
+        );
+    }
+    assert_eq!(
+        player.position, hydrated_position,
+        "no debe pisarse durante la ventana de supresion"
+    );
+
+    // Mitad de la ventana.
+    let mid_tick = hydrate_tick + 10;
+    if !movement_suppressed(mid_tick, suppressed_until) {
+        apply_movement(&mut player, &stale_client_input, dt, &world, mid_tick, true);
+    }
+    assert_eq!(
+        player.position, hydrated_position,
+        "sigue suprimido a mitad de ventana"
+    );
+
+    // Control negativo: ventana expirada, el cliente vuelve a ganar.
+    let after_tick = hydrate_tick + RESTORE_SNAP_SUPPRESS_TICKS;
+    if !movement_suppressed(after_tick, suppressed_until) {
+        apply_movement(
+            &mut player,
+            &stale_client_input,
+            dt,
+            &world,
+            after_tick,
+            true,
+        );
+    }
+    assert_eq!(
+        player.position,
+        Vec3::new(999.0, 1.8, 999.0),
+        "tras la ventana, apply_movement debe volver a aplicar la posicion del cliente"
+    );
+}
+
 // P0-2: `resolve_phantom_density_scale` es la misma regla de precedencia que world_seed
 // (game_loop.rs:270-280) extraída a función pura, precisamente para poder testearla sin
 // levantar el loop entero — mismo motivo que llevó a mover el gate de `broadcast_chunk_states`
