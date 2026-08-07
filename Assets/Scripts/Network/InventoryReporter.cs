@@ -49,7 +49,7 @@ namespace BackroomsSurvival.Net
         private float _lastChangeAt;
 
         // Reusable buffer — snapshots are small (≤64 stacks server-side).
-        private readonly List<CorpseLootStack> _items = new List<CorpseLootStack>(32);
+        private readonly List<InventoryStackV2> _items = new List<InventoryStackV2>(32);
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
@@ -112,7 +112,16 @@ namespace BackroomsSurvival.Net
             ipc.SendReportInventory(_items);
         }
 
-        /// <summary>Every non-empty stack of every container — DeathLootReporter's items pass.</summary>
+        /// <summary>
+        /// ADR-045 Fase 3: every non-empty stack of every container, now WITH its container/slot
+        /// index and instance properties — DeathLootReporter's items pass stays item_id/quantity
+        /// only (a corpse doesn't care where in your bag something sat).
+        ///
+        /// container/slot are cast to byte: <c>IItemContainer.MaxSlotsCount</c> is 128 and no STP
+        /// inventory in this project comes close to 256 containers, so this never truncates in
+        /// practice — if it ever did, the backend drops the stack via the same `?` short-circuit a
+        /// missing key gets (`parse_inventory_v2_stacks`), not silent corruption.
+        /// </summary>
         private void BuildSnapshot()
         {
             _items.Clear();
@@ -130,13 +139,44 @@ namespace BackroomsSurvival.Net
                 for (int s = 0; s < container.SlotsCount; s++)
                 {
                     var stack = container.GetItemAtIndex(s);
-                    int id = stack.Item?.Id ?? 0;
+                    var item = stack.Item;
+                    int id = item?.Id ?? 0;
                     if (id == 0 || stack.Count <= 0)
                         continue;
 
-                    _items.Add(new CorpseLootStack { itemId = id, quantity = stack.Count });
+                    _items.Add(new InventoryStackV2
+                    {
+                        itemId = id,
+                        quantity = stack.Count,
+                        container = (byte)c,
+                        slot = (byte)s,
+                        props = BuildProps(item),
+                    });
                 }
             }
+        }
+
+        /// <summary>
+        /// ADR-045 Fase 3: an item's runtime property VALUES live on <see cref="Item"/>, but only
+        /// reachable one id at a time via <c>TryGetProperty</c> (it doesn't expose the whole
+        /// array); the set of ids that CAN exist on this item's definition comes from
+        /// <c>ItemDefinition.GetPropertyGenerators()</c>. Cross-referencing the two is the
+        /// documented way to enumerate "this instance's actual properties" without a new model.
+        /// </summary>
+        private static List<ItemPropertyValue> BuildProps(Item item)
+        {
+            var generators = item.Definition.GetPropertyGenerators();
+            if (generators == null || generators.Length == 0)
+                return null;
+
+            var props = new List<ItemPropertyValue>(generators.Length);
+            for (int i = 0; i < generators.Length; i++)
+            {
+                int propId = generators[i].Property.Id;
+                if (item.TryGetProperty(propId, out var prop))
+                    props.Add(new ItemPropertyValue { id = propId, value = prop.Double });
+            }
+            return props;
         }
 
         // Mirror of DeathLootReporter.ResolveAndSubscribe: destroyed motor reads as null →

@@ -243,6 +243,29 @@ namespace BackroomsSurvival.Net
         public int quantity;
     }
 
+    /// <summary>ADR-045 Fase 3: one item-instance property (durability, ammo, ...). Mirrors STP's
+    /// <c>ItemProperty {int Id, double Value}</c> 1:1.</summary>
+    public struct ItemPropertyValue
+    {
+        public int id;
+        public double value;
+    }
+
+    /// <summary>ADR-045 Fase 3: instance-fidelity companion to <see cref="CorpseLootStack"/> —
+    /// carries WHERE the item sits (container/slot) and its properties, for report_inventory and
+    /// inventory_restored. Unlike CorpseLootStack (death loot, world chests — slot is meaningless
+    /// there), this is used ONLY by the player's own live-inventory report/restore round trip.
+    /// itemId = raw STP item id (DataIdReference — may be negative), same convention as
+    /// CorpseLootStack.</summary>
+    public struct InventoryStackV2
+    {
+        public int itemId;
+        public int quantity;
+        public byte container;
+        public byte slot;
+        public List<ItemPropertyValue> props;
+    }
+
     /// <summary>
     /// ADR-028 — one lootable corpse replicated in world_state.visible_corpses. position is the
     /// server-frozen death position (the loot interaction point); the client ragdoll is cosmetic
