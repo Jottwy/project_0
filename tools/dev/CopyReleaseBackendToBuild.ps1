@@ -34,3 +34,12 @@ Write-Host "  Size:        $sizeMB MB ($dstSize bytes)"
 if ($srcSize -ne $dstSize) {
     Write-Host "WARNING: Size mismatch between source and destination!" -ForegroundColor Red
 }
+
+# BUG encontrado 2026-08-07: este script nunca llamaba `exit 0` en su camino de exito -
+# Copy-Item/Get-Item/Write-Host son cmdlets, ninguno toca $LASTEXITCODE, asi que quien lo
+# invoque via `&` y mire $LASTEXITCODE despues hereda el valor STALE del ultimo .exe nativo
+# que corriera antes en esa sesion (nunca 0 a proposito). RunMultiInstancePlaytest.ps1 lo
+# sufrio: imprimia "Backend copied successfully" y acto seguido abortaba por esto. Exit
+# explicito para que $LASTEXITCODE sea correcto para CUALQUIER futuro llamante, no solo el
+# que lo destapo.
+exit 0
