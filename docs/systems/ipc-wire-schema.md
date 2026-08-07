@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v21
+# IPC wire schema — changelog v2 → v22
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **21**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **22**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -199,3 +199,12 @@ is true of every prior pose-relay field addition (v3 through v19) and none of th
 counter for that reason. The rule this changelog states at the top (a P2P-only change bumps the
 counter too, regardless of whether the shape change is additive) applies here exactly as it did
 there; this entry and the `WIRE_SCHEMA_VERSION` bump close that gap.
+
+### v22 (ADR-045 Fase 1)
+
+Adds the `set_identity` client action (`key: string`, IPC only — client → its own backend, never
+P2P). No new wire struct: `PlayerAction` was already generic (`action_type` + free-form `data`),
+same shape as `report_noise`'s v13 bump, itself IPC-only and still counted. Additive and inert: a
+client that never sends it leaves `Player::identity_key` at `None` forever, and the backend simply
+never resolves a per-player save file for that session (ADR-045 Fase 2) — same degradation
+`report_noise` already established for an IPC-only addition.

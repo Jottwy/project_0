@@ -242,6 +242,23 @@ namespace BackroomsSurvival.Tests
                 "65a46461746182a6616d6f756e74ca41480000a56361757365a446616c6c");
         }
 
+        /// <summary>ADR-045 Fase 1: no invoca IPCClient.SendSetIdentity — mismo hueco conocido y
+        /// aceptado que el resto de la familia Send*, ver la nota al principio del fichero.</summary>
+        [Test]
+        public void SetIdentityFrameBytesAreStable()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("set_identity");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("key"); w.WriteString("uuid:abc-123");
+
+            AssertGolden("set_identity", w, 61,
+                "83a474797065a6616374696f6eab616374696f6e5f74797065ac7365745f6964656e74697479" +
+                "a46461746181a36b6579ac757569643a6162632d313233");
+        }
+
         /// <summary>Array anidado de mapas de 2 campos + item ids NEGATIVOS (DataIdReference).</summary>
         [Test]
         public void ReportDeathLootFrameBytesAreStable()

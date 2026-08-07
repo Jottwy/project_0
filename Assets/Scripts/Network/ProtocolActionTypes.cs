@@ -60,5 +60,11 @@ namespace BackroomsSurvival.Net
         /// whoever's backend this is, so there is nothing to send and nothing to forge. The backend
         /// decides whether that actually frees anyone and answers with `phantom_grab_release`.
         public const string ReportStruggle = "report_struggle";
+
+        /// <summary>ADR-045 Fase 1: the client's own identity key ("uuid:{guid}" normally, or a
+        /// PLAYER_IDENTITY_KEY env-var override for local multi-instance playtesting — see
+        /// PlayerIdentity), sent to its own backend so it can resolve which player file to
+        /// load/write. IPC only, never P2P — the backend never relays this to peers.</summary>
+        public const string SetIdentity = "set_identity";
     }
 }
