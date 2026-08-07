@@ -65,6 +65,14 @@ const RESPAWN_INVULN_TICKS: u32 = (TICK_HZ * 3) as u32;
 /// ADR-032: host-only world autosave cadence (~3 real minutes). Derived from TICK_HZ so the
 /// interval holds regardless of tick rate. 60*180 = 10800 ticks @60Hz.
 const AUTOSAVE_EVERY: u64 = TICK_HZ * 180;
+/// ADR-045 Fase 2 fix: how long `apply_movement` is suppressed after `session_restored` is
+/// emitted. Mirrors the client's `AuthoritativePoseApplier.SnapWindow` (0.35s) — the round trip
+/// the event needs to reach the client and for the client to actually apply it, during which its
+/// reported position is still the pre-restore one and must not be trusted. A dedicated constant,
+/// NOT the `TP_WATCH_WINDOW_TICKS` local inside `apply_client_authoritative_move` (that one is
+/// explicitly marked TEMP DIAG / removable and shared with player_died/player_respawned, which
+/// this fix does not touch).
+const RESTORE_SNAP_SUPPRESS_TICKS: u64 = (0.35 * TICK_HZ as f64) as u64;
 
 const BASE_SPEED: f32 = 5.0;
 const SPRINT_MULT: f32 = 1.5;
@@ -221,6 +229,14 @@ fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::Pl
     player.held_item = snap.held_item;
     player.respawn_point = snap.respawn_point;
     player.stp_inventory = snap.stp_inventory;
+}
+
+/// ADR-045 Fase 2 fix: whether `apply_movement` should be skipped this tick because a
+/// `session_restored` snap is still in flight to the client. Extracted as a pure function so the
+/// tick-boundary arithmetic (`tick < until`, not `<=`) is unit-testable without spinning up the
+/// game loop.
+fn movement_suppressed(tick: u64, suppressed_until: Option<u64>) -> bool {
+    suppressed_until.is_some_and(|until| tick < until)
 }
 
 /// ADR-032: apply a loaded save over a freshly-generated host world. Restores corpses/chests, the
@@ -438,6 +454,16 @@ pub async fn run(
     // DISTINCT event type on purpose: RespawnRequester listens for player_respawned and would
     // force the native STP respawn chain (SetHealthSilent(0) + RestoreHealth) at boot.
     let mut pending_restore_snap = false;
+    // ADR-045 Fase 2 fix: armed to `tick + RESTORE_SNAP_SUPPRESS_TICKS` at the SAME instant a
+    // snapshot is hydrated (every site that sets `pending_restore_snap = true` also sets this,
+    // in the same statement group) — NOT at emission time. The risk starts the moment the
+    // position is overwritten in RAM: `apply_movement` can run LATER in that SAME tick (the
+    // resolution block that hydrates sits above the movement-apply site in `run()`'s body), so
+    // arming only when `session_restored` goes out (one tick later, at the earliest) would miss
+    // that first, same-tick clobber — the event would then carry the ALREADY-clobbered position.
+    // Until `tick` reaches this value, `apply_movement` is skipped: the client hasn't received
+    // (or hasn't yet applied) the snap, so its reported position is still the pre-restore one.
+    let mut movement_suppressed_until: Option<u64> = None;
 
     // Bootstrap: host/solo creates the authoritative initial structure before
     // loading the surrounding ownership radius. Joiners wait for host WorldSync.
@@ -455,6 +481,11 @@ pub async fn run(
             hydrate_from_save(&mut world, &mut player, &mut net, save);
             spawn_resolved = true;
             pending_restore_snap = true;
+            // ADR-045 Fase 2 fix: see the doc comment on `movement_suppressed_until` above —
+            // `tick` is 0 here (before the loop's first iteration), so this protects ticks
+            // 0..RESTORE_SNAP_SUPPRESS_TICKS in case input is already queued by the time the
+            // loop starts.
+            movement_suppressed_until = Some(tick + RESTORE_SNAP_SUPPRESS_TICKS);
             world.update_ownership(player.position, player.id);
         } else {
             world.update_ownership(player.position, player.id);
@@ -795,6 +826,12 @@ pub async fn run(
                                 {
                                     apply_player_snapshot(&mut player, file.snapshot);
                                     pending_restore_snap = true;
+                                    // ADR-045 Fase 2 fix: see the doc comment on
+                                    // `movement_suppressed_until` above — armed HERE, not at
+                                    // emission, because `apply_movement` can still run later in
+                                    // this SAME tick.
+                                    movement_suppressed_until =
+                                        Some(tick + RESTORE_SNAP_SUPPRESS_TICKS);
                                     info!("ADR-045: player file hydrated from {}", path.display());
                                 } else {
                                     info!(
@@ -898,7 +935,13 @@ pub async fn run(
             // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
             // take_damage). Any local client drift while dead is corrected by the applier's snap
             // on player_respawned. The ack does not advance (nothing was accepted).
-            if !player.stats.is_dead() {
+            //
+            // ADR-045 Fase 2 fix: same freeze, same "nothing accepted" semantics, while a
+            // session_restored snap is in flight to the client (see `movement_suppressed_until`
+            // above) — trusting the client's reported position during that window would
+            // overwrite the just-restored one with wherever the client was BEFORE it received
+            // the snap.
+            if !player.stats.is_dead() && !movement_suppressed(tick, movement_suppressed_until) {
                 let seq = apply_movement(
                     &mut player,
                     &received_input,
