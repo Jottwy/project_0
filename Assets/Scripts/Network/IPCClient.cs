@@ -444,6 +444,34 @@ namespace BackroomsSurvival.Net
             }
         }
 
+        /// <summary>
+        /// ADR-045 Fase 3: writes the instance-fidelity stack shape (container/slot/props) that
+        /// report_inventory now sends. Backend-side, parse_loot_stacks (legacy, still feeds
+        /// stp_inventory) and parse_inventory_v2_stacks (new, feeds inventory_v2) both read the
+        /// SAME "items" array — one wire message, two independent parses on the other end.
+        /// </summary>
+        private static void WriteInventoryStacksV2(MsgPackWriter w, IReadOnlyList<InventoryStackV2> items)
+        {
+            w.WriteArrayHeader(items?.Count ?? 0);
+            for (int i = 0; i < (items?.Count ?? 0); i++)
+            {
+                w.WriteMapHeader(5);
+                w.WriteString("item_id"); w.WriteInt(items[i].itemId);
+                w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+                w.WriteString("container"); w.WriteInt(items[i].container);
+                w.WriteString("slot"); w.WriteInt(items[i].slot);
+                w.WriteString("props");
+                var props = items[i].props;
+                w.WriteArrayHeader(props?.Count ?? 0);
+                for (int p = 0; p < (props?.Count ?? 0); p++)
+                {
+                    w.WriteMapHeader(2);
+                    w.WriteString("id"); w.WriteInt(props[p].id);
+                    w.WriteString("value"); w.WriteFloat((float)props[p].value);
+                }
+            }
+        }
+
         /// <summary>Send a per-frame player input packet to the backend.</summary>
         public void SendInput(Vector3 movement, Vector2 lookDelta, bool sprint, IList<string> actions = null)
         {
@@ -710,15 +738,17 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// ADR-032 amendment: report the CURRENT real STP inventory (debounced on-change by
-        /// InventoryReporter) so the backend can persist it. Same items shape as
-        /// SendReportDeathLoot; the backend applies the shared corpse hygiene (cap 64, qty>0).
+        /// ADR-032 amendment (Fase 3 widened the item shape): report the CURRENT real STP
+        /// inventory (debounced on-change by InventoryReporter) so the backend can persist it.
+        /// container/slot/props ride along per item — the backend's legacy parse still reads
+        /// item_id/quantity only (feeds stp_inventory, cap 64/qty>0 hygiene), a new parse reads
+        /// the rest (feeds inventory_v2). One message, two independent consumers server-side.
         /// </summary>
-        public void SendReportInventory(System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
+        public void SendReportInventory(System.Collections.Generic.IReadOnlyList<InventoryStackV2> items)
         {
             SendActionFrame(ProtocolActionTypes.ReportInventory, 1, w =>
             {
-                w.WriteString("items"); WriteLootStacks(w, items);
+                w.WriteString("items"); WriteInventoryStacksV2(w, items);
             });
         }
 
