@@ -104,32 +104,37 @@ namespace BackroomsSurvival.Net
             Debug.Log($"[InventoryRestorer] inventory_restored received: {stacks.Count} stacks (pending apply)");
         }
 
-        private static List<(int itemId, int quantity)> ParseStacks(object data)
+        /// ADR-045 fix: `MsgPackReader.ReadValue()` materializes a msgpack array as `object[]`
+        /// (see its doc comment + `ReadArray`), NEVER `List<object>` — every other IPC event
+        /// consumer in the project (`IPCParse.Vec3`/`IntArray`/`IntArray2`/`StringArray`) checks
+        /// `is object[]` for exactly this reason. This method checked `List<object>`, a type the
+        /// reader never produces, so the cast failed on every single payload and
+        /// `inventory_restored` was unparsable 100% of the time — confirmed in a real playtest
+        /// log, not intermittent. Rewritten to match the established `object[]` + `IPCParse`
+        /// convention; `ToLong` never throws on a type mismatch (defaults to 0), same as every
+        /// other `IPCParse` accessor, so the old try/catch is no longer needed.
+        ///
+        /// Public rather than internal so the EditMode suite can reach it directly — same reason
+        /// documented on `IpcStreamReader`: `tools/dev/CompileCheckClient.sh` builds each
+        /// assembly under a `_check` suffix, so an `InternalsVisibleTo` friend name never matches
+        /// under the project's own compile-check gate.
+        public static List<(int itemId, int quantity)> ParseStacks(object data)
         {
             if (data is not Dictionary<string, object> d ||
                 !d.TryGetValue("items", out var rawItems) ||
-                rawItems is not List<object> list)
+                rawItems is not object[] list)
                 return null;
 
-            var stacks = new List<(int, int)>(list.Count);
-            for (int i = 0; i < list.Count; i++)
+            var stacks = new List<(int, int)>(list.Length);
+            for (int i = 0; i < list.Length; i++)
             {
-                if (list[i] is not Dictionary<string, object> m ||
-                    !m.TryGetValue("item_id", out var idRaw) ||
-                    !m.TryGetValue("quantity", out var qtyRaw))
+                if (list[i] is not Dictionary<string, object> m)
                     continue;
 
-                try
-                {
-                    int id = (int)System.Convert.ToInt64(idRaw);
-                    int qty = (int)System.Convert.ToInt64(qtyRaw);
-                    if (id != 0 && qty > 0)
-                        stacks.Add((id, qty));
-                }
-                catch
-                {
-                    // malformed entry — skip it, keep the rest
-                }
+                int id = (int)IPCParse.ToLong(IPCParse.Get(m, "item_id"));
+                int qty = (int)IPCParse.ToLong(IPCParse.Get(m, "quantity"));
+                if (id != 0 && qty > 0)
+                    stacks.Add((id, qty));
             }
             return stacks;
         }
