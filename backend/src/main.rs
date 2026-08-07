@@ -106,6 +106,12 @@ async fn main() {
     // Unity → game loop (input / actions).
     let (to_game_tx, to_game_rx) = mpsc::channel::<ipc::ClientMessage>(1024);
 
+    // ADR-045 fix: IPC server → game loop, "this backend's own local Unity client just
+    // disconnected" — see the doc comment in `ipc::server::run` and the receiving end in
+    // `game_loop::run`. Small buffer: this is a rare, idempotent wake-up signal, not a data
+    // channel.
+    let (local_disconnect_tx, local_disconnect_rx) = mpsc::channel::<()>(4);
+
     // Game loop → Unity (world snapshots). Capacity 256 (was 64): idle traffic alone is
     // ~30 msg/s (20 Hz delta + 10 Hz world_state), so 64 was only ~2 s of writer stall before
     // "IPC write loop lagged" dropped messages — including Events (player_died). 256 rides out
@@ -122,7 +128,15 @@ async fn main() {
     let ipc_state_tx = state_tx.clone();
     let ipc_voice_tx = voice_tx.clone();
     let ipc_handle = tokio::spawn(async move {
-        if let Err(e) = ipc::server::run(to_game_tx, ipc_state_tx, ipc_voice_tx, ipc_addr).await {
+        if let Err(e) = ipc::server::run(
+            to_game_tx,
+            ipc_state_tx,
+            ipc_voice_tx,
+            ipc_addr,
+            local_disconnect_tx,
+        )
+        .await
+        {
             error!("IPC server terminated: {e}");
         }
     });
@@ -164,7 +178,13 @@ async fn main() {
     }
 
     // Game loop task (drives the whole simulation).
-    let game_handle = tokio::spawn(game_loop::run(to_game_rx, state_tx, voice_tx, net));
+    let game_handle = tokio::spawn(game_loop::run(
+        to_game_rx,
+        state_tx,
+        voice_tx,
+        net,
+        local_disconnect_rx,
+    ));
 
     // If either core task ends, the process should come down with it.
     tokio::select! {

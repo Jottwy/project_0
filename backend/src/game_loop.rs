@@ -308,6 +308,17 @@ pub async fn run(
     // `ipc::server::run`: that one drops its oldest messages on overflow, events included.
     to_clients_voice: broadcast::Sender<ServerMessage>,
     mut net: NetworkManager,
+    // ADR-045 fix: fires whenever THIS backend's own local Unity IPC connection ends — a real
+    // quit, but ALSO a transient drop (e.g. an editor recompile bouncing the socket) that isn't
+    // one. `save_and_shutdown` depends on Unity's `NetworkInitializer` successfully reaching
+    // `IPCClient` before the socket closes — two independent `OnApplicationQuit` handlers on two
+    // MonoBehaviours with no execution order between them, and `IPCClient`'s own teardown can
+    // close the socket (and null its singleton) before `NetworkInitializer` gets a chance to ask
+    // for a save. This is the backend's OWN, Unity-independent fallback: it always knows when its
+    // local client is gone, without caring why. Firing on a transient drop too is accepted, not
+    // overlooked — the write it triggers is the same idempotent atomic save the timer autosave
+    // already performs at an arbitrary cadence, just early.
+    mut local_disconnect_rx: mpsc::Receiver<()>,
 ) {
     let mut player = Player::new(net.local_id, &net.local_name);
     let mut world = World::new(net.world_seed);
@@ -739,6 +750,53 @@ pub async fn run(
                             data.len()
                         );
                     }
+                }
+            }
+        }
+
+        // ADR-045 fix: the local Unity IPC client disconnected — save what `save_and_shutdown`
+        // would have saved, without depending on Unity having sent it. See the doc comment on
+        // `local_disconnect_rx` above. Mirrors `save_and_shutdown`'s own gates AND order exactly
+        // (world save host-only, then player save whenever a path is resolved) but does NOT
+        // `std::process::exit` — a lost local connection is not by itself a reason for this
+        // backend to end its own process; Unity's `KillBackend` already force-kills it on its own
+        // timeout regardless, and this is a safety net for that window, not a second shutdown
+        // path. Placed AFTER the `ClientMessage` loop above on purpose: if Unity's own
+        // `save_and_shutdown` request is queued in the SAME tick as the disconnect that follows
+        // it (the common case — `IPCClient.Shutdown()` closes the socket shortly after sending),
+        // that arm's `std::process::exit(0)` already ended the process by the time control would
+        // reach here — this block never runs for that tick, so the two paths cannot both fire for
+        // the same clean shutdown. It can still fire on a TRANSIENT local socket drop that is not
+        // a real quit (e.g. an editor recompile bounces the connection) — harmless: same atomic
+        // write the timer autosave already performs at an arbitrary cadence, just early.
+        while local_disconnect_rx.try_recv().is_ok() {
+            if net.is_host {
+                match crate::persistence::save::save_world(
+                    &save_path,
+                    &session_name,
+                    &world,
+                    &player,
+                    &save_meta_now(&save_meta_base, tick),
+                    &net.stp_items,
+                    &net.stp_buildings,
+                    &net.stp_carryables,
+                    &net.stp_harvestables,
+                    net.phantom_density_scale,
+                ) {
+                    Ok(()) => info!(
+                        "ADR-032: world save on local IPC disconnect written to {}",
+                        save_path.display()
+                    ),
+                    Err(e) => warn!("ADR-032: world save on local IPC disconnect failed: {e}"),
+                }
+            }
+            if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
+                match crate::persistence::player_save::save_player(path, key, &player) {
+                    Ok(()) => info!(
+                        "ADR-045: player save on local IPC disconnect written to {}",
+                        path.display()
+                    ),
+                    Err(e) => warn!("ADR-045: player save on local IPC disconnect failed: {e}"),
                 }
             }
         }
