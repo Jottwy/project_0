@@ -110,6 +110,13 @@ pub struct Player {
     /// and pushed back to the client with the `inventory_restored` event after hydration.
     #[serde(default)]
     pub stp_inventory: Vec<crate::world::corpse::CorpseStack>,
+    /// ADR-045 Fase 1: identity key coined by the client ("uuid:{guid}" normally, "name:{name}"
+    /// fallback), fixed once via the `set_identity` IPC action. `None` until the client sends it
+    /// (or forever, with a pre-ADR-045 client) — never a placeholder, so callers can tell "not
+    /// known yet" apart from "resolved to the name: fallback". Session-transient: it selects
+    /// which player file to load/write, it is not itself part of `PlayerSnapshot`.
+    #[serde(skip)]
+    pub identity_key: Option<String>,
     /// TEMP DIAG (TP attribution audit; REMOVE after diagnosis): game-loop tick of the last
     /// authoritative-reposition event sent to this player (`session_restored`/`player_died`/
     /// `player_respawned` — the same three that arm the client's `AuthoritativePoseApplier`
@@ -149,6 +156,7 @@ impl Player {
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),
+            identity_key: None,
             last_reposition_tick: None,
         }
     }

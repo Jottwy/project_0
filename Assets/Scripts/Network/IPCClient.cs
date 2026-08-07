@@ -723,6 +723,21 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-045 Fase 1: send this client's identity key so its own backend can resolve which
+        /// player file to load/write. IPC only, sent once per session by PlayerIdentity. Returns
+        /// whether the frame actually went out, so the caller (which polls until success, since
+        /// the socket may not be connected yet at the moment the identity is first ready) knows
+        /// whether to keep trying.
+        /// </summary>
+        public bool SendSetIdentity(string key)
+        {
+            return SendActionFrame(ProtocolActionTypes.SetIdentity, 1, w =>
+            {
+                w.WriteString("key"); w.WriteString(key);
+            });
+        }
+
+        /// <summary>
         /// ADR-028 amendment (world chests): seed one host-authoritative supply chest. Host-only
         /// server-side (a joiner's send is a logged no-op — joiners mirror chests via CorpseList);
         /// deduped by (player, request_id) against client re-sends after reconnect. Position is

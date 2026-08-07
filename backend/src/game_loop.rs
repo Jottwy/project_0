@@ -533,6 +533,18 @@ pub async fn run(
                         }
                         std::process::exit(0);
                     }
+                    // ADR-045 Fase 1: the client's own identity key, session-transient (never
+                    // part of PlayerSnapshot — it SELECTS which player file to load/write, see
+                    // the per-tick resolution below). Resolved eagerly, sanitized on receipt —
+                    // trust-the-client with a filesystem-safety net, same posture as every other
+                    // client-reported action.
+                    if action.action_type == "set_identity" {
+                        let raw_key = json_str(&action.data, "key");
+                        let key = crate::persistence::sanitize_player_key(raw_key, &player.name);
+                        info!("ADR-045: identity resolved to key={key}");
+                        player.identity_key = Some(key);
+                        continue;
+                    }
                     info!(
                         "MPTRACE step=PVP event=backend_action_received backend action_received action={}",
                         action.action_type
