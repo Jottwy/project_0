@@ -14,7 +14,7 @@ use crate::network::protocol::{
 };
 use crate::player::inventory::Inventory;
 use crate::player::stats::PlayerStats;
-use crate::player::Player;
+use crate::player::{InventoryStackV2, Player};
 use crate::utils::Vec3;
 use crate::world::corpse::{CorpseData, CorpseStack};
 use crate::world::World;
@@ -45,6 +45,12 @@ pub struct PlayerSnapshot {
     /// `serde(default)` → pre-amendment saves load with an empty list.
     #[serde(default)]
     pub stp_inventory: Vec<CorpseStack>,
+    /// ADR-045 Fase 3: instance-fidelity companion to `stp_inventory` above (container/slot/
+    /// props). `serde(default)` → a pre-Fase-3 save (including every save written by Fases 1+2,
+    /// already validated in real playtest) loads with an empty list here and restores from the
+    /// flat `stp_inventory` instead — see the emission-site fallback in `game_loop.rs`.
+    #[serde(default)]
+    pub inventory_v2: Vec<InventoryStackV2>,
 }
 
 impl PlayerSnapshot {
@@ -60,6 +66,7 @@ impl PlayerSnapshot {
             held_item: p.held_item,
             respawn_point: p.respawn_point,
             stp_inventory: p.stp_inventory.clone(),
+            inventory_v2: p.inventory_v2.clone(),
         }
     }
 }
@@ -306,6 +313,7 @@ pub fn save_world<P: AsRef<Path>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::player::session::ItemPropertyValue;
     use crate::world::corpse::CorpseStack;
 
     fn scratch_path(name: &str) -> std::path::PathBuf {
@@ -480,6 +488,126 @@ mod tests {
             "missing stp_inventory must default to empty"
         );
         assert!((hp.stats.health - 80.0).abs() < 1e-4);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ADR-045 Fase 3: inventory_v2 (container/slot/props) round-trips through the same
+    // save/load path as stp_inventory, unmodified.
+    #[test]
+    fn inventory_v2_round_trips_container_slot_and_props() {
+        let world = seeded_world();
+        let mut player = Player::new(1, "Host");
+        player.inventory_v2 = vec![InventoryStackV2 {
+            item_id: -52379,
+            quantity: 2,
+            container: 1,
+            slot: 5,
+            props: vec![
+                ItemPropertyValue {
+                    id: 10,
+                    value: 0.75,
+                },
+                ItemPropertyValue {
+                    id: 11,
+                    value: 30.0,
+                },
+            ],
+        }];
+
+        let path = scratch_path("inventory_v2_round_trip");
+        save_world(
+            &path,
+            "test-session",
+            &world,
+            &player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+            2.5,
+        )
+        .expect("save should succeed");
+
+        let loaded = load_or_fresh(&path).expect("freshly written save must load");
+        let hp = loaded.host_player.expect("host player must persist");
+        assert_eq!(
+            hp.inventory_v2,
+            vec![InventoryStackV2 {
+                item_id: -52379,
+                quantity: 2,
+                container: 1,
+                slot: 5,
+                props: vec![
+                    ItemPropertyValue {
+                        id: 10,
+                        value: 0.75,
+                    },
+                    ItemPropertyValue {
+                        id: 11,
+                        value: 30.0
+                    },
+                ],
+            }]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ADR-045 Fase 3, requisito explícito de Joel: los saves reales generados en el playtest
+    // de Fases 1+2 de esta sesión (host_player CON stp_inventory poblado, sin la clave
+    // "inventory_v2" porque el campo no existía) deben seguir cargando exactamente igual, con
+    // inventory_v2 vacío y stp_inventory intacto — no solo por fe en `#[serde(default)]`, sino
+    // fijado con un test que reproduce la forma literal de esos ficheros.
+    #[test]
+    fn pre_fase3_save_without_inventory_v2_loads_and_keeps_stp_inventory() {
+        let path = scratch_path("pre_fase3_host_player");
+        let json = r#"{
+            "version": "0.1.0",
+            "world_seed": 42,
+            "session_name": "old",
+            "created_at": "2026-01-01T00:00:00Z",
+            "last_saved": "2026-01-01T00:00:00Z",
+            "play_time_seconds": 0,
+            "config": { "max_players": 50, "teleport_interval_min": 120, "teleport_interval_max": 600, "entity_scaling": 1.0 },
+            "host_player": {
+                "stats": { "health": 80.0, "hunger": 50.0, "thirst": 50.0, "sanity": 50.0, "stamina": 100.0,
+                           "speed_modifier": 1.0, "accuracy_modifier": 1.0, "hallucination_intensity": 0.0 },
+                "position": { "x": 1.0, "y": 1.8, "z": 2.0 },
+                "rotation": 90.0,
+                "inventory": { "slots": [] },
+                "equipment": [0, 0, 0, 0],
+                "held_item": 0,
+                "respawn_point": null,
+                "stp_inventory": [
+                    { "item_id": -52379, "quantity": 2 },
+                    { "item_id": 3621376, "quantity": 30 }
+                ]
+            }
+        }"#;
+        std::fs::write(&path, json).unwrap();
+
+        let loaded = load_or_fresh(&path).expect("pre-Fase-3 save with host_player must parse");
+        let hp = loaded.host_player.expect("host_player present");
+        assert!(
+            hp.inventory_v2.is_empty(),
+            "missing inventory_v2 key must default to empty, not fail to parse"
+        );
+        assert_eq!(
+            hp.stp_inventory,
+            vec![
+                CorpseStack {
+                    item_id: -52379,
+                    quantity: 2
+                },
+                CorpseStack {
+                    item_id: 3621376,
+                    quantity: 30
+                },
+            ],
+            "stp_inventory from a real Fase 1+2 playtest save must survive untouched"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 

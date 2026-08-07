@@ -229,6 +229,7 @@ fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::Pl
     player.held_item = snap.held_item;
     player.respawn_point = snap.respawn_point;
     player.stp_inventory = snap.stp_inventory;
+    player.inventory_v2 = snap.inventory_v2;
 }
 
 /// ADR-045 Fase 2 fix: whether `apply_movement` should be skipped this tick because a
