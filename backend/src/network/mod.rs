@@ -214,6 +214,12 @@ pub struct NetworkManager {
     pub last_pickup_at: Option<Instant>,
     next_peer_id: PeerId,
     pub world_seed: u64,
+    /// ADR-045 Fase 2: whether `world_seed` above is actually known yet. The host knows it from
+    /// its own launch args at construction (`true` from the start); a joiner does not learn it
+    /// until `handle_handshake_ack` writes it, where this flips to `true` in the same place.
+    /// Exists so player-file resolution (which needs `world_seed` + `identity_key` together, see
+    /// `game_loop::run`) can poll a plain field instead of inferring the moment from an event.
+    pub world_seed_known: bool,
     /// P0-2: density multiplier for the phantom population draw. Same shape as `world_seed` —
     /// read once from env at boot (or from a loaded save, which wins), travels in the
     /// HandshakeAck, and the joiner adopts the host's value. Defaults to 1.0 (no scaling) so
@@ -287,6 +293,7 @@ impl NetworkManager {
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
+            world_seed_known: is_host,
             phantom_density_scale: 1.0,
             global_sequence: 0,
             local_name: format!("Player{local_id}"),

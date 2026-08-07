@@ -190,6 +190,36 @@ async fn hydrate_clears_the_absolute_invulnerability_tick() {
     );
 }
 
+/// ADR-045 Fase 2: "el fichero de jugador gana sobre `host_player`" no es una regla de
+/// prioridad en ningun sitio del codigo — es simplemente que `apply_player_snapshot` se llama
+/// una segunda vez (desde el bloque por-tick de `run()`) despues de que `hydrate_from_save` ya
+/// la llamo una primera con el snapshot embebido del save de mundo. El ultimo `apply` gana.
+#[test]
+fn apply_player_snapshot_prefers_the_last_applied_snapshot() {
+    use crate::persistence::save::PlayerSnapshot;
+
+    let mut host_embedded_like = Player::new(1, "Host");
+    host_embedded_like.stats.health = 40.0;
+    host_embedded_like.position = Vec3::new(1.0, 1.8, 1.0);
+
+    let mut player_file_like = Player::new(1, "Host");
+    player_file_like.stats.health = 90.0;
+    player_file_like.position = Vec3::new(9.0, 1.8, 9.0);
+
+    let mut player = Player::new(1, "Host");
+    apply_player_snapshot(
+        &mut player,
+        PlayerSnapshot::from_player(&host_embedded_like),
+    );
+    apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&player_file_like));
+
+    assert!(
+        (player.stats.health - 90.0).abs() < 1e-4,
+        "el segundo apply (fichero de jugador) debe ganar sobre el primero (host_player)"
+    );
+    assert_eq!(player.position, Vec3::new(9.0, 1.8, 9.0));
+}
+
 // P0-2: `resolve_phantom_density_scale` es la misma regla de precedencia que world_seed
 // (game_loop.rs:270-280) extraída a función pura, precisamente para poder testearla sin
 // levantar el loop entero — mismo motivo que llevó a mover el gate de `broadcast_chunk_states`

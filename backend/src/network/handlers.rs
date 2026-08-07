@@ -656,6 +656,9 @@ impl NetworkManager {
         // Update our local ID to the one assigned by the host.
         self.local_id = assigned_id;
         self.world_seed = world_seed;
+        // ADR-045 Fase 2: the joiner now knows its world_seed — the other half (identity_key,
+        // via set_identity) may already be waiting on this in game_loop::run.
+        self.world_seed_known = true;
         // P0-2: the host's value always wins — same precedent as world_seed above. Our own
         // env-derived value never reaches PhantomDriver (nothing consumes it before this).
         if self.phantom_density_scale != phantom_density_scale {
