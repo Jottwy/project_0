@@ -654,19 +654,45 @@ namespace BackroomsSurvival.Net
         }
 
         // ADR-032: ask the backend to persist the world NOW (before we kill it). Best-effort — if
-        // the IPC stream is already down or this isn't a host, it's a harmless no-op and we fall
-        // through to the kill. The send is synchronous (IPCClient.SendFrame), so on success the
-        // frame is on the socket before we return. Uses TryGetInstance to bypass the quitting gate
-        // (Instance returns null once MarkQuitting has run during OnApplicationQuit).
+        // the IPC stream is already down or this isn't a host, it's a no-op and we fall through
+        // to the kill (the backend itself has an independent fallback for exactly that case —
+        // see the ADR-045 fix note below). The send is synchronous (IPCClient.SendFrame), so on
+        // success the frame is on the socket before we return. Uses TryGetInstance to bypass the
+        // quitting gate (Instance returns null once MarkQuitting has run during
+        // OnApplicationQuit).
+        //
+        // ADR-045 fix: this gate used to fail SILENTLY — no log at all when TryGetInstance
+        // returned false, which is exactly what happens if IPCClient's OWN OnApplicationQuit (a
+        // separate MonoBehaviour, no execution order between the two is guaranteed anywhere in
+        // this project) runs first and nulls its singleton before this one gets to ask for a
+        // save. Both failure branches below now log explicitly, so the next time this race wins,
+        // it leaves a trace instead of looking like it worked. The backend-side fallback
+        // (game_loop::run reacting to its own IPC disconnect) is the real fix for the race
+        // itself — this is the diagnosability half.
         private void TryRequestBackendSave()
         {
             try
             {
-                if (IPCClient.TryGetInstance(out var ipc) && ipc != null && ipc.IsConnected)
+                if (!IPCClient.TryGetInstance(out var ipc) || ipc == null)
                 {
-                    ipc.SendSaveAndShutdown();
-                    Debug.Log("[NetworkInitializer] ADR-032: requested backend save-on-quit");
+                    Debug.LogWarning(
+                        "[NetworkInitializer] ADR-045: no IPCClient instance at save-on-quit time " +
+                        "(likely its own OnApplicationQuit ran first) — skipping SendSaveAndShutdown, " +
+                        "relying on the backend's own disconnect-triggered save.");
+                    return;
                 }
+
+                if (!ipc.IsConnected)
+                {
+                    Debug.LogWarning(
+                        "[NetworkInitializer] ADR-045: IPCClient instance found but not connected at " +
+                        "save-on-quit time — skipping SendSaveAndShutdown, relying on the backend's own " +
+                        "disconnect-triggered save.");
+                    return;
+                }
+
+                ipc.SendSaveAndShutdown();
+                Debug.Log("[NetworkInitializer] ADR-032: requested backend save-on-quit");
             }
             catch (Exception e)
             {
