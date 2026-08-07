@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using PolymindGames;
+using PolymindGames.InventorySystem;
 using PolymindGames.MovementSystem;
 using UnityEngine;
 
@@ -36,8 +37,12 @@ namespace BackroomsSurvival.Net
         private CharacterControllerMotor _motor;
         private ICharacter _character;
 
-        // Stacks waiting for the character to exist. Null = nothing pending.
+        // Stacks waiting for the character to exist. Null = nothing pending. Mutually
+        // exclusive with `_pendingV2` — the backend sends ONE homogeneous shape per event
+        // (ADR-045 Fase 3: v2 when inventory_v2 is populated server-side, legacy flat
+        // otherwise), never both for the same restore.
         private List<(int itemId, int quantity)> _pending;
+        private List<InventoryStackV2> _pendingV2;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
@@ -77,21 +82,39 @@ namespace BackroomsSurvival.Net
                 _ipc.AddEventListener(OnGameEvent);
             }
 
-            if (_pending == null)
+            if (_pending == null && _pendingV2 == null)
                 return;
 
             ResolveCharacter();
             if (_character?.Inventory == null)
                 return; // keep waiting — scene still warming up
 
-            Apply(_pending);
-            _pending = null;
+            if (_pendingV2 != null)
+            {
+                ApplyV2(_pendingV2);
+                _pendingV2 = null;
+            }
+            else
+            {
+                Apply(_pending);
+                _pending = null;
+            }
         }
 
         private void OnGameEvent(GameEventMsg ev)
         {
             if (ev == null || ev.eventType != RestoredEvent)
                 return;
+
+            // ADR-045 Fase 3: v2 (container/slot/props) takes priority when the payload has it —
+            // the backend only ever sends ONE homogeneous shape per event (see `_pendingV2` doc).
+            var stacksV2 = ParseStacksV2(ev.data);
+            if (stacksV2 != null)
+            {
+                _pendingV2 = stacksV2; // applied in Update once the character exists
+                Debug.Log($"[InventoryRestorer] inventory_restored v2 received: {stacksV2.Count} stacks (pending apply)");
+                return;
+            }
 
             var stacks = ParseStacks(ev.data);
             if (stacks == null)
@@ -139,6 +162,65 @@ namespace BackroomsSurvival.Net
             return stacks;
         }
 
+        /// ADR-045 Fase 3: companion of <see cref="ParseStacks"/> for the instance-fidelity
+        /// shape (container/slot/props). Returns null when the payload isn't v2-shaped at
+        /// all — malformed, or every entry is a legacy `{item_id, quantity}` pair — so the
+        /// caller falls back to <see cref="ParseStacks"/>; the backend only ever sends ONE
+        /// homogeneous shape per event (never a mix), so checking the FIRST entry for
+        /// "container"/"slot" is enough to classify the whole payload.
+        public static List<InventoryStackV2> ParseStacksV2(object data)
+        {
+            if (data is not Dictionary<string, object> d ||
+                !d.TryGetValue("items", out var rawItems) ||
+                rawItems is not object[] list ||
+                list.Length == 0 ||
+                list[0] is not Dictionary<string, object> first ||
+                !first.ContainsKey("container") ||
+                !first.ContainsKey("slot"))
+                return null;
+
+            var stacks = new List<InventoryStackV2>(list.Length);
+            for (int i = 0; i < list.Length; i++)
+            {
+                if (list[i] is not Dictionary<string, object> m)
+                    continue;
+
+                int id = (int)IPCParse.ToLong(IPCParse.Get(m, "item_id"));
+                int qty = (int)IPCParse.ToLong(IPCParse.Get(m, "quantity"));
+                if (id == 0 || qty <= 0)
+                    continue;
+
+                byte container = (byte)IPCParse.ToLong(IPCParse.Get(m, "container"));
+                byte slot = (byte)IPCParse.ToLong(IPCParse.Get(m, "slot"));
+
+                List<ItemPropertyValue> props = null;
+                if (IPCParse.Get(m, "props") is object[] rawProps && rawProps.Length > 0)
+                {
+                    props = new List<ItemPropertyValue>(rawProps.Length);
+                    for (int p = 0; p < rawProps.Length; p++)
+                    {
+                        if (rawProps[p] is not Dictionary<string, object> pm)
+                            continue;
+                        props.Add(new ItemPropertyValue
+                        {
+                            id = (int)IPCParse.ToLong(IPCParse.Get(pm, "id")),
+                            value = IPCParse.ToFloat(IPCParse.Get(pm, "value")),
+                        });
+                    }
+                }
+
+                stacks.Add(new InventoryStackV2
+                {
+                    itemId = id,
+                    quantity = qty,
+                    container = container,
+                    slot = slot,
+                    props = props,
+                });
+            }
+            return stacks;
+        }
+
         private void Apply(List<(int itemId, int quantity)> stacks)
         {
             var inventory = _character.Inventory;
@@ -164,6 +246,66 @@ namespace BackroomsSurvival.Net
             }
 
             Debug.Log($"[InventoryRestorer] inventory restored: {added} stacks added, {rejected} partial/rejected");
+        }
+
+        /// ADR-045 Fase 3: places each stack in its EXACT saved container/slot via
+        /// <c>IItemContainer.SetItemAtIndex</c> (public STP API — no vendor edit) instead of
+        /// letting <c>AddItemsById</c> pick a slot, then restores instance properties via the
+        /// public <c>ItemProperty.Double</c> setter. Same clear-first idempotence as
+        /// <see cref="Apply"/>. An out-of-range container/slot (a save from before the
+        /// inventory layout changed) or an unknown item_id degrades gracefully — the stack is
+        /// dropped and logged, never a hard failure; an unknown property id on an otherwise
+        /// valid stack is silently skipped (same contract the backend documents for its own
+        /// restore path).
+        private void ApplyV2(List<InventoryStackV2> stacks)
+        {
+            var containers = _character.Inventory.Containers;
+
+            for (int i = 0; i < containers.Count; i++)
+                containers[i]?.Clear();
+
+            int placed = 0, rejected = 0;
+            for (int i = 0; i < stacks.Count; i++)
+            {
+                var s = stacks[i];
+                if (s.container >= containers.Count || containers[s.container] == null)
+                {
+                    rejected++;
+                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} container={s.container} out of range ({containers.Count} containers) — dropped");
+                    continue;
+                }
+
+                var container = containers[s.container];
+                if (s.slot >= container.SlotsCount)
+                {
+                    rejected++;
+                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} slot={s.slot} out of range ({container.SlotsCount} slots) — dropped");
+                    continue;
+                }
+
+                if (!ItemDefinition.TryGetWithId(s.itemId, out var def))
+                {
+                    rejected++;
+                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} unknown definition — dropped");
+                    continue;
+                }
+
+                var item = new Item(def);
+                if (s.props != null)
+                {
+                    for (int p = 0; p < s.props.Count; p++)
+                    {
+                        if (item.TryGetProperty(s.props[p].id, out var prop))
+                            prop.Double = s.props[p].value;
+                        // Unknown property id: ignored, not an error (def changed between versions).
+                    }
+                }
+
+                container.SetItemAtIndex(s.slot, new ItemStack(item, s.quantity));
+                placed++;
+            }
+
+            Debug.Log($"[InventoryRestorer] inventory v2 restored: {placed} stacks placed, {rejected} dropped");
         }
 
         // Same local-character resolve as DeathLootReporter/InventoryReporter (skip remote
