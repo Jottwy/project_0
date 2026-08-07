@@ -1058,6 +1058,98 @@ namespace BackroomsSurvival.Tests
             Assert.IsNull(stacks);
         }
 
+        // ── InventoryRestorer.ParseStacksV2 (ADR-045 Fase 3) ─────────────────
+        //
+        // Mismos bytes msgpack reales (MsgPackWriter -> el shape exacto que game_loop.rs emite
+        // cuando inventory_v2 no esta vacio -> MsgPackReader), no un arbol fabricado a mano.
+
+        [Test]
+        public void InventoryRestorer_ParseStacksV2_DecodesRealBackendPayloadWithProps()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(5);
+            w.WriteString("item_id"); w.WriteInt(-52379);
+            w.WriteString("quantity"); w.WriteInt(2);
+            w.WriteString("container"); w.WriteInt(1);
+            w.WriteString("slot"); w.WriteInt(5);
+            w.WriteString("props"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2);
+            w.WriteString("id"); w.WriteInt(10);
+            w.WriteString("value"); w.WriteFloat(0.75f);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacksV2(e.data);
+            Assert.IsNotNull(stacks, "un payload v2 bien formado no debe caer al parse legado");
+            Assert.AreEqual(1, stacks.Count);
+            Assert.AreEqual(-52379, stacks[0].itemId);
+            Assert.AreEqual(2, stacks[0].quantity);
+            Assert.AreEqual(1, stacks[0].container);
+            Assert.AreEqual(5, stacks[0].slot);
+            Assert.IsNotNull(stacks[0].props);
+            Assert.AreEqual(1, stacks[0].props.Count);
+            Assert.AreEqual(10, stacks[0].props[0].id);
+            Assert.AreEqual(0.75, stacks[0].props[0].value, 1e-4);
+        }
+
+        /// Un payload legado (sin container/slot en ninguna entrada) NO es v2 — ParseStacksV2
+        /// debe devolver null para que OnGameEvent caiga al ParseStacks de siempre, no aplicar
+        /// container=0/slot=0 por defecto (colisionaria con un item real en ese slot).
+        [Test]
+        public void InventoryRestorer_ParseStacksV2_LegacyPayloadReturnsNullForFallback()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(42);
+            w.WriteString("quantity"); w.WriteInt(3);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.IsNull(InventoryRestorer.ParseStacksV2(e.data));
+            var legacy = InventoryRestorer.ParseStacks(e.data);
+            Assert.IsNotNull(legacy);
+            Assert.AreEqual((42, 3), legacy[0]);
+        }
+
+        /// Un item v2 sin props (item sin propiedades de instancia) es valido — props queda null,
+        /// no una lista vacia forzada ni un fallo de parseo.
+        [Test]
+        public void InventoryRestorer_ParseStacksV2_ItemWithoutPropsParsesWithNullProps()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(5);
+            w.WriteString("item_id"); w.WriteInt(999);
+            w.WriteString("quantity"); w.WriteInt(1);
+            w.WriteString("container"); w.WriteInt(0);
+            w.WriteString("slot"); w.WriteInt(0);
+            w.WriteString("props"); w.WriteArrayHeader(0);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacksV2(e.data);
+            Assert.IsNotNull(stacks);
+            Assert.AreEqual(1, stacks.Count);
+            Assert.IsNull(stacks[0].props, "sin propiedades, props debe quedar null, no lista vacia");
+        }
+
         // ── PeerVoiceMsg (ADR-046) ───────────────────────────────────────────
 
         [Test]
