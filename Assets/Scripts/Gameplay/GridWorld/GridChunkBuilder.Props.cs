@@ -32,10 +32,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             LayerVisualMaterials mats, int chunkX, int chunkZ, int zoneKind, RoomZoneMsg[] roomZones,
             OfficeStairs.Plan stairPlan)
         {
-            // Catálogo por zona (OFFICE) con caída al de la capa. Se resuelve UNA vez por chunk,
-            // no por tile: `zone_kind` es constante en todo el chunk (ZoneRegistry lo keyea por
-            // (cx,cz)), así que consultarlo dentro del bucle solo repetiría el mismo recorrido.
-            PropEntry[] props = cfg.PropsFor(zoneKind);
+            // Catálogo, densidad y tope por zona (OFFICE), con caída a los de la capa. Se
+            // resuelve UNA vez por chunk, no por tile: `zone_kind` es constante en todo el
+            // chunk (ZoneRegistry lo keyea por (cx,cz)), así que consultarlo dentro del bucle
+            // solo repetiría el mismo recorrido.
+            bool hasZoneSet = cfg.TryGetZonePropSet(zoneKind, out var zoneSet);
+            PropEntry[] props = hasZoneSet ? zoneSet.props : cfg.props;
             if (props == null || props.Length == 0) return;
 
             float totalWeight = 0f;
@@ -43,7 +45,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 totalWeight += Mathf.Max(0f, props[i].spawnWeight);
             if (totalWeight <= 0f) return;
 
-            float baseDensity = Mathf.Clamp01(cfg.propDensity);
+            // El tope por zona es lo que de verdad amueblaba mal una planta de oficinas: el
+            // global (12) es para TODO el chunk, así que repartido entre 4 despachos más el
+            // maze deja ~3 objetos en una sala de 10×10 m. 0 = sin autorar ⇒ el global.
+            int maxProps = hasZoneSet && zoneSet.maxPropsPerChunk > 0
+                ? zoneSet.maxPropsPerChunk
+                : MaxPropsPerChunk;
+
+            // `densityScale` multiplica ANTES del Clamp01 de propDensity para que una zona
+            // pueda subir de verdad; 0 = sin autorar ⇒ 1, sin cambio.
+            float zoneScale = hasZoneSet && zoneSet.densityScale > 0f ? zoneSet.densityScale : 1f;
+            float baseDensity = Mathf.Clamp01(cfg.propDensity * zoneScale);
             float bias    = Mathf.Clamp01(cfg.propClusterBias);
             int center    = Tiles / 2;
             // ADR-036: sin zonas (backend anterior a ADR-034, o chunk sin ellas) ni se
@@ -89,10 +101,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
 
             // Cap: keep an unbiased deterministic subset (sort by order hash, drop the rest).
-            if (_propScratch.Count > MaxPropsPerChunk)
+            if (_propScratch.Count > maxProps)
             {
                 _propScratch.Sort((a, b) => a.key.CompareTo(b.key));
-                _propScratch.RemoveRange(MaxPropsPerChunk, _propScratch.Count - MaxPropsPerChunk);
+                _propScratch.RemoveRange(maxProps, _propScratch.Count - maxProps);
             }
 
             // Pass 2: place one prop per selected tile.
