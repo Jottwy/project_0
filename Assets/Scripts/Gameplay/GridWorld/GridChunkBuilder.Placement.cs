@@ -157,6 +157,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <paramref name="cfg"/>.wallPanelVariety turns a share of the panels into KNEE
         /// WALLS (partial height, see-over) chosen by a pure hash of the GLOBAL tile coords
         /// — never by <c>rng</c>, so the tint draw sequence of Piezas A-F is untouched.
+        /// Los paneles de perímetro SELLADO (SealedRoom/CorridorSpine) quedan EXCLUIDOS
+        /// del sorteo — ver el comentario en el sitio de la comprobación.
         /// The knee wall stays untraversable by construction (see
         /// <see cref="LayerVisualConfig.MinKneeWallHeight"/>): the runtime BoxCollider
         /// scales with the transform, so the collider matches the visual exactly — no
@@ -181,7 +183,26 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         ResolveWallPrefab(prefabs, cfg, hasCfg, zoneKind, roomZones,
                             tx, tz, gx, gz, flag),
                         parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
-                    if (variety > 0f && Hash01(gx, gz, KneeSaltFor(flag)) < variety)
+                    // Un knee wall NUNCA perfora un perímetro sellado: una SealedRoom o
+                    // CorridorSpine que se puede ver por encima deja de leerse como sala
+                    // cerrada, que es justo su razón de existir frente a una zona Open.
+                    // `Open` cubre tanto "dentro de una zona Open" como "en ningún rect"
+                    // (el fallback de RoomTypeForPanel), o sea el maze — ahí sí aplica.
+                    //
+                    // ORDEN DELIBERADO: `Hash01` es aritmética pura y RoomTypeForPanel
+                    // recorre `roomZones` (hasta 2 RoomTypeForTile por panel). Con el
+                    // sorteo primero, la resolución de sala solo corre para la fracción
+                    // que ya pasó el roll (~8% con el perfil de layer 0), no para los ~94
+                    // paneles del chunk. Ambas condiciones son puras, así que el
+                    // corto-circuito no cambia el resultado, solo el coste.
+                    //
+                    // Hoy `ResolveWallPrefab` corta antes de resolver la sala porque
+                    // `wallVariantSets` está vacío en los 4 assets, así que esta es la
+                    // ÚNICA llamada. Cuando se autoren modelos de pared (ADR-035) el
+                    // mismo panel resolverá su RoomType dos veces — merece cachearlo
+                    // entonces, no ahora (sería una abstracción sin consumidor).
+                    if (variety > 0f && Hash01(gx, gz, KneeSaltFor(flag)) < variety
+                        && RoomTypeForPanel(roomZones, tx, tz, flag) == RoomZoneKind.Open)
                         go.transform.localScale = new Vector3(1f, kneeScale, 1f);
                     AddColliderIfMissing(go);
                     Paint(go, mat, tint);

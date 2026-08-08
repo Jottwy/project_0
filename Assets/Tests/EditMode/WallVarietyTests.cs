@@ -67,8 +67,35 @@ namespace BackroomsSurvival.Tests
 
         /// <summary>layerIndex 0 de 2 ⇒ no es la capa superior ⇒ sin losa de techo extra.</summary>
         private GameObject Build(byte[,] walls, LayerVisualConfig cfg, string name) =>
+            BuildWithZones(walls, cfg, null, name);
+
+        /// <summary>Igual que <see cref="Build"/> pero con <c>room_zones</c> (ADR-034).</summary>
+        private GameObject BuildWithZones(byte[,] walls, LayerVisualConfig cfg,
+            RoomZoneMsg[] zones, string name) =>
             GridChunkBuilder.BuildFromWalls(walls, GridPrefabSet.LoadFromResources(),
-                Vector3.zero, name, 0, 2, cfg, NullMaterials());
+                Vector3.zero, name, 0, 2, cfg, NullMaterials(), 0, 0, zones);
+
+        /// <summary>
+        /// Un rect en coordenadas de CELDA (2.5 m, x1/z1 exclusivos) igual que el wire.
+        /// Celdas 4..11 ⇒ tiles 2..5: <c>RoomTypeForTile</c> consulta la sub-celda NO
+        /// del tile (2·tx), así que tile 2 → celda 4 (dentro) y tile 6 → celda 12 (fuera).
+        /// </summary>
+        private static RoomZoneMsg[] ZoneOfKind(RoomZoneKind kind) => new[]
+        {
+            new RoomZoneMsg { x0 = 4, z0 = 4, x1 = 12, z1 = 12, kindByte = (byte)kind }
+        };
+
+        /// <summary>Panel cuya posición local casa con (x, z). Identificar por posición es
+        /// más robusto que por índice: el orden de instanciación es el de WallEdgeTable.</summary>
+        private static Transform PanelAt(GameObject root, float x, float z)
+        {
+            foreach (var p in WallInstances(root))
+                if (Mathf.Abs(p.localPosition.x - x) < 1e-3f
+                    && Mathf.Abs(p.localPosition.z - z) < 1e-3f)
+                    return p;
+            Assert.Fail($"no hay panel en ({x}, {z})");
+            return null;
+        }
 
         private static List<Transform> WallInstances(GameObject root)
         {
@@ -199,6 +226,77 @@ namespace BackroomsSurvival.Tests
             var b = ColliderBounds(panels[0]);
             Assert.GreaterOrEqual(b.max.y, LayerVisualConfig.MinKneeWallHeight - 1e-3f,
                 "la geometría construida tampoco puede quedar por debajo del mínimo");
+        }
+
+        // ── 3b. El knee wall nunca perfora un perímetro sellado ─────────────────
+
+        /// <summary>
+        /// Con <c>variety = 1</c> TODO panel sería knee wall si no hubiera gate, así que el
+        /// resultado no depende del hash y el test aísla exactamente la exclusión.
+        ///
+        /// Una <c>SealedRoom</c> que se puede ver por encima deja de leerse como sala
+        /// cerrada — su perímetro es su identidad frente a una zona <c>Open</c>. Se cubren
+        /// las DOS rutas de <see cref="GridChunkBuilder.RoomTypeForPanel"/>: el panel que
+        /// emite un tile de DENTRO de la sala, y el muro oeste, que por la regla de
+        /// no-duplicación lo emite el tile de FUERA (vecino al otro lado del panel).
+        /// </summary>
+        [Test]
+        public void KneeWallNeverBreachesASealedPerimeter()
+        {
+            var walls = EmptyWalls();
+            walls[3, 3] = BitS; // dentro de la sala (tile 3 → celda 6): ruta "tile propietario"
+            walls[1, 3] = BitE; // muro oeste de la sala: ruta "vecino" (propietario tile 1 = Open)
+            walls[8, 8] = BitS; // maze, fuera de la sala: control positivo
+
+            _root = BuildWithZones(walls, StyledConfig(1f, 1.35f),
+                ZoneOfKind(RoomZoneKind.SealedRoom), "ChunkSealedPerimeter");
+
+            Assert.AreEqual(3, WallInstances(_root).Count);
+
+            Assert.AreEqual(Vector3.one, PanelAt(_root, 17.5f, 20f).localScale,
+                "panel emitido por un tile DENTRO de la SealedRoom: nunca knee wall");
+            Assert.AreEqual(Vector3.one, PanelAt(_root, 10f, 17.5f).localScale,
+                "muro oeste de la SealedRoom (lo emite el tile de fuera): nunca knee wall");
+            Assert.AreEqual(1.35f / 4f, PanelAt(_root, 42.5f, 45f).localScale.y, 1e-4f,
+                "el maze fuera de la sala SÍ debe seguir recibiendo knee walls — el gate " +
+                "excluye perímetros sellados, no apaga la mecánica");
+        }
+
+        /// <summary>
+        /// El gate mira el TIPO de zona, no la mera presencia de una. Una zona
+        /// <c>Open</c> no tiene perímetro propio (el muro que la rodea es maze normal),
+        /// así que sus paneles siguen entrando al sorteo — si se excluyeran, la mecánica
+        /// desaparecería justo en las salas grandes, que es donde más se nota.
+        /// </summary>
+        [Test]
+        public void KneeWallStillAppliesInsideAnOpenZone()
+        {
+            var walls = EmptyWalls();
+            walls[3, 3] = BitS;
+
+            _root = BuildWithZones(walls, StyledConfig(1f, 1.35f),
+                ZoneOfKind(RoomZoneKind.Open), "ChunkOpenZone");
+
+            Assert.AreEqual(1.35f / 4f, PanelAt(_root, 17.5f, 20f).localScale.y, 1e-4f,
+                "una zona Open no tiene perímetro sellado que proteger");
+        }
+
+        /// <summary>
+        /// <c>CorridorSpine</c> comparte el mecanismo de perímetro sellado con
+        /// <c>SealedRoom</c> (ambos estampan <c>SealedWall</c> en el backend), así que la
+        /// exclusión debe cubrir los dos — no solo el tipo que se probó primero.
+        /// </summary>
+        [Test]
+        public void KneeWallNeverBreachesACorridorSpinePerimeter()
+        {
+            var walls = EmptyWalls();
+            walls[3, 3] = BitS;
+
+            _root = BuildWithZones(walls, StyledConfig(1f, 1.35f),
+                ZoneOfKind(RoomZoneKind.CorridorSpine), "ChunkSpinePerimeter");
+
+            Assert.AreEqual(Vector3.one, PanelAt(_root, 17.5f, 20f).localScale,
+                "CorridorSpine también tiene perímetro sellado");
         }
 
         // ── 4. Dintel: solo sobre vano, nunca sobre pared ni en borde ───────────
