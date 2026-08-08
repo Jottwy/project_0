@@ -2135,3 +2135,97 @@ fn subregion_zones_all_connected_after_repair() {
         }
     }
 }
+
+// ── Fix B — densidad de muro del maze (sesión de sub-regiones) ───────────────
+
+/// Fracción de celdas TRANSITABLES sobre el interior utilizable del chunk
+/// (`1..=18` en cada eje, 324 celdas — excluye el borde reservado de
+/// costura, que nunca es transitable por construcción y ensuciaría la
+/// medida). Cuenta CUALQUIER celda `is_walkable()`: maze DFS, interior de
+/// zonas Open/SealedRoom/CorridorSpine, Stair/Pit — todo lo que el jugador
+/// puede pisar, no solo el maze puro. Es la métrica real de "sitio para
+/// spawnear contenido" que pedía la sesión, a diferencia del conteo
+/// "no-Wall" de `layer_profiles_change_the_output` (ese cuenta el anillo
+/// `SealedWall` como abierto; este NO, porque `SealedWall` no es transitable).
+fn walkable_fraction(grid: &LayerGrid) -> f64 {
+    let mut walkable = 0usize;
+    for z in 1..=18usize {
+        for x in 1..=18usize {
+            if grid.get(x, z).is_walkable() {
+                walkable += 1;
+            }
+        }
+    }
+    walkable as f64 / 324.0
+}
+
+/// (B1) Herramienta de CALIBRACIÓN, no un guard — nunca falla. Imprime
+/// media/mín/máx de `walkable_fraction` para el perfil de PRODUCCIÓN actual
+/// de layer 0 sobre una muestra amplia y determinista. Correr con
+/// `cargo test --release layer0_openness_report -- --ignored --nocapture`
+/// para leer los números al calibrar `wide_chance`/`erode_chance`.
+#[test]
+#[ignore]
+fn layer0_openness_report() {
+    const SEEDS: u64 = 64;
+    const CHUNKS: i32 = 3;
+    let rules = &LAYER_PROFILES[0];
+    let mut fractions: Vec<f64> = Vec::new();
+
+    for seed in 0..SEEDS {
+        for cx in 0..CHUNKS {
+            let out = generate_layer(rules, seed, (cx, cx * 5 + 1), 0, &[]);
+            fractions.push(walkable_fraction(&out.grid));
+        }
+    }
+
+    let n = fractions.len() as f64;
+    let mean = fractions.iter().sum::<f64>() / n;
+    let min = fractions.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = fractions.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    println!(
+        "layer0_openness_report: n={} mean={mean:.4} min={min:.4} max={max:.4} \
+         wide_chance={} erode_chance={}",
+        fractions.len(),
+        rules.wide_chance,
+        rules.erode_chance
+    );
+}
+
+/// (B1) Guard REAL: sobre una muestra fija (16 seeds × 2 chunks) más pequeña
+/// que `layer0_openness_report` — determinista, rápida, corre en cada
+/// `cargo test`, no solo bajo `--ignored` — la media de `walkable_fraction`
+/// para el perfil de layer 0 se mantiene dentro de ±0.03 del baseline medido
+/// al momento de escribir este test (0.10/0.08 → media real 0.5446 en la
+/// muestra de 64×3 de `layer0_openness_report`; aquí, con 16×2, 0.5611).
+/// Cualquier cambio a `wide_chance`/`erode_chance`/Fase 1-3 que mueva la
+/// densidad de layer 0 debe actualizar la banda A PROPÓSITO (ver B2 de esta
+/// sesión) — el test existe para que ESE cambio sea intencional, no un
+/// efecto secundario silencioso de tocar otra cosa.
+#[test]
+fn layer0_walkable_ratio_stays_in_band() {
+    const SEEDS: u64 = 16;
+    const CHUNKS: i32 = 2;
+    const BASELINE: f64 = 0.5611;
+    const TOLERANCE: f64 = 0.03;
+
+    let rules = &LAYER_PROFILES[0];
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for seed in 0..SEEDS {
+        for cx in 0..CHUNKS {
+            let out = generate_layer(rules, seed, (cx, cx * 5 + 1), 0, &[]);
+            sum += walkable_fraction(&out.grid);
+            n += 1;
+        }
+    }
+    let mean = sum / n as f64;
+    assert!(
+        (mean - BASELINE).abs() <= TOLERANCE,
+        "layer 0: media transitable {mean:.4} se salió de la banda [{:.4}, {:.4}] \
+         (baseline {BASELINE}, ±{TOLERANCE}) — si el cambio es intencional, actualiza \
+         BASELINE con el número real medido, no ensanches la tolerancia a ciegas",
+        BASELINE - TOLERANCE,
+        BASELINE + TOLERANCE
+    );
+}
