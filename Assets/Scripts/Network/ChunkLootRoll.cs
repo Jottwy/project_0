@@ -105,15 +105,21 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// 12 first-pass profiles, one per ZONE_* (0=Normal..11=Pit, mirrors
+        /// 13 first-pass profiles, one per ZONE_* (0=Normal..12=Office, mirrors
         /// backend/src/world/chunk/surface_profiles.rs) — TODO(balance): distinguishable so the
         /// wiring is OBSERVABLE in playtest, deliberately NOT a tuned final design (approved plan,
         /// see docs/STATE.md Pieza 3). Per the zone_kind distribution audited for that plan, the
         /// expansion generator (the vast majority of the explorable world) only reaches NORMAL/
-        /// OPEN_HALL/PILLAR_HALL/STORAGE/HUMID in real volume; SAFE/DANGER/CLEANING only occur in
-        /// the starter structures near spawn, and RED/PIT need depth >= 12 chunks at ~1% each. All
-        /// 12 are still wired for completeness. Entry 0 (NORMAL) is byte-for-value identical to
-        /// <see cref="ZoneLootProfile.Default"/> — the ~83%-of-the-world case keeps today's feel.
+        /// OPEN_HALL/PILLAR_HALL/STORAGE/HUMID/OFFICE in real volume; SAFE/DANGER/CLEANING only
+        /// occur in the starter structures near spawn, and RED/PIT need depth >= 12 chunks at ~1%
+        /// each. All 13 are still wired for completeness. Entry 0 (NORMAL) is byte-for-value
+        /// identical to <see cref="ZoneLootProfile.Default"/> — the largest case keeps today's feel.
+        ///
+        /// THE ARRAY LENGTH IS LOAD-BEARING, not documentation: <see cref="ZoneLootTable.Profile"/>
+        /// resolves out-of-range with <c>Mathf.Clamp</c>, so a short array does not throw — it
+        /// silently serves the LAST entry's profile. Before ZONE_OFFICE existed, an OFFICE chunk
+        /// would have been looted as ZONE_PIT (richest caches, weapon-heavy) with nothing to
+        /// notice it by.
         /// </summary>
         public static ZoneLootProfile[] DefaultZoneLootProfiles() => new[]
         {
@@ -183,6 +189,12 @@ namespace BackroomsSurvival.Net
                 itemCacheChance = 0.70f, carryableZoneChance = 0.20f, weaponRollChance = 0.30f,
                 consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 2f, materialWeight = 1f,
                 logWeight = 20f, stoneWeight = 40f, metalWeight = 40f,
+            },
+            new ZoneLootProfile // 12 ZONE_OFFICE — compartmented floor: many small caches, few materials
+            {
+                itemCacheChance = 0.60f, carryableZoneChance = 0.20f, weaponRollChance = 0.08f,
+                consumableWeight = 3f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 15f, stoneWeight = 20f, metalWeight = 65f,
             },
         };
 

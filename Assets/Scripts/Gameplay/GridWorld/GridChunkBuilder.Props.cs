@@ -29,11 +29,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// chunk's Unity layer via SetLayerRecursively (called after) — lit only by this layer.
         /// </summary>
         private static void PlaceProps(Transform parent, byte[,] walls, LayerVisualConfig cfg,
-            LayerVisualMaterials mats, int chunkX, int chunkZ, RoomZoneMsg[] roomZones)
+            LayerVisualMaterials mats, int chunkX, int chunkZ, int zoneKind, RoomZoneMsg[] roomZones)
         {
+            // Catálogo por zona (OFFICE) con caída al de la capa. Se resuelve UNA vez por chunk,
+            // no por tile: `zone_kind` es constante en todo el chunk (ZoneRegistry lo keyea por
+            // (cx,cz)), así que consultarlo dentro del bucle solo repetiría el mismo recorrido.
+            PropEntry[] props = cfg.PropsFor(zoneKind);
+            if (props == null || props.Length == 0) return;
+
             float totalWeight = 0f;
-            for (int i = 0; i < cfg.props.Length; i++)
-                totalWeight += Mathf.Max(0f, cfg.props[i].spawnWeight);
+            for (int i = 0; i < props.Length; i++)
+                totalWeight += Mathf.Max(0f, props[i].spawnWeight);
             if (totalWeight <= 0f) return;
 
             float baseDensity = Mathf.Clamp01(cfg.propDensity);
@@ -89,7 +95,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int tx = _propScratch[i].tx, tz = _propScratch[i].tz;
                 int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
 
-                PropEntry e = PickProp(cfg.props, Hash01(gx, gz, PropSaltPick) * totalWeight);
+                PropEntry e = PickProp(props, Hash01(gx, gz, PropSaltPick) * totalWeight);
                 string type = e.placeholderType;
 
                 // Instantiating straight under `parent` avoids the scene-root spawn + reparent
