@@ -413,12 +413,30 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 PlacePipes(root.transform, cfg, mats, chunkX, chunkZ);
 
             // Fase 5C: procedural props (placeholders) per tile.
+            // ZONE_OFFICE — escalera decorativa. Se planifica ANTES de los props para que
+            // ambos vean el MISMO tile reservado: el plan es puro, así que llamarlo dos veces
+            // da lo mismo, pero pasarlo evita que un cambio futuro en uno de los dos criterios
+            // deje un archivador dentro de la escalera.
+            var stairPlan = OfficeStairs.PlanFor(zoneKindQuery, roomZones, walls, chunkX, chunkZ);
+            if (styled && stairPlan.valid)
+            {
+                // Tinte SIN pasar por JitterValue, misma disciplina que PlaceLintels: el
+                // `rng` de esta clase es por tile y su secuencia decide el jitter HSV de
+                // suelo/pared/pilares. Consumir una draw aquí re-tintaría el chunk entero,
+                // y esto no es una pieza por tile.
+                int sgx = chunkX * Tiles + stairPlan.tx, sgz = chunkZ * Tiles + stairPlan.tz;
+                OfficeStairs.Build(root.transform, mats.wall,
+                    cfg.WallTintFor(Hash01(sgx, sgz, TintSaltWall)) * zoneTint,
+                    TileCenter(stairPlan.tx, stairPlan.tz), stairPlan.yaw);
+            }
+
             // El gate sigue mirando `cfg.props` (el catálogo de CAPA) a propósito: un
             // `zonePropSets` autorado sin catálogo de capa detrás sería una zona con muebles
             // en un mundo sin ellos, y este gate es el interruptor histórico de "esta capa
             // tiene props". `PlaceProps` resuelve dentro cuál usar de verdad.
             if (styled && cfg.props != null && cfg.props.Length > 0)
-                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, zoneKindQuery, roomZones);
+                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, zoneKindQuery,
+                    roomZones, stairPlan);
 
             // Fase 5A (Bug #1): tag the whole chunk to its macro-layer's Unity layer so
             // per-layer lamp culling isolates it (see GeoLayers). Lamps/luminaires added

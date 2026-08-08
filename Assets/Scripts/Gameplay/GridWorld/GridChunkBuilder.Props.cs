@@ -29,7 +29,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// chunk's Unity layer via SetLayerRecursively (called after) — lit only by this layer.
         /// </summary>
         private static void PlaceProps(Transform parent, byte[,] walls, LayerVisualConfig cfg,
-            LayerVisualMaterials mats, int chunkX, int chunkZ, int zoneKind, RoomZoneMsg[] roomZones)
+            LayerVisualMaterials mats, int chunkX, int chunkZ, int zoneKind, RoomZoneMsg[] roomZones,
+            OfficeStairs.Plan stairPlan)
         {
             // Catálogo por zona (OFFICE) con caída al de la capa. Se resuelve UNA vez por chunk,
             // no por tile: `zone_kind` es constante en todo el chunk (ZoneRegistry lo keyea por
@@ -57,6 +58,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 for (int tx = 0; tx < Tiles; tx++)
                 {
                     if (tx == center && tz == center) continue;      // reserved centre tile
+                    // ZONE_OFFICE: el tile de la escalera está ocupado por geometría con
+                    // collider de suelo a rellano. Un prop ahí spawnearía DENTRO de ella —
+                    // mismo motivo por el que se excluye un tile con columna, unas líneas
+                    // más abajo.
+                    if (stairPlan.valid && tx == stairPlan.tx && tz == stairPlan.tz) continue;
                     if ((walls[tx, tz] & 0x0F) == 0x0F) continue;    // fully enclosed / solid
                     // ADR-033/Pillar: a tile with ANY pillar sub-cell is excluded
                     // outright, not just the sub-cell itself — props spawn at
