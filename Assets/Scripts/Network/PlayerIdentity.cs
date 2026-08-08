@@ -18,7 +18,14 @@ namespace BackroomsSurvival.Net
     /// está presente, esa es la clave que se manda, sin acuñar ni leer GUID.
     ///
     /// Self-bootstraps; sin dependencia del rig del personaje (la identidad no necesita que el
-    /// personaje exista, a diferencia de InventoryReporter). Envía una sola vez por proceso.
+    /// personaje exista, a diferencia de InventoryReporter). Envía una sola vez por proceso: no
+    /// se reenvía si el IPC se desconecta y reconecta (ver <see cref="_sent"/>) — asume que el
+    /// backend que responde es el mismo proceso y conserva su <c>identity_key</c> en memoria
+    /// entre conexiones, no que ha reiniciado.
+    ///
+    /// El override de <see cref="IdentityEnvVar"/> se manda tal cual: aquí no se valida el
+    /// namespace "uuid:" (ADR-045 punto 2) porque el contrato real del backend es aceptar
+    /// cualquier clave arbitraria en <c>set_identity</c>, no solo GUIDs con ese prefijo.
     /// </summary>
     public sealed class PlayerIdentity : MonoBehaviour
     {
@@ -66,15 +73,30 @@ namespace BackroomsSurvival.Net
                 return;
 
             _sent = ipc.SendSetIdentity(ResolveKey());
+            if (_sent)
+                Debug.Log("[PlayerIdentity] identity sent to backend");
         }
 
         private static string ResolveKey()
         {
             string envOverride = Environment.GetEnvironmentVariable(IdentityEnvVar);
             if (!string.IsNullOrWhiteSpace(envOverride))
+            {
+                Debug.Log($"[PlayerIdentity] resolved from env override {IdentityEnvVar}, prefix={KeyPrefix(envOverride)}");
                 return envOverride;
+            }
 
-            return "uuid:" + ResolveOrCreateGuid();
+            string key = "uuid:" + ResolveOrCreateGuid();
+            Debug.Log($"[PlayerIdentity] resolved from PlayerPrefs, prefix={KeyPrefix(key)}");
+            return key;
+        }
+
+        /// <summary>Primeros caracteres de una clave para logging — nunca la clave entera (es
+        /// identidad de jugador y estos logs pueden acabar en reportes de bug compartidos).</summary>
+        private static string KeyPrefix(string key)
+        {
+            const int PrefixLength = 8;
+            return key.Length <= PrefixLength ? key : key[..PrefixLength] + "…";
         }
 
         private static string ResolveOrCreateGuid()
