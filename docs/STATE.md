@@ -2,6 +2,30 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-09 — **PLAYTEST REAL de ZONE_OFFICE + 4 commits de mejora. Primera vez que la serie OFFICE se ve en juego, y el playtest desmintió la premisa de diseño de ADR-058. Enmienda anclada (`DECISIONS.md` 2243→2265).**
+
+0. **QUÉ CERRÓ:** `2e79303` (catálogo de props de OFFICE autorizado + `DevPlayerBuild`) → `84e6128` (3 fallos reales que destapó la primera pasada de Test Runner) → `2735601` (densidad y tope por zona) → `25873c8` (modelo de pared, primer uso real de ADR-035) → `b0cd3d7` (props en sub-celda + 4 placeholders).
+
+1. **PRIMERA PASADA REAL DE TEST RUNNER — 3 fallos míos que el compile-check no podía ver.** (a) `ChunkLootRollTests` exigía exactamente 12 perfiles de loot y el 13º ya estaba puesto; (b)+(c) dos de `OfficeStairsTests` fallaban con números inexistentes en la geometría (0.5 m) porque **`Collider.bounds` lo devuelve PhysX, que en EditMode no sincroniza con el transform** — todo `BoxCollider` reportaba el cubo unitario. Lo grave no fue que fallaran dos: **otros dos pasaban en falso por lo mismo** (`min.y == -0.5 <= 0`, `size.x == 1.0 > 0.9`). `Physics.SyncTransforms()` en el helper de construcción y los cuatro miden geometría real. Tests EditMode: **265 → 300, 299 passed**; el único fallo restante (`IPCFrameGoldenTests`, map16 19 vs 21) es **preexistente y atribuido con pruebas** — su resultado es función pura de dos ficheros que esta serie no tocó, y el escritor lo cambió `0d6e5a8`. Chip creado.
+
+2. **EL PLAYTEST DESMINTIÓ LA PREMISA DE ADR-058 — ver la enmienda del 2026-08-09.** Replicar la palanca de PILLAR_HALL (reconfigurar `LayerRules`) NO basta: layer 0 ya estampa salas selladas de serie, así que una sala de OFFICE era idéntica a cualquier otra. **Diferencia de grado, no de tipo.** Regla que sale de aquí: **un `zone_kind` se distingue por lo que AÑADE, no por cómo reparte.**
+
+3. **MEDIDO en el chunk (-1,-1) real (seed 42), instrumentación temporal ya retirada:** `panels(open=51, sealed=31)`, `zones=4 sealedZones=3` ⇒ **el 62% de los paneles de una "oficina" son pasillo del maze**. Causa raíz de "no se ve como una oficina", aún sin atacar.
+
+4. **GATE DE KNEE WALLS VERIFICADO EN VIVO, no por analogía.** De 5 candidatos en ese chunk, **1 cayó sobre perímetro sellado y fue SUPRIMIDO**; los 4 aplicados, todos sobre paneles `Open`. Los knee walls que se ven en una oficina son de pasillo, por diseño. La enmienda del 2026-08-08 se sostiene sobre datos reales.
+
+5. **TECHO DE LA RETÍCULA DE PROPS.** Un prop por TILE de 5 m y densidad efectiva ~1 en sala sellada ⇒ un despacho de 10×10 m son 4 tiles y **4 objetos como máximo**; subir el tope no hacía nada. `ZonePropSet.propsPerTile` reparte los extra por sub-celdas de 2.5 m. Slot 0 conserva centro y salts sin derivar ⇒ toda capa sin autorar queda prop por prop idéntica. **Bug cazado antes de juego:** el wall-hug (1.9 m) sumado al offset de sub-celda (1.25 m) sacaba el prop del tile.
+
+6. **DOS ASERTOS MÍOS MAL FORMULADOS, cazados por sus propios tests y corregidos, no relajados:** el del tabique exigía "nada a la altura de los ojos en el centro" y falló contra el montante central (confundía autoría con la propiedad real ⇒ pasa a medir **ancho ocluido < 25%**); el de placeholders contaba renderers y dio falso positivo con `paper`, que legítimamente es una sola caja como `cabinet` (⇒ compara el **nombre de la raíz**, `Prop_<tipo>`).
+
+7. **INFRAESTRUCTURA NUEVA:** `Assets/Editor/DevPlayerBuild.cs` — build de desarrollo por CLI. Hacía falta porque `-buildWindows64Player` (el del arnés) produce siempre RELEASE y `PoiDebugHud` —único sitio donde se leen en pantalla `layer` y `zone_kind`— vive tras `DEVELOPMENT_BUILD`. **Corrección a una afirmación anterior de esta sesión:** el `#if` solo cambia el valor por defecto de `enablePoiDebugHud`, la clase se compila igual; está ahí, apagada.
+
+8. **TRAMPA DEL ARNÉS, anotada:** su check de frescura compara el timestamp del `.exe`, y en un build INCREMENTAL el `.exe` es solo el stub lanzador y no cambia — da falso negativo ("el exe es anterior al último cambio") con un build perfectamente bueno. La prueba real es `BackroomsSurvivalMMO_Data/Managed/*.dll`.
+
+9. **SIN CONFIRMAR, explícito:** de los 4 puntos del checklist de playtest **solo el de knee walls está cerrado**. Siguen abiertos: que el HUD de capa NO se mueva al saltar sobre el rellano (**el invariante entero de la escalera, hoy probado solo por aritmética**), que el mobiliario frene de verdad, y tinte/loot. Y las palancas 3 (techo y luz por zona) y 4 (sub-regiones más pequeñas) están **sin empezar** — las dos son cambio de sistema núcleo, con la aritmética ya hecha en la enmienda para no re-derivarla.
+
+10. **PRÓXIMO PASO ÚNICO:** subir al rellano y saltar mirando el HUD. Es el único punto que, si falla, invalida la pieza entera.
+
 - Fecha: 2026-08-08 (quinta sesión del día) — **CIERRE DE SESIÓN. `ZONE_OFFICE`: el segundo `zone_kind` con geometría propia, con escalera decorativa. 5 commits, evaluator antes de cada uno. ADR-058 anclado. La respuesta a la pregunta que gobernaba la sesión ("¿se reutiliza el patrón de PILLAR_HALL tal cual?") es NO DEL TODO — y el detalle de qué faltó es lo que abarata los siguientes.**
 
 0. **QUÉ CERRÓ, en orden:** `dfcf213` (gate inerte: `ZONE_OFFICE=12`, `TEMPLATE_OFFICE=22`, `TEMPLATE_COUNT` 22→23) → `2a0e641` (perfil de densidad, apagado en producción) → `89b00ad` (cliente: tinte, loot, catálogo de props por zona) → `b27ee03` (cliente: escalera "a ninguna parte") → `b62a081` (flip de banda + gramática legacy propia). Más el Paso 0 de la sesión: nota de backlog de verticalidad anclada en `DECISIONS.md` + entrada en ▸ Deuda conocida.
