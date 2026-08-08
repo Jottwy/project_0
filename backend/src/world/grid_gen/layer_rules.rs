@@ -112,6 +112,28 @@ pub struct LayerRules {
     /// `subregion_grid` es `true`.
     #[serde(default = "default_subregion_presence")]
     pub subregion_presence: f32,
+    /// Divisiones por eje de la partición intra-chunk cuando `subregion_grid`
+    /// está activo: `2` (default) = los 4 cuadrantes de ADR-057, `3` = 9
+    /// sub-regiones. Solo se lee cuando `subregion_grid` es `true`.
+    ///
+    /// **SOLO 2 Y 3 ESTÁN SOPORTADOS.** No es una generalización libre a
+    /// `divisions × divisions`: la tabla de bandas solo cubre esos dos casos y
+    /// con 4 o más varias sub-regiones se estamparían sobre el mismo rect. Un
+    /// valor fuera de rango se ACOTA (`effective_subregion_divisions`), no
+    /// revienta — este campo puede venir de `generation_config.json`.
+    ///
+    /// El default reproduce ADR-057 EXACTAMENTE —mismas bandas, mismo orden de
+    /// cuadrante, mismo `subregion_seed` por índice— así que todo perfil que no
+    /// lo suba genera grid byte-idéntico, goldens incluidos. Mismo principio de
+    /// "camino apagado, byte-idéntico" que `straight_bias`/`room_type_weights`.
+    ///
+    /// El TAMAÑO de sub-región que cabe depende de esto y no al revés: con 3
+    /// divisiones las bandas miden 4 celdas justas (ver
+    /// `subregion_band_bounds`), así que `open_zone_size_x/_z` tiene que bajar a
+    /// 4 o la guarda de `subregion_origin_slots` se salta las sub-regiones en
+    /// silencio.
+    #[serde(default = "default_subregion_divisions")]
+    pub subregion_divisions: u8,
 }
 
 fn default_straight_bias() -> f32 {
@@ -128,6 +150,10 @@ pub(super) fn default_room_type_weights() -> (f32, f32, f32) {
 
 fn default_subregion_presence() -> f32 {
     1.0
+}
+
+fn default_subregion_divisions() -> u8 {
+    2
 }
 
 /// Layer profiles — §3 of the design document, recalibrated in Fase 2.
@@ -202,6 +228,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         open_zone_size_z: Some(6),
         subregion_grid: true,
         subregion_presence: 0.75,
+        subregion_divisions: 2,
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
@@ -228,6 +255,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         room_type_weights: (1.0, 0.0, 0.0),
         subregion_grid: false,
         subregion_presence: 1.0,
+        subregion_divisions: 2,
     },
     // ── Layer 2 — El Caos ───────────────────────────────────────────────────
     LayerRules {
@@ -254,6 +282,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         room_type_weights: (1.0, 0.0, 0.0),
         subregion_grid: false,
         subregion_presence: 1.0,
+        subregion_divisions: 2,
     },
     // ── Layer 3 — El Vacío ──────────────────────────────────────────────────
     LayerRules {
@@ -280,6 +309,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         room_type_weights: (1.0, 0.0, 0.0),
         subregion_grid: false,
         subregion_presence: 1.0,
+        subregion_divisions: 2,
     },
 ];
 

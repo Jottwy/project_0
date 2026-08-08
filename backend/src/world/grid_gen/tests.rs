@@ -2243,3 +2243,86 @@ fn layer0_walkable_ratio_stays_in_band() {
         BASELINE + TOLERANCE
     );
 }
+
+// ── Partición intra-chunk: aritmética de bandas ──────────────────────────────
+
+/// Con `divisions = 2` las bandas son LITERALMENTE las de ADR-057. Es lo que
+/// respalda que subir el campo a un perfil no toque a ningún otro: si esto se
+/// mueve, todo perfil con `subregion_grid` cambia de golpe, goldens incluidos.
+#[test]
+fn two_divisions_reproduce_the_adr057_bands() {
+    use super::generator::subregion_band_bounds;
+    assert_eq!(subregion_band_bounds(2, 0), (2, 10));
+    assert_eq!(subregion_band_bounds(2, 1), (12, 18));
+}
+
+/// Las bandas de cualquier división: dentro del interior utilizable, sin
+/// solaparse, y separadas por al menos un TILE entero. Ese buffer de 2 celdas es
+/// lo que hace imposible por construcción que dos sub-regiones compartan arista
+/// de tile — la premisa de `RoomTypeForPanel` en Unity.
+/// El techo del rango importa tanto como el suelo. Con 4 divisiones toda banda a
+/// partir de la segunda caería en el mismo `[14, 18)` y varias sub-regiones se
+/// estamparían sobre el MISMO rect — mismo sitio, distinto `zid`, gana la última,
+/// sin panic ni aviso. El acotado lo impide; este test es lo que impide que
+/// alguien "generalice" el campo creyéndolo libre.
+#[test]
+fn subregion_divisions_are_clamped_to_the_supported_range() {
+    use super::generator::effective_subregion_divisions;
+    assert_eq!(effective_subregion_divisions(0), 2);
+    assert_eq!(effective_subregion_divisions(1), 2);
+    assert_eq!(effective_subregion_divisions(2), 2);
+    assert_eq!(effective_subregion_divisions(3), 3);
+    assert_eq!(effective_subregion_divisions(4), 3);
+    assert_eq!(effective_subregion_divisions(200), 3);
+}
+
+#[test]
+fn subregion_bands_never_touch_and_stay_inside_the_chunk() {
+    use super::generator::subregion_band_bounds;
+    for divisions in [2u8, 3] {
+        let mut previous_end = 1i32; // la fila/columna 0 es borde reservado
+        for band in 0..divisions {
+            let (first, last) = subregion_band_bounds(divisions, band);
+            assert!(
+                first > previous_end,
+                "divisions {divisions} banda {band}: arranca en {first}, pegada a la anterior que acabó en {previous_end}"
+            );
+            if band > 0 {
+                assert!(
+                    first - previous_end >= 2,
+                    "divisions {divisions} banda {band}: buffer de {} celdas, por debajo del tile entero",
+                    first - previous_end
+                );
+            }
+            assert!(
+                last <= CHUNK_CELLS as i32 - 2,
+                "divisions {divisions} banda {band}: acaba en {last}, invade el borde reservado"
+            );
+            previous_end = last;
+        }
+    }
+}
+
+/// El tamaño de sub-región NO es libre: lo fija la banda. Con 3 divisiones las
+/// bandas miden 4 celdas justas, así que 4 cabe (un solo origen, sin variedad de
+/// posición) y 6 NO — y no cabe EN SILENCIO, por la guarda `count == 0` de
+/// `subregion_origin_slots`, que se salta el cuadrante sin emitir ningún error.
+/// Es exactamente la trampa que se comió tres cuadrantes en layer 2 cuando
+/// OFFICE heredaba el escalar del perfil de capa.
+#[test]
+fn three_divisions_only_fit_the_smaller_subregion_size() {
+    use super::generator::subregion_origin_slots;
+    for band in 0..3u8 {
+        let (_, fits) = subregion_origin_slots(3, band, 4);
+        assert_eq!(
+            fits, 1,
+            "divisions 3 banda {band}: sz=4 debería dar 1 origen"
+        );
+
+        let (_, too_big) = subregion_origin_slots(3, band, 6);
+        assert_eq!(
+            too_big, 0,
+            "divisions 3 banda {band}: sz=6 dice caber, y no cabe — el cuadrante se saltaría en silencio"
+        );
+    }
+}
