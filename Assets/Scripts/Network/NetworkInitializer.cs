@@ -152,7 +152,7 @@ namespace BackroomsSurvival.Net
                 autoSolo ? "autosolo" : "host",
                 true,
                 config.DefaultIpcOccupied,
-                null);
+                env);
 
             if (!LaunchBackendProcess(env))
                 return;
@@ -196,7 +196,7 @@ namespace BackroomsSurvival.Net
                 "joiner",
                 false,
                 config.DefaultIpcOccupied,
-                $"{serverIP}:{serverNetPort}");
+                env);
 
             if (!LaunchBackendProcess(env))
                 return;
@@ -204,6 +204,62 @@ namespace BackroomsSurvival.Net
             IPCClient.Instance?.StartClient();
             _waitingForBackend = true;
             _startupTimer = 0f;
+        }
+
+        /// <summary>
+        /// OS-level environment variables the child backend process needs regardless of role,
+        /// verified empirically against <c>backrooms_server.exe</c> rather than guessed:
+        /// launching it with a fully stripped <see cref="ProcessStartInfo.EnvironmentVariables"/>
+        /// fails with "Failed to bind P2P UDP socket: os error 10106" (WSAEPROVIDERFAILEDINIT —
+        /// Winsock cannot initialize) before either socket binds; adding ONLY <c>SystemRoot</c>
+        /// (no PATH, no TEMP) was sufficient for a full startup — both sockets bound, IPC
+        /// listening, world generated. Nothing else is in this list on purpose: every other
+        /// variable the backend reads (IPC_PORT, NET_PORT, WORLD_SEED, CONNECT_TO, ...) is
+        /// explicit application config, declared per-launch by the caller — never inherited.
+        /// </summary>
+        private static readonly string[] EssentialPassthroughEnvKeys = { "SystemRoot" };
+
+        /// <summary>
+        /// Builds the CLOSED set of environment variables the child backend process receives:
+        /// exactly <paramref name="declared"/> (the per-launch app config built by StartAsHost/
+        /// StartAsJoiner) plus <see cref="EssentialPassthroughEnvKeys"/>, read from
+        /// <paramref name="parentEnvReader"/> ONLY when <paramref name="declared"/> doesn't
+        /// already set that key. Nothing else survives.
+        ///
+        /// This exists because <see cref="ProcessStartInfo.EnvironmentVariables"/> starts
+        /// pre-populated with a COPY of Unity's own process environment — assigning keys into it
+        /// (the old code) only ever ADDS or OVERWRITES, it can never remove. A key Unity's own
+        /// process happened to carry (e.g. <c>CONNECT_TO</c>, left over from THIS SAME Unity
+        /// process having joined a previous session) rode along into every later launch that
+        /// didn't explicitly declare it — a Host launch silently inherited a joiner's
+        /// <c>CONNECT_TO</c> and the backend started as a joiner instead, with <c>is_host=false</c>
+        /// silently disabling world load/save/lock and per-player persistence, no error anywhere.
+        ///
+        /// Pure and testable without spawning a process: <paramref name="parentEnvReader"/> is
+        /// injected so a test can simulate a poisoned parent environment without touching the
+        /// real one. Comparisons are ordinal-ignore-case, matching how Windows itself treats
+        /// environment variable names.
+        ///
+        /// Public rather than private so the EditMode suite can reach it directly: the
+        /// compile-check builds each assembly with a <c>_check</c> suffix, so an
+        /// <c>InternalsVisibleTo</c> friend name never matches — same reason
+        /// <c>InventoryRestorer.ParseStacks</c>/<c>SessionEndHandler.ReadReason</c> are public.
+        /// </summary>
+        public static Dictionary<string, string> BuildChildEnvironment(
+            IDictionary<string, string> declared,
+            Func<string, string> parentEnvReader)
+        {
+            var result = new Dictionary<string, string>(declared, StringComparer.OrdinalIgnoreCase);
+            foreach (string key in EssentialPassthroughEnvKeys)
+            {
+                if (result.ContainsKey(key))
+                    continue; // an explicitly declared value always wins over the OS passthrough
+
+                string value = parentEnvReader(key);
+                if (!string.IsNullOrEmpty(value))
+                    result[key] = value;
+            }
+            return result;
         }
 
         private bool LaunchBackendProcess(Dictionary<string, string> env)
@@ -233,7 +289,14 @@ namespace BackroomsSurvival.Net
                 WorkingDirectory = Application.persistentDataPath,
             };
 
-            foreach (var kvp in env)
+            // Allowlist, not a blacklist of keys to remove: ProcessStartInfo.EnvironmentVariables
+            // starts pre-populated with Unity's OWN process environment, and assigning into it
+            // can only add/overwrite — Clear() first makes the child's env EXACTLY
+            // BuildChildEnvironment's result, no matter what Unity's process happens to carry.
+            // See that method's doc comment for the bug this fixes.
+            var childEnv = BuildChildEnvironment(env, Environment.GetEnvironmentVariable);
+            psi.EnvironmentVariables.Clear();
+            foreach (var kvp in childEnv)
                 psi.EnvironmentVariables[kvp.Key] = kvp.Value;
 
             try
@@ -588,9 +651,17 @@ namespace BackroomsSurvival.Net
             string roleName,
             bool autoHost,
             bool defaultIpcOccupied,
-            string connectTo)
+            IDictionary<string, string> env)
         {
-            string target = string.IsNullOrEmpty(connectTo) ? "<none>" : connectTo;
+            // Reads CONNECT_TO from `env` itself — the SAME dictionary LaunchBackendProcess turns
+            // into the child's environment via BuildChildEnvironment — instead of a
+            // separately-passed argument. A hand-passed value can drift from what actually ships:
+            // the Host call site used to hardcode `null` here regardless of what the child's real
+            // (Unity-inherited) environment carried, which is exactly what hid the CONNECT_TO leak
+            // this method's caller now guards against.
+            string target = env.TryGetValue("CONNECT_TO", out string connectTo) && !string.IsNullOrEmpty(connectTo)
+                ? connectTo
+                : "<none>";
             Debug.Log(
                 $"[NetworkInitializer] Launch config: SESSION_MODE={FormatNone(sessionMode)}, " +
                 $"IPC_ADDR={localIpcAddress}:{localIpcPort}, " +

@@ -1,3 +1,6 @@
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Linq;
 using BackroomsSurvival.Net;
 using NUnit.Framework;
 using UnityEngine;
@@ -187,6 +190,147 @@ namespace BackroomsSurvival.Tests
                 $"Expected no error but got: {_init.StatusMessage}");
 
             _init.Shutdown();
+        }
+
+        // ── BuildChildEnvironment (env-leak fix) ──────────────────────────
+        //
+        // The production bug: ProcessStartInfo.EnvironmentVariables starts as a COPY of Unity's
+        // OWN process environment. The old LaunchBackendProcess only ever ASSIGNED declared keys
+        // into that pre-populated dictionary — never cleared it — so a Unity process that had
+        // previously JOINED a session (CONNECT_TO set in ITS OWN env) silently carried that
+        // CONNECT_TO into a LATER Host launch, which never declares the key itself. The backend
+        // read `is_host = connect_to.is_none()` as false and started as a joiner instead, with
+        // world load/save/lock and per-player persistence all silently disabled — no error
+        // anywhere. BuildChildEnvironment is the allowlist that replaces the old assign-only
+        // merge; these tests exercise its decision directly, without spawning a process.
+
+        [Test]
+        public void BuildChildEnvironment_HostLaunchDoesNotInheritConnectToFromParentProcess()
+        {
+            var declaredHostEnv = new Dictionary<string, string>
+            {
+                ["IPC_PORT"] = "7777",
+                ["NET_PORT"] = "7778",
+            };
+            // Simulates Unity's OWN process environment already carrying CONNECT_TO from a
+            // previous joiner session — the poisoned parent the allowlist must not leak through.
+            string PoisonedParentEnv(string key) => key == "CONNECT_TO" ? "127.0.0.1:7778" : null;
+
+            var childEnv = NetworkInitializer.BuildChildEnvironment(declaredHostEnv, PoisonedParentEnv);
+
+            Assert.IsFalse(childEnv.ContainsKey("CONNECT_TO"),
+                "a Host launch must never carry a CONNECT_TO inherited from the parent Unity " +
+                "process — the backend reads its mere presence as is_host=false");
+        }
+
+        [Test]
+        public void BuildChildEnvironment_PassesThroughEssentialSystemRoot()
+        {
+            var declared = new Dictionary<string, string> { ["IPC_PORT"] = "7777" };
+            string FakeParentEnv(string key) => key == "SystemRoot" ? @"C:\Windows" : null;
+
+            var child = NetworkInitializer.BuildChildEnvironment(declared, FakeParentEnv);
+
+            Assert.AreEqual(@"C:\Windows", child["SystemRoot"],
+                "without SystemRoot the backend's Winsock init fails outright (verified " +
+                "empirically: os error 10106) — the one OS var that must always pass through");
+        }
+
+        [Test]
+        public void BuildChildEnvironment_ExplicitlyDeclaredValueWinsOverParentPassthrough()
+        {
+            var declared = new Dictionary<string, string> { ["SystemRoot"] = @"C:\CustomRoot" };
+            string FakeParentEnv(string key) => key == "SystemRoot" ? @"C:\Windows" : null;
+
+            var child = NetworkInitializer.BuildChildEnvironment(declared, FakeParentEnv);
+
+            Assert.AreEqual(@"C:\CustomRoot", child["SystemRoot"]);
+        }
+
+        [Test]
+        public void BuildChildEnvironment_UnrelatedParentVariablesNeverLeakThrough()
+        {
+            var declared = new Dictionary<string, string> { ["IPC_PORT"] = "7777" };
+            string FakeParentEnv(string key) => key switch
+            {
+                "SESSION_MODE" => "join",
+                "PLAYER_IDENTITY_KEY" => "uuid:leftover-from-a-previous-instance",
+                "WORLD_SEED" => "12345",
+                _ => null,
+            };
+
+            var child = NetworkInitializer.BuildChildEnvironment(declared, FakeParentEnv);
+
+            Assert.IsFalse(child.ContainsKey("SESSION_MODE"));
+            Assert.IsFalse(child.ContainsKey("PLAYER_IDENTITY_KEY"));
+            Assert.IsFalse(child.ContainsKey("WORLD_SEED"));
+        }
+
+        /// <summary>
+        /// End-to-end regression for the reported bug: spawns the REAL backend exe with THIS
+        /// process's own environment poisoned by a leftover CONNECT_TO — exactly what this same
+        /// Unity process's env carries after it previously joined a session — and reads the
+        /// backend's OWN startup log line to confirm it resolved role=host, not role=joiner.
+        /// The BuildChildEnvironment tests above prove the C# decision in isolation; this proves
+        /// the fix survives the actual OS process boundary. Skips if the exe isn't built, same
+        /// as <see cref="HostLaunchesBackendWithValidPath"/>.
+        /// </summary>
+        [Test]
+        public void HostLaunchOverRealProcessIgnoresPoisonedParentConnectTo()
+        {
+            string relPath = "backend/target/release/backrooms_server.exe";
+            string fullPath = System.IO.Path.GetFullPath(
+                System.IO.Path.Combine(Application.dataPath, "..", relPath));
+            if (!System.IO.File.Exists(fullPath))
+            {
+                relPath = "backend/target/debug/backrooms_server.exe";
+                fullPath = System.IO.Path.GetFullPath(
+                    System.IO.Path.Combine(Application.dataPath, "..", relPath));
+            }
+            if (!System.IO.File.Exists(fullPath))
+            {
+                Assert.Ignore("Backend exe not built; skipping launch test");
+                return;
+            }
+
+            string previousConnectTo = System.Environment.GetEnvironmentVariable("CONNECT_TO");
+            System.Environment.SetEnvironmentVariable("CONNECT_TO", "127.0.0.1:1");
+
+            var messages = new ConcurrentBag<string>();
+            void Collect(string condition, string stackTrace, LogType type) => messages.Add(condition);
+
+            try
+            {
+                Application.logMessageReceivedThreaded += Collect;
+                try
+                {
+                    _init.startupTimeout = 5f;
+                    _init.StartAsHost("TestPlayer");
+
+                    var deadline = System.DateTime.UtcNow.AddSeconds(5);
+                    while (System.DateTime.UtcNow < deadline &&
+                           !messages.Any(m => m.StartsWith("[Backend]") && m.Contains("role=")))
+                    {
+                        System.Threading.Thread.Sleep(50);
+                    }
+                }
+                finally
+                {
+                    Application.logMessageReceivedThreaded -= Collect;
+                }
+
+                Assert.IsTrue(
+                    messages.Any(m => m.StartsWith("[Backend]") && m.Contains("role=host")),
+                    $"expected the backend to log role=host; captured: {string.Join(" | ", messages)}");
+                Assert.IsFalse(
+                    messages.Any(m => m.StartsWith("[Backend]") && m.Contains("role=joiner")),
+                    "the backend must never resolve role=joiner from a CONNECT_TO Unity's own " +
+                    "process inherited — that is the exact production bug this fix closes");
+            }
+            finally
+            {
+                System.Environment.SetEnvironmentVariable("CONNECT_TO", previousConnectTo);
+            }
         }
     }
 }
