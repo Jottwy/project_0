@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.GridWorld;
 using BackroomsSurvival.Net;
 using UnityEngine;
 using UnityEngine.UI;
@@ -17,6 +18,12 @@ namespace BackroomsSurvival.UI
         private Image _bgImage;
         private Image _playerDot;
         private readonly Dictionary<long, Image> _chunkCells = new Dictionary<long, Image>();
+
+        // Bug: sin esto, cv.layer nunca se lee y las 4 capas de una columna colapsan en la
+        // misma key (x,z) — el minimapa pinta la ultima capa iterada, mezclando estados.
+        // Se rastrea la capa del jugador (no fija a 0, a diferencia de ZoneRegistry) para
+        // forzar un repintado limpio de todas las celdas al cruzar de capa.
+        private int _lastPlayerLayer = int.MinValue;
 
         // Scratch reutilizado por LateUpdate. Ninguno de los dos escapa del método ni se
         // enumera en un orden observable (`_alive` solo recibe Add/Contains), así que
@@ -103,11 +110,25 @@ namespace BackroomsSurvival.UI
             var playerPos = state.localPlayer.position;
             int playerCx = Mathf.FloorToInt(playerPos.x / 50f);
             int playerCz = Mathf.FloorToInt(playerPos.z / 50f);
+            int playerLayer = Mathf.FloorToInt(playerPos.y / GridConstants.LayerHeight);
+
+            if (playerLayer != _lastPlayerLayer)
+            {
+                // Layer crossed: every surviving cell belongs to the old layer's chunks and
+                // would otherwise linger (SetActive(false), never destroyed) until its exact
+                // (x,z) key happens to reappear — force a clean repaint instead.
+                foreach (var kv in _chunkCells)
+                    kv.Value.gameObject.SetActive(false);
+                _chunkCells.Clear();
+                _lastPlayerLayer = playerLayer;
+            }
 
             _alive.Clear();
 
             foreach (var cv in state.visibleChunks)
             {
+                if (cv.layer != playerLayer) continue;
+
                 long key = Key(cv.pos[0], cv.pos[1]);
                 _alive.Add(key);
 
