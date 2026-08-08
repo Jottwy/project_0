@@ -113,6 +113,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             = new Dictionary<(int, int, int), float>();
         private const float ZoneWaitTimeout = 0.75f; // seconds; ~7 world-state ticks at 10hz
 
+        // Fix priorizado worldgen (Alpha 1, chunks blancos): ZoneWaitTimeout above only ever
+        // moves WHEN a chunk gives up waiting — it still bakes white forever once it does, and
+        // the anti-fall guard chunk bypasses the gate entirely (never waits at all). Neither
+        // path has a way back once the zone actually lands. This set tracks every currently
+        // LOADED chunk that was built with zoneKnown == false (mirrors the exact check
+        // GridChunkBuilder.BuildFromWalls makes internally, GridChunkBuilder.cs:307) so
+        // ZoneRegistry.ZoneArrived can trigger a late, full rebuild instead of a permanent hole.
+        // Styled-but-unknown chunks only; an unstyled layer (no LayerVisualConfig) never
+        // depends on zone_kind, so it is never added here (see BuildChunkFromBitmask).
+        private readonly HashSet<(int, int, int)> _builtWhite = new HashSet<(int, int, int)>();
+
         // Fase 5A: shared per-layer materials (built once, reused across all tiles of
         // the layer; per-tile tint via MaterialPropertyBlock) + the fog layer currently
         // applied to RenderSettings. _matCache is owned here and freed in OnDestroy.
@@ -147,6 +158,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private void Start()
         {
             Instance = this;
+            // Fix priorizado worldgen (Alpha 1, chunks blancos): subscribe unconditionally,
+            // before the early-returns below — OnDestroy's unsubscribe is safe even if this
+            // never actually fires (no chunk ever gets built without prefabs/playerTransform).
+            ZoneRegistry.ZoneArrived += OnZoneArrived;
             _prefabs = GridPrefabSet.LoadFromResources();
             if (_prefabs.floor == null) return;
             if (playerTransform == null) return;
@@ -173,6 +188,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private void OnDestroy()
         {
+            ZoneRegistry.ZoneArrived -= OnZoneArrived;
             if (Instance == this)
                 Instance = null;
             if (_ipc != null)
@@ -280,6 +296,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     _wallsCache.Remove(key);
                     _roomZonesCache.Remove(key); // ADR-034: misma vida que el bitmask
                     _zoneWaitSince.Remove(key);
+                    _builtWhite.Remove(key); // fix chunks blancos: sin sentido reconstruir lo descargado
                     destroys++;
                 }
             }
@@ -423,6 +440,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var cfg = GetLayerVisual(layer);
             var mats = cfg != null ? GetLayerMaterials(layer) : null;
 
+            // Fix priorizado worldgen (Alpha 1, chunks blancos): mismo check que
+            // BuildFromWalls hace internamente para decidir tinte/modelo de zona
+            // (GridChunkBuilder.cs:307) — leerlo aquí también nos dice si ESTE build nace
+            // "blanco" (zona aún no conocida), para poder reconstruirlo más tarde cuando
+            // ZoneRegistry.ZoneArrived avise. Lectura pura sin efectos secundarios — llamar
+            // TryGetZone dos veces (aquí y dentro de BuildFromWalls) es inofensivo.
+            bool styled = cfg != null && mats != null;
+            bool zoneKnownAtBuild = styled && ZoneRegistry.TryGetZone(ccx, ccz, out _);
+
             // ADR-035: los rects de sala salen del cache, no del mensaje — una
             // reconstrucción desde _wallsCache (chunk revisitado, o reintento tras el gate
             // de zona) tiene que ver las mismas zonas que la construcción original.
@@ -431,6 +457,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 GetRoomZones(ccx, ccz, layer));
             go.transform.SetParent(transform, true);
             _loaded[key] = go;
+
+            if (styled && !zoneKnownAtBuild)
+                _builtWhite.Add(key);
+            else
+                _builtWhite.Remove(key); // a rebuild resolved it, or it was never white to begin with
 
             // Fase 5A: light here (layer + coords known); GridTestWorld no longer lights.
             if (lighting != null && cfg != null && mats != null)
@@ -445,6 +476,40 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
                     cfg, mats.lamp, ccx, ccz, layer, walls);
             }
+        }
+
+        // Fix priorizado worldgen (Alpha 1, chunks blancos): ZoneRegistry told us (cx,cz) just
+        // learned its zone — rebuild every currently-loaded layer of that column that was built
+        // white. Column, not single layer: the anti-fall guard bypasses the gate for only the
+        // player's OWN layer (ProcessBudget above), so the other 3 layers of the same column can
+        // independently be sitting white too, and this is the only recovery path any of them get.
+        private void OnZoneArrived(int cx, int cz)
+        {
+            if (_builtWhite.Count == 0) return; // fast-out; the common case once warmed up
+            for (int layer = 0; layer < layerCount; layer++)
+            {
+                var key = (cx, cz, layer);
+                if (_builtWhite.Contains(key))
+                    RebuildChunk(key);
+            }
+        }
+
+        // Full rebuild from the SAME cached bitmask/room-zones the original build used — the
+        // zone doesn't just re-tint, it selects a different wall MODEL (ADR-035,
+        // GridChunkBuilder.cs:309), so nothing short of a full rebuild renders correctly. Builds
+        // the new root BEFORE destroying the old one (both in this same call, same frame): the
+        // target chunk can be the one under the player, and a Destroy-then-Build order would
+        // leave zero floor collider for however many frames the build takes.
+        private void RebuildChunk((int, int, int) key)
+        {
+            if (!_wallsCache.TryGetValue(key, out var walls))
+                return; // unloaded since — nothing to rebuild, _builtWhite already pruned on unload
+            if (!_loaded.TryGetValue(key, out var oldGo))
+                return; // not currently loaded (shouldn't happen if _wallsCache still has it, but
+                         // degrade instead of assuming — the next real load will re-evaluate zoneKnownAtBuild anyway)
+
+            BuildChunkFromBitmask(key, walls); // overwrites _loaded[key] with the NEW root first
+            Destroy(oldGo);
         }
 
         // ── Fase 5A — per-layer visuals ────────────────────────────────────────
