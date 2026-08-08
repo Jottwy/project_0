@@ -44,9 +44,9 @@ use crate::world::levels::level_0::builder::Level0Builder;
 use crate::world::architecture::layout_grammars::{
     template_zone_kind, TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_DEAD_END,
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
-    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM,
-    TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC,
-    TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
+    TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
 };
 
 pub use crate::world::levels::level_0::structure::StructureV0;
@@ -87,7 +87,14 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // punctuated by occasional halls, column rooms and strange lighting zones.
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=38 => TEMPLATE_HALLWAY_STRAIGHT,
+        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
+        // OFFICE — banda tallada a HALLWAY_STRAIGHT (era 0..=38), el brazo más ancho del
+        // sorteo, para que el 4% salga del pasillo genérico y no de un template que ya
+        // aportaba carácter propio. Sin gate de `depth`: una planta de oficinas cerca de
+        // la entrada es tan legítima como una lejos, igual que PILLAR_HALL.
+        // ESPEJO OBLIGATORIO en `zone_density::expansion_template_id` — los dos se editan
+        // juntos o `resolver_matches_real_world_zone_kind` falla.
+        35..=38 => TEMPLATE_OFFICE,
         39..=51 => TEMPLATE_HALLWAY_CORNER,
         52..=61 => TEMPLATE_HALLWAY_T,
         62..=70 => TEMPLATE_INTERSECTION,

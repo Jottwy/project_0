@@ -37,6 +37,7 @@ pub enum LayoutGrammarType {
     BlackoutPocket,
     RedWarningPocket,
     ManilaRoom,
+    OfficeFloor,
     PitGridRoom,
     VerticalTransition,
     // POI V1
@@ -285,10 +286,60 @@ fn g_pillar_field(layout: &mut ChunkLayoutV1) {
     layout.set_edge_h(4, 9, EDGE_KIND_OPEN);
 }
 
+/// `TEMPLATE_OFFICE` — planta de oficinas del mundo LEGACY (`world::generator`),
+/// que es contra el que colisiona el jugador real mientras las partes 1-2 de
+/// ADR-026 sigan bloqueadas. NO es la geometría que se renderiza: esa sale del
+/// perfil de `zone_density::office_rules` a través de `grid_gen`.
+///
+/// CONECTIVIDAD POR CONSTRUCCIÓN, que es justo lo que `g_office_maze` no tiene
+/// (ver su comentario). La forma es un pasillo central de 2 filas (z = 4, 5) a
+/// todo lo ancho, y bahías de cubículos al norte y al sur separadas SOLO por
+/// tabiques VERTICALES. Un tabique vertical parte cada banda en columnas, y toda
+/// columna llega de arriba abajo hasta el pasillo sin cruzar ninguna arista
+/// horizontal — así que cada celda del chunk alcanza el pasillo, y el pasillo
+/// alcanza los cuatro bordes. No hace falta ningún pase de reparación, y no lo
+/// hay: `repair_connectivity` vive en `grid_gen` y nunca se llama desde aquí.
+///
+/// Las puertas solo AÑADEN conectividad (perforan tabiques entre cubículos
+/// contiguos), así que quitarlas o moverlas no puede romper la garantía —
+/// únicamente hace el recorrido más largo.
+fn g_office_floor(layout: &mut ChunkLayoutV1, extra: u16) {
+    or_all_cells(layout, extra);
+
+    // Bahía norte (z 0..=3) y bahía sur (z 6..=9). Los tabiques NUNCA cruzan las
+    // filas 4 y 5: ese hueco ES el pasillo.
+    for bx in [2usize, 4, 6, 8] {
+        wall_v(layout, bx, 0, 3, EDGE_KIND_PARTITION);
+        wall_v(layout, bx, 6, 9, EDGE_KIND_PARTITION);
+    }
+
+    // NADA de aristas horizontales en este layout, a propósito. La tentación es
+    // poner un frente de mostrador con `EDGE_KIND_LOW_WALL` a lo largo del
+    // pasillo: NO se puede, porque en el mundo legacy `edge_blocks_movement`
+    // (`world/collision.rs`) cuenta LOW_WALL como bloqueante igual que WALL, así
+    // que sellaría las bahías contra el pasillo. La "media pared que se ve por
+    // encima" es un concepto de `grid_gen`/render (knee walls), no de aquí.
+
+    // Puertas entre cubículos contiguos: solo suman caminos.
+    layout.set_edge_v(2, 1, EDGE_KIND_DOOR);
+    layout.set_edge_v(6, 2, EDGE_KIND_DOOR);
+    layout.set_edge_v(4, 7, EDGE_KIND_DOOR);
+    layout.set_edge_v(8, 8, EDGE_KIND_DOOR);
+}
+
 fn g_office_maze(layout: &mut ChunkLayoutV1, extra: u16) {
     or_all_cells(layout, extra);
-    // Dense, offset partitions. Connectivity repair guarantees traversal, so
-    // these can be aggressive without trapping the player.
+    // DEUDA CONOCIDA, no tocada aquí: dos de los ocho tramos —`wall_h(6, 9, 3)` y
+    // `wall_h(4, 7, 8)`— no llevan ninguna puerta, y esta gramática deja dos
+    // bolsillos incomunicados (20 de 100 celdas, uno de ellos se traga la salida
+    // sur del chunk). El comentario que había aquí decía que "connectivity repair
+    // guarantees traversal" y era FALSO: `repair_connectivity` vive en `grid_gen`
+    // y nunca se llama desde este módulo. Se deja como está a propósito — su
+    // único usuario es `TEMPLATE_DANGER_ROOM`, que solo llega por colocación
+    // curada de estructura (el sorteo de expansión no tiene brazo 7), así que
+    // arreglarlo cambiaría geometría del área de spawn sin que nadie lo haya
+    // pedido. `TEMPLATE_OFFICE` NO la reutiliza justamente por esto: tiene la
+    // suya, `g_office_floor`, conexa por construcción.
     wall_v(layout, 2, 0, 6, EDGE_KIND_PARTITION);
     wall_v(layout, 4, 3, 9, EDGE_KIND_PARTITION);
     wall_v(layout, 6, 0, 5, EDGE_KIND_PARTITION);
@@ -538,13 +589,11 @@ pub fn grammar_for_template(template_id: u8, _rotation: u16) -> LayoutGrammarTyp
         19 => LayoutGrammarType::PoiAnomaly,
         20 => LayoutGrammarType::PoiDangerPocket,
         21 => LayoutGrammarType::PoiSafePocket,
-        // TEMPLATE_OFFICE — `MazePocket` ejecuta `g_office_maze`, la gramática
-        // legacy que YA existía con ese nombre y que produce cubículos. Se
-        // reutiliza en vez de escribir una nueva: este layout solo alimenta al
-        // mundo LEGACY (`world::generator` → colisión XZ del jugador), no a la
-        // geometría que se renderiza (`grid_gen`), que sale del perfil de
-        // `zone_density::rules_for_zone`.
-        22 => LayoutGrammarType::MazePocket, // TEMPLATE_OFFICE
+        // TEMPLATE_OFFICE — gramática PROPIA, no la reutilización de
+        // `g_office_maze` que el nombre invitaba a hacer: aquella deja bolsillos
+        // incomunicados (ver su comentario) y esto sí alimenta al mundo LEGACY,
+        // que es contra el que colisiona el jugador real hoy. Ver `g_office_floor`.
+        22 => LayoutGrammarType::OfficeFloor, // TEMPLATE_OFFICE
         _ => LayoutGrammarType::RoomCluster,
     }
 }
@@ -564,6 +613,7 @@ pub fn generate_layout_from_template(template_id: u8, _rotation: u16) -> ChunkLa
         LayoutGrammarType::OpenHall => g_open_hall(&mut layout),
         LayoutGrammarType::PillarGrid => g_pillar_field(&mut layout),
         LayoutGrammarType::MazePocket => g_office_maze(&mut layout, 0),
+        LayoutGrammarType::OfficeFloor => g_office_floor(&mut layout, 0),
         LayoutGrammarType::ArchTransition => g_arch_transition(&mut layout),
         LayoutGrammarType::SideRooms => g_side_rooms(&mut layout),
         LayoutGrammarType::HubAndSpokes => g_hub(&mut layout),
@@ -756,7 +806,7 @@ mod tests {
         // el brazo 22, este assert lo caza en vez de degradar en silencio.
         assert_eq!(
             grammar_for_template(TEMPLATE_OFFICE, 0),
-            LayoutGrammarType::MazePocket
+            LayoutGrammarType::OfficeFloor
         );
         let layout = generate_layout_from_template(TEMPLATE_OFFICE, 0);
         assert_eq!(layout.zone_kind, ZONE_OFFICE);
@@ -766,29 +816,120 @@ mod tests {
         );
     }
 
-    /// El gate sigue INERTE: el sorteo de expansión no devuelve
-    /// `TEMPLATE_OFFICE` en ningún chunk del barrido. Se invierte en el commit
-    /// del flip.
+    /// Flood-fill sobre el layout LEGACY de `TEMPLATE_OFFICE`.
     ///
-    /// GUARDA DE REGRESIÓN, NO LA PRUEBA DE INERCIA. La prueba real es
-    /// ESTRUCTURAL y no cabe en un assert: el `match rng.gen_range(0..100u32)`
-    /// de `generate_chunk_layer` cubre 0..=99 con brazos explícitos más
-    /// `_ => TEMPLATE_DEAD_END`, y `generator.rs` ni siquiera importa
-    /// `TEMPLATE_OFFICE`. Este barrido finito (4 seeds × 289 chunks, layer 0)
-    /// solo avisaría si el flip aterrizara a medias.
+    /// Este es el hueco de cobertura que el flip destapó: `zone_density::tests::
+    /// office_chunks_stay_connected_and_non_degenerate` prueba la conectividad
+    /// del grid de `grid_gen` —lo que se RENDERIZA— pero la colisión XZ del
+    /// jugador real sigue contra `world::generator`, o sea contra ESTE layout,
+    /// mientras las partes 1-2 de ADR-026 sigan bloqueadas. Ningún test miraba
+    /// aquí, y por eso `g_office_maze` lleva sus dos bolsillos incomunicados
+    /// desde que se escribió sin que nada lo notara.
+    ///
+    /// Se prueba `TEMPLATE_OFFICE` y no todos los templates a propósito: los
+    /// demás son preexistentes y varios NO pasarían — arreglarlos es trabajo
+    /// aparte, y hacerlo aquí de rebote habría cambiado geometría que nadie pidió.
     #[test]
-    fn office_is_not_reachable_from_the_expansion_lottery_yet() {
-        use crate::world::generator::generate_chunk_layer;
-        for seed in [42u64, 7778, 1, 9_999_999] {
-            for cx in -8..=8 {
-                for cz in -8..=8 {
-                    assert_ne!(
-                        generate_chunk_layer(seed, (cx, cz), 0).template_id,
-                        TEMPLATE_OFFICE,
-                        "seed {seed} chunk ({cx},{cz}): OFFICE ya se sortea, el gate dejó de ser inerte"
-                    );
+    fn office_legacy_layout_is_fully_connected() {
+        use crate::world::chunk::{SIDE_EAST, SIDE_NORTH, SIDE_SOUTH, SIDE_WEST};
+        use crate::world::collision::edge_blocks_movement;
+
+        let layout = generate_layout_from_template(TEMPLATE_OFFICE, 0);
+        let g = LAYOUT_GRID_SIZE as usize;
+
+        let walkable = |x: usize, z: usize| layout.cells[z * g + x] & CELL_WALKABLE != 0;
+        let mut start = None;
+        let mut total = 0usize;
+        for z in 0..g {
+            for x in 0..g {
+                if walkable(x, z) {
+                    total += 1;
+                    start.get_or_insert((x, z));
                 }
             }
         }
+        let start = start.expect("TEMPLATE_OFFICE sin una sola celda transitable");
+
+        let mut visited = vec![false; g * g];
+        visited[start.1 * g + start.0] = true;
+        let mut queue = vec![start];
+        let mut reached = 0usize;
+        while let Some((x, z)) = queue.pop() {
+            reached += 1;
+            for (dx, dz, side) in [
+                (0i32, -1i32, SIDE_NORTH),
+                (1, 0, SIDE_EAST),
+                (0, 1, SIDE_SOUTH),
+                (-1, 0, SIDE_WEST),
+            ] {
+                // La arista se consulta desde la celda de origen, que es como la
+                // consulta `Level0Collision`: es lo que hace que este test mida
+                // el mismo bloqueo que sufre el jugador, no uno parecido.
+                if edge_blocks_movement(layout.cell_side_edge(x, z, side)) {
+                    continue;
+                }
+                let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+                if nx < 0 || nz < 0 || nx as usize >= g || nz as usize >= g {
+                    continue;
+                }
+                let (nx, nz) = (nx as usize, nz as usize);
+                if !visited[nz * g + nx] && walkable(nx, nz) {
+                    visited[nz * g + nx] = true;
+                    queue.push((nx, nz));
+                }
+            }
+        }
+
+        assert_eq!(
+            reached, total,
+            "TEMPLATE_OFFICE: {reached} de {total} celdas alcanzables — hay cubículos incomunicados en el mundo contra el que colisiona el jugador"
+        );
+
+        // NO se comprueba aquí que el chunk sea atravesable de borde a borde, y no
+        // es un olvido: `ChunkLayoutV1::init_edges` nace con TODO el perímetro a
+        // `EDGE_KIND_WALL`, y las aperturas hacia los chunks vecinos las talla una
+        // etapa POSTERIOR (`open_boundary_gaps`/`finalize_level0_edges`, en el
+        // generador), no la gramática — cuyo propio encabezado dice que no decide
+        // conectividad entre chunks. Un assert de travesía aquí mediría la etapa
+        // equivocada y fallaría para TODOS los templates.
+        //
+        // Y no hace falta: con el interior 100% conexo, CUALQUIER apertura que esa
+        // etapa abra en el perímetro alcanza todas las celdas del chunk. Esa es
+        // justamente la propiedad que `g_office_maze` no tiene y por la que
+        // `TEMPLATE_OFFICE` no la reutiliza.
+    }
+
+    /// El gate está ABIERTO: la banda `35..=38` del sorteo de expansión emite
+    /// `TEMPLATE_OFFICE`, y sale de verdad en el mundo. 4 de cada 100 chunks en
+    /// expectativa; el suelo del assert es deliberadamente flojo porque esto
+    /// verifica que el flip ATERRIZÓ, no que la frecuencia esté calibrada.
+    ///
+    /// Sin gate de `depth`, así que la comprobación vale igual cerca del origen
+    /// que lejos — a diferencia de BLACKOUT/ARCH/MANILA/RED/PIT.
+    #[test]
+    fn office_is_reachable_from_the_expansion_lottery() {
+        use crate::world::generator::generate_chunk_layer;
+        let (mut office, mut total) = (0usize, 0usize);
+        for seed in [42u64, 7778, 1, 9_999_999] {
+            for cx in -8..=8 {
+                for cz in -8..=8 {
+                    let chunk = generate_chunk_layer(seed, (cx, cz), 0);
+                    total += 1;
+                    if chunk.template_id == TEMPLATE_OFFICE {
+                        office += 1;
+                        // Y el chunk lleva de verdad la zona, no solo el template:
+                        // es el eslabón del que dependen el tinte, el loot y el
+                        // perfil de densidad.
+                        assert_eq!(chunk.layout.zone_kind, ZONE_OFFICE);
+                    }
+                }
+            }
+        }
+        // 4% esperado sobre 1156 chunks ⇒ ~46. Un suelo de 10 caza "el flip no
+        // aterrizó" sin volverse frágil ante un cambio de calibración.
+        assert!(
+            office >= 10,
+            "solo {office} de {total} chunks salieron OFFICE — el flip de banda no llegó"
+        );
     }
 }

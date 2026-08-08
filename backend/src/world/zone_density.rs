@@ -31,9 +31,9 @@ use crate::world::architecture::collision_builder::template_is_vertical;
 use crate::world::architecture::layout_grammars::{
     template_zone_kind, TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_DEAD_END,
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
-    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM,
-    TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC,
-    TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
+    TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
 };
 use crate::world::chunk::{ChunkLayer, ZONE_OFFICE, ZONE_PILLAR_HALL};
 use crate::world::generator::{generate_initial_structures, structure_zone_kind};
@@ -119,7 +119,8 @@ fn expansion_template_id(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u
     let mut rng = StdRng::seed_from_u64(seed);
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=38 => TEMPLATE_HALLWAY_STRAIGHT,
+        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
+        35..=38 => TEMPLATE_OFFICE, // ver el comentario del original, en `world::generator`
         39..=51 => TEMPLATE_HALLWAY_CORNER,
         52..=61 => TEMPLATE_HALLWAY_T,
         62..=70 => TEMPLATE_INTERSECTION,
@@ -720,26 +721,41 @@ mod tests {
         assert!(checked > 100, "solo {checked} chunks OFFICE comprobados");
     }
 
-    /// El perfil existe pero sigue SIN CABLEAR al sorteo: ningún chunk resuelve
-    /// a OFFICE todavía, así que este commit no cambia la geometría de nadie.
-    /// Se invierte en el commit del flip. Espejo, del lado del resolver, de
-    /// `office_is_not_reachable_from_the_expansion_lottery_yet`
-    /// (`layout_grammars.rs`), que cubre el sorteo original.
+    /// El resolver PURO llega a OFFICE, y cuando llega devuelve el perfil de
+    /// OFFICE — no el de la capa. Espejo, del lado del render/robapieles, de
+    /// `office_is_reachable_from_the_expansion_lottery` (`layout_grammars.rs`),
+    /// que cubre el sorteo original. Los dos juntos son lo que garantiza que el
+    /// flip aterrizó ENTERO: `resolver_matches_real_world_zone_kind` ya prueba
+    /// que ambos sorteos coinciden, pero solo estos prueban que además EMITEN.
     #[test]
-    fn office_profile_is_not_reachable_from_the_resolver_yet() {
+    fn office_reaches_the_resolver_and_brings_its_own_profile() {
+        let mut hits = 0usize;
         for seed in SEEDS {
             for cx in -10..=10 {
                 for cz in -10..=10 {
                     for layer in 0..LAYER_PROFILES.len() as u8 {
-                        assert_ne!(
-                            zone_kind_for(seed, cx, cz, layer),
-                            ZONE_OFFICE,
-                            "seed {seed} chunk ({cx},{cz}) capa {layer}: OFFICE ya se resuelve, el perfil dejó de estar apagado"
-                        );
+                        if zone_kind_for(seed, cx, cz, layer) != ZONE_OFFICE {
+                            continue;
+                        }
+                        hits += 1;
+                        let rules = rules_for(seed, cx, cz, layer);
+                        assert_eq!(rules, rules_for_zone(ZONE_OFFICE, layer),
+                            "seed {seed} chunk ({cx},{cz}) capa {layer}: resuelve a OFFICE pero `rules_for` no devolvió su perfil");
+                        // Campos que difieren del perfil de capa en las CUATRO
+                        // capas. `subregion_grid`/`pillar_chance` no valdrían:
+                        // `LAYER_PROFILES[0]` ya los trae con esos valores, así
+                        // que en layer 0 el assert sería verde sin que
+                        // `office_rules` hubiera intervenido.
+                        assert_eq!(rules.room_type_weights, (0.2, 0.8, 0.0));
+                        assert_eq!(rules.subregion_presence, 1.0);
                     }
                 }
             }
         }
+        assert!(
+            hits > 50,
+            "solo {hits} chunks resolvieron a OFFICE en el barrido — el flip no llegó al resolver"
+        );
     }
 
     /// El resolver es una función pura del seed: misma entrada → misma salida,
