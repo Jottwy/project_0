@@ -4453,3 +4453,196 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
         "a bed that is not the one the point came from must not clear it"
     );
 }
+
+// ─── ADR-056: fin de sesión cuando cae el host ───
+
+/// Drains every event currently queued on the receiver, so a test can assert on what a handler
+/// emitted without depending on the order of the other events it also sends.
+fn drain_event_types(rx: &mut broadcast::Receiver<ServerMessage>) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Ok(ServerMessage::Event(ev)) = rx.try_recv() {
+        out.push(ev.event_type);
+    }
+    out
+}
+
+fn scratch_player_path(name: &str) -> std::path::PathBuf {
+    let mut p = std::env::temp_dir();
+    p.push(format!("backrooms_adr056_{name}.json"));
+    let _ = std::fs::remove_file(&p);
+    p
+}
+
+/// The whole point of ADR-056: when the peer that leaves is the HOST, the joiner's backend ends
+/// the session — it persists the player file and tells Unity, which owns the teardown.
+#[tokio::test]
+async fn host_departure_saves_the_player_and_announces_session_ended() {
+    let mut net = NetworkManager::bind(0, 0, 42, false).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(7, "Joiner");
+    player.identity_key = Some("uuid:adr056".into());
+    player.stats.health = 61.0;
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+    let host_id = 1;
+    net.host_peer_id = Some(host_id);
+    let path = scratch_player_path("host_departure");
+
+    handle_network_event(
+        NetworkEvent::PeerDisconnected {
+            id: host_id,
+            reason: "clean_shutdown".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        Some(path.as_path()),
+    )
+    .await;
+
+    let events = drain_event_types(&mut rx);
+    assert!(
+        events.iter().any(|e| e == "session_ended"),
+        "the host leaving must announce the end of the session, got: {events:?}"
+    );
+    assert!(
+        events.iter().any(|e| e == "player_left"),
+        "and it must not swallow the generic departure event, got: {events:?}"
+    );
+
+    let saved = crate::persistence::player_save::load_or_fresh(&path)
+        .expect("the player file must have been written before announcing");
+    assert_eq!(saved.identity_key, "uuid:adr056");
+    assert!(
+        (saved.snapshot.stats.health - 61.0).abs() < 1e-4,
+        "and it must carry this session's state, not a default"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Control negativo: ANY other peer leaving is an ordinary departure. Without this the feature
+/// would end the session every time a joiner quits — the exact failure the `host_peer_id`
+/// comparison exists to prevent.
+#[tokio::test]
+async fn a_non_host_peer_leaving_does_not_end_the_session() {
+    let mut net = NetworkManager::bind(0, 0, 42, false).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(7, "Joiner");
+    player.identity_key = Some("uuid:adr056b".into());
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+    net.host_peer_id = Some(1);
+    let path = scratch_player_path("non_host_departure");
+
+    handle_network_event(
+        NetworkEvent::PeerDisconnected {
+            id: 5,
+            reason: "heartbeat timeout".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        Some(path.as_path()),
+    )
+    .await;
+
+    let events = drain_event_types(&mut rx);
+    assert!(
+        events.iter().any(|e| e == "player_left"),
+        "another peer leaving is still reported, got: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| e == "session_ended"),
+        "but it must NOT end the session, got: {events:?}"
+    );
+    assert!(
+        !path.exists(),
+        "and it must not write the player file either — that belongs to the shutdown path"
+    );
+}
+
+/// A HOST's own backend has `host_peer_id == None`, so no departure can ever end its session.
+/// Pinned because the comparison is against an `Option`: a `None == None` slip would make every
+/// disconnect on the host end its own session.
+#[tokio::test]
+async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+
+    assert!(net.host_peer_id.is_none(), "precondition: this IS the host");
+
+    handle_network_event(
+        NetworkEvent::PeerDisconnected {
+            id: 2,
+            reason: "heartbeat timeout".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+    )
+    .await;
+
+    let events = drain_event_types(&mut rx);
+    assert!(
+        !events.iter().any(|e| e == "session_ended"),
+        "a host losing a joiner is business as usual, got: {events:?}"
+    );
+}
+
+/// The reason travels verbatim from the transport to the client, so the UI can tell "the host
+/// closed" (goodbye) from "the host crashed" (timeout).
+#[tokio::test]
+async fn session_ended_carries_the_disconnect_reason() {
+    let mut net = NetworkManager::bind(0, 0, 42, false).await.unwrap();
+    let mut world = World::new(42);
+    let mut player = Player::new(7, "Joiner");
+    let (tx, mut rx) = broadcast::channel(16);
+    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    net.host_peer_id = Some(1);
+
+    handle_network_event(
+        NetworkEvent::PeerDisconnected {
+            id: 1,
+            reason: "heartbeat timeout".into(),
+        },
+        &mut player,
+        &mut world,
+        &mut net,
+        &tx,
+        &tx,
+        &mut processed,
+        0,
+        None,
+    )
+    .await;
+
+    let mut reason = None;
+    while let Ok(ServerMessage::Event(ev)) = rx.try_recv() {
+        if ev.event_type == "session_ended" {
+            reason = ev
+                .data
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .map(String::from);
+        }
+    }
+    assert_eq!(reason.as_deref(), Some("heartbeat timeout"));
+}
