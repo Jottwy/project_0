@@ -1505,16 +1505,26 @@ fn grid_fingerprint(grid: &LayerGrid) -> u64 {
 /// pasa a `stamp_subregion_grid` (stream propio por cuadrante) — el cambio
 /// de huella ES el cambio de producto (más zonas por chunk, `open_zone_size`
 /// escalar ya no aplica). Mundos NUEVOS de layer 0 salen distintos; seeds YA
-/// jugadas regeneran su layer 0 distinto. Se documenta en `DECISIONS.md` al
-/// cierre de esta sesión (Fix A, paso A4) — no anclado todavía al momento
-/// de este commit.
+/// jugadas regeneran su layer 0 distinto. Documentado en `DECISIONS.md`
+/// (ADR-057).
+///
+/// EXCEPCIÓN DELIBERADA #4 — layer 0, SOLO 2 de las 4 primeras entradas
+/// (seeds `3133931653` y `1`; `42` y `7778` NO cambiaron): Fix B de esta
+/// misma sesión, `wide_chance` 0.10→0.25 y `erode_chance` 0.08→0.18
+/// (`LAYER_PROFILES[0]`), aprobado por Joel sobre medición real de
+/// `walkable_fraction` (ver ADR-057, enmienda). Que solo 2 de 4 seeds
+/// muestren huella distinta es plausible, no un bug: "estampar gana" (Fase
+/// 4 sobreescribe Fase 1-3) puede tapar por completo cualquier diferencia
+/// de ensanchado/erosión que caiga dentro del ~27 % del chunk que ocupan
+/// las sub-regiones para una seed dada — verificado explícitamente
+/// corriendo el test antes y después del cambio, no asumido.
 ///
 /// Regla normal ("un fallo aquí es bug") sigue aplicando a cualquier huella
-/// que no sea una de estas 3 excepciones documentadas (9 entradas en total:
-/// 4 de #1, 1 de #2, 4 de #3).
+/// que no sea una de estas 4 excepciones documentadas (11 entradas en
+/// total: 4 de #1, 1 de #2, 4 de #3, 2 de #4).
 const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
-    ((0, 3133931653), 0xC0D2F7F9C470F39F),
-    ((0, 1), 0xDB1408B8E4DB5FA9),
+    ((0, 3133931653), 0x5F9BD9144AA0AABB),
+    ((0, 1), 0x73D5E0C79F6BD617),
     ((0, 42), 0x5A0CE53A141D4C6E),
     ((0, 7778), 0x0BA91250637AD619),
     ((1, 3133931653), 0x729F00EC161AE35A),
@@ -2192,21 +2202,25 @@ fn layer0_openness_report() {
     );
 }
 
-/// (B1) Guard REAL: sobre una muestra fija (16 seeds × 2 chunks) más pequeña
-/// que `layer0_openness_report` — determinista, rápida, corre en cada
-/// `cargo test`, no solo bajo `--ignored` — la media de `walkable_fraction`
-/// para el perfil de layer 0 se mantiene dentro de ±0.03 del baseline medido
-/// al momento de escribir este test (0.10/0.08 → media real 0.5446 en la
-/// muestra de 64×3 de `layer0_openness_report`; aquí, con 16×2, 0.5611).
+/// (B1/B2) Guard REAL: sobre una muestra fija (16 seeds × 2 chunks) más
+/// pequeña que `layer0_openness_report` — determinista, rápida, corre en
+/// cada `cargo test`, no solo bajo `--ignored` — la media de
+/// `walkable_fraction` para el perfil de layer 0 se mantiene dentro de
+/// ±0.03 del baseline medido al momento de escribir este test.
 /// Cualquier cambio a `wide_chance`/`erode_chance`/Fase 1-3 que mueva la
-/// densidad de layer 0 debe actualizar la banda A PROPÓSITO (ver B2 de esta
-/// sesión) — el test existe para que ESE cambio sea intencional, no un
-/// efecto secundario silencioso de tocar otra cosa.
+/// densidad de layer 0 debe actualizar la banda A PROPÓSITO — el test
+/// existe para que ESE cambio sea intencional, no un efecto secundario
+/// silencioso de tocar otra cosa.
+///
+/// Historial de `BASELINE` (16×2), cada actualización con su valor real
+/// medido, nunca a ciegas:
+/// - B1 (0.10/0.08, sin cambios de perfil): 0.5611.
+/// - B2 (0.25/0.18, aprobado por Joel — ver ADR-057 enmienda): 0.6095.
 #[test]
 fn layer0_walkable_ratio_stays_in_band() {
     const SEEDS: u64 = 16;
     const CHUNKS: i32 = 2;
-    const BASELINE: f64 = 0.5611;
+    const BASELINE: f64 = 0.6095;
     const TOLERANCE: f64 = 0.03;
 
     let rules = &LAYER_PROFILES[0];

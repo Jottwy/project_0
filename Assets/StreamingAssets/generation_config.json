@@ -1,8 +1,8 @@
 [
   {
     "name": "El Vestibulo",
-    "wide_chance": 0.10,
-    "erode_chance": 0.08,
+    "wide_chance": 0.25,
+    "erode_chance": 0.18,
     "num_open_zones": 1,
     "open_zone_size": 5,
     "open_zone_size_x": 6,

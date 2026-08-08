@@ -145,8 +145,15 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
     // ── Layer 0 — El Vestíbulo ──────────────────────────────────────────────
     LayerRules {
         name: "El Vestibulo",
-        wide_chance: 0.10,
-        erode_chance: 0.08,
+        // Fix B (sesión de sub-regiones, 2026-08-08): 0.10/0.08 → 0.25/0.18.
+        // Aprobado por Joel sobre medición real (`layer0_openness_report`):
+        // baseline 54.5% transitable (interior 1..=18) → ~60% con estos
+        // valores, claramente por debajo de layer 1 ("Las Salas", 0.30/0.30
+        // → 62.2%) para conservar la jerarquía de densidad entre capas. El
+        // objetivo original de la sesión (~65-70%) resultó inalcanzable sin
+        // igualar o superar layer 1 — ver ADR-057 (enmienda) en DECISIONS.md.
+        wide_chance: 0.25,
+        erode_chance: 0.18,
         // `num_open_zones`/`open_zone_size` (escalar) quedan sin efecto para
         // layer 0 desde A3: `subregion_grid` ignora `num_open_zones` (siempre
         // 4 cuadrantes) y `open_zone_size_x`/`_z` de abajo, no `None`, así que
