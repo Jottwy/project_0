@@ -2083,3 +2083,15 @@ El camino de vuelta al menú existe solo en el vendor STP (`PauseMenu.QuitToMenu
 ### Estado de validación
 
 Paso 1 (campo + goodbye) aterrizado en `99bbc98`, `cargo test` 589→593. El resto pendiente al anclar esta entrada. Criterio para pasar a VALIDADA-EN-EJECUCIÓN: playtest con el arnés multi-instancia (host + 2 joiners) donde matar el host devuelve a los joiners al menú — inmediato con cierre limpio, en ≤5 s con kill duro — y donde una segunda sesión arranca limpia en el mismo proceso.
+
+### ENMIENDA (2026-08-08) — props placeholder sólidos ganan collider local; extiende la nota de arquitectura de paneles de pared (2026-07-30, línea ~974)
+
+Estado: **DECIDIDA E IMPLEMENTADA.** Sesión de fixes priorizados de worldgen (Alpha 1). Backend intocado.
+
+EL BUG: los 4 assets `LayerVisuals` (Layer0-3) declaran 20 entradas de prop en total y las 20 usan placeholder (`prefab: {fileID: 0}`) — ningún prop del juego usa prefab real todavía. `PlaceholderFactory.Finish` destruía cualquier `Collider` de las primitivas Cube/Cylinder generadas por `CreatePrimitive` ("decorative — Rust owns collision", comentario original), así que el 100% de los props (desk, chair, cabinet, bin, paper, cable, stain) eran atravesables por el jugador.
+
+DECISIÓN: `PlaceholderFactory` conserva el `Collider` primitivo (el que ya crea `GameObject.CreatePrimitive` — no se añade ninguno nuevo tipo `AddColliderIfMissing`) únicamente en props sólidos de bulto: **desk, chair, cabinet, bin** (y el fallback de tipo desconocido, que ya renderiza como `Cabinet`). Siguen sin collider, sin cambio de comportamiento respecto a hoy: **paper** y **stain** (decals de 0.005–0.01 m de grosor sobre el suelo — un collider ahí crea un micro-escalón) y **cable** (prop que cuelga del techo — un collider ahí es un obstáculo invisible en el aire).
+
+POR QUÉ ESTO NO CONTRADICE LA NOTA DE ARQUITECTURA DE 2026-07-30 (línea ~974): esa nota establece que el panel de pared es "la única superficie de `grid_gen` con colisión cliente real" — los props de `PlaceholderFactory` **no son geometría de `grid_gen`** (paredes/suelo/techo/pilares los autora `GridPrefabCreator`/`GridChunkBuilder`); son la capa de dressing de Fase 5C, un sistema aparte que nunca fue parte del contrato render↔fantasma. El invariante de la nota original sigue vigente sin cambios para paredes, techo y pilares. La colisión autoritativa de NPCs (robapieles, ADR-016) sigue siendo exclusivamente Rust vía `chunk_tile_walls` — este collider es cliente-only (bloquea solo al jugador real) y no introduce divergencia porque los props no existen en absoluto del lado Rust, ni en `walls[,]` ni en `collision.rs`. No aplica ni contradice ADR-018.
+
+Alcance: `Assets/Scripts/Gameplay/GridWorld/PlaceholderFactory.cs` únicamente (`Finish`/`Box`/`Cyl` ganan parámetro `keepCollider`, seteado por tipo en cada método de construcción). No toca wire, no toca protocolo, no toca `GridChunkBuilder`, no requiere bump de `WIRE_SCHEMA_VERSION` ni de IPC.
