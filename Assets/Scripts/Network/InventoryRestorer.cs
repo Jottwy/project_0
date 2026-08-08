@@ -254,9 +254,10 @@ namespace BackroomsSurvival.Net
         /// public <c>ItemProperty.Double</c> setter. Same clear-first idempotence as
         /// <see cref="Apply"/>. An out-of-range container/slot (a save from before the
         /// inventory layout changed) or an unknown item_id degrades gracefully — the stack is
-        /// dropped and logged, never a hard failure; an unknown property id on an otherwise
-        /// valid stack is silently skipped (same contract the backend documents for its own
-        /// restore path).
+        /// dropped and logged, never a hard failure; likewise a stack the container truncates or
+        /// refuses (weight limit, slot restriction) is counted as rejected, not as placed. An
+        /// unknown property id on an otherwise valid stack is silently skipped (same contract the
+        /// backend documents for its own restore path).
         private void ApplyV2(List<InventoryStackV2> stacks)
         {
             var containers = _character.Inventory.Containers;
@@ -301,11 +302,25 @@ namespace BackroomsSurvival.Net
                     }
                 }
 
-                container.SetItemAtIndex(s.slot, new ItemStack(item, s.quantity));
-                placed++;
+                // SetItemAtIndex silently truncates (or drops) via GetAllowedCount — weight limit
+                // and container restrictions both apply here, same as the AddItemsById path in
+                // Apply. Check what actually landed instead of assuming the full stack fit.
+                var stack = new ItemStack(item, s.quantity);
+                var (allowedCount, rejectReason) = container.GetAllowedCount(stack);
+                int placedCount = allowedCount > 0 ? container.SetItemAtIndex(s.slot, stack) : 0;
+
+                if (placedCount >= s.quantity)
+                {
+                    placed++;
+                }
+                else
+                {
+                    rejected++;
+                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} x{s.quantity} container={s.container} slot={s.slot} only placed {placedCount} ({(string.IsNullOrEmpty(rejectReason) ? "no reason" : rejectReason)})");
+                }
             }
 
-            Debug.Log($"[InventoryRestorer] inventory v2 restored: {placed} stacks placed, {rejected} dropped");
+            Debug.Log($"[InventoryRestorer] inventory v2 restored: {placed} stacks placed, {rejected} partial/dropped");
         }
 
         // Same local-character resolve as DeathLootReporter/InventoryReporter (skip remote
