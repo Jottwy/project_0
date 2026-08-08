@@ -22,9 +22,11 @@
 
 8. **TRAMPA DEL ARNÉS, anotada:** su check de frescura compara el timestamp del `.exe`, y en un build INCREMENTAL el `.exe` es solo el stub lanzador y no cambia — da falso negativo ("el exe es anterior al último cambio") con un build perfectamente bueno. La prueba real es `BackroomsSurvivalMMO_Data/Managed/*.dll`.
 
-9. **SIN CONFIRMAR, explícito:** de los 4 puntos del checklist de playtest **solo el de knee walls está cerrado**. Siguen abiertos: que el HUD de capa NO se mueva al saltar sobre el rellano (**el invariante entero de la escalera, hoy probado solo por aritmética**), que el mobiliario frene de verdad, y tinte/loot. Y las palancas 3 (techo y luz por zona) y 4 (sub-regiones más pequeñas) están **sin empezar** — las dos son cambio de sistema núcleo, con la aritmética ya hecha en la enmienda para no re-derivarla.
+9. **INVARIANTE DE CAPA — CONFIRMADO EN VIVO (2026-08-09).** De pie en el rellano y saltando, el `layer` del HUD **no se mueve de 0**. Cierra el punto que era el único capaz de invalidar la pieza: el margen calculado (rellano 0.66 + salto 1.05 = 1.71 contra el umbral de 2.0) es el margen real. La escalera queda validada como decorativa en el sentido fuerte — se ha comprobado que NO produce cruce de capa ni por accidente, que es el modo de fallo que la NOTA DE BACKLOG del 2026-08-08 señalaba como peligroso por no necesitar tocar Rust para colarse. Confirmación anclada en `DECISIONS.md`.
 
-10. **PRÓXIMO PASO ÚNICO:** subir al rellano y saltar mirando el HUD. Es el único punto que, si falla, invalida la pieza entera.
+10. **SIN CONFIRMAR, explícito:** del checklist de playtest quedan **mobiliario frenando físicamente** y **tinte/loot**; knee walls y el invariante de capa SÍ están cerrados. Las palancas 3 (techo y luz por zona) y 4 (sub-regiones más pequeñas) están **sin empezar** — las dos son cambio de sistema núcleo, con la aritmética ya hecha en la enmienda para no re-derivarla.
+
+11. **PRÓXIMO PASO ÚNICO:** palanca 4 (partición 3×3). Es la que ataca el 62% de pasillo, o sea la causa raíz de que la zona no se lea; y es la que exige enmienda a ADR-057 y romper los goldens de layer 0, así que merece sesión con contexto fresco.
 
 - Fecha: 2026-08-08 (quinta sesión del día) — **CIERRE DE SESIÓN. `ZONE_OFFICE`: el segundo `zone_kind` con geometría propia, con escalera decorativa. 5 commits, evaluator antes de cada uno. ADR-058 anclado. La respuesta a la pregunta que gobernaba la sesión ("¿se reutiliza el patrón de PILLAR_HALL tal cual?") es NO DEL TODO — y el detalle de qué faltó es lo que abarata los siguientes.**
 
