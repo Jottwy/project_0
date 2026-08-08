@@ -182,12 +182,65 @@ pub(super) const QUADRANT_CUT: i32 = 10;
 /// defensiva — no ocurre con los tamaños de producción de hoy (`sz = 6` dentro
 /// del hueco de 8 celdas de cada banda), pero evita un `gen_range` con rango
 /// vacío si algún perfil futuro configura un `open_zone_size` que no cabe.
-fn subregion_origin_slots(high: bool, sz: i32) -> (i32, u32) {
-    let (first, last_exclusive) = if high {
-        (QUADRANT_CUT + 2, CHUNK_CELLS as i32 - 2) // [12, 18)
-    } else {
+/// Límites `[first, last_exclusive)` de la banda `band` de un eje, con
+/// `divisions` divisiones. Devuelve la banda EXACTA, no una fórmula: son dos
+/// tablas cortas y la corrección de cada una depende de que sus buffers midan un
+/// tile entero, que es más fácil de auditar escrito que derivado.
+///
+/// `divisions = 2` (ADR-057, default): `[2, 10)` y `[12, 18)`. Se conserva
+/// literal, incluido `QUADRANT_CUT`, para que el camino de siempre siga siendo
+/// byte-idéntico.
+///
+/// `divisions = 3`: `[2, 6)`, `[8, 12)`, `[14, 18)`. La cuenta cierra justa en
+/// las 20 celdas del chunk: 2 de borde + 4 + 2 de buffer + 4 + 2 de buffer + 4 +
+/// 2 de borde. Los buffers siguen midiendo 2 celdas = 1 tile, que es lo que
+/// garantiza por construcción que dos sub-regiones nunca compartan arista de
+/// tile — la premisa de `RoomTypeForPanel` en Unity, intacta.
+///
+/// CONSECUENCIA ACEPTADA: con 3 divisiones la banda mide exactamente lo que mide
+/// la sub-región (4), así que hay UN solo origen posible por banda y la variedad
+/// de POSICIÓN desaparece. Es la misma asimetría que ADR-057 ya aceptó para su
+/// banda HIGH, ahora en las nueve. La variedad la da el `RoomType` y la
+/// presencia de cada celda, no dónde cae el rect. Para dos orígenes harían falta
+/// bandas de 6, o sea 3×6 + 2×2 = 22 > 20: no cabe.
+/// Divisiones EFECTIVAS a partir de lo que traiga el perfil.
+///
+/// Acota a `{2, 3}`, y el techo importa tanto como el suelo: `subregion_band_bounds`
+/// solo tiene tabla para dos y tres bandas, así que con 4 o más TODAS las bandas
+/// a partir de la segunda caerían en el mismo rango `[14, 18)` y varias
+/// sub-regiones se estamparían encima unas de otras — mismo rect, distinto `zid`,
+/// gana la última. Sin panic y sin aviso: corrupción geométrica silenciosa, que es
+/// justo la clase de fallo que la partición existe para hacer imposible.
+///
+/// Se acota en vez de asertar porque `LayerRules` se puede cargar de
+/// `generation_config.json` (ADR-007): un JSON mal escrito debe degradar a la
+/// partición conocida, no tumbar el backend de todos los peers.
+pub(super) fn effective_subregion_divisions(configured: u8) -> u8 {
+    configured.clamp(2, 3)
+}
+
+/// PRECONDICIÓN: `divisions ∈ {2, 3}`. Pasa siempre por
+/// `effective_subregion_divisions`, nunca el valor crudo del perfil.
+pub(super) fn subregion_band_bounds(divisions: u8, band: u8) -> (i32, i32) {
+    debug_assert!(
+        divisions == 2 || divisions == 3,
+        "subregion_band_bounds solo tiene tabla para 2 y 3 divisiones, recibió {divisions}"
+    );
+    if divisions >= 3 {
+        match band {
+            0 => (2, 6),
+            1 => (8, 12),
+            _ => (14, CHUNK_CELLS as i32 - 2), // [14, 18)
+        }
+    } else if band == 0 {
         (2, QUADRANT_CUT) // [2, 10)
-    };
+    } else {
+        (QUADRANT_CUT + 2, CHUNK_CELLS as i32 - 2) // [12, 18)
+    }
+}
+
+pub(super) fn subregion_origin_slots(divisions: u8, band: u8, sz: i32) -> (i32, u32) {
+    let (first, last_exclusive) = subregion_band_bounds(divisions, band);
     let max_origin = last_exclusive - sz;
     if max_origin < first {
         return (first, 0);
@@ -241,9 +294,14 @@ fn stamp_subregion_grid(
     let sz_x = rules.open_zone_size_x.unwrap_or(rules.open_zone_size) as i32;
     let sz_z = rules.open_zone_size_z.unwrap_or(rules.open_zone_size) as i32;
 
-    for quadrant_idx in 0..4u32 {
-        let x_high = quadrant_idx == 1 || quadrant_idx == 3; // NE, SE
-        let z_high = quadrant_idx == 2 || quadrant_idx == 3; // SW, SE
+    // `divisions²` sub-regiones. Con `divisions = 2` esto recorre 0..4 y el mapeo
+    // índice→banda coincide EXACTAMENTE con el de ADR-057 (`x` = idx % 2 da los
+    // altos en 1 y 3; `z` = idx / 2 los da en 2 y 3), así que el orden de
+    // cuadrante, los `zid` y los `subregion_seed` por índice quedan intactos.
+    let divisions = effective_subregion_divisions(rules.subregion_divisions);
+    for quadrant_idx in 0..(divisions as u32 * divisions as u32) {
+        let x_band = (quadrant_idx % divisions as u32) as u8;
+        let z_band = (quadrant_idx / divisions as u32) as u8;
 
         let seed = subregion_seed(world_seed, chunk_coord, layer_index, quadrant_idx);
         let mut sub_rng = StdRng::seed_from_u64(seed);
@@ -276,8 +334,8 @@ fn stamp_subregion_grid(
         eff_sz_x = tile_aligned_size(eff_sz_x);
         eff_sz_z = tile_aligned_size(eff_sz_z);
 
-        let (x_first, x_count) = subregion_origin_slots(x_high, eff_sz_x);
-        let (z_first, z_count) = subregion_origin_slots(z_high, eff_sz_z);
+        let (x_first, x_count) = subregion_origin_slots(divisions, x_band, eff_sz_x);
+        let (z_first, z_count) = subregion_origin_slots(divisions, z_band, eff_sz_z);
         if x_count == 0 || z_count == 0 {
             continue; // guarda defensiva — ver doc-comment de subregion_origin_slots
         }
