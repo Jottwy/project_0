@@ -147,12 +147,14 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         name: "El Vestibulo",
         wide_chance: 0.10,
         erode_chance: 0.08,
+        // `num_open_zones`/`open_zone_size` (escalar) quedan sin efecto para
+        // layer 0 desde A3: `subregion_grid` ignora `num_open_zones` (siempre
+        // 4 cuadrantes) y `open_zone_size_x`/`_z` de abajo, no `None`, así que
+        // el escalar nunca se lee como fallback. Se dejan en sus valores
+        // históricos (documentales) en vez de borrarlos, por si algún día se
+        // desactiva `subregion_grid` de vuelta.
         num_open_zones: 1,
         open_zone_size: 5,
-        // 17.5 m: validado en dos experimentos previos (SealedRoom y
-        // CorridorSpine, sesión de RoomType) antes de pasar a producción.
-        open_zone_size_x: Some(7),
-        open_zone_size_z: Some(7),
         pillar_chance: 0.0,
         num_anomalies: 0,
         num_stairs: 2,
@@ -171,9 +173,28 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         // Rompe a propósito los 4 PHASE1_GOLDENS de layer 0 — ver
         // DECISIONS.md (RoomType en producción) y el commit que los actualiza.
         room_type_weights: (0.5, 0.3, 0.2),
-        // A1: gate inerte todavía — el flip a producción es A3 (commit propio).
-        subregion_grid: false,
-        subregion_presence: 1.0,
+        // A3: partición 2×2 en producción (sesión de sub-regiones — más zonas
+        // por chunk, menos probabilidad de chunk sin ninguna sub-región
+        // especial). `open_zone_size_x`/`_z` pasan a ser el tamaño de CADA
+        // cuadrante (no ya de una única zona de todo el chunk); `sz=6` deja
+        // ~27% del chunk estampado en el caso de las 4 presentes.
+        //
+        // Asimetría de bandas conocida (`subregion_origin_slots`,
+        // `generator.rs`): con `QUADRANT_CUT=10` y `sz=6`, la banda LOW
+        // (`[2,10)`) tiene 2 orígenes posibles por eje, la banda HIGH
+        // (`[12,18)`) tiene EXACTAMENTE 1 (`x0`/`z0` siempre 12) — consecuencia
+        // aritmética forzada del split no simétrico entre 16 celdas útiles y
+        // 1 tile de buffer obligatorio, no un bug. Efecto: los cuadrantes NE/
+        // SE (eje X en banda HIGH) y SW/SE (eje Z en banda HIGH) tienen menos
+        // variedad de POSICIÓN que NW — el `RoomType` sigue variando en los
+        // cuatro. Aceptado a propósito: el objetivo de esta sesión es
+        // variedad de CONTENIDO por chunk, no de posición exacta; documentado
+        // aquí para que quien recalibre `open_zone_size`/`QUADRANT_CUT` sepa
+        // que mueve esta asimetría, no solo el % de área.
+        open_zone_size_x: Some(6),
+        open_zone_size_z: Some(6),
+        subregion_grid: true,
+        subregion_presence: 0.75,
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
