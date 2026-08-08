@@ -100,20 +100,34 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 }
             }
 
-            // Cap: keep an unbiased deterministic subset (sort by order hash, drop the rest).
-            if (_propScratch.Count > maxProps)
+            // Props por TILE. Subir `maxPropsPerChunk` deja de servir en cuanto la retícula
+            // de 5 m se satura: con densidad ~1 en sala sellada, cada tile elegible ya tiene
+            // su objeto, y un despacho de 10×10 m son 4 tiles ⇒ 4 objetos y no más. Los
+            // extra van a las sub-celdas de 2.5 m, la misma subdivisión que usan las
+            // columnas. 0/1 = comportamiento de siempre.
+            int perTile = Mathf.Clamp(hasZoneSet && zoneSet.propsPerTile > 0
+                ? zoneSet.propsPerTile : 1, 1, PropSlotOffsets.Length);
+
+            // El tope sigue contando PROPS, no tiles, así que el cupo de tiles se divide
+            // entre los slots — si no, `propsPerTile` multiplicaría el tope por la espalda.
+            int maxTiles = Mathf.Max(1, maxProps / perTile);
+            if (_propScratch.Count > maxTiles)
             {
                 _propScratch.Sort((a, b) => a.key.CompareTo(b.key));
-                _propScratch.RemoveRange(maxProps, _propScratch.Count - maxProps);
+                _propScratch.RemoveRange(maxTiles, _propScratch.Count - maxTiles);
             }
 
-            // Pass 2: place one prop per selected tile.
+            // Pass 2: place `perTile` props per selected tile.
             for (int i = 0; i < _propScratch.Count; i++)
+            for (int slot = 0; slot < perTile; slot++)
             {
                 int tx = _propScratch[i].tx, tz = _propScratch[i].tz;
                 int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
 
-                PropEntry e = PickProp(props, Hash01(gx, gz, PropSaltPick) * totalWeight);
+                // El slot 0 usa los salts TAL CUAL, así que una capa sin `propsPerTile`
+                // reproduce prop por prop lo que colocaba antes de esta pieza; los slots
+                // extra sacan sus decisiones de salts derivados.
+                PropEntry e = PickProp(props, Hash01(gx, gz, SlotSalt(PropSaltPick, slot)) * totalWeight);
                 string type = e.placeholderType;
 
                 // Instantiating straight under `parent` avoids the scene-root spawn + reparent
@@ -127,7 +141,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 }
                 else
                 {
-                    go = PlaceholderFactory.Create(type, mats.prop, Hash01(gx, gz, PropSaltVarA));
+                    go = PlaceholderFactory.Create(type, mats.prop,
+                        Hash01(gx, gz, SlotSalt(PropSaltVarA, slot)));
                     go.transform.SetParent(parent, false);
                 }
 
@@ -136,16 +151,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 float y = PropFloorY;
                 if (!e.floorOnly && type == "cable")          y = LayerHeight;
                 else if (type == "paper" || type == "stain")  y = PropFloorY + 0.005f;
-                go.transform.localPosition = TileCenter(tx, tz) + new Vector3(0f, y, 0f);
+                // El slot 0 se queda en el centro del tile (posición histórica); los extra se
+                // reparten por las sub-celdas, lo bastante lejos del centro para no clavarse
+                // dentro del que ya está ahí.
+                var slotOff = PropSlotOffsets[slot];
+                go.transform.localPosition = TileCenter(tx, tz)
+                    + new Vector3(slotOff.x, y, slotOff.y);
 
                 // Yaw / tip.
                 if (e.canBeRotated)
                 {
-                    float hYaw = Hash01(gx, gz, PropSaltYaw);
+                    float hYaw = Hash01(gx, gz, SlotSalt(PropSaltYaw, slot));
                     if (type == "chair")
                     {
                         float yaw = Mathf.Floor(hYaw * 4f) * 90f;                     // 0/90/180/270
-                        float tip = Hash01(gx, gz, PropSaltVarB) < 0.30f ? 90f : 0f;  // 30% tipped over
+                        float tip = Hash01(gx, gz, SlotSalt(PropSaltVarB, slot)) < 0.30f ? 90f : 0f;
                         go.transform.localRotation = Quaternion.Euler(0f, yaw, tip);
                     }
                     else
@@ -170,14 +190,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         int count = 0;
                         for (int b = 0; b < 4; b++)
                             if ((sides & (1 << b)) != 0) count++;
-                        int pick = Mathf.Clamp((int)(Hash01(gx, gz, PropSaltSide) * count), 0, count - 1);
+                        int pick = Mathf.Clamp(
+                            (int)(Hash01(gx, gz, SlotSalt(PropSaltSide, slot)) * count), 0, count - 1);
                         for (int b = 0; b < 4; b++)
                         {
                             if ((sides & (1 << b)) == 0) continue;
                             if (pick-- > 0) continue;
                             var hug = WallHugTable[b];
-                            go.transform.localPosition += new Vector3(
-                                hug.ox * PropHugInset, 0f, hug.oz * PropHugInset);
+                            // El DESPLAZAMIENTO solo para el slot central. Un slot de
+                            // sub-celda ya está a 1.25 m del centro; sumarle los 1.9 m del
+                            // hug daría 3.15 m, o sea fuera del tile de 5 m — el prop
+                            // acabaría en el tile vecino o dentro de la pared. La ROTACIÓN sí
+                            // se aplica siempre: un prop de sub-celda ya está pegado a un
+                            // lado, lo que le faltaba era mirar hacia donde toca.
+                            if (slot == 0)
+                                go.transform.localPosition += new Vector3(
+                                    hug.ox * PropHugInset, 0f, hug.oz * PropHugInset);
                             go.transform.localRotation = Quaternion.Euler(0f, hug.yaw, 0f);
                             break;
                         }
@@ -185,6 +213,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 }
             }
         }
+
+        /// <summary>
+        /// Salt del slot <paramref name="slot"/> dentro de un tile. El slot 0 devuelve el salt
+        /// SIN TOCAR — es lo que hace que una capa sin `propsPerTile` reproduzca prop por prop
+        /// lo que colocaba antes de que esto existiera. Los demás mezclan con la constante de
+        /// Knuth, igual que el resto de derivaciones de hash del fichero.
+        /// </summary>
+        private static uint SlotSalt(uint salt, int slot) =>
+            slot == 0 ? salt : salt ^ (uint)(slot * 0x9E3779B1u);
 
         /// <summary>Weighted pick by cumulative spawnWeight; <paramref name="r"/> ∈ [0,total).</summary>
         private static PropEntry PickProp(PropEntry[] props, float r)

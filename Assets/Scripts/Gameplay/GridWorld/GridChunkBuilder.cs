@@ -543,6 +543,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // prop's own depth and keeps it from clipping through the panel.
         private const float PropHugInset = 1.9f;
 
+        // Offsets de los slots de prop dentro de un tile de 5 m. El slot 0 es el CENTRO —
+        // la posición histórica, que es lo que mantiene byte-idéntica una capa sin
+        // `propsPerTile`. Los 4 restantes son los centros de sub-celda (±1.25 m), la misma
+        // subdivisión de 2.5 m que usan las columnas; a esa distancia un escritorio en el
+        // centro (1.2 m de ancho) y un archivador en una esquina (0.42 m) no se solapan.
+        private static readonly Vector2[] PropSlotOffsets =
+        {
+            new Vector2( 0f,     0f),
+            new Vector2(-1.25f, -1.25f),
+            new Vector2( 1.25f, -1.25f),
+            new Vector2(-1.25f,  1.25f),
+            new Vector2( 1.25f,  1.25f),
+        };
+
         // ── ADR-036 — densidad de props por RoomType ────────────────────────────
         //
         // Multiplican `cfg.propDensity` en el gate de spawn, NADA MÁS: el catálogo

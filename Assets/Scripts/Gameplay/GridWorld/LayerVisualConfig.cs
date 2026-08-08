@@ -349,6 +349,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "añadido) ⇒ se usa el tope global de la capa.")]
         public int maxPropsPerChunk;
 
+        [Tooltip("Props por TILE en esta zona (1..5). 0 o 1 ⇒ uno por tile, el comportamiento " +
+                 "de siempre. Por encima de 1 los extra se colocan en las sub-celdas de 2.5 m " +
+                 "del tile, igual que las columnas. Es el único modo de subir densidad una vez " +
+                 "que la retícula de 5 m está saturada.")]
+        public int propsPerTile;
+
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/>. Un −1 ("zona aún
         /// desconocida") no casa con ningún set específico, porque −1 no es un zone_kind válido;
         /// uno marcado <c>anyZoneKind</c> sí.</summary>

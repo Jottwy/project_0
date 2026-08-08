@@ -246,6 +246,50 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void Layer0PacksMoreThanOnePropPerTileInOffices()
+        {
+            // El techo real que destapó el playtest: con densidad ~1 en sala sellada, cada
+            // tile elegible YA tenía su objeto, así que un despacho de 10×10 m son 4 tiles y
+            // 4 objetos. Subir el tope no lo arregla; hay que romper la retícula de 5 m.
+            var layer0 = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsTrue(layer0.TryGetZonePropSet(ZoneOffice, out var office));
+            Assert.Greater(office.propsPerTile, 1,
+                "OFFICE sigue a un prop por tile: los despachos no pueden pasar de 4 objetos");
+            Assert.GreaterOrEqual(office.maxPropsPerChunk, office.propsPerTile * 12,
+                "el tope por chunk no da para los slots autorados; el cupo de tiles se " +
+                "dividiría entre ellos y saldrían MENOS tiles amueblados que antes");
+        }
+
+        [Test]
+        public void EveryOfficePlaceholderTypeBuildsSomething()
+        {
+            // PlaceholderFactory cae a Cabinet() para un tipo desconocido, así que una errata
+            // en el asset ("filecabinet" por "filecab") no lanza: amuebla la oficina entera
+            // con armarios grises y nadie se entera. Esto compara contra ese fallback.
+            var layer0 = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsTrue(layer0.TryGetZonePropSet(ZoneOffice, out var office));
+
+            // Se compara el NOMBRE de la raíz, no el número de piezas. La primera versión de
+            // este test contaba renderers y dio falso positivo con 'paper', que legítimamente
+            // construye una sola caja igual que 'cabinet' — el conteo no distingue "es simple"
+            // de "cayó en el fallback". Cada builder nombra su raíz `Prop_<tipo>`, así que una
+            // errata en el asset se ve exacta: pide 'filecabinet', recibe 'Prop_cabinet'.
+            foreach (var entry in office.props)
+            {
+                var go = PlaceholderFactory.Create(entry.placeholderType, null, 0.5f);
+                try
+                {
+                    Assert.IsNotEmpty(go.GetComponentsInChildren<Renderer>(),
+                        $"'{entry.placeholderType}' no construyó geometría");
+                    Assert.AreEqual($"Prop_{entry.placeholderType}", go.name,
+                        $"'{entry.placeholderType}' cayó en el fallback de tipo desconocido: " +
+                        "el asset pide un placeholder que PlaceholderFactory no conoce");
+                }
+                finally { Object.DestroyImmediate(go); }
+            }
+        }
+
+        [Test]
         public void PropsForTreatsAnEmptyAuthoredSetAsUnfinishedNotAsNoProps()
         {
             var cfg = Config();
