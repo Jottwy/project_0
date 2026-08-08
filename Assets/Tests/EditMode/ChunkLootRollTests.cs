@@ -286,5 +286,73 @@ namespace BackroomsSurvival.Tests
             foreach (var e in entries) sb.Append(e.Slot).Append(':').Append(e.Name).Append('|');
             return sb.ToString();
         }
+
+        // ── Fix priorizado worldgen (Alpha 1): loot dentro de muros ───────────────────────────
+        // Covers the reachability invariant the audit flagged (ChunkLootManager.TryPlace only
+        // raycast to the floor, which every tile has including walled ones, so it could never
+        // reject a position). IsWalkable is pure (no Unity, no Physics) so this is a genuine
+        // headless test, unlike the walkable RAYCAST itself (ChunkLootManager.TryPlace), which
+        // stays Play-only per this file's declared boundary above.
+
+        // 10x10 backend-convention bitmask (GridChunkDataMsg.Tiles), same layout ChunkLootRoll's
+        // internal IsWalkable expects: low nibble N/S/E/W wall bits, high nibble pillar sub-cell.
+        private static byte[,] Walls() => new byte[10, 10];
+
+        // Chunk-local normalized (u,v) for a point at tile (tx,tz), offset (localX,localZ) in
+        // metres within that 5 m tile. Mirrors ChunkLootManager's own wx/wz = cx*Side + u*Side.
+        private static (float u, float v) UvAt(int tx, float localX, int tz, float localZ) =>
+            ((tx * 5f + localX) / 50f, (tz * 5f + localZ) / 50f);
+
+        [Test]
+        public void IsWalkable_EmptyBitmask_EverySampledPointIsWalkable()
+        {
+            var walls = Walls(); // all zero — no walls, no pillars anywhere
+            var (cu, cv) = UvAt(4, 2.5f, 4, 2.5f); // tile centre
+            Assert.IsTrue(ChunkLootRoll.IsWalkable(walls, cu, cv));
+
+            var (eu, ev) = UvAt(9, 4.99f, 9, 4.99f); // far corner, near the u/v==1.0 edge
+            Assert.IsTrue(ChunkLootRoll.IsWalkable(walls, eu, ev));
+        }
+
+        [Test]
+        public void IsWalkable_PillarSubCell_RejectsOnlyThatSubCell()
+        {
+            var walls = Walls();
+            walls[3, 4] = 0x10; // PillarNW: the (x0,z0) sub-cell of tile (3,4)
+
+            var (nwU, nwV) = UvAt(3, 1.0f, 4, 1.0f); // west half, north half → NW sub-cell
+            Assert.IsFalse(ChunkLootRoll.IsWalkable(walls, nwU, nwV), "point inside the pillar sub-cell must reject");
+
+            var (seU, seV) = UvAt(3, 4.0f, 4, 4.0f); // east half, south half → SE sub-cell, no pillar there
+            Assert.IsTrue(ChunkLootRoll.IsWalkable(walls, seU, seV), "a different sub-cell of the same tile must stay walkable");
+        }
+
+        [Test]
+        public void IsWalkable_WalledEdge_RejectsNearThatEdgeOnly()
+        {
+            var walls = Walls();
+            walls[5, 5] = 1; // WallN (−Z edge) of tile (5,5)
+
+            var (edgeU, edgeV) = UvAt(5, 2.5f, 5, 0.05f); // 5 cm from the north edge — inside WallThickness/2
+            Assert.IsFalse(ChunkLootRoll.IsWalkable(walls, edgeU, edgeV), "point within wall thickness of a walled edge must reject");
+
+            var (centreU, centreV) = UvAt(5, 2.5f, 5, 2.5f); // tile centre, well clear of the edge
+            Assert.IsTrue(ChunkLootRoll.IsWalkable(walls, centreU, centreV), "tile centre away from the walled edge must stay walkable");
+        }
+
+        [Test]
+        public void IsWalkable_UvExactlyOne_ClampsInsteadOfThrowing()
+        {
+            var walls = Walls();
+            Assert.DoesNotThrow(() => ChunkLootRoll.IsWalkable(walls, 1f, 1f));
+            Assert.IsTrue(ChunkLootRoll.IsWalkable(walls, 1f, 1f), "u/v==1.0 must clamp to the last tile, not index out of range");
+        }
+
+        [Test]
+        public void IsWalkable_NullBitmask_ReturnsFalseInsteadOfThrowing()
+        {
+            Assert.DoesNotThrow(() => ChunkLootRoll.IsWalkable(null, 0.5f, 0.5f));
+            Assert.IsFalse(ChunkLootRoll.IsWalkable(null, 0.5f, 0.5f));
+        }
     }
 }
