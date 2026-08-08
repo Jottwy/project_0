@@ -893,6 +893,7 @@ pub async fn run(
                 &to_clients_voice,
                 &mut processed_interactions,
                 tick,
+                player_save_path.as_deref(),
             )
             .await;
         }
@@ -1414,6 +1415,7 @@ pub async fn run(
                     &to_clients_voice,
                     &mut processed_interactions,
                     tick,
+                    player_save_path.as_deref(),
                 )
                 .await;
             }
@@ -1533,6 +1535,10 @@ async fn handle_network_event(
     to_clients_voice: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut HashSet<(u16, u64)>,
     tick: u64,
+    // ADR-056: needed by the host-departure arm below, which persists the player file before
+    // announcing the end of the session. `None` means no file was ever resolved (no identity, or
+    // the lock was contested) — exactly the same gate every other save site in this loop uses.
+    player_save_path: Option<&std::path::Path>,
 ) {
     match event {
         NetworkEvent::PeerConnected { id, name } => {
@@ -1574,6 +1580,38 @@ async fn handle_network_event(
                 event_type: "player_left".into(),
                 data: serde_json::json!({ "player_id": id, "name": "", "reason": reason }),
             }));
+
+            // ADR-056: the host leaving ends the session — there is no host migration, so
+            // whatever is left of the mesh is a world that cannot advance (chunk displacement is
+            // gated on `is_host || peer_count() == 0`, and with the mesh still alive peer_count
+            // never reaches 0). Compared against `host_peer_id` rather than the literal `1` the
+            // request paths use, so this does not become the sixteenth hardcoded host id.
+            if net.host_peer_id == Some(id) {
+                info!("ADR-056: host {id} left ({reason}) — ending the session");
+
+                // Persist before announcing. Same gates and same order as `save_and_shutdown`:
+                // if Unity tears down promptly on the event below, this is the write that makes
+                // the difference between keeping this session's progress and losing it back to
+                // the last ~3-minute autosave.
+                if let (Some(path), Some(key)) = (player_save_path, &player.identity_key) {
+                    match crate::persistence::player_save::save_player(path, key, player) {
+                        Ok(()) => info!(
+                            "ADR-056: player saved on host departure to {}",
+                            path.display()
+                        ),
+                        Err(e) => warn!("ADR-056: player save on host departure failed: {e}"),
+                    }
+                }
+
+                // Unity owns the teardown: it answers this by calling `NetworkInitializer
+                // .Shutdown()`, which comes back as `save_and_shutdown` and exits this process.
+                // Deliberately NOT `std::process::exit` here — two owners of the shutdown is the
+                // race the ADR-045 amendment already had to untangle once.
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "session_ended".into(),
+                    data: serde_json::json!({ "reason": reason }),
+                }));
+            }
         }
 
         NetworkEvent::RemotePlayerUpdate {

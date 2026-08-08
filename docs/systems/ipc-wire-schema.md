@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v23
+# IPC wire schema — changelog v2 → v24
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **23**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **24**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -209,7 +209,7 @@ client that never sends it leaves `Player::identity_key` at `None` forever, and 
 never resolves a per-player save file for that session (ADR-045 Fase 2) — same degradation
 `report_noise` already established for an IPC-only addition.
 
-### v23 (ADR-045 Fase 3) — actual
+### v23 (ADR-045 Fase 3)
 
 Widens two existing IPC-only messages, no new action/event name. `report_inventory`'s `items`
 entries gain optional `container: u8`, `slot: u8`, `props: [{id: i32, value: f64}]` — a
@@ -222,3 +222,26 @@ session with a pre-Fase-3 client either side) the event falls back to the origin
 `{item_id, quantity}` shape, byte-for-byte what Fases 1+2 already emit. Both directions
 therefore degrade to exactly today's behavior when either side of the connection predates Fase
 3 — additive, `serde(default)`-equivalent (the JSON parser simply doesn't find the new keys).
+
+### v24 (ADR-056) — actual
+
+Adds one IPC-only event, backend → its own Unity client: `session_ended` with
+`data: { reason: string }`. Emitted by a JOINER's backend when the peer that leaves is the host
+(`NetworkManager::host_peer_id`), carrying the reason forward from the underlying
+`PeerDisconnected` — `"clean_shutdown"` when the host announced itself, `"heartbeat timeout"`
+when it died outright, so the UI can tell "the host closed" from "the host crashed". A host's own
+backend never emits it (`host_peer_id` is `None` there), and neither does a joiner for any other
+peer leaving.
+
+New event name rather than widening the existing `player_left`: that one has no Unity consumer at
+all today (`docs/ARCHITECTURE_RISK_REVIEW.md:146`) and the client does not know which peer id is
+the host, so carrying this on it would mean widening it — which bumps just the same (precedent
+v23, `inventory_restored`). An IPC-only addition counts for this counter with or without a new
+struct (precedents v13 `report_noise`, v22 `set_identity`).
+
+Degradation is total in both directions: a pre-v24 client receives an event name it has no
+listener for and ignores it (the same shape every one-off event already has), and a pre-v24
+backend simply never emits it, leaving today's behavior — the joiner stays in a frozen world
+until the player quits manually. **No P2P change accompanies this bump**: the goodbye that makes
+the common case immediate reuses `PacketPayload::Disconnect` (0x06), which has existed with a
+complete receiver since the baseline commit.
