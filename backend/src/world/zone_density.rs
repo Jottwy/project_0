@@ -242,15 +242,27 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     // perfil con `subregion_grid`, que es lo que hace comparables las huellas.
     rules.pillar_chance = 0.0;
 
-    // OBLIGATORIO, NO ESTÉTICO. La banda HIGH de `subregion_origin_slots` es
-    // `[12, 18)`, 6 celdas justas: el tamaño efectivo (ya pasado por
-    // `tile_aligned_size`, o sea par) tiene que ser <= 6 o `max_origin =
-    // 18 - sz < 12` ⇒ `count == 0` ⇒ los cuadrantes de banda HIGH (NE/SE/SW) se
-    // SALTAN EN SILENCIO por la guarda defensiva. Heredar el escalar del perfil
-    // de capa rompe justo eso en layer 2 (`open_zone_size: 7`, sin overrides
-    // x/z ⇒ alinea a 8) y dejaría 3 de los 4 cuadrantes sin estampar sin ningún
-    // error. 6 es el mayor que cabe; se fija ese, no el mínimo, porque una
-    // sub-región de 4 dejaría un interior de 2×2 tras el perímetro sellado.
+    // SE QUEDA EN LA PARTICIÓN 2×2 DE ADR-057, y es una decisión MEDIDA que
+    // contradice la hipótesis con la que se construyó `subregion_divisions`.
+    //
+    // La hipótesis era: como el 62% de los paneles de un chunk OFFICE son pasillo
+    // del maze, partir en 3×3 (nueve despachos de 5×5 m en vez de cuatro de
+    // 10×10) reduciría el pasillo. **Medido sobre 144 chunks, hace lo contrario:**
+    // el espacio pisable que cae DENTRO de una sala baja de 44.5% a 38.9%.
+    //
+    // El motivo es el perímetro sellado, que es de 1 celda cueste lo que cueste:
+    // un rect de 6×6 tiene 16 celdas de interior sobre 36 (44% útil), uno de 4×4
+    // tiene 4 sobre 16 (25% útil). Más salas pequeñas gastan MÁS presupuesto de
+    // chunk en pared y dejan menos suelo de oficina, no más.
+    //
+    // O sea: el pasillo no sobra porque las salas sean grandes, sobra porque las
+    // salas solo pueden cubrir ~27% del chunk con el esquema de bandas + buffers
+    // de ADR-057. Bajar el tamaño ataca el síntoma equivocado.
+    //
+    // El mecanismo de 3×3 queda construido, probado e INERTE por si un diseño
+    // futuro lo quiere por ESCALA (una sala de 5×5 m se lee más a oficina que una
+    // de 10×10, aunque haya menos metros de sala) — pero eso es una decisión de
+    // lectura, no de densidad, y no se toma a partir de este número.
     rules.open_zone_size_x = Some(6);
     rules.open_zone_size_z = Some(6);
 
@@ -361,11 +373,26 @@ mod tests {
                     // `subregion_origin_slots` solo admite <= 6. Con 8 (lo que
                     // daría `open_zone_size: 7` de layer 2 tras alinear) los
                     // tres cuadrantes de banda HIGH se saltarían EN SILENCIO.
-                    assert_eq!(
-                        (rules.open_zone_size_x, rules.open_zone_size_z),
-                        (Some(6), Some(6)),
-                        "capa {layer}: OFFICE debe fijar el tamaño de sub-región a 6"
+                    // Ancho de banda LITERAL y no leído de `subregion_band_bounds`:
+                    // esa función es `pub(super)` dentro de `grid_gen` y
+                    // `zone_density` es un módulo hermano, no descendiente — mismo
+                    // caso que `default_room_type_weights`, y se resuelve igual,
+                    // con el literal documentado en vez de ensanchar la visibilidad
+                    // de un interno del generador para un test.
+                    //
+                    // El tamaño tiene que caber en la banda MÁS ESTRECHA de las
+                    // divisiones configuradas o la sub-región se salta EN SILENCIO
+                    // (guarda `count == 0`). Con 2 divisiones la banda estrecha es
+                    // `[12,18)` = 6 celdas; con 3 serían 4. Atado a las divisiones
+                    // para que cambiar una sin la otra falle aquí y no en juego.
+                    let band_cells = if rules.subregion_divisions >= 3 { 4 } else { 6 };
+                    assert!(
+                        rules.open_zone_size_x.unwrap() <= band_cells,
+                        "capa {layer}: sub-región de {:?} con {} divisiones (banda de {band_cells} celdas) — se saltaría sin avisar",
+                        rules.open_zone_size_x,
+                        rules.subregion_divisions
                     );
+                    assert_eq!(rules.open_zone_size_x, rules.open_zone_size_z);
                     assert_eq!(
                         (rules.wide_chance, rules.erode_chance),
                         (base.wide_chance, base.erode_chance),
@@ -617,10 +644,14 @@ mod tests {
                     // bandas ⇒ la guarda `count == 0` no puede dispararse. Si
                     // alguien cambia el tamaño y rompe la banda HIGH, esto lo
                     // caza en vez de dejar medio chunk sin estampar en silencio.
+                    // Derivado de las divisiones, no un literal: 3×3 = 9. Con
+                    // presencia 1.0 y un tamaño que cabe en la banda, la guarda
+                    // `count == 0` no puede dispararse, así que salen TODAS.
+                    let expected = (rules.subregion_divisions as usize).pow(2);
                     assert_eq!(
                         out.room_zones.len(),
-                        4,
-                        "seed {seed} capa {layer} chunk ({cx},{cz}): OFFICE estampó {} sub-regiones, no 4",
+                        expected,
+                        "seed {seed} capa {layer} chunk ({cx},{cz}): OFFICE estampó {} sub-regiones, no {expected} — alguna se saltó en silencio",
                         out.room_zones.len()
                     );
                     zones_seen += out.room_zones.len();
