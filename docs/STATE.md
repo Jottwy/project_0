@@ -2,6 +2,29 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-08 (cuarta sesión del día) — **cierre de sesión — knee walls dejan de saturar layer 0: frecuencia bajada y perímetros sellados protegidos. Diagnóstico-primero, medido antes de tocar nada.**
+
+0. **QUÉ CERRÓ, en orden:**
+   - `1c801e0` — `wallPanelVariety` de layer 0 pasa de 0.2 a 0.08 en `Assets/Resources/LayerVisuals/Layer0_Vestibulo.asset:83`. Layers 1-3 siguen en 0, sin cambio.
+   - `19c5b2a` — gate en `Assets/Scripts/Gameplay/GridWorld/GridChunkBuilder.Placement.cs` (`PlaceWallsTinted`): el sorteo de knee wall excluye los paneles de perímetro sellado, vía `RoomTypeForPanel(roomZones, tx, tz, flag) == RoomZoneKind.Open`. Más 3 tests EditMode nuevos en `Assets/Tests/EditMode/WallVarietyTests.cs`.
+
+1. **DIAGNÓSTICO MEDIDO (a petición explícita: informe antes de tocar el valor).** El campo es un chance POR PANEL, no una densidad agregada — un solo consumidor, `GridChunkBuilder.Placement.cs` en `PlaceWallsTinted`; `Hash01` (`GridChunkBuilder.Tinting.cs:91`) es hash con avalancha, así que 0.20 era un 20% real. Medición temporal sobre 192 chunks (64 seeds × 3), contando los bits S/E del bitmask (los únicos paneles que Unity emite por la regla de no-duplicación):
+   - Paneles de pared por chunk (chunk = 50×50 m): PRE-sesión 115.1 → producción 94.2 (mín 54, máx 178; máximo posible 200).
+   - Knee walls por chunk a 0.20: 23.0 → 18.8. O sea 1 de cada 5 paneles.
+   - A 0.08 quedan ~7.5 por chunk (1 de cada 12.5).
+   - Celdas SealedWall por chunk: 12.2 → 23.7 (+94%). Zonas selladas por chunk: 0.56 → 1.55 (+177%).
+   La medición era temporal y se BORRÓ tras leerla (`backend/src/world/grid_gen/tests.rs` quedó byte-idéntico, verificado con `git diff` vacío).
+
+2. **HALLAZGO CLAVE — el total de knee walls había BAJADO, no subido (23.0 → 18.8):** la partición 2×2 + apertura del maze redujo los paneles de 115 a 94. La saturación percibida venía de otras dos vías, no del conteo: (a) más transitable (0.5611 → 0.6095) = líneas de visión más largas = más paneles a la vista de un vistazo; (b) las zonas selladas casi se triplicaron y el sorteo se aplicaba también a sus perímetros — una `SealedRoom` que se puede ver por encima deja de leerse como cerrada. Sin filtro de espaciado en ninguna versión, así que a 0.20 los pares adyacentes eran frecuentes y amplificaban la lectura.
+
+3. **NOTAS DEL GATE:** `Open` es también el fallback de `RoomTypeForPanel` cuando no hay `room_zones` o el tile no cae en ningún rect, así que el maze y las zonas Open conservan la mecánica — el gate excluye perímetros sellados, no la apaga. Orden de condiciones deliberado (`Hash01` antes de `RoomTypeForPanel`): ambas son puras, el corto-circuito no cambia el resultado y evita recorrer `roomZones` en los ~94 paneles del chunk (solo corre en el ~8% que pasó el sorteo). Deuda anotada en comentario: cuando se autoren `wallVariantSets` (ADR-035, hoy vacíos en los 4 assets) el mismo panel resolverá su RoomType dos veces y convendrá cachearlo.
+
+4. **VERIFICACIÓN:** `cargo test --release` 603 passed, 0 failed, 5 ignored (baseline de inicio de sesión 597; +6 de la partición 2×2/densidad, ninguna regresión). `cargo fmt --check` y `clippy --all-targets -D warnings` limpios. Compile-check Roslyn 0 errores en las 4 asambleas.
+
+5. **SIN CONFIRMAR, explícito:** los 3 tests EditMode nuevos NO se ejecutaron en Test Runner — el editor estaba abierto (lockfile ocupado) y no se cerró sin permiso; batchmode lo exige cerrado. Su verificación hoy es compile-check Roslyn + revisión del evaluator (`revisor-diffs`), que derivó a mano la aritmética de coordenadas de los 3 tests y el mapeo celdas 4..12 → tiles 2..5. Tampoco hubo playtest: el efecto visual de 0.08 no se ha visto en juego, solo calculado.
+
+6. **PRÓXIMO PASO ÚNICO:** playtest de layer 0 para confirmar en vivo que 0.08 se lee "ocasional" y que ninguna sala sellada muestra brecha de knee wall; si sigue saturando, el siguiente escalón medido es 0.05 (~4.7 por chunk).
+
 - Fecha: 2026-08-08 (cuarta sesión del día) — **CIERRE DE SESIÓN. Fase 1 — solape intra-chunk + reducción de maze walls: 6 commits (`3ce19d8`/`9d943d2`/`d8d6739`/`7c7f713`/`096e9a9`/`955e2fe`), evaluator (`revisor-diffs`) antes de cada uno. Fix A (partición 2×2 en producción) y Fix B (densidad de muro reducida) COMPLETOS. ADR-057 anclado en `DECISIONS.md`. Dos hallazgos reales de mitad de sesión resueltos vía `AskUserQuestion` con Joel, no improvisados.**
 
 0. **QUÉ CERRÓ ESTA SESIÓN, en orden:**
