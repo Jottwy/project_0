@@ -2263,3 +2263,13 @@ PILLAR_HALL funciona porque **añade** geometría que no existe en ningún otro 
 - **Sub-regiones más pequeñas**, que es lo que ataca el 62% de pasillo. Hoy `QUADRANT_CUT=10` da bandas de 8 y 6 celdas y sub-región 6 (interior 10×10 m tras el perímetro). Para interior de ~5×5 m hace falta sub-región 4, pero con la partición 2×2 eso solo da salas más pequeñas y MÁS pasillo: hace falta **3×3**, y ahí la cuenta se pone justa (3 bandas × 4 celdas + 2 buffers × 2 + bordes ≈ 18 de 20). Cabe, pero rompe la premisa de ADR-057 (4 cuadrantes fijos, `zid = quadrant_idx + 1`, un `subregion_seed` por cuadrante) ⇒ **enmienda a ADR-057 y goldens de layer 0 rotos otra vez**.
 - **Los 4 puntos del checklist de playtest siguen SIN CONFIRMAR** salvo el de knee walls: que el HUD de capa no se mueva al saltar sobre el rellano (el invariante entero de la escalera, hoy probado solo por aritmética), que el mobiliario frene de verdad, y el tinte/loot.
 - **Deuda ACTIVADA por `25873c8`:** con `wallVariantSets` ya autorado, `ResolveWallPrefab` y el gate de knee walls resuelven el `RoomType` del mismo panel dos veces. El comentario del gate lo predijo y pedía cachearlo "cuando se autoren modelos de pared". Ese momento llegó.
+
+### CONFIRMACIÓN EN VIVO (2026-08-09) — el invariante de capa de la escalera se sostiene en juego
+
+El punto que la enmienda de arriba dejaba abierto como "el invariante entero de la escalera, hoy probado solo por aritmética" queda **CERRADO POR OBSERVACIÓN DIRECTA**: de pie en el rellano y saltando, el `layer` del HUD (`PoiDebugHud`, build de desarrollo) **no se mueve de 0 en ningún momento**.
+
+Confirma en el juego real la cadena que hasta ahora solo respaldaban 17 tests de aritmética: `layer_from_player_y` = `round((y − PLAYER_BASE_Y)/LAYER_HEIGHT)` con Y de canal "pies + 1.8" ⇒ `round(pies/4)`, umbral a 2 m de pies; rellano a 0.66 + salto de 1.05 = **1.71, con 0.29 m de margen**. El margen calculado es el margen real.
+
+**La escalera queda validada como DECORATIVA en el sentido fuerte**: no es que no se haya cableado verticalidad, es que se ha comprobado que no la produce ni siquiera por accidente, que era el modo de fallo que la NOTA DE BACKLOG (2026-08-08) señalaba como el peligroso — el que no habría necesitado tocar una línea de Rust para colarse.
+
+Lo que esto NO cierra, para que nadie lo lea de más: siguen sin confirmar el mobiliario frenando físicamente y el tinte/loot; y las palancas 3 y 4 siguen sin empezar. Cerrado es el invariante, no el checklist.
