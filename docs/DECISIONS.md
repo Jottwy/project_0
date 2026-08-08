@@ -2174,3 +2174,70 @@ Por qué la premisa cambió justo ahora: ADR-057 (partición 2×2) casi duplicó
 **QUEDA PROHIBIDO sin nueva enmienda** (se suma a lo ya prohibido por la entrada de 2026-07-30, que sigue vigente sin cambios): aplicar knee wall —o cualquier variante de panel que permita ver por encima— a un panel cuyo `RoomTypeForPanel` no sea `Open`.
 
 Deuda de esta enmienda: (a) el orden de condiciones (`Hash01` antes de `RoomTypeForPanel`) es una optimización, no semántica — ambas son puras y el corto-circuito no cambia el resultado, solo evita recorrer `roomZones` en los ~94 paneles del chunk; (b) hoy `ResolveWallPrefab` corta antes de resolver la sala porque `wallVariantSets` está vacío en los 4 assets, así que el gate es la ÚNICA llamada — cuando se autoren modelos de pared (ADR-035) el mismo panel resolverá su `RoomType` dos veces y convendrá cachearlo; (c) los 3 tests EditMode nuevos (`WallVarietyTests`) están compile-verificados y revisados, pero **no ejecutados en Test Runner** — el editor estaba abierto y no se cerró sin permiso; (d) **el efecto visual de 0.08 no se ha visto en juego**, solo calculado: si sigue saturando, el siguiente escalón medido es 0.05 (~4.7 por chunk).
+
+### NOTA DE BACKLOG (2026-08-08) — la verticalidad JUGABLE queda diferida a post-Alpha 1, con ADR propio
+
+**No es una decisión de diseño ni un ADR: es una reserva de terreno.** Se ancla aquí para que el hueco quede registrado en el único sitio que es ley, y para que nadie lo reabra a medias sin querer al añadir geometría que "sube".
+
+**Qué queda pendiente:** cruzar de capa macro por medio jugable (escalera, hueco, pozo) — es decir, que el jugador ande desde `layer_index` hasta `layer_index ± 1` por geometría, no por teletransporte ni por caída.
+
+**Por qué se declara pendiente y no "medio hecho":**
+- El mecanismo de contrato existe pero **no tiene ningún consumidor de producción**: `generate_layer` devuelve `require_walkable_above` / `require_walkable_below` (Fase 7, celdas `Stair`/`Pit`), y los DOS únicos llamadores reales pasan `forced_walkable: &[]` — `backend/src/world/grid_gen/tile_walls.rs:96` (render) y `backend/src/world/grid_gen/collision.rs:167` (colisión del robapieles). O sea: hoy la garantía §5 ("una escalera nunca sube a una pared") no está rota en el juego, simplemente **nadie la ejercita**.
+- La colisión XZ del jugador real sigue contra `world::generator`, no contra `grid_gen`: **ADR-026 partes 1-2 continúan BLOQUEADAS** (enmienda 2026-07-06, desbloqueo parcial de solo la parte 3). Cablear verticalidad real antes de eso pondría al jugador a subir por geometría que el backend ni siquiera genera.
+
+**Consecuencia operativa (esto es lo que la nota PROHÍBE):** ninguna pieza de geometría nueva puede cablear `forced_walkable`, tocar `require_walkable_above/below`, ni modificar `collision.rs`, alegando "es que mi escalera lo necesita". Una escalera **decorativa** —la que sube y termina en un rellano dentro de la MISMA capa— no necesita nada de eso; si un diseño siente que sí lo necesita, es que dejó de ser decorativa y entra en este backlog, que exige **ADR propio antes de código** (regla dura #4 y #9: worldgen + colisión son sistema núcleo).
+
+Referencia cruzada: no enmienda ADR-026 (sus partes 1-2 quedan exactamente igual de bloqueadas y por el mismo motivo), no enmienda ADR-007 ni ADR-033. Relacionado con la deuda ya anotada en `docs/STATE.md` ▸ Deuda conocida "(ADR-025, 2026-07-03) Verticalidad pisable perdida tras el fix del payload `volumetric_grid`", que es el OTRO hilo de verticalidad (columnas volumétricas intra-capa) y sigue igual de abierto — cuando se retomen, conviene mirarlos juntos, pero son piezas distintas.
+
+## ADR-058 — `ZONE_OFFICE`: el segundo `zone_kind` con geometría propia, y qué costó de verdad añadirlo
+
+Estado: **IMPLEMENTADA, PENDIENTE DE VALIDACIÓN EN VIVO** (2026-08-08). Cinco commits con evaluator antes de cada uno: `dfcf213` (gate inerte) → `2a0e641` (perfil apagado) → `89b00ad` (cliente: tinte/loot/props) → `b27ee03` (cliente: escalera) → `b62a081` (flip + gramática legacy). `cargo test --release` 603 → **609**, 0 failed, 5 ignored; `fmt`/`clippy -D warnings` limpios en los cinco; compile-check Roslyn 0 errores en las 4 asambleas. **Sin playtest: nadie ha visto un chunk OFFICE en juego.**
+
+Contexto: ADR-033 dejó `ZONE_PILLAR_HALL` como único `zone_kind` con geometría propia y los otros 11 explícitamente inertes (`TODO(balance)`). OFFICE es el segundo, y la pregunta real de esta sesión no era "cómo hago una oficina" sino **si el patrón de PILLAR_HALL se reutiliza tal cual** — de eso depende cuánto cuesta el tercero, el cuarto y el quinto.
+
+### Decisión
+
+`ZONE_OFFICE = 12` + `TEMPLATE_OFFICE = 22`, con banda propia `35..=38` (**4%**, medido 4.10% sobre 5000 chunks) tallada a `TEMPLATE_HALLWAY_STRAIGHT` (que baja de `0..=38` a `0..=34`). Sin gate de `depth`. Su perfil es el **espejo invertido** de PILLAR_HALL, con la misma palanca y cero estampadores nuevos:
+
+| | PILLAR_HALL | OFFICE |
+|---|---|---|
+| `subregion_grid` | `false` forzado | `true` forzado |
+| `room_type_weights` | `(1,0,0)` Open | `(0.2, 0.8, 0.0)` mayoría SealedRoom |
+| `pillar_chance` | `max(0.6)` | `0.0` |
+| `wide/erode_chance` | los abre | los deja del perfil de capa |
+
+Se eligió C (zone_kind nuevo) sobre reutilizar `ZONE_MANILA` o `ZONE_STORAGE` porque aquellas eran identidades prestadas: MANILA está gateada a `depth >= 9` con 1% (invisible para playtest) y STORAGE ya tiene tinte y perfil de loot de almacén. `zone_kind` es `u8` sobre el wire con espacio de valores abierto, así que **no es cambio de formato** y la regla dura #7 no aplica.
+
+### Lo que el patrón de PILLAR_HALL SÍ dio gratis
+
+El perfil de densidad entero. `rules_for_zone` ganó una rama y una función; el estampado, el sorteo de `RoomType`, el anti-solape de la partición 2×2 y los streams de seed disjuntos (`subregion_seed`) ya existían y no se tocaron. **Un `zone_kind` nuevo que solo quiera densidad distinta cuesta ~40 líneas y ningún riesgo.**
+
+### Lo que NO dio, y hay que saber antes de añadir el tercero
+
+1. **No existía "catálogo de props por `zone_kind`".** Los props eran por CAPA; lo único que variaba por zona era el tinte, el modelo de pared (ADR-035, sin autorar) y el loot. Hubo que generalizar: `LayerVisualConfig.zonePropSets` + `PropsFor(zoneKind)`, lista dispersa calcada de `WallVariantSet`/`WallPrefabFor`. Ya está hecho — el tercer `zone_kind` sí lo hereda gratis.
+2. **Los arrays indexados por zona resuelven fuera de rango con `Mathf.Clamp`, no lanzan.** Un array corto sirve **la última entrada** en silencio: OFFICE se habría tintado con el púrpura de `ZONE_PIT` y looteado con su perfil. Y ampliar el inicializador de C# NO basta — **dos assets ya serializados llevaban su array horneado en YAML** (`Layer0_Vestibulo.asset`, justo la capa donde se juega, y `Loot/ZoneLootTable.asset`, cuyo creador por diseño nunca re-siembra). Los dos tests que cargan los assets REALES por `Resources` son la guarda para el siguiente.
+3. **La gramática LEGACY no es opcional.** Un `template_id` nuevo produce también un `ChunkLayoutV1`, y ese layout es contra el que colisiona el jugador real mientras ADR-026 partes 1-2 sigan bloqueadas. Reutilizar `g_office_maze` "porque ya se llamaba office" fue un error cazado al llegar el flip: deja **dos bolsillos incomunicados, 20 de 100 celdas**, uno de ellos con la salida sur entera. Su comentario afirmaba que "connectivity repair guarantees traversal" y era **falso** (`repair_connectivity` solo existe en `grid_gen`). OFFICE recibió `g_office_floor`, conexa por construcción. El defecto de `g_office_maze` se documenta pero **no se arregla aquí**: su único usuario es `TEMPLATE_DANGER_ROOM`, que solo llega por colocación curada, y tocarlo cambiaría el área de spawn sin que nadie lo pidiera.
+
+### La escalera: decorativa por ARITMÉTICA, no por promesa
+
+Requisito de sesión: escalera con escalón real, dentro de la misma capa, sin rozar `require_walkable_above/below` ni `collision.rs`. Se cumple — es 100% cliente, derivada por hash de `(chunk, room_zones)` igual que knee walls, dinteles y props, porque el bitmask tiene sus dos nibbles ocupados y meterla en el wire sería cambio de protocolo.
+
+**Pero el mecanismo por el que la verticalidad se habría colado no era ese: era la ALTURA.** `layer_from_player_y` (`world/collision.rs`) es `round((y − PLAYER_BASE_Y) / LAYER_HEIGHT)`, y la Y del canal es "pies + `PLAYER_BASE_Y`", así que se reduce a `round(pies / 4)`: **el backend reclasifica al jugador de capa en cuanto sus pies pasan de 2 m.** Con un salto de 1.05 m, la altura PISABLE máxima es ~0.9 m. Una escalera "normal" de 8 escalones habría cambiado de capa al primer salto desde su rellano, sin tocar una sola línea de backend.
+
+De ahí la forma, que es consecuencia del umbral y no estética: **3 escalones de 0.22 m** (bajo el `m_StepOffset` 0.275 del `CharacterController`) hasta un rellano a **0.66 m** (ápice de salto 1.71, margen 0.29), y un **tramo superior DESCONECTADO** que arranca a **2.6 m**, sube hasta comerse el techo y va **sin collider**. Doble barrera deliberada: la geométrica, y una que sobrevive a que alguien cambie la primera. `LayerFlipFeetY` se **deriva** de `GridConstants.LayerHeight`, no se copia.
+
+### QUEDA PROHIBIDO sin nueva enmienda
+
+- Subir la altura pisable de la escalera por encima de `LayerFlipFeetY − jumpHeight` con margen, o ponerle collider al tramo decorativo. Las dos cosas reintroducen cruce de capa sin tocar backend, que es exactamente lo que la NOTA DE BACKLOG (2026-08-08) declara como pieza aparte.
+- Añadir un `zone_kind` sin extender **los dos** arrays de cliente Y **los assets ya serializados** que los horneen.
+- Reutilizar `g_office_maze` para un template alcanzable por el sorteo de expansión.
+
+### Agujero de cobertura, declarado y no escondido
+
+Este flip **no rompió ningún golden**, contra lo que se predijo al diseñarlo. Verificado el porqué en vez de darlo por bueno: el `match` consume el mismo draw tome el brazo que tome (stream intacto ⇒ entidades/items idénticos); `golden_ascii_export_*` solo renderiza chunks de estructura; `PHASE1_GOLDENS` va contra `LAYER_PROFILES` sin pasar por `zone_density`. **Consecuencia: ningún test del repo se rompe si alguien reordena las bandas del sorteo de expansión entre templates que comparten `ZONE_NORMAL`.** Para OFFICE hay red (tiene `zone_kind` propio); para el resto, no. No se cierra aquí — necesita su propia sesión.
+
+### Pendiente antes de subir a VALIDADA
+
+Playtest de un chunk OFFICE: que la planta se lea compartimentada, que la escalera se lea como escalera rota y no como glitch, y que el HUD de capa NO cambie al saltar sobre el rellano. Los 28 tests EditMode nuevos (`ZonePropSetTests`, `OfficeStairsTests`) están compile-verificados y revisados pero **no ejecutados en Test Runner** — el editor estaba abierto y batchmode lo exige cerrado.
+
+Referencia cruzada: extiende ADR-033 (mismo resolver, mismo alcance render+robapieles, colisión del jugador igual de excluida) sin enmendarlo; usa la partición 2×2 de ADR-057 y el `RoomType` de la DECISIÓN de 2026-07-31; respeta el gate de knee walls de la enmienda del 2026-08-08 sin tocarlo; no desbloquea nada de ADR-026 y se apoya en la NOTA DE BACKLOG (2026-08-08) para dejar claro por qué.
