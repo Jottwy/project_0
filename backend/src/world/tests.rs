@@ -387,7 +387,97 @@ fn teleportation_fires_when_timer_expires() {
         "chunk seed should change after teleport"
     );
     assert!(!events.is_empty(), "should emit teleport event");
-    assert_eq!(events[0].event_type, "chunk_teleported");
+    assert_eq!(events[0].event.event_type, "chunk_teleported");
+}
+
+/// The broadcast side of a displacement must carry the seed that was actually applied
+/// to the chunk. It used to be reconstructed from the event JSON, which never carried
+/// the seed, so the P2P broadcast went out with a hardcoded 0.
+#[test]
+fn teleport_outcome_carries_applied_seed() {
+    let mut world = World::new(42);
+    world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+    if let Some(chunk) = world.chunks.get_mut(&key((0, 0))) {
+        chunk.teleport_timer = 0.5;
+    }
+    let old_seed = world.chunks[&key((0, 0))].seed;
+
+    let outcomes = world.tick_teleportation(1);
+    let outcome = outcomes
+        .iter()
+        .find(|o| o.old_pos == [0, 0])
+        .expect("chunk (0,0) should have teleported");
+
+    assert_eq!(
+        outcome.new_seed,
+        world.chunks[&key((0, 0))].seed,
+        "the broadcast seed must be the seed the owner applied to the chunk"
+    );
+    assert_ne!(outcome.new_seed, old_seed, "the seed must have changed");
+    assert_ne!(outcome.new_seed, 0, "0 is the bug this test exists for");
+
+    // Event and broadcast must never describe different displacements.
+    let data = outcome.event.data.as_object().unwrap();
+    let chunk_pos = data["chunk_pos"].as_array().unwrap();
+    let offset = data["new_offset"].as_array().unwrap();
+    assert_eq!(
+        outcome.old_pos,
+        [
+            chunk_pos[0].as_i64().unwrap() as i32,
+            chunk_pos[1].as_i64().unwrap() as i32
+        ]
+    );
+    assert_eq!(
+        outcome.new_pos,
+        [
+            outcome.old_pos[0] + offset[0].as_i64().unwrap() as i32,
+            outcome.old_pos[1] + offset[1].as_i64().unwrap() as i32
+        ]
+    );
+}
+
+/// The determinism invariant the whole sync model rests on: geometry is not replicated,
+/// it is regenerated from a seed. Give a peer the owner's seed and its chunk content
+/// must match the owner's exactly.
+///
+/// This is the test that proves the bug, not just the fix: with the hardcoded
+/// `new_seed = 0` the peer regenerated from seed 0 and every assertion below fails
+/// (`template_id`, `rotation`, entity and item sets all differ), while the owner
+/// stayed on its real seed — a live divergence with the host still alive.
+#[test]
+fn remote_teleport_with_owner_seed_converges() {
+    let mut owner = World::new(42);
+    owner.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+    if let Some(chunk) = owner.chunks.get_mut(&key((0, 0))) {
+        chunk.teleport_timer = 0.5;
+    }
+    let outcomes = owner.tick_teleportation(1);
+    let outcome = outcomes
+        .iter()
+        .find(|o| o.old_pos == [0, 0])
+        .expect("chunk (0,0) should have teleported");
+
+    let mut peer = World::new(42);
+    peer.update_ownership(Vec3::new(25.0, 0.0, 25.0), 2);
+    peer.apply_remote_teleport(outcome.old_pos, outcome.new_seed);
+
+    let a = &owner.chunks[&key((0, 0))];
+    let b = &peer.chunks[&key((0, 0))];
+    assert_eq!(a.seed, b.seed);
+    assert_eq!(a.template_id, b.template_id);
+    assert_eq!(a.rotation, b.rotation);
+    assert_eq!(a.mirrored, b.mirrored);
+    assert_eq!(a.has_workbench, b.has_workbench);
+    assert_eq!(
+        a.entities.iter().map(|e| e.id).collect::<Vec<_>>(),
+        b.entities.iter().map(|e| e.id).collect::<Vec<_>>(),
+        "entity spawns must match — they come from the same seed"
+    );
+    assert_eq!(
+        a.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+        b.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+        "loot must match — it comes from the same seed"
+    );
 }
 
 /// Regression guard for the owner/peer split in chunk displacement.

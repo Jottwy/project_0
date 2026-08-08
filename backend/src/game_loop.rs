@@ -1288,29 +1288,15 @@ pub async fn run(
         // Ownership is now handled per-chunk-boundary above; only teleportation
         // and other slow-tick work runs here.
         if tick.is_multiple_of(SLOW_TICK_EVERY) && (net.is_host || net.peer_count() == 0) {
-            let events = world.tick_teleportation(tick);
-            for ev in &events {
-                let _ = to_clients.send(ServerMessage::Event(ev.clone()));
+            let outcomes = world.tick_teleportation(tick);
+            for o in &outcomes {
+                let _ = to_clients.send(ServerMessage::Event(o.event.clone()));
             }
-            // Broadcast teleport events to peers.
-            for ev in &events {
-                if let Some(data) = ev.data.as_object() {
-                    if let (Some(pos), Some(offset)) =
-                        (data.get("chunk_pos"), data.get("new_offset"))
-                    {
-                        let old_pos = [
-                            pos.as_array().and_then(|a| a[0].as_i64()).unwrap_or(0) as i32,
-                            pos.as_array().and_then(|a| a[1].as_i64()).unwrap_or(0) as i32,
-                        ];
-                        let new_pos = [
-                            old_pos[0]
-                                + offset.as_array().and_then(|a| a[0].as_i64()).unwrap_or(0) as i32,
-                            old_pos[1]
-                                + offset.as_array().and_then(|a| a[1].as_i64()).unwrap_or(0) as i32,
-                        ];
-                        sync::broadcast_chunk_teleport(&net, old_pos, new_pos, 0).await;
-                    }
-                }
+            // Broadcast teleport events to peers. The seed comes straight from the
+            // outcome: peers regenerate the chunk from it, so sending anything else
+            // diverges their content from the owner's while the owner is still alive.
+            for o in &outcomes {
+                sync::broadcast_chunk_teleport(&net, o.old_pos, o.new_pos, o.new_seed).await;
             }
         }
 
