@@ -291,8 +291,9 @@ fn g_pillar_field(layout: &mut ChunkLayoutV1) {
 /// ADR-026 sigan bloqueadas. NO es la geometría que se renderiza: esa sale del
 /// perfil de `zone_density::office_rules` a través de `grid_gen`.
 ///
-/// CONECTIVIDAD POR CONSTRUCCIÓN, que es justo lo que `g_office_maze` no tiene
-/// (ver su comentario). La forma es un pasillo central de 2 filas (z = 4, 5) a
+/// CONECTIVIDAD POR CONSTRUCCIÓN — no por puertas colocadas a mano, que es como
+/// la consigue `g_office_maze` desde que se cerró su deuda de bolsillos.
+/// La forma es un pasillo central de 2 filas (z = 4, 5) a
 /// todo lo ancho, y bahías de cubículos al norte y al sur separadas SOLO por
 /// tabiques VERTICALES. Un tabique vertical parte cada banda en columnas, y toda
 /// columna llega de arriba abajo hasta el pasillo sin cruzar ninguna arista
@@ -327,19 +328,30 @@ fn g_office_floor(layout: &mut ChunkLayoutV1, extra: u16) {
     layout.set_edge_v(8, 8, EDGE_KIND_DOOR);
 }
 
+/// Laberinto de tabiques compartido por `TEMPLATE_DANGER_ROOM` (7),
+/// `TEMPLATE_BLACKOUT_ZONE` (14) y `TEMPLATE_RED_ROOM_WARNING` (16).
+///
+/// Aquí NO hay pase de reparación: `repair_connectivity` vive en `grid_gen` y
+/// nunca se llama desde este módulo (el comentario anterior afirmaba lo
+/// contrario y era falso). La conectividad la tiene que dar la propia
+/// gramática, tramo por tramo, y la ancla `maze_pocket_templates_are_fully_
+/// connected` con el mismo flood fill que usa `Level0Collision`.
+///
+/// Dos de los ocho tramos se quedaron sin puerta al escribirse, y eso partía el
+/// chunk en dos bolsillos incomunicados de 20 celdas en total:
+///   - `wall_h(6, 9, 3)` encerraba `x 6..9, z 0..2` (12 celdas) contra
+///     `wall_v(6, 0, 5)`.
+///   - `wall_h(4, 7, 8)` encerraba `x 4..7, z 8..9` (8 celdas) entre
+///     `wall_v(4, 3, 9)` y `wall_v(8, 4, 9)` — y ese bolsillo se tragaba las
+///     DOS aperturas de borde sur, que `open_boundary_gaps` talla en x = 4 y 5.
+///
+/// `set_edge_h(8, 3)` y `set_edge_h(6, 8)` son las puertas que los abren.
+///
+/// `wall_v(8, 4, 9)` sigue sin puerta a propósito: no aísla nada (x 8..9
+/// alcanza z 4..9 por las aristas horizontales) y quitarle el tabique solo
+/// acortaría el recorrido.
 fn g_office_maze(layout: &mut ChunkLayoutV1, extra: u16) {
     or_all_cells(layout, extra);
-    // DEUDA CONOCIDA, no tocada aquí: dos de los ocho tramos —`wall_h(6, 9, 3)` y
-    // `wall_h(4, 7, 8)`— no llevan ninguna puerta, y esta gramática deja dos
-    // bolsillos incomunicados (20 de 100 celdas, uno de ellos se traga la salida
-    // sur del chunk). El comentario que había aquí decía que "connectivity repair
-    // guarantees traversal" y era FALSO: `repair_connectivity` vive en `grid_gen`
-    // y nunca se llama desde este módulo. Se deja como está a propósito — su
-    // único usuario es `TEMPLATE_DANGER_ROOM`, que solo llega por colocación
-    // curada de estructura (el sorteo de expansión no tiene brazo 7), así que
-    // arreglarlo cambiaría geometría del área de spawn sin que nadie lo haya
-    // pedido. `TEMPLATE_OFFICE` NO la reutiliza justamente por esto: tiene la
-    // suya, `g_office_floor`, conexa por construcción.
     wall_v(layout, 2, 0, 6, EDGE_KIND_PARTITION);
     wall_v(layout, 4, 3, 9, EDGE_KIND_PARTITION);
     wall_v(layout, 6, 0, 5, EDGE_KIND_PARTITION);
@@ -353,6 +365,11 @@ fn g_office_maze(layout: &mut ChunkLayoutV1, extra: u16) {
     layout.set_edge_v(6, 3, EDGE_KIND_DOOR);
     layout.set_edge_h(1, 3, EDGE_KIND_DOOR);
     layout.set_edge_h(5, 6, EDGE_KIND_DOOR);
+    // Las dos puertas que cierran la deuda. Van en el extremo LEJANO de cada
+    // tramo respecto de la puerta que ya conectaba su vecindario, para que el
+    // bolsillo se recorra entero en vez de quedar en un recodo de una celda.
+    layout.set_edge_h(8, 3, EDGE_KIND_DOOR);
+    layout.set_edge_h(6, 8, EDGE_KIND_DOOR);
 }
 
 fn g_arch_transition(layout: &mut ChunkLayoutV1) {
@@ -590,9 +607,11 @@ pub fn grammar_for_template(template_id: u8, _rotation: u16) -> LayoutGrammarTyp
         20 => LayoutGrammarType::PoiDangerPocket,
         21 => LayoutGrammarType::PoiSafePocket,
         // TEMPLATE_OFFICE — gramática PROPIA, no la reutilización de
-        // `g_office_maze` que el nombre invitaba a hacer: aquella deja bolsillos
-        // incomunicados (ver su comentario) y esto sí alimenta al mundo LEGACY,
-        // que es contra el que colisiona el jugador real hoy. Ver `g_office_floor`.
+        // `g_office_maze` que el nombre invitaba a hacer: cuando se decidió,
+        // aquella dejaba dos bolsillos incomunicados (deuda ya cerrada, ver su
+        // comentario). Sigue separada a propósito: son plantas distintas —
+        // cubículos con pasillo central frente a laberinto de tabiques— y esto
+        // alimenta al mundo LEGACY, contra el que colisiona el jugador real hoy.
         22 => LayoutGrammarType::OfficeFloor, // TEMPLATE_OFFICE
         _ => LayoutGrammarType::RoomCluster,
     }
@@ -816,28 +835,27 @@ mod tests {
         );
     }
 
-    /// Flood-fill sobre el layout LEGACY de `TEMPLATE_OFFICE`.
+    /// Flood fill INTERNO de un layout legacy: `(alcanzables, transitables)`.
     ///
-    /// Este es el hueco de cobertura que el flip destapó: `zone_density::tests::
-    /// office_chunks_stay_connected_and_non_degenerate` prueba la conectividad
-    /// del grid de `grid_gen` —lo que se RENDERIZA— pero la colisión XZ del
-    /// jugador real sigue contra `world::generator`, o sea contra ESTE layout,
-    /// mientras las partes 1-2 de ADR-026 sigan bloqueadas. Ningún test miraba
-    /// aquí, y por eso `g_office_maze` lleva sus dos bolsillos incomunicados
-    /// desde que se escribió sin que nada lo notara.
+    /// La arista se consulta desde la celda de ORIGEN, que es como la consulta
+    /// `Level0Collision` — es lo que hace que esto mida el mismo bloqueo que
+    /// sufre el jugador, no uno parecido.
     ///
-    /// Se prueba `TEMPLATE_OFFICE` y no todos los templates a propósito: los
-    /// demás son preexistentes y varios NO pasarían — arreglarlos es trabajo
-    /// aparte, y hacerlo aquí de rebote habría cambiado geometría que nadie pidió.
-    #[test]
-    fn office_legacy_layout_is_fully_connected() {
+    /// Mide SOLO el interior, y no es un olvido: `ChunkLayoutV1::init_edges`
+    /// nace con TODO el perímetro a `EDGE_KIND_WALL`, y las aperturas hacia los
+    /// chunks vecinos las talla una etapa POSTERIOR (`open_boundary_gaps`/
+    /// `finalize_level0_edges`, en el generador), no la gramática — cuyo propio
+    /// encabezado dice que no decide conectividad entre chunks. Un assert de
+    /// travesía de borde a borde mediría la etapa equivocada y fallaría para
+    /// TODOS los templates. Y no hace falta: con el interior 100% conexo,
+    /// CUALQUIER apertura que esa etapa abra alcanza todas las celdas del chunk.
+    fn internal_reach(layout: &ChunkLayoutV1) -> (usize, usize) {
         use crate::world::chunk::{SIDE_EAST, SIDE_NORTH, SIDE_SOUTH, SIDE_WEST};
         use crate::world::collision::edge_blocks_movement;
 
-        let layout = generate_layout_from_template(TEMPLATE_OFFICE, 0);
         let g = LAYOUT_GRID_SIZE as usize;
-
         let walkable = |x: usize, z: usize| layout.cells[z * g + x] & CELL_WALKABLE != 0;
+
         let mut start = None;
         let mut total = 0usize;
         for z in 0..g {
@@ -848,7 +866,9 @@ mod tests {
                 }
             }
         }
-        let start = start.expect("TEMPLATE_OFFICE sin una sola celda transitable");
+        let Some(start) = start else {
+            return (0, 0);
+        };
 
         let mut visited = vec![false; g * g];
         visited[start.1 * g + start.0] = true;
@@ -862,9 +882,6 @@ mod tests {
                 (0, 1, SIDE_SOUTH),
                 (-1, 0, SIDE_WEST),
             ] {
-                // La arista se consulta desde la celda de origen, que es como la
-                // consulta `Level0Collision`: es lo que hace que este test mida
-                // el mismo bloqueo que sufre el jugador, no uno parecido.
                 if edge_blocks_movement(layout.cell_side_edge(x, z, side)) {
                     continue;
                 }
@@ -879,24 +896,68 @@ mod tests {
                 }
             }
         }
+        (reached, total)
+    }
 
+    /// Flood-fill sobre el layout LEGACY de `TEMPLATE_OFFICE`.
+    ///
+    /// Este es el hueco de cobertura que el flip destapó: `zone_density::tests::
+    /// office_chunks_stay_connected_and_non_degenerate` prueba la conectividad
+    /// del grid de `grid_gen` —lo que se RENDERIZA— pero la colisión XZ del
+    /// jugador real sigue contra `world::generator`, o sea contra ESTE layout,
+    /// mientras las partes 1-2 de ADR-026 sigan bloqueadas. Ningún test miraba
+    /// aquí, y por eso `g_office_maze` llevó sus dos bolsillos incomunicados
+    /// desde que se escribió sin que nada lo notara.
+    ///
+    /// Se prueba `TEMPLATE_OFFICE` y no todos los templates a propósito: los
+    /// demás son preexistentes y varios NO pasarían — arreglarlos es trabajo
+    /// aparte, y hacerlo aquí de rebote habría cambiado geometría que nadie pidió.
+    #[test]
+    fn office_legacy_layout_is_fully_connected() {
+        let layout = generate_layout_from_template(TEMPLATE_OFFICE, 0);
+        let (reached, total) = internal_reach(&layout);
+        assert!(total > 0, "TEMPLATE_OFFICE sin una sola celda transitable");
         assert_eq!(
             reached, total,
             "TEMPLATE_OFFICE: {reached} de {total} celdas alcanzables — hay cubículos incomunicados en el mundo contra el que colisiona el jugador"
         );
+    }
 
-        // NO se comprueba aquí que el chunk sea atravesable de borde a borde, y no
-        // es un olvido: `ChunkLayoutV1::init_edges` nace con TODO el perímetro a
-        // `EDGE_KIND_WALL`, y las aperturas hacia los chunks vecinos las talla una
-        // etapa POSTERIOR (`open_boundary_gaps`/`finalize_level0_edges`, en el
-        // generador), no la gramática — cuyo propio encabezado dice que no decide
-        // conectividad entre chunks. Un assert de travesía aquí mediría la etapa
-        // equivocada y fallaría para TODOS los templates.
-        //
-        // Y no hace falta: con el interior 100% conexo, CUALQUIER apertura que esa
-        // etapa abra en el perímetro alcanza todas las celdas del chunk. Esa es
-        // justamente la propiedad que `g_office_maze` no tiene y por la que
-        // `TEMPLATE_OFFICE` no la reutiliza.
+    /// Flood-fill sobre los TRES templates que comparten `g_office_maze`.
+    ///
+    /// No es solo `TEMPLATE_DANGER_ROOM` (colocación curada): `grammar_for_
+    /// template` manda también 14 y 16 a la misma gramática, y esos DOS SÍ los
+    /// emite el sorteo de expansión (`generator.rs`, `95 if depth >= 8` y
+    /// `98 if depth >= 12`). Los bolsillos incomunicados estaban en mundo
+    /// abierto, no solo en el área de spawn.
+    #[test]
+    fn maze_pocket_templates_are_fully_connected() {
+        for template_id in [
+            TEMPLATE_DANGER_ROOM,
+            TEMPLATE_BLACKOUT_ZONE,
+            TEMPLATE_RED_ROOM_WARNING,
+        ] {
+            let layout = generate_layout_from_template(template_id, 0);
+            let (reached, total) = internal_reach(&layout);
+            assert!(total > 0, "template {template_id} sin celdas transitables");
+            assert_eq!(
+                reached, total,
+                "template {template_id} (g_office_maze): {reached} de {total} celdas alcanzables — bolsillo incomunicado"
+            );
+        }
+    }
+
+    /// Ancla las dos puertas que hacen conexa a `g_office_maze`. El flood fill
+    /// de arriba caza la regresión, pero no dice DÓNDE: si alguien mueve o
+    /// borra una de las dos, este test nombra el tramo exacto.
+    #[test]
+    fn maze_pocket_doorless_segments_got_their_doors() {
+        let layout = generate_layout_from_template(TEMPLATE_DANGER_ROOM, 0);
+        // Tramo `wall_h(6, 9, 3)`: única salida del bolsillo norte-este.
+        assert_eq!(layout.edge_h(8, 3), EDGE_KIND_DOOR);
+        // Tramo `wall_h(4, 7, 8)`: única salida del bolsillo sur, el que se
+        // tragaba las aperturas de borde sur (`open_boundary_gaps`: x = 4 y 5).
+        assert_eq!(layout.edge_h(6, 8), EDGE_KIND_DOOR);
     }
 
     /// El gate está ABIERTO: la banda `35..=38` del sorteo de expansión emite

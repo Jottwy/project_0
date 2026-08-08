@@ -86,18 +86,31 @@ mod tests {
     }
 
     /// Pins the ASCII export hash for seed=42 (world layout + zone rendering).
+    ///
+    /// RE-PINCHADO (fix de conectividad de `g_office_maze`): las dos puertas
+    /// nuevas —`set_edge_h(8, 3)` y `set_edge_h(6, 8)`— caen dentro del chunk
+    /// `(12,0) template=7 zone=3`, que el muestreo de `sample_chunks_for_ascii`
+    /// sí incluye en el detalle de aristas. El delta se verificó carácter a
+    /// carácter volcando el export antes y después: exactamente DOS chars
+    /// `' ' -> 'd'` en ese único chunk, cero cambios en el resto del canvas y
+    /// `len` idéntico (`edge_char` mapea tanto PARTITION como DOOR a un solo
+    /// carácter). El hash anterior era `0x43CBBFB7E7F818FB`.
     #[test]
     fn golden_ascii_export_seed42() {
         let ascii = export_level0_ascii(42);
         assert_eq!(ascii.len(), 56592, "ascii export length changed (seed 42)");
         assert_eq!(
             ascii_hash(&ascii),
-            0x43CBBFB7E7F818FB,
+            0x139BD5452CDC2B83,
             "ascii export content changed (seed 42)"
         );
     }
 
     /// Pins the ASCII export hash for seed=7778 (VISFIX showcase seed).
+    ///
+    /// RE-PINCHADO por el mismo fix, y verificado igual: el chunk afectado aquí
+    /// es `(6,-5) template=7 zone=3`, mismos dos chars, misma longitud. El hash
+    /// anterior era `0x7A43CA4EDFEA6665`.
     #[test]
     fn golden_ascii_export_seed7778() {
         let ascii = export_level0_ascii(7778);
@@ -108,7 +121,7 @@ mod tests {
         );
         assert_eq!(
             ascii_hash(&ascii),
-            0x7A43CA4EDFEA6665,
+            0x0D5327C0C30F284D,
             "ascii export content changed (seed 7778)"
         );
     }
