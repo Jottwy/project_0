@@ -2031,3 +2031,55 @@ Playtest posterior al cierre de sesión confirmó EN VIVO que la ropa equipada s
 **`rotation` NO comparte esta salida — sigue siendo un hueco real, sin mecanismo que lo arregle de rebote.** No vive en un `IItemContainer`: es un escalar (`player.rotation`, cámara/yaw) sellado incondicional en `game_loop.rs` desde `input.look[1]`, y `session_restored` solo lleva `"position"`. No hay contenedor equivalente que Fase 3 pueble por accidente. **ADR-055 se reduce a rotation únicamente** — equipment sale de su alcance, confirmado por código, no solo por la observación del playtest (regla explícita: no tachar backlog sin causa identificada; aquí la causa SÍ está identificada y verificada).
 
 Archivos verificados (solo lectura, cero cambio de código en esta entrada): `Inventory.cs`, `PlayerPoseTransmitter.cs`, `InventoryReporter.cs`, `InventoryRestorer.cs`.
+
+## ADR-056 — Fin de sesión cuando cae el host: la sesión termina, no se hereda
+
+**Número verificado libre antes de escribir:** el último ADR con cuerpo era ADR-054 (línea 1963); ADR-055 está reservado a `rotation` por la segunda enmienda a ADR-045 pero todavía no tiene cuerpo. Comprobación explícita por el precedente de ADR-048 (tomado por la voz del robapieles y detectado tarde).
+
+### Contexto
+
+Cuando el host cae, la malla P2P sobrevive de forma incorrecta. Las poses y los heartbeats viajan peer-a-peer sin gate de rol, así que los joiners se siguen viendo entre ellos — en playtest, 4m22s — dentro de un mundo que ya no avanza: el chunk displacement está gateado a `is_host || peer_count() == 0` (`game_loop.rs:1290`) y con la malla viva `peer_count` nunca llega a 0, los rosters STP quedan congelados en su última foto, y toda petición dirigida al host (`send_reliable(1, ...)`, ~14 sitios) se descarta en silencio. El joiner no recibe ningún error: se queda jugando un mundo muerto que parece vivo.
+
+El handler que debería reaccionar son 7 líneas que no distinguen quién cayó (`game_loop.rs:1566-1572`): log + `player_left`, un evento que además no tiene ningún consumidor en Unity (confirmado en `docs/ARCHITECTURE_RISK_REVIEW.md:146`).
+
+### Decisión
+
+**La sesión muere con el host.** Cuando un joiner detecta que el peer host se fue, guarda, cierra la sesión de red y vuelve al menú principal. No hay relevo de host, ni elección de nuevo host, ni migración de autoridad: eso queda explícitamente post-Alpha y este ADR no lo prepara ni lo bloquea.
+
+Cuatro piezas:
+
+**1. El joiner sabe quién era el host — campo explícito, no un literal más.**
+`NetworkManager.host_peer_id: Option<PeerId>`, `None` en el host y fijado en `handle_handshake_ack` (`network/handlers.rs`) junto al registro del peer host, que es el único punto donde un joiner aprende esa identidad de primera mano. Mismo patrón y misma razón que `world_seed_known` de ADR-045: la identidad del host hoy solo es implícita (peer `1` por convención, escrito como literal en ~15 sitios que la auditoría de red pidió NO ampliar). Un campo llano permite comparar sin añadir el decimosexto literal. **Este ADR no migra los 15 existentes** — es un refactor aparte con su propio riesgo.
+
+**2. Despedida explícita al cerrar — sin opcode nuevo y sin bump P2P.**
+`save_and_shutdown` termina en `exit(0)` sin avisar a nadie, así que hoy la única señal es el timeout de heartbeat de 5 s (`network/peer.rs:11`). Se añade un broadcast de `PacketPayload::Disconnect { reason }` como último paso antes de salir. **No hace falta opcode libre: `Disconnect` (0x06) y su receptor completo — que purga el estado del peer y emite `PeerDisconnected` — existen desde el commit baseline**; hasta ahora el único emisor era el rechazo por sesión llena (`handlers.rs:586-589`). Nada cambia de forma en el wire, así que no hay bump por el lado P2P.
+
+Se manda en crudo, no con `send_reliable`: el proceso sale acto seguido y nadie procesaría un ACK ni un reenvío — encolarlo como fiable sería dejarlo en una cola que muere con el proceso. Un goodbye perdido degrada exactamente al comportamiento de hoy (el peer se entera por timeout), y eso es lo que hace seguro mandarlo sin garantía. Sin gate de `is_host`: un joiner que sale limpio también se anuncia, y el host ya maneja `Disconnect` entrante desde el baseline.
+
+**3. Evento IPC nuevo `session_ended` — bump v23→v24.**
+Al detectar que el caído era el host, el backend del joiner: (a) guarda el fichero de jugador por el mismo camino que `save_and_shutdown`, (b) emite `GameEvent { event_type: "session_ended", data: { reason } }`. `reason` propaga el del `PeerDisconnected` (`clean_shutdown` si hubo goodbye, `heartbeat timeout` si el host murió de golpe), para que la UI pueda distinguir "el host cerró" de "el host se cayó".
+
+**El backend NO se mata a sí mismo.** Unity, al recibir `session_ended`, ordena el teardown por el camino que ya existe (`NetworkInitializer.Shutdown()` → `save_and_shutdown` → `exit(0)`). Un solo dueño del apagado, cero carrera nueva — es la misma disciplina que la enmienda de ADR-045 impuso al `save_and_shutdown` frente a la desconexión del IPC local.
+
+Por qué evento propio y no reutilizar `player_left`: no tiene consumidor en Unity hoy, y el cliente no sabe qué peer-id es el host, así que "`player_left` con contexto" significaría ensancharlo — y ensanchar un evento IPC existente bumpea igual (precedente v23 con `inventory_restored`). Una adición solo-IPC cuenta para el contador con o sin struct nuevo (precedentes v13 `report_noise`, v22 `set_identity`). Mismo coste, semántica limpia.
+
+**4. Unity: cablear dos mitades que ya existen y no se conocen.**
+El camino de vuelta al menú existe solo en el vendor STP (`PauseMenu.QuitToMenu` → `LevelManager.CloseCurrentGame`, destino `STP_MainMenu`) y **no toca la red en ningún punto**. `NetworkInitializer.Shutdown()` existe y mata el backend con guardado gracioso, pero no vuelve al menú, no para el bucle de reconexión del IPC (`IPCClient.cs:266-311`, reintenta contra un puerto muerto indefinidamente) y no resetea `JoinSessionUI._loadingGameplay`, sin lo cual una segunda sesión en el mismo proceso nunca vuelve a cargar la escena de gameplay. Se añade un consumidor de `session_ended` que ejecuta la secuencia completa. **Cero ediciones dentro de `Assets/PolymindGames/`**: `LevelManager.CloseCurrentGame` es API pública y la dirección de asmdef (Assembly-CSharp → PolymindGames) lo permite.
+
+**Invariante del arnés de playtest, verificado, no asumido:** el auto-conectar por `SESSION_MODE`/`CONNECT_TO` vive EXCLUSIVAMENTE en `JoinSessionUI.Start()` (`JoinSessionUI.cs:91-114`; los demás usos de esas variables son logging o el env del proceso hijo). `Start()` corre una sola vez por componente, el componente vive en el objeto DDOL `NetworkSession`, y `NetworkMenuBootstrap.ShowConnectPanel` hace early-return cuando encuentra una instancia existente (`NetworkMenuBootstrap.cs:25-32`) en vez de añadir otra. Por tanto volver al menú NO re-dispara el auto-join, y el auto-join de la primera vez queda intacto. **De ahí una restricción dura para la implementación: el fin de sesión NUNCA destruye el objeto `NetworkSession` ni el componente `JoinSessionUI`** — solo resetea sus campos. Destruirlo haría que un `ShowConnectPanel` posterior construyese una instancia nueva cuyo `Start()` volvería a auto-conectar en bucle, que es precisamente el fallo que rompería el arnés.
+
+### Alternativas descartadas
+
+- **Migración/relevo de host.** Es la solución "correcta" a largo plazo y está anclada como post-Alpha. Se descarta aquí a propósito: obliga a decidir transferencia de autoridad del mundo, del save y de los rosters STP, y nada de eso es necesario para que el joiner deje de jugar en un mundo muerto.
+- **Solo un mensaje de aviso, sin cerrar.** No basta: la malla sigue viva por sí sola (poses y heartbeats no tienen gate de rol), así que el jugador podría ignorar el aviso y seguir en el mundo congelado. Hay que forzar el fin.
+- **Que el backend del joiner se suicide con `exit(0)`.** Deja a Unity hablando con un socket muerto y duplica el dueño del apagado. Unity manda, el backend informa.
+
+### Alcance
+
+**Toca:** `network/mod.rs` (campo), `network/handlers.rs` (fijarlo), `network/sync.rs` (goodbye), `game_loop.rs` (goodbye en shutdown + reacción en `PeerDisconnected`), `ipc/server.rs` (v24), `docs/systems/ipc-wire-schema.md` (entrada v24), y en Unity un consumidor nuevo de `session_ended` más el reseteo de estado de `JoinSessionUI`/`IPCClient`.
+
+**No toca:** formato de `world_{seed}.json`, fichero de jugador de ADR-045, protocolo de pose relay, los 15 literales de host, ni nada dentro de `Assets/PolymindGames/`.
+
+### Estado de validación
+
+Paso 1 (campo + goodbye) aterrizado en `99bbc98`, `cargo test` 589→593. El resto pendiente al anclar esta entrada. Criterio para pasar a VALIDADA-EN-EJECUCIÓN: playtest con el arnés multi-instancia (host + 2 joiners) donde matar el host devuelve a los joiners al menú — inmediato con cierre limpio, en ≤5 s con kill duro — y donde una segunda sesión arranca limpia en el mismo proceso.
