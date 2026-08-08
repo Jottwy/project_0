@@ -413,8 +413,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 PlacePipes(root.transform, cfg, mats, chunkX, chunkZ);
 
             // Fase 5C: procedural props (placeholders) per tile.
+            // El gate sigue mirando `cfg.props` (el catálogo de CAPA) a propósito: un
+            // `zonePropSets` autorado sin catálogo de capa detrás sería una zona con muebles
+            // en un mundo sin ellos, y este gate es el interruptor histórico de "esta capa
+            // tiene props". `PlaceProps` resuelve dentro cuál usar de verdad.
             if (styled && cfg.props != null && cfg.props.Length > 0)
-                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, roomZones);
+                PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, zoneKindQuery, roomZones);
 
             // Fase 5A (Bug #1): tag the whole chunk to its macro-layer's Unity layer so
             // per-layer lamp culling isolates it (see GeoLayers). Lamps/luminaires added

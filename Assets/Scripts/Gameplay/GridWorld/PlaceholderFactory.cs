@@ -12,9 +12,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// The caller (<see cref="GridChunkBuilder"/>.PlaceProps) positions/rotates the root.
     /// Swap a placeholder for a real prefab later via <c>PropEntry.prefab</c>.
     /// Collider policy (enmienda a la nota de arquitectura de knee walls, docs/DECISIONS.md):
-    /// solid floor props (desk/chair/cabinet/bin) keep their primitive collider as a local
-    /// physical blocker — Rust NPC collision stays authoritative and unaffected, this is
-    /// player-only. Thin decals (paper/stain) and the hanging cable stay collider-less: a
+    /// solid floor props (desk/chair/cabinet/bin, más partition/filecab de ZONE_OFFICE) keep
+    /// their primitive collider as a local physical blocker — Rust NPC collision stays
+    /// authoritative and unaffected, this is player-only. Thin decals (paper/stain), the
+    /// hanging cable and sub-5 cm details (the file cabinet's handles) stay collider-less: a
     /// 0.01 m decal would create a micro-step and the cable would be an invisible mid-air
     /// obstacle.
     /// </summary>
@@ -30,6 +31,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static readonly Color PaperCol = new Color(0.80f, 0.78f, 0.72f);
         private static readonly Color Black    = new Color(0.05f, 0.05f, 0.05f);
         private static readonly Color StainCol = new Color(0.12f, 0.09f, 0.06f);
+        private static readonly Color PartitionCol = new Color(0.55f, 0.53f, 0.45f); // tela beige de mampara
 
         /// <summary>Create a placeholder for <paramref name="type"/>. <paramref name="hA"/>
         /// is a per-prop hash value in [0,1) for type variation (e.g. cable length).</summary>
@@ -41,6 +43,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 case "chair":   return Chair(mat);
                 case "cabinet": return Cabinet(mat);
                 case "bin":     return Bin(mat);
+                case "partition": return Partition(mat);
+                case "filecab":   return FileCabinet(mat);
                 case "paper":   return Paper(mat);
                 case "cable":   return Cable(mat, hA);
                 case "stain":   return Stain(mat);
@@ -82,6 +86,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             var root = new GameObject("Prop_bin");
             Cyl(root.transform, mat, DarkGrey, new Vector3(0f, 0.25f, 0f), 0.35f, 0.5f, keepCollider: true);
+            return root;
+        }
+
+        /// <summary>
+        /// ZONE_OFFICE — mampara de cubículo: panel de 2.2 m × 1.45 m sobre dos pies.
+        ///
+        /// La ALTURA es una cantidad de jugabilidad, no estética, por el mismo motivo que
+        /// <see cref="LayerVisualConfig.MinKneeWallHeight"/>: lleva collider, así que un panel
+        /// más bajo que ~1.15 m lo saltaría el jugador (FPS_Player.prefab _jumpHeight 1.05,
+        /// m_StepOffset 0.275). 1.45 m deja margen y sigue por debajo de la altura de ojos
+        /// (~1.65 m) — se ve por encima de la planta, no se pasa por encima.
+        /// </summary>
+        private static GameObject Partition(Material mat)
+        {
+            var root = new GameObject("Prop_partition");
+            Box(root.transform, mat, PartitionCol, new Vector3(0f, 0.775f, 0f), new Vector3(2.2f, 1.35f, 0.07f), keepCollider: true);
+            for (int sx = -1; sx <= 1; sx += 2)
+                Box(root.transform, mat, Metal, new Vector3(sx * 1.0f, 0.05f, 0f), new Vector3(0.12f, 0.10f, 0.45f), keepCollider: true);
+            return root;
+        }
+
+        /// <summary>ZONE_OFFICE — archivador de 4 cajones, más alto y estrecho que
+        /// <see cref="Cabinet"/> para que las dos siluetas no se confundan de lejos.</summary>
+        private static GameObject FileCabinet(Material mat)
+        {
+            var root = new GameObject("Prop_filecab");
+            Box(root.transform, mat, Metal, new Vector3(0f, 0.66f, 0f), new Vector3(0.42f, 1.32f, 0.62f), keepCollider: true);
+            // Tiradores: sin collider, son 3 cm de relieve — un collider ahí solo añadiría
+            // micro-escalones contra los que engancharse.
+            for (int i = 0; i < 4; i++)
+                Box(root.transform, mat, DarkGrey, new Vector3(0f, 0.20f + i * 0.31f, 0.32f), new Vector3(0.20f, 0.03f, 0.03f), keepCollider: false);
             return root;
         }
 
@@ -130,8 +165,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             if (!keepCollider)
             {
+                // decal/prop colgante — sin presencia física. `Object.Destroy` a secas lanza
+                // "Destroy may not be called from edit mode!" fuera de Play Mode, y desde que
+                // hay tests EditMode que construyen placeholders esa ruta SÍ se recorre.
+                // Mismo patrón que `LayerVisualMaterials.SafeDestroy`, ya establecido en este
+                // subsistema; en Play Mode el comportamiento es idéntico al de antes.
                 var col = go.GetComponent<Collider>();
-                if (col != null) Object.Destroy(col); // decal/hanging prop — no physical presence
+                if (col != null)
+                {
+                    if (Application.isPlaying) Object.Destroy(col);
+                    else Object.DestroyImmediate(col);
+                }
             }
             var r = go.GetComponent<MeshRenderer>();
             if (mat != null) r.sharedMaterial = mat;
