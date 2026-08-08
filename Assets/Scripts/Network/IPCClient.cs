@@ -150,6 +150,9 @@ namespace BackroomsSurvival.Net
         private Thread _netThread;
         private volatile bool _running;
         private volatile bool _hasConnectedOnce;
+        // ADR-056: set while the session is over but the client must stay reusable. See
+        // PauseReconnect.
+        private volatile bool _reconnectPaused;
         private TcpClient _client;
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
@@ -158,10 +161,47 @@ namespace BackroomsSurvival.Net
         private int _lastRemotePlayersLogTick = Environment.TickCount - RemotePlayersLogIntervalMs;
         private const int RemotePlayersLogIntervalMs = 2000;
 
+        /// <summary>
+        /// ADR-056: stop trying to reconnect, WITHOUT tearing the client down. The session is
+        /// over (the host left) and the backend process is being killed, so the reconnect loop
+        /// would otherwise spend the rest of the process's life dialling a dead port.
+        ///
+        /// Deliberately not <see cref="Shutdown"/>: that stops the thread and clears the
+        /// singleton, which would make a second session in the same process impossible. Here the
+        /// thread stays alive and idle, and <see cref="ConfigureEndpoint"/> — which every
+        /// Host/Join path calls before launching a backend — lifts the pause on its own.
+        ///
+        /// Must be called AFTER NetworkInitializer.Shutdown(): the graceful save-on-quit
+        /// (save_and_shutdown) travels over this very connection.
+        /// </summary>
+        public void PauseReconnect()
+        {
+            if (_reconnectPaused) return;
+            _reconnectPaused = true;
+            Debug.Log("[IPCClient] Reconnect paused (session ended)");
+            // Unblock ReadFrames so the loop reaches the paused check promptly instead of
+            // sitting on the socket's 5 s receive timeout.
+            lock (_sendLock)
+            {
+                try { _stream?.Close(); } catch { }
+                try { _client?.Close(); } catch { }
+                _stream = null;
+            }
+        }
+
         public void ConfigureEndpoint(string address, int ipcPort)
         {
             if (string.IsNullOrWhiteSpace(address)) address = "127.0.0.1";
             bool changed = serverAddress != address || port != ipcPort;
+
+            // A new session is starting: lift any pause BEFORE the unchanged-endpoint early
+            // return below, or reconnecting to the same address+port as the dead session would
+            // leave the loop parked forever.
+            if (_reconnectPaused)
+            {
+                _reconnectPaused = false;
+                Debug.Log("[IPCClient] Reconnect resumed (new session configured)");
+            }
 
             serverAddress = address;
             port = ipcPort;
@@ -195,6 +235,9 @@ namespace BackroomsSurvival.Net
             Debug.Log($"[IPCClient] StartClient requested endpoint={serverAddress}:{port}");
 
             if (_isQuitting) return;
+            // ADR-056: an explicit start request always means a live session is wanted, even if
+            // the thread is already alive and merely parked (the early return below).
+            _reconnectPaused = false;
             if (_netThread != null && _netThread.IsAlive) return;
 
             _running = true;
@@ -267,6 +310,13 @@ namespace BackroomsSurvival.Net
         {
             while (_running)
             {
+                // ADR-056: parked between sessions — stay alive and cheap, dial nothing.
+                if (_reconnectPaused)
+                {
+                    Thread.Sleep(200);
+                    continue;
+                }
+
                 try
                 {
                     var client = new TcpClient();
