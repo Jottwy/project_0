@@ -115,6 +115,14 @@ MonoBehaviour:
   kneeWallHeight: 1.35
   lintelChance: 0.12
   lintelClearance: 2.2
+  wallVariantSets:
+  - zoneKind: 12
+    anyZoneKind: 0
+    roomType: 1
+    anyRoomType: 0
+    variants:
+    - prefab: {fileID: 3019090243915002323, guid: e4e4b4d9f1d811a45bf1b3b5beec3469, type: 3}
+      weight: 1
   zoneTints:
   - {r: 1, g: 1, b: 1, a: 1}
   - {r: 1, g: 0.85, b: 0.6, a: 1}
