@@ -32,6 +32,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static readonly Color Black    = new Color(0.05f, 0.05f, 0.05f);
         private static readonly Color StainCol = new Color(0.12f, 0.09f, 0.06f);
         private static readonly Color PartitionCol = new Color(0.55f, 0.53f, 0.45f); // tela beige de mampara
+        private static readonly Color ScreenCol    = new Color(0.16f, 0.19f, 0.17f); // CRT apagado
+        private static readonly Color CardboardCol = new Color(0.62f, 0.48f, 0.32f);
+        private static readonly Color PotCol       = new Color(0.36f, 0.24f, 0.18f);
+        private static readonly Color LeafCol      = new Color(0.24f, 0.34f, 0.20f);
+        private static readonly Color BoardCol     = new Color(0.88f, 0.88f, 0.85f);
 
         /// <summary>Create a placeholder for <paramref name="type"/>. <paramref name="hA"/>
         /// is a per-prop hash value in [0,1) for type variation (e.g. cable length).</summary>
@@ -45,6 +50,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 case "bin":     return Bin(mat);
                 case "partition": return Partition(mat);
                 case "filecab":   return FileCabinet(mat);
+                case "monitor":   return Monitor(mat);
+                case "boxes":     return Boxes(mat, hA);
+                case "plant":     return Plant(mat);
+                case "whiteboard": return Whiteboard(mat);
                 case "paper":   return Paper(mat);
                 case "cable":   return Cable(mat, hA);
                 case "stain":   return Stain(mat);
@@ -117,6 +126,54 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // micro-escalones contra los que engancharse.
             for (int i = 0; i < 4; i++)
                 Box(root.transform, mat, DarkGrey, new Vector3(0f, 0.20f + i * 0.31f, 0.32f), new Vector3(0.20f, 0.03f, 0.03f), keepCollider: false);
+            return root;
+        }
+
+        /// <summary>ZONE_OFFICE — monitor CRT sobre su peana. Bajo (0.75 m) a propósito: se
+        /// lee como "hay un escritorio ahí" sin necesitar que el escritorio caiga en la misma
+        /// sub-celda, que el sorteo no garantiza.</summary>
+        private static GameObject Monitor(Material mat)
+        {
+            var root = new GameObject("Prop_monitor");
+            Box(root.transform, mat, Wood, new Vector3(0f, 0.36f, 0f), new Vector3(0.9f, 0.72f, 0.5f), keepCollider: true);
+            Box(root.transform, mat, DarkGrey, new Vector3(0f, 0.75f, 0f), new Vector3(0.06f, 0.06f, 0.2f), keepCollider: false);
+            Box(root.transform, mat, DarkGrey, new Vector3(0f, 0.98f, 0f), new Vector3(0.44f, 0.40f, 0.38f), keepCollider: true);
+            Box(root.transform, mat, ScreenCol, new Vector3(0f, 0.98f, 0.20f), new Vector3(0.36f, 0.30f, 0.02f), keepCollider: false);
+            return root;
+        }
+
+        /// <summary>ZONE_OFFICE — pila de cajas de archivo, altura variable por
+        /// <paramref name="hA"/>.</summary>
+        private static GameObject Boxes(Material mat, float hA)
+        {
+            var root = new GameObject("Prop_boxes");
+            int n = 2 + (int)(hA * 2.99f); // 2..4
+            for (int i = 0; i < n; i++)
+                Box(root.transform, mat, CardboardCol,
+                    new Vector3((i % 2) * 0.06f, 0.16f + i * 0.32f, (i % 3) * 0.05f),
+                    new Vector3(0.5f, 0.32f, 0.4f), keepCollider: true);
+            return root;
+        }
+
+        /// <summary>ZONE_OFFICE — planta de oficina en su maceta. El follaje va sin collider:
+        /// es lo único que asoma por encima de la maceta y no debe frenar al jugador por
+        /// rozarlo.</summary>
+        private static GameObject Plant(Material mat)
+        {
+            var root = new GameObject("Prop_plant");
+            Cyl(root.transform, mat, PotCol, new Vector3(0f, 0.18f, 0f), 0.36f, 0.36f, keepCollider: true);
+            Box(root.transform, mat, LeafCol, new Vector3(0f, 0.75f, 0f), new Vector3(0.5f, 0.8f, 0.5f), keepCollider: false);
+            return root;
+        }
+
+        /// <summary>ZONE_OFFICE — pizarra. Va SIN collider y a altura de pared a propósito:
+        /// es decoración vertical, y un bloque sólido a 1.5 m en mitad de una sub-celda sería
+        /// un obstáculo invisible de leer.</summary>
+        private static GameObject Whiteboard(Material mat)
+        {
+            var root = new GameObject("Prop_whiteboard");
+            Box(root.transform, mat, BoardCol, new Vector3(0f, 1.55f, 0f), new Vector3(1.6f, 0.95f, 0.05f), keepCollider: false);
+            Box(root.transform, mat, Metal, new Vector3(0f, 1.06f, 0f), new Vector3(1.6f, 0.06f, 0.09f), keepCollider: false);
             return root;
         }
 
