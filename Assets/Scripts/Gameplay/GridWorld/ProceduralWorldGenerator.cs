@@ -137,8 +137,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // so neither can drift without the Rust contract drifting first.
         private const float Side = GridConstants.ChunkCells * GridConstants.CellSize;
 
+        /// <summary>Fix priorizado worldgen (Alpha 1): la única instancia viva, para que
+        /// ChunkLootManager (u otro consumidor fuera de esta clase) consulte el caché de
+        /// paredes sin una referencia de escena. Misma asunción de "solo hay una" que ya
+        /// hace el setup de GridTestWorld; mismo patrón singleton que ChunkLootManager
+        /// usa para sí mismo (_instance).</summary>
+        public static ChunkStreamer Instance { get; private set; }
+
         private void Start()
         {
+            Instance = this;
             _prefabs = GridPrefabSet.LoadFromResources();
             if (_prefabs.floor == null) return;
             if (playerTransform == null) return;
@@ -165,6 +173,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private void OnDestroy()
         {
+            if (Instance == this)
+                Instance = null;
             if (_ipc != null)
                 _ipc.RemoveChunkDataListener(OnChunkDataReceived);
             // Fase 5A: free the shared per-layer materials we instanced.
@@ -393,6 +403,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             _roomZonesCache.TryGetValue((cx, cz, layer), out var zones)
                 ? zones
                 : System.Array.Empty<RoomZoneMsg>();
+
+        /// <summary>Fix priorizado worldgen (Alpha 1, loot dentro de muros) — el bitmask
+        /// de paredes cacheado para una columna cargada/vista, EXACTAMENTE el mismo dato
+        /// del que <see cref="GridChunkBuilder.BuildFromWalls"/> renderiza (sin segunda
+        /// fuente de verdad). false si este (cx,cz,layer) nunca llegó (no pedido aún, o
+        /// desalojado al descargar) — el llamador debe degradar con gracia, no asumir que
+        /// las paredes siempre se conocen.</summary>
+        public bool TryGetWalls(int cx, int cz, int layer, out byte[,] walls) =>
+            _wallsCache.TryGetValue((cx, cz, layer), out walls);
 
         // Instantiate one chunk from a tile-wall bitmask, parenting it under the streamer
         // ONLY once fully built so GridTestWorld's carve sees a complete chunk. Fase 5A:
