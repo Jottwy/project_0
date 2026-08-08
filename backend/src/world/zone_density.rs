@@ -195,6 +195,13 @@ fn rules_for_zone(zone_kind: u8, layer: u8) -> LayerRules {
     // un módulo hermano, no descendiente — no la alcanza. El tuple es el
     // mismo valor documentado y estable de "RoomType::Open siempre".
     rules.room_type_weights = (1.0, 0.0, 0.0);
+    // Override EXPLÍCITO, mismo motivo que `room_type_weights` arriba: la
+    // partición 2×2 (sesión de sub-regiones) puede sortear SealedRoom/
+    // CorridorSpine por cuadrante, incompatible con la retícula de pilares
+    // de PILLAR_HALL igual que el modo legacy. Si el perfil de capa base
+    // activa `subregion_grid` (layer 0 en producción), un chunk PILLAR_HALL
+    // lo heredaría sin querer — se fuerza a `false` aquí, no se mitiga.
+    rules.subregion_grid = false;
     rules
 }
 
@@ -293,6 +300,10 @@ mod tests {
                         (1.0, 0.0, 0.0),
                         "capa {layer}: PILLAR_HALL debe forzar RoomType::Open, heredó {:?} del perfil base",
                         rules.room_type_weights
+                    );
+                    assert!(
+                        !rules.subregion_grid,
+                        "capa {layer}: PILLAR_HALL debe forzar subregion_grid=false, heredó true del perfil base"
                     );
                 } else {
                     assert_eq!(
