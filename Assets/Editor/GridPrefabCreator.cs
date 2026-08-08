@@ -48,10 +48,11 @@ namespace BackroomsSurvival.EditorTools
             SavePrefab(BuildWall(wall), "Wall");
             SavePrefab(BuildPillar(pillar), "Pillar");
             SavePrefab(BuildVoidEdge(voidEdge), "VoidEdge");
+            SavePrefab(BuildOfficeWall(wall, pillar), "OfficeWall");
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
-            Debug.Log($"[GridPrefabCreator] 6 grid prefabs saved to {PrefabFolder}");
+            Debug.Log($"[GridPrefabCreator] 7 grid prefabs saved to {PrefabFolder}");
         }
 
         // ---- prefab builders -------------------------------------------------
@@ -106,6 +107,46 @@ namespace BackroomsSurvival.EditorTools
             Box("Cube", root, mat,
                 new Vector3(0, GridVisualConstants.CellHeight, 0),
                 new Vector3(GridVisualConstants.TileSize, 2f * GridVisualConstants.CellHeight, GridVisualConstants.WallThickness));
+            return root;
+        }
+
+        /// <summary>
+        /// ADR-035 — variante de pared de ZONE_OFFICE: tabique de despacho (antepecho macizo,
+        /// banda acristalada, cabecero). Se selecciona por (zone_kind, RoomType) desde
+        /// <c>LayerVisualConfig.wallVariantSets</c>, no reemplaza al panel de siempre.
+        ///
+        /// CONTRATO (doc-comment de <c>WallVariant</c>): 5 m × 4 m × 0.2 m con el PIVOTE EN EL
+        /// SUELO, igual que Wall.prefab. Se respeta pieza a pieza — el conjunto ocupa
+        /// exactamente 0..4 m en Y y ±TileSize/2 en X. Romperlo no lanza ningún error: escala
+        /// mal los knee walls y los dinteles, que dividen por esa altura de 4 m hardcodeada.
+        ///
+        /// La banda acristalada es un HUECO REAL en la malla, no un material transparente: el
+        /// panel lleva collider de caja por bounds (<c>AddColliderIfMissing</c>), así que un
+        /// cristal no cambiaría la colisión y sí costaría una pasada de transparencias.
+        /// Dejar el hueco da la lectura de tabique de oficina y mantiene el panel opaco al
+        /// paso, que es lo que el backend dice de esa arista.
+        /// </summary>
+        private static GameObject BuildOfficeWall(Material panelMat, Material trimMat)
+        {
+            const float H = 2f * GridVisualConstants.CellHeight;   // 4 m
+            const float W = GridVisualConstants.TileSize;          // 5 m
+            const float T = GridVisualConstants.WallThickness;     // 0.2 m
+
+            const float SillTop = 1.1f;   // antepecho: por debajo de la vista
+            const float HeadFrom = 2.3f;  // cabecero: arranca por encima de la cabeza (1.8)
+
+            var root = new GameObject("OfficeWall");
+            // Antepecho macizo, del suelo a SillTop.
+            Box("Sill", root, panelMat, new Vector3(0f, SillTop * 0.5f, 0f), new Vector3(W, SillTop, T));
+            // Cabecero, de HeadFrom al techo.
+            Box("Head", root, panelMat,
+                new Vector3(0f, (HeadFrom + H) * 0.5f, 0f), new Vector3(W, H - HeadFrom, T));
+            // Montantes: los dos extremos y uno central, que cierran la banda por los lados y
+            // son lo que de verdad lee como "tabique modular" y no como ventana.
+            float bandY = (SillTop + HeadFrom) * 0.5f;
+            float bandH = HeadFrom - SillTop;
+            foreach (float x in new[] { -W * 0.5f + 0.08f, 0f, W * 0.5f - 0.08f })
+                Box("Mullion", root, trimMat, new Vector3(x, bandY, 0f), new Vector3(0.16f, bandH, T));
             return root;
         }
 

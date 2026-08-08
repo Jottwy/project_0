@@ -44,6 +44,76 @@ namespace BackroomsSurvival.Tests
             _cfg = null;
         }
 
+        /// <summary>Espejo de `ZONE_OFFICE` (backend/src/world/chunk/surface_profiles.rs).</summary>
+        private const int ZoneOffice = 12;
+
+        [Test]
+        public void Layer0AuthorsAWallModelForSealedOfficeRoomsOnly()
+        {
+            var layer0 = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(layer0);
+
+            // La variante se autoriza SOLO para los despachos sellados: son los 31 paneles
+            // que delimitan sala en un chunk OFFICE medido. Los ~51 paneles Open son pasillo
+            // del maze y tienen que seguir con el papel amarillo, o la zona entera cambia de
+            // aspecto y deja de leerse como "hay oficinas DENTRO del Vestíbulo".
+            Assert.IsNotNull(layer0.WallPrefabFor(ZoneOffice, RoomZoneKind.SealedRoom, 0.5f),
+                "layer 0 no autoriza modelo de pared para los despachos de OFFICE");
+            Assert.IsNull(layer0.WallPrefabFor(ZoneOffice, RoomZoneKind.Open, 0.5f),
+                "el modelo de oficina se está aplicando también al pasillo");
+            Assert.IsNull(layer0.WallPrefabFor(0, RoomZoneKind.SealedRoom, 0.5f),
+                "el modelo de oficina se está aplicando a salas selladas de OTRAS zonas");
+            // Zona aún desconocida (ZoneRegistry sin responder): nunca casa un set específico.
+            Assert.IsNull(layer0.WallPrefabFor(-1, RoomZoneKind.SealedRoom, 0.5f));
+        }
+
+        [Test]
+        public void TheOfficeWallPrefabRespectsThePanelGeometryContract()
+        {
+            var prefab = Resources.Load<GameObject>("GridPrefabs/OfficeWall");
+            Assert.IsNotNull(prefab, "falta Resources/GridPrefabs/OfficeWall — regenéralo con " +
+                                     "el menú Backrooms ▸ Create Grid Prefabs");
+
+            var go = Object.Instantiate(prefab);
+            _stubPrefabs.Add(go);
+
+            var renderers = go.GetComponentsInChildren<Renderer>();
+            Assert.IsNotEmpty(renderers);
+            Bounds b = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++) b.Encapsulate(renderers[i].bounds);
+
+            // CONTRATO de WallVariant, cuya violación NO lanza: knee walls y dinteles escalan
+            // contra una altura de 4 m hardcodeada y el pivote en el suelo. Un panel más alto,
+            // más bajo o centrado los rompe en silencio — de ahí que esto se asierte y no se
+            // confíe en la revisión visual.
+            Assert.AreEqual(0f, b.min.y, 0.01f, "el pivote del panel no está en el suelo");
+            Assert.AreEqual(2f * GridVisualConstants.CellHeight, b.max.y, 0.01f,
+                "el panel no mide 4 m de alto");
+            Assert.AreEqual(GridVisualConstants.TileSize, b.size.x, 0.01f,
+                "el panel no mide 5 m de ancho");
+            Assert.LessOrEqual(b.size.z, GridVisualConstants.WallThickness + 0.01f,
+                "el panel es más grueso que Wall.prefab: asomaría en el tile vecino");
+
+            // La banda es un hueco REAL, y es lo que distingue el tabique de una pared lisa:
+            // a la altura de los ojos el panel tiene que estar mayormente abierto.
+            //
+            // Se mide ANCHO OCLUIDO, no "nada en el centro". La primera versión de este
+            // assert exigía que no hubiera malla en |x| < 0.5 y falló — contra el montante
+            // CENTRAL, que es parte legítima de un tabique modular. Aquel aserto confundía
+            // una decisión de autoría (cuántos montantes y dónde) con la propiedad que de
+            // verdad importa (se ve a través). Reformulado, no relajado: con la banda tapada
+            // entera seguiría fallando.
+            float occluded = 0f;
+            foreach (var r in renderers)
+                if (r.bounds.min.y < 1.65f && r.bounds.max.y > 1.65f)
+                    occluded += r.bounds.size.x;
+            Assert.Less(occluded, GridVisualConstants.TileSize * 0.25f,
+                $"a la altura de los ojos hay {occluded:F2} m de {GridVisualConstants.TileSize} m " +
+                "ocluidos: el panel se lee como pared, no como tabique");
+            Assert.Greater(occluded, 0f,
+                "no hay ni un montante cruzando la banda: es un vano, no un tabique");
+        }
+
         private static byte[,] EmptyWalls() => new byte[Tiles, Tiles];
 
         /// <summary>
