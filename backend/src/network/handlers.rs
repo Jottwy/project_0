@@ -673,6 +673,10 @@ impl NetworkManager {
         // Add the host as a peer.
         let host_peer = PeerConnection::new(sender_id, "Host".to_string(), from_addr);
         self.peers.insert(sender_id, host_peer);
+        // ADR-056: remember WHICH peer that is, so a later `PeerDisconnected` can tell the host
+        // falling over from any other peer leaving. Set here and nowhere else — this is the one
+        // place a joiner learns the host's identity first-hand.
+        self.host_peer_id = Some(sender_id);
         info!(
             "MPTRACE step=F event=joiner_register_host self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
             self.local_id,

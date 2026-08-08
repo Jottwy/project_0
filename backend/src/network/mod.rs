@@ -220,6 +220,16 @@ pub struct NetworkManager {
     /// Exists so player-file resolution (which needs `world_seed` + `identity_key` together, see
     /// `game_loop::run`) can poll a plain field instead of inferring the moment from an event.
     pub world_seed_known: bool,
+    /// ADR-056: which peer is the host, from this backend's point of view. `None` on the host
+    /// itself (it IS the host — nobody to point at) and on a joiner until its `HandshakeAck`
+    /// arrives, where `handle_handshake_ack` fills it in with the same `sender_id` it registers
+    /// as the host peer.
+    ///
+    /// Same shape and same reason as `world_seed_known` above: `PeerDisconnected` has to answer
+    /// "was that the host?" and the host's id is only implicit today (peer `1` by convention,
+    /// spelled as a literal in ~15 call sites that an earlier audit asked NOT to grow). A plain
+    /// field lets the handler compare instead of hardcoding a sixteenth.
+    pub host_peer_id: Option<PeerId>,
     /// P0-2: density multiplier for the phantom population draw. Same shape as `world_seed` —
     /// read once from env at boot (or from a loaded save, which wins), travels in the
     /// HandshakeAck, and the joiner adopts the host's value. Defaults to 1.0 (no scaling) so
@@ -294,6 +304,7 @@ impl NetworkManager {
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
             world_seed_known: is_host,
+            host_peer_id: None,
             phantom_density_scale: 1.0,
             global_sequence: 0,
             local_name: format!("Player{local_id}"),
