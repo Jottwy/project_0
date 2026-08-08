@@ -620,6 +620,11 @@ pub async fn run(
                                 Err(e) => warn!("ADR-045: player save-on-shutdown failed: {e}"),
                             }
                         }
+                        // ADR-056: tell the peers before vanishing. Last thing before the exit,
+                        // after both saves, so a slow or failing send can never cost us the
+                        // persistence this path exists for. Peers that miss it still notice on
+                        // the 5 s heartbeat timeout — this only makes the common case immediate.
+                        sync::broadcast_goodbye(&net, "clean_shutdown").await;
                         std::process::exit(0);
                     }
                     // ADR-045 Fase 1: the client's own identity key, session-transient (never

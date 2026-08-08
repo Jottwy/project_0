@@ -18,8 +18,8 @@ use crate::world::World;
 use log::info;
 
 use super::protocol::{
-    AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketPayload, PeerInfo,
-    SessionConfig, StabilizerInfo,
+    encode_packet, AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketHeader,
+    PacketPayload, PeerInfo, SessionConfig, StabilizerInfo,
 };
 use super::NetworkManager;
 use super::PeerId;
@@ -505,6 +505,31 @@ pub async fn broadcast_chunk_teleport(
         new_seed,
     };
     net.broadcast_unreliable(&payload).await;
+}
+
+/// ADR-056: say goodbye before this process exits, so peers act on the departure NOW instead
+/// of waiting out the 5 s heartbeat timeout (`peer::HEARTBEAT_TIMEOUT`). No new packet type —
+/// `PacketPayload::Disconnect` and its receiver (`handlers.rs`, which purges peer state and
+/// raises `PeerDisconnected`) have existed since the baseline; only the "session full" rejection
+/// ever sent one. Nothing on the wire changes shape, so there is no schema bump on the P2P side.
+///
+/// Sent raw rather than with `send_reliable`, matching the rejection path: the caller exits
+/// immediately afterwards, so nothing would ever process an ACK or a retransmit — queueing it as
+/// reliable would just drop it in a queue that dies with the process. A lost goodbye therefore
+/// degrades to exactly today's behavior (the peer notices on heartbeat timeout), which is what
+/// keeps this safe to send unreliably.
+///
+/// Not gated on `is_host`: a joiner leaving cleanly is worth announcing too, and the host has
+/// handled inbound `Disconnect` since the baseline.
+pub async fn broadcast_goodbye(net: &NetworkManager, reason: &str) {
+    let payload = PacketPayload::Disconnect {
+        reason: reason.into(),
+    };
+    let header = PacketHeader::new(payload.type_code(), net.local_id, 0, net.timestamp());
+    let data = encode_packet(&header, &payload);
+    for (_, addr) in net.broadcast_destinations() {
+        net.send_datagram(&data, addr, "goodbye").await;
+    }
 }
 
 /// Broadcast anchor placement to all peers (reliable — replicated critical data).

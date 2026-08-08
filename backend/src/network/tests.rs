@@ -166,6 +166,120 @@ async fn handshake_ack_marks_world_seed_known_for_the_joiner() {
     );
 }
 
+/// ADR-056: the starting value of `host_peer_id` for both roles. A host points at nobody (it IS
+/// the host); a joiner does not know the host's peer id until the `HandshakeAck` arrives. Same
+/// shape as `world_seed_known` above, and pinned for the same reason: `PeerDisconnected` polls
+/// this plain field instead of hardcoding peer `1`.
+#[tokio::test]
+async fn host_peer_id_starts_none_for_both_roles() {
+    let host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    assert!(
+        host.host_peer_id.is_none(),
+        "the host has no host peer to point at"
+    );
+
+    let joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(
+        joiner.host_peer_id.is_none(),
+        "a joiner does not know the host's peer id until the HandshakeAck arrives"
+    );
+}
+
+/// Over real sockets: after a full handshake the joiner must know WHICH peer is the host, and it
+/// must be the same peer it registered — that identity is what lets a later disconnect be told
+/// apart from any other peer leaving.
+#[tokio::test]
+async fn handshake_ack_records_the_host_peer_id_for_the_joiner() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(joiner.host_peer_id.is_none());
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    let host_id = joiner
+        .host_peer_id
+        .expect("host_peer_id must be set once the HandshakeAck is processed");
+    assert!(
+        joiner.peers.contains_key(&host_id),
+        "the recorded host id must be a peer the joiner actually tracks"
+    );
+    assert!(
+        host.host_peer_id.is_none(),
+        "the host itself never records one, even after peers connect"
+    );
+}
+
+/// ADR-056: the goodbye reaches peers as a real `Disconnect`, so they act on the departure
+/// immediately instead of waiting out the 5 s heartbeat timeout. Uses real sockets because the
+/// point of the test is that the datagram is on the wire BEFORE the sender would exit — nothing
+/// re-sends it later.
+#[tokio::test]
+async fn goodbye_broadcast_disconnects_peers_without_waiting_for_timeout() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+    assert_eq!(
+        joiner.peer_count(),
+        1,
+        "joiner should be connected to start"
+    );
+
+    super::sync::broadcast_goodbye(&host, "clean_shutdown").await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let events = joiner.process_incoming().await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::PeerDisconnected { reason, .. } if reason == "clean_shutdown"
+        )),
+        "the goodbye must raise PeerDisconnected carrying its reason, got: {events:?}"
+    );
+    assert_eq!(
+        joiner.peer_count(),
+        0,
+        "and the departing peer must be gone, not merely reported"
+    );
+}
+
+/// The goodbye must never be addressed to a phantom (ADR-016/043): their `addr` is an inert
+/// loopback port and every datagram aimed at one poisons the sender's socket on Windows. It
+/// reuses `broadcast_destinations`, and this pins that it keeps doing so.
+#[tokio::test]
+async fn goodbye_destinations_exclude_phantoms() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_id = 2;
+    host.peers.insert(
+        real_id,
+        PeerConnection::new(real_id, "Joiner".into(), "127.0.0.1:9999".parse().unwrap()),
+    );
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 0.0, 0.0]);
+
+    let dests = host.broadcast_destinations();
+    assert!(
+        dests.iter().any(|(id, _)| *id == real_id),
+        "the real peer must be addressed"
+    );
+    assert!(
+        !dests.iter().any(|(id, _)| *id == phantom_id),
+        "a phantom must never be addressed by the goodbye"
+    );
+}
+
 // ADR-028 Fase E: the corpse relay's three network hops over real sockets —
 // (1) joiner → host CorpseSpawnRequest (reliable), (2) host → all CorpseList
 // broadcast (mirror), (3) host → requester CorpseTakeResult (reliable) surfacing
