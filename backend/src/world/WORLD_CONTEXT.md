@@ -141,7 +141,11 @@ World::generate_initial_structures(owner_id)
 - `stabilized=true` → 95% chance the stabilizer blocks the teleport.
 - `anchored=true` → never teleports.
 - On teleport: chunk gets a new random `seed`, entities/items regenerated.
-- Emits `GameEvent { event_type: "chunk_teleported" }`.
+- Returns one `TeleportOutcome` per displacement: the `GameEvent
+  { event_type: "chunk_teleported" }` for the local client, plus `old_pos`/`new_pos`/
+  `new_seed` for the P2P broadcast. The seed is a field and not something to read back
+  out of the event JSON — the event only carries what the client needs, and rebuilding
+  the broadcast from it is how `new_seed` used to reach peers as a hardcoded 0.
 
 Timer range: `config.teleport_interval` (default 120–600 seconds).
 
