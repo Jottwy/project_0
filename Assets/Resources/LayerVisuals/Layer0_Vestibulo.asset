@@ -70,6 +70,8 @@ MonoBehaviour:
   zonePropSets:
   - zoneKind: 12
     anyZoneKind: 0
+    densityScale: 2.2
+    maxPropsPerChunk: 44
     props:
     - prefab: {fileID: 0}
       placeholderType: partition

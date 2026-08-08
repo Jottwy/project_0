@@ -210,6 +210,42 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void AnUnauthoredZoneKeepsTheLayerDensityAndCap()
+        {
+            var cfg = Config();
+            // Sin set: no hay override, así que la colocación usa propDensity y el tope
+            // global tal cual — el comportamiento anterior a esta pieza.
+            Assert.IsFalse(cfg.TryGetZonePropSet(ZoneOffice, out _));
+
+            // Y un set con densidad/tope a 0 (el default de un elemento recién añadido desde
+            // el Inspector) tampoco debe cambiar nada: 0 significa "sin autorar", no
+            // "densidad cero" — que dejaría la zona pelada sin ningún aviso.
+            cfg.zonePropSets = new[]
+            {
+                new ZonePropSet { zoneKind = ZoneOffice, props = OfficeProps() },
+            };
+            Assert.IsTrue(cfg.TryGetZonePropSet(ZoneOffice, out var set));
+            Assert.AreEqual(0f, set.densityScale);
+            Assert.AreEqual(0, set.maxPropsPerChunk);
+        }
+
+        [Test]
+        public void Layer0RaisesTheOfficePropCapAboveTheGlobalOne()
+        {
+            // El hallazgo del playtest: el tope global es de 12 para TODO el chunk, así que
+            // repartido entre 4 despachos más el maze deja ~3 objetos en una sala de 10×10 m.
+            // Sin subirlo, autorizar el catálogo no se nota.
+            var layer0 = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(layer0);
+            Assert.IsTrue(layer0.TryGetZonePropSet(ZoneOffice, out var office),
+                "layer 0 no autoriza set de OFFICE");
+            Assert.Greater(office.maxPropsPerChunk, 12,
+                "el tope de OFFICE no supera el global: los despachos seguirán medio vacíos");
+            Assert.Greater(office.densityScale, 1f,
+                "OFFICE no sube la densidad respecto a la capa");
+        }
+
+        [Test]
         public void PropsForTreatsAnEmptyAuthoredSetAsUnfinishedNotAsNoProps()
         {
             var cfg = Config();

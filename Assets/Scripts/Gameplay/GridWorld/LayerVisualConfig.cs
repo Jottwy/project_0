@@ -79,19 +79,33 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// per-LAYER only and nothing but the tint, the wall model and the loot table could vary
         /// by zone. Deliberately NOT a 13-row matrix — an unauthored zone must cost nothing.
         /// </summary>
-        public PropEntry[] PropsFor(int zoneKind)
+        public PropEntry[] PropsFor(int zoneKind) =>
+            TryGetZonePropSet(zoneKind, out var set) ? set.props : props;
+
+        /// <summary>
+        /// El <see cref="ZonePropSet"/> que gobierna <paramref name="zoneKind"/>, si hay uno
+        /// autorado Y con catálogo. Existe aparte de <see cref="PropsFor"/> porque la
+        /// colocación necesita también su densidad y su tope, y resolver la lista tres veces
+        /// recorrería `zonePropSets` tres veces por chunk.
+        ///
+        /// Un set autorado pero con `props` VACÍO no cuenta como coincidencia: significa que
+        /// el autor no terminó de rellenarlo, no "esta zona va pelada". En ese caso se sigue
+        /// buscando y, si nada más casa, manda el catálogo de capa — con su densidad y su
+        /// tope, no con los del set a medias.
+        /// </summary>
+        public bool TryGetZonePropSet(int zoneKind, out ZonePropSet match)
         {
-            if (zonePropSets == null) return props;
+            match = default;
+            if (zonePropSets == null) return false;
             for (int i = 0; i < zonePropSets.Length; i++)
             {
                 if (!zonePropSets[i].Matches(zoneKind)) continue;
                 var set = zonePropSets[i].props;
-                // Un set autorado pero VACÍO no significa "sin props": significa que el autor
-                // no terminó de rellenarlo. Cae al catálogo de capa en vez de dejar la zona
-                // pelada sin ningún aviso.
-                if (set != null && set.Length > 0) return set;
+                if (set == null || set.Length == 0) continue;
+                match = zonePropSets[i];
+                return true;
             }
-            return props;
+            return false;
         }
 
         [Header("Per-tile tint palette (Pieza C)")]
@@ -326,6 +340,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         [Tooltip("Catálogo de props de esta zona, con sus pesos. Vacío ⇒ se usa el de la capa.")]
         public PropEntry[] props;
+
+        [Tooltip("Multiplica propDensity SOLO en esta zona. 0 (el default de un elemento " +
+                 "recién añadido) ⇒ sin cambio, igual que 1.")]
+        public float densityScale;
+
+        [Tooltip("Tope de props por chunk en esta zona. 0 (el default de un elemento recién " +
+                 "añadido) ⇒ se usa el tope global de la capa.")]
+        public int maxPropsPerChunk;
 
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/>. Un −1 ("zona aún
         /// desconocida") no casa con ningún set específico, porque −1 no es un zone_kind válido;
