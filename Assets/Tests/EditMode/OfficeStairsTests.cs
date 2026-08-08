@@ -48,7 +48,21 @@ namespace BackroomsSurvival.Tests
         private GameObject BuildStairs(float yaw = 0f)
         {
             _root = new GameObject("StairHost");
-            return OfficeStairs.Build(_root.transform, null, Color.white, Vector3.zero, yaw);
+            var stairs = OfficeStairs.Build(_root.transform, null, Color.white, Vector3.zero, yaw);
+            // OBLIGATORIO, y el motivo por el que dos asserts de esta clase fallaron en la
+            // primera pasada REAL de Test Runner mientras otros dos pasaban en falso:
+            // `Collider.bounds` NO se deriva del transform, lo devuelve PhysX, y PhysX solo
+            // se entera de un cambio de transform cuando algo llama a `Physics.SyncTransforms`
+            // (automático antes de cada FixedUpdate en Play Mode; en EditMode no corre nadie).
+            // Sin esto, todo `BoxCollider` recién creado por `CreatePrimitive` seguía
+            // reportando el cubo unitario en el origen: bounds `[-0.5, 0.5]`. De ahí el
+            // "salto de 0.500 m" y la "superficie a 0.5" del primer informe — números que no
+            // existen en la geometría real. Los dos asserts que SÍ pasaban lo hacían por el
+            // mismo motivo equivocado (`min.y == -0.5 <= 0` y `size.x == 1.0 > 0.9`).
+            // `Renderer.bounds` no tiene este problema, por eso los tests basados en él
+            // pasaron desde el principio.
+            Physics.SyncTransforms();
+            return stairs;
         }
 
         private static RoomZoneMsg Zone(byte x0, byte z0, byte x1, byte z1, byte kind = 1) =>

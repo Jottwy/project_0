@@ -21,6 +21,9 @@ namespace BackroomsSurvival.Tests
     public class ChunkLootRollTests
     {
         private const long Seed = 7778;
+        /// <summary>Espejo de `ZONE_OFFICE`, el último zone_kind
+        /// (backend/src/world/chunk/surface_profiles.rs).</summary>
+        private const int ZoneOffice = 12;
         // Every pre-Pieza-3 test below exercises the PURE roll mechanics independent of zone —
         // using the NORMAL/default profile everywhere keeps their asserted behaviour numerically
         // identical to the flat pre-Pieza-3 constants (see ZoneLootProfile.Default's doc-comment).
@@ -237,11 +240,16 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void DefaultZoneLootProfiles_HasTwelveEntries_AndNormalMatchesTheSharedDefault()
+        public void DefaultZoneLootProfiles_CoverEveryZoneKind_AndNormalMatchesTheSharedDefault()
         {
-            // 12 ZONE_* constants in backend/src/world/chunk/surface_profiles.rs (0=Normal..11=Pit).
+            // 13 ZONE_* constants in backend/src/world/chunk/surface_profiles.rs
+            // (0=Normal..12=Office). El conteo se afirma contra ZONE_OFFICE + 1 y no contra un
+            // literal a propósito: este assert ya se quedó obsoleto UNA vez —al añadir
+            // ZONE_OFFICE— y el nombre del test llevaba el número dentro, así que el fallo
+            // pedía renombrar además de corregir. Anclado al último zone_kind, un futuro
+            // ZONE_13 rompe el test por el motivo correcto en vez de por aritmética.
             var profiles = ChunkLootRoll.DefaultZoneLootProfiles();
-            Assert.AreEqual(12, profiles.Length);
+            Assert.AreEqual(ZoneOffice + 1, profiles.Length);
 
             // Entry 0 (NORMAL) must keep the exact pre-Pieza-3 numbers via ZoneLootProfile.Default
             // (the ~83%-of-the-world default zone keeps today's already-playtested feel).
