@@ -97,6 +97,34 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
+        public void Layer0ActuallyAuthorsTheOfficePropCatalogue()
+        {
+            // La lección de la primera corrida en juego: tener el MECANISMO no es tenerlo
+            // CABLEADO. `zonePropSets` + `PropsFor` estaban implementados y con 8 tests en
+            // verde, y un chunk OFFICE seguía saliendo con los props genéricos de la capa
+            // porque ningún asset autorizaba un catálogo — exactamente lo que
+            // `PropsForFallsBackToTheLayerCatalogueWhenNothingIsAuthored` documenta y
+            // aprueba. Este test es el que distingue "cae bien al de capa" de "nadie lo
+            // autorizó todavía".
+            var layer0 = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(layer0, "no se cargó Resources/LayerVisuals/Layer0_Vestibulo");
+
+            var office = layer0.PropsFor(ZoneOffice);
+            Assert.AreNotSame(layer0.props, office,
+                "layer 0 no autoriza catálogo de props para OFFICE: un chunk de oficina se " +
+                "amueblaría con los props genéricos de la capa");
+
+            var types = new System.Collections.Generic.List<string>();
+            foreach (var p in office) types.Add(p.placeholderType);
+            CollectionAssert.Contains(types, "partition", "el catálogo de OFFICE no lleva mamparas");
+            CollectionAssert.Contains(types, "filecab", "el catálogo de OFFICE no lleva archivadores");
+
+            float total = 0f;
+            foreach (var p in office) total += Mathf.Max(0f, p.spawnWeight);
+            Assert.Greater(total, 0f, "todos los pesos del catálogo de OFFICE son 0: no saldría nada");
+        }
+
+        [Test]
         public void TheSerializedZoneLootTableCoversEveryZoneKind()
         {
             var table = Resources.Load<ZoneLootTable>("Loot/ZoneLootTable");
