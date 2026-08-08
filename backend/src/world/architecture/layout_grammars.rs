@@ -9,8 +9,8 @@
 
 use crate::utils::ChunkPos;
 use crate::world::chunk::{
-    ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER, ZONE_HUMID, ZONE_MANILA, ZONE_OPEN_HALL,
-    ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED, ZONE_SAFE, ZONE_STORAGE,
+    ZONE_BLACKOUT, ZONE_CLEANING, ZONE_DANGER, ZONE_HUMID, ZONE_MANILA, ZONE_OFFICE,
+    ZONE_OPEN_HALL, ZONE_PILLAR_HALL, ZONE_PIT, ZONE_RED, ZONE_SAFE, ZONE_STORAGE,
 };
 
 use crate::world::chunk::{
@@ -59,6 +59,7 @@ pub fn template_zone_kind(template_id: u8) -> u8 {
         TEMPLATE_CLEANING_AREA => ZONE_CLEANING,
         TEMPLATE_RED_ROOM_WARNING => ZONE_RED,
         TEMPLATE_PIT_ROOM_PLACEHOLDER => ZONE_PIT,
+        TEMPLATE_OFFICE => ZONE_OFFICE,
         TEMPLATE_POI_LANDMARK => ZONE_OPEN_HALL,
         TEMPLATE_POI_ANOMALY => ZONE_NORMAL,
         TEMPLATE_POI_DANGER_POCKET => ZONE_DANGER,
@@ -91,6 +92,12 @@ pub const TEMPLATE_POI_LANDMARK: u8 = 18;
 pub const TEMPLATE_POI_ANOMALY: u8 = 19;
 pub const TEMPLATE_POI_DANGER_POCKET: u8 = 20;
 pub const TEMPLATE_POI_SAFE_POCKET: u8 = 21;
+/// Planta de oficinas (`ZONE_OFFICE`). Añadido después de los 22 originales;
+/// su banda del sorteo de expansión se talla en `generate_chunk_layer`
+/// (`world::generator`) y en su espejo `zone_density::expansion_template_id`,
+/// que deben editarse SIEMPRE juntos — `resolver_matches_real_world_zone_kind`
+/// falla si divergen.
+pub const TEMPLATE_OFFICE: u8 = 22;
 
 pub const TEMPLATE_OPEN_COLUMN_ROOM: u8 = TEMPLATE_OPEN_HALL;
 pub const TEMPLATE_CLOSED_ROOM: u8 = TEMPLATE_ARCH_ROOM;
@@ -100,7 +107,7 @@ pub const TEMPLATE_OVERLIT_ZONE: u8 = TEMPLATE_MANILA_ROOM;
 pub const TEMPLATE_FALSE_RETURN: u8 = TEMPLATE_RED_ROOM_WARNING;
 pub const TEMPLATE_VERTICAL_ANOMALY: u8 = TEMPLATE_PIT_ROOM_PLACEHOLDER;
 
-pub const TEMPLATE_COUNT: u8 = 22;
+pub const TEMPLATE_COUNT: u8 = 23;
 
 // ─────────────────────────────────────────────────────────────
 // Helpers de celdas
@@ -531,6 +538,13 @@ pub fn grammar_for_template(template_id: u8, _rotation: u16) -> LayoutGrammarTyp
         19 => LayoutGrammarType::PoiAnomaly,
         20 => LayoutGrammarType::PoiDangerPocket,
         21 => LayoutGrammarType::PoiSafePocket,
+        // TEMPLATE_OFFICE — `MazePocket` ejecuta `g_office_maze`, la gramática
+        // legacy que YA existía con ese nombre y que produce cubículos. Se
+        // reutiliza en vez de escribir una nueva: este layout solo alimenta al
+        // mundo LEGACY (`world::generator` → colisión XZ del jugador), no a la
+        // geometría que se renderiza (`grid_gen`), que sale del perfil de
+        // `zone_density::rules_for_zone`.
+        22 => LayoutGrammarType::MazePocket, // TEMPLATE_OFFICE
         _ => LayoutGrammarType::RoomCluster,
     }
 }
@@ -663,7 +677,7 @@ mod tests {
 
     #[test]
     fn all_templates_generate_nonpanic() {
-        for template_id in 0..22 {
+        for template_id in 0..TEMPLATE_COUNT {
             let layout = generate_layout_from_template(template_id, 0);
             assert_eq!(
                 layout.cells.len(),
@@ -676,7 +690,7 @@ mod tests {
 
     #[test]
     fn templates_have_nonzero_cells() {
-        for template_id in 0..22 {
+        for template_id in 0..TEMPLATE_COUNT {
             let layout = generate_layout_from_template(template_id, 0);
             let walkable_count = layout
                 .cells
@@ -725,6 +739,56 @@ mod tests {
                 "template {}: expected CELL_HAZARD cells",
                 template_id
             );
+        }
+    }
+
+    /// OFFICE — paso 1 (gate INERTE). El template y la zona existen y se
+    /// resuelven, pero NINGÚN sorteo los emite todavía: el flip de la banda
+    /// del `gen_range(0..100)` es un commit posterior. Este test fija las dos
+    /// mitades para que el flip no pueda aterrizar a medias.
+    #[test]
+    fn office_template_maps_to_office_zone_and_has_a_grammar() {
+        assert_eq!(TEMPLATE_OFFICE, 22);
+        assert_eq!(ZONE_OFFICE, 12);
+        assert_eq!(template_zone_kind(TEMPLATE_OFFICE), ZONE_OFFICE);
+        assert_eq!(TEMPLATE_COUNT, TEMPLATE_OFFICE + 1);
+        // Arm EXPLÍCITO, no el `_ => RoomCluster` de fallback: si alguien borra
+        // el brazo 22, este assert lo caza en vez de degradar en silencio.
+        assert_eq!(
+            grammar_for_template(TEMPLATE_OFFICE, 0),
+            LayoutGrammarType::MazePocket
+        );
+        let layout = generate_layout_from_template(TEMPLATE_OFFICE, 0);
+        assert_eq!(layout.zone_kind, ZONE_OFFICE);
+        assert!(
+            layout.cells.iter().any(|c| *c & CELL_WALKABLE != 0),
+            "TEMPLATE_OFFICE produjo un layout legacy sin una sola celda transitable"
+        );
+    }
+
+    /// El gate sigue INERTE: el sorteo de expansión no devuelve
+    /// `TEMPLATE_OFFICE` en ningún chunk del barrido. Se invierte en el commit
+    /// del flip.
+    ///
+    /// GUARDA DE REGRESIÓN, NO LA PRUEBA DE INERCIA. La prueba real es
+    /// ESTRUCTURAL y no cabe en un assert: el `match rng.gen_range(0..100u32)`
+    /// de `generate_chunk_layer` cubre 0..=99 con brazos explícitos más
+    /// `_ => TEMPLATE_DEAD_END`, y `generator.rs` ni siquiera importa
+    /// `TEMPLATE_OFFICE`. Este barrido finito (4 seeds × 289 chunks, layer 0)
+    /// solo avisaría si el flip aterrizara a medias.
+    #[test]
+    fn office_is_not_reachable_from_the_expansion_lottery_yet() {
+        use crate::world::generator::generate_chunk_layer;
+        for seed in [42u64, 7778, 1, 9_999_999] {
+            for cx in -8..=8 {
+                for cz in -8..=8 {
+                    assert_ne!(
+                        generate_chunk_layer(seed, (cx, cz), 0).template_id,
+                        TEMPLATE_OFFICE,
+                        "seed {seed} chunk ({cx},{cz}): OFFICE ya se sortea, el gate dejó de ser inerte"
+                    );
+                }
+            }
         }
     }
 }
