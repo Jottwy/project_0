@@ -301,6 +301,11 @@ namespace BackroomsSurvival.Net
 
             try
             {
+                // A previous handle (e.g. a caller that launches again without going through
+                // KillBackend/Shutdown first) would otherwise leak its native handle here —
+                // Dispose() only releases OUR wrapper, it does not touch whatever OS process it
+                // pointed at.
+                _backendProcess?.Dispose();
                 _backendProcess = Process.Start(psi);
                 _backendProcess.EnableRaisingEvents = true;
                 _backendProcess.Exited += OnBackendExited;
