@@ -124,6 +124,7 @@ namespace BackroomsSurvival.Net
             LastEffectiveRole = autoSolo ? "autosolo" : "host";
             LastConnectTo = "<none>";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
+            ArmSessionEndHandler();
 
             var env = new Dictionary<string, string>
             {
@@ -174,6 +175,7 @@ namespace BackroomsSurvival.Net
             LastEffectiveRole = "joiner";
             LastConnectTo = $"{serverIP}:{serverNetPort}";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
+            ArmSessionEndHandler();
 
             var env = new Dictionary<string, string>
             {
@@ -626,6 +628,20 @@ namespace BackroomsSurvival.Net
         private static void AddIpcAddressEnv(Dictionary<string, string> env, string address, int port)
         {
             env["IPC_ADDR"] = $"{address}:{port}";
+        }
+
+        // ADR-056: a new session is starting, so clear SessionEndHandler's once-per-session latch.
+        // The latch is set on the first session_ended and cleared only on the paths where the
+        // teardown FAILED — on the successful path it stays set, which is what stops the duplicate
+        // event (goodbye packet AND heartbeat timeout) from killing a session that already replaced
+        // the dead one. The handler sits on this same DontDestroyOnLoad object, so nothing else
+        // clears it: without this call, session-end works exactly once per process.
+        // Paired with ConfigureIpcClient — both undo a piece of the previous session's teardown.
+        private void ArmSessionEndHandler()
+        {
+            var handler = GetComponent<SessionEndHandler>();
+            if (handler != null)
+                handler.ResetForNewSession();
         }
 
         private static void ConfigureIpcClient(string address, int localIpcPort)
