@@ -1901,3 +1901,144 @@ fn walls_and_rooms_matches_plain_walls_bitmask() {
         }
     }
 }
+
+// ── Partición intra-chunk 2×2 (`subregion_grid`, sesión de sub-regiones) ─────
+
+/// Perfil de laboratorio para `subregion_grid`: clona layer 0 y activa el
+/// modo con el MISMO par (tamaño, presencia) que la sesión decidió activar
+/// en producción — 6×6, presencia 0.75 por cuadrante. `room_type_weights`
+/// hereda el 50/30/20 ya vigente en `LAYER_PROFILES[0]`, así que estos tests
+/// ejercitan exactamente la configuración real, no un caso de laboratorio
+/// aparte.
+use super::generator::QUADRANT_CUT;
+
+fn subregion_test_profile() -> LayerRules {
+    let mut r = LAYER_PROFILES[0].clone();
+    r.subregion_grid = true;
+    r.subregion_presence = 0.75;
+    r.open_zone_size_x = Some(6);
+    r.open_zone_size_z = Some(6);
+    r
+}
+
+/// `true` si los rects `a` y `b` (`x0,z0,x1,z1` exclusivos) se solapan.
+fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    let (ax0, az0, ax1, az1) = a;
+    let (bx0, bz0, bx1, bz1) = b;
+    ax0 < bx1 && bx0 < ax1 && az0 < bz1 && bz0 < az1
+}
+
+/// (A2-1) Anti-solape POR CONSTRUCCIÓN, no por rechazo: sobre una muestra
+/// grande de (seed, chunk), cada `RoomZone` cae entera en la banda LOW
+/// (`x1 <= QUADRANT_CUT`) o HIGH (`x0 >= QUADRANT_CUT + 2`) en CADA eje —
+/// nunca cruza el corte —, origen y tamaño son pares, y ningún par de rects
+/// se solapa. Verifica la geometría real emitida, no solo que
+/// `subregion_origin_slots` esté bien escrito.
+#[test]
+fn subregion_zones_are_disjoint_and_buffered_by_construction() {
+    let rules = subregion_test_profile();
+    let chunks: [(i32, i32); 4] = [(3, -7), (0, 0), (12, 5), (-4, 9)];
+
+    for seed in 0..64u64 {
+        for &chunk in &chunks {
+            let out = generate_layer(&rules, seed, chunk, 0, &[]);
+            let rects: Vec<(i32, i32, i32, i32)> = out
+                .room_zones
+                .iter()
+                .map(|z| (z.x0 as i32, z.z0 as i32, z.x1 as i32, z.z1 as i32))
+                .collect();
+
+            for &(x0, z0, x1, z1) in &rects {
+                assert_eq!(x0 % 2, 0, "seed {seed} chunk {chunk:?}: x0={x0} impar");
+                assert_eq!(z0 % 2, 0, "seed {seed} chunk {chunk:?}: z0={z0} impar");
+                assert_eq!(x1 % 2, 0, "seed {seed} chunk {chunk:?}: x1={x1} impar");
+                assert_eq!(z1 % 2, 0, "seed {seed} chunk {chunk:?}: z1={z1} impar");
+
+                let x_banded = x1 <= QUADRANT_CUT || x0 >= QUADRANT_CUT + 2;
+                let z_banded = z1 <= QUADRANT_CUT || z0 >= QUADRANT_CUT + 2;
+                assert!(
+                    x_banded,
+                    "seed {seed} chunk {chunk:?}: rect ({x0},{z0},{x1},{z1}) cruza el corte en X"
+                );
+                assert!(
+                    z_banded,
+                    "seed {seed} chunk {chunk:?}: rect ({x0},{z0},{x1},{z1}) cruza el corte en Z"
+                );
+            }
+
+            for i in 0..rects.len() {
+                for j in (i + 1)..rects.len() {
+                    assert!(
+                        !rects_overlap(rects[i], rects[j]),
+                        "seed {seed} chunk {chunk:?}: rects {:?} y {:?} se solapan",
+                        rects[i],
+                        rects[j]
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// (A2-2) `room_zones` reporta entradas bien formadas de extremo a extremo:
+/// como mucho 4 (una por cuadrante), `kind` siempre en `{0,1,2}`, y sobre la
+/// muestra aparecen tanto chunks con las 4 sub-regiones presentes como
+/// chunks con menos — confirma que el draw de `subregion_presence` de verdad
+/// puede saltarse un cuadrante (no solo que el código compile con él).
+#[test]
+fn subregion_room_zones_report_expected_entries_with_valid_kinds() {
+    let rules = subregion_test_profile();
+    let mut saw_four = false;
+    let mut saw_fewer = false;
+
+    for seed in 0..64u64 {
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        assert!(
+            out.room_zones.len() <= 4,
+            "seed {seed}: {} RoomZones, nunca deberían pasar de 4",
+            out.room_zones.len()
+        );
+        for z in &out.room_zones {
+            assert!(
+                z.kind <= 2,
+                "seed {seed}: kind {} fuera de {{0,1,2}}",
+                z.kind
+            );
+        }
+        match out.room_zones.len() {
+            4 => saw_four = true,
+            0..=3 => saw_fewer = true,
+            _ => unreachable!(),
+        }
+    }
+
+    assert!(
+        saw_four,
+        "ninguna de las 64 seeds dio las 4 sub-regiones presentes"
+    );
+    assert!(saw_fewer, "ninguna de las 64 seeds dejó un cuadrante vacío (subregion_presence no se está ejerciendo)");
+}
+
+/// (A2-3) Fase 5 (`is_zone_connected`/`connect_zone_to_maze`) y el pase de
+/// reparación siguen cumpliendo su invariante con 4 zonas en vez de 1: cada
+/// `RoomZone` estampada por `stamp_subregion_grid` tiene, en el grid FINAL
+/// (post Fase 7), al menos un vecino transitable fuera de sus propios
+/// límites.
+#[test]
+fn subregion_zones_all_connected_after_repair() {
+    let rules = subregion_test_profile();
+    let chunks: [(i32, i32); 3] = [(3, -7), (0, 0), (-4, 9)];
+
+    for seed in 0..32u64 {
+        for &chunk in &chunks {
+            let out = generate_layer(&rules, seed, chunk, 0, &[]);
+            for z in &out.room_zones {
+                let (x0, z0, x1, z1) = (z.x0 as i32, z.z0 as i32, z.x1 as i32, z.z1 as i32);
+                assert!(
+                    is_zone_connected(&out.grid, x0, z0, x1, z1),
+                    "seed {seed} chunk {chunk:?}: zona ({x0},{z0},{x1},{z1}) quedó incomunicada tras reparación"
+                );
+            }
+        }
+    }
+}
