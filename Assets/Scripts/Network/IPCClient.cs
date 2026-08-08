@@ -76,6 +76,26 @@ namespace BackroomsSurvival.Net
         private volatile bool _connected;
         public bool IsConnected => _connected;
 
+        private volatile int _connectionEpoch;
+
+        /// <summary>
+        /// Incremented once per TCP connection established, for the life of the process. Lets a
+        /// send-once-per-connection reporter tell "the socket I already sent on" apart from "a
+        /// socket I have not sent on yet" — which, across a second session, is a DIFFERENT backend
+        /// process with none of the state the first one had (see PlayerIdentity, whose
+        /// `set_identity` a new backend must receive or it never resolves a player file).
+        ///
+        /// A monotonic counter, deliberately not a disconnect event or an <see cref="IsConnected"/>
+        /// transition: a reader polling from Update() can miss a false→true flip that happens
+        /// entirely inside one long frame (scene loads, exactly when sessions change), but it can
+        /// never miss a number that already changed and stays changed. Also nothing to subscribe
+        /// to, so no callback-ordering assumption against the Host/Join teardown path.
+        ///
+        /// Written by the network thread, read from the main thread — single writer, so `volatile`
+        /// is enough without Interlocked.
+        /// </summary>
+        public int ConnectionEpoch => _connectionEpoch;
+
         public readonly ConcurrentQueue<GameEventMsg> Events = new ConcurrentQueue<GameEventMsg>();
 
         /// <summary>
@@ -330,9 +350,13 @@ namespace BackroomsSurvival.Net
                         _client = client;
                         _stream = client.GetStream();
                     }
+                    // Bumped BEFORE _connected, never after: a main-thread reader that sees
+                    // IsConnected==true must already see this connection's epoch, or it would
+                    // send on the new socket while still recording the old epoch as "done".
+                    _connectionEpoch++;
                     _connected = true;
                     _hasConnectedOnce = true;
-                    Debug.Log($"[IPCClient] Connected to {serverAddress}:{port}");
+                    Debug.Log($"[IPCClient] Connected to {serverAddress}:{port} (epoch {_connectionEpoch})");
 
                     ReadFrames(_stream);
                 }

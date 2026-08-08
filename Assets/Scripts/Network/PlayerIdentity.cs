@@ -18,10 +18,20 @@ namespace BackroomsSurvival.Net
     /// está presente, esa es la clave que se manda, sin acuñar ni leer GUID.
     ///
     /// Self-bootstraps; sin dependencia del rig del personaje (la identidad no necesita que el
-    /// personaje exista, a diferencia de InventoryReporter). Envía una sola vez por proceso: no
-    /// se reenvía si el IPC se desconecta y reconecta (ver <see cref="_sent"/>) — asume que el
-    /// backend que responde es el mismo proceso y conserva su <c>identity_key</c> en memoria
-    /// entre conexiones, no que ha reiniciado.
+    /// personaje exista, a diferencia de InventoryReporter). Envía una vez por CONEXIÓN IPC, no
+    /// una vez por proceso: el latch es <see cref="IPCClient.ConnectionEpoch"/>, no un bool.
+    ///
+    /// El motivo es la SEGUNDA sesión. Este GameObject es DontDestroyOnLoad y
+    /// <see cref="ResetStatics"/> solo corre en SubsystemRegistration, así que sobrevive al
+    /// volver al menú — pero el backend NO: Host/Join lanza un proceso nuevo, con
+    /// <c>player.identity_key = None</c>. Con un latch de proceso ese backend nuevo nunca
+    /// recibía <c>set_identity</c>, la resolución del fichero de jugador (game_loop.rs, gated en
+    /// `identity_key`) nunca corría, y la sesión entera se jugaba sin hidratación, sin autosave
+    /// y sin save-on-quit — en silencio, porque nada falla, simplemente no ocurre.
+    ///
+    /// Reenviar en una reconexión al MISMO backend es inofensivo (el handler de
+    /// <c>set_identity</c> es idempotente: reasigna la misma clave y sigue) y esa es la razón de
+    /// gatear en el epoch y no en "¿es un backend nuevo?", que el cliente no puede saber.
     ///
     /// El override de <see cref="IdentityEnvVar"/> se manda tal cual: aquí no se valida el
     /// namespace "uuid:" (ADR-045 punto 2) porque el contrato real del backend es aceptar
@@ -33,13 +43,17 @@ namespace BackroomsSurvival.Net
         private const string GuidPrefKey = "identity.guid";
 
         private static PlayerIdentity _instance;
+        private static string _cachedKey;
 
-        private bool _sent;
+        /// <summary>Epoch de la conexión en la que ya se envió la identidad. 0 = ninguna, y
+        /// <see cref="IPCClient.ConnectionEpoch"/> empieza en 1 en su primera conexión.</summary>
+        private int _sentEpoch;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
         {
             _instance = null;
+            _cachedKey = null;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -66,29 +80,44 @@ namespace BackroomsSurvival.Net
 
         private void Update()
         {
-            if (_sent)
-                return;
-
             if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
                 return;
 
-            _sent = ipc.SendSetIdentity(ResolveKey());
-            if (_sent)
-                Debug.Log("[PlayerIdentity] identity sent to backend");
+            // Read once: the network thread can bump the epoch between the guard and the send,
+            // and recording the value we actually sent on is what keeps the retry correct.
+            int epoch = ipc.ConnectionEpoch;
+            if (epoch == _sentEpoch)
+                return;
+
+            if (!ipc.SendSetIdentity(ResolveKey()))
+                return;
+
+            _sentEpoch = epoch;
+            Debug.Log($"[PlayerIdentity] identity sent to backend (connection epoch {epoch})");
         }
 
+        /// <summary>
+        /// Resuelve la clave una vez y la cachea: la identidad no cambia durante el proceso, y
+        /// ahora hay más de una llamada (una por conexión, más los reintentos mientras el socket
+        /// no acepta el frame). Sin la caché, cada reintento reharía la lectura de PlayerPrefs y
+        /// repetiría el log de resolución en bucle.
+        /// </summary>
         private static string ResolveKey()
         {
+            if (_cachedKey != null)
+                return _cachedKey;
+
             string envOverride = Environment.GetEnvironmentVariable(IdentityEnvVar);
             if (!string.IsNullOrWhiteSpace(envOverride))
             {
                 Debug.Log($"[PlayerIdentity] resolved from env override {IdentityEnvVar}, prefix={KeyPrefix(envOverride)}");
-                return envOverride;
+                _cachedKey = envOverride;
+                return _cachedKey;
             }
 
-            string key = "uuid:" + ResolveOrCreateGuid();
-            Debug.Log($"[PlayerIdentity] resolved from PlayerPrefs, prefix={KeyPrefix(key)}");
-            return key;
+            _cachedKey = "uuid:" + ResolveOrCreateGuid();
+            Debug.Log($"[PlayerIdentity] resolved from PlayerPrefs, prefix={KeyPrefix(_cachedKey)}");
+            return _cachedKey;
         }
 
         /// <summary>Primeros caracteres de una clave para logging — nunca la clave entera (es
