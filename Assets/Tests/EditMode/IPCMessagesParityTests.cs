@@ -955,6 +955,77 @@ namespace BackroomsSurvival.Tests
             Assert.IsNull(e.data);
         }
 
+        // ── SessionEndHandler.ReadReason (ADR-056) ───────────────────────────
+        //
+        // El evento `session_ended` decide si el joiner se va al menu, y su `reason` es lo unico
+        // que distingue "el host cerro" de "el host se cayo". Mismo motivo que la tanda de abajo:
+        // se decodifican bytes msgpack REALES con el shape exacto que emite game_loop.rs, no un
+        // arbol fabricado a mano — asumir el tipo del payload sin comprobarlo contra el decoder
+        // real es exactamente lo que dejo `inventory_restored` roto el 100% de las veces.
+
+        [Test]
+        public void SessionEndHandler_ReadReason_DecodesRealBackendPayload()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("session_ended");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("reason"); w.WriteString("heartbeat timeout");
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.AreEqual("session_ended", e.eventType);
+            Assert.AreEqual("heartbeat timeout", SessionEndHandler.ReadReason(e),
+                "el reason viaja verbatim desde el PeerDisconnected del backend");
+        }
+
+        [Test]
+        public void SessionEndHandler_ReadReason_CleanShutdownIsDistinguishable()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("session_ended");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("reason"); w.WriteString("clean_shutdown");
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.AreEqual("clean_shutdown", SessionEndHandler.ReadReason(e));
+        }
+
+        [Test]
+        public void SessionEndHandler_ReadReason_MissingOrNilDataFallsBackWithoutThrowing()
+        {
+            // Un backend anterior a v24 no emite el evento, pero un payload sin `reason` (o nil)
+            // no debe tirar una excepcion dentro del listener: el fin de sesion importa mas que
+            // el motivo, asi que degrada a "unknown" y sigue.
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("session_ended");
+            w.WriteString("data"); w.WriteNil();
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.IsNull(e.data);
+            Assert.AreEqual("unknown", SessionEndHandler.ReadReason(e));
+
+            var w2 = new MsgPackWriter();
+            w2.WriteMapHeader(3);
+            w2.WriteString("type"); w2.WriteString("event");
+            w2.WriteString("event_type"); w2.WriteString("session_ended");
+            w2.WriteString("data"); w2.WriteMapHeader(0);
+
+            var (reader2, remaining2) = OpenTaggedFrame(w2.ToArray(), "event");
+            var e2 = GameEventMsg.Parse(reader2, remaining2);
+            Assert.AreEqual("unknown", SessionEndHandler.ReadReason(e2));
+        }
+
         // ── InventoryRestorer.ParseStacks (ADR-045) ──────────────────────────
         //
         // Fija el bug real de playtest: MsgPackReader.ReadValue() materializa un array msgpack

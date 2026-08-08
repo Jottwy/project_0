@@ -67,6 +67,13 @@ namespace BackroomsSurvival.Net
 
             ipcPort = ReadIntEnv("IPC_PORT", ipcPort);
             netPort = ReadIntEnv("NET_PORT", netPort);
+
+            // ADR-056: the session-end listener lives on this same DontDestroyOnLoad object, so
+            // it exists exactly once and survives the trip back to the menu. Added here rather
+            // than placed in a scene because both entry points (NetworkMenuBootstrap from the
+            // menu, GameBootstrap from the gameplay scene) build this object in code.
+            if (GetComponent<SessionEndHandler>() == null)
+                gameObject.AddComponent<SessionEndHandler>();
         }
 
         public void StartAsHost(string playerName, int worldSeed = 42)

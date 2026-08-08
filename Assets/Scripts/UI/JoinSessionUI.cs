@@ -179,6 +179,31 @@ namespace BackroomsSurvival.UI
         public void SetGameplayScene(string sceneName) => _gameplayScene = sceneName;
 
         /// <summary>
+        /// ADR-056: the session is over — make this component usable for a NEW one. Resets
+        /// fields ONLY; the component and its GameObject must survive.
+        ///
+        /// Why the survival matters: the env-var auto-connect (SESSION_MODE / CONNECT_TO) lives
+        /// in <see cref="Start"/>, which runs once per component. This one lives on the
+        /// DontDestroyOnLoad "NetworkSession" object, and NetworkMenuBootstrap.ShowConnectPanel
+        /// early-returns when it finds an existing instance instead of adding another — so going
+        /// back to the menu cannot re-fire the auto-connect. Destroying this component (or its
+        /// object) would break exactly that: the next ShowConnectPanel would build a fresh
+        /// instance whose Start() auto-connects again, looping, and taking the multi-instance
+        /// playtest harness down with it.
+        ///
+        /// _loadingGameplay is the one that actually blocks a second session: it latches true on
+        /// the first CreateGame and TryLoadGameplayScene early-returns on it forever. _state and
+        /// the panel's visibility are left to Update(), which already flips to Disconnected and
+        /// re-shows the panel once the IPC connection drops.
+        /// </summary>
+        public void ResetForNewSession()
+        {
+            _loadingGameplay = false;
+            _state = PanelState.Disconnected;
+            Debug.Log("[JoinSessionUI] Session state reset — ready for a new session");
+        }
+
+        /// <summary>
         /// Connection succeeded. From the menu (any scene that is NOT the gameplay scene)
         /// this loads the gameplay scene via STP's LevelManager — the connection persists
         /// because IPCClient/NetworkInitializer are DontDestroyOnLoad. Once already in the
