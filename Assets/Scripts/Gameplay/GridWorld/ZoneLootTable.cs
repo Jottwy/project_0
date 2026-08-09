@@ -5,7 +5,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 {
     /// <summary>
     /// Pieza 3 — per-zone loot profile table, one <see cref="ZoneLootProfile"/> per
-    /// zone_kind (backend/src/world/chunk/surface_profiles.rs ZONE_* constants, indices 0-11).
+    /// zone_kind (backend/src/world/chunk/surface_profiles.rs ZONE_* constants, indices 0-12).
     /// Consumed by <see cref="Net.ChunkLootManager"/>, which resolves a chunk's zone_kind via
     /// <see cref="ZoneRegistry"/> and looks up the matching profile here before calling
     /// <see cref="ChunkLootRoll.RollItems"/>/<see cref="ChunkLootRoll.RollCarryables"/>.
@@ -24,12 +24,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     [CreateAssetMenu(menuName = "Backrooms/Zone Loot Table", fileName = "ZoneLootTable")]
     public sealed class ZoneLootTable : ScriptableObject
     {
-        [Tooltip("One profile per zone_kind, index 0-11 (ZONE_NORMAL..ZONE_PIT — backend/src/world/" +
-                 "chunk/surface_profiles.rs). Index out of range or a null/short array falls back " +
-                 "to entry 0 (ZONE_NORMAL's profile).")]
+        [Tooltip("One profile per zone_kind, index 0-12 (ZONE_NORMAL..ZONE_OFFICE — backend/src/" +
+                 "world/chunk/surface_profiles.rs). CLAMPED, not wrapped: a null/empty array " +
+                 "falls back to ZONE_NORMAL's profile, but an array that is merely TOO SHORT " +
+                 "silently serves its LAST entry to every higher zone_kind. Adding a zone_kind " +
+                 "in Rust means adding a row HERE too, in this asset — the C# default only " +
+                 "applies to an asset that has never been serialized.")]
         public ZoneLootProfile[] profiles = ChunkLootRoll.DefaultZoneLootProfiles();
 
-        /// <summary>Bounds-safe lookup; out-of-range or unconfigured falls back to profile 0 (NORMAL).</summary>
+        /// <summary>Bounds-safe lookup. A null/empty array falls back to profile 0 (NORMAL); an
+        /// out-of-range index is CLAMPED, so a short array serves its last entry — see the
+        /// tooltip on <see cref="profiles"/>, this is a silent-degradation trap, not a fallback.</summary>
         public ZoneLootProfile Profile(int zoneKind)
         {
             if (profiles == null || profiles.Length == 0)

@@ -96,17 +96,18 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// El frame de pose a 30 Hz. 19 campos ⇒ cabecera map16 (`de 0013`), NO fixmap: es el
+        /// El frame de pose a 30 Hz. 21 campos ⇒ cabecera map16 (`de 0015`), NO fixmap: es el
         /// único frame del cliente que cruza esa frontera, y desalinear ahí es exactamente el
         /// modo de fallo del bug histórico de `crouch` (rmp_serde descarta la cola en silencio).
         ///
-        /// GOLDEN REGENERADO dos veces: ADR-042 (16 → 18, `light_on` + `fire_seq`) y ADR-044
-        /// (18 → 19, `melee_seq`). STATE.md exige que romper un golden sea DELIBERADO Y DOCUMENTADO:
-        /// lo está, en las "Consecuencias" de ambos ADRs. Cada valor se acuñó con un arnés headless
-        /// contra el `MsgPack.cs` REAL del repo, y el arnés reprodujo primero los goldens ANTERIORES
-        /// byte a byte (len 238 / 0x66588337895127b0 y len 258 / 0x30f307f1c05701f0) antes de emitir
-        /// el nuevo — sin esa comprobación previa, una constante nueva sólo dice que el writer
-        /// coincide consigo mismo.
+        /// GOLDEN REGENERADO tres veces: ADR-042 (16 → 18, `light_on` + `fire_seq`), ADR-044
+        /// (18 → 19, `melee_seq`) y ADR-049 (19 → 21, `carry_def` + `carry_count`). STATE.md exige
+        /// que romper un golden sea DELIBERADO Y DOCUMENTADO: lo está, en las "Consecuencias" de
+        /// los tres ADRs. Cada valor se acuñó con un arnés headless contra el `MsgPack.cs` REAL del
+        /// repo, y el arnés reprodujo primero los goldens ANTERIORES byte a byte (len 238 /
+        /// 0x66588337895127b0, len 258 / 0x30f307f1c05701f0 y len 269 / 0xff1bd09a3c966ee6) antes
+        /// de emitir el nuevo — sin esa comprobación previa, una constante nueva sólo dice que el
+        /// writer coincide consigo mismo.
         ///
         /// OJO con `buttons`: ADR-044 le da significado (bits de apuntar/recargar) pero aquí se deja
         /// en 0 A PROPÓSITO, para que el único delta contra el golden de ADR-042 sea el campo nuevo.
@@ -116,7 +117,7 @@ namespace BackroomsSurvival.Tests
         public void PlayerInputFrameBytesAreStableAndUseMap16Header()
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(19);
+            w.WriteMapHeader(21);
             w.WriteString("type"); w.WriteString("input");
             w.WriteString("movement"); w.WriteArrayHeader(3);
             w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
@@ -240,6 +241,23 @@ namespace BackroomsSurvival.Tests
             AssertGolden("report_damage", w, 68,
                 "83a474797065a6616374696f6eab616374696f6e5f74797065ad7265706f72745f64616d6167" +
                 "65a46461746182a6616d6f756e74ca41480000a56361757365a446616c6c");
+        }
+
+        /// <summary>ADR-045 Fase 1: no invoca IPCClient.SendSetIdentity — mismo hueco conocido y
+        /// aceptado que el resto de la familia Send*, ver la nota al principio del fichero.</summary>
+        [Test]
+        public void SetIdentityFrameBytesAreStable()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("action");
+            w.WriteString("action_type"); w.WriteString("set_identity");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("key"); w.WriteString("uuid:abc-123");
+
+            AssertGolden("set_identity", w, 61,
+                "83a474797065a6616374696f6eab616374696f6e5f74797065ac7365745f6964656e74697479" +
+                "a46461746181a36b6579ac757569643a6162632d313233");
         }
 
         /// <summary>Array anidado de mapas de 2 campos + item ids NEGATIVOS (DataIdReference).</summary>

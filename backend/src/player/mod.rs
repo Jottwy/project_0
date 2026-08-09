@@ -4,4 +4,4 @@ pub mod inventory;
 pub mod session;
 pub mod stats;
 
-pub use session::Player;
+pub use session::{InventoryStackV2, Player};

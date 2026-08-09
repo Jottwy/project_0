@@ -67,6 +67,58 @@ MonoBehaviour:
     floorOnly: 0
   propDensity: 0.18
   propClusterBias: 0.3
+  zonePropSets:
+  - zoneKind: 12
+    anyZoneKind: 0
+    densityScale: 2.2
+    maxPropsPerChunk: 96
+    propsPerTile: 3
+    props:
+    - prefab: {fileID: 0}
+      placeholderType: partition
+      spawnWeight: 5
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: filecab
+      spawnWeight: 3
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: desk
+      spawnWeight: 3
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: chair
+      spawnWeight: 2
+      canBeRotated: 1
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: paper
+      spawnWeight: 2
+      canBeRotated: 1
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: monitor
+      spawnWeight: 4
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: boxes
+      spawnWeight: 3
+      canBeRotated: 1
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: plant
+      spawnWeight: 2
+      canBeRotated: 1
+      floorOnly: 1
+    - prefab: {fileID: 0}
+      placeholderType: whiteboard
+      spawnWeight: 1
+      canBeRotated: 0
+      floorOnly: 1
   floorTintVariants:
   - {r: 0.82, g: 0.74, b: 0.51, a: 1}
   - {r: 0.78, g: 0.71, b: 0.5, a: 1}
@@ -80,10 +132,18 @@ MonoBehaviour:
   - {r: 0.88, g: 0.88, b: 0.82, a: 1}
   - {r: 0.85, g: 0.85, b: 0.79, a: 1}
   - {r: 0.9, g: 0.9, b: 0.85, a: 1}
-  wallPanelVariety: 0
-  kneeWallHeight: 0
+  wallPanelVariety: 0.08
+  kneeWallHeight: 1.35
   lintelChance: 0.12
   lintelClearance: 2.2
+  wallVariantSets:
+  - zoneKind: 12
+    anyZoneKind: 0
+    roomType: 1
+    anyRoomType: 0
+    variants:
+    - prefab: {fileID: 3019090243915002323, guid: e4e4b4d9f1d811a45bf1b3b5beec3469, type: 3}
+      weight: 1
   zoneTints:
   - {r: 1, g: 1, b: 1, a: 1}
   - {r: 1, g: 0.85, b: 0.6, a: 1}
@@ -97,3 +157,4 @@ MonoBehaviour:
   - {r: 0.9, g: 1, b: 1, a: 1}
   - {r: 1, g: 0.35, b: 0.35, a: 1}
   - {r: 0.35, g: 0.25, b: 0.35, a: 1}
+  - {r: 0.82, g: 0.86, b: 0.8, a: 1}

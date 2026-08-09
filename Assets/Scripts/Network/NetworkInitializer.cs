@@ -67,6 +67,13 @@ namespace BackroomsSurvival.Net
 
             ipcPort = ReadIntEnv("IPC_PORT", ipcPort);
             netPort = ReadIntEnv("NET_PORT", netPort);
+
+            // ADR-056: the session-end listener lives on this same DontDestroyOnLoad object, so
+            // it exists exactly once and survives the trip back to the menu. Added here rather
+            // than placed in a scene because both entry points (NetworkMenuBootstrap from the
+            // menu, GameBootstrap from the gameplay scene) build this object in code.
+            if (GetComponent<SessionEndHandler>() == null)
+                gameObject.AddComponent<SessionEndHandler>();
         }
 
         public void StartAsHost(string playerName, int worldSeed = 42)
@@ -117,6 +124,7 @@ namespace BackroomsSurvival.Net
             LastEffectiveRole = autoSolo ? "autosolo" : "host";
             LastConnectTo = "<none>";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
+            ArmSessionEndHandler();
 
             var env = new Dictionary<string, string>
             {
@@ -145,7 +153,7 @@ namespace BackroomsSurvival.Net
                 autoSolo ? "autosolo" : "host",
                 true,
                 config.DefaultIpcOccupied,
-                null);
+                env);
 
             if (!LaunchBackendProcess(env))
                 return;
@@ -167,6 +175,7 @@ namespace BackroomsSurvival.Net
             LastEffectiveRole = "joiner";
             LastConnectTo = $"{serverIP}:{serverNetPort}";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
+            ArmSessionEndHandler();
 
             var env = new Dictionary<string, string>
             {
@@ -189,7 +198,7 @@ namespace BackroomsSurvival.Net
                 "joiner",
                 false,
                 config.DefaultIpcOccupied,
-                $"{serverIP}:{serverNetPort}");
+                env);
 
             if (!LaunchBackendProcess(env))
                 return;
@@ -197,6 +206,62 @@ namespace BackroomsSurvival.Net
             IPCClient.Instance?.StartClient();
             _waitingForBackend = true;
             _startupTimer = 0f;
+        }
+
+        /// <summary>
+        /// OS-level environment variables the child backend process needs regardless of role,
+        /// verified empirically against <c>backrooms_server.exe</c> rather than guessed:
+        /// launching it with a fully stripped <see cref="ProcessStartInfo.EnvironmentVariables"/>
+        /// fails with "Failed to bind P2P UDP socket: os error 10106" (WSAEPROVIDERFAILEDINIT —
+        /// Winsock cannot initialize) before either socket binds; adding ONLY <c>SystemRoot</c>
+        /// (no PATH, no TEMP) was sufficient for a full startup — both sockets bound, IPC
+        /// listening, world generated. Nothing else is in this list on purpose: every other
+        /// variable the backend reads (IPC_PORT, NET_PORT, WORLD_SEED, CONNECT_TO, ...) is
+        /// explicit application config, declared per-launch by the caller — never inherited.
+        /// </summary>
+        private static readonly string[] EssentialPassthroughEnvKeys = { "SystemRoot" };
+
+        /// <summary>
+        /// Builds the CLOSED set of environment variables the child backend process receives:
+        /// exactly <paramref name="declared"/> (the per-launch app config built by StartAsHost/
+        /// StartAsJoiner) plus <see cref="EssentialPassthroughEnvKeys"/>, read from
+        /// <paramref name="parentEnvReader"/> ONLY when <paramref name="declared"/> doesn't
+        /// already set that key. Nothing else survives.
+        ///
+        /// This exists because <see cref="ProcessStartInfo.EnvironmentVariables"/> starts
+        /// pre-populated with a COPY of Unity's own process environment — assigning keys into it
+        /// (the old code) only ever ADDS or OVERWRITES, it can never remove. A key Unity's own
+        /// process happened to carry (e.g. <c>CONNECT_TO</c>, left over from THIS SAME Unity
+        /// process having joined a previous session) rode along into every later launch that
+        /// didn't explicitly declare it — a Host launch silently inherited a joiner's
+        /// <c>CONNECT_TO</c> and the backend started as a joiner instead, with <c>is_host=false</c>
+        /// silently disabling world load/save/lock and per-player persistence, no error anywhere.
+        ///
+        /// Pure and testable without spawning a process: <paramref name="parentEnvReader"/> is
+        /// injected so a test can simulate a poisoned parent environment without touching the
+        /// real one. Comparisons are ordinal-ignore-case, matching how Windows itself treats
+        /// environment variable names.
+        ///
+        /// Public rather than private so the EditMode suite can reach it directly: the
+        /// compile-check builds each assembly with a <c>_check</c> suffix, so an
+        /// <c>InternalsVisibleTo</c> friend name never matches — same reason
+        /// <c>InventoryRestorer.ParseStacks</c>/<c>SessionEndHandler.ReadReason</c> are public.
+        /// </summary>
+        public static Dictionary<string, string> BuildChildEnvironment(
+            IDictionary<string, string> declared,
+            Func<string, string> parentEnvReader)
+        {
+            var result = new Dictionary<string, string>(declared, StringComparer.OrdinalIgnoreCase);
+            foreach (string key in EssentialPassthroughEnvKeys)
+            {
+                if (result.ContainsKey(key))
+                    continue; // an explicitly declared value always wins over the OS passthrough
+
+                string value = parentEnvReader(key);
+                if (!string.IsNullOrEmpty(value))
+                    result[key] = value;
+            }
+            return result;
         }
 
         private bool LaunchBackendProcess(Dictionary<string, string> env)
@@ -226,11 +291,23 @@ namespace BackroomsSurvival.Net
                 WorkingDirectory = Application.persistentDataPath,
             };
 
-            foreach (var kvp in env)
+            // Allowlist, not a blacklist of keys to remove: ProcessStartInfo.EnvironmentVariables
+            // starts pre-populated with Unity's OWN process environment, and assigning into it
+            // can only add/overwrite — Clear() first makes the child's env EXACTLY
+            // BuildChildEnvironment's result, no matter what Unity's process happens to carry.
+            // See that method's doc comment for the bug this fixes.
+            var childEnv = BuildChildEnvironment(env, Environment.GetEnvironmentVariable);
+            psi.EnvironmentVariables.Clear();
+            foreach (var kvp in childEnv)
                 psi.EnvironmentVariables[kvp.Key] = kvp.Value;
 
             try
             {
+                // A previous handle (e.g. a caller that launches again without going through
+                // KillBackend/Shutdown first) would otherwise leak its native handle here —
+                // Dispose() only releases OUR wrapper, it does not touch whatever OS process it
+                // pointed at.
+                _backendProcess?.Dispose();
                 _backendProcess = Process.Start(psi);
                 _backendProcess.EnableRaisingEvents = true;
                 _backendProcess.Exited += OnBackendExited;
@@ -553,6 +630,20 @@ namespace BackroomsSurvival.Net
             env["IPC_ADDR"] = $"{address}:{port}";
         }
 
+        // ADR-056: a new session is starting, so clear SessionEndHandler's once-per-session latch.
+        // The latch is set on the first session_ended and cleared only on the paths where the
+        // teardown FAILED — on the successful path it stays set, which is what stops the duplicate
+        // event (goodbye packet AND heartbeat timeout) from killing a session that already replaced
+        // the dead one. The handler sits on this same DontDestroyOnLoad object, so nothing else
+        // clears it: without this call, session-end works exactly once per process.
+        // Paired with ConfigureIpcClient — both undo a piece of the previous session's teardown.
+        private void ArmSessionEndHandler()
+        {
+            var handler = GetComponent<SessionEndHandler>();
+            if (handler != null)
+                handler.ResetForNewSession();
+        }
+
         private static void ConfigureIpcClient(string address, int localIpcPort)
         {
             var ipc = IPCClient.Instance;
@@ -581,9 +672,17 @@ namespace BackroomsSurvival.Net
             string roleName,
             bool autoHost,
             bool defaultIpcOccupied,
-            string connectTo)
+            IDictionary<string, string> env)
         {
-            string target = string.IsNullOrEmpty(connectTo) ? "<none>" : connectTo;
+            // Reads CONNECT_TO from `env` itself — the SAME dictionary LaunchBackendProcess turns
+            // into the child's environment via BuildChildEnvironment — instead of a
+            // separately-passed argument. A hand-passed value can drift from what actually ships:
+            // the Host call site used to hardcode `null` here regardless of what the child's real
+            // (Unity-inherited) environment carried, which is exactly what hid the CONNECT_TO leak
+            // this method's caller now guards against.
+            string target = env.TryGetValue("CONNECT_TO", out string connectTo) && !string.IsNullOrEmpty(connectTo)
+                ? connectTo
+                : "<none>";
             Debug.Log(
                 $"[NetworkInitializer] Launch config: SESSION_MODE={FormatNone(sessionMode)}, " +
                 $"IPC_ADDR={localIpcAddress}:{localIpcPort}, " +
@@ -654,19 +753,45 @@ namespace BackroomsSurvival.Net
         }
 
         // ADR-032: ask the backend to persist the world NOW (before we kill it). Best-effort — if
-        // the IPC stream is already down or this isn't a host, it's a harmless no-op and we fall
-        // through to the kill. The send is synchronous (IPCClient.SendFrame), so on success the
-        // frame is on the socket before we return. Uses TryGetInstance to bypass the quitting gate
-        // (Instance returns null once MarkQuitting has run during OnApplicationQuit).
+        // the IPC stream is already down or this isn't a host, it's a no-op and we fall through
+        // to the kill (the backend itself has an independent fallback for exactly that case —
+        // see the ADR-045 fix note below). The send is synchronous (IPCClient.SendFrame), so on
+        // success the frame is on the socket before we return. Uses TryGetInstance to bypass the
+        // quitting gate (Instance returns null once MarkQuitting has run during
+        // OnApplicationQuit).
+        //
+        // ADR-045 fix: this gate used to fail SILENTLY — no log at all when TryGetInstance
+        // returned false, which is exactly what happens if IPCClient's OWN OnApplicationQuit (a
+        // separate MonoBehaviour, no execution order between the two is guaranteed anywhere in
+        // this project) runs first and nulls its singleton before this one gets to ask for a
+        // save. Both failure branches below now log explicitly, so the next time this race wins,
+        // it leaves a trace instead of looking like it worked. The backend-side fallback
+        // (game_loop::run reacting to its own IPC disconnect) is the real fix for the race
+        // itself — this is the diagnosability half.
         private void TryRequestBackendSave()
         {
             try
             {
-                if (IPCClient.TryGetInstance(out var ipc) && ipc != null && ipc.IsConnected)
+                if (!IPCClient.TryGetInstance(out var ipc) || ipc == null)
                 {
-                    ipc.SendSaveAndShutdown();
-                    Debug.Log("[NetworkInitializer] ADR-032: requested backend save-on-quit");
+                    Debug.LogWarning(
+                        "[NetworkInitializer] ADR-045: no IPCClient instance at save-on-quit time " +
+                        "(likely its own OnApplicationQuit ran first) — skipping SendSaveAndShutdown, " +
+                        "relying on the backend's own disconnect-triggered save.");
+                    return;
                 }
+
+                if (!ipc.IsConnected)
+                {
+                    Debug.LogWarning(
+                        "[NetworkInitializer] ADR-045: IPCClient instance found but not connected at " +
+                        "save-on-quit time — skipping SendSaveAndShutdown, relying on the backend's own " +
+                        "disconnect-triggered save.");
+                    return;
+                }
+
+                ipc.SendSaveAndShutdown();
+                Debug.Log("[NetworkInitializer] ADR-032: requested backend save-on-quit");
             }
             catch (Exception e)
             {

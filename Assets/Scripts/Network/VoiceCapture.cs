@@ -232,6 +232,19 @@ namespace BackroomsSurvival.Net
         public static string ChannelName(int channel) =>
             channel == -1 ? "automático" : channel == -2 ? "mezcla" : "canal " + (channel + 1);
 
+        /// <summary>
+        /// Índice de un desplegable de canal → valor de <see cref="Channel"/>. El orden que fija
+        /// esta función es el contrato del desplegable: 0 automático, 1 mezcla, 2.. canal fijo.
+        ///
+        /// Vivía COPIADA en los dos paneles, cada uno además con su inversa a mano: cuatro copias
+        /// del mismo orden. Tocar una sin las otras deja el desplegable eligiendo un canal distinto
+        /// del que enseña, que es exactamente el fallo que no se ve hasta que alguien no se oye.
+        /// </summary>
+        public static int ChannelFromIndex(int index) => index == 0 ? -1 : index == 1 ? -2 : index - 2;
+
+        /// <summary>La inversa de <see cref="ChannelFromIndex"/>.</summary>
+        public static int IndexFromChannel(int channel) => channel == -1 ? 0 : channel == -2 ? 1 : channel + 2;
+
         public bool NoiseGate
         {
             get => _noiseGate;
@@ -371,8 +384,6 @@ namespace BackroomsSurvival.Net
             o.ToggleMicKey.SetValue((int)_toggleMicKey);
             o.Channel.SetValue(_channel);
         }
-
-
 
         // Auto-test (monitor local)
         private bool _selfTest;
@@ -569,7 +580,7 @@ namespace BackroomsSurvival.Net
             int ch = _channels;
             if (ch <= 1)
             {
-                System.Array.Copy(_interleaved, _capture, _inputFrameSamples);
+                Array.Copy(_interleaved, _capture, _inputFrameSamples);
                 return;
             }
 
@@ -590,11 +601,17 @@ namespace BackroomsSurvival.Net
                 }
                 else
                 {
+                    // El |v| del candidato actual se lleva en una variable: la version anterior lo
+                    // recalculaba DOS veces por canal y por muestra, y este es el bucle mas caliente
+                    // del componente (48.000 muestras por segundo y canal). Mismo resultado exacto,
+                    // incluidos los empates, que siguen quedandose con el canal de menor indice.
                     v = _interleaved[b];
+                    float mag = v < 0f ? -v : v;
                     for (int c = 1; c < ch; c++)
                     {
                         float s = _interleaved[b + c];
-                        if (s < 0f ? -s > (v < 0f ? -v : v) : s > (v < 0f ? -v : v)) v = s;
+                        float m = s < 0f ? -s : s;
+                        if (m > mag) { v = s; mag = m; }
                     }
                 }
                 _capture[i] = v;
@@ -643,6 +660,11 @@ namespace BackroomsSurvival.Net
 
             FillPcmFromCapture();
 
+            // ADR-052: la criatura te OYE sin entenderte. Se mide aquí porque aquí está el PCM ya
+            // hecho, así que el coste es un recorrido de la ventana que de todos modos vamos a
+            // codificar — cero captura extra, cero hilo extra.
+            ReportVoiceLoudness();
+
             // El formato del datagrama (cabecera de longitud por trama) vive en VoicePacket, que
             // es el mismo código que usa el reproductor para deshacerlo.
             int offset = _packetBytes;
@@ -686,6 +708,66 @@ namespace BackroomsSurvival.Net
                 _framesInPacket = 0;
                 _packetBytes = 0;
             }
+        }
+
+        // ── ADR-052: la voz como estímulo del robapieles ─────────────────────────────────────────
+        //
+        // El sistema de ruido de ADR-041 ya existe entero y no le importa de dónde salga el ruido:
+        // recibe una posición y un RADIO EN METROS y la criatura decide. Un disparo son 500 m. Esto
+        // solo añade otra fuente a ese mismo carril, así que hablar hereda gratis todo lo que ya
+        // hace un tiro: atrae de lejos, enfurece de cerca, y despierta a los que duermen.
+        //
+        // NO SE INTERPRETA NADA. No hay reconocimiento, no hay palabras, no sale audio del proceso:
+        // se mide la energía de la ventana que ya íbamos a codificar y se manda un número. Susurrar
+        // es seguro, hablar te ubica en una habitación, gritar te ubica en el pasillo entero.
+
+        /// RMS por debajo del cual no se reporta nada. Un micro abierto en una habitación en
+        /// silencio no puede ser un cebo permanente.
+        private const float VoiceNoiseFloor = 0.012f;
+        /// RMS a partir del cual se considera un grito (el techo de la escala).
+        private const float VoiceShoutRms = 0.28f;
+        /// Radio audible (m) de una voz normal, y de un grito. Muy por debajo de los 500 m de un
+        /// rifle A PROPÓSITO: la voz te ubica en tu zona, el disparo te ubica en el mapa.
+        private const float VoiceQuietRange = 14f;
+        private const float VoiceShoutRange = 45f;
+        /// Segundos entre reportes. La ventana de codificación es de milisegundos; sin esto se
+        /// mandarían decenas de estímulos por segundo por el mismo hecho de estar hablando.
+        private const float VoiceNoiseInterval = 0.6f;
+
+        private float _nextVoiceNoiseAt;
+
+        /// <summary>
+        /// Mide la energía de la ventana actual y, si pasa el suelo, la reporta como ruido.
+        /// Removible: borrar esta llamada deja el chat de voz exactamente como estaba.
+        /// </summary>
+        private void ReportVoiceLoudness()
+        {
+            if (_ipc == null || Time.unscaledTime < _nextVoiceNoiseAt)
+                return;
+
+            // RMS sobre la ventana ya convertida a PCM. `long` en el acumulador porque
+            // FrameSamples * short.MaxValue² desborda un int con holgura.
+            long sum = 0;
+            for (int i = 0; i < FrameSamples; i++)
+            {
+                int s = _pcm[i];
+                sum += (long)s * s;
+            }
+            float rms = Mathf.Sqrt((float)(sum / (double)FrameSamples)) / short.MaxValue;
+            if (rms < VoiceNoiseFloor)
+                return;
+
+            _nextVoiceNoiseAt = Time.unscaledTime + VoiceNoiseInterval;
+
+            float t = Mathf.InverseLerp(VoiceNoiseFloor, VoiceShoutRms, rms);
+            float range = Mathf.Lerp(VoiceQuietRange, VoiceShoutRange, t);
+
+            // La cámara ES la cabeza del jugador local, igual que en el agarre. Si todavía no hay
+            // cámara no hay a quién ubicar, así que no se reporta.
+            var cam = Camera.main;
+            if (cam == null)
+                return;
+            _ipc.SendReportNoise(cam.transform.position, range);
         }
 
         /// <summary>
@@ -761,7 +843,7 @@ namespace BackroomsSurvival.Net
             for (int i = 0; i < FrameSamples; i++)
             {
                 double src = i * ratio - 1.0; // -1: el índice 0 cae sobre la muestra de historia
-                int i0 = (int)System.Math.Floor(src);
+                int i0 = (int)Math.Floor(src);
                 float frac = (float)(src - i0);
                 float a = SampleAt(i0);
                 float b = SampleAt(i0 + 1);

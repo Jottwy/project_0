@@ -812,6 +812,14 @@ mod tests {
     /// `world::zone_density::tests::render_and_phantom_agree_on_pillar_hall`.
     fn pillar_hall_like_rules(_seed: u64, _cx: i32, _cz: i32, layer: u8) -> LayerRules {
         let mut rules = LAYER_PROFILES[(layer as usize).min(LAYER_PROFILES.len() - 1)].clone();
+        // Camino legacy (`num_open_zones` zonas) — no la partición 2×2 de
+        // producción de layer 0. Mismo override que el resolutor real
+        // (`zone_density.rs::rules_for_zone` para `ZONE_PILLAR_HALL`): sin
+        // esto, layer 0 heredaría `subregion_grid=true` e ignoraría
+        // `num_open_zones`/`open_zone_size`, dejando `pillar_chance` sin
+        // efecto (el test que compara contra el perfil plano dejaría de
+        // ejercer nada).
+        rules.subregion_grid = false;
         rules.num_open_zones = 4;
         rules.open_zone_size = 7;
         rules.pillar_chance = 0.6;

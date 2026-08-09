@@ -63,6 +63,51 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Range(0f, 1f)] [Tooltip("0 = uniform placement, 1 = strongly clustered.")]
         public float propClusterBias = 0.3f;
 
+        [Tooltip("Sparse override list: alternative prop catalogues selected by zone_kind. The " +
+                 "FIRST matching entry wins. Empty/null (or no match) ⇒ every zone uses `props`, " +
+                 "which is exactly the behaviour before this field existed.")]
+        public ZonePropSet[] zonePropSets;
+
+        /// <summary>
+        /// Prop catalogue for <paramref name="zoneKind"/>: the first matching
+        /// <see cref="ZonePropSet"/>, else the layer-wide <see cref="props"/>. Same sparse,
+        /// first-match-wins shape as <see cref="WallPrefabFor"/> and the same degradation for an
+        /// unknown zone (−1, ZoneRegistry hasn't answered) — it matches no zone-SPECIFIC set, so
+        /// the chunk gets the layer's own props rather than baking a wrong zone's furniture.
+        ///
+        /// This is the generalisation the zone_kind pattern was missing: until OFFICE, props were
+        /// per-LAYER only and nothing but the tint, the wall model and the loot table could vary
+        /// by zone. Deliberately NOT a 13-row matrix — an unauthored zone must cost nothing.
+        /// </summary>
+        public PropEntry[] PropsFor(int zoneKind) =>
+            TryGetZonePropSet(zoneKind, out var set) ? set.props : props;
+
+        /// <summary>
+        /// El <see cref="ZonePropSet"/> que gobierna <paramref name="zoneKind"/>, si hay uno
+        /// autorado Y con catálogo. Existe aparte de <see cref="PropsFor"/> porque la
+        /// colocación necesita también su densidad y su tope, y resolver la lista tres veces
+        /// recorrería `zonePropSets` tres veces por chunk.
+        ///
+        /// Un set autorado pero con `props` VACÍO no cuenta como coincidencia: significa que
+        /// el autor no terminó de rellenarlo, no "esta zona va pelada". En ese caso se sigue
+        /// buscando y, si nada más casa, manda el catálogo de capa — con su densidad y su
+        /// tope, no con los del set a medias.
+        /// </summary>
+        public bool TryGetZonePropSet(int zoneKind, out ZonePropSet match)
+        {
+            match = default;
+            if (zonePropSets == null) return false;
+            for (int i = 0; i < zonePropSets.Length; i++)
+            {
+                if (!zonePropSets[i].Matches(zoneKind)) continue;
+                var set = zonePropSets[i].props;
+                if (set == null || set.Length == 0) continue;
+                match = zonePropSets[i];
+                return true;
+            }
+            return false;
+        }
+
         [Header("Per-tile tint palette (Pieza C)")]
         [Tooltip("Alternative floor tints picked per TILE by a deterministic hash. Empty/null " +
                  "⇒ every tile uses floorTint (behaviour before this field existed).")]
@@ -218,14 +263,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Header("Zone tint (first pass — placeholder hues, not final art)")]
         [Tooltip("Multiplied into floor/wall/ceiling tint by the chunk's zone_kind " +
                  "(backend/src/world/chunk/surface_profiles.rs ZONE_* constants, indices " +
-                 "0-11). Index out of range or a null/short array falls back to white " +
+                 "0-12). Index out of range or a null/short array falls back to white " +
                  "(no change). GridChunkBuilder looks this up via ZoneRegistry.")]
         public Color[] zoneTints = DefaultZoneTints();
 
         /// <summary>
-        /// 12 placeholder hues, one per ZONE_* (0=Normal .. 11=Pit) — deliberately loud
-        /// so the 12 zones read as visually distinct in a first playtest pass. Swap for
+        /// 13 placeholder hues, one per ZONE_* (0=Normal .. 12=Office) — deliberately loud
+        /// so the zones read as visually distinct in a first playtest pass. Swap for
         /// authored per-zone palettes later; this is not the final look.
+        ///
+        /// THE LENGTH IS LOAD-BEARING: <see cref="ZoneTint"/> clamps out-of-range instead of
+        /// throwing, so a short array serves the LAST hue silently. An OFFICE chunk built
+        /// against the 12-entry version would have been tinted ZONE_PIT's dark purple.
         /// </summary>
         private static Color[] DefaultZoneTints() => new[]
         {
@@ -241,6 +290,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             new Color(0.9f,  1f,    1f   ), // 9  ZONE_CLEANING    — bright cyan-white
             new Color(1f,    0.35f, 0.35f), // 10 ZONE_RED         — deep red
             new Color(0.35f, 0.25f, 0.35f), // 11 ZONE_PIT         — dark purple
+            new Color(0.82f, 0.86f, 0.80f), // 12 ZONE_OFFICE      — pale institutional green
         };
 
         /// <summary>Bounds-safe lookup; out-of-range or unconfigured falls back to white.</summary>
@@ -269,6 +319,49 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     }
 
     /// <summary>
+    /// Un catálogo de props ligado a un <c>zone_kind</c>. Lista DISPERSA con la misma forma y el
+    /// mismo criterio que <see cref="WallVariantSet"/>: solo se autoriza la zona que de verdad
+    /// quiere muebles propios, todo lo demás cae a <see cref="LayerVisualConfig.props"/>.
+    ///
+    /// El comodín es un BOOLEANO EXPLÍCITO por el mismo motivo que allí: un elemento recién
+    /// añadido desde el Inspector nace con <c>zoneKind == 0</c>, que es ZONE_NORMAL — una zona
+    /// concreta, no "todas". Con un centinela el default habría aplicado en silencio solo a
+    /// ZONE_NORMAL cuando el autor casi siempre quiere lo contrario.
+    /// </summary>
+    [System.Serializable]
+    public struct ZonePropSet
+    {
+        [Tooltip("zone_kind al que aplica (0..12, ver ZoneTint). Se ignora si anyZoneKind está " +
+                 "marcado.")]
+        public int zoneKind;
+
+        [Tooltip("Marcado ⇒ aplica a todos los zone_kind.")]
+        public bool anyZoneKind;
+
+        [Tooltip("Catálogo de props de esta zona, con sus pesos. Vacío ⇒ se usa el de la capa.")]
+        public PropEntry[] props;
+
+        [Tooltip("Multiplica propDensity SOLO en esta zona. 0 (el default de un elemento " +
+                 "recién añadido) ⇒ sin cambio, igual que 1.")]
+        public float densityScale;
+
+        [Tooltip("Tope de props por chunk en esta zona. 0 (el default de un elemento recién " +
+                 "añadido) ⇒ se usa el tope global de la capa.")]
+        public int maxPropsPerChunk;
+
+        [Tooltip("Props por TILE en esta zona (1..5). 0 o 1 ⇒ uno por tile, el comportamiento " +
+                 "de siempre. Por encima de 1 los extra se colocan en las sub-celdas de 2.5 m " +
+                 "del tile, igual que las columnas. Es el único modo de subir densidad una vez " +
+                 "que la retícula de 5 m está saturada.")]
+        public int propsPerTile;
+
+        /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/>. Un −1 ("zona aún
+        /// desconocida") no casa con ningún set específico, porque −1 no es un zone_kind válido;
+        /// uno marcado <c>anyZoneKind</c> sí.</summary>
+        public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
+    }
+
+    /// <summary>
     /// ADR-035 — one wall-model option inside a <see cref="WallVariantSet"/>. Same
     /// (prefab, weight) shape as <see cref="PropEntry"/>, and the same null rule:
     /// <c>prefab</c> null ⇒ the stock <c>GridPrefabSet.wall</c> panel, so "keep the old
@@ -291,16 +384,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// <summary>
     /// ADR-035 — un conjunto de variantes de pared con su selector. Lista DISPERSA: solo
     /// se autoriza la combinación que de verdad quiere un modelo distinto; todo lo demás
-    /// cae al panel de siempre. No es una matriz de 12 zone_kind × 3 RoomType.
+    /// cae al panel de siempre. No es una matriz de zone_kind × RoomType.
     /// </summary>
     [System.Serializable]
     public struct WallVariantSet
     {
-        [Tooltip("zone_kind al que aplica (0..11, ver ZoneTint). Se ignora si anyZoneKind " +
+        [Tooltip("zone_kind al que aplica (0..12, ver ZoneTint). Se ignora si anyZoneKind " +
                  "está marcado.")]
         public int zoneKind;
 
-        [Tooltip("Marcado ⇒ aplica a los 12 zone_kind.")]
+        [Tooltip("Marcado ⇒ aplica a todos los zone_kind.")]
         public bool anyZoneKind;
 
         [Tooltip("RoomType al que aplica. Se ignora si anyRoomType está marcado.")]

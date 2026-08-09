@@ -31,11 +31,11 @@ use crate::world::architecture::collision_builder::template_is_vertical;
 use crate::world::architecture::layout_grammars::{
     template_zone_kind, TEMPLATE_ARCH_ROOM, TEMPLATE_BLACKOUT_ZONE, TEMPLATE_DEAD_END,
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
-    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OPEN_HALL, TEMPLATE_PILLAR_ROOM,
-    TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING, TEMPLATE_ROOM_BASIC,
-    TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
+    TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
 };
-use crate::world::chunk::{ChunkLayer, ZONE_PILLAR_HALL};
+use crate::world::chunk::{ChunkLayer, ZONE_OFFICE, ZONE_PILLAR_HALL};
 use crate::world::generator::{generate_initial_structures, structure_zone_kind};
 use crate::world::grid_gen::{LayerRules, LAYER_PROFILES};
 
@@ -119,7 +119,8 @@ fn expansion_template_id(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u
     let mut rng = StdRng::seed_from_u64(seed);
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=38 => TEMPLATE_HALLWAY_STRAIGHT,
+        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
+        35..=38 => TEMPLATE_OFFICE, // ver el comentario del original, en `world::generator`
         39..=51 => TEMPLATE_HALLWAY_CORNER,
         52..=61 => TEMPLATE_HALLWAY_T,
         62..=70 => TEMPLATE_INTERSECTION,
@@ -144,13 +145,15 @@ fn expansion_template_id(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u
 
 /// Perfil de densidad por zona.
 ///
-/// PRIMER PASE INCREMENTAL (ADR-033): solo `ZONE_PILLAR_HALL` cambia la
-/// geometría; los otros 11 `zone_kind` devuelven el perfil de capa SIN TOCAR.
-/// TODO(balance): los 11 restantes son deliberadamente inertes hasta que
-/// PILLAR_HALL se valide en playtest — mismo criterio que los 12 perfiles de
-/// loot de la Pieza 3, primer pase no final.
+/// PASE INCREMENTAL (ADR-033 + OFFICE): `ZONE_PILLAR_HALL` y `ZONE_OFFICE`
+/// cambian la geometría; los otros 11 `zone_kind` devuelven el perfil de capa
+/// SIN TOCAR. TODO(balance): los 11 restantes siguen deliberadamente inertes —
+/// mismo criterio que los perfiles de loot de la Pieza 3, pase no final.
 fn rules_for_zone(zone_kind: u8, layer: u8) -> LayerRules {
     let base = &LAYER_PROFILES[(layer as usize).min(LAYER_PROFILES.len() - 1)];
+    if zone_kind == ZONE_OFFICE {
+        return office_rules(base);
+    }
     if zone_kind != ZONE_PILLAR_HALL {
         return base.clone();
     }
@@ -195,6 +198,79 @@ fn rules_for_zone(zone_kind: u8, layer: u8) -> LayerRules {
     // un módulo hermano, no descendiente — no la alcanza. El tuple es el
     // mismo valor documentado y estable de "RoomType::Open siempre".
     rules.room_type_weights = (1.0, 0.0, 0.0);
+    // Override EXPLÍCITO, mismo motivo que `room_type_weights` arriba: la
+    // partición 2×2 (sesión de sub-regiones) puede sortear SealedRoom/
+    // CorridorSpine por cuadrante, incompatible con la retícula de pilares
+    // de PILLAR_HALL igual que el modo legacy. Si el perfil de capa base
+    // activa `subregion_grid` (layer 0 en producción), un chunk PILLAR_HALL
+    // lo heredaría sin querer — se fuerza a `false` aquí, no se mitiga.
+    rules.subregion_grid = false;
+    rules
+}
+
+/// Planta de oficinas: el espejo invertido de PILLAR_HALL.
+///
+/// PILLAR_HALL es una nave ABIERTA con columnas; OFFICE es una planta
+/// COMPARTIMENTADA sin columnas. Los dos usan exactamente la misma palanca
+/// (reconfigurar `LayerRules`, cero estampadores nuevos) y los dos fuerzan sus
+/// campos de identidad con `=` explícito en vez de `max`/`min`: heredar del
+/// perfil de capa produciría un chunk que no es ninguna de las dos cosas.
+fn office_rules(base: &LayerRules) -> LayerRules {
+    let mut rules = base.clone();
+
+    // IDENTIDAD 1 — despachos, no nave. `subregion_grid` estampa un rect por
+    // cuadrante fijo (hasta 4 por chunk), con anti-solape por construcción; es
+    // literalmente la planta de oficinas que se quiere. Se fuerza a `true`
+    // aunque el perfil de capa base lo tenga apagado (layers 1-3 lo tienen).
+    rules.subregion_grid = true;
+    // Los 4 cuadrantes SIEMPRE presentes: la lectura de "planta" depende de que
+    // el chunk esté compartimentado entero, no de que le falten trozos. Layer 0
+    // en producción usa 0.75 (ADR-057, busca variedad de contenido); aquí la
+    // variedad la da el `RoomType` de cada cuadrante, no su ausencia.
+    rules.subregion_presence = 1.0;
+    // IDENTIDAD 2 — mayoría de despachos con perímetro sellado y 1-3 puertas
+    // (`carve_sealed_room_entrances`), con un 20% de cuadrante Open que hace de
+    // sala común. Sin `CorridorSpine`: su ancho fijo de 2 celdas ya lo aporta el
+    // maze circundante, y un spine dentro de un cuadrante leería como pasillo
+    // duplicado.
+    rules.room_type_weights = (0.2, 0.8, 0.0);
+    // IDENTIDAD 3 — sin columnas. Es lo único que separa visualmente un
+    // cuadrante OFFICE grande de uno PILLAR_HALL. El bucle de retícula de Fase 4
+    // sigue corriendo (el umbral `min(eff_sz) >= 6` se cumple con sz=6) y sigue
+    // consumiendo sus draws del stream por cuadrante — no se salta, simplemente
+    // nunca coloca. Mantenerlo así deja el stream idéntico a cualquier otro
+    // perfil con `subregion_grid`, que es lo que hace comparables las huellas.
+    rules.pillar_chance = 0.0;
+
+    // SE QUEDA EN LA PARTICIÓN 2×2 DE ADR-057, y es una decisión MEDIDA que
+    // contradice la hipótesis con la que se construyó `subregion_divisions`.
+    //
+    // La hipótesis era: como el 62% de los paneles de un chunk OFFICE son pasillo
+    // del maze, partir en 3×3 (nueve despachos de 5×5 m en vez de cuatro de
+    // 10×10) reduciría el pasillo. **Medido sobre 144 chunks, hace lo contrario:**
+    // el espacio pisable que cae DENTRO de una sala baja de 44.5% a 38.9%.
+    //
+    // El motivo es el perímetro sellado, que es de 1 celda cueste lo que cueste:
+    // un rect de 6×6 tiene 16 celdas de interior sobre 36 (44% útil), uno de 4×4
+    // tiene 4 sobre 16 (25% útil). Más salas pequeñas gastan MÁS presupuesto de
+    // chunk en pared y dejan menos suelo de oficina, no más.
+    //
+    // O sea: el pasillo no sobra porque las salas sean grandes, sobra porque las
+    // salas solo pueden cubrir ~27% del chunk con el esquema de bandas + buffers
+    // de ADR-057. Bajar el tamaño ataca el síntoma equivocado.
+    //
+    // El mecanismo de 3×3 queda construido, probado e INERTE por si un diseño
+    // futuro lo quiere por ESCALA (una sala de 5×5 m se lee más a oficina que una
+    // de 10×10, aunque haya menos metros de sala) — pero eso es una decisión de
+    // lectura, no de densidad, y no se toma a partir de este número.
+    rules.open_zone_size_x = Some(6);
+    rules.open_zone_size_z = Some(6);
+
+    // `wide_chance`/`erode_chance` se dejan TAL CUAL los del perfil de capa: un
+    // pasillo de oficina es estrecho, así que no hay motivo para abrirlos como
+    // hace PILLAR_HALL, y cerrarlos por debajo del perfil convertiría una capa
+    // ya densa en intransitable. `num_open_zones` no se toca porque
+    // `subregion_grid` lo ignora (siempre 4 cuadrantes).
     rules
 }
 
@@ -264,15 +340,66 @@ mod tests {
     /// PILLAR_HALL debe cambiar la geometría de verdad Y forzar
     /// `room_type_weights` a `(1,0,0)` (Open) SIN IMPORTAR lo que diga el
     /// perfil de capa base — su identidad es la retícula de columnas sobre
-    /// una zona Open, incompatible con perímetro `SealedWall`. Los otros 11
-    /// zone_kind deben devolver el perfil de capa INTACTO, weights incluidos
-    /// (primer pase incremental).
+    /// una zona Open, incompatible con perímetro `SealedWall`. OFFICE cambia
+    /// la suya en sentido contrario (compartimentada, sin columnas). Los
+    /// otros 11 zone_kind deben devolver el perfil de capa INTACTO, weights
+    /// incluidos (pase incremental).
     #[test]
-    fn only_pillar_hall_changes_the_profile() {
+    fn only_pillar_hall_and_office_change_the_profile() {
         for layer in 0..LAYER_PROFILES.len() as u8 {
             let base = &LAYER_PROFILES[layer as usize];
-            for zone_kind in 0..12u8 {
+            for zone_kind in 0..=ZONE_OFFICE {
                 let rules = rules_for_zone(zone_kind, layer);
+                if zone_kind == ZONE_OFFICE {
+                    assert!(
+                        rules.subregion_grid,
+                        "capa {layer}: OFFICE debe forzar subregion_grid=true"
+                    );
+                    assert_eq!(
+                        rules.subregion_presence, 1.0,
+                        "capa {layer}: OFFICE debe estampar los 4 cuadrantes"
+                    );
+                    assert_eq!(
+                        rules.room_type_weights,
+                        (0.2, 0.8, 0.0),
+                        "capa {layer}: OFFICE heredó {:?} del perfil base",
+                        rules.room_type_weights
+                    );
+                    assert_eq!(
+                        rules.pillar_chance, 0.0,
+                        "capa {layer}: OFFICE con columnas — es la identidad de PILLAR_HALL, no la suya"
+                    );
+                    // El tamaño NO es estético: la banda HIGH de
+                    // `subregion_origin_slots` solo admite <= 6. Con 8 (lo que
+                    // daría `open_zone_size: 7` de layer 2 tras alinear) los
+                    // tres cuadrantes de banda HIGH se saltarían EN SILENCIO.
+                    // Ancho de banda LITERAL y no leído de `subregion_band_bounds`:
+                    // esa función es `pub(super)` dentro de `grid_gen` y
+                    // `zone_density` es un módulo hermano, no descendiente — mismo
+                    // caso que `default_room_type_weights`, y se resuelve igual,
+                    // con el literal documentado en vez de ensanchar la visibilidad
+                    // de un interno del generador para un test.
+                    //
+                    // El tamaño tiene que caber en la banda MÁS ESTRECHA de las
+                    // divisiones configuradas o la sub-región se salta EN SILENCIO
+                    // (guarda `count == 0`). Con 2 divisiones la banda estrecha es
+                    // `[12,18)` = 6 celdas; con 3 serían 4. Atado a las divisiones
+                    // para que cambiar una sin la otra falle aquí y no en juego.
+                    let band_cells = if rules.subregion_divisions >= 3 { 4 } else { 6 };
+                    assert!(
+                        rules.open_zone_size_x.unwrap() <= band_cells,
+                        "capa {layer}: sub-región de {:?} con {} divisiones (banda de {band_cells} celdas) — se saltaría sin avisar",
+                        rules.open_zone_size_x,
+                        rules.subregion_divisions
+                    );
+                    assert_eq!(rules.open_zone_size_x, rules.open_zone_size_z);
+                    assert_eq!(
+                        (rules.wide_chance, rules.erode_chance),
+                        (base.wide_chance, base.erode_chance),
+                        "capa {layer}: OFFICE no debe tocar las palancas de densidad del maze"
+                    );
+                    continue;
+                }
                 if zone_kind == ZONE_PILLAR_HALL {
                     assert!(
                         rules.open_zone_size >= 6,
@@ -293,6 +420,10 @@ mod tests {
                         (1.0, 0.0, 0.0),
                         "capa {layer}: PILLAR_HALL debe forzar RoomType::Open, heredó {:?} del perfil base",
                         rules.room_type_weights
+                    );
+                    assert!(
+                        !rules.subregion_grid,
+                        "capa {layer}: PILLAR_HALL debe forzar subregion_grid=false, heredó true del perfil base"
                     );
                 } else {
                     assert_eq!(
@@ -490,6 +621,171 @@ mod tests {
         assert!(
             checked > 20,
             "solo {checked} chunks PILLAR_HALL comprobados"
+        );
+    }
+
+    /// OFFICE produce de verdad una PLANTA: 4 sub-regiones por chunk, mayoría
+    /// con perímetro sellado, y CERO columnas. Se ejercita el perfil DIRECTO
+    /// (no barriendo chunks) porque el sorteo todavía no puede emitir OFFICE —
+    /// el flip de banda es un commit posterior. Cuando llegue, este test sigue
+    /// siendo válido tal cual: prueba el perfil, no su frecuencia.
+    #[test]
+    fn office_profile_stamps_sealed_rooms_and_never_pillars() {
+        use crate::world::grid_gen::{generate_chunk_layer, CellType, CHUNK_CELLS};
+
+        const WIRE_SEALED_ROOM: u8 = 1;
+        let (mut zones_seen, mut sealed_seen) = (0usize, 0usize);
+        for seed in SEEDS {
+            for layer in 0..LAYER_PROFILES.len() as u8 {
+                let rules = rules_for_zone(ZONE_OFFICE, layer);
+                for (cx, cz) in [(0, 0), (3, -7), (11, 11), (-9, 4), (-2, 13)] {
+                    let out = generate_chunk_layer(&rules, seed, (cx, cz), layer as i32, &[]);
+                    // 4 cuadrantes, presencia 1.0, y `sz = 6` cabe en las dos
+                    // bandas ⇒ la guarda `count == 0` no puede dispararse. Si
+                    // alguien cambia el tamaño y rompe la banda HIGH, esto lo
+                    // caza en vez de dejar medio chunk sin estampar en silencio.
+                    // Derivado de las divisiones, no un literal: 3×3 = 9. Con
+                    // presencia 1.0 y un tamaño que cabe en la banda, la guarda
+                    // `count == 0` no puede dispararse, así que salen TODAS.
+                    let expected = (rules.subregion_divisions as usize).pow(2);
+                    assert_eq!(
+                        out.room_zones.len(),
+                        expected,
+                        "seed {seed} capa {layer} chunk ({cx},{cz}): OFFICE estampó {} sub-regiones, no {expected} — alguna se saltó en silencio",
+                        out.room_zones.len()
+                    );
+                    zones_seen += out.room_zones.len();
+                    sealed_seen += out
+                        .room_zones
+                        .iter()
+                        .filter(|z| z.kind == WIRE_SEALED_ROOM)
+                        .count();
+
+                    let pillars = out
+                        .grid
+                        .cells()
+                        .iter()
+                        .filter(|c| c.kind() == CellType::Pillar)
+                        .count();
+                    assert_eq!(
+                        pillars, 0,
+                        "seed {seed} capa {layer} chunk ({cx},{cz}): OFFICE colocó {pillars} columnas"
+                    );
+                    assert_eq!(out.grid.cells().len(), CHUNK_CELLS * CHUNK_CELLS);
+                }
+            }
+        }
+        // 80% esperado sobre las 320 sub-regiones del barrido (4 seeds × 4
+        // capas × 5 chunks × 4 cuadrantes); el suelo (50%) es holgado a
+        // propósito — verifica que el peso está CABLEADO y no invertido, no
+        // calibra su valor.
+        assert!(
+            sealed_seen * 2 > zones_seen,
+            "solo {sealed_seen} de {zones_seen} sub-regiones OFFICE salieron selladas — el peso 0.8 no está llegando"
+        );
+    }
+
+    /// Mismo hueco de cobertura que abrió PILLAR_HALL, ahora para OFFICE:
+    /// `all_walkable_cells_are_connected` barre `LAYER_PROFILES`, así que
+    /// ningún test toca el perfil derivado. Cuatro salas selladas por chunk son
+    /// el caso MÁS agresivo que ha estampado este generador — si alguna
+    /// combinación deja un bolsillo incomunicado, sale aquí.
+    #[test]
+    fn office_chunks_stay_connected_and_non_degenerate() {
+        use crate::world::grid_gen::{generate_chunk_layer, LayerGrid, CHUNK_CELLS};
+
+        fn flood(grid: &LayerGrid) -> (usize, usize) {
+            let (mut total, mut start) = (0usize, None);
+            for z in 0..CHUNK_CELLS {
+                for x in 0..CHUNK_CELLS {
+                    if grid.get(x, z).is_walkable() {
+                        total += 1;
+                        start.get_or_insert((x, z));
+                    }
+                }
+            }
+            let Some(start) = start else { return (0, 0) };
+            let mut visited = vec![false; CHUNK_CELLS * CHUNK_CELLS];
+            visited[start.1 * CHUNK_CELLS + start.0] = true;
+            let mut queue = vec![start];
+            let mut reached = 0usize;
+            while let Some((x, z)) = queue.pop() {
+                reached += 1;
+                for (dx, dz) in [(-1i32, 0i32), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, nz) = (x as i32 + dx, z as i32 + dz);
+                    if !LayerGrid::in_bounds(nx, nz) {
+                        continue;
+                    }
+                    let (nx, nz) = (nx as usize, nz as usize);
+                    if !visited[nz * CHUNK_CELLS + nx] && grid.get(nx, nz).is_walkable() {
+                        visited[nz * CHUNK_CELLS + nx] = true;
+                        queue.push((nx, nz));
+                    }
+                }
+            }
+            (reached, total)
+        }
+
+        let mut checked = 0usize;
+        for seed in SEEDS {
+            for layer in 0..LAYER_PROFILES.len() as u8 {
+                let rules = rules_for_zone(ZONE_OFFICE, layer);
+                for cx in -3..=3 {
+                    for cz in -3..=3 {
+                        let out = generate_chunk_layer(&rules, seed, (cx, cz), layer as i32, &[]);
+                        let (reached, total) = flood(&out.grid);
+                        assert_eq!(
+                            reached, total,
+                            "seed {seed} capa {layer} chunk ({cx},{cz}) OFFICE: {reached} de {total} celdas alcanzables — despacho incomunicado"
+                        );
+                        // Mismo suelo absoluto que PILLAR_HALL y que
+                        // `sealing_preserves_main_component`.
+                        assert!(
+                            total >= 30,
+                            "seed {seed} capa {layer} chunk ({cx},{cz}) OFFICE: solo {total} celdas transitables"
+                        );
+                        checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(checked > 100, "solo {checked} chunks OFFICE comprobados");
+    }
+
+    /// El resolver PURO llega a OFFICE, y cuando llega devuelve el perfil de
+    /// OFFICE — no el de la capa. Espejo, del lado del render/robapieles, de
+    /// `office_is_reachable_from_the_expansion_lottery` (`layout_grammars.rs`),
+    /// que cubre el sorteo original. Los dos juntos son lo que garantiza que el
+    /// flip aterrizó ENTERO: `resolver_matches_real_world_zone_kind` ya prueba
+    /// que ambos sorteos coinciden, pero solo estos prueban que además EMITEN.
+    #[test]
+    fn office_reaches_the_resolver_and_brings_its_own_profile() {
+        let mut hits = 0usize;
+        for seed in SEEDS {
+            for cx in -10..=10 {
+                for cz in -10..=10 {
+                    for layer in 0..LAYER_PROFILES.len() as u8 {
+                        if zone_kind_for(seed, cx, cz, layer) != ZONE_OFFICE {
+                            continue;
+                        }
+                        hits += 1;
+                        let rules = rules_for(seed, cx, cz, layer);
+                        assert_eq!(rules, rules_for_zone(ZONE_OFFICE, layer),
+                            "seed {seed} chunk ({cx},{cz}) capa {layer}: resuelve a OFFICE pero `rules_for` no devolvió su perfil");
+                        // Campos que difieren del perfil de capa en las CUATRO
+                        // capas. `subregion_grid`/`pillar_chance` no valdrían:
+                        // `LAYER_PROFILES[0]` ya los trae con esos valores, así
+                        // que en layer 0 el assert sería verde sin que
+                        // `office_rules` hubiera intervenido.
+                        assert_eq!(rules.room_type_weights, (0.2, 0.8, 0.0));
+                        assert_eq!(rules.subregion_presence, 1.0);
+                    }
+                }
+            }
+        }
+        assert!(
+            hits > 50,
+            "solo {hits} chunks resolvieron a OFFICE en el barrido — el flip no llegó al resolver"
         );
     }
 

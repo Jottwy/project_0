@@ -123,7 +123,15 @@ impl NetworkManager {
                 peers,
                 anchors: _,
                 stabilizers: _,
-            } => self.handle_handshake_ack(pkt.addr, sender_id, assigned_id, world_seed, peers),
+                phantom_density_scale,
+            } => self.handle_handshake_ack(
+                pkt.addr,
+                sender_id,
+                assigned_id,
+                world_seed,
+                peers,
+                phantom_density_scale,
+            ),
 
             PacketPayload::Heartbeat => {
                 // Already updated heartbeat above.
@@ -132,6 +140,7 @@ impl NetworkManager {
 
             PacketPayload::Disconnect { reason } => {
                 if let Some(peer) = self.peers.remove(&sender_id) {
+                    self.purge_peer_state(sender_id);
                     info!(
                         "Peer {} ({}) disconnected: {}",
                         peer.name, peer.addr, reason
@@ -256,6 +265,12 @@ impl NetworkManager {
 
             PacketPayload::NoiseReport { position, loudness } => {
                 Some(NetworkEvent::NoiseReported { position, loudness })
+            }
+
+            // ADR-050 point 9. The sender IS the victim — the transport already knows who that is,
+            // so the packet carries nothing and there is no field to validate or forge.
+            PacketPayload::StruggleReport => {
+                Some(NetworkEvent::StruggleReported { victim: sender_id })
             }
 
             PacketPayload::VoiceFrame { seq, data } => Some(NetworkEvent::VoiceReceived {
@@ -613,6 +628,7 @@ impl NetworkManager {
         assigned_id: PeerId,
         world_seed: u64,
         peers: Vec<PeerInfo>,
+        phantom_density_scale: f32,
     ) -> Option<NetworkEvent> {
         if self.is_host {
             return None; // Host doesn't receive handshake acks.
@@ -640,11 +656,27 @@ impl NetworkManager {
         // Update our local ID to the one assigned by the host.
         self.local_id = assigned_id;
         self.world_seed = world_seed;
+        // ADR-045 Fase 2: the joiner now knows its world_seed — the other half (identity_key,
+        // via set_identity) may already be waiting on this in game_loop::run.
+        self.world_seed_known = true;
+        // P0-2: the host's value always wins — same precedent as world_seed above. Our own
+        // env-derived value never reaches PhantomDriver (nothing consumes it before this).
+        if self.phantom_density_scale != phantom_density_scale {
+            warn!(
+                "P0-2: local PHANTOM_DENSITY_SCALE {} differs from host's {}; adopting host's value",
+                self.phantom_density_scale, phantom_density_scale
+            );
+        }
+        self.phantom_density_scale = phantom_density_scale;
         self.pending_connect_addr = None;
 
         // Add the host as a peer.
         let host_peer = PeerConnection::new(sender_id, "Host".to_string(), from_addr);
         self.peers.insert(sender_id, host_peer);
+        // ADR-056: remember WHICH peer that is, so a later `PeerDisconnected` can tell the host
+        // falling over from any other peer leaving. Set here and nowhere else — this is the one
+        // place a joiner learns the host's identity first-hand.
+        self.host_peer_id = Some(sender_id);
         info!(
             "MPTRACE step=F event=joiner_register_host self_id={} sender_id={} assigned_id={} peer_id={} endpoint={} peer_count={} remote_players_count=<n/a> remote_players_ids={:?}",
             self.local_id,
@@ -664,6 +696,21 @@ impl NetworkManager {
 
     pub fn peer_count(&self) -> usize {
         self.peers.len()
+    }
+
+    /// Orphan cleanup on disconnect (explicit `Disconnect` packet or heartbeat timeout).
+    /// `PeerId` is reused after a peer leaves (`allocate_peer_id` just hands out the next free
+    /// number), so any state keyed by `PeerId` that outlives the disconnect would silently
+    /// apply to whichever different player inherits the number next. `pending_pickups` is
+    /// excluded on purpose — it self-purges on its own ~400ms deadline regardless of connection
+    /// (ADR-014 drain in `game_loop.rs`), so there is nothing here for it to leak.
+    pub(super) fn purge_peer_state(&mut self, id: PeerId) {
+        self.voice_echo.remove(&id);
+        self.pending_struggles.remove(&id);
+        self.processed_corpse_requests
+            .retain(|(peer, _)| *peer != id);
+        self.last_keepalive_trace_at.remove(&id);
+        self.last_transform_trace_at.remove(&id);
     }
 
     pub fn peer_ids(&self) -> Vec<PeerId> {
@@ -702,6 +749,7 @@ impl NetworkManager {
                 .collect(),
             anchors: vec![],
             stabilizers: vec![],
+            phantom_density_scale: self.phantom_density_scale,
         }
     }
 

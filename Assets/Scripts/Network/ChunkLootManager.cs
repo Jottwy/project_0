@@ -415,8 +415,10 @@ namespace BackroomsSurvival.Net
                 _liveSlotsScratch.Add((v.cx, v.cz, v.slot));
         }
 
-        // Desired columns not yet generated: roll + raycast-place. A non-empty roll whose floor is
-        // not rendered yet stays pending (retried next scan). Fills _pendingPlacements.
+        // Desired columns not yet generated: roll + raycast-place, now walkability-checked (Fix
+        // priorizado worldgen Alpha 1 — see TryPlace). A non-empty roll whose floor is not
+        // rendered yet stays pending (retried next scan); a slot that lands in a wall/pillar even
+        // after retrying nearby is permanently omitted instead. Fills _pendingPlacements.
         private void CollectLoads(
             HashSet<(int cx, int cz)> generated,
             ICollection<(int cx, int cz, int slot)> collected,
@@ -456,24 +458,99 @@ namespace BackroomsSurvival.Net
                 }
 
                 bool placedAny = false;
+                bool anyPermanentlyUnwalkable = false;
                 foreach (var e in entries)
                 {
-                    if (!TryPlace(col.cx, col.cz, e, rayY, out Vector3 pos)) continue; // floor missing this slot
-                    placedAny = true;
-                    _pendingPlacements.Add((col.cx, col.cz, e, pos));
+                    switch (TryPlace(col.cx, col.cz, e, rayY, out Vector3 pos))
+                    {
+                        case PlaceResult.Placed:
+                            placedAny = true;
+                            _pendingPlacements.Add((col.cx, col.cz, e, pos));
+                            break;
+                        case PlaceResult.Unwalkable:
+                            // Every retry inside the zone's dispersion also landed in a
+                            // wall/pillar — this is not "floor not built yet" (that keeps the
+                            // column pending forever, see CollectLoads header), it is permanent
+                            // for this roll. Omit the slot instead of never sealing the column.
+                            anyPermanentlyUnwalkable = true;
+                            Debug.LogWarning($"[ChunkLootManager] slot {e.Slot} en columna " +
+                                              $"({col.cx},{col.cz}) cayo en muro/pilar tras " +
+                                              $"{WalkabilityRetries} reintentos; omitido.");
+                            break;
+                        case PlaceResult.FloorMissing:
+                            break; // retried next scan, unchanged from before this fix
+                    }
                 }
 
-                // Seal once at least one slot landed. If a non-empty (uncollected) roll placed nothing,
-                // the floor isn't rendered yet → leave pending for a later scan.
-                if (placedAny)
+                // Seal once at least one slot reached a TERMINAL outcome (placed, or permanently
+                // unwalkable). If every entry is still FloorMissing, the floor isn't rendered yet
+                // → leave pending for a later scan (unchanged from before this fix).
+                if (placedAny || anyPermanentlyUnwalkable)
                     generated.Add(col);
             }
         }
 
-        private static bool TryPlace(int cx, int cz, ChunkLootRoll.Entry e, float rayY, out Vector3 point)
+        private enum PlaceResult { FloorMissing, Unwalkable, Placed }
+
+        // Retries a slot that landed in a wall/pillar within the zone's own dispersion radius
+        // before giving up on it. Deterministic per (worldSeed, cx, cz, slot, attempt) — not
+        // drawn from ChunkLootRoll's roll stream (that stream is fully consumed once per roll
+        // and discarded; this only nudges a PHYSICAL position, it never changes what item/count
+        // was rolled), so re-running this on the same inputs always finds the same slot.
+        private const int WalkabilityRetries = 8;
+        private const ulong PlacementRetrySalt = 0xB0_A7_D0_5EUL;
+
+        private PlaceResult TryPlace(int cx, int cz, ChunkLootRoll.Entry e, float rayY, out Vector3 point)
         {
-            float wx = cx * Side + e.U * Side;
-            float wz = cz * Side + e.V * Side;
+            if (!TryRaycastFloor(cx, cz, e.U, e.V, rayY, out Vector3 raycastPoint))
+            {
+                point = default;
+                return PlaceResult.FloorMissing;
+            }
+
+            // No wall data cached yet (should not happen once the raycast above succeeded —
+            // _wallsCache is populated before the chunk's floor is even built, see
+            // ChunkStreamer.OnChunkDataReceived — but degrade gracefully instead of assuming):
+            // fall back to floor-only placement, same as before this fix.
+            if (ChunkStreamer.Instance == null ||
+                !ChunkStreamer.Instance.TryGetWalls(cx, cz, LayerOf(rayY), out byte[,] walls))
+            {
+                point = raycastPoint;
+                return PlaceResult.Placed;
+            }
+
+            if (ChunkLootRoll.IsWalkable(walls, e.U, e.V))
+            {
+                point = raycastPoint;
+                return PlaceResult.Placed;
+            }
+
+            var rng = new DeterministicRng(ChunkLootRoll.Hash(_worldSeed, cx, cz,
+                PlacementRetrySalt ^ (ulong)(uint)e.Slot));
+            for (int attempt = 0; attempt < WalkabilityRetries; attempt++)
+            {
+                float ru = Clamp01(e.U + (rng.NextFloat() - 0.5f) * 2f * ZoneSpreadNormalized);
+                float rv = Clamp01(e.V + (rng.NextFloat() - 0.5f) * 2f * ZoneSpreadNormalized);
+                if (!ChunkLootRoll.IsWalkable(walls, ru, rv)) continue;
+                if (!TryRaycastFloor(cx, cz, ru, rv, rayY, out Vector3 retryPoint)) continue;
+                point = retryPoint;
+                return PlaceResult.Placed;
+            }
+
+            point = default;
+            return PlaceResult.Unwalkable;
+        }
+
+        // Reuses ChunkLootRoll.ZoneSpreadRadius (12 m normalized) for both channels — items use
+        // a tighter CacheClusterRadius for their original cluster, so an item retry can wander
+        // slightly further than that cluster, but never further than the zone itself; safe, not
+        // worth a second constant here.
+        private const float ZoneSpreadNormalized = ChunkLootRoll.ZoneSpreadRadius;
+
+        private static bool TryRaycastFloor(int cx, int cz, float u, float v, float rayY, out Vector3 point)
+        {
+            float wx = cx * Side + u * Side;
+            float wz = cz * Side + v * Side;
             var origin = new Vector3(wx, rayY + RaycastUpOffset, wz);
             if (Physics.Raycast(origin, Vector3.down, out RaycastHit hit, RaycastUpOffset + RaycastDownRange,
                     GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore))
@@ -484,6 +561,9 @@ namespace BackroomsSurvival.Net
             point = default;
             return false;
         }
+
+        private static int LayerOf(float rayY) => Mathf.FloorToInt(rayY / GridConstants.LayerHeight);
+        private static float Clamp01(float x) => x < 0f ? 0f : (x > 1f ? 1f : x);
 
         // ── Timed material respawn (carryables only) ──────────────────────────────────────────
         // Expire collected-carryable slots older than CarryableRespawnSeconds and UN-SEAL their

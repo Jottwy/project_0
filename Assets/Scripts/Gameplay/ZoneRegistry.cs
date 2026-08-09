@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using BackroomsSurvival.Net;
 using UnityEngine;
@@ -23,11 +24,21 @@ namespace BackroomsSurvival.Gameplay
 
         private static GameObject _pump;
 
+        /// <summary>Fix priorizado worldgen (Alpha 1, chunks blancos): fires ONCE per (cx,cz)
+        /// the first time its zone_kind is learned — never on a re-write of an already-known
+        /// zone (this dictionary only ever gains entries, see Refresh below, so that is also
+        /// the only time this fires for a given column). ChunkStreamer subscribes to trigger a
+        /// late rebuild of any chunk it had to build "white" (zone not known yet at build
+        /// time) instead of leaving it that way forever. No consumers before this fix — safe
+        /// to add without touching Refresh's existing behaviour for anyone else.</summary>
+        public static event Action<int, int> ZoneArrived;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics()
         {
             _zoneByChunk.Clear();
             _pump = null;
+            ZoneArrived = null;
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -36,7 +47,7 @@ namespace BackroomsSurvival.Gameplay
             if (_pump != null)
                 return;
             _pump = new GameObject("ZoneRegistryPump");
-            Object.DontDestroyOnLoad(_pump);
+            UnityEngine.Object.DontDestroyOnLoad(_pump);
             _pump.AddComponent<ZoneRegistryPump>();
         }
 
@@ -63,7 +74,12 @@ namespace BackroomsSurvival.Gameplay
                 // (ZoneWaitTimeout, ChunkLootManager's zone gate) could have caught it.
                 if (cv.layer != 0)
                     continue;
-                _zoneByChunk[(cv.pos[0], cv.pos[1])] = (byte)cv.zoneKind;
+
+                var key = (cv.pos[0], cv.pos[1]);
+                bool isNew = !_zoneByChunk.ContainsKey(key);
+                _zoneByChunk[key] = (byte)cv.zoneKind;
+                if (isNew)
+                    ZoneArrived?.Invoke(key.Item1, key.Item2);
             }
         }
     }

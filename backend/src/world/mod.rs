@@ -99,6 +99,22 @@ pub struct WorldTickResult {
     pub stat_context: StatContext,
 }
 
+/// One chunk displacement, with everything the caller needs to both notify the local
+/// client and replicate the displacement to peers.
+///
+/// The seed is returned as a field instead of being read back out of `event.data`
+/// on purpose: `event` is the IPC payload and only carries what the client needs
+/// (`chunk_pos` + `new_offset`). Reconstructing the P2P broadcast from that JSON is
+/// exactly how `new_seed` used to be lost — the broadcast went out with a hardcoded 0,
+/// so every peer regenerated the displaced chunk from seed 0 while the owner used the
+/// real one. See `remote_teleport_with_owner_seed_converges`.
+pub struct TeleportOutcome {
+    pub event: GameEvent,
+    pub old_pos: [i32; 2],
+    pub new_pos: [i32; 2],
+    pub new_seed: u64,
+}
+
 fn chunk_has_layer_connector(chunk: &Chunk) -> bool {
     chunk.layout.vertical_flags & chunk::V30A_CONNECTOR != 0
         || matches!(
@@ -836,7 +852,7 @@ impl World {
     /// Tick all chunk teleport timers (called at 1hz from the game loop).
     /// `tick` is the caller's game-loop tick counter, threaded through ONLY for the
     /// TEMP DIAG log below (TP attribution audit) — no other use, no behavior change.
-    pub fn tick_teleportation(&mut self, tick: u64) -> Vec<GameEvent> {
+    pub fn tick_teleportation(&mut self, tick: u64) -> Vec<TeleportOutcome> {
         let mut events = Vec::new();
         let (t_min, t_max) = self.config.teleport_interval;
 
@@ -911,12 +927,17 @@ impl World {
                         "MPTRACE step=CHUNK_DISPLACEMENT tick={} chunk_id=({},{}) old_seed={} new_seed={}",
                         tick, old_pos.0, old_pos.1, old_seed, new_seed
                     );
-                    events.push(GameEvent {
-                        event_type: "chunk_teleported".into(),
-                        data: serde_json::json!({
-                            "chunk_pos": [old_pos.0, old_pos.1],
-                            "new_offset": [new_offset_x, new_offset_z],
-                        }),
+                    events.push(TeleportOutcome {
+                        event: GameEvent {
+                            event_type: "chunk_teleported".into(),
+                            data: serde_json::json!({
+                                "chunk_pos": [old_pos.0, old_pos.1],
+                                "new_offset": [new_offset_x, new_offset_z],
+                            }),
+                        },
+                        old_pos: [old_pos.0, old_pos.1],
+                        new_pos: [old_pos.0 + new_offset_x, old_pos.1 + new_offset_z],
+                        new_seed,
                     });
                 }
             }

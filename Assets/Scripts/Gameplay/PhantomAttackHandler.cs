@@ -3,6 +3,7 @@ using BackroomsSurvival.Net;
 using PolymindGames;
 using PolymindGames.MovementSystem;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
 namespace BackroomsSurvival.Gameplay
@@ -31,6 +32,9 @@ namespace BackroomsSurvival.Gameplay
         private const string HitEvent = "phantom_hit";
         private const string KillEvent = "phantom_kill";
         private const string KnockbackEvent = "phantom_knockback";
+        // ADR-050 point 9: the grab is now a LIVE window rather than a death epilogue.
+        private const string GrabStartEvent = "phantom_grab_start";
+        private const string GrabReleaseEvent = "phantom_grab_release";
 
         // Death fade timing (presentation only — the backend respawn is instant).
         private const float FadeInTime = 0.5f;
@@ -62,6 +66,32 @@ namespace BackroomsSurvival.Gameplay
         // Fraction of the hold after which you are lifted off the floor.
         private const float GrabLiftStart = 0.55f;
         private const float GrabLiftSpeed = 3.2f;
+        // ── The LIVE grab (ADR-050 point 9) ───────────────────────────────────────────────────
+        // How many presses break you out. Enough that it is an effort and few enough that it can be
+        // done inside the window with room to spare — the tension is meant to come from the seconds
+        // draining, not from a wrist test.
+        private const int StruggleTarget = 8;
+        // Struggle decays while you are not pressing, so pacing yourself does not work.
+        private const float StruggleDecayPerSecond = 2.2f;
+        // What counts as struggling: space or the left mouse button, both, because in the two
+        // seconds after something grabs you nobody reads a prompt.
+        //
+        // READ THROUGH THE INPUT SYSTEM PACKAGE, never `UnityEngine.Input`. This project has active
+        // input handling set to the package, so the legacy class THROWS on every read
+        // (`InvalidOperationException: You are trying to read Input using the UnityEngine.Input
+        // class…`). The first version of this shipped with `Input.GetKeyDown` and the play-test log
+        // holds 1427 of those: the exception aborted the struggle tick before it could count a
+        // press, so all eight grabs in that session ended in `grab_expired` and the escape hatch
+        // silently did not exist. `BackroomsGraphicsSettings` two files over already did it right.
+        private static bool StrugglePressedThisFrame()
+        {
+            var kb = Keyboard.current;
+            if (kb != null && kb.spaceKey.wasPressedThisFrame)
+                return true;
+            var mouse = Mouse.current;
+            return mouse != null && mouse.leftButton.wasPressedThisFrame;
+        }
+
         // Impulse handed to the corpse ragdoll, away from the killer.
         private const float CorpseThrowSpeed = 6.5f;
         // A corpse spawning further than this from the recorded death spot is somebody else's.
@@ -101,6 +131,15 @@ namespace BackroomsSurvival.Gameplay
         // The grab: who took you, and how long is left of being held by it.
         private Transform _grabber;
         private float _grabTimer;
+        // ADR-050 point 9 — the LIVE grab: held and still alive, with a way out. Distinct from
+        // `_dying` on purpose; the death grab keeps working exactly as it did for anything that
+        // still kills outright.
+        private bool _heldAlive;
+        private float _heldWindow;
+        private float _struggle;
+        private bool _struggleSent;
+        private IMovementControllerCC _heldBlock;
+        private Text _struggleText;
         // The camera transform the grab borrowed, and the rotation to hand back. Cached at the
         // start rather than reconstructed at the end: by then the rig may have moved and there
         // would be nothing correct left to restore to.
@@ -191,7 +230,12 @@ namespace BackroomsSurvival.Gameplay
                 _ipc.AddEventListener(OnGameEvent);
             }
 
-            if (_grabTimer > 0f)
+            // ADR-050: the live grab is checked FIRST and is mutually exclusive with the death one
+            // — while you are held and alive there is no fade to run, and once the grab becomes a
+            // kill `StartDeath` has already cleared this flag.
+            if (_heldAlive)
+                TickLiveGrab();
+            else if (_grabTimer > 0f)
                 TickGrab();
             else if (_dying)
                 TickDeath();
@@ -223,7 +267,156 @@ namespace BackroomsSurvival.Gameplay
                     var d = ev.data as Dictionary<string, object>;
                     ApplyKnockback(IPCParse.F(d, "dx"), IPCParse.F(d, "dz"));
                     break;
+
+                case GrabStartEvent:
+                    // The window comes from the backend rather than being a second copy of the
+                    // number here. `PHANTOM_GRAB_SECONDS` has one owner now.
+                    var g = ev.data as Dictionary<string, object>;
+                    StartLiveGrab(IPCParse.F(g, "window"));
+                    break;
+
+                case GrabReleaseEvent:
+                    EndLiveGrab();
+                    break;
             }
+        }
+
+        // ── The live grab (ADR-050 point 9) ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Something has hold of you and you are STILL ALIVE. This is the window that did not exist
+        /// before: the old grab began inside <see cref="StartDeath"/>, i.e. after the backend had
+        /// already applied 100 damage, ran for a fixed 0.9 s and read no input at all. There was no
+        /// instant at which a player was held and could act, so there was nothing to escape.
+        ///
+        /// Reuses the whole presentation the death grab already built — camera possession, the drag
+        /// to arm's length, the locomotion block, the handoff to `ProxyGrabHook` — and adds the one
+        /// thing it never had: a way out.
+        /// </summary>
+        private void StartLiveGrab(float window)
+        {
+            if (_dying)
+                return; // already gone; a grab means nothing now
+
+            // TWO CREATURES CAN GRAB YOU IN THE SAME TICK — seen in the play-test log at 23:11:53,
+            // phantom 61440 and 61441 both opening on victim 1. Without this guard the second call
+            // added a SECOND set of locomotion blockers under the same key, and the single
+            // `EndLiveGrab` that follows only removes one set: the player respawns unable to walk.
+            // Re-grabbing while already held just refreshes the window; the backend is the one
+            // tracking who actually has you.
+            if (_heldAlive)
+            {
+                _heldWindow = window > 0.05f ? window : _heldWindow;
+                _grabTimer = _heldWindow;
+                return;
+            }
+
+            EnsureUi();
+            _heldAlive = true;
+            // Guard the window: a malformed or missing field must not produce an instant death or an
+            // eternal hold. The backend's own value is the contract, this is only the floor.
+            _heldWindow = window > 0.05f ? window : 2.5f;
+            _grabTimer = _heldWindow;
+            _struggle = 0f;
+            _struggleSent = false;
+
+            _grabber = ResolveGrabber();
+            ActiveGrabber = _grabber;
+            GrabProgress01 = 0f;
+
+            var grabCam = ResolveCam();
+            if (grabCam != null)
+            {
+                _camRestore = grabCam.transform;
+                _camRotationAtGrab = _camRestore.localRotation;
+            }
+
+            // Held means held: the same locomotion block the death fade uses. Tracked in its own
+            // field so releasing it can never race the death one.
+            var movement = ResolveMovement();
+            if (movement != null)
+            {
+                for (int i = 0; i < BlockedStates.Length; i++)
+                    movement.AddStateBlocker(this, BlockedStates[i]);
+                _heldBlock = movement;
+            }
+        }
+
+        /// <summary>
+        /// Drives the live grab: the same camera work as the death hold, plus reading input and
+        /// reporting a successful struggle to the backend, which is the authority on whether you
+        /// actually got free.
+        ///
+        /// The client NEVER decides the outcome on its own. It reports; the backend releases (or
+        /// does not) and says so with `phantom_grab_release`. Deciding locally would mean a client
+        /// reverting a death the server already owns, which is exactly the split ADR-025 exists to
+        /// keep straight.
+        /// </summary>
+        private void TickLiveGrab()
+        {
+            _grabTimer -= Time.unscaledDeltaTime;
+
+            // It let go, died, or despawned. The backend is still the authority on what happens
+            // next; locally there is nothing left to hold on to.
+            if (_grabber == null)
+            {
+                EndLiveGrab();
+                return;
+            }
+
+            float t = 1f - Mathf.Clamp01(_grabTimer / Mathf.Max(0.01f, _heldWindow));
+            GrabProgress01 = t;
+            ActiveGrabber = _grabber;
+            DriveGrabCamera(t);
+
+            // Struggle. Decays while idle, so pacing yourself does not work.
+            _struggle = Mathf.Max(0f, _struggle - StruggleDecayPerSecond * Time.unscaledDeltaTime);
+            if (StrugglePressedThisFrame())
+                _struggle += 1f;
+
+            if (_struggleText != null)
+            {
+                int left = Mathf.Max(0, StruggleTarget - Mathf.FloorToInt(_struggle));
+                _struggleText.text = left > 0 ? $"MASH  [SPACE]   {left}" : "…";
+                _struggleText.enabled = true;
+            }
+
+            // Report ONCE. Mashing past the threshold must not spam the reliable channel, and the
+            // release arrives as its own event whenever the backend gets to it.
+            if (!_struggleSent && _struggle >= StruggleTarget)
+            {
+                _struggleSent = true;
+                if (_ipc != null)
+                    _ipc.SendAction(ProtocolActionTypes.ReportStruggle);
+            }
+        }
+
+        /// <summary>
+        /// Hand everything back. Called on release, on death (the grab became a kill), and when the
+        /// grabber vanishes — so it must be safe to run twice.
+        /// </summary>
+        private void EndLiveGrab()
+        {
+            if (!_heldAlive)
+                return;
+            _heldAlive = false;
+            _struggle = 0f;
+            _struggleSent = false;
+
+            if (_struggleText != null)
+                _struggleText.enabled = false;
+
+            if (_heldBlock != null)
+            {
+                for (int i = 0; i < BlockedStates.Length; i++)
+                    _heldBlock.RemoveStateBlocker(this, BlockedStates[i]);
+                _heldBlock = null;
+            }
+
+            // Only give the camera back if the death sequence has not taken it over: if the grab
+            // became a kill, `StartDeath` is now driving it and restoring here would fight it.
+            if (!_dying)
+                EndGrab();
         }
 
         // ── Death (fade + "YOU DIED" + movement lock) ──────────────────────────────────────────
@@ -236,6 +429,12 @@ namespace BackroomsSurvival.Gameplay
                 _deathElapsed = 0f; // re-kill during the fade → restart the sequence
                 return;
             }
+
+            // ADR-050: the grab ran out and became this. Tear the live hold down FIRST — it owns a
+            // locomotion blocker and the struggle prompt, and the death sequence is about to take
+            // the camera. Note this runs before `_dying` is set, so `EndLiveGrab` correctly hands
+            // the camera back to be re-borrowed below rather than leaving it half-owned.
+            EndLiveGrab();
 
             _dying = true;
             _deathElapsed = 0f;
@@ -296,7 +495,28 @@ namespace BackroomsSurvival.Gameplay
             float t = 1f - Mathf.Clamp01(_grabTimer / GrabTime); // 0 → 1 across the hold
             GrabProgress01 = t;
             ActiveGrabber = _grabber;
+            DriveGrabCamera(t);
 
+            if (_grabTimer <= 0f)
+                EndGrab(); // the fade takes over next frame
+        }
+
+        /// <summary>
+        /// The presentation of being held, shared by the death grab and the live one (ADR-050): the
+        /// view swings onto the creature, the frame comes apart as it holds you, and the body is
+        /// dragged to arm's length and lifted off its feet.
+        ///
+        /// Extracted rather than duplicated because these two grabs must not drift apart — the live
+        /// one IS the death one with an exit, and a second copy of this would be a second place for
+        /// the camera-roll bug below to come back in.
+        ///
+        /// DECLARED LIMIT: there is no authored grab animation. The creature holds the strike pose
+        /// the backend already puts it in and stays revealed through it, so what reads is "it has
+        /// you", not "it is performing a grab". A real animation needs the creature and the player
+        /// aligned by a shared clip, which is authoring work, not code.
+        /// </summary>
+        private void DriveGrabCamera(float t)
+        {
             var cam = ResolveCam();
             if (cam != null)
             {
@@ -346,9 +566,6 @@ namespace BackroomsSurvival.Gameplay
                 }
                 motor.SetVelocity(pull);
             }
-
-            if (_grabTimer <= 0f)
-                EndGrab(); // the fade takes over next frame
         }
 
         /// <summary>
@@ -548,6 +765,14 @@ namespace BackroomsSurvival.Gameplay
             _flashImage = CreateOverlay("HitFlash", new Color(0.6f, 0f, 0f, 0f));
             _fadeImage = CreateOverlay("DeathFade", new Color(0f, 0f, 0f, 0f));
             _diedText = CreateText("YouDied", "YOU DIED");
+
+            // ADR-050: the struggle prompt. Smaller than YOU DIED and sat low, because it competes
+            // with the creature's face for the same two seconds and the face has to win.
+            _struggleText = CreateText("Struggle", string.Empty);
+            _struggleText.fontSize = 34;
+            _struggleText.color = new Color(0.92f, 0.88f, 0.82f, 0.95f);
+            _struggleText.rectTransform.anchoredPosition = new Vector2(0f, -180f);
+            _struggleText.enabled = false;
         }
 
         private Image CreateOverlay(string name, Color color)
@@ -592,6 +817,7 @@ namespace BackroomsSurvival.Gameplay
             if (_ipc != null)
                 _ipc.RemoveEventListener(OnGameEvent);
 
+            EndLiveGrab(); // releases the live-grab block if it is holding one
             EndDeath(); // releases the movement block if mid-fade
 
             if (_canvas != null)
