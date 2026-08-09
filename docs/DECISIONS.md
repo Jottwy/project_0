@@ -2306,3 +2306,9 @@ Wire NO cambia (el `zone_kind` ya llega al cliente); no toca backend; regla dura
 ### Plan de commits
 
 (a) mecanismo + tests EditMode, inerte sin autoría; (b) autoría OFFICE en `Layer0_Vestibulo.asset` (fluorescente frío, sin lámparas rotas, techo uniforme) + test guarda que carga el asset REAL (patrón `Layer0ActuallyAuthorsTheOfficePropCatalogue` — la lección de "tener el mecanismo no es tenerlo cableado" está pagada dos veces y no se repite).
+
+### CONFIRMACIÓN EN VIVO (2026-08-09, tercera sesión) — la luz fría de OFFICE se ve en juego
+
+Playtest autónomo (build dev con `91618de`, input por computer-use). HUD confirma `chunk (-1,-1) layer 0 zone_kind 12` — mismo chunk OFFICE de las confirmaciones previas. El panel emisivo satura a blanco por el bloom del post-proceso a cualquier distancia probada, así que no sirve para leer el matiz; el SPILL sobre el suelo bajo una lámpara sí: `RGB(217, 221, 223)` — **B > G > R**, exactamente el signo que predice el override `lampColor (0.85, 0.93, 1)` frente al cálido de capa `(1, 0.97, 0.88)` (R > G > B). El giro de matiz es el observable, no un número absoluto — el resto del layer 0 no se muestreó como contraste en esta sesión, pero la dirección por sí sola descarta que el override no esté aplicándose.
+
+ADR-059 pasa a **VALIDADA** para la pieza de luz. El techo (variedad 0, tinte más blanco) no se verificó visualmente esta vez — queda igual que antes, implementado y sin confirmar.
