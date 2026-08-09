@@ -20,6 +20,11 @@
 ## Herramientas
 - [EDITOR-MENUS.md](EDITOR-MENUS.md) — qué hace cada una de las 22 entradas de menú del Editor,
   cuáles son idempotentes y cuáles rehacen assets. Léelo antes de ejecutar un bake.
+- [DEV-ENVIRONMENT.md](DEV-ENVIRONMENT.md) — rutas de esta máquina, comandos exactos de tests
+  EditMode / build de desarrollo / playtest, y las trampas de herramienta que NO dan error
+  (`Collider.bounds` sin sincronizar en EditMode, banker's rounding de `Mathf.RoundToInt`,
+  arrays por `zone_kind` que sirven la última entrada, freshness del arnés). Léelo antes de
+  pelearte con un resultado absurdo.
 
 ## Sistemas (documentación operativa por subsistema)
 - [systems/damage-sync.md](systems/damage-sync.md) — [G] Player Damage Sync (ADR-024): hit-reaction cosmético `hit_seq` en la pose relay.
