@@ -19,27 +19,25 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>
         /// ADR-035 — prefab a instanciar para UN panel concreto. Devuelve
         /// <c>prefabs.wall</c> siempre que no haya un set autorizado que case, así que con
-        /// <c>cfg.wallVariantSets</c> vacío (situación de hoy, sin modelos importados) el
+        /// <c>hasVariants == false</c> (sin cfg o con <c>wallVariantSets</c> vacío) el
         /// render es byte-idéntico al previo a este ADR.
         ///
         /// El hash va en coords GLOBALES de tile (gx, gz) con salt por carril, misma
         /// disciplina que knee walls y dinteles: nunca toca el <c>System.Random</c> del
         /// jitter, así que los tintes de las Piezas A-F no se mueven.
         /// </summary>
-        /// <paramref name="hasCfg"/> lo trae ya resuelto el llamador: `!= null` sobre un
-        /// <c>UnityEngine.Object</c> baja a código nativo, y esto corre una vez por PANEL.
-        /// El corto-circuito por <c>wallVariantSets</c> —array plano, comparación de
-        /// referencia normal— hace que en el estado sin autorar de hoy esta función no
-        /// añada NI UNA llamada nativa respecto al `Instantiate(prefabs.wall, …)` anterior.
+        /// <paramref name="hasVariants"/> y <paramref name="roomType"/> los trae ya
+        /// resueltos el llamador. El RoomType del panel lo comparte con el gate de knee
+        /// walls (deuda de la enmienda 2026-08-08, activada al autorar
+        /// <c>wallVariantSets</c>): `roomZones` se recorre como máximo UNA vez por panel,
+        /// nunca dos, y el `!= null` nativo de <c>cfg</c> sigue resuelto una sola vez
+        /// fuera del bucle de paneles.
         private static GameObject ResolveWallPrefab(GridPrefabSet prefabs, LayerVisualConfig cfg,
-            bool hasCfg, int zoneKind, RoomZoneMsg[] roomZones,
-            int tx, int tz, int gx, int gz, byte flag)
+            bool hasVariants, int zoneKind, RoomZoneKind roomType, int gx, int gz, byte flag)
         {
-            if (!hasCfg || cfg.wallVariantSets == null || cfg.wallVariantSets.Length == 0)
+            if (!hasVariants)
                 return prefabs.wall;
-            // La resolución de sala va DESPUÉS del corto-circuito: sin sets autorizados no
-            // se recorre `roomZones` ni una vez por panel.
-            var variant = cfg.WallPrefabFor(zoneKind, RoomTypeForPanel(roomZones, tx, tz, flag),
+            var variant = cfg.WallPrefabFor(zoneKind, roomType,
                 Hash01(gx, gz, VariantSaltFor(flag)));
             return variant != null ? variant : prefabs.wall;
         }

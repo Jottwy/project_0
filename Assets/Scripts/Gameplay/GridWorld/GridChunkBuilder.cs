@@ -369,7 +369,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                             Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain),
                             cfg, gx, gz, zoneKindQuery, roomZones);
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz,
-                            gx, gz, zoneKindQuery, roomZones);
+                            gx, gz, zoneKindQuery);
                     }
 
                     // Medias paredes (2): dintel sobre vano. Va FUERA del `if (edges != 0)`

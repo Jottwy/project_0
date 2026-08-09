@@ -63,16 +63,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// Independent 5×4×0.2 wall pieces on the flagged tile edges. Unstyled path: sin
         /// <c>cfg</c> no hay sets de variantes que consultar, así que
         /// <see cref="ResolveWallPrefab"/> devuelve siempre <c>prefabs.wall</c> — comparte
-        /// la ruta de selección con <see cref="PlaceWallsTinted"/> sin cambiar de resultado.
+        /// la ruta de selección con <see cref="PlaceWallsTinted"/> sin cambiar de resultado
+        /// y sin resolver RoomType (por eso esta ruta ni siquiera recibe `room_zones`).
         /// </summary>
         private static void PlaceWalls(GridPrefabSet prefabs, Transform parent,
-            byte edges, int tx, int tz, int gx, int gz, int zoneKind, RoomZoneMsg[] roomZones)
+            byte edges, int tx, int tz, int gx, int gz, int zoneKind)
         {
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
                     AddColliderIfMissing(Instantiate(
-                        ResolveWallPrefab(prefabs, null, false, zoneKind, roomZones,
-                            tx, tz, gx, gz, flag),
+                        ResolveWallPrefab(prefabs, null, false, zoneKind, RoomZoneKind.Open,
+                            gx, gz, flag),
                         parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
         }
 
@@ -171,38 +172,41 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // One aliveness check instead of two: `!= null` on a UnityEngine.Object is an
             // overloaded operator that calls into native code, not a reference compare.
             bool hasCfg = cfg != null;
+            // `wallVariantSets` es un campo de array normal: mirarlo aquí no añade
+            // llamadas nativas, y deja el estado "¿hay modelos autorados?" resuelto una
+            // vez para todo el bucle de paneles.
+            bool hasVariants = hasCfg && cfg.wallVariantSets != null
+                && cfg.wallVariantSets.Length != 0;
             float variety = hasCfg ? Mathf.Clamp01(cfg.wallPanelVariety) : 0f;
             float kneeScale = hasCfg ? cfg.KneeWallHeightClamped / WallPrefabHeight : 1f;
 
             foreach (var (flag, ox, oz, yaw) in WallEdgeTable)
                 if ((edges & flag) != 0)
                 {
-                    // ADR-035: `hasCfg` ya resuelto arriba — ResolveWallPrefab no repite
-                    // el `!= null` nativo por panel. El RoomType se resuelve POR PANEL.
-                    var go = Instantiate(
-                        ResolveWallPrefab(prefabs, cfg, hasCfg, zoneKind, roomZones,
-                            tx, tz, gx, gz, flag),
-                        parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
                     // Un knee wall NUNCA perfora un perímetro sellado: una SealedRoom o
                     // CorridorSpine que se puede ver por encima deja de leerse como sala
                     // cerrada, que es justo su razón de existir frente a una zona Open.
                     // `Open` cubre tanto "dentro de una zona Open" como "en ningún rect"
                     // (el fallback de RoomTypeForPanel), o sea el maze — ahí sí aplica.
                     //
-                    // ORDEN DELIBERADO: `Hash01` es aritmética pura y RoomTypeForPanel
-                    // recorre `roomZones` (hasta 2 RoomTypeForTile por panel). Con el
-                    // sorteo primero, la resolución de sala solo corre para la fracción
-                    // que ya pasó el roll (~8% con el perfil de layer 0), no para los ~94
-                    // paneles del chunk. Ambas condiciones son puras, así que el
-                    // corto-circuito no cambia el resultado, solo el coste.
-                    //
-                    // Hoy `ResolveWallPrefab` corta antes de resolver la sala porque
-                    // `wallVariantSets` está vacío en los 4 assets, así que esta es la
-                    // ÚNICA llamada. Cuando se autoren modelos de pared (ADR-035) el
-                    // mismo panel resolverá su RoomType dos veces — merece cachearlo
-                    // entonces, no ahora (sería una abstracción sin consumidor).
-                    if (variety > 0f && Hash01(gx, gz, KneeSaltFor(flag)) < variety
-                        && RoomTypeForPanel(roomZones, tx, tz, flag) == RoomZoneKind.Open)
+                    // RESOLUCIÓN ÚNICA POR PANEL — deuda de la enmienda 2026-08-08,
+                    // activada al autorar `wallVariantSets`: el RoomType lo COMPARTEN la
+                    // selección de variante (ResolveWallPrefab) y el gate de knee wall,
+                    // nunca se resuelve dos veces. Y sigue siendo lazy donde puede: sin
+                    // sets autorados, solo lo resuelven los paneles que ya pasaron el
+                    // sorteo (~8% con el perfil de layer 0) — `Hash01` es aritmética pura
+                    // y RoomTypeForPanel recorre `roomZones` (hasta 2 RoomTypeForTile por
+                    // panel). Ambas condiciones son puras: el orden del corto-circuito no
+                    // cambia el resultado, solo el coste.
+                    bool kneeRoll = variety > 0f && Hash01(gx, gz, KneeSaltFor(flag)) < variety;
+                    RoomZoneKind roomType = hasVariants || kneeRoll
+                        ? RoomTypeForPanel(roomZones, tx, tz, flag)
+                        : RoomZoneKind.Open;
+                    var go = Instantiate(
+                        ResolveWallPrefab(prefabs, cfg, hasVariants, zoneKind, roomType,
+                            gx, gz, flag),
+                        parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
+                    if (kneeRoll && roomType == RoomZoneKind.Open)
                         go.transform.localScale = new Vector3(1f, kneeScale, 1f);
                     AddColliderIfMissing(go);
                     Paint(go, mat, tint);
