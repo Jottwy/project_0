@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use log::{debug, info, warn};
+use log::{debug, error, info, warn};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{interval, MissedTickBehavior};
 
@@ -65,6 +65,14 @@ const RESPAWN_INVULN_TICKS: u32 = (TICK_HZ * 3) as u32;
 /// ADR-032: host-only world autosave cadence (~3 real minutes). Derived from TICK_HZ so the
 /// interval holds regardless of tick rate. 60*180 = 10800 ticks @60Hz.
 const AUTOSAVE_EVERY: u64 = TICK_HZ * 180;
+/// ADR-045 Fase 2 fix: how long `apply_movement` is suppressed after `session_restored` is
+/// emitted. Mirrors the client's `AuthoritativePoseApplier.SnapWindow` (0.35s) — the round trip
+/// the event needs to reach the client and for the client to actually apply it, during which its
+/// reported position is still the pre-restore one and must not be trusted. A dedicated constant,
+/// NOT the `TP_WATCH_WINDOW_TICKS` local inside `apply_client_authoritative_move` (that one is
+/// explicitly marked TEMP DIAG / removable and shared with player_died/player_respawned, which
+/// this fix does not touch).
+const RESTORE_SNAP_SUPPRESS_TICKS: u64 = (0.35 * TICK_HZ as f64) as u64;
 
 const BASE_SPEED: f32 = 5.0;
 const SPRINT_MULT: f32 = 1.5;
@@ -96,6 +104,36 @@ fn resolve_save_path(seed: u64) -> std::path::PathBuf {
     std::env::var("SAVE_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::path::PathBuf::from(format!("./saves/world_{seed}.json")))
+}
+
+/// P0-3: `true` when a loaded save's `world_seed` disagrees with the launch-time WORLD_SEED.
+/// Extracted so the caller's fatal-exit decision is testable without actually exiting the
+/// process — same reason `resolve_phantom_density_scale` above is its own function.
+fn save_world_seed_conflicts(
+    save: &crate::persistence::save::SaveFile,
+    launch_world_seed: u64,
+) -> bool {
+    save.world_seed != launch_world_seed
+}
+
+/// P0-2: same precedent as `world_seed`'s adoption below — a loaded save wins over the
+/// launch-time env, with a warn when they differ. Pure so it's testable without driving the
+/// whole loop (see the tick-gate note on `broadcast_chunk_states` from P0-1 for why that matters
+/// here: nothing in `run()` exercises this in isolation otherwise).
+fn resolve_phantom_density_scale(
+    launch_value: f32,
+    loaded_save: Option<&crate::persistence::save::SaveFile>,
+) -> f32 {
+    let Some(save) = loaded_save else {
+        return launch_value;
+    };
+    if save.phantom_density_scale != launch_value {
+        warn!(
+            "P0-2: save phantom_density_scale {} differs from launch PHANTOM_DENSITY_SCALE {}; adopting saved value",
+            save.phantom_density_scale, launch_value
+        );
+    }
+    save.phantom_density_scale
 }
 
 /// Metadatos a persistir en ESTE guardado: la fecha de creación original más el tiempo jugado
@@ -170,6 +208,38 @@ fn reseed_stp_id_allocators(net: &NetworkManager) -> (u32, u32, u32, u32) {
     (drop_id, building_id, carryable_id, group_id)
 }
 
+/// ADR-032 / ADR-045 Fase 2: apply a `PlayerSnapshot` onto a live `Player`. Extracted so it is the
+/// SAME call whether the snapshot came from the world save's embedded `host_player` (ADR-032) or
+/// from a per-player file (ADR-045 Fase 2) — calling it a second time with the player-file
+/// snapshot after `hydrate_from_save` already called it with `host_player` is what makes "the
+/// player file wins when it exists" true for free: it is simply the last `apply` winning, no
+/// priority logic needed anywhere.
+fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::PlayerSnapshot) {
+    player.stats = snap.stats;
+    // `invuln_until_tick` is an ABSOLUTE tick of the game loop's own counter, which restarts at 0
+    // on every process launch. Restoring it as-is would grant PvP invulnerability for as many
+    // ticks as the session that saved it had been running (measured on a real save: 21716 ticks ≈
+    // 6 min at 60 Hz; hours in a long session). Sanitized to 0: ADR-029's invulnerability protects
+    // the instant of a respawn, it does not survive a backend restart by design.
+    player.stats.invuln_until_tick = 0;
+    player.position = snap.position;
+    player.rotation = snap.rotation;
+    player.inventory = snap.inventory;
+    player.equipment = snap.equipment;
+    player.held_item = snap.held_item;
+    player.respawn_point = snap.respawn_point;
+    player.stp_inventory = snap.stp_inventory;
+    player.inventory_v2 = snap.inventory_v2;
+}
+
+/// ADR-045 Fase 2 fix: whether `apply_movement` should be skipped this tick because a
+/// `session_restored` snap is still in flight to the client. Extracted as a pure function so the
+/// tick-boundary arithmetic (`tick < until`, not `<=`) is unit-testable without spinning up the
+/// game loop.
+fn movement_suppressed(tick: u64, suppressed_until: Option<u64>) -> bool {
+    suppressed_until.is_some_and(|until| tick < until)
+}
+
 /// ADR-032: apply a loaded save over a freshly-generated host world. Restores corpses/chests, the
 /// corpse-id allocator (defensively above both the saved counter and any loaded id), the four
 /// host-authoritative STP rosters, and the host player's durable slice.
@@ -213,21 +283,7 @@ fn hydrate_from_save(
     let rederived_cells = net.occupied_stp_cells.len();
 
     if let Some(p) = save.host_player {
-        player.stats = p.stats;
-        // `invuln_until_tick` es un tick ABSOLUTO del contador del game loop, y ese contador
-        // arranca en 0 en cada lanzamiento del proceso. Restaurarlo tal cual concede
-        // invulnerabilidad PvP durante tantos ticks como llevara la sesión que lo guardó
-        // (medido en un save real: 21716 ticks ≈ 6 min a 60 Hz; en una sesión larga, horas).
-        // Se sanea a 0: la invulnerabilidad de ADR-029 protege el instante del respawn, no
-        // sobrevive a un reinicio del backend por diseño.
-        player.stats.invuln_until_tick = 0;
-        player.position = p.position;
-        player.rotation = p.rotation;
-        player.inventory = p.inventory;
-        player.equipment = p.equipment;
-        player.held_item = p.held_item;
-        player.respawn_point = p.respawn_point;
-        player.stp_inventory = p.stp_inventory;
+        apply_player_snapshot(player, p);
     }
 
     info!(
@@ -253,6 +309,17 @@ pub async fn run(
     // `ipc::server::run`: that one drops its oldest messages on overflow, events included.
     to_clients_voice: broadcast::Sender<ServerMessage>,
     mut net: NetworkManager,
+    // ADR-045 fix: fires whenever THIS backend's own local Unity IPC connection ends — a real
+    // quit, but ALSO a transient drop (e.g. an editor recompile bouncing the socket) that isn't
+    // one. `save_and_shutdown` depends on Unity's `NetworkInitializer` successfully reaching
+    // `IPCClient` before the socket closes — two independent `OnApplicationQuit` handlers on two
+    // MonoBehaviours with no execution order between them, and `IPCClient`'s own teardown can
+    // close the socket (and null its singleton) before `NetworkInitializer` gets a chance to ask
+    // for a save. This is the backend's OWN, Unity-independent fallback: it always knows when its
+    // local client is gone, without caring why. Firing on a transient drop too is accepted, not
+    // overlooked — the write it triggers is the same idempotent atomic save the timer autosave
+    // already performs at an arbitrary cadence, just early.
+    mut local_disconnect_rx: mpsc::Receiver<()>,
 ) {
     let mut player = Player::new(net.local_id, &net.local_name);
     let mut world = World::new(net.world_seed);
@@ -261,6 +328,57 @@ pub async fn run(
     // (and player position) win. Non-host backends never load/save — world state isn't
     // authoritative there (joiners adopt the host's world via WorldSync).
     let save_path = resolve_save_path(net.world_seed);
+
+    // P0-3: exclusive lock on the world save, held for the whole process — host-only, same
+    // reason loading/saving already are (a joiner never touches persistence, see the checkpoint
+    // entry for why that's load-bearing here). Acquired BEFORE `load_or_fresh` so this backend
+    // never even reads a save another live host might be mid-write on.
+    let mut world_lock = if net.is_host {
+        Some(
+            crate::persistence::lock::open_for_locking(&save_path).unwrap_or_else(|e| {
+                eprintln!(
+                    "FATAL: cannot open world lock file for {} ({e}). Refusing to start.",
+                    save_path.display()
+                );
+                error!(
+                    "P0-3: could not open world lock file for {}: {e}",
+                    save_path.display()
+                );
+                std::process::exit(1);
+            }),
+        )
+    } else {
+        None
+    };
+    let _world_lock_guard = world_lock
+        .as_mut()
+        .map(|lock| crate::persistence::lock::acquire_or_exit(lock, &save_path));
+
+    // ADR-045 Fase 2: per-player save file. Unlike `world_lock` above this cannot be resolved at
+    // this point — it needs `identity_key` (arrives async via the `set_identity` IPC action) AND
+    // `world_seed` (already known for a host; a joiner only has it after the HandshakeAck) — so
+    // resolution happens later, inside the tick loop, the first tick both are available.
+    //
+    // `_player_lock_guard` is `'static`: a plain `RwLockWriteGuard<'a, File>` borrows from an
+    // `RwLock<File>` local, and the borrow checker cannot see that the tick loop's runtime guard
+    // (`player_file_resolve_attempted`) makes the acquisition run at most once — it has to assume
+    // ANY iteration could reassign that local, which would invalidate a guard already borrowed
+    // from a PRIOR iteration. `Box::leak` sidesteps this honestly rather than fighting it: this
+    // lock is genuinely meant to live for the rest of the process (exactly like `world_lock`,
+    // which sidesteps the same problem by being acquired before any loop exists at all), so
+    // leaking the tiny `RwLock<File>` once is the correct shape for that intent, not a workaround.
+    //
+    // Two-piece state, deliberately NOT collapsed to one flag:
+    //  - `player_file_resolve_attempted`: tried exactly once — never retried, success or not (a
+    //    contested lock is a standing fact about this identity_key+world_seed combo, not a
+    //    transient one worth polling 60x/second forever).
+    //  - `player_save_path`: `Some` ONLY on a successful lock acquisition — this, not the attempt
+    //    flag, is what autosave/save_and_shutdown gate on, so a failed/contested resolution can
+    //    never write to a path it does not hold the lock for.
+    let mut player_file_resolve_attempted = false;
+    let mut player_save_path: Option<std::path::PathBuf> = None;
+    let mut _player_lock_guard: Option<fd_lock::RwLockWriteGuard<'static, std::fs::File>> = None;
+
     let mut session_name = net.local_name.clone();
     let mut loaded_save = if net.is_host {
         crate::persistence::save::load_or_fresh(&save_path)
@@ -268,16 +386,30 @@ pub async fn run(
         None
     };
     if let Some(save) = &loaded_save {
-        if save.world_seed != net.world_seed {
-            warn!(
-                "ADR-032: save world_seed {} differs from launch WORLD_SEED {}; adopting saved seed",
+        // P0-3: a mismatch used to be a warn + silent adopt. That degradation is exactly what
+        // this task exists to close — two things disagreeing about which world this is must
+        // refuse to start, not quietly merge into whichever one the code happened to load.
+        if save_world_seed_conflicts(save, net.world_seed) {
+            eprintln!(
+                "FATAL: save at {} has world_seed={} but this launch requested WORLD_SEED={}. \
+                 Refusing to start — set WORLD_SEED={} or use a different SAVE_PATH.",
+                save_path.display(),
+                save.world_seed,
+                net.world_seed,
+                save.world_seed
+            );
+            error!(
+                "P0-3: save world_seed {} != launch WORLD_SEED {}; refusing to start",
                 save.world_seed, net.world_seed
             );
+            std::process::exit(1);
         }
         net.world_seed = save.world_seed;
         world = World::new(save.world_seed);
         session_name = save.session_name.clone();
     }
+    net.phantom_density_scale =
+        resolve_phantom_density_scale(net.phantom_density_scale, loaded_save.as_ref());
     // Continuidad de metadatos: sin esto `created_at` se re-estampa en cada guardado y
     // `play_time_seconds` se escribe siempre 0. Se captura ANTES de que `hydrate_from_save`
     // consuma el `SaveFile`.
@@ -324,6 +456,8 @@ pub async fn run(
     // ADR-016 slice 2: host-only driver that walks phantom peers (the robapieles) each
     // entity tick, resolving collision via ADR-017's sim-only chunk cache.
     let mut phantom_driver = PhantomDriver::new(net.world_seed);
+    // P0-2: the value this backend would use if it hosts, resolved above (env, save-overridden).
+    phantom_driver.density_scale = net.phantom_density_scale;
     // ADR-032 (snap de sesión restaurada): armed by the hydration branch below. The
     // "session_restored" event CANNOT be emitted at hydration time — Unity's IPC client hasn't
     // connected yet (broadcast to zero receivers = dropped) — so it is deferred until the first
@@ -332,6 +466,16 @@ pub async fn run(
     // DISTINCT event type on purpose: RespawnRequester listens for player_respawned and would
     // force the native STP respawn chain (SetHealthSilent(0) + RestoreHealth) at boot.
     let mut pending_restore_snap = false;
+    // ADR-045 Fase 2 fix: armed to `tick + RESTORE_SNAP_SUPPRESS_TICKS` at the SAME instant a
+    // snapshot is hydrated (every site that sets `pending_restore_snap = true` also sets this,
+    // in the same statement group) — NOT at emission time. The risk starts the moment the
+    // position is overwritten in RAM: `apply_movement` can run LATER in that SAME tick (the
+    // resolution block that hydrates sits above the movement-apply site in `run()`'s body), so
+    // arming only when `session_restored` goes out (one tick later, at the earliest) would miss
+    // that first, same-tick clobber — the event would then carry the ALREADY-clobbered position.
+    // Until `tick` reaches this value, `apply_movement` is skipped: the client hasn't received
+    // (or hasn't yet applied) the snap, so its reported position is still the pre-restore one.
+    let mut movement_suppressed_until: Option<u64> = None;
 
     // Bootstrap: host/solo creates the authoritative initial structure before
     // loading the surrounding ownership radius. Joiners wait for host WorldSync.
@@ -349,6 +493,11 @@ pub async fn run(
             hydrate_from_save(&mut world, &mut player, &mut net, save);
             spawn_resolved = true;
             pending_restore_snap = true;
+            // ADR-045 Fase 2 fix: see the doc comment on `movement_suppressed_until` above —
+            // `tick` is 0 here (before the loop's first iteration), so this protects ticks
+            // 0..RESTORE_SNAP_SUPPRESS_TICKS in case input is already queued by the time the
+            // loop starts.
+            movement_suppressed_until = Some(tick + RESTORE_SNAP_SUPPRESS_TICKS);
             world.update_ownership(player.position, player.id);
         } else {
             world.update_ownership(player.position, player.id);
@@ -448,6 +597,7 @@ pub async fn run(
                                 &net.stp_buildings,
                                 &net.stp_carryables,
                                 &net.stp_harvestables,
+                                net.phantom_density_scale,
                             ) {
                                 Ok(()) => info!(
                                     "ADR-032: save-on-shutdown written to {}",
@@ -458,7 +608,36 @@ pub async fn run(
                         } else {
                             info!("ADR-032: save-on-shutdown on non-host — nothing to persist, exiting");
                         }
+                        // ADR-045 Fase 2: same graceful save-on-quit, extended to the per-player
+                        // file — host AND joiner, whichever this backend is. No `net.is_host`
+                        // gate, mirroring the autosave above.
+                        if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
+                            match crate::persistence::player_save::save_player(path, key, &player) {
+                                Ok(()) => info!(
+                                    "ADR-045: player save-on-shutdown written to {}",
+                                    path.display()
+                                ),
+                                Err(e) => warn!("ADR-045: player save-on-shutdown failed: {e}"),
+                            }
+                        }
+                        // ADR-056: tell the peers before vanishing. Last thing before the exit,
+                        // after both saves, so a slow or failing send can never cost us the
+                        // persistence this path exists for. Peers that miss it still notice on
+                        // the 5 s heartbeat timeout — this only makes the common case immediate.
+                        sync::broadcast_goodbye(&net, "clean_shutdown").await;
                         std::process::exit(0);
+                    }
+                    // ADR-045 Fase 1: the client's own identity key, session-transient (never
+                    // part of PlayerSnapshot — it SELECTS which player file to load/write, see
+                    // the per-tick resolution below). Resolved eagerly, sanitized on receipt —
+                    // trust-the-client with a filesystem-safety net, same posture as every other
+                    // client-reported action.
+                    if action.action_type == "set_identity" {
+                        let raw_key = json_str(&action.data, "key");
+                        let key = crate::persistence::sanitize_player_key(raw_key, &player.name);
+                        info!("ADR-045: identity resolved to key={key}");
+                        player.identity_key = Some(key);
+                        continue;
                     }
                     info!(
                         "MPTRACE step=PVP event=backend_action_received backend action_received action={}",
@@ -523,6 +702,11 @@ pub async fn run(
                     // the one a patched client can delete.
                     let mut sent_to = 0usize;
                     if !player.stats.is_dead() && !data.is_empty() {
+                        // ADR-053: our own voice is stealable too — and on a solo session it is the
+                        // ONLY voice there is, so without this the mimicry would never fire.
+                        if net.is_host {
+                            net.voice_echo.insert(net.local_id, data.clone());
+                        }
                         let me = [player.position.x, player.position.y, player.position.z];
                         let payload = PacketPayload::VoiceFrame {
                             seq,
@@ -576,6 +760,53 @@ pub async fn run(
             }
         }
 
+        // ADR-045 fix: the local Unity IPC client disconnected — save what `save_and_shutdown`
+        // would have saved, without depending on Unity having sent it. See the doc comment on
+        // `local_disconnect_rx` above. Mirrors `save_and_shutdown`'s own gates AND order exactly
+        // (world save host-only, then player save whenever a path is resolved) but does NOT
+        // `std::process::exit` — a lost local connection is not by itself a reason for this
+        // backend to end its own process; Unity's `KillBackend` already force-kills it on its own
+        // timeout regardless, and this is a safety net for that window, not a second shutdown
+        // path. Placed AFTER the `ClientMessage` loop above on purpose: if Unity's own
+        // `save_and_shutdown` request is queued in the SAME tick as the disconnect that follows
+        // it (the common case — `IPCClient.Shutdown()` closes the socket shortly after sending),
+        // that arm's `std::process::exit(0)` already ended the process by the time control would
+        // reach here — this block never runs for that tick, so the two paths cannot both fire for
+        // the same clean shutdown. It can still fire on a TRANSIENT local socket drop that is not
+        // a real quit (e.g. an editor recompile bounces the connection) — harmless: same atomic
+        // write the timer autosave already performs at an arbitrary cadence, just early.
+        while local_disconnect_rx.try_recv().is_ok() {
+            if net.is_host {
+                match crate::persistence::save::save_world(
+                    &save_path,
+                    &session_name,
+                    &world,
+                    &player,
+                    &save_meta_now(&save_meta_base, tick),
+                    &net.stp_items,
+                    &net.stp_buildings,
+                    &net.stp_carryables,
+                    &net.stp_harvestables,
+                    net.phantom_density_scale,
+                ) {
+                    Ok(()) => info!(
+                        "ADR-032: world save on local IPC disconnect written to {}",
+                        save_path.display()
+                    ),
+                    Err(e) => warn!("ADR-032: world save on local IPC disconnect failed: {e}"),
+                }
+            }
+            if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
+                match crate::persistence::player_save::save_player(path, key, &player) {
+                    Ok(()) => info!(
+                        "ADR-045: player save on local IPC disconnect written to {}",
+                        path.display()
+                    ),
+                    Err(e) => warn!("ADR-045: player save on local IPC disconnect failed: {e}"),
+                }
+            }
+        }
+
         // ADR-032 (snap de sesión restaurada): first PlayerInput ⇒ Unity is connected and
         // subscribed — emit the deferred position-arming event exactly once. Carries the
         // CURRENT authoritative position (hydrated; the XZ speed cap has held it against the
@@ -601,7 +832,39 @@ pub async fn run(
             // client's fresh-session containers over that ambiguity would destroy STP starter
             // items for no gain (accepted degradation: a genuinely-naked persisted state falls
             // back to whatever STP grants a fresh session).
-            if !player.stp_inventory.is_empty() {
+            // ADR-045 Fase 3: inventory_v2 (container/slot/props) takes priority when the
+            // client has ever sent the richer report_inventory shape; a save written under
+            // Fases 1+2 only (or by a pre-Fase-3 client that never sends it) falls back to the
+            // flat stp_inventory restore, UNCHANGED from before this fase existed — the two
+            // are never merged, and neither being non-empty implies the other is.
+            if !player.inventory_v2.is_empty() {
+                info!(
+                    "ADR-045: emitting inventory_restored v2 ({} stacks)",
+                    player.inventory_v2.len()
+                );
+                let items: Vec<serde_json::Value> = player
+                    .inventory_v2
+                    .iter()
+                    .map(|s| {
+                        let props: Vec<serde_json::Value> = s
+                            .props
+                            .iter()
+                            .map(|p| serde_json::json!({ "id": p.id, "value": p.value }))
+                            .collect();
+                        serde_json::json!({
+                            "item_id": s.item_id,
+                            "quantity": s.quantity,
+                            "container": s.container,
+                            "slot": s.slot,
+                            "props": props,
+                        })
+                    })
+                    .collect();
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "inventory_restored".into(),
+                    data: serde_json::json!({ "items": items }),
+                }));
+            } else if !player.stp_inventory.is_empty() {
                 info!(
                     "ADR-032: emitting inventory_restored ({} stacks)",
                     player.stp_inventory.len()
@@ -630,8 +893,67 @@ pub async fn run(
                 &to_clients_voice,
                 &mut processed_interactions,
                 tick,
+                player_save_path.as_deref(),
             )
             .await;
+        }
+
+        // ADR-045 Fase 2: resolve the per-player save file, exactly once, the first tick both
+        // ingredients are available — `net.world_seed_known` (always true for a host; a joiner
+        // gets it from the HandshakeAck this same `process_incoming()` may just have processed)
+        // and `player.identity_key` (set by the `set_identity` handler above, whichever tick it
+        // arrives on). `player_file_resolve_attempted` guards this from ever running twice,
+        // success or not — see the doc comment on the locals above for why that is a SEPARATE
+        // flag from `player_save_path`.
+        if !player_file_resolve_attempted && net.world_seed_known {
+            if let Some(key) = player.identity_key.clone() {
+                player_file_resolve_attempted = true;
+                let path =
+                    crate::persistence::player_save::resolve_player_save_path(net.world_seed, &key);
+                match crate::persistence::lock::open_for_locking(&path) {
+                    Ok(lock) => {
+                        // Leaked on purpose — see the doc comment on `_player_lock_guard` above.
+                        let leaked: &'static mut fd_lock::RwLock<std::fs::File> =
+                            Box::leak(Box::new(lock));
+                        match crate::persistence::lock::try_acquire(leaked) {
+                            Ok(guard) => {
+                                _player_lock_guard = Some(guard);
+                                if let Some(file) =
+                                    crate::persistence::player_save::load_or_fresh(&path)
+                                {
+                                    apply_player_snapshot(&mut player, file.snapshot);
+                                    pending_restore_snap = true;
+                                    // ADR-045 Fase 2 fix: see the doc comment on
+                                    // `movement_suppressed_until` above — armed HERE, not at
+                                    // emission, because `apply_movement` can still run later in
+                                    // this SAME tick.
+                                    movement_suppressed_until =
+                                        Some(tick + RESTORE_SNAP_SUPPRESS_TICKS);
+                                    info!("ADR-045: player file hydrated from {}", path.display());
+                                } else {
+                                    info!(
+                                        "ADR-045: no existing player file at {} — starting fresh",
+                                        path.display()
+                                    );
+                                }
+                                player_save_path = Some(path);
+                            }
+                            Err(e) => warn!(
+                                "ADR-045: lock on {} held by another process ({e}) — this \
+                                 session will not persist a player file this run (same \
+                                 identity_key + world_seed already in use elsewhere). Playing \
+                                 without save.",
+                                path.display()
+                            ),
+                        }
+                    }
+                    Err(e) => warn!(
+                        "ADR-045: could not open player lock file for {} ({e}) — playing \
+                         without save.",
+                        path.display()
+                    ),
+                }
+            }
         }
 
         // ADR-016 (identity phase): once a real peer is connected, an unbound phantom adopts
@@ -710,7 +1032,13 @@ pub async fn run(
             // client-reported movement is ignored (same gating family as DEV_FREEZE_SURVIVAL /
             // take_damage). Any local client drift while dead is corrected by the applier's snap
             // on player_respawned. The ack does not advance (nothing was accepted).
-            if !player.stats.is_dead() {
+            //
+            // ADR-045 Fase 2 fix: same freeze, same "nothing accepted" semantics, while a
+            // session_restored snap is in flight to the client (see `movement_suppressed_until`
+            // above) — trusting the client's reported position during that window would
+            // overwrite the just-restored one with wherever the client was BEFORE it received
+            // the snap.
+            if !player.stats.is_dead() && !movement_suppressed(tick, movement_suppressed_until) {
                 let seq = apply_movement(
                     &mut player,
                     &received_input,
@@ -782,14 +1110,58 @@ pub async fn run(
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
                 phantom_driver.wake_for_noises(&mut net);
-                let attacks = phantom_driver.step(
-                    &mut net,
-                    entity_dt,
-                    player.position,
-                    player.rotation,
-                    player.crouch,
-                    player.stats.is_dead(),
-                );
+                // Copied out rather than borrowed so the driver is free again immediately — the
+                // voice echoes below need it mutably, and an attack is two `Copy` words.
+                let attacks: Vec<_> = phantom_driver
+                    .step(
+                        &mut net,
+                        entity_dt,
+                        player.position,
+                        player.rotation,
+                        player.crouch,
+                        player.stats.is_dead(),
+                        player.held_item,
+                    )
+                    .to_vec();
+
+                // ADR-053 — IT SAYS YOUR OWN WORDS BACK AT YOU. The driver decides who and when;
+                // this is the half that owns the sockets. `send_unreliable_as` stamps the frame
+                // with the PHANTOM's id, which is the whole trick: the client already plays a
+                // peer's voice at that peer's position, so the words come out of the figure down
+                // the corridor with no client code at all.
+                for (phantom_id, victim_id) in std::mem::take(&mut phantom_driver.voice_echoes) {
+                    let Some(data) = net.voice_echo.get(&victim_id).cloned() else {
+                        continue;
+                    };
+                    // Its OWN counter — see `voice_echo_seq`. Borrowing the attack-request id meant
+                    // every echo of a solo session shipped with seq 0 and the client's jitter
+                    // buffer dropped all but the first as duplicates.
+                    net.voice_echo_seq = net.voice_echo_seq.wrapping_add(1);
+                    let payload = PacketPayload::VoiceFrame {
+                        seq: net.voice_echo_seq,
+                        data,
+                    };
+                    for dest in crate::network::sync::voice_destinations(&net, phantom_id) {
+                        net.send_unreliable_as(phantom_id, dest, &payload).await;
+                    }
+                    // …and the host's own player, who is not a peer and therefore not in that list.
+                    if let Some(ph) = net.peers.get(&phantom_id) {
+                        let me = [player.position.x, player.position.y, player.position.z];
+                        if crate::network::sync::within_voice_range(me, ph.position)
+                            && !player.stats.is_dead()
+                        {
+                            if let PacketPayload::VoiceFrame { seq, data } = &payload {
+                                let _ = to_clients.send(ServerMessage::PeerVoice(
+                                    crate::ipc::PeerVoice {
+                                        peer_id: phantom_id,
+                                        seq: *seq,
+                                        data: data.clone(),
+                                    },
+                                ));
+                            }
+                        }
+                    }
+                }
                 // ADR-047 — this loop ROUTES; it no longer assumes the victim. Each attack names
                 // whose health it is for, and the only branch that applies damage is the one where
                 // that victim IS this backend's own local player. ADR-025 makes the split
@@ -842,6 +1214,12 @@ pub async fn run(
                             PhantomAttackKind::Hit(dmg) => (0u8, dmg, [0.0, 0.0]),
                             PhantomAttackKind::Kill => (1u8, 0.0, [0.0, 0.0]),
                             PhantomAttackKind::Knockback(dx, dz) => (2u8, 0.0, [dx, dz]),
+                            // ADR-050 point 9. The grab window rides `damage`, which is the only
+                            // spare f32 in the payload — no layout change, per ADR-047's spare-kind
+                            // clause. It is NOT damage and the victim side must not apply it as
+                            // such; kind 3 has its own arm there.
+                            PhantomAttackKind::GrabStart(window) => (3u8, window, [0.0, 0.0]),
+                            PhantomAttackKind::GrabRelease => (4u8, 0.0, [0.0, 0.0]),
                         };
                         let grant = PacketPayload::PhantomAttackGrant {
                             request_id,
@@ -893,6 +1271,21 @@ pub async fn run(
                                 data: serde_json::json!({ "dx": dx, "dz": dz }),
                             }));
                         }
+                        // ADR-050 point 9: NO health is touched by either of these. The grab is a
+                        // window, not a blow — the kill that may follow arrives as a separate
+                        // `Kill` from `tick_grab` once the timer expires.
+                        PhantomAttackKind::GrabStart(window) => {
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_grab_start".into(),
+                                data: serde_json::json!({ "window": window }),
+                            }));
+                        }
+                        PhantomAttackKind::GrabRelease => {
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_grab_release".into(),
+                                data: serde_json::json!({}),
+                            }));
+                        }
                     }
                 }
             }
@@ -901,29 +1294,15 @@ pub async fn run(
         // Ownership is now handled per-chunk-boundary above; only teleportation
         // and other slow-tick work runs here.
         if tick.is_multiple_of(SLOW_TICK_EVERY) && (net.is_host || net.peer_count() == 0) {
-            let events = world.tick_teleportation(tick);
-            for ev in &events {
-                let _ = to_clients.send(ServerMessage::Event(ev.clone()));
+            let outcomes = world.tick_teleportation(tick);
+            for o in &outcomes {
+                let _ = to_clients.send(ServerMessage::Event(o.event.clone()));
             }
-            // Broadcast teleport events to peers.
-            for ev in &events {
-                if let Some(data) = ev.data.as_object() {
-                    if let (Some(pos), Some(offset)) =
-                        (data.get("chunk_pos"), data.get("new_offset"))
-                    {
-                        let old_pos = [
-                            pos.as_array().and_then(|a| a[0].as_i64()).unwrap_or(0) as i32,
-                            pos.as_array().and_then(|a| a[1].as_i64()).unwrap_or(0) as i32,
-                        ];
-                        let new_pos = [
-                            old_pos[0]
-                                + offset.as_array().and_then(|a| a[0].as_i64()).unwrap_or(0) as i32,
-                            old_pos[1]
-                                + offset.as_array().and_then(|a| a[1].as_i64()).unwrap_or(0) as i32,
-                        ];
-                        sync::broadcast_chunk_teleport(&net, old_pos, new_pos, 0).await;
-                    }
-                }
+            // Broadcast teleport events to peers. The seed comes straight from the
+            // outcome: peers regenerate the chunk from it, so sending anything else
+            // diverges their content from the owner's while the owner is still alive.
+            for o in &outcomes {
+                sync::broadcast_chunk_teleport(&net, o.old_pos, o.new_pos, o.new_seed).await;
             }
         }
 
@@ -1036,6 +1415,7 @@ pub async fn run(
                     &to_clients_voice,
                     &mut processed_interactions,
                     tick,
+                    player_save_path.as_deref(),
                 )
                 .await;
             }
@@ -1079,9 +1459,24 @@ pub async fn run(
                 &net.stp_buildings,
                 &net.stp_carryables,
                 &net.stp_harvestables,
+                net.phantom_density_scale,
             ) {
                 Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
                 Err(e) => warn!("ADR-032: autosave failed: {e}"),
+            }
+        }
+
+        // ADR-045 Fase 2: per-player autosave, same cadence as the world autosave above but
+        // WITHOUT the `net.is_host` gate — unlike the world save, a joiner owns and writes its
+        // own player file too. Gated on `player_save_path` alone: `None` covers both "not
+        // resolved yet" and "resolution failed/lost the lock" (see the locals' doc comment) —
+        // either way, nothing to write to.
+        if tick > 0 && tick.is_multiple_of(AUTOSAVE_EVERY) {
+            if let (Some(path), Some(key)) = (&player_save_path, &player.identity_key) {
+                match crate::persistence::player_save::save_player(path, key, &player) {
+                    Ok(()) => info!("ADR-045: player autosave written to {}", path.display()),
+                    Err(e) => warn!("ADR-045: player autosave failed: {e}"),
+                }
             }
         }
 
@@ -1140,6 +1535,10 @@ async fn handle_network_event(
     to_clients_voice: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut HashSet<(u16, u64)>,
     tick: u64,
+    // ADR-056: needed by the host-departure arm below, which persists the player file before
+    // announcing the end of the session. `None` means no file was ever resolved (no identity, or
+    // the lock was contested) — exactly the same gate every other save site in this loop uses.
+    player_save_path: Option<&std::path::Path>,
 ) {
     match event {
         NetworkEvent::PeerConnected { id, name } => {
@@ -1181,6 +1580,38 @@ async fn handle_network_event(
                 event_type: "player_left".into(),
                 data: serde_json::json!({ "player_id": id, "name": "", "reason": reason }),
             }));
+
+            // ADR-056: the host leaving ends the session — there is no host migration, so
+            // whatever is left of the mesh is a world that cannot advance (chunk displacement is
+            // gated on `is_host || peer_count() == 0`, and with the mesh still alive peer_count
+            // never reaches 0). Compared against `host_peer_id` rather than the literal `1` the
+            // request paths use, so this does not become the sixteenth hardcoded host id.
+            if net.host_peer_id == Some(id) {
+                info!("ADR-056: host {id} left ({reason}) — ending the session");
+
+                // Persist before announcing. Same gates and same order as `save_and_shutdown`:
+                // if Unity tears down promptly on the event below, this is the write that makes
+                // the difference between keeping this session's progress and losing it back to
+                // the last ~3-minute autosave.
+                if let (Some(path), Some(key)) = (player_save_path, &player.identity_key) {
+                    match crate::persistence::player_save::save_player(path, key, player) {
+                        Ok(()) => info!(
+                            "ADR-056: player saved on host departure to {}",
+                            path.display()
+                        ),
+                        Err(e) => warn!("ADR-056: player save on host departure failed: {e}"),
+                    }
+                }
+
+                // Unity owns the teardown: it answers this by calling `NetworkInitializer
+                // .Shutdown()`, which comes back as `save_and_shutdown` and exits this process.
+                // Deliberately NOT `std::process::exit` here — two owners of the shutdown is the
+                // race the ADR-045 amendment already had to untangle once.
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "session_ended".into(),
+                    data: serde_json::json!({ "reason": reason }),
+                }));
+            }
         }
 
         NetworkEvent::RemotePlayerUpdate {
@@ -1714,6 +2145,28 @@ async fn handle_network_event(
                         data: serde_json::json!({ "dx": impulse[0], "dz": impulse[1] }),
                     }));
                 }
+                // ADR-050 point 9. These MUST be explicit arms rather than falling through to the
+                // `_` below, which treats an unknown kind as a hit: the grab window rides `damage`,
+                // so kind 3 would land 2.5 points of damage on the victim instead of opening the
+                // escape window. Neither touches health.
+                3 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=grab_start window={damage:.1} request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_grab_start".into(),
+                        data: serde_json::json!({ "window": damage }),
+                    }));
+                }
+                4 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=grab_release request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_grab_release".into(),
+                        data: serde_json::json!({}),
+                    }));
+                }
                 _ => {
                     // Unknown kinds decode as a plain hit rather than being dropped: a future
                     // sender adding one should still land damage on an older victim backend.
@@ -1734,6 +2187,22 @@ async fn handle_network_event(
                     }));
                 }
             }
+        }
+
+        NetworkEvent::StruggleReported { victim } => {
+            // Same host-only gate as the noise below, and for the same reason: nothing on a joiner
+            // simulates a phantom, so nothing there can release one.
+            if !net.is_host {
+                warn!(
+                    "MPTRACE step=PH_GRAB event=struggle_report_not_host note=dropped_no_simulator"
+                );
+                return;
+            }
+            // Nothing to sanitise: the payload is empty and the victim is the sender, which the
+            // transport authenticated by address. A struggle from somebody nobody is holding drains
+            // into an empty set on the next tick and does nothing.
+            info!("MPTRACE step=PH_GRAB event=struggle_reported_p2p victim_id={victim}");
+            net.pending_struggles.insert(victim);
         }
 
         NetworkEvent::NoiseReported { position, loudness } => {
@@ -1771,6 +2240,11 @@ async fn handle_network_event(
             }
 
             if net.is_host {
+                // ADR-053: keep the last scrap so a robapieles can give it back later. Only the
+                // host, because only the host simulates them.
+                if !data.is_empty() {
+                    net.voice_echo.insert(speaker, data.clone());
+                }
                 // 1) Relay to every other peer within earshot OF THE SPEAKER, stamped with the
                 //    speaker's id — the same ADR-015 mechanism the pose relay uses, so the
                 //    receiving side needs no special case at all.
@@ -2167,11 +2641,42 @@ async fn handle_action(
                 None => debug!("report_noise ignored: malformed position or loudness"),
             }
         }
+        // ADR-050 point 9: the victim reports STRUGGLING out of a grab. Carries no payload at all —
+        // the identity is "whoever's backend this is", so there is nothing to forge. A struggle
+        // from a player nobody is holding drains into an empty set and does nothing.
+        //
+        // Molded on `report_noise` above, including the host/joiner split: only the host simulates
+        // phantoms, so a joiner forwards it instead of writing to a queue nobody reads. RELIABLE,
+        // unlike the noise: a dropped noise is a missed stimulus, a dropped struggle is a death the
+        // player earned their way out of.
+        "report_struggle" => {
+            if net.is_host {
+                info!(
+                    "MPTRACE step=PH_GRAB event=struggle_reported victim_id={}",
+                    net.local_id
+                );
+                net.pending_struggles.insert(net.local_id);
+            } else {
+                info!("MPTRACE step=PH_GRAB event=struggle_forwarded_to_host");
+                let report = PacketPayload::StruggleReport;
+                net.send_reliable(1, &report).await; // 1 = host
+            }
+        }
         "report_inventory" => {
             let mut items = parse_loot_stacks(&action.data);
             crate::world::corpse::sanitize_loot_stacks(&mut items);
             debug!("report_inventory: {} stacks", items.len());
             player.stp_inventory = items;
+
+            // ADR-045 Fase 3: same report, richer companion parse. Empty on a pre-Fase-3
+            // client (no container/slot on any entry) — that is fine, the emission site falls
+            // back to the flat restore above when this stays empty.
+            let mut items_v2 = parse_inventory_v2_stacks(&action.data);
+            sanitize_inventory_v2_stacks(&mut items_v2);
+            if !items_v2.is_empty() {
+                debug!("report_inventory: {} v2 stacks", items_v2.len());
+            }
+            player.inventory_v2 = items_v2;
         }
         // ADR-030: the client reports eating/drinking an item (STP's own local Hunger/Thirst
         // managers are disabled by StatInterpolator, ADR-009 L2, so without this the survival
@@ -4133,6 +4638,56 @@ fn parse_loot_stacks(data: &serde_json::Value) -> Vec<crate::world::corpse::Corp
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// ADR-045 Fase 3: richer companion of `parse_loot_stacks` — reads the SAME `report_inventory`
+/// `items` array, but only keeps entries that carry `container`+`slot` (a Fase-3-aware client).
+/// A pre-Fase-3 client's plain `{item_id, quantity}` entries have neither key, so `?` short-
+/// circuits them out here; they still populate `stp_inventory` via `parse_loot_stacks`,
+/// unchanged. `props` is optional even on a v2 entry (an item with no instance properties).
+fn parse_inventory_v2_stacks(data: &serde_json::Value) -> Vec<crate::player::InventoryStackV2> {
+    data.get("items")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|entry| {
+                    let item_id = json_i32(entry, "item_id")?;
+                    let quantity = json_i32(entry, "quantity")?;
+                    let container =
+                        json_u32(entry, "container").and_then(|v| u8::try_from(v).ok())?;
+                    let slot = json_u32(entry, "slot").and_then(|v| u8::try_from(v).ok())?;
+                    let props = entry
+                        .get("props")
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|p| {
+                                    let id = json_i32(p, "id")?;
+                                    let value = p.get("value").and_then(|v| v.as_f64())?;
+                                    Some(crate::player::session::ItemPropertyValue { id, value })
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    Some(crate::player::InventoryStackV2 {
+                        item_id,
+                        quantity,
+                        container,
+                        slot,
+                        props,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// ADR-045 Fase 3: same hygiene as `sanitize_loot_stacks` (zero-quantity drop, cap truncate),
+/// kept as its own function because the two stacks share only their JSON key names, not a
+/// backing type — `InventoryStackV2` is not `CorpseStack`.
+fn sanitize_inventory_v2_stacks(items: &mut Vec<crate::player::InventoryStackV2>) {
+    items.retain(|s| s.quantity > 0);
+    items.truncate(crate::world::corpse::MAX_CORPSE_STACKS);
 }
 
 /// ADR-025 Slice B: sanitize a client-reported damage amount. Missing/NaN/∞/negative → 0

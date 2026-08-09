@@ -59,7 +59,10 @@ namespace BackroomsSurvival.Net
         // materials cover ~4× the area (≈1/4 the per-m² density) instead of a heavy concentrated
         // pile. 12 m / 50 m = 0.24 normalized; points past the chunk edge are clamped (mild).
         private const float CacheClusterRadius = 1.5f / 50f;
-        private const float ZoneSpreadRadius = 12.0f / 50f;
+        // internal, not private: ChunkLootManager's walkability-retry jitter (Fix priorizado
+        // worldgen Alpha 1) reuses this instead of a duplicated magic number — a retry should
+        // never wander further than the zone's own spread.
+        internal const float ZoneSpreadRadius = 12.0f / 50f;
         // Keep cluster centres off the chunk seams so a cache/zone never straddles two chunks.
         private const float CentreMargin = 0.18f;
 
@@ -102,15 +105,21 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// 12 first-pass profiles, one per ZONE_* (0=Normal..11=Pit, mirrors
+        /// 13 first-pass profiles, one per ZONE_* (0=Normal..12=Office, mirrors
         /// backend/src/world/chunk/surface_profiles.rs) — TODO(balance): distinguishable so the
         /// wiring is OBSERVABLE in playtest, deliberately NOT a tuned final design (approved plan,
         /// see docs/STATE.md Pieza 3). Per the zone_kind distribution audited for that plan, the
         /// expansion generator (the vast majority of the explorable world) only reaches NORMAL/
-        /// OPEN_HALL/PILLAR_HALL/STORAGE/HUMID in real volume; SAFE/DANGER/CLEANING only occur in
-        /// the starter structures near spawn, and RED/PIT need depth >= 12 chunks at ~1% each. All
-        /// 12 are still wired for completeness. Entry 0 (NORMAL) is byte-for-value identical to
-        /// <see cref="ZoneLootProfile.Default"/> — the ~83%-of-the-world case keeps today's feel.
+        /// OPEN_HALL/PILLAR_HALL/STORAGE/HUMID/OFFICE in real volume; SAFE/DANGER/CLEANING only
+        /// occur in the starter structures near spawn, and RED/PIT need depth >= 12 chunks at ~1%
+        /// each. All 13 are still wired for completeness. Entry 0 (NORMAL) is byte-for-value
+        /// identical to <see cref="ZoneLootProfile.Default"/> — the largest case keeps today's feel.
+        ///
+        /// THE ARRAY LENGTH IS LOAD-BEARING, not documentation: <see cref="ZoneLootTable.Profile"/>
+        /// resolves out-of-range with <c>Mathf.Clamp</c>, so a short array does not throw — it
+        /// silently serves the LAST entry's profile. Before ZONE_OFFICE existed, an OFFICE chunk
+        /// would have been looted as ZONE_PIT (richest caches, weapon-heavy) with nothing to
+        /// notice it by.
         /// </summary>
         public static ZoneLootProfile[] DefaultZoneLootProfiles() => new[]
         {
@@ -180,6 +189,12 @@ namespace BackroomsSurvival.Net
                 itemCacheChance = 0.70f, carryableZoneChance = 0.20f, weaponRollChance = 0.30f,
                 consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 2f, materialWeight = 1f,
                 logWeight = 20f, stoneWeight = 40f, metalWeight = 40f,
+            },
+            new ZoneLootProfile // 12 ZONE_OFFICE — compartmented floor: many small caches, few materials
+            {
+                itemCacheChance = 0.60f, carryableZoneChance = 0.20f, weaponRollChance = 0.08f,
+                consumableWeight = 3f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
+                logWeight = 15f, stoneWeight = 20f, metalWeight = 65f,
             },
         };
 
@@ -296,6 +311,62 @@ namespace BackroomsSurvival.Net
         // Tiny local trig (keeps this file free of a UnityEngine dependency for pure headless use).
         private static float Cos(float a) => (float)System.Math.Cos(a);
         private static float Sin(float a) => (float)System.Math.Sin(a);
+
+        // ── Fix priorizado worldgen (Alpha 1): loot dentro de muros ───────────────────────────
+        // ChunkLootManager.TryPlace solo hacia raycast al suelo; toda tile tiene losa de suelo
+        // (incluidas las macizas), asi que el raycast nunca podia fallar y el loot terminaba
+        // dentro de paneles de pared/pilares. Este es el chequeo que faltaba, sobre el MISMO
+        // bitmask que GridChunkBuilder.BuildFromWalls ya usa para renderizar (sin segunda fuente
+        // de verdad, sin riesgo de divergir de is_walkable_grid_gen — que es host-only en Rust y
+        // nunca llega a Unity). Pura, sin UnityEngine, misma razon que el resto del fichero.
+        private const byte WallN = 1, WallS = 2, WallE = 4, WallW = 8; // mirror GridChunkDataMsg
+        private const byte PillarNW = 0x10, PillarNE = 0x20, PillarSW = 0x40, PillarSE = 0x80; // mirror GridChunkBuilder
+        private const float TileSize = 5.0f;      // mirror GridVisualConstants.TileSize
+        private const float WallThickness = 0.2f; // mirror GridVisualConstants.WallThickness
+
+        /// <summary>
+        /// Given the tile-wall bitmask of a chunk column (10x10, backend/GridChunkDataMsg
+        /// convention) and a chunk-local normalized (u,v), is that point walkable? Rejects a
+        /// point that falls in a pillar sub-cell (high nibble, ADR-033/Pillar) or within
+        /// WallThickness of a tile edge the low nibble marks as walled. Deliberately coarser
+        /// than the backend's raw 2.5 m collision (grid_gen/collision.rs, host-only, never
+        /// serialized to Unity) — this matches what the PLAYER sees and collides with
+        /// client-side, which is the correct target for where loot renders, not the backend's
+        /// finer-grained authoritative maze.
+        /// </summary>
+        public static bool IsWalkable(byte[,] walls, float u, float v)
+        {
+            if (walls == null) return false;
+            int gridX = walls.GetLength(0);
+            int gridZ = walls.GetLength(1);
+            if (gridX <= 0 || gridZ <= 0) return false;
+
+            // Clamp01 alone lets u/v == 1.0 map to tile index == gridX/gridZ (out of range) —
+            // clamp the derived tile index too, not just the normalized input.
+            float lx = Clamp01(u) * (gridX * TileSize);
+            float lz = Clamp01(v) * (gridZ * TileSize);
+            int tx = ClampInt((int)(lx / TileSize), 0, gridX - 1);
+            int tz = ClampInt((int)(lz / TileSize), 0, gridZ - 1);
+            byte b = walls[tx, tz];
+
+            float localX = lx - tx * TileSize; // [0, TileSize)
+            float localZ = lz - tz * TileSize;
+
+            // Which of the tile's 4 sub-cells (2.5 m halves) does the point fall in?
+            bool west = localX < TileSize * 0.5f;
+            bool north = localZ < TileSize * 0.5f; // low-Z half — backend's "north (−Z) row"
+            byte pillarBit = north ? (west ? PillarNW : PillarNE) : (west ? PillarSW : PillarSE);
+            if ((b & pillarBit) != 0) return false;
+
+            float half = WallThickness * 0.5f;
+            if ((b & WallN) != 0 && localZ < half) return false;
+            if ((b & WallS) != 0 && localZ > TileSize - half) return false;
+            if ((b & WallW) != 0 && localX < half) return false;
+            if ((b & WallE) != 0 && localX > TileSize - half) return false;
+            return true;
+        }
+
+        private static int ClampInt(int x, int lo, int hi) => x < lo ? lo : (x > hi ? hi : x);
     }
 
     /// <summary>

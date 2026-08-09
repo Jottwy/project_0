@@ -19,6 +19,73 @@ async fn bind_and_local_addr() {
     assert_ne!(addr.port(), 0);
 }
 
+// P0-2: the joiner's own PHANTOM_DENSITY_SCALE never mattered to the draw before this (only the
+// host ever calls it), but it must not survive the handshake either — the host's value always
+// wins, same precedent as world_seed. Proven end-to-end: two DIFFERING local values, real
+// handshake, then the same deterministic draw over both post-adoption values must agree — which
+// it would NOT if the joiner had kept its own.
+#[tokio::test]
+async fn joiner_adopts_the_hosts_phantom_density_scale_and_it_changes_the_draw() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    host.phantom_density_scale = 8.0;
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.phantom_density_scale = 1.0; // differs from the host's on purpose
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    assert_eq!(
+        joiner.phantom_density_scale, 8.0,
+        "the joiner must adopt the host's value, not keep its own"
+    );
+
+    // The draw is a pure function of its arguments (world_seed, block, layer, density_scale) —
+    // see phantom_spawn::draw_into's doc-comment. With BOTH sides now agreeing on the value,
+    // both must draw the identical population for the same block/layer.
+    let mut host_drawn = Vec::new();
+    crate::world::phantom_spawn::draw_into(
+        host.world_seed,
+        (0, 0),
+        0,
+        host.phantom_density_scale,
+        &mut host_drawn,
+    );
+    let mut joiner_drawn = Vec::new();
+    crate::world::phantom_spawn::draw_into(
+        joiner.world_seed,
+        (0, 0),
+        0,
+        joiner.phantom_density_scale,
+        &mut joiner_drawn,
+    );
+    assert_eq!(
+        host_drawn, joiner_drawn,
+        "same world_seed + same adopted density_scale must draw the same population"
+    );
+
+    // Negative control: the joiner's OWN pre-adoption value would have drawn something
+    // different — otherwise the assertion above would be vacuous (both empty, or a value this
+    // block/layer's density happens not to affect).
+    let mut joiner_drawn_with_own_value = Vec::new();
+    crate::world::phantom_spawn::draw_into(
+        joiner.world_seed,
+        (0, 0),
+        0,
+        1.0,
+        &mut joiner_drawn_with_own_value,
+    );
+    assert_ne!(
+        host_drawn, joiner_drawn_with_own_value,
+        "setup bug: density_scale 8.0 vs 1.0 must draw a different population at (0,0)/layer 0, \
+         or this test cannot tell adoption apart from coincidence"
+    );
+}
+
 #[tokio::test]
 async fn two_peers_handshake_and_sync() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
@@ -50,6 +117,167 @@ async fn two_peers_handshake_and_sync() {
     );
     assert_eq!(joiner.peer_count(), 1);
     assert_ne!(joiner.local_id, 0, "joiner should have an assigned ID");
+}
+
+/// ADR-045 Fase 2: the host knows its `world_seed` from its own launch args at construction; a
+/// joiner does not until the host tells it via `HandshakeAck`. `world_seed_known` exists so
+/// player-file resolution (`game_loop::run`) can poll a plain field instead of inferring the
+/// moment from an event — this fixes the STARTING value both roles construct with.
+#[tokio::test]
+async fn world_seed_known_starts_true_for_host_false_for_joiner() {
+    let host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    assert!(
+        host.world_seed_known,
+        "the host already knows its own seed at construction"
+    );
+
+    let joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(
+        !joiner.world_seed_known,
+        "a joiner does not know the world's seed until the host's HandshakeAck arrives"
+    );
+}
+
+/// Contrapartida sobre sockets reales: tras un handshake completo, el JOINER debe tener
+/// `world_seed_known == true` — es la señal exacta que `game_loop::run` espera antes de intentar
+/// resolver la ruta del fichero de jugador de ADR-045 Fase 2.
+#[tokio::test]
+async fn handshake_ack_marks_world_seed_known_for_the_joiner() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(!joiner.world_seed_known);
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    assert!(
+        joiner.world_seed_known,
+        "world_seed_known must flip to true once the joiner has processed the HandshakeAck"
+    );
+    assert_eq!(
+        joiner.world_seed, 42,
+        "and it must carry the host's actual seed"
+    );
+}
+
+/// ADR-056: the starting value of `host_peer_id` for both roles. A host points at nobody (it IS
+/// the host); a joiner does not know the host's peer id until the `HandshakeAck` arrives. Same
+/// shape as `world_seed_known` above, and pinned for the same reason: `PeerDisconnected` polls
+/// this plain field instead of hardcoding peer `1`.
+#[tokio::test]
+async fn host_peer_id_starts_none_for_both_roles() {
+    let host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    assert!(
+        host.host_peer_id.is_none(),
+        "the host has no host peer to point at"
+    );
+
+    let joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(
+        joiner.host_peer_id.is_none(),
+        "a joiner does not know the host's peer id until the HandshakeAck arrives"
+    );
+}
+
+/// Over real sockets: after a full handshake the joiner must know WHICH peer is the host, and it
+/// must be the same peer it registered — that identity is what lets a later disconnect be told
+/// apart from any other peer leaving.
+#[tokio::test]
+async fn handshake_ack_records_the_host_peer_id_for_the_joiner() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    assert!(joiner.host_peer_id.is_none());
+
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    let host_id = joiner
+        .host_peer_id
+        .expect("host_peer_id must be set once the HandshakeAck is processed");
+    assert!(
+        joiner.peers.contains_key(&host_id),
+        "the recorded host id must be a peer the joiner actually tracks"
+    );
+    assert!(
+        host.host_peer_id.is_none(),
+        "the host itself never records one, even after peers connect"
+    );
+}
+
+/// ADR-056: the goodbye reaches peers as a real `Disconnect`, so they act on the departure
+/// immediately instead of waiting out the 5 s heartbeat timeout. Uses real sockets because the
+/// point of the test is that the datagram is on the wire BEFORE the sender would exit — nothing
+/// re-sends it later.
+#[tokio::test]
+async fn goodbye_broadcast_disconnects_peers_without_waiting_for_timeout() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+
+    let mut joiner = NetworkManager::bind(0, 0, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+    assert_eq!(
+        joiner.peer_count(),
+        1,
+        "joiner should be connected to start"
+    );
+
+    super::sync::broadcast_goodbye(&host, "clean_shutdown").await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let events = joiner.process_incoming().await;
+
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            NetworkEvent::PeerDisconnected { reason, .. } if reason == "clean_shutdown"
+        )),
+        "the goodbye must raise PeerDisconnected carrying its reason, got: {events:?}"
+    );
+    assert_eq!(
+        joiner.peer_count(),
+        0,
+        "and the departing peer must be gone, not merely reported"
+    );
+}
+
+/// The goodbye must never be addressed to a phantom (ADR-016/043): their `addr` is an inert
+/// loopback port and every datagram aimed at one poisons the sender's socket on Windows. It
+/// reuses `broadcast_destinations`, and this pins that it keeps doing so.
+#[tokio::test]
+async fn goodbye_destinations_exclude_phantoms() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_id = 2;
+    host.peers.insert(
+        real_id,
+        PeerConnection::new(real_id, "Joiner".into(), "127.0.0.1:9999".parse().unwrap()),
+    );
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 0.0, 0.0]);
+
+    let dests = host.broadcast_destinations();
+    assert!(
+        dests.iter().any(|(id, _)| *id == real_id),
+        "the real peer must be addressed"
+    );
+    assert!(
+        !dests.iter().any(|(id, _)| *id == phantom_id),
+        "a phantom must never be addressed by the goodbye"
+    );
 }
 
 // ADR-028 Fase E: the corpse relay's three network hops over real sockets —
@@ -366,6 +594,63 @@ async fn peer_timeout_detection() {
         NetworkEvent::PeerDisconnected { id: 2, .. }
     ));
     assert_eq!(net.peer_count(), 0);
+}
+
+/// `PeerId` gets reused after a disconnect (`allocate_peer_id` just hands out the next free
+/// number), so any PeerId-keyed state that outlives the disconnect would silently apply to
+/// whichever different player inherits the number next. Covers both call sites of
+/// `purge_peer_state` implicitly (timeout here; the `Disconnect`-packet arm in `handlers.rs`
+/// calls the same one-line helper) and includes a negative control — a peer that stays
+/// connected must keep its state untouched, or a purge-everything bug would pass silently.
+#[tokio::test]
+async fn peer_timeout_purges_orphaned_peer_keyed_state() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    let gone_addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut gone = PeerConnection::new(2, "Gone".into(), gone_addr);
+    gone.last_heartbeat = Instant::now() - Duration::from_secs(10);
+    net.peers.insert(2, gone);
+    net.voice_echo.insert(2, vec![1, 2, 3]);
+    net.pending_struggles.insert(2);
+    net.processed_corpse_requests.insert((2, 7));
+    net.last_keepalive_trace_at.insert(2, Instant::now());
+    net.last_transform_trace_at.insert(2, Instant::now());
+
+    let staying_addr: SocketAddr = "127.0.0.1:9998".parse().unwrap();
+    net.peers
+        .insert(3, PeerConnection::new(3, "Staying".into(), staying_addr));
+    net.voice_echo.insert(3, vec![9]);
+    net.pending_struggles.insert(3);
+    net.processed_corpse_requests.insert((3, 9));
+    net.last_keepalive_trace_at.insert(3, Instant::now());
+    net.last_transform_trace_at.insert(3, Instant::now());
+
+    let events = net.check_timeouts();
+    assert_eq!(events.len(), 1);
+
+    assert!(
+        !net.voice_echo.contains_key(&2),
+        "voice_echo del peer desconectado debe purgarse"
+    );
+    assert!(
+        !net.pending_struggles.contains(&2),
+        "pending_struggles del peer desconectado debe purgarse"
+    );
+    assert!(
+        !net.processed_corpse_requests.contains(&(2, 7)),
+        "processed_corpse_requests del peer desconectado debe purgarse"
+    );
+    assert!(!net.last_keepalive_trace_at.contains_key(&2));
+    assert!(!net.last_transform_trace_at.contains_key(&2));
+
+    assert!(
+        net.voice_echo.contains_key(&3),
+        "el peer que sigue conectado no debe perder su estado"
+    );
+    assert!(net.pending_struggles.contains(&3));
+    assert!(net.processed_corpse_requests.contains(&(3, 9)));
+    assert!(net.last_keepalive_trace_at.contains_key(&3));
+    assert!(net.last_transform_trace_at.contains_key(&3));
 }
 
 /// ADR-049. El único test de toda la cadena que caza el modo de fallo que el compilador NO ve.

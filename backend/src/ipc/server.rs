@@ -21,11 +21,11 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// ADR-009 wire schema revision — the number Unity and the backend agree on.
 ///
-/// The full v2→v19 changelog (what each bump added, why, and how the previous version
+/// The full v2→v22 changelog (what each bump added, why, and how the previous version
 /// degrades) lives in `docs/systems/ipc-wire-schema.md`, together with the rule that a
 /// P2P-only change bumps this counter too. Bumping this constant means appending an entry
 /// there in the same commit — and the CODE is the authority on the number, not the ADR.
-const WIRE_SCHEMA_VERSION: u32 = 19;
+const WIRE_SCHEMA_VERSION: u32 = 24;
 
 /// Run the IPC server until a fatal accept error.
 ///
@@ -43,6 +43,14 @@ pub async fn run(
     state_tx: broadcast::Sender<ServerMessage>,
     voice_tx: broadcast::Sender<ServerMessage>,
     ipc_addr: String,
+    // ADR-045 fix: signals `game_loop::run` when THIS backend's own local Unity client's
+    // connection ends, so it can save its player file (and, host-only, the world) without
+    // depending on Unity managing to send `save_and_shutdown` first — see the doc comment on
+    // the receiving end in `game_loop::run` for why that send can silently never happen. A
+    // dedicated channel, not a new `ClientMessage` variant: this never crosses the wire (Unity
+    // never sends it), so folding it into the wire-schema enum would blur "what Unity can
+    // actually serialize" with in-process control flow.
+    local_disconnect_tx: mpsc::Sender<()>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(&ipc_addr).await?;
     info!("IPC server listening on {ipc_addr} (wire schema v{WIRE_SCHEMA_VERSION})");
@@ -56,20 +64,44 @@ pub async fn run(
         let to_game = to_game.clone();
         let state_rx = state_tx.subscribe();
         let voice_rx = voice_tx.subscribe();
+        let local_disconnect_tx = local_disconnect_tx.clone();
 
-        tokio::spawn(async move {
-            let (reader, writer) = stream.into_split();
-            let mut read_task = tokio::spawn(read_loop(reader, to_game, peer));
-            let mut write_task = tokio::spawn(write_loop(writer, state_rx, voice_rx));
-
-            // When either half ends (disconnect/error), tear down the other.
-            tokio::select! {
-                _ = &mut read_task => write_task.abort(),
-                _ = &mut write_task => read_task.abort(),
-            }
-            info!("Unity client disconnected: {peer}");
-        });
+        tokio::spawn(handle_connection(
+            stream,
+            peer,
+            to_game,
+            state_rx,
+            voice_rx,
+            local_disconnect_tx,
+        ));
     }
+}
+
+/// One connection's lifetime: read + write loops, torn down together, with the local-disconnect
+/// signal fired on the way out. Extracted from `run`'s accept loop so it is callable directly
+/// against a manually-accepted `TcpStream` in a test, without needing to discover the port
+/// `run` bound to (it never hands that back out).
+async fn handle_connection(
+    stream: tokio::net::TcpStream,
+    peer: SocketAddr,
+    to_game: mpsc::Sender<ClientMessage>,
+    state_rx: broadcast::Receiver<ServerMessage>,
+    voice_rx: broadcast::Receiver<ServerMessage>,
+    local_disconnect_tx: mpsc::Sender<()>,
+) {
+    let (reader, writer) = stream.into_split();
+    let mut read_task = tokio::spawn(read_loop(reader, to_game, peer));
+    let mut write_task = tokio::spawn(write_loop(writer, state_rx, voice_rx));
+
+    // When either half ends (disconnect/error), tear down the other.
+    tokio::select! {
+        _ = &mut read_task => write_task.abort(),
+        _ = &mut write_task => read_task.abort(),
+    }
+    info!("Unity client disconnected: {peer}");
+    // Best-effort: a full buffer just means game_loop hasn't drained the last one yet, and a
+    // duplicate wake-up is harmless (the save it triggers is idempotent).
+    let _ = local_disconnect_tx.try_send(());
 }
 
 /// Decode length-prefixed MessagePack frames into `ClientMessage`s.
@@ -192,5 +224,82 @@ async fn write_loop(
                 warn!("IPC write loop lagged, skipped {skipped} messages");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::TcpStream;
+
+    /// ADR-045 fix: the whole point of `handle_connection` sending on `local_disconnect_tx` is
+    /// that `game_loop::run` learns about a lost local Unity client WITHOUT depending on Unity
+    /// managing to ask for a save first. Proven over a real socket, not a re-implementation of
+    /// the teardown logic in the test — connect, then drop the client end, and the signal must
+    /// arrive.
+    #[tokio::test]
+    async fn local_disconnect_signal_fires_when_the_connection_ends() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (to_game_tx, _to_game_rx) = mpsc::channel::<ClientMessage>(8);
+        let (state_tx, _) = broadcast::channel::<ServerMessage>(8);
+        let (voice_tx, _) = broadcast::channel::<ServerMessage>(8);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(4);
+
+        let client = TcpStream::connect(addr).await.unwrap();
+        let (stream, peer) = listener.accept().await.unwrap();
+        tokio::spawn(handle_connection(
+            stream,
+            peer,
+            to_game_tx,
+            state_tx.subscribe(),
+            voice_tx.subscribe(),
+            disconnect_tx,
+        ));
+
+        drop(client);
+
+        let received =
+            tokio::time::timeout(std::time::Duration::from_secs(2), disconnect_rx.recv())
+                .await
+                .expect("local_disconnect signal must fire within 2s of the client dropping")
+                .is_some();
+        assert!(
+            received,
+            "the channel closed instead of delivering a signal"
+        );
+    }
+
+    /// Negative control for the test above: with the connection still open, nothing should have
+    /// been sent — otherwise the positive test could pass for the wrong reason (e.g. a signal
+    /// fired eagerly on `handle_connection` starting, not on the connection actually ending).
+    #[tokio::test]
+    async fn local_disconnect_signal_does_not_fire_while_still_connected() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (to_game_tx, _to_game_rx) = mpsc::channel::<ClientMessage>(8);
+        let (state_tx, _) = broadcast::channel::<ServerMessage>(8);
+        let (voice_tx, _) = broadcast::channel::<ServerMessage>(8);
+        let (disconnect_tx, mut disconnect_rx) = mpsc::channel::<()>(4);
+
+        let _client = TcpStream::connect(addr).await.unwrap();
+        let (stream, peer) = listener.accept().await.unwrap();
+        tokio::spawn(handle_connection(
+            stream,
+            peer,
+            to_game_tx,
+            state_tx.subscribe(),
+            voice_tx.subscribe(),
+            disconnect_tx,
+        ));
+
+        let fired_early =
+            tokio::time::timeout(std::time::Duration::from_millis(300), disconnect_rx.recv()).await;
+        assert!(
+            fired_early.is_err(),
+            "must not signal while the client is still connected (_client kept alive)"
+        );
     }
 }

@@ -133,3 +133,13 @@ MonoBehaviour:
     logWeight: 20
     stoneWeight: 40
     metalWeight: 40
+  - itemCacheChance: 0.6
+    carryableZoneChance: 0.2
+    weaponRollChance: 0.08
+    consumableWeight: 3
+    medicalWeight: 2
+    ammoWeight: 1
+    materialWeight: 1
+    logWeight: 15
+    stoneWeight: 20
+    metalWeight: 65

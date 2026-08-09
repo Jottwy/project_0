@@ -76,6 +76,26 @@ namespace BackroomsSurvival.Net
         private volatile bool _connected;
         public bool IsConnected => _connected;
 
+        private volatile int _connectionEpoch;
+
+        /// <summary>
+        /// Incremented once per TCP connection established, for the life of the process. Lets a
+        /// send-once-per-connection reporter tell "the socket I already sent on" apart from "a
+        /// socket I have not sent on yet" — which, across a second session, is a DIFFERENT backend
+        /// process with none of the state the first one had (see PlayerIdentity, whose
+        /// `set_identity` a new backend must receive or it never resolves a player file).
+        ///
+        /// A monotonic counter, deliberately not a disconnect event or an <see cref="IsConnected"/>
+        /// transition: a reader polling from Update() can miss a false→true flip that happens
+        /// entirely inside one long frame (scene loads, exactly when sessions change), but it can
+        /// never miss a number that already changed and stays changed. Also nothing to subscribe
+        /// to, so no callback-ordering assumption against the Host/Join teardown path.
+        ///
+        /// Written by the network thread, read from the main thread — single writer, so `volatile`
+        /// is enough without Interlocked.
+        /// </summary>
+        public int ConnectionEpoch => _connectionEpoch;
+
         public readonly ConcurrentQueue<GameEventMsg> Events = new ConcurrentQueue<GameEventMsg>();
 
         /// <summary>
@@ -150,6 +170,9 @@ namespace BackroomsSurvival.Net
         private Thread _netThread;
         private volatile bool _running;
         private volatile bool _hasConnectedOnce;
+        // ADR-056: set while the session is over but the client must stay reusable. See
+        // PauseReconnect.
+        private volatile bool _reconnectPaused;
         private TcpClient _client;
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
@@ -158,10 +181,47 @@ namespace BackroomsSurvival.Net
         private int _lastRemotePlayersLogTick = Environment.TickCount - RemotePlayersLogIntervalMs;
         private const int RemotePlayersLogIntervalMs = 2000;
 
+        /// <summary>
+        /// ADR-056: stop trying to reconnect, WITHOUT tearing the client down. The session is
+        /// over (the host left) and the backend process is being killed, so the reconnect loop
+        /// would otherwise spend the rest of the process's life dialling a dead port.
+        ///
+        /// Deliberately not <see cref="Shutdown"/>: that stops the thread and clears the
+        /// singleton, which would make a second session in the same process impossible. Here the
+        /// thread stays alive and idle, and <see cref="ConfigureEndpoint"/> — which every
+        /// Host/Join path calls before launching a backend — lifts the pause on its own.
+        ///
+        /// Must be called AFTER NetworkInitializer.Shutdown(): the graceful save-on-quit
+        /// (save_and_shutdown) travels over this very connection.
+        /// </summary>
+        public void PauseReconnect()
+        {
+            if (_reconnectPaused) return;
+            _reconnectPaused = true;
+            Debug.Log("[IPCClient] Reconnect paused (session ended)");
+            // Unblock ReadFrames so the loop reaches the paused check promptly instead of
+            // sitting on the socket's 5 s receive timeout.
+            lock (_sendLock)
+            {
+                try { _stream?.Close(); } catch { }
+                try { _client?.Close(); } catch { }
+                _stream = null;
+            }
+        }
+
         public void ConfigureEndpoint(string address, int ipcPort)
         {
             if (string.IsNullOrWhiteSpace(address)) address = "127.0.0.1";
             bool changed = serverAddress != address || port != ipcPort;
+
+            // A new session is starting: lift any pause BEFORE the unchanged-endpoint early
+            // return below, or reconnecting to the same address+port as the dead session would
+            // leave the loop parked forever.
+            if (_reconnectPaused)
+            {
+                _reconnectPaused = false;
+                Debug.Log("[IPCClient] Reconnect resumed (new session configured)");
+            }
 
             serverAddress = address;
             port = ipcPort;
@@ -195,6 +255,9 @@ namespace BackroomsSurvival.Net
             Debug.Log($"[IPCClient] StartClient requested endpoint={serverAddress}:{port}");
 
             if (_isQuitting) return;
+            // ADR-056: an explicit start request always means a live session is wanted, even if
+            // the thread is already alive and merely parked (the early return below).
+            _reconnectPaused = false;
             if (_netThread != null && _netThread.IsAlive) return;
 
             _running = true;
@@ -267,6 +330,13 @@ namespace BackroomsSurvival.Net
         {
             while (_running)
             {
+                // ADR-056: parked between sessions — stay alive and cheap, dial nothing.
+                if (_reconnectPaused)
+                {
+                    Thread.Sleep(200);
+                    continue;
+                }
+
                 try
                 {
                     var client = new TcpClient();
@@ -280,9 +350,13 @@ namespace BackroomsSurvival.Net
                         _client = client;
                         _stream = client.GetStream();
                     }
+                    // Bumped BEFORE _connected, never after: a main-thread reader that sees
+                    // IsConnected==true must already see this connection's epoch, or it would
+                    // send on the new socket while still recording the old epoch as "done".
+                    _connectionEpoch++;
                     _connected = true;
                     _hasConnectedOnce = true;
-                    Debug.Log($"[IPCClient] Connected to {serverAddress}:{port}");
+                    Debug.Log($"[IPCClient] Connected to {serverAddress}:{port} (epoch {_connectionEpoch})");
 
                     ReadFrames(_stream);
                 }
@@ -441,6 +515,34 @@ namespace BackroomsSurvival.Net
                 w.WriteMapHeader(2);
                 w.WriteString("item_id"); w.WriteInt(items[i].itemId);
                 w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+            }
+        }
+
+        /// <summary>
+        /// ADR-045 Fase 3: writes the instance-fidelity stack shape (container/slot/props) that
+        /// report_inventory now sends. Backend-side, parse_loot_stacks (legacy, still feeds
+        /// stp_inventory) and parse_inventory_v2_stacks (new, feeds inventory_v2) both read the
+        /// SAME "items" array — one wire message, two independent parses on the other end.
+        /// </summary>
+        private static void WriteInventoryStacksV2(MsgPackWriter w, IReadOnlyList<InventoryStackV2> items)
+        {
+            w.WriteArrayHeader(items?.Count ?? 0);
+            for (int i = 0; i < (items?.Count ?? 0); i++)
+            {
+                w.WriteMapHeader(5);
+                w.WriteString("item_id"); w.WriteInt(items[i].itemId);
+                w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+                w.WriteString("container"); w.WriteInt(items[i].container);
+                w.WriteString("slot"); w.WriteInt(items[i].slot);
+                w.WriteString("props");
+                var props = items[i].props;
+                w.WriteArrayHeader(props?.Count ?? 0);
+                for (int p = 0; p < (props?.Count ?? 0); p++)
+                {
+                    w.WriteMapHeader(2);
+                    w.WriteString("id"); w.WriteInt(props[p].id);
+                    w.WriteString("value"); w.WriteFloat((float)props[p].value);
+                }
             }
         }
 
@@ -710,15 +812,32 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// ADR-032 amendment: report the CURRENT real STP inventory (debounced on-change by
-        /// InventoryReporter) so the backend can persist it. Same items shape as
-        /// SendReportDeathLoot; the backend applies the shared corpse hygiene (cap 64, qty>0).
+        /// ADR-032 amendment (Fase 3 widened the item shape): report the CURRENT real STP
+        /// inventory (debounced on-change by InventoryReporter) so the backend can persist it.
+        /// container/slot/props ride along per item — the backend's legacy parse still reads
+        /// item_id/quantity only (feeds stp_inventory, cap 64/qty>0 hygiene), a new parse reads
+        /// the rest (feeds inventory_v2). One message, two independent consumers server-side.
         /// </summary>
-        public void SendReportInventory(System.Collections.Generic.IReadOnlyList<CorpseLootStack> items)
+        public void SendReportInventory(System.Collections.Generic.IReadOnlyList<InventoryStackV2> items)
         {
             SendActionFrame(ProtocolActionTypes.ReportInventory, 1, w =>
             {
-                w.WriteString("items"); WriteLootStacks(w, items);
+                w.WriteString("items"); WriteInventoryStacksV2(w, items);
+            });
+        }
+
+        /// <summary>
+        /// ADR-045 Fase 1: send this client's identity key so its own backend can resolve which
+        /// player file to load/write. IPC only, sent once per session by PlayerIdentity. Returns
+        /// whether the frame actually went out, so the caller (which polls until success, since
+        /// the socket may not be connected yet at the moment the identity is first ready) knows
+        /// whether to keep trying.
+        /// </summary>
+        public bool SendSetIdentity(string key)
+        {
+            return SendActionFrame(ProtocolActionTypes.SetIdentity, 1, w =>
+            {
+                w.WriteString("key"); w.WriteString(key);
             });
         }
 

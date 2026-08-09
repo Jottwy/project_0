@@ -9,6 +9,29 @@ use crate::player::inventory::{Inventory, StabilizerTier};
 use crate::player::stats::PlayerStats;
 use crate::utils::{ChunkPos, Vec3};
 
+/// ADR-045 Fase 3: one item-instance property (durability, ammo count, ...). Mirrors STP's
+/// `ItemProperty { int Id, double Value }` 1:1 — no parallel model invented. An id the client
+/// no longer recognizes at restore time (a def changed between versions) is ignored, not an
+/// error — same degrade-gracefully contract as an unknown `item_id`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ItemPropertyValue {
+    pub id: i32,
+    pub value: f64,
+}
+
+/// ADR-045 Fase 3: one inventory stack with instance fidelity — which container, which slot,
+/// and its properties — unlike `world::corpse::CorpseStack` (`{item_id, quantity}` only, used
+/// by `stp_inventory`/corpses/chests, where slot placement is meaningless).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct InventoryStackV2 {
+    pub item_id: i32,
+    pub quantity: i32,
+    pub container: u8,
+    pub slot: u8,
+    #[serde(default)]
+    pub props: Vec<ItemPropertyValue>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Player {
     pub id: PeerId,
@@ -110,6 +133,21 @@ pub struct Player {
     /// and pushed back to the client with the `inventory_restored` event after hydration.
     #[serde(default)]
     pub stp_inventory: Vec<crate::world::corpse::CorpseStack>,
+    /// ADR-045 Fase 3: instance-fidelity companion to `stp_inventory` above — same items, but
+    /// with container/slot placement and per-instance properties (durability, ammo, ...), fed
+    /// by the SAME debounced `report_inventory` action once the client sends the richer shape.
+    /// `stp_inventory` is left intact and still authoritative for a pre-Fase-3 client (or a
+    /// pre-Fase-3 save loaded by a Fase-3 backend): `#[serde(default)]` empties this on load,
+    /// and the emission site falls back to the flat `stp_inventory` restore when this is empty.
+    #[serde(default)]
+    pub inventory_v2: Vec<InventoryStackV2>,
+    /// ADR-045 Fase 1: identity key coined by the client ("uuid:{guid}" normally, "name:{name}"
+    /// fallback), fixed once via the `set_identity` IPC action. `None` until the client sends it
+    /// (or forever, with a pre-ADR-045 client) — never a placeholder, so callers can tell "not
+    /// known yet" apart from "resolved to the name: fallback". Session-transient: it selects
+    /// which player file to load/write, it is not itself part of `PlayerSnapshot`.
+    #[serde(skip)]
+    pub identity_key: Option<String>,
     /// TEMP DIAG (TP attribution audit; REMOVE after diagnosis): game-loop tick of the last
     /// authoritative-reposition event sent to this player (`session_restored`/`player_died`/
     /// `player_respawned` — the same three that arm the client's `AuthoritativePoseApplier`
@@ -149,6 +187,8 @@ impl Player {
             death_loot_reported: false,
             respawn_point: None,
             stp_inventory: Vec::new(),
+            inventory_v2: Vec::new(),
+            identity_key: None,
             last_reposition_tick: None,
         }
     }

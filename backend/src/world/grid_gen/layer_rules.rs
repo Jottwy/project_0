@@ -88,6 +88,30 @@ pub struct LayerRules {
     /// RoomType.
     #[serde(default = "default_room_type_weights")]
     pub room_type_weights: (f32, f32, f32),
+
+    // ── Partición intra-chunk 2×2 (Fase 1, sesión de reducción de solape) ───
+    /// `false` (default) = Fase 4 usa el camino legacy (`num_open_zones`
+    /// zonas con origen `gen_range` ciego, tal cual desde RoomType). `true` =
+    /// Fase 4 estampa hasta 4 sub-regiones, una por cuadrante fijo del
+    /// chunk, con origen restringido a una banda par por cuadrante —
+    /// solape estructuralmente imposible, sin check ni retry. Cada
+    /// cuadrante sortea su propio `RoomType` y presencia (`subregion_presence`)
+    /// de un stream de RNG INDEPENDIENTE (`subregion_seed`), así que activar
+    /// este modo consume CERO draws extra del `rng` compartido de la capa —
+    /// mismo principio de "camino apagado, byte-idéntico" que
+    /// `straight_bias`/`room_type_weights`. `num_open_zones`/`open_zone_size*`
+    /// se REUTILIZAN como tamaño de cada sub-región (no como cuenta: la
+    /// cuenta es siempre 4 cuadrantes, cada uno presente o no según
+    /// `subregion_presence`).
+    #[serde(default)]
+    pub subregion_grid: bool,
+    /// Probabilidad de que un cuadrante dado SÍ estampe su sub-región
+    /// (en vez de quedar maze puro). Default `1.0` = todo cuadrante siempre
+    /// presente — retro-compatible con cualquier perfil futuro que active
+    /// `subregion_grid` sin fijar este campo. Solo se lee cuando
+    /// `subregion_grid` es `true`.
+    #[serde(default = "default_subregion_presence")]
+    pub subregion_presence: f32,
 }
 
 fn default_straight_bias() -> f32 {
@@ -100,6 +124,10 @@ fn default_branch_persistence() -> f32 {
 
 pub(super) fn default_room_type_weights() -> (f32, f32, f32) {
     (1.0, 0.0, 0.0)
+}
+
+fn default_subregion_presence() -> f32 {
+    1.0
 }
 
 /// Layer profiles — §3 of the design document, recalibrated in Fase 2.
@@ -117,14 +145,23 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
     // ── Layer 0 — El Vestíbulo ──────────────────────────────────────────────
     LayerRules {
         name: "El Vestibulo",
-        wide_chance: 0.10,
-        erode_chance: 0.08,
+        // Fix B (sesión de sub-regiones, 2026-08-08): 0.10/0.08 → 0.25/0.18.
+        // Aprobado por Joel sobre medición real (`layer0_openness_report`):
+        // baseline 54.5% transitable (interior 1..=18) → ~60% con estos
+        // valores, claramente por debajo de layer 1 ("Las Salas", 0.30/0.30
+        // → 62.2%) para conservar la jerarquía de densidad entre capas. El
+        // objetivo original de la sesión (~65-70%) resultó inalcanzable sin
+        // igualar o superar layer 1 — ver ADR-057 (enmienda) en DECISIONS.md.
+        wide_chance: 0.25,
+        erode_chance: 0.18,
+        // `num_open_zones`/`open_zone_size` (escalar) quedan sin efecto para
+        // layer 0 desde A3: `subregion_grid` ignora `num_open_zones` (siempre
+        // 4 cuadrantes) y `open_zone_size_x`/`_z` de abajo, no `None`, así que
+        // el escalar nunca se lee como fallback. Se dejan en sus valores
+        // históricos (documentales) en vez de borrarlos, por si algún día se
+        // desactiva `subregion_grid` de vuelta.
         num_open_zones: 1,
         open_zone_size: 5,
-        // 17.5 m: validado en dos experimentos previos (SealedRoom y
-        // CorridorSpine, sesión de RoomType) antes de pasar a producción.
-        open_zone_size_x: Some(7),
-        open_zone_size_z: Some(7),
         pillar_chance: 0.0,
         num_anomalies: 0,
         num_stairs: 2,
@@ -143,6 +180,28 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         // Rompe a propósito los 4 PHASE1_GOLDENS de layer 0 — ver
         // DECISIONS.md (RoomType en producción) y el commit que los actualiza.
         room_type_weights: (0.5, 0.3, 0.2),
+        // A3: partición 2×2 en producción (sesión de sub-regiones — más zonas
+        // por chunk, menos probabilidad de chunk sin ninguna sub-región
+        // especial). `open_zone_size_x`/`_z` pasan a ser el tamaño de CADA
+        // cuadrante (no ya de una única zona de todo el chunk); `sz=6` deja
+        // ~27% del chunk estampado en el caso de las 4 presentes.
+        //
+        // Asimetría de bandas conocida (`subregion_origin_slots`,
+        // `generator.rs`): con `QUADRANT_CUT=10` y `sz=6`, la banda LOW
+        // (`[2,10)`) tiene 2 orígenes posibles por eje, la banda HIGH
+        // (`[12,18)`) tiene EXACTAMENTE 1 (`x0`/`z0` siempre 12) — consecuencia
+        // aritmética forzada del split no simétrico entre 16 celdas útiles y
+        // 1 tile de buffer obligatorio, no un bug. Efecto: los cuadrantes NE/
+        // SE (eje X en banda HIGH) y SW/SE (eje Z en banda HIGH) tienen menos
+        // variedad de POSICIÓN que NW — el `RoomType` sigue variando en los
+        // cuatro. Aceptado a propósito: el objetivo de esta sesión es
+        // variedad de CONTENIDO por chunk, no de posición exacta; documentado
+        // aquí para que quien recalibre `open_zone_size`/`QUADRANT_CUT` sepa
+        // que mueve esta asimetría, no solo el % de área.
+        open_zone_size_x: Some(6),
+        open_zone_size_z: Some(6),
+        subregion_grid: true,
+        subregion_presence: 0.75,
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
@@ -167,6 +226,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         straight_bias: 0.0,
         branch_persistence: 0.82,
         room_type_weights: (1.0, 0.0, 0.0),
+        subregion_grid: false,
+        subregion_presence: 1.0,
     },
     // ── Layer 2 — El Caos ───────────────────────────────────────────────────
     LayerRules {
@@ -191,6 +252,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         straight_bias: 0.0,
         branch_persistence: 0.82,
         room_type_weights: (1.0, 0.0, 0.0),
+        subregion_grid: false,
+        subregion_presence: 1.0,
     },
     // ── Layer 3 — El Vacío ──────────────────────────────────────────────────
     LayerRules {
@@ -215,6 +278,8 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         straight_bias: 0.0,
         branch_persistence: 0.82,
         room_type_weights: (1.0, 0.0, 0.0),
+        subregion_grid: false,
+        subregion_presence: 1.0,
     },
 ];
 
@@ -285,5 +350,23 @@ mod tests {
     fn malformed_or_wrong_count_falls_back() {
         assert!(parse_profiles("[]").is_none());
         assert!(parse_profiles("not json at all").is_none());
+    }
+
+    /// La `generation_config.json` ya distribuida tampoco lleva los campos de
+    /// partición 2×2 (sesión de sub-regiones). Mismo contrato que
+    /// `json_without_straightness_fields_still_parses_with_historic_defaults`:
+    /// debe seguir parseando y reproducir el camino legacy (`subregion_grid`
+    /// = false), no invalidar el fichero entero.
+    #[test]
+    fn json_without_subregion_field_parses_false() {
+        let json = r#"[
+            {"wide_chance":0.10,"erode_chance":0.08,"num_open_zones":1,"open_zone_size":5,
+             "pillar_chance":0.0,"num_anomalies":0,"num_stairs":2,"num_pits":2,"num_voids":0,
+             "ceiling_corridor":2,"ceiling_open":2,"inter_layer_up":0.05,"inter_layer_down":0.10,
+             "wall_density":0.4,"corridor_ratio":0.7}
+        ]"#;
+        let row: LayerRules = serde_json::from_str::<Vec<LayerRules>>(json).unwrap()[0].clone();
+        assert!(!row.subregion_grid);
+        assert_eq!(row.subregion_presence, 1.0);
     }
 }

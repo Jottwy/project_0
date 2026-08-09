@@ -1,10 +1,12 @@
 [
   {
     "name": "El Vestibulo",
-    "wide_chance": 0.10,
-    "erode_chance": 0.08,
+    "wide_chance": 0.25,
+    "erode_chance": 0.18,
     "num_open_zones": 1,
     "open_zone_size": 5,
+    "open_zone_size_x": 6,
+    "open_zone_size_z": 6,
     "pillar_chance": 0.0,
     "num_anomalies": 0,
     "num_stairs": 2,
@@ -15,7 +17,10 @@
     "inter_layer_up": 0.05,
     "inter_layer_down": 0.10,
     "wall_density": 0.4,
-    "corridor_ratio": 0.7
+    "corridor_ratio": 0.7,
+    "room_type_weights": [0.5, 0.3, 0.2],
+    "subregion_grid": true,
+    "subregion_presence": 0.75
   },
   {
     "name": "Las Salas",

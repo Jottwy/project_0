@@ -55,5 +55,16 @@ namespace BackroomsSurvival.Net
         /// contract — the backend never interprets weapon types, so the weapon table stays here
         /// where the weapon definitions live). Perception stimulus only: it mutates no game state.
         public const string ReportNoise = "report_noise";
+
+        /// ADR-050: the local player struggled out of a grab. Carries NO data — the victim is
+        /// whoever's backend this is, so there is nothing to send and nothing to forge. The backend
+        /// decides whether that actually frees anyone and answers with `phantom_grab_release`.
+        public const string ReportStruggle = "report_struggle";
+
+        /// <summary>ADR-045 Fase 1: the client's own identity key ("uuid:{guid}" normally, or a
+        /// PLAYER_IDENTITY_KEY env-var override for local multi-instance playtesting — see
+        /// PlayerIdentity), sent to its own backend so it can resolve which player file to
+        /// load/write. IPC only, never P2P — the backend never relays this to peers.</summary>
+        public const string SetIdentity = "set_identity";
     }
 }

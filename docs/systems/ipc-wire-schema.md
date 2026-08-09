@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v19
+# IPC wire schema — changelog v2 → v24
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **19**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **24**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -154,7 +154,7 @@ BACKEND-derived like `revealed`, absent from `PlayerInput`, so no client writer 
 the C6 goldens stay valid. Additive and inert: a creature that never vocalises is
 byte-identical to a v17 one, and a v17 receiver decodes both to 0 and simply hears nothing.
 
-### v19 (ADR-049) — actual
+### v19 (ADR-049)
 
 Adds `carry_def:i32` + `carry_count:u8` to `PlayerInput`, `RemotePlayerState` and the P2P
 `PlayerUpdate`. Unlike v18 these ARE client-reported — the backend keeps no per-player carry
@@ -162,3 +162,86 @@ state to derive them from — so this is the first pose bump in a while that tou
 writer: `SendPlayerInput` goes from 19 to 21 fields and its golden is regenerated ON PURPOSE.
 Additive and inert otherwise: a player who never carries is byte-identical to a v18 one, and
 a v18 receiver decodes both to 0 and simply sees empty hands.
+
+### v20 (ADR-050)
+
+No pose field changes at all. Adds one inbound IPC action, two outbound IPC events and one
+P2P packet type, all of them for the grab:
+
+- `report_struggle` (client → its own backend). NO PAYLOAD: the victim is the sender, which
+  the transport already knows, so unlike `report_noise` there is nothing to clamp or forge.
+- `phantom_grab_start { window: f32 }` and `phantom_grab_release` (backend → client), which
+  join `phantom_hit` / `phantom_kill` / `phantom_knockback`. `window` is how many seconds the
+  victim has to break out, so the client stops holding its own copy of that number.
+- `StruggleReport` (0x4F, joiner → host, **reliable**). Claims the opcode ADR-047 reserved
+  and stopped short of. Reliable where `NoiseReport` is not: a dropped noise self-heals on the
+  next shot, a dropped struggle is a death the player earned their way out of.
+
+`PhantomAttackGrant` (0x4D) gains kinds 3 and 4 with **no layout change** — `kind` was always
+a `u8` with 3..255 spare, and ADR-047 wrote that spare down on purpose. The grab window rides
+the existing `damage` field, so a v19 victim backend, whose `_` arm treats unknown kinds as a
+hit, would apply 2.5 damage instead of opening a window: the v20 backend has explicit arms for
+both. Degradation is therefore NOT silent across this bump for a mixed-version session, which
+is why it is a bump and not a quiet addition.
+
+### v21 (ADR-054) — actual
+
+Adds `phantom_density_scale: f32` to `PacketPayload::HandshakeAck` (P2P, host → joiner),
+`#[serde(default = "default_phantom_density_scale")]` to 1.0 = no scaling. Same precedent as
+`world_seed` in the same packet: the phantom population draw (`phantom_spawn::draw_into`) is a
+pure function of `world_seed` AND this scalar, so a joiner deriving it from its own process env
+instead of the host's would compute a different population from the same seed. A v20 peer omits
+the field and decodes 1.0, so an old-vs-new session degrades to "no density scaling applied" —
+cosmetic, never an error.
+
+Landed in `fc1ab70` without this bump — the commit reasoned "additive, nothing to break", which
+is true of every prior pose-relay field addition (v3 through v19) and none of those skipped the
+counter for that reason. The rule this changelog states at the top (a P2P-only change bumps the
+counter too, regardless of whether the shape change is additive) applies here exactly as it did
+there; this entry and the `WIRE_SCHEMA_VERSION` bump close that gap.
+
+### v22 (ADR-045 Fase 1)
+
+Adds the `set_identity` client action (`key: string`, IPC only — client → its own backend, never
+P2P). No new wire struct: `PlayerAction` was already generic (`action_type` + free-form `data`),
+same shape as `report_noise`'s v13 bump, itself IPC-only and still counted. Additive and inert: a
+client that never sends it leaves `Player::identity_key` at `None` forever, and the backend simply
+never resolves a per-player save file for that session (ADR-045 Fase 2) — same degradation
+`report_noise` already established for an IPC-only addition.
+
+### v23 (ADR-045 Fase 3)
+
+Widens two existing IPC-only messages, no new action/event name. `report_inventory`'s `items`
+entries gain optional `container: u8`, `slot: u8`, `props: [{id: i32, value: f64}]` — a
+pre-Fase-3 client's plain `{item_id, quantity}` entries lack `container`/`slot`, so the backend's
+new `parse_inventory_v2_stacks` parser skips them (`?` short-circuit) and `Player::inventory_v2`
+stays empty for that session; `parse_loot_stacks` keeps populating `stp_inventory` exactly as
+before, unaffected. `inventory_restored`'s `items` entries gain the SAME three fields, sent by
+the backend when `inventory_v2` is non-empty; when it is empty (every save from Fases 1+2, or a
+session with a pre-Fase-3 client either side) the event falls back to the original flat
+`{item_id, quantity}` shape, byte-for-byte what Fases 1+2 already emit. Both directions
+therefore degrade to exactly today's behavior when either side of the connection predates Fase
+3 — additive, `serde(default)`-equivalent (the JSON parser simply doesn't find the new keys).
+
+### v24 (ADR-056) — actual
+
+Adds one IPC-only event, backend → its own Unity client: `session_ended` with
+`data: { reason: string }`. Emitted by a JOINER's backend when the peer that leaves is the host
+(`NetworkManager::host_peer_id`), carrying the reason forward from the underlying
+`PeerDisconnected` — `"clean_shutdown"` when the host announced itself, `"heartbeat timeout"`
+when it died outright, so the UI can tell "the host closed" from "the host crashed". A host's own
+backend never emits it (`host_peer_id` is `None` there), and neither does a joiner for any other
+peer leaving.
+
+New event name rather than widening the existing `player_left`: that one has no Unity consumer at
+all today (`docs/ARCHITECTURE_RISK_REVIEW.md:146`) and the client does not know which peer id is
+the host, so carrying this on it would mean widening it — which bumps just the same (precedent
+v23, `inventory_restored`). An IPC-only addition counts for this counter with or without a new
+struct (precedents v13 `report_noise`, v22 `set_identity`).
+
+Degradation is total in both directions: a pre-v24 client receives an event name it has no
+listener for and ignores it (the same shape every one-off event already has), and a pre-v24
+backend simply never emits it, leaving today's behavior — the joiner stays in a frozen world
+until the player quits manually. **No P2P change accompanies this bump**: the goodbye that makes
+the common case immediate reuses `PacketPayload::Disconnect` (0x06), which has existed with a
+complete receiver since the baseline commit.

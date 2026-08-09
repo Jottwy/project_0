@@ -202,6 +202,18 @@ fn stairs_have_walkable_floor_in_layer_above() {
 #[test]
 fn pits_have_walkable_floor_in_layer_below() {
     // Capa 1 coloca pozos → sus coordenadas deben ser transitables en capa 0.
+    //
+    // LÍMITE CONOCIDO, aceptado (sesión de sub-regiones): desde que layer 0
+    // activa `subregion_grid` en producción, una posición forzada puede caer
+    // dentro del perímetro `SealedWall` de una SealedRoom — y `generate_layer`
+    // se niega a perforarlo a propósito (misma guarda que `connect_zone_to_maze`,
+    // fix `c42dd48`: una posición forzada nunca debe romper un perímetro
+    // protegido). El mecanismo `forced_walkable`/`require_walkable_*` no tiene
+    // NINGÚN llamador real en producción hoy (`collision.rs`/`tile_walls.rs`
+    // pasan siempre `&[]` — grep confirmado), así que esto es un contrato
+    // interno de `generate_layer` sin efecto en el juego real; se documenta
+    // aquí para que quien lo cablee algún día sepa que la garantía de §5
+    // ("pozo nunca cae contra pared") tiene esta excepción explícita.
     let upper = gen(1, &[]);
     assert!(
         !upper.require_walkable_below.is_empty(),
@@ -211,8 +223,8 @@ fn pits_have_walkable_floor_in_layer_below() {
     for &(x, z) in &upper.require_walkable_below {
         let cell = lower.grid.get(x as usize, z as usize);
         assert!(
-            cell.is_walkable(),
-            "Pit en capa 1 ({x},{z}) baja hacia {:?} en capa 0 — pozo contra pared",
+            cell.is_walkable() || cell.kind() == CellType::SealedWall,
+            "Pit en capa 1 ({x},{z}) baja hacia {:?} en capa 0 — pozo contra pared no protegida",
             cell.kind()
         );
     }
@@ -250,31 +262,29 @@ fn stair_and_pit_counts_match_rules() {
 
 #[test]
 fn layer_profiles_change_the_output() {
-    // El Vestíbulo (capa 0) debe ser significativamente más cerrado que El Caos
-    // (capa 2). Comparamos fracción de celdas no-Wall sobre varias seeds para
-    // que el test no dependa de una seed afortunada.
-    let mut open_0 = 0usize;
-    let mut open_2 = 0usize;
+    // Cada perfil produce un grid distinto y determinista — comprobado por
+    // huella, NO por "capa 0 más cerrada que capa 2 en bruto" (la aserción
+    // histórica de este test). Desde que layer 0 activa la partición 2×2
+    // (sesión de sub-regiones), su conteo de celdas no-Wall puede IGUALAR o
+    // SUPERAR al de otras capas: la métrica "no-Wall" cuenta el anillo
+    // `SealedWall` de una SealedRoom como "abierto" aunque sea pared, así
+    // que más contenido de RoomType ya no implica más densidad transitable
+    // real. La distinción de capa 0 frente a El Caos pasa a ser de TIPO de
+    // contenido (RoomType vs pilares/anomalías/voids), no de densidad bruta
+    // — ver `room_zones_report_the_stamped_kind` / `stair_and_pit_counts_match_rules`
+    // para las propiedades específicas por tipo. El % de celdas REALMENTE
+    // transitables de capa 0 queda cubierto por Fix B de esta misma sesión
+    // (test `layer0_walkable_ratio_stays_in_band`, aún sin implementar al
+    // momento de este commit — ver `docs/STATE.md`).
     for seed in [TEST_SEED, 7, 1234, 555_555] {
         let v = generate_layer(&LAYER_PROFILES[0], seed, TEST_CHUNK, 0, &[]);
         let c = generate_layer(&LAYER_PROFILES[2], seed, TEST_CHUNK, 2, &[]);
-        open_0 += v
-            .grid
-            .cells()
-            .iter()
-            .filter(|c| c.kind() != CellType::Wall)
-            .count();
-        open_2 += c
-            .grid
-            .cells()
-            .iter()
-            .filter(|c| c.kind() != CellType::Wall)
-            .count();
+        assert_ne!(
+            grid_fingerprint(&v.grid),
+            grid_fingerprint(&c.grid),
+            "seed {seed}: layer 0 y layer 2 deberían producir grids distintos"
+        );
     }
-    assert!(
-        open_2 > open_0 + open_0 / 4,
-        "El Caos ({open_2} celdas no-muro) debería ser claramente más abierto que El Vestíbulo ({open_0})"
-    );
 }
 
 #[test]
@@ -808,6 +818,10 @@ fn count_kind(grid: &LayerGrid, kind: CellType) -> usize {
 #[test]
 fn open_zone_size_x_z_produce_a_non_square_zone() {
     let mut rules = LAYER_PROFILES[0].clone();
+    // Este test ejerce el camino LEGACY (una zona vía `num_open_zones`), no
+    // la partición 2×2 de producción — layer 0 ya no es `subregion_grid`
+    // por defecto desde la sesión de sub-regiones.
+    rules.subregion_grid = false;
     rules.num_open_zones = 1;
     rules.open_zone_size_x = Some(3);
     rules.open_zone_size_z = Some(12);
@@ -1481,14 +1495,38 @@ fn grid_fingerprint(grid: &LayerGrid) -> u64 {
 /// reproducible SIN RoomType de por medio (ver DECISIONS.md). Afecta a las 4
 /// capas por igual, no solo a layer 0; esta seed en layer 3 es la única
 /// combinación de las 12 restantes que resultó tener una apertura de costura
-/// afectada por el bug. Layers 1-3 en el resto de seeds NO cambiaron — la
-/// regla normal ("un fallo aquí es bug") sigue aplicando a cualquier huella
-/// que no sea una de estas 5 excepciones documentadas.
+/// afectada por el bug. Layers 1-3 en el resto de seeds NO cambiaron.
+///
+/// EXCEPCIÓN DELIBERADA #3 — layer 0 (las 4 primeras entradas), de nuevo:
+/// activación de la partición intra-chunk 2×2 en producción
+/// (`subregion_grid: true`, `open_zone_size_x/z: Some(6)`,
+/// `subregion_presence: 0.75`, `LAYER_PROFILES[0]`, sesión de sub-regiones).
+/// Fase 4 deja de leer `num_open_zones`/el `rng` compartido para layer 0 y
+/// pasa a `stamp_subregion_grid` (stream propio por cuadrante) — el cambio
+/// de huella ES el cambio de producto (más zonas por chunk, `open_zone_size`
+/// escalar ya no aplica). Mundos NUEVOS de layer 0 salen distintos; seeds YA
+/// jugadas regeneran su layer 0 distinto. Documentado en `DECISIONS.md`
+/// (ADR-057).
+///
+/// EXCEPCIÓN DELIBERADA #4 — layer 0, SOLO 2 de las 4 primeras entradas
+/// (seeds `3133931653` y `1`; `42` y `7778` NO cambiaron): Fix B de esta
+/// misma sesión, `wide_chance` 0.10→0.25 y `erode_chance` 0.08→0.18
+/// (`LAYER_PROFILES[0]`), aprobado por Joel sobre medición real de
+/// `walkable_fraction` (ver ADR-057, enmienda). Que solo 2 de 4 seeds
+/// muestren huella distinta es plausible, no un bug: "estampar gana" (Fase
+/// 4 sobreescribe Fase 1-3) puede tapar por completo cualquier diferencia
+/// de ensanchado/erosión que caiga dentro del ~27 % del chunk que ocupan
+/// las sub-regiones para una seed dada — verificado explícitamente
+/// corriendo el test antes y después del cambio, no asumido.
+///
+/// Regla normal ("un fallo aquí es bug") sigue aplicando a cualquier huella
+/// que no sea una de estas 4 excepciones documentadas (11 entradas en
+/// total: 4 de #1, 1 de #2, 4 de #3, 2 de #4).
 const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
-    ((0, 3133931653), 0x401418810ECD39FF),
-    ((0, 1), 0x338FC2AE7D17E9F4),
-    ((0, 42), 0x33867857ADE056DE),
-    ((0, 7778), 0x856CF4907033B755),
+    ((0, 3133931653), 0x5F9BD9144AA0AABB),
+    ((0, 1), 0x73D5E0C79F6BD617),
+    ((0, 42), 0x5A0CE53A141D4C6E),
+    ((0, 7778), 0x0BA91250637AD619),
     ((1, 3133931653), 0x729F00EC161AE35A),
     ((1, 1), 0x94A9570BED47AA30),
     ((1, 42), 0xA64F9DF2D6414E94),
@@ -1734,6 +1772,9 @@ fn room_zones_report_the_stamped_kind() {
         ((0.0, 0.0, 1.0), 2),   // CorridorSpine
     ] {
         let mut rules = LAYER_PROFILES[0].clone();
+        // Camino legacy (una zona vía `num_open_zones`) — no la partición
+        // 2×2 de producción. Ver `open_zone_size_x_z_produce_a_non_square_zone`.
+        rules.subregion_grid = false;
         rules.room_type_weights = weights;
         for seed in [TEST_SEED, 1, 42, 7778] {
             let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
@@ -1760,6 +1801,8 @@ fn room_zones_report_the_stamped_kind() {
 #[test]
 fn sealed_room_zone_rect_matches_the_real_perimeter() {
     let mut rules = LAYER_PROFILES[0].clone();
+    // Camino legacy (una zona) — no la partición 2×2 de producción.
+    rules.subregion_grid = false;
     rules.room_type_weights = (0.0, 1.0, 0.0); // siempre SealedRoom
 
     // Sin Voids/anomalías/escaleras: esas fases posteriores pueden pisar
@@ -1828,6 +1871,8 @@ fn sealed_room_zone_rect_matches_the_real_perimeter() {
 #[test]
 fn corridor_spine_zone_rect_is_narrow_and_sealed() {
     let mut rules = LAYER_PROFILES[0].clone();
+    // Camino legacy (una zona) — no la partición 2×2 de producción.
+    rules.subregion_grid = false;
     rules.room_type_weights = (0.0, 0.0, 1.0); // siempre CorridorSpine
     rules.num_voids = 0;
     rules.num_anomalies = 0;
@@ -1900,4 +1945,301 @@ fn walls_and_rooms_matches_plain_walls_bitmask() {
             );
         }
     }
+}
+
+// ── Partición intra-chunk 2×2 (`subregion_grid`, sesión de sub-regiones) ─────
+
+/// Perfil de laboratorio para `subregion_grid`: clona layer 0 y activa el
+/// modo con el MISMO par (tamaño, presencia) que la sesión decidió activar
+/// en producción — 6×6, presencia 0.75 por cuadrante. `room_type_weights`
+/// hereda el 50/30/20 ya vigente en `LAYER_PROFILES[0]`, así que estos tests
+/// ejercitan exactamente la configuración real, no un caso de laboratorio
+/// aparte.
+use super::generator::QUADRANT_CUT;
+
+fn subregion_test_profile() -> LayerRules {
+    let mut r = LAYER_PROFILES[0].clone();
+    r.subregion_grid = true;
+    r.subregion_presence = 0.75;
+    r.open_zone_size_x = Some(6);
+    r.open_zone_size_z = Some(6);
+    r
+}
+
+/// `true` si los rects `a` y `b` (`x0,z0,x1,z1` exclusivos) se solapan.
+fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    let (ax0, az0, ax1, az1) = a;
+    let (bx0, bz0, bx1, bz1) = b;
+    ax0 < bx1 && bx0 < ax1 && az0 < bz1 && bz0 < az1
+}
+
+/// (A2-1) Anti-solape POR CONSTRUCCIÓN, no por rechazo: sobre una muestra
+/// grande de (seed, chunk), cada `RoomZone` cae entera en la banda LOW
+/// (`x1 <= QUADRANT_CUT`) o HIGH (`x0 >= QUADRANT_CUT + 2`) en CADA eje —
+/// nunca cruza el corte —, origen y tamaño son pares, y ningún par de rects
+/// se solapa. Verifica la geometría real emitida, no solo que
+/// `subregion_origin_slots` esté bien escrito.
+#[test]
+fn subregion_zones_are_disjoint_and_buffered_by_construction() {
+    let rules = subregion_test_profile();
+    let chunks: [(i32, i32); 4] = [(3, -7), (0, 0), (12, 5), (-4, 9)];
+
+    for seed in 0..64u64 {
+        for &chunk in &chunks {
+            let out = generate_layer(&rules, seed, chunk, 0, &[]);
+            let rects: Vec<(i32, i32, i32, i32)> = out
+                .room_zones
+                .iter()
+                .map(|z| (z.x0 as i32, z.z0 as i32, z.x1 as i32, z.z1 as i32))
+                .collect();
+
+            for &(x0, z0, x1, z1) in &rects {
+                assert_eq!(x0 % 2, 0, "seed {seed} chunk {chunk:?}: x0={x0} impar");
+                assert_eq!(z0 % 2, 0, "seed {seed} chunk {chunk:?}: z0={z0} impar");
+                assert_eq!(x1 % 2, 0, "seed {seed} chunk {chunk:?}: x1={x1} impar");
+                assert_eq!(z1 % 2, 0, "seed {seed} chunk {chunk:?}: z1={z1} impar");
+
+                let x_banded = x1 <= QUADRANT_CUT || x0 >= QUADRANT_CUT + 2;
+                let z_banded = z1 <= QUADRANT_CUT || z0 >= QUADRANT_CUT + 2;
+                assert!(
+                    x_banded,
+                    "seed {seed} chunk {chunk:?}: rect ({x0},{z0},{x1},{z1}) cruza el corte en X"
+                );
+                assert!(
+                    z_banded,
+                    "seed {seed} chunk {chunk:?}: rect ({x0},{z0},{x1},{z1}) cruza el corte en Z"
+                );
+            }
+
+            for i in 0..rects.len() {
+                for j in (i + 1)..rects.len() {
+                    assert!(
+                        !rects_overlap(rects[i], rects[j]),
+                        "seed {seed} chunk {chunk:?}: rects {:?} y {:?} se solapan",
+                        rects[i],
+                        rects[j]
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// (A2-2) `room_zones` reporta entradas bien formadas de extremo a extremo:
+/// como mucho 4 (una por cuadrante), `kind` siempre en `{0,1,2}`, y sobre la
+/// muestra aparecen tanto chunks con las 4 sub-regiones presentes como
+/// chunks con menos — confirma que el draw de `subregion_presence` de verdad
+/// puede saltarse un cuadrante (no solo que el código compile con él).
+#[test]
+fn subregion_room_zones_report_expected_entries_with_valid_kinds() {
+    let rules = subregion_test_profile();
+    let mut saw_four = false;
+    let mut saw_fewer = false;
+
+    for seed in 0..64u64 {
+        let out = generate_layer(&rules, seed, TEST_CHUNK, 0, &[]);
+        assert!(
+            out.room_zones.len() <= 4,
+            "seed {seed}: {} RoomZones, nunca deberían pasar de 4",
+            out.room_zones.len()
+        );
+        for z in &out.room_zones {
+            assert!(
+                z.kind <= 2,
+                "seed {seed}: kind {} fuera de {{0,1,2}}",
+                z.kind
+            );
+        }
+        match out.room_zones.len() {
+            4 => saw_four = true,
+            0..=3 => saw_fewer = true,
+            _ => unreachable!(),
+        }
+    }
+
+    assert!(
+        saw_four,
+        "ninguna de las 64 seeds dio las 4 sub-regiones presentes"
+    );
+    assert!(saw_fewer, "ninguna de las 64 seeds dejó un cuadrante vacío (subregion_presence no se está ejerciendo)");
+}
+
+/// (A3) `LAYER_PROFILES[0]` EN PRODUCCIÓN: sobre una muestra grande de
+/// chunks, la distribución de `RoomType` de las sub-regiones estampadas
+/// (`room_zones.kind`, ya resuelto) se acerca a los pesos configurados
+/// (50/30/20) y la fracción de cuadrantes presentes se acerca a
+/// `subregion_presence` (0.75). Cubre el invariante #5 de la auditoría
+/// previa a esta sesión (RoomType sin cobertura estadística), ahora para el
+/// perfil de producción real — no solo para `stamp_subregion_grid` aislado
+/// como los tests A2 de arriba.
+#[test]
+fn subregion_room_type_distribution_matches_weights() {
+    const CHUNKS: i32 = 300; // × 4 cuadrantes = 1200 muestras de presencia
+    let rules = &LAYER_PROFILES[0];
+    let (mut open, mut sealed, mut spine) = (0u32, 0u32, 0u32);
+    let mut present = 0u32;
+
+    for cx in 0..CHUNKS {
+        let out = generate_layer(rules, TEST_SEED, (cx, cx * 7 + 3), 0, &[]);
+        present += out.room_zones.len() as u32;
+        for z in &out.room_zones {
+            match z.kind {
+                0 => open += 1,
+                1 => sealed += 1,
+                2 => spine += 1,
+                k => panic!("kind {k} fuera de {{0,1,2}}"),
+            }
+        }
+    }
+
+    let stamped = open + sealed + spine;
+    assert_eq!(
+        stamped, present,
+        "toda RoomZone estampada debería tener un kind reconocido en {{0,1,2}}"
+    );
+
+    let pct = |n: u32| n as f64 / stamped as f64 * 100.0;
+    let (open_pct, sealed_pct, spine_pct) = (pct(open), pct(sealed), pct(spine));
+    assert!(
+        (open_pct - 50.0).abs() <= 5.0,
+        "Open: {open_pct:.1}% de {stamped} (esperado ~50%)"
+    );
+    assert!(
+        (sealed_pct - 30.0).abs() <= 5.0,
+        "SealedRoom: {sealed_pct:.1}% de {stamped} (esperado ~30%)"
+    );
+    assert!(
+        (spine_pct - 20.0).abs() <= 5.0,
+        "CorridorSpine: {spine_pct:.1}% de {stamped} (esperado ~20%)"
+    );
+
+    let total_quadrants = CHUNKS as u32 * 4;
+    let presence_pct = present as f64 / total_quadrants as f64 * 100.0;
+    assert!(
+        (presence_pct - 75.0).abs() <= 5.0,
+        "presencia observada {presence_pct:.1}% sobre {total_quadrants} cuadrantes \
+         (esperado ~75%, subregion_presence=0.75)"
+    );
+}
+
+/// (A2-3) Fase 5 (`is_zone_connected`/`connect_zone_to_maze`) y el pase de
+/// reparación siguen cumpliendo su invariante con 4 zonas en vez de 1: cada
+/// `RoomZone` estampada por `stamp_subregion_grid` tiene, en el grid FINAL
+/// (post Fase 7), al menos un vecino transitable fuera de sus propios
+/// límites.
+#[test]
+fn subregion_zones_all_connected_after_repair() {
+    let rules = subregion_test_profile();
+    let chunks: [(i32, i32); 3] = [(3, -7), (0, 0), (-4, 9)];
+
+    for seed in 0..32u64 {
+        for &chunk in &chunks {
+            let out = generate_layer(&rules, seed, chunk, 0, &[]);
+            for z in &out.room_zones {
+                let (x0, z0, x1, z1) = (z.x0 as i32, z.z0 as i32, z.x1 as i32, z.z1 as i32);
+                assert!(
+                    is_zone_connected(&out.grid, x0, z0, x1, z1),
+                    "seed {seed} chunk {chunk:?}: zona ({x0},{z0},{x1},{z1}) quedó incomunicada tras reparación"
+                );
+            }
+        }
+    }
+}
+
+// ── Fix B — densidad de muro del maze (sesión de sub-regiones) ───────────────
+
+/// Fracción de celdas TRANSITABLES sobre el interior utilizable del chunk
+/// (`1..=18` en cada eje, 324 celdas — excluye el borde reservado de
+/// costura, que nunca es transitable por construcción y ensuciaría la
+/// medida). Cuenta CUALQUIER celda `is_walkable()`: maze DFS, interior de
+/// zonas Open/SealedRoom/CorridorSpine, Stair/Pit — todo lo que el jugador
+/// puede pisar, no solo el maze puro. Es la métrica real de "sitio para
+/// spawnear contenido" que pedía la sesión, a diferencia del conteo
+/// "no-Wall" de `layer_profiles_change_the_output` (ese cuenta el anillo
+/// `SealedWall` como abierto; este NO, porque `SealedWall` no es transitable).
+fn walkable_fraction(grid: &LayerGrid) -> f64 {
+    let mut walkable = 0usize;
+    for z in 1..=18usize {
+        for x in 1..=18usize {
+            if grid.get(x, z).is_walkable() {
+                walkable += 1;
+            }
+        }
+    }
+    walkable as f64 / 324.0
+}
+
+/// (B1) Herramienta de CALIBRACIÓN, no un guard — nunca falla. Imprime
+/// media/mín/máx de `walkable_fraction` para el perfil de PRODUCCIÓN actual
+/// de layer 0 sobre una muestra amplia y determinista. Correr con
+/// `cargo test --release layer0_openness_report -- --ignored --nocapture`
+/// para leer los números al calibrar `wide_chance`/`erode_chance`.
+#[test]
+#[ignore]
+fn layer0_openness_report() {
+    const SEEDS: u64 = 64;
+    const CHUNKS: i32 = 3;
+    let rules = &LAYER_PROFILES[0];
+    let mut fractions: Vec<f64> = Vec::new();
+
+    for seed in 0..SEEDS {
+        for cx in 0..CHUNKS {
+            let out = generate_layer(rules, seed, (cx, cx * 5 + 1), 0, &[]);
+            fractions.push(walkable_fraction(&out.grid));
+        }
+    }
+
+    let n = fractions.len() as f64;
+    let mean = fractions.iter().sum::<f64>() / n;
+    let min = fractions.iter().cloned().fold(f64::INFINITY, f64::min);
+    let max = fractions.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    println!(
+        "layer0_openness_report: n={} mean={mean:.4} min={min:.4} max={max:.4} \
+         wide_chance={} erode_chance={}",
+        fractions.len(),
+        rules.wide_chance,
+        rules.erode_chance
+    );
+}
+
+/// (B1/B2) Guard REAL: sobre una muestra fija (16 seeds × 2 chunks) más
+/// pequeña que `layer0_openness_report` — determinista, rápida, corre en
+/// cada `cargo test`, no solo bajo `--ignored` — la media de
+/// `walkable_fraction` para el perfil de layer 0 se mantiene dentro de
+/// ±0.03 del baseline medido al momento de escribir este test.
+/// Cualquier cambio a `wide_chance`/`erode_chance`/Fase 1-3 que mueva la
+/// densidad de layer 0 debe actualizar la banda A PROPÓSITO — el test
+/// existe para que ESE cambio sea intencional, no un efecto secundario
+/// silencioso de tocar otra cosa.
+///
+/// Historial de `BASELINE` (16×2), cada actualización con su valor real
+/// medido, nunca a ciegas:
+/// - B1 (0.10/0.08, sin cambios de perfil): 0.5611.
+/// - B2 (0.25/0.18, aprobado por Joel — ver ADR-057 enmienda): 0.6095.
+#[test]
+fn layer0_walkable_ratio_stays_in_band() {
+    const SEEDS: u64 = 16;
+    const CHUNKS: i32 = 2;
+    const BASELINE: f64 = 0.6095;
+    const TOLERANCE: f64 = 0.03;
+
+    let rules = &LAYER_PROFILES[0];
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for seed in 0..SEEDS {
+        for cx in 0..CHUNKS {
+            let out = generate_layer(rules, seed, (cx, cx * 5 + 1), 0, &[]);
+            sum += walkable_fraction(&out.grid);
+            n += 1;
+        }
+    }
+    let mean = sum / n as f64;
+    assert!(
+        (mean - BASELINE).abs() <= TOLERANCE,
+        "layer 0: media transitable {mean:.4} se salió de la banda [{:.4}, {:.4}] \
+         (baseline {BASELINE}, ±{TOLERANCE}) — si el cambio es intencional, actualiza \
+         BASELINE con el número real medido, no ensanches la tolerancia a ciegas",
+        BASELINE - TOLERANCE,
+        BASELINE + TOLERANCE
+    );
 }

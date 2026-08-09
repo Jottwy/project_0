@@ -80,8 +80,8 @@ MonoBehaviour:
   - {r: 0.88, g: 0.88, b: 0.82, a: 1}
   - {r: 0.85, g: 0.85, b: 0.79, a: 1}
   - {r: 0.9, g: 0.9, b: 0.85, a: 1}
-  wallPanelVariety: 0
-  kneeWallHeight: 0
+  wallPanelVariety: 0.08
+  kneeWallHeight: 1.35
   lintelChance: 0.12
   lintelClearance: 2.2
   zoneTints:
@@ -97,3 +97,4 @@ MonoBehaviour:
   - {r: 0.9, g: 1, b: 1, a: 1}
   - {r: 1, g: 0.35, b: 0.35, a: 1}
   - {r: 0.35, g: 0.25, b: 0.35, a: 1}
+  - {r: 0.82, g: 0.86, b: 0.8, a: 1}

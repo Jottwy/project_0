@@ -955,6 +955,272 @@ namespace BackroomsSurvival.Tests
             Assert.IsNull(e.data);
         }
 
+        // ── SessionEndHandler.ReadReason (ADR-056) ───────────────────────────
+        //
+        // El evento `session_ended` decide si el joiner se va al menu, y su `reason` es lo unico
+        // que distingue "el host cerro" de "el host se cayo". Mismo motivo que la tanda de abajo:
+        // se decodifican bytes msgpack REALES con el shape exacto que emite game_loop.rs, no un
+        // arbol fabricado a mano — asumir el tipo del payload sin comprobarlo contra el decoder
+        // real es exactamente lo que dejo `inventory_restored` roto el 100% de las veces.
+
+        [Test]
+        public void SessionEndHandler_ReadReason_DecodesRealBackendPayload()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("session_ended");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("reason"); w.WriteString("heartbeat timeout");
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.AreEqual("session_ended", e.eventType);
+            Assert.AreEqual("heartbeat timeout", SessionEndHandler.ReadReason(e),
+                "el reason viaja verbatim desde el PeerDisconnected del backend");
+        }
+
+        [Test]
+        public void SessionEndHandler_ReadReason_CleanShutdownIsDistinguishable()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("session_ended");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("reason"); w.WriteString("clean_shutdown");
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.AreEqual("clean_shutdown", SessionEndHandler.ReadReason(e));
+        }
+
+        [Test]
+        public void SessionEndHandler_ReadReason_MissingOrNilDataFallsBackWithoutThrowing()
+        {
+            // Un backend anterior a v24 no emite el evento, pero un payload sin `reason` (o nil)
+            // no debe tirar una excepcion dentro del listener: el fin de sesion importa mas que
+            // el motivo, asi que degrada a "unknown" y sigue.
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("session_ended");
+            w.WriteString("data"); w.WriteNil();
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.IsNull(e.data);
+            Assert.AreEqual("unknown", SessionEndHandler.ReadReason(e));
+
+            var w2 = new MsgPackWriter();
+            w2.WriteMapHeader(3);
+            w2.WriteString("type"); w2.WriteString("event");
+            w2.WriteString("event_type"); w2.WriteString("session_ended");
+            w2.WriteString("data"); w2.WriteMapHeader(0);
+
+            var (reader2, remaining2) = OpenTaggedFrame(w2.ToArray(), "event");
+            var e2 = GameEventMsg.Parse(reader2, remaining2);
+            Assert.AreEqual("unknown", SessionEndHandler.ReadReason(e2));
+        }
+
+        // ── InventoryRestorer.ParseStacks (ADR-045) ──────────────────────────
+        //
+        // Fija el bug real de playtest: MsgPackReader.ReadValue() materializa un array msgpack
+        // como object[] (ver su doc-comment + ReadArray), nunca List<object>. ParseStacks
+        // comprobaba List<object> — un tipo que el reader jamas produce — asi que el cast fallaba
+        // siempre y "inventory_restored" llegaba "unparsable" el 100% de las veces, no de forma
+        // intermitente. Estos tests decodifican bytes msgpack REALES (MsgPackWriter -> el mismo
+        // shape exacto que emite game_loop.rs -> MsgPackReader), no un arbol de objetos fabricado
+        // a mano, para que la prueba dependa del decoder de verdad, igual que el resto del fichero.
+
+        [Test]
+        public void InventoryRestorer_ParseStacks_DecodesRealBackendPayload()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(2);
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(-52379);
+            w.WriteString("quantity"); w.WriteInt(2);
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(3621376);
+            w.WriteString("quantity"); w.WriteInt(30);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacks(e.data);
+            Assert.IsNotNull(stacks, "un payload bien formado nunca debe leerse como unparsable");
+            Assert.AreEqual(2, stacks.Count);
+            Assert.AreEqual((-52379, 2), stacks[0]);
+            Assert.AreEqual((3621376, 30), stacks[1]);
+        }
+
+        [Test]
+        public void InventoryRestorer_ParseStacks_DropsZeroQuantityAndZeroIdEntries()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(3);
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(111);
+            w.WriteString("quantity"); w.WriteInt(0); // filtered: qty must be > 0
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(0); // filtered: id must be != 0
+            w.WriteString("quantity"); w.WriteInt(5);
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(222);
+            w.WriteString("quantity"); w.WriteInt(7);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacks(e.data);
+            Assert.IsNotNull(stacks);
+            Assert.AreEqual(1, stacks.Count, "solo la entrada valida debe sobrevivir el filtro");
+            Assert.AreEqual((222, 7), stacks[0]);
+        }
+
+        [Test]
+        public void InventoryRestorer_ParseStacks_EmptyItemsArrayIsAnEmptyListNotUnparsable()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(0);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacks(e.data);
+            Assert.IsNotNull(stacks, "un array vacio es un payload valido, no unparsable");
+            Assert.AreEqual(0, stacks.Count);
+        }
+
+        /// Control negativo: si "items" NO es un array (p.ej. viene de un evento con otro shape,
+        /// o de un cliente/backend desincronizado), ParseStacks debe devolver null explicitamente
+        /// — el contrato que InventoryRestorer.OnGameEvent usa para decidir "unparsable, ignorar"
+        /// en vez de aplicar un pending vacio por accidente.
+        [Test]
+        public void InventoryRestorer_ParseStacks_NonArrayItemsReturnsNull()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteString("not an array");
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacks(e.data);
+            Assert.IsNull(stacks);
+        }
+
+        // ── InventoryRestorer.ParseStacksV2 (ADR-045 Fase 3) ─────────────────
+        //
+        // Mismos bytes msgpack reales (MsgPackWriter -> el shape exacto que game_loop.rs emite
+        // cuando inventory_v2 no esta vacio -> MsgPackReader), no un arbol fabricado a mano.
+
+        [Test]
+        public void InventoryRestorer_ParseStacksV2_DecodesRealBackendPayloadWithProps()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(5);
+            w.WriteString("item_id"); w.WriteInt(-52379);
+            w.WriteString("quantity"); w.WriteInt(2);
+            w.WriteString("container"); w.WriteInt(1);
+            w.WriteString("slot"); w.WriteInt(5);
+            w.WriteString("props"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2);
+            w.WriteString("id"); w.WriteInt(10);
+            w.WriteString("value"); w.WriteFloat(0.75f);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacksV2(e.data);
+            Assert.IsNotNull(stacks, "un payload v2 bien formado no debe caer al parse legado");
+            Assert.AreEqual(1, stacks.Count);
+            Assert.AreEqual(-52379, stacks[0].itemId);
+            Assert.AreEqual(2, stacks[0].quantity);
+            Assert.AreEqual(1, stacks[0].container);
+            Assert.AreEqual(5, stacks[0].slot);
+            Assert.IsNotNull(stacks[0].props);
+            Assert.AreEqual(1, stacks[0].props.Count);
+            Assert.AreEqual(10, stacks[0].props[0].id);
+            Assert.AreEqual(0.75, stacks[0].props[0].value, 1e-4);
+        }
+
+        /// Un payload legado (sin container/slot en ninguna entrada) NO es v2 — ParseStacksV2
+        /// debe devolver null para que OnGameEvent caiga al ParseStacks de siempre, no aplicar
+        /// container=0/slot=0 por defecto (colisionaria con un item real en ese slot).
+        [Test]
+        public void InventoryRestorer_ParseStacksV2_LegacyPayloadReturnsNullForFallback()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(2);
+            w.WriteString("item_id"); w.WriteInt(42);
+            w.WriteString("quantity"); w.WriteInt(3);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            Assert.IsNull(InventoryRestorer.ParseStacksV2(e.data));
+            var legacy = InventoryRestorer.ParseStacks(e.data);
+            Assert.IsNotNull(legacy);
+            Assert.AreEqual((42, 3), legacy[0]);
+        }
+
+        /// Un item v2 sin props (item sin propiedades de instancia) es valido — props queda null,
+        /// no una lista vacia forzada ni un fallo de parseo.
+        [Test]
+        public void InventoryRestorer_ParseStacksV2_ItemWithoutPropsParsesWithNullProps()
+        {
+            var w = new MsgPackWriter();
+            w.WriteMapHeader(3);
+            w.WriteString("type"); w.WriteString("event");
+            w.WriteString("event_type"); w.WriteString("inventory_restored");
+            w.WriteString("data"); w.WriteMapHeader(1);
+            w.WriteString("items"); w.WriteArrayHeader(1);
+            w.WriteMapHeader(5);
+            w.WriteString("item_id"); w.WriteInt(999);
+            w.WriteString("quantity"); w.WriteInt(1);
+            w.WriteString("container"); w.WriteInt(0);
+            w.WriteString("slot"); w.WriteInt(0);
+            w.WriteString("props"); w.WriteArrayHeader(0);
+
+            var (reader, remaining) = OpenTaggedFrame(w.ToArray(), "event");
+            var e = GameEventMsg.Parse(reader, remaining);
+
+            var stacks = InventoryRestorer.ParseStacksV2(e.data);
+            Assert.IsNotNull(stacks);
+            Assert.AreEqual(1, stacks.Count);
+            Assert.IsNull(stacks[0].props, "sin propiedades, props debe quedar null, no lista vacia");
+        }
+
         // ── PeerVoiceMsg (ADR-046) ───────────────────────────────────────────
 
         [Test]

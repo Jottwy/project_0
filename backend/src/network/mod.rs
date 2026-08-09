@@ -175,6 +175,31 @@ pub struct NetworkManager {
     /// it is not in `PeerInfo` (P2P) nor `RemotePlayerState` (IPC); pure host-side state. A
     /// joiner therefore cannot tell a phantom from a real peer (and its own set stays empty).
     pub phantom_ids: std::collections::HashSet<PeerId>,
+    /// ADR-050 point 9 — victims who reported struggling out of a grab this tick, drained by
+    /// `PhantomDriver::tick_grab`.
+    ///
+    /// A SET keyed by victim and not a flag or a queue: mashing produces many reports for the same
+    /// grab and only the first can matter, and one player breaking free must never release the
+    /// creature holding somebody else. Host-only — it is the only backend that simulates phantoms,
+    /// so a joiner's struggle arrives here as a `StruggleReport` packet.
+    pub pending_struggles: std::collections::HashSet<PeerId>,
+    /// ADR-053 — the last thing each real player said, kept so a robapieles can say it back.
+    ///
+    /// ONE packet per speaker, overwritten: this is a stolen scrap of voice, not a recording, and
+    /// a rolling buffer would be a per-player audio log living in server memory for no extra
+    /// effect. Opus bytes are passed through untouched — the backend never decodes them (it has no
+    /// codec and wants none), so the "distortion" is the client's job.
+    ///
+    /// Host-only in practice: only the host relays voice and only the host simulates phantoms.
+    pub voice_echo: std::collections::HashMap<PeerId, Vec<u8>>,
+    /// ADR-053 — sequence number for the echoes, and it has to be its OWN monotonic counter.
+    ///
+    /// The first version borrowed `next_phantom_attack_request_id`, which only moves when a blow is
+    /// routed to a REMOTE victim — so in a solo session it sits at 0 forever, every echo went out
+    /// with the same `seq`, and the client's jitter buffer (which orders and de-duplicates BY seq,
+    /// exactly as a voice stream should) would treat the second one onwards as a repeat and drop
+    /// it. The creature would have said your words back exactly once per session.
+    pub voice_echo_seq: u16,
     incoming_rx: mpsc::Receiver<IncomingPacket>,
     pub session_start: Instant,
     /// Throttle for `send_datagram`'s failure log: millis since `session_start` of the last
@@ -189,6 +214,27 @@ pub struct NetworkManager {
     pub last_pickup_at: Option<Instant>,
     next_peer_id: PeerId,
     pub world_seed: u64,
+    /// ADR-045 Fase 2: whether `world_seed` above is actually known yet. The host knows it from
+    /// its own launch args at construction (`true` from the start); a joiner does not learn it
+    /// until `handle_handshake_ack` writes it, where this flips to `true` in the same place.
+    /// Exists so player-file resolution (which needs `world_seed` + `identity_key` together, see
+    /// `game_loop::run`) can poll a plain field instead of inferring the moment from an event.
+    pub world_seed_known: bool,
+    /// ADR-056: which peer is the host, from this backend's point of view. `None` on the host
+    /// itself (it IS the host — nobody to point at) and on a joiner until its `HandshakeAck`
+    /// arrives, where `handle_handshake_ack` fills it in with the same `sender_id` it registers
+    /// as the host peer.
+    ///
+    /// Same shape and same reason as `world_seed_known` above: `PeerDisconnected` has to answer
+    /// "was that the host?" and the host's id is only implicit today (peer `1` by convention,
+    /// spelled as a literal in ~15 call sites that an earlier audit asked NOT to grow). A plain
+    /// field lets the handler compare instead of hardcoding a sixteenth.
+    pub host_peer_id: Option<PeerId>,
+    /// P0-2: density multiplier for the phantom population draw. Same shape as `world_seed` —
+    /// read once from env at boot (or from a loaded save, which wins), travels in the
+    /// HandshakeAck, and the joiner adopts the host's value. Defaults to 1.0 (no scaling) so
+    /// every existing test constructing a `NetworkManager` directly keeps today's behavior.
+    pub phantom_density_scale: f32,
     global_sequence: u32,
     pub local_name: String,
     pending_connect_addr: Option<SocketAddr>,
@@ -248,12 +294,18 @@ impl NetworkManager {
             next_phantom_attack_request_id: 1,
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
+            pending_struggles: std::collections::HashSet::new(),
+            voice_echo: std::collections::HashMap::new(),
+            voice_echo_seq: 0,
             incoming_rx: rx,
             session_start: Instant::now(),
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
+            world_seed_known: is_host,
+            host_peer_id: None,
+            phantom_density_scale: 1.0,
             global_sequence: 0,
             local_name: format!("Player{local_id}"),
             pending_connect_addr: None,
@@ -373,6 +425,7 @@ impl NetworkManager {
 
         for id in timed_out {
             if let Some(peer) = self.peers.remove(&id) {
+                self.purge_peer_state(id);
                 info!("Peer {} ({}) timed out", peer.name, peer.addr);
                 info!(
                     "MPTRACE step=L event=peer_removed reason=heartbeat_timeout self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} remote_players_ids={:?}",
