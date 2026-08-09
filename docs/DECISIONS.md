@@ -2273,3 +2273,36 @@ Confirma en el juego real la cadena que hasta ahora solo respaldaban 17 tests de
 **La escalera queda validada como DECORATIVA en el sentido fuerte**: no es que no se haya cableado verticalidad, es que se ha comprobado que no la produce ni siquiera por accidente, que era el modo de fallo que la NOTA DE BACKLOG (2026-08-08) señalaba como el peligroso — el que no habría necesitado tocar una línea de Rust para colarse.
 
 Lo que esto NO cierra, para que nadie lo lea de más: siguen sin confirmar el mobiliario frenando físicamente y el tinte/loot; y las palancas 3 y 4 siguen sin empezar. Cerrado es el invariante, no el checklist.
+
+### CONFIRMACIÓN EN VIVO (2026-08-09, segunda sesión) — mobiliario y tinte cierran el checklist; el loot queda confirmado por mecanismo, no por muestra
+
+Playtest autónomo (build de desarrollo con HEAD, input por computer-use, posiciones leídas del log del backend, no del HUD):
+
+- **MOBILIARIO FRENA FÍSICAMENTE: CONFIRMADO.** Contra un prop sólido del despacho, 2 s de avance produjeron 0.42 m y la posición quedó clavada en `(-30.60, 1.90, -6.60)` durante 4 s de log (velocidad libre ~4 m/s); la contraprueba en la dirección opuesta movió al jugador con normalidad, y un strafe lateral contra el escritorio dio desplazamiento CERO con el eje x congelado exacto en `-30.60`. Los colliders de `b0c5494` hacen su trabajo en el juego real.
+- **TINTE: CONFIRMADO en lo que la trampa del Clamp podía romper.** Paredes del chunk OFFICE (-1,-1) muestrean crema-amarillo (`RGB 214/201/149`, G/R = 0.94, compatible con el multiplicador `(0.82, 0.86, 0.80)`); el modo de fallo que el checklist vigilaba —servir el púrpura oscuro `(0.35, 0.25, 0.35)` de ZONE_PIT por array corto— queda descartado por observación directa. El tabique de ADR-035 se ve y se lee como pared de despacho.
+- **LOOT: el MECANISMO queda confirmado; la MUESTRA no existe en este seed.** El gate por zona funciona (42 items / 64 carryables vivos colocados en el mundo con perfil por `zone_kind` y sin fallback), pero el chunk OFFICE (-1,-1) de seed 42 rolla **vacío por sorteo determinista**: `RollItems`/`RollCarryables` gatean el chunk ENTERO (`itemCacheChance` 0.6 ⇒ 40% de chunks OFFICE sin cache; `carryableZoneChance` 0.2 ⇒ 80% sin zona de carryables) y este chunk cayó en ambos vacíos. No es bug — y la selección de perfil 12 ya la protege `TheSerializedZoneLootTableCoversEveryZoneKind` contra el asset real. Confirmar loot OFFICE con los ojos exige otro chunk OFFICE u otro seed; no se persigue.
+- **Hallazgo lateral con chip propio:** la Development Console escupe en bucle `Can't remove CarryablePickup because CarryableBuildAction depends on it` — `StpCarryableReplicator.cs:90` intenta destruir un componente del que un componente vendor depende (`RequireComponent`), el Destroy se rechaza y el pickup del vendor queda vivo. Ajeno a la serie OFFICE; anotado, no tocado.
+
+Con esto, el checklist de playtest de ADR-058 queda CERRADO en sus cuatro puntos (planta/knee walls, invariante de capa, mobiliario, tinte) con la salvedad del loot dicha arriba. ADR-058 pasa a **VALIDADA** con esa salvedad.
+
+## ADR-059 — Techo y luz por zona: dos listas dispersas paralelas, solo parámetros
+
+Estado: **DECIDIDA (2026-08-09), pendiente de implementación.** Decisión de Joel vía `AskUserQuestion` entre tres opciones (set combinado / dos sets paralelos / solo luz): **dos sets paralelos, y para el techo solo parámetros** (sin mecanismo de modelo de techo).
+
+Contexto: la enmienda a ADR-058 del 2026-08-09 estableció que un `zone_kind` se distingue por lo que AÑADE, y dejó como pendiente n.º 1 "techo y luz por zona" — lo que más vendería una oficina (fluorescente frío, rejilla uniforme) no tiene mecanismo: `PlaceCeilingTile` (GridChunkBuilder, per-tile) y `BackroomsLighting.PlaceFluorescentLights` (per-chunk, invocado por `ProceduralWorldGenerator`) leen `LayerVisualConfig` por CAPA, en dos sistemas distintos.
+
+### Decisión
+
+1. **Dos listas dispersas nuevas en `LayerVisualConfig`**, con la misma forma, comodín booleano explícito y regla de degradación que `zonePropSets`/`wallVariantSets` (zona sin autorar ⇒ byte-idéntico al render actual):
+   - `ZoneLightSet[] zoneLightSets` — overrides de `lampColor`, `lampIntensity`, `lampRange`, `lightDensity`, `brokenLampChance`. **Cada override lleva su booleano `override*` explícito** (no el centinela "0 ⇒ sin cambio" de `densityScale`): `brokenLampChance = 0` y `ceilingPanelVariety = 0` son exactamente los valores que OFFICE quiere autorar, así que 0 no puede significar "sin cambio".
+   - `ZoneCeilingSet[] zoneCeilingSets` — overrides de `ceilingPanelVariety` y del tinte base de techo.
+2. **Cada consumidor lee SU lista** (patrón 1:1): `PlaceFluorescentLights` gana un parámetro `zoneKind` (el llamador ya resuelve `ZoneRegistry.TryGetZone` en la misma función, se reutiliza; zona desconocida ⇒ −1 ⇒ ningún set específico casa, misma degradación que tinte/props/modelo de pared, y la reconstrucción de chunks blancos ya re-coloca las luces); `PlaceCeilingTile` recibe el `zoneKindQuery` que `BuildFromWalls` ya tiene.
+3. **Restricción de determinismo:** los overrides cambian VALORES, nunca el NÚMERO de draws del `System.Random` compartido. En `PlaceCeilingTile` la variedad se decide por hash puro y el único draw (tinte) es incondicional — un override de variedad o tinte no mueve el stream. En `PlaceFluorescentLights` el rng es propio del chunk y todos los peers resuelven la misma zona, mismo estatus que ya tienen tinte y props.
+4. **Techo: SOLO parámetros.** Un modelo de techo real (rejilla T-bar como prefab, réplica de `wallVariantSets`) queda explícitamente FUERA y para sesión propia si el resultado paramétrico no vende.
+5. `lampRange` autorado sigue sujeto a la restricción dura ya documentada en `BackroomsLighting`: alcance horizontal a suelo `√(range² − ceilingHeight²)` < 5 m de pasillo (techo 4 m ⇒ range ≤ ~6.4, autorar ≤ 6).
+
+Wire NO cambia (el `zone_kind` ya llega al cliente); no toca backend; regla dura #7 no aplica. Es cambio de sistema núcleo de render cliente ⇒ este ADR existe antes que el código.
+
+### Plan de commits
+
+(a) mecanismo + tests EditMode, inerte sin autoría; (b) autoría OFFICE en `Layer0_Vestibulo.asset` (fluorescente frío, sin lámparas rotas, techo uniforme) + test guarda que carga el asset REAL (patrón `Layer0ActuallyAuthorsTheOfficePropCatalogue` — la lección de "tener el mecanismo no es tenerlo cableado" está pagada dos veces y no se repite).
