@@ -96,17 +96,18 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// El frame de pose a 30 Hz. 19 campos ⇒ cabecera map16 (`de 0013`), NO fixmap: es el
+        /// El frame de pose a 30 Hz. 21 campos ⇒ cabecera map16 (`de 0015`), NO fixmap: es el
         /// único frame del cliente que cruza esa frontera, y desalinear ahí es exactamente el
         /// modo de fallo del bug histórico de `crouch` (rmp_serde descarta la cola en silencio).
         ///
-        /// GOLDEN REGENERADO dos veces: ADR-042 (16 → 18, `light_on` + `fire_seq`) y ADR-044
-        /// (18 → 19, `melee_seq`). STATE.md exige que romper un golden sea DELIBERADO Y DOCUMENTADO:
-        /// lo está, en las "Consecuencias" de ambos ADRs. Cada valor se acuñó con un arnés headless
-        /// contra el `MsgPack.cs` REAL del repo, y el arnés reprodujo primero los goldens ANTERIORES
-        /// byte a byte (len 238 / 0x66588337895127b0 y len 258 / 0x30f307f1c05701f0) antes de emitir
-        /// el nuevo — sin esa comprobación previa, una constante nueva sólo dice que el writer
-        /// coincide consigo mismo.
+        /// GOLDEN REGENERADO tres veces: ADR-042 (16 → 18, `light_on` + `fire_seq`), ADR-044
+        /// (18 → 19, `melee_seq`) y ADR-049 (19 → 21, `carry_def` + `carry_count`). STATE.md exige
+        /// que romper un golden sea DELIBERADO Y DOCUMENTADO: lo está, en las "Consecuencias" de
+        /// los tres ADRs. Cada valor se acuñó con un arnés headless contra el `MsgPack.cs` REAL del
+        /// repo, y el arnés reprodujo primero los goldens ANTERIORES byte a byte (len 238 /
+        /// 0x66588337895127b0, len 258 / 0x30f307f1c05701f0 y len 269 / 0xff1bd09a3c966ee6) antes
+        /// de emitir el nuevo — sin esa comprobación previa, una constante nueva sólo dice que el
+        /// writer coincide consigo mismo.
         ///
         /// OJO con `buttons`: ADR-044 le da significado (bits de apuntar/recargar) pero aquí se deja
         /// en 0 A PROPÓSITO, para que el único delta contra el golden de ADR-042 sea el campo nuevo.
@@ -116,7 +117,7 @@ namespace BackroomsSurvival.Tests
         public void PlayerInputFrameBytesAreStableAndUseMap16Header()
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(19);
+            w.WriteMapHeader(21);
             w.WriteString("type"); w.WriteString("input");
             w.WriteString("movement"); w.WriteArrayHeader(3);
             w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
