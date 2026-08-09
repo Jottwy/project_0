@@ -167,5 +167,44 @@ namespace BackroomsSurvival.Tests
             cfg.zoneCeilingSets = new[] { wc };
             Assert.IsTrue(cfg.TryGetZoneCeilingSet(ZoneUnknown, out _), "−1 vs comodín");
         }
+
+        // ── Guardas contra el asset REAL ─────────────────────────────────────────
+        //
+        // La lección de "tener el mecanismo no es tenerlo cableado" está pagada dos
+        // veces (zonePropSets estuvo implementado con 8 tests en verde y la zona salía
+        // sin muebles porque ningún asset autoraba catálogo). Estos tests cargan el
+        // asset REAL por Resources — si alguien borra la autoría de OFFICE del YAML,
+        // esto es lo único que lo cuenta. NO se destruye el asset cargado: es el
+        // compartido de Resources, no una instancia del test.
+
+        [Test]
+        public void Layer0ActuallyAuthorsTheOfficeLightSet()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+            Assert.IsTrue(real.TryGetZoneLightSet(ZoneOffice, out var zl),
+                "ADR-059 pide que layer 0 autore luz de OFFICE — el mecanismo sin " +
+                "autoría es exactamente el agujero que ya pasó con zonePropSets");
+            Assert.IsTrue(zl.overrideBrokenLampChance && zl.brokenLampChance < real.brokenLampChance,
+                "fluorescente institucional: menos lámparas rotas que la capa");
+            Assert.IsTrue(zl.overrideLampColor && zl.lampColor.b > zl.lampColor.r,
+                "el color autorado debe ser FRÍO (b > r); la capa es cálida (r > b)");
+            if (zl.overrideLampRange)
+                Assert.LessOrEqual(zl.lampRange, 6f,
+                    "restricción dura de BackroomsLighting: √(range²−16) < 5 ⇒ ≤ 6");
+        }
+
+        [Test]
+        public void Layer0ActuallyAuthorsTheOfficeCeilingSet()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+            Assert.IsTrue(real.TryGetZoneCeilingSet(ZoneOffice, out var zc),
+                "ADR-059 pide que layer 0 autore techo de OFFICE");
+            Assert.IsTrue(zc.overridePanelVariety,
+                "el override de variedad debe estar habilitado…");
+            Assert.AreEqual(0f, zc.ceilingPanelVariety,
+                "…y a 0: rejilla uniforme, sin paneles hundidos/caídos en un despacho");
+        }
     }
 }

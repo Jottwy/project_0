@@ -22,11 +22,31 @@ MonoBehaviour:
   ceilingPanelVariety: 0.25
   ceilingPipeChance: 0.35
   ceilingPipes: 1
+  zoneCeilingSets:
+  - zoneKind: 12
+    anyZoneKind: 0
+    overridePanelVariety: 1
+    ceilingPanelVariety: 0
+    overrideCeilingTint: 1
+    ceilingTint: {r: 0.95, g: 0.96, b: 0.94, a: 1}
   lightDensity: 0.7
   brokenLampChance: 0.1
   lampColor: {r: 1, g: 0.97, b: 0.88, a: 1}
   lampIntensity: 2.8
   lampRange: 5
+  zoneLightSets:
+  - zoneKind: 12
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 0.85, g: 0.93, b: 1, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 3.2
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.9
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.02
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
   props:
