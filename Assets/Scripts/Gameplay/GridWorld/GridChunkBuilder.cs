@@ -353,7 +353,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // is untouched; the ceiling tint still draws one rng value inside so the
                     // draw sequence — and thus floor/wall shades — stays byte-identical.
                     if (styled && cfg.showCeiling)
-                        PlaceCeilingTile(prefabs, root.transform, tx, tz, mats, cfg, chunkX, chunkZ, rng, zoneTint);
+                        PlaceCeilingTile(prefabs, root.transform, tx, tz, mats, cfg, chunkX,
+                            chunkZ, rng, zoneTint, zoneKindQuery);
 
                     byte b = walls[tx, tz];
                     byte edges = 0;

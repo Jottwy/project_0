@@ -447,7 +447,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // ZoneRegistry.ZoneArrived avise. Lectura pura sin efectos secundarios — llamar
             // TryGetZone dos veces (aquí y dentro de BuildFromWalls) es inofensivo.
             bool styled = cfg != null && mats != null;
-            bool zoneKnownAtBuild = styled && ZoneRegistry.TryGetZone(ccx, ccz, out _);
+            // ADR-059: el byte de zona se conserva — además de decidir "blanco o no",
+            // alimenta los overrides de luz por zona más abajo.
+            byte zoneKindByte = 0;
+            bool zoneKnownAtBuild = styled && ZoneRegistry.TryGetZone(ccx, ccz, out zoneKindByte);
 
             // ADR-035: los rects de sala salen del cache, no del mensaje — una
             // reconstrucción desde _wallsCache (chunk revisitado, o reintento tras el gate
@@ -472,9 +475,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 // (GridChunkBuilder.cs:109, 2f * Ch). The height is left as the literal
                 // expression on purpose — aliasing it would move a number for no gain.
                 int tiles = GridChunkBuilder.TilesPerChunk;
+                // ADR-059: −1 cuando la zona no se conocía al construir — un set de luz
+                // específico de zona no casa con eso (solo uno comodín), y la
+                // reconstrucción vía OnZoneArrived vuelve a pasar por aquí con la zona.
                 lighting.PlaceFluorescentLights(go.transform, tiles, tiles,
                     GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
-                    cfg, mats.lamp, ccx, ccz, layer, walls);
+                    cfg, mats.lamp, ccx, ccz, layer, walls,
+                    zoneKnownAtBuild ? zoneKindByte : -1);
             }
         }
 

@@ -42,6 +42,35 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Enable overhead pipes for this layer (consumed in Slice 2).")]
         public bool ceilingPipes = false;
 
+        [Tooltip("ADR-059 — sparse override list: ceiling parameters by zone_kind. The FIRST " +
+                 "matching entry with at least one override ENABLED wins. Empty/null (or no " +
+                 "match) ⇒ every zone uses the layer's ceiling fields — the behaviour before " +
+                 "this field existed.")]
+        public ZoneCeilingSet[] zoneCeilingSets;
+
+        /// <summary>
+        /// ADR-059 — el <see cref="ZoneCeilingSet"/> que gobierna <paramref name="zoneKind"/>,
+        /// si hay uno autorado Y con algún override habilitado. Misma regla de "a medias no
+        /// cuenta" que <see cref="TryGetZonePropSet"/>: cada override lleva booleano EXPLÍCITO
+        /// porque 0 es un valor legítimo aquí (OFFICE quiere exactamente
+        /// <c>ceilingPanelVariety = 0</c>: rejilla uniforme sin paneles caídos), así que el
+        /// centinela "0 ⇒ sin cambio" de otros sets no sirve. Un −1 ("zona desconocida") solo
+        /// casa con un set comodín, igual que tinte/props/modelo de pared.
+        /// </summary>
+        public bool TryGetZoneCeilingSet(int zoneKind, out ZoneCeilingSet match)
+        {
+            match = default;
+            if (zoneCeilingSets == null) return false;
+            for (int i = 0; i < zoneCeilingSets.Length; i++)
+            {
+                if (!zoneCeilingSets[i].Matches(zoneKind)) continue;
+                if (!zoneCeilingSets[i].HasAnyOverride) continue;
+                match = zoneCeilingSets[i];
+                return true;
+            }
+            return false;
+        }
+
         [Header("Lighting")]
         [Range(0f, 1f)] [Tooltip("Fraction of tiles that get a luminaire slot.")]
         public float lightDensity = 0.6f;
@@ -50,6 +79,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public Color lampColor = new Color(1f, 0.95f, 0.78f);
         public float lampIntensity = 1.8f;
         public float lampRange = 12f;
+
+        [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
+                 "matching entry with at least one override ENABLED wins. Empty/null (or no " +
+                 "match) ⇒ every zone uses the layer's lamp fields — the behaviour before " +
+                 "this field existed. OJO al retunear lampRange: alcance horizontal a suelo " +
+                 "= √(range² − ceilingHeight²) y debe quedar bajo los 5 m de pasillo (ver " +
+                 "BackroomsLighting) — con techo de 4 m, autorar ≤ 6.")]
+        public ZoneLightSet[] zoneLightSets;
+
+        /// <summary>
+        /// ADR-059 — el <see cref="ZoneLightSet"/> que gobierna <paramref name="zoneKind"/>,
+        /// si hay uno autorado Y con algún override habilitado. Booleanos de override
+        /// EXPLÍCITOS porque 0 es un valor legítimo (OFFICE quiere
+        /// <c>brokenLampChance = 0</c>: fluorescentes institucionales, todas funcionando).
+        /// Un −1 ("zona desconocida") solo casa con un set comodín — misma degradación que
+        /// tinte/props/modelo de pared, y la reconstrucción de chunks blancos
+        /// (ZoneRegistry.ZoneArrived) ya re-coloca las luces con la zona correcta.
+        /// </summary>
+        public bool TryGetZoneLightSet(int zoneKind, out ZoneLightSet match)
+        {
+            match = default;
+            if (zoneLightSets == null) return false;
+            for (int i = 0; i < zoneLightSets.Length; i++)
+            {
+                if (!zoneLightSets[i].Matches(zoneKind)) continue;
+                if (!zoneLightSets[i].HasAnyOverride) continue;
+                match = zoneLightSets[i];
+                return true;
+            }
+            return false;
+        }
 
         [Header("Fog (applied to RenderSettings when this is the player's active layer)")]
         public float fogDensity = 0.04f;
@@ -423,5 +483,95 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public bool Matches(int zoneKindQuery, RoomZoneKind roomTypeQuery) =>
             (anyZoneKind || zoneKind == zoneKindQuery) &&
             (anyRoomType || roomType == roomTypeQuery);
+    }
+
+    /// <summary>
+    /// ADR-059 — overrides de LUZ ligados a un <c>zone_kind</c>. Lista DISPERSA con el mismo
+    /// comodín booleano explícito que <see cref="ZonePropSet"/> (un elemento recién añadido
+    /// nace con <c>zoneKind == 0</c> = ZONE_NORMAL, una zona concreta, no "todas").
+    ///
+    /// A diferencia de los sets anteriores, CADA campo lleva su booleano <c>override*</c>:
+    /// aquí 0 es un valor que se quiere poder autorar (<c>brokenLampChance = 0</c>), así que
+    /// "0 ⇒ sin cambio" destruiría exactamente el caso de uso que motivó el ADR. Un set sin
+    /// ningún override habilitado no cuenta como coincidencia (autoría a medias ⇒ se sigue
+    /// buscando), igual que un <see cref="ZonePropSet"/> con catálogo vacío.
+    /// </summary>
+    [System.Serializable]
+    public struct ZoneLightSet
+    {
+        [Tooltip("zone_kind al que aplica (0..12, ver ZoneTint). Se ignora si anyZoneKind " +
+                 "está marcado.")]
+        public int zoneKind;
+
+        [Tooltip("Marcado ⇒ aplica a todos los zone_kind.")]
+        public bool anyZoneKind;
+
+        [Tooltip("Marcado ⇒ lampColor de abajo sustituye al de la capa en esta zona.")]
+        public bool overrideLampColor;
+        public Color lampColor;
+
+        [Tooltip("Marcado ⇒ lampIntensity de abajo sustituye al de la capa en esta zona.")]
+        public bool overrideLampIntensity;
+        public float lampIntensity;
+
+        [Tooltip("Marcado ⇒ lampRange de abajo sustituye al de la capa en esta zona. " +
+                 "Restricción dura: √(range² − 16) < 5 ⇒ autorar ≤ 6 (ver BackroomsLighting).")]
+        public bool overrideLampRange;
+        public float lampRange;
+
+        [Tooltip("Marcado ⇒ lightDensity de abajo sustituye al de la capa en esta zona. El " +
+                 "jitter por chunk de Pieza D se aplica igualmente encima.")]
+        public bool overrideLightDensity;
+        [Range(0f, 1f)] public float lightDensity;
+
+        [Tooltip("Marcado ⇒ brokenLampChance de abajo sustituye al de la capa en esta zona. " +
+                 "0 es autorable: significa NINGUNA lámpara rota.")]
+        public bool overrideBrokenLampChance;
+        [Range(0f, 1f)] public float brokenLampChance;
+
+        /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
+        /// con un set específico; sí con uno comodín).</summary>
+        public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
+
+        /// <summary>True si el autor habilitó al menos un override — un set sin ninguno es
+        /// autoría a medias y no debe capturar la zona.</summary>
+        public bool HasAnyOverride =>
+            overrideLampColor || overrideLampIntensity || overrideLampRange ||
+            overrideLightDensity || overrideBrokenLampChance;
+    }
+
+    /// <summary>
+    /// ADR-059 — overrides de TECHO ligados a un <c>zone_kind</c>. Misma forma y mismas
+    /// reglas que <see cref="ZoneLightSet"/> (booleanos de override explícitos: OFFICE quiere
+    /// <c>ceilingPanelVariety = 0</c>, rejilla uniforme). SOLO parámetros — un modelo de techo
+    /// real (prefab de rejilla) quedó explícitamente fuera del ADR.
+    /// </summary>
+    [System.Serializable]
+    public struct ZoneCeilingSet
+    {
+        [Tooltip("zone_kind al que aplica (0..12, ver ZoneTint). Se ignora si anyZoneKind " +
+                 "está marcado.")]
+        public int zoneKind;
+
+        [Tooltip("Marcado ⇒ aplica a todos los zone_kind.")]
+        public bool anyZoneKind;
+
+        [Tooltip("Marcado ⇒ ceilingPanelVariety de abajo sustituye al de la capa en esta " +
+                 "zona. 0 es autorable: techo uniforme, sin paneles hundidos/caídos.")]
+        public bool overridePanelVariety;
+        [Range(0f, 1f)] public float ceilingPanelVariety;
+
+        [Tooltip("Marcado ⇒ este tinte sustituye a la paleta de techo de la capa " +
+                 "(ceilingTint/ceilingTintVariants) en esta zona. El tinte de ZONA " +
+                 "(zoneTints) y el jitter por tile se aplican igualmente encima.")]
+        public bool overrideCeilingTint;
+        public Color ceilingTint;
+
+        /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
+        /// con un set específico; sí con uno comodín).</summary>
+        public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
+
+        /// <summary>True si el autor habilitó al menos un override.</summary>
+        public bool HasAnyOverride => overridePanelVariety || overrideCeilingTint;
     }
 }

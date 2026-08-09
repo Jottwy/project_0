@@ -220,23 +220,34 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// unaffected. One ceiling-tint rng value is still drawn here (unconditionally) to
         /// keep the original draw sequence. <c>ceilingPanelVariety</c> scales the share of
         /// non-normal panels in a fixed 3:2:1 (sunken:absent:dropped) ratio.
+        /// ADR-059: <paramref name="zoneKind"/> selecciona overrides de variedad y tinte
+        /// base por zona (<see cref="LayerVisualConfig.TryGetZoneCeilingSet"/>). Los
+        /// overrides no añaden ni quitan draws del <paramref name="rng"/>: la variedad se
+        /// decide por hash puro y el draw del tinte sigue siendo incondicional, así que
+        /// los tintes de suelo/pared no se mueven aunque se autore un techo por zona.
         /// </summary>
         private static void PlaceCeilingTile(GridPrefabSet prefabs, Transform parent,
             int tx, int tz, LayerVisualMaterials mats, LayerVisualConfig cfg,
-            int chunkX, int chunkZ, System.Random rng, Color zoneTint)
+            int chunkX, int chunkZ, System.Random rng, Color zoneTint, int zoneKind)
         {
             CeilingHash(chunkX, chunkZ, tx, tz, out float hType, out float hDrop,
                 out float hTilt, out float hYaw);
 
+            bool hasZoneCeiling = cfg.TryGetZoneCeilingSet(zoneKind, out var zc);
+
             // Base tint (still draws one rng value so floor/wall shades stay identical),
-            // darkened where moisture clusters.
-            Color tint = JitterValue(
-                cfg.CeilingTintFor(Hash01(chunkX * Tiles + tx, chunkZ * Tiles + tz, TintSaltCeiling))
-                * zoneTint, rng);
+            // darkened where moisture clusters. Con override de zona, el tinte base
+            // sustituye a la paleta de capa pero conserva zoneTint y el jitter encima.
+            Color baseTint = hasZoneCeiling && zc.overrideCeilingTint
+                ? zc.ceilingTint
+                : cfg.CeilingTintFor(Hash01(chunkX * Tiles + tx, chunkZ * Tiles + tz, TintSaltCeiling));
+            Color tint = JitterValue(baseTint * zoneTint, rng);
             if (MoistureAt(chunkX, chunkZ, tx, tz, MoistSaltCeilCell, MoistSaltCeilJit) < 0.20f)
                 tint *= MoistureStain;
 
-            float v = Mathf.Clamp01(cfg.ceilingPanelVariety);
+            float v = Mathf.Clamp01(hasZoneCeiling && zc.overridePanelVariety
+                ? zc.ceilingPanelVariety
+                : cfg.ceilingPanelVariety);
             float pSunken  = v * 0.5f;
             float pAbsent  = pSunken + v * (1f / 3f);
             float pDropped = pAbsent + v * (1f / 6f);

@@ -33,24 +33,45 @@ namespace BackroomsSurvival.Gameplay.World
         /// Spawn luminaires across <paramref name="chunkRoot"/>'s ceiling. Positions
         /// follow GridChunkBuilder's tile-centre convention ((tile + 0.5) × tileSize).
         /// <paramref name="lampMat"/> is the shared emissive material for this layer.
+        /// <paramref name="zoneKind"/> (ADR-059) selecciona un <see cref="ZoneLightSet"/>
+        /// de overrides si la capa autora uno para esa zona; −1 ("zona aún desconocida")
+        /// solo casa con un set comodín, y la reconstrucción de chunks blancos ya vuelve
+        /// a pasar por aquí con la zona correcta. Los overrides cambian VALORES, nunca
+        /// el número de draws del rng — el stream por chunk queda intacto.
         /// </summary>
         public void PlaceFluorescentLights(Transform chunkRoot, int tilesX, int tilesZ,
             float tileSize, float ceilingHeight, LayerVisualConfig cfg, Material lampMat,
-            int chunkX, int chunkZ, int worldLayer, byte[,] walls)
+            int chunkX, int chunkZ, int worldLayer, byte[,] walls, int zoneKind = -1)
         {
             if (cfg == null) return;
 
+            // ADR-059 — valores efectivos: los de la capa salvo override por zona. Se
+            // resuelven UNA vez por chunk, fuera del bucle de tiles.
+            Color lampColor      = cfg.lampColor;
+            float lampIntensity  = cfg.lampIntensity;
+            float lampRange      = cfg.lampRange;
+            float lightDensity   = cfg.lightDensity;
+            float brokenChance   = cfg.brokenLampChance;
+            if (cfg.TryGetZoneLightSet(zoneKind, out var zl))
+            {
+                if (zl.overrideLampColor)        lampColor     = zl.lampColor;
+                if (zl.overrideLampIntensity)    lampIntensity = zl.lampIntensity;
+                if (zl.overrideLampRange)        lampRange     = zl.lampRange;
+                if (zl.overrideLightDensity)     lightDensity  = zl.lightDensity;
+                if (zl.overrideBrokenLampChance) brokenChance  = zl.brokenLampChance;
+            }
+
             // One deterministic RNG per chunk; tiles drawn in scan order.
             var rng = new System.Random(unchecked(chunkX * 73856093 ^ chunkZ * 19349663));
-            Color litEmission = cfg.lampColor * Mathf.Max(0f, cfg.lampIntensity);
+            Color litEmission = lampColor * Mathf.Max(0f, lampIntensity);
 
-            // Pieza D — per-chunk density jitter. With a flat cfg.lightDensity every
+            // Pieza D — per-chunk density jitter. With a flat lightDensity every
             // chunk lands within a couple of lamps of the same count, so a corridor is
             // lit identically end to end and the space reads as one uniform box. The
             // band is deliberately asymmetric downward so genuinely DARK stretches
             // exist; the pure hash keeps it deterministic per chunk (all peers agree)
             // without touching the rng stream above. TODO(balance): band tuned by eye.
-            float density = Mathf.Clamp01(cfg.lightDensity *
+            float density = Mathf.Clamp01(lightDensity *
                 (0.30f + GridChunkBuilder.Hash01(chunkX, chunkZ, LightSaltDensity) * 0.90f));
 
             // Lamps hang from the ceiling of a tile the player can be under. A fully
@@ -82,7 +103,7 @@ namespace BackroomsSurvival.Gameplay.World
                         ceilingHeight - 0.3f,   // just below the ceiling slab
                         (tz + 0.5f) * tileSize);
 
-                    bool broken     = rng.NextDouble() < cfg.brokenLampChance;
+                    bool broken     = rng.NextDouble() < brokenChance;
                     bool flickering = !broken && rng.NextDouble() < FlickerChance;
                     bool dying      = flickering && rng.NextDouble() < DeathChance;
                     float frequency = flickering ? (float)(0.5 + rng.NextDouble() * 3.5) : 0f;   // 0.5–4 Hz
@@ -90,27 +111,28 @@ namespace BackroomsSurvival.Gameplay.World
 
                     // Luminaire mesh (always): emissive when working, near-dark when broken.
                     var mesh = MakeLuminaire(chunkRoot, localPos, lampMat,
-                        broken ? cfg.lampColor * 0.04f : litEmission, out var meshRenderer);
+                        broken ? lampColor * 0.04f : litEmission, out var meshRenderer);
                     mesh.layer = geoLayer; // so only this layer's lamps light the tube
 
                     if (broken) continue; // dark tube, no light cast (mesh stays)
 
                     // One centred Point light per panel (4 lights/panel killed perf).
                     //
-                    // Pieza D: the range now comes from cfg.lampRange instead of a hardcoded
-                    // 5 m that silently ignored the field. HARD CONSTRAINT when retuning it:
-                    // horizontal reach at floor level is √(range² − ceilingHeight²), and it
-                    // must stay under the 5 m corridor width or a lamp lights the corridor
-                    // BEYOND its own wall — the per-layer cullingMask below only stops
-                    // bleed between macro-layers, never sideways within one. With a 4 m
-                    // ceiling that caps range at ~6.4 m; the authored values are ≤ 6.
+                    // Pieza D: the range now comes from lampRange instead of a hardcoded
+                    // 5 m that silently ignored the field. HARD CONSTRAINT when retuning it
+                    // (aplica igual a un override de zona, ADR-059): horizontal reach at
+                    // floor level is √(range² − ceilingHeight²), and it must stay under the
+                    // 5 m corridor width or a lamp lights the corridor BEYOND its own wall —
+                    // the per-layer cullingMask below only stops bleed between macro-layers,
+                    // never sideways within one. With a 4 m ceiling that caps range at
+                    // ~6.4 m; the authored values are ≤ 6.
                     var lightGo = new GameObject("FluorescentLight");
                     lightGo.transform.SetParent(mesh.transform, false); // centred under the panel
                     var light = lightGo.AddComponent<Light>();
                     light.type        = LightType.Point;
-                    light.color       = cfg.lampColor;
-                    light.intensity   = cfg.lampIntensity;
-                    light.range       = Mathf.Max(0.1f, cfg.lampRange);
+                    light.color       = lampColor;
+                    light.intensity   = lampIntensity;
+                    light.range       = Mathf.Max(0.1f, lampRange);
                     light.shadows     = LightShadows.None;
                     light.renderMode  = LightRenderMode.Auto;
                     light.cullingMask = litMask; // only this layer's geometry + non-geo
@@ -119,7 +141,7 @@ namespace BackroomsSurvival.Gameplay.World
                     {
                         var f = lightGo.AddComponent<LampFlicker>();
                         f.target        = light;
-                        f.baseIntensity = cfg.lampIntensity;
+                        f.baseIntensity = lampIntensity;
                         f.frequency     = frequency;
                         f.mesh          = meshRenderer; // already resolved by MakeLuminaire
                         f.litEmission   = litEmission;
