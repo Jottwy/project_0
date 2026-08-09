@@ -323,7 +323,19 @@ fn stamp_subregion_grid(
         // los de perímetro sellado, a diferencia del camino legacy): el
         // buffer de 1 tile entre cuadrantes depende de que TODO rect —
         // también los `Open`— caiga en un límite de tile.
-        let (mut eff_sz_x, mut eff_sz_z) = (sz_x, sz_z);
+        //
+        // `subregion_fill_band`: en vez del tamaño fijo del perfil, cada
+        // cuadrante ocupa el ancho COMPLETO de su propia banda por eje —
+        // las bandas ya son par por construcción (`subregion_band_bounds`),
+        // así que `tile_aligned_size` de abajo no tiene nada que redondear
+        // aquí, solo lo conserva por uniformidad con la rama de siempre.
+        let (mut eff_sz_x, mut eff_sz_z) = if rules.subregion_fill_band {
+            let (x_first, x_last) = subregion_band_bounds(divisions, x_band);
+            let (z_first, z_last) = subregion_band_bounds(divisions, z_band);
+            (x_last - x_first, z_last - z_first)
+        } else {
+            (sz_x, sz_z)
+        };
         if room_type == RoomType::CorridorSpine {
             if sz_x >= sz_z {
                 eff_sz_z = CORRIDOR_SPINE_TOTAL_WIDTH;

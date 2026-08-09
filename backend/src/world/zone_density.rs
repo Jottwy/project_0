@@ -255,16 +255,36 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     // tiene 4 sobre 16 (25% útil). Más salas pequeñas gastan MÁS presupuesto de
     // chunk en pared y dejan menos suelo de oficina, no más.
     //
-    // O sea: el pasillo no sobra porque las salas sean grandes, sobra porque las
-    // salas solo pueden cubrir ~27% del chunk con el esquema de bandas + buffers
-    // de ADR-057. Bajar el tamaño ataca el síntoma equivocado.
-    //
     // El mecanismo de 3×3 queda construido, probado e INERTE por si un diseño
     // futuro lo quiere por ESCALA (una sala de 5×5 m se lee más a oficina que una
     // de 10×10, aunque haya menos metros de sala) — pero eso es una decisión de
     // lectura, no de densidad, y no se toma a partir de este número.
-    rules.open_zone_size_x = Some(6);
-    rules.open_zone_size_z = Some(6);
+    rules.open_zone_size_x = Some(6); // fallback documental: `subregion_fill_band`
+    rules.open_zone_size_z = Some(6); // de abajo lo ignora mientras esté activo.
+
+    // IDENTIDAD 4 — cobertura de sala (enmienda 2026-08-09, sesión de
+    // `office_room_coverage_report`). MEDIDO con `sz=6` fijo: footprint 36% del
+    // chunk (4 cuadrantes × 36 celdas), interior pisable de sala real 21.9% de
+    // media (17-36% según Open/Sealed) — el pasillo es MÁS de la mitad de lo
+    // pisable (54%), coherente con el 62% de paneles-pasillo ya medido en
+    // Unity. Causa: `sz=6` desperdicia las 2 celdas extra que la banda LOW
+    // ([2,10), 8 celdas) tiene de sobra sobre la banda HIGH ([12,18), 6 celdas)
+    // — un tamaño fijo tiene que caber en la más estrecha de las dos.
+    //
+    // `subregion_fill_band` (ADR-057, enmienda 2026-08-09) rompe ese techo:
+    // cada cuadrante ocupa el ancho ENTERO de su propia banda, así que los
+    // cuadrantes de banda LOW crecen a 8×8 mientras los de banda HIGH se
+    // quedan en 6×6 — asimétrico A PROPÓSITO, no un descuido: la banda LOW
+    // mide 8 por el mismo split de bandas que ADR-057 ya documentó como no
+    // simétrico. Con esto el footprint sube de 36% a ~49% del chunk (medido).
+    //
+    // Perímetro de sala más fino (quitar el anillo `SealedWall` y colisionar
+    // solo contra el borde de tile, como ya renderiza Unity) se DESCARTA para
+    // esta enmienda: cambia la semántica de colisión del robapieles y la
+    // identidad entera de `SealedRoom`/`carve_sealed_room_entrances` — mayor
+    // ganancia potencial, pero es un rediseño que merece su propio ADR si
+    // algún día se retoma, no una mejora de esta sesión.
+    rules.subregion_fill_band = true;
 
     // `wide_chance`/`erode_chance` se dejan TAL CUAL los del perfil de capa: un
     // pasillo de oficina es estrecho, así que no hay motivo para abrirlos como
@@ -368,6 +388,18 @@ mod tests {
                     assert_eq!(
                         rules.pillar_chance, 0.0,
                         "capa {layer}: OFFICE con columnas — es la identidad de PILLAR_HALL, no la suya"
+                    );
+                    // Enmienda 2026-08-09 (cobertura de sala): OFFICE deja de leer
+                    // `open_zone_size_x/z` — cada cuadrante ocupa el ancho ENTERO
+                    // de su banda (asimétrico: 8 en LOW, 6 en HIGH). El campo se
+                    // conserva como fallback documental (ver `office_rules`), así
+                    // que se comprueba igual que antes por si el flag se apaga
+                    // algún día — con `subregion_fill_band` en `true` esta
+                    // comprobación es del respaldo, no del camino activo.
+                    assert!(
+                        rules.subregion_fill_band,
+                        "capa {layer}: OFFICE debe forzar subregion_fill_band=true \
+                         (enmienda de cobertura de sala, 2026-08-09)"
                     );
                     // El tamaño NO es estético: la banda HIGH de
                     // `subregion_origin_slots` solo admite <= 6. Con 8 (lo que
@@ -806,5 +838,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// GUARDA REAL (enmienda 2026-08-09, cobertura de sala). Mide, sobre una
+    /// muestra fija, el footprint de sala (suma de rects de `room_zones` /
+    /// área del chunk) con `office_rules` tal cual (que fuerza
+    /// `subregion_fill_band = true`) contra la MISMA regla con el flag
+    /// forzado de vuelta a `false`. `office_rules` YA documenta el número
+    /// (36% → 49%, medido sobre 256 chunks con `office_room_coverage_report`,
+    /// instrumentación efímera ya retirada); este test lo convierte en guard
+    /// determinista para que un futuro cambio a `stamp_subregion_grid` o a
+    /// las bandas de ADR-057 que borre la ganancia falle aquí, no en
+    /// producción.
+    #[test]
+    fn office_fill_band_grows_room_footprint_over_the_fixed_size_path() {
+        use crate::world::grid_gen::generate_layer;
+
+        let base = &LAYER_PROFILES[0];
+        let with_fill = office_rules(base);
+        assert!(with_fill.subregion_fill_band, "office_rules debe activarlo");
+
+        let mut without_fill = with_fill.clone();
+        without_fill.subregion_fill_band = false; // vuelve al sz=6 fijo de antes
+
+        let footprint_of = |rules: &LayerRules, seed: u64, cx: i32| -> u32 {
+            let out = generate_layer(rules, seed, (cx, cx * 7 + 3), 0, &[]);
+            out.room_zones
+                .iter()
+                .map(|z| (z.x1 - z.x0) as u32 * (z.z1 - z.z0) as u32)
+                .sum()
+        };
+
+        // subregion_presence = 1.0 en OFFICE ⇒ los 4 cuadrantes SIEMPRE
+        // presentes: footprint es una función pura de sz por banda, no del
+        // sorteo de presencia — una sola muestra basta y es determinista.
+        let footprint_with = footprint_of(&with_fill, 42, 0);
+        let footprint_without = footprint_of(&without_fill, 42, 0);
+
+        assert_eq!(
+            footprint_without,
+            4 * 36,
+            "camino sz=6 fijo: 4 cuadrantes de 6×6 = 144 celdas — si esto cambia, \
+             cambió `open_zone_size_x/z` de office_rules, no el mecanismo nuevo"
+        );
+        // Cuadrantes por (x_band, z_band): idx0=(LOW,LOW) 8×8=64,
+        // idx1=(HIGH,LOW) 6×8=48, idx2=(LOW,HIGH) 8×6=48, idx3=(HIGH,HIGH)
+        // 6×6=36. Suma 196 — NO 1 grande + 2 mixtos + 1 pequeño simétrico,
+        // porque solo hay UN cuadrante 8×8 (idx0) y uno 6×6 (idx3): los dos
+        // "mixtos" (idx1, idx2) ya tenían 48 cada uno antes también.
+        assert_eq!(
+            footprint_with,
+            8 * 8 + 6 * 8 + 8 * 6 + 6 * 6,
+            "fill_band: idx0(LOW,LOW)=8×8, idx1(HIGH,LOW)=6×8, idx2(LOW,HIGH)=8×6, \
+             idx3(HIGH,HIGH)=6×6 — si esto cambia, cambiaron las bandas de ADR-057 \
+             o el mapeo de cuadrante"
+        );
+        assert!(
+            footprint_with > footprint_without,
+            "fill_band debe crecer el footprint sobre el camino de tamaño fijo"
+        );
     }
 }

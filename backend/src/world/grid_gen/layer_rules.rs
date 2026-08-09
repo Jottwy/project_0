@@ -134,6 +134,24 @@ pub struct LayerRules {
     /// silencio.
     #[serde(default = "default_subregion_divisions")]
     pub subregion_divisions: u8,
+    /// `false` (default) = cada sub-región usa `open_zone_size_x/z` tal
+    /// cual, igual que antes de este campo. `true` = IGNORA
+    /// `open_zone_size_x/z` y calcula el tamaño de cada eje como el ancho
+    /// completo de la banda que le toca (`subregion_band_bounds`), tile a
+    /// tile — ya siempre par, `tile_aligned_size` no tiene nada que
+    /// redondear. Con `divisions = 2` eso es 8 en la banda LOW y 6 en la
+    /// HIGH (asimétrico, no un error: la banda LOW mide 8 celdas porque
+    /// absorbe el resto de la costura tras separar el buffer fijo de 1
+    /// tile — ver ADR-057). Consecuencia aceptada: con la banda llena no
+    /// queda margen de posición, `subregion_origin_slots` da un único
+    /// origen (igual que la banda HIGH con `sz = 6` desde ADR-057) — la
+    /// variedad la sigue dando `RoomType`, no la posición.
+    ///
+    /// Solo se lee cuando `subregion_grid` es `true`. Cero draws extra del
+    /// `rng` compartido ni del stream por cuadrante — mismo principio que
+    /// el resto de este bloque.
+    #[serde(default)]
+    pub subregion_fill_band: bool,
 }
 
 fn default_straight_bias() -> f32 {
@@ -229,6 +247,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         subregion_grid: true,
         subregion_presence: 0.75,
         subregion_divisions: 2,
+        subregion_fill_band: false,
     },
     // ── Layer 1 — Las Salas ─────────────────────────────────────────────────
     LayerRules {
@@ -256,6 +275,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         subregion_grid: false,
         subregion_presence: 1.0,
         subregion_divisions: 2,
+        subregion_fill_band: false,
     },
     // ── Layer 2 — El Caos ───────────────────────────────────────────────────
     LayerRules {
@@ -283,6 +303,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         subregion_grid: false,
         subregion_presence: 1.0,
         subregion_divisions: 2,
+        subregion_fill_band: false,
     },
     // ── Layer 3 — El Vacío ──────────────────────────────────────────────────
     LayerRules {
@@ -310,6 +331,7 @@ pub const LAYER_PROFILES: [LayerRules; 4] = [
         subregion_grid: false,
         subregion_presence: 1.0,
         subregion_divisions: 2,
+        subregion_fill_band: false,
     },
 ];
 
