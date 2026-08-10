@@ -2562,6 +2562,25 @@ Id runtime de entidad = `(peer_id as u32) << 24 | contador`, con el contador de 
 
 Alcance exacto del bump (¿solo el contrato de unicidad documentado, o cambia algún campo de wire?); si el particionado aplica también a `interact_with_item` (¿añadir chunk coord al payload `Interact`, o resolver por `(chunk, id)` en vez de id plano?); si esto se implementa en su propia sesión con ADR promovido a DECIDIDA, o se pliega a la próxima ronda de trabajo de red. Sin código de esta propuesta en la sesión que la redacta.
 
+### ENMIENDA DE ESTADO (2026-08-10) — ADR-063 pasa de PROPUESTA a VALIDADA
+
+Decisión de Joel vía dos `AskUserQuestion` en la misma sesión que redactó la propuesta. Contexto adicional que cambió el cálculo de urgencia: el gate host-only cerrado esta misma sesión (`ae937a6`, `docs/STATE.md` 2026-08-10) ya deja `tick_entities`/`tick_respawns` y `spawn_dropped_item` exclusivamente en manos del host — hoy CERO colisión activa (confirmado leyendo cada call site: ambos acuñadores están detrás de `net.is_host`, directo o vía su único llamador). El particionado por peer es defensa a futuro, no un fix de bug en curso. Informado de esto, Joel decidió proceder con el alcance completo de todas formas.
+
+**Corrección de un error real en la fórmula del cuerpo original.** `(peer_id as u32) << 24` deja solo 8 bits para `peer_id`, no 16: `PeerId = u16` puede valer hasta 65535, y `allocate_peer_id` (`network/handlers.rs:917-941`) es un contador monótono de por vida del proceso host (`next_peer_id.wrapping_add(1)` en cada join, nunca resetea por desconexión) — un host de sesión larga cruza 256 joins sin esfuerzo. Con el shift de 24, `peer_id=257` (`0x101`) y `peer_id=1` comparten el mismo byte bajo (`0x01`); al desplazar 24 bits, los bits 8-15 de `peer_id` se pierden fuera del `u32` y ambos producen el mismo top-byte `0xFF000000`-ish — la fórmula original reintroduce la clase de colisión que este ADR existe para cerrar, solo que entre peer_id 1 y 257 en vez de entre dos procesos cualesquiera.
+
+**Fórmula corregida (16/16), la que se implementa:**
+```rust
+((peer_id as u32) << 16) | (counter as u16 as u32)
+```
+16 bits para `peer_id` (cabe cualquier valor de `PeerId` sin truncar), 16 bits para el contador (65536 valores por peer — de sobra dado que el acuñado es host-only hoy; si algún día se sintiera corto, la palanca correcta es reclamar ids al recoger/despawnear o ensanchar el tipo en un ADR futuro, NO volver a recortar el split). Contador arranca en 0, no en 1: `peer_id` real nunca es 0 (`allocate_peer_id` nunca asigna 0; host es 1 por convención), así que `(peer_id<<16)|0` ya es no-cero — no hace falta el offset `+1` que sí necesita el esquema plano de hoy. Un solo `AtomicU32` global de contador puro, sin `HashMap<PeerId, AtomicU32>`: el `peer_id` vigente se aplica en el momento del mint vía parámetro (`net.local_id` es constante durante la vida del proceso).
+
+**Respuestas a "Pendiente de decidir antes de implementar":**
+1. **Alcance del bump: SÍ bumpea `WIRE_SCHEMA_VERSION` (27→28)**, aunque ningún campo cambia de tipo (los ids ya viajan como `u32`/`uint`). Cambia el CONTRATO DE UNICIDAD del dato, no su forma — mismo patrón que el proyecto ya distingue de ADR-039 (que NO bumpeó porque cambió semántica de transporte sin tocar payload). El gate de handshake P2P (corrección de ADR-060, ya implementada esta sesión) y el `hello` IPC (ADR-061) rechazan cualquier mismatch de versión ANTES de que un id con significado nuevo cruce el wire hacia un peer que no lo entiende — cero riesgo de mezcla de formatos en producción.
+2. **`interact_with_item` SÍ entra en el mismo trabajo, con la Opción A (sin campo nuevo en el wire).** `interact_with_item` ya recibe `requester_pos`; `max_distance=5.0` « `CHUNK_SIZE=50.0`, así que el chunk del requester (vía `world_to_chunk`, ya existente) es un hint fiable con el mismo resultado funcional que añadir `chunk_pos` al payload `Interact`, sin ensanchar la superficie wire/Unity (evita romper el golden hash de `IPCFrameGoldenTests.cs` y tocar `WorldInteractor.cs`/`NetworkWorldObject.cs` para cero ganancia funcional sobre A).
+3. **Se implementa en esta misma sesión.**
+
+**Fuera de alcance, verificado y descartado explícitamente:** persistencia — `World.chunks` (con `Entity.id`/`DroppedItem.id`) nunca se serializa a disco (`persistence/save.rs`), cero riesgo de compatibilidad de saves. `StpPickupRequest`/`StpPickupGranted` (namespace STP, `def_id`/`item_id` distintos) y `next_corpse_id` (sistema de ids separado) no se tocan.
+
 ## ADR-064 — El crafteo se muda al vocabulario STP: recetas por `item_id`, validadas contra el inventario reportado (PROPUESTA)
 
 Estado: **PROPUESTA (2026-08-10)**. Decisión de autoridad tomada por Joel en sesión (`AskUserQuestion`); el resto del diseño queda para validación humana antes de tocar código. Cero código en la sesión que la redacta.
