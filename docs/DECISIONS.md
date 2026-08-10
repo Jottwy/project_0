@@ -2399,3 +2399,83 @@ Plan de commits (regla #5, una preocupación por commit): **(a)** protocolo — 
 La sección "Común a ambas rutas" de arriba afirma "join cross-versión ya está gateado por schema". **Falso, verificado leyendo el receptor**: `handle_handshake` (`network/handlers.rs`) recibe el `version` del `Handshake` P2P como `_version` — se ignora, nadie rechaza nada. El agujero es ANTERIOR a este ADR (el campo se ignora desde la baseline), pero este ADR lo vuelve observable por primera vez: un peer v24 contra un host v25 conecta y nunca recibe mundo (queda pre-spawn, visible, sin corrupción de estado — los payloads del goteo simplemente no decodifican y se descartan).
 
 Queda como **corrección pendiente adosada a este ADR** (no ADR nuevo: es hacer verdad lo que este ADR ya asumía, sin cambiar forma del wire): rellenar `version` con `WIRE_SCHEMA_VERSION` en el emisor del `Handshake` y rechazar el mismatch en el host con el mismo mecanismo de rechazo que ya usa "session full" (`Disconnect` con reason). Hasta entonces, la degradación real del bump v25 es la descrita en `docs/systems/ipc-wire-schema.md` §v25.
+
+## ADR-061 — La versión de esquema IPC nunca viaja: `hello` del servidor como primer frame
+
+Estado: **DECIDIDA (2026-08-10), en implementación.** Cambio de wire IPC ⇒ regla dura #7: este ADR precede al código. Hallazgo de auditoría, confirmado por lectura en esta sesión.
+
+### Contexto
+
+`WIRE_SCHEMA_VERSION` (`ipc/server.rs`) existe desde ADR-009 y **no se transmite jamás**: su único uso es el `info!` de arranque. No hay handshake IPC — al aceptar la conexión, el primer frame que sale es el siguiente `world_state` del broadcast. Unity ni siquiera tiene constante espejo. El número que el changelog llama "la autoridad" es, en el wire, decorativo.
+
+Consecuencia medida, no hipotética: un mismatch de esquema degrada a **defaults silenciosos**. El contrato `else r.Skip()` (`IPCMessages.cs`, cabecera) es deliberado y correcto para campos aditivos, pero sin gate de envelope convierte cualquier deriva en datos plausibles: un campo renombrado queda en su inicializador C# (`0`, `""`, lista vacía) y un `type` renombrado se evaporaba sin log (el `switch` de `Dispatch()` no tenía rama `default:` — corregido como paso previo a este ADR). El caso peor ya estaba escrito en `docs/STABILITY_AUDIT_CURRENT.md` §R4 (P1): **un fallo de parseo de `remote_players` es byte a byte indistinguible de "no hay jugadores remotos"**.
+
+El fix ya estaba pedido por dos documentos propios y nunca ejecutado: `ARCHITECTURE_RISK_REVIEW.md` RF-11 ("Backend sends schema version on IPC connect. Unity rejects mismatch with clear error") y `archive/SAFE_REFACTOR_PLAN-2026-06-08.md` R3-2.
+
+### Decisión
+
+El backend emite **`ServerMessage::Hello { schema_version: u32 }` como primer frame de cada conexión IPC**, escrito en `handle_connection` tras `into_split()` y ANTES de spawnear `write_loop` — así precede a cualquier `world_state` ya bufferizado en el `broadcast::Receiver` suscrito en `run()`. Unity compara contra su constante espejo (`WireSchema.Expected`) por **igualdad exacta**: el despliegue es lockstep (un único exe en `Builds/Backend/`, ADR-047), de modo que un mismatch no es un peer viejo legítimo sino una build desincronizada.
+
+**Alcance cerrado — gate de envelope, NO endurecimiento por campo.** `IPCMessagesParityTests` congela hoy el default silencioso por campo como contrato correcto (`StatsMsg_MissingKeysDefaultToZero` y compañía); ese contrato es lo que permite añadir campos sin romper clientes y **se conserva intacto**. Este ADR no lo toca: pone una puerta en la entrada, no un cerrojo en cada campo.
+
+**Bump a `WIRE_SCHEMA_VERSION = 26.** v25 lo tomó ADR-060 (goteo `WorldSyncChunk`/`WorldSyncEnd`) mientras este ADR se redactaba; se aplica la regla ya escrita en el changelog — el CÓDIGO es la autoridad y quien aterriza segundo toma el siguiente. Entrada §v26 en `docs/systems/ipc-wire-schema.md` en el mismo commit que la constante.
+
+### Decisiones de diseño
+
+1. **Mismatch ⇒ fallo duro, reutilizando la ruta `session_ended` de ADR-056.** `Debug.LogError` con ambas versiones + `GameEventMsg` sintético `session_ended` con `data = {reason: "wire_schema_mismatch backend=vX client=vY"}` + `PauseReconnect()`. `SessionEndHandler` ya mata el backend, vuelve al menú y tolera "ya estoy en el menú"; `ReadReason` ya lee exactamente esa forma de `data`. **Cero UI nueva.** Seguir conectado con defaults silenciosos ES el bug que este ADR elimina, y reconectar recibiría el mismo hello en bucle — de ahí `PauseReconnect`, no reintento.
+2. **Backend pre-hello ⇒ tolerancia con warning, sin timeout.** Si el primer frame de una conexión no es `hello`: un `LogWarning` por conexión ("backend pre-v26, versión NO verificada") y modo legacy. El conjunto de backends sin hello solo decrece (el frame es permanente desde v26); un timeout exigiría timer y estado extra, y un fallo duro rompería el rollout el día 1. Coste: un `bool` por conexión, solo en el hilo de red.
+3. **Payload mínimo: solo `schema_version: u32`.** Un `build: String` duplicaría lo que el log de arranque ya imprime e invitaría a lógica sobre strings. El contrato `else r.Skip()` hace aditivo cualquier campo futuro sin bump de forma.
+4. **Gate cliente→backend: APLAZADO, no olvidado.** El mismatch es simétrico — detectarlo en un sentido detecta el par, y con (1) el cliente ya tumba la sesión entera; el backend solo podría loguear. Enmienda futura barata: `#[serde(default)] schema_version: u32` dentro del `set_identity` existente (aditivo, ya deduplicado por `ConnectionEpoch`, warn en `game_loop.rs`).
+
+**Relación con la corrección pendiente de ADR-060:** son dos gates distintos en dos transportes distintos y no se sustituyen. Éste cubre **IPC** (Unity ↔ su backend local); aquél cubre **P2P** (host ↔ peer remoto, el `_version` ignorado en `handle_handshake`). Un mismatch P2P sigue sin rechazarse después de este ADR.
+
+### Degradación en ambas direcciones
+
+- **Cliente viejo + backend v26:** el frame `hello` cae en la rama `default:` de `Dispatch` (log de warning, frame descartado); el resto de la sesión funciona como antes. Degradación cosmética, por construcción.
+- **Cliente v26 + backend viejo:** decisión (2) — warning una vez, sesión normal, versión sin verificar.
+
+### Plan de commits (regla #5)
+
+**(a)** rama `default:` en `Dispatch` — fix independiente, precede al resto; **(b)** este ADR; **(c)** Unity: `ProtocolMessageTypes.Hello`, `WireSchema` (constante espejo + decisión, clase `public` — el compile-check Roslyn compila asambleas `_check` y rompe `InternalsVisibleTo`), `HelloMsg.Parse`, gate en `Dispatch` + tests EditMode; **(d)** backend: `ServerHello`, emisión en `handle_connection`, bump a 26, changelog §v26, tests (orden hello-antes-de-world_state; bytes del frame con el tag primero); **(e)** `STATE.md` + cierre de RF-11.
+
+Verificación E2E del camino de fallo: bumpear `WireSchema.Expected` en local sin commitear contra el backend nuevo ⇒ `LogError` + vuelta al menú con reason `wire_schema_mismatch`.
+
+## ADR-062 — Agotar los reintentos reliable desconecta al peer, no lo deja mudo
+
+Estado: **DECIDIDA (2026-08-10), implementada en la misma sesión.** Decisión de Joel vía `AskUserQuestion`. Cierra el riesgo **P0-3** de `docs/ARCHITECTURE_RISK_REVIEW.md` §5 y el ítem P0 homónimo de `docs/STABILITY_AUDIT_CURRENT.md` §7 (ambos apuntan a `network/mod.rs::process_retransmits()`).
+
+**Numeración:** ADR-061 queda RESERVADO para el gate de wire schema en el `Handshake` (la "corrección pendiente" adosada a ADR-060 arriba). Este ADR toma 062 para no colisionar con ese trabajo en curso.
+
+### El fallo
+
+`collect_retransmits` (`network/peer.rs`) marca `peer_dead` cuando UN paquete supera `MAX_RETRIES = 5`. `process_retransmits` reaccionaba vaciando `reliable_queue` entera y **reteniendo el peer**, sin emitir ningún `NetworkEvent`. Consecuencias encadenadas, todas verificadas leyendo el código:
+
+1. **La purga es por PEER, no por paquete.** El `break` de `collect_retransmits` marca al peer entero; el `clear()` se lleva también los paquetes recién encolados con `retries = 0`. Un solo WorldSync que no se pueda entregar borra el gameplay reliable pendiente (acciones ADR-039, anchors, inventario) que iba detrás.
+2. **El peer sigue "vivo" para el detector de vida.** `handle_packet` refresca `last_heartbeat` con CUALQUIER paquete recibido, no solo `Heartbeat` — la pose unreliable a 10 Hz basta. El ciclo completo de agotamiento (200+400+800+1600+3200 ms ≈ 4.8 s) cabe justo por debajo de `HEARTBEAT_TIMEOUT = 5 s`, así que `check_timeouts` nunca lo reapa. **Salud de la vía reliable y señal de vida eran dos señales completamente desacopladas.**
+3. **Silencio a nivel de programa.** La función devolvía `()`. Ni `game_loop` ni Unity se enteraban; no existía ruta de recuperación (nada reencolaba el WorldSync perdido). El peer quedaba con mundo permanentemente stale, renderizándose como jugador normal.
+
+Las causas plausibles del agotamiento son reales y no exóticas: divergencia emisor/receptor en `is_reliable` (el bug que motivó ADR-039), peer con versión vieja que no decodifica el tipo, ACK perdido (el ACK viaja unreliable, `sequence = 0`, sin reintento), o el `send_to` que falla por tamaño (P0-1 / ADR-060). El `Nack` sigue siendo un no-op, así que no hay recuperación negativa.
+
+### Decisión
+
+**Al agotar los reintentos, el peer se desconecta**, calcando el camino ya existente de `check_timeouts`: `peers.remove` + `purge_peer_state` + `NetworkEvent::PeerDisconnected { reason: "reliable retransmit exhausted" }`. `process_retransmits` pasa a devolver `Vec<NetworkEvent>` (misma forma que `check_timeouts`) y su call site en `game_loop` los pasa por `handle_network_event`, que ya sabe manejar `PeerDisconnected` desde la baseline.
+
+Motivo: es **honesto y recuperable**. La vía reliable muerta ya significa "este peer no está funcionalmente conectado"; decirlo hace que el cliente reconecte y reciba un WorldSync fresco por el camino normal, en vez de quedarse mirando un mundo congelado. El lado evictado lo detecta solo: al salir del mapa deja de recibir heartbeats y su propio `check_timeouts` expira a los 5 s.
+
+**Alternativa descartada — retener el peer y emitir un evento de resync:** `game_loop` reenviaría el snapshot completo al peer afectado. Se descarta porque la causa raíz del agotamiento normalmente PERSISTE (tipo no ACKeado, versión incompatible, datagrama demasiado grande), así que el resync agotaría de nuevo: bucle de reenvíos caros sin convergencia, y más maquinaria (evento nuevo + rama en `game_loop`) que la que cuesta el evict.
+
+### Guarda de fantasmas — comportamiento HEREDADO, no verificado como seguro
+
+Un peer marcado en `phantom_ids` (ADR-016) **no se evicta**: conserva el `clear()` + `purge_deferred()` + warn de antes. Motivo: el ciclo de vida del robapieles lo gestiona el sistema phantom (`refresh_phantom_heartbeats` lo mantiene explícitamente fuera del alcance de `check_timeouts`), y evictarlo desde la capa de red rompería ADR-016 en silencio.
+
+**Se declara explícitamente lo que esta guarda NO garantiza:** un fantasma con la cola reliable atascada queda exactamente en el estado silencioso que este ADR elimina para peers reales — acotado a fantasmas, pero no resuelto. ADR-016 solo garantiza que `broadcast_reliable` los salta; **no** existe detección de agotamiento en el sistema phantom, y un `send_reliable` directo a un fantasma (hoy sin call sites conocidos) volvería a caer en el caso residual. Queda como riesgo conocido con nombre, no como "cubierto por ADR-016".
+
+### Interacción con ADR-060 (goteo de WorldSync)
+
+El goteo por chunk pone N paquetes reliable en vuelo hacia un peer recién llegado, así que un peer que no ACKea se detecta ANTES y con más certeza que con el snapshot monolítico. Es el comportamiento buscado: con ADR-060 un join fallido produce una desconexión visible en ~5 s en vez de un joiner permanentemente pre-spawn. La cola diferida (`deferred_reliable`) muere con el peer al eliminarlo del mapa, sin ruta de fuga.
+
+### Alcance y verificación
+
+Sin cambio de formato de wire: `PeerDisconnected` es un evento interno y no se añade ningún packet type ⇒ **sin bump de `WIRE_SCHEMA_VERSION`** (regla dura #7 no aplica).
+
+El test `reliable_retransmit_failure_does_not_remove_peer` (`network/tests.rs`) fijaba el comportamiento anterior como intencional — se **reescribe** para fijar el evict, con un test hermano nuevo que fija la guarda de fantasmas. Fuera de alcance, cada uno su propia preocupación: el `Nack` no-op, `ACK_DEADLINE_MS` declarada y sin uso (`reliability.rs`), y el follow-up de `StpPickupGranted` retransmitiendo pese al ACK (`docs/STATE.md` ▸ Deuda conocida).
