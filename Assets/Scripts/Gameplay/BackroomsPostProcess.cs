@@ -1,16 +1,17 @@
 using UnityEngine;
-#if UNITY_POST_PROCESSING_STACK_V2
-using UnityEngine.Rendering.PostProcessing;
-#endif
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.Universal;
 
 namespace BackroomsSurvival.Gameplay
 {
-#if UNITY_POST_PROCESSING_STACK_V2
     /// <summary>
-    /// Fase 5D — Built-in PPv2 post-process for the Backrooms look. Builds a global
-    /// PostProcessVolume + a runtime profile (Vignette / Grain / Bloom / ColorGrading) and
-    /// exposes per-effect enable + intensity, persisted to PlayerPrefs (bp_*). The camera
-    /// side (the PostProcessLayer) is handled by <see cref="PlayerCameraPostProcessEnabler"/>.
+    /// URP Volume post-process for the Backrooms look (reescrito desde PPv2 en la
+    /// migración BIRP→URP). Builds a global Volume + a runtime profile
+    /// (Vignette / FilmGrain / Bloom / ColorAdjustments) and exposes per-effect
+    /// enable + intensity, persisted to PlayerPrefs under the same bp_* keys as the
+    /// PPv2 era. The volume GameObject sits on the PostProcessing layer (11): the
+    /// vendor player camera's volumeLayerMask only samples that layer. The camera
+    /// side is handled by <see cref="PlayerCameraPostProcessEnabler"/>.
     /// Singleton; created by GridTestWorld.InitializeWorld.
     /// </summary>
     public sealed class BackroomsPostProcess : MonoBehaviour
@@ -24,13 +25,13 @@ namespace BackroomsSurvival.Gameplay
         // Backrooms defaults.
         private const float DefVig = 0.38f, DefGrain = 0.18f, DefBloom = 0.5f, DefGrade = 1f;
 
-        private PostProcessProfile _profile;
-        private PostProcessVolume  _volume;
-        private Vignette     _vignette;
-        private Grain        _grain;
-        private Bloom        _bloom;
-        private ColorGrading _grading;
-        private float        _gradeT = DefGrade;
+        private VolumeProfile     _profile;
+        private Volume            _volume;
+        private Vignette          _vignette;
+        private FilmGrain         _grain;
+        private Bloom             _bloom;
+        private ColorAdjustments  _grading;
+        private float             _gradeT = DefGrade;
 
         private void Awake()
         {
@@ -49,25 +50,26 @@ namespace BackroomsSurvival.Gameplay
 
         private void BuildVolume()
         {
-            _profile  = ScriptableObject.CreateInstance<PostProcessProfile>();
-            _vignette = _profile.AddSettings<Vignette>();
-            _grain    = _profile.AddSettings<Grain>();
-            _bloom    = _profile.AddSettings<Bloom>();
-            _grading  = _profile.AddSettings<ColorGrading>();
+            _profile  = ScriptableObject.CreateInstance<VolumeProfile>();
+            _vignette = _profile.Add<Vignette>();
+            _grain    = _profile.Add<FilmGrain>();
+            _bloom    = _profile.Add<Bloom>();
+            _grading  = _profile.Add<ColorAdjustments>();
 
             // Static (non-tunable) parameters → Backrooms character.
+            // PPv2 mapping: Grain.lumContrib→response, Grain.size≈1→Thin lookup;
+            // Bloom.softKnee has no URP equivalent (scatter stays at default).
             _vignette.smoothness.Override(0.4f);
             _vignette.rounded.Override(true);
-            _grain.lumContrib.Override(0.8f); // "response"
-            _grain.colored.Override(false);
-            _grain.size.Override(1.0f);
+            _grain.type.Override(FilmGrainLookup.Thin1);
+            _grain.response.Override(0.8f);
             _bloom.threshold.Override(0.85f);
-            _bloom.softKnee.Override(0.5f);
-            _grading.gradingMode.Override(GradingMode.LowDefinitionRange);
 
             var go = new GameObject("BackroomsPostProcessVolume");
             go.transform.SetParent(transform, false);
-            _volume = go.AddComponent<PostProcessVolume>();
+            int ppLayer = LayerMask.NameToLayer("PostProcessing");
+            if (ppLayer >= 0) go.layer = ppLayer;
+            _volume = go.AddComponent<Volume>();
             _volume.isGlobal = true;
             _volume.priority = 100f;
             _volume.weight   = 1f;
@@ -76,25 +78,26 @@ namespace BackroomsSurvival.Gameplay
 
         // ── Public API ──────────────────────────────────────────────────────────
 
-        public void SetVignetteIntensity(float v)    { _vignette.intensity.Override(Mathf.Clamp01(v)); SaveFloat(KVig, _vignette.intensity.value); }
+        public void SetVignetteIntensity(float v)     { _vignette.intensity.Override(Mathf.Clamp01(v)); SaveFloat(KVig, _vignette.intensity.value); }
         public void SetGrainIntensity(float v)        { _grain.intensity.Override(Mathf.Clamp01(v));    SaveFloat(KGrain, _grain.intensity.value); }
         public void SetBloomIntensity(float v)        { _bloom.intensity.Override(Mathf.Max(0f, v));    SaveFloat(KBloom, _bloom.intensity.value); }
         public void SetColorGradingIntensity(float t) { _gradeT = Mathf.Clamp01(t); ApplyGrading(_gradeT); SaveFloat(KGrade, _gradeT); }
 
-        public void SetVignetteEnabled(bool on)     { _vignette.enabled.Override(on); SaveBool(KVig, on); }
-        public void SetGrainEnabled(bool on)        { _grain.enabled.Override(on);    SaveBool(KGrain, on); }
-        public void SetBloomEnabled(bool on)        { _bloom.enabled.Override(on);    SaveBool(KBloom, on); }
-        public void SetColorGradingEnabled(bool on) { _grading.enabled.Override(on);  SaveBool(KGrade, on); }
+        // URP VolumeComponents toggle via .active (PPv2 used the enabled parameter).
+        public void SetVignetteEnabled(bool on)     { _vignette.active = on; SaveBool(KVig, on); }
+        public void SetGrainEnabled(bool on)        { _grain.active = on;    SaveBool(KGrain, on); }
+        public void SetBloomEnabled(bool on)        { _bloom.active = on;    SaveBool(KBloom, on); }
+        public void SetColorGradingEnabled(bool on) { _grading.active = on;  SaveBool(KGrade, on); }
 
         // Current values (for the UI to initialise its widgets).
         public float VignetteIntensity     => _vignette.intensity.value;
         public float GrainIntensity        => _grain.intensity.value;
         public float BloomIntensity        => _bloom.intensity.value;
         public float ColorGradingIntensity => _gradeT;
-        public bool  VignetteEnabled       => _vignette.enabled.value;
-        public bool  GrainEnabled          => _grain.enabled.value;
-        public bool  BloomEnabled          => _bloom.enabled.value;
-        public bool  ColorGradingEnabled   => _grading.enabled.value;
+        public bool  VignetteEnabled       => _vignette.active;
+        public bool  GrainEnabled          => _grain.active;
+        public bool  BloomEnabled          => _bloom.active;
+        public bool  ColorGradingEnabled   => _grading.active;
 
         private void ApplyGrading(float t)
         {
@@ -121,42 +124,4 @@ namespace BackroomsSurvival.Gameplay
         private static void SaveBool(string key, bool on)   { PlayerPrefs.SetInt(key + "_on", on ? 1 : 0); }
         private static bool LoadBool(string key)            => PlayerPrefs.GetInt(key + "_on", 1) != 0;
     }
-#else
-    /// <summary>
-    /// No-op stub compiled while PPv2 (UNITY_POST_PROCESSING_STACK_V2) is absent, so
-    /// GridTestWorld and BackroomsGraphicsSettings keep compiling during the URP
-    /// migration. The Volume-based implementation replaces this whole file.
-    /// </summary>
-    public sealed class BackroomsPostProcess : MonoBehaviour
-    {
-        public static BackroomsPostProcess Instance { get; private set; }
-
-        private void Awake()
-        {
-            if (Instance != null && Instance != this) { Destroy(this); return; }
-            Instance = this;
-        }
-
-        private void OnDestroy() { if (Instance == this) Instance = null; }
-
-        public void SetVignetteIntensity(float v)     { }
-        public void SetGrainIntensity(float v)        { }
-        public void SetBloomIntensity(float v)        { }
-        public void SetColorGradingIntensity(float t) { }
-
-        public void SetVignetteEnabled(bool on)     { }
-        public void SetGrainEnabled(bool on)        { }
-        public void SetBloomEnabled(bool on)        { }
-        public void SetColorGradingEnabled(bool on) { }
-
-        public float VignetteIntensity     => 0.38f;
-        public float GrainIntensity        => 0.18f;
-        public float BloomIntensity        => 0.5f;
-        public float ColorGradingIntensity => 1f;
-        public bool  VignetteEnabled       => false;
-        public bool  GrainEnabled          => false;
-        public bool  BloomEnabled          => false;
-        public bool  ColorGradingEnabled   => false;
-    }
-#endif
 }

@@ -1,57 +1,39 @@
 using UnityEngine;
-#if UNITY_POST_PROCESSING_STACK_V2
-using UnityEngine.Rendering.PostProcessing;
-#endif
+using UnityEngine.Rendering.Universal;
 
 namespace BackroomsSurvival.Gameplay
 {
-#if UNITY_POST_PROCESSING_STACK_V2
     /// <summary>
-    /// Fase 5D — attaches a PPv2 <see cref="PostProcessLayer"/> to the player camera at
-    /// runtime (no vendor prefab edit). Waits for <c>Camera.main</c> (the STP player camera is
-    /// tagged MainCamera), inits the layer with the PostProcessResources copied into
-    /// Resources, and scans every layer for the global volume created by
-    /// <see cref="BackroomsPostProcess"/>.
+    /// URP version (reescrito desde PPv2 en la migración BIRP→URP). The vendor
+    /// player camera prefab already enables post-processing (TAA, volumeLayerMask =
+    /// PostProcessing). This enabler covers cameras created outside that prefab
+    /// (grid test world fallback): waits for <c>Camera.main</c>, forces
+    /// renderPostProcessing on, widens the volume mask to include the
+    /// PostProcessing layer (where <see cref="BackroomsPostProcess"/> puts its
+    /// global volume), and only sets FXAA when antialiasing is off — never
+    /// downgrades the vendor's TAA.
     /// </summary>
     public sealed class PlayerCameraPostProcessEnabler : MonoBehaviour
     {
-        private PostProcessResources _resources;
         private bool _attached;
-
-        private void Start()
-        {
-            _resources = Resources.Load<PostProcessResources>("PostProcessResources");
-            if (_resources == null)
-                Debug.LogError("[PostProcess] Resources/PostProcessResources.asset not found — " +
-                               "PPv2 layer disabled. Copy it from the postprocessing package.");
-        }
 
         private void Update()
         {
-            if (_attached || _resources == null) return;
+            if (_attached) return;
 
             var cam = Camera.main; // player camera spawns late; null until then
             if (cam == null) return;
 
-            if (cam.GetComponent<PostProcessLayer>() == null)
-            {
-                var layer = cam.gameObject.AddComponent<PostProcessLayer>();
-                layer.Init(_resources);
-                layer.volumeTrigger    = cam.transform;
-                layer.volumeLayer      = ~0; // Everything (the global volume sits on Default)
-                layer.antialiasingMode = PostProcessLayer.Antialiasing.FastApproximateAntialiasing;
-            }
+            var data = cam.GetUniversalAdditionalCameraData();
+            data.renderPostProcessing = true;
+            if (data.antialiasing == AntialiasingMode.None)
+                data.antialiasing = AntialiasingMode.FastApproximateAntialiasing;
+
+            int ppLayer = LayerMask.NameToLayer("PostProcessing");
+            if (ppLayer >= 0)
+                data.volumeLayerMask = data.volumeLayerMask | (1 << ppLayer);
+
             _attached = true;
         }
     }
-#else
-    /// <summary>
-    /// No-op stub compiled while PPv2 (UNITY_POST_PROCESSING_STACK_V2) is absent — keeps
-    /// GridTestWorld.InitializeWorld compiling during the URP migration. The URP version
-    /// enables post-processing on UniversalAdditionalCameraData instead.
-    /// </summary>
-    public sealed class PlayerCameraPostProcessEnabler : MonoBehaviour
-    {
-    }
-#endif
 }
