@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::network::PeerId;
 use crate::player::inventory::{Inventory, StabilizerTier};
 use crate::player::stats::PlayerStats;
-use crate::utils::{ChunkPos, Vec3};
+use crate::utils::Vec3;
 
 /// ADR-045 Fase 3: one item-instance property (durability, ammo count, ...). Mirrors STP's
 /// `ItemProperty { int Id, double Value }` 1:1 — no parallel model invented. An id the client
@@ -43,7 +43,6 @@ pub struct Player {
     pub stats: PlayerStats,
     pub inventory: Inventory,
     pub equipped_stabilizer: Option<StabilizerTier>,
-    pub owned_chunks: Vec<ChunkPos>,
     /// ADR-020: cosmetic crouch state reported by the client, relayed to peers
     /// (presentation only — not validated, does not affect collision/hitreg/stamina).
     #[serde(default)]
@@ -169,7 +168,6 @@ impl Player {
             stats: PlayerStats::default(),
             inventory: Inventory::new(),
             equipped_stabilizer: None,
-            owned_chunks: Vec::new(),
             crouch: false,
             pitch: 0,
             equipment: [0; 4],

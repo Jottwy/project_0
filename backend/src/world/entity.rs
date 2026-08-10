@@ -107,7 +107,6 @@ pub struct Entity {
     pub health: u8,
     pub state: EntityState,
     pub patrol_center: Vec3,
-    pub respawn_timer: Option<f32>,
     pub wander_dir: Vec3,
     pub wander_timer: f32,
 }
@@ -122,7 +121,6 @@ impl Entity {
             health: entity_type.max_health(),
             state: EntityState::Idle,
             patrol_center: position,
-            respawn_timer: None,
             wander_dir: Vec3::ZERO,
             wander_timer: 0.0,
         }

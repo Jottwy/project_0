@@ -7,8 +7,6 @@ pub const RETRANSMIT_BACKOFF_MS: [u64; 4] = [200, 400, 800, 1600];
 pub const MAX_RETRIES: u8 = 5;
 /// Maximum reliable packets in flight per peer.
 pub const WINDOW_SIZE: usize = 32;
-/// Receiver must ACK a reliable packet within this many milliseconds.
-pub const ACK_DEADLINE_MS: u64 = 100;
 
 /// Whether a packet type must be delivered reliably (ARCHITECTURE_V1.md §5.3).
 ///

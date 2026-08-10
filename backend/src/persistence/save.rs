@@ -28,8 +28,8 @@ pub struct SaveConfig {
 }
 
 /// ADR-032: the host player's persisted slice. NOT the full `Player` — transient/cosmetic
-/// fields (crouch/pitch/hit_seq/death_loot_reported), the network-derived `owned_chunks`, and the
-/// per-session `uuid`/`id` are deliberately omitted; only durable survival/inventory state is kept.
+/// fields (crouch/pitch/hit_seq/death_loot_reported) and the per-session `uuid`/`id` are
+/// deliberately omitted; only durable survival/inventory state is kept.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlayerSnapshot {
     pub stats: PlayerStats,
