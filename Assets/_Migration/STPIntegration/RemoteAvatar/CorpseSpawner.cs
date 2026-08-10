@@ -300,8 +300,25 @@ namespace BackroomsSurvival.Migration.STPIntegration
             var go = Instantiate(prefab, position, Quaternion.identity);
             foreach (var rb in go.GetComponentsInChildren<Rigidbody>(true))
                 Destroy(rb);
+
+            // DOS PASADAS, y el orden importa: el crate del vendor trae `StorageStation`, que lleva
+            // [RequireComponent(typeof(Interactable))]. Destruyéndolo todo en una sola pasada, el
+            // `Interactable` salía antes que sus dependientes y Unity RECHAZABA la llamada — medido
+            // en el standalone: 48 líneas de "Can't remove Interactable (Script) because
+            // StorageStation (Script) depends on it" por sesión, y el componente seguía vivo, que es
+            // lo que de verdad importa: este método existe para dejar el crate como pura visual.
+            // Mismo arreglo y misma razón que en StpCarryableReplicator (CarryableBuildAction antes
+            // que CarryablePickup). `Destroy` es diferido a fin de frame, pero Unity ya cuenta el
+            // componente marcado como pendiente al validar la dependencia, así que dos pasadas
+            // seguidas bastan — no hace falta esperar un frame.
             foreach (var mb in go.GetComponentsInChildren<MonoBehaviour>(true))
-                Destroy(mb);
+            {
+                if (mb is not Interactable)
+                    Destroy(mb);
+            }
+            foreach (var interactable in go.GetComponentsInChildren<Interactable>(true))
+                Destroy(interactable);
+
             return go;
         }
 
