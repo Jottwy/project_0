@@ -559,7 +559,12 @@ impl NetworkManager {
             PacketPayload::Nack {
                 requested_sequence: _,
             } => {
-                // Future: retransmit the requested packet.
+                // Auditoría (H12a, 2026-08-10): confirmado no-op — nadie en este crate construye
+                // un `PacketPayload::Nack` (grep sin resultados fuera del propio decode/encode).
+                // Se conserva el decode a propósito, sin implementar el reenvío: retirar la
+                // variante tocaría el enum de wire de `protocol.rs` y por la regla dura #7
+                // (cambio de API pública = ADR) eso es un ADR de limpieza, no una corrección
+                // adosada. No compensa para un opcode que ya no se emite.
                 None
             }
 

@@ -11,6 +11,15 @@
 //!   CONNECT_TO  — Peer address to join on startup (e.g. "127.0.0.1:7778")
 //!   WORLD_SEED  — World generation seed (default: 42)
 
+// Auditoría (2026-08-10): inventario medido quitando este `allow` y compilando —
+// 112 warnings `dead_code` únicos en el binario, 121 en total contando lo que solo aparece
+// bajo `--all-targets` (código de test-only). La inmensa mayoría es scaffolding de la
+// migración `grid_gen`/world-graph en curso (ver `docs/STATE.md`): generadores V0 alternativos,
+// exportadores ASCII de debug, capas de validación de nivel 0 que aún no se cablean —
+// intencional, no descuido acumulado. `#[allow]` selectivos por-item quedan diferidos a
+// cuando la migración cierre: con ~120 sitios en movimiento activo, targeted allows serían un
+// diff enorme y volátil que se reescribiría en cada sesión de migración. Ver STATE.md
+// "Auditoría: dead_code inventariado".
 #![allow(dead_code)]
 
 mod crafting;

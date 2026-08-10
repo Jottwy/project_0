@@ -836,6 +836,9 @@ pub enum PacketPayload {
     Ack {
         acked_sequence: u32,
     },
+    /// Auditoría (H12a, 2026-08-10): decodifica pero nunca lo emite nadie en este crate — el
+    /// handler es no-op a propósito (`handlers.rs`, brazo `PacketPayload::Nack`). Retirar la
+    /// variante es cambio de enum de wire (regla dura #7 = ADR), no una corrección adosada.
     Nack {
         requested_sequence: u32,
     },

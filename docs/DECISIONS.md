@@ -2524,3 +2524,40 @@ El arreglo es un `tokio::task::yield_now()` entre páginas, que deja al bucle de
 **Fiabilidad: los cinco siguen FUERA de `is_reliable`, a propósito.** La autocuración a 10 Hz que ADR-039 invocó para excluirlos sigue siendo cierta página a página, y hacerlos fiables ahora llenaría la ventana de 32 con cientos de páginas — exactamente lo que ADR-039 quería evitar. Es el contraste con el goteo de WorldSync (0x36/0x37, sí fiable): aquél se envía UNA vez al entrar y no tiene quien lo repita.
 
 **Tests: 632 → 646.** 10 unitarios del mecanismo (roster vacío ⇒ una página y no cero — es como el host dice "ya no queda nada"; elemento sobredimensionado viaja solo en vez de desaparecer; página perdida nunca entrega lista truncada; envoltura del contador; entrega única; índice incoherente ignorado en vez de panic en el hilo de red) + 2 end-to-end sobre sockets reales (roster de 200 KB —que supera el límite del datagrama, asertado en el propio test— llega entero y en orden; roster a medias nunca sustituye al anterior).
+
+### CORRECCIÓN de ADR-060 (2397-2401) — IMPLEMENTADA (2026-08-10, auditoría de 12 hallazgos)
+
+La "corrección pendiente adosada" de la sección `### CORRECCIÓN (2026-08-10, durante commit a)` de este mismo ADR queda implementada, sin ADR nuevo (la decisión ya estaba tomada ahí, solo faltaba el código):
+
+**Lo implementado, tal como lo fijaba esa corrección:** el emisor del `Handshake` P2P (`network/mod.rs::send_handshake`) rellena `version` con `WIRE_SCHEMA_VERSION.to_string()` en vez del literal `"0.1.0"`; el host (`network/handlers.rs::handle_handshake`) compara contra el mismo valor ANTES de las ramas de duplicado-de-peer y rechaza el mismatch con el mecanismo ya existente de "session full": `Disconnect { reason }` crudo, sin registrar al peer.
+
+**Una pieza más allá de lo que pedía la corrección, necesaria para que el rechazo no fuera invisible:** antes de este cambio, CUALQUIER `Disconnect` pre-registro (session full, y ahora también version) se perdía en silencio en el joiner — `self.peers.remove(&sender_id)` no encontraba nada que quitar (el joiner nunca llegó a registrar al host), así que `retry_pending_connection` reenviaba el mismo handshake muerto cada 1s para siempre, sin que Unity se enterara jamás del rechazo. `NetworkEvent::ConnectRejected` (variante interna, NO cruza el wire) limpia `pending_connect_addr` y reutiliza el `GameEvent "session_ended"` que Unity ya maneja vía ADR-056 — cero UI nueva, cero cambio en C#.
+
+**Decisión explícita sobre QUÉ contador de versión usar, documentada en el doc-comment de `ipc::server::WIRE_SCHEMA_VERSION`:** se reutiliza el mismo contador que IPC (Unity↔backend) en vez de introducir un `P2P_PROTOCOL_VERSION` separado. Esto conflaciona dos protocolos distintos a propósito — un bump motivado solo por un campo IPC-Unity rechazará peers P2P que en la práctica seguirían siendo compatibles entre sí (falso rechazo). Se acepta ese acoplamiento porque la alternativa correcta en abstracto (un segundo contador) repetiría exactamente la clase de bug que ya mordió dos veces esta migración: sincronizar a mano dos números que deben coincidir (ver ADR-061, el mismatch Rust↔C# de `WireSchema.Expected`). Si el falso rechazo se observa alguna vez en la práctica, la salida es promover a una constante `P2P_PROTOCOL_VERSION` dedicada entonces — no parchear el gate.
+
+**Tests:** `handshake_is_accepted_when_there_is_room` y `handshake_is_rejected_when_the_session_is_full` (`network/tests.rs`) actualizados para usar `WIRE_SCHEMA_VERSION` en vez del literal `"0.1.0"`. Nuevos: `handshake_is_rejected_on_wire_schema_mismatch`, `pending_connection_stops_retrying_after_rejection`. Sin cambio de wire — `version` sigue siendo `String`; sin bump de `WIRE_SCHEMA_VERSION`.
+
+## ADR-063 — Namespace de ids runtime particionado por peer (PROPUESTA)
+
+Estado: **PROPUESTA (2026-08-10).** Hallazgo de auditoría (H2), no implementado. Cambia el contrato de unicidad de los ids de entidad/item, así que por la regla dura #7 (API pública = protocolo) requiere bump de `WIRE_SCHEMA_VERSION` cuando se implemente, aunque la FORMA de ningún payload cambie (los ids ya viajan como `u32`).
+
+### Contexto
+
+Dos familias de ids conviven en el mismo espacio `u32`, y solo una es segura entre peers. Los ids estables (`stable_entity_id`/`stable_item_id`, `chunk_generator.rs`) son `hash(seed, chunk_pos, index)` — deterministas, cualquier peer que regenere el mismo chunk calcula el mismo id. Los ids runtime (`NEXT_ENTITY_ID`, `chunk_generator.rs`; `NEXT_DROPPED_ID`, `world/mod.rs`) son contadores de PROCESO que arrancan en 1 (o en `0xF000_0000` para drops) en CADA backend por separado — dos backends que acuñan runtime ids (típicamente vía `tick_respawns`) producen colisiones garantizadas, no probabilísticas. La corrección de esta misma sesión (gate host-only de `tick_entities`/`tick_respawns`, ver entrada de `docs/STATE.md` 2026-08-10) mitiga la vía más urgente — solo el host acuña en runtime hoy — pero no resuelve el namespace de fondo: cualquier acuñado runtime futuro que corra en un joiner (drops de items, por ejemplo, si algún día se descentralizan) reabre exactamente el mismo agujero.
+
+Riesgo secundario, distinto del namespace pero en la misma familia: `interact_with_item` (`world/mod.rs:1214`) resuelve `target_id` recorriendo TODOS los chunks y devolviendo el primer match — sin chunk coord en el payload `Interact` (`protocol.rs:588`) no hay forma de desambiguar si dos ids coincidieran.
+
+### Precedentes ya en el codebase (no inventar un cuarto esquema)
+
+- **Rangos STP particionados por tipo:** `NEXT_STP_DROP_ID=0x4000_0000`, `BUILDING=0x6000_0000`, `CARRYABLE=0x7000_0000` (`game_loop.rs`), acuñados solo por el host.
+- **Fantasmas:** `PHANTOM_ID_BASE=0xF000` (ADR-016), rango reservado por encima de los ids de peer reales.
+- **Request-ids:** ADR-037, `LastSelectedNetId * 1_000_000_000 + contador` — id globalmente único derivado de la identidad de quien lo pide.
+- **Prefijo con namespace:** ADR-045 §2, identidad de jugador como clave opaca `"uuid:{guid}"` — precedente de diseño más directo: prefijar con quién lo acuñó en vez de competir por un contador compartido.
+
+### Propuesta (para discutir, NO decidida)
+
+Id runtime de entidad = `(peer_id as u32) << 24 | contador`, con el contador de 24 bits por peer y `0` reservado como centinela de "sin id". Los ids estables (hash 31-bit) quedan intactos — solo se particiona la familia runtime, que es la que colisiona. `peer_id` cabe en 16 bits hoy (`PeerId = u16`); el shift de 24 dentro de un `u32` deja 8 bits de margen para el peer y 24 para el contador, generoso frente a cualquier sesión real.
+
+### Pendiente de decidir antes de implementar
+
+Alcance exacto del bump (¿solo el contrato de unicidad documentado, o cambia algún campo de wire?); si el particionado aplica también a `interact_with_item` (¿añadir chunk coord al payload `Interact`, o resolver por `(chunk, id)` en vez de id plano?); si esto se implementa en su propia sesión con ADR promovido a DECIDIDA, o se pliega a la próxima ronda de trabajo de red. Sin código de esta propuesta en la sesión que la redacta.
