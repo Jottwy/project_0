@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v27
+# IPC wire schema — changelog v2 → v28
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **27**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **28**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -327,3 +327,33 @@ Techo práctico MEDIDO, documentado en `roster.rs`: 4 000 elementos (222 página
 una sola ronda; hacia 20 000 (1 111 páginas) la ráfaga desborda el buffer de recepción y ninguna
 generación completa. El monolito moría a ~2 200 elementos y de forma permanente. Cruzar el techo
 nuevo pediría un rediseño a deltas, explícitamente fuera de ADR-060.
+
+### v28 (ADR-063) — actual
+
+Caso distinto de los anteriores: **ningún payload cambia de forma.** Los ids de entidad/item que ya
+viajan como `u32`/`uint` (`EntityView.id`, `ItemView.id`, `EntitySyncData.id`, `ItemSyncData.id` en
+`ipc/mod.rs`; `target_id`/`item_id` de `Interact`/`WorldInteractRequest` en P2P) cambian el
+**contrato de unicidad** del valor, no su tipo: antes, un id runtime era un contador de proceso
+plano (arranca en 1/`0xF000_0000`, sin coordinación entre backends); ahora es
+`(peer_id as u32) << 16 | contador`, particionado por quién lo acuñó
+(`world::architecture::chunk_generator::partition_runtime_id`). Bumpea de todas formas, por la
+regla dura #7 (cambio de API pública = ADR) — mismo patrón que el proyecto ya distingue de ADR-039
+(que NO bumpeó porque cambió semántica de *transporte*, sin tocar el dato; esto cambia la semántica
+del *dato* que ya cruza el wire).
+
+Motivo: `NEXT_ENTITY_ID`/`NEXT_DROPPED_ID` (`chunk_generator.rs`, `world/mod.rs`) son contadores de
+proceso — dos backends acuñando runtime ids independientemente producían colisiones garantizadas,
+no probabilísticas. Hoy ambos acuñadores están gateados host-only (`game_loop.rs`, ADR-009 §4), así
+que la colisión no es activa; el particionado es defensa a futuro si algún día el acuñado se
+descentraliza. Ver `docs/DECISIONS.md` ADR-063 (enmienda de estado 2026-08-10) para la fórmula
+completa, incluida la corrección de un split 8/24 erróneo del primer borrador que sí habría
+truncado `peer_id` por encima de 255.
+
+Ids estables (`stable_entity_id`/`stable_item_id`, hash `(seed, pos, index)`) intactos — el ADR
+particiona solo la familia runtime.
+
+Degradación: **ninguna interop cross-versión, y no hace falta ninguna.** El gate de handshake P2P
+(corrección de ADR-060) y el `hello` IPC (ADR-061) — ambos ya activos desde antes de este bump —
+rechazan cualquier mismatch de versión ANTES de que un id con significado nuevo cruce el wire hacia
+un peer que no lo entiende. Un v27 y un v28 nunca completan la conexión entre sí; no hay escenario
+de mezcla de formatos en producción.

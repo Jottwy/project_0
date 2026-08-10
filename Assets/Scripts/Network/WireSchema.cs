@@ -22,7 +22,7 @@ namespace BackroomsSurvival.Net
     public static class WireSchema
     {
         /// <summary>Revision this client speaks. Must equal the backend's constant.</summary>
-        public const uint Expected = 27;
+        public const uint Expected = 28;
 
         /// <summary>
         /// A backend that omits <c>schema_version</c> decodes as 0, which is deliberately NOT
