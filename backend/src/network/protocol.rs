@@ -364,6 +364,13 @@ fn default_phantom_density_scale() -> f32 {
     1.0
 }
 
+/// ADR-060 (d): un roster sin campos de paginación es el de un emisor pre-paginación, que mandaba
+/// UNA página con la lista entera. El default de `u16` sería 0, y un `page_count` de 0 es
+/// incoherente (el ensamblador lo descartaría), así que este roster nunca se aplicaría.
+fn default_page_count() -> u16 {
+    1
+}
+
 // ─── Packet payload (MessagePack body after the 12-byte header) ───
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -419,8 +426,20 @@ pub enum PacketPayload {
     PeerList {
         peers: Vec<PeerInfo>,
     },
+    /// ADR-060 (d): paginado. `generation` identifica la ronda de emisión (una por broadcast, a
+    /// 10 Hz); el receptor solo aplica el roster cuando tiene sus `page_count` páginas. Los tres
+    /// campos son `serde(default)`, así que un roster de una página (el caso normal) decodifica
+    /// como `gen=0, page=0, page_count=1`… salvo que `page_count` por defecto sería 0, que es
+    /// incoherente — de ahí `default_page_count`, que devuelve 1: un emisor viejo mandaba
+    /// exactamente eso, una página única con el roster entero.
     StpItemList {
         items: Vec<StpItemInfo>,
+        #[serde(default)]
+        generation: u32,
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     StpPickupRequest {
         item_id: u32,
@@ -438,8 +457,16 @@ pub enum PacketPayload {
         position: [f32; 3],
         rotation: f32,
     },
+    /// ADR-060 (d): paginado — ver `StpItemList`. Éste es el roster que el doc-comment de
+    /// `send_datagram` señalaba como el primero en reventar (~800 piezas colocadas).
     StpBuildingList {
         buildings: Vec<StpBuildingInfo>,
+        #[serde(default)]
+        generation: u32,
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     StpPlaceRequest {
         place_id: u64,
@@ -606,8 +633,15 @@ pub enum PacketPayload {
         tier: u8,
         remaining_hours: f32,
     },
+    /// ADR-060 (d): paginado — ver `StpItemList`.
     StpCarryableList {
         carryables: Vec<StpCarryableInfo>,
+        #[serde(default)]
+        generation: u32,
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     StpCarryablePickupRequest {
         carryable_id: u32,
@@ -623,8 +657,15 @@ pub enum PacketPayload {
         position: [f32; 3],
         rotation: f32,
     },
+    /// ADR-060 (d): paginado — ver `StpItemList`.
     StpHarvestableList {
         harvestables: Vec<StpHarvestableInfo>,
+        #[serde(default)]
+        generation: u32,
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     StpHarvestHitRequest {
         hit_id: u64,
@@ -636,8 +677,16 @@ pub enum PacketPayload {
     // (`world::corpse::CorpseData`) directly on the wire — same precedent as ChunkLayoutV1.
     /// Host → all: the full authoritative corpse roster, broadcast at 10 Hz (self-healing,
     /// same pattern as StpItemList). Joiners mirror it verbatim into their `world.corpses`.
+    /// ADR-060 (d): paginado — ver `StpItemList`. Un `CorpseData` lleva su inventario entero,
+    /// así que aquí el tamaño por elemento es el más variable de los cinco.
     CorpseList {
         corpses: Vec<crate::world::corpse::CorpseData>,
+        #[serde(default)]
+        generation: u32,
+        #[serde(default)]
+        page: u16,
+        #[serde(default = "default_page_count")]
+        page_count: u16,
     },
     /// Joiner → host (reliable): "my player died with this loot snapshot — spawn the corpse".
     /// The host dedupes by (sender, request_id): reliable retransmits spawn exactly one corpse.
@@ -1305,11 +1354,14 @@ mod tests {
 
         let list = PacketPayload::CorpseList {
             corpses: vec![corpse.clone()],
+            generation: 0,
+            page: 0,
+            page_count: 1,
         };
         let header = PacketHeader::new(list.type_code(), 1, 1, 100);
         let (_, decoded) = decode_packet(&encode_packet(&header, &list)).unwrap();
         match decoded {
-            PacketPayload::CorpseList { corpses } => {
+            PacketPayload::CorpseList { corpses, .. } => {
                 assert_eq!(corpses.len(), 1);
                 assert_eq!(corpses[0].id, 7);
                 assert_eq!(corpses[0].owner_name, "Joel");

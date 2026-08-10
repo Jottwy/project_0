@@ -21,6 +21,7 @@ use super::protocol::{
     encode_packet, AnchorInfo, ChunkSyncData, EntitySyncData, ItemSyncData, PacketHeader,
     PacketPayload, PeerInfo, SessionConfig, StabilizerInfo,
 };
+use super::roster;
 use super::NetworkManager;
 use super::PeerId;
 
@@ -337,14 +338,31 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
 
 /// Host-as-server relay of the STP item roster: the host broadcasts its full
 /// authoritative item list so every joiner spawns the same STP items (Phase 1).
+///
+/// ADR-060 (d): paginado. Ver `roster::paginate` para por qué el troceo va por bytes reales y
+/// `roster::RosterAssembler` para el reensamblado; la generación es el `timestamp()` de esta
+/// ronda, resuelto UNA vez para que todas las páginas la compartan.
 pub async fn broadcast_stp_items(net: &NetworkManager) {
     if net.peers.is_empty() {
         return;
     }
-    let payload = PacketPayload::StpItemList {
-        items: net.stp_items.clone(),
-    };
-    net.broadcast_unreliable(&payload).await;
+    let generation = net.timestamp();
+    let pages = roster::paginate(&net.stp_items, roster::ROSTER_PAGE_BUDGET_BYTES);
+    let page_count = pages.len() as u16;
+    for (index, items) in pages.into_iter().enumerate() {
+        let payload = PacketPayload::StpItemList {
+            items,
+            generation,
+            page: index as u16,
+            page_count,
+        };
+        net.broadcast_unreliable(&payload).await;
+        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
+        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
+        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
+        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
+        tokio::task::yield_now().await;
+    }
 }
 
 /// ADR-028 Fase E: host-as-server relay of the corpse roster â€” the host broadcasts its
@@ -355,10 +373,24 @@ pub async fn broadcast_corpses(net: &NetworkManager, world: &World) {
     if net.peers.is_empty() {
         return;
     }
-    let payload = PacketPayload::CorpseList {
-        corpses: world.corpses.values().cloned().collect(),
-    };
-    net.broadcast_unreliable(&payload).await;
+    let all: Vec<_> = world.corpses.values().cloned().collect();
+    let generation = net.timestamp();
+    let pages = roster::paginate(&all, roster::ROSTER_PAGE_BUDGET_BYTES);
+    let page_count = pages.len() as u16;
+    for (index, corpses) in pages.into_iter().enumerate() {
+        let payload = PacketPayload::CorpseList {
+            corpses,
+            generation,
+            page: index as u16,
+            page_count,
+        };
+        net.broadcast_unreliable(&payload).await;
+        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
+        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
+        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
+        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Host-as-server relay of the STP building roster: the host broadcasts its full
@@ -367,10 +399,23 @@ pub async fn broadcast_stp_buildings(net: &NetworkManager) {
     if net.peers.is_empty() {
         return;
     }
-    let payload = PacketPayload::StpBuildingList {
-        buildings: net.stp_buildings.clone(),
-    };
-    net.broadcast_unreliable(&payload).await;
+    let generation = net.timestamp();
+    let pages = roster::paginate(&net.stp_buildings, roster::ROSTER_PAGE_BUDGET_BYTES);
+    let page_count = pages.len() as u16;
+    for (index, buildings) in pages.into_iter().enumerate() {
+        let payload = PacketPayload::StpBuildingList {
+            buildings,
+            generation,
+            page: index as u16,
+            page_count,
+        };
+        net.broadcast_unreliable(&payload).await;
+        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
+        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
+        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
+        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Host-as-server relay of the STP carryable roster: the host broadcasts its full
@@ -379,10 +424,23 @@ pub async fn broadcast_stp_carryables(net: &NetworkManager) {
     if net.peers.is_empty() {
         return;
     }
-    let payload = PacketPayload::StpCarryableList {
-        carryables: net.stp_carryables.clone(),
-    };
-    net.broadcast_unreliable(&payload).await;
+    let generation = net.timestamp();
+    let pages = roster::paginate(&net.stp_carryables, roster::ROSTER_PAGE_BUDGET_BYTES);
+    let page_count = pages.len() as u16;
+    for (index, carryables) in pages.into_iter().enumerate() {
+        let payload = PacketPayload::StpCarryableList {
+            carryables,
+            generation,
+            page: index as u16,
+            page_count,
+        };
+        net.broadcast_unreliable(&payload).await;
+        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
+        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
+        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
+        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Host-as-server relay of the STP harvestable health roster: the host broadcasts its full
@@ -391,10 +449,23 @@ pub async fn broadcast_stp_harvestables(net: &NetworkManager) {
     if net.peers.is_empty() {
         return;
     }
-    let payload = PacketPayload::StpHarvestableList {
-        harvestables: net.stp_harvestables.clone(),
-    };
-    net.broadcast_unreliable(&payload).await;
+    let generation = net.timestamp();
+    let pages = roster::paginate(&net.stp_harvestables, roster::ROSTER_PAGE_BUDGET_BYTES);
+    let page_count = pages.len() as u16;
+    for (index, harvestables) in pages.into_iter().enumerate() {
+        let payload = PacketPayload::StpHarvestableList {
+            harvestables,
+            generation,
+            page: index as u16,
+            page_count,
+        };
+        net.broadcast_unreliable(&payload).await;
+        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
+        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
+        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
+        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
+        tokio::task::yield_now().await;
+    }
 }
 
 /// Send nearby chunk states to all peers (for chunks the local player owns).
@@ -422,6 +493,11 @@ pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_
         let data = chunk_to_sync_data(chunk);
         let payload = PacketPayload::ChunkState { data };
         net.broadcast_unreliable(&payload).await;
+        // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
+        // ininterrumpida y desborda el buffer de recepción del socket del receptor (~64 KB por
+        // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
+        // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
+        tokio::task::yield_now().await;
     }
 }
 

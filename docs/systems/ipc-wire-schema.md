@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v26
+# IPC wire schema — changelog v2 → v27
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **26**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **27**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -296,3 +296,34 @@ Mismatch real ⇒ fallo duro: `LogError` + `session_ended` sintético con
 `reason = "wire_schema_mismatch backend=vX client=vY"`, que reutiliza el teardown de ADR-056 (cero
 UI nueva). Sigue **sin** cubrir el gate P2P: el `_version` ignorado en `handle_handshake` es otro
 transporte y sigue siendo la corrección pendiente de ADR-060.
+
+### v27 (ADR-060 commit d) — actual
+
+Cambio solo-P2P: los CINCO rosters completos (`StpItemList` 0x16, `StpBuildingList` 0x1A,
+`StpCarryableList` 0x40, `StpHarvestableList` 0x44, `CorpseList` 0x46) ganan tres campos de
+paginación — `generation: u32`, `page: u16`, `page_count: u16` — y pasan a viajar troceados en
+páginas de ≤1000 B de contenido en vez de un datagrama con la lista entera. Motivo: por encima
+de 65 507 B el `send_to` fallaba con `WSAEMSGSIZE` y la replicación de ese roster se detenía
+**permanentemente**, con el único rastro del warn 1/s de `send_datagram` — el mismo final que ese
+doc-comment ya predecía para `StpBuildingList` (~800 piezas).
+
+El receptor reensambla por generación (`network::roster::RosterAssembler`) y **solo aplica el
+roster cuando la generación está completa**, conservando la semántica de reemplazo verbatim: una
+página suelta no puede sustituir a la lista entera, porque aplicar media lista borraría la otra
+mitad de los objetos del joiner. Una página perdida deja su generación incompleta y la ronda
+siguiente (100 ms después) la sustituye entera — la misma autocuración que ADR-039 invocó para
+dejar estos cinco fuera de `is_reliable`, y que este cambio conserva.
+
+Degradación:
+- **Emisor ≤v26 + receptor v27:** el roster llega sin los tres campos; `page_count` tiene
+  `#[serde(default = "default_page_count")]` = **1** (no 0, que sería incoherente y haría que el
+  roster no se aplicara nunca), así que decodifica exactamente como lo que era: una página única
+  con la lista entera. Interoperable de verdad.
+- **Emisor v27 + receptor ≤v26:** el receptor viejo ignora los campos nuevos y aplica CADA página
+  como si fuera el roster completo ⇒ con más de una página se queda con la última. Degradación
+  real, cubierta por el gate de envelope de v26 (ADR-061), que rechaza la sesión antes.
+
+Techo práctico MEDIDO, documentado en `roster.rs`: 4 000 elementos (222 páginas) llegan enteros en
+una sola ronda; hacia 20 000 (1 111 páginas) la ráfaga desborda el buffer de recepción y ninguna
+generación completa. El monolito moría a ~2 200 elementos y de forma permanente. Cruzar el techo
+nuevo pediría un rediseño a deltas, explícitamente fuera de ADR-060.

@@ -1047,6 +1047,97 @@ async fn exhausted_retries_purge_a_phantoms_deferred_queue_without_evicting_it()
     );
 }
 
+/// ADR-060 (d) end-to-end sobre sockets reales: un roster que ANTES no cabia en un datagrama
+/// UDP (65 507 B) ahora llega entero y se aplica entero. 4000 carryables son ~200 KB: con el
+/// envio monolitico esto era un `WSAEMSGSIZE` y la replicacion de carryables se detenia PARA
+/// SIEMPRE, sin mas rastro que un warn 1/s.
+#[tokio::test]
+async fn an_oversized_roster_now_survives_the_datagram_limit_and_arrives_whole() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let joiner_addr = loopback_addr(&joiner);
+    host.peers
+        .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
+
+    host.stp_carryables = (0..4000)
+        .map(|id| protocol::StpCarryableInfo {
+            id,
+            def_id: 7,
+            position: [id as f32, 1.8, 0.0],
+            rotation: 0.0,
+        })
+        .collect();
+    let monolithic_bytes = rmp_serde::to_vec_named(&host.stp_carryables).unwrap().len();
+    assert!(
+        monolithic_bytes > 65_507,
+        "setup: el roster tiene que superar el limite del datagrama ({monolithic_bytes} B) o el \
+         test no prueba nada"
+    );
+
+    // Rondas repetidas, como el juego real (10 Hz): una pagina perdida deja su generacion
+    // incompleta y la ronda siguiente la sustituye entera. Eso es la autocuracion declarada.
+    for _ in 0..20 {
+        sync::broadcast_stp_carryables(&host).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        joiner.process_incoming().await;
+        if joiner.stp_carryables.len() == 4000 {
+            break;
+        }
+    }
+
+    assert_eq!(
+        joiner.stp_carryables.len(),
+        4000,
+        "el roster tiene que llegar ENTERO, no truncado"
+    );
+    assert_eq!(
+        joiner.stp_carryables[0].id, 0,
+        "y en el orden del emisor: la pagina 0 va primero"
+    );
+    assert_eq!(joiner.stp_carryables[3999].id, 3999);
+}
+
+/// La mitad negativa: mientras el roster esta a medias, el joiner conserva el ANTERIOR. Aplicar
+/// media lista le borraria la otra mitad de los objetos del mundo — peor que esperar 100 ms.
+#[tokio::test]
+async fn a_partially_arrived_roster_never_replaces_the_previous_one() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let joiner_addr = loopback_addr(&joiner);
+    host.peers
+        .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
+
+    // El joiner ya tiene un roster aplicado de una ronda anterior.
+    joiner.stp_carryables = vec![protocol::StpCarryableInfo {
+        id: 999,
+        def_id: 1,
+        position: [0.0, 0.0, 0.0],
+        rotation: 0.0,
+    }];
+
+    // El host emite un roster grande, pero solo se procesa UNA pasada: llegan paginas sueltas,
+    // nunca todas.
+    host.stp_carryables = (0..2000)
+        .map(|id| protocol::StpCarryableInfo {
+            id,
+            def_id: 7,
+            position: [id as f32, 1.8, 0.0],
+            rotation: 0.0,
+        })
+        .collect();
+    sync::broadcast_stp_carryables(&host).await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+
+    // Se drena el socket UNA sola vez y a proposito no se espera a la generacion completa.
+    joiner.process_incoming().await;
+
+    assert!(
+        joiner.stp_carryables.len() == 1 || joiner.stp_carryables.len() == 2000,
+        "o sigue el roster viejo, o esta el nuevo COMPLETO: nunca una lista truncada (habia {})",
+        joiner.stp_carryables.len()
+    );
+}
+
 /// La contrapartida: por debajo de la ventana, un envio fiable SI se encola.
 #[tokio::test]
 async fn reliable_send_queues_normally_below_the_window() {

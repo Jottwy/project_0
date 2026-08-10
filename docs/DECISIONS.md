@@ -2497,3 +2497,30 @@ La decisión 1 de ADR-061 enumera el efecto del mismatch como "`Debug.LogError` 
 Lo implementado: `HandleHello` **no** pausa la reconexión — solo loguea y encola el `session_ended`. El hueco entre encolar y el teardown (el evento se drena en el hilo principal, uno o dos frames después) lo cubre un flag volátil `_schemaMismatch`, que hace que `Dispatch` descarte todo frame posterior de esa conexión **sin parsearlo**. Sin él, un `world_state` del backend incompatible podría aplicarse con defaults silenciosos justo en la ventana que el gate existe para cerrar. El flag se limpia al conectar, no al desconectar, para que un backend relanzado reciba un veredicto nuevo.
 
 Sin cambio de wire ni de la decisión: el mecanismo elegido (reutilizar `session_ended`, cero UI nueva) es exactamente el de la decisión 1. Solo cambia qué pieza ejecuta la pausa, y el resultado observable es el mismo más la garantía de no aplicar datos del backend equivocado durante el teardown.
+
+### ADR-060 COMMIT (d) — IMPLEMENTADO (2026-08-10): los cinco rosters viajan paginados
+
+Cierra el último pendiente de ADR-060. Wire v26 → **v27** (`ipc/server.rs`; entrada en `docs/systems/ipc-wire-schema.md` §v27, mismo commit). Mecanismo genérico nuevo en `network/roster.rs` — no cinco copias del mismo troceo.
+
+**Lo implementado, tal como lo fijaba la decisión:** los cinco payloads (`StpItemList`, `StpBuildingList`, `StpCarryableList`, `StpHarvestableList`, `CorpseList`) ganan `generation: u32` + `page: u16` + `page_count: u16`; el emisor trocea por **presupuesto de bytes reales** (mide cada elemento serializado — un `StpBuildingInfo` con progreso de construcción y un `CorpseData` con inventario varían en un orden de magnitud, así que trocear por número de elementos no acota nada) y el receptor reensambla por generación, aplicando el roster **solo cuando está completo**. La semántica de reemplazo verbatim se conserva: aplicar media lista borraría la otra mitad de los objetos del joiner, que es peor que esperar los 100 ms a la ronda siguiente.
+
+**Tres detalles que solo aparecen al escribirlo, y que quedan fijados por test:**
+1. **`page_count` por defecto es 1, no 0.** El default de `u16` haría que un roster de un emisor pre-paginación (que mandaba exactamente una página con la lista entera) se descartara por incoherente y no se aplicara **nunca**. Es la diferencia entre interoperar y romper en silencio.
+2. **La adopción de generación es INCONDICIONAL, no "la mayor gana".** `generation` es el `timestamp()` de la ronda, un `u32` de milisegundos que **envuelve a los ~49 días**: con `>` la envoltura congelaría el roster hasta el fin de la sesión. Con adopción incondicional, una página reordenada de la ronda anterior solo cuesta perder la ronda en curso, que se rehace 100 ms después. Perder una ronda es invisible; congelar un roster no.
+3. **El buffer se vacía al entregar**, para que la retransmisión de una última página no vuelva a aplicar el mismo roster.
+
+**HALLAZGO PROPIO DE LA IMPLEMENTACIÓN, medido y arreglado — la paginación por sí sola NO bastaba.** El primer end-to-end con 4 000 elementos falló: `left: 0`, el roster no llegaba entero **en ninguna de 20 rondas**. Causa medida, no supuesta: la ronda salía como una ráfaga ininterrumpida de datagramas y desbordaba el buffer de recepción del socket (~64 KB por defecto); con reensamblado todo-o-nada, perder una página por ronda significa que **ninguna generación completa jamás**. Medición (loopback, `StpCarryableInfo`, rondas hasta llegar entero):
+
+| elementos | páginas | antes del arreglo | después |
+|-----------|---------|-------------------|---------|
+| 1 000     | 56      | 1                 | 1       |
+| 4 000     | 222     | **nunca** (20 rondas) | 1   |
+| 20 000    | 1 111   | nunca             | nunca   |
+
+El arreglo es un `tokio::task::yield_now()` entre páginas, que deja al bucle de recepción drenar el socket durante la emisión. Sube el techo ~10× sobre la paginación sin ceder, y ~50× sobre el monolito.
+
+**TECHO PRÁCTICO, DECLARADO EN VEZ DE FINGIDO** (constante `MEASURED_CONVERGENCE_CEILING_ITEMS` en `roster.rs`, con la tabla): **4 000 elementos llegan enteros en una ronda; hacia 20 000 ya no converge.** El monolito moría a ~2 200 elementos y de forma PERMANENTE; esto degrada de otra manera — el joiner conserva el último roster completo en vez de perderlo todo, y la replicación se reanuda si el roster vuelve a bajar del techo. Cruzarlo pediría el rediseño a deltas que este ADR deja explícitamente FUERA. Los órdenes reales están muy por debajo: el doc-comment de `send_datagram` situaba el primer roster en riesgo (`StpBuildingList`) en ~800 piezas.
+
+**Fiabilidad: los cinco siguen FUERA de `is_reliable`, a propósito.** La autocuración a 10 Hz que ADR-039 invocó para excluirlos sigue siendo cierta página a página, y hacerlos fiables ahora llenaría la ventana de 32 con cientos de páginas — exactamente lo que ADR-039 quería evitar. Es el contraste con el goteo de WorldSync (0x36/0x37, sí fiable): aquél se envía UNA vez al entrar y no tiene quien lo repita.
+
+**Tests: 632 → 646.** 10 unitarios del mecanismo (roster vacío ⇒ una página y no cero — es como el host dice "ya no queda nada"; elemento sobredimensionado viaja solo en vez de desaparecer; página perdida nunca entrega lista truncada; envoltura del contador; entrega única; índice incoherente ignorado en vez de panic en el hilo de red) + 2 end-to-end sobre sockets reales (roster de 200 KB —que supera el límite del datagrama, asertado en el propio test— llega entero y en orden; roster a medias nunca sustituye al anterior).

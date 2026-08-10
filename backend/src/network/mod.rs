@@ -11,6 +11,7 @@ pub mod peer;
 mod phantom;
 pub mod protocol;
 pub mod reliability;
+pub mod roster;
 mod send;
 pub mod sync;
 
@@ -71,6 +72,17 @@ impl<K: std::hash::Hash + Eq + Copy> BoundedDedupeSet<K> {
         }
         true
     }
+}
+
+/// ADR-060 (d): los cinco ensambladores de roster, agrupados en un solo campo de
+/// `NetworkManager` en vez de cinco sueltos.
+#[derive(Debug, Default)]
+pub struct RosterAssemblers {
+    pub items: roster::RosterAssembler<protocol::StpItemInfo>,
+    pub buildings: roster::RosterAssembler<protocol::StpBuildingInfo>,
+    pub carryables: roster::RosterAssembler<protocol::StpCarryableInfo>,
+    pub harvestables: roster::RosterAssembler<protocol::StpHarvestableInfo>,
+    pub corpses: roster::RosterAssembler<crate::world::corpse::CorpseData>,
 }
 
 /// Incoming packet from the receive loop.
@@ -147,6 +159,10 @@ pub struct NetworkManager {
     /// El gate de spawn del joiner consulta `is_complete()`; el host nunca la toca (resuelve
     /// su spawn en el bootstrap, antes del loop).
     pub world_sync_progress: sync::WorldSyncProgress,
+    /// ADR-060 (d), joiner-only: reensamblado de los cinco rosters paginados. Un roster solo se
+    /// aplica cuando su generación está completa — aplicar media lista BORRARÍA la otra mitad de
+    /// los objetos del joiner, que es peor que esperar los 100 ms a la ronda siguiente.
+    pub roster_assemblers: RosterAssemblers,
     /// ADR-028 Fase E (joiner-only): monotonic source for our corpse request ids.
     pub next_corpse_request_id: u64,
     /// ADR-029 V0 (host-only): (attacker_id, request_id) pairs of PvP hit candidates already
@@ -292,6 +308,7 @@ impl NetworkManager {
             processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: std::collections::HashSet::with_capacity(64),
             world_sync_progress: sync::WorldSyncProgress::default(),
+            roster_assemblers: RosterAssemblers::default(),
             next_corpse_request_id: 1,
             processed_pvp_hits: BoundedDedupeSet::with_capacity(512),
             processed_pvp_grants: BoundedDedupeSet::with_capacity(512),

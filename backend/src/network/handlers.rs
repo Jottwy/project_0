@@ -185,17 +185,43 @@ impl NetworkManager {
                 None
             }
 
-            PacketPayload::StpItemList { items } => {
+            PacketPayload::StpItemList {
+                items,
+                generation,
+                page,
+                page_count,
+            } => {
                 // Host-authoritative STP item roster: joiners mirror it verbatim so
                 // their build_world_state replicates the same items. (Phase 1.)
-                self.stp_items = items;
+                //
+                // ADR-060 (d): el reemplazo verbatim se conserva, pero solo cuando la generación
+                // está COMPLETA — una página suelta no puede sustituir al roster entero.
+                if let Some(complete) =
+                    self.roster_assemblers
+                        .items
+                        .accept(generation, page, page_count, items)
+                {
+                    self.stp_items = complete;
+                }
                 None
             }
 
-            PacketPayload::StpBuildingList { buildings } => {
+            PacketPayload::StpBuildingList {
+                buildings,
+                generation,
+                page,
+                page_count,
+            } => {
                 // Host-authoritative STP building roster: joiners mirror it verbatim so
                 // their build_world_state replicates the same pieces. (Phase B1.)
-                self.stp_buildings = buildings;
+                // ADR-060 (d): reemplazo solo con la generación completa.
+                if let Some(complete) =
+                    self.roster_assemblers
+                        .buildings
+                        .accept(generation, page, page_count, buildings)
+                {
+                    self.stp_buildings = complete;
+                }
                 None
             }
 
@@ -207,9 +233,22 @@ impl NetworkManager {
         ]
         {
 
-            PacketPayload::StpCarryableList { carryables } => {
+            PacketPayload::StpCarryableList {
+                carryables,
+                generation,
+                page,
+                page_count,
+            } => {
                 // Host-authoritative carryable roster: joiners mirror it verbatim. (B2.5)
-                self.stp_carryables = carryables;
+                // ADR-060 (d): reemplazo solo con la generación completa.
+                if let Some(complete) = self.roster_assemblers.carryables.accept(
+                    generation,
+                    page,
+                    page_count,
+                    carryables,
+                ) {
+                    self.stp_carryables = complete;
+                }
                 None
             }
 
@@ -221,9 +260,22 @@ impl NetworkManager {
         ]
         {
 
-            PacketPayload::StpHarvestableList { harvestables } => {
+            PacketPayload::StpHarvestableList {
+                harvestables,
+                generation,
+                page,
+                page_count,
+            } => {
                 // Host-authoritative harvestable health roster: joiners mirror it. (B2.6)
-                self.stp_harvestables = harvestables;
+                // ADR-060 (d): reemplazo solo con la generación completa.
+                if let Some(complete) = self.roster_assemblers.harvestables.accept(
+                    generation,
+                    page,
+                    page_count,
+                    harvestables,
+                ) {
+                    self.stp_harvestables = complete;
+                }
                 None
             }
 
@@ -243,9 +295,20 @@ impl NetworkManager {
         ]
         {
 
-            PacketPayload::CorpseList { corpses } => {
-                Some(NetworkEvent::CorpseListReceived { corpses })
-            }
+            // ADR-060 (d): a diferencia de los otros cuatro rosters, éste no muta `self` sino que
+            // emite un evento que `game_loop` aplica. El ensamblado vive igualmente aquí (es donde
+            // está el buffer) y el evento se emite SOLO con la generación completa: una página
+            // suelta convertida en evento borraría los cadáveres de las demás páginas.
+            PacketPayload::CorpseList {
+                corpses,
+                generation,
+                page,
+                page_count,
+            } => self
+                .roster_assemblers
+                .corpses
+                .accept(generation, page, page_count, corpses)
+                .map(|complete| NetworkEvent::CorpseListReceived { corpses: complete }),
 
         }
         [
