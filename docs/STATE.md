@@ -2,6 +2,28 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-10 (cierre de ADR-060) — **Commit (d): los cinco rosters viajan paginados. ADR-060 COMPLETO (a, b, c, d). Backend 646 tests verde. Wire v27.**
+
+0. **QUÉ CERRÓ:** `1239cc2` (commit d: `network/roster.rs` + los cinco payloads paginados + bump v26→v27 con el espejo C#). ADR anclado (`DECISIONS.md` 2499 → 2526, verificado antes/después). Con esto ADR-060 no deja pendientes.
+
+1. **EL MISMO TECHO, EL OTRO RÉGIMEN.** Los cinco rosters completos morían por los mismos 65 507 B que el WorldSync monolítico, pero al ser unreliable la muerte era peor: al superarlo la replicación de ESE roster se detenía **para siempre**, sin evento, sin reintento y con el único rastro del warn 1/s de `send_datagram` — el final que ese doc-comment ya predecía para `StpBuildingList` (~800 piezas).
+
+2. **MECANISMO GENÉRICO, NO CINCO COPIAS** (`network/roster.rs`): `paginate` trocea por **presupuesto de bytes reales** (mide cada elemento serializado — un `StpBuildingInfo` con progreso y un `CorpseData` con inventario difieren en un orden de magnitud, así que trocear por número de elementos no acota nada) y `RosterAssembler` reensambla por generación, aplicando el roster **solo completo**: media lista aplicada borraría la otra mitad de los objetos del joiner.
+
+3. **DOS DECISIONES QUE SOLO APARECEN AL ESCRIBIRLO, ambas fijadas por test.** (a) `page_count` por defecto es **1, no 0** — un emisor pre-paginación mandaba exactamente una página con la lista entera, y con el default de `u16` su roster no se aplicaría **nunca**. (b) La adopción de generación es **incondicional**, no "la mayor gana": el contador es el `timestamp()` (`u32` de ms) y **envuelve a los ~49 días**; comparando con `>` la envoltura congelaría el roster hasta el fin de la sesión. Con adopción incondicional, una página reordenada solo cuesta la ronda en curso.
+
+4. **HALLAZGO: LA PAGINACIÓN SOLA NO BASTABA — medido, no supuesto.** El primer end-to-end con 4 000 elementos dio `left: 0`: el roster no llegaba entero **en 20 rondas**. Causa: la ronda salía como ráfaga ininterrumpida y desbordaba el buffer de recepción del socket (~64 KB); con reensamblado todo-o-nada, perder una página por ronda ⇒ ninguna generación completa jamás. Arreglo: `tokio::task::yield_now()` entre páginas, que deja al bucle de recepción drenar durante la emisión. Medición (loopback, rondas hasta llegar entero): 1 000 elementos (56 páginas) 1→1; **4 000 (222 páginas) nunca→1**; 20 000 (1 111 páginas) nunca→nunca.
+
+5. **TECHO DECLARADO, NO FINGIDO** (`MEASURED_CONVERGENCE_CEILING_ITEMS` en `roster.rs`, con la tabla): 4 000 elementos llegan en una ronda; hacia 20 000 no converge. El monolito moría a ~2 200 y de forma PERMANENTE; esto degrada distinto — el joiner conserva el último roster completo y la replicación se reanuda si el roster vuelve a bajar del techo. Cruzarlo pide el rediseño a deltas que ADR-060 deja FUERA.
+
+6. **LOS CINCO SIGUEN FUERA DE `is_reliable`, a propósito.** La autocuración a 10 Hz que ADR-039 invocó para excluirlos sigue siendo cierta página a página, y hacerlos fiables llenaría la ventana de 32 con cientos de páginas. Contraste con el goteo de WorldSync (0x36/0x37, sí fiable): aquél se envía UNA vez al entrar y no hay quien lo repita.
+
+7. **EL ESPEJO C# SALVADO POR LA MEMORIA DEL PROYECTO.** Bumpear `WIRE_SCHEMA_VERSION` sin bumpear `WireSchema.Expected` (ADR-061) deja el juego **inarrancable**, no con un warning: van en el MISMO commit. Los tests EditMode comparan contra `WireSchema.Expected`, no contra literales, así que el bump no los rompe.
+
+8. **TESTS: 632 → 646, 0 failed.** 10 unitarios del mecanismo (roster vacío ⇒ una página y no cero, porque es como el host dice "ya no queda nada"; elemento sobredimensionado viaja solo en vez de desaparecer; página perdida nunca entrega lista truncada; envoltura del contador; entrega única; índice incoherente ignorado en vez de panic en el hilo de red) + 2 end-to-end sobre sockets reales (roster de 200 KB —que supera el límite del datagrama, asertado en el propio test— llega entero y en orden; roster a medias nunca sustituye al anterior). Binario release reconstruido y verificado. **Sigue SIN desplegar a `Builds/Backend/`** (el de allí es del 09/08).
+
+9. **TRAMPA OPERATIVA, reincidente:** el here-string de PowerShell volvió a romperse por comillas dobles dentro del mensaje de commit (`"la mayor gana"`) — git interpretó el resto como pathspec. Ya estaba anotada el 09/08: mensajes largos van con `git commit -F fichero`, sin excepción.
+
 - Fecha: 2026-08-10 — **ADR-062: cola confiable agota reintentos + evicción ordenada. P0-3 cerrado. Backend 634 tests verde; sesión con dos colisiones reales de git + dos trampas operativas nuevas.**
 
 0. **QUÉ CERRÓ:** `c7ce2fc` (ADR-060 commit c, sesión concurrente: emisor WorldSync a goteo + receptor + gate) + `cdb7af0` (fix de test de fantasma, propio). ADR-062 anclado en `DECISIONS.md` durante sesión concurrente; contenido en HEAD íntegro y verificado, historial atribuye la enmienda a commits ajenos. `WIRE_SCHEMA_VERSION` sin bump (sin packet type nuevo).
