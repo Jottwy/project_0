@@ -1,8 +1,11 @@
 using UnityEngine;
+#if UNITY_POST_PROCESSING_STACK_V2
 using UnityEngine.Rendering.PostProcessing;
+#endif
 
 namespace BackroomsSurvival.Gameplay
 {
+#if UNITY_POST_PROCESSING_STACK_V2
     /// <summary>
     /// Fase 5D — Built-in PPv2 post-process for the Backrooms look. Builds a global
     /// PostProcessVolume + a runtime profile (Vignette / Grain / Bloom / ColorGrading) and
@@ -118,4 +121,42 @@ namespace BackroomsSurvival.Gameplay
         private static void SaveBool(string key, bool on)   { PlayerPrefs.SetInt(key + "_on", on ? 1 : 0); }
         private static bool LoadBool(string key)            => PlayerPrefs.GetInt(key + "_on", 1) != 0;
     }
+#else
+    /// <summary>
+    /// No-op stub compiled while PPv2 (UNITY_POST_PROCESSING_STACK_V2) is absent, so
+    /// GridTestWorld and BackroomsGraphicsSettings keep compiling during the URP
+    /// migration. The Volume-based implementation replaces this whole file.
+    /// </summary>
+    public sealed class BackroomsPostProcess : MonoBehaviour
+    {
+        public static BackroomsPostProcess Instance { get; private set; }
+
+        private void Awake()
+        {
+            if (Instance != null && Instance != this) { Destroy(this); return; }
+            Instance = this;
+        }
+
+        private void OnDestroy() { if (Instance == this) Instance = null; }
+
+        public void SetVignetteIntensity(float v)     { }
+        public void SetGrainIntensity(float v)        { }
+        public void SetBloomIntensity(float v)        { }
+        public void SetColorGradingIntensity(float t) { }
+
+        public void SetVignetteEnabled(bool on)     { }
+        public void SetGrainEnabled(bool on)        { }
+        public void SetBloomEnabled(bool on)        { }
+        public void SetColorGradingEnabled(bool on) { }
+
+        public float VignetteIntensity     => 0.38f;
+        public float GrainIntensity        => 0.18f;
+        public float BloomIntensity        => 0.5f;
+        public float ColorGradingIntensity => 1f;
+        public bool  VignetteEnabled       => false;
+        public bool  GrainEnabled          => false;
+        public bool  BloomEnabled          => false;
+        public bool  ColorGradingEnabled   => false;
+    }
+#endif
 }

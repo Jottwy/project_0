@@ -1,8 +1,11 @@
 using UnityEngine;
+#if UNITY_POST_PROCESSING_STACK_V2
 using UnityEngine.Rendering.PostProcessing;
+#endif
 
 namespace BackroomsSurvival.Gameplay
 {
+#if UNITY_POST_PROCESSING_STACK_V2
     /// <summary>
     /// Fase 5D — attaches a PPv2 <see cref="PostProcessLayer"/> to the player camera at
     /// runtime (no vendor prefab edit). Waits for <c>Camera.main</c> (the STP player camera is
@@ -41,4 +44,14 @@ namespace BackroomsSurvival.Gameplay
             _attached = true;
         }
     }
+#else
+    /// <summary>
+    /// No-op stub compiled while PPv2 (UNITY_POST_PROCESSING_STACK_V2) is absent — keeps
+    /// GridTestWorld.InitializeWorld compiling during the URP migration. The URP version
+    /// enables post-processing on UniversalAdditionalCameraData instead.
+    /// </summary>
+    public sealed class PlayerCameraPostProcessEnabler : MonoBehaviour
+    {
+    }
+#endif
 }
