@@ -25,7 +25,17 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// degrades) lives in `docs/systems/ipc-wire-schema.md`, together with the rule that a
 /// P2P-only change bumps this counter too. Bumping this constant means appending an entry
 /// there in the same commit — and the CODE is the authority on the number, not the ADR.
-const WIRE_SCHEMA_VERSION: u32 = 27;
+///
+/// `pub` since the corrección adosada a ADR-060 (`docs/DECISIONS.md`, 2026-08-10): the P2P
+/// `Handshake.version` field reuses this SAME counter rather than a separate
+/// `P2P_PROTOCOL_VERSION`. Deliberately coarse — an IPC-only bump (a field that only Unity
+/// reads) will reject P2P peers that would in practice still be wire-compatible with each
+/// other. Accepted anyway: a second version constant is a second thing to keep in sync by
+/// hand, which is exactly the class of bug that bit this schema twice already (see the
+/// Rust↔C# `WireSchema.Expected` mismatch history). If the false-rejection case is ever hit
+/// in practice, promote to a dedicated `P2P_PROTOCOL_VERSION` then — don't patch around it
+/// in the gate.
+pub const WIRE_SCHEMA_VERSION: u32 = 27;
 
 /// Run the IPC server until a fatal accept error.
 ///

@@ -383,7 +383,9 @@ impl NetworkManager {
         );
         let payload = PacketPayload::Handshake {
             player_name: self.local_name.clone(),
-            version: "0.1.0".into(),
+            // Reuses the IPC wire schema counter — see the doc-comment on
+            // `crate::ipc::server::WIRE_SCHEMA_VERSION` for why this is one counter, not two.
+            version: crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
         };
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
         let data = encode_packet(&header, &payload);

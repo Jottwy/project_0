@@ -861,8 +861,13 @@ async fn handshake_is_rejected_when_the_session_is_full() {
     assert_eq!(host.real_peer_count(), capacity);
 
     let newcomer: SocketAddr = "127.0.0.1:9500".parse().unwrap();
-    host.handle_handshake(newcomer, 0, "TooMany".into(), "0.1.0".into())
-        .await;
+    host.handle_handshake(
+        newcomer,
+        0,
+        "TooMany".into(),
+        crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+    )
+    .await;
 
     assert_eq!(
         host.real_peer_count(),
@@ -881,11 +886,38 @@ async fn handshake_is_accepted_when_there_is_room() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let newcomer: SocketAddr = "127.0.0.1:9501".parse().unwrap();
 
-    host.handle_handshake(newcomer, 0, "Joiner".into(), "0.1.0".into())
-        .await;
+    host.handle_handshake(
+        newcomer,
+        0,
+        "Joiner".into(),
+        crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+    )
+    .await;
 
     assert_eq!(host.real_peer_count(), 1);
     assert!(host.peers.values().any(|p| p.addr == newcomer));
+}
+
+/// Corrección adosada a ADR-060 (docs/DECISIONS.md, 2026-08-10): antes de este gate `version`
+/// se ignoraba por completo (`_version`). Un joiner con un schema distinto no debe quedar
+/// registrado ni recibir un HandshakeAck.
+#[tokio::test]
+async fn handshake_is_rejected_on_wire_schema_mismatch() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let newcomer: SocketAddr = "127.0.0.1:9502".parse().unwrap();
+
+    host.handle_handshake(newcomer, 0, "OldBuild".into(), "0.1.0".into())
+        .await;
+
+    assert_eq!(
+        host.real_peer_count(),
+        0,
+        "un mismatch de version no puede quedar registrado"
+    );
+    assert!(
+        !host.peers.values().any(|p| p.addr == newcomer),
+        "el rechazado no puede quedar registrado"
+    );
 }
 
 /// ADR-060: la variante encolada NO descarta con la ventana llena — aparca. El contraste con

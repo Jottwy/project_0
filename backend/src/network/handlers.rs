@@ -605,10 +605,28 @@ impl NetworkManager {
         from_addr: SocketAddr,
         sender_id: PeerId,
         player_name: String,
-        _version: String,
+        version: String,
     ) -> Option<NetworkEvent> {
         if !self.is_host {
             // Only the host accepts handshakes.
+            return None;
+        }
+
+        // Corrección adosada a ADR-060 (docs/DECISIONS.md, 2026-08-10): `version` used to be
+        // ignored entirely (`_version`). Compared before the duplicate-peer branches below on
+        // purpose — a mismatched joiner never got registered, so it can't fall into either of
+        // those reconnect paths. Same rejection mechanism as "session full": raw `Disconnect`,
+        // never entering `self.peers`.
+        let expected_version = crate::ipc::server::WIRE_SCHEMA_VERSION.to_string();
+        if version != expected_version {
+            warn!(
+                "MPTRACE step=B2 event=host_reject_handshake_version_mismatch self_id={} sender_id={} endpoint={} host_version={} joiner_version={}",
+                self.local_id, sender_id, from_addr, expected_version, version
+            );
+            let mismatch = PacketPayload::Disconnect {
+                reason: format!("wire schema mismatch: host={expected_version} joiner={version}"),
+            };
+            self.send_raw_to(from_addr, &mismatch).await;
             return None;
         }
 
