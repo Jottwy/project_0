@@ -2609,3 +2609,22 @@ La progresión del jugador (estabilizadores → territorio anclado) pasa a depen
 ### Pendiente de decidir antes de implementar
 
 Opcode y forma exacta de la acción de crafteo (¿`craft_item { recipe_id }` con respuesta, o fire-and-forget con reconciliación por `report_inventory`?) y si eso obliga a bump de `WIRE_SCHEMA_VERSION`; si el tiempo de crafteo (T2 15 min, T3 30 min, anchor 25 min) lo cuenta el servidor o el cliente, y qué pasa si el jugador se desconecta a mitad; si el `Workbench` (`requires_workbench: true` en las 4 recetas) se valida por proximidad server-side, lo que exige que el servidor conozca dónde están los workbenches — dato que hoy sí tiene vía el roster de edificios de ADR-037. Nada de esto se implementa hasta que el ADR pase a DECIDIDA.
+
+### ENMIENDA DE ESTADO (2026-08-10) — ADR-064 pasa de PROPUESTA a VALIDADA; slice 1 aterrizado
+
+Validación humana explícita de Joel en la misma sesión que redactó el ADR. La línea `Estado:` de la cabecera queda superada por esta enmienda: **ADR-064 es VALIDADA**.
+
+**Qué autoriza esta enmienda y qué NO.** Autoriza el **slice 1: mecanismo inerte** — que los cuatro materiales EXISTAN como `ItemDefinition` y entren al mundo por la vía de loot que ya funciona. Sigue SIN autorizar el flujo de crafteo en sí: las tres preguntas de «Pendiente de decidir antes de implementar» (opcode y bump de wire, quién cuenta el tiempo y qué pasa con una desconexión a mitad, validación de proximidad al `Workbench`) siguen abiertas y **ninguna se toca en este slice**. Es el mismo patrón que ADR-059 commit a: aterrizar el mecanismo apagado antes de decidir cómo se enciende.
+
+**Aterrizado en el slice 1:**
+- `Assets/Editor/BackroomsItemCreator.cs` — menú «Backrooms ▸ Create Craft Materials», crear-si-falta por item, sexto creador de la familia. Los assets van a `Assets/Resources/Definitions/Item/` con prefijo `BR_`, **fuera de `Assets/PolymindGames/**`**: `Resources.LoadAll` mezcla todas las carpetas `Resources`, así que se cargan junto a los del vendor sin editar un solo fichero vendor.
+- Los cuatro nombres añadidos al final de `MaterialPool` en `ChunkLootRoll.cs` y su espejo `StpChestSpawner.cs`.
+
+**Tres hechos verificados durante la implementación que el ADR no anticipaba, y que gobiernan cómo se extiende esto:**
+1. **El `_id` NO se elige a mano.** `DataDefinition.AssignID` lo acuña con `Random.Range(int.MinValue, int.MaxValue)` reintentando ante colisión, y solo corre en `ValidationTrigger.Created`/`Duplicated` — nunca en `Refresh`. El creador llama a `Validate_EditorOnly(...Created)`, que es la entrada pública del vendor a ese método privado. Ese id es el `def_id` del wire Y lo que guarda `stp_inventory` en el save ⇒ **regenerarlo huerfaniza saves y desincroniza replicación**; de ahí el crear-si-falta que se niega a tocar lo existente.
+2. **`Name` es `name.RemovePrefix()`**, que corta hasta el PRIMER `_`. `BR_Metal` resuelve a `"Metal"`, que es exactamente la cadena con la que las pools lo buscan vía `GetWithName`. Renombrar el asset sin prefijo lo vuelve irresoluble en silencio (warning + slot omitido, no excepción).
+3. **Donar el prefab de pickup de otro item es SEGURO, no solo tolerable.** `StpItemReplicator` destruye el componente `ItemPickup` del vendor sobre el objeto spawneado y conduce la identidad desde `def_id` por wire, así que un pickup compartido no puede hacer que un Circuit se comporte como el donante. El coste es puramente visual: cuatro materiales indistinguibles en el suelo hasta que haya arte propio.
+
+**Los materiales entran en `MaterialPool` y no en una pool propia, a propósito:** la restricción dura de `ChunkLootRoll` permite variar pools y rareza pero **nunca el COUNT de entradas**, y una pool nueva habría exigido un peso nuevo en `ZoneLootProfile` y en el `ZoneLootTable.asset` ya serializado. Queda anotado como `TODO(balance)`: a 13 entradas equiprobables un material de crafteo sale ~4/13 de los slots de esa pool, contra un T3 que cuesta 130 unidades. Si el ritmo se lee absurdo en playtest, la palanca es una pool propia con peso, no repetir nombres.
+
+**Las dos mitades son independientemente seguras.** Mientras los assets no se hayan generado, `GetWithName("Metal")` devuelve `null` y `ChunkLootManager` omite el slot con warning — el cambio de pools puede vivir en la rama sin que nadie ejecute el menú. Verificado en compilación, **no en juego**: nadie ha visto todavía un material de crafteo caer en el mundo.
