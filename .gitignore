@@ -62,3 +62,6 @@ Assets/TripoModels.meta
 *.tmp
 *.bak
 *.log
+
+# Backup local pre-migracion URP (commit 2/8, no versionado)
+backup_birp/
