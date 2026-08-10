@@ -2444,7 +2444,7 @@ Verificación E2E del camino de fallo: bumpear `WireSchema.Expected` en local si
 
 Estado: **DECIDIDA (2026-08-10), implementada en la misma sesión.** Decisión de Joel vía `AskUserQuestion`. Cierra el riesgo **P0-3** de `docs/ARCHITECTURE_RISK_REVIEW.md` §5 y el ítem P0 homónimo de `docs/STABILITY_AUDIT_CURRENT.md` §7 (ambos apuntan a `network/mod.rs::process_retransmits()`).
 
-**Numeración:** ADR-061 queda RESERVADO para el gate de wire schema en el `Handshake` (la "corrección pendiente" adosada a ADR-060 arriba). Este ADR toma 062 para no colisionar con ese trabajo en curso.
+**Numeración:** 060 (paginación de WorldSync) y 061 (`hello` de esquema IPC) estaban tomados al escribir esto — este ADR toma 062. No confundir el gate de ADR-061 (envelope IPC Unity↔backend) con la "corrección pendiente" adosada a ADR-060 (el `version` ignorado del `Handshake` P2P): son dos superficies distintas y la segunda sigue abierta.
 
 ### El fallo
 
@@ -2474,8 +2474,26 @@ Un peer marcado en `phantom_ids` (ADR-016) **no se evicta**: conserva el `clear(
 
 El goteo por chunk pone N paquetes reliable en vuelo hacia un peer recién llegado, así que un peer que no ACKea se detecta ANTES y con más certeza que con el snapshot monolítico. Es el comportamiento buscado: con ADR-060 un join fallido produce una desconexión visible en ~5 s en vez de un joiner permanentemente pre-spawn. La cola diferida (`deferred_reliable`) muere con el peer al eliminarlo del mapa, sin ruta de fuga.
 
+### Consecuencia en el joiner: esto puede TERMINAR la sesión (ADR-056)
+
+Consecuencia derivada, no accidental, y la de mayor alcance de este ADR: `handle_network_event` trata `PeerDisconnected` con `net.host_peer_id == Some(id)` como fin de sesión (ADR-056: no hay migración de host ⇒ guarda el jugador y emite `session_ended`, Unity hace el teardown). Por tanto, **en un joiner cuya vía reliable hacia el host agote los reintentos, la sesión termina en ~4.8 s** en vez de continuar con un mundo congelado.
+
+Se acepta a propósito: sin vía reliable, el joiner no recibe mundo ni confirma acciones — la sesión ya está funcionalmente muerta, y ADR-056 ya decidió que un host ausente la cierra. Terminar con guardado y aviso es estrictamente mejor que seguir mostrando un mundo que no avanza.
+
+**El riesgo que esto crea, con nombre:** un falso positivo del agotamiento (5 ACKs perdidos seguidos, o un tipo enviado reliable que el receptor no ACKea) pasa de degradación invisible a cierre de sesión. Dos guardas ya existentes lo acotan, y ninguna es nueva de este ADR: el invariante emisor/receptor lo fija el test `reliability_covers_every_reliably_sent_type` (`reliability.rs`), y el caso "peer con versión vieja que no decodifica el tipo" es exactamente lo que cierra el gate de ADR-061. Si aun así aparecieran cierres espurios en playtest, la palanca correcta es subir `MAX_RETRIES`/backoff (la ventana de 4.8 s es hoy deliberadamente más corta que `HEARTBEAT_TIMEOUT = 5 s`), no volver a retener al peer mudo.
+
 ### Alcance y verificación
 
 Sin cambio de formato de wire: `PeerDisconnected` es un evento interno y no se añade ningún packet type ⇒ **sin bump de `WIRE_SCHEMA_VERSION`** (regla dura #7 no aplica).
 
 El test `reliable_retransmit_failure_does_not_remove_peer` (`network/tests.rs`) fijaba el comportamiento anterior como intencional — se **reescribe** para fijar el evict, con un test hermano nuevo que fija la guarda de fantasmas. Fuera de alcance, cada uno su propia preocupación: el `Nack` no-op, `ACK_DEADLINE_MS` declarada y sin uso (`reliability.rs`), y el follow-up de `StpPickupGranted` retransmitiendo pese al ACK (`docs/STATE.md` ▸ Deuda conocida).
+
+## ENMIENDA a ADR-061 (2026-08-10, durante commit c) — quién llama a `PauseReconnect`
+
+La decisión 1 de ADR-061 enumera el efecto del mismatch como "`Debug.LogError` + `session_ended` sintético + `PauseReconnect()`", como si `IPCClient` hiciera las tres cosas. **Al implementarlo resultó incorrecto en el orden**, y se corrige aquí en vez de dejar el ADR mintiendo sobre el código.
+
+`SessionEndHandler.EndSession` ya llama a `PauseReconnect()` como su paso 2, y lo hace **después** del paso 1 (`NetworkInitializer.Shutdown()`) por una razón escrita en ese mismo archivo: el `save_and_shutdown` grácil viaja por esa misma conexión IPC, así que cerrar el socket antes cuesta el guardado. Si `HandleHello` llamara a `PauseReconnect()` desde el hilo de red, se lo robaría al handler que este ADR dice reutilizar.
+
+Lo implementado: `HandleHello` **no** pausa la reconexión — solo loguea y encola el `session_ended`. El hueco entre encolar y el teardown (el evento se drena en el hilo principal, uno o dos frames después) lo cubre un flag volátil `_schemaMismatch`, que hace que `Dispatch` descarte todo frame posterior de esa conexión **sin parsearlo**. Sin él, un `world_state` del backend incompatible podría aplicarse con defaults silenciosos justo en la ventana que el gate existe para cerrar. El flag se limpia al conectar, no al desconectar, para que un backend relanzado reciba un veredicto nuevo.
+
+Sin cambio de wire ni de la decisión: el mecanismo elegido (reutilizar `session_ended`, cero UI nueva) es exactamente el de la decisión 1. Solo cambia qué pieza ejecuta la pausa, y el resultado observable es el mismo más la garantía de no aplicar datos del backend equivocado durante el teardown.
