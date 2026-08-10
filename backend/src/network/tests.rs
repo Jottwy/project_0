@@ -635,6 +635,43 @@ async fn reliable_retransmit_exhaustion_does_not_evict_a_phantom() {
     );
 }
 
+/// H11 (auditoria): el carve-out de fantasmas en `process_retransmits` (ADR-062) solo importa
+/// si la cola reliable de un fantasma puede llenarse en primer lugar — y en la práctica no
+/// puede: `broadcast_destinations` (send.rs:78) y `broadcast_reliable` (send.rs:160) filtran
+/// fantasmas ANTES de encolar nada. Fija el invariante desde el otro lado de
+/// `reliable_retransmit_exhaustion_does_not_evict_a_phantom`: aquel prueba que la evicción no
+/// le pasa a un fantasma; este prueba que la cola que dispararía esa evicción nunca debería
+/// crecer para empezar.
+#[tokio::test]
+async fn broadcasts_skip_phantoms_so_their_reliable_queue_never_grows() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let real_addr: SocketAddr = "127.0.0.1:9700".parse().unwrap();
+    host.peers
+        .insert(2, PeerConnection::new(2, "Real".into(), real_addr));
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0]);
+
+    assert!(
+        !host
+            .broadcast_destinations()
+            .iter()
+            .any(|(id, _)| *id == phantom_id),
+        "un fantasma nunca es destino de broadcast_destinations"
+    );
+
+    host.broadcast_reliable(&PacketPayload::Heartbeat).await;
+
+    assert_eq!(
+        host.peers[&phantom_id].reliable_queue.len(),
+        0,
+        "broadcast_reliable no debe encolar nada para un fantasma"
+    );
+    assert_eq!(
+        host.peers[&2].reliable_queue.len(),
+        1,
+        "un peer real SI recibe el broadcast reliable"
+    );
+}
+
 #[tokio::test]
 async fn peer_timeout_detection() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
