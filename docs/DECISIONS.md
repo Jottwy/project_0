@@ -2628,3 +2628,15 @@ Validación humana explícita de Joel en la misma sesión que redactó el ADR. L
 **Los materiales entran en `MaterialPool` y no en una pool propia, a propósito:** la restricción dura de `ChunkLootRoll` permite variar pools y rareza pero **nunca el COUNT de entradas**, y una pool nueva habría exigido un peso nuevo en `ZoneLootProfile` y en el `ZoneLootTable.asset` ya serializado. Queda anotado como `TODO(balance)`: a 13 entradas equiprobables un material de crafteo sale ~4/13 de los slots de esa pool, contra un T3 que cuesta 130 unidades. Si el ritmo se lee absurdo en playtest, la palanca es una pool propia con peso, no repetir nombres.
 
 **Las dos mitades son independientemente seguras.** Mientras los assets no se hayan generado, `GetWithName("Metal")` devuelve `null` y `ChunkLootManager` omite el slot con warning — el cambio de pools puede vivir en la rama sin que nadie ejecute el menú. Verificado en compilación, **no en juego**: nadie ha visto todavía un material de crafteo caer en el mundo.
+
+### CORRECCIÓN (2026-08-10, mismas horas) — la frase de arriba estaba mal, y el slice 1 queda DIFERIDO
+
+Decisión de Joel al cierre: los materiales se quedan **documentados para el futuro**, sin construirse todavía. El menú **no se ejecutó** y los cuatro `ItemDefinition` **no existen**.
+
+**La afirmación «las dos mitades son independientemente seguras» era falsa como la escribí.** Era cierta solo para *no crashea*; no para *sin efecto*. Con los cuatro nombres en `MaterialPool` y los assets sin generar, cada slot que sortee uno de ellos resuelve a `null`, y `ChunkLootManager` lo **descarta con un warning**: ~4 de cada 13 slots de material caídos, y un warning por cada uno. En una sesión que acababa de documentar un bug de spam de log de 2 478 780 líneas como problema serio, eso no es un no-op benigno.
+
+**Consecuencia práctica, ya aplicada:** las entradas de los cuatro materiales se retiraron de `MaterialPool` en `ChunkLootRoll.cs` y `StpChestSpawner.cs`, dejando ambos arrays byte-idénticos a como estaban antes del slice (verificado contra `b76a43d^`). Queda en su lugar un comentario que dice dónde van y **por qué no están todavía**.
+
+**Regla que sale de esto, para quien retome ADR-064:** añadir los nombres a las pools y generar los assets del menú **son UN solo paso, no dos**. Separarlos deja la rama peor que si no se hubiera tocado nada. Lo que SÍ puede vivir separado y sin coste es `Assets/Editor/BackroomsItemCreator.cs`: un `[MenuItem]` que nadie invoca no tiene efecto en runtime, así que se queda en la rama como la forma ejecutable de esta decisión — documentación que compila.
+
+**Estado real de ADR-064 tras esta corrección:** la DECISIÓN sigue **VALIDADA** (el crafteo se mudará al vocabulario STP; Joel la eligió sobre la evidencia). Lo que se revierte es su implementación: **slice 1 DIFERIDO**, cero efecto en juego, cero assets generados.
