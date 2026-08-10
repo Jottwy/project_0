@@ -2334,3 +2334,68 @@ Estado: **IMPLEMENTADA**. Cierra el "próximo paso único" que `docs/STATE.md` t
 **Sin confirmar, explícito:** el efecto visual del salto de tamaño (cuadrantes de 8×8 m frente a 6×6 m, asimétrico entre bandas) no se ha visto en juego — playtest pendiente, mismo patrón que el resto de esta serie.
 
 Referencia cruzada: extiende ADR-057 (misma partición 2×2, mismas bandas, mismo buffer de 1 tile) sin contradecirlo; usa `office_rules` de ADR-058 sin tocar su identidad (`subregion_grid`, `room_type_weights`, `pillar_chance` intactos); la palanca 3×3 (`subregion_divisions`) sigue MEDIDA Y DESCARTADA del commit `02309c9`, no se re-deriva ni se reabre aquí — es una palanca ortogonal, no una alternativa a esta.
+
+## ADR-060 — WorldSync monolítico revienta el datagrama UDP a escala: paginar el snapshot de join
+
+Estado: **PROPUESTA (2026-08-10), pendiente de decisión.** Dos rutas expuestas abajo; ninguna implementada. Cambio de formato de protocolo P2P ⇒ regla dura #7: este ADR existe (y se decide) antes de tocar código. Hallazgo de auditoría, confirmado por lectura de código en esta sesión.
+
+### Contexto
+
+`send_world_sync` (`network/sync.rs`) serializa **TODOS** los `world.chunks` en un único `PacketPayload::WorldSync`, lo codifica en un solo `Vec<u8>` (`encode_packet`, MessagePack `to_vec_named`) y `send_reliable` lo emite con **un solo `send_to`**. No existe fragmentación a nivel de protocolo; el receptor lee con buffer de 65 535 B.
+
+Dos regímenes de fallo, no uno:
+
+1. **Payload > 65 507 B** (límite duro del datagrama UDP IPv4): `send_to` falla con `WSAEMSGSIZE`. El snapshot **nunca sale**. La capa reliable reintenta el mismo datagrama imposible 6 veces (backoff 200–1600 ms) y al agotar `MAX_RETRIES` purga la cola reliable ENTERA del peer (comportamiento pre-ADR-039 documentado en `reliability.rs`), llevándose otros paquetes pendientes. El joiner queda sin mundo permanentemente. `send_datagram` lo loguea (throttled 1/s) con `payload_bytes` — visible, pero no recuperable.
+2. **MTU (~1 500 B) < payload ≤ 65 507 B**: fragmentación IP. A 64 KB son ~44 fragmentos; perder UNO mata el datagrama completo. Con 1 % de pérdida por fragmento, la entrega por intento es ≈ 0.99⁴⁴ ≈ 64 %; los 6 reintentos salvan la LAN, pero en internet real muchos NAT/routers descartan fragmentos IP sin más — ahí ni los reintentos.
+
+**Escala real:** `world.chunks` solo crece (`or_insert` en exploración, multi-capa) ⇒ el payload de join crece monotónicamente con la sesión. `to_vec_named` repite los nombres de campo por chunk (ChunkSyncData ~13 campos + `ChunkLayoutV1` ~17 campos + `cells` 100×u16 + `edges_v`/`edges_h` ~220 B + entities/items). Estimación: ~0.8–1.5 KB por chunk serializado ⇒ el techo de 65 507 B se cruza en **~50–80 chunks**, alcanzable en una sesión normal. Hoy latente (mundo inicial pequeño, sesiones cortas), no hipotético.
+
+El propio código ya conoce esta clase de muerte: el doc-comment de `send_datagram` (`network/send.rs`) la documenta para `StpBuildingList` (~800 piezas). Y el patrón bueno ya existe en la misma superficie: `broadcast_chunk_states` emite UN datagrama por chunk con filtro de proximidad ±3.
+
+### Ruta A — `WorldSyncPage`: paginación explícita del snapshot
+
+Nuevo payload `WorldSyncPage { world_seed, world_revision, page_index, page_count, chunks: Vec<ChunkSyncData> }`. `send_world_sync` trocea `world.chunks` en páginas cuyo tamaño CODIFICADO no supere ~1 200 B (medir serializando, no contando chunks — el tamaño por chunk varía con entities/items) y envía cada página por `send_reliable`. El receptor acumula páginas de la misma `world_revision` y aplica el snapshot al completar `page_count`; una página de una revision más nueva descarta lo acumulado (mismo rol de cursor que `world_revision` ya cumple).
+
+- **A favor:** cada datagrama cabe en un MTU ⇒ cero fragmentación IP en ningún régimen; la capa reliable existente reintenta por-página (pérdida de una página no obliga a reenviar el snapshot entero); semántica de "snapshot completo" explícita (`page_count`) — el cliente sabe cuándo tiene el mundo entero y puede gatear el spawn en eso, como hoy.
+- **En contra:** payload nuevo + estado de reensamblado en el receptor (buffer de páginas por revision); interacción con `WINDOW_SIZE = 32` — un mundo de >32 páginas llena la ventana reliable y `send_world_sync` pasa a necesitar emisión incremental (encolar a medida que llegan ACKs), que es la pieza de más diseño de esta ruta.
+
+### Ruta B — goteo por chunk: reutilizar `ChunkTransfer` + marcadores de inicio/fin
+
+Sin payload de datos nuevo: `send_world_sync` emite `WorldSyncBegin { world_seed, world_revision, chunk_count }` (payload nuevo, trivial), luego un `ChunkTransfer` reliable POR CHUNK (payload y receptor existentes desde la baseline — `send_chunk_transfer` está escrito y sin call sites, ver aviso en cabecera de `sync.rs`), y cierra con `WorldSyncEnd { world_revision }`. El receptor aplica chunks a medida que llegan y declara el join completo al recibir `End` con `chunk_count` satisfecho.
+
+- **A favor:** máxima reutilización (aplica-chunk ya existe en el receptor; se estrena código muerto diseñado para esto); un chunk por datagrama ≈ 1–1.5 KB, sin reensamblado — cada chunk es autosuficiente; converge con el patrón ya validado de `broadcast_chunk_states`.
+- **En contra:** misma presión sobre `WINDOW_SIZE` (N chunks = N paquetes reliable en vuelo) ⇒ también pide emisión incremental; el estado intermedio "mundo a medias" existe en el receptor entre `Begin` y `End` y hay que gatear el spawn del joiner en `End`, no en el primer chunk; chunks >65 507 B individuales siguen siendo posibles en teoría (chunk patológico con cientos de items) aunque hoy irreal.
+
+### Común a ambas rutas (se decide una vez, aplica igual)
+
+- **Bump de `WIRE_SCHEMA_VERSION`** (`ipc/server.rs`): payload nuevo en cualquiera de las dos rutas. Un peer viejo no decodifica el snapshot nuevo — join cross-versión ya está gateado por schema, sin degradación silenciosa.
+- **Emisión incremental bajo la ventana reliable:** las dos rutas emiten N>32 paquetes reliable a un peer recién llegado; hoy `send_reliable` DESCARTA el paquete nuevo con la ventana llena (`reliable_window_full`), lo que trocearía el snapshot en silencio. La solución (cola de emisión que avanza con los ACKs) es parte del alcance de este ADR, no un extra.
+- **Techo de los rosters STP (misma muerte por 65 507, régimen unreliable):** `broadcast_stp_buildings` / `broadcast_stp_items` / `broadcast_stp_carryables` / `broadcast_stp_harvestables` / `broadcast_corpses` emiten roster COMPLETO, unreliable, 10 Hz, sin tope — al superar 65 507 B la replicación de ese roster se detiene para siempre (solo el warn 1/s). Alcance mínimo aquí: trocear cada roster en datagramas ≤~1 200 B (unreliable, autosanante por repetición a 10 Hz — no necesita reensamblado si cada trozo es aplicable por sí mismo, lo que pide claves estables por elemento en el receptor). El rediseño a deltas queda explícitamente FUERA (sería su propio ADR).
+
+### Criterio de decisión propuesto
+
+Si el gate del spawn del joiner puede moverse a `End`/última página sin tocar más estado del cliente, la Ruta B es menos código nuevo y estrena el muerto diseñado para esto; si el cliente necesita atomicidad real del snapshot (aplicar TODO o nada), la Ruta A la da por construcción y B no. La pieza cara (emisión incremental bajo ventana) es idéntica en ambas — no discrimina.
+
+Sin decidir hasta validación humana. Referencia cruzada: ADR-016 (skip de phantoms en WorldSync, se conserva), ADR-039 (purga de cola reliable — el modo de fallo que este ADR evita disparar), regla dura #7 (este documento es el prerrequisito del código).
+
+### DECISIÓN (2026-08-10) — Ruta B, spawn gateado en `End`
+
+Decisión de Joel: **Ruta B (goteo por chunk), con el spawn del joiner gateado en `End`.** ADR-060 pasa a **DECIDIDA, pendiente de implementación.**
+
+Tres refinamientos de diseño salidos de leer el código receptor ANTES de implementar, que ajustan la Ruta B tal como estaba enunciada sin cambiar su identidad:
+
+1. **La capa reliable es at-least-once SIN orden garantizado** (reintento hasta ACK sobre UDP; nada reordena en recepción). `Begin` puede llegar DESPUÉS de los primeros chunks. Por tanto la completitud NO se define como secuencia `Begin → chunks → End`, sino como **estado por revision**: cada chunk del goteo viaja estampado con `world_revision`, y el join está completo cuando (a) se recibió `WorldSyncEnd { world_revision, chunk_count }` y (b) los chunks aplicados de ESA revision alcanzan `chunk_count`. Con eso `Begin` resulta redundante y NO existe: dos payloads nuevos, no tres.
+2. **No se reutiliza el payload `ChunkTransfer` en el wire, sí su semántica de aplicación.** Motivo: el receptor de `ChunkTransferReceived` responde HOY con un `ChunkTransferAck` **reliable** por chunk (semántica de handoff de propiedad, `game_loop.rs`) — un goteo de N chunks generaría N acks reliable que inundan la ventana (32) del joiner hacia el host, y la redundancia es total porque la capa reliable ya garantiza la entrega. Payload propio **`WorldSyncChunk { world_revision, data: ChunkSyncData }`**, que aplica por `apply_chunk_sync` (el MISMO camino que ChunkTransfer) y no emite ack de aplicación. `send_chunk_transfer`/`ChunkTransfer` quedan como estaban (handoff explícito, sin call sites — su aviso en `sync.rs` sigue vigente).
+3. **Equivalencia upsert/replace verificada:** `apply_world_sync` hace clear+reaplicar, pero `world.chunks` es de crecimiento monotónico (nada borra chunks; los teleports mutan in place) ⇒ aplicar el goteo por upsert (`apply_chunk_sync`) es semánticamente equivalente al replace de hoy, también para los re-syncs de runtime (pickup/drop legacy, `broadcast_world_sync` en `game_loop`), que pasan a gotear igual. El cursor `world_revision` descarta goteos obsoletos: un `End` de revision vieja con contador incompleto simplemente no completa nunca y su estado se desecha al ver revision mayor.
+
+**Gate de spawn:** el gate actual del joiner (`!spawn_resolved && real_peer_count > 0 && !world.chunks.is_empty()`, `game_loop.rs`) pasaría a dispararse con el PRIMER chunk del goteo — exactamente el mundo a medias que la decisión evita. Se sustituye la condición `!world.chunks.is_empty()` por el flag de completitud del punto 1. Los caminos del host (generación propia / hydrate de save) no se tocan: resuelven `spawn_resolved` directamente, como hoy.
+
+**Emisión incremental bajo la ventana:** cola diferida por peer — `send_reliable` gana variante encolada: con la ventana llena el paquete NO se descarta sino que espera en una cola FIFO por peer, bombeada cuando los ACKs abren hueco. El descarte con warn (`reliable_window_full`) se conserva para los envíos no-encolados. Desaparición del peer ⇒ su cola muere con él.
+
+Plan de commits (regla #5, una preocupación por commit): **(a)** protocolo — `WorldSyncChunk`/`WorldSyncEnd` + type codes + round-trip tests con valores no-default + bump `WIRE_SCHEMA_VERSION`; **(b)** cola diferida por peer + tests de ventana (overflow encolado ≠ descartado, drenaje con ACKs); **(c)** emisor `send_world_sync` a goteo + receptor (eventos, aplicación, contador por revision, gate de spawn en End) + retirada del envío monolítico (`PacketPayload::WorldSync` queda deprecado en el wire, su decode se conserva una versión); **(d)** techo de rosters STP/corpses (paginación unreliable con contador de generación, reensamblado-o-descarte por ronda de 10 Hz — el detalle fino se fija en el commit, dentro del alcance ya acotado arriba); **(e)** `docs/STATE.md` + verificación (`cargo test` verde, `grep -aoc` del campo nuevo en el binario release).
+
+### CORRECCIÓN (2026-08-10, durante commit a) — el gate cross-versión del handshake NO existe
+
+La sección "Común a ambas rutas" de arriba afirma "join cross-versión ya está gateado por schema". **Falso, verificado leyendo el receptor**: `handle_handshake` (`network/handlers.rs`) recibe el `version` del `Handshake` P2P como `_version` — se ignora, nadie rechaza nada. El agujero es ANTERIOR a este ADR (el campo se ignora desde la baseline), pero este ADR lo vuelve observable por primera vez: un peer v24 contra un host v25 conecta y nunca recibe mundo (queda pre-spawn, visible, sin corrupción de estado — los payloads del goteo simplemente no decodifican y se descartan).
+
+Queda como **corrección pendiente adosada a este ADR** (no ADR nuevo: es hacer verdad lo que este ADR ya asumía, sin cambiar forma del wire): rellenar `version` con `WIRE_SCHEMA_VERSION` en el emisor del `Handshake` y rechazar el mismatch en el host con el mismo mecanismo de rechazo que ya usa "session full" (`Disconnect` con reason). Hasta entonces, la degradación real del bump v25 es la descrita en `docs/systems/ipc-wire-schema.md` §v25.

@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v24
+# IPC wire schema — changelog v2 → v25
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **24**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **25**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -245,3 +245,22 @@ backend simply never emits it, leaving today's behavior — the joiner stays in 
 until the player quits manually. **No P2P change accompanies this bump**: the goodbye that makes
 the common case immediate reuses `PacketPayload::Disconnect` (0x06), which has existed with a
 complete receiver since the baseline commit.
+
+### v25 (ADR-060) — actual
+
+Cambio solo-P2P (la superficie IPC no se toca; bumpea por la regla de ADR-047: añadir un
+`PacketPayload` bumpea). Dos variantes nuevas para el goteo del snapshot de mundo:
+`WorldSyncChunk { world_revision, data }` (0x36) y `WorldSyncEnd { world_revision, chunk_count }`
+(0x37), que sustituyen al envío monolítico `WorldSync` (0x04) — un solo datagrama UDP con TODOS
+los chunks, que muere en `WSAEMSGSIZE` al superar 65 507 B (~50–80 chunks) y antes de eso depende
+de fragmentación IP. `WorldSync` queda deprecado: su decode se conserva esta versión, ningún
+emisor queda, y el variant se retira en el siguiente bump.
+
+Degradación: NINGUNA interop cross-versión — un peer v24 no decodifica 0x36/0x37 y un host v25 ya
+no emite 0x04, así que un join mixto conecta pero nunca recibe mundo (el joiner queda pre-spawn,
+visible, sin corromper estado). `#[serde(default)]` no puede salvar un variant entero que el otro
+lado no conoce (mismo caso que ADR-028 Fase E, v8→v9). **OJO — verificado en esta sesión:** el
+`version` del `Handshake` P2P se IGNORA en `handle_handshake` (`_version`), así que NO existe
+gate que rechace el join mixto; el agujero es previo a este bump y este bump lo hace por primera
+vez observable en juego. Cerrar el gate (rellenar `version` con `WIRE_SCHEMA_VERSION` y rechazar
+en el host) queda anotado como corrección pendiente en ADR-060.

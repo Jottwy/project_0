@@ -95,6 +95,11 @@ pub enum PacketType {
     ChunkGenerate = 0x33,
     AnchorBroadcast = 0x34,
     StabilizerBroadcast = 0x35,
+    // ADR-060: goteo del snapshot de mundo. 0x36 lleva UN chunk estampado con la revision;
+    // 0x37 cierra el goteo con el contador total. Sustituyen al envío monolítico de 0x04
+    // (WorldSync), cuyo decode se conserva una versión.
+    WorldSyncChunk = 0x36,
+    WorldSyncEnd = 0x37,
     // STP Carryables (0x40-0x4F)
     StpCarryableList = 0x40,
     StpCarryablePickupRequest = 0x41,
@@ -181,6 +186,8 @@ impl PacketType {
             0x33 => Some(Self::ChunkGenerate),
             0x34 => Some(Self::AnchorBroadcast),
             0x35 => Some(Self::StabilizerBroadcast),
+            0x36 => Some(Self::WorldSyncChunk),
+            0x37 => Some(Self::WorldSyncEnd),
             0x40 => Some(Self::StpCarryableList),
             0x41 => Some(Self::StpCarryablePickupRequest),
             0x42 => Some(Self::StpCarryablePickupGranted),
@@ -382,10 +389,28 @@ pub enum PacketPayload {
         #[serde(default = "default_phantom_density_scale")]
         phantom_density_scale: f32,
     },
+    /// DEPRECADO por ADR-060 (goteo `WorldSyncChunk`/`WorldSyncEnd`). Ningún emisor queda;
+    /// el decode se conserva una versión y luego se retira el variant entero.
     WorldSync {
         world_seed: u64,
         world_revision: u64,
         chunks: Vec<ChunkSyncData>,
+    },
+    /// ADR-060: un chunk del goteo de snapshot. Estampado con `world_revision` porque la capa
+    /// reliable es at-least-once SIN orden — la completitud se cuenta POR REVISION, nunca por
+    /// secuencia de llegada. Aplica por `apply_chunk_sync` (upsert), sin ack de aplicación:
+    /// la redundancia del `ChunkTransferAck` del handoff es exactamente lo que se evita.
+    WorldSyncChunk {
+        world_revision: u64,
+        data: ChunkSyncData,
+    },
+    /// ADR-060: cierre del goteo. El receptor declara el snapshot completo cuando recibió este
+    /// payload Y los chunks aplicados de `world_revision` alcanzan `chunk_count`; el spawn del
+    /// joiner se gatea en esa completitud (decisión "spawn en End"). Una revision más nueva
+    /// desecha el estado de conteo de las anteriores.
+    WorldSyncEnd {
+        world_revision: u64,
+        chunk_count: u32,
     },
     Heartbeat,
     Disconnect {
@@ -777,6 +802,8 @@ impl PacketPayload {
             Self::Handshake { .. } => PacketType::Handshake as u16,
             Self::HandshakeAck { .. } => PacketType::HandshakeAck as u16,
             Self::WorldSync { .. } => PacketType::WorldSync as u16,
+            Self::WorldSyncChunk { .. } => PacketType::WorldSyncChunk as u16,
+            Self::WorldSyncEnd { .. } => PacketType::WorldSyncEnd as u16,
             Self::Heartbeat => PacketType::Heartbeat as u16,
             Self::Disconnect { .. } => PacketType::Disconnect as u16,
             Self::PeerList { .. } => PacketType::PeerList as u16,
@@ -1122,6 +1149,76 @@ mod tests {
                 assert_eq!(world_seed, 1234);
                 assert_eq!(world_revision, 7);
                 assert_eq!(chunks.len(), 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    // ADR-060. Valores no-default a propósito (patrón ADR-037): un chunk con revision 0 y
+    // pos [0,0] pasaría aunque los campos se cruzaran en el wire.
+    #[test]
+    fn world_sync_chunk_round_trip_keeps_revision_and_chunk() {
+        let payload = PacketPayload::WorldSyncChunk {
+            world_revision: 9,
+            data: ChunkSyncData {
+                pos: [-2, 5],
+                layer: 1,
+                seed: 777,
+                template_id: 3,
+                rotation: 180,
+                mirrored: true,
+                has_workbench: true,
+                layout: ChunkLayoutV1::default(),
+                stabilized: true,
+                anchored: false,
+                teleport_timer: 42.5,
+                entities: vec![],
+                items: vec![ItemSyncData {
+                    id: 4,
+                    item_type: "cloth".into(),
+                    quantity: 2,
+                    position: [1.0, 0.0, 2.0],
+                }],
+            },
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 400, 10000);
+        assert_eq!(
+            header.packet_type, 0x36,
+            "opcode de WorldSyncChunk (ADR-060)"
+        );
+        let data = encode_packet(&header, &payload);
+        let (_, p2) = decode_packet(&data).unwrap();
+        match p2 {
+            PacketPayload::WorldSyncChunk {
+                world_revision,
+                data,
+            } => {
+                assert_eq!(world_revision, 9);
+                assert_eq!(data.pos, [-2, 5]);
+                assert_eq!(data.layer, 1);
+                assert_eq!(data.items.len(), 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn world_sync_end_round_trip_keeps_revision_and_count() {
+        let payload = PacketPayload::WorldSyncEnd {
+            world_revision: 9,
+            chunk_count: 137,
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 401, 10000);
+        assert_eq!(header.packet_type, 0x37, "opcode de WorldSyncEnd (ADR-060)");
+        let data = encode_packet(&header, &payload);
+        let (_, p2) = decode_packet(&data).unwrap();
+        match p2 {
+            PacketPayload::WorldSyncEnd {
+                world_revision,
+                chunk_count,
+            } => {
+                assert_eq!(world_revision, 9);
+                assert_eq!(chunk_count, 137);
             }
             _ => panic!("wrong variant"),
         }

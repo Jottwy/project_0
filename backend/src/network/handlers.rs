@@ -397,6 +397,12 @@ impl NetworkManager {
                 })
             }
 
+            // ADR-060 commit (a): el wire existe antes que el receptor. Estos dos arms se
+            // sustituyen por los eventos del goteo en el commit del receptor; hasta entonces
+            // un paquete de estos se ignora (nadie los emite todavía).
+            PacketPayload::WorldSyncChunk { .. } => None,
+            PacketPayload::WorldSyncEnd { .. } => None,
+
             PacketPayload::ChunkState { data } => {
                 // Treat as a chunk transfer for now.
                 Some(NetworkEvent::ChunkTransferReceived {

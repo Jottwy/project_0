@@ -25,7 +25,7 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// degrades) lives in `docs/systems/ipc-wire-schema.md`, together with the rule that a
 /// P2P-only change bumps this counter too. Bumping this constant means appending an entry
 /// there in the same commit — and the CODE is the authority on the number, not the ADR.
-const WIRE_SCHEMA_VERSION: u32 = 24;
+const WIRE_SCHEMA_VERSION: u32 = 25;
 
 /// Run the IPC server until a fatal accept error.
 ///
