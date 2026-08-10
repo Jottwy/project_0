@@ -34,6 +34,7 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x20..=0x2F   // Actions
         | 0x30..=0x31   // ChunkTransfer / Ack
         | 0x34..=0x35   // Anchor / Stabilizer broadcasts
+        | 0x36..=0x37   // WorldSyncChunk / WorldSyncEnd — el goteo de ADR-060 viaja fiable
         // ─── ADR-039: familia petición/veredicto de gameplay ───
         // Enumerados uno a uno y no por rangos: cada código lindante es un roster que debe
         // quedar FUERA (0x1A, 0x40, 0x44, 0x46), así que la inclusión tiene que ser un acto
@@ -97,6 +98,19 @@ mod tests {
                 !is_reliable(code),
                 "0x{code:02x} es un roster completo a 10 Hz, idempotente y auto-curado: \
                  hacerlo fiable llena la ventana sin ganar nada (ADR-039)"
+            );
+        }
+    }
+
+    /// ADR-060: el goteo de snapshot viaja fiable — 0x36/0x37 se emiten con
+    /// `send_reliable_queued`, que encola en la MISMA ventana que `send_reliable`, asi que el
+    /// receptor tiene que ACKearlos o el emisor los reenvia x6 y purga la cola (ADR-039).
+    #[test]
+    fn the_world_drip_is_reliable() {
+        for code in [0x36u16, 0x37] {
+            assert!(
+                is_reliable(code),
+                "0x{code:02x} se emite por la cola fiable (ADR-060) y el receptor debe ACKearlo"
             );
         }
     }

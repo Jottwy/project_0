@@ -548,8 +548,12 @@ async fn reliable_packet_ack() {
     );
 }
 
+/// ADR-062: agotar MAX_RETRIES desconecta al peer. Antes se le retenía con la cola vaciada,
+/// que es justamente el estado silencioso (conectado pero mudo por la vía reliable, sin evento
+/// y sin recuperación) que el ADR elimina. El evento es lo que hace observable la caída: sin él
+/// `game_loop` y Unity siguen renderizando a un jugador que ya no recibe mundo.
 #[tokio::test]
-async fn reliable_retransmit_failure_does_not_remove_peer() {
+async fn reliable_retransmit_exhaustion_evicts_peer() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let peer_id = 2;
     let addr: SocketAddr = "127.0.0.1:9999".parse().unwrap();
@@ -569,13 +573,63 @@ async fn reliable_retransmit_failure_does_not_remove_peer() {
         }
     }
 
-    host.process_retransmits().await;
+    let events = host.process_retransmits().await;
 
     assert!(
-        host.peers.contains_key(&peer_id),
-        "reliable retransmit exhaustion must not remove a connected peer"
+        !host.peers.contains_key(&peer_id),
+        "reliable retransmit exhaustion must evict the peer, not leave it connected and mute"
     );
-    assert_eq!(host.peers[&peer_id].reliable_queue.len(), 0);
+    assert_eq!(
+        events.len(),
+        1,
+        "the eviction must be observable as exactly one event, got: {events:?}"
+    );
+    assert!(
+        matches!(
+            &events[0],
+            NetworkEvent::PeerDisconnected { id, reason }
+                if *id == peer_id && reason == "reliable retransmit exhausted"
+        ),
+        "the event must carry its own reason, distinct from a heartbeat timeout, got: {:?}",
+        events[0]
+    );
+}
+
+/// ADR-062 §guarda de fantasmas: el robapieles (ADR-016) NO se evicta por esta vía — su ciclo de
+/// vida lo gestiona el sistema phantom, y sacarlo del mapa desde la capa de red lo haría
+/// desaparecer del mundo en silencio. Conserva el comportamiento heredado (purgar y seguir), que
+/// el ADR declara explícitamente como no-verificado-seguro en vez de darlo por cubierto.
+#[tokio::test]
+async fn reliable_retransmit_exhaustion_does_not_evict_a_phantom() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0]);
+
+    {
+        let peer = host.peers.get_mut(&phantom_id).unwrap();
+        peer.queue_reliable(0, vec![0u8; 8]);
+        peer.defer_reliable(100, vec![1u8; 8]);
+        for packet in peer.reliable_queue.iter_mut() {
+            packet.retries = reliability::MAX_RETRIES;
+            packet.next_retry_at = Instant::now() - Duration::from_millis(1);
+        }
+    }
+
+    let events = host.process_retransmits().await;
+
+    assert!(
+        host.peers.contains_key(&phantom_id),
+        "a phantom must survive reliable exhaustion — the phantom system owns its lifecycle"
+    );
+    assert!(
+        events.is_empty(),
+        "a phantom raises no PeerDisconnected: it never handshook, so nothing consumes it"
+    );
+    assert_eq!(
+        host.peers[&phantom_id].reliable_queue.len(),
+        0,
+        "both queues are still purged for a phantom"
+    );
+    assert_eq!(host.peers[&phantom_id].deferred_reliable.len(), 0);
 }
 
 #[tokio::test]
@@ -928,8 +982,10 @@ async fn the_pump_drains_deferred_packets_as_acks_open_the_window() {
     );
 }
 
-/// ADR-060: al agotar MAX_RETRIES la purga se lleva TAMBIEN los aparcados — bombear hacia un
-/// enlace muerto solo repetiria la agonia ventana a ventana.
+/// ADR-060 + ADR-062: al agotar MAX_RETRIES los aparcados mueren junto con la cola en vuelo —
+/// bombearlos hacia un enlace muerto solo repetiria la agonia ventana a ventana. Desde ADR-062
+/// eso ocurre porque el peer entero sale del mapa y se lleva ambas colas consigo; ninguna
+/// sobrevive al evict.
 #[tokio::test]
 async fn exhausted_retries_purge_the_deferred_queue_with_the_inflight_one() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
@@ -946,9 +1002,43 @@ async fn exhausted_retries_purge_the_deferred_queue_with_the_inflight_one() {
 
     net.process_retransmits().await;
 
-    assert_eq!(net.peers[&2].reliable_queue.len(), 0, "en vuelo purgada");
+    assert!(
+        !net.peers.contains_key(&2),
+        "el peer sale del mapa y ambas colas mueren con el"
+    );
+}
+
+/// La rama que SI retiene: un fantasma no se evicta desde aqui (ADR-016 — su ciclo de vida lo
+/// lleva el sistema phantom), asi que ahi la purga de los aparcados tiene que ser EXPLICITA.
+/// Sin este test, `purge_deferred` puede desaparecer de esa rama y nada falla: el otro test
+/// pasa por el evict del peer real, que no la ejecuta.
+#[tokio::test]
+async fn exhausted_retries_purge_a_phantoms_deferred_queue_without_evicting_it() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let phantom_id = net.spawn_phantom("Victima", [2.0, 1.8, 0.0]);
+    {
+        let peer = net.peers.get_mut(&phantom_id).unwrap();
+        peer.queue_reliable(0, vec![0u8; 8]);
+        peer.defer_reliable(100, vec![1u8; 8]);
+        for pkt in peer.reliable_queue.iter_mut() {
+            pkt.retries = reliability::MAX_RETRIES;
+            pkt.next_retry_at = std::time::Instant::now() - Duration::from_millis(1);
+        }
+    }
+
+    net.process_retransmits().await;
+
+    assert!(
+        net.peers.contains_key(&phantom_id),
+        "un fantasma no se evicta desde aqui (ADR-016)"
+    );
     assert_eq!(
-        net.peers[&2].deferred_reliable.len(),
+        net.peers[&phantom_id].reliable_queue.len(),
+        0,
+        "en vuelo purgada"
+    );
+    assert_eq!(
+        net.peers[&phantom_id].deferred_reliable.len(),
         0,
         "aparcados purgados con ella"
     );

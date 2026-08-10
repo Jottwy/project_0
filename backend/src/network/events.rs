@@ -210,10 +210,26 @@ pub enum NetworkEvent {
         seq: u16,
         data: Vec<u8>,
     },
+    /// DEPRECADO por ADR-060 (ver `PacketPayload::WorldSync`): solo lo produce el decode del
+    /// monolito 0x04, conservado una versión. Su handler marca la completitud del drip
+    /// (`note_monolith`) para que un mundo llegado entero también abra el gate de spawn.
     WorldSyncReceived {
         world_seed: u64,
         world_revision: u64,
         chunks: Vec<ChunkSyncData>,
+    },
+    /// ADR-060: un chunk del goteo de snapshot. Se aplica por upsert al llegar; la completitud
+    /// se cuenta en `WorldSyncProgress` por (pos, layer) — nunca por conteo de paquetes, porque
+    /// la capa reliable es at-least-once y los duplicados por retransmisión son legales.
+    WorldSyncChunkReceived {
+        world_revision: u64,
+        data: ChunkSyncData,
+    },
+    /// ADR-060: cierre del goteo. El snapshot está completo cuando este evento llegó Y los
+    /// chunks distintos aplicados de `world_revision` alcanzan `chunk_count`.
+    WorldSyncEndReceived {
+        world_revision: u64,
+        chunk_count: u32,
     },
     ChunkTransferReceived {
         from: PeerId,

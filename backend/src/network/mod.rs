@@ -143,6 +143,10 @@ pub struct NetworkManager {
     /// our Unity, so a reliable retransmit of the verdict never double-fires the IPC event
     /// (a duplicated corpse_item_taken would double-shift CorpseLootSync's index mirror).
     pub processed_corpse_results: std::collections::HashSet<u64>,
+    /// ADR-060 (joiner-only en la práctica): completitud del goteo de snapshot de mundo.
+    /// El gate de spawn del joiner consulta `is_complete()`; el host nunca la toca (resuelve
+    /// su spawn en el bootstrap, antes del loop).
+    pub world_sync_progress: sync::WorldSyncProgress,
     /// ADR-028 Fase E (joiner-only): monotonic source for our corpse request ids.
     pub next_corpse_request_id: u64,
     /// ADR-029 V0 (host-only): (attacker_id, request_id) pairs of PvP hit candidates already
@@ -287,6 +291,7 @@ impl NetworkManager {
             processed_stp_pickup_grants: std::collections::HashSet::with_capacity(128),
             processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: std::collections::HashSet::with_capacity(64),
+            world_sync_progress: sync::WorldSyncProgress::default(),
             next_corpse_request_id: 1,
             processed_pvp_hits: BoundedDedupeSet::with_capacity(512),
             processed_pvp_grants: BoundedDedupeSet::with_capacity(512),
@@ -485,8 +490,15 @@ impl NetworkManager {
         }
     }
 
-    /// Retransmit reliable packets that haven't been ACKed.
-    pub async fn process_retransmits(&mut self) {
+    /// Retransmit reliable packets that haven't been ACKed. Returns disconnect events for the
+    /// peers whose reliable path died.
+    ///
+    /// ADR-062: agotar `MAX_RETRIES` DESCONECTA al peer. Antes se vaciaba su cola y se le
+    /// retenía, con lo que quedaba conectado pero mudo para siempre por la vía reliable
+    /// (WorldSync, chunks, acciones), sin evento y sin ruta de recuperación — `check_timeouts`
+    /// no lo reapaba porque cualquier paquete unreliable le refresca `last_heartbeat`.
+    pub async fn process_retransmits(&mut self) -> Vec<NetworkEvent> {
+        let mut events = Vec::new();
         self.pump_deferred_reliable().await;
         let peer_ids: Vec<PeerId> = self.peers.keys().copied().collect();
         let peer_count_before = self.peers.len();
@@ -516,31 +528,67 @@ impl NetworkManager {
 
         for pid in failed_reliable_peers {
             let self_id = self.local_id;
-            let ids_after = self.peer_ids();
-            if let Some(peer) = self.peers.get_mut(&pid) {
-                let endpoint = peer.addr;
-                let queued = peer.reliable_queue.len();
-                peer.reliable_queue.clear();
-                // ADR-060: los aparcados mueren con la cola en vuelo — bombearlos hacia un
-                // enlace que acaba de agotar MAX_RETRIES solo repetiría la agonía ventana a
-                // ventana. Se cuentan en el mismo log.
-                let deferred_dropped = peer.purge_deferred();
+
+            // ADR-016: un fantasma NO se evicta desde aquí — su ciclo de vida lo gestiona el
+            // sistema phantom (`refresh_phantom_heartbeats` lo mantiene fuera del alcance de
+            // `check_timeouts`). Conserva el comportamiento heredado: purgar y seguir. Ver
+            // ADR-062 §guarda de fantasmas: eso lo deja en el mismo estado silencioso que este
+            // ADR elimina para peers reales, acotado a fantasmas y declarado como tal.
+            if self.is_phantom(pid) {
+                let ids_after = self.peer_ids();
+                if let Some(peer) = self.peers.get_mut(&pid) {
+                    let endpoint = peer.addr;
+                    let queued = peer.reliable_queue.len();
+                    peer.reliable_queue.clear();
+                    let deferred_dropped = peer.purge_deferred();
+                    warn!(
+                        "Phantom {} ({}) reliable queue dropped after too many retransmit failures; phantom retained (deferred dropped: {deferred_dropped})",
+                        peer.name, endpoint
+                    );
+                    info!(
+                        "MPTRACE step=L event=peer_reliable_queue_dropped reason=reliable_retransmit_exhausted_phantom_retained self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} queued_reliable_before={} remote_players_ids={:?}",
+                        self_id,
+                        pid,
+                        endpoint,
+                        peer_count_before,
+                        peer_count_before,
+                        queued,
+                        ids_after
+                    );
+                }
+                continue;
+            }
+
+            // Peer real: mismo camino de desconexión que `check_timeouts` — remove + purge del
+            // estado indexado por PeerId + evento. Su cola diferida muere con él al salir del
+            // mapa; no hace falta purgarla aparte.
+            if let Some(peer) = self.peers.remove(&pid) {
+                self.purge_peer_state(pid);
                 warn!(
-                    "Peer {} ({}) reliable queue dropped after too many retransmit failures; peer retained (deferred dropped: {deferred_dropped})",
-                    peer.name, endpoint
+                    "Peer {} ({}) disconnected: reliable retransmit exhausted ({} reliable + {} deferred packets lost)",
+                    peer.name,
+                    peer.addr,
+                    peer.reliable_queue.len(),
+                    peer.deferred_reliable.len()
                 );
                 info!(
-                    "MPTRACE step=L event=peer_reliable_queue_dropped reason=reliable_retransmit_exhausted_peer_retained self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} queued_reliable_before={} remote_players_ids={:?}",
+                    "MPTRACE step=L event=peer_removed reason=reliable_retransmit_exhausted self_id={} peer_id={} endpoint={} peer_count_before={} peer_count_after={} queued_reliable_before={} remote_players_ids={:?}",
                     self_id,
                     pid,
-                    endpoint,
+                    peer.addr,
                     peer_count_before,
-                    peer_count_before,
-                    queued,
-                    ids_after
+                    self.peers.len(),
+                    peer.reliable_queue.len(),
+                    self.peer_ids()
                 );
+                events.push(NetworkEvent::PeerDisconnected {
+                    id: pid,
+                    reason: "reliable retransmit exhausted".into(),
+                });
             }
         }
+
+        events
     }
 }
 

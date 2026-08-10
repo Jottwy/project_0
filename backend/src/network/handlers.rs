@@ -397,11 +397,29 @@ impl NetworkManager {
                 })
             }
 
-            // ADR-060 commit (a): el wire existe antes que el receptor. Estos dos arms se
-            // sustituyen por los eventos del goteo en el commit del receptor; hasta entonces
-            // un paquete de estos se ignora (nadie los emite todavía).
-            PacketPayload::WorldSyncChunk { .. } => None,
-            PacketPayload::WorldSyncEnd { .. } => None,
+            // ADR-060: goteo de snapshot. El chunk es 1:1 payload→evento; el End loguea el
+            // punto de medida del join (el gemelo de step=Y del monolito de arriba).
+            PacketPayload::WorldSyncChunk {
+                world_revision,
+                data,
+            } => Some(NetworkEvent::WorldSyncChunkReceived {
+                world_revision,
+                data,
+            }),
+
+            PacketPayload::WorldSyncEnd {
+                world_revision,
+                chunk_count,
+            } => {
+                info!(
+                    "MPTRACE step=Y event=receive_world_drip_end self_id={} from_peer={} revision={} chunk_count={}",
+                    self.local_id, sender_id, world_revision, chunk_count
+                );
+                Some(NetworkEvent::WorldSyncEndReceived {
+                    world_revision,
+                    chunk_count,
+                })
+            }
 
             PacketPayload::ChunkState { data } => {
                 // Treat as a chunk transfer for now.

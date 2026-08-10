@@ -968,7 +968,13 @@ pub async fn run(
         // never at the unsafe chunk-corner origin. ADR-016: real_peer_count so an
         // injected phantom never satisfies this gate (no-op on a joiner, where the
         // phantom is unmarked, but correct on any backend that injects one).
-        if !spawn_resolved && net.real_peer_count() > 0 && !world.chunks.is_empty() {
+        //
+        // ADR-060: el mundo ya NO llega en un paquete, sino a goteo — `!world.chunks.is_empty()`
+        // se dispararía con el PRIMER chunk y resolvería el spawn sobre un mundo a medias
+        // (`resolve_safe_spawn` buscaría celda segura entre los chunks que hubieran llegado).
+        // La condición es la completitud del goteo: `WorldSyncEnd` recibido Y todos sus chunks
+        // aplicados. El monolito deprecado la marca completa de una vez (`note_monolith`).
+        if !spawn_resolved && net.real_peer_count() > 0 && net.world_sync_progress.is_complete() {
             let res = resolve_safe_spawn(&mut world, preferred_spawn());
             player.position = res.position;
             spawn_resolved = true;
@@ -1421,9 +1427,24 @@ pub async fn run(
             }
         }
 
-        // Process reliable retransmits.
+        // Process reliable retransmits. ADR-062: agotar los reintentos desconecta al peer, así
+        // que esto emite eventos por el mismo camino que el escaneo de timeouts.
         if tick.is_multiple_of(ENTITY_TICK_EVERY) {
-            net.process_retransmits().await;
+            let retransmit_events = net.process_retransmits().await;
+            for event in retransmit_events {
+                handle_network_event(
+                    event,
+                    &mut player,
+                    &mut world,
+                    &mut net,
+                    &to_clients,
+                    &to_clients_voice,
+                    &mut processed_interactions,
+                    tick,
+                    player_save_path.as_deref(),
+                )
+                .await;
+            }
         }
 
         // ─── PHASE 4: SEND ───
@@ -1654,6 +1675,38 @@ async fn handle_network_event(
                 chunks.len()
             );
             world.apply_world_sync(world_seed, world_revision, &chunks, net.local_id);
+            // ADR-060: el monolito deprecado aplica el mundo entero — completo por
+            // construcción, para que el gate de spawn abra igual que con un goteo.
+            net.world_sync_progress.note_monolith(world_revision);
+        }
+
+        // ADR-060: un chunk del goteo. Upsert inmediato (mismo camino que ChunkTransfer);
+        // la completitud se cuenta por clave (pos, layer) — los duplicados por retransmisión
+        // colapsan en el set y un rezagado de una revision vieja se ignora.
+        NetworkEvent::WorldSyncChunkReceived {
+            world_revision,
+            data,
+        } => {
+            let (pos, layer) = (data.pos, data.layer);
+            world.apply_chunk_transfer(&data, net.local_id);
+            net.world_sync_progress
+                .note_chunk(world_revision, pos, layer);
+        }
+
+        NetworkEvent::WorldSyncEndReceived {
+            world_revision,
+            chunk_count,
+        } => {
+            net.world_sync_progress
+                .note_end(world_revision, chunk_count);
+            info!(
+                "MPTRACE step=Z event=apply_world_drip_end self_id={} revision={} chunk_count={} complete={} chunks_in_world={}",
+                net.local_id,
+                world_revision,
+                chunk_count,
+                net.world_sync_progress.is_complete(),
+                world.chunks.len()
+            );
         }
 
         NetworkEvent::StpPickupRequest {
