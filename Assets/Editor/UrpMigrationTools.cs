@@ -1,0 +1,59 @@
+using UnityEditor;
+using UnityEditor.Rendering;
+using UnityEditor.Rendering.Universal;
+using UnityEngine;
+
+namespace BackroomsSurvival.EditorTools
+{
+    /// <summary>
+    /// Herramientas de la migración BIRP→URP (commit 4/8 del plan 2026-08-10).
+    ///
+    /// Convierte SOLO los materiales propios (fuera de Assets/PolymindGames) que
+    /// siguen en el shader Built-in "Standard" al URP Lit, usando el
+    /// StandardUpgrader oficial del paquete URP — el mismo remapeo de propiedades
+    /// (_MainTex→_BaseMap, _Color→_BaseColor, _Glossiness→_Smoothness, keywords)
+    /// que el Render Pipeline Converter, pero acotado por ruta para que la
+    /// conversión del vendor viva en su propio commit (5/8).
+    ///
+    /// La herramienta de switch del propio vendor NO se usa: pasa fromPipeline dos
+    /// veces y su conversión compila vacía (ver auditoría en el ADR de migración).
+    ///
+    /// Headless:
+    ///   Unity.exe -batchmode -quit -nographics -projectPath &lt;proyecto&gt; ^
+    ///     -executeMethod BackroomsSurvival.EditorTools.UrpMigrationTools.UpgradeOwnStandardMaterials ^
+    ///     -logFile &lt;log&gt;
+    /// </summary>
+    public static class UrpMigrationTools
+    {
+        // Raíces con materiales propios; PolymindGames y TextMesh Pro quedan fuera.
+        private static readonly string[] OwnMaterialRoots =
+        {
+            "Assets/Resources",
+            "Assets/MeshyImports",
+            "Assets/TripoModels",
+            "Assets/_Migration",
+        };
+
+        [MenuItem("Backrooms/URP Migration/Upgrade Own Standard Materials")]
+        public static void UpgradeOwnStandardMaterials()
+        {
+            var upgrader = new StandardUpgrader("Standard");
+            int upgraded = 0;
+
+            foreach (var guid in AssetDatabase.FindAssets("t:Material", OwnMaterialRoots))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+                if (mat == null || mat.shader == null || mat.shader.name != "Standard")
+                    continue;
+
+                MaterialUpgrader.Upgrade(mat, upgrader, MaterialUpgrader.UpgradeFlags.None);
+                upgraded++;
+                Debug.Log($"[UrpMigration] upgraded: {path}");
+            }
+
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[UrpMigration] Standard -> URP Lit: {upgraded} materiales convertidos.");
+        }
+    }
+}

@@ -15,14 +15,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// </summary>
     public sealed class LayerVisualMaterials
     {
-        // Built-in Standard shader property names (the project runs the Built-in
-        // pipeline — the STP vendor is Built-in, so URP is not active). These IDs are
-        // reused by GridChunkBuilder (per-tile _Color tint) and BackroomsLighting
-        // (lamp _EmissionColor), so they all stay in lockstep.
-        public static readonly int BaseMapId = Shader.PropertyToID("_MainTex");
-        public static readonly int BaseColorId = Shader.PropertyToID("_Color");
+        // URP Lit property names (the project runs URP Forward+ since the BIRP→URP
+        // migration). These IDs are reused by GridChunkBuilder (per-tile _BaseColor
+        // tint) and BackroomsLighting (lamp _EmissionColor), so they all stay in
+        // lockstep.
+        public static readonly int BaseMapId = Shader.PropertyToID("_BaseMap");
+        public static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
         public static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
-        private static readonly int SmoothnessId = Shader.PropertyToID("_Glossiness");
+        private static readonly int SmoothnessId = Shader.PropertyToID("_Smoothness");
 
         public Material floor;
         public Material wall;
@@ -32,16 +32,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public Material prop;   // Fase 5C — shared matte placeholder-prop material
 
         /// <summary>
-        /// Build the shared materials for <paramref name="cfg"/>. Built-in Standard for
-        /// floor/ceiling/lamp; the Built-in Backrooms/GridWallOffset shader for walls
+        /// Build the shared materials for <paramref name="cfg"/>. URP Lit for
+        /// floor/ceiling/lamp; the URP Backrooms/GridWallOffset shader for walls
         /// (preserves the anti-z-fight polygon offset against floor/ceiling seams).
         /// Falls back to the base Grid* textures when a layer texture is unset.
         /// </summary>
         public static LayerVisualMaterials Build(LayerVisualConfig cfg)
         {
-            var standard = Shader.Find("Standard");
+            var standard = Shader.Find("Universal Render Pipeline/Lit");
             if (standard == null)
-                Debug.LogError("[LayerVisualMaterials] 'Standard' shader not found — surfaces would render magenta.");
+                Debug.LogError("[LayerVisualMaterials] 'Universal Render Pipeline/Lit' shader not found — surfaces would render magenta.");
             var wallShader = Shader.Find("Backrooms/GridWallOffset") ?? standard;
 
             return new LayerVisualMaterials
