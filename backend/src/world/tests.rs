@@ -336,6 +336,43 @@ fn dropped_item_ids_are_partitioned_by_peer() {
 }
 
 #[test]
+fn interact_with_item_finds_a_freshly_dropped_item_in_the_requesters_own_chunk() {
+    let mut world = World::new(42);
+    let requester_pos = Vec3::new(25.0, 1.8, 25.0);
+    world.update_ownership(requester_pos, 1);
+
+    let id = world
+        .spawn_dropped_item(requester_pos, crate::player::inventory::Item::Metal, 1, 1)
+        .expect("chunk should be loaded at requester_pos after update_ownership");
+
+    let result = world.interact_with_item(id, requester_pos, 5.0);
+
+    assert!(
+        result.is_ok(),
+        "ADR-063: el fast-path por chunk del requester debe encontrarlo"
+    );
+}
+
+#[test]
+fn interact_with_item_falls_back_to_full_scan_across_a_chunk_boundary() {
+    let mut world = World::new(42);
+    let requester_pos = Vec3::new(49.0, 1.8, 25.0); // dentro del chunk (0, 0)
+    world.update_ownership(requester_pos, 1);
+
+    let item_pos = Vec3::new(51.0, 1.8, 25.0); // un chunk mas alla, dentro del chunk (1, 0)
+    let id = world
+        .spawn_dropped_item(item_pos, crate::player::inventory::Item::Metal, 1, 1)
+        .expect("el chunk vecino deberia estar cargado por el radio de ownership");
+
+    let result = world.interact_with_item(id, requester_pos, 5.0);
+
+    assert!(
+        result.is_ok(),
+        "ADR-063: el recorrido completo de respaldo debe seguir encontrando items en chunks vecinos"
+    );
+}
+
+#[test]
 fn valid_item_interaction_removes_item_and_increments_revision_once() {
     let mut world = World::new(42);
     world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);

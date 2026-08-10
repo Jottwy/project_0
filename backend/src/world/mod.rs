@@ -1217,23 +1217,57 @@ impl World {
         }
     }
 
+    /// ADR-063: `target_id` alone has no chunk namespacing, so this is where a collision (or a
+    /// stale/wrong id) would resolve ambiguously if one ever occurred. Returns `None` when
+    /// `target_id` is not in THIS chunk — caller keeps looking. Returns `Some(Err(..))` when it
+    /// IS here but out of range, which is terminal: ids are unique, so no other chunk can also
+    /// have it.
+    fn take_item_from_chunk(
+        chunk: &mut Chunk,
+        target_id: u32,
+        requester_pos: Vec3,
+        max_distance: f32,
+    ) -> Option<Result<(String, u16), String>> {
+        let idx = chunk.items.iter().position(|item| item.id == target_id)?;
+        let item_pos = chunk.items[idx].position;
+        let distance = requester_pos.distance(item_pos);
+        if distance > max_distance {
+            return Some(Err(format!("too_far distance={distance:.2}")));
+        }
+        let item = chunk.items.remove(idx);
+        Some(Ok((item.item.type_name().into(), item.quantity)))
+    }
+
     pub fn interact_with_item(
         &mut self,
         target_id: u32,
         requester_pos: Vec3,
         max_distance: f32,
     ) -> Result<(String, u16), String> {
-        for chunk in self.chunks.values_mut() {
-            if let Some(idx) = chunk.items.iter().position(|item| item.id == target_id) {
-                let item_pos = chunk.items[idx].position;
-                let distance = requester_pos.distance(item_pos);
-                if distance > max_distance {
-                    return Err(format!("too_far distance={distance:.2}"));
+        // ADR-063: try the requester's own chunk first. `max_distance` (5.0) is far smaller
+        // than `CHUNK_SIZE` (50.0), so the target is almost always right there — this turns the
+        // common case from an O(chunks) scan into an O(1) lookup. Falls back to the full scan
+        // only near a chunk boundary, where the item can legitimately sit one chunk over.
+        let requester_chunk = layered_chunk_pos(world_to_chunk(requester_pos), 0);
+        if let Some(chunk) = self.chunks.get_mut(&requester_chunk) {
+            if let Some(outcome) =
+                Self::take_item_from_chunk(chunk, target_id, requester_pos, max_distance)
+            {
+                if outcome.is_ok() {
+                    self.revision = self.revision.wrapping_add(1);
                 }
+                return outcome;
+            }
+        }
 
-                let item = chunk.items.remove(idx);
-                self.revision = self.revision.wrapping_add(1);
-                return Ok((item.item.type_name().into(), item.quantity));
+        for chunk in self.chunks.values_mut() {
+            if let Some(outcome) =
+                Self::take_item_from_chunk(chunk, target_id, requester_pos, max_distance)
+            {
+                if outcome.is_ok() {
+                    self.revision = self.revision.wrapping_add(1);
+                }
+                return outcome;
             }
         }
 
