@@ -48,16 +48,39 @@ use crate::world::chunk::LAYOUT_GRID_SIZE;
 /// derivable from the world seed — there is no `(pos, index)` to hash. The trade-off is
 /// accepted deliberately: such an ID is only meaningful inside the session that minted it
 /// and is NOT reproducible by another peer regenerating the same world.
-static NEXT_ENTITY_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+///
+/// ADR-063: the raw counter is process-global on purpose (today only the host ever mints —
+/// `tick_respawns` is gated `if net.is_host`, `game_loop.rs`). `partition_runtime_id` stamps
+/// the minting peer into the top 16 bits so a FUTURE decentralised minter (a joiner spawning
+/// something at runtime) can never collide with the host's ids, without needing a counter
+/// per peer.
+static NEXT_ENTITY_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-fn next_entity_id() -> u32 {
-    NEXT_ENTITY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+/// ADR-063: partitions a runtime-minted id by `peer_id` so two backends minting independently
+/// never produce the same id. **16/16 split, not the 8/24 the ADR's first draft proposed** —
+/// `PeerId` is `u16` and `allocate_peer_id` (`network/handlers.rs`) never resets across a
+/// host's lifetime, so an 8-bit top half truncates: `peer_id=1` and `peer_id=257` share the
+/// same low byte and would collide after `<<24`. With `<<16` no `PeerId` value truncates.
+///
+/// Counter starts at 0, not 1: `peer_id` is never 0 in practice (`allocate_peer_id` never
+/// assigns it; the host is 1 by convention), so `(peer_id << 16) | 0` is already non-zero —
+/// no `.max(1)` offset needed, unlike the stable IDs below. The low 16 bits wrap naturally via
+/// `as u16` regardless of how far the underlying `AtomicU32` has counted — 65536 ids per peer
+/// per process, generous while minting stays host-only; if that ever feels tight, reclaim ids
+/// on pickup/despawn or widen the type in a future ADR, don't re-shrink this split.
+pub(crate) fn partition_runtime_id(peer_id: u16, counter: u32) -> u32 {
+    ((peer_id as u32) << 16) | (counter as u16 as u32)
 }
 
-/// Public face of the runtime counter (see `NEXT_ENTITY_ID`). Starts at 1 so 0 stays free
-/// as the "absent" sentinel, same convention the stable IDs below keep with `.max(1)`.
-pub fn next_entity_id_pub() -> u32 {
-    next_entity_id()
+fn next_entity_id(peer_id: u16) -> u32 {
+    let counter = NEXT_ENTITY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    partition_runtime_id(peer_id, counter)
+}
+
+/// Public face of the runtime counter (see `NEXT_ENTITY_ID`). `peer_id` is who is minting —
+/// see `partition_runtime_id` for why it matters.
+pub fn next_entity_id_pub(peer_id: u16) -> u32 {
+    next_entity_id(peer_id)
 }
 
 /// Root seed of a chunk: a pure hash of `world_seed` and the chunk's `(x, z)`.
@@ -272,5 +295,43 @@ pub(crate) fn fisher_yates(slice: &mut [usize], rng: &mut StdRng) {
     for i in (1..slice.len()).rev() {
         let j = rng.gen_range(0..=i);
         slice.swap(i, j);
+    }
+}
+
+#[cfg(test)]
+mod partition_tests {
+    use super::partition_runtime_id;
+
+    #[test]
+    fn different_peers_never_collide_regardless_of_counter() {
+        for counter_a in [0u32, 1, 65535, 65536, 131071] {
+            for counter_b in [0u32, 1, 65535, 65536, 131071] {
+                assert_ne!(
+                    partition_runtime_id(1, counter_a),
+                    partition_runtime_id(2, counter_b),
+                    "distintos peer_id nunca deben colisionar, sea cual sea el contador"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_peer_id_does_not_truncate_like_the_rejected_24_bit_split_did() {
+        // La formula del borrador (<<24) hacia colisionar peer_id=1 con peer_id=257 (0x101):
+        // el byte alto de 257 se perdia fuera del u32. Con <<16 eso no puede pasar.
+        assert_ne!(
+            partition_runtime_id(1, 0),
+            partition_runtime_id(257, 0),
+            "16/16 no trunca ningun PeerId, a diferencia del split 8/24 rechazado"
+        );
+    }
+
+    #[test]
+    fn counter_zero_with_a_real_peer_id_is_never_the_sentinel() {
+        assert_ne!(
+            partition_runtime_id(1, 0),
+            0,
+            "peer_id nunca es 0 en la practica, asi que el contador puede arrancar en 0"
+        );
     }
 }

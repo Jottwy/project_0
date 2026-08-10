@@ -1120,7 +1120,7 @@ pub async fn run(
                     }
                     let _ = to_clients.send(ServerMessage::Event(ev));
                 }
-                world.tick_respawns(entity_dt);
+                world.tick_respawns(entity_dt, net.local_id);
             }
 
             // ADR-016 slice 2: advance phantom peers (host-only). Each phantom walks and its

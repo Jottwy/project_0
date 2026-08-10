@@ -46,7 +46,7 @@ world.generate_initial_structures(owner_id)   // builds Level 0 + WorldGraph
 world.update_ownership(player_pos, player_id) // load/unload radius management
 world.tick_teleportation()    // 1 hz — random chunk displacement
 world.tick_entities(dt, ..)   // entity AI ticks
-world.tick_respawns(dt)        // respawn timers
+world.tick_respawns(dt, peer_id)  // respawn timers; peer_id partitions minted ids (ADR-063)
 
 // IPC → Unity (10 hz WorldState)
 world.visible_chunk_views()   // cached; invalidated on revision change

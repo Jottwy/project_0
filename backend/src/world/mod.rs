@@ -1008,7 +1008,12 @@ impl World {
     }
 
     /// Tick respawn timers and spawn fresh entities back into their chunks.
-    pub fn tick_respawns(&mut self, dt: f32) {
+    ///
+    /// ADR-063: `peer_id` is who is minting — passed straight to `next_entity_id_pub` so the
+    /// runtime id gets partitioned. Callers pass their own `net.local_id`; today that is always
+    /// the host (this whole call is gated `if net.is_host` in `game_loop.rs`), but the
+    /// partition makes that a defense, not an assumption baked into the id itself.
+    pub fn tick_respawns(&mut self, dt: f32, peer_id: PeerId) {
         let mut still_waiting = Vec::new();
         for (id, chunk_pos, mut timer) in self.respawn_queue.drain(..) {
             timer -= dt;
@@ -1021,7 +1026,7 @@ impl World {
                         _ => entity::EntityType::Shadow,
                     };
                     chunk.entities.push(entity::Entity::new(
-                        generator::next_entity_id_pub(),
+                        generator::next_entity_id_pub(peer_id),
                         etype,
                         spawn_pos,
                     ));

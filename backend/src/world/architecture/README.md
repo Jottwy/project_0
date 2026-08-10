@@ -41,7 +41,7 @@ Low-level chunk assembly helpers.
 pub fn chunk_seed(world_seed: u64, pos: ChunkPos) -> u64
 pub fn chunk_seed_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u64
 pub fn build_chunk_layout(template_id: u8, rotation: u16) -> ChunkLayoutV1
-pub fn next_entity_id_pub() -> u32    // global AtomicU32, monotonic per session
+pub fn next_entity_id_pub(peer_id: u16) -> u32   // ADR-063: id partitioned by minting peer
 ```
 
 `chunk_seed` is a deterministic hash — same world_seed + pos always produces the same chunk.
