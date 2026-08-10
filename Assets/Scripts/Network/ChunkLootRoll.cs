@@ -39,9 +39,20 @@ namespace BackroomsSurvival.Net
         // ZoneLootProfile / ZoneLootTable.asset pero su masa de probabilidad ahora cae en
         // MaterialPool (ver RollItemName) — campo VIVO pero redirigido, no muerto: sigue moviendo
         // el reparto material/consumible por zona. No borrar creyendo que no lo lee nadie.
+        // ADR-064: los 4 ÚLTIMOS son los materiales de crafteo (autorados por "Backrooms ▸ Create
+        // Craft Materials", fuera de territorio vendor). Entran aquí y no en una pool propia por la
+        // restricción dura de esta clase: un perfil de zona puede variar pools y rareza, nunca el
+        // COUNT de entradas — una pool nueva habría exigido un peso nuevo en ZoneLootProfile y en el
+        // ZoneLootTable.asset ya serializado. Mientras los assets no existan, `GetWithName` devuelve
+        // null y ChunkLootManager omite el slot con warning: las dos mitades aterrizan por separado
+        // sin romperse.
+        // TODO(balance): a 13 entradas equiprobables, un material de crafteo sale ~4/13 de los slots
+        // que caen en esta pool. Un T3 cuesta 130 unidades — si el ritmo de acumulación se lee
+        // absurdo en playtest, la palanca es una pool propia con peso, no repetir nombres aquí.
         private static readonly string[] MaterialPool =
         {
-            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch"
+            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch",
+            "Metal", "Circuit", "Battery", "Cable"
         };
         // Recorte de catálogo vendor: fuera el rifle y el arco (armas de fuego/caza ajenas al tono)
         // y el kit de caza (Hunting Axe/Knife, Stone/Wooden Spear). Quedan los dos que se leen como

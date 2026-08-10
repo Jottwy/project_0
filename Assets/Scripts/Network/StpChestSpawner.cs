@@ -57,9 +57,12 @@ namespace BackroomsSurvival.Net
         private static readonly string[] MedicalPool = { "Antibiotics", "Medicinal Corn" };
         // RECORTE DE CATÁLOGO VENDOR (2026-08-10): AmmoPool eliminada — sin rifle ni arco, la
         // munición era basura de inventario. Su stack del cofre pasa a material (ver RollChestLoot).
+        // ADR-064: mismos 4 materiales de crafteo al final que en ChunkLootRoll.MaterialPool — si
+        // divergen, el cofre deja de servir lo que el mundo sí da (o al revés).
         private static readonly string[] MaterialPool =
         {
-            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch"
+            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch",
+            "Metal", "Circuit", "Battery", "Cable"
         };
         // Mismo recorte que ChunkLootRoll.WeaponPool: fuera armas de fuego/caza y kit de cazador.
         private static readonly string[] WeaponPool =
