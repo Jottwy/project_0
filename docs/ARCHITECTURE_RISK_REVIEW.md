@@ -252,7 +252,7 @@ Assets/Scripts/
 | RF-8 | **Fragment WorldSync into per-chunk reliable packets** | Medium | R3 | Prevents MTU overflow. Requires new assembly logic on receiver. Separate branch. |
 | RF-9 | **Add `HashMap<u32, ChunkPos>` index for item ID lookups** | Low | R2 | O(1) item lookup in `interact_with_item` instead of O(chunks × items). |
 | RF-10 | **Centralize MPTRACE emission into a helper** | Low | R2 | Single `fn mptrace(step, event, fields...)` reduces inline format strings. |
-| RF-11 | **Add IPC version handshake** | Medium | R3 | Backend sends schema version on IPC connect. Unity rejects mismatch with clear error. |
+| RF-11 | ~~**Add IPC version handshake**~~ **HECHO (ADR-061, v26)** | Medium | R3 | `ServerMessage::Hello { schema_version }` como primer frame de cada conexión IPC; Unity compara contra `WireSchema.Expected` por igualdad exacta y un mismatch cae por la ruta `session_ended` de ADR-056 con `reason=wire_schema_mismatch`. **No cubre el P2P**: el `version` del `Handshake` sigue ignorado (corrección pendiente de ADR-060). |
 | RF-12 | **Remove `PeerInfo.addr` from broadcast** | Low | R2 | Replace with just peer_id in PeerList. Addresses are transport-internal. |
 | RF-13 | **Add delta encoding to WorldState IPC** | High | R4 | Only send changed entities/items. Major protocol change, postpone. |
 | RF-14 | **Replace hand-rolled MsgPack with library** | High | R4 | Large change, high regression risk, currently works. |

@@ -2,6 +2,26 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-10 (sesión paralela) — **ADR-061: la versión de esquema IPC deja de ser decorativa. Auditoría → ADR → implementado en 5 commits. Backend 634 tests verde; E2E confirmado sobre el binario release.**
+
+0. **QUÉ CERRÓ:** `1da971a` (rama `default:` en `Dispatch`) → `99321ca` (ADR-061) → `51db6d2` (Unity: `WireSchema`/`HelloMsg`/gate + 5 tests EditMode) → `e5d7723` (backend: `ServerHello`, emisión, bump v26, changelog §v26, 2 tests) → `7b35815` (enmienda al ADR). `DECISIONS.md` 2401 → 2481 → 2491 líneas, contadas con `@(Get-Content).Count` antes/después de cada append.
+
+1. **EL HALLAZGO:** `WIRE_SCHEMA_VERSION` existía desde ADR-009 y **nunca viajaba** — único uso, el `info!` de arranque; Unity ni siquiera tenía constante espejo. Sin gate, un mismatch no fallaba: degradaba a defaults silenciosos por el contrato `else r.Skip()`. Caso peor (`STABILITY_AUDIT_CURRENT.md` §R4, P1): un fallo de parseo de `remote_players` es byte a byte indistinguible de "no hay jugadores remotos". Y el `switch` de `Dispatch` no tenía rama `default:`, así que un `type` renombrado se evaporaba **sin log**. RF-11 y R3-2 llevaban pedido el fix desde dos documentos distintos.
+
+2. **GATE DE ENVELOPE, NO POR CAMPO.** `IPCMessagesParityTests` congela el default silencioso **por campo** como contrato correcto — es lo que permite añadir campos sin romper clientes, y no se tocó ni un test. La puerta va en la entrada de la conexión, no en cada campo.
+
+3. **ORDEN DEL HELLO — el detalle que decide si el gate funciona.** Se escribe en `handle_connection` tras `into_split()` y **antes** de `tokio::spawn(write_loop(...))`, porque `state_rx` se suscribió en `run()` y puede venir ya con un mensaje bufferizado. Unity keyea el gate en el PRIMER frame, así que "primero" tiene que ser literal. Test dedicado que publica en `state_tx` **antes** de entregar la conexión y exige hello→bufferizado en ese orden.
+
+4. **DESVÍO DE IMPLEMENTACIÓN, ENMENDADO EN EL ADR (`7b35815`).** La decisión 1 listaba `PauseReconnect()` como efecto de `IPCClient`; al implementarlo resultó erróneo en el orden — `SessionEndHandler` ya lo llama en su paso 2, **después** de matar el backend, porque el `save_and_shutdown` grácil viaja por esa misma conexión. `HandleHello` solo loguea y encola; el hueco de uno o dos frames lo cubre el flag `_schemaMismatch`, que descarta frames posteriores **sin parsearlos**.
+
+5. **VERIFICACIÓN.** Backend: `cargo test` 634 passed / 0 failed. Unity: compile-check Roslyn 0 errores en las 4 asambleas — con el test nuevo **añadido a mano al `build.rsp`**, porque el `<Compile Include>` de `EditModeTests` es un snapshot obsoleto y `errors: 0` habría sido vacuo sobre él (trampa ya documentada en la memoria del proyecto). E2E sobre el binario release, hablando TCP directo sin Unity: primer frame = `82 a4 "type" a5 "hello" ae "schema_version" 1a` (28 B, versión 26), segundo frame = `delta_update` — el hello precede al tráfico normal, no lo sustituye.
+
+6. **SIN EJECUTAR, EXPLÍCITO:** los 5 tests EditMode nuevos (`WireSchemaHelloTests.cs`) **compilan pero no se han ejecutado** — el editor Unity estaba abierto toda la sesión (`Temp/UnityLockfile` ocupado) y no se cerró por ser trabajo del usuario. Tampoco se verificó en juego el camino de mismatch (`LogError` + vuelta al menú); la receta está en el ADR: bumpear `WireSchema.Expected` en local sin commitear contra el backend nuevo. El binario release **no se desplegó** a `Builds/Backend/` (sigue el del 09/08) por la misma razón que la otra sesión: ambos trabajos coexisten en ese exe.
+
+7. **COLISIÓN CON LA SESIÓN CONCURRENTE, DESDE EL OTRO LADO.** Mi primer commit se llevó 4 archivos suyos que estaban en el índice compartido; al separarlos con `reset --soft` dejé huérfano un commit suyo, recuperado con `merge --ff-only` tras leer el reflog (nada perdido). Confirmado el aprendizaje que ellos anotaron: **stage y commit en la misma llamada, rutas explícitas, `git diff --cached --stat` antes de cada commit**. `WIRE_SCHEMA_VERSION` 25 (suyo) → 26 (mío): el código es la autoridad, quien aterriza segundo toma el siguiente.
+
+8. **NO CUBIERTO — el otro gate.** Este ADR cierra **IPC** (Unity ↔ backend local). El `version` del `Handshake` **P2P** sigue ignorado (`_version` en `handle_handshake`): sigue siendo la corrección pendiente adosada a ADR-060, y son dos superficies distintas.
+
 - Fecha: 2026-08-10 — **ADR-060: WorldSync deja de ser un datagrama monolítico. Auditoría → ADR → Ruta B implementada (commits a, b, c). Backend 613 → 632 tests, verde.**
 
 0. **QUÉ CERRÓ:** `a6a143e` (commit a: wire `WorldSyncChunk` 0x36 / `WorldSyncEnd` 0x37 + bump schema) → `1da971a` (commit b: cola diferida — **aterrizó DENTRO de un commit de la sesión concurrente**, trazado en `69ec51d`) → `c7ce2fc` (commit c: emisor a goteo + receptor + gate de spawn en End). ADR-060 anclado en `DECISIONS.md` (2336 → 2401 líneas, verificado antes/después).
