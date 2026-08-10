@@ -82,6 +82,15 @@ pub fn build_session_config(world: &World) -> SessionConfig {
     }
 }
 
+/// ADR-043 gap (auditoría 2026-08-10, playtest H10): antes de este filtro, esta era la ÚNICA
+/// función del archivo que ponía un peer en el WIRE sin excluir fantasmas — `broadcast_player_update`,
+/// `voice_destinations` y `broadcast_world_sync` ya lo hacían. Un fantasma aquí no es solo un
+/// destino de más: su `PeerInfo` (id, nombre, la dirección INERTE `127.0.0.1:1`) viaja dentro del
+/// `PeerList` hacia un peer real, que la adopta sin saber que es un fantasma (esa marca vive solo
+/// en `phantom_ids`, local a quien lo inyectó, y no cruza el wire) — ver `PacketPayload::PeerList`
+/// en `handlers.rs`, que inserta un `PeerConnection` real para cada entrada. Ese peer real acaba
+/// con un "peer" fantasma en su propio `net.peers` que SU `is_phantom` no reconoce, y sus propios
+/// broadcasts (ya filtrados por `broadcast_destinations`) lo tratarían como real.
 pub fn build_peer_list(net: &NetworkManager, local_player: &Player) -> Vec<PeerInfo> {
     let mut peers = vec![PeerInfo {
         id: net.local_id,
@@ -90,6 +99,9 @@ pub fn build_peer_list(net: &NetworkManager, local_player: &Player) -> Vec<PeerI
         position: local_player.position.to_array(),
     }];
     for peer in net.peers.values() {
+        if net.is_phantom(peer.id) {
+            continue;
+        }
         peers.push(PeerInfo {
             id: peer.id,
             name: peer.name.clone(),
@@ -98,6 +110,36 @@ pub fn build_peer_list(net: &NetworkManager, local_player: &Player) -> Vec<PeerI
         });
     }
     peers
+}
+
+#[cfg(test)]
+mod peer_list_tests {
+    use super::*;
+    use crate::network::peer::PeerConnection;
+
+    /// ADR-043 gap cerrado (auditoría 2026-08-10, playtest H10): sin el filtro, un fantasma
+    /// aparecía en el `PeerList` con su dirección inerte `127.0.0.1:1` como si fuera un peer
+    /// real, y quien lo recibiera lo adoptaba sin saber que era un fantasma.
+    #[tokio::test]
+    async fn build_peer_list_excludes_phantoms() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let real_addr: std::net::SocketAddr = "127.0.0.1:9800".parse().unwrap();
+        host.peers
+            .insert(2, PeerConnection::new(2, "Real".into(), real_addr));
+        let phantom_id = host.spawn_phantom("Skinwalker", [0.0, 1.8, 0.0]);
+
+        let player = Player::new(host.local_id, "Host");
+        let list = build_peer_list(&host, &player);
+
+        assert!(
+            list.iter().any(|p| p.id == 2),
+            "un peer real SI debe aparecer en el roster"
+        );
+        assert!(
+            !list.iter().any(|p| p.id == phantom_id),
+            "un fantasma no puede aparecer en el PeerList — su addr inerte cruzaria el wire"
+        );
+    }
 }
 
 // â”€â”€â”€ Broadcast functions â”€â”€â”€
