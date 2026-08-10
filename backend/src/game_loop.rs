@@ -4563,7 +4563,7 @@ async fn process_authoritative_interaction(
         // per-peer inventories yet (the client removes from its own UI). Deferred.
         "drop" => {
             let item = item_from_type_name(target_kind);
-            match world.spawn_dropped_item(requester_pos, item, 1) {
+            match world.spawn_dropped_item(requester_pos, item, 1, net.local_id) {
                 Some(item_id) => {
                     info!(
                         "MPTRACE step=AF event=host_validate_interaction result=accepted reason=drop requester_id={} item_type={} item_id={} pos=({:.2},{:.2},{:.2})",

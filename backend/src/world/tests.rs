@@ -306,6 +306,36 @@ fn world_sync_replaces_local_chunks_and_preserves_local_id() {
 }
 
 #[test]
+fn dropped_item_ids_are_partitioned_by_peer() {
+    let mut world = World::new(42);
+    world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+    let pos = Vec3::new(25.0, 1.8, 25.0);
+
+    let id_from_peer_1 = world
+        .spawn_dropped_item(pos, crate::player::inventory::Item::Metal, 1, 1)
+        .expect("chunk should be loaded at pos after update_ownership");
+    let id_from_peer_2 = world
+        .spawn_dropped_item(pos, crate::player::inventory::Item::Metal, 1, 2)
+        .expect("chunk should be loaded at pos after update_ownership");
+
+    assert_ne!(
+        id_from_peer_1 >> 16,
+        id_from_peer_2 >> 16,
+        "ids acunados por peers distintos deben tener distinto peer_id en los bits altos"
+    );
+    assert_eq!(
+        id_from_peer_1 >> 16,
+        1,
+        "el peer_id 1 debe quedar en los bits altos del id"
+    );
+    assert_eq!(
+        id_from_peer_2 >> 16,
+        2,
+        "el peer_id 2 debe quedar en los bits altos del id"
+    );
+}
+
+#[test]
 fn valid_item_interaction_removes_item_and_increments_revision_once() {
     let mut world = World::new(42);
     world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);

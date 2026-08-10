@@ -30,13 +30,20 @@ use crate::player::stats::StatContext;
 use crate::utils::{chunks_in_radius, world_to_chunk, ChunkPos, Vec3};
 use chunk::{layer_y, layered_chunk_pos, Chunk, ChunkLayer, ChunkState, LayeredChunkPos};
 
-/// Monotonic id source for player-dropped items. Starts high to keep dropped-item ids
-/// out of the range used by procedurally-generated items (stable hashes of seed+pos+index),
-/// so a fresh drop never reuses a generated item's id within a session.
-static NEXT_DROPPED_ID: AtomicU32 = AtomicU32::new(0xF000_0000);
+/// Monotonic id source for player-dropped items. Starts at 0, not the old `0xF000_0000` —
+/// ADR-063 partitions by `peer_id` now (see `generator::partition_runtime_id`), and the top
+/// bits of the id already separate a drop from any OTHER peer's drops; the raw counter itself
+/// no longer needs a high starting point of its own.
+///
+/// Numeric overlap with the stable-hash item ids (31-bit range, `stable_item_id`) is NOT a
+/// regression introduced here: `NEXT_ENTITY_ID` already shared that same low range before
+/// ADR-063 too. This ADR guarantees uniqueness BETWEEN PEERS, not a reserved numeric band
+/// against the stable-hash family — that was never part of its contract.
+static NEXT_DROPPED_ID: AtomicU32 = AtomicU32::new(0);
 
-fn next_dropped_item_id() -> u32 {
-    NEXT_DROPPED_ID.fetch_add(1, Ordering::Relaxed)
+fn next_dropped_item_id(peer_id: PeerId) -> u32 {
+    let counter = NEXT_DROPPED_ID.fetch_add(1, Ordering::Relaxed);
+    architecture::chunk_generator::partition_runtime_id(peer_id, counter)
 }
 use entity::EntityEvent;
 use graph::verticality::{export_vertical_debug_markers, VerticalDebugMarkerV0};
@@ -1242,10 +1249,11 @@ impl World {
         position: Vec3,
         item: crate::player::inventory::Item,
         quantity: u16,
+        peer_id: PeerId,
     ) -> Option<u32> {
         let key = layered_chunk_pos(world_to_chunk(position), 0);
         let chunk = self.chunks.get_mut(&key)?;
-        let id = next_dropped_item_id();
+        let id = next_dropped_item_id(peer_id);
         chunk.items.push(chunk::DroppedItem {
             id,
             item,
