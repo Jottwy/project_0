@@ -25,7 +25,7 @@ const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// degrades) lives in `docs/systems/ipc-wire-schema.md`, together with the rule that a
 /// P2P-only change bumps this counter too. Bumping this constant means appending an entry
 /// there in the same commit — and the CODE is the authority on the number, not the ADR.
-const WIRE_SCHEMA_VERSION: u32 = 25;
+const WIRE_SCHEMA_VERSION: u32 = 26;
 
 /// Run the IPC server until a fatal accept error.
 ///
@@ -89,7 +89,31 @@ async fn handle_connection(
     voice_rx: broadcast::Receiver<ServerMessage>,
     local_disconnect_tx: mpsc::Sender<()>,
 ) {
-    let (reader, writer) = stream.into_split();
+    let (reader, mut writer) = stream.into_split();
+
+    // ADR-061: the version gate. Written here — before `write_loop` is spawned — so it lands
+    // ahead of anything already buffered in `state_rx`, which subscribed back in `run()` and may
+    // well be holding a world_state. Unity keys the gate on the FIRST frame of the connection,
+    // so "first" has to be literal, not merely early.
+    match encode(&ServerMessage::Hello(super::ServerHello {
+        schema_version: WIRE_SCHEMA_VERSION,
+    })) {
+        Ok(frame) => {
+            if let Err(e) = writer.write_all(&frame).await {
+                // The socket died before the handshake. Bail out the same way the normal
+                // teardown does, signal included, rather than spawning loops onto a dead pipe.
+                warn!("Failed to send hello to {peer}: {e}");
+                let _ = local_disconnect_tx.try_send(());
+                return;
+            }
+        }
+        Err(e) => {
+            warn!("Failed to encode hello for {peer}: {e}");
+            let _ = local_disconnect_tx.try_send(());
+            return;
+        }
+    }
+
     let mut read_task = tokio::spawn(read_loop(reader, to_game, peer));
     let mut write_task = tokio::spawn(write_loop(writer, state_rx, voice_rx));
 
@@ -300,6 +324,80 @@ mod tests {
         assert!(
             fired_early.is_err(),
             "must not signal while the client is still connected (_client kept alive)"
+        );
+    }
+
+    /// Reads one length-prefixed frame off the client end, the way `IPCClient.ReadFrames` does.
+    async fn read_frame(stream: &mut TcpStream) -> Vec<u8> {
+        let mut len_buf = [0u8; 4];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stream.read_exact(&mut len_buf),
+        )
+        .await
+        .expect("timed out waiting for a frame")
+        .expect("failed to read the length prefix");
+
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut body = vec![0u8; len];
+        stream
+            .read_exact(&mut body)
+            .await
+            .expect("failed to read the frame body");
+        body
+    }
+
+    /// ADR-061: the gate is keyed on the FIRST frame of the connection, so "hello goes out
+    /// first" has to hold even when a world_state is ALREADY sitting in the broadcast receiver
+    /// at the moment the connection is handed over — which is the real ordering hazard, since
+    /// `run()` subscribes before spawning. Publishing before the spawn reproduces exactly that.
+    #[tokio::test]
+    async fn hello_is_the_first_frame_and_precedes_buffered_world_state() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let (to_game_tx, _to_game_rx) = mpsc::channel::<ClientMessage>(8);
+        let (state_tx, state_rx) = broadcast::channel::<ServerMessage>(8);
+        let (voice_tx, _) = broadcast::channel::<ServerMessage>(8);
+        let (disconnect_tx, _disconnect_rx) = mpsc::channel::<()>(4);
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        let (stream, peer) = listener.accept().await.unwrap();
+
+        // Queued BEFORE the connection is handled: the receiver already holds it. An Event
+        // stands in for the world_state a live backend would have buffered — same channel, same
+        // ordering hazard, and it builds without a full world snapshot.
+        state_tx
+            .send(ServerMessage::Event(crate::ipc::GameEvent {
+                event_type: "buffered_before_connect".to_string(),
+                data: serde_json::Value::Null,
+            }))
+            .unwrap();
+
+        tokio::spawn(handle_connection(
+            stream,
+            peer,
+            to_game_tx,
+            state_rx,
+            voice_tx.subscribe(),
+            disconnect_tx,
+        ));
+
+        let first = read_frame(&mut client).await;
+        let decoded: ServerMessage = decode(&first).expect("first frame must decode");
+        match decoded {
+            ServerMessage::Hello(hello) => assert_eq!(
+                hello.schema_version, WIRE_SCHEMA_VERSION,
+                "hello must carry the constant Unity mirrors"
+            ),
+            other => panic!("first frame was {other:?}, not Hello"),
+        }
+
+        let second = read_frame(&mut client).await;
+        let decoded: ServerMessage = decode(&second).expect("second frame must decode");
+        assert!(
+            matches!(decoded, ServerMessage::Event(_)),
+            "the message buffered before connect must arrive AFTER the hello, not instead of it"
         );
     }
 }

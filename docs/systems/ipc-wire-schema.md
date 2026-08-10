@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v25
+# IPC wire schema — changelog v2 → v26
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **25**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **26**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -246,7 +246,7 @@ until the player quits manually. **No P2P change accompanies this bump**: the go
 the common case immediate reuses `PacketPayload::Disconnect` (0x06), which has existed with a
 complete receiver since the baseline commit.
 
-### v25 (ADR-060) — actual
+### v25 (ADR-060)
 
 Cambio solo-P2P (la superficie IPC no se toca; bumpea por la regla de ADR-047: añadir un
 `PacketPayload` bumpea). Dos variantes nuevas para el goteo del snapshot de mundo:
@@ -264,3 +264,35 @@ lado no conoce (mismo caso que ADR-028 Fase E, v8→v9). **OJO — verificado en
 gate que rechace el join mixto; el agujero es previo a este bump y este bump lo hace por primera
 vez observable en juego. Cerrar el gate (rellenar `version` con `WIRE_SCHEMA_VERSION` y rechazar
 en el host) queda anotado como corrección pendiente en ADR-060.
+
+### v26 (ADR-061) — actual
+
+Primer cambio que hace que este número **viaje**. Hasta aquí `WIRE_SCHEMA_VERSION` solo se
+imprimía en el log de arranque: existía desde ADR-009 y ninguna de las dos partes lo comprobaba
+jamás. Variante nueva `ServerMessage::Hello { schema_version: u32 }`, emitida como **primer frame
+de cada conexión IPC** — escrita en `handle_connection` antes de spawnear `write_loop`, de modo
+que precede a cualquier mensaje ya bufferizado en el `broadcast::Receiver` suscrito en `run()`.
+Unity la compara por igualdad exacta contra `WireSchema.Expected` (`Assets/Scripts/Network/
+WireSchema.cs`, la constante espejo que hay que bumpear en el mismo cambio).
+
+Motivo: sin gate, un mismatch de esquema no fallaba — **degradaba a defaults silenciosos**. El
+contrato `else r.Skip()` del decoder de Unity es correcto y aditivo por diseño, pero convierte
+cualquier deriva en datos plausibles; el caso peor (`STABILITY_AUDIT_CURRENT.md` §R4, P1) es que
+un fallo de parseo de `remote_players` sea byte a byte indistinguible de "no hay jugadores
+remotos". El gate es de **envelope, no por campo**: el default silencioso por campo sigue siendo
+el contrato y `IPCMessagesParityTests` lo sigue congelando.
+
+Igualdad exacta y no un mínimo porque el despliegue es lockstep (un único exe en
+`Builds/Backend/`, ADR-047): un backend más nuevo también es una build desincronizada.
+
+Degradación en las dos direcciones, ambas benignas:
+- **Cliente ≤v25 + backend v26:** el frame `hello` cae en la rama `default:` de `Dispatch` (log de
+  warning, frame descartado). El resto de la sesión, intacta.
+- **Cliente v26 + backend ≤v25:** no llega hello; el cliente loguea un warning una vez por
+  conexión ("versión NO verificada") y sigue. Tolerancia deliberada, sin timeout — el conjunto de
+  backends sin hello solo decrece.
+
+Mismatch real ⇒ fallo duro: `LogError` + `session_ended` sintético con
+`reason = "wire_schema_mismatch backend=vX client=vY"`, que reutiliza el teardown de ADR-056 (cero
+UI nueva). Sigue **sin** cubrir el gate P2P: el `_version` ignorado en `handle_handshake` es otro
+transporte y sigue siendo la corrección pendiente de ADR-060.

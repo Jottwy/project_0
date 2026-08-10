@@ -167,6 +167,21 @@ pub enum ServerMessage {
     /// distance at the host. Travels on its own broadcast channel, never on the one
     /// carrying world state (see `ipc::server::run`).
     PeerVoice(PeerVoice),
+    /// ADR-061 — first frame of every IPC connection, before any world state. Never goes
+    /// through a broadcast channel: `handle_connection` writes it straight to the socket.
+    Hello(ServerHello),
+}
+
+/// ADR-061 — the schema revision this backend speaks, so Unity can refuse a desynced build
+/// instead of decoding it into silent defaults (a failed `remote_players` parse is otherwise
+/// indistinguishable from "no remote players", STABILITY_AUDIT_CURRENT.md R4).
+///
+/// Just the number: a build string would duplicate what the startup log already prints and
+/// invite logic over strings. The client skips unknown keys, so adding fields here later stays
+/// additive.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerHello {
+    pub schema_version: u32,
 }
 
 /// ADR-046 — a voice frame on its way to the local Unity client. `peer_id` is the
@@ -836,5 +851,32 @@ mod tests {
                 .unwrap();
         let decoded: serde_json::Value = rmp_serde::from_slice(&body).unwrap();
         assert_eq!(decoded, serde_json::json!("SERVICE_SHAFT"));
+    }
+
+    /// ADR-061: `IPCClient.Dispatch` reads "type" as the FIRST key and drops the frame if it
+    /// isn't — that assumption is serde-derive's internally-tagged codegen, not an observed
+    /// convention, so the hello is pinned byte-for-byte here the way the voice frame is. A
+    /// future field added to `ServerHello` must not push the tag out of first position.
+    #[test]
+    fn hello_frame_puts_the_type_tag_first_on_the_wire() {
+        let frame = encode(&ServerMessage::Hello(ServerHello { schema_version: 26 })).unwrap();
+
+        let body = &frame[4..];
+        assert_eq!(
+            u32::from_be_bytes(frame[..4].try_into().unwrap()) as usize,
+            body.len(),
+            "length prefix must match the body"
+        );
+
+        let mut expected = vec![0x82]; // fixmap, 2 entries
+        expected.push(0xa4);
+        expected.extend_from_slice(b"type");
+        expected.push(0xa5);
+        expected.extend_from_slice(b"hello");
+        expected.push(0xae);
+        expected.extend_from_slice(b"schema_version");
+        expected.push(26); // positive fixint
+
+        assert_eq!(body, expected.as_slice());
     }
 }
