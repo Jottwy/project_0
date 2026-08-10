@@ -49,6 +49,11 @@ const ENTITY_TICK_EVERY: u64 = 6;
 /// Unity has no "damage_taken" handler). AI (aggro/movement/attack events) keeps running; only
 /// the health application is gated. Re-enable ONLY with an explicit decision (renderer +
 /// feedback + rebalance) — see STATE.md "Deuda: entidades PvE".
+///
+/// This invisibility is also load-bearing elsewhere: the entity-AI gate below (search
+/// `net.is_host` near `ENTITY_TICK_EVERY`) freezes legacy PvE entities for a joiner in chunks far
+/// from the host, and that's only harmless BECAUSE they're invisible and damage-free. If this
+/// flag flips or `EntityRenderer` gets wired in, re-check that gate before shipping either.
 const ENTITY_DAMAGE_ENABLED: bool = false;
 /// Ownership + teleportation checked at 1hz.
 const SLOW_TICK_EVERY: u64 = 60;
@@ -1092,17 +1097,31 @@ pub async fn run(
 
         // Entity AI at 10hz.
         if tick.is_multiple_of(ENTITY_TICK_EVERY) {
-            let (damage, events) = world.tick_entities(entity_dt, player.position, player.id);
-            if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
-                player.stats.take_damage(damage);
-            }
-            for ev in events {
-                if dev_freeze_survival && ev.event_type == "damage_taken" {
-                    continue;
+            // ADR-009 §4: the host owns all authoritative world state; a joiner only predicts
+            // movement. Before this guard, `tick_entities`/`tick_respawns` ran unconditionally on
+            // BOTH — the joiner simulated its own AI locally, the host's `broadcast_chunk_states`
+            // (host-only since `sync.rs:473-477`, same bug on the send side) overwrote it via
+            // `chunk.entities.clear()` + rebuild every 5hz, and the joiner's `tick_respawns`
+            // minted ids from a `NEXT_ENTITY_ID` counter that restarts at 1 in every process —
+            // guaranteed collisions with the host's ids. Net effect: 0.5s of visible AI drift
+            // between overwrites (jitter) plus a live id-collision generator. Host-only closes
+            // both. Cost accepted: legacy PvE entities freeze in chunks far from the host for the
+            // joiner — currently invisible and harmless, see `ENTITY_DAMAGE_ENABLED` above; if
+            // either flag there changes, re-read this comment before assuming AI still "just
+            // works" for a joiner.
+            if net.is_host {
+                let (damage, events) = world.tick_entities(entity_dt, player.position, player.id);
+                if ENTITY_DAMAGE_ENABLED && !dev_freeze_survival && damage > 0.0 {
+                    player.stats.take_damage(damage);
                 }
-                let _ = to_clients.send(ServerMessage::Event(ev));
+                for ev in events {
+                    if dev_freeze_survival && ev.event_type == "damage_taken" {
+                        continue;
+                    }
+                    let _ = to_clients.send(ServerMessage::Event(ev));
+                }
+                world.tick_respawns(entity_dt);
             }
-            world.tick_respawns(entity_dt);
 
             // ADR-016 slice 2: advance phantom peers (host-only). Each phantom walks and its
             // move is resolved via ADR-017 sim-only collision, so it respects walls/floor even
