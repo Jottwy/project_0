@@ -2561,3 +2561,51 @@ Id runtime de entidad = `(peer_id as u32) << 24 | contador`, con el contador de 
 ### Pendiente de decidir antes de implementar
 
 Alcance exacto del bump (¿solo el contrato de unicidad documentado, o cambia algún campo de wire?); si el particionado aplica también a `interact_with_item` (¿añadir chunk coord al payload `Interact`, o resolver por `(chunk, id)` en vez de id plano?); si esto se implementa en su propia sesión con ADR promovido a DECIDIDA, o se pliega a la próxima ronda de trabajo de red. Sin código de esta propuesta en la sesión que la redacta.
+
+## ADR-064 — El crafteo se muda al vocabulario STP: recetas por `item_id`, validadas contra el inventario reportado (PROPUESTA)
+
+Estado: **PROPUESTA (2026-08-10)**. Decisión de autoridad tomada por Joel en sesión (`AskUserQuestion`); el resto del diseño queda para validación humana antes de tocar código. Cero código en la sesión que la redacta.
+
+### Contexto — el hallazgo que reformula el problema
+
+El roadmap arrastraba «resolver el mapeo item↔material» como el bloqueante de la Fase 4 de crafteo, descrito como casar el enum `Item` de Rust (9 variantes) con los 40 `ItemDefinition` de Unity. **Auditado esta sesión, ese mapeo no existe como tarea, porque los dos extremos están muertos:**
+
+1. **El consumidor no existe.** `crafting::find_recipe` y `crafting::all_recipes` (`backend/src/crafting/recipes.rs`) tienen **cero llamadores** en todo el crate — verificado por grep. Es scaffolding declarado como tal en su propio doc-comment desde la Fase 1.
+2. **El vocabulario `Item` no es «el inventario»: es el de los drops del MUNDO.** `Item::{Metal, Circuit, Battery, Cable, Food, Water, Medicine, Tool, Stabilizer}` lo coloca `world/levels/level_0/content.rs` dentro de `world.chunks[].items`, y viaja a Unity como `visible_items`.
+3. **Esos drops son invisibles en juego.** Los dibujaría `Assets/Scripts/Gameplay/ItemRenderer.cs`, que **no está referenciado por ninguna escena ni prefab** (verificado buscando su GUID en todo `Assets/`). Mismo estado que `EntityRenderer`.
+4. **El inventario real del jugador es otro.** `PlayerSnapshot.stp_inventory` (ids STP crudos, reportados por el cliente vía `report_inventory`) es el que el juego restaura; el propio `save.rs` documenta el campo `inventory` (el del enum `Item`) como *«the legacy disconnected model, kept intact only for shape stability»*.
+5. **Recoger un drop no acredita nada.** `World::interact_with_item` (`world/mod.rs:1208`) borra el item del chunk, devuelve `(type_name, quantity)`… y el único llamador (`game_loop.rs:4526`) solo loguea tres líneas MPTRACE y hace `broadcast_world_sync`. El valor devuelto no entra en ningún inventario.
+6. **El loot que el jugador SÍ recoge es un tercer sistema**, client-side: `ChunkLootRoll`/`ChunkLootManager` sembrando `ItemDefinition` de STP — el mismo cuyas pools se recortaron en `a0d2a6f`.
+
+Consecuencia: mapear las 9 categorías a los 40 ítems habría casado un vocabulario invisible con un consumidor que nadie llama. La pregunta real nunca fue de mapeo, sino **quién lleva la cuenta de los materiales de crafteo**.
+
+### Decisión
+
+**El crafteo adopta el vocabulario que el jugador realmente sostiene: ids de `ItemDefinition` de STP.** El cliente reporta inventario (mecanismo que ya existe, `report_inventory`, enmienda de ADR-032) y el servidor **valida** la receta contra `stp_inventory` antes de conceder el resultado. El enum `Item` NO se extiende ni se mapea: queda donde está, sirviendo a los drops de mundo, que son un sistema aparte y hoy inerte.
+
+En concreto:
+
+1. `Recipe.ingredients` deja de referenciar `Item` y pasa a referenciar **`item_id: i32`** (el `DataIdReference` de STP, mismo tipo y rango que `held_item`/`weapon_id` de ADR-023/027 y que `consume_item` de ADR-030).
+2. Hay que **autorar 4 `ItemDefinition` nuevos** en `Assets/PolymindGames/STP/Data/Resources/Definitions/Item/`: Metal, Circuit, Battery, Cable. Hoy no existen — el más cercano del catálogo es `Metal Shard`, que es otra cosa (material de crafteo vendor). Sus ids se hornean en la tabla de recetas de Rust.
+3. Esos 4 entran en el loot por la vía que ya funciona: una pool de materiales en `ChunkLootRoll` (y su espejo en `StpChestSpawner`), respetando la restricción dura de esa clase — variar pools sí, cambiar el COUNT de entradas no.
+4. La acción de craftear viaja como acción nueva del protocolo IPC, con el mismo patrón de `consume_item` (ADR-030): el cliente pide, el servidor valida contra `stp_inventory` y responde; el descuento de stacks lo sigue haciendo STP client-side, como ya hace `ConsumeAction`.
+
+### Alternativas rechazadas
+
+- **(A) Servidor-autoritativo de verdad** — revivir el enum `Item` como moneda separada: arreglar `interact_with_item` para que acredite, cablear `ItemRenderer`, y que el crafteo nunca se fíe del cliente. **RECHAZADA para v1**: obliga a dos inventarios visibles al jugador (bolsa STP + materiales), UI nueva, y un camino de wire de concesión. Es exactamente el modelo server-authoritative que **ADR-028 ya difirió por escrito** calificándolo de «medio roadmap de migración STP servidor-autoritativo, un proyecto aparte». Sigue siendo el destino correcto a largo plazo; esto no lo cierra.
+- **(B) Mapear `Item` ↔ `ItemDefinition` con una tabla de equivalencias.** RECHAZADA: mantiene vivos DOS vocabularios y una tabla que hay que sincronizar a mano — el mismo problema de sincronización manual que ya mordió dos veces con `WIRE_SCHEMA_VERSION` ↔ `WireSchema.Expected` y que ADR-061 §H9 citó como razón para no duplicar contadores.
+- **(C) Reutilizar items del catálogo vendor existente como materiales** (p. ej. `Metal Shard` como Metal). RECHAZADA: son items de supervivencia genérica cuyo tono el recorte de `a0d2a6f` acaba de sacar del juego; reintroducirlos como moneda núcleo contradice esa dirección.
+
+### Qué PROHÍBE
+
+- Prohíbe extender el enum `Item` con variantes nuevas para dar de comer al crafteo: ese enum queda congelado en su rol de drops de mundo.
+- Prohíbe tratar `stp_inventory` como fuente de verdad para nada **fuera** del crafteo y de lo que ADR-032 ya cubre. El servidor sigue sin llevar un modelo de inventario propio.
+- **Prohíbe presentar esto como anti-trampas.** Con el cliente reportando su propio inventario, un cliente modificado puede afirmar que tiene los materiales y craftear. Es un coste **aceptado a sabiendas** y debe quedar escrito donde se implemente, no descubrirse después: el sandbox es cooperativo y hoy no hay superficie competitiva que lo justifique. Si aparece (PvP con progresión en juego), la salida es la alternativa (A), no un parche.
+
+### Riesgo declarado
+
+La progresión del jugador (estabilizadores → territorio anclado) pasa a depender de un dato que el cliente afirma. En un sandbox persistente donde la progresión ES la partida (ver el riesgo de guardado ya anclado en el análisis de loop), eso es una superficie de confianza real, no teórica. Se acepta porque la alternativa bloquea la Fase 4 detrás de medio roadmap de migración, y la Fase 4 es el único hueco que rompe el loop entero.
+
+### Pendiente de decidir antes de implementar
+
+Opcode y forma exacta de la acción de crafteo (¿`craft_item { recipe_id }` con respuesta, o fire-and-forget con reconciliación por `report_inventory`?) y si eso obliga a bump de `WIRE_SCHEMA_VERSION`; si el tiempo de crafteo (T2 15 min, T3 30 min, anchor 25 min) lo cuenta el servidor o el cliente, y qué pasa si el jugador se desconecta a mitad; si el `Workbench` (`requires_workbench: true` en las 4 recetas) se valida por proximidad server-side, lo que exige que el servidor conozca dónde están los workbenches — dato que hoy sí tiene vía el roster de edificios de ADR-037. Nada de esto se implementa hasta que el ADR pase a DECIDIDA.
