@@ -231,7 +231,24 @@ pub enum NetworkEvent {
         world_revision: u64,
         chunk_count: u32,
     },
+    /// HANDOFF de propiedad de un chunk (`ChunkTransfer`, 0x30): se aplica Y se confirma con un
+    /// `ChunkTransferAck` fiable, porque el emisor cede la autoridad y quiere saber que llegó.
+    ///
+    /// DISTINTO de `ChunkStateReceived` a propósito. Los dos payloads se fundían aquí ("Treat as a
+    /// chunk transfer for now") y el ack salía también para el broadcast periódico: medido en
+    /// sesión de 2 backends, 8 267 descartes por ventana llena en 40 s (~820 acks/s). Ver el
+    /// comentario de `ChunkStateReceived`.
     ChunkTransferReceived {
+        from: PeerId,
+        data: ChunkSyncData,
+    },
+    /// BROADCAST periódico del estado de un chunk (`ChunkState`, 0x11, unreliable, cada tick del
+    /// dueño). Se aplica igual que un handoff — mismo `apply_chunk_sync` — pero NO se confirma:
+    /// el emisor no espera respuesta, nadie lee el ack (`ChunkTransferAckReceived` solo hace
+    /// `debug!`), y a ~820 chunks/s los acks llenaban permanentemente la ventana reliable de 32
+    /// del joiner, de modo que sus envíos fiables de gameplay (pickup, place, corpse, PvP) se
+    /// descartaban en silencio contra el mismo `send_reliable`.
+    ChunkStateReceived {
         from: PeerId,
         data: ChunkSyncData,
     },

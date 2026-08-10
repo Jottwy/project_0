@@ -1881,9 +1881,29 @@ async fn handle_network_event(
             );
             world.apply_chunk_transfer(&data, net.local_id);
 
-            // ACK the transfer.
+            // ACK the transfer. SOLO para el handoff (0x30): quien cede la propiedad de un chunk
+            // sí quiere saber que llegó. El broadcast periódico (0x11) cae en el brazo de abajo y
+            // NO se confirma — ver `NetworkEvent::ChunkStateReceived`.
             let ack = crate::network::protocol::PacketPayload::ChunkTransferAck { pos: data.pos };
             net.send_reliable(from, &ack).await;
+        }
+
+        // Mismo apply que el handoff, SIN ack: es un broadcast unreliable que el dueño repite cada
+        // tick, así que confirmarlo no aporta nada (nadie lee el ack) y a ~820 chunks/s llenaba la
+        // ventana fiable del receptor, tirando sus propias acciones de gameplay.
+        NetworkEvent::ChunkStateReceived { from, data } => {
+            world.apply_chunk_transfer(&data, net.local_id);
+            // Throttled a UNA línea por segundo, no por chunk: a ~820/s el `info!` por chunk que
+            // traía el brazo del handoff era en sí mismo parte del problema. Pero SIN traza no hay
+            // forma de ver en un log de producción si el broadcast sigue llegando — que es justo lo
+            // que hubo que comprobar al separar los dos caminos, para no "arreglar" el spam a base
+            // de dejar de aplicar el estado.
+            if net.should_log_chunk_state() {
+                info!(
+                    "MPTRACE step=CS event=chunk_state_applied self_id={} from_peer={} chunk=({},{}) layer={} acked=false",
+                    net.local_id, from, data.pos[0], data.pos[1], data.layer
+                );
+            }
         }
 
         NetworkEvent::ChunkTransferAckReceived { from, pos } => {

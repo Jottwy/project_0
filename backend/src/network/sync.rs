@@ -870,7 +870,7 @@ mod chunk_broadcast_tests {
         assert!(
             !host_events
                 .iter()
-                .any(|e| matches!(e, NetworkEvent::ChunkTransferReceived { .. })),
+                .any(|e| matches!(e, NetworkEvent::ChunkStateReceived { .. })),
             "a non-host must never emit ChunkState, got: {host_events:?}"
         );
 
@@ -884,8 +884,75 @@ mod chunk_broadcast_tests {
         assert!(
             joiner_events
                 .iter()
-                .any(|e| matches!(e, NetworkEvent::ChunkTransferReceived { .. })),
+                .any(|e| matches!(e, NetworkEvent::ChunkStateReceived { .. })),
             "positive control failed: the host should still broadcast, got: {joiner_events:?}"
+        );
+    }
+
+    /// El broadcast periodico de chunks NO se confirma; el handoff de propiedad SI.
+    ///
+    /// MEDIDO antes de este arreglo, en sesion de 2 backends reales (40 s): el joiner emitia
+    /// 8 267 `reliable_window_full` porque respondia un `ChunkTransferAck` FIABLE a cada uno de
+    /// los ~820 `ChunkState`/s del host. Su ventana de 32 vivia llena, asi que sus propios envios
+    /// fiables de gameplay (pickup, place, corpse, PvP) se descartaban en silencio contra el mismo
+    /// `send_reliable`. El ack no lo lee nadie: su receptor solo hace `debug!`.
+    ///
+    /// El par positivo/negativo importa: sin el control positivo, borrar el ack ENTERO tambien
+    /// pasaria este test, y el handoff perderia su confirmacion sin que nada avisara.
+    #[tokio::test]
+    async fn a_broadcast_chunk_is_not_acked_but_a_handoff_still_is() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        let host_addr = loopback_addr(&host);
+        let joiner_addr = loopback_addr(&joiner);
+        host.peers
+            .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
+        joiner
+            .peers
+            .insert(1, PeerConnection::new(1, "Host".into(), host_addr));
+
+        let pos = Vec3::new(0.0, 1.8, 0.0);
+        let mut host_world = World::new(42);
+        host_world.update_ownership(pos, host.local_id);
+        let mut joiner_world = World::new(42);
+
+        // NEGATIVO: broadcast periodico -> se aplica, no se confirma.
+        broadcast_chunk_states(&host, &host_world, pos).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut applied = 0usize;
+        for e in joiner.process_incoming().await {
+            if let NetworkEvent::ChunkStateReceived { data, .. } = e {
+                joiner_world.apply_chunk_transfer(&data, joiner.local_id);
+                applied += 1;
+            }
+        }
+        assert!(applied > 0, "setup: el broadcast tiene que llegar");
+        assert_eq!(
+            joiner.peers[&1].reliable_queue.len(),
+            0,
+            "un ChunkState NO puede encolar acks fiables: {applied} chunks llegaron y la ventana \
+             del joiner tiene que seguir vacia"
+        );
+
+        // POSITIVO: handoff explicito -> sigue confirmandose.
+        let chunk = host_world
+            .chunks
+            .values()
+            .next()
+            .expect("setup: el host necesita un chunk")
+            .clone();
+        send_chunk_transfer(&mut host, 2, &chunk).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        for e in joiner.process_incoming().await {
+            if let NetworkEvent::ChunkTransferReceived { from, data } = e {
+                let ack = PacketPayload::ChunkTransferAck { pos: data.pos };
+                joiner.send_reliable(from, &ack).await;
+            }
+        }
+        assert_eq!(
+            joiner.peers[&1].reliable_queue.len(),
+            1,
+            "el handoff de propiedad SI se confirma — quien cede la autoridad quiere saber que llego"
         );
     }
 

@@ -484,13 +484,14 @@ impl NetworkManager {
                 })
             }
 
-            PacketPayload::ChunkState { data } => {
-                // Treat as a chunk transfer for now.
-                Some(NetworkEvent::ChunkTransferReceived {
-                    from: sender_id,
-                    data,
-                })
-            }
+            // El "Treat as a chunk transfer for now" que vivía aquí fundía el broadcast periódico
+            // con el handoff de propiedad, y con ello heredaba su ACK FIABLE: a ~820 chunks/s eso
+            // llenaba permanentemente la ventana de 32 del receptor. Ahora cada uno tiene su
+            // evento; la APLICACIÓN sigue siendo la misma en ambos, solo cambia si se confirma.
+            PacketPayload::ChunkState { data } => Some(NetworkEvent::ChunkStateReceived {
+                from: sender_id,
+                data,
+            }),
 
             PacketPayload::ChunkTransfer { data } => Some(NetworkEvent::ChunkTransferReceived {
                 from: sender_id,

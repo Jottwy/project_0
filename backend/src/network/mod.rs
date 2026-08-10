@@ -228,6 +228,11 @@ pub struct NetworkManager {
     /// failing at the broadcast cadence, and the point is to make it visible, not to become the
     /// new noise floor.
     last_send_error_log_ms: std::sync::atomic::AtomicU64,
+    /// Igual que el de arriba, para la traza de `ChunkStateReceived`. Hace falta un throttle REAL
+    /// (una línea por segundo) y no el `elapsed % 1000 < 120` que usan las trazas de pose: aquél
+    /// deja pasar una VENTANA de 120 ms, y a ~820 chunks/s eso son ~60 líneas por segundo, no una
+    /// — medido, 2 847 líneas en 45 s antes de cambiarlo.
+    last_chunk_state_log_ms: std::sync::atomic::AtomicU64,
     /// ADR-011: when the LOCAL player last confirmed a pickup. `broadcast_player_update`
     /// emits animation="pickup" while inside the ~1s window — a trigger flank for the proxy,
     /// NOT the gesture duration (the client owns that via the Animator exitTime).
@@ -322,6 +327,7 @@ impl NetworkManager {
             incoming_rx: rx,
             session_start: Instant::now(),
             last_send_error_log_ms: std::sync::atomic::AtomicU64::new(0),
+            last_chunk_state_log_ms: std::sync::atomic::AtomicU64::new(0),
             last_pickup_at: None,
             next_peer_id: if is_host { 2 } else { 0 },
             world_seed,
@@ -475,6 +481,20 @@ impl NetworkManager {
             );
         }
         events
+    }
+
+    /// `true` como mucho una vez por segundo — throttle REAL, con el mismo compare_exchange que
+    /// usa `send_datagram` para su log de fallos. Existe porque el broadcast de chunks llega a
+    /// ~820/s y su traza tiene que ser legible, no el nuevo suelo de ruido.
+    pub fn should_log_chunk_state(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        let now_ms = self.session_start.elapsed().as_millis() as u64;
+        let last = self.last_chunk_state_log_ms.load(Ordering::Relaxed);
+        now_ms.saturating_sub(last) >= 1000
+            && self
+                .last_chunk_state_log_ms
+                .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
     }
 
     /// ADR-060: drena las colas diferidas hacia la ventana reliable. Por cada peer, mientras
