@@ -599,6 +599,11 @@ async fn reliable_retransmit_exhaustion_evicts_peer() {
 /// vida lo gestiona el sistema phantom, y sacarlo del mapa desde la capa de red lo haría
 /// desaparecer del mundo en silencio. Conserva el comportamiento heredado (purgar y seguir), que
 /// el ADR declara explícitamente como no-verificado-seguro en vez de darlo por cubierto.
+///
+/// El foco aquí es el EVENTO: un fantasma nunca hizo handshake, así que emitir `PeerDisconnected`
+/// por él haría que `game_loop` anunciara la salida de un jugador que nadie vio entrar. La purga
+/// explícita de la cola aparcada en esa misma rama la fija
+/// `exhausted_retries_purge_a_phantoms_deferred_queue_without_evicting_it`.
 #[tokio::test]
 async fn reliable_retransmit_exhaustion_does_not_evict_a_phantom() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
@@ -607,7 +612,6 @@ async fn reliable_retransmit_exhaustion_does_not_evict_a_phantom() {
     {
         let peer = host.peers.get_mut(&phantom_id).unwrap();
         peer.queue_reliable(0, vec![0u8; 8]);
-        peer.defer_reliable(100, vec![1u8; 8]);
         for packet in peer.reliable_queue.iter_mut() {
             packet.retries = reliability::MAX_RETRIES;
             packet.next_retry_at = Instant::now() - Duration::from_millis(1);
@@ -627,9 +631,8 @@ async fn reliable_retransmit_exhaustion_does_not_evict_a_phantom() {
     assert_eq!(
         host.peers[&phantom_id].reliable_queue.len(),
         0,
-        "both queues are still purged for a phantom"
+        "its in-flight queue is still purged"
     );
-    assert_eq!(host.peers[&phantom_id].deferred_reliable.len(), 0);
 }
 
 #[tokio::test]
