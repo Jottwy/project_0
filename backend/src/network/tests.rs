@@ -831,6 +831,129 @@ async fn handshake_is_accepted_when_there_is_room() {
     assert!(host.peers.values().any(|p| p.addr == newcomer));
 }
 
+/// ADR-060: la variante encolada NO descarta con la ventana llena — aparca. El contraste con
+/// `reliable_send_respects_the_window_instead_of_growing_unbounded` es la decision entera:
+/// mismo estado de partida, destino distinto del paquete nuevo.
+#[tokio::test]
+async fn queued_reliable_send_defers_instead_of_dropping_when_the_window_is_full() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let addr: SocketAddr = "127.0.0.1:7015".parse().unwrap();
+    let mut peer = PeerConnection::new(2, "PeerB".into(), addr);
+    for seq in 0..reliability::WINDOW_SIZE as u32 {
+        peer.queue_reliable(seq, vec![0u8; 8]);
+    }
+    net.peers.insert(2, peer);
+
+    net.send_reliable_queued(2, &PacketPayload::Heartbeat).await;
+
+    assert_eq!(
+        net.peers[&2].reliable_queue.len(),
+        reliability::WINDOW_SIZE,
+        "la ventana en vuelo no crece"
+    );
+    assert_eq!(
+        net.peers[&2].deferred_reliable.len(),
+        1,
+        "el paquete nuevo espera aparcado, no se descarta"
+    );
+}
+
+/// ADR-060: con diferidos pendientes, un envio encolado nuevo se aparca AUNQUE la ventana tenga
+/// hueco — saltarse la cola romperia el orden FIFO del lote.
+#[tokio::test]
+async fn queued_reliable_send_never_jumps_ahead_of_the_deferred_queue() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let addr: SocketAddr = "127.0.0.1:7016".parse().unwrap();
+    let mut peer = PeerConnection::new(2, "PeerB".into(), addr);
+    peer.defer_reliable(999, vec![0u8; 8]);
+    net.peers.insert(2, peer);
+    assert!(net.peers[&2].can_queue_reliable(), "ventana con hueco");
+
+    net.send_reliable_queued(2, &PacketPayload::Heartbeat).await;
+
+    assert_eq!(
+        net.peers[&2].deferred_reliable.len(),
+        2,
+        "el nuevo se pone DETRAS del diferido, no en el aire"
+    );
+    assert_eq!(net.peers[&2].reliable_queue.len(), 0);
+}
+
+/// ADR-060: el drenaje avanza a velocidad de ventana. Con la ventana llena nada se mueve; al
+/// ACKearse en vuelo, el siguiente pump pasa aparcados al aire hasta rellenar el hueco, en orden.
+#[tokio::test]
+async fn the_pump_drains_deferred_packets_as_acks_open_the_window() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let addr: SocketAddr = "127.0.0.1:7017".parse().unwrap();
+    let mut peer = PeerConnection::new(2, "PeerB".into(), addr);
+    for seq in 0..reliability::WINDOW_SIZE as u32 {
+        peer.queue_reliable(seq, vec![0u8; 8]);
+    }
+    peer.defer_reliable(100, vec![1u8; 8]);
+    peer.defer_reliable(101, vec![2u8; 8]);
+    net.peers.insert(2, peer);
+
+    net.pump_deferred_reliable().await;
+    assert_eq!(
+        net.peers[&2].deferred_reliable.len(),
+        2,
+        "ventana llena: nada se mueve"
+    );
+
+    // Dos ACKs abren dos huecos.
+    net.peers.get_mut(&2).unwrap().process_ack(0);
+    net.peers.get_mut(&2).unwrap().process_ack(1);
+    net.pump_deferred_reliable().await;
+
+    assert_eq!(
+        net.peers[&2].deferred_reliable.len(),
+        0,
+        "los dos aparcados pasaron al aire"
+    );
+    assert_eq!(
+        net.peers[&2].reliable_queue.len(),
+        reliability::WINDOW_SIZE,
+        "y ahora estan en la ventana, esperando su propio ACK"
+    );
+    assert!(
+        net.peers[&2]
+            .reliable_queue
+            .iter()
+            .any(|p| p.sequence == 100)
+            && net.peers[&2]
+                .reliable_queue
+                .iter()
+                .any(|p| p.sequence == 101),
+        "los que viajaron son exactamente los aparcados, en orden FIFO"
+    );
+}
+
+/// ADR-060: al agotar MAX_RETRIES la purga se lleva TAMBIEN los aparcados — bombear hacia un
+/// enlace muerto solo repetiria la agonia ventana a ventana.
+#[tokio::test]
+async fn exhausted_retries_purge_the_deferred_queue_with_the_inflight_one() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let addr: SocketAddr = "127.0.0.1:7018".parse().unwrap();
+    let mut peer = PeerConnection::new(2, "PeerB".into(), addr);
+    peer.queue_reliable(0, vec![0u8; 8]);
+    peer.defer_reliable(100, vec![1u8; 8]);
+    // Fuerza el agotamiento: retries al limite y proximo reintento vencido.
+    for pkt in peer.reliable_queue.iter_mut() {
+        pkt.retries = reliability::MAX_RETRIES;
+        pkt.next_retry_at = std::time::Instant::now() - Duration::from_millis(1);
+    }
+    net.peers.insert(2, peer);
+
+    net.process_retransmits().await;
+
+    assert_eq!(net.peers[&2].reliable_queue.len(), 0, "en vuelo purgada");
+    assert_eq!(
+        net.peers[&2].deferred_reliable.len(),
+        0,
+        "aparcados purgados con ella"
+    );
+}
+
 /// La contrapartida: por debajo de la ventana, un envio fiable SI se encola.
 #[tokio::test]
 async fn reliable_send_queues_normally_below_the_window() {

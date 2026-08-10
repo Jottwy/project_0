@@ -473,6 +473,12 @@ namespace BackroomsSurvival.Net
                 case ProtocolMessageTypes.ActionResult:
                     // Phase 4 will consume these; ignored for now.
                     break;
+                default:
+                    // A type this client doesn't know is schema drift, not noise: without this
+                    // branch a renamed ServerMessage variant is indistinguishable from "the
+                    // backend never sends it" (STABILITY_AUDIT_CURRENT.md R4).
+                    Debug.LogWarning($"[IPCClient] Unknown message type '{type}' — frame dropped (schema drift?)");
+                    break;
             }
         }
 

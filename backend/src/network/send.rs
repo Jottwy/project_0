@@ -120,6 +120,38 @@ impl NetworkManager {
         }
     }
 
+    /// ADR-060: reliable con espera en vez de descarte. Igual que `send_reliable` salvo el caso
+    /// de ventana llena: el paquete se aparca en la cola diferida FIFO del peer y
+    /// `pump_deferred_reliable` lo emitirá cuando los ACKs abran hueco. También se aparca si ya
+    /// HAY diferidos aunque la ventana tenga sitio — saltarse la cola rompería el FIFO.
+    ///
+    /// Para tráfico suelto `send_reliable` sigue siendo el default correcto: su descarte-con-warn
+    /// es la protección de ADR-039 contra colas sin tope. Esta variante existe para EMISIONES EN
+    /// LOTE con final conocido (el goteo de WorldSync), donde el emisor purga y re-encola en
+    /// bloque y el tope real es el tamaño del lote.
+    pub async fn send_reliable_queued(&mut self, peer_id: PeerId, payload: &PacketPayload) {
+        let seq = self.next_sequence();
+        let header = PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
+        let data = encode_packet(&header, payload);
+
+        let Some(peer) = self.peers.get(&peer_id) else {
+            return;
+        };
+        let addr = peer.addr;
+
+        if !peer.can_queue_reliable() || !peer.deferred_reliable.is_empty() {
+            if let Some(peer) = self.peers.get_mut(&peer_id) {
+                peer.defer_reliable(seq, data);
+            }
+            return;
+        }
+
+        self.send_datagram(&data, addr, "reliable").await;
+        if let Some(peer) = self.peers.get_mut(&peer_id) {
+            peer.queue_reliable(seq, data);
+        }
+    }
+
     /// Broadcast a reliable packet to all peers.
     ///
     /// ADR-016: phantom peers are skipped — their addr is inert (nobody listens), so a

@@ -24,6 +24,16 @@ pub struct ReliablePacket {
     pub next_retry_at: Instant,
 }
 
+/// ADR-060: a reliable packet encoded and sequenced but NOT yet on the wire — it waits for the
+/// in-flight window to open. Distinct from `ReliablePacket` on purpose: `sent_at`/`retries`
+/// would be lies before the first real send, and a deferred packet must never be retransmitted
+/// by the sweep (it was never transmitted at all).
+#[derive(Debug, Clone)]
+pub struct DeferredPacket {
+    pub sequence: u32,
+    pub data: Vec<u8>,
+}
+
 /// State for a single peer connected to this backend (host-as-server star, not a mesh).
 #[derive(Debug)]
 pub struct PeerConnection {
@@ -33,6 +43,11 @@ pub struct PeerConnection {
     pub latency_ms: u16,
     pub last_heartbeat: Instant,
     pub reliable_queue: VecDeque<ReliablePacket>,
+    /// ADR-060: FIFO overflow for `send_reliable_queued`. Con la ventana llena el paquete espera
+    /// aquí en vez de descartarse (el descarte con warn sigue siendo el contrato de
+    /// `send_reliable` a secas); `pump_deferred_reliable` lo drena cuando los ACKs abren hueco.
+    /// El emisor de un goteo nuevo purga esta cola antes de encolar (superseded por revision).
+    pub deferred_reliable: VecDeque<DeferredPacket>,
     // Remote player state (updated by PlayerUpdate packets)
     pub position: [f32; 3],
     pub rotation: f32,
@@ -112,6 +127,7 @@ impl PeerConnection {
             latency_ms: 0,
             last_heartbeat: now,
             reliable_queue: VecDeque::new(),
+            deferred_reliable: VecDeque::new(),
             position: [0.0, 1.8, 0.0],
             rotation: 0.0,
             animation: "idle".into(),
@@ -143,6 +159,20 @@ impl PeerConnection {
 
     pub fn can_queue_reliable(&self) -> bool {
         self.reliable_queue.len() < WINDOW_SIZE
+    }
+
+    /// ADR-060: park an encoded reliable packet until the window opens.
+    pub fn defer_reliable(&mut self, sequence: u32, data: Vec<u8>) {
+        self.deferred_reliable
+            .push_back(DeferredPacket { sequence, data });
+    }
+
+    /// ADR-060: drop every parked packet (a fresh drip supersedes the previous one).
+    /// Returns how many were dropped so the caller can log it.
+    pub fn purge_deferred(&mut self) -> usize {
+        let n = self.deferred_reliable.len();
+        self.deferred_reliable.clear();
+        n
     }
 
     /// Queue a reliable packet for ACK tracking + retransmit.

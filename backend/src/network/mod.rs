@@ -455,8 +455,39 @@ impl NetworkManager {
         events
     }
 
+    /// ADR-060: drena las colas diferidas hacia la ventana reliable. Por cada peer, mientras
+    /// haya hueco en la ventana Y paquetes aparcados, el más antiguo pasa al aire y a la cola
+    /// de retransmisión. Llamado desde `process_retransmits` — mismo tick que procesa los ACKs
+    /// que abren el hueco, así el drenaje avanza a velocidad de ventana sin timer propio.
+    pub async fn pump_deferred_reliable(&mut self) {
+        let peer_ids: Vec<PeerId> = self.peers.keys().copied().collect();
+        for pid in peer_ids {
+            loop {
+                // Préstamo corto: decidir y extraer con el mutable, enviar con `&self`.
+                let next = match self.peers.get_mut(&pid) {
+                    Some(peer) if peer.can_queue_reliable() => {
+                        match peer.deferred_reliable.pop_front() {
+                            Some(pkt) => Some((peer.addr, pkt)),
+                            None => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let Some((addr, pkt)) = next else {
+                    break;
+                };
+                self.send_datagram(&pkt.data, addr, "deferred_reliable")
+                    .await;
+                if let Some(peer) = self.peers.get_mut(&pid) {
+                    peer.queue_reliable(pkt.sequence, pkt.data);
+                }
+            }
+        }
+    }
+
     /// Retransmit reliable packets that haven't been ACKed.
     pub async fn process_retransmits(&mut self) {
+        self.pump_deferred_reliable().await;
         let peer_ids: Vec<PeerId> = self.peers.keys().copied().collect();
         let peer_count_before = self.peers.len();
         let mut failed_reliable_peers = Vec::new();
@@ -490,8 +521,12 @@ impl NetworkManager {
                 let endpoint = peer.addr;
                 let queued = peer.reliable_queue.len();
                 peer.reliable_queue.clear();
+                // ADR-060: los aparcados mueren con la cola en vuelo — bombearlos hacia un
+                // enlace que acaba de agotar MAX_RETRIES solo repetiría la agonía ventana a
+                // ventana. Se cuentan en el mismo log.
+                let deferred_dropped = peer.purge_deferred();
                 warn!(
-                    "Peer {} ({}) reliable queue dropped after too many retransmit failures; peer retained",
+                    "Peer {} ({}) reliable queue dropped after too many retransmit failures; peer retained (deferred dropped: {deferred_dropped})",
                     peer.name, endpoint
                 );
                 info!(
