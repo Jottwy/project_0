@@ -24,5 +24,10 @@ namespace BackroomsSurvival.Net
         /// at the host. Arrives on the backend's SEPARATE voice channel, so a burst of audio
         /// cannot evict a world-state message or an event.</summary>
         public const string PeerVoice = "peer_voice";
+
+        /// <summary>ADR-061 — first frame of every IPC connection, carrying the backend's
+        /// <see cref="WireSchema"/> revision. Written before the write loop starts, so it
+        /// precedes any world_state already buffered on the broadcast channel.</summary>
+        public const string Hello = "hello";
     }
 }

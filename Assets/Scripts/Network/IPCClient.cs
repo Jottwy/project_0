@@ -173,6 +173,15 @@ namespace BackroomsSurvival.Net
         // ADR-056: set while the session is over but the client must stay reusable. See
         // PauseReconnect.
         private volatile bool _reconnectPaused;
+        // ADR-061: latched once the backend's hello fails the version gate. Every later frame on
+        // this connection is dropped undecoded — the whole point is to NOT feed the game
+        // defaults parsed against the wrong schema while the session tears down. Cleared on the
+        // next connect, since a relaunched backend may well be the matching build.
+        private volatile bool _schemaMismatch;
+        // ADR-061: network-thread only (set in NetworkLoop before ReadFrames, read+cleared in
+        // Dispatch), so it needs no synchronization. Distinguishes "backend never sent hello"
+        // from "hello arrived": only the FIRST frame of a connection can be the hello.
+        private bool _firstFrameOfConnection;
         private TcpClient _client;
         private NetworkStream _stream;
         private readonly object _sendLock = new object();
@@ -358,6 +367,11 @@ namespace BackroomsSurvival.Net
                     _hasConnectedOnce = true;
                     Debug.Log($"[IPCClient] Connected to {serverAddress}:{port} (epoch {_connectionEpoch})");
 
+                    // ADR-061: per-connection gate state. Cleared here, not on disconnect, so a
+                    // relaunched backend gets a fresh verdict.
+                    _firstFrameOfConnection = true;
+                    _schemaMismatch = false;
+
                     ReadFrames(_stream);
                 }
                 catch (ThreadAbortException) { return; }
@@ -431,8 +445,26 @@ namespace BackroomsSurvival.Net
             string type = r.ReadString();
             int remaining = n - 1;
 
+            // ADR-061: once the gate has failed, nothing on this connection is trustworthy —
+            // parsing on would hand the game fields decoded against the wrong schema, which is
+            // exactly the silent-default failure the gate exists to stop.
+            if (_schemaMismatch) return;
+
+            bool wasFirstFrame = _firstFrameOfConnection;
+            _firstFrameOfConnection = false;
+            if (wasFirstFrame && type != ProtocolMessageTypes.Hello)
+            {
+                // Decision 2 of ADR-061: a backend older than v26 never sends hello. Tolerated
+                // with one warning per connection rather than a timeout — that set only shrinks,
+                // and failing hard here would have broken the rollout on day one.
+                Debug.LogWarning($"[IPCClient] Backend sent '{type}' as its first frame, not 'hello' — pre-v{WireSchema.Expected} backend, wire schema NOT verified");
+            }
+
             switch (type)
             {
+                case ProtocolMessageTypes.Hello:
+                    HandleHello(HelloMsg.Parse(r, remaining));
+                    break;
                 case ProtocolMessageTypes.WorldState:
                     var ws = WorldStateMsg.Parse(r, remaining);
                     // Unchecked delta rather than `TickCount >= nextTick`: TickCount wraps every
@@ -480,6 +512,39 @@ namespace BackroomsSurvival.Net
                     Debug.LogWarning($"[IPCClient] Unknown message type '{type}' — frame dropped (schema drift?)");
                     break;
             }
+        }
+
+        /// <summary>
+        /// ADR-061 — the version gate. On a match, one confirmation line and the session proceeds
+        /// as before. On a mismatch, the connection is written off and the session is ended
+        /// through the SAME path a host-left uses (ADR-056): a synthetic `session_ended` event,
+        /// which SessionEndHandler already turns into backend teardown → PauseReconnect →
+        /// back-to-menu. Reusing it is what keeps this feature at zero new UI.
+        ///
+        /// Deliberately does NOT call PauseReconnect here: SessionEndHandler does it as its
+        /// step 2, AFTER killing the backend, because the graceful save travels over this very
+        /// socket. Closing it from the network thread first would steal that save. `_schemaMismatch`
+        /// covers the gap instead — later frames are dropped without being parsed.
+        /// </summary>
+        private void HandleHello(HelloMsg hello)
+        {
+            if (WireSchema.IsCompatible(hello.schemaVersion))
+            {
+                Debug.Log($"[IPCClient] Wire schema v{hello.schemaVersion} confirmed");
+                return;
+            }
+
+            _schemaMismatch = true;
+            string reason = WireSchema.MismatchReason(hello.schemaVersion);
+            Debug.LogError($"[IPCClient] {reason} — refusing this session. Backend and client are different builds; rebuild both from the same commit.");
+
+            var ev = new GameEventMsg
+            {
+                eventType = "session_ended",
+                data = new Dictionary<string, object> { { "reason", reason } },
+            };
+            Events.Enqueue(ev);
+            _pendingNotify.Enqueue(ev);
         }
 
         // Cached so the per-frame reads don't allocate a closure each call (ReadFrames calls

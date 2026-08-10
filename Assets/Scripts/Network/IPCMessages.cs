@@ -29,6 +29,32 @@ namespace BackroomsSurvival.Net
 
 
     /// <summary>
+    /// ADR-061 — primer frame de cada conexión IPC: la revisión de esquema del backend.
+    /// Root-tagged (<c>ServerMessage::Hello</c>, <c>"type":"hello"</c>).
+    ///
+    /// El default de <see cref="schemaVersion"/> es 0 A PROPÓSITO: un hello sin la clave (o con
+    /// ella de otro tipo) cae en mismatch, nunca en un falso match. Es el único sitio de este
+    /// archivo donde el default silencioso del contrato de cabecera se usa para FALLAR, no para
+    /// degradar — ver <see cref="WireSchema.IsCompatible"/>.
+    /// </summary>
+    public class HelloMsg
+    {
+        public uint schemaVersion;
+
+        public static HelloMsg Parse(MsgPackReader r, int remainingPairs)
+        {
+            var m = new HelloMsg();
+            for (int i = 0; i < remainingPairs; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "schema_version")) m.schemaVersion = (uint)r.ReadInt();
+                else r.Skip();
+            }
+            return m;
+        }
+    }
+
+    /// <summary>
     /// ADR-046 — un frame de voz de un peer, ya filtrado por distancia en el host.
     /// Root-tagged (<c>ServerMessage::PeerVoice</c>, <c>"type":"peer_voice"</c>).
     ///
