@@ -46,22 +46,25 @@ namespace BackroomsSurvival.Net
         // stable across sessions by design.
         private const long RequestIdBase = 0x43_48_45_53_54L << 8; // "CHEST" << 8
 
-        // Chest loot rolls — richer than a cache: guaranteed weapon + ammo, plus medical/
-        // consumables/materials. Pools mirror StpItemSpawner's (same authored item names).
+        // Chest loot rolls — richer than a cache: guaranteed weapon, plus medical/consumables/
+        // materials. Pools espejan las de ChunkLootRoll (mismos nombres autorados); si allí se
+        // recorta el catálogo, aquí también, o el cofre sigue sirviendo lo que el mundo ya no da.
         // TODO(balance): placeholder composition/quantities.
         private static readonly string[] ConsumablePool =
         {
             "Apple", "Cooked Meat", "Raw Meat", "Energy Bar", "Small Food Can", "Large Food Can", "Water Bottle"
         };
         private static readonly string[] MedicalPool = { "Antibiotics", "Medicinal Corn" };
-        private static readonly string[] AmmoPool = { "30-30 Bullet", "Wooden Arrow", "Stone Arrow", "Metal Arrow" };
+        // RECORTE DE CATÁLOGO VENDOR (2026-08-10): AmmoPool eliminada — sin rifle ni arco, la
+        // munición era basura de inventario. Su stack del cofre pasa a material (ver RollChestLoot).
         private static readonly string[] MaterialPool =
         {
             "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch"
         };
+        // Mismo recorte que ChunkLootRoll.WeaponPool: fuera armas de fuego/caza y kit de cazador.
         private static readonly string[] WeaponPool =
         {
-            "Marlin 336", "Wooden Bow", "Bone Club", "Hunting Axe", "Hunting Knife", "Steel Pickaxe", "Stone Spear", "Wooden Spear"
+            "Bone Club", "Steel Pickaxe"
         };
 
         private float _warmupEnd;
@@ -153,18 +156,21 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// One chest's contents: guaranteed weapon, 2 ammo stacks, 1–2 medical, 3 consumables,
-        /// 2 materials (~8–9 stacks — a cache is 6 loose single items). Unresolved item names are
-        /// skipped with a warning, mirroring StpItemSpawner's tolerance.
+        /// One chest's contents: guaranteed weapon, 1–2 medical, 3 consumables, 4 materials
+        /// (9–10 stacks — a cache is 6 loose single items). Unresolved item names are skipped with
+        /// a warning, mirroring StpItemSpawner's tolerance. (El "~8–9" anterior ya estaba mal antes
+        /// del recorte: 1 + 1..2 + 3 + 2 son 7–8, no 8–9.)
+        /// Recorte de catálogo vendor (2026-08-10): los 2 stacks de munición pasaron a material
+        /// (2→4 rolls) en vez de desaparecer, para no adelgazar el cofre — sigue siendo más rico
+        /// que una cache, que es lo que justifica su existencia.
         /// </summary>
         private static List<CorpseLootStack> RollChestLoot()
         {
             var loot = new List<CorpseLootStack>();
             AddRoll(loot, WeaponPool, 1, 1, 1);
-            AddRoll(loot, AmmoPool, 2, 5, 10);
             AddRoll(loot, MedicalPool, Random.Range(1, 3), 1, 1);
             AddRoll(loot, ConsumablePool, 3, 1, 2);
-            AddRoll(loot, MaterialPool, 2, 1, 3);
+            AddRoll(loot, MaterialPool, 4, 1, 3);
             return loot;
         }
 

@@ -13,10 +13,13 @@ namespace BackroomsSurvival.Net
     /// The hash mirrors <c>ChunkRenderer.Level0Profile.FromSeedAndPos</c> (the project's existing
     /// seed+coord mixing pattern) so per-chunk determinism is consistent with the renderer.
     ///
-    /// POOL TABLES are copied VERBATIM from StpItemSpawner / StpCarryableSpawner. They are NOT
-    /// refactored out of those two files: the old scatter spawners stay byte-identical as the A/B
-    /// comparison baseline (they are only DISABLED behind a flag, not edited). When the old
-    /// spawners are deleted in a later prompt, their copies go and this becomes the single source.
+    /// POOL TABLES nacieron copiadas VERBATIM de StpItemSpawner / StpCarryableSpawner y YA NO LO
+    /// SON: el recorte de catálogo vendor (2026-08-10) borró AmmoPool y adelgazó WeaponPool AQUÍ y
+    /// en StpChestSpawner, dejando a los dos spawners viejos con el catálogo completo. Eso es
+    /// deliberado — siguen byte-idénticos como baseline A/B (están DESACTIVADOS tras un flag, no
+    /// editados), así que a partir de ahora el A/B compara además catálogos distintos: si se
+    /// reactivan para comparar, el rifle y el arco reaparecen por esa vía. Cuando esos spawners se
+    /// borren, sus copias se van y este fichero queda como fuente única.
     ///
     /// PIEZA 3 (zone_kind → loot): RollItems/RollCarryables now take a <see cref="ZoneLootProfile"/>
     /// (resolved by the Unity side from ZoneRegistry + ZoneLootTable) that varies cache/zone chance,
@@ -31,14 +34,21 @@ namespace BackroomsSurvival.Net
             "Apple", "Cooked Meat", "Raw Meat", "Energy Bar", "Small Food Can", "Large Food Can", "Water Bottle"
         };
         private static readonly string[] MedicalPool = { "Antibiotics", "Medicinal Corn" };
-        private static readonly string[] AmmoPool = { "30-30 Bullet", "Wooden Arrow", "Stone Arrow", "Metal Arrow" };
+        // RECORTE DE CATÁLOGO VENDOR (2026-08-10): AmmoPool ELIMINADA junto con el rifle y el arco.
+        // Munición sin arma de fuego es basura de inventario. `profile.ammoWeight` sobrevive en
+        // ZoneLootProfile / ZoneLootTable.asset pero su masa de probabilidad ahora cae en
+        // MaterialPool (ver RollItemName) — campo VIVO pero redirigido, no muerto: sigue moviendo
+        // el reparto material/consumible por zona. No borrar creyendo que no lo lee nadie.
         private static readonly string[] MaterialPool =
         {
             "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch"
         };
+        // Recorte de catálogo vendor: fuera el rifle y el arco (armas de fuego/caza ajenas al tono)
+        // y el kit de caza (Hunting Axe/Knife, Stone/Wooden Spear). Quedan los dos que se leen como
+        // objeto encontrado en un edificio, no como equipo de cazador.
         private static readonly string[] WeaponPool =
         {
-            "Marlin 336", "Wooden Bow", "Bone Club", "Hunting Axe", "Hunting Knife", "Steel Pickaxe", "Stone Spear", "Wooden Spear"
+            "Bone Club", "Steel Pickaxe"
         };
         private static readonly string[] CarryableTypes = { "Log", "Stone", "Metal" };
 
@@ -301,7 +311,11 @@ namespace BackroomsSurvival.Net
                 float r = rng.NextFloat() * total;
                 if ((r -= profile.consumableWeight) < 0f) pool = ConsumablePool;
                 else if ((r -= profile.medicalWeight) < 0f) pool = MedicalPool;
-                else if ((r -= profile.ammoWeight) < 0f) pool = AmmoPool;
+                // La rama de ammo se plegó en material (recorte de catálogo vendor, 2026-08-10):
+                // `total` SIGUE sumando ammoWeight a propósito, así que ni la escala de `r` ni el
+                // número de draws cambian — la masa que antes era munición ahora es material. Eso
+                // preserva la restricción dura de la clase (nunca cambiar el COUNT de entradas) y
+                // deja el recorte reversible restaurando esta sola línea.
                 else pool = MaterialPool;
             }
             return pool[rng.NextInt(pool.Length)];
