@@ -258,7 +258,9 @@ namespace PolymindGames.Editor
                 changed = true;
             }
                         
-            var volumeComponents = prefab.GetComponentsInChildren<Volume>();
+            // Fix local: la rama URP/HDRP del vendor no compila sin cualificar Volume
+            // (falta using UnityEngine.Rendering). Bug #3 del vendor, ver ADR.
+            var volumeComponents = prefab.GetComponentsInChildren<UnityEngine.Rendering.Volume>();
             foreach (var volumeComponent in volumeComponents)
             {
                 UnityEngine.Object.DestroyImmediate(volumeComponent, true);
@@ -288,7 +290,9 @@ namespace PolymindGames.Editor
                 changed = true;
             }
                         
-            var volumeComponents = prefab.GetComponentsInChildren<Volume>();
+            // Fix local: la rama URP/HDRP del vendor no compila sin cualificar Volume
+            // (falta using UnityEngine.Rendering). Bug #3 del vendor, ver ADR.
+            var volumeComponents = prefab.GetComponentsInChildren<UnityEngine.Rendering.Volume>();
             foreach (var volumeComponent in volumeComponents)
             {
                 UnityEngine.Object.DestroyImmediate(volumeComponent, true);

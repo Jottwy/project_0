@@ -207,6 +207,7 @@ MonoBehaviour:
   _inventory: {fileID: 0}
   _defaultContainer:
     Name: Container
+    AllowStacking: 1
     MaxSlotCount: 5
     MaxWeightLimit: 1000
     Restrictions: []
@@ -357,10 +358,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   _playOnStart: 0
+  _unscaledTime: 0
   _useCurrentValueAsStart: 1
   _useRelativeEndValue: 0
-  _loopCount: 0
   _yoyo: 0
+  _loopCount: 0
   _tweens:
   - Type: 1
     StartValue: {x: 0, y: 0, z: 0}

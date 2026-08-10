@@ -70,7 +70,7 @@ MeshRenderer:
     firstSubMesh: 0
     subMeshCount: 0
   m_StaticBatchRoot: {fileID: 0}
-  m_ProbeAnchor: {fileID: 3679042606370738909}
+  m_ProbeAnchor: {fileID: 0}
   m_LightProbeVolumeOverride: {fileID: 0}
   m_ScaleInLightmap: 1.7205817
   m_ReceiveGI: 1
@@ -162,7 +162,7 @@ MeshRenderer:
     firstSubMesh: 0
     subMeshCount: 0
   m_StaticBatchRoot: {fileID: 0}
-  m_ProbeAnchor: {fileID: 3679681687173236581}
+  m_ProbeAnchor: {fileID: 0}
   m_LightProbeVolumeOverride: {fileID: 0}
   m_ScaleInLightmap: 1
   m_ReceiveGI: 1
@@ -187,8 +187,8 @@ LODGroup:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 3676890639853508229}
   serializedVersion: 2
-  m_LocalReferencePoint: {x: 0, y: 12.857846, z: 0}
-  m_Size: 27.696539
+  m_LocalReferencePoint: {x: -0.33492327, y: 12.916925, z: 0.52897644}
+  m_Size: 30.053047
   m_FadeMode: 1
   m_AnimateCrossFading: 1
   m_LastLODIsBillboard: 0
@@ -204,7 +204,7 @@ LODGroup:
   - screenRelativeHeight: 0.0006943288
     fadeTransitionWidth: 0
     renderers:
-    - renderer: {fileID: 6961986272210803949}
+    - renderer: {fileID: 5446963652705746177}
   m_Enabled: 1
 --- !u!208 &6644208689708674671
 NavMeshObstacle:
@@ -254,8 +254,9 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 5322934118457933635}
-  - component: {fileID: 6961986272210803949}
-  m_Layer: 0
+  - component: {fileID: 3701140981003971102}
+  - component: {fileID: 5446963652705746177}
+  m_Layer: 15
   m_Name: ConiferBillboard
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -277,8 +278,16 @@ Transform:
   m_Children: []
   m_Father: {fileID: 3679681687173236581}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!227 &6961986272210803949
-BillboardRenderer:
+--- !u!33 &3701140981003971102
+MeshFilter:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4797755050355959289}
+  m_Mesh: {fileID: -6639054791464608691, guid: 0f72233ef85001b408fdbd65b2c5fcae, type: 3}
+--- !u!23 &5446963652705746177
+MeshRenderer:
   m_ObjectHideFlags: 0
   m_CorrespondingSourceObject: {fileID: 0}
   m_PrefabInstance: {fileID: 0}
@@ -286,13 +295,13 @@ BillboardRenderer:
   m_GameObject: {fileID: 4797755050355959289}
   m_Enabled: 1
   m_CastShadows: 1
-  m_ReceiveShadows: 0
+  m_ReceiveShadows: 1
   m_DynamicOccludee: 1
   m_StaticShadowCaster: 0
   m_MotionVectors: 1
-  m_LightProbeUsage: 0
-  m_ReflectionProbeUsage: 0
-  m_RayTracingMode: 0
+  m_LightProbeUsage: 1
+  m_ReflectionProbeUsage: 1
+  m_RayTracingMode: 2
   m_RayTraceProcedural: 0
   m_RayTracingAccelStructBuildFlagsOverride: 0
   m_RayTracingAccelStructBuildFlags: 1
@@ -300,7 +309,7 @@ BillboardRenderer:
   m_RenderingLayerMask: 1
   m_RendererPriority: 0
   m_Materials:
-  - {fileID: 0}
+  - {fileID: 2100000, guid: cb64c4536ee5b445783c428f4a53af1c, type: 2}
   m_StaticBatchInfo:
     firstSubMesh: 0
     subMeshCount: 0
@@ -321,4 +330,4 @@ BillboardRenderer:
   m_SortingLayerID: 0
   m_SortingLayer: 0
   m_SortingOrder: 0
-  m_Billboard: {fileID: 22600000, guid: cd6e2d55445fa449ea39d6fd5f5b2452, type: 2}
+  m_AdditionalVertexStreams: {fileID: 0}

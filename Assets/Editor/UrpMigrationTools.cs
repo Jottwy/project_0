@@ -35,12 +35,22 @@ namespace BackroomsSurvival.EditorTools
         };
 
         [MenuItem("Backrooms/URP Migration/Upgrade Own Standard Materials")]
-        public static void UpgradeOwnStandardMaterials()
+        public static void UpgradeOwnStandardMaterials() =>
+            UpgradeStandardMaterials(OwnMaterialRoots);
+
+        // Commit 5/8: los materiales Standard que el .unitypackage URP del vendor no
+        // reemplazó. Mismo upgrader oficial; el ConvertMaterialsToUrp del vendor no se
+        // usa (su define nunca se activa solo — bug documentado en el ADR).
+        [MenuItem("Backrooms/URP Migration/Upgrade Vendor Standard Materials")]
+        public static void UpgradeVendorStandardMaterials() =>
+            UpgradeStandardMaterials(new[] { "Assets/PolymindGames" });
+
+        private static void UpgradeStandardMaterials(string[] roots)
         {
             var upgrader = new StandardUpgrader("Standard");
             int upgraded = 0;
 
-            foreach (var guid in AssetDatabase.FindAssets("t:Material", OwnMaterialRoots))
+            foreach (var guid in AssetDatabase.FindAssets("t:Material", roots))
             {
                 var path = AssetDatabase.GUIDToAssetPath(guid);
                 var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
