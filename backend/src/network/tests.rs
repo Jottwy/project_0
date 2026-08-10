@@ -920,6 +920,36 @@ async fn handshake_is_rejected_on_wire_schema_mismatch() {
     );
 }
 
+/// Corrección adosada a ADR-060: el `Disconnect` pre-registro que rechaza un handshake (session
+/// full o version mismatch) llegaba a un joiner que no tenía a nadie registrado en `self.peers`
+/// para "desconectar" — se perdía en silencio y `retry_pending_connection` reenviaba el mismo
+/// handshake cada 1s para siempre. Este es el único camino por el que un joiner puede aprender
+/// que su conexión fue rechazada.
+#[tokio::test]
+async fn pending_connection_stops_retrying_after_rejection() {
+    let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let host_addr: SocketAddr = "127.0.0.1:9600".parse().unwrap();
+    joiner.pending_connect_addr = Some(host_addr);
+
+    let rejection = IncomingPacket {
+        addr: host_addr,
+        header: PacketHeader::new(protocol::PacketType::Disconnect as u16, 1, 0, 0),
+        payload: PacketPayload::Disconnect {
+            reason: "session full".into(),
+        },
+    };
+    let event = joiner.handle_packet(rejection).await;
+
+    assert!(
+        matches!(event, Some(NetworkEvent::ConnectRejected { reason }) if reason == "session full"),
+        "el Disconnect pre-registro debe traducirse en ConnectRejected, no perderse"
+    );
+    assert_eq!(
+        joiner.pending_connect_addr, None,
+        "sin esto retry_pending_connection seguiria reenviando el handshake muerto"
+    );
+}
+
 /// ADR-060: la variante encolada NO descarta con la ventana llena — aparca. El contraste con
 /// `reliable_send_respects_the_window_instead_of_growing_unbounded` es la decision entera:
 /// mismo estado de partida, destino distinto del paquete nuevo.

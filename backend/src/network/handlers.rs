@@ -157,6 +157,20 @@ impl NetworkManager {
                         id: sender_id,
                         reason,
                     })
+                } else if !self.is_host
+                    && self.peers.is_empty()
+                    && self.pending_connect_addr == Some(pkt.addr)
+                {
+                    // Corrección adosada a ADR-060: nuestro propio handshake pre-registro fue
+                    // rechazado (session full o version mismatch). Sin esto, `retry_pending_
+                    // connection` reenviaba el mismo handshake cada 1s para siempre y Unity nunca
+                    // se enteraba — ver doc-comment de `NetworkEvent::ConnectRejected`.
+                    warn!(
+                        "MPTRACE step=A2 event=joiner_connect_rejected self_id={} endpoint={} reason={}",
+                        self.local_id, pkt.addr, reason
+                    );
+                    self.pending_connect_addr = None;
+                    Some(NetworkEvent::ConnectRejected { reason })
                 } else {
                     None
                 }

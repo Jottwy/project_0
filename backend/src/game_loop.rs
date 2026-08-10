@@ -1654,6 +1654,18 @@ async fn handle_network_event(
             }
         }
 
+        NetworkEvent::ConnectRejected { reason } => {
+            // Corrección adosada a ADR-060: reutiliza el `session_ended` que Unity YA maneja
+            // (ADR-056) en vez de una UI nueva — nunca llegamos a unirnos a ningún mundo, así
+            // que no hay nada que persistir aquí, a diferencia del brazo `PeerDisconnected`
+            // de arriba.
+            info!("Connect rejected by host: {reason}");
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "session_ended".into(),
+                data: serde_json::json!({ "reason": reason }),
+            }));
+        }
+
         NetworkEvent::RemotePlayerUpdate {
             id,
             position,

@@ -275,4 +275,15 @@ pub enum NetworkEvent {
         from_addr: SocketAddr,
         player_name: String,
     },
+    /// Corrección adosada a ADR-060 (docs/DECISIONS.md, 2026-08-10): a joiner's `Handshake` was
+    /// rejected BEFORE it got registered (session full, or now also a `WIRE_SCHEMA_VERSION`
+    /// mismatch). Before this event existed the joiner never learned why — the raw `Disconnect`
+    /// packet had nowhere to land (it isn't from a registered peer, so the normal
+    /// `PeerDisconnected` path finds nothing to remove) and `retry_pending_connection` kept
+    /// re-sending the same doomed handshake every second forever. This event is purely internal
+    /// bookkeeping — it never crosses the wire itself, unlike everything else in this enum that
+    /// mirrors a `PacketPayload` variant.
+    ConnectRejected {
+        reason: String,
+    },
 }
