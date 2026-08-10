@@ -102,8 +102,11 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            var gm = GameMode.Instance;
-            var character = gm != null ? gm.LocalPlayer : null;
+            // HasInstance, not `Instance != null`: el getter de MonoSingleton del vendor emite un
+            // Debug.LogError CON TRAZA cada vez que se lee sin instancia. Aquí el guard de escena de
+            // arriba ya evitaba el spam del menú, así que esto es prevención: en la escena de
+            // gameplay sin GameMode (carga, teardown) volvería a loguear por escaneo.
+            var character = GameMode.HasInstance ? GameMode.Instance.LocalPlayer : null;
             if (character == null)
                 return; // no local player → can't judge "near me"; record nothing, retry next scan
             Vector3 localPos = character.transform.position;

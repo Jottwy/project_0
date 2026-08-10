@@ -59,8 +59,12 @@ namespace BackroomsSurvival.Net
 
         private static IBuildControllerCC ResolveLocalController()
         {
-            var gm = GameMode.Instance;
-            var character = gm != null ? gm.LocalPlayer : null;
+            // HasInstance, not `Instance != null`: the vendor's MonoSingleton getter LOGS AN ERROR
+            // (with a stack trace) every time it is read while unset, so polling it from Update in
+            // the main menu — where there is no GameMode — wrote two errors per frame. Measured at
+            // 2.5M lines of Player.log in minutes, which buries every other diagnostic. Same guard
+            // NoiseReporter and GridTestWorld already use.
+            var character = GameMode.HasInstance ? GameMode.Instance.LocalPlayer : null;
             if (character == null)
                 return null;
 

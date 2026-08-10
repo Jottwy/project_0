@@ -91,8 +91,12 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            var gm = GameMode.Instance;
-            var character = gm != null ? gm.LocalPlayer : null;
+            // HasInstance, not `Instance != null`: el getter de MonoSingleton del vendor emite un
+            // Debug.LogError CON TRAZA cada vez que se lee sin instancia. Este watcher escanea por
+            // temporizador y no está limitado a la escena de gameplay (a diferencia de
+            // StpNativeDropWatcher), así que en el menú era la fuente viva del spam: 623 errores
+            // medidos en 75 s. Mismo guard que StpBuildingPlacementWatcher.
+            var character = GameMode.HasInstance ? GameMode.Instance.LocalPlayer : null;
             if (character == null)
                 return;
             Vector3 localPos = character.transform.position;
