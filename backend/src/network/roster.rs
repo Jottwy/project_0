@@ -20,7 +20,7 @@ use serde::Serialize;
 
 /// Presupuesto de payload por página, en bytes. Muy por debajo de un MTU típico (1500) para
 /// dejar sitio a la cabecera de 12 B, al envoltorio MessagePack del payload (nombre de variante
-/// + nombres de campo) y a cualquier encapsulado de red por debajo (VPN/túnel), que es
+/// y nombres de campo) y a cualquier encapsulado de red por debajo (VPN/túnel), que es
 /// exactamente lo que hace que apurar al MTU exacto vuelva a fragmentar.
 pub const ROSTER_PAGE_BUDGET_BYTES: usize = 1000;
 
