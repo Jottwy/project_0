@@ -116,7 +116,7 @@ namespace BackroomsSurvival.Tests
         public void PlayerInputFrameBytesAreStableAndUseMap16Header()
         {
             var w = new MsgPackWriter();
-            w.WriteMapHeader(19);
+            w.WriteMapHeader(21);
             w.WriteString("type"); w.WriteString("input");
             w.WriteString("movement"); w.WriteArrayHeader(3);
             w.WriteFloat(0f); w.WriteFloat(0f); w.WriteFloat(0f);
