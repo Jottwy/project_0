@@ -38,6 +38,9 @@ namespace BackroomsSurvival.Tests
             _cfg = null;
         }
 
+        /// <summary>Luminancia Rec.709 — el brillo percibido, no la media de canales.</summary>
+        private static float Luma(Color c) => 0.2126f * c.r + 0.7152f * c.g + 0.0722f * c.b;
+
         private LayerVisualConfig Config()
         {
             _cfg = ScriptableObject.CreateInstance<LayerVisualConfig>();
@@ -317,12 +320,22 @@ namespace BackroomsSurvival.Tests
                 Assert.GreaterOrEqual(za.fogDensity, 0.015f,
                     $"zone_kind {z}: menos niebla que la base plana de Fase 5A no aporta nada");
 
-                // El mundo es oscuro por diseño: un ambient alto anula las lámparas y con
-                // ellas todo el trabajo de luz por zona de ADR-059.
-                float luma = 0.2126f * za.ambientLight.r
-                           + 0.7152f * za.ambientLight.g
-                           + 0.0722f * za.ambientLight.b;
-                Assert.Less(luma, 0.30f, $"zone_kind {z}: ambient demasiado brillante ({luma:F3})");
+                // Enmienda ADR-066 (2026-08-11): sin luz debe haber oscuridad. Un ambient
+                // alto ilumina toda superficie mire donde mire y anula las lámparas, y con
+                // ellas el trabajo de luz por zona de ADR-059. El techo era 0.30 y no
+                // protegía nada — la autoría real vive en torno a 0.01–0.05.
+                float ambLuma = Luma(za.ambientLight);
+                Assert.Less(ambLuma, 0.08f,
+                    $"zone_kind {z}: ambient demasiado brillante ({ambLuma:F3}) — sin luz hay que ver poco");
+
+                // La niebla de Unity es un lerp por distancia hacia fogColor SIN mirar la
+                // iluminación: una niebla clara hace BRILLAR el fondo de un pasillo a
+                // oscuras, que es exactamente el defecto que esta enmienda corrige. Atada al
+                // ambient para que no pueda volver a despegarse de él.
+                float fogLuma = Luma(za.fogColor);
+                Assert.LessOrEqual(fogLuma, ambLuma * 2.5f + 0.01f,
+                    $"zone_kind {z}: niebla ({fogLuma:F3}) demasiado clara para su ambient " +
+                    $"({ambLuma:F3}) — el fondo sin luz brillaría");
             }
 
             Assert.IsTrue(real.TryGetZoneAmbienceSet(ZoneBlackout, out var blackout));

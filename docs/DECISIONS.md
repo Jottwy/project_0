@@ -2756,6 +2756,24 @@ En `ExponentialSquared` la distancia de atenuación al 50 % es `d = 0.8326 / den
 
 Verificado: compile-check Roslyn 0 errores en las 4 asambleas tras cada commit; `ZoneAmbienceSetTests` cubre los 5 casos de forma del set nuevo más el guarda contra el asset real.
 
+### ENMIENDA (2026-08-11, mismo día) — sin luz hay oscuridad: los 26 valores de ambiente bajan
+
+Decisión de Joel tras jugarlo: *"a veces se ven cosas en zonas donde no hay luz, y donde no hay luz debería haber oscuridad total"*. La tabla original de este ADR no lo cumplía, por dos vías distintas y una de ellas nada obvia.
+
+**1. `RenderSettings.ambientLight` es luz plana e incondicional.** Con NORMAL en `(0.22, 0.19, 0.13)`, un pasillo sin una sola lámpara se veía perfectamente. Esto era herencia consciente de Fase 5A —*"a dim golden ambient fills the space so unlit corners read as Backrooms gloom rather than pure black"*— y **esta enmienda revierte esa decisión**: el objetivo pasa a ser negro de verdad, no penumbra.
+
+**2. La niebla de Unity no es un medio iluminado.** `FogMode.ExponentialSquared` interpola cada fragmento hacia `fogColor` **por distancia, sin mirar si le llega luz**. Con NORMAL en `(0.57, 0.49, 0.34)`, el fondo de un pasillo a oscuras tendía a ese dorado claro y **brillaba**: cuanto más lejos, más visible. Era el mayor contribuyente al defecto y el menos evidente — la niebla clara se había elegido pensando en el halo de las lámparas, sin ver que ilumina igual lo que no tiene luz ninguna.
+
+**Regla nueva, aplicada a las 13 zonas:** ambient al ~20 % del valor original (luminancia resultante 0.008–0.051) y **`fogColor ≈ ambient × 1.6`** — la niebla deja de poder despegarse del ambiente. **Las densidades de niebla NO se tocan**: siguen gobernando cuánto ves; lo que cambia es que deja de brillar.
+
+**Lo que se pierde y se acepta:** con la niebla casi negra, los fluorescentes ya no tiñen el aire a su alrededor — iluminan superficies, pero el volumen no se ve. Es más realista y menos atmosférico de postal. **No hay término medio con la niebla plana de Unity**: halo cerca y negro lejos exige fog volumétrico, que URP 17.0.4 no trae (ver §1 de la auditoría de este ADR). Si alguna vez se quiere el halo de vuelta, la vía es un `RenderFeature` propio, no subir `fogColor`.
+
+**Guardas endurecidos** en `ZoneAmbienceSetTests`, porque el techo anterior (`luma < 0.30`) ya no protegía nada frente a una autoría que vive en 0.01–0.05:
+- `Luma(ambientLight) < 0.08` — sin luz hay que ver poco.
+- `Luma(fogColor) ≤ Luma(ambientLight) × 2.5 + 0.01` — ata la niebla al ambiente para que no pueda volver a despegarse y hacer brillar el fondo.
+
+**PROHÍBE subir `fogColor` por encima de esa proporción para "dar ambiente"**: es exactamente el defecto que esta enmienda corrige.
+
 ---
 
 ## ADR-067 — Chunk Displacement: intercambio simétrico de dos chunks, decidido por el host y telegrafiado en tres fases
