@@ -2659,3 +2659,51 @@ Decisión de Joel al cierre: los materiales se quedan **documentados para el fut
 **Regla que sale de esto, para quien retome ADR-064:** añadir los nombres a las pools y generar los assets del menú **son UN solo paso, no dos**. Separarlos deja la rama peor que si no se hubiera tocado nada. Lo que SÍ puede vivir separado y sin coste es `Assets/Editor/BackroomsItemCreator.cs`: un `[MenuItem]` que nadie invoca no tiene efecto en runtime, así que se queda en la rama como la forma ejecutable de esta decisión — documentación que compila.
 
 **Estado real de ADR-064 tras esta corrección:** la DECISIÓN sigue **VALIDADA** (el crafteo se mudará al vocabulario STP; Joel la eligió sobre la evidencia). Lo que se revierte es su implementación: **slice 1 DIFERIDO**, cero efecto en juego, cero assets generados.
+
+---
+
+## ADR-065 — El proyecto pasa a URP Forward+ de verdad: fin de la mentira de ADR-001
+
+Estado: **VALIDADA e IMPLEMENTADA (2026-08-10/11).** Rama `migration/worldgraph-v1`, commits `7ec4d0a`..`2932a37`. Decisiones de alcance tomadas por Joel vía `AskUserQuestion` durante la auditoría.
+
+### Contexto: qué era falso
+
+ADR-001 declara "Cliente Unity 6 con URP" desde el primer día, y `CLAUDE.md` lo repetía. **Era falso.** La auditoría de superficie (2026-08-10) confirmó lo que la sesión de ADR-062 ya había destapado y anotado en la línea 1742 de este mismo registro: el paquete `com.unity.render-pipelines.universal` 17.0.4 estaba instalado, pero **ningún asset de pipeline estaba asignado** (`GraphicsSettings.m_CustomRenderPipeline` a 0, `QualitySettings` sin `renderPipeline`), así que el render era **Built-in**.
+
+**Esta entrada enmienda esa línea 1742: a partir de `7ec4d0a` el proyecto SÍ corre en URP.** La trampa que describía —`Shader.Find("Universal Render Pipeline/Lit")` devuelve un shader válido que renderiza magenta porque el pipeline no está activo— deja de existir, pero la lección se conserva: la comprobación válida nunca fue si el shader existe, sino `GraphicsSettings.currentRenderPipeline != null`.
+
+### Decisión
+
+**Forward+ (clustered), no Forward clásico.** La razón es dura, no estética: el worldgen crea una point light por lámpara en runtime (`BackroomsLighting.PlaceFluorescentLights`) y un pasillo con varias luminarias visibles supera de largo el límite de 8 luces adicionales por objeto de Forward. Forward+ lo elimina (256 luces visibles en desktop).
+
+**Migración manual, herramienta del vendor VETADA.** `RenderPipelineUtility` de PolymindGames tiene dos bugs verificados: (1) su `ConvertMaterialsToUrp()` compila vacío porque el define `POLYMIND_GAMES_FPS_URP` que lo activa nunca se activa solo — la herramienta reporta éxito habiendo convertido 0 materiales; (2) borra por substring `"_BIRP"`, lo que se habría llevado por delante la carpeta `CTIRuntimeComponents_BIRP` entera. En su lugar: import manual de los dos `.unitypackage` URP, define puesto a mano en las 20 plataformas, y conversión con el `StandardUpgrader`/`ParticleUpgrader` oficiales del paquete URP.
+
+**SSR descartado.** Verificado sobre el paquete instalado, no por número de versión: URP 17.0.4 trae **0 archivos** `*ScreenSpaceReflection*`. Solo lo usaba el perfil demo del vendor; interiores mate + la ReflectionProbe existente cubren. Por el mismo método se confirmó que **tampoco hay fog volumétrico** (0 coincidencias de `VolumetricFog`; los 19 overrides de `Runtime/Overrides/` son todos de post-proceso 2D).
+
+**PPv2 fuera del proyecto.** `BackroomsPostProcess` y `PlayerCameraPostProcessEnabler` reescritos contra el sistema Volume de URP, conservando las claves PlayerPrefs `bp_*` y la API que consume `BackroomsGraphicsSettings`. Mapeo: Vignette→Vignette, Grain→FilmGrain (con `response`), Bloom→Bloom, ColorGrading→ColorAdjustments. El paquete `com.unity.postprocessing` se retiró del manifest y el define `UNITY_POST_PROCESSING_STACK_V2` de las 20 plataformas.
+
+**`GridWallOffset.shader` portado a HLSL a mano, no a Shader Graph.** Shader Graph no expone el render state `Offset`, y ese `Offset 1, 1` es lo único que evita el z-fighting en las costuras coplanares de pared y suelo. Se conservan el nombre del shader (los tres `Shader.Find` siguen vivos) y la propiedad `_Cull`.
+
+**MPB se mantiene.** El tinte por tile sigue en `MaterialPropertyBlock`, que rompe el SRP Batcher en los renderers tinteados. La alternativa (instancing o vertex color) es un rediseño fuera de alcance. **Deuda medible y consciente.**
+
+### Lo que costó de verdad, y la regla que sale de ello
+
+El import del `STP - URP.unitypackage` **pisó tres escenas del proyecto con las versiones stock del vendor** (`STP_Showcase` −3438 líneas, `STP_MainMenu` −82, `STP_Forest` −102) y el `STP_Building.asset` con el alta de la pared. Se detectó tarde y se restauró desde git (`7793c4d`), pero **lo que no estuviera commiteado en ese momento no era recuperable**.
+
+**Regla que sale de esto, no negociable:** antes de importar cualquier `.unitypackage` de un vendor, commitear el árbol, y en el diálogo de import **desmarcar todo lo que no sea shader, material o prefab de render**. Los paquetes de integración traen las escenas demo completas y las sobrescriben enteras. Git fue lo único que salvó el trabajo; Plastic SCM está configurado en el proyecto pero sin CLI instalada, así que su historial solo es consultable desde la UI.
+
+Daño colateral no recuperado y **aceptado por decisión de Joel (2026-08-11)**: el `Cube` con `Default-Material` de Showcase y el terreno con `Default-Terrain-Standard` de Forest siguen en shaders Built-in. Son escenas demo del vendor y no afectan al mundo procedural. Bajo URP, un material sin pase válido sale magenta **solo en editor y dev build** — el pase de error está bajo `[Conditional("DEVELOPMENT_BUILD")]`, así que en release simplemente no se dibuja.
+
+### Consecuencias / qué prohíbe
+
+**PROHÍBE ejecutar `RenderPipelineUtility` del vendor** por los dos bugs de arriba.
+
+**PROHÍBE dar sombras a las luces runtime del worldgen.** `m_AdditionalLightShadowsSupported` queda OFF en `PC_RPAsset` y todas las luces de lámpara nacen con `LightShadows.None`. N lámparas con sombra en Forward+ es el camino corto a tirar el frame — mismo razonamiento que ya prohibió las sombras de la antorcha del peer en ADR-050.
+
+**PROHÍBE reintroducir `Shader.Find` como prueba de pipeline.** La comprobación es `GraphicsSettings.currentRenderPipeline != null`.
+
+**Obliga a que `Opaque Texture` siga ON** en `PC_RPAsset`: el import del vendor lo activó y sus shaders de refracción lo muestrean. Se aceptó en vez de revertirlo.
+
+**Deja pendiente** la retirada de `ChunkRenderer` (Fase 5 de la migración grid_gen; hoy es código muerto, `//EnsureComponent<ChunkRenderer>()` comentado en `GameBootstrap`), y el `Hair.shader` del vendor sin portar (0 materiales lo referencian).
+
+Verificado: ciclo headless con 0 errores CS, build de Player `Build Finished, Result: Success` con 0 errores de shader, y smoke visual sobre el standalone — menú principal renderizando correcto, sin magenta.

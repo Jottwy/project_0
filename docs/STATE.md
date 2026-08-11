@@ -2,6 +2,23 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-11 (migración BIRP→URP Forward+, ADR-065) — **9 commits: el proyecto pasa a URP de verdad. ADR-001 decía "Unity 6 + URP" desde el día uno y era falso: el paquete estaba instalado pero sin asset de pipeline asignado, así que el render era Built-in. Build de Player `Result: Success` con 0 errores de shader; smoke visual sobre el standalone con el menú renderizando correcto.**
+
+0. **QUÉ CERRÓ, en orden:** desacople de PPv2 → backup de assets en riesgo → `PC_RPAsset` asignado con Forward+ → worldgen a URP (`GridWallOffset.shader` portado a HLSL a mano + `LayerVisualMaterials`) → PolymindGames a URP (import manual, 95 materiales) → PPv2 reescrito a Volume system → limpieza (paquete y defines fuera) → `7793c4d` (restauración de escenas pisadas) → `2932a37` (cámara, partículas y Volume del menú).
+
+1. **EL IMPORT DEL VENDOR PISÓ TRES ESCENAS DEL PROYECTO.** El `STP - URP.unitypackage` trae las escenas demo completas y las sobrescribe enteras: `STP_Showcase` perdió 3438 líneas, `STP_MainMenu` 82, `STP_Forest` 102, y `STP_Building.asset` el alta de la pared. Se detectó tarde y se restauró desde git. **Regla que sale de esto: commitear ANTES de importar cualquier `.unitypackage` de vendor, y desmarcar en el diálogo todo lo que no sea shader/material/prefab de render.** Lo que no estuviera commiteado no era recuperable — Plastic SCM está configurado pero sin CLI, solo consultable desde la UI.
+
+2. **Herramienta de switch del vendor VETADA** por dos bugs verificados (conversión que compila vacía y reporta éxito; borrado por substring `"_BIRP"` que se habría llevado `CTIRuntimeComponents_BIRP`). Conversión hecha con `StandardUpgrader`/`ParticleUpgrader` oficiales vía `Assets/Editor/UrpMigrationTools.cs`.
+
+3. **Descartados con verificación sobre el paquete instalado, no por número de versión:** URP 17.0.4 no trae SSR (0 archivos `*ScreenSpaceReflection*`) ni fog volumétrico (0 coincidencias de `VolumetricFog`; los 19 overrides son todos post-proceso 2D).
+
+4. **Deuda aceptada:** `Cube` de Showcase y terreno de Forest siguen en shaders Built-in (escenas demo del vendor, decisión de Joel); MPB se mantiene en el tinte por tile pese a romper el SRP Batcher; `ChunkRenderer` sigue muerto pendiente de retirada (Fase 5 grid_gen); `Hair.shader` sin portar (0 materiales lo referencian).
+
+5. **Próximo:** ADR-066 — atmósfera de terror por zona (`ZoneAmbienceSet`: ambient + fog por `zone_kind`, sobre el patrón ya establecido por ADR-059).
+
+---
+
+## Sesión anterior
 - Fecha: 2026-08-10 (implementación ADR-063, misma sesión continuada) — **5 commits: namespace de ids runtime particionado por peer, implementado completo. ADR-063 pasa de PROPUESTA a VALIDADA. Bump WIRE_SCHEMA_VERSION 27→28. Backend 651→657 tests verdes; compile-check Roslyn 0 errores en las 4 asambleas Unity (único trabajo de esta sesión que toca C#).**
 
 0. **QUÉ CERRÓ, en orden:** `4e75aaf` (docs: ADR-063 pasa a VALIDADA — corrige la fórmula del borrador y responde las 3 preguntas pendientes) → `c4e8af9` (`NEXT_ENTITY_ID` particionado) → `89ea88f` (`NEXT_DROPPED_ID` particionado) → `4492663` (`interact_with_item` resuelve por chunk antes de recorrer todo el mundo) → `27b43af` (bump `WIRE_SCHEMA_VERSION` 27→28 + espejo C# + entrada `ipc-wire-schema.md`). `cargo fmt --check`/`clippy -D warnings` en verde en cada commit.

@@ -1,7 +1,7 @@
 # Backrooms Survival MMO — CLAUDE.md
 
 Mundo procedural multijugador persistente inspirado en Backrooms.
-Cliente: Unity 6 + URP (C#). Backend: Rust. Mecánica núcleo: chunk displacement + estabilización por tiers.
+Cliente: Unity 6 + URP 17.0.4 Forward+ (C#) — real desde ADR-065 (2026-08-11); antes de eso el render era Built-in pese a lo que decía ADR-001. Backend: Rust. Mecánica núcleo: chunk displacement + estabilización por tiers.
 
 ## Fuente de verdad
 - `docs/ARCHITECTURE.md` — arquitectura validada. No se contradice, se enmienda vía ADR.
