@@ -22,9 +22,12 @@ namespace BackroomsSurvival.Gameplay
         private const string KVig = "bp_vignette", KGrain = "bp_grain",
                              KBloom = "bp_bloom", KGrade = "bp_colorgrading";
 
-        // Backrooms defaults (ADR-066 subió viñeta y grano: el mundo tiene que cerrarse
-        // sobre el jugador, no leerse como un pasillo de oficina bien iluminado).
-        private const float DefVig = 0.45f, DefGrain = 0.25f, DefBloom = 0.6f, DefGrade = 1f;
+        // Backrooms defaults. ADR-066 los subió (viñeta 0.45, grano 0.25) y el playtest los
+        // corrigió: a esos valores el mundo se leía como metraje encontrado, no como un sitio
+        // real. Ahora el grano es ruido de sensor en las sombras, no textura de película, y la
+        // viñeta cierra el encuadre sin cantar como efecto de lente. La oscuridad la ponen el
+        // ambient por zona y postExposure, que es donde debe estar.
+        private const float DefVig = 0.32f, DefGrain = 0.08f, DefBloom = 0.6f, DefGrade = 1f;
 
         private VolumeProfile     _profile;
         private Volume            _volume;
@@ -64,7 +67,10 @@ namespace BackroomsSurvival.Gameplay
             // Bloom.softKnee has no URP equivalent (scatter stays at default).
             _vignette.smoothness.Override(0.5f);
             _vignette.rounded.Override(true);
-            _grain.type.Override(FilmGrainLookup.Medium1);
+            // Thin1: grano fino. ADR-066 lo puso en Medium1 porque ACES apaga el fino, pero
+            // Medium1 es grano de PELÍCULA y se ve como tal — justo lo que rompía el realismo.
+            // El fino a baja intensidad ensucia las sombras sin anunciarse.
+            _grain.type.Override(FilmGrainLookup.Thin1);
             _grain.response.Override(0.8f);
             _bloom.threshold.Override(0.75f);
 
