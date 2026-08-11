@@ -129,6 +129,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // applied to RenderSettings. _matCache is owned here and freed in OnDestroy.
         private readonly Dictionary<int, LayerVisualMaterials> _matCache = new Dictionary<int, LayerVisualMaterials>();
         private int _activeFogLayer = int.MinValue;
+        // ADR-066 — zona cuyo ambiente está aplicado ahora mismo. −1 es un valor LEGÍTIMO
+        // ("zona aún desconocida", cae al fallback de capa), así que el centinela de "nada
+        // aplicado todavía" tiene que ser otro: int.MinValue, igual que _activeFogLayer.
+        private int _activeZoneKind = int.MinValue;
 
         private int _lastCX = int.MinValue;
         private int _lastCZ = int.MinValue;
@@ -210,10 +214,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (cx != _lastCX || cz != _lastCZ)
                 UpdateChunks();
 
-            // Fase 5A: fog follows the player's active layer (applied only on change).
-            ApplyFogForLayer(Mathf.Clamp(
+            // ADR-066: ambient + fog follow the player's layer AND the zone of the chunk they
+            // stand in (applied only on change). The zone is POLLED here rather than driven by
+            // ZoneRegistry.ZoneArrived: TryGetZone is a dictionary hit, and polling needs no
+            // event lifecycle to get the late-chunk case right — the frame the zone lands, the
+            // lookup starts answering and the change-guard below does the rest.
+            int ambienceZone = ZoneRegistry.TryGetZone(cx, cz, out byte zk) ? zk : -1;
+            ApplyAmbienceForZone(Mathf.Clamp(
                 Mathf.FloorToInt(playerTransform.position.y / GridConstants.LayerHeight),
-                0, layerCount - 1));
+                0, layerCount - 1), ambienceZone);
 
             // Drain the queues under the per-frame budget every frame.
             ProcessBudget(cx, cz);
@@ -541,22 +550,51 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return m;
         }
 
-        /// <summary>Apply the fog of the player's active layer to RenderSettings (on change only).</summary>
-        private void ApplyFogForLayer(int layer)
+        // Fase 5A: uniform, lighter fog. Was per-layer cfg.fogDensity (0.035–0.09 → too
+        // dense); a flat 0.015 lets the space read without milky wash. ADR-066 keeps these
+        // as the FALLBACK — a zone that authors nothing looks exactly as it did before the
+        // ADR, which is what makes layers 1-3 byte-identical while only layer 0 is authored.
+        // cfg.fogDensity/cfg.fogColor stay disconnected on purpose: reconnecting them would
+        // bring back the milky look Fase 5A removed.
+        private const float BaseFogDensity = 0.015f;
+        private static readonly Color BaseFogColor = new Color(0.72f, 0.65f, 0.45f);
+
+        /// <summary>
+        /// ADR-066 — apply ambient light + fog for the player's layer AND zone (on change only).
+        /// Generalises Fase 5A's ApplyFogForLayer: fog is no longer flat across the world, and
+        /// RenderSettings.ambientLight — written exactly once at boot until now — is owned here.
+        ///
+        /// A zone with no authored <see cref="ZoneAmbienceSet"/> (including −1, "zone not known
+        /// yet") falls back to the layer's values, so an unauthored layer renders byte-identical
+        /// to before. This is GLOBAL render state resolved once per change, never inside the
+        /// per-tile loop: it cannot touch the per-chunk System.Random, so lamp/prop determinism
+        /// holds by construction.
+        /// </summary>
+        private void ApplyAmbienceForZone(int layer, int zoneKind)
         {
-            if (layer == _activeFogLayer) return;
+            if (layer == _activeFogLayer && zoneKind == _activeZoneKind) return;
             var cfg = GetLayerVisual(layer);
             if (cfg == null) return;
             _activeFogLayer = layer;
-            RenderSettings.fog = true;
-            RenderSettings.fogMode = FogMode.ExponentialSquared;
-            // Fase 5A: uniform, lighter fog. Was per-layer cfg.fogDensity (0.035–0.09 →
-            // too dense); now a flat 0.015 so the space reads without milky wash. This is
-            // the runtime fog owner, so setting it elsewhere (e.g. InitializeWorld) would
-            // be clobbered here on the first layer change. cfg.fogDensity/fogColor no
-            // longer drive fog (uniform look for now).
-            RenderSettings.fogDensity = 0.015f;
-            RenderSettings.fogColor = new Color(0.72f, 0.65f, 0.45f);
+            _activeZoneKind = zoneKind;
+
+            var ambient = cfg.ambientLight;
+            float density = BaseFogDensity;
+            var color = BaseFogColor;
+
+            if (cfg.TryGetZoneAmbienceSet(zoneKind, out var za))
+            {
+                if (za.overrideAmbientLight) ambient = za.ambientLight;
+                if (za.overrideFogDensity)   density = za.fogDensity;
+                if (za.overrideFogColor)     color   = za.fogColor;
+            }
+
+            RenderSettings.ambientMode  = UnityEngine.Rendering.AmbientMode.Flat;
+            RenderSettings.ambientLight = ambient;
+            RenderSettings.fog          = true;
+            RenderSettings.fogMode      = FogMode.ExponentialSquared;
+            RenderSettings.fogDensity   = density;
+            RenderSettings.fogColor     = color;
         }
 
         // ── Scheduling logic (pure; unit-tested headless in ChunkStreamSchedulerTests) ──

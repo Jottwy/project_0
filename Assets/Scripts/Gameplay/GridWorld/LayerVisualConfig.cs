@@ -115,6 +115,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float fogDensity = 0.04f;
         public Color fogColor = new Color(0.776f, 0.711f, 0.684f);
 
+        [Tooltip("ADR-066 — luz ambiental de la capa: lo que se ve en los rincones sin lámpara. " +
+                 "Es el FALLBACK cuando la zona del jugador no autora zoneAmbienceSets. El " +
+                 "default es el dorado apagado que GridTestWorld escribía a fuego hasta ADR-066, " +
+                 "así que una capa sin tocar se ve exactamente igual que antes.")]
+        public Color ambientLight = new Color(0.28f, 0.24f, 0.16f);
+
         [Tooltip("ADR-066 — sparse override list: ambient light and fog by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
                  "match) ⇒ the layer's ambient/fog, unchanged. A diferencia de luz y techo, " +

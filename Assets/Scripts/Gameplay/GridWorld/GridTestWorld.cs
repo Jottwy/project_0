@@ -110,7 +110,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             // Fase 5A: a dim golden ambient fills the space so unlit corners read as
             // Backrooms gloom rather than pure black (the per-layer spots only pool the
-            // floor). Set once — nothing else writes RenderSettings.ambient.
+            // floor).
+            //
+            // ADR-066: this is now only the BOOT value, for the frames before the streamer
+            // resolves the player's layer and zone. From the first Update, the owner is
+            // ProceduralWorldGenerator.ApplyAmbienceForZone, which re-applies it from the
+            // layer config (LayerVisualConfig.ambientLight defaults to this same colour) or
+            // from the zone's override. Changing the constant here alone no longer changes
+            // what the player sees.
             RenderSettings.ambientMode  = UnityEngine.Rendering.AmbientMode.Flat;
             RenderSettings.ambientLight = new Color(0.28f, 0.24f, 0.16f);
 
