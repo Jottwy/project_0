@@ -2,7 +2,7 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
-- Fecha: 2026-08-11 (migración BIRP→URP Forward+, ADR-065) — **9 commits: el proyecto pasa a URP de verdad. ADR-001 decía "Unity 6 + URP" desde el día uno y era falso: el paquete estaba instalado pero sin asset de pipeline asignado, así que el render era Built-in. Build de Player `Result: Success` con 0 errores de shader; smoke visual sobre el standalone con el menú renderizando correcto.**
+- Fecha: 2026-08-11 (migración BIRP→URP Forward+ ADR-065 + atmósfera por zona ADR-066) — **13 commits: el proyecto pasa a URP de verdad. ADR-001 decía "Unity 6 + URP" desde el día uno y era falso: el paquete estaba instalado pero sin asset de pipeline asignado, así que el render era Built-in. Build de Player `Result: Success` con 0 errores de shader; smoke visual sobre el standalone con el menú renderizando correcto.**
 
 0. **QUÉ CERRÓ, en orden:** desacople de PPv2 → backup de assets en riesgo → `PC_RPAsset` asignado con Forward+ → worldgen a URP (`GridWallOffset.shader` portado a HLSL a mano + `LayerVisualMaterials`) → PolymindGames a URP (import manual, 95 materiales) → PPv2 reescrito a Volume system → limpieza (paquete y defines fuera) → `7793c4d` (restauración de escenas pisadas) → `2932a37` (cámara, partículas y Volume del menú).
 
@@ -14,7 +14,9 @@
 
 4. **Deuda aceptada:** `Cube` de Showcase y terreno de Forest siguen en shaders Built-in (escenas demo del vendor, decisión de Joel); MPB se mantiene en el tinte por tile pese a romper el SRP Batcher; `ChunkRenderer` sigue muerto pendiente de retirada (Fase 5 grid_gen); `Hair.shader` sin portar (0 materiales lo referencian).
 
-5. **Próximo:** ADR-066 — atmósfera de terror por zona (`ZoneAmbienceSet`: ambient + fog por `zone_kind`, sobre el patrón ya establecido por ADR-059).
+5. **ADR-066 implementado en la misma sesión** (`f74b6c1` mecanismo → `dce7298` consumidor → `eb4d569` autoría + Volume): atmósfera por `zone_kind`. `ZoneAmbienceSet` es la tercera lista dispersa con la forma exacta de ADR-059 (comodín booleano, `override*` por campo, primera coincidencia gana, set a medias no captura). `ApplyFogForLayer` → `ApplyAmbienceForZone`, que pasa a ser el dueño de `RenderSettings.ambientLight` — hasta ahora se escribía UNA vez en `GridTestWorld` y nadie más lo tocaba. Zona consultada por polling (`ZoneRegistry.TryGetZone`), no por suscripción a `ZoneArrived`: un hit de diccionario por frame y sin ciclo de vida de evento que gestionar. Las 13 zonas autoradas en `Layer0_Vestibulo` con niebla de 0.020 a 0.070 (atenuación al 50 % de 42 m a 12 m; antes eran 55 m planos para todo), más 7 `ZoneLightSet` nuevos sobre el mecanismo existente, cero código. Volume de mundo: ACES añadido, `postExposure −0.35` estático, viñeta 0.45, grano `Medium1` 0.25.
+
+6. **PENDIENTE Y NO NEGOCIABLE ANTES DE DAR ADR-066 POR BUENO — validación visual.** Los 13 juegos de valores salen de aritmética sobre la curva de niebla (`d = 0.8326/density`) y de intención de diseño, **no de haberlos visto en juego**. Compile-check en verde no dice si da miedo. Primer valor a revisar si algo falla: `BLACKOUT` a `0.070` cruza a propósito el suelo de jugabilidad de ~14 m (queda en 12 m) — si es tanteo en vez de tensión, bajar a `0.060` antes de tocar nada más. Capas 1–3 sin autorar caen al fallback y quedan byte-idénticas.
 
 ---
 

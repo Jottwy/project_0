@@ -2707,3 +2707,51 @@ Daño colateral no recuperado y **aceptado por decisión de Joel (2026-08-11)**:
 **Deja pendiente** la retirada de `ChunkRenderer` (Fase 5 de la migración grid_gen; hoy es código muerto, `//EnsureComponent<ChunkRenderer>()` comentado en `GameBootstrap`), y el `Hair.shader` del vendor sin portar (0 materiales lo referencian).
 
 Verificado: ciclo headless con 0 errores CS, build de Player `Build Finished, Result: Success` con 0 errores de shader, y smoke visual sobre el standalone — menú principal renderizando correcto, sin magenta.
+
+---
+
+## ADR-066 — Atmósfera por zona: `ZoneAmbienceSet`, la tercera lista dispersa
+
+Estado: **DECIDIDA e IMPLEMENTADA (2026-08-11), PENDIENTE DE VALIDACIÓN VISUAL.** Rama `migration/worldgraph-v1`, commits `f74b6c1` (mecanismo), `dce7298` (consumidor), `eb4d569` (autoría + Volume). Alcance decidido por Joel vía `AskUserQuestion`: fog por zona con densidad moderada, y autoría solo de `Layer0_Vestibulo`.
+
+### Contexto
+
+Tras ADR-065 el proyecto ya renderiza en URP, pero el mundo no daba miedo: **la niebla era plana** (`0.015` para todo el mundo, decisión de Fase 5A tras comprobar que el rango por capa de 0.035–0.09 salía lechoso) y **la luz ambiental se escribía una sola vez al arrancar** (`GridTestWorld.InitializeWorld`, con el comentario "Set once — nothing else writes RenderSettings.ambient"). Trece `zone_kind` distintos compartían exactamente la misma atmósfera.
+
+ADR-059 ya había resuelto la mitad del problema: luz y techo por zona, con mecanismo probado. Lo que faltaba era el eje de ambiente. **Este ADR no inventa un patrón: copia el de ADR-059 por tercera vez.**
+
+### Decisión
+
+**`ZoneAmbienceSet[] zoneAmbienceSets` en `LayerVisualConfig`**, tercera lista dispersa paralela a `zoneLightSets` y `zoneCeilingSets`, con las mismas reglas exactas: comodín booleano explícito `anyZoneKind`, un booleano `override*` por campo, primera coincidencia gana, y un set sin ningún override habilitado no captura la zona (autoría a medias). Campos: `ambientLight`, `fogDensity`, `fogColor`. Los booleanos por campo son obligatorios por el mismo motivo que en ADR-059: `fogDensity = 0` es "zona sin niebla", un valor autorable, no "sin cambio".
+
+**`ApplyFogForLayer(layer)` se generaliza a `ApplyAmbienceForZone(layer, zoneKind)`** y pasa a ser el dueño de `RenderSettings.ambientLight` además del fog. Se recalcula al cambiar capa **o** zona.
+
+**La zona se consulta por polling, no por suscripción a `ZoneRegistry.ZoneArrived`.** `TryGetZone` es un hit de diccionario por frame y no necesita ciclo de vida de evento para acertar el caso del chunk que llega tarde bajo los pies del jugador: el frame en que la zona aterriza, el lookup empieza a responder y la guarda de "solo al cambiar" hace el resto. Menos superficie que un evento con su suscripción y su baja.
+
+**Fallbacks elegidos para que nada cambie sin autoría explícita.** El fog cae a las constantes planas de Fase 5A, ahora con nombre (`BaseFogDensity = 0.015f`, `BaseFogColor`); `cfg.fogDensity`/`cfg.fogColor` **siguen desconectados a propósito** — reconectarlos devolvería el lavado lechoso que Fase 5A quitó. El ambient cae a `LayerVisualConfig.ambientLight`, campo nuevo cuyo default es exactamente el color que `GridTestWorld` tenía a fuego. **Las capas 1–3, sin autorar, quedan byte-idénticas.**
+
+**Trampa de centinela, documentada porque costó pensarla:** `_activeZoneKind` arranca en `int.MinValue`, no en `−1`. `−1` es un valor legítimo ("zona aún desconocida", cae al fallback), así que usarlo como "nada aplicado todavía" habría hecho que la primera aplicación real se saltara la guarda de cambio.
+
+**Volume de mundo:** se añade `Tonemapping` en ACES, que faltaba desde la migración — sin él los fluorescentes queman a blanco plano. `postExposure` a `−0.35` **estático, fuera del lerp de `ApplyGrading`**: el slider `bp_colorgrading` gobierna carácter (saturación, contraste, tinte), no cuánta luz entra, así que apagarlo no puede devolver un mundo brillante. Viñeta 0.38→0.45, grano 0.18→0.25 y de `Thin1` a `Medium1` (con ACES el grano fino desaparece), bloom threshold 0.85→0.75, saturación −18→−28, contraste 12→15.
+
+### Determinismo: por qué no puede romperse aquí
+
+Ambient y fog son estado **global** de `RenderSettings`, resuelto una vez por cambio de capa o zona, **fuera del bucle de tiles**. No pueden tocar el `System.Random` por chunk que decide qué lámparas están rotas. A diferencia de ADR-059 —donde el invariante "los overrides cambian valores, nunca el número de draws" hay que respetarlo a mano al editar— aquí se cumple **por construcción**.
+
+### Rango de niebla y el suelo de jugabilidad
+
+En `ExponentialSquared` la distancia de atenuación al 50 % es `d = 0.8326 / density`. Con pasillos de 5 m, salas de hasta 20 m y chunks de 50 m, el suelo de navegabilidad se fija en **~14 m** (`density ≈ 0.060`): por debajo de eso moverse es tanteo, no tensión. La autoría va de `0.020` (OPEN_HALL, 42 m — una nave tiene que leerse como grande) a `0.070` (BLACKOUT, 12 m).
+
+**BLACKOUT cruza ese suelo a propósito**: es la zona que justifica la linterna. Si el playtest dice que es injugable, **ese es el primer valor a bajar (a `0.060`), antes de tocar cualquier otro**.
+
+### Consecuencias / qué prohíbe
+
+**PROHÍBE volver a escribir `RenderSettings.ambientLight` o el fog desde otro sitio.** El dueño es `ApplyAmbienceForZone`; cualquier escritura externa la pisa en el siguiente cambio de zona o de capa. El valor de `GridTestWorld.InitializeWorld` queda como valor de arranque para los frames previos a la primera resolución, y cambiarlo ahí ya no cambia lo que ve el jugador.
+
+**PROHÍBE reconectar `cfg.fogDensity`/`cfg.fogColor`** sin revisar antes por qué Fase 5A los desconectó.
+
+**Obliga a que un `ZoneAmbienceSet` nuevo respete el suelo de niebla**, verificado por test contra el asset real (`fogDensity ∈ [0.015, 0.075]`, luminancia del ambient `< 0.30`, y SAFE más claro que BLACKOUT — esta última detecta que alguien invirtió la intención al retocar valores).
+
+**Deja pendiente** la autoría de zonas en las capas 1–3 (hoy caen al fallback) y **la validación visual completa**: los 13 juegos de valores salen de aritmética sobre la curva de niebla y de intención de diseño, no de haberlos visto en juego. El compile-check en verde no dice nada sobre si da miedo.
+
+Verificado: compile-check Roslyn 0 errores en las 4 asambleas tras cada commit; `ZoneAmbienceSetTests` cubre los 5 casos de forma del set nuevo más el guarda contra el asset real.
