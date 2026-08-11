@@ -86,6 +86,10 @@ namespace BackroomsSurvival.Net
             // Neutralize the vendor CarryablePickup so interaction routes through the host (mirrors
             // StpItemReplicator destroying ItemPickup). Destroying before Start runs means it never
             // subscribes Interacted nor carries locally; only the gate responds.
+            // CarryableBuildAction has [RequireComponent(typeof(CarryablePickup))], so it must be
+            // destroyed first or Unity refuses to remove CarryablePickup.
+            foreach (var buildAction in go.GetComponentsInChildren<CarryableBuildAction>(true))
+                Destroy(buildAction);
             foreach (var vendorPickup in go.GetComponentsInChildren<CarryablePickup>(true))
                 Destroy(vendorPickup);
 
