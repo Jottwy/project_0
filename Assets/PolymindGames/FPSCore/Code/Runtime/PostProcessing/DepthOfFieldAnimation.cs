@@ -39,7 +39,16 @@ namespace PolymindGames.PostProcessing
             list.Add(_nearFocusEnd.SetParameter(component.nearFocusEnd));
             list.Add(_farFocusStart.SetParameter(component.farFocusStart));
             list.Add(_farFocusEnd.SetParameter(component.farFocusEnd));
-#elif UNITY_POST_PROCESSING_STACK_V2
+#else
+            // PARCHE LOCAL (ADR-065, migración a URP). El original era
+            // `#elif UNITY_POST_PROCESSING_STACK_V2`, así que bajo URP no entraba NINGUNA
+            // rama y esta colección salía vacía: el DoF se activaba y se quedaba con los
+            // valores estáticos del perfil (focusDistance 10, Bokeh), de modo que el libro
+            // a 0,3 m salía borroso y el mundo nítido — exactamente al revés de lo autorado.
+            // Afectaba a los 4 efectos con DoF (SurvivalBook, Pause, Death, Inventory).
+            // `aperture` y `focusDistance` existen igual en el DepthOfField de URP, así que
+            // la rama de PPv2 vale tal cual; solo le faltaba dejar entrar a URP.
+            // OJO: se pierde si se reimporta el .unitypackage del vendor.
             list.Add(_aperture.SetParameter(component.aperture));
             list.Add(_focusDistance.SetParameter(component.focusDistance));
 #endif
