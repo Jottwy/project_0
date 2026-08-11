@@ -22,8 +22,9 @@ namespace BackroomsSurvival.Gameplay
         private const string KVig = "bp_vignette", KGrain = "bp_grain",
                              KBloom = "bp_bloom", KGrade = "bp_colorgrading";
 
-        // Backrooms defaults.
-        private const float DefVig = 0.38f, DefGrain = 0.18f, DefBloom = 0.5f, DefGrade = 1f;
+        // Backrooms defaults (ADR-066 subió viñeta y grano: el mundo tiene que cerrarse
+        // sobre el jugador, no leerse como un pasillo de oficina bien iluminado).
+        private const float DefVig = 0.45f, DefGrain = 0.25f, DefBloom = 0.6f, DefGrade = 1f;
 
         private VolumeProfile     _profile;
         private Volume            _volume;
@@ -31,6 +32,7 @@ namespace BackroomsSurvival.Gameplay
         private FilmGrain         _grain;
         private Bloom             _bloom;
         private ColorAdjustments  _grading;
+        private Tonemapping       _tonemapping;
         private float             _gradeT = DefGrade;
 
         private void Awake()
@@ -50,20 +52,31 @@ namespace BackroomsSurvival.Gameplay
 
         private void BuildVolume()
         {
-            _profile  = ScriptableObject.CreateInstance<VolumeProfile>();
-            _vignette = _profile.Add<Vignette>();
-            _grain    = _profile.Add<FilmGrain>();
-            _bloom    = _profile.Add<Bloom>();
-            _grading  = _profile.Add<ColorAdjustments>();
+            _profile     = ScriptableObject.CreateInstance<VolumeProfile>();
+            _vignette    = _profile.Add<Vignette>();
+            _grain       = _profile.Add<FilmGrain>();
+            _bloom       = _profile.Add<Bloom>();
+            _grading     = _profile.Add<ColorAdjustments>();
+            _tonemapping = _profile.Add<Tonemapping>();
 
             // Static (non-tunable) parameters → Backrooms character.
             // PPv2 mapping: Grain.lumContrib→response, Grain.size≈1→Thin lookup;
             // Bloom.softKnee has no URP equivalent (scatter stays at default).
-            _vignette.smoothness.Override(0.4f);
+            _vignette.smoothness.Override(0.5f);
             _vignette.rounded.Override(true);
-            _grain.type.Override(FilmGrainLookup.Thin1);
+            _grain.type.Override(FilmGrainLookup.Medium1);
             _grain.response.Override(0.8f);
-            _bloom.threshold.Override(0.85f);
+            _bloom.threshold.Override(0.75f);
+
+            // ADR-066 — ACES: sin él los fluorescentes queman a blanco plano y el mundo se
+            // lee como sobreexpuesto justo donde debería dar miedo.
+            _tonemapping.mode.Override(TonemappingMode.ACES);
+
+            // ADR-066 — la exposición es ESTÁTICA, fuera del lerp de ApplyGrading: el slider
+            // bp_colorgrading gobierna carácter (saturación, contraste, tinte), no cuánta luz
+            // entra. Apagar el grading no puede devolver un mundo brillante. Compensa además
+            // el lift de ACES en los medios.
+            _grading.postExposure.Override(-0.35f);
 
             var go = new GameObject("BackroomsPostProcessVolume");
             go.transform.SetParent(transform, false);
@@ -101,8 +114,8 @@ namespace BackroomsSurvival.Gameplay
 
         private void ApplyGrading(float t)
         {
-            _grading.saturation.Override(Mathf.Lerp(0f, -18f, t));
-            _grading.contrast.Override(Mathf.Lerp(0f, 12f, t));
+            _grading.saturation.Override(Mathf.Lerp(0f, -28f, t));
+            _grading.contrast.Override(Mathf.Lerp(0f, 15f, t));
             _grading.colorFilter.Override(Color.Lerp(Color.white, new Color(1f, 0.97f, 0.88f), t));
         }
 

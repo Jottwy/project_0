@@ -47,8 +47,198 @@ MonoBehaviour:
     lightDensity: 0.9
     overrideBrokenLampChance: 1
     brokenLampChance: 0.02
+  - zoneKind: 7
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 0.9, g: 0.9, b: 1, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 1.2
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.1
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.85
+  - zoneKind: 3
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 1, g: 0.75, b: 0.7, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 2.2
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.35
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.45
+  - zoneKind: 10
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 1, g: 0.5, b: 0.45, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 2
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.3
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.4
+  - zoneKind: 11
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 0.8, g: 0.75, b: 0.9, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 1.5
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.15
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.7
+  - zoneKind: 6
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 0.85, g: 0.95, b: 0.95, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 2.4
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.45
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.35
+  - zoneKind: 2
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 1, g: 0.98, b: 0.9, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 3
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.75
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.05
+  - zoneKind: 9
+    anyZoneKind: 0
+    overrideLampColor: 1
+    lampColor: {r: 0.9, g: 0.97, b: 1, a: 1}
+    overrideLampIntensity: 1
+    lampIntensity: 3.4
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 1
+    lightDensity: 0.8
+    overrideBrokenLampChance: 1
+    brokenLampChance: 0.02
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
+  ambientLight: {r: 0.28, g: 0.24, b: 0.16, a: 1}
+  zoneAmbienceSets:
+  - zoneKind: 0
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.22, g: 0.19, b: 0.13, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.028
+    overrideFogColor: 1
+    fogColor: {r: 0.57, g: 0.49, b: 0.34, a: 1}
+  - zoneKind: 1
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.2, g: 0.17, b: 0.12, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.035
+    overrideFogColor: 1
+    fogColor: {r: 0.52, g: 0.44, b: 0.31, a: 1}
+  - zoneKind: 2
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.26, g: 0.25, b: 0.22, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.022
+    overrideFogColor: 1
+    fogColor: {r: 0.68, g: 0.65, b: 0.57, a: 1}
+  - zoneKind: 3
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.16, g: 0.1, b: 0.09, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.045
+    overrideFogColor: 1
+    fogColor: {r: 0.42, g: 0.26, b: 0.23, a: 1}
+  - zoneKind: 4
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.24, g: 0.22, b: 0.17, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.02
+    overrideFogColor: 1
+    fogColor: {r: 0.62, g: 0.57, b: 0.44, a: 1}
+  - zoneKind: 5
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.21, g: 0.19, b: 0.15, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.03
+    overrideFogColor: 1
+    fogColor: {r: 0.55, g: 0.49, b: 0.39, a: 1}
+  - zoneKind: 6
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.15, g: 0.18, b: 0.18, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.055
+    overrideFogColor: 1
+    fogColor: {r: 0.62, g: 0.68, b: 0.68, a: 1}
+  - zoneKind: 7
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.05, g: 0.05, b: 0.06, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.07
+    overrideFogColor: 1
+    fogColor: {r: 0.13, g: 0.13, b: 0.16, a: 1}
+  - zoneKind: 8
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.25, g: 0.22, b: 0.14, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.03
+    overrideFogColor: 1
+    fogColor: {r: 0.65, g: 0.57, b: 0.36, a: 1}
+  - zoneKind: 9
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.23, g: 0.24, b: 0.24, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.026
+    overrideFogColor: 1
+    fogColor: {r: 0.72, g: 0.75, b: 0.75, a: 1}
+  - zoneKind: 10
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.2, g: 0.07, b: 0.07, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.048
+    overrideFogColor: 1
+    fogColor: {r: 0.52, g: 0.18, b: 0.18, a: 1}
+  - zoneKind: 11
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.08, g: 0.06, b: 0.09, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.06
+    overrideFogColor: 1
+    fogColor: {r: 0.21, g: 0.16, b: 0.23, a: 1}
+  - zoneKind: 12
+    anyZoneKind: 0
+    overrideAmbientLight: 1
+    ambientLight: {r: 0.24, g: 0.26, b: 0.24, a: 1}
+    overrideFogDensity: 1
+    fogDensity: 0.024
+    overrideFogColor: 1
+    fogColor: {r: 0.62, g: 0.68, b: 0.62, a: 1}
   props:
   - prefab: {fileID: 0}
     placeholderType: desk

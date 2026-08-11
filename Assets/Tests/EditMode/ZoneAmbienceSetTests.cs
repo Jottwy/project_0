@@ -25,6 +25,8 @@ namespace BackroomsSurvival.Tests
         private const int ZoneNormal = 0;
         /// <summary>Espejo de `ZONE_BLACKOUT` (mismo archivo del backend).</summary>
         private const int ZoneBlackout = 7;
+        /// <summary>Espejo de `ZONE_SAFE` (mismo archivo del backend).</summary>
+        private const int ZoneSafe = 2;
         private const int ZoneUnknown = -1;
 
         private LayerVisualConfig _cfg;
@@ -291,6 +293,44 @@ namespace BackroomsSurvival.Tests
             if (zl.overrideLampRange)
                 Assert.LessOrEqual(zl.lampRange, 6f,
                     "restricción dura de BackroomsLighting: √(range²−16) < 5 ⇒ ≤ 6");
+        }
+
+        [Test]
+        public void Layer0ActuallyAuthorsAmbienceForEveryZone()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+
+            // ADR-066 autora las 13 zonas de golpe: aquí el mecanismo sin autoría no es un
+            // "no pasa nada", es el ADR entero sin efecto.
+            for (int z = 0; z <= ZoneOffice; z++)
+            {
+                Assert.IsTrue(real.TryGetZoneAmbienceSet(z, out var za),
+                    $"zone_kind {z} sin ZoneAmbienceSet — las 13 se autoran en ADR-066");
+                Assert.IsTrue(za.overrideAmbientLight && za.overrideFogDensity,
+                    $"zone_kind {z}: ambiente y niebla deben estar ambos habilitados");
+
+                // Suelo de jugabilidad: 0.8326/density es la distancia de atenuación al 50 %.
+                // 0.075 ≈ 11 m; por debajo de eso navegar un pasillo de 5 m es tanteo.
+                Assert.LessOrEqual(za.fogDensity, 0.075f,
+                    $"zone_kind {z}: niebla por encima del suelo de jugabilidad");
+                Assert.GreaterOrEqual(za.fogDensity, 0.015f,
+                    $"zone_kind {z}: menos niebla que la base plana de Fase 5A no aporta nada");
+
+                // El mundo es oscuro por diseño: un ambient alto anula las lámparas y con
+                // ellas todo el trabajo de luz por zona de ADR-059.
+                float luma = 0.2126f * za.ambientLight.r
+                           + 0.7152f * za.ambientLight.g
+                           + 0.0722f * za.ambientLight.b;
+                Assert.Less(luma, 0.30f, $"zone_kind {z}: ambient demasiado brillante ({luma:F3})");
+            }
+
+            Assert.IsTrue(real.TryGetZoneAmbienceSet(ZoneBlackout, out var blackout));
+            Assert.Less(blackout.fogDensity, 1f, "sanity");
+            Assert.IsTrue(real.TryGetZoneAmbienceSet(ZoneSafe, out var safe));
+            Assert.Less(safe.fogDensity, blackout.fogDensity,
+                "SAFE tiene que ser el alivio y BLACKOUT el castigo — si se invierte, la " +
+                "intención del ADR está del revés en el asset");
         }
 
         [Test]
