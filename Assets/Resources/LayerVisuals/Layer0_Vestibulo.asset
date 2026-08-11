@@ -13,11 +13,11 @@ MonoBehaviour:
   m_Name: Layer0_Vestibulo
   m_EditorClassIdentifier: 
   floorTexture: {fileID: 2800000, guid: 6482eff00d0dc134994eea83c6f3f35c, type: 3}
-  floorTint: {r: 0.95, g: 0.93, b: 0.9, a: 1}
+  floorTint: {r: 1, g: 1, b: 1, a: 1}
   wallTexture: {fileID: 2800000, guid: d1c798872c2936c4c9887f4050e1010a, type: 3}
-  wallTint: {r: 0.98, g: 0.97, b: 0.95, a: 1}
+  wallTint: {r: 1, g: 1, b: 1, a: 1}
   ceilingTexture: {fileID: 2800000, guid: dd05e192d84308546afe376cd571b166, type: 3}
-  ceilingTint: {r: 0.97, g: 0.97, b: 0.94, a: 1}
+  ceilingTint: {r: 1, g: 1, b: 1, a: 1}
   showCeiling: 1
   ceilingPanelVariety: 0.25
   ceilingPipeChance: 0.35
@@ -344,19 +344,9 @@ MonoBehaviour:
       spawnWeight: 1
       canBeRotated: 0
       floorOnly: 1
-  floorTintVariants:
-  - {r: 0.95, g: 0.93, b: 0.9, a: 1}
-  - {r: 0.91, g: 0.89, b: 0.87, a: 1}
-  - {r: 0.98, g: 0.96, b: 0.93, a: 1}
-  wallTintVariants:
-  - {r: 0.98, g: 0.97, b: 0.95, a: 1}
-  - {r: 0.94, g: 0.93, b: 0.91, a: 1}
-  - {r: 1, g: 0.99, b: 0.98, a: 1}
-  - {r: 0.96, g: 0.96, b: 0.93, a: 1}
-  ceilingTintVariants:
-  - {r: 0.97, g: 0.97, b: 0.94, a: 1}
-  - {r: 0.94, g: 0.94, b: 0.91, a: 1}
-  - {r: 1, g: 1, b: 0.97, a: 1}
+  floorTintVariants: []
+  wallTintVariants: []
+  ceilingTintVariants: []
   wallPanelVariety: 0.08
   kneeWallHeight: 1.35
   lintelChance: 0.12

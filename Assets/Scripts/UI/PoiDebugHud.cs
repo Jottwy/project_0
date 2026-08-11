@@ -49,9 +49,27 @@ namespace BackroomsSurvival.UI
             _canvas.gameObject.SetActive(enablePoiDebugHud);
         }
 
+        /// <summary>
+        /// FPS suavizado (media móvil exponencial sobre <c>unscaledDeltaTime</c>, τ ≈ 0.5 s).
+        /// Está aquí y no en un contador propio porque este HUD ya es el único sitio del
+        /// proyecto donde se leen en pantalla capa y <c>zone_kind</c>, y una captura de
+        /// validación tiene que poder probar POSICIÓN, ZONA y COSTE en la misma imagen —
+        /// si el rendimiento se mide en una corrida y el encuadre en otra, no son la misma
+        /// medida. Solo dev build, como el resto del HUD.
+        /// </summary>
+        private float _fps;
+
         private void Update()
         {
-            
+            // Fuera del early-return: el FPS debe seguir promediando mientras el mundo
+            // carga, que es justo cuando el frame es más caro.
+            float dt = Time.unscaledDeltaTime;
+            if (dt > 0f)
+            {
+                float inst = 1f / dt;
+                _fps = _fps <= 0f ? inst : Mathf.Lerp(_fps, inst, Mathf.Clamp01(dt / 0.5f));
+            }
+
             if (!enablePoiDebugHud || _text == null)
                 return;
 
@@ -76,7 +94,8 @@ namespace BackroomsSurvival.UI
                 .Append(pos.x.ToString("0.0")).Append(", ")
                 .Append(pos.y.ToString("0.0")).Append(", ")
                 .Append(pos.z.ToString("0.0")).Append(")\n");
-            _sb.Append("chunk (").Append(chunkX).Append(", ").Append(chunkZ).Append(")  layer ").Append(layer).Append('\n');
+            _sb.Append("chunk (").Append(chunkX).Append(", ").Append(chunkZ).Append(")  layer ").Append(layer)
+                .Append("  fps ").Append(Mathf.RoundToInt(_fps)).Append('\n');
 
             if (current != null)
             {

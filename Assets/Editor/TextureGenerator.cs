@@ -32,11 +32,21 @@ namespace BackroomsSurvival.EditorTools
             ApplyTexture($"{MaterialFolder}/GridFloor.mat",   carpet,    4f, 4f);
             ApplyTexture($"{MaterialFolder}/GridCeiling.mat", ceiling,   2f, 2f);
 
+            // Los tres materiales CANON — los únicos que el mundo generado usa de verdad
+            // (LayerVisualMaterials.Build copia estos; los Grid* de arriba solo sobreviven
+            // como material de los prefabs y como fallback de textura). Si se dejaran fuera
+            // de aquí, regenerar las texturas movería el aspecto de los prefabs y no el del
+            // mundo, que es justo al revés de lo que se espera al ejecutar este menú.
+            ApplyTexture($"{MaterialFolder}/M_Backrooms_Wall.mat",    wallpaper, 2f, 2f);
+            ApplyTexture($"{MaterialFolder}/M_Backrooms_Floor.mat",   carpet,    4f, 4f);
+            ApplyTexture($"{MaterialFolder}/M_Backrooms_Ceiling.mat", ceiling,   2f, 2f);
+
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
             Debug.Log("[TextureGenerator] Generated WallpaperYellow / CarpetBeige / " +
-                      "CeilingTiles and applied them to GridWall/GridFloor/GridCeiling.");
+                      "CeilingTiles and applied them to GridWall/GridFloor/GridCeiling " +
+                      "and to M_Backrooms_Wall/Floor/Ceiling.");
         }
 
         // ─── Texture 1: pale cream wallpaper with a faint argyle diamond pattern ──
@@ -81,12 +91,18 @@ namespace BackroomsSurvival.EditorTools
         //
         // El nombre del fichero decía "beige" y el color era marrón oscuro (120/95/65 → con
         // el tinte de capa, albedo 0.13 en azul: gris carbón en pantalla). La moqueta de
-        // oficina del canon es clara. Luminancia de fondo 150/255 frente a 100/255.
+        // oficina del canon es clara.
+        //
+        // Segundo ajuste, con la paleta base unificada: 150/255 dejaba el suelo un 24 % por
+        // debajo de la pared (197), y el canon de Level 0 tiene la moqueta APENAS más oscura
+        // que el papel, no en otra liga. Se sube la luminancia de fondo a 180/255 (−9 %
+        // respecto a la pared) conservando la saturación, que sí debe ser mayor que la del
+        // papel: 0.30 frente a 0.24.
         private static Color32[] BuildCarpetBeige()
         {
             var rng = new System.Random(2002);
-            var bg    = new Color32(166, 148, 116, 255);
-            var fibre = new Color32(180, 163, 132, 255);
+            var bg    = new Color32(200, 178, 140, 255);
+            var fibre = new Color32(213, 190, 150, 255);
 
             // Thin diagonal fibres every 3 px; the diagonal flips direction every
             // 6 px band, giving an interlocked weave.
@@ -106,12 +122,24 @@ namespace BackroomsSurvival.EditorTools
         }
 
         // ─── Texture 3: dirty-white drop-ceiling tiles ───────────────────────
+        //
+        // Dos correcciones, ambas hacia el canon:
+        //
+        // (1) FONDO de 220 a 203 de luminancia. "Igual o un punto más claro que la pared" es
+        //     lo que pide Level 0; contra los 197 del fondo del papel, 220 son 23 puntos de
+        //     escalón y el techo terminaba llamando la atención por encima de la pared. A 203
+        //     la placa queda 6 puntos por encima: se lee como más clara sin separarse.
+        //
+        // (2) CONTRASTE de la rejilla. El punto de esquina caía a 120/255, un 47 % por debajo
+        //     del fondo, y a 0,625 m de placa eso se lee como una mancha oscura por baldosa en
+        //     vez de como una junta. Rejilla y punto pasan a 16 y 33 puntos: la placa se
+        //     distingue de cerca y el techo es prácticamente liso a distancia.
         private static Color32[] BuildCeilingTiles()
         {
             var rng = new System.Random(3003);
-            var bg     = new Color32(225, 220, 205, 255);
-            var border = new Color32(180, 175, 160, 255);
-            var dot    = new Color32(120, 115, 100, 255);
+            var bg     = new Color32(208, 203, 189, 255);
+            var border = new Color32(192, 187, 174, 255);
+            var dot    = new Color32(175, 171, 157, 255);
 
             // 128 px plates (4 across). 3 px grid line on the top/left of each
             // plate; a 4×4 dark dot at every plate corner. Interior carries faint

@@ -53,11 +53,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
-        /// <summary>Shared floor/ceiling slab at local height <paramref name="localY"/>.</summary>
-        private static void PlaceFloorSlab(GridPrefabSet prefabs, Transform parent,
+        /// <summary>Shared floor/ceiling slab at local height <paramref name="localY"/>.
+        /// Devuelve la pieza para que el llamador pueda pintarla: es la losa de TECHO de la
+        /// capa superior, y era la única superficie de mundo que se quedaba con el material
+        /// del prefab (GridFloor.mat) en vez de con la paleta base. Hoy no se instancia —
+        /// las cuatro capas autoran <c>showCeiling</c>, que la suprime— pero dejarla sin
+        /// pintar convertía "ninguna superficie fuera de la paleta" en una afirmación
+        /// dependiente de un flag de autoría.</summary>
+        private static GameObject PlaceFloorSlab(GridPrefabSet prefabs, Transform parent,
             int tx, int tz, float localY)
-            => AddColliderIfMissing(Instantiate(prefabs.floorSlab, parent,
-                TileCenter(tx, tz) + new Vector3(0f, localY, 0f), 0f));
+        {
+            var go = Instantiate(prefabs.floorSlab, parent,
+                TileCenter(tx, tz) + new Vector3(0f, localY, 0f), 0f);
+            AddColliderIfMissing(go);
+            return go;
+        }
 
         /// <summary>
         /// Independent 5×4×0.2 wall pieces on the flagged tile edges. Unstyled path: sin
@@ -261,11 +271,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
             else if (hType < pAbsent)
             {
-                // "Absent": a near-black panel in place — guaranteed black, rather than
-                // revealing the dim underside of the floor above.
+                // "Absent": el hueco donde faltaría la placa. Sigue siendo una placa real
+                // para no destapar el envés del suelo de la capa de arriba, pero YA NO SE
+                // PINTA DE NEGRO. El 0.05 plano de antes era la única superficie de mundo
+                // con un color propio fuera de la paleta base — a ceilingPanelVariety 0.25
+                // (capa 0) eso son ~8 de cada 100 tiles de techo leyéndose como agujeros
+                // negros, indistinguibles de un fallo de iluminación justo en la captura
+                // que servía para diagnosticarlo. Ahora es el MISMO material y el MISMO
+                // tinte, atenuado: sigue leyéndose como hueco, ya no como agujero.
                 var go = Instantiate(prefabs.floorSlab, parent,
                     TileCenter(tx, tz) + new Vector3(0f, LayerHeight, 0f), 0f);
-                Paint(go, mats.ceiling, new Color(0.05f, 0.05f, 0.05f, 1f));
+                Paint(go, mats.ceiling, tint * AbsentPanelDim);
             }
             else if (hType < pDropped)
             {

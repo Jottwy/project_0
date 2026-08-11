@@ -10,26 +10,36 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// that layer. Consumed by <see cref="ChunkStreamer"/> →
     /// <see cref="GridChunkBuilder.BuildFromWalls"/> and <see cref="World.BackroomsLighting"/>.
     ///
-    /// Textures are the bespoke Backrooms set in Resources/Textures (CarpetBeige,
-    /// WallpaperYellow, CeilingTiles, TileWall, TileWall 1); variety per layer is
-    /// achieved by re-TINTING those base textures (no per-layer art).
+    /// PALETA BASE UNIFICADA: desde la unificación de superficies, el MATERIAL de
+    /// suelo/pared/techo NO sale ya de esta config sino de los tres assets canon
+    /// (<see cref="LayerVisualMaterials.FloorMaterialResource"/> y compañía), iguales en
+    /// las cuatro capas. Lo que esta config sigue decidiendo por capa es el TINTE que
+    /// <c>GridChunkBuilder.Paint</c> mete por MaterialPropertyBlock encima de ese
+    /// material, y con él el tinte de zona (ADR-059/066), el jitter por tile y las
+    /// manchas de humedad.
     /// </summary>
     [CreateAssetMenu(menuName = "Backrooms/LayerVisualConfig", fileName = "LayerVisualConfig")]
     public sealed class LayerVisualConfig : ScriptableObject
     {
         [Header("Floor")]
-        [Tooltip("Base texture for the floor slab. null → falls back to the GridFloor texture.")]
+        [Tooltip("YA NO SE LEE: el material de suelo es M_Backrooms_Floor, igual en las " +
+                 "cuatro capas. Se conserva apuntando a la textura canon para que el campo " +
+                 "no mienta, y como enganche de una futura pasada de arte por capa.")]
         public Texture2D floorTexture;
+        [Tooltip("Multiplicado sobre el albedo de M_Backrooms_Floor por MaterialPropertyBlock. " +
+                 "Blanco = el material canon tal cual, que es la base unificada.")]
         public Color floorTint = Color.white;
 
         [Header("Wall")]
-        [Tooltip("Base texture for wall panels. null → falls back to the GridWall texture.")]
+        [Tooltip("YA NO SE LEE: el material de pared es M_Backrooms_Wall (ver floorTexture).")]
         public Texture2D wallTexture;
+        [Tooltip("Multiplicado sobre el albedo de M_Backrooms_Wall. Blanco = base unificada.")]
         public Color wallTint = Color.white;
 
         [Header("Ceiling")]
-        [Tooltip("Base texture for the ceiling slab. null → falls back to the GridCeiling texture.")]
+        [Tooltip("YA NO SE LEE: el material de techo es M_Backrooms_Ceiling (ver floorTexture).")]
         public Texture2D ceilingTexture;
+        [Tooltip("Multiplicado sobre el albedo de M_Backrooms_Ceiling. Blanco = base unificada.")]
         public Color ceilingTint = Color.white;
         [Tooltip("If true, every tile gets a ceiling slab (and the top-layer roof slab is suppressed to avoid a coplanar double surface).")]
         public bool showCeiling = true;

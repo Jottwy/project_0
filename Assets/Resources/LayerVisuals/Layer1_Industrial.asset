@@ -12,12 +12,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: fd899d36d211f014e939cc973dec9d79, type: 3}
   m_Name: Layer1_Industrial
   m_EditorClassIdentifier: 
-  floorTexture: {fileID: 2800000, guid: 51326c806d5137a4dac7001756f1760f, type: 3}
-  floorTint: {r: 0.65, g: 0.62, b: 0.55, a: 1}
-  wallTexture: {fileID: 2800000, guid: 876d6c760d97df14cb20104990d4c8ed, type: 3}
-  wallTint: {r: 0.7, g: 0.67, b: 0.58, a: 1}
+  floorTexture: {fileID: 2800000, guid: 6482eff00d0dc134994eea83c6f3f35c, type: 3}
+  floorTint: {r: 1, g: 1, b: 1, a: 1}
+  wallTexture: {fileID: 2800000, guid: d1c798872c2936c4c9887f4050e1010a, type: 3}
+  wallTint: {r: 1, g: 1, b: 1, a: 1}
   ceilingTexture: {fileID: 2800000, guid: dd05e192d84308546afe376cd571b166, type: 3}
-  ceilingTint: {r: 0.6, g: 0.6, b: 0.57, a: 1}
+  ceilingTint: {r: 1, g: 1, b: 1, a: 1}
   showCeiling: 1
   lightDensity: 0.55
   brokenLampChance: 0.2

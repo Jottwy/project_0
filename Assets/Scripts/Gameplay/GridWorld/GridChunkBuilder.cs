@@ -346,7 +346,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     }
 
                     if (roofSlab)
-                        PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
+                    {
+                        var roofGo = PlaceFloorSlab(prefabs, root.transform, tx, tz, LayerHeight);
+                        // Misma paleta base que el techo por tile: esta losa ES el techo de
+                        // la capa superior cuando la capa no dibuja techo propio. Sin tinte
+                        // por tile a propósito — no consume una draw del rng, así que los
+                        // tintes de suelo/pared del tile no se mueven (misma disciplina que
+                        // PlaceLintels).
+                        if (styled) Paint(roofGo, mats.ceiling, zoneTint);
+                    }
 
                     // Per-tile ceiling with Fase 5B procedural variety (panel type + moisture
                     // stains). Variety comes from a pure hash so the floor/wall jitter (rng)
@@ -509,6 +517,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         // Damp-grey multiplier for moisture-stained ceiling tiles.
         private static readonly Color MoistureStain = new Color(0.7f, 0.68f, 0.6f);
+
+        // Atenuación de la placa "ausente" (ver PlaceCeilingTile). Es el panel MÁS oscuro
+        // de todo el techo, así que fija el suelo del criterio "ninguna superficie de mundo
+        // se lee como negro puro bajo una lámpara": con el albedo medido de
+        // M_Backrooms_Ceiling (0.793 en sRGB) queda en 0.357, muy por encima de negro, y
+        // sigue separándose de la placa hundida (×0.80) y de la caída (×0.85).
+        private const float AbsentPanelDim = 0.45f;
 
         // Ceiling salts keep their original literals so the ceiling damp field — already
         // confirmed in playtest — stays byte-identical to before Pieza F.
