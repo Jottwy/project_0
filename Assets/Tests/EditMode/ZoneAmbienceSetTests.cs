@@ -7,7 +7,9 @@ namespace BackroomsSurvival.Tests
     /// <summary>
     /// ADR-059 — overrides de luz y techo por <c>zone_kind</c>
     /// (<see cref="LayerVisualConfig.TryGetZoneLightSet"/> /
-    /// <see cref="LayerVisualConfig.TryGetZoneCeilingSet"/>).
+    /// <see cref="LayerVisualConfig.TryGetZoneCeilingSet"/>) — y, desde ADR-066, el de
+    /// ambiente (<see cref="LayerVisualConfig.TryGetZoneAmbienceSet"/>), que es el que
+    /// por fin hace honor al nombre de este fixture.
     ///
     /// Lo que más importa aquí es la disciplina de los booleanos de override: en estos sets
     /// 0 ES un valor autorable (<c>brokenLampChance = 0</c>, <c>ceilingPanelVariety = 0</c>
@@ -21,6 +23,8 @@ namespace BackroomsSurvival.Tests
         /// <summary>Espejo de `ZONE_OFFICE` (backend/src/world/chunk/surface_profiles.rs).</summary>
         private const int ZoneOffice = 12;
         private const int ZoneNormal = 0;
+        /// <summary>Espejo de `ZONE_BLACKOUT` (mismo archivo del backend).</summary>
+        private const int ZoneBlackout = 7;
         private const int ZoneUnknown = -1;
 
         private LayerVisualConfig _cfg;
@@ -166,6 +170,101 @@ namespace BackroomsSurvival.Tests
             wc.anyZoneKind = true;
             cfg.zoneCeilingSets = new[] { wc };
             Assert.IsTrue(cfg.TryGetZoneCeilingSet(ZoneUnknown, out _), "−1 vs comodín");
+        }
+
+        // ── ZoneAmbienceSet (ADR-066) ─────────────────────────────────────────────
+
+        private static ZoneAmbienceSet BlackoutAmbience() => new ZoneAmbienceSet
+        {
+            zoneKind = ZoneBlackout,
+            overrideAmbientLight = true,
+            ambientLight = new Color(0.05f, 0.05f, 0.06f),
+            overrideFogDensity = true,
+            fogDensity = 0.070f,
+        };
+
+        [Test]
+        public void AmbienceSet_NullOrEmptyListNeverMatches()
+        {
+            var cfg = Config();
+            Assert.IsFalse(cfg.TryGetZoneAmbienceSet(ZoneBlackout, out _), "lista null");
+            cfg.zoneAmbienceSets = new ZoneAmbienceSet[0];
+            Assert.IsFalse(cfg.TryGetZoneAmbienceSet(ZoneBlackout, out _), "lista vacía");
+        }
+
+        [Test]
+        public void AmbienceSet_SpecificZoneMatchesOnlyItsOwnZone()
+        {
+            var cfg = Config();
+            cfg.zoneAmbienceSets = new[] { BlackoutAmbience() };
+            Assert.IsTrue(cfg.TryGetZoneAmbienceSet(ZoneBlackout, out var m), "BLACKOUT debe casar");
+            Assert.IsTrue(m.overrideFogDensity);
+            Assert.AreEqual(0.070f, m.fogDensity, 1e-6f);
+            Assert.IsFalse(cfg.TryGetZoneAmbienceSet(ZoneNormal, out _),
+                "un set de BLACKOUT no debe capturar ZONE_NORMAL");
+        }
+
+        [Test]
+        public void AmbienceSet_ZeroFogDensityIsAnAuthorableValue()
+        {
+            var cfg = Config();
+            cfg.fogDensity = 0.04f; // la capa sí tiene niebla
+            cfg.zoneAmbienceSets = new[]
+            {
+                new ZoneAmbienceSet
+                {
+                    zoneKind = ZoneOffice,
+                    overrideFogDensity = true,
+                    fogDensity = 0f, // aire limpio: la oficina la apaga del todo
+                },
+            };
+            Assert.IsTrue(cfg.TryGetZoneAmbienceSet(ZoneOffice, out var m));
+            Assert.IsTrue(m.overrideFogDensity);
+            Assert.AreEqual(0f, m.fogDensity,
+                "density 0 con override habilitado debe distinguirse de 'sin autorar' — misma " +
+                "razón que brokenLampChance 0 en ZoneLightSet");
+        }
+
+        [Test]
+        public void AmbienceSet_UnknownZoneOnlyMatchesTheWildcard()
+        {
+            var cfg = Config();
+            cfg.zoneAmbienceSets = new[] { BlackoutAmbience() };
+            Assert.IsFalse(cfg.TryGetZoneAmbienceSet(ZoneUnknown, out _),
+                "−1 (zona aún desconocida) no puede casar con un set específico: el jugador " +
+                "vería el ambiente de una zona equivocada mientras llega la de verdad");
+
+            var wildcard = BlackoutAmbience();
+            wildcard.anyZoneKind = true;
+            cfg.zoneAmbienceSets = new[] { wildcard };
+            Assert.IsTrue(cfg.TryGetZoneAmbienceSet(ZoneUnknown, out _),
+                "un set comodín dice 'cualquier zona' y una desconocida es una de ellas");
+        }
+
+        [Test]
+        public void AmbienceSet_WithNoOverrideEnabledIsHalfAuthoredAndSkipped()
+        {
+            var cfg = Config();
+            var half = new ZoneAmbienceSet { zoneKind = ZoneBlackout };
+            var real = BlackoutAmbience();
+            cfg.zoneAmbienceSets = new[] { half, real };
+            Assert.IsTrue(cfg.TryGetZoneAmbienceSet(ZoneBlackout, out var m),
+                "el set a medias debe saltarse y el completo capturar");
+            Assert.IsTrue(m.overrideAmbientLight, "debe devolver el set COMPLETO, no el vacío");
+        }
+
+        [Test]
+        public void AmbienceSet_FirstMatchWins()
+        {
+            var cfg = Config();
+            var first = BlackoutAmbience();
+            first.fogDensity = 0.011f;
+            var second = BlackoutAmbience();
+            second.fogDensity = 0.022f;
+            cfg.zoneAmbienceSets = new[] { first, second };
+            Assert.IsTrue(cfg.TryGetZoneAmbienceSet(ZoneBlackout, out var m));
+            Assert.AreEqual(0.011f, m.fogDensity, 1e-6f,
+                "primera coincidencia gana — misma regla hand-ordered que el resto de sets");
         }
 
         // ── Guardas contra el asset REAL ─────────────────────────────────────────

@@ -115,6 +115,35 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float fogDensity = 0.04f;
         public Color fogColor = new Color(0.776f, 0.711f, 0.684f);
 
+        [Tooltip("ADR-066 — sparse override list: ambient light and fog by zone_kind. The FIRST " +
+                 "matching entry with at least one override ENABLED wins. Empty/null (or no " +
+                 "match) ⇒ the layer's ambient/fog, unchanged. A diferencia de luz y techo, " +
+                 "esto es estado GLOBAL de render: lo aplica el dueño del ambiente (ver " +
+                 "ProceduralWorldGenerator) para la zona del chunk del jugador, no por chunk.")]
+        public ZoneAmbienceSet[] zoneAmbienceSets;
+
+        /// <summary>
+        /// ADR-066 — el <see cref="ZoneAmbienceSet"/> que gobierna <paramref name="zoneKind"/>,
+        /// si hay uno autorado Y con algún override habilitado. Misma regla de "a medias no
+        /// cuenta" y mismo comodín booleano explícito que <see cref="TryGetZoneLightSet"/>;
+        /// booleanos de override EXPLÍCITOS porque 0 es autorable aquí también
+        /// (<c>fogDensity = 0</c> es una zona sin niebla, no "sin cambio").
+        /// Un −1 ("zona desconocida") solo casa con un set comodín.
+        /// </summary>
+        public bool TryGetZoneAmbienceSet(int zoneKind, out ZoneAmbienceSet match)
+        {
+            match = default;
+            if (zoneAmbienceSets == null) return false;
+            for (int i = 0; i < zoneAmbienceSets.Length; i++)
+            {
+                if (!zoneAmbienceSets[i].Matches(zoneKind)) continue;
+                if (!zoneAmbienceSets[i].HasAnyOverride) continue;
+                match = zoneAmbienceSets[i];
+                return true;
+            }
+            return false;
+        }
+
         [Header("Props (Fase 5C)")]
         [Tooltip("Props available for this layer (weighted pick per tile). Empty = none.")]
         public PropEntry[] props;
@@ -573,5 +602,52 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>True si el autor habilitó al menos un override.</summary>
         public bool HasAnyOverride => overridePanelVariety || overrideCeilingTint;
+    }
+
+    /// <summary>
+    /// ADR-066 — overrides de AMBIENTE (luz ambiental y niebla) ligados a un <c>zone_kind</c>.
+    /// Tercera lista dispersa paralela a <see cref="ZoneLightSet"/> y
+    /// <see cref="ZoneCeilingSet"/>, con las mismas reglas: comodín booleano explícito y un
+    /// booleano <c>override*</c> por campo, porque 0 vuelve a ser un valor autorable
+    /// (<c>fogDensity = 0</c> = zona sin niebla, no "sin cambio").
+    ///
+    /// Diferencia importante con los otros dos: esto NO se resuelve por chunk. Ambient y fog
+    /// son estado global de <c>RenderSettings</c>, así que se aplican una vez por la zona del
+    /// chunk donde está el jugador y no tocan el <c>System.Random</c> por chunk — el
+    /// determinismo del stream de lámparas y props queda intacto por construcción.
+    /// </summary>
+    [System.Serializable]
+    public struct ZoneAmbienceSet
+    {
+        [Tooltip("zone_kind al que aplica (0..12, ver ZoneTint). Se ignora si anyZoneKind " +
+                 "está marcado.")]
+        public int zoneKind;
+
+        [Tooltip("Marcado ⇒ aplica a todos los zone_kind.")]
+        public bool anyZoneKind;
+
+        [Tooltip("Marcado ⇒ esta luz ambiental sustituye a la del mundo mientras el jugador " +
+                 "esté en esta zona. Es lo que decide cuánto se ve en los rincones sin lámpara.")]
+        public bool overrideAmbientLight;
+        public Color ambientLight;
+
+        [Tooltip("Marcado ⇒ esta densidad de niebla sustituye a la de la capa en esta zona. " +
+                 "ExponentialSquared: la distancia de atenuación al 50 % es 0.8326/density " +
+                 "(0.028 ≈ 30 m, 0.070 ≈ 12 m). 0 es autorable: zona sin niebla.")]
+        public bool overrideFogDensity;
+        [Range(0f, 0.15f)] public float fogDensity;
+
+        [Tooltip("Marcado ⇒ este color de niebla sustituye al de la capa en esta zona.")]
+        public bool overrideFogColor;
+        public Color fogColor;
+
+        /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
+        /// con un set específico; sí con uno comodín).</summary>
+        public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
+
+        /// <summary>True si el autor habilitó al menos un override — un set sin ninguno es
+        /// autoría a medias y no debe capturar la zona.</summary>
+        public bool HasAnyOverride =>
+            overrideAmbientLight || overrideFogDensity || overrideFogColor;
     }
 }
