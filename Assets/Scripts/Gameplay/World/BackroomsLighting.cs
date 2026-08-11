@@ -146,8 +146,17 @@ namespace BackroomsSurvival.Gameplay.World
                     lightGo.transform.localRotation = Quaternion.Euler(90f, 0f, 0f); // +Z → −Y
                     var light = lightGo.AddComponent<Light>();
                     light.type           = LightType.Spot;
-                    light.spotAngle      = 120f;
-                    light.innerSpotAngle = 85f;  // borde suave: un difusor no recorta en seco
+                    // 155°, casi un hemisferio, que es lo que emite un difusor empotrado.
+                    // El primer intento fue 120° y dejó las PAREDES negras: semiángulo 60°
+                    // ⇒ un punto de pared a 2 m horizontales solo recibe luz si está 1,15 m
+                    // por debajo del panel, o sea nada por encima de 2,55 m de altura. Con
+                    // Point eso lo cubría la esfera completa; sin GI ni ambient que rellenen,
+                    // recortar el hemisferio superior se llevó también las paredes.
+                    // A 155° (semiángulo 77,5°) el corte cae 12,5° por debajo del plano del
+                    // panel: se ilumina suelo y pared, y el techo sigue a oscuras — que era
+                    // el objetivo de dejar de usar Point.
+                    light.spotAngle      = 155f;
+                    light.innerSpotAngle = 110f; // borde suave: un difusor no recorta en seco
                     light.color          = lampColor;
                     light.intensity      = lampIntensity;
                     light.range          = Mathf.Max(0.1f, lampRange);
