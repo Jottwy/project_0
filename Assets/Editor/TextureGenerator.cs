@@ -39,13 +39,21 @@ namespace BackroomsSurvival.EditorTools
                       "CeilingTiles and applied them to GridWall/GridFloor/GridCeiling.");
         }
 
-        // ─── Texture 1: dirty-yellow wallpaper with an argyle diamond pattern ──
+        // ─── Texture 1: pale cream wallpaper with a faint argyle diamond pattern ──
+        //
+        // Reautoría hacia el canon de Level 0 (2026-08-11). Antes: bg 210/195/140, fill
+        // 185/170/115, border 165/150/95 — con el tinte de capa encima daban un oliva de
+        // albedo ~0.36 en el canal azul, así que la luz moría al salir del cono del panel y
+        // no había rebote falso que rellenara. Y el patrón era LEGIBLE a 10 m (bg−border =
+        // 45/255, 18 % de contraste), cuando el papel canon tiene un rombo casi imperceptible.
+        // Ahora: luminancia de fondo 197/255 (~0.77 de albedo), saturación de 70 a 50 puntos
+        // y contraste del patrón de 45 a 14 puntos.
         private static Color32[] BuildWallpaperYellow()
         {
             var rng = new System.Random(1001);
-            var bg     = new Color32(210, 195, 140, 255);
-            var fill   = new Color32(185, 170, 115, 255);
-            var border = new Color32(165, 150, 95, 255);
+            var bg     = new Color32(208, 198, 158, 255);
+            var fill   = new Color32(200, 190, 151, 255);
+            var border = new Color32(194, 184, 146, 255);
 
             // Diamond cell: 32 px wide, 48 px tall. A pixel belongs to the diamond
             // when |dx|/16 + |dy|/24 <= 1; scaled to integers: |dx|*24 + |dy|*16.
@@ -63,18 +71,22 @@ namespace BackroomsSurvival.EditorTools
                     int d = Mathf.Abs(lx - halfW) * halfH + Mathf.Abs(ly - halfH) * halfW;
 
                     Color32 c = d > edge ? bg : (d >= edge - borderBand ? border : fill);
-                    px[y * Size + x] = AddNoise(c, rng, 8);
+                    px[y * Size + x] = AddNoise(c, rng, 5);
                 }
             }
             return px;
         }
 
-        // ─── Texture 2: brown carpet, woven diagonal fibres ──────────────────
+        // ─── Texture 2: light beige office carpet, woven diagonal fibres ─────
+        //
+        // El nombre del fichero decía "beige" y el color era marrón oscuro (120/95/65 → con
+        // el tinte de capa, albedo 0.13 en azul: gris carbón en pantalla). La moqueta de
+        // oficina del canon es clara. Luminancia de fondo 150/255 frente a 100/255.
         private static Color32[] BuildCarpetBeige()
         {
             var rng = new System.Random(2002);
-            var bg    = new Color32(120, 95, 65, 255);
-            var fibre = new Color32(140, 112, 78, 255);
+            var bg    = new Color32(166, 148, 116, 255);
+            var fibre = new Color32(180, 163, 132, 255);
 
             // Thin diagonal fibres every 3 px; the diagonal flips direction every
             // 6 px band, giving an interlocked weave.
@@ -87,7 +99,7 @@ namespace BackroomsSurvival.EditorTools
                     int diag = flip ? (x - y) : (x + y);
                     int m = ((diag % 3) + 3) % 3;
                     Color32 c = m == 0 ? fibre : bg;
-                    px[y * Size + x] = AddNoise(c, rng, 12);
+                    px[y * Size + x] = AddNoise(c, rng, 8);
                 }
             }
             return px;

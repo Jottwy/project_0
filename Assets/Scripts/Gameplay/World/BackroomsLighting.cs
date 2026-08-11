@@ -24,6 +24,16 @@ namespace BackroomsSurvival.Gameplay.World
         // Pieza D — salt for the per-chunk lamp-density jitter ("LDNS").
         private const uint LightSaltDensity = 0x4C444E53U;
 
+        /// <summary>
+        /// Cuánto cuelga la Light POR DEBAJO del difusor (enmienda ADR-059, canon Level 0).
+        /// Con la luz en el plano exacto del panel, un Spot de 155° corta 12,5° por debajo de
+        /// ese plano y el techo circundante NO recibe nada: cada panel se leía como un
+        /// rectángulo quemado flotando en vacío negro. Bajándola 0,25 m el corte del cono
+        /// alcanza el techo a 0,25/tan(12,5°) ≈ 1,13 m del eje, así que el techo entre paneles
+        /// deja de ser negro. No mueve la MALLA — el difusor sigue empotrado donde estaba.
+        /// </summary>
+        private const float LightDropBelowPanel = 0.25f;
+
         // Lazy-init at first use, NOT via a field initializer: a static initializer in a
         // MonoBehaviour runs inside the first AddComponent's constructor context, where
         // creating a MaterialPropertyBlock throws "CreateImpl not allowed from constructor".
@@ -122,18 +132,29 @@ namespace BackroomsSurvival.Gameplay.World
 
                     if (broken) continue; // dark tube, no light cast (mesh stays)
 
-                    // One centred Point light per panel (4 lights/panel killed perf).
+                    // One centred light per panel (4 lights/panel killed perf).
                     //
-                    // Pieza D: the range now comes from lampRange instead of a hardcoded
-                    // 5 m that silently ignored the field. HARD CONSTRAINT when retuning it
-                    // (aplica igual a un override de zona, ADR-059): horizontal reach at
-                    // floor level is √(range² − ceilingHeight²), and it must stay under the
-                    // 5 m corridor width or a lamp lights the corridor BEYOND its own wall —
-                    // the per-layer cullingMask below only stops bleed between macro-layers,
-                    // never sideways within one. With a 4 m ceiling that caps range at
-                    // ~6.4 m; the authored values are ≤ 6.
+                    // Pieza D: the range comes from lampRange instead of a hardcoded 5 m that
+                    // silently ignored the field. RESTRICCIÓN de ADR-059: el alcance horizontal
+                    // a nivel de suelo es √(range² − h²) y debe quedar bajo los 5 m de baldosa,
+                    // o una lámpara ilumina el pasillo MÁS ALLÁ de su propia pared — el
+                    // cullingMask de abajo solo corta el sangrado entre macro-capas, nunca de
+                    // lado dentro de una. Con la luz a 3,45 m eso capa el rango en ~6,07.
+                    //
+                    // ENMIENDA (2026-08-11, canon Level 0): ZONE_NORMAL autora range 9 y ACEPTA
+                    // ese sangrado a cambio de cobertura continua. El razonamiento está en el
+                    // ADR; el resumen es que a densidad 1.0 la sala de al lado tiene su propia
+                    // lámpara casi siempre, así que la luz que cruza la pared cae sobre algo ya
+                    // iluminado y no se lee. Las otras 12 zonas siguen capadas a 6 y el test
+                    // Layer0LampRangeStaysCappedOutsideNormal lo sostiene.
+                    //
+                    // La Light cuelga del chunkRoot, NO de la malla: el difusor tiene escala
+                    // (1.65, 0.08, 1.65) y un hijo posicionado ahí vería su offset dividido por
+                    // esa escala no uniforme (0,25 m se habrían quedado en 2 cm).
                     var lightGo = new GameObject("FluorescentLight");
-                    lightGo.transform.SetParent(mesh.transform, false); // centred under the panel
+                    lightGo.transform.SetParent(chunkRoot, false);
+                    lightGo.transform.localPosition =
+                        localPos - new Vector3(0f, LightDropBelowPanel, 0f);
                     // Enmienda ADR-066: Spot hacia abajo, no Point. Un Point a 0,3 m de la losa
                     // lavaba el techo alrededor de cada panel con la misma fuerza que el suelo —
                     // más superficie quemada que los propios paneles. Un difusor empotrado emite

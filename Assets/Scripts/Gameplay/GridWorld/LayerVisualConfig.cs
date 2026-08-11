@@ -92,8 +92,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
                  "match) ⇒ every zone uses the layer's lamp fields — the behaviour before " +
                  "this field existed. OJO al retunear lampRange: alcance horizontal a suelo " +
-                 "= √(range² − ceilingHeight²) y debe quedar bajo los 5 m de pasillo (ver " +
-                 "BackroomsLighting) — con techo de 4 m, autorar ≤ 6.")]
+                 "= √(range² − h²) y debe quedar bajo los 5 m de baldosa (ver " +
+                 "BackroomsLighting) — con la luz a 3,45 m, autorar ≤ 6. ÚNICA excepción, por " +
+                 "enmienda a ADR-059: ZONE_NORMAL autora 9 y acepta el sangrado lateral a " +
+                 "cambio de la cobertura plana y continua del canon de Level 0.")]
         public ZoneLightSet[] zoneLightSets;
 
         /// <summary>
@@ -558,7 +560,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float lampIntensity;
 
         [Tooltip("Marcado ⇒ lampRange de abajo sustituye al de la capa en esta zona. " +
-                 "Restricción dura: √(range² − 16) < 5 ⇒ autorar ≤ 6 (ver BackroomsLighting).")]
+                 "Restricción: √(range² − 11.9) < 5 ⇒ autorar ≤ 6 (ver BackroomsLighting). " +
+                 "ZONE_NORMAL es la única excepción autorizada (9, enmienda a ADR-059).")]
         public bool overrideLampRange;
         public float lampRange;
 

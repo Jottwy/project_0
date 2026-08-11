@@ -29,6 +29,27 @@ namespace BackroomsSurvival.Gameplay
         // ambient por zona y postExposure, que es donde debe estar.
         private const float DefVig = 0.32f, DefGrain = 0.08f, DefBloom = 0.45f, DefGrade = 1f;
 
+        /// <summary>
+        /// Umbral de bloom, en la misma escala que <c>lampEmission</c> del difusor. Es la
+        /// pareja de tuneo de ese campo: por debajo del umbral el panel no florece nada y se
+        /// pierde el halo de fluorescente; muy por encima, la superficie ENTERA florece y el
+        /// rectángulo se convierte en una mancha sin forma. Con NORMAL emitiendo a 1.25, este
+        /// 1.15 deja florecer solo la parte alta de la variación del panel: hay halo y se sigue
+        /// leyendo la geometría rectangular. Subió de 1.05 porque postExposure pasó de −0.35 a
+        /// 0 y eso mete +0,35 EV en todo lo que llega al bloom.
+        /// </summary>
+        private const float BloomThreshold = 1.15f;
+
+        /// <summary>
+        /// Exposición estática del grado de color. ADR-066 la puso en −0.35 para oscurecer, y
+        /// eso APLASTABA LOS MEDIOS, que es donde vive el ambiente de Backrooms: ACES ya
+        /// comprime los altos por sí solo, así que restar exposición encima solo se come el
+        /// rango medio. A 0 el canon de Level 0 (plano, casi sobreexpuesto) es alcanzable.
+        /// Es el valor MENOS seguro de la reautoría — se deja aquí, con nombre, para poder
+        /// moverlo sin buscarlo: entre −0.15 y +0.15 el mundo sigue leyéndose.
+        /// </summary>
+        private const float PostExposure = 0f;
+
         private VolumeProfile     _profile;
         private Volume            _volume;
         private Vignette          _vignette;
@@ -77,7 +98,7 @@ namespace BackroomsSurvival.Gameplay
             // encima del umbral, y el bloom los convertia en manchas sin contorno que se
             // comian el techo. Con la emision ya en ~1.3, un umbral por ENCIMA de 1 hace que
             // solo florezcan los bordes del difusor y no la superficie entera.
-            _bloom.threshold.Override(1.05f);
+            _bloom.threshold.Override(BloomThreshold);
 
             // ADR-066 — ACES: sin él los fluorescentes queman a blanco plano y el mundo se
             // lee como sobreexpuesto justo donde debería dar miedo.
@@ -85,9 +106,8 @@ namespace BackroomsSurvival.Gameplay
 
             // ADR-066 — la exposición es ESTÁTICA, fuera del lerp de ApplyGrading: el slider
             // bp_colorgrading gobierna carácter (saturación, contraste, tinte), no cuánta luz
-            // entra. Apagar el grading no puede devolver un mundo brillante. Compensa además
-            // el lift de ACES en los medios.
-            _grading.postExposure.Override(-0.35f);
+            // entra. Apagar el grading no puede devolver un mundo brillante.
+            _grading.postExposure.Override(PostExposure);
 
             var go = new GameObject("BackroomsPostProcessVolume");
             go.transform.SetParent(transform, false);

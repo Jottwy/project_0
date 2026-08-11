@@ -309,6 +309,48 @@ namespace BackroomsSurvival.Tests
                     $"lampEmission de OFFICE {zl.lampEmission} revienta el panel");
         }
 
+        /// <summary>
+        /// Enmienda a ADR-059 (2026-08-11, canon Level 0): ZONE_NORMAL es la ÚNICA zona
+        /// autorizada a pasar de 6 de <c>lampRange</c>. El cap existe porque estas lámparas
+        /// nacen con <c>LightShadows.None</c> (ADR-065 lo prohíbe cambiar) y el alcance a
+        /// suelo √(range²−h²) por encima de 5 m ilumina a través de la propia pared. NORMAL
+        /// acepta ese sangrado a cambio de cobertura continua; nadie más puede.
+        ///
+        /// Este test es el único sitio donde esa excepción es comprobable: si alguien copia
+        /// el 9 de NORMAL a otra zona o lo sube al valor de CAPA (que gobierna las 12 zonas
+        /// que no autoran rango), salta aquí.
+        /// </summary>
+        [Test]
+        public void Layer0AuthorsNormalLightSetAndCapsLampRangeEverywhereElse()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+
+            Assert.IsTrue(real.TryGetZoneLightSet(ZoneNormal, out var zn),
+                "ZONE_NORMAL debe autorar su propio ZoneLightSet: sin él, la zona base cae a " +
+                "los valores de capa y la reautoría del canon no llega a ninguna parte");
+            Assert.IsTrue(zn.overrideLampRange && zn.lampRange > 6f,
+                $"NORMAL necesita rango por encima del cap para que las lámparas se solapen " +
+                $"(autorado {zn.lampRange})");
+            Assert.IsTrue(zn.overrideLightDensity && zn.lightDensity >= 0.95f,
+                "el rango grande sin densidad alta vuelve a dejar islas: van juntos");
+            Assert.IsTrue(zn.overrideLampEmission && zn.lampEmission <= 1.6f,
+                $"lampEmission de NORMAL {zn.lampEmission} revienta el panel");
+
+            Assert.LessOrEqual(real.lampRange, 6f,
+                $"el lampRange de CAPA ({real.lampRange}) gobierna las zonas que no lo " +
+                "sobrescriben — subirlo aquí levantaría el cap de las 12 de golpe");
+
+            foreach (var set in real.zoneLightSets)
+            {
+                if (set.zoneKind == ZoneNormal && !set.anyZoneKind) continue;
+                if (!set.overrideLampRange) continue;
+                Assert.LessOrEqual(set.lampRange, 6f,
+                    $"zone_kind {set.zoneKind}: la excepción de la enmienda es de NORMAL y de " +
+                    "nadie más (√(range²−11.9) < 5)");
+            }
+        }
+
         [Test]
         public void Layer0ActuallyAuthorsAmbienceForEveryZone()
         {
