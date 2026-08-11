@@ -2755,3 +2755,70 @@ En `ExponentialSquared` la distancia de atenuación al 50 % es `d = 0.8326 / den
 **Deja pendiente** la autoría de zonas en las capas 1–3 (hoy caen al fallback) y **la validación visual completa**: los 13 juegos de valores salen de aritmética sobre la curva de niebla y de intención de diseño, no de haberlos visto en juego. El compile-check en verde no dice nada sobre si da miedo.
 
 Verificado: compile-check Roslyn 0 errores en las 4 asambleas tras cada commit; `ZoneAmbienceSetTests` cubre los 5 casos de forma del set nuevo más el guarda contra el asset real.
+
+---
+
+## ADR-067 — Chunk Displacement: intercambio simétrico de dos chunks, decidido por el host y telegrafiado en tres fases
+
+Estado: **PROPUESTA (2026-08-11). Diseño congelado, CERO código.** Este ADR existe para fijar el diseño acordado ANTES de abrir ninguna tarea de implementación. Ninguna decisión de aquí está verificada en juego; los números son puntos de partida parametrizables, no valores validados.
+
+### Contexto — qué existe hoy y por qué NO es esto
+
+`CLAUDE.md` declara "chunk displacement + estabilización por tiers" como mecánica núcleo desde el día uno, y el backend tiene código que se llama así. **No la implementa.** `World::tick_teleportation` (`backend/src/world/mod.rs:862`) corre a slow-tick host-only, decrementa el `teleport_timer` de los chunks `Active { stabilized: false, anchored: false }` (con el 95 % de bloqueo del estabilizador ya cableado), y al vencer **reasigna `chunk.seed` y regenera entidades e items EN EL SITIO**. Calcula un `new_offset` aleatorio de ±30 chunks, lo mete en el evento `chunk_teleported` y en el paquete P2P `ChunkTeleport` (`network/sync.rs:686`) — **y nadie mueve nada con ese offset**. `apply_remote_teleport` (`world/mod.rs:1202`) solo copia el seed nuevo; el único consumidor cliente es `TeleportationVFX.cs`, un flash blanco + estática a pantalla completa de 0.5 s.
+
+Hoy el chunk **se re-baraja, no se desplaza**. El offset viaja por el wire y muere sin consumidor. El comentario de `apply_remote_teleport` ya documenta por qué el layout NO se toca —`chunk.layout` es la fuente de colisión del servidor y el mapa de `find_safe_spawn`, mientras que la geometría RENDERIZADA sale de grid_gen cliente keyeada por posición— y es, de hecho, la mejor descripción existente del problema que este ADR abre.
+
+### Decisiones
+
+**1. Mecánica: SWAP simétrico de dos chunks, no reubicación unilateral.** Dos chunks intercambian posición. Razón: **conserva la topología del grafo de mundo** — el número de chunks es constante y toda posición sigue ocupada, así que no hay huecos que rellenar ni nodos que crear o destruir, y `region_graph_builder` (`world/levels/level_0/region_graph_builder.rs`) no cambia. Una reubicación unilateral obligaría a decidir qué aparece en el hueco y a reconstruir el grafo en caliente; el swap convierte ese problema en cero trabajo.
+
+**2. Distancia: el destino queda FUERA del radio de streaming del jugador.** La garantía es cualitativa antes que numérica: *todo el contexto visible tras el swap debe ser nuevo*. Un desplazamiento que deje al jugador viendo un pasillo que reconoce no es displacement, es un glitch. Rango de partida **~1000 unidades**, parametrizable con mínimo y máximo. Con chunks de 50 m son ~20 chunks; el `viewRadius` cliente vigente es **1** (3×3 chunks, ~150 m de lado), así que 1000 u lo excede por más de un orden de magnitud — **el mínimo del rango debe derivarse del `viewRadius` en vigor, no quedar a fuego**, porque subir el radio de streaming sin tocar este mínimo rompe la garantía en silencio. **Pendiente de calibrar en playtest contra el pilar cooperativo:** separar a un jugador más de lo que un squad puede recorrer no genera tensión, rompe la coop. Es el techo real del parámetro y no se conoce todavía.
+
+**3. Autoridad: el host decide, los clientes obedecen.** El host (Rust) elige qué dos chunks se intercambian y cuándo, y lo broadcastea con **timestamp**. Los clientes NO calculan el swap localmente: cualquier cálculo local sobre un RNG que avanza por timing de ticks diverge entre procesos (el mismo motivo por el que el seed del teleport actual ya no es reproducible del seed base). Esto **requiere bump de `WIRE_SCHEMA_VERSION`** y, por la regla dura #7, la forma concreta del paquete se fija en el ADR/slice de implementación: el `ChunkTeleport` actual lleva `old_pos`/`new_pos`/`new_seed`, y un swap necesita las dos posiciones más el timestamp. Ese bump arrastra el espejo C# (`WireSchema.Expected`, ADR-061) en el MISMO commit.
+
+**4. Telegraph: tres fases distinguibles antes del teleport, ancladas al chunk.** Duración de partida **5 s**, parametrizable.
+- Fase 1: parpadeo de fluorescentes + cambio de tono del zumbido.
+- Fase 2: polvo fino cayendo.
+- Fase 3: temblor fuerte + gravilla gruesa.
+
+Las partículas van **ancladas a los techos del chunk, NO como efecto de cámara**. Es una decisión de diseño con consecuencia de red: un efecto en cámara solo lo ve quien está dentro, mientras que el chunk temblando se ve **desde fuera**, y eso convierte el displacement en información compartida por el squad. El `TeleportationVFX` actual (overlay a pantalla completa) es exactamente el patrón que esta decisión descarta.
+
+**5. Evitabilidad: NO evitable en el slice inicial.** Decisión **diferida**, no cerrada. Si en playtest el evento se siente arbitrario en vez de tenso, se abre la evitabilidad y el telegraph sube a **12–20 s**, calibrado contra el tiempo real de cruzar medio chunk esprintando (que hay que medir, no estimar). Diseño futuro considerado y no adoptado: **una cuerda tendida ancla el chunk** contra el displacement — encaja con el `anchored` que `ChunkState::Active` ya contempla y que hoy nadie pone a `true` desde gameplay.
+
+**6. Seams: las incoherencias de borde se ACEPTAN como ficción del juego.** Tras el swap, dos chunks vecinos pueden dejar de casar: un pasillo que ahora muere en muro liso es coherente con Backrooms, no un bug. **NO se recarvean bordes** — recarvear reintroduce el acoplamiento entre chunks que el swap acababa de eliminar. Única garantía requerida: **mínimo una apertura transitable por chunk tras el swap**, para que el displacement no encierre a un jugador permanentemente. Esa garantía es la única condición que puede vetar un swap candidato.
+
+### Riesgos abiertos (en orden de gravedad, NINGUNO resuelto aquí)
+
+**R1 — Coordenadas locales.** Todo lo anclado al chunk (items en suelo, corpses de ADR-028, camas de ADR-031, estructuras construidas del roster STP) debe persistir posición **LOCAL al chunk**, no global. Si se guarda global, el swap deja los objetos flotando en la posición vieja mientras la geometría se va. **Requiere auditoría previa**: se sospecha código guardando globales, y el ADR-032 §2 lista los cuatro rosters `stp_*` como payload persistido sin decir en qué espacio están sus posiciones. Esta auditoría es prerrequisito de S3, no trabajo opcional.
+
+**R2 — Colisión con la reconciliación de pose.** Un teleport de ~1000 unidades es exactamente el patrón que `AuthoritativePoseApplier` (`Assets/Scripts/Network/AuthoritativePoseApplier.cs`) interpreta como desincronización. Necesita una **ventana de teleport autorizado**, análoga al `SnapWindow = 0.35f` de ADR-025 (que ya arma el snap sobre `player_died`/`player_respawned`/`session_restored`): el displacement sería un cuarto evento de reposición legítima. Sin esto, el resultado esperado es rubber-banding severo o daño fantasma. Cierra S2.
+
+**R3 — Persistencia.** El mapeo chunk→posición pasa a ser **estado de mundo no reconstruible del seed**, y el autosave de ADR-032 no lo contempla: ese ADR lo declara explícitamente non-goal ("Desplazamiento/teleport de chunks... como el estado desplazado también se pierde al descargar el chunk hoy, regenerar el terreno pristino en el re-arranque es consistente"). Con swap real esa justificación deja de sostenerse — un chunk desplazado con construcciones dentro no puede volver a su sitio en el re-arranque. **ADR-032 necesitará enmienda cuando aterrice S1**; este ADR no la escribe.
+
+**R4 — Coste de partículas.** Emisores en los techos de un chunk entero es el mismo patrón de spike que ya ocurrió con `AudioSource`. Requiere **pooling y límite de emisores por cercanía al jugador** desde el primer commit de S4, no como optimización posterior.
+
+**R5 — Indirección posición→identidad (hallazgo de esta auditoría, no estaba en la lista original).** Hoy **ambos lados keyean la geometría por posición, no por identidad de chunk**: en el cliente, `GridChunkBuilder.TileSeed(cx, cz, tx, tz)` deriva el detalle visual de las coordenadas; en el servidor, `apply_remote_teleport` documenta que el layout NO se mueve precisamente porque la geometría renderizada "does not move on displacement". Un swap real exige que el chunk A se dibuje y colisione en la posición de B, es decir, **una capa de indirección posición→identidad en el cliente Y en el backend**. Es el trabajo de fondo de S1 y probablemente el más caro del plan; documentarlo aquí evita que S1 se planifique como "mover dos entradas de un HashMap".
+
+### Plan de slices (orden, no ejecución)
+
+- **S1.** Swap de dos chunks vacíos, sin jugadores, forzado por comando de debug. Verificar que **el grafo y la persistencia sobreviven**. Absorbe R5 y destapa R3.
+- **S2.** Jugadores dentro del chunk desplazado. Cierra R2.
+- **S3.** Items y estructuras ancladas. Bloqueado por la auditoría de R1.
+- **S4.** Telegraph visual y sonoro. Sujeto a R4.
+- **S5.** Evitabilidad — **solo si el playtest lo justifica** (decisión 5).
+
+### Consecuencias / qué prohíbe
+
+**PROHÍBE implementar el swap client-side.** El cálculo es host-only y llega por wire con timestamp (decisión 3). Un cliente que decida por su cuenta diverge.
+
+**PROHÍBE recarvear bordes tras el swap** (decisión 6). La única comprobación admitida sobre el resultado es "al menos una apertura transitable por chunk".
+
+**PROHÍBE tratar el `TeleportationVFX` actual como el telegraph.** Es un overlay de cámara: contradice la decisión 4 punto por punto. Al llegar S4 se sustituye, no se extiende.
+
+**PROHÍBE abrir S3 sin la auditoría de coordenadas de R1.** Anclar items a coordenadas globales y descubrirlo después del swap es corrupción de estado guardado, no un bug visual.
+
+**Obliga a bumpear `WIRE_SCHEMA_VERSION` + `WireSchema.Expected` en el mismo commit** cuando el paquete de swap se defina (ADR-061: desincronizarlos deja el juego inarrancable, no con un warning).
+
+**Deja pendiente y explícitamente sin decidir:** la forma exacta del paquete, el destino de `tick_teleportation` (¿se reescribe como swap o convive el re-barajado como mecánica distinta?), el rango definitivo de distancia, la duración definitiva del telegraph, y si el `anchored` de `ChunkState` acaba siendo el vehículo de la cuerda de la decisión 5.
+
+No verificado: **nada**. No hay código, tests ni playtest asociados a este ADR.

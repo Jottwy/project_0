@@ -20,6 +20,17 @@
 
 ---
 
+## Chunk Displacement (ADR-067) — DISEÑO CONGELADO, CERO CÓDIGO (2026-08-11)
+- **ADR-067 anclado en `DECISIONS.md` (2757 → 2824 líneas, verificado antes/después). Estado PROPUESTA. No se tocó código ni se abrió tarea de implementación.**
+- **Qué fija:** swap simétrico de dos chunks (conserva la topología del grafo, `region_graph_builder` no cambia); destino fuera del radio de streaming (~1000 u de partida, mínimo derivado del `viewRadius` vigente, hoy 1); autoridad host-only con broadcast + timestamp (⇒ bump de wire schema pendiente de definir); telegraph de 3 fases y 5 s **anclado a los techos del chunk, no a la cámara** (para que el squad lo vea desde fuera); no evitable en el slice inicial (diferido; si el playtest lo pide, telegraph a 12–20 s y cuerda-ancla); seams incoherentes ACEPTADOS como ficción, con la única garantía de ≥1 apertura transitable por chunk.
+- **HALLAZGO QUE CAMBIA EL COSTE ESTIMADO — lo que hoy se llama "teleport" NO es displacement.** `World::tick_teleportation` (`world/mod.rs:862`) reasigna `chunk.seed` y regenera entidades/items **en el sitio**; calcula un `new_offset` de ±30 chunks que viaja en `chunk_teleported` y en el paquete `ChunkTeleport` **y que ningún consumidor usa** (`apply_remote_teleport` solo copia el seed; el cliente solo dispara `TeleportationVFX`, un overlay de pantalla). El chunk se re-baraja, no se mueve.
+- **Riesgo R5, nuevo y probablemente el más caro:** cliente y servidor keyean geometría por POSICIÓN, no por identidad de chunk (`GridChunkBuilder.TileSeed(cx,cz,tx,tz)`; y `apply_remote_teleport` documenta que el layout no se mueve porque la geometría renderizada tampoco). El swap exige una capa de indirección posición→identidad en AMBOS lados. S1 no es "mover dos entradas de un HashMap".
+- **Riesgos restantes:** R1 coordenadas locales vs globales de items/corpses(ADR-028)/camas(ADR-031)/rosters STP — **auditoría prerrequisito de S3**; R2 el teleport de ~1000 u es el patrón que `AuthoritativePoseApplier` lee como desincronización, necesita ventana autorizada análoga al `SnapWindow = 0.35f` de ADR-025; R3 el mapeo chunk→posición es estado no reconstruible que **ADR-032 declara non-goal — necesitará enmienda al aterrizar S1**; R4 emisores de partículas por techo = el patrón de spike de `AudioSource`, pooling desde el primer commit.
+- **Orden de slices:** S1 swap de dos chunks vacíos por comando de debug (grafo + persistencia sobreviven) → S2 jugadores dentro → S3 items y estructuras → S4 telegraph → S5 evitabilidad (solo si el playtest lo justifica).
+- **Próximo paso cuando se retome:** la auditoría de R1/R5, no código.
+
+---
+
 ## Sesión anterior
 - Fecha: 2026-08-10 (implementación ADR-063, misma sesión continuada) — **5 commits: namespace de ids runtime particionado por peer, implementado completo. ADR-063 pasa de PROPUESTA a VALIDADA. Bump WIRE_SCHEMA_VERSION 27→28. Backend 651→657 tests verdes; compile-check Roslyn 0 errores en las 4 asambleas Unity (único trabajo de esta sesión que toca C#).**
 
@@ -1019,6 +1030,7 @@ PENDIENTE QUE ESTE REFACTOR NO ARREGLA, dicho como tal: el ruido de `self.movers
 - Robapieles (ADR-016 slice 2 + ADR-017) — colisión contra el mundo EQUIVOCADO (hallazgo runtime 2026-06-19): la colisión del fantasma consulta el mundo del BACKEND (`generate_chunk`/`Level0Collision`/`SimChunkCache`). Pero lo que se RENDERIZA y contra lo que colisionan los JUGADORES es el `ChunkStreamer` CLIENT-SIDE (Unity/C#), un generador DISTINTO; las dos geometrías no coinciden. → El robapieles respeta paredes del backend que no existen en lo renderizado y atraviesa paredes visibles que el backend desconoce. Los jugadores no lo sufren (su render y colisión son el mismo ChunkStreamer). La "cero divergencia" de ADR-017 era intra-backend (sim-only == `generate_chunk`), no contempla backend↔ChunkStreamer. SE RESUELVE con la migración del mundo a backend-authoritative (el ChunkStreamer renderiza el mundo que genera el backend → render y colisión vuelven a coincidir, ahora server-authoritative); ver ▸ Riesgos abiertos. Hasta entonces el robapieles es PROTOTIPO con colisión imperfecta; los slices restantes (pickup imitado, slice 4) NO dependen de la colisión y se completan igual. Nota datada anexada a ADR-016 en DECISIONS.md.
 
 ## ADRs pendientes (numeración alineada con DECISIONS.md)
+- ADR-067: Chunk Displacement (swap simétrico host-autoritativo + telegraph de 3 fases) — **PROPUESTA (2026-08-11), diseño congelado, sin implementar.** Ver ▸ Chunk Displacement (ADR-067) arriba y `DECISIONS.md`. Requerirá bump de wire schema y enmienda a ADR-032.
 - **PENDIENTE (no bloqueante, 2026-07-04): esta lista está desactualizada desde ADR-021 — faltan ADR-022 a ADR-028 (todos VALIDADOS en DECISIONS.md). Rellenar en una sesión dedicada.**
 - ADR-003: Topología de red (propuesta, ya en DECISIONS.md) — bloquea persistencia/regiones
 - ADR-004: Formato de chunk y seams procedurales (pendiente, ya en DECISIONS.md)
