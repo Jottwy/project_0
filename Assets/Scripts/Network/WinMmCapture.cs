@@ -35,6 +35,11 @@ namespace BackroomsSurvival.Net
         /// un hipo del hilo principal sin que el driver se quede sin sitio donde escribir.</summary>
         private const int BufferCount = 8;
 
+        /// <summary>Tamaño de <see cref="WaveHdr"/>, resuelto UNA vez. Es constante para el proceso
+        /// entero y se pedía en cada iteración de <see cref="Read"/>, o sea hasta ocho veces por
+        /// frame mientras hay captura.</summary>
+        private static readonly int HdrSize = Marshal.SizeOf<WaveHdr>();
+
         private const int WaveFormatPcm = 1;
         private const uint CallbackNull = 0x00000000;
         private const uint WhdrDone = 0x00000001;
@@ -98,11 +103,11 @@ namespace BackroomsSurvival.Net
             {
                 _buffers[i] = Marshal.AllocHGlobal(_bufferBytes);
                 var hdr = new WaveHdr { lpData = _buffers[i], dwBufferLength = (uint)_bufferBytes };
-                _headers[i] = Marshal.AllocHGlobal(Marshal.SizeOf<WaveHdr>());
+                _headers[i] = Marshal.AllocHGlobal(HdrSize);
                 Marshal.StructureToPtr(hdr, _headers[i], false);
 
-                if (waveInPrepareHeader(_handle, _headers[i], (uint)Marshal.SizeOf<WaveHdr>()) != 0 ||
-                    waveInAddBuffer(_handle, _headers[i], (uint)Marshal.SizeOf<WaveHdr>()) != 0)
+                if (waveInPrepareHeader(_handle, _headers[i], (uint)HdrSize) != 0 ||
+                    waveInAddBuffer(_handle, _headers[i], (uint)HdrSize) != 0)
                 {
                     Debug.LogWarning("[WinMm] No se pudo preparar el buffer " + i);
                     Stop();
@@ -156,7 +161,7 @@ namespace BackroomsSurvival.Net
                 hdr.dwFlags &= ~WhdrDone;
                 hdr.dwBytesRecorded = 0;
                 Marshal.StructureToPtr(hdr, _headers[_next], false);
-                waveInAddBuffer(_handle, _headers[_next], (uint)Marshal.SizeOf<WaveHdr>());
+                waveInAddBuffer(_handle, _headers[_next], (uint)HdrSize);
 
                 _next = (_next + 1) % BufferCount;
             }
@@ -176,7 +181,7 @@ namespace BackroomsSurvival.Net
                     for (int i = 0; i < _headers.Length; i++)
                     {
                         if (_headers[i] == IntPtr.Zero) continue;
-                        waveInUnprepareHeader(_handle, _headers[i], (uint)Marshal.SizeOf<WaveHdr>());
+                        waveInUnprepareHeader(_handle, _headers[i], (uint)HdrSize);
                         Marshal.FreeHGlobal(_headers[i]);
                         _headers[i] = IntPtr.Zero;
                     }

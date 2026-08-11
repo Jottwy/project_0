@@ -51,6 +51,10 @@ namespace BackroomsSurvival.UI
         /// cuando cambian de verdad y no en cada frame.</summary>
         private int _shownChannels = -1;
 
+        /// <summary>Último relleno pintado en el medidor, para no reescribir el layout con el mismo
+        /// valor. -1 fuerza la primera escritura.</summary>
+        private float _shownFill = -1f;
+
         /// <summary>Nombres reales, tal cual los espera <c>VoiceCapture.Device</c>.</summary>
         private readonly List<string> _deviceOptions = new List<string>();
 
@@ -137,7 +141,14 @@ namespace BackroomsSurvival.UI
             }
 
             float level = vc.InputLevel;
-            _levelFill.rectTransform.anchorMax = new Vector2(Mathf.Clamp01(level * 4f), 1f);
+            // Escribir anchorMax marca el layout sucio AUNQUE el valor sea idéntico, y esto corre
+            // cada frame con el panel abierto. Solo se escribe cuando cambia de verdad.
+            float fill = Mathf.Clamp01(level * 4f);
+            if (fill != _shownFill)
+            {
+                _shownFill = fill;
+                _levelFill.rectTransform.anchorMax = new Vector2(fill, 1f);
+            }
             _levelFill.color = vc.IsTransmitting
                 ? new Color(0.4f, 0.9f, 0.45f)
                 : new Color(0.55f, 0.55f, 0.5f);
@@ -222,7 +233,7 @@ namespace BackroomsSurvival.UI
             _channelDropdown.ClearOptions();
             _channelDropdown.AddOptions(opts);
 
-            int sel = vc.Channel == -1 ? 0 : vc.Channel == -2 ? 1 : Mathf.Clamp(vc.Channel + 2, 0, opts.Count - 1);
+            int sel = Mathf.Clamp(VoiceCapture.IndexFromChannel(vc.Channel), 0, opts.Count - 1);
             _channelDropdown.SetValueWithoutNotify(sel);
         }
 
@@ -341,7 +352,7 @@ namespace BackroomsSurvival.UI
                 var vc = Voice();
                 if (vc == null) return;
                 // 0 = automático (-1), 1 = mezcla (-2), 2.. = canal fijo empezando en 0
-                vc.Channel = i == 0 ? -1 : i == 1 ? -2 : i - 2;
+                vc.Channel = VoiceCapture.ChannelFromIndex(i);
                 // Reabrir para que el cambio se note ya, sin esperar a otro toggle.
                 if (vc.MicEnabled) { vc.MicEnabled = false; vc.MicEnabled = true; }
             });

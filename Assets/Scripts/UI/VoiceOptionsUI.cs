@@ -65,6 +65,7 @@ namespace BackroomsSurvival.UI
         private readonly List<string> _devices = new List<string>();
         private VoiceCapture _capture;
         private int _shownChannels = -1;
+        private float _shownFill = -1f;
 
         private VoiceCapture Capture()
         {
@@ -99,7 +100,7 @@ namespace BackroomsSurvival.UI
 
             if (_channelDropdown != null)
                 _channelDropdown.onValueChanged.AddListener(i =>
-                    UserOptions.Channel.SetValue(i == 0 ? -1 : i == 1 ? -2 : i - 2));
+                    UserOptions.Channel.SetValue(VoiceCapture.ChannelFromIndex(i)));
 
             FillKeys(_pttKeyDropdown);
             FillKeys(_toggleKeyDropdown);
@@ -154,7 +155,15 @@ namespace BackroomsSurvival.UI
 
             if (_levelFill != null)
             {
-                _levelFill.rectTransform.anchorMax = new Vector2(Mathf.Clamp01(vc.InputLevel * 4f), 1f);
+                // Escribir anchorMax marca el layout sucio AUNQUE el valor sea idéntico, y esto
+                // corre cada frame con el menú abierto. Solo se escribe cuando cambia de verdad.
+                // (`Graphic.color` ya lleva esa comprobación dentro, por eso no la necesita.)
+                float fill = Mathf.Clamp01(vc.InputLevel * 4f);
+                if (fill != _shownFill)
+                {
+                    _shownFill = fill;
+                    _levelFill.rectTransform.anchorMax = new Vector2(fill, 1f);
+                }
                 _levelFill.color = vc.IsTransmitting
                     ? new Color(0.4f, 0.9f, 0.45f)
                     : new Color(0.55f, 0.55f, 0.5f);
@@ -189,13 +198,22 @@ namespace BackroomsSurvival.UI
             RefreshChannels();
         }
 
+        /// <summary>Los nombres se resuelven UNA vez. `Key.ToString()` sobre un enum pasa por
+        /// reflexión, y los dos desplegables ofrecen exactamente la misma lista, así que se
+        /// construía dos veces para nada. `AddOptions` copia lo que recibe, así que compartirla
+        /// es seguro.</summary>
+        private static List<string> _keyNames;
+
         private static void FillKeys(TMP_Dropdown dd)
         {
             if (dd == null) return;
-            var names = new List<string>(KeyChoices.Length);
-            foreach (var k in KeyChoices) names.Add(k.ToString());
+            if (_keyNames == null)
+            {
+                _keyNames = new List<string>(KeyChoices.Length);
+                foreach (var k in KeyChoices) _keyNames.Add(k.ToString());
+            }
             dd.ClearOptions();
-            dd.AddOptions(names);
+            dd.AddOptions(_keyNames);
         }
 
         /// <summary>Una tecla guardada que no esta en la lista curada (un ajuste viejo, o editado a
@@ -271,9 +289,7 @@ namespace BackroomsSurvival.UI
             _channelDropdown.ClearOptions();
             _channelDropdown.AddOptions(opts);
 
-            int sel = UserOptions.Channel == -1 ? 0
-                : UserOptions.Channel == -2 ? 1
-                : Mathf.Clamp(UserOptions.Channel + 2, 0, opts.Count - 1);
+            int sel = Mathf.Clamp(VoiceCapture.IndexFromChannel(UserOptions.Channel), 0, opts.Count - 1);
             _channelDropdown.SetValueWithoutNotify(sel);
             _channelDropdown.RefreshShownValue();
         }
