@@ -296,6 +296,17 @@ namespace BackroomsSurvival.Tests
             if (zl.overrideLampRange)
                 Assert.LessOrEqual(zl.lampRange, 6f,
                     "restricción dura de BackroomsLighting: √(range²−16) < 5 ⇒ ≤ 6");
+
+            // Enmienda ADR-066: el brillo del difusor va por lampEmission, NO por
+            // lampIntensity. Estuvieron acoplados y el panel salía a 2.8–3.4 × blanco puro,
+            // sin forma bajo ACES y desbordando el bloom por todo el techo. Techo en 1.6:
+            // por encima vuelve a reventar con el umbral de bloom actual (1.05).
+            Assert.LessOrEqual(real.lampEmission, 1.6f,
+                $"lampEmission de capa {real.lampEmission} revienta el panel — es brillo de " +
+                "superficie, no potencia de luz");
+            if (zl.overrideLampEmission)
+                Assert.LessOrEqual(zl.lampEmission, 1.6f,
+                    $"lampEmission de OFFICE {zl.lampEmission} revienta el panel");
         }
 
         [Test]

@@ -27,7 +27,7 @@ namespace BackroomsSurvival.Gameplay
         // real. Ahora el grano es ruido de sensor en las sombras, no textura de película, y la
         // viñeta cierra el encuadre sin cantar como efecto de lente. La oscuridad la ponen el
         // ambient por zona y postExposure, que es donde debe estar.
-        private const float DefVig = 0.32f, DefGrain = 0.08f, DefBloom = 0.6f, DefGrade = 1f;
+        private const float DefVig = 0.32f, DefGrain = 0.08f, DefBloom = 0.45f, DefGrade = 1f;
 
         private VolumeProfile     _profile;
         private Volume            _volume;
@@ -72,7 +72,12 @@ namespace BackroomsSurvival.Gameplay
             // El fino a baja intensidad ensucia las sombras sin anunciarse.
             _grain.type.Override(FilmGrainLookup.Thin1);
             _grain.response.Override(0.8f);
-            _bloom.threshold.Override(0.75f);
+            // Enmienda ADR-066: 0.85 -> 0.75 fue un error compuesto. Los paneles emitian a
+            // 2.8-3.4 (bug de unidades, ya corregido en BackroomsLighting), o sea casi 4x por
+            // encima del umbral, y el bloom los convertia en manchas sin contorno que se
+            // comian el techo. Con la emision ya en ~1.3, un umbral por ENCIMA de 1 hace que
+            // solo florezcan los bordes del difusor y no la superficie entera.
+            _bloom.threshold.Override(1.05f);
 
             // ADR-066 — ACES: sin él los fluorescentes queman a blanco plano y el mundo se
             // lee como sobreexpuesto justo donde debería dar miedo.

@@ -80,6 +80,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float lampIntensity = 1.8f;
         public float lampRange = 12f;
 
+        [Tooltip("Brillo del DIFUSOR (la superficie del panel), independiente de lampIntensity. " +
+                 "Hasta la enmienda de ADR-066 la emisión se calculaba multiplicando por " +
+                 "lampIntensity, que es la intensidad de la LUZ: mezclaba unidades y dejaba el " +
+                 "panel a 2.8–3.4 veces blanco puro, sin forma posible bajo ningún tonemapper. " +
+                 "Que una lámpara alumbre más lejos no hace que su difusor se vea más brillante. " +
+                 "Por encima de ~1.6 el panel vuelve a reventar con el bloom actual.")]
+        [Range(0f, 3f)] public float lampEmission = 1.3f;
+
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
                  "match) ⇒ every zone uses the layer's lamp fields — the behaviour before " +
@@ -564,6 +572,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public bool overrideBrokenLampChance;
         [Range(0f, 1f)] public float brokenLampChance;
 
+        [Tooltip("Marcado ⇒ lampEmission de abajo sustituye al de la capa en esta zona. Es el " +
+                 "brillo del DIFUSOR, no la potencia de la luz: una zona puede querer paneles " +
+                 "que se vean apagados aunque iluminen igual, o al revés.")]
+        public bool overrideLampEmission;
+        [Range(0f, 3f)] public float lampEmission;
+
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
         /// con un set específico; sí con uno comodín).</summary>
         public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
@@ -572,7 +586,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// autoría a medias y no debe capturar la zona.</summary>
         public bool HasAnyOverride =>
             overrideLampColor || overrideLampIntensity || overrideLampRange ||
-            overrideLightDensity || overrideBrokenLampChance;
+            overrideLightDensity || overrideBrokenLampChance || overrideLampEmission;
     }
 
     /// <summary>

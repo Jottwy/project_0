@@ -2774,6 +2774,24 @@ Decisión de Joel tras jugarlo: *"a veces se ven cosas en zonas donde no hay luz
 
 **PROHÍBE subir `fogColor` por encima de esa proporción para "dar ambiente"**: es exactamente el defecto que esta enmienda corrige.
 
+### ENMIENDA 2 (2026-08-11, mismo día) — las lámparas reventaban: emisión desacoplada de la intensidad, y Spot en vez de Point
+
+Con el mundo ya oscuro, los paneles quedaron como manchas blancas sin contorno y el techo alrededor lavado. **Tres causas apiladas, y la principal es un error de unidades que llevaba ahí desde Fase 5A.**
+
+**1. La emisión del difusor se calculaba con la intensidad de la Light.** `LayerVisualMaterials.MakeLamp` recibía `cfg.lampIntensity` y `BackroomsLighting` hacía `litEmission = lampColor * lampIntensity`. Pero `lampIntensity` es la intensidad de un `Light` de Unity —cuánto ilumina y hasta dónde llega—, no la radiancia de una superficie. Resultado: el panel se pintaba a **2.8× blanco puro** en la capa base, y 3.0–3.4 en las zonas que suben la potencia (SAFE, OFFICE, CLEANING). Ningún tonemapper recupera forma de eso. Y el acoplamiento no tiene sentido físico: que una lámpara alumbre más lejos no hace que su difusor se vea más brillante.
+
+**Campo nuevo `lampEmission`** (capa, default `1.3`) con su override en `ZoneLightSet`. `lampIntensity` queda para lo único que es suyo: la potencia de la luz. Cambiar cuánto ilumina ya no cambia cómo se ve el panel.
+
+**2. `Bloom.threshold` 0.85 → 0.75 fue un error compuesto**, introducido por el ADR original "para que los tubos florezcan". Con la emisión a 2.8 el panel estaba casi 4× por encima del umbral. **Sube a `1.05`** (e intensidad `0.6 → 0.45`): con la emisión ya en ~1.3 florecen los bordes del difusor, no la superficie entera.
+
+**3. `LightType.Point` lavaba el techo.** La luz cuelga a 0,3 m de la losa; con caída cuadrática, el techo alrededor de cada panel recibía tanta irradiancia como el suelo — y es mucha más superficie quemada que los propios paneles. **Pasa a `Spot` apuntando abajo**, 120° con 85° interior.
+
+**El Spot NO relaja la restricción de sangrado lateral de ADR-059.** El alcance sigue acotado por `range` exactamente igual que con Point: a nivel de suelo son `√(range² − h²)`, que con `range ≤ 6` da 4,7 m. El cono solo RECORTA — 120° a 3,7 m de altura daría 6,4 m, muy por encima. Manda el rango, como antes. **`lampRange ≤ 6` sigue vigente sin cambios.**
+
+**Guarda nueva:** `lampEmission ≤ 1.6`, en capa y en override de zona. Por encima el panel vuelve a reventar con el umbral de bloom actual.
+
+**Lección que conviene no volver a pagar:** un solo campo alimentaba dos cosas de naturaleza distinta (potencia de luz y brillo de superficie), y durante meses pareció "una lámpara brillante" en vez de un bug. Solo se hizo visible cuando el ambiente bajó y dejó de haber nada más quemado con lo que compararlo.
+
 ---
 
 ## ADR-067 — Chunk Displacement: intercambio simétrico de dos chunks, decidido por el host y telegrafiado en tres fases

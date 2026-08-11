@@ -34,6 +34,7 @@ MonoBehaviour:
   lampColor: {r: 1, g: 0.97, b: 0.88, a: 1}
   lampIntensity: 2.8
   lampRange: 5
+  lampEmission: 1.3
   zoneLightSets:
   - zoneKind: 12
     anyZoneKind: 0

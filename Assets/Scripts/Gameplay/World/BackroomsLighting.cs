@@ -52,6 +52,7 @@ namespace BackroomsSurvival.Gameplay.World
             float lampRange      = cfg.lampRange;
             float lightDensity   = cfg.lightDensity;
             float brokenChance   = cfg.brokenLampChance;
+            float lampEmission   = cfg.lampEmission;
             if (cfg.TryGetZoneLightSet(zoneKind, out var zl))
             {
                 if (zl.overrideLampColor)        lampColor     = zl.lampColor;
@@ -59,11 +60,16 @@ namespace BackroomsSurvival.Gameplay.World
                 if (zl.overrideLampRange)        lampRange     = zl.lampRange;
                 if (zl.overrideLightDensity)     lightDensity  = zl.lightDensity;
                 if (zl.overrideBrokenLampChance) brokenChance  = zl.brokenLampChance;
+                if (zl.overrideLampEmission)     lampEmission  = zl.lampEmission;
             }
 
             // One deterministic RNG per chunk; tiles drawn in scan order.
             var rng = new System.Random(unchecked(chunkX * 73856093 ^ chunkZ * 19349663));
-            Color litEmission = lampColor * Mathf.Max(0f, lampIntensity);
+            // Enmienda ADR-066: la emisión del difusor sale de lampEmission, NO de
+            // lampIntensity. Eran la misma cifra y mezclaban unidades — la potencia de la
+            // Light pintaba la superficie del panel a 2.8–3.4 × blanco, que ningún
+            // tonemapper puede recuperar. Cambiar cuánto ilumina ya no cambia cómo se ve.
+            Color litEmission = lampColor * Mathf.Max(0f, lampEmission);
 
             // Pieza D — per-chunk density jitter. With a flat lightDensity every
             // chunk lands within a couple of lamps of the same count, so a corridor is
@@ -128,14 +134,26 @@ namespace BackroomsSurvival.Gameplay.World
                     // ~6.4 m; the authored values are ≤ 6.
                     var lightGo = new GameObject("FluorescentLight");
                     lightGo.transform.SetParent(mesh.transform, false); // centred under the panel
+                    // Enmienda ADR-066: Spot hacia abajo, no Point. Un Point a 0,3 m de la losa
+                    // lavaba el techo alrededor de cada panel con la misma fuerza que el suelo —
+                    // más superficie quemada que los propios paneles. Un difusor empotrado emite
+                    // hacia abajo y ya está.
+                    //
+                    // NO relaja la restricción de sangrado lateral: el alcance sigue acotado por
+                    // `range` igual que con Point (√(range² − h²) a nivel de suelo), y el cono
+                    // solo RECORTA. Con 120° el cono da 3,7·tan60° = 6,4 m, muy por encima de los
+                    // 4,7 m que impone range ≤ 6 — o sea que manda el rango, como antes.
+                    lightGo.transform.localRotation = Quaternion.Euler(90f, 0f, 0f); // +Z → −Y
                     var light = lightGo.AddComponent<Light>();
-                    light.type        = LightType.Point;
-                    light.color       = lampColor;
-                    light.intensity   = lampIntensity;
-                    light.range       = Mathf.Max(0.1f, lampRange);
-                    light.shadows     = LightShadows.None;
-                    light.renderMode  = LightRenderMode.Auto;
-                    light.cullingMask = litMask; // only this layer's geometry + non-geo
+                    light.type           = LightType.Spot;
+                    light.spotAngle      = 120f;
+                    light.innerSpotAngle = 85f;  // borde suave: un difusor no recorta en seco
+                    light.color          = lampColor;
+                    light.intensity      = lampIntensity;
+                    light.range          = Mathf.Max(0.1f, lampRange);
+                    light.shadows        = LightShadows.None;
+                    light.renderMode     = LightRenderMode.Auto;
+                    light.cullingMask    = litMask; // only this layer's geometry + non-geo
 
                     if (flickering)
                     {

@@ -49,7 +49,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 floor   = MakeSurface(standard,  cfg.floorTexture,   cfg.floorTint,   "GridMaterials/GridFloor"),
                 wall    = MakeSurface(wallShader, cfg.wallTexture,   cfg.wallTint,    "GridMaterials/GridWall"),
                 ceiling = MakeSurface(standard,  cfg.ceilingTexture, cfg.ceilingTint, "GridMaterials/GridCeiling"),
-                lamp    = MakeLamp(standard, cfg.lampColor, cfg.lampIntensity),
+                lamp    = MakeLamp(standard, cfg.lampColor, cfg.lampEmission),
                 pipe    = MakePipe(standard),
                 prop    = MakeProp(standard),
             };
@@ -81,13 +81,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return m;
         }
 
-        private static Material MakeLamp(Shader shader, Color color, float intensity)
+        /// <paramref name="emission"/> es el brillo del DIFUSOR, no la intensidad de la Light.
+        /// Enmienda de ADR-066: aquí se pasaba <c>cfg.lampIntensity</c>, o sea la potencia de
+        /// la luz, y el panel acababa a 2.8–3.4 × blanco puro — sin forma bajo ningún
+        /// tonemapper y desbordando el bloom por todo el techo.
+        private static Material MakeLamp(Shader shader, Color color, float emission)
         {
             var m = new Material(shader) { name = "LayerLampEmissive" };
             if (m.HasProperty(BaseColorId)) m.SetColor(BaseColorId, color);
             m.EnableKeyword("_EMISSION");
             m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
-            m.SetColor(EmissionColorId, color * Mathf.Max(0f, intensity));
+            m.SetColor(EmissionColorId, color * Mathf.Max(0f, emission));
             return m;
         }
 
