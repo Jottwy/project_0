@@ -351,6 +351,53 @@ namespace BackroomsSurvival.Tests
             }
         }
 
+        /// <summary>
+        /// Segunda enmienda a ADR-059 (2026-08-12, canon Level 0): el TIPO de luz pasa a ser
+        /// autorable por zona, y Point es de ZONE_NORMAL y de nadie más.
+        ///
+        /// Por qué hay test y no basta el asset: las intensidades de las otras zonas están
+        /// calibradas para un Spot que NO ilumina el techo (OFFICE 3.2, SAFE 3.0, CLEANING
+        /// 3.4). Marcar Point en cualquiera de ellas les entrega esa intensidad sobre la losa
+        /// a 1 m — techo blanco y bloom desbordado — sin que nada falle ni avise. Es un fallo
+        /// puramente visual, del tipo que solo se ve entrando a esa zona concreta en juego.
+        /// </summary>
+        [Test]
+        public void OnlyNormalAuthorsAPointLampAndItsIntensityFitsTheCeiling()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+
+            Assert.IsTrue(real.TryGetZoneLightSet(ZoneNormal, out var zn),
+                "ZONE_NORMAL debe autorar su ZoneLightSet");
+            Assert.IsTrue(zn.overrideLampPoint && zn.lampPoint,
+                "sin Point, el Spot no puede iluminar el plano del que cuelga y el techo " +
+                "vuelve a ser negro — que es justo lo que esta enmienda deja atrás");
+
+            // La malla del difusor va a ceilingHeight − 0.3 y PointDropBelowPanel baja la Light
+            // otros 0.70, así que hay 1.0 m EXACTO de la Light a la losa de techo. Con 1/d² = 1
+            // la irradiancia sobre el techo es la intensidad tal cual, y sobre un albedo de 0.79
+            // (M_Backrooms_Ceiling medido) el BloomThreshold de 1.15 se cruza en intensidad
+            // 1.15/0.79 ≈ 1.45. Se deja margen: por encima de 1.0 el panel deja de tener forma.
+            Assert.IsTrue(zn.overrideLampIntensity,
+                "con Point el techo depende de la intensidad, así que NORMAL debe fijarla y no " +
+                "heredar la de capa, calibrada para Spot");
+            Assert.LessOrEqual(zn.lampIntensity, 1.0f,
+                $"intensidad {zn.lampIntensity} con Point a 1 m del techo lo quema y desborda " +
+                "el bloom — es el defecto que hizo abandonar Point en su día");
+            Assert.Greater(zn.lampIntensity, 0.3f,
+                $"intensidad {zn.lampIntensity}: por debajo de ~0.3 la lámpara no se distingue " +
+                "del ambiente y el techo queda plano, sin panel");
+
+            foreach (var set in real.zoneLightSets)
+            {
+                if (set.zoneKind == ZoneNormal && !set.anyZoneKind) continue;
+                Assert.IsFalse(set.overrideLampPoint && set.lampPoint,
+                    $"zone_kind {set.zoneKind} autora Point con una intensidad calibrada para " +
+                    "Spot: el techo de esa zona saldría blanco. Point exige rebajar la " +
+                    "intensidad en la misma fila, nunca por separado");
+            }
+        }
+
         [Test]
         public void Layer0ActuallyAuthorsAmbienceForEveryZone()
         {
@@ -377,9 +424,31 @@ namespace BackroomsSurvival.Tests
                 // alto ilumina toda superficie mire donde mire y anula las lámparas, y con
                 // ellas el trabajo de luz por zona de ADR-059. El techo era 0.30 y no
                 // protegía nada — la autoría real vive en torno a 0.01–0.05.
+                //
+                // SEGUNDA ENMIENDA (2026-08-12, canon Level 0): ZONE_NORMAL sale de esa regla
+                // y solo ella. La oscuridad es el recurso de las zonas HOSTILES; en la zona
+                // base compite con el canon, que es luz plana, uniforme y casi sobreexpuesta
+                // sin un solo píxel negro. Los dos objetivos son incompatibles en la misma
+                // zona y la resolución del proyecto ya era por zona. Las otras doce mantienen
+                // el techo intacto, así que el presupuesto de oscuridad no se toca donde
+                // significa algo.
                 float ambLuma = Luma(za.ambientLight);
-                Assert.Less(ambLuma, 0.08f,
-                    $"zone_kind {z}: ambient demasiado brillante ({ambLuma:F3}) — sin luz hay que ver poco");
+                if (z == ZoneNormal)
+                {
+                    Assert.Greater(ambLuma, 0.15f,
+                        $"ZONE_NORMAL con ambient {ambLuma:F3}: por debajo de ~0.15 el mundo " +
+                        "vuelve a leerse negro fuera del cono de las lámparas y la paleta base " +
+                        "de superficie deja de poder evaluarse");
+                    Assert.Less(ambLuma, 0.45f,
+                        $"ZONE_NORMAL con ambient {ambLuma:F3}: por encima de ~0.45 el ambiente " +
+                        "aplana tanto que las lámparas dejan de aportar y el sitio deja de " +
+                        "tener forma");
+                }
+                else
+                {
+                    Assert.Less(ambLuma, 0.08f,
+                        $"zone_kind {z}: ambient demasiado brillante ({ambLuma:F3}) — sin luz hay que ver poco");
+                }
 
                 // La niebla de Unity es un lerp por distancia hacia fogColor SIN mirar la
                 // iluminación: una niebla clara hace BRILLAR el fondo de un pasillo a

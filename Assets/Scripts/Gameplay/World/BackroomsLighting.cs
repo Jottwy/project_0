@@ -25,14 +25,32 @@ namespace BackroomsSurvival.Gameplay.World
         private const uint LightSaltDensity = 0x4C444E53U;
 
         /// <summary>
-        /// Cuánto cuelga la Light POR DEBAJO del difusor (enmienda ADR-059, canon Level 0).
+        /// Cuánto cuelga un Spot POR DEBAJO del difusor (enmienda ADR-059, canon Level 0).
         /// Con la luz en el plano exacto del panel, un Spot de 155° corta 12,5° por debajo de
         /// ese plano y el techo circundante NO recibe nada: cada panel se leía como un
         /// rectángulo quemado flotando en vacío negro. Bajándola 0,25 m el corte del cono
         /// alcanza el techo a 0,25/tan(12,5°) ≈ 1,13 m del eje, así que el techo entre paneles
         /// deja de ser negro. No mueve la MALLA — el difusor sigue empotrado donde estaba.
         /// </summary>
-        private const float LightDropBelowPanel = 0.25f;
+        private const float SpotDropBelowPanel = 0.25f;
+
+        /// <summary>
+        /// Lo mismo para un Point, y NO es el mismo número porque no lo decide la misma física.
+        /// Un Spot se ajusta por ÁNGULO de corte; un Point por INVERSO DEL CUADRADO. La malla
+        /// del difusor va a <c>ceilingHeight − 0.3</c>, así que con la caída del Spot la Light
+        /// queda a 0,55 m de la losa de techo: un Point ahí entrega 1/0,55² = 3,3 × intensidad
+        /// justo encima, que con cualquier intensidad autorada revienta el techo y desborda el
+        /// bloom — exactamente el "más superficie quemada que los propios paneles" que motivó
+        /// pasar a Spot en su día.
+        ///
+        /// A 0,70 la Light queda a 1,0 m de la losa y el factor cae a 1,0: el techo se convierte
+        /// en la superficie más brillante de la escena SIN quemarse, que es la lectura del canon
+        /// de Level 0. Coste declarado: la luz baja a 3,0 m, así que el alcance horizontal a
+        /// nivel de suelo pasa a √(range² − 9) y el cap de sangrado lateral de ADR-059 se aprieta
+        /// de 6,07 a 5,83 PARA LAS ZONAS QUE USEN POINT. Hoy la única es ZONE_NORMAL, que ya
+        /// autora 9 como excepción declarada; las demás siguen en Spot y con su cap intacto.
+        /// </summary>
+        private const float PointDropBelowPanel = 0.70f;
 
         // Lazy-init at first use, NOT via a field initializer: a static initializer in a
         // MonoBehaviour runs inside the first AddComponent's constructor context, where
@@ -63,6 +81,9 @@ namespace BackroomsSurvival.Gameplay.World
             float lightDensity   = cfg.lightDensity;
             float brokenChance   = cfg.brokenLampChance;
             float lampEmission   = cfg.lampEmission;
+            // Spot es el default histórico y sigue siéndolo: una zona que no autora nada
+            // renderiza byte-idéntica a antes de que este override existiera.
+            bool  lampIsPoint    = false;
             if (cfg.TryGetZoneLightSet(zoneKind, out var zl))
             {
                 if (zl.overrideLampColor)        lampColor     = zl.lampColor;
@@ -71,7 +92,11 @@ namespace BackroomsSurvival.Gameplay.World
                 if (zl.overrideLightDensity)     lightDensity  = zl.lightDensity;
                 if (zl.overrideBrokenLampChance) brokenChance  = zl.brokenLampChance;
                 if (zl.overrideLampEmission)     lampEmission  = zl.lampEmission;
+                if (zl.overrideLampPoint)        lampIsPoint   = zl.lampPoint;
             }
+            // El tipo decide la caída, no al revés: son dos derivaciones distintas (ángulo de
+            // corte del cono vs inverso del cuadrado) y mezclarlas es lo que quema el techo.
+            float lightDrop = lampIsPoint ? PointDropBelowPanel : SpotDropBelowPanel;
 
             // One deterministic RNG per chunk; tiles drawn in scan order.
             var rng = new System.Random(unchecked(chunkX * 73856093 ^ chunkZ * 19349663));
@@ -154,7 +179,7 @@ namespace BackroomsSurvival.Gameplay.World
                     var lightGo = new GameObject("FluorescentLight");
                     lightGo.transform.SetParent(chunkRoot, false);
                     lightGo.transform.localPosition =
-                        localPos - new Vector3(0f, LightDropBelowPanel, 0f);
+                        localPos - new Vector3(0f, lightDrop, 0f);
                     // Enmienda ADR-066: Spot hacia abajo, no Point. Un Point a 0,3 m de la losa
                     // lavaba el techo alrededor de cada panel con la misma fuerza que el suelo —
                     // más superficie quemada que los propios paneles. Un difusor empotrado emite
@@ -166,7 +191,14 @@ namespace BackroomsSurvival.Gameplay.World
                     // 4,7 m que impone range ≤ 6 — o sea que manda el rango, como antes.
                     lightGo.transform.localRotation = Quaternion.Euler(90f, 0f, 0f); // +Z → −Y
                     var light = lightGo.AddComponent<Light>();
-                    light.type           = LightType.Spot;
+                    // ENMIENDA (canon Level 0): el TIPO lo elige la zona. Un Spot hacia abajo
+                    // no puede iluminar el plano del que cuelga — el techo negro de ADR-066 no
+                    // era un fallo, era el objetivo escrito. El canon de Level 0 es lo contrario:
+                    // el techo es la superficie MÁS brillante de la escena. Point lo consigue;
+                    // Spot no puede, con ninguna combinación de ángulo e intensidad.
+                    // La rotación de arriba se aplica igual y es inerte en Point — se deja para
+                    // que volver a Spot sea cambiar un booleano en el asset y nada más.
+                    light.type           = lampIsPoint ? LightType.Point : LightType.Spot;
                     // 155°, casi un hemisferio, que es lo que emite un difusor empotrado.
                     // El primer intento fue 120° y dejó las PAREDES negras: semiángulo 60°
                     // ⇒ un punto de pared a 2 m horizontales solo recibe luz si está 1,15 m

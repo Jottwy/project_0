@@ -591,6 +591,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public bool overrideLampEmission;
         [Range(0f, 3f)] public float lampEmission;
 
+        [Tooltip("Marcado ⇒ esta zona elige el TIPO de luz. lampPoint marcado = Point (el techo " +
+                 "recibe luz y pasa a ser la superficie más brillante, canon de Level 0); sin " +
+                 "marcar = Spot hacia abajo, que deja el techo a oscuras. El tipo va POR ZONA y " +
+                 "no global porque las intensidades autoradas están calibradas para Spot: OFFICE " +
+                 "(3.2), SAFE (3.0) y CLEANING (3.4) con Point quemarían el techo entero. " +
+                 "OJO: cambiar a Point mueve la Light 0.45 m más abajo (ver " +
+                 "BackroomsLighting.PointDropBelowPanel) y con ella el cap de sangrado lateral.")]
+        public bool overrideLampPoint;
+        [Tooltip("Solo se lee con overrideLampPoint marcado. true = Point, false = Spot.")]
+        public bool lampPoint;
+
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
         /// con un set específico; sí con uno comodín).</summary>
         public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
@@ -599,7 +610,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// autoría a medias y no debe capturar la zona.</summary>
         public bool HasAnyOverride =>
             overrideLampColor || overrideLampIntensity || overrideLampRange ||
-            overrideLightDensity || overrideBrokenLampChance || overrideLampEmission;
+            overrideLightDensity || overrideBrokenLampChance || overrideLampEmission ||
+            overrideLampPoint;
     }
 
     /// <summary>
