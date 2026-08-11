@@ -2888,3 +2888,27 @@ Auditoría de solo lectura ejecutada el mismo día que se ancló el ADR, antes d
 **Qué le hace esto al plan de slices:** S1 **crece** — introducir el mapa y hacerlo consultar en los 4 puntos de backend + 5 de cliente ANTES de que nada se mueva. S3 **se abarata** si se elige traducir en lectura en vez de migrar payloads a coordenadas locales. S2 se aclara: un evento de armado más, no una ventana nueva. El orden S1→S5 no cambia.
 
 Verificado: auditoría de solo lectura sobre HEAD `9ae31be`. Cero cambios de código. Las afirmaciones de esta enmienda salen de leer los archivos citados, no del registro.
+
+---
+
+### Enmienda a ADR-065 (2026-08-11) — UNA luz con sombras: la antorcha del jugador local
+
+Estado: **DECIDIDA e IMPLEMENTADA (2026-08-11).** Rama `migration/worldgraph-v1`. Alcance elegido por Joel vía `AskUserQuestion`: "la opción más realista posible" y "lo que mejor se vea".
+
+**Qué enmienda, exactamente.** ADR-065 escribió: *"`m_AdditionalLightShadowsSupported` queda OFF en `PC_RPAsset` y todas las luces de lámpara nacen con `LightShadows.None`"*. La primera mitad se levanta; **la segunda se mantiene íntegra y sigue siendo ley**. El flag pasa a ON en `PC_RPAsset` porque con él en OFF URP strippea el keyword `_ADDITIONAL_LIGHT_SHADOWS` y **cualquier** `Light.shadows` es un no-op — no hay forma de dar sombra a una sola luz sin tocarlo. Lo que ADR-065 protegía de verdad —N lámparas / N peers proyectando— queda protegido por construcción, no por el flag: `BackroomsLighting.PlaceFluorescentLights` y `ProxyLightHook.CreateLight` siguen escribiendo `LightShadows.None` en el momento de crear, y nada los toca.
+
+**El gate es un archivo, no una convención.** `Assets/Scripts/Gameplay/TorchShadowCaster.cs` es lo único en el proyecto que promueve una luz, y promueve **exactamente una**: la más potente que esté emitiendo bajo el wieldable ACTIVO del jugador local. Borra el archivo y no queda ni una sombra adicional en el juego, solo la posibilidad. Antorchas colocadas, hogueras y el fogonazo del Marlin quedan fuera por definición del criterio: no son el wieldable activo.
+
+**Por qué un hook externo y no el prefab.** La luz de la antorcha NO está en `STP_Wieldable_WoodenTorch` — de ahí que su YAML no tenga ningún `!u!108`, solo registros `stripped`. Está en el hijo `FireLight` del prefab ANIDADO `FPS_VFX_SmallFire`, que comparten hoguera, antorcha de suelo y fogonazo del rifle. Editarlo daría sombras a **todas** las llamas del juego de golpe —justo lo prohibido— y además es contenido de vendor: un reimport del `.unitypackage` lo revierte en silencio. Se corrige desde fuera, igual que manda la regla que ya rige para todo PolymindGames. `LightEffect` escribe intensity/range/color cada frame pero **nunca** `shadows`, así que la promoción sobrevive sin pelearse con nada, y como `LightEffect.OnEnable/OnDisable` maneja `Light.enabled`, una antorcha apagada no renderiza shadow map.
+
+**Point, no Spot, y el precio se paga a sabiendas.** Una llama emite en todas direcciones; un spot habría costado 1 cara de shadow map en vez de 6, pero se lee como linterna. Consecuencia directa: el atlas de sombras adicionales sube de **2048 a 4096** en `PC_RPAsset` (~+24 MB de VRAM). No es cosmético — URP recorta la resolución concedida a lo que el atlas pueda tesselar, y con 6 caras en 2048 el techo son 2048/3 ≈ 682 px: el tier High de 1024 que pide la luz se habría degradado en silencio. Con 4096 se concede entero.
+
+**Bias propio, obligatorio.** El hook pone `usePipelineSettings = false` en el `UniversalAdditionalLightData` y escribe su propio bias (depth 0.05 / normal 0.2 / near plane 0.05) porque los del pipeline (0.1 / 0.5) están calibrados para la cascada direccional de 50 m y sobre una llama de 7,5 m despegan la sombra de su emisor (peter-panning).
+
+**Qué PROHÍBE esta enmienda.** Prohíbe promover una segunda luz por cualquier vía: si algún día hay dos fuentes portátiles simultáneas, la decisión de cuál proyecta es de este hook y de nadie más. Prohíbe reactivar las sombras de la antorcha del **peer** — ADR-042 sigue vigente palabra por palabra, y ahora que el flag está ON esa prohibición es lo único que separa N peers de N shadow maps. Prohíbe dar sombras a las lámparas del worldgen, sin cambios respecto a ADR-065. Y prohíbe editar `FPS_VFX_SmallFire` para conseguir el efecto.
+
+**Nota de mantenimiento:** `m_PrefilteringModeAdditionalLightShadows` se pone a `1` (Select) en el asset, pero URP lo **recalcula en build** desde `supportsAdditionalLightShadows` (`ShaderBuildPreprocessor.cs:993`). Se escribe a mano para que el estado serializado no mienta, no porque haga falta.
+
+Dependencias: ADR-065 (el pipeline URP Forward+ que hace esto posible y cuya letra se enmienda), ADR-042 (las sombras del peer, que siguen prohibidas y ahora importan más), ADR-050 (el mismo razonamiento de coste que citaba ADR-065), ADR-059/066 (las lámparas y la atmósfera por zona, intactas).
+
+Verificado: `bash tools/dev/CompileCheckClient.sh BackroomsSurvival` → `errors: 0`, con `TorchShadowCaster.cs` confirmado dentro del set de fuentes compiladas. **PENDIENTE DE VALIDACIÓN VISUAL en standalone** — el efecto no puede afirmarse verde hasta verlo.
