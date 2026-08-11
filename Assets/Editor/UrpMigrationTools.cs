@@ -45,6 +45,46 @@ namespace BackroomsSurvival.EditorTools
         public static void UpgradeVendorStandardMaterials() =>
             UpgradeStandardMaterials(new[] { "Assets/PolymindGames" });
 
+        // Los .unitypackage URP del vendor tampoco tocaron los materiales de
+        // partículas: la hoguera del menú principal (MenuFire) y las llamas de
+        // FPS_VFX_SmallFire siguen en "Particles/Standard Unlit" de Built-in.
+        // ParticleUpgrader es el mismo upgrader que el Render Pipeline Converter
+        // registra para esos shaders (UniversalRenderPipelineMaterialUpgrader.cs:202).
+        [MenuItem("Backrooms/URP Migration/Upgrade Particle Materials")]
+        public static void UpgradeParticleMaterials()
+        {
+            var upgraders = new (string from, MaterialUpgrader upgrader)[]
+            {
+                ("Particles/Standard Unlit", new ParticleUpgrader("Particles/Standard Unlit")),
+                ("Particles/Standard Surface", new ParticleUpgrader("Particles/Standard Surface")),
+                ("Particles/VertexLit Blended", new ParticleUpgrader("Particles/VertexLit Blended")),
+            };
+
+            int upgraded = 0;
+
+            foreach (var guid in AssetDatabase.FindAssets("t:Material", new[] { "Assets" }))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                var mat = AssetDatabase.LoadAssetAtPath<Material>(path);
+                if (mat == null || mat.shader == null)
+                    continue;
+
+                foreach (var (from, upgrader) in upgraders)
+                {
+                    if (mat.shader.name != from)
+                        continue;
+
+                    MaterialUpgrader.Upgrade(mat, upgrader, MaterialUpgrader.UpgradeFlags.None);
+                    upgraded++;
+                    Debug.Log($"[UrpMigration] particle upgraded ({from}): {path}");
+                    break;
+                }
+            }
+
+            AssetDatabase.SaveAssets();
+            Debug.Log($"[UrpMigration] Particles -> URP: {upgraded} materiales convertidos.");
+        }
+
         private static void UpgradeStandardMaterials(string[] roots)
         {
             var upgrader = new StandardUpgrader("Standard");
