@@ -547,6 +547,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         // Damp multipliers per surface. Floor is the strongest (soaked carpet goes dark);
         // walls stain least (water runs down rather than pooling).
+        /// <summary>
+        /// Mancha de suelo. DESACTIVADA desde 2026-08-13 (ver <see cref="FloorStainThreshold"/>);
+        /// el color se conserva porque el defecto no era el tono sino dónde caía su borde.
+        /// </summary>
         private static readonly Color FloorStain = new Color(0.74f, 0.71f, 0.64f);
         private static readonly Color WallStain  = new Color(0.84f, 0.82f, 0.74f);
         /// <summary>Segundo tono de mancha de pared: el núcleo de la filtración, más
@@ -555,7 +559,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// que el umbral de abajo sea más bajo y que los dos lean la misma muestra de
         /// humedad.</summary>
         private static readonly Color WallStainDeep = new Color(0.72f, 0.67f, 0.55f);
-        private const float FloorStainThreshold = 0.22f;
+        /// <summary>
+        /// 0.22 → 0 (2026-08-13): la mancha de suelo se apaga. `MoistureAt` nunca devuelve
+        /// menos de 0, así que con el umbral a 0 ningún tile es húmedo y el multiplicador
+        /// deja de aplicarse.
+        ///
+        /// POR QUÉ, y por qué la de PARED se queda: la mancha es un multiplicador por TILE
+        /// con borde duro. En pared eso funciona —los paneles son piezas separadas de 5 m y
+        /// el agua corre por ellas, así que el escalón cae donde ya hay una junta real. El
+        /// suelo son losas COPLANARES que forman una superficie continua: el mismo escalón
+        /// no tiene junta donde esconderse y se lee como una raya recta pintada sobre el
+        /// suelo. Y era el residuo grande — −28.9 % de luminancia sobre el 15 % de las
+        /// baldosas, agrupadas en bloques de 2×2 (10 m), o sea 3.6× lo que valía el jitter
+        /// que se quitó en 3dece7c precisamente por producir ese mismo artefacto.
+        ///
+        /// No se borra el camino: subir este umbral la reactiva. Pero devolverla tal cual
+        /// devuelve el defecto — la forma correcta de ensuciar un suelo continuo es en el
+        /// espacio de la TEXTURA, no por tile, y eso es trabajo de shader.
+        ///
+        /// El equivalente del techo (<see cref="MoistureStain"/>, umbral 0.20 en
+        /// <c>PlaceCeilingTile</c>) queda intacto a propósito: fuera de alcance aquí, y el
+        /// techo sí tiene junta dibujada por la propia textura de placa.
+        /// </summary>
+        private const float FloorStainThreshold = 0f;
         /// <summary>0.18 → 0.35 (2026-08-13). Con el jitter por tile fuera de las paredes,
         /// la mancha es lo ÚNICO que varía de panel a panel, y a 0.18 tocaba ~10 % de los
         /// tiles: una pared de seis paneles salía con cinco idénticos. A 0.35 son ~31 %.
