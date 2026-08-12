@@ -140,10 +140,16 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(Color.white, c,
                 $"{what} = {c} — con la paleta base unificada el tinte de capa es blanco");
 
-        /// <summary>La paleta por tile queda vacía a propósito: el jitter HSV de ±8 % de
-        /// <c>GridChunkBuilder.JitterValue</c> ya da variedad tile a tile, y es MAYOR que
-        /// la que daban estas variantes. Mantenerlas solo añadía una segunda fuente de
-        /// albedo por capa que no se ve en el material.</summary>
+        /// <summary>La paleta por tile queda vacía a propósito: era una segunda fuente de
+        /// albedo por capa que no se ve en el material, y la variedad la daba mejor el
+        /// jitter HSV de <c>GridChunkBuilder.JitterValue</c>.
+        ///
+        /// Nota (2026-08-12): ese argumento ya solo vale para SUELO y TECHO. En pared el
+        /// jitter está a 0 (<c>WallValueJitter</c>) porque sobre una superficie vertical el
+        /// salto entre paneles contiguos cae en el borde geométrico y se lee como costura
+        /// de tiling, no como desgaste. La variedad de pared la aporta <c>WallStain</c>.
+        /// Reactivar estas variantes NO es la forma de recuperarla: volverían a mover el
+        /// albedo por capa, que es justo lo que la paleta base unificada quitó.</summary>
         private static void AssertNoVariants(Color[] variants, string what) =>
             Assert.IsTrue(variants == null || variants.Length == 0,
                 $"{what} tiene {variants?.Length} entradas — la paleta base es un solo tinte");

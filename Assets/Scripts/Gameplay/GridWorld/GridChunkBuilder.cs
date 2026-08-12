@@ -375,7 +375,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // en la frontera entre dos tiles, y los muros oeste/norte de una
                         // sala los emite el tile de fuera.
                         if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall,
-                            Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain),
+                            Damp(JitterValue(wallBase * zoneTint, rng, WallValueJitter), wallDamp, WallStain),
                             cfg, gx, gz, zoneKindQuery, roomZones);
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz,
                             gx, gz, zoneKindQuery);
@@ -398,8 +398,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     {
                         // Primer pase (decisión explícita): mats.wall, SIN material
                         // propio de pilar — pendiente de pasada de arte separada.
+                        // Mismo WallValueJitter que el panel: el pilar se pinta con el
+                        // material de pared y con su mismo tinte base, así que dejarlo
+                        // jitterado lo habría convertido en lo ÚNICO que varía por tile en
+                        // esa superficie — más visible aún ahora que sus vecinos son planos.
                         Color pillarTint = styled
-                            ? Damp(JitterValue(wallBase * zoneTint, rng), wallDamp, WallStain)
+                            ? Damp(JitterValue(wallBase * zoneTint, rng, WallValueJitter), wallDamp, WallStain)
                             : Color.white;
                         PlacePillars(prefabs, root.transform, pillarBits, tx, tz,
                             styled ? mats.wall : null, pillarTint);

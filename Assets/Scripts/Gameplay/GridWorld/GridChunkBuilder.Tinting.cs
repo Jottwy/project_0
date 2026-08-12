@@ -27,13 +27,48 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
-        /// <summary>Jitter the HSV Value of <paramref name="baseColor"/> by ±8%
-        /// (deterministic via <paramref name="rng"/>) to break tile uniformity.</summary>
-        private static Color JitterValue(Color baseColor, System.Random rng)
+        /// <summary>
+        /// Amplitud del jitter de valor HSV por tile en SUELO y TECHO. Rompe la
+        /// uniformidad de la retícula en superficies que se ven en escorzo, donde el
+        /// escalón entre baldosas contiguas no dibuja una arista.
+        /// </summary>
+        private const float SurfaceValueJitter = 0.08f;
+
+        /// <summary>
+        /// Lo mismo para PAREDES y pilares, a 0 desde 2026-08-12.
+        ///
+        /// En una superficie vertical el jitter no lee como desgaste: cada panel es un
+        /// rectángulo de 5 m con su propio valor plano, y el salto entre dos paneles
+        /// contiguos cae exactamente en el borde geométrico. A media distancia eso es una
+        /// BANDA VERTICAL de canto recto, o sea la costura del tiling anunciándose, que es
+        /// lo contrario de lo que el jitter pretendía disimular. En suelo y techo no pasa
+        /// porque se ven en escorzo y sus juntas ya están dibujadas por la propia textura.
+        ///
+        /// Queda como parámetro y no borrado: con la iluminación cerrada puede querer
+        /// volver a un valor MUCHO menor (~0.02) donde el salto quede por debajo del
+        /// umbral de percepción. La variación de pared la aporta mientras tanto
+        /// <c>WallStain</c>, cuya distribución es por ruido de humedad y no por tile, así
+        /// que no produce bordes rectos.
+        /// </summary>
+        private const float WallValueJitter = 0f;
+
+        /// <summary>Jitter the HSV Value of <paramref name="baseColor"/> by
+        /// ±<paramref name="amplitude"/> (deterministic via <paramref name="rng"/>) to
+        /// break tile uniformity.</summary>
+        private static Color JitterValue(Color baseColor, System.Random rng,
+            float amplitude = SurfaceValueJitter)
         {
             if (rng == null) return baseColor;
+            // El sorteo se hace SIEMPRE, también con amplitud 0. El rng es uno por chunk y
+            // lo comparten suelo, pared, pilares y techo: saltarse una extracción correría
+            // la secuencia y movería el tinte de todo lo que viene detrás en el tile —
+            // incluido el suelo, que en este cambio no se toca. Es la misma disciplina que
+            // documentan PlaceCeilingTile y PlaceLintels.
+            double draw = rng.NextDouble();
+            if (amplitude <= 0f) return baseColor;
+
             Color.RGBToHSV(baseColor, out float h, out float s, out float v);
-            float k = 1f + (float)(rng.NextDouble() * 2.0 - 1.0) * 0.08f;
+            float k = 1f + (float)(draw * 2.0 - 1.0) * amplitude;
             var c = Color.HSVToRGB(h, Mathf.Clamp01(s), Mathf.Clamp01(v * k));
             c.a = baseColor.a;
             return c;
