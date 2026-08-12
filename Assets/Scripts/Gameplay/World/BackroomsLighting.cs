@@ -104,7 +104,16 @@ namespace BackroomsSurvival.Gameplay.World
             // lampIntensity. Eran la misma cifra y mezclaban unidades — la potencia de la
             // Light pintaba la superficie del panel a 2.8–3.4 × blanco, que ningún
             // tonemapper puede recuperar. Cambiar cuánto ilumina ya no cambia cómo se ve.
-            Color litEmission = lampColor * Mathf.Max(0f, lampEmission);
+            //
+            // .linear NO es decorativo: el proyecto está en espacio LINEAL y las dos vías
+            // por las que sale este color NO lo tratan igual. `light.color` es gamma y
+            // Unity la convierte al renderizar; `_EmissionColor` está declarada [HDR] en
+            // URP/Lit y llega por MaterialPropertyBlock, o sea que se consume TAL CUAL,
+            // como si ya fuera lineal. Con un color casi blanco las dos vías coincidían y
+            // el desajuste no se veía; con el amarillo mostaza de NORMAL el difusor se
+            // quedaba en 0.44 de azul donde la luz proyecta 0.16 — panel pálido tirando a
+            // blanco encima de una pared amarilla, que es justo lo que canta.
+            Color litEmission = lampColor.linear * Mathf.Max(0f, lampEmission);
 
             // Pieza D — per-chunk density jitter. With a flat lightDensity every
             // chunk lands within a couple of lamps of the same count, so a corridor is
@@ -152,7 +161,7 @@ namespace BackroomsSurvival.Gameplay.World
 
                     // Luminaire mesh (always): emissive when working, near-dark when broken.
                     var mesh = MakeLuminaire(chunkRoot, localPos, lampMat,
-                        broken ? lampColor * 0.04f : litEmission, out var meshRenderer);
+                        broken ? lampColor.linear * 0.04f : litEmission, out var meshRenderer);
                     mesh.layer = geoLayer; // so only this layer's lamps light the tube
 
                     if (broken) continue; // dark tube, no light cast (mesh stays)

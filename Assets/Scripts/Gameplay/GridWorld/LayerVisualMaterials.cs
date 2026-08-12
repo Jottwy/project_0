@@ -128,13 +128,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// Enmienda de ADR-066: aquí se pasaba <c>cfg.lampIntensity</c>, o sea la potencia de
         /// la luz, y el panel acababa a 2.8–3.4 × blanco puro — sin forma bajo ningún
         /// tonemapper y desbordando el bloom por todo el techo.
+        ///
+        /// El <c>.linear</c> de la emisión es el mismo arreglo que en
+        /// <c>BackroomsLighting</c>: <c>_EmissionColor</c> es [HDR] en URP/Lit y se consume
+        /// como valor LINEAL, mientras que la <c>Light</c> que acompaña al panel recibe el
+        /// color en gamma y lo convierte Unity. Sin la conversión, un color de lámpara
+        /// saturado sale del difusor más pálido de lo que proyecta.
         private static Material MakeLamp(Shader shader, Color color, float emission)
         {
             var m = new Material(shader) { name = "LayerLampEmissive" };
             if (m.HasProperty(BaseColorId)) m.SetColor(BaseColorId, color);
             m.EnableKeyword("_EMISSION");
             m.globalIlluminationFlags = MaterialGlobalIlluminationFlags.RealtimeEmissive;
-            m.SetColor(EmissionColorId, color * Mathf.Max(0f, emission));
+            m.SetColor(EmissionColorId, color.linear * Mathf.Max(0f, emission));
             return m;
         }
 

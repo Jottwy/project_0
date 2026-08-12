@@ -468,6 +468,74 @@ namespace BackroomsSurvival.Tests
                 "intención del ADR está del revés en el asset");
         }
 
+        /// <summary>
+        /// Canon de Level 0 (2026-08-12): el amarillo del sitio lo pone la LUZ, no el
+        /// material. El albedo del papel se desaturó a crema (luminancia 196, saturación
+        /// 0.147, ver <c>WallpaperSurfaceTests</c>) precisamente para dejarle ese trabajo a
+        /// esta fila, así que un lampColor de NORMAL que vuelva a blanco neutro deja las
+        /// paredes lavadas y las dos mitades del cambio dejan de sumar.
+        ///
+        /// El criterio es el fluorescente VIEJO: azul muy recortado (mostaza, no crema),
+        /// verde en la punta o al nivel del rojo (el pico verde de un tubo halofosfato
+        /// gastado) y rojo alto (cálido, no hospital). El azul tiene suelo además de techo:
+        /// por debajo de ~0.30 el mundo se vuelve ácido en cuanto alguien baja el slider de
+        /// color grading, que a 1.0 recorta 28 puntos de saturación y hoy tapa el exceso.
+        /// </summary>
+        [Test]
+        public void Layer0NormalLampIsAnAgedFluorescentAndNotNeutralWhite()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+            Assert.IsTrue(real.TryGetZoneLightSet(ZoneNormal, out var zn));
+            Assert.IsTrue(zn.overrideLampColor, "sin el override, NORMAL cae al color de capa");
+
+            Color c = zn.lampColor;
+            Assert.LessOrEqual(c.b, 0.60f,
+                $"azul {c.b:F2}: sin recortarlo la luz es blanca y la pared crema se ve lavada, " +
+                "que es el estado del que venimos");
+            Assert.GreaterOrEqual(c.b, 0.30f,
+                $"azul {c.b:F2}: por debajo de esto el amarillo es ácido en cuanto el slider de " +
+                "color grading deja de restar saturación");
+            Assert.GreaterOrEqual(c.g, c.r - 0.02f,
+                $"R {c.r:F2} / G {c.g:F2}: el punto es amarillo VERDOSO-cálido — con el rojo por " +
+                "encima del verde la lámpara lee a bombilla incandescente, que es acogedora");
+            Assert.GreaterOrEqual(c.r, 0.90f,
+                $"rojo {c.r:F2}: con el rojo bajo la luz deja de ser cálida y lee a hospital");
+        }
+
+        /// <summary>
+        /// El difusor tiene que emitir el MISMO tono que proyecta su Light, y eso no es
+        /// gratis: el proyecto está en espacio lineal, <c>Light.color</c> se autora en gamma
+        /// y la convierte Unity, pero <c>_EmissionColor</c> es [HDR] en URP/Lit y se consume
+        /// tal cual. Sin <c>.linear</c> en la emisión, un color de lámpara saturado sale del
+        /// panel más pálido de lo que ilumina — panel casi blanco sobre pared amarilla.
+        ///
+        /// Se comprueba sobre <see cref="LayerVisualMaterials.Build"/>, que es la vía
+        /// testeable; la de <c>BackroomsLighting.PlaceFluorescentLights</c> (override por
+        /// zona) aplica la misma expresión y no se puede ejercitar en EditMode porque
+        /// instancia GameObjects con <c>Destroy</c>.
+        /// </summary>
+        [Test]
+        public void TheLampDiffuserEmitsTheHueItProjects()
+        {
+            var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
+            Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
+
+            var mats = LayerVisualMaterials.Build(real);
+            try
+            {
+                Color emission = mats.lamp.GetColor(LayerVisualMaterials.EmissionColorId);
+                Color expected = real.lampColor.linear * real.lampEmission;
+
+                Assert.AreEqual(expected.r, emission.r, 0.001f, "emisión R fuera del color de la lámpara");
+                Assert.AreEqual(expected.g, emission.g, 0.001f, "emisión G fuera del color de la lámpara");
+                Assert.AreEqual(expected.b, emission.b, 0.001f,
+                    "emisión B: sin la conversión a lineal el difusor se queda pálido mientras " +
+                    "la luz proyecta saturado");
+            }
+            finally { mats.Destroy(); }
+        }
+
         [Test]
         public void Layer0ActuallyAuthorsTheOfficeCeilingSet()
         {
