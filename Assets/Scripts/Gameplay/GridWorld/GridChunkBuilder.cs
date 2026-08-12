@@ -331,8 +331,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // Own salt pair per surface, so the three fields are uncorrelated.
                     bool floorDamp = styled && MoistureAt(chunkX, chunkZ, tx, tz,
                         MoistSaltFloorCell, MoistSaltFloorJit) < FloorStainThreshold;
-                    bool wallDamp = styled && MoistureAt(chunkX, chunkZ, tx, tz,
-                        MoistSaltWallCell, MoistSaltWallJit) < WallStainThreshold;
+                    float wallMoist = MoistureAt(chunkX, chunkZ, tx, tz,
+                        MoistSaltWallCell, MoistSaltWallJit);
+                    bool wallDamp = styled && wallMoist < WallStainThreshold;
+                    // El SEGUNDO tono lo elige la misma muestra de humedad, no un hash nuevo:
+                    // así el tono fuerte cae siempre DENTRO del débil y la mancha tiene núcleo
+                    // y halo, que es como se seca una filtración. Con un hash independiente
+                    // saldrían dos parches sin relación y volvería a leerse como retícula. Sin
+                    // draws de rng ni hashes extra: el orden de consumo no se mueve.
+                    Color wallStain = wallMoist < WallStainDeepThreshold ? WallStainDeep : WallStain;
 
                     // Floor of this layer == ceiling of the layer below (one slab).
                     var floorGo = Instantiate(prefabs.floorSlab, root.transform, TileCenter(tx, tz), 0f);
@@ -375,7 +382,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // en la frontera entre dos tiles, y los muros oeste/norte de una
                         // sala los emite el tile de fuera.
                         if (styled) PlaceWallsTinted(prefabs, root.transform, edges, tx, tz, mats.wall,
-                            Damp(JitterValue(wallBase * zoneTint, rng, WallValueJitter), wallDamp, WallStain),
+                            Damp(JitterValue(wallBase * zoneTint, rng, WallValueJitter), wallDamp, wallStain),
                             cfg, gx, gz, zoneKindQuery, roomZones);
                         else PlaceWalls(prefabs, root.transform, edges, tx, tz,
                             gx, gz, zoneKindQuery);
@@ -388,7 +395,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // disciplina que mantiene PlaceCeilingTile.
                     if (styled)
                         PlaceLintels(prefabs, root.transform, walls, cfg, tx, tz, gx, gz,
-                            mats.wall, Damp(wallBase * zoneTint, wallDamp, WallStain));
+                            mats.wall, Damp(wallBase * zoneTint, wallDamp, wallStain));
 
                     // ADR-033/Pillar: nibble alto → columnas por sub-celda. Sin
                     // traducción de bits (a diferencia de N/S/E/W): cada bit ya
@@ -403,7 +410,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // jitterado lo habría convertido en lo ÚNICO que varía por tile en
                         // esa superficie — más visible aún ahora que sus vecinos son planos.
                         Color pillarTint = styled
-                            ? Damp(JitterValue(wallBase * zoneTint, rng, WallValueJitter), wallDamp, WallStain)
+                            ? Damp(JitterValue(wallBase * zoneTint, rng, WallValueJitter), wallDamp, wallStain)
                             : Color.white;
                         PlacePillars(prefabs, root.transform, pillarBits, tx, tz,
                             styled ? mats.wall : null, pillarTint);
@@ -542,8 +549,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // walls stain least (water runs down rather than pooling).
         private static readonly Color FloorStain = new Color(0.74f, 0.71f, 0.64f);
         private static readonly Color WallStain  = new Color(0.84f, 0.82f, 0.74f);
+        /// <summary>Segundo tono de mancha de pared: el núcleo de la filtración, más
+        /// oscuro (−33 % de luminancia frente al −18 % de <see cref="WallStain"/>) y más
+        /// amarronado. Va DENTRO de la mancha débil, no en parches propios — lo garantiza
+        /// que el umbral de abajo sea más bajo y que los dos lean la misma muestra de
+        /// humedad.</summary>
+        private static readonly Color WallStainDeep = new Color(0.72f, 0.67f, 0.55f);
         private const float FloorStainThreshold = 0.22f;
-        private const float WallStainThreshold  = 0.18f;
+        /// <summary>0.18 → 0.35 (2026-08-13). Con el jitter por tile fuera de las paredes,
+        /// la mancha es lo ÚNICO que varía de panel a panel, y a 0.18 tocaba ~10 % de los
+        /// tiles: una pared de seis paneles salía con cinco idénticos. A 0.35 son ~31 %.
+        /// El umbral NO es la fracción de tiles manchados — la humedad es
+        /// <c>0.8 · hash(bloque 2×2) + 0.2 · hash(tile)</c>, así que la fracción sale de
+        /// integrar esa mezcla, no de leer el número.</summary>
+        private const float WallStainThreshold  = 0.35f;
+        /// <summary>~4.5 % de los tiles, o sea uno de cada siete manchados: el núcleo.</summary>
+        private const float WallStainDeepThreshold = 0.12f;
 
         // ── Fase 5C — procedural props ──────────────────────────────────────────
 
