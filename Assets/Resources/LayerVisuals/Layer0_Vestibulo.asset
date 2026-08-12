@@ -155,7 +155,7 @@ MonoBehaviour:
   - zoneKind: 0
     anyZoneKind: 0
     overrideAmbientLight: 1
-    ambientLight: {r: 0.3, g: 0.28, b: 0.22, a: 1}
+    ambientLight: {r: 0.465, g: 0.45, b: 0.375, a: 1}
     overrideFogDensity: 1
     fogDensity: 0.028
     overrideFogColor: 1
