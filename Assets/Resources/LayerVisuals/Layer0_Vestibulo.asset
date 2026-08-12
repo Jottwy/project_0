@@ -41,7 +41,7 @@ MonoBehaviour:
     overrideLampColor: 1
     lampColor: {r: 1, g: 0.96, b: 0.86, a: 1}
     overrideLampIntensity: 1
-    lampIntensity: 0.85
+    lampIntensity: 7
     overrideLampRange: 1
     lampRange: 9
     overrideLightDensity: 1
