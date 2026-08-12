@@ -526,8 +526,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         // ── Fase 5B — procedural ceiling variety ────────────────────────────────
 
-        // Damp-grey multiplier for moisture-stained ceiling tiles.
+        /// <summary>
+        /// Damp-grey multiplier for moisture-stained ceiling tiles. DESACTIVADO desde
+        /// 2026-08-13 (ver <see cref="CeilingStainThreshold"/>); el color se conserva
+        /// porque el defecto no era el tono.
+        /// </summary>
         private static readonly Color MoistureStain = new Color(0.7f, 0.68f, 0.6f);
+
+        /// <summary>
+        /// Umbral de la mancha de techo, 0.20 → 0 (2026-08-13). Era un literal dentro de
+        /// <c>PlaceCeilingTile</c>; se saca a constante con nombre para apagarlo con la
+        /// misma disciplina que <see cref="FloorStainThreshold"/> y los dos jitter — el
+        /// camino de código sigue entero y subir el umbral lo reactiva.
+        ///
+        /// Cierra el barrido de multiplicadores por TILE con borde duro: primero el jitter
+        /// de pared, luego el de suelo y techo, luego la mancha de suelo y ahora esta. En
+        /// una retícula de 5 m todos producen el mismo artefacto —un escalón de valor que
+        /// cae exactamente en el límite del tile y se lee como la costura del tiling en vez
+        /// de como desgaste. Aquí eran −30 % de luminancia sobre el 13 % de las placas.
+        ///
+        /// Sobrevive SOLO la mancha de pared, que es la excepción con motivo: los paneles
+        /// son piezas separadas de 5 m, así que su escalón cae sobre una junta real.
+        /// </summary>
+        private const float CeilingStainThreshold = 0f;
 
         // Atenuación de la placa "ausente" (ver PlaceCeilingTile). Es el panel MÁS oscuro
         // de todo el techo, así que fija el suelo del criterio "ninguna superficie de mundo

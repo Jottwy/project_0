@@ -252,7 +252,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 ? zc.ceilingTint
                 : cfg.CeilingTintFor(Hash01(chunkX * Tiles + tx, chunkZ * Tiles + tz, TintSaltCeiling));
             Color tint = JitterValue(baseTint * zoneTint, rng);
-            if (MoistureAt(chunkX, chunkZ, tx, tz, MoistSaltCeilCell, MoistSaltCeilJit) < 0.20f)
+            if (MoistureAt(chunkX, chunkZ, tx, tz, MoistSaltCeilCell, MoistSaltCeilJit)
+                < CeilingStainThreshold)
                 tint *= MoistureStain;
 
             float v = Mathf.Clamp01(hasZoneCeiling && zc.overridePanelVariety
