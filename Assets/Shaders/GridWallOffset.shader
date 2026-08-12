@@ -10,12 +10,24 @@
 // Shader Graph cannot emit it. Name + guid are unchanged so GridWall.mat and the
 // Shader.Find call sites keep referencing it. _BaseColor is the per-tile tint
 // (set via MaterialPropertyBlock). Zero specular: fluorescent-lit office look.
+//
+// Mapa de normales (2026-08-12): el papel pintado de Level 0 no se distingue por
+// color sino por el grabado, y con smoothness cero el ÚNICO canal que puede
+// mostrarlo es el N·L difuso. De ahí la base tangente en el vértice y el
+// _BumpMap en el fragmento. Sigue sin haber especular ni metalicidad: el relieve
+// se ve porque la luz roza la superficie, no porque brille.
 Shader "Backrooms/GridWallOffset"
 {
     Properties
     {
         _BaseMap("Base Map", 2D) = "white" {}
         _BaseColor("Base Color", Color) = (1, 1, 1, 1)
+        // El papel pintado se distingue por RELIEVE, no por albedo: el motivo del
+        // _BaseMap son 6 de 255 de luminancia y quien lo saca en luz rasante es este
+        // mapa. Sin _BumpMap asignado, "bump" es la normal plana y la pared se
+        // comporta exactamente como antes.
+        [Normal] _BumpMap("Normal Map", 2D) = "bump" {}
+        _BumpScale("Normal Scale", Float) = 1
         [Enum(UnityEngine.Rendering.CullMode)] _Cull("Cull", Float) = 2 // 0=Off,1=Front,2=Back
     }
 
@@ -28,7 +40,9 @@ Shader "Backrooms/GridWallOffset"
 
         CBUFFER_START(UnityPerMaterial)
             float4 _BaseMap_ST;
+            float4 _BumpMap_ST;
             half4 _BaseColor;
+            float _BumpScale;
             float _Cull;
         CBUFFER_END
         ENDHLSL
@@ -61,42 +75,60 @@ Shader "Backrooms/GridWallOffset"
 
             TEXTURE2D(_BaseMap);
             SAMPLER(sampler_BaseMap);
+            TEXTURE2D(_BumpMap);
+            SAMPLER(sampler_BumpMap);
 
             struct Attributes
             {
                 float4 positionOS : POSITION;
                 float3 normalOS   : NORMAL;
+                float4 tangentOS  : TANGENT;
                 float2 uv         : TEXCOORD0;
             };
 
             struct Varyings
             {
-                float4 positionCS : SV_POSITION;
-                float2 uv         : TEXCOORD0;
-                float3 positionWS : TEXCOORD1;
-                float3 normalWS   : TEXCOORD2;
-                half   fogFactor  : TEXCOORD3;
+                float4 positionCS  : SV_POSITION;
+                float2 uv          : TEXCOORD0;
+                float3 positionWS  : TEXCOORD1;
+                float3 normalWS    : TEXCOORD2;
+                half   fogFactor   : TEXCOORD3;
+                float3 tangentWS   : TEXCOORD4;
+                float3 bitangentWS : TEXCOORD5;
             };
 
             Varyings Vert(Attributes input)
             {
                 Varyings output;
                 VertexPositionInputs pos = GetVertexPositionInputs(input.positionOS.xyz);
-                output.positionCS = pos.positionCS;
-                output.positionWS = pos.positionWS;
-                output.normalWS   = TransformObjectToWorldNormal(input.normalOS);
-                output.uv         = TRANSFORM_TEX(input.uv, _BaseMap);
-                output.fogFactor  = ComputeFogFactor(pos.positionCS.z);
+                // La base tangente sale del vértice (el Cube de los prefabs de pared la
+                // trae): sin ella el mapa de normales no tiene marco en el que aplicarse.
+                VertexNormalInputs nrm = GetVertexNormalInputs(input.normalOS, input.tangentOS);
+                output.positionCS  = pos.positionCS;
+                output.positionWS  = pos.positionWS;
+                output.normalWS    = nrm.normalWS;
+                output.tangentWS   = nrm.tangentWS;
+                output.bitangentWS = nrm.bitangentWS;
+                output.uv          = input.uv;   // sin ST: albedo y relieve tienen el suyo
+                output.fogFactor   = ComputeFogFactor(pos.positionCS.z);
                 return output;
             }
 
             half4 Frag(Varyings input) : SV_Target
             {
-                half4 albedo = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, input.uv) * _BaseColor;
+                float2 baseUV = input.uv * _BaseMap_ST.xy + _BaseMap_ST.zw;
+                half4 albedo = SAMPLE_TEXTURE2D(_BaseMap, sampler_BaseMap, baseUV) * _BaseColor;
+
+                // _BumpMap lleva su propio ST para que el relieve pueda escalarse sin
+                // arrastrar al albedo; el generador los deja iguales.
+                float2 bumpUV = input.uv * _BumpMap_ST.xy + _BumpMap_ST.zw;
+                half3 normalTS = UnpackNormalScale(
+                    SAMPLE_TEXTURE2D(_BumpMap, sampler_BumpMap, bumpUV), _BumpScale);
 
                 InputData inputData = (InputData)0;
                 inputData.positionWS = input.positionWS;
-                inputData.normalWS = normalize(input.normalWS);
+                inputData.normalWS = normalize(TransformTangentToWorld(normalTS,
+                    half3x3(input.tangentWS, input.bitangentWS, input.normalWS)));
                 inputData.viewDirectionWS = GetWorldSpaceNormalizeViewDir(input.positionWS);
                 inputData.shadowCoord = TransformWorldToShadowCoord(input.positionWS);
                 inputData.fogCoord = input.fogFactor;

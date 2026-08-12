@@ -6,10 +6,13 @@ using UnityEngine;
 namespace BackroomsSurvival.EditorTools
 {
     /// <summary>
-    /// Generates the three Backrooms surface textures procedurally (no external
-    /// deps — pure Texture2D pixel writes), saves them as PNG assets under
+    /// Generates the Backrooms surface textures procedurally (no external deps —
+    /// pure Texture2D pixel writes), saves them as PNG assets under
     /// Resources/Textures, and wires them into the existing grid materials.
-    /// Deterministic: a fixed RNG seed per texture, so re-running is idempotent.
+    /// Deterministic, así que volver a ejecutarlo es idempotente: suelo y techo con
+    /// una semilla fija por textura, la pared con el hash entero de
+    /// <see cref="WallpaperPattern"/>. La pared son DOS mapas —albedo y normal— y es
+    /// el mapa de normales el que hace el trabajo visual.
     /// Menu: Backrooms/Generate Textures.
     /// </summary>
     public static class TextureGenerator
@@ -24,11 +27,16 @@ namespace BackroomsSurvival.EditorTools
         {
             EnsureFolders();
 
-            var wallpaper = Bake(BuildWallpaperYellow(), "WallpaperYellow.png");
-            var carpet    = Bake(BuildCarpetBeige(),     "CarpetBeige.png");
-            var ceiling   = Bake(BuildCeilingTiles(),    "CeilingTiles.png");
+            // La pared sale de WallpaperPattern (motivo + relieve) y a 1024, no a 512:
+            // el chevron de Level 0 mide 6 cm y a 512 sobre 2.5 m de tile no le quedan
+            // píxeles para leerse como grabado. Suelo y techo siguen a 512.
+            WallpaperPattern.Build(out byte[] wallAlbedo, out byte[] wallNormal);
+            var wallpaper   = Bake(ToPixels(wallAlbedo), WallpaperPattern.Size, "WallpaperYellow.png", false);
+            var wallpaperNM = Bake(ToPixels(wallNormal), WallpaperPattern.Size, "WallpaperYellow_Normal.png", true);
+            var carpet      = Bake(BuildCarpetBeige(),  Size, "CarpetBeige.png",  false);
+            var ceiling     = Bake(BuildCeilingTiles(), Size, "CeilingTiles.png", false);
 
-            ApplyTexture($"{MaterialFolder}/GridWall.mat",    wallpaper, 2f, 2f);
+            ApplyTexture($"{MaterialFolder}/GridWall.mat",    wallpaper, 2f, 2f, wallpaperNM);
             ApplyTexture($"{MaterialFolder}/GridFloor.mat",   carpet,    4f, 4f);
             ApplyTexture($"{MaterialFolder}/GridCeiling.mat", ceiling,   2f, 2f);
 
@@ -37,53 +45,32 @@ namespace BackroomsSurvival.EditorTools
             // como material de los prefabs y como fallback de textura). Si se dejaran fuera
             // de aquí, regenerar las texturas movería el aspecto de los prefabs y no el del
             // mundo, que es justo al revés de lo que se espera al ejecutar este menú.
-            ApplyTexture($"{MaterialFolder}/M_Backrooms_Wall.mat",    wallpaper, 2f, 2f);
+            ApplyTexture($"{MaterialFolder}/M_Backrooms_Wall.mat",    wallpaper, 2f, 2f, wallpaperNM);
             ApplyTexture($"{MaterialFolder}/M_Backrooms_Floor.mat",   carpet,    4f, 4f);
             ApplyTexture($"{MaterialFolder}/M_Backrooms_Ceiling.mat", ceiling,   2f, 2f);
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
-            Debug.Log("[TextureGenerator] Generated WallpaperYellow / CarpetBeige / " +
+            Debug.Log("[TextureGenerator] Generated WallpaperYellow (+ _Normal) / CarpetBeige / " +
                       "CeilingTiles and applied them to GridWall/GridFloor/GridCeiling " +
                       "and to M_Backrooms_Wall/Floor/Ceiling.");
         }
 
-        // ─── Texture 1: pale cream wallpaper with a faint argyle diamond pattern ──
+        // ─── Texture 1: el papel pintado de pared ────────────────────────────
         //
-        // Reautoría hacia el canon de Level 0 (2026-08-11). Antes: bg 210/195/140, fill
-        // 185/170/115, border 165/150/95 — con el tinte de capa encima daban un oliva de
-        // albedo ~0.36 en el canal azul, así que la luz moría al salir del cono del panel y
-        // no había rebote falso que rellenara. Y el patrón era LEGIBLE a 10 m (bg−border =
-        // 45/255, 18 % de contraste), cuando el papel canon tiene un rombo casi imperceptible.
-        // Ahora: luminancia de fondo 197/255 (~0.77 de albedo), saturación de 70 a 50 puntos
-        // y contraste del patrón de 45 a 14 puntos.
-        private static Color32[] BuildWallpaperYellow()
+        // El motivo, la paleta y el relieve viven en WallpaperPattern — un archivo sin
+        // una sola referencia a Unity, para poder compilarlo suelto y comparar su salida
+        // byte a byte antes de meter los PNG en el proyecto. Aquí solo se empaqueta.
+        //
+        // Historia: el rombo de argyle que había antes NO era el papel de Level 0 (ese
+        // motivo es del Manila Room) y además se leía de lejos. Lo sustituye el galón
+        // vertical, y el trabajo visual pasa del albedo al mapa de normales.
+        private static Color32[] ToPixels(byte[] rgb)
         {
-            var rng = new System.Random(1001);
-            var bg     = new Color32(208, 198, 158, 255);
-            var fill   = new Color32(200, 190, 151, 255);
-            var border = new Color32(194, 184, 146, 255);
-
-            // Diamond cell: 32 px wide, 48 px tall. A pixel belongs to the diamond
-            // when |dx|/16 + |dy|/24 <= 1; scaled to integers: |dx|*24 + |dy|*16.
-            // Edge band ≈ 2 px → D within ~58 of the 384 boundary (|grad| ≈ 28.8).
-            const int cellW = 32, cellH = 48, halfW = 16, halfH = 24;
-            const int edge = halfW * halfH;      // 384 — diamond boundary
-            const int borderBand = 58;           // ~2 px constant-width rim
-
-            var px = new Color32[Size * Size];
-            for (int y = 0; y < Size; y++)
-            {
-                for (int x = 0; x < Size; x++)
-                {
-                    int lx = x % cellW, ly = y % cellH;
-                    int d = Mathf.Abs(lx - halfW) * halfH + Mathf.Abs(ly - halfH) * halfW;
-
-                    Color32 c = d > edge ? bg : (d >= edge - borderBand ? border : fill);
-                    px[y * Size + x] = AddNoise(c, rng, 5);
-                }
-            }
+            var px = new Color32[rgb.Length / 3];
+            for (int i = 0; i < px.Length; i++)
+                px[i] = new Color32(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2], 255);
             return px;
         }
 
@@ -174,9 +161,9 @@ namespace BackroomsSurvival.EditorTools
                 255);
         }
 
-        private static Texture2D Bake(Color32[] pixels, string fileName)
+        private static Texture2D Bake(Color32[] pixels, int size, string fileName, bool normalMap)
         {
-            var tex = new Texture2D(Size, Size, TextureFormat.RGBA32, false);
+            var tex = new Texture2D(size, size, TextureFormat.RGBA32, false);
             tex.SetPixels32(pixels);
             tex.Apply();
 
@@ -185,23 +172,29 @@ namespace BackroomsSurvival.EditorTools
             Object.DestroyImmediate(tex);
 
             AssetDatabase.ImportAsset(path, ImportAssetOptions.ForceUpdate);
-            ConfigureImporter(path);
+            ConfigureImporter(path, size, normalMap);
             return AssetDatabase.LoadAssetAtPath<Texture2D>(path);
         }
 
-        private static void ConfigureImporter(string path)
+        private static void ConfigureImporter(string path, int size, bool normalMap)
         {
             if (AssetImporter.GetAtPath(path) is not TextureImporter importer) return;
-            importer.textureType   = TextureImporterType.Default;
-            importer.sRGBTexture   = true;
+            importer.textureType   = normalMap ? TextureImporterType.NormalMap : TextureImporterType.Default;
+            importer.sRGBTexture   = !normalMap;
             importer.wrapMode      = TextureWrapMode.Repeat;
             importer.filterMode    = FilterMode.Bilinear;
             importer.mipmapEnabled = true;
-            importer.maxTextureSize = Size;
+            importer.maxTextureSize = size;
+            // BC7 y no BC1: el motivo del papel son 6 de 255 de luminancia, y BC1
+            // cuantiza los extremos a 5-6-5 bits — un escalón así se pierde entero o
+            // sale en bandas dentro del bloque. Lo mismo vale para el mapa de normales,
+            // donde el bandeo se ve como facetas en luz rasante.
+            importer.textureCompression = TextureImporterCompression.CompressedHQ;
             importer.SaveAndReimport();
         }
 
-        private static void ApplyTexture(string matPath, Texture2D tex, float tileX, float tileY)
+        private static void ApplyTexture(string matPath, Texture2D tex, float tileX, float tileY,
+                                         Texture2D normalMap = null)
         {
             var mat = AssetDatabase.LoadAssetAtPath<Material>(matPath);
             if (mat == null)
@@ -213,6 +206,14 @@ namespace BackroomsSurvival.EditorTools
             var scale = new Vector2(tileX, tileY);
             if (mat.HasProperty("_BaseMap")) { mat.SetTexture("_BaseMap", tex); mat.SetTextureScale("_BaseMap", scale); }
             if (mat.HasProperty("_MainTex")) { mat.SetTexture("_MainTex", tex); mat.SetTextureScale("_MainTex", scale); }
+
+            // El relieve tilea con el albedo o el grabado se despega del motivo.
+            if (normalMap != null && mat.HasProperty("_BumpMap"))
+            {
+                mat.SetTexture("_BumpMap", normalMap);
+                mat.SetTextureScale("_BumpMap", scale);
+                if (mat.HasProperty("_BumpScale")) mat.SetFloat("_BumpScale", 1f);
+            }
 
             // Neutralise the existing colour tint so the texture reads true.
             if (mat.HasProperty("_BaseColor")) mat.SetColor("_BaseColor", Color.white);
