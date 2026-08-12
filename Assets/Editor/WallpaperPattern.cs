@@ -19,10 +19,18 @@ namespace BackroomsSurvival.EditorTools
     /// normales), que en luz rasante saca el grabado del papel; el albedo casi no
     /// participa. Un motivo legible de lejos es el fallo, no el objetivo.
     ///
-    /// COLOR: crema apagado, casi desaturado (saturación 0.14, luminancia 197/255 —
-    /// la misma que la moqueta y la placa de techo ya emparejadas). El amarillo de
-    /// las fotos de referencia lo pone la LUZ, no el papel; meterlo en el albedo es
-    /// lo que dejaba el mundo oliva.
+    /// COLOR: crema AMARILLO pálido — saturación 0.28, luminancia 198/255, tono 52°.
+    /// Aislada, la textura se lee amarilla; solo algo más apagada que la fotografía
+    /// de referencia, que está tomada bajo luz cálida.
+    ///
+    /// CORRECCIÓN (2026-08-12) de la iteración anterior, que se fue al extremo
+    /// contrario. Aquel paso leyó el canon como "el color real es beige amarronado y
+    /// el amarillo lo pone la iluminación" y bajó la saturación a 0.14; para
+    /// compensar, la lámpara subió a un amarillo casi neón, y el resultado fue el
+    /// reparto invertido: emisores amarillo saturado sobre superficies neutras, o
+    /// sea techo verde oliva y paredes marrones. En el canon es al revés — el
+    /// AMARILLO VIVE EN LA SUPERFICIE y las lámparas son casi blancas. El papel ES
+    /// amarillo pálido; la luz solo lo intensifica.
     ///
     /// ESCALA: el tile son 1024 px con tiling 2×2 sobre el panel de 5 m × 4 m, así
     /// que cubre 2.5 m × 2.0 m — 2.44 mm por píxel en horizontal, 1.95 en vertical.
@@ -50,9 +58,9 @@ namespace BackroomsSurvival.EditorTools
         private const double SmlCx = 50.0, SmlHw = 6.5, SmlT = 2.0, SmlP = 16.0, SmlPh = 14.0;
 
         // ── Paleta ───────────────────────────────────────────────────────────
-        private static readonly double[] Base = { 209.0, 196.0, 179.0 };  // luma 197.5, sat 0.144
-        private static readonly double[] InkChevron = { 204.0, 190.0, 170.0 };  // −6.0 de luma
-        private static readonly double[] InkStripe = { 203.0, 189.0, 168.0 };  // −7.1 de luma
+        private static readonly double[] Base = { 208.0, 200.0, 150.0 };  // luma 198.1, sat 0.279
+        private static readonly double[] InkChevron = { 203.0, 194.0, 141.0 };  // −6.0 de luma
+        private static readonly double[] InkStripe = { 202.0, 193.0, 139.0 };  // −7.1 de luma
 
         private const double StainAmp = 0.040;     // mancha de papel viejo: ±3 % de luma
         private const double NormalStrength = 0.6; // relieve: 11.6° de inclinación máxima

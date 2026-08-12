@@ -58,31 +58,90 @@ namespace BackroomsSurvival.Tests
             return Luma(m.x, m.y, m.z);
         }
 
-        /// <summary>Crema apagado y casi desaturado: el amarillo de las fotos de
-        /// referencia lo pone la LUZ, no el papel. Con el amarillo dentro del albedo el
-        /// mundo salía oliva y no había forma de saber si una superficie oscura lo era
-        /// por el material o por la iluminación.</summary>
+        /// <summary>
+        /// El papel de Level 0 ES amarillo pálido. La luz solo lo intensifica.
+        ///
+        /// Esta guarda existe por las DOS formas de equivocarse, y la segunda ya pasó: la
+        /// iteración del 2026-08-12 leyó el canon como "el color real es beige amarronado
+        /// y el amarillo lo pone la iluminación", bajó la saturación a 0.14 —gris topo— y
+        /// para compensar tuvo que subir la lámpara a un amarillo casi neón. El reparto
+        /// quedó invertido respecto al canon (emisores saturados sobre superficies
+        /// neutras) y el mundo salió con techo verde oliva y paredes marrones. Por eso el
+        /// rango de saturación tiene SUELO además de techo: por debajo se pierde el
+        /// amarillo del sitio y alguien lo devuelve por la vía de la luz, que es la que
+        /// no toca.
+        /// </summary>
         [Test]
-        public void TheWallpaperIsMutedCreamAtTheHeightOfFloorAndCeiling()
+        public void TheWallpaperIsPaleYellowAtTheHeightOfFloorAndCeiling()
         {
             var m = MeanRgb(Load(Albedo, out int w, out int h));
             Assert.AreEqual(1024, w, "el tile de pared es de 1024 — a 512 el chevron no tiene píxeles");
             Assert.AreEqual(1024, h);
 
             float sat = (Mathf.Max(m.x, m.y, m.z) - Mathf.Min(m.x, m.y, m.z)) / Mathf.Max(m.x, m.y, m.z);
-            Assert.LessOrEqual(sat, 0.18f,
-                $"saturación {sat:F3}: el papel aislado es beige amarronado, no amarillo");
+            Assert.GreaterOrEqual(sat, 0.22f,
+                $"saturación {sat:F3}: por debajo el papel aislado ya no se lee amarillo y el " +
+                "sitio pierde su color, que es lo que hay que arreglar en el ALBEDO");
+            Assert.LessOrEqual(sat, 0.36f,
+                $"saturación {sat:F3}: la referencia está fotografiada bajo luz cálida — el " +
+                "albedo va algo más apagado que la foto, no igual ni por encima");
 
-            // Sin dominante verde: el beige amarronado es R > G > B, y con G por encima
-            // de R el papel vira a oliva bajo luz cálida.
+            // Amarillo: R y G altos y juntos, azul muy por debajo. Es la firma que separa
+            // amarillo de beige amarronado (donde R−G se acerca a G−B) y de verde (G > R).
             Assert.Greater(m.x, m.y, "media R ≤ G — el papel viraría a verde");
-            Assert.Greater(m.y, m.z, "media G ≤ B — el papel viraría a frío");
+            Assert.Greater(m.y - m.z, 3f * (m.x - m.y),
+                $"R−G {m.x - m.y:F1} contra G−B {m.y - m.z:F1}: con el rojo despegado del verde " +
+                "esto es beige amarronado, no amarillo");
 
             // La paleta base es una sola: la pared no puede escaparse por encima del
-            // techo ni por debajo de la moqueta.
+            // techo ni por debajo de la moqueta. Banda estrecha = el sitio uniformemente
+            // iluminado del canon, sin una superficie que llame la atención sobre otra.
             float wall = Luma(m.x, m.y, m.z), floor = MeanLuma(Carpet), ceiling = MeanLuma(Ceiling);
             Assert.That(wall, Is.InRange(floor - 2f, ceiling + 2f),
                 $"luminancia de pared {wall:F1} fuera de la banda suelo {floor:F1} … techo {ceiling:F1}");
+            Assert.LessOrEqual(ceiling - floor, 20f,
+                $"suelo {floor:F1} y techo {ceiling:F1} a {ceiling - floor:F1} puntos — en la " +
+                "referencia las tres superficies caben en un rango estrecho");
+        }
+
+        /// <summary>
+        /// Las tres superficies son la misma familia de color. Es lo que impide volver al
+        /// estado del que venimos, donde el suelo estaba 13 puntos por debajo de la pared
+        /// y el techo era casi neutro: al lado de un papel amarillo, eso lee marrón y gris.
+        /// </summary>
+        [Test]
+        public void FloorAndCeilingShareTheWallHue()
+        {
+            var wall = MeanRgb(Load(Albedo, out _, out _));
+            var floor = MeanRgb(Load(Carpet, out _, out _));
+            var ceiling = MeanRgb(Load(Ceiling, out _, out _));
+
+            float hw = Hue(wall), hf = Hue(floor), hc = Hue(ceiling);
+            Assert.That(hw, Is.InRange(45f, 58f), $"tono de pared {hw:F1}° — fuera de esto no es amarillo");
+            Assert.LessOrEqual(Mathf.Abs(hf - hw), 8f,
+                $"tono de suelo {hf:F1}° contra pared {hw:F1}°: la moqueta es más sucia, no de otro color");
+            Assert.LessOrEqual(Mathf.Abs(hc - hw), 8f,
+                $"tono de techo {hc:F1}° contra pared {hw:F1}°: crema, no blanco sucio");
+
+            Assert.Greater(Sat(floor), Sat(wall),
+                "la moqueta lleva un punto más de saturación que el papel — es lo que las " +
+                "distingue cuando las dos son amarillas");
+            Assert.Less(Sat(ceiling), Sat(wall),
+                "una placa de fibra mineral no está impresa: menos saturada que el papel");
+        }
+
+        /// <summary>Tono en grados, con el rojo como canal máximo (que es el caso de las
+        /// tres superficies). 60° es amarillo puro; por debajo tira a naranja.</summary>
+        private static float Hue(Vector3 c)
+        {
+            float mx = Mathf.Max(c.x, c.y, c.z), mn = Mathf.Min(c.x, c.y, c.z);
+            return mx > mn ? 60f * (c.y - c.z) / (mx - mn) : 0f;
+        }
+
+        private static float Sat(Vector3 c)
+        {
+            float mx = Mathf.Max(c.x, c.y, c.z);
+            return (mx - Mathf.Min(c.x, c.y, c.z)) / mx;
         }
 
         /// <summary>La prueba de los diez metros. Un promedio de 8×8 es lo que el mip

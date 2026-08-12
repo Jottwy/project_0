@@ -85,11 +85,17 @@ namespace BackroomsSurvival.EditorTools
         // que el papel, no en otra liga. Se sube la luminancia de fondo a 180/255 (−9 %
         // respecto a la pared) conservando la saturación, que sí debe ser mayor que la del
         // papel: 0.30 frente a 0.24.
+        //
+        // TERCER ajuste (2026-08-12): 184 de media seguía leyéndose MARRÓN al lado del papel
+        // y en la referencia el suelo está casi tan claro como la pared. Sube a 194 de media
+        // (3 puntos por debajo del papel, no 13) y la saturación a 0.32 — un punto por encima
+        // de la del papel, que es lo que distingue moqueta de pared cuando las dos son
+        // amarillas y no cuando una es marrón.
         private static Color32[] BuildCarpetBeige()
         {
             var rng = new System.Random(2002);
-            var bg    = new Color32(200, 178, 140, 255);
-            var fibre = new Color32(213, 190, 150, 255);
+            var bg    = new Color32(205, 192, 138, 255);
+            var fibre = new Color32(217, 203, 147, 255);
 
             // Thin diagonal fibres every 3 px; the diagonal flips direction every
             // 6 px band, giving an interlocked weave.
@@ -121,12 +127,18 @@ namespace BackroomsSurvival.EditorTools
         //     del fondo, y a 0,625 m de placa eso se lee como una mancha oscura por baldosa en
         //     vez de como una junta. Rejilla y punto pasan a 16 y 33 puntos: la placa se
         //     distingue de cerca y el techo es prácticamente liso a distancia.
+        //
+        // (3) CREMA, no blanco sucio (2026-08-12). La placa estaba a saturación 0.09, o sea
+        //     casi neutra, y al lado de un papel amarillo eso lee gris. En la referencia el
+        //     techo es la superficie más clara Y comparte el tono de la pared. Sube a 0.21 de
+        //     saturación conservando la luminancia (204): crema claro, todavía menos saturado
+        //     que el papel porque una placa de fibra mineral no es papel pintado.
         private static Color32[] BuildCeilingTiles()
         {
             var rng = new System.Random(3003);
-            var bg     = new Color32(208, 203, 189, 255);
-            var border = new Color32(192, 187, 174, 255);
-            var dot    = new Color32(175, 171, 157, 255);
+            var bg     = new Color32(212, 205, 168, 255);
+            var border = new Color32(196, 189, 153, 255);
+            var dot    = new Color32(179, 173, 136, 255);
 
             // 128 px plates (4 across). 3 px grid line on the top/left of each
             // plate; a 4×4 dark dot at every plate corner. Interior carries faint
