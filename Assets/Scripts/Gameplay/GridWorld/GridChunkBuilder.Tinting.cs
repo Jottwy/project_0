@@ -28,14 +28,26 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
-        /// Amplitud del jitter de valor HSV por tile en SUELO y TECHO. Rompe la
-        /// uniformidad de la retícula en superficies que se ven en escorzo, donde el
-        /// escalón entre baldosas contiguas no dibuja una arista.
+        /// Amplitud del jitter de valor HSV por tile en SUELO y TECHO, a 0 desde
+        /// 2026-08-13 por la misma razón que <see cref="WallValueJitter"/>.
+        ///
+        /// El argumento que lo mantenía vivo aquí —"suelo y techo se ven en escorzo, así
+        /// que el escalón entre baldosas no dibuja una arista"— era falso, y la captura lo
+        /// zanjó: en escorzo el borde entre dos baldosas contiguas se proyecta como una
+        /// DIAGONAL recta, que llama más la atención que la vertical de la pared, no
+        /// menos. Con 5 m de baldosa el parche es lo bastante grande como para leerse
+        /// antes que la textura que lo cubre.
+        ///
+        /// Queda como parámetro, no borrado: con la iluminación cerrada puede querer
+        /// volver a ~0.02, donde el salto quedaría por debajo del umbral de percepción.
+        /// La variación de suelo y techo la aportan mientras tanto <c>FloorStain</c> y
+        /// <c>MoistureStain</c>, repartidos por ruido de humedad y no por tile.
         /// </summary>
-        private const float SurfaceValueJitter = 0.08f;
+        private const float SurfaceValueJitter = 0f;
 
         /// <summary>
-        /// Lo mismo para PAREDES y pilares, a 0 desde 2026-08-12.
+        /// Lo mismo para PAREDES y pilares, a 0 desde 2026-08-12 — el primero en caer, y
+        /// el que dejó el argumento escrito.
         ///
         /// En una superficie vertical el jitter no lee como desgaste: cada panel es un
         /// rectángulo de 5 m con su propio valor plano, y el salto entre dos paneles
