@@ -26,9 +26,13 @@ circular. La validación contra el canon necesita `level0-canon.png`.
 
 | superficie | albedo (media del PNG) | luma | sat | tono |
 |---|---|---|---|---|
-| pared  `WallpaperYellow.png` | 206.7 / 198.5 / 148.1 | 196.6 | 0.283 | 51.7° |
+| pared  `WallpaperYellow.png` | 204.7 / 199.6 / 113.1 | 194.4 | **0.447** | **56.7°** |
 | suelo  `CarpetBeige.png`     | 209.0 / 195.6 / 141.0 | 194.5 | 0.325 | 48.2° |
 | techo  `CeilingTiles.png`    | 211.2 / 204.2 / 167.3 | 203.1 | 0.208 | 50.4° |
+
+La PARED es el ancla: amarillo verdoso saturado, fijado contra el frame de la
+película. Suelo y techo están todavía en los valores de la iteración anterior y
+tienen que DIVERGIR de ella en tono — hoy las tres se funden.
 
 Luz de ZONE_NORMAL: `lampColor` 1.00 / 0.96 / 0.86 · `lampEmission` 1.25 ·
 `ambientLight` 0.465 / 0.45 / 0.375.

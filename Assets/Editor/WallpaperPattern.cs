@@ -58,12 +58,13 @@ namespace BackroomsSurvival.EditorTools
         private const double SmlCx = 50.0, SmlHw = 6.5, SmlT = 2.0, SmlP = 16.0, SmlPh = 14.0;
 
         // ── Paleta ───────────────────────────────────────────────────────────
-        private static readonly double[] Base = { 208.0, 200.0, 150.0 };  // luma 198.1, sat 0.279
-        private static readonly double[] InkChevron = { 203.0, 194.0, 141.0 };  // −6.0 de luma
-        private static readonly double[] InkStripe = { 202.0, 193.0, 139.0 };  // −7.1 de luma
+        private static readonly double[] Base = { 207.0, 202.0, 116.0 };  // luma 196.9, sat 0.440, tono 56.7°
+        private static readonly double[] InkChevron = { 196.0, 190.0, 100.0 };  // −12.1 de luma
+        private static readonly double[] InkStripe = { 193.0, 187.0, 96.0 };   // −15.2 de luma
 
-        private const double StainAmp = 0.040;     // mancha de papel viejo: ±3 % de luma
-        private const double NormalStrength = 0.6; // relieve: 11.6° de inclinación máxima
+        private const double StainAmp = 0.075;     // mancha de papel viejo: ±6 % de luma
+        private const double StainShape = 1.6;     // curva que separa manchas de degradado
+        private const double NormalStrength = 1.0; // relieve: 18.8° de inclinación máxima
 
         /// <summary>
         /// Genera los dos buffers, RGB entrelazado, <c>y = 0</c> en la fila de ABAJO
@@ -100,7 +101,13 @@ namespace BackroomsSurvival.EditorTools
                     double stain = (ValueNoise(x, y, 6, 3, 7101) - 0.5) * 1.0;
                     stain += (ValueNoise(x, y, 13, 7, 7102) - 0.5) * 0.5;
                     stain += (ValueNoise(x, y, 29, 17, 7103) - 0.5) * 0.25;
-                    stain /= 1.75;
+                    stain += (ValueNoise(x, y, 47, 29, 7107) - 0.5) * 0.18;
+                    stain /= 0.965;   // normaliza el fBm a ±1 antes de la curva
+                    // Sin esta curva el campo es un degradado suave y a esta amplitud se
+                    // lee como una iluminación desigual, no como suciedad. Elevar el valor
+                    // absoluto concentra el recorrido en las puntas: manchas separadas
+                    // sobre papel limpio, que es lo que hace un papel viejo.
+                    stain = (stain < 0 ? -1.0 : 1.0) * Math.Pow(Math.Abs(stain), StainShape);
 
                     double grain = (Hash01(x, y, 7104) - 0.5) * 2.0 * 2.0;
 
