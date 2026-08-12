@@ -379,28 +379,31 @@ namespace BackroomsSurvival.Tests
             // (M_Backrooms_Ceiling medido) el BloomThreshold de 1.15 se cruza en intensidad
             // 1.15/0.79 ≈ 1.45.
             //
-            // ESE CRUCE SE ACEPTA A PROPÓSITO desde 2026-08-12, y el cap pasa de 1.0 a la banda
-            // que pide el canon. El motivo es geométrico y no se puede negociar con la
-            // intensidad: la MISMA Light está a 1.0 m del techo y a ~3.4 m de la pared a altura
-            // de ojo, y con 1/d² más el N·L (techo 1.0, pared 0.75 en el mejor punto) el techo
-            // recibe 6.6× lo que recibe la pared. La pared en el rango canónico (luminancia
-            // 180–200) exige intensidad 6–8; a esa intensidad el techo junto al panel sale a
-            // 4.9 de lineal, o sea blanco puro y 4× por encima del umbral de bloom.
+            // Se deja margen: por encima de 1.0 el panel deja de tener forma.
             //
-            // No hay ningún valor de intensidad que satisfaga las dos cosas. Lo que las
-            // desacopla es la GEOMETRÍA —bajar la Light más de 0.70 m del panel, que divide el
-            // término del techo por el cuadrado y casi no toca el de la pared— o el tipo de
-            // luz. Mientras eso no se toque, esta banda deja el techo quemado a sabiendas.
+            // SE INTENTÓ ROMPER ESTE CAP Y SE REVIRTIÓ (2026-08-12). La subida a 7.0 buscaba
+            // meter la pared en el rango canónico de luminancia (180–200) y lo consiguió sobre
+            // el papel, pero en pantalla APLANÓ el nivel: al subir la intensidad global sube
+            // por igual el punto iluminado y el que estaba en penumbra, y lo que hacía
+            // funcionar el espacio era justamente la variación entre unos y otros y la
+            // transición al cruzar de una zona a otra. Además quemaba el techo junto a cada
+            // panel (4.9 de lineal, blanco puro, halo de bloom de 1.50 m contra 0.83 m de
+            // semilado del panel), que es el defecto que este cap describe.
+            //
+            // 0.85 es un valor VALIDADO A OJO en captura, no calculado: es el primer estado del
+            // que se sabe que el ambiente funciona. Subir el nivel de la pared es un problema
+            // abierto, pero la vía no es la intensidad global — es irregularidad en la
+            // colocación (más lámparas y más fuertes donde hay, huecos reales donde no).
             Assert.IsTrue(zn.overrideLampIntensity,
                 "con Point el techo depende de la intensidad, así que NORMAL debe fijarla y no " +
                 "heredar la de capa, calibrada para Spot");
-            Assert.LessOrEqual(zn.lampIntensity, 9f,
-                $"intensidad {zn.lampIntensity}: por encima de ~9 la pared se pasa de 200 de " +
-                "luminancia y el sitio deja de ser 'casi sobreexpuesto' para estar sobreexpuesto");
-            Assert.GreaterOrEqual(zn.lampIntensity, 5f,
-                $"intensidad {zn.lampIntensity}: por debajo de ~5 la pared a altura de ojo no " +
-                "llega a 180 de luminancia y el sitio vuelve a leerse oscuro — el ambient ya " +
-                "está en el tope de su guarda y no puede compensarlo");
+            Assert.LessOrEqual(zn.lampIntensity, 1.0f,
+                $"intensidad {zn.lampIntensity} con Point a 1 m del techo lo quema y desborda " +
+                "el bloom — es el defecto que hizo abandonar Point en su día, y subirla también " +
+                "aplana la variación entre zona iluminada y penumbra");
+            Assert.Greater(zn.lampIntensity, 0.3f,
+                $"intensidad {zn.lampIntensity}: por debajo de ~0.3 la lámpara no se distingue " +
+                "del ambiente y el techo queda plano, sin panel");
 
             foreach (var set in real.zoneLightSets)
             {
