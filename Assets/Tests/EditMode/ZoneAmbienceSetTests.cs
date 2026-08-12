@@ -469,20 +469,26 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// Canon de Level 0 (2026-08-12): el amarillo del sitio lo pone la LUZ, no el
-        /// material. El albedo del papel se desaturó a crema (luminancia 196, saturación
-        /// 0.147, ver <c>WallpaperSurfaceTests</c>) precisamente para dejarle ese trabajo a
-        /// esta fila, así que un lampColor de NORMAL que vuelva a blanco neutro deja las
-        /// paredes lavadas y las dos mitades del cambio dejan de sumar.
+        /// En el canon de Level 0 las lámparas se leen CASI BLANCAS y el amarillo vive en
+        /// las superficies. El ambiente amarillo sale del rebote sobre paredes amarillas,
+        /// no del color del emisor.
         ///
-        /// El criterio es el fluorescente VIEJO: azul muy recortado (mostaza, no crema),
-        /// verde en la punta o al nivel del rojo (el pico verde de un tubo halofosfato
-        /// gastado) y rojo alto (cálido, no hospital). El azul tiene suelo además de techo:
-        /// por debajo de ~0.30 el mundo se vuelve ácido en cuanto alguien baja el slider de
-        /// color grading, que a 1.0 recorta 28 puntos de saturación y hoy tapa el exceso.
+        /// Este test estaba escrito al revés hace unas horas —exigía azul ≤ 0.60, o sea
+        /// mostaza saturada— y es la mitad visible de un lazo de sobrecorrección: el albedo
+        /// se había desaturado a 0.14 (gris topo) creyendo que el amarillo lo aportaba la
+        /// luz, y la lámpara subió a amarillo casi neón para compensarlo. El resultado es
+        /// el reparto invertido del canon y se ve como techo verde oliva y paredes marrones.
+        /// El albedo volvió a amarillo pálido en la Parte A (saturación 0.283, congelada,
+        /// ver <c>WallpaperSurfaceTests</c>) y esta fila vuelve a blanco cálido.
+        ///
+        /// El azul tiene techo además de suelo: por encima de ~0.95 la luz es neutra y el
+        /// sitio queda frío, pero por debajo de 0.75 el emisor vuelve a teñir y se reabre
+        /// el lazo. Si el conjunto sale lavado, lo que se sube es la CALIDEZ de la luz
+        /// —bajar r/g/b juntos hacia el ámbar dentro de esta banda—, nunca la saturación ni
+        /// el albedo.
         /// </summary>
         [Test]
-        public void Layer0NormalLampIsAnAgedFluorescentAndNotNeutralWhite()
+        public void Layer0NormalLampIsWarmWhiteAndNotATintedEmitter()
         {
             var real = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
             Assert.IsNotNull(real, "Layer0_Vestibulo no aparece por Resources");
@@ -490,17 +496,19 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(zn.overrideLampColor, "sin el override, NORMAL cae al color de capa");
 
             Color c = zn.lampColor;
-            Assert.LessOrEqual(c.b, 0.60f,
-                $"azul {c.b:F2}: sin recortarlo la luz es blanca y la pared crema se ve lavada, " +
-                "que es el estado del que venimos");
-            Assert.GreaterOrEqual(c.b, 0.30f,
-                $"azul {c.b:F2}: por debajo de esto el amarillo es ácido en cuanto el slider de " +
-                "color grading deja de restar saturación");
-            Assert.GreaterOrEqual(c.g, c.r - 0.02f,
-                $"R {c.r:F2} / G {c.g:F2}: el punto es amarillo VERDOSO-cálido — con el rojo por " +
-                "encima del verde la lámpara lee a bombilla incandescente, que es acogedora");
-            Assert.GreaterOrEqual(c.r, 0.90f,
-                $"rojo {c.r:F2}: con el rojo bajo la luz deja de ser cálida y lee a hospital");
+            float sat = (Mathf.Max(c.r, c.g, c.b) - Mathf.Min(c.r, c.g, c.b)) / Mathf.Max(c.r, c.g, c.b);
+            Assert.LessOrEqual(sat, 0.20f,
+                $"saturación {sat:F3}: en la referencia la lámpara se lee casi blanca — el " +
+                "amarillo del sitio sale de las superficies, no del emisor");
+            Assert.GreaterOrEqual(c.b, 0.75f,
+                $"azul {c.b:F2}: por debajo el emisor tiñe y se reabre el lazo que este cambio cierra");
+            Assert.LessOrEqual(c.b, 0.95f,
+                $"azul {c.b:F2}: blanco neutro deja el sitio frío — un fluorescente de oficina " +
+                "vieja es blanco CÁLIDO");
+            Assert.GreaterOrEqual(c.r, c.g,
+                $"R {c.r:F2} / G {c.g:F2}: cálido es R ≥ G ≥ B; con el verde por encima la " +
+                "lámpara vuelve al tubo verdoso de la iteración anterior");
+            Assert.GreaterOrEqual(c.g, c.b, $"G {c.g:F2} / B {c.b:F2}: cálido es R ≥ G ≥ B");
         }
 
         /// <summary>

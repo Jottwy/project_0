@@ -39,7 +39,7 @@ MonoBehaviour:
   - zoneKind: 0
     anyZoneKind: 0
     overrideLampColor: 1
-    lampColor: {r: 0.99, g: 1, b: 0.44, a: 1}
+    lampColor: {r: 1, g: 0.96, b: 0.86, a: 1}
     overrideLampIntensity: 1
     lampIntensity: 0.85
     overrideLampRange: 1
