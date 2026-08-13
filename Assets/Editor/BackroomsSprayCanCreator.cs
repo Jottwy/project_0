@@ -92,8 +92,9 @@ namespace BackroomsSurvival.EditorTools
             var definition = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DefinitionPath);
             if (definition != null)
             {
-                Debug.Log($"[SprayCanCreator] '{DefinitionPath}' ya existe (id={definition.Id}) — intacto. " +
-                          "Su id está en el wire y en los saves; bórralo a mano si de verdad quieres uno nuevo.");
+                Debug.Log($"[SprayCanCreator] '{DefinitionPath}' ya existe (id={definition.Id}) — su id no se " +
+                          "toca (está en el wire y en los saves); bórralo a mano si quieres uno nuevo.");
+                RepairWieldableTag(definition);
             }
             else
             {
@@ -136,6 +137,13 @@ namespace BackroomsSurvival.EditorTools
             target.CopyFromSerializedProperty(source.FindProperty("_icon"));
             target.CopyFromSerializedProperty(source.FindProperty("_pickup"));
 
+            // LA ETIQUETA NO ES DECORACIÓN: es la que decide si el item se puede EMPUÑAR.
+            // `WieldableInventory` resuelve su pistolera con
+            // `FindContainer(ItemContainerFilters.WithTag(ItemConstants.WieldableTag))` y
+            // `EquipAction` compara la etiqueta del item contra esa misma. Sin ella el bote entra
+            // en la mochila, se ve en el inventario y NO se deja equipar — sin un solo error.
+            target.CopyFromSerializedProperty(source.FindProperty("_tag"));
+
             target.FindProperty("_description").stringValue = Description;
             target.FindProperty("_weight").floatValue = Weight;
             // Un bote por hueco: la carga vive en el componente SprayCan de la instancia, así que
@@ -161,6 +169,34 @@ namespace BackroomsSurvival.EditorTools
 
             Debug.Log($"[SprayCanCreator] Creado '{DefinitionPath}' (id={definition.Id}, Name='{definition.Name}').");
             return definition;
+        }
+
+        /// <summary>
+        /// Repara la etiqueta de un asset YA existente. Existe porque la primera versión de este
+        /// creador no copiaba `_tag`, y el resultado era un bote que aparecía en el inventario y
+        /// no se dejaba equipar, sin ningún error. Solo toca la etiqueta: el `_id` no se roza,
+        /// así que reparar es seguro para saves y wire.
+        /// </summary>
+        private static void RepairWieldableTag(ItemDefinition definition)
+        {
+            var donor = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DonorDefinitionPath);
+            if (donor == null) return;
+
+            var target = new SerializedObject(definition);
+            var tag = target.FindProperty("_tag");
+            var value = tag?.FindPropertyRelative("_value");
+            if (value == null) return;
+
+            var donorValue = new SerializedObject(donor).FindProperty("_tag")?.FindPropertyRelative("_value");
+            if (donorValue == null || donorValue.intValue == 0) return;
+            if (value.intValue == donorValue.intValue) return;
+
+            value.intValue = donorValue.intValue;
+            target.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(definition);
+            Debug.LogWarning($"[SprayCanCreator] Reparada la etiqueta de '{DefinitionPath}' " +
+                             $"({value.intValue}). Sin ella el bote se ve en el inventario y no se " +
+                             "deja equipar.");
         }
 
         private static void CreateWieldablePrefab(GameObject donorPrefab, ItemDefinition definition)
