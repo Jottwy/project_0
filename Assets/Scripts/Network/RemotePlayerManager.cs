@@ -239,7 +239,12 @@ namespace BackroomsSurvival.Net
                 view.root.rotation = Quaternion.Euler(0f, newY, 0f);
             }
 
-            if (_active.Count > 0 && Time.unscaledTime >= _nextUpdateLogTime)
+            // Mismo gate que el espejo del log del backend (ver NetworkInitializer
+            // .VerboseBackendLog): son dos Debug.Log POR PEER, y aunque van estrangulados a
+            // uno cada 2 s, cada uno arrastra su stack trace y se suman al mismo Editor.log
+            // que reventó el editor. Con BACKROOMS_VERBOSE_LOG=1 vuelven.
+            if (NetworkInitializer.VerboseBackendLog &&
+                _active.Count > 0 && Time.unscaledTime >= _nextUpdateLogTime)
             {
                 foreach (var kvp in _active)
                 {

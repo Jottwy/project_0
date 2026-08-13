@@ -712,20 +712,45 @@ namespace BackroomsSurvival.Net
             public bool DefaultIpcOccupied;
         }
 
+        /// <summary>
+        /// Reenvía a la consola de Unity las líneas INFO/DEBUG/TRACE del backend. APAGADO por
+        /// defecto, y no es una preferencia de gusto: con `RUST_LOG=info` el backend emite
+        /// MPTRACE por tick y por mover, cada línea se convierte en un <c>Debug.Log</c>, y
+        /// Unity adjunta un stack trace de ~500 B a CADA UNO. El 2026-08-13 eso dejó un
+        /// Editor.log de 8 GB y el editor murió en ScriptingDomainUnload, llevándose por
+        /// delante trabajo sin guardar.
+        ///
+        /// No se pierde diagnóstico: el backend ya escribe su propio log completo en
+        /// Builds/PlaytestLogs/&lt;timestamp&gt;, que es donde se mira una traza a posteriori.
+        /// Lo que esto corta es solo el ESPEJO en Unity. ERROR y WARN siguen pasando siempre
+        /// — son raros y son justo lo que hay que ver sin ir a buscar un archivo.
+        /// </summary>
+        public static readonly bool VerboseBackendLog =
+            Environment.GetEnvironmentVariable("BACKROOMS_VERBOSE_LOG") == "1";
+
         private static void LogBackendLine(string line, bool fromStdErr)
         {
-            if (!fromStdErr)
+            if (ContainsLogLevel(line, "ERROR"))
             {
-                Debug.Log($"[Backend] {line}");
+                Debug.LogError($"[Backend] {line}");
+                return;
+            }
+            if (ContainsLogLevel(line, "WARN"))
+            {
+                Debug.LogWarning($"[Backend] {line}");
                 return;
             }
 
-            if (ContainsLogLevel(line, "ERROR"))
-                Debug.LogError($"[Backend] {line}");
-            else if (ContainsLogLevel(line, "WARN"))
-                Debug.LogWarning($"[Backend] {line}");
-            else
-                Debug.Log($"[Backend] {line}");
+            // Todo lo demás es ruido de alta frecuencia. Las líneas SIN nivel reconocible
+            // (arranque, panics sin formato) sí pasan: son pocas y son las que explican un
+            // fallo de lanzamiento.
+            if (!VerboseBackendLog &&
+                (ContainsLogLevel(line, "INFO") ||
+                 ContainsLogLevel(line, "DEBUG") ||
+                 ContainsLogLevel(line, "TRACE")))
+                return;
+
+            Debug.Log($"[Backend] {line}");
         }
 
         private static bool ContainsLogLevel(string line, string level)

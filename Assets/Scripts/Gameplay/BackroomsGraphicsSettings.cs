@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.EventSystems;
+using UnityEngine.InputSystem.UI; // InputSystemUIInputModule — activeInputHandler: 1
 using UnityEngine.InputSystem;
 using UnityEngine.UI;
 
@@ -49,10 +50,25 @@ namespace BackroomsSurvival.Gameplay
             if (_panel != null) _panel.SetActive(v);
         }
 
+        /// <summary>
+        /// EventSystem de respaldo para el overlay, solo si la escena no trae uno.
+        ///
+        /// EL MÓDULO IMPORTA Y NO ES COSMÉTICO. Esto creaba un <c>StandaloneInputModule</c>,
+        /// que es el módulo del Input Manager LEGACY, y este proyecto está en
+        /// <c>activeInputHandler: 1</c> (solo el Input System nuevo). Consecuencias, las dos
+        /// verificadas: el módulo no puede leer input, así que ese EventSystem no servía para
+        /// nada; y uGUI emite un warning POR FRAME desde <c>EventSystem.Update</c>, cada uno
+        /// con stack trace, que fue uno de los tres surtidores del Editor.log de 8 GB que
+        /// tumbó el editor el 2026-08-13.
+        ///
+        /// Ninguna escena ni prefab del proyecto serializa un StandaloneInputModule — este
+        /// código era su único origen, así que cambiarlo no puede pisar UI existente.
+        /// </summary>
         private static void EnsureEventSystem()
         {
-            if (FindFirstObjectByType<EventSystem>() == null)
-                new GameObject("EventSystem", typeof(EventSystem), typeof(StandaloneInputModule));
+            if (FindFirstObjectByType<EventSystem>() != null) return;
+            new GameObject("EventSystem",
+                typeof(EventSystem), typeof(InputSystemUIInputModule));
         }
 
         // ── Overlay construction ────────────────────────────────────────────────
