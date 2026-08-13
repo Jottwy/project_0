@@ -38,11 +38,16 @@ namespace BackroomsSurvival.Gameplay
         private const float CommitDelaySeconds = 1.2f;
 
         /// <summary>
-        /// Separación mínima entre muestras, en pasos de retícula. Sin esto, quedarse quieto
+        /// Separación mínima entre muestras, EN METROS de pared. Sin esto, quedarse quieto
         /// apretando el gatillo llenaría los 512 puntos con el mismo punto repetido y cerraría la
-        /// pintada sin haber dibujado nada.
+        /// pintada sin haber dibujado nada. En metros y no en pasos de retícula porque la
+        /// retícula ya no existe hasta el final: el gesto se guarda en mundo.
         /// </summary>
-        private const int MinStepGrid = 2;
+        private const float MinStepMeters = 0.006f;
+
+        /// <summary>Refresco de la vista previa. 30 Hz basta para que el trazo se sienta pegado
+        /// a la mira, y rasterizar 256×256 en cada frame sería tirar el presupuesto.</summary>
+        private const float PreviewInterval = 1f / 30f;
 
         private static SprayPainter _instance;
 
@@ -55,25 +60,16 @@ namespace BackroomsSurvival.Gameplay
         private GameObject _canCachedFor;
         private float _nextPoll;
 
-        // Lienzo en curso. Se fija con el PRIMER impacto y no se mueve mientras dure la pintada:
-        // si siguiera al puntero, cada muestra reencuadraría el dibujo y los trazos previos se
-        // desplazarían solos.
-        private bool _hasCanvas;
-        private Vector3 _canvasCentre;
-        private float _canvasYaw;
-        private float _canvasSize;
+        // El gesto vivo, en coordenadas de MUNDO. El lienzo no se fija al empezar: se ajusta a lo
+        // que de verdad se ha pintado, en cada refresco de la previa y otra vez al mandarlo.
+        private readonly SprayGesture _gesture = new SprayGesture();
         private byte _canvasLayer;
-
-        private readonly List<SprayStrokeMsg> _strokes = new List<SprayStrokeMsg>();
-        private readonly List<byte> _points = new List<byte>();
-        private int _pointsInSpray;
-        private bool _strokeOpen;
-        private byte _lastU, _lastV;
         private float _idleSeconds;
+        private float _nextPreview;
         private long _nextPlaceId = 1;
 
         /// <summary>Diagnóstico y tests: hay una pintada a medias esperando a cerrarse.</summary>
-        public bool HasPendingSpray => _hasCanvas && (_strokes.Count > 0 || _points.Count > 0);
+        public bool HasPendingSpray => !_gesture.IsEmpty;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -189,66 +185,110 @@ namespace BackroomsSurvival.Gameplay
                 return;
             }
 
-            if (!_hasCanvas)
+            _gesture.SetWall(SprayCanvas.YawFromNormal(hit.normal));
+
+            // Si el gesto se saliera del tope de 2 m, se CIERRA la pintada aquí y empieza otra en
+            // el punto actual. Antes esto se clampeaba, y clampear es justo lo que apelmazaba el
+            // trazo contra un borde invisible en vez de seguir a la mira.
+            if (_gesture.WouldExceedCanvas(hit.point))
             {
-                _canvasCentre = hit.point;
-                _canvasYaw = SprayCanvas.YawFromNormal(hit.normal);
-                _canvasSize = _can.CanvasMeters;
-                _canvasLayer = 0;
-                _hasCanvas = true;
+                Commit();
+                _gesture.SetWall(SprayCanvas.YawFromNormal(hit.normal));
             }
 
-            SprayCanvas.WorldToCanvas(hit.point, _canvasCentre, _canvasYaw,
-                _canvasSize, _canvasSize, out byte u, out byte v);
-
-            if (!_strokeOpen)
+            if (!_gesture.StrokeOpen)
             {
-                if (_strokes.Count >= SprayCanvas.MaxStrokes) return;
-                if (_pointsInSpray >= SprayCanvas.MaxPoints) return;
-                _points.Clear();
-                _points.Add(u); _points.Add(v);
-                _pointsInSpray++;
-                _lastU = u; _lastV = v;
-                _strokeOpen = true;
+                if (_gesture.StrokeCount >= SprayCanvas.MaxStrokes) return;
+                if (_gesture.PointCount >= SprayCanvas.MaxPoints) return;
+                _gesture.BeginStroke();
+                _gesture.Add(hit.point);
                 _idleSeconds = 0f;
+                RefreshPreview();
                 return;
             }
 
-            int du = u - _lastU, dv = v - _lastV;
-            if (du * du + dv * dv < MinStepGrid * MinStepGrid) return;
-
-            float meters = SprayCanvas.CanvasStepMeters(_lastU, _lastV, u, v, _canvasSize, _canvasSize);
-            if (_can.Spend(meters) <= 0f) { EndStroke(); return; }
-
-            _points.Add(u); _points.Add(v);
-            _pointsInSpray++;
-            _lastU = u; _lastV = v;
-            _idleSeconds = 0f;
-
-            // Al tocar techo se cierra Y se manda: seguir muestreando sin sitio sería pintar en
-            // el vacío, y el jugador estaría moviendo el bote sin que salga nada.
-            if (_pointsInSpray >= SprayCanvas.MaxPoints)
+            if (_gesture.TryGetLast(out var last))
             {
-                EndStroke();
-                Commit();
+                float meters = Vector3.Distance(last, hit.point);
+                if (meters < MinStepMeters) return;
+                if (_can.Spend(meters) <= 0f) { EndStroke(); return; }
             }
+
+            _gesture.Add(hit.point);
+            _idleSeconds = 0f;
+            RefreshPreview();
+
+            // Al tocar el tope de puntos se cierra Y se manda: seguir muestreando sin sitio sería
+            // pintar en el vacío, con el jugador moviendo el bote y sin que salga nada.
+            if (_gesture.PointCount >= SprayCanvas.MaxPoints)
+                Commit();
         }
 
         private void EndStroke()
         {
-            if (!_strokeOpen) return;
-            _strokeOpen = false;
+            if (!_gesture.StrokeOpen) return;
+            _gesture.EndStroke();
+            RefreshPreview();
+        }
 
-            if (_points.Count >= 2 && _strokes.Count < SprayCanvas.MaxStrokes)
+        /// <summary>
+        /// Redibuja el trazo en curso en local, throttleado. Es lo que hace que pintar se sienta
+        /// pintar: sin esto no aparece nada hasta que el host devuelve la pintada, más de un
+        /// segundo después de soltar, y el jugador está dibujando a ciegas.
+        /// </summary>
+        private void RefreshPreview(bool force = false)
+        {
+            if (!force && Time.unscaledTime < _nextPreview) return;
+            _nextPreview = Time.unscaledTime + PreviewInterval;
+
+            var renderer = SprayRenderer.Instance;
+            if (renderer == null) return;
+
+            var msg = BuildMessage();
+            if (msg == null) renderer.ClearPreview();
+            else renderer.ShowPreview(msg);
+        }
+
+        /// <summary>
+        /// El gesto convertido a lo que viaja por el wire, con el lienzo AJUSTADO a lo pintado.
+        /// Lo comparten la previa y el envío, así que lo que se ve mientras se pinta es lo mismo
+        /// que se manda — si divergieran, el trazo saltaría al soltar.
+        /// </summary>
+        private SprayMsg BuildMessage()
+        {
+            if (!_gesture.TryFit(out var centre, out float sizeX, out float sizeY)) return null;
+
+            int total = _gesture.TotalStrokesIncludingOpen;
+            var strokes = new List<SprayStrokeMsg>(total);
+            for (int i = 0; i < total; i++)
             {
-                _strokes.Add(new SprayStrokeMsg
+                var points = _gesture.ProjectStroke(i, centre, sizeX, sizeY);
+                if (points.Length < 2) continue;
+                strokes.Add(new SprayStrokeMsg
                 {
                     color = _can != null ? _can.ColorIndex : (byte)0,
                     width = _can != null ? _can.StrokeWidth : (byte)4,
-                    points = _points.ToArray(),
+                    points = points,
                 });
             }
-            _points.Clear();
+            if (strokes.Count == 0) return null;
+
+            int cx = Mathf.FloorToInt(centre.x / SprayMsg.ChunkSize);
+            int cz = Mathf.FloorToInt(centre.z / SprayMsg.ChunkSize);
+            return new SprayMsg
+            {
+                id = 0,
+                cx = cx,
+                cz = cz,
+                layer = _canvasLayer,
+                lx = centre.x - cx * SprayMsg.ChunkSize,
+                ly = centre.y,
+                lz = centre.z - cz * SprayMsg.ChunkSize,
+                yaw = _gesture.Yaw,
+                sizeX = sizeX,
+                sizeY = sizeY,
+                strokes = strokes.ToArray(),
+            };
         }
 
         /// <summary>
@@ -259,8 +299,9 @@ namespace BackroomsSurvival.Gameplay
         /// </summary>
         public void Commit()
         {
-            EndStroke();
-            if (_strokes.Count == 0) { Reset(); return; }
+            _gesture.EndStroke();
+            var msg = BuildMessage();
+            if (msg == null) { Reset(); return; }
 
             var ipc = IPCClient.Instance;
             if (ipc != null)
@@ -270,11 +311,12 @@ namespace BackroomsSurvival.Gameplay
                     : 0;
                 long placeId = ((long)Mathf.Max(1, selfId) * 1000000000L) + _nextPlaceId++;
 
-                ipc.SendSprayPlace(placeId, _canvasLayer, _canvasCentre, _canvasYaw,
-                    _canvasSize, _canvasSize, _strokes);
+                ipc.SendSprayPlace(placeId, msg.layer, msg.WorldPos, msg.yaw,
+                    msg.sizeX, msg.sizeY, msg.strokes);
 
                 Debug.Log($"MPTRACE step=SPRAY event=unity_spray_sent place_id={placeId} " +
-                          $"strokes={_strokes.Count} points={_pointsInSpray} " +
+                          $"strokes={msg.strokes.Length} points={_gesture.PointCount} " +
+                          $"canvas={msg.sizeX:F2}x{msg.sizeY:F2}m " +
                           $"paint_left={(_can != null ? _can.PaintMeters : 0f):F1}");
             }
 
@@ -283,12 +325,10 @@ namespace BackroomsSurvival.Gameplay
 
         private void Reset()
         {
-            _strokes.Clear();
-            _points.Clear();
-            _pointsInSpray = 0;
-            _strokeOpen = false;
-            _hasCanvas = false;
+            _gesture.Clear();
             _idleSeconds = 0f;
+            // La previa NO se retira aquí: se queda hasta que llegue la copia autoritativa, o
+            // el trazo parpadearía en el hueco entre soltar y recibir el eco del host.
         }
     }
 }

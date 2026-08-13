@@ -83,6 +83,9 @@ namespace BackroomsSurvival.Gameplay
 
         private static SprayRenderer _instance;
 
+        /// <summary>El renderizador vivo, para que el pintor pueda pedirle la vista previa.</summary>
+        public static SprayRenderer Instance => _instance;
+
         /// <summary>Lo pintado, por id de pintada. El id lo acuña el host y es único de mundo.</summary>
         private readonly Dictionary<uint, GameObject> _spawned = new Dictionary<uint, GameObject>();
 
@@ -155,7 +158,16 @@ namespace BackroomsSurvival.Gameplay
             var tex = Rasterize(spray);
             if (tex == null) return;
 
-            var go = new GameObject($"Spray_{spray.id}");
+            // Llegó la autoritativa: fuera la previa, o se verían las dos superpuestas.
+            ClearPreview();
+            _spawned[spray.id] = BuildQuadObject(spray, tex, $"Spray_{spray.id}");
+        }
+
+        /// <summary>El quad con su textura, colocado contra la pared. Compartido por la pintada
+        /// definitiva y por la previa, para que las dos se vean EXACTAMENTE igual.</summary>
+        private GameObject BuildQuadObject(SprayMsg spray, Texture2D tex, string name)
+        {
+            var go = new GameObject(name);
             go.transform.SetParent(transform, false);
             // Sin collider, y esto NO es un descuido: una pintada no puede frenar al jugador ni
             // aparecer en los raycasts de construcción o interacción. Es pintura, no geometría.
@@ -180,12 +192,44 @@ namespace BackroomsSurvival.Gameplay
                 if (mat.HasProperty("_Metallic")) mat.SetFloat("_Metallic", 0f);
                 mr.sharedMaterial = mat;
             }
-
-            _spawned[spray.id] = go;
+            return go;
         }
 
         /// <summary>Cuántas pintadas hay materializadas ahora mismo. Para diagnóstico y tests.</summary>
         public int LiveCount => _spawned.Count;
+
+        // ── Vista previa ──────────────────────────────────────────────────────────────────
+        //
+        // El trazo EN CURSO, dibujado en local mientras el jugador arrastra. No es un adorno:
+        // sin esto se pinta a ciegas y el dibujo no aparece hasta que el host lo devuelve, más
+        // de un segundo después de soltar. La previa es lo único que hace que la mecánica se
+        // sienta como pintar y no como rellenar un formulario.
+        //
+        // Es puramente local: no viaja, no se guarda, y desaparece en cuanto llega la pintada
+        // autoritativa (que puede diferir — el host manda).
+        private GameObject _preview;
+
+        /// <summary>Refresca el trazo en curso. Llamar mientras se pinta.</summary>
+        public void ShowPreview(SprayMsg spray)
+        {
+            ClearPreview();
+            if (spray == null || spray.strokes == null || spray.strokes.Length == 0) return;
+
+            var tex = Rasterize(spray);
+            if (tex == null) return;
+
+            _preview = BuildQuadObject(spray, tex, "Spray_Preview");
+        }
+
+        /// <summary>
+        /// Retira la previa. Se llama al mandar la pintada: a partir de ahí manda la copia
+        /// autoritativa, y tener las dos a la vez daría doble trazo mientras llega el eco.
+        /// </summary>
+        public void ClearPreview()
+        {
+            if (_preview != null) Destroy(_preview);
+            _preview = null;
+        }
 
         public void Clear()
         {
