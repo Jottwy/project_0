@@ -22,6 +22,14 @@
 #  - csc output here is Spanish-localized, so we grep 'error CS', not ': error'.
 #  - BackroomsSurvival's <Compile Include> list is a stale snapshot that omits just-added files;
 #    glob Assets/Scripts instead.
+#  - EL .CSPROJ ES UNA FOTO, Y UNA FOTO VIEJA MIENTE EN VERDE. Todo el conjunto de referencias
+#    sale del .csproj, que lo REGENERA Unity al refrescar. Si el asmdef cambió (o el fichero es
+#    nuevo) y Unity no ha refrescado desde entonces, este script compila contra las referencias
+#    de ANTES. El 2026-08-13 dio `errors: 0` tres veces seguidas sobre un `SprayLootTests.cs` que
+#    usaba `PolymindGames` sin que `EditModeTests.asmdef` lo referenciara; en cuanto Unity
+#    recompiló y regeneró el csproj, el mismo script reprodujo los dos CS0246.
+#    Regla: tras TOCAR un .asmdef, este script no dice la verdad hasta que Unity refresque. Y un
+#    verde sobre un `using` recién añadido de otro assembly vale menos que mirar el asmdef.
 set -uo pipefail
 
 # Windows-style root (csc needs J:/… , not the msys /j/… form).

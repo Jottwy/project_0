@@ -5,6 +5,7 @@
         "UnityEngine.TestRunner",
         "UnityEditor.TestRunner",
         "BackroomsSurvival",
+        "PolymindGames",
         "Unity.TextMeshPro"
     ],
     "includePlatforms": [

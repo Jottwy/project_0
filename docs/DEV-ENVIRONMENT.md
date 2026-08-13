@@ -72,6 +72,18 @@ queda en `backend/`, los hooks del repo se resuelven con ruta relativa y fallan.
 
 ## Trampas de test que no dan error
 
+**`CompileCheckClient.sh` da FALSO VERDE cuando el `.csproj` está viejo.** Todo su conjunto de
+referencias sale del `.csproj`, y ése lo **regenera Unity al refrescar**. Si el `.asmdef` cambió,
+o el fichero es nuevo, y Unity no ha refrescado desde entonces, el arnés compila contra las
+referencias de ANTES. Ocurrió el 2026-08-13: `SprayLootTests.cs` usaba `PolymindGames` sin que
+`EditModeTests.asmdef` lo referenciara y el script dijo `errors: 0` tres veces seguidas; en
+cuanto Unity recompiló y regeneró el csproj, el MISMO script reprodujo los dos `CS0246`.
+
+**Regla:** tras tocar un `.asmdef` —o al añadir a un fichero el primer `using` de otro
+assembly— este script no dice la verdad hasta que Unity refresque. Mirar el `.asmdef` cuesta
+menos. Ojo además con los nombres: el assembly del vendor se llama `PolymindGames` aunque su
+fichero sea `PolymindFPSCore.Runtime.asmdef`.
+
 **`Collider.bounds` en EditMode.** Lo devuelve PhysX, que solo se entera de un cambio de
 transform cuando algo llama a `Physics.SyncTransforms()` — automático antes de cada
 FixedUpdate en Play Mode, y en EditMode no lo llama nadie. Sin eso, todo `BoxCollider`
