@@ -296,15 +296,21 @@ namespace BackroomsSurvival.Gameplay
                 new Vector3(-0.5f, 0.5f, 0f),
                 new Vector3(0.5f, 0.5f, 0f),
             };
+            // U INVERTIDA respecto a la X local, y no es un despiste. Quien mira una cara que
+            // apunta a +Z está en +Z mirando hacia −Z, y desde ahí su derecha es −X. Con las UV
+            // "naturales" (U creciendo con +X) el dibujo saldría EN ESPEJO — invisible con una
+            // flecha, obvio en cuanto alguien pinte una letra o un número, que es justo para lo
+            // que existe esta mecánica. Así la X del lienzo crece hacia la derecha del que mira.
             mesh.uv = new[]
             {
-                new Vector2(0f, 0f), new Vector2(1f, 0f),
-                new Vector2(0f, 1f), new Vector2(1f, 1f),
+                new Vector2(1f, 0f), new Vector2(0f, 0f),
+                new Vector2(1f, 1f), new Vector2(0f, 1f),
             };
-            // Devanado para que la cara visible mire a −Z local: el quad se coloca girado por el
-            // yaw de la pared y desplazado hacia fuera, así que lo que mira al jugador es esa.
-            mesh.triangles = new[] { 0, 2, 1, 2, 3, 1 };
-            mesh.normals = new[] { Vector3.back, Vector3.back, Vector3.back, Vector3.back };
+            // Cara visible hacia +Z local, o sea la MISMA dirección que `yaw` y que el
+            // desplazamiento de separación. El Quad de Unity mira a −Z; copiar su devanado tal
+            // cual habría metido la pintada DENTRO de la pared.
+            mesh.triangles = new[] { 0, 1, 2, 2, 1, 3 };
+            mesh.normals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward };
             mesh.RecalculateBounds();
             return mesh;
         }

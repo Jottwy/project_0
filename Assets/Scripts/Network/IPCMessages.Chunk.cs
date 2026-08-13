@@ -139,7 +139,11 @@ namespace BackroomsSurvival.Net
         /// <summary>X/Z LOCALES al chunk; Y es altura de mundo. Ver <see cref="WorldPos"/>.</summary>
         public float lx, ly, lz;
 
-        /// <summary>Giro del lienzo en grados: hacia dónde mira la pared pintada.</summary>
+        /// <summary>
+        /// Giro del lienzo en grados. CONVENIO, fijado por el render de S2: es la dirección hacia
+        /// la que MIRA la pintada — hacia quien la lee, no hacia la pared. Quien pinte apuntando a
+        /// una pared manda su propio yaw + 180.
+        /// </summary>
         public float yaw;
 
         /// <summary>Ancho y alto del lienzo, en metros.</summary>

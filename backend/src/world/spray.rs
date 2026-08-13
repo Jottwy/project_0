@@ -101,7 +101,9 @@ pub struct Spray {
     pub layer: u8,
     /// X/Z LOCALES al chunk en `[0, CHUNK_SIZE)`; Y es altura de mundo (ver cabecera).
     pub local_pos: [f32; 3],
-    /// Giro del lienzo en grados: hacia dónde mira la pared pintada.
+    /// Giro del lienzo en grados. CONVENIO, fijado por el render de S2 y espejado en
+    /// `SprayMsg.yaw`: es la dirección hacia la que MIRA la pintada — hacia quien la lee, no
+    /// hacia la pared. Quien pinte apuntando a una pared manda su propio yaw + 180.
     pub yaw: f32,
     /// Ancho y alto del lienzo en metros.
     pub size: [f32; 2],
