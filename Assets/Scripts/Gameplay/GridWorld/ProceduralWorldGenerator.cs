@@ -646,6 +646,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Se manda el TONO, no un salto: el driver interpola en su propio Update porque
             // una cola que cambia de golpe se oye como un corte, mientras que ambiente y
             // niebla sí pueden aplicarse de una vez.
+            // Se manda la sala CRUDA de la zona. El tinte por aislamiento lo aplica el
+            // driver en cada pasada y no aquí: esto solo corre al CAMBIAR de zona, así
+            // que teñir en este punto congelaría la modulación hasta el próximo cruce.
             Audio.ReverbMixerDriver.SetRoom(cfg.ReverbFor(zoneKind), zoneKind);
         }
 

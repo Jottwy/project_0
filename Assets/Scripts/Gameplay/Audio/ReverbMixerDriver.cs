@@ -263,16 +263,21 @@ namespace BackroomsSurvival.Gameplay.Audio
             // congelada a medias dejaría media cola puesta durante toda la pausa.
             float t = Mathf.Clamp01(Time.unscaledDeltaTime / BlendTau);
 
+            // El objetivo efectivo es la sala de la ZONA teñida por el aislamiento actual.
+            // Se recalcula cada pasada porque el aislamiento deriva de forma continua,
+            // mientras que _target solo cambia al cruzar de zona.
+            var goal = IsolationDirector.Colour(_target);
+
             bool moved = false;
-            Approach(ref _current.dry,          _target.dry,          t, ref moved);
-            Approach(ref _current.room,         _target.room,         t, ref moved);
-            Approach(ref _current.roomHF,       _target.roomHF,       t, ref moved);
-            Approach(ref _current.level,        _target.level,        t, ref moved);
-            Approach(ref _current.reflect,      _target.reflect,      t, ref moved);
+            Approach(ref _current.dry,          goal.dry,          t, ref moved);
+            Approach(ref _current.room,         goal.room,         t, ref moved);
+            Approach(ref _current.roomHF,       goal.roomHF,       t, ref moved);
+            Approach(ref _current.level,        goal.level,        t, ref moved);
+            Approach(ref _current.reflect,      goal.reflect,      t, ref moved);
             // decay y reflectDelay viven en segundos, no en mB: su epsilon es otro y hay que
             // escalarlo, o "medio milibelio" sería un abismo en una cola de 0,6 s.
-            Approach(ref _current.decay,        _target.decay,        t, ref moved, 1e-4f);
-            Approach(ref _current.reflectDelay, _target.reflectDelay, t, ref moved, 1e-5f);
+            Approach(ref _current.decay,        goal.decay,        t, ref moved, 1e-4f);
+            Approach(ref _current.reflectDelay, goal.reflectDelay, t, ref moved, 1e-5f);
 
             // Sin movimiento no se reescribe: una vez asentada la sala, el driver deja de
             // tocar el mixer hasta el siguiente cambio de zona.

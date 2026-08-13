@@ -483,6 +483,10 @@ namespace BackroomsSurvival.Gameplay.Audio
 
             _candidates.Clear();
             _refs.Clear();
+            // La distancia a la lámpara más cercana sale GRATIS de este mismo barrido: el
+            // aislamiento no añade ni un sondeo. Ojo, solo cuenta lámparas de la capa del
+            // oyente — las de otra capa no son compañía, están al otro lado de una losa.
+            float nearestSqr = float.MaxValue;
 
             for (int b = _batches.Count - 1; b >= 0; b--)
             {
@@ -507,6 +511,10 @@ namespace BackroomsSurvival.Gameplay.Audio
                 for (int i = 0; i < batch.count; i++)
                 {
                     float sqr = (batch.positions[i] - ear).sqrMagnitude;
+                    // La medida del aislamiento va ANTES del culling por alcance: si midiera
+                    // después, una lámpara a 9 m no contaría y el jugador figuraría como
+                    // aislado teniéndola a la vista.
+                    if (sqr < nearestSqr) nearestSqr = sqr;
                     if (sqr > MaxDistanceSqr) continue;
 
                     long key = ((long)batch.id << LampIndexBits) | (uint)(i & LampIndexMask);
@@ -521,6 +529,10 @@ namespace BackroomsSurvival.Gameplay.Audio
                     };
                 }
             }
+
+            IsolationDirector.Report(
+                nearestSqr == float.MaxValue ? float.MaxValue : Mathf.Sqrt(nearestSqr),
+                ReassignInterval);
 
             SelectSlots(_candidates, _selection, HysteresisMetres);
         }
@@ -580,8 +592,9 @@ namespace BackroomsSurvival.Gameplay.Audio
                 // baseVolume NO se toca: lo refresca el ajuste en vivo desde la config, y
                 // meterle aquí la oclusión lo iría apagando acumulativamente cada frame.
                 float occGain = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+                float isoGain = IsolationDirector.ColourHumVolume(1f);
                 slot.src.volume = slot.baseVolume * slot.envelope * slot.flickerGain
-                                * occGain * _masterVolume;
+                                * occGain * isoGain * _masterVolume;
             }
 
             StepOcclusionProbe();
