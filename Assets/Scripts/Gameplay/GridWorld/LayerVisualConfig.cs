@@ -101,11 +101,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Volumen del zumbido de fluorescente de esta capa (FluorescentHumDirector). " +
                  "0 = capa muda. Es el volumen de UNA lámpara bajo el panel; el presupuesto " +
                  "de fuentes hace que solo suenen las más cercanas, así que subirlo no " +
-                 "multiplica el número de voces, solo lo hace más presente. VALOR DE " +
-                 "PLAYTEST, no calculado: a 0.35 el zumbido se anteponía a los pasos y " +
-                 "sonaba a primer plano en vez de a fondo de sala. Subir de ~0.2 lo devuelve " +
-                 "a competir con los SFX del jugador.")]
-        [Range(0f, 1f)] public float humVolume = 0.12f;
+                 "multiplica el número de voces, solo lo hace más presente. VALOR DE OÍDO, " +
+                 "no calculado, y bajado DOS veces: 0.35 se anteponía a los pasos, 0.12 " +
+                 "seguía sonando a primer plano. El zumbido tiene que leerse como " +
+                 "profundidad de la sala, no como un objeto — vive muy por debajo de los " +
+                 "SFX del jugador, no un poco. Cualquier subida futura parte de aquí.")]
+        [Range(0f, 1f)] public float humVolume = 0.05f;
 
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
