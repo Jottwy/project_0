@@ -103,6 +103,16 @@ AudioMixerController:
     name: EffectsVolume
   - guid: 341a5636933d657409a369a01fdbabce
     name: MasterVolume
+  - guid: 411edbff866b2274bb95bdb3692e82ab
+    name: RvbDry
+  - guid: e7d73403169a28a4a8ac6e0ac48d3075
+    name: RvbRoom
+  - guid: ef5c956ba18fa2243991d584d92ae3ce
+    name: RvbRoomHF
+  - guid: ec69243db0fc0b247a11cd96bbf3b77b
+    name: RvbDecay
+  - guid: f3edd441a3a62f347b03cee503813abe
+    name: RvbLevel
   - guid: da08b7b75c6a2d745904555d2cfed523
     name: MusicVolume
   - guid: e4e3c385e0b4aba4cae7382ad68bcf50
@@ -116,7 +126,7 @@ AudioMixerController:
     - 120097da846426447bb923ba33c1b3f0
     name: View
   m_CurrentViewIndex: 0
-  m_TargetSnapshot: {fileID: 6328772527866679640}
+  m_TargetSnapshot: {fileID: 24500006}
 --- !u!243 &24300002
 AudioMixerGroupController:
   m_ObjectHideFlags: 0
@@ -136,6 +146,7 @@ AudioMixerGroupController:
   m_Send: 00000000000000000000000000000000
   m_Effects:
   - {fileID: 24400004}
+  - {fileID: 7654252797094999856}
   m_UserColorIndex: 0
   m_Mute: 0
   m_Solo: 0
@@ -273,3 +284,45 @@ AudioMixerSnapshotController:
     da08b7b75c6a2d745904555d2cfed523: -4.9356413
     94f1095ee1c49014894f3dee602a39af: -80
   m_TransitionOverrides: {}
+--- !u!244 &7654252797094999856
+AudioMixerEffectController:
+  m_ObjectHideFlags: 3
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: 
+  m_EffectID: 98be0bb41af21a548b644a5fd1e25357
+  m_EffectName: SFX Reverb
+  m_MixLevel: 7b5eb18477d6ff54a90fa04f86606f82
+  m_Parameters:
+  - m_ParameterName: Dry Level
+    m_GUID: 411edbff866b2274bb95bdb3692e82ab
+  - m_ParameterName: Room
+    m_GUID: e7d73403169a28a4a8ac6e0ac48d3075
+  - m_ParameterName: Room HF
+    m_GUID: ef5c956ba18fa2243991d584d92ae3ce
+  - m_ParameterName: Decay Time
+    m_GUID: ec69243db0fc0b247a11cd96bbf3b77b
+  - m_ParameterName: Decay HF Ratio
+    m_GUID: e9aac288ec32de34dac038f79775dbbe
+  - m_ParameterName: Reflections
+    m_GUID: b3cc17973c2b5024d93181eef083b20c
+  - m_ParameterName: Reflect Delay
+    m_GUID: 01774c1d338a1ad4088f21ae2aa89a36
+  - m_ParameterName: Reverb
+    m_GUID: f3edd441a3a62f347b03cee503813abe
+  - m_ParameterName: Reverb Delay
+    m_GUID: 1a8dbb743c411624e92b89012939707b
+  - m_ParameterName: Diffusion
+    m_GUID: ec563d056d769f34baa1566187540af6
+  - m_ParameterName: Density
+    m_GUID: 538be924519b7034e8971fb9d2c0a2dc
+  - m_ParameterName: HF Reference
+    m_GUID: a34e240b1168f924392bb69efb988153
+  - m_ParameterName: Room LF
+    m_GUID: ccce9fb3ff090cb4a8fe7f1e4ad3d4ae
+  - m_ParameterName: LF Reference
+    m_GUID: c2e177de26487fd448ab5726d2a1e9d5
+  m_SendTarget: {fileID: 0}
+  m_EnableWetMix: 0
+  m_Bypass: 0

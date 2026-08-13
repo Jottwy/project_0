@@ -211,6 +211,11 @@ MonoBehaviour:
     fogDensity: 0.028
     overrideFogColor: 1
     fogColor: {r: 0.3, g: 0.28, b: 0.23, a: 1}
+    overrideReverb: 1
+    reverbDecay: 1.1
+    reverbRoom: -1800
+    reverbRoomHF: -1800
+    reverbLevel: 0
   - zoneKind: 1
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -219,6 +224,11 @@ MonoBehaviour:
     fogDensity: 0.035
     overrideFogColor: 1
     fogColor: {r: 0.064, g: 0.054, b: 0.038, a: 1}
+    overrideReverb: 1
+    reverbDecay: 1.6
+    reverbRoom: -1400
+    reverbRoomHF: -900
+    reverbLevel: 0
   - zoneKind: 2
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -227,6 +237,11 @@ MonoBehaviour:
     fogDensity: 0.022
     overrideFogColor: 1
     fogColor: {r: 0.083, g: 0.08, b: 0.07, a: 1}
+    overrideReverb: 1
+    reverbDecay: 0.9
+    reverbRoom: -2200
+    reverbRoomHF: -2200
+    reverbLevel: 0
   - zoneKind: 3
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -235,6 +250,11 @@ MonoBehaviour:
     fogDensity: 0.045
     overrideFogColor: 1
     fogColor: {r: 0.051, g: 0.032, b: 0.029, a: 1}
+    overrideReverb: 1
+    reverbDecay: 1.8
+    reverbRoom: -1200
+    reverbRoomHF: -600
+    reverbLevel: 200
   - zoneKind: 4
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -243,6 +263,11 @@ MonoBehaviour:
     fogDensity: 0.02
     overrideFogColor: 1
     fogColor: {r: 0.077, g: 0.07, b: 0.054, a: 1}
+    overrideReverb: 1
+    reverbDecay: 2.8
+    reverbRoom: -700
+    reverbRoomHF: -400
+    reverbLevel: 300
   - zoneKind: 5
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -251,6 +276,11 @@ MonoBehaviour:
     fogDensity: 0.03
     overrideFogColor: 1
     fogColor: {r: 0.067, g: 0.061, b: 0.048, a: 1}
+    overrideReverb: 1
+    reverbDecay: 2.4
+    reverbRoom: -800
+    reverbRoomHF: -500
+    reverbLevel: 250
   - zoneKind: 6
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -259,6 +289,11 @@ MonoBehaviour:
     fogDensity: 0.055
     overrideFogColor: 1
     fogColor: {r: 0.048, g: 0.058, b: 0.058, a: 1}
+    overrideReverb: 1
+    reverbDecay: 2.0
+    reverbRoom: -1000
+    reverbRoomHF: -300
+    reverbLevel: 200
   - zoneKind: 7
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -267,6 +302,11 @@ MonoBehaviour:
     fogDensity: 0.07
     overrideFogColor: 1
     fogColor: {r: 0.013, g: 0.013, b: 0.016, a: 1}
+    overrideReverb: 1
+    reverbDecay: 1.5
+    reverbRoom: -1500
+    reverbRoomHF: -2500
+    reverbLevel: 100
   - zoneKind: 8
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -275,6 +315,11 @@ MonoBehaviour:
     fogDensity: 0.03
     overrideFogColor: 1
     fogColor: {r: 0.08, g: 0.07, b: 0.045, a: 1}
+    overrideReverb: 1
+    reverbDecay: 1.0
+    reverbRoom: -2000
+    reverbRoomHF: -2000
+    reverbLevel: 0
   - zoneKind: 9
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -283,6 +328,11 @@ MonoBehaviour:
     fogDensity: 0.026
     overrideFogColor: 1
     fogColor: {r: 0.074, g: 0.077, b: 0.077, a: 1}
+    overrideReverb: 1
+    reverbDecay: 1.4
+    reverbRoom: -1300
+    reverbRoomHF: -500
+    reverbLevel: 100
   - zoneKind: 10
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -291,6 +341,11 @@ MonoBehaviour:
     fogDensity: 0.048
     overrideFogColor: 1
     fogColor: {r: 0.064, g: 0.022, b: 0.022, a: 1}
+    overrideReverb: 1
+    reverbDecay: 2.2
+    reverbRoom: -900
+    reverbRoomHF: -700
+    reverbLevel: 250
   - zoneKind: 11
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -299,6 +354,11 @@ MonoBehaviour:
     fogDensity: 0.06
     overrideFogColor: 1
     fogColor: {r: 0.026, g: 0.019, b: 0.029, a: 1}
+    overrideReverb: 1
+    reverbDecay: 3.5
+    reverbRoom: -600
+    reverbRoomHF: -1200
+    reverbLevel: 400
   - zoneKind: 12
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -307,6 +367,11 @@ MonoBehaviour:
     fogDensity: 0.024
     overrideFogColor: 1
     fogColor: {r: 0.077, g: 0.083, b: 0.077, a: 1}
+    overrideReverb: 1
+    reverbDecay: 0.6
+    reverbRoom: -2600
+    reverbRoomHF: -2800
+    reverbLevel: -200
   props:
   - prefab: {fileID: 0}
     placeholderType: desk
