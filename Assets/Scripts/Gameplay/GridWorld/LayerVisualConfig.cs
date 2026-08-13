@@ -194,28 +194,51 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Nivel de la cola tardía de la capa, en mB.")]
         [Range(-10000f, 2000f)] public float reverbLevel = 0f;
 
+        [Tooltip("Rebotes tempranos de la capa, en mB. −10000 = ninguno: solo cola difusa, " +
+                 "que se percibe como VACÍO sin superficies y no como una habitación.")]
+        [Range(-10000f, 1000f)] public float reverbReflect = -10000f;
+
+        [Tooltip("Distancia a la pared más cercana, en METROS. Se convierte a retardo del " +
+                 "primer rebote (ida y vuelta a 343 m/s). Baldosa de 5 m ⇒ ~2.5 en un pasillo.")]
+        [Range(0f, 50f)] public float reverbWallMetres = 3.4f;
+
+        [Tooltip("Cuánto del sonido SECO pasa, en mB. 0 = todo (lo normal). Bajarlo hunde la " +
+                 "escena dentro del reverb — sensación de estar sumergido, no de tener una " +
+                 "sala alrededor. Úsalo con cuidado: se lleva por delante la localización.")]
+        [Range(-10000f, 0f)] public float reverbDry = 0f;
+
         /// <summary>
         /// La sala de <paramref name="zoneKind"/>: la de la zona si la autora, si no la de la
         /// capa. Único resolvedor, por el mismo motivo que <see cref="HumVolumeFor"/> — dos
         /// derivaciones del mismo dato es como se autoriza una discrepancia.
+        ///
+        /// El override de zona es TODO-O-NADA sobre los siete mandos, no campo a campo: una
+        /// sala es una descripción coherente de un espacio, y mezclar la cola de una zona con
+        /// las reflexiones de otra da un sitio que no existe.
         /// </summary>
         public Audio.ReverbMixerDriver.RoomTone ReverbFor(int zoneKind)
         {
+            float wallMetres = reverbWallMetres;
             var t = new Audio.ReverbMixerDriver.RoomTone
             {
-                dry    = 0f,
-                room   = reverbRoom,
-                roomHF = reverbRoomHF,
-                decay  = reverbDecay,
-                level  = reverbLevel,
+                dry     = reverbDry,
+                room    = reverbRoom,
+                roomHF  = reverbRoomHF,
+                decay   = reverbDecay,
+                level   = reverbLevel,
+                reflect = reverbReflect,
             };
             if (TryGetZoneAmbienceSet(zoneKind, out var za) && za.overrideReverb)
             {
-                t.room   = za.reverbRoom;
-                t.roomHF = za.reverbRoomHF;
-                t.decay  = za.reverbDecay;
-                t.level  = za.reverbLevel;
+                t.dry      = za.reverbDry;
+                t.room     = za.reverbRoom;
+                t.roomHF   = za.reverbRoomHF;
+                t.decay    = za.reverbDecay;
+                t.level    = za.reverbLevel;
+                t.reflect  = za.reverbReflect;
+                wallMetres = za.reverbWallMetres;
             }
+            t.reflectDelay = Audio.ReverbMixerDriver.ReflectDelayForMetres(wallMetres);
             return t;
         }
 
@@ -798,6 +821,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Nivel de la cola tardía en mB. Súbelo para que el espacio se sienta más " +
                  "grande sin alargar la cola.")]
         [Range(-10000f, 2000f)] public float reverbLevel;
+
+        [Tooltip("Rebotes tempranos en mB — el mando que decide si esto suena a SITIO o a " +
+                 "VACÍO. Presentes (−1500..−600) = hay paredes cerca y el espacio se lee " +
+                 "como una habitación. A −10000 = ninguno, solo cola difusa flotando: " +
+                 "irreal, sin superficies. Lo segundo NO es un fallo, es lo que se quiere en " +
+                 "BLACKOUT y en el PIT.")]
+        [Range(-10000f, 1000f)] public float reverbReflect;
+
+        [Tooltip("Distancia a la pared más cercana en METROS, no en segundos: el retardo del " +
+                 "primer rebote sale de aquí (ida y vuelta a 343 m/s). Un pasillo de baldosa " +
+                 "de 5 m son ~2.5; una nave, 10 o más.")]
+        [Range(0f, 50f)] public float reverbWallMetres;
+
+        [Tooltip("Cuánto del seco pasa, en mB. 0 = todo, lo normal. Negativo hunde la escena " +
+                 "DENTRO del reverb en vez de rodearla con él.")]
+        [Range(-10000f, 0f)] public float reverbDry;
 
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
         /// con un set específico; sí con uno comodín).</summary>

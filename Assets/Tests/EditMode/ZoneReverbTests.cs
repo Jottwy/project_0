@@ -29,12 +29,15 @@ namespace BackroomsSurvival.Tests
 
         private static ZoneAmbienceSet Hall(int zoneKind) => new ZoneAmbienceSet
         {
-            zoneKind       = zoneKind,
-            overrideReverb = true,
-            reverbDecay    = 2.6f,
-            reverbRoom     = -800f,
-            reverbRoomHF   = -400f,
-            reverbLevel    = 200f,
+            zoneKind         = zoneKind,
+            overrideReverb   = true,
+            reverbDecay      = 2.6f,
+            reverbRoom       = -800f,
+            reverbRoomHF     = -400f,
+            reverbLevel      = 200f,
+            reverbReflect    = -1800f,
+            reverbWallMetres = 9.5f,
+            reverbDry        = 0f,
         };
 
         [Test]
@@ -136,6 +139,70 @@ namespace BackroomsSurvival.Tests
             cfg.zoneAmbienceSets = new[] { mute };
 
             Assert.AreEqual(ReverbMixerDriver.RoomSilent, cfg.ReverbFor(ZoneNormal).room, 0.001f);
+            Object.DestroyImmediate(cfg);
+        }
+
+        [Test]
+        public void ElRetardoDelPrimerReboteSaleDeLaDistanciaALaPared()
+        {
+            // Autorar en metros y no en milisegundos es la mitad de por qué esto se puede
+            // ajustar de oído. Ida y vuelta a 343 m/s: 2,5 m ⇒ 5 m de recorrido ⇒ ~14,6 ms.
+            Assert.AreEqual(0.01458f, ReverbMixerDriver.ReflectDelayForMetres(2.5f), 0.0002f);
+            Assert.AreEqual(0f,       ReverbMixerDriver.ReflectDelayForMetres(0f),   1e-6f);
+            // El SFX Reverb corta el Reflect Delay en 0,3 s: una distancia absurda no puede
+            // producir un valor que el efecto rechace en silencio.
+            Assert.AreEqual(0.3f, ReverbMixerDriver.ReflectDelayForMetres(9999f), 1e-6f);
+        }
+
+        [Test]
+        public void LaSalaDeLaZonaSeAdoptaEnteraIncluidasLasReflexiones()
+        {
+            // El override es TODO-O-NADA: mezclar la cola de una zona con las reflexiones de
+            // otra daría un sitio que no existe. Este test fija esa unidad.
+            var cfg = NewLayer();
+            cfg.reverbRoom        = -2000f;
+            cfg.reverbReflect     = -700f;   // la capa SÍ tiene paredes
+            cfg.reverbWallMetres  = 2.5f;
+            cfg.reverbDry         = 0f;
+            cfg.zoneAmbienceSets  = new[] { Hall(ZoneOpenHall) };
+
+            var t = cfg.ReverbFor(ZoneOpenHall);
+
+            Assert.AreEqual(-1800f, t.reflect, 0.001f, "la nave impone SUS reflexiones");
+            Assert.AreEqual(ReverbMixerDriver.ReflectDelayForMetres(9.5f), t.reflectDelay, 1e-5f,
+                "y su distancia a la pared, no la de la capa");
+            Object.DestroyImmediate(cfg);
+        }
+
+        [Test]
+        public void UnaZonaPuedeQuedarseSinSuperficies()
+        {
+            // reverbReflect a −10000 = sin rebotes tempranos: solo cola difusa, que se
+            // percibe como VACÍO y no como habitación. NO es un fallo — es lo que se quiere
+            // en BLACKOUT y en el PIT, y está validado en juego. El test existe para que
+            // nadie lo "arregle" subiéndolo al retocar valores.
+            var cfg = NewLayer();
+            var voidZone = Hall(ZoneNormal);
+            voidZone.reverbReflect = ReverbMixerDriver.RoomSilent;
+            voidZone.reverbDry     = -400f;   // hundido dentro del reverb, no rodeado por él
+            cfg.zoneAmbienceSets   = new[] { voidZone };
+
+            var t = cfg.ReverbFor(ZoneNormal);
+
+            Assert.AreEqual(ReverbMixerDriver.RoomSilent, t.reflect, 0.001f);
+            Assert.AreEqual(-400f, t.dry, 0.001f);
+            Assert.AreNotEqual(ReverbMixerDriver.RoomSilent, t.room,
+                "sin reflexiones pero CON cola: el vacío tiene que seguir sonando");
+            Object.DestroyImmediate(cfg);
+        }
+
+        [Test]
+        public void UnaCapaReciénCreadaTampocoTieneSuperficies()
+        {
+            var cfg = NewLayer();
+            var t = cfg.ReverbFor(ZoneNormal);
+            Assert.AreEqual(ReverbMixerDriver.RoomSilent, t.reflect, 0.001f);
+            Assert.AreEqual(0f, t.dry, 0.001f, "el seco pasa entero mientras nadie diga otra cosa");
             Object.DestroyImmediate(cfg);
         }
 

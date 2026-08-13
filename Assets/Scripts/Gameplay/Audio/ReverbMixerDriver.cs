@@ -32,11 +32,13 @@ namespace BackroomsSurvival.Gameplay.Audio
     {
         // Nombres EXACTOS de los parámetros expuestos en FPS_AudioMixer. Cambiar uno aquí
         // sin cambiarlo en el asset apaga esa dimensión del reverb en silencio.
-        public const string ParamDry    = "RvbDry";
-        public const string ParamRoom   = "RvbRoom";
-        public const string ParamRoomHF = "RvbRoomHF";
-        public const string ParamDecay  = "RvbDecay";
-        public const string ParamLevel  = "RvbLevel";
+        public const string ParamDry          = "RvbDry";
+        public const string ParamRoom         = "RvbRoom";
+        public const string ParamRoomHF       = "RvbRoomHF";
+        public const string ParamDecay        = "RvbDecay";
+        public const string ParamLevel        = "RvbLevel";
+        public const string ParamReflect      = "RvbReflect";
+        public const string ParamReflectDelay = "RvbReflectDelay";
 
         /// <summary>
         /// Reverb apagado. −10000 es el suelo del SFX Reverb de Unity: silencio real, no
@@ -52,27 +54,63 @@ namespace BackroomsSurvival.Gameplay.Audio
         public const float RoomSilent = -10000f;
 
         /// <summary>
-        /// Segundos de transición al cruzar de zona. Un salto instantáneo de cola es
-        /// audible como corte; 1,5 s lo cruza por debajo del umbral sin que se perciba como
-        /// desvanecido. Mismo espíritu que el fade de reasignación del zumbido, otra escala.
+        /// CONSTANTE DE TIEMPO de la mezcla al cruzar de zona, no la duración total: el
+        /// suavizado es exponencial, así que en <c>BlendTau</c> segundos se recorre el 63 %
+        /// del camino y en 3× el 95 %. El comentario anterior decía "transición en 1,5 s" y
+        /// era falso — se documenta bien porque de aquí sale cuánto tarda de verdad en
+        /// asentarse una sala, y con 1,5 s son ~4,5 s hasta que deja de moverse.
+        ///
+        /// Un salto instantáneo de cola se oye como un corte; esto lo cruza por debajo del
+        /// umbral. Mismo espíritu que el fade de reasignación del zumbido, otra escala.
         /// </summary>
-        private const float BlendSeconds = 1.5f;
+        private const float BlendTau = 1.5f;
 
-        /// <summary>Los cinco mandos del SFX Reverb que este sistema gobierna.</summary>
+        /// <summary>
+        /// Un suavizado exponencial es ASINTÓTICO: nunca llega al objetivo. Por debajo de
+        /// este resto se engancha de golpe, para que el estado quede exacto y las escrituras
+        /// al mixer paren en vez de perseguir la última milésima para siempre.
+        /// </summary>
+        private const float SnapEpsilon = 0.5f;
+
+        /// <summary>
+        /// Los siete mandos del SFX Reverb que este sistema gobierna.
+        ///
+        /// <see cref="reflect"/> Y <see cref="reflectDelay"/> SON LOS QUE DECIDEN SI UN SITIO
+        /// SUENA A SITIO. Las reflexiones tempranas son los primeros rebotes: lo que te dice
+        /// que hay una pared a dos metros. Con <c>reflect</c> mudo solo queda la cola difusa,
+        /// y eso NO se percibe como una habitación sino como un efecto de reverb encima del
+        /// sonido — un vacío irreal, sin superficies.
+        ///
+        /// Que eso sea un fallo o el objetivo DEPENDE DE LA ZONA, y por eso son autorables en
+        /// vez de constantes: en un pasillo o una oficina el vacío delata el efecto, pero en
+        /// BLACKOUT y en el PIT es exactamente la sensación que se busca — validado en juego.
+        /// </summary>
         public struct RoomTone
         {
-            public float dry;     // mB, −10000..0    — cuánto del seco pasa (0 = todo)
-            public float room;    // mB, −10000..0    — presencia general del reverb
-            public float roomHF;  // mB, −10000..0    — cuánto agudo sobrevive a la sala
-            public float decay;   // s,  0.1..20      — largo de la cola (el único en segundos)
-            public float level;   // mB, −10000..2000 — nivel de la cola tardía
+            public float dry;          // mB, −10000..0    — cuánto del seco pasa (0 = todo)
+            public float room;         // mB, −10000..0    — presencia general del reverb
+            public float roomHF;       // mB, −10000..0    — cuánto agudo sobrevive a la sala
+            public float decay;        // s,  0.1..20      — largo de la cola
+            public float level;        // mB, −10000..2000 — nivel de la cola tardía
+            public float reflect;      // mB, −10000..1000 — rebotes tempranos (−10000 = vacío)
+            public float reflectDelay; // s,  0..0.3       — a qué distancia está la pared
 
             /// <summary>Sala muda: el estado de "aquí no hay reverb autorado".</summary>
             public static RoomTone Silent => new RoomTone
             {
                 dry = 0f, room = RoomSilent, roomHF = 0f, decay = 1f, level = 0f,
+                reflect = RoomSilent, reflectDelay = 0.02f,
             };
         }
+
+        /// <summary>
+        /// Distancia a la pared más cercana → retardo del primer rebote, en segundos.
+        /// El sonido va a ~343 m/s y recorre IDA Y VUELTA, de ahí el ×2. Existe para que
+        /// autorar una zona sea decir "las paredes están a 2,5 m" en vez de adivinar un
+        /// número en milisegundos.
+        /// </summary>
+        public static float ReflectDelayForMetres(float metres) =>
+            Mathf.Clamp(metres * 2f / 343f, 0f, 0.3f);
 
         private static ReverbMixerDriver _instance;
         private static bool _quitting;
@@ -122,6 +160,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (_instance != null && _instance != this) { Destroy(this); return; }
             _instance = this;
             ResolveMixer();
+            WarnIfMixerNotAuthored();
         }
 
         private void OnDestroy()
@@ -156,18 +195,41 @@ namespace BackroomsSurvival.Gameplay.Audio
                 _mixerRetry = 0.5f;
                 ResolveMixer();
                 if (_mixer == null) return;
+                WarnIfMixerNotAuthored();
             }
 
             // unscaledDeltaTime: el audio no se detiene con timeScale 0, y una mezcla
             // congelada a medias dejaría media cola puesta durante toda la pausa.
-            float t = Mathf.Clamp01(Time.unscaledDeltaTime / BlendSeconds);
-            _current.dry    = Mathf.Lerp(_current.dry,    _target.dry,    t);
-            _current.room   = Mathf.Lerp(_current.room,   _target.room,   t);
-            _current.roomHF = Mathf.Lerp(_current.roomHF, _target.roomHF, t);
-            _current.decay  = Mathf.Lerp(_current.decay,  _target.decay,  t);
-            _current.level  = Mathf.Lerp(_current.level,  _target.level,  t);
+            float t = Mathf.Clamp01(Time.unscaledDeltaTime / BlendTau);
 
-            Write(_current);
+            bool moved = false;
+            Approach(ref _current.dry,          _target.dry,          t, ref moved);
+            Approach(ref _current.room,         _target.room,         t, ref moved);
+            Approach(ref _current.roomHF,       _target.roomHF,       t, ref moved);
+            Approach(ref _current.level,        _target.level,        t, ref moved);
+            Approach(ref _current.reflect,      _target.reflect,      t, ref moved);
+            // decay y reflectDelay viven en segundos, no en mB: su epsilon es otro y hay que
+            // escalarlo, o "medio milibelio" sería un abismo en una cola de 0,6 s.
+            Approach(ref _current.decay,        _target.decay,        t, ref moved, 1e-4f);
+            Approach(ref _current.reflectDelay, _target.reflectDelay, t, ref moved, 1e-5f);
+
+            // Sin movimiento no se reescribe: una vez asentada la sala, el driver deja de
+            // tocar el mixer hasta el siguiente cambio de zona.
+            if (moved) Write(_current);
+        }
+
+        private static void Approach(ref float current, float target, float t, ref bool moved,
+            float epsilon = SnapEpsilon)
+        {
+            if (Mathf.Abs(target - current) <= epsilon)
+            {
+                if (current == target) return;
+                current = target;   // engancha: el exponencial nunca llegaría solo
+                moved   = true;
+                return;
+            }
+            current = Mathf.Lerp(current, target, t);
+            moved   = true;
         }
 
         // SetFloat devuelve false si el parámetro no está expuesto en el asset. Se ignora a
@@ -175,12 +237,35 @@ namespace BackroomsSurvival.Gameplay.Audio
         private void Write(RoomTone t)
         {
             if (_mixer == null) return;
-            _mixer.SetFloat(ParamDry,    t.dry);
-            _mixer.SetFloat(ParamRoom,   t.room);
-            _mixer.SetFloat(ParamRoomHF, t.roomHF);
-            _mixer.SetFloat(ParamDecay,  t.decay);
-            _mixer.SetFloat(ParamLevel,  t.level);
+            _mixer.SetFloat(ParamDry,          t.dry);
+            _mixer.SetFloat(ParamRoom,         t.room);
+            _mixer.SetFloat(ParamRoomHF,       t.roomHF);
+            _mixer.SetFloat(ParamDecay,        t.decay);
+            _mixer.SetFloat(ParamLevel,        t.level);
+            _mixer.SetFloat(ParamReflect,      t.reflect);
+            _mixer.SetFloat(ParamReflectDelay, t.reflectDelay);
         }
+
+        /// <summary>
+        /// Aviso ÚNICO si el mixer no está autorado. Existe porque el modo de fallo de este
+        /// sistema es mudo por diseño: si el .unitypackage del vendor vuelve a pisar
+        /// FPS_AudioMixer —ya se llevó tres escenas una vez— el efecto y los siete nombres
+        /// desaparecen, SetFloat empieza a devolver false y el reverb se apaga sin que nada
+        /// lo diga. Una línea al arrancar convierte media sesión de desconcierto en una
+        /// búsqueda de treinta segundos. Ver docs/systems/reverb-mixer.md para rehacerlo.
+        /// </summary>
+        private void WarnIfMixerNotAuthored()
+        {
+            if (_warned || _mixer == null) return;
+            _warned = true;
+            if (MixerIsAuthored()) return;
+            Debug.LogWarning(
+                "[Reverb] FPS_AudioMixer no tiene el efecto SFX Reverb con los siete " +
+                "parámetros expuestos: el reverb por zona queda MUDO. Suele significar que " +
+                "un reimport del vendor piso el mixer — ver docs/systems/reverb-mixer.md.");
+        }
+
+        private bool _warned;
 
         /// <summary>
         /// True si el mixer tiene los cinco parámetros expuestos. Solo para diagnóstico y
@@ -192,9 +277,10 @@ namespace BackroomsSurvival.Gameplay.Audio
             var mgr = AudioManager.Instance;
             var mix = mgr != null ? mgr.AudioMixer : null;
             if (mix == null) return false;
-            return mix.GetFloat(ParamDry,    out _) && mix.GetFloat(ParamRoom,  out _) &&
-                   mix.GetFloat(ParamRoomHF, out _) && mix.GetFloat(ParamDecay, out _) &&
-                   mix.GetFloat(ParamLevel,  out _);
+            return mix.GetFloat(ParamDry,     out _) && mix.GetFloat(ParamRoom,    out _) &&
+                   mix.GetFloat(ParamRoomHF,  out _) && mix.GetFloat(ParamDecay,   out _) &&
+                   mix.GetFloat(ParamLevel,   out _) && mix.GetFloat(ParamReflect, out _) &&
+                   mix.GetFloat(ParamReflectDelay, out _);
         }
     }
 }
