@@ -1,6 +1,8 @@
 #if UNITY_EDITOR
+using BackroomsSurvival.Net;
 using PolymindGames;
 using PolymindGames.InventorySystem;
+using PolymindGames.MovementSystem;
 using UnityEditor;
 using UnityEngine;
 
@@ -39,14 +41,29 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
 
-            var character = Object.FindFirstObjectByType<Character>();
-            if (character == null || character.Inventory == null)
+            // LocalPlayerLocator y NO FindFirstObjectByType<Character>: los avatares de los peers
+            // remotos y el robapieles TAMBIÉN son Character, y el primero que aparece suele ser
+            // uno de ésos — con su Inventory sin contenedores, que revienta dentro de
+            // AddItemsById con un NullReferenceException del vendor. Misma resolución que
+            // InventoryRestorer, que es el otro sitio del proyecto que escribe en el inventario.
+            var motor = LocalPlayerLocator.Find<CharacterControllerMotor>();
+            var character = motor != null ? motor.GetComponentInParent<ICharacter>() : null;
+            if (character == null)
             {
-                Debug.LogError("[SprayCanGiver] No hay jugador con inventario en escena.");
+                Debug.LogError("[SprayCanGiver] No se encuentra al jugador LOCAL. ¿Estás dentro de " +
+                               "una partida, no solo en el menú?");
                 return;
             }
 
-            var (added, reason) = character.Inventory.AddItemsById(definition.Id, 1);
+            var inventory = character.Inventory;
+            if (inventory == null || inventory.Containers == null || inventory.Containers.Count == 0)
+            {
+                Debug.LogError("[SprayCanGiver] El jugador local no tiene inventario inicializado todavía. " +
+                               "Espera a que la partida termine de cargar y reintenta.");
+                return;
+            }
+
+            var (added, reason) = inventory.AddItemsById(definition.Id, 1);
             if (added <= 0)
             {
                 Debug.LogError($"[SprayCanGiver] No entró en el inventario: {reason ?? "sin motivo"}. " +
