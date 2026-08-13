@@ -98,8 +98,15 @@ namespace BackroomsSurvival.Gameplay
         /// el momento en que apunta, en vez de dejarle pintar un trazo entero que luego
         /// desaparece sin explicación.
         /// </summary>
+        /// <param name="maxVerticalDot">
+        /// Cuánto puede desviarse la superficie de la vertical y seguir contando como pared.
+        /// 0,60 ⇒ hasta ~37°, y sigue descartando suelo y techo, que están en 1,0. Se subió desde
+        /// 0,35 (~20°) porque era demasiado estricto con la parte baja de los muros: ahí la
+        /// normal que devuelve el collider no siempre sale limpia, y el bote dejaba de responder
+        /// sin motivo aparente.
+        /// </param>
         public static bool IsPaintableWall(Vector3 from, Vector3 hitPoint, Vector3 normal,
-            float maxVerticalDot = 0.35f)
+            float maxVerticalDot = 0.60f)
         {
             if (Vector3.Distance(from, hitPoint) > MaxPlaceDistance) return false;
             return Mathf.Abs(normal.y) <= maxVerticalDot;

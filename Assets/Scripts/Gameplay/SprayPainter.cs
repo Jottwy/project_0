@@ -171,15 +171,7 @@ namespace BackroomsSurvival.Gameplay
             var cam = Camera.main;
             if (cam == null) return;
 
-            var ray = new Ray(cam.transform.position, cam.transform.forward);
-            if (!Physics.Raycast(ray, out var hit, SprayCanvas.MaxPlaceDistance, ~0,
-                    QueryTriggerInteraction.Ignore))
-            {
-                EndStroke();
-                return;
-            }
-
-            if (!SprayCanvas.IsPaintableWall(cam.transform.position, hit.point, hit.normal))
+            if (!TryFindWall(cam.transform.position, cam.transform.forward, out var hit))
             {
                 EndStroke();
                 return;
@@ -223,6 +215,43 @@ namespace BackroomsSurvival.Gameplay
             if (_gesture.PointCount >= SprayCanvas.MaxPoints)
                 Commit();
         }
+
+        /// <summary>
+        /// Busca la primera superficie PINTABLE del rayo, no el primer impacto a secas.
+        ///
+        /// Es la diferencia entre poder pintar la parte baja de una pared y no poder. Apuntando
+        /// hacia abajo el rayo suele rozar el SUELO antes de tocar el muro, y con un `Raycast`
+        /// normal ese roce se lleva el disparo entero: el suelo no es pintable, así que se
+        /// descartaba todo y el jugador veía el bote dejar de responder sin motivo aparente.
+        /// Mirando más allá del primer impacto, el rodapié y el arranque del muro vuelven a ser
+        /// pintables.
+        ///
+        /// `RaycastNonAlloc` con buffer reutilizado: esto corre en cada frame mientras se pinta,
+        /// y `RaycastAll` dejaría un array nuevo por frame.
+        /// </summary>
+        private bool TryFindWall(Vector3 origin, Vector3 direction, out RaycastHit wall)
+        {
+            wall = default;
+            int count = Physics.RaycastNonAlloc(new Ray(origin, direction), _hits,
+                SprayCanvas.MaxPlaceDistance, ~0, QueryTriggerInteraction.Ignore);
+            if (count <= 0) return false;
+
+            float best = float.MaxValue;
+            bool found = false;
+            for (int i = 0; i < count; i++)
+            {
+                var h = _hits[i];
+                if (h.distance >= best) continue;
+                if (!SprayCanvas.IsPaintableWall(origin, h.point, h.normal)) continue;
+                best = h.distance;
+                wall = h;
+                found = true;
+            }
+            return found;
+        }
+
+        /// <summary>Buffer de impactos, reutilizado. 8 caben de sobra en un pasillo.</summary>
+        private readonly RaycastHit[] _hits = new RaycastHit[8];
 
         private void EndStroke()
         {

@@ -144,6 +144,29 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
+        /// La tolerancia se subió de ~20° a ~37° tras el playtest: con 20° la parte baja de los
+        /// muros dejaba de responder, porque ahí la normal que devuelve el collider no sale
+        /// limpia. Lo que NO puede pasar es que se cuele el suelo — el arreglo tenía que aflojar,
+        /// no abrir la puerta.
+        /// </summary>
+        [Test]
+        public void ASlantedWallIsPaintableButTheFloorStillIsNot()
+        {
+            var from = Vector3.zero;
+            var at = new Vector3(0f, 0f, 2f);
+
+            // Pared inclinada ~30°: normal con algo de componente vertical.
+            var slanted = new Vector3(0f, 0.5f, -1f).normalized;
+            Assert.IsTrue(SprayCanvas.IsPaintableWall(from, at, slanted),
+                "un muro inclinado 30° sigue siendo un muro");
+
+            Assert.IsFalse(SprayCanvas.IsPaintableWall(from, at, Vector3.up),
+                "pero el suelo no entra por aflojar la tolerancia");
+            Assert.IsFalse(SprayCanvas.IsPaintableWall(from, at, Vector3.down),
+                "ni el techo");
+        }
+
+        /// <summary>
         /// La pintura se cobra por DISTANCIA y no por número de puntos: si no, pintar despacio
         /// (más muestras para el mismo trazo) costaría más que pintar rápido, que es justo al
         /// revés de lo que cualquiera espera.
