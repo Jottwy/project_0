@@ -2,6 +2,24 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-13 (dos varamientos de arranque sin mundo + save muerto congelado — ambos resueltos y validados en juego) — **4 commits (8659236, a83b306, a6e8c68, d13682c). ADR-025 enmienda registrada. Backend 660 tests verdes; clippy GNU -D warnings limpio; CompileCheckClient.sh errors:0.**
+
+0. **BUG 1 — GameMode.Start sin timeout en fallback offline dejaba al jugador sin mundo a los 10s (RESUELTO, VALIDADO).** `GameMode.Start` (`Assets/PolymindGames/FPSCore/Code/Runtime/Core/GameMode.cs`) tenía un timeout hardcodeado: si `GameBootGate` no estaba listo en 10 segundos, spawneaba al jugador **sin backend** → juego roto sobre mundo vacío, sesión sin red. Fix: el gate espera indefinidamente; menú Host/Join visible mientras carga. Escenas standalone intactas (`GameBootGate` default = listo al instantiate). Doc del binder actualizado (`Assets/Scripts/Gameplay/GameBootGateBinder.cs`). Commit 8659236.
+
+1. **BUG 2 — cargar un save muerto dejaba al jugador congelado sin DeathUI ni botón de respawn (RESUELTO, VALIDADO).** Dos mitades:
+   - **Backend (raíz):** `revive_if_dead_on_load` (`backend/src/game_loop.rs`), llamado en los DOS puntos de hidratación (host_player del world save + fichero per-player). Cargar muerto ejecuta el mismo reset+recolocación que `respawn_request` (`PlayerStats::on_respawn` + `resolve_respawn` cama/starter + `update_ownership`), sin emitir eventos. Sanea también saves muertos preexistentes (marca histórica). 3 tests nuevos en `backend/src/game_loop/tests.rs` (revive en starter, revive en cama, save vivo intacto). Commit a83b306.
+   - **Cliente (cinturón):** `RespawnRequester.OnWorldState` (`Assets/Scripts/Gameplay/RespawnRequester.cs`) ya no latchea `_serverSawDead` mientras `_health` no resuelve — retry silencioso por tick de estado hasta que el rig existe. Antes el edge se consumía con un warning y esa muerte no volvía a anunciarse jamás. Commit a6e8c68.
+
+2. **ADR-025 enmienda registrada en docs/DECISIONS.md (2026-08-13, commit d13682c, append anclado líneas 2970→2986 verificadas).** Enunciado: "cargar un save muerto ES el respawn" — sella que el no-auto-respawn sigue siendo ley DENTRO de sesión; prohíbe reintroducir timeouts de spawn offline y revertir el `revive_if_dead_on_load`. No tocar ese registro.
+
+3. **Verificación de la sesión:** `cargo test 660` en verde; `clippy +stable-x86_64-pc-windows-gnu -D warnings` limpio (OJO: `clippy` con MSVC por defecto crashea con `STATUS_STACK_BUFFER_OVERRUN` en esta máquina — siempre usar el toolchain GNU). `CompileCheckClient.sh` errors:0 en los 5 asmdef. E2E real con save fabricado (health 0, pos 999, vía `SAVE_PATH`) contra el exe desplegado → log `dead_save_revived_on_load pos=(22.50,1.80,22.50)` y cero `player_died` tras boot. Binario release desplegado en `Builds/Backend` (marker verificado con `grep -aoc = 1`). Había un `backrooms_server` huérfano del 12/08 bloqueando el exe, matado.
+
+4. **Riesgos nuevos / deuda declarada:** (a) **Joiner que reconecta muerto con mundo a medio sincronizar:** `revive_if_dead_on_load` puede recolocarlo en el starter ignorando su cama (`resolve_safe_spawn` trata chunk no cargado como bloqueado). No es inseguro; es subóptimo. Aceptado — el flujo real del juego hoy es host/solo. (b) **GameMode.cs es edición dentro de vendor:** un reimport del `.unitypackage` de PolymindGames la pisa (riesgo ya conocido del proyecto). (c) **Sin timeout, espera indefinida si backend inalcanzable:** tradeoff declarado en la enmienda, sin UX de recuperación dedicada. **Sección "NO tocar" (validado por Joel):** el trío del cierre — gate de arranque sin timeout offline, `revive_if_dead_on_load` en ambas hidrataciones, y el no-latch del edge sin rig en `RespawnRequester.OnWorldState`. Cualquier cambio ahí contradice la enmienda ADR-025.
+
+5. **Pendientes a medias de esta sesión:** ninguno. **Próximo paso ÚNICO:** validación visual pendiente de la enmienda ADR-059/066 e irregularidad en la colocación de lámparas (ya abierto en sesión anterior de STATE.md) — presérvalo como prioridad salvo que el flujo del proyecto indique otro más urgente.
+
+---
+
 - Fecha: 2026-08-12 (color de superficie y luz de ZONE_NORMAL — lazo de sobrecorrección cerrado) — **6 commits. Un dato validado y un problema abierto.**
 
 0. **VALOR VALIDADO SUBJETIVAMENTE — NO PERDERLO.** `lampIntensity` de ZONE_NORMAL = **0.85**, con `ambientLight` 0.465/0.45/0.375, `lampColor` 1.00/0.96/0.86 y `lampRange` 9 / `lightDensity` 1.0. Es el **primer estado del que Joel confirma en captura que el ambiente funciona**: zonas iluminadas con penumbra entre ellas y transiciones legibles al cruzar de una a otra. No es un valor calculado — el cálculo dice que la pared se queda en ~90 de luminancia contra los 180–200 del canon — pero el resultado en pantalla es mejor que el que sí cumple el número. Cualquier iteración futura parte de aquí.
