@@ -3084,3 +3084,55 @@ Estado: **VALIDADA**. S1 (backend), S2 (render), S3 (item y captura) y S4 (loot)
 - **Los tests EditMode (45) no se han ejecutado nunca**: el runner headless exige el editor cerrado y estuvo abierto toda la sesión. Compilan (`errors: 0` en las cuatro asambleas).
 
 Verificado: `cargo test` **688 en verde**, `clippy +stable-x86_64-pc-windows-gnu --all-targets -D warnings` limpio, `CompileCheckClient.sh` → `errors: 0`. **La mitad multijugador y el ciclo de guardado se validan con dos backends sobre sockets UDP reales y un fichero real en disco** (`spray_hops_round_trip_between_peers`, `a_worst_case_spray_survives_a_real_datagram`, `a_painted_wall_survives_saving_and_reloading`), no solo con lógica suelta. Binario release desplegado en `Builds/Backend` con wire 29 y su espejo C#.
+
+---
+
+## ADR-069 — Las propiedades de instancia viajan con el item fuera del inventario (PROPUESTA)
+
+Estado: **PROPUESTA**. Nace de un bug reportado en juego por Joel el 2026-08-13, no de una revisión de escritorio.
+
+### El problema
+
+ADR-045 Fase 3 dio fidelidad de instancia **al inventario**: `InventoryStackV2 { item_id, quantity, container, slot, props }`, con `ItemPropertyValue { id, value }`. Fuera del inventario, en cambio, un item viaja pelado:
+
+- `CorpseStack { item_id, quantity }` — cadáveres, cofres y `stp_inventory`.
+- `stp_drop` — `def_id` + cantidad.
+
+Ninguno de los dos lleva `props`. La consecuencia se ve jugando: **mueres, looteas tu propio cadáver, y la antorcha vuelve a valor de fábrica.** Todo objeto con desgaste se repara al morir. No es solo pérdida de estado: es un incentivo invertido — en un juego cuya progresión es la profundidad, morir sale gratis *y además* restaura el equipo.
+
+Y desde el 2026-08-13 hay un segundo camino que lo pierde: los arreglos de recogida con inventario lleno y de restauración sueltan al mundo lo que no cabe, y lo hacen por `stp_drop`. Está declarado en el código de los dos sitios, apuntando aquí.
+
+### Decisión propuesta
+
+1. **`CorpseStack` gana `props: Vec<ItemPropertyValue>`**, con `#[serde(default)]`.
+2. **Vocabulario reutilizado, no inventado**: el mismo `ItemPropertyValue` de ADR-045. Un solo formato de propiedad en todo el proyecto, no dos que un día divergen.
+3. **Fase 2, después y por separado**: el mismo campo en el camino de drop al mundo (`stp_drop` y el spec de item replicado).
+
+### Alcance real, para que no haya sorpresas a mitad
+
+- **Rust**: `CorpseStack` y su sanitizado (`world/corpse.rs`), la persistencia (`CorpseData` dentro de `WorldSave`, y el campo `stp_inventory` que comparte el tipo), el relay P2P de cadáveres, y los mensajes IPC `report_death_loot`, `world_state.visibleCorpses[].items`, `corpse_item_taken` y `spawn_world_chest`.
+- **C#**: `CorpseLootStack`, `DeathLootReporter` (hoy emite `item_id`/`quantity` y ahí empieza la pérdida), `CorpseLootSync` y `CorpseSpawner`.
+- **Wire**: `WIRE_SCHEMA_VERSION` **29 → 30** y su espejo `WireSchema.Expected` **en el mismo commit**. Desde el commit `7532876` eso lo vigila un test de `cargo test`, así que no puede olvidarse en silencio.
+
+### Degradación
+
+- **Save anterior**: `props` ausente → `serde(default)` → vector vacío → exactamente el comportamiento de hoy. **Sin migración.**
+- **Cliente o peer con otra versión**: no existe el caso. El gate de ADR-061 rechaza la conexión ante cualquier diferencia de versión, así que no hay estado mixto que degradar.
+
+### Lo que NO se decide aquí
+
+- **No se unifica `CorpseStack` con `InventoryStackV2`.** El doc de `player/session.rs` ya explica por qué: comparten nombres de clave JSON, no tipo, y `container`/`slot` no significan nada en un cadáver. Unificar arrastraría dos campos muertos a todo el botín del juego.
+- **No se persigue fidelidad total del item** (adjuntos, nombre propio): solo las `ItemProperty` numéricas, que es lo que ADR-045 ya sabe transportar y lo que cubre el desgaste.
+
+### Riesgos y preguntas abiertas — hay que cerrarlas ANTES de implementar
+
+1. **El rollback de `CorpseLootSync` reconstruye el item desde `item_id`.** Con props, si no las reconstruye, un take rechazado devuelve al cadáver una antorcha **reparada**: el mismo bug en pequeño, y en un camino que además solo se ejecuta cuando algo va mal.
+2. **¿Apilan los items con desgaste?** Si un stack de cantidad > 1 puede llevar props, un take parcial reparte un solo desgaste entre dos mitades y lo **duplica**. Hay que verificar en STP si los items con `ItemProperty` tienen `StackSize` 1; si lo tienen, el invariante «props ⇒ cantidad 1» se puede afirmar y probar. Si no lo tienen, esta propuesta necesita otra decisión antes de seguir.
+3. **Presupuesto de wire sin medir.** ADR-068 prometió 1,2 KB por pintada y la medida real fue 3,1 KB: **2,6× de error, y lo cazó un test, no el diseño.** Aquí no se da por bueno ningún número hasta medir un cadáver de peor caso (`MAX_CORPSE_STACKS` lleno, props al tope), y hace falta fijar un tope de props por stack antes de abrir el campo.
+
+### Validación exigida para pasar a VALIDADA
+
+- Test Rust: cadáver con antorcha a medio gastar → guardar a fichero real → cargar → servir con el chunk → props intactas.
+- Test Rust: un save anterior a este ADR carga con `props` vacías y sin error.
+- Medición del peor caso de wire, escrita en `docs/systems/ipc-wire-schema.md` junto al bump a v30.
+- En juego: morir con la antorcha a media vida, lootearse el cadáver, y comprobar que sigue a media vida.
