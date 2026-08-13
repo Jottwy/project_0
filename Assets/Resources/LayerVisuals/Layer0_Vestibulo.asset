@@ -125,8 +125,8 @@ MonoBehaviour:
     lampEmission: 0
     overrideLampPoint: 0
     lampPoint: 0
-    overrideHumVolume: 0
-    humVolume: 0
+    overrideHumVolume: 1
+    humVolume: 0.03
   - zoneKind: 11
     anyZoneKind: 0
     overrideLampColor: 1
@@ -143,8 +143,8 @@ MonoBehaviour:
     lampEmission: 0
     overrideLampPoint: 0
     lampPoint: 0
-    overrideHumVolume: 0
-    humVolume: 0
+    overrideHumVolume: 1
+    humVolume: 0.02
   - zoneKind: 6
     anyZoneKind: 0
     overrideLampColor: 1
@@ -199,6 +199,43 @@ MonoBehaviour:
     lampPoint: 0
     overrideHumVolume: 0
     humVolume: 0
+  - zoneKind: 4
+    anyZoneKind: 0
+    overrideLampColor: 0
+    lampColor: {r: 0, g: 0, b: 0, a: 0}
+    overrideLampIntensity: 0
+    lampIntensity: 0
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 0
+    lightDensity: 0
+    overrideBrokenLampChance: 0
+    brokenLampChance: 0
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 1
+    humVolume: 0.025
+  - zoneKind: 5
+    anyZoneKind: 0
+    overrideLampColor: 0
+    lampColor: {r: 0, g: 0, b: 0, a: 0}
+    overrideLampIntensity: 0
+    lampIntensity: 0
+    overrideLampRange: 0
+    lampRange: 0
+    overrideLightDensity: 0
+    lightDensity: 0
+    overrideBrokenLampChance: 0
+    brokenLampChance: 0
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 1
+    humVolume: 0.03
+
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
   ambientLight: {r: 0.28, g: 0.24, b: 0.16, a: 1}
@@ -216,6 +253,9 @@ MonoBehaviour:
     reverbRoom: -1800
     reverbRoomHF: -1800
     reverbLevel: 0
+    reverbReflect: -700
+    reverbWallMetres: 2.5
+    reverbDry: 0
   - zoneKind: 1
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -229,6 +269,9 @@ MonoBehaviour:
     reverbRoom: -1400
     reverbRoomHF: -900
     reverbLevel: 0
+    reverbReflect: -900
+    reverbWallMetres: 3.8
+    reverbDry: 0
   - zoneKind: 2
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -242,6 +285,9 @@ MonoBehaviour:
     reverbRoom: -2200
     reverbRoomHF: -2200
     reverbLevel: 0
+    reverbReflect: -600
+    reverbWallMetres: 2.0
+    reverbDry: 0
   - zoneKind: 3
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -255,6 +301,9 @@ MonoBehaviour:
     reverbRoom: -1200
     reverbRoomHF: -600
     reverbLevel: 200
+    reverbReflect: -1400
+    reverbWallMetres: 5.0
+    reverbDry: 0
   - zoneKind: 4
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -268,6 +317,9 @@ MonoBehaviour:
     reverbRoom: -700
     reverbRoomHF: -400
     reverbLevel: 300
+    reverbReflect: -1800
+    reverbWallMetres: 9.5
+    reverbDry: 0
   - zoneKind: 5
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -281,6 +333,9 @@ MonoBehaviour:
     reverbRoom: -800
     reverbRoomHF: -500
     reverbLevel: 250
+    reverbReflect: -1100
+    reverbWallMetres: 6.5
+    reverbDry: 0
   - zoneKind: 6
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -294,6 +349,9 @@ MonoBehaviour:
     reverbRoom: -1000
     reverbRoomHF: -300
     reverbLevel: 200
+    reverbReflect: -700
+    reverbWallMetres: 3.0
+    reverbDry: 0
   - zoneKind: 7
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -307,6 +365,9 @@ MonoBehaviour:
     reverbRoom: -1500
     reverbRoomHF: -2500
     reverbLevel: 100
+    reverbReflect: -10000
+    reverbWallMetres: 3.4
+    reverbDry: 0
   - zoneKind: 8
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -320,6 +381,9 @@ MonoBehaviour:
     reverbRoom: -2000
     reverbRoomHF: -2000
     reverbLevel: 0
+    reverbReflect: -800
+    reverbWallMetres: 2.8
+    reverbDry: 0
   - zoneKind: 9
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -333,6 +397,9 @@ MonoBehaviour:
     reverbRoom: -1300
     reverbRoomHF: -500
     reverbLevel: 100
+    reverbReflect: -600
+    reverbWallMetres: 2.4
+    reverbDry: 0
   - zoneKind: 10
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -346,6 +413,9 @@ MonoBehaviour:
     reverbRoom: -900
     reverbRoomHF: -700
     reverbLevel: 250
+    reverbReflect: -1600
+    reverbWallMetres: 7.5
+    reverbDry: 0
   - zoneKind: 11
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -359,6 +429,9 @@ MonoBehaviour:
     reverbRoom: -600
     reverbRoomHF: -1200
     reverbLevel: 400
+    reverbReflect: -10000
+    reverbWallMetres: 13.0
+    reverbDry: -400
   - zoneKind: 12
     anyZoneKind: 0
     overrideAmbientLight: 1
@@ -372,6 +445,9 @@ MonoBehaviour:
     reverbRoom: -2600
     reverbRoomHF: -2800
     reverbLevel: -200
+    reverbReflect: -900
+    reverbWallMetres: 2.2
+    reverbDry: 0
   props:
   - prefab: {fileID: 0}
     placeholderType: desk

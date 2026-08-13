@@ -113,6 +113,10 @@ AudioMixerController:
     name: RvbDecay
   - guid: f3edd441a3a62f347b03cee503813abe
     name: RvbLevel
+  - guid: b3cc17973c2b5024d93181eef083b20c
+    name: RvbReflect
+  - guid: 01774c1d338a1ad4088f21ae2aa89a36
+    name: RvbReflectDelay
   - guid: da08b7b75c6a2d745904555d2cfed523
     name: MusicVolume
   - guid: e4e3c385e0b4aba4cae7382ad68bcf50

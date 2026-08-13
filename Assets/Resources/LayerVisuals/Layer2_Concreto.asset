@@ -26,6 +26,13 @@ MonoBehaviour:
   lampRange: 6
   fogDensity: 0.07
   fogColor: {r: 0.42, g: 0.4, b: 0.37, a: 1}
+  reverbRoom: -900
+  reverbDecay: 2.6
+  reverbRoomHF: -400
+  reverbLevel: 150
+  reverbReflect: -1000
+  reverbWallMetres: 7.0
+  reverbDry: 0
   ceilingPanelVariety: 0
   ceilingPipeChance: 1
   ceilingPipes: 1

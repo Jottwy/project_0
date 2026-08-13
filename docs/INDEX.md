@@ -29,6 +29,7 @@
 ## Sistemas (documentación operativa por subsistema)
 - [systems/damage-sync.md](systems/damage-sync.md) — [G] Player Damage Sync (ADR-024): hit-reaction cosmético `hit_seq` en la pose relay.
 - [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire schema IPC/P2P v2→v19 (ADR-009 y siguientes): qué añadió cada bump y cómo degrada la versión anterior. El número vive en `WIRE_SCHEMA_VERSION` (`backend/src/ipc/server.rs`); este doc es el changelog.
+- [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona: los 7 parámetros que `ReverbMixerDriver` escribe en `FPS_AudioMixer` y cómo rehacerlos. El mixer es del VENDOR: un reimport se lleva el efecto y el reverb se apaga en silencio — empieza aquí si dejó de sonar.
 
 ## Limpieza y refactor
 - [AUDIT-2026-08-03.md](AUDIT-2026-08-03.md) — barrido de auditoría vigente: qué se limpió, qué
