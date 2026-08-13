@@ -4262,6 +4262,96 @@ fn respawn_point_last_placed_wins() {
     assert_eq!(p.respawn_point, Some(Vec3::new(500.0, 1.8, 500.0)));
 }
 
+/// Un save con el jugador muerto NO puede hidratarse tal cual: el cliente arranca sin DeathUI y
+/// el edge de muerte re-anunciado se pierde contra un rig que aún no existe → jugador congelado
+/// sin botón de respawn. Cargar muerto ES el respawn (mismo reset + recolocación que
+/// `respawn_request`).
+#[test]
+fn a_dead_snapshot_revives_on_load() {
+    use crate::persistence::save::PlayerSnapshot;
+
+    let mut dead = Player::new(1, "Host");
+    dead.stats.health = 0.0;
+    dead.stats.hunger = 0.0;
+    dead.stats.thirst = 0.0;
+    dead.position = Vec3::new(999.0, 1.8, 999.0);
+
+    let mut player = Player::new(1, "Host");
+    let mut world = crate::world::World::new(1);
+    apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&dead));
+    revive_if_dead_on_load(&mut player, &mut world);
+
+    assert!(
+        !player.stats.is_dead(),
+        "cargar un save muerto debe revivir al jugador"
+    );
+    assert!((player.stats.health - 100.0).abs() < 1e-4);
+    assert!(
+        (player.stats.hunger - 100.0).abs() < 1e-4,
+        "el revive usa on_respawn — hunger/thirst llenos, no los del save muerto"
+    );
+    assert_ne!(
+        player.position,
+        Vec3::new(999.0, 1.8, 999.0),
+        "sin cama el revive recoloca en el starter, no en la posición de la muerte"
+    );
+}
+
+/// Con cama puesta el revive delega en `resolve_respawn` igual que `respawn_request`: aterriza
+/// en el chunk de la cama, no en el starter ni en la posición de la muerte.
+#[test]
+fn a_dead_snapshot_revives_at_the_bed_when_one_is_placed() {
+    use crate::persistence::save::PlayerSnapshot;
+
+    let mut dead = Player::new(1, "Host");
+    dead.stats.health = 0.0;
+    dead.position = Vec3::new(999.0, 1.8, 999.0);
+    dead.respawn_point = Some(Vec3::new(
+        10.0 * CHUNK_SIZE + 25.0,
+        1.8,
+        10.0 * CHUNK_SIZE + 25.0,
+    ));
+
+    let mut player = Player::new(1, "Host");
+    let mut world = crate::world::World::new(1);
+    insert_clean_flat_chunk(&mut world, (10, 10));
+    apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&dead));
+    revive_if_dead_on_load(&mut player, &mut world);
+
+    assert!(!player.stats.is_dead());
+    let chunk = (
+        (player.position.x / CHUNK_SIZE).floor() as i32,
+        (player.position.z / CHUNK_SIZE).floor() as i32,
+    );
+    assert_eq!(
+        chunk,
+        (10, 10),
+        "el revive con cama debe aterrizar en el chunk de la cama, got {:?}",
+        player.position
+    );
+}
+
+/// El guardián solo actúa sobre saves muertos: un save vivo (aunque tocado) hidrata intacto —
+/// stats y posición del fichero, sin recolocación.
+#[test]
+fn an_alive_snapshot_hydrates_untouched() {
+    use crate::persistence::save::PlayerSnapshot;
+
+    let mut hurt = Player::new(1, "Host");
+    hurt.stats.health = 61.0;
+    hurt.stats.hunger = 5.0;
+    hurt.position = Vec3::new(999.0, 1.8, 999.0);
+
+    let mut player = Player::new(1, "Host");
+    let mut world = crate::world::World::new(1);
+    apply_player_snapshot(&mut player, PlayerSnapshot::from_player(&hurt));
+    revive_if_dead_on_load(&mut player, &mut world);
+
+    assert!((player.stats.health - 61.0).abs() < 1e-4);
+    assert!((player.stats.hunger - 5.0).abs() < 1e-4);
+    assert_eq!(player.position, Vec3::new(999.0, 1.8, 999.0));
+}
+
 #[test]
 fn bounded_dedupe_set_evicts_oldest_past_capacity() {
     let mut dedupe: BoundedDedupeSet<(u32, u64)> = BoundedDedupeSet::with_capacity(2);

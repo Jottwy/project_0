@@ -237,6 +237,30 @@ fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::Pl
     player.inventory_v2 = snap.inventory_v2;
 }
 
+/// A snapshot saved while dead must NOT hydrate as-is. The death belongs to a session that no
+/// longer exists: the client booting against this save has no DeathUI up, and the re-announced
+/// `player_died` races a rig that hasn't spawned yet — the edge is lost and the player loads
+/// frozen (the ADR-025 dead gate holds their pose) with no button and no way out. Loading a dead
+/// save therefore IS the respawn: the same stats reset + bed/starter placement the
+/// `respawn_request` handler runs, minus its events (nobody is dead-awaiting at boot; the
+/// `session_restored` snap already carries the resolved position) and minus the PvP
+/// invulnerability window (tick-relative, meaningless across a restart — see
+/// `apply_player_snapshot`). Done at LOAD, not at save time, so saves that already contain a
+/// dead player are healed too.
+fn revive_if_dead_on_load(player: &mut Player, world: &mut World) {
+    if !player.stats.is_dead() {
+        return;
+    }
+    player.stats = crate::player::stats::PlayerStats::on_respawn();
+    let res = resolve_respawn(world, player.respawn_point, player.id);
+    player.position = res.position;
+    world.update_ownership(player.position, player.id);
+    info!(
+        "MPTRACE step=RESPAWN event=dead_save_revived_on_load pos=({:.2},{:.2},{:.2})",
+        player.position.x, player.position.y, player.position.z
+    );
+}
+
 /// ADR-045 Fase 2 fix: whether `apply_movement` should be skipped this tick because a
 /// `session_restored` snap is still in flight to the client. Extracted as a pure function so the
 /// tick-boundary arithmetic (`tick < until`, not `<=`) is unit-testable without spinning up the
@@ -289,6 +313,7 @@ fn hydrate_from_save(
 
     if let Some(p) = save.host_player {
         apply_player_snapshot(player, p);
+        revive_if_dead_on_load(player, world);
     }
 
     info!(
@@ -927,6 +952,7 @@ pub async fn run(
                                     crate::persistence::player_save::load_or_fresh(&path)
                                 {
                                     apply_player_snapshot(&mut player, file.snapshot);
+                                    revive_if_dead_on_load(&mut player, &mut world);
                                     pending_restore_snap = true;
                                     // ADR-045 Fase 2 fix: see the doc comment on
                                     // `movement_suppressed_until` above — armed HERE, not at
