@@ -52,11 +52,27 @@ namespace BackroomsSurvival.EditorTools
         private const string DonorPrefabPath =
             "Assets/PolymindGames/STP/Prefabs/Wieldables/STP_Wieldable_WoodenTorch.prefab";
 
+        // El NOMBRE no se toca: las pools de loot de ChunkLootRoll y StpChestSpawner lo buscan
+        // por esta cadena exacta con `GetWithName`. La marca vive en la descripción, no aquí.
         private const string ItemName = "Spray Can";
+
         private const string Description =
-            "Todavía suena al agitarlo. Sirve para dejar dicho por dónde has pasado, " +
-            "y para borrar lo que dijo otro.";
+            "Motor-Red, esmalte industrial. Todavía suena al agitarlo.";
+
+        private const string LongDescription =
+            "Doce onzas de secado rápido y alta cobertura, según la lata. Sirve para dejar dicho " +
+            "por dónde has pasado: una flecha, un número, una raya en la esquina que mañana te " +
+            "diga que ya estuviste aquí.\n\n" +
+            "Sirve igual de bien para tachar lo que dejó dicho otro, y eso no lo pone en la lata.";
+
         private const float Weight = 0.4f;
+
+        /// <summary>
+        /// Icono propio. Si el PNG existe se importa como Sprite y se asigna; si no, el bote se
+        /// queda con el icono prestado de la antorcha y se avisa. Se separa del resto para que
+        /// meter el arte más adelante sea un paso y no un rehacer.
+        /// </summary>
+        private const string IconPath = "Assets/Art/Items/BR_SprayCan_Icon.png";
 
         [MenuItem("Backrooms/Spray/Crear bote de spray")]
         public static void CreateIfMissing()
@@ -96,6 +112,8 @@ namespace BackroomsSurvival.EditorTools
                           "toca (está en el wire y en los saves); bórralo a mano si quieres uno nuevo.");
                 RepairWieldableTag(definition);
                 RepairDurabilityProperty(definition);
+                RepairText(definition);
+                AssignIcon(definition);
             }
             else
             {
@@ -153,6 +171,7 @@ namespace BackroomsSurvival.EditorTools
             target.CopyFromSerializedProperty(source.FindProperty("_properties"));
 
             target.FindProperty("_description").stringValue = Description;
+            target.FindProperty("_longDescription").stringValue = LongDescription;
             target.FindProperty("_weight").floatValue = Weight;
             // Un bote por hueco: la carga vive en el componente SprayCan de la instancia, así que
             // apilarlos mezclaría botes medio gastados en una sola cifra.
@@ -279,6 +298,92 @@ namespace BackroomsSurvival.EditorTools
             Debug.LogWarning($"[SprayCanCreator] Reparada la etiqueta de '{DefinitionPath}' " +
                              $"({value.intValue}). Sin ella el bote se ve en el inventario y no se " +
                              "deja equipar.");
+        }
+
+        /// <summary>
+        /// Pone al día el texto de un asset ya existente. Barato y sin riesgo: la descripción no
+        /// la referencia nadie por valor, a diferencia del `_id` o del nombre.
+        /// </summary>
+        private static void RepairText(ItemDefinition definition)
+        {
+            var target = new SerializedObject(definition);
+            var desc = target.FindProperty("_description");
+            var longDesc = target.FindProperty("_longDescription");
+            if (desc == null) return;
+            if (desc.stringValue == Description &&
+                (longDesc == null || longDesc.stringValue == LongDescription)) return;
+
+            desc.stringValue = Description;
+            if (longDesc != null) longDesc.stringValue = LongDescription;
+            target.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(definition);
+            Debug.Log("[SprayCanCreator] Descripción del bote actualizada.");
+        }
+
+        /// <summary>
+        /// Asigna el icono propio si el PNG está en <see cref="IconPath"/>, importándolo antes
+        /// como Sprite — un `Texture2D` sin ese tipo de importación NO se puede asignar al
+        /// `_icon`, que es un `Sprite`, y el fallo sería un icono que sigue siendo el de la
+        /// antorcha sin que nada lo explique.
+        ///
+        /// Si el PNG no está, se avisa y se deja el prestado: es arte pendiente, no un error.
+        /// </summary>
+        [MenuItem("Backrooms/Spray/Asignar icono del bote", false, 96)]
+        public static void AssignIconMenu()
+        {
+            var definition = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DefinitionPath);
+            if (definition == null)
+            {
+                Debug.LogError($"[SprayCanCreator] No hay definición en '{DefinitionPath}'.");
+                return;
+            }
+            if (AssignIcon(definition))
+            {
+                AssetDatabase.SaveAssets();
+                AssetDatabase.Refresh();
+            }
+        }
+
+        private static bool AssignIcon(ItemDefinition definition)
+        {
+            if (!System.IO.File.Exists(System.IO.Path.Combine(
+                    System.IO.Directory.GetCurrentDirectory(), IconPath)))
+            {
+                Debug.LogWarning($"[SprayCanCreator] Sin icono propio en '{IconPath}' — el bote " +
+                                 "se queda con el prestado de la antorcha. Deja ahí el PNG y " +
+                                 "ejecuta 'Backrooms/Spray/Asignar icono del bote'.");
+                return false;
+            }
+
+            // El importador PRIMERO: sin Sprite no hay nada que asignar.
+            var importer = AssetImporter.GetAtPath(IconPath) as TextureImporter;
+            if (importer != null && importer.textureType != TextureImporterType.Sprite)
+            {
+                importer.textureType = TextureImporterType.Sprite;
+                importer.spriteImportMode = SpriteImportMode.Single;
+                importer.alphaIsTransparency = true;
+                importer.mipmapEnabled = false;
+                importer.SaveAndReimport();
+            }
+
+            var sprite = AssetDatabase.LoadAssetAtPath<Sprite>(IconPath);
+            if (sprite == null)
+            {
+                Debug.LogError($"[SprayCanCreator] '{IconPath}' existe pero no da un Sprite. " +
+                               "¿Se importó como algo que no es textura?");
+                return false;
+            }
+
+            var target = new SerializedObject(definition);
+            var icon = target.FindProperty("_icon");
+            if (icon == null) return false;
+            if (icon.objectReferenceValue == sprite) return false;
+
+            icon.objectReferenceValue = sprite;
+            target.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(definition);
+            Debug.Log($"[SprayCanCreator] Icono asignado desde '{IconPath}'.");
+            return true;
         }
 
         /// <summary>
