@@ -3051,3 +3051,19 @@ Corrección de un error aritmético del borrador, encontrada al implementar S1 y
 **Qué NO cambia:** el anclaje chunk-local, la inmutabilidad del registro, el tapado por timestamp, la validación host-only y el cap por chunk con desalojo FIFO siguen exactamente como los fijó el ADR.
 
 Verificado: `cargo test` 673 en verde (660 previos + 13 nuevos en `world::spray`); `clippy +stable-x86_64-pc-windows-gnu --all-targets -D warnings` limpio. Sin wire, sin save y sin cliente todavía — este commit es solo el modelo.
+
+### Enmienda ADR-068 (S3, 2026-08-13) — empuñar el bote exige EDITAR UN PREFAB DEL VENDOR, y eso es deuda nueva
+
+Descubierto al implementar S3, depurando por qué el bote entraba en el inventario y equiparlo no sacaba nada. **Ninguna decisión del ADR cambia; se añade un coste que el plan de slices no veía.**
+
+**EL MECANISMO, que no es el que se asumió.** `WieldableInventory.OnBehaviourStart` llama UNA sola vez a `InitializeWieldablesCache`, y esa función escanea **los hijos directos del root de wieldables del jugador** buscando componentes `WieldableItem` **ya instanciados en la jerarquía**; con ellos monta el diccionario `item → wieldable` que usa el equipar. NO es una lista de prefabs que se resuelva bajo demanda ni un registro por `Resources`: los wieldables están **pre-colocados** dentro del prefab del jugador. Un prefab que no cuelgue de ahí no entra en el diccionario, y equipar su item no saca nada — sin error, sin warning.
+
+**CONSECUENCIA: el alta del bote vive dentro de `FPS_Player.prefab` y `STP_Player.prefab`, que son del VENDOR.** Es exactamente la clase de edición que la regla del proyecto sobre PolymindGames existe para evitar, y aquí no hay alternativa externa: el gancho que haría falta (`InitializeWieldablesCache`) es privado y corre una vez en el arranque del personaje, así que un instalador en runtime tendría que ganarle la carrera y, si la pierde, el bote simplemente no aparece. **Se elige la edición del prefab (opción (a), decidida por Joel) porque cambia un fallo intermitente por uno reproducible.**
+
+**Qué se rompe y cómo se arregla:** un reimport del `.unitypackage` de PolymindGames se lleva el alta **en silencio** — el bote sigue en el inventario y deja de poder empuñarse. La salida es reejecutar `Backrooms/Spray/Registrar bote en el jugador`, que es idempotente. Queda anotado en `docs/EDITOR-MENUS.md` junto al resto de menús que rehacen assets. Es la misma deuda ya asumida por la edición de `GameMode.cs` (enmienda de ADR-025), y se suma a la lista de cosas a rehacer tras un reimport del vendor.
+
+**Cómo se mitiga el riesgo de apuntar mal:** el registrador NO escribe una ruta de nodo a mano. Busca dónde vive ya un `WieldableItem` en ese prefab y cuelga el bote **al lado**, copiando la pose local y el `activeSelf` del hermano — el `activeSelf` importa porque el escaneo filtra por inactivos. Así sobrevive a que el vendor reorganice su jerarquía, que es el otro modo de fallo silencioso posible.
+
+**Lo que esto NO cambia:** el bote sigue siendo item-agnóstico desde el lado del juego. `SprayPainter` nunca pregunta "¿es el bote de spray?" sino si el wieldable activo trae un `SprayCan` (mismo criterio que `ReadLightOn` de ADR-042), así que cualquier item futuro que quiera pintar solo tiene que traer el componente y darse de alta igual.
+
+Verificado: `CompileCheckClient.sh` → `errors: 0` en las cuatro asambleas. **PENDIENTE DE VALIDACIÓN EN JUEGO** — el registrador está escrito y compilado; que el bote aparezca en la mano y pinte no puede afirmarse hasta verlo.
