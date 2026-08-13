@@ -464,6 +464,11 @@ pub struct ItemView {
 pub struct ItemStackView {
     pub item_id: i32,
     pub quantity: u16,
+    /// ADR-072: las propiedades de instancia del stack (desgaste, munición cargada...). Vacío en
+    /// la inmensa mayoría de items, que no tienen ninguna — por eso va al final y con `default`:
+    /// un stack sin propiedades cuesta lo mismo en el wire que antes de existir este campo.
+    #[serde(default)]
+    pub props: Vec<crate::player::session::ItemPropertyValue>,
 }
 
 /// ADR-028 — a lootable corpse. `position` is the server-frozen death position (the
@@ -806,10 +811,12 @@ mod tests {
                     ItemStackView {
                         item_id: -12345,
                         quantity: 3,
+                        props: Vec::new(),
                     },
                     ItemStackView {
                         item_id: 99,
                         quantity: 1,
+                        props: Vec::new(),
                     },
                 ],
                 is_chest: false,

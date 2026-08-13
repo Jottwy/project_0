@@ -1405,6 +1405,7 @@ mod tests {
             items: vec![CorpseStack {
                 item_id: -12345,
                 quantity: 3,
+                props: Vec::new(),
             }],
             // ADR-028 amendment (world chests): the flag must survive the P2P mirror hop.
             is_chest: true,
@@ -1440,6 +1441,7 @@ mod tests {
             items: vec![CorpseStack {
                 item_id: 99,
                 quantity: 1,
+                props: Vec::new(),
             }],
         };
         let header = PacketHeader::new(spawn.type_code(), 1004, 2, 100);

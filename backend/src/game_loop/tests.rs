@@ -60,6 +60,7 @@ fn world_chest_is_not_reseeded_over_one_already_loaded() {
     let loot = vec![crate::world::corpse::CorpseStack {
         item_id: 1,
         quantity: 3,
+        props: Vec::new(),
     }];
 
     // Arranque 1: se siembra.
@@ -528,6 +529,7 @@ fn corpse_spawn_request_dedupes_under_retransmit() {
     let items = vec![crate::world::corpse::CorpseStack {
         item_id: -12345,
         quantity: 3,
+        props: Vec::new(),
     }];
 
     let spawn_data = |items: Vec<crate::world::corpse::CorpseStack>| CorpseSpawnData {
@@ -590,6 +592,7 @@ fn corpse_take_request_dedupes_validates_and_reports_verdict() {
         vec![crate::world::corpse::CorpseStack {
             item_id: -55,
             quantity: 2,
+            props: Vec::new(),
         }],
     );
 
@@ -4114,6 +4117,7 @@ fn spawn_world_chest_gates_dedupes_and_seeds() {
         vec![CorpseStack {
             item_id: -5498592,
             quantity: 2,
+            props: Vec::new(),
         }]
     };
 

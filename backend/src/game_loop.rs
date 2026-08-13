@@ -5264,7 +5264,15 @@ fn parse_loot_stacks(data: &serde_json::Value) -> Vec<crate::world::corpse::Corp
                     let item_id = json_i32(entry, "item_id")?;
                     let quantity =
                         json_u32(entry, "quantity").map(|q| q.min(u16::MAX as u32) as u16)?;
-                    Some(crate::world::corpse::CorpseStack { item_id, quantity })
+                    // ADR-072: las propiedades son OPCIONALES en el mensaje. Un cliente que no las
+                    // mande (o un item que no tenga) da un vector vacío, que es exactamente el
+                    // comportamiento anterior a este ADR — por eso no hace falta versionar el
+                    // parseo, solo el schema.
+                    Some(crate::world::corpse::CorpseStack {
+                        item_id,
+                        quantity,
+                        props: parse_item_props(entry),
+                    })
                 })
                 .collect()
         })
@@ -5287,19 +5295,7 @@ fn parse_inventory_v2_stacks(data: &serde_json::Value) -> Vec<crate::player::Inv
                     let container =
                         json_u32(entry, "container").and_then(|v| u8::try_from(v).ok())?;
                     let slot = json_u32(entry, "slot").and_then(|v| u8::try_from(v).ok())?;
-                    let props = entry
-                        .get("props")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|p| {
-                                    let id = json_i32(p, "id")?;
-                                    let value = p.get("value").and_then(|v| v.as_f64())?;
-                                    Some(crate::player::session::ItemPropertyValue { id, value })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let props = parse_item_props(entry);
                     Some(crate::player::InventoryStackV2 {
                         item_id,
                         quantity,
@@ -5307,6 +5303,35 @@ fn parse_inventory_v2_stacks(data: &serde_json::Value) -> Vec<crate::player::Inv
                         slot,
                         props,
                     })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Las propiedades de instancia de UN stack, en la forma `props:[{id,value}]`.
+///
+/// Una sola función para los dos consumidores: el inventario de ADR-045 y, desde ADR-072, el
+/// botín del cadáver. Comparten la forma exacta porque comparten el tipo (`ItemPropertyValue`),
+/// y dos copias de este bucle es garantizar que un día uno acepte lo que el otro descarta.
+///
+/// Ausente, malformado o con una entrada sin `id`/`value` → esa entrada se cae, no es un error:
+/// mismo contrato de degradación que el resto del parseo del snapshot de muerte.
+fn parse_item_props(entry: &serde_json::Value) -> Vec<crate::player::session::ItemPropertyValue> {
+    entry
+        .get("props")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let id = json_i32(p, "id")?;
+                    let value = p.get("value").and_then(|v| v.as_f64())?;
+                    // Un NaN/∞ envenenaría el desgaste con un valor que no se puede comparar ni
+                    // guardar en JSON. Mismo criterio que `sanitize_reported_damage`.
+                    if !value.is_finite() {
+                        return None;
+                    }
+                    Some(crate::player::session::ItemPropertyValue { id, value })
                 })
                 .collect()
         })
