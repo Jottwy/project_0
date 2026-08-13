@@ -36,6 +36,11 @@ namespace BackroomsSurvival.Net
         private CharacterControllerMotor _motor;
         private ICharacter _character;       // cached parent character (look handler + inventory source)
         private ILookHandlerCC _lookHandler; // ADR-021: source of the local camera pitch
+        // Lean (Q/E): source of the local body-lean state, relayed as two bits of `buttons`. STP's
+        // BodyLeanHandler owns the local effect (camera roll + side offset); we only READ its
+        // resulting state, never the raw input — so a lean the vendor REFUSED (obstruction, speed
+        // cap, cooldown) is never reported as one.
+        private IBodyLeanHandlerCC _leanHandler;
         // ADR-022: cached inventory equipment containers (Head/Torso/Legs/Feet) + reusable read buffer.
         private IItemContainer _headEquip, _torsoEquip, _legsEquip, _feetEquip;
         private bool _equipmentResolved;
@@ -141,6 +146,7 @@ namespace BackroomsSurvival.Net
                 IsSending = false;
                 _hasPrev = false; // restart the finite difference after a gap / rig rebuild
                 _lookHandler = null; // the look handler is a sibling of the motor; re-resolve next time
+                _leanHandler = null; // idem: the body-lean handler dies with the rig too
                 // ADR-022: the rig rebuild invalidates the character/inventory too — drop the cached
                 // containers so they re-resolve against the fresh character on the next valid frame.
                 _character = null;
@@ -395,14 +401,34 @@ namespace BackroomsSurvival.Net
         ///
         /// Non-firearms report neither, which is correct rather than a gap: a torch has no sights
         /// and no magazine, so the honest answer for both bits is false.
+        ///
+        /// The lean bits (Q/E) are read FIRST and unconditionally, because they belong to the body
+        /// and not to whatever is in the hands: leaning with empty hands or a torch is exactly as
+        /// legitimate as leaning with a rifle. That is why the firearm test below is an early
+        /// `return bits` and not the early `return 0` it used to be.
         /// </summary>
         private int ReadButtons()
         {
+            int bits = 0;
+
+            // Lean is the sustained state ADR-044 anticipated: it rides the free bits of `buttons`,
+            // so it costs no wire field and no schema bump. Read off the vendor's handler (which has
+            // already applied its own obstruction / speed / cooldown rules), never off the raw axis.
+            if (_leanHandler == null && _character != null)
+                _leanHandler = _character.GetCC<IBodyLeanHandlerCC>();
+            if (_leanHandler != null)
+            {
+                switch (_leanHandler.LeanState)
+                {
+                    case BodyLeanState.Left: bits |= RemoteButtons.LeanLeft; break;
+                    case BodyLeanState.Right: bits |= RemoteButtons.LeanRight; break;
+                }
+            }
+
             var wieldable = ActiveWieldable();
             if (wieldable is not IFirearm firearm)
-                return 0;
+                return bits;
 
-            int bits = 0;
             var aim = firearm.AimHandler;
             if (aim != null && aim.IsAiming)
                 bits |= RemoteButtons.Aiming;

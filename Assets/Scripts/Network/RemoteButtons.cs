@@ -25,6 +25,14 @@ namespace BackroomsSurvival.Net
         /// <summary>Reloading — tactically the most valuable bit here: it says "vulnerable now".</summary>
         public const int Reloading = 1 << 1;
 
+        /// <summary>Body-leaning left (Q). The exact case ADR-044 reserved these bits for: a sustained
+        /// state that costs no wire because the field was already paid for.</summary>
+        public const int LeanLeft = 1 << 2;
+
+        /// <summary>Body-leaning right (E). Mutually exclusive with <see cref="LeanLeft"/> at the
+        /// source (<c>BodyLeanState</c> is a single enum), so the two bits are never both set.</summary>
+        public const int LeanRight = 1 << 3;
+
         public static bool Has(int buttons, int bit) => (buttons & bit) != 0;
     }
 }

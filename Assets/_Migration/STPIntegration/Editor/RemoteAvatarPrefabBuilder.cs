@@ -110,6 +110,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireDamageAudioHook(instance);
                 WireMeleeHook(instance);
                 WireStanceHook(instance);
+                WireLeanHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -825,6 +826,23 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_reloadArmDrop", 30f);
             SetFeederFloat(so, "_reloadOffHandSwing", 45f);
             SetFeederFloat(so, "_blendTime", 0.18f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // Adds the body-lean hook (Q/E). Same shape as WireStanceHook — bones by name at runtime,
+        // only the pose tuning baked — and for the same reason it needs no wire work: lean rides the
+        // free bits of `buttons` that ADR-044 left for exactly this. Which bit means what is NOT
+        // declared here; it lives once in RemoteButtons. Idempotent.
+        private static void WireLeanHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyLeanHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyLeanHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_leanAngle", 20f);
+            SetFeederFloat(so, "_headAngle", 6f);
+            SetFeederFloat(so, "_blendTime", 0.15f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 
