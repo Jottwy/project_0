@@ -7,18 +7,48 @@
 > devuelve `false` sin lanzar nada. Ya pasó con tres escenas del proyecto (ADR-065).
 > Esto es lo que hay que rehacer si vuelve a ocurrir.
 
+## Renombrar los parámetros SOLO funciona desde el editor
+
+Editar `name:` dentro de `m_ExposedParameters` en el YAML **no basta**: el runtime siguió
+usando los nombres viejos aunque el asset en disco mostraba los nuevos, y el resultado fue
+`SetFloat` escribiendo contra nombres inexistentes. Lo mismo vale para **añadir** entradas
+a esa lista a mano.
+
+Si el asset y el runtime se desincronizan: click derecho sobre `FPS_AudioMixer` ▸
+**Reimport**, y si aún así no casa, renombra desde el desplegable *Exposed Parameters* de
+la ventana del Audio Mixer.
+
+Como red, `ReverbMixerDriver.ParamCandidates` prueba también los nombres que Unity asigna
+por defecto (`MyExposedParam`, `MyExposedParam 1`, …, en el orden en que se expusieron:
+Dry, Room, Room HF, Decay, Reverb). Es un respaldo, no un contrato — los dos parámetros
+añadidos después (`RvbReflect`, `RvbReflectDelay`) no tienen variante numerada.
+
+## `SetFloat` no falla en silencio
+
+Un `AudioMixer.SetFloat` con un nombre que el mixer no conoce **no** devuelve `false` sin
+más: Unity escribe `Exposed name does not exist: X` **con stack trace** en cada llamada.
+El driver escribe siete valores por frame mientras interpola, así que un solo nombre mal
+puesto generó **229.725 errores y 386 MB de log** en una sesión — la misma mecánica que
+tumbó el editor con el espejo del backend.
+
+Por eso `ResolveParamNames()` sondea con `GetFloat` (ese sí es mudo) una única vez y, si
+falta cualquiera de los siete, marca el sistema como **mudo y sin escrituras**. Nunca
+añadas una escritura al mixer fuera de `Write()`.
+
 ## Síntoma de que se ha perdido
 
 Al entrar en Play sale una vez:
 
 ```
-[Reverb] FPS_AudioMixer no tiene el efecto SFX Reverb con los siete parámetros expuestos:
-el reverb por zona queda MUDO.
+[Reverb] el mixer no expone N de 7 parámetros: reverb MUDO y sin escrituras
 ```
 
-`ReverbMixerDriver.WarnIfMixerNotAuthored()` lo emite una sola vez por sesión. Si no
-aparece ese aviso pero tampoco se oye reverb, el problema **no** es el mixer: mira la
-autoría por zona (`LayerVisualConfig.zoneAmbienceSets`, campo `overrideReverb`).
+`ReverbMixerDriver.ResolveParamNames()` lo emite una sola vez por sesión. Si no aparece
+ese aviso pero tampoco se oye reverb, el problema **no** es el mixer: mira la autoría por
+zona (`LayerVisualConfig.zoneAmbienceSets`, campo `overrideReverb`), y sobre todo el acuse
+`[Reverb] pedido … | EN EL MIXER …`, que sale al cruzar de zona y compara lo que el código
+pidió contra lo que el efecto tiene de verdad. Si el pedido ya es `room=-10000`, la zona
+no está autorada y el mixer no tiene nada que ver.
 
 ## Rehacerlo (5 minutos en el editor)
 

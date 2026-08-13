@@ -22,11 +22,18 @@ namespace BackroomsSurvival.Gameplay.Audio
     /// canta inmediatamente. Master es el único punto que los une, y por suerte no lleva la
     /// UI, así que los menús quedan secos sin hacer nada.
     ///
-    /// DEGRADA EN SILENCIO SI EL MIXER NO ESTÁ PREPARADO. Los cinco parámetros tienen que
-    /// estar EXPUESTOS en el asset del mixer con los nombres de abajo; Unity no permite
-    /// añadir efectos ni exponer parámetros desde código, solo escribir los ya expuestos.
-    /// Si faltan, <c>SetFloat</c> devuelve false y esto no hace nada — sin excepción y sin
-    /// spam de log, que en este proyecto ya costó un editor.
+    /// SetFloat NO FALLA EN SILENCIO — este archivo lo daba por hecho y era FALSO. Unity
+    /// emite <c>"Exposed name does not exist: X"</c> CON STACK TRACE en cada llamada con un
+    /// nombre que el mixer no conoce. Con siete escrituras por frame eso produjo 229.725
+    /// errores y un Editor.log de 386 MB en una sola sesión, que es la misma mecánica que ya
+    /// tumbó el editor hoy. Por eso <see cref="ResolveParamNames"/> descubre los nombres UNA
+    /// vez con <c>GetFloat</c> (ese sí es mudo) y, si falta alguno, el driver se declara
+    /// MUDO y deja de escribir del todo. La degradación silenciosa hay que construirla; no
+    /// viene de fábrica.
+    ///
+    /// Unity no permite añadir efectos ni exponer parámetros desde código, solo escribir los
+    /// ya expuestos: el efecto y sus siete parámetros se autoran en el asset a mano
+    /// (docs/systems/reverb-mixer.md).
     /// </summary>
     public sealed class ReverbMixerDriver : MonoBehaviour
     {
@@ -157,15 +164,15 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// </summary>
         private void AnnounceRoom()
         {
-            if (!_announcePending || _mixer == null) return;
+            if (!_announcePending || _mixer == null || _muted || _names == null) return;
             _announcePending = false;
 
             float room, decay, refl, delay, dry;
-            bool ok = _mixer.GetFloat(ParamRoom, out room)
-                    & _mixer.GetFloat(ParamDecay, out decay)
-                    & _mixer.GetFloat(ParamReflect, out refl)
-                    & _mixer.GetFloat(ParamReflectDelay, out delay)
-                    & _mixer.GetFloat(ParamDry, out dry);
+            bool ok = _mixer.GetFloat(_names[1], out room)
+                    & _mixer.GetFloat(_names[3], out decay)
+                    & _mixer.GetFloat(_names[5], out refl)
+                    & _mixer.GetFloat(_names[6], out delay)
+                    & _mixer.GetFloat(_names[0], out dry);
 
             if (!ok)
             {
@@ -200,7 +207,6 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (_instance != null && _instance != this) { Destroy(this); return; }
             _instance = this;
             ResolveMixer();
-            WarnIfMixerNotAuthored();
         }
 
         private void OnDestroy()
@@ -220,6 +226,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (_mixer != null) return;
             var mgr = AudioManager.Instance;
             if (mgr != null) _mixer = mgr.AudioMixer;
+            ResolveParamNames();
         }
 
         private void Update()
@@ -235,7 +242,6 @@ namespace BackroomsSurvival.Gameplay.Audio
                 _mixerRetry = 0.5f;
                 ResolveMixer();
                 if (_mixer == null) return;
-                WarnIfMixerNotAuthored();
             }
 
             // unscaledDeltaTime: el audio no se detiene con timeScale 0, y una mezcla
@@ -275,38 +281,82 @@ namespace BackroomsSurvival.Gameplay.Audio
 
         // SetFloat devuelve false si el parámetro no está expuesto en el asset. Se ignora a
         // propósito: el sistema tiene que poder existir antes de que el mixer esté autorado.
-        private void Write(RoomTone t)
+        /// <summary>
+        /// Nombres alternativos por mando, en orden de preferencia. Unity bautiza los
+        /// parámetros expuestos como <c>MyExposedParam N</c> y hay que renombrarlos A MANO en
+        /// el editor; renombrarlos editando el YAML del <c>.mixer</c> NO basta —el runtime
+        /// siguió usando los viejos— y eso dejó el sistema escribiendo nombres inexistentes.
+        /// Probar candidatos hace que funcione con o sin renombrado, y sobrevive a que el
+        /// vendor pise el asset y Unity los vuelva a numerar.
+        ///
+        /// El sufijo numérico sale del ORDEN en que se expusieron: Dry, Room, Room HF, Decay,
+        /// Reverb. Es un respaldo, no un contrato — por eso los nombres propios van primero.
+        /// </summary>
+        private static readonly string[][] ParamCandidates =
         {
-            if (_mixer == null) return;
-            _mixer.SetFloat(ParamDry,          t.dry);
-            _mixer.SetFloat(ParamRoom,         t.room);
-            _mixer.SetFloat(ParamRoomHF,       t.roomHF);
-            _mixer.SetFloat(ParamDecay,        t.decay);
-            _mixer.SetFloat(ParamLevel,        t.level);
-            _mixer.SetFloat(ParamReflect,      t.reflect);
-            _mixer.SetFloat(ParamReflectDelay, t.reflectDelay);
-        }
+            new[] { ParamDry,          "MyExposedParam"   },
+            new[] { ParamRoom,         "MyExposedParam 1" },
+            new[] { ParamRoomHF,       "MyExposedParam 2" },
+            new[] { ParamDecay,        "MyExposedParam 3" },
+            new[] { ParamLevel,        "MyExposedParam 4" },
+            new[] { ParamReflect       },  // añadidos después: sin variante numerada
+            new[] { ParamReflectDelay  },
+        };
+
+        // Nombre que de verdad responde para cada mando, o null si ninguno. Resuelto una vez.
+        private string[] _names;
+        private bool _muted;
 
         /// <summary>
-        /// Aviso ÚNICO si el mixer no está autorado. Existe porque el modo de fallo de este
-        /// sistema es mudo por diseño: si el .unitypackage del vendor vuelve a pisar
-        /// FPS_AudioMixer —ya se llevó tres escenas una vez— el efecto y los siete nombres
-        /// desaparecen, SetFloat empieza a devolver false y el reverb se apaga sin que nada
-        /// lo diga. Una línea al arrancar convierte media sesión de desconcierto en una
-        /// búsqueda de treinta segundos. Ver docs/systems/reverb-mixer.md para rehacerlo.
+        /// Descubre qué nombre acepta el mixer para cada mando. Si falta alguno el sistema
+        /// se declara MUDO y deja de escribir.
+        ///
+        /// QUE DEJE DE ESCRIBIR ES EL PUNTO, no un detalle: <c>SetFloat</c> sobre un nombre
+        /// inexistente NO falla en silencio como este archivo daba por hecho — Unity emite un
+        /// error CON STACK TRACE en cada llamada. Con el driver escribiendo siete por frame
+        /// eso dejó 229.725 errores y un Editor.log de 386 MB, que es exactamente la
+        /// mecánica que ya tumbó el editor una vez hoy.
         /// </summary>
-        private void WarnIfMixerNotAuthored()
+        private void ResolveParamNames()
         {
-            if (_warned || _mixer == null) return;
-            _warned = true;
-            if (MixerIsAuthored()) return;
+            if (_names != null || _mixer == null) return;
+            _names = new string[ParamCandidates.Length];
+            int missing = 0;
+
+            for (int i = 0; i < ParamCandidates.Length; i++)
+            {
+                foreach (var candidate in ParamCandidates[i])
+                {
+                    // GetFloat es la sonda barata: a diferencia de SetFloat, un nombre
+                    // desconocido devuelve false sin escribir nada en el log.
+                    if (!_mixer.GetFloat(candidate, out _)) continue;
+                    _names[i] = candidate;
+                    break;
+                }
+                if (_names[i] == null) missing++;
+            }
+
+            if (missing == 0) return;
+            _muted = true;
             Debug.LogWarning(
-                "[Reverb] FPS_AudioMixer no tiene el efecto SFX Reverb con los siete " +
-                "parámetros expuestos: el reverb por zona queda MUDO. Suele significar que " +
-                "un reimport del vendor piso el mixer — ver docs/systems/reverb-mixer.md.");
+                $"[Reverb] el mixer no expone {missing} de {ParamCandidates.Length} " +
+                "parámetros: reverb MUDO y sin escrituras (evita inundar el log). Suele " +
+                "bastar con reimportar FPS_AudioMixer; si no, ver docs/systems/reverb-mixer.md.");
         }
 
-        private bool _warned;
+        private void Write(RoomTone t)
+        {
+            if (_mixer == null || _muted || _names == null) return;
+            Set(0, t.dry);    Set(1, t.room);  Set(2, t.roomHF); Set(3, t.decay);
+            Set(4, t.level);  Set(5, t.reflect); Set(6, t.reflectDelay);
+        }
+
+        private void Set(int slot, float value)
+        {
+            var n = _names[slot];
+            if (n != null) _mixer.SetFloat(n, value);
+        }
+
 
         /// <summary>
         /// True si el mixer tiene los cinco parámetros expuestos. Solo para diagnóstico y
