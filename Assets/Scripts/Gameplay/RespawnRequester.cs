@@ -178,6 +178,15 @@ namespace BackroomsSurvival.Gameplay
             if (state?.localPlayer?.stats == null)
                 return;
 
+            // Edge detection must not outrun the rig: before the local HealthManager
+            // resolves (scene/world still loading) the forces below are no-op warnings,
+            // and latching _serverSawDead would consume the ONLY edge this death gets —
+            // the WorldState stream re-sends state, not edges — so a player dead at load
+            // stayed frozen with no DeathUI and no button, forever. Quiet retry: the next
+            // state tick re-derives the same edge once the rig exists.
+            if (_health is not HealthManager)
+                return;
+
             bool dead = state.localPlayer.stats.health <= HealthExtensions.Threshold;
             if (dead == _serverSawDead)
                 return;
