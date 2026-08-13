@@ -271,6 +271,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return false;
         }
 
+        [Header("Superficie física (pasos, impactos)")]
+        [Tooltip("SurfaceDefinition de PolymindGames que suena al pisar el SUELO de esta capa. " +
+                 "Level 0 es moqueta y de las nueve que trae el vendor la más cercana es " +
+                 "FPS_Dirt: apagada y sin resonancia. Vacío ⇒ el collider se queda sin material " +
+                 "físico y SurfaceManager cae a su superficie por defecto, que es lo que pasaba " +
+                 "hasta ahora — cada paso del juego sonaba a genérico.\n\n" +
+                 "Es un NOMBRE y no una referencia a propósito: la definición vive en territorio " +
+                 "del vendor y un reimport le cambiaría el GUID, pero no el nombre.")]
+        public string floorSurfaceName = "FPS_Dirt";
+
+        [Tooltip("Ídem para PAREDES, dinteles y columnas. Papel sobre yeso ⇒ FPS_Concrete. " +
+                 "Importa menos que el suelo (no se pisa) pero decide impactos de bala y melee.")]
+        public string wallSurfaceName = "FPS_Concrete";
+
         [Header("Props (Fase 5C)")]
         [Tooltip("Props available for this layer (weighted pick per tile). Empty = none.")]
         public PropEntry[] props;

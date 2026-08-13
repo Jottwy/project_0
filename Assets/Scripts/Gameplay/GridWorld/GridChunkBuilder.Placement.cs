@@ -3,6 +3,7 @@
 // GridChunkBuilder.cs (raíz), .WallVariants.cs, .Tinting.cs y .Props.cs.
 // TODOS los campos estáticos viven en el fichero raíz: el orden de
 // inicialización de estáticos entre ficheros de una clase partial es indefinido.
+using System.Collections.Generic;
 using BackroomsSurvival.Net;
 using UnityEngine;
 
@@ -35,7 +36,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return go;
         }
 
-        private static void AddColliderIfMissing(GameObject go)
+        /// <summary>
+        /// <paramref name="physMat"/> es lo que hace que un paso suene a la superficie que
+        /// pisas. STP resuelve el sonido con
+        /// <c>GetSurfaceFromMaterial(collider.sharedMaterial) ?? _defaultSurface</c>
+        /// (SurfaceManager.cs:112), así que un collider SIN material físico cae al default
+        /// del vendor — que es exactamente lo que pasaba: cada paso dado en Level 0, el
+        /// sonido más repetido del juego, salía con la superficie equivocada.
+        ///
+        /// Se aplica también a los colliders que el prefab YA traía, no solo a los que se
+        /// crean aquí: si no, un prefab de pared con collider propio seguiría mudo y el
+        /// fallo sobreviviría medio arreglado.
+        /// </summary>
+        private static void AddColliderIfMissing(GameObject go, PhysicsMaterial physMat = null)
         {
             // List overload: same traversal and order as the array one, but it fills a reusable
             // buffer instead of allocating an array per call. This runs once per instantiated
@@ -44,13 +57,60 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             for (int i = 0; i < _rendererScratch.Count; i++)
             {
                 var r = _rendererScratch[i];
-                if (r.TryGetComponent<Collider>(out _)) continue;
+                if (r.TryGetComponent<Collider>(out var existing))
+                {
+                    if (physMat != null && existing.sharedMaterial == null)
+                        existing.sharedMaterial = physMat;
+                    continue;
+                }
                 if (!r.TryGetComponent<MeshFilter>(out var mf) || mf.sharedMesh == null) continue;
                 var col    = r.gameObject.AddComponent<BoxCollider>();
                 var mb     = mf.sharedMesh.bounds;
                 col.center = mb.center;
                 col.size   = mb.size;
+                if (physMat != null) col.sharedMaterial = physMat;
             }
+        }
+
+        // ── Superficie física por capa ──────────────────────────────────────────
+
+        /// <summary>
+        /// Material físico vigente para suelo y para pared. Estáticos como <c>_mpb</c> y
+        /// <c>_rendererScratch</c>, y por el mismo motivo: la construcción de un chunk no es
+        /// reentrante y pasarlos por seis firmas solo para volver a leerlos abajo no aporta.
+        /// Se refrescan una vez por chunk desde <see cref="UseSurfacesOf"/>.
+        /// </summary>
+        private static PhysicsMaterial _floorPhys, _wallPhys;
+
+        // Resolver una SurfaceDefinition recorre TODAS las definiciones comparando nombres
+        // (el propio vendor lo desaconseja frente a GetWithId), así que el resultado se cachea
+        // por nombre: son dos entradas para toda la sesión, no dos búsquedas por chunk.
+        private static readonly Dictionary<string, PhysicsMaterial> _physByName =
+            new Dictionary<string, PhysicsMaterial>();
+
+        /// <summary>Fija las superficies físicas del chunk que se va a construir.</summary>
+        private static void UseSurfacesOf(LayerVisualConfig cfg)
+        {
+            _floorPhys = PhysicsFor(cfg != null ? cfg.floorSurfaceName : null);
+            _wallPhys  = PhysicsFor(cfg != null ? cfg.wallSurfaceName  : null);
+        }
+
+        private static PhysicsMaterial PhysicsFor(string surfaceName)
+        {
+            if (string.IsNullOrEmpty(surfaceName)) return null;
+            if (_physByName.TryGetValue(surfaceName, out var cached)) return cached;
+
+            var def = PolymindGames.SurfaceSystem.SurfaceDefinition.GetWithName(surfaceName);
+            var mats = def != null ? def.Materials : null;
+            // La primera de la lista: una SurfaceDefinition puede declarar varias (FPS_Light
+            // Wood agrupa madera y tela), y cualquiera de ellas resuelve a la MISMA definición
+            // al ir de vuelta, que es lo único que importa aquí.
+            var mat = (mats != null && mats.Length > 0) ? mats[0] : null;
+            if (mat == null)
+                Debug.LogWarning($"[GridChunkBuilder] superficie '{surfaceName}' no encontrada " +
+                                 "o sin material físico: los pasos sonarán al default del vendor.");
+            _physByName[surfaceName] = mat;
+            return mat;
         }
 
         /// <summary>Shared floor/ceiling slab at local height <paramref name="localY"/>.
@@ -65,7 +125,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             var go = Instantiate(prefabs.floorSlab, parent,
                 TileCenter(tx, tz) + new Vector3(0f, localY, 0f), 0f);
-            AddColliderIfMissing(go);
+            AddColliderIfMissing(go, _floorPhys);
             return go;
         }
 
@@ -84,7 +144,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     AddColliderIfMissing(Instantiate(
                         ResolveWallPrefab(prefabs, null, false, zoneKind, RoomZoneKind.Open,
                             gx, gz, flag),
-                        parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw));
+                        parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw),
+                        _wallPhys);
         }
 
         /// <summary>
@@ -159,7 +220,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 TileCenter(tx, tz) + new Vector3(ox * Ts, clearance, oz * Ts), yaw);
             go.name = "Lintel";
             go.transform.localScale = new Vector3(1f, scaleY, 1f);
-            AddColliderIfMissing(go);
+            AddColliderIfMissing(go, _wallPhys);
             Paint(go, mat, tint);
         }
 
@@ -218,7 +279,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         parent, TileCenter(tx, tz) + new Vector3(ox * Ts, 0f, oz * Ts), yaw);
                     if (kneeRoll && roomType == RoomZoneKind.Open)
                         go.transform.localScale = new Vector3(1f, kneeScale, 1f);
-                    AddColliderIfMissing(go);
+                    AddColliderIfMissing(go, _wallPhys);
                     Paint(go, mat, tint);
                 }
         }

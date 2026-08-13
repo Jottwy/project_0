@@ -293,6 +293,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             bool isTopLayer = layerIndex >= layerCount - 1;
             // Fase 5A: "styled" = a layer visual config + its shared materials.
             bool styled = cfg != null && mats != null;
+            // Superficie física del chunk: decide a qué suena cada paso que se dé aquí.
+            // Se resuelve una vez por chunk y NO depende de `styled` — una capa sin
+            // materiales de render sigue teniendo suelo que pisar.
+            UseSurfacesOf(cfg);
             // Zone-kind first pass: multiplied into the layer's floor/wall/ceiling tint
             // below. ZoneRegistry is keyed by XZ chunk coord only (zone_kind ignores
             // vertical layer) — white ("no change") when the chunk hasn't been seen yet
