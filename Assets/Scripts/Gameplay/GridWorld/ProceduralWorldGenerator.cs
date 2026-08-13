@@ -219,7 +219,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // ZoneRegistry.ZoneArrived: TryGetZone is a dictionary hit, and polling needs no
             // event lifecycle to get the late-chunk case right — the frame the zone lands, the
             // lookup starts answering and the change-guard below does the rest.
-            int ambienceZone = ZoneRegistry.TryGetZone(cx, cz, out byte zk) ? zk : -1;
+            int ambienceZone = StableZone(
+                ZoneRegistry.TryGetZone(cx, cz, out byte zk) ? zk : -1);
             ApplyAmbienceForZone(Mathf.Clamp(
                 Mathf.FloorToInt(playerTransform.position.y / GridConstants.LayerHeight),
                 0, layerCount - 1), ambienceZone);
@@ -570,6 +571,48 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// per-tile loop: it cannot touch the per-chunk System.Random, so lamp/prop determinism
         /// holds by construction.
         /// </summary>
+        // ── Histéresis de zona ──────────────────────────────────────────────────
+
+        /// <summary>
+        /// Segundos que una zona nueva tiene que sostenerse antes de que la atmósfera la
+        /// adopte. Caminar justo por el límite entre dos chunks de zonas distintas hace que
+        /// la lectura alterne frame a frame, y sin esto el reverb persigue las dos salas a la
+        /// vez: bombeo audible mientras el jugador está prácticamente quieto. Niebla y
+        /// ambiente sufrían lo mismo, solo que un parpadeo de color se nota menos que uno de
+        /// cola. Medio segundo cuesta menos que cruzar un umbral andando y mata la oscilación.
+        /// </summary>
+        private const float ZoneSettleSeconds = 0.5f;
+
+        private int   _committedZone = int.MinValue; // la que gobierna ahora mismo
+        private int   _pendingZone   = int.MinValue; // candidata esperando a sostenerse
+        private float _zonePendingSince;
+
+        /// <summary>
+        /// La zona a aplicar, filtrada por histéresis. Una lectura distinta a la vigente NO
+        /// manda hasta que se mantiene <see cref="ZoneSettleSeconds"/>; si vuelve a la
+        /// anterior antes, no ha pasado nada. El primer valor entra de inmediato: al aparecer
+        /// el mundo no hay nada que estabilizar y esperar medio segundo solo retrasaría la
+        /// atmósfera inicial.
+        /// </summary>
+        private int StableZone(int reading)
+        {
+            if (_committedZone == int.MinValue) { _committedZone = reading; return reading; }
+            if (reading == _committedZone) { _pendingZone = int.MinValue; return _committedZone; }
+
+            if (reading != _pendingZone)
+            {
+                _pendingZone  = reading;
+                _zonePendingSince = Time.unscaledTime;
+                return _committedZone;
+            }
+            if (Time.unscaledTime - _zonePendingSince < ZoneSettleSeconds)
+                return _committedZone;
+
+            _committedZone = reading;
+            _pendingZone   = int.MinValue;
+            return _committedZone;
+        }
+
         private void ApplyAmbienceForZone(int layer, int zoneKind)
         {
             if (layer == _activeFogLayer && zoneKind == _activeZoneKind) return;
