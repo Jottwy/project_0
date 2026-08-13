@@ -105,14 +105,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "AJUSTABLE EN VIVO: muévelo DURANTE el Play y se oye en la pasada siguiente " +
                  "(0,25 s). Es la única forma sensata de acertarlo; un ambiente se calibra de " +
                  "oído, no de cálculo.\n\n" +
+                 "0.038 es el VALOR CALIBRADO A OÍDO por Joel sobre la capa 0, con el slider " +
+                 "en vivo, y está escrito en Layer0_Vestibulo.asset. Este default existe para " +
+                 "las capas 1–3, que no autoran el campo: si se deja distinto, el zumbido pega " +
+                 "un salto de volumen al cambiar de capa macro.\n\n" +
                  "HISTORIA DEL NÚMERO, para no repetir el barrido. Bajó 0.35 → 0.12 → 0.05 → " +
                  "0.005 sin que se notara NINGUNA diferencia, y no era culpa del valor: el " +
                  "editor arrastraba un Editor.log de 8 GB y moría al recompilar, así que cada " +
                  "prueba corría código viejo. Con el editor sano se midió por fin — " +
                  "AudioSource.volume real == humVolume exacto, routed al mixer, sin ganancia " +
-                 "oculta — y 0.001 resultó ser sencillamente inaudible (−60 dBFS). 0.15 es un " +
-                 "punto de partida que SE OYE; desde aquí se baja de oído y ya sin recompilar.")]
-        [Range(0f, 1f)] public float humVolume = 0.15f;
+                 "oculta — y el barrido de oído desde 0.15 aterrizó en 0.038.")]
+        [Range(0f, 1f)] public float humVolume = 0.038f;
 
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +

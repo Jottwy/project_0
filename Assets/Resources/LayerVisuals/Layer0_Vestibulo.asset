@@ -35,6 +35,7 @@ MonoBehaviour:
   lampIntensity: 2.8
   lampRange: 5
   lampEmission: 1.3
+  humVolume: 0.038
   zoneLightSets:
   - zoneKind: 0
     anyZoneKind: 0
@@ -52,6 +53,8 @@ MonoBehaviour:
     lampEmission: 1.25
     overrideLampPoint: 1
     lampPoint: 1
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 12
     anyZoneKind: 0
     overrideLampColor: 1
@@ -64,6 +67,12 @@ MonoBehaviour:
     lightDensity: 0.9
     overrideBrokenLampChance: 1
     brokenLampChance: 0.02
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 7
     anyZoneKind: 0
     overrideLampColor: 1
@@ -76,6 +85,12 @@ MonoBehaviour:
     lightDensity: 0.1
     overrideBrokenLampChance: 1
     brokenLampChance: 0.85
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 3
     anyZoneKind: 0
     overrideLampColor: 1
@@ -88,6 +103,12 @@ MonoBehaviour:
     lightDensity: 0.35
     overrideBrokenLampChance: 1
     brokenLampChance: 0.45
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 10
     anyZoneKind: 0
     overrideLampColor: 1
@@ -100,6 +121,12 @@ MonoBehaviour:
     lightDensity: 0.3
     overrideBrokenLampChance: 1
     brokenLampChance: 0.4
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 11
     anyZoneKind: 0
     overrideLampColor: 1
@@ -112,6 +139,12 @@ MonoBehaviour:
     lightDensity: 0.15
     overrideBrokenLampChance: 1
     brokenLampChance: 0.7
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 6
     anyZoneKind: 0
     overrideLampColor: 1
@@ -124,6 +157,12 @@ MonoBehaviour:
     lightDensity: 0.45
     overrideBrokenLampChance: 1
     brokenLampChance: 0.35
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 2
     anyZoneKind: 0
     overrideLampColor: 1
@@ -136,6 +175,12 @@ MonoBehaviour:
     lightDensity: 0.75
     overrideBrokenLampChance: 1
     brokenLampChance: 0.05
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   - zoneKind: 9
     anyZoneKind: 0
     overrideLampColor: 1
@@ -148,6 +193,12 @@ MonoBehaviour:
     lightDensity: 0.8
     overrideBrokenLampChance: 1
     brokenLampChance: 0.02
+    overrideLampEmission: 0
+    lampEmission: 0
+    overrideLampPoint: 0
+    lampPoint: 0
+    overrideHumVolume: 0
+    humVolume: 0
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
   ambientLight: {r: 0.28, g: 0.24, b: 0.16, a: 1}
@@ -297,9 +348,6 @@ MonoBehaviour:
   zonePropSets:
   - zoneKind: 12
     anyZoneKind: 0
-    densityScale: 2.2
-    maxPropsPerChunk: 96
-    propsPerTile: 3
     props:
     - prefab: {fileID: 0}
       placeholderType: partition
@@ -346,6 +394,9 @@ MonoBehaviour:
       spawnWeight: 1
       canBeRotated: 0
       floorOnly: 1
+    densityScale: 2.2
+    maxPropsPerChunk: 96
+    propsPerTile: 3
   floorTintVariants: []
   wallTintVariants: []
   ceilingTintVariants: []
