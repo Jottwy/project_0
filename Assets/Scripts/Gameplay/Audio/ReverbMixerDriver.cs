@@ -39,9 +39,15 @@ namespace BackroomsSurvival.Gameplay.Audio
         public const string ParamLevel  = "RvbLevel";
 
         /// <summary>
-        /// Reverb apagado. −10000 dB es el suelo del SFX Reverb de Unity: silencio real, no
+        /// Reverb apagado. −10000 es el suelo del SFX Reverb de Unity: silencio real, no
         /// "muy bajito". Es el estado de arranque y el de una capa que no autora nada, para
         /// que añadir este sistema no cambie cómo suena nada hasta que alguien lo autore.
+        ///
+        /// LA UNIDAD ES mB (MILIBELIOS), NO dB — es la trampa de este efecto y el Inspector
+        /// lo dice en pequeño: <c>100 mB = 1 dB</c>, así que el suelo son −100 dB y un
+        /// reverb discreto está en torno a −2000 (= −20 dB), no en −20. Autorar pensando en
+        /// dB deja valores 100 veces cortos, o sea reverb a todo trapo donde se quería un
+        /// susurro. Solo <c>decay</c> escapa: ese sí va en segundos.
         /// </summary>
         public const float RoomSilent = -10000f;
 
@@ -55,11 +61,11 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// <summary>Los cinco mandos del SFX Reverb que este sistema gobierna.</summary>
         public struct RoomTone
         {
-            public float dry;     // dB, −10000..0   — cuánto del seco pasa (0 = todo)
-            public float room;    // dB, −10000..0   — presencia general del reverb
-            public float roomHF;  // dB, −10000..0   — cuánto agudo sobrevive a la sala
-            public float decay;   // s,  0.1..20     — largo de la cola
-            public float level;   // dB, −10000..2000 — nivel de la cola tardía
+            public float dry;     // mB, −10000..0    — cuánto del seco pasa (0 = todo)
+            public float room;    // mB, −10000..0    — presencia general del reverb
+            public float roomHF;  // mB, −10000..0    — cuánto agudo sobrevive a la sala
+            public float decay;   // s,  0.1..20      — largo de la cola (el único en segundos)
+            public float level;   // mB, −10000..2000 — nivel de la cola tardía
 
             /// <summary>Sala muda: el estado de "aquí no hay reverb autorado".</summary>
             public static RoomTone Silent => new RoomTone

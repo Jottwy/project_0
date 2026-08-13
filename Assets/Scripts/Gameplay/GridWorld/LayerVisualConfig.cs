@@ -180,7 +180,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         [Header("Reverb de sala (bus Master del mixer)")]
         [Tooltip("Reverb base de la capa, para las zonas que no autoran el suyo. El default " +
-                 "es MUDO (−10000 dB) a propósito: añadir el sistema no cambia cómo suena " +
+                 "es MUDO (−10000 mB) a propósito: añadir el sistema no cambia cómo suena " +
                  "nada hasta que alguien describa una sala. Requiere el efecto SFX Reverb " +
                  "expuesto en FPS_AudioMixer — ver ReverbMixerDriver.")]
         [Range(-10000f, 0f)] public float reverbRoom = -10000f;
@@ -188,10 +188,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Largo de la cola de la capa, en segundos.")]
         [Range(0.1f, 20f)] public float reverbDecay = 1f;
 
-        [Tooltip("Agudo que sobrevive a la sala, en dB. Negativo = superficies absorbentes.")]
+        [Tooltip("Agudo que sobrevive a la sala, en mB. Negativo = superficies absorbentes.")]
         [Range(-10000f, 0f)] public float reverbRoomHF = -1500f;
 
-        [Tooltip("Nivel de la cola tardía de la capa, en dB.")]
+        [Tooltip("Nivel de la cola tardía de la capa, en mB.")]
         [Range(-10000f, 2000f)] public float reverbLevel = 0f;
 
         /// <summary>
@@ -783,17 +783,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "~2.5. Es el mando que más distingue un espacio de otro.")]
         [Range(0.1f, 20f)] public float reverbDecay;
 
-        [Tooltip("Presencia del reverb en dB (−10000 = mudo, 0 = máximo). −10000 es " +
-                 "autorable y significa una zona SIN reverb — un espacio tan pequeño o tan " +
-                 "absorbente que no devuelve nada.")]
+        [Tooltip("Presencia del reverb en mB (−10000 = mudo, 0 = máximo). OJO: mB, no dB — " +
+                 "100 mB = 1 dB, así que un reverb discreto está en −2000 (−20 dB) y no en " +
+                 "−20, que sería prácticamente el máximo. −10000 es autorable y significa " +
+                 "una zona SIN reverb: un espacio tan pequeño o tan absorbente que no " +
+                 "devuelve nada.")]
         [Range(-10000f, 0f)] public float reverbRoom;
 
-        [Tooltip("Cuánto agudo sobrevive a la sala, en dB. Muy negativo = superficies " +
+        [Tooltip("Cuánto agudo sobrevive a la sala, en mB. Muy negativo = superficies " +
                  "blandas (moqueta, techo acústico) que se comen el brillo; cerca de 0 = " +
                  "hormigón y azulejo.")]
         [Range(-10000f, 0f)] public float reverbRoomHF;
 
-        [Tooltip("Nivel de la cola tardía en dB. Súbelo para que el espacio se sienta más " +
+        [Tooltip("Nivel de la cola tardía en mB. Súbelo para que el espacio se sienta más " +
                  "grande sin alargar la cola.")]
         [Range(-10000f, 2000f)] public float reverbLevel;
 
