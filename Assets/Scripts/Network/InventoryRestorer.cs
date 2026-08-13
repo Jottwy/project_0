@@ -248,6 +248,36 @@ namespace BackroomsSurvival.Net
             Debug.Log($"[InventoryRestorer] inventory restored: {added} stacks added, {rejected} partial/rejected");
         }
 
+        /// <summary>
+        /// Última red: lo que no cabe en ningún hueco se suelta a los pies por el mismo camino que
+        /// un drop nativo, replicado y recogible, en vez de dejar de existir.
+        ///
+        /// LIMITACIÓN DECLARADA: `stp_drop` viaja como `def_id` + cantidad, así que las propiedades
+        /// de instancia (el desgaste de una antorcha) NO sobreviven al vuelco — el item vuelve al
+        /// mundo a valor de fábrica. Es la misma carencia de esquema que hace que el botín de un
+        /// cadáver pierda el desgaste, y se arregla en el mismo sitio (pide ADR). Perder el desgaste
+        /// es estrictamente mejor que perder el item.
+        /// </summary>
+        private void SpillToWorld(int itemId, int count)
+        {
+            if (count <= 0)
+                return;
+
+            if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
+            {
+                Debug.LogError($"[InventoryRestorer] IPC caído: {count}×item_id={itemId} no caben y no se pueden " +
+                    "soltar al mundo. ESO se ha perdido.");
+                return;
+            }
+
+            var t = _character.transform;
+            Vector3 at = t.position + t.forward * 0.5f;
+            long dropId = StpNativeDropWatcher.MintDropId();
+            ipc.SendStpDrop(dropId, itemId, count, at, t.eulerAngles.y);
+            Debug.LogWarning($"[InventoryRestorer] {count}×item_id={itemId} no cabían — soltados al mundo " +
+                $"drop_id={dropId} en {at:F2} (sin propiedades de instancia).");
+        }
+
         /// ADR-045 Fase 3: places each stack in its EXACT saved container/slot via
         /// <c>IItemContainer.SetItemAtIndex</c> (public STP API — no vendor edit) instead of
         /// letting <c>AddItemsById</c> pick a slot, then restores instance properties via the
@@ -269,27 +299,25 @@ namespace BackroomsSurvival.Net
             for (int i = 0; i < stacks.Count; i++)
             {
                 var s = stacks[i];
-                if (s.container >= containers.Count || containers[s.container] == null)
-                {
-                    rejected++;
-                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} container={s.container} out of range ({containers.Count} containers) — dropped");
-                    continue;
-                }
 
-                var container = containers[s.container];
-                if (s.slot >= container.SlotsCount)
-                {
-                    rejected++;
-                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} slot={s.slot} out of range ({container.SlotsCount} slots) — dropped");
-                    continue;
-                }
-
+                // La definición se resuelve ANTES que el hueco: es lo único de aquí que no tiene
+                // recuperación posible. Con def conocida, un contenedor o slot que ya no existen
+                // solo significan "aquí no", no "esto se pierde".
                 if (!ItemDefinition.TryGetWithId(s.itemId, out var def))
                 {
                     rejected++;
-                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} unknown definition — dropped");
+                    Debug.LogError($"[InventoryRestorer] v2 stack item_id={s.itemId} x{s.quantity}: definición desconocida — " +
+                        "IRRECUPERABLE, no hay con qué reconstruirlo.");
                     continue;
                 }
+
+                IItemContainer container = null;
+                if (s.container >= containers.Count || containers[s.container] == null)
+                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} container={s.container} out of range ({containers.Count} containers) — se recoloca");
+                else if (s.slot >= containers[s.container].SlotsCount)
+                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} slot={s.slot} out of range ({containers[s.container].SlotsCount} slots) — se recoloca");
+                else
+                    container = containers[s.container];
 
                 var item = new Item(def);
                 if (s.props != null)
@@ -306,18 +334,36 @@ namespace BackroomsSurvival.Net
                 // and container restrictions both apply here, same as the AddItemsById path in
                 // Apply. Check what actually landed instead of assuming the full stack fit.
                 var stack = new ItemStack(item, s.quantity);
-                var (allowedCount, rejectReason) = container.GetAllowedCount(stack);
-                int placedCount = allowedCount > 0 ? container.SetItemAtIndex(s.slot, stack) : 0;
+                string rejectReason = null;
+                int placedCount = 0;
+                if (container != null)
+                {
+                    var allowed = container.GetAllowedCount(stack);
+                    rejectReason = allowed.rejectReason;
+                    placedCount = allowed.allowedCount > 0 ? container.SetItemAtIndex(s.slot, stack) : 0;
+                }
 
                 if (placedCount >= s.quantity)
                 {
                     placed++;
+                    continue;
                 }
-                else
-                {
-                    rejected++;
-                    Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} x{s.quantity} container={s.container} slot={s.slot} only placed {placedCount} ({(string.IsNullOrEmpty(rejectReason) ? "no reason" : rejectReason)})");
-                }
+
+                rejected++;
+                Debug.LogWarning($"[InventoryRestorer] v2 stack item_id={s.itemId} x{s.quantity} container={s.container} slot={s.slot} only placed {placedCount} ({(string.IsNullOrEmpty(rejectReason) ? "no reason" : rejectReason)})");
+
+                // Lo que no cupo en SU sitio NO se descarta. Antes se contaba como rechazado y ahí
+                // moría: volvías a la partida y te faltaba lo que no encajó, con un warning que
+                // nadie lee a media sesión. Segundo intento en cualquier hueco del inventario —con
+                // el item YA construido, así que conserva sus propiedades de instancia— y lo que
+                // aun así sobre se suelta al mundo.
+                int leftover = s.quantity - Mathf.Max(0, placedCount);
+                var (elsewhere, _) = _character.Inventory.AddItem(new ItemStack(item, leftover));
+                leftover -= Mathf.Max(0, elsewhere);
+                if (elsewhere > 0)
+                    Debug.Log($"[InventoryRestorer] item_id={s.itemId}: {elsewhere} recolocados en otro hueco.");
+
+                SpillToWorld(s.itemId, leftover);
             }
 
             Debug.Log($"[InventoryRestorer] inventory v2 restored: {placed} stacks placed, {rejected} partial/dropped");
