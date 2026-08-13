@@ -20,7 +20,7 @@ namespace BackroomsSurvival.Tests
     public class SprayLootTests
     {
         private const string ItemName = "Spray Can";
-        private const ulong Seed = 987654321UL;
+        private const long Seed = 987654321L;
 
         private static ZoneLootProfile DefaultProfile => ZoneLootProfile.Default;
 
@@ -38,7 +38,7 @@ namespace BackroomsSurvival.Tests
                 for (int cz = -30; cz <= 30; cz++)
                 {
                     foreach (var entry in ChunkLootRoll.RollItems(Seed, cx, cz, DefaultProfile))
-                        seen.Add(entry.name);
+                        seen.Add(entry.Name);
                     if (seen.Contains(ItemName)) break;
                 }
             }
@@ -78,7 +78,9 @@ namespace BackroomsSurvival.Tests
             Assert.IsNotNull(definition);
 
             Assert.IsFalse(definition.Tag.IsNull, "el bote necesita etiqueta para poder empuñarse");
-            Assert.AreEqual(ItemConstants.WieldableTag, definition.Tag,
+            // Por `.Id` y no comparando los structs: `DataIdReference` es un envoltorio y su
+            // igualdad no es algo de lo que este test deba depender.
+            Assert.AreEqual(ItemConstants.WieldableTag.Id, definition.Tag.Id,
                 "y tiene que ser exactamente la de Wieldable, que es la que mira EquipAction");
         }
 
