@@ -14,7 +14,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   _id: -534693330
   _parentGroup: {fileID: 11400000, guid: c26c90643cd4e1346b73cebfb3e7b81e, type: 2}
-  _icon: {fileID: 21300000, guid: 41100e1e992cf9942bf403374f14f356, type: 3}
+  _icon: {fileID: 21300000, guid: 969eb01204880484983d273fa7b32db8, type: 3}
   _description: "Motor-Red, esmalte industrial. Todav\xEDa suena al agitarlo."
   _longDescription: "Doce onzas de secado r\xE1pido y alta cobertura, seg\xFAn la
     lata. Sirve para dejar dicho por d\xF3nde has pasado: una flecha, un n\xFAmero,

@@ -357,13 +357,33 @@ namespace BackroomsSurvival.EditorTools
 
             // El importador PRIMERO: sin Sprite no hay nada que asignar.
             var importer = AssetImporter.GetAtPath(IconPath) as TextureImporter;
-            if (importer != null && importer.textureType != TextureImporterType.Sprite)
+            if (importer != null)
             {
-                importer.textureType = TextureImporterType.Sprite;
-                importer.spriteImportMode = SpriteImportMode.Single;
-                importer.alphaIsTransparency = true;
-                importer.mipmapEnabled = false;
-                importer.SaveAndReimport();
+                var settings = new TextureImporterSettings();
+                importer.ReadTextureSettings(settings);
+
+                bool dirty = importer.textureType != TextureImporterType.Sprite
+                             || importer.spriteImportMode != SpriteImportMode.Single
+                             || !importer.alphaIsTransparency
+                             || settings.spriteMeshType != SpriteMeshType.FullRect;
+
+                if (dirty)
+                {
+                    importer.textureType = TextureImporterType.Sprite;
+                    importer.spriteImportMode = SpriteImportMode.Single;
+                    importer.alphaIsTransparency = true;
+                    importer.mipmapEnabled = false;
+
+                    // FULL RECT, y esto NO es un detalle: con el mesh en `Tight` Unity RECORTA el
+                    // borde transparente del sprite, así que el relleno que vuelve cuadrado al
+                    // PNG desaparece y el hueco cuadrado del inventario vuelve a estirar la lata.
+                    // El icono se ve gordo y chato exactamente igual que sin rellenar.
+                    importer.ReadTextureSettings(settings);
+                    settings.spriteMeshType = SpriteMeshType.FullRect;
+                    importer.SetTextureSettings(settings);
+
+                    importer.SaveAndReimport();
+                }
             }
 
             var sprite = AssetDatabase.LoadAssetAtPath<Sprite>(IconPath);
