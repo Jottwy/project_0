@@ -170,7 +170,15 @@ namespace BackroomsSurvival.Net
                     if (id == 0 || stack.Count <= 0)
                         continue;
 
-                    _items.Add(new CorpseLootStack { itemId = id, quantity = stack.Count });
+                    // ADR-072: el desgaste viaja con el item. Este es EL sitio donde se perdía —
+                    // el snapshot de muerte mandaba `{itemId, quantity}` pelado, así que lootear
+                    // el propio cadáver devolvía todo a valor de fábrica.
+                    _items.Add(new CorpseLootStack
+                    {
+                        itemId = id,
+                        quantity = stack.Count,
+                        props = ItemProps.Read(stack.Item),
+                    });
                 }
             }
         }

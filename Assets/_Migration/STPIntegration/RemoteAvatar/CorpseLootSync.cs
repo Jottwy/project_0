@@ -76,12 +76,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
             public readonly int Quantity;
             public readonly bool WasFullDepletion;
 
-            public PendingTake(int localSlot, int itemId, int quantity, bool wasFullDepletion)
+            /// <summary>
+            /// ADR-072: el desgaste que tenía el item cuando se lo llevaron. Va en la petición
+            /// porque el rollback ocurre cuando el item YA no está en el slot: reconstruirlo desde
+            /// la definición a secas devolvería al cadáver una antorcha REPARADA, que es el mismo
+            /// bug que este ADR arregla, colado por el camino que solo corre cuando algo va mal.
+            /// </summary>
+            public readonly List<ItemPropertyValue> Props;
+
+            public PendingTake(int localSlot, int itemId, int quantity, bool wasFullDepletion,
+                List<ItemPropertyValue> props)
             {
                 LocalSlot = localSlot;
                 ItemId = itemId;
                 Quantity = quantity;
                 WasFullDepletion = wasFullDepletion;
+                Props = props;
             }
         }
 
@@ -91,6 +101,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private int[] _serverIndex;
         private int[] _lastKnownCount;
         private int[] _lastKnownItemId;
+        /// <summary>ADR-072: el desgaste del item que había en cada slot en el último evento —
+        /// espejo de <see cref="_lastKnownItemId"/> y por el mismo motivo (el rollback llega
+        /// cuando el item ya no está donde leerlo).</summary>
+        private List<ItemPropertyValue>[] _lastKnownProps;
 
         /// <summary>Fires (itemId, quantity) once the server CONFIRMS a take — not on the
         /// optimistic local removal. CorpseSpawner.WireLoot subscribes to undress the ragdoll in
@@ -152,12 +166,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _serverIndex = new int[n];
             _lastKnownCount = new int[n];
             _lastKnownItemId = new int[n];
+            _lastKnownProps = new List<ItemPropertyValue>[n];
             for (int i = 0; i < n; i++)
             {
                 var stack = container.GetItemAtIndex(i);
                 _serverIndex[i] = i;
                 _lastKnownCount[i] = stack.Count;
                 _lastKnownItemId[i] = stack.Item?.Id ?? 0;
+                _lastKnownProps[i] = ItemProps.Read(stack.Item);
             }
 
             container.SlotChanged += OnSlotChanged;
@@ -234,8 +250,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             int newItemId = slot.HasItem() ? slot.GetItem().Id : 0;
             int oldCount = _lastKnownCount[i];
             int oldItemId = _lastKnownItemId[i];
+            // ADR-072: el desgaste de ANTES del cambio, por la misma razón que `oldItemId` — para
+            // cuando esto es una retirada, el item ya no está en el slot del que habría que leerlo.
+            var oldProps = _lastKnownProps[i];
             _lastKnownCount[i] = newCount;
             _lastKnownItemId[i] = newItemId;
+            _lastKnownProps[i] = slot.HasItem() ? ItemProps.Read(slot.GetItem()) : null;
 
             int delta = newCount - oldCount;
             if (delta >= 0)
@@ -249,7 +269,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             // Se ENCOLA, no se envía: el índice de servidor se resuelve al enviar. Ver el bloque
             // de _queued para por qué calcularlo aquí rompía "Take All".
-            _queued.Enqueue(new PendingTake(i, oldItemId, removed, wasFullDepletion));
+            _queued.Enqueue(new PendingTake(i, oldItemId, removed, wasFullDepletion, oldProps));
             PumpQueue();
 
             // NOTE: the server-index shift is deferred to OnGameEvent (corpse_item_taken) — see
@@ -427,8 +447,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             try
             {
                 if (pending.WasFullDepletion)
-                    _container.SetItemAtIndex(pending.LocalSlot, new ItemStack(new Item(def), pending.Quantity));
+                    // ADR-072: se repone CON su desgaste. Un `new Item(def)` a secas devolvería al
+                    // cadáver una antorcha reparada, y encima solo en el camino de rechazo, que es
+                    // el que menos se mira.
+                    _container.SetItemAtIndex(pending.LocalSlot,
+                        new ItemStack(ItemProps.Build(def, pending.Props), pending.Quantity));
                 else
+                    // Retirada parcial: el item sigue en el slot con sus propiedades intactas, así
+                    // que solo hay que devolver la cantidad.
                     _container.AdjustStackAtIndex(pending.LocalSlot, pending.Quantity);
             }
             finally

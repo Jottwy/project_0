@@ -633,9 +633,31 @@ namespace BackroomsSurvival.Net
             w.WriteArrayHeader(items?.Count ?? 0);
             for (int i = 0; i < (items?.Count ?? 0); i++)
             {
-                w.WriteMapHeader(2);
+                // ADR-072: tres campos, no dos — el stack lleva sus propiedades de instancia. El
+                // backend las lee con `serde(default)`, así que una lista vacía cuesta lo mismo
+                // que no mandarlas y no hay dos formas de decir "sin propiedades".
+                w.WriteMapHeader(3);
                 w.WriteString("item_id"); w.WriteInt(items[i].itemId);
                 w.WriteString("quantity"); w.WriteInt(items[i].quantity);
+                w.WriteString("props"); WriteProps(w, items[i].props);
+            }
+        }
+
+        /// <summary>
+        /// La lista `[{id,value}]` de propiedades de instancia. Una sola copia para los dos
+        /// emisores (el inventario de ADR-045 y, desde ADR-072, el botín): comparten forma porque
+        /// comparten tipo, y dos copias de este bucle acabarían divergiendo en el formato del
+        /// número, que es justo lo que el backend no puede tolerar.
+        /// </summary>
+        private static void WriteProps(MsgPackWriter w, IReadOnlyList<ItemPropertyValue> props)
+        {
+            int n = props?.Count ?? 0;
+            w.WriteArrayHeader(n);
+            for (int p = 0; p < n; p++)
+            {
+                w.WriteMapHeader(2);
+                w.WriteString("id"); w.WriteInt(props[p].id);
+                w.WriteString("value"); w.WriteFloat((float)props[p].value);
             }
         }
 
@@ -655,15 +677,7 @@ namespace BackroomsSurvival.Net
                 w.WriteString("quantity"); w.WriteInt(items[i].quantity);
                 w.WriteString("container"); w.WriteInt(items[i].container);
                 w.WriteString("slot"); w.WriteInt(items[i].slot);
-                w.WriteString("props");
-                var props = items[i].props;
-                w.WriteArrayHeader(props?.Count ?? 0);
-                for (int p = 0; p < (props?.Count ?? 0); p++)
-                {
-                    w.WriteMapHeader(2);
-                    w.WriteString("id"); w.WriteInt(props[p].id);
-                    w.WriteString("value"); w.WriteFloat((float)props[p].value);
-                }
+                w.WriteString("props"); WriteProps(w, items[i].props);
             }
         }
 

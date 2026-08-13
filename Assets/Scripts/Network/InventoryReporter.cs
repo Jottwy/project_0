@@ -157,27 +157,11 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// ADR-045 Fase 3: an item's runtime property VALUES live on <see cref="Item"/>, but only
-        /// reachable one id at a time via <c>TryGetProperty</c> (it doesn't expose the whole
-        /// array); the set of ids that CAN exist on this item's definition comes from
-        /// <c>ItemDefinition.GetPropertyGenerators()</c>. Cross-referencing the two is the
-        /// documented way to enumerate "this instance's actual properties" without a new model.
+        /// ADR-045 Fase 3, movido a <see cref="ItemProps"/> por ADR-072: el mismo par leer/aplicar
+        /// hace falta ya en cinco sitios (este reporte, el snapshot de muerte, el cadáver que se
+        /// materializa, el rollback de una toma y el reconcile), así que vive en un solo lugar.
         /// </summary>
-        private static List<ItemPropertyValue> BuildProps(Item item)
-        {
-            var generators = item.Definition.GetPropertyGenerators();
-            if (generators == null || generators.Length == 0)
-                return null;
-
-            var props = new List<ItemPropertyValue>(generators.Length);
-            for (int i = 0; i < generators.Length; i++)
-            {
-                int propId = generators[i].Property.Id;
-                if (item.TryGetProperty(propId, out var prop))
-                    props.Add(new ItemPropertyValue { id = propId, value = prop.Double });
-            }
-            return props;
-        }
+        private static List<ItemPropertyValue> BuildProps(Item item) => ItemProps.Read(item);
 
         // Mirror of DeathLootReporter.ResolveAndSubscribe: destroyed motor reads as null →
         // rig rebuild forces a clean re-find + re-subscribe of every container's SlotChanged.

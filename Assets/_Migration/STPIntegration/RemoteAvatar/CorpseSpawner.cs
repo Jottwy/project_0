@@ -523,7 +523,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
                     Debug.LogWarning($"[CorpseSpawner] corpse {corpse.id}: unknown item_id={stack.itemId} at slot {i}, skipped.");
                     continue;
                 }
-                container.SetItemAtIndex(i, new ItemStack(new Item(def), stack.quantity));
+                // ADR-072: con sus propiedades de instancia puestas. Un `new Item(def)` pelado nace
+                // a valor de fábrica, así que sin esto el cadáver enseñaba —y entregaba— antorchas
+                // nuevas por muy gastadas que las mandara el host.
+                container.SetItemAtIndex(i, new ItemStack(ItemProps.Build(def, stack.props), stack.quantity));
             }
 
             restriction.Sealed = true;

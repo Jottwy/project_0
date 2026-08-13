@@ -267,6 +267,19 @@ namespace BackroomsSurvival.Net
     {
         public int itemId;
         public int quantity;
+
+        /// <summary>
+        /// ADR-072: las propiedades de instancia del stack (desgaste, munición cargada...). Sin
+        /// esto, morir REPARABA el equipo — el botín viajaba pelado y la antorcha volvía a valor
+        /// de fábrica al lootear el propio cadáver.
+        ///
+        /// `null` y lista vacía significan lo mismo (item sin propiedades, que es la mayoría) y se
+        /// serializan igual: el backend lo lee con `serde(default)`.
+        ///
+        /// Son POR STACK, no por unidad — es el modelo del propio STP, donde un `ItemStack` es UN
+        /// `Item` más un contador.
+        /// </summary>
+        public List<ItemPropertyValue> props;
     }
 
     /// <summary>ADR-045 Fase 3: one item-instance property (durability, ammo, ...). Mirrors STP's
@@ -338,6 +351,11 @@ namespace BackroomsSurvival.Net
                                 var fk = r.ReadKey();
                                 if (MsgPackReader.Is(fk, "item_id")) stack.itemId = (int)r.ReadInt();
                                 else if (MsgPackReader.Is(fk, "quantity")) stack.quantity = (int)r.ReadInt();
+                                // ADR-072: el desgaste del stack. Sin leerlo aquí, el cadáver se
+                                // materializaría con items a estreno aunque el host los mande
+                                // gastados — y el fallo sería invisible, porque un item sin
+                                // propiedades y uno cuyas propiedades se ignoran se ven igual.
+                                else if (MsgPackReader.Is(fk, "props")) stack.props = ReadProps(r);
                                 else r.Skip();
                             }
                             m.items.Add(stack);
@@ -347,6 +365,34 @@ namespace BackroomsSurvival.Net
                 else r.Skip();
             }
             return m;
+        }
+
+        /// <summary>
+        /// ADR-072: lee la lista `[{id,value}]` de propiedades de instancia. Devuelve `null` —y no
+        /// una lista vacía— cuando no hay ninguna, que es el caso de casi todos los items: así el
+        /// consumidor puede saltarse el trabajo con una comparación en vez de recorrer.
+        /// </summary>
+        private static List<ItemPropertyValue> ReadProps(MsgPackReader r)
+        {
+            int pc = r.ReadArrayHeader();
+            if (pc <= 0)
+                return null;
+
+            var list = new List<ItemPropertyValue>(pc);
+            for (int pi = 0; pi < pc; pi++)
+            {
+                var prop = new ItemPropertyValue();
+                int pn = r.ReadMapHeader();
+                for (int fi = 0; fi < pn; fi++)
+                {
+                    var pk = r.ReadKey();
+                    if (MsgPackReader.Is(pk, "id")) prop.id = (int)r.ReadInt();
+                    else if (MsgPackReader.Is(pk, "value")) prop.value = r.ReadFloat();
+                    else r.Skip();
+                }
+                list.Add(prop);
+            }
+            return list;
         }
     }
 

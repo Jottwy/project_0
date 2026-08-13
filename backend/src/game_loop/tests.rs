@@ -717,6 +717,52 @@ fn parse_death_loot_reads_negative_ids_and_degrades_malformed_to_empty() {
     assert_eq!(equipment, [1, 2, 0, 0]);
 }
 
+/// ADR-072: el snapshot de muerte trae el desgaste, y este es el punto de entrada donde se perdía.
+/// Cubre también lo que NO debe entrar: un cliente viejo que no manda `props`, y una propiedad con
+/// un valor que no es finito (envenenaría el desgaste con algo que ni se compara ni se guarda).
+#[test]
+fn parse_death_loot_reads_instance_properties_and_rejects_the_unusable() {
+    let data = serde_json::json!({
+        "items": [
+            {
+                "item_id": -8792658,
+                "quantity": 1,
+                "props": [
+                    { "id": -8792658, "value": 0.4237 },
+                    { "id": 6313314, "value": 1.0 },
+                ],
+            },
+            // Sin la clave: un cliente anterior a este ADR. Vector vacío, no error.
+            { "item_id": 99, "quantity": 2 },
+            {
+                "item_id": 7,
+                "quantity": 1,
+                "props": [
+                    { "id": 1 },                    // sin valor → se cae
+                    { "value": 0.5 },               // sin id → se cae
+                    { "id": 2, "value": "medio" },  // valor no numérico → se cae
+                ],
+            },
+        ],
+    });
+
+    let (_, _, items) = parse_death_loot(&data);
+    assert_eq!(items.len(), 3);
+
+    assert_eq!(items[0].props.len(), 2, "las dos propiedades buenas entran");
+    assert_eq!(items[0].props[0].id, -8792658);
+    assert!((items[0].props[0].value - 0.4237).abs() < 1e-9);
+
+    assert!(
+        items[1].props.is_empty(),
+        "sin la clave `props` se degrada al comportamiento de siempre"
+    );
+    assert!(
+        items[2].props.is_empty(),
+        "las entradas incompletas o con valor no numérico se caen una a una"
+    );
+}
+
 // ADR-032 amendment: a valid report_inventory mirrors the client's real STP inventory into
 // player.stp_inventory, with the shared corpse hygiene applied (quantity<=0 dropped,
 // truncated to MAX_CORPSE_STACKS — the FIRST 64 valid stacks survive, the rest discarded).
