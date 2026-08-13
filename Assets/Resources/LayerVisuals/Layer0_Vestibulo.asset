@@ -235,7 +235,6 @@ MonoBehaviour:
     lampPoint: 0
     overrideHumVolume: 1
     humVolume: 0.03
-
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
   ambientLight: {r: 0.28, g: 0.24, b: 0.16, a: 1}
