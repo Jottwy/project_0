@@ -103,6 +103,17 @@ pub struct SaveFile {
     /// "unset"; a save written before this field existed must load as 1.0 (no scaling).
     #[serde(default = "default_phantom_density_scale")]
     pub phantom_density_scale: f32,
+    /// ADR-068: las pintadas del mundo, planas y ordenadas por id (el indice por chunk se
+    /// reconstruye al cargar con `SprayStore::from_sprays`, igual que `corpses` frente al
+    /// `HashMap` de `World`). `#[serde(default)]` = un save anterior a ADR-068 carga con el
+    /// mundo sin pintar, sin migracion ni `.bak`.
+    ///
+    /// OJO al coste: esto es JSON y JSON no tiene tipo binario, asi que el blob de puntos de
+    /// cada trazo sale como lista de enteros ASCII, ~4x lo que ocupa en wire. La enmienda de
+    /// ADR-068 lo mide: 3609 B por pintada y 225 KB por chunk saturado. Si el fichero se
+    /// dispara, este es el primer sitio donde mirar.
+    #[serde(default)]
+    pub sprays: Vec<crate::world::spray::Spray>,
 }
 
 fn default_phantom_density_scale() -> f32 {
@@ -158,6 +169,7 @@ impl SaveFile {
             stp_carryables: Vec::new(),
             stp_harvestables: Vec::new(),
             phantom_density_scale: 1.0,
+            sprays: Vec::new(),
         }
     }
 
@@ -259,6 +271,9 @@ pub fn build_save(
     stp_carryables: &[StpCarryableInfo],
     stp_harvestables: &[StpHarvestableInfo],
     phantom_density_scale: f32,
+    // ADR-068. Ultimo, y no junto a los rosters STP, a proposito: asi los ~11 sitios que ya
+    // llamaban a esto anaden un argumento al final en vez de reordenar los que tenian.
+    sprays: &[crate::world::spray::Spray],
 ) -> SaveFile {
     let mut corpses: Vec<CorpseData> = world.corpses.values().cloned().collect();
     // Stable ordering for a deterministic file (mirrors visible_corpse_views' sort rationale).
@@ -279,6 +294,7 @@ pub fn build_save(
     save.stp_carryables = stp_carryables.to_vec();
     save.stp_harvestables = stp_harvestables.to_vec();
     save.phantom_density_scale = phantom_density_scale;
+    save.sprays = sprays.to_vec();
     save
 }
 
@@ -295,6 +311,7 @@ pub fn save_world<P: AsRef<Path>>(
     stp_carryables: &[StpCarryableInfo],
     stp_harvestables: &[StpHarvestableInfo],
     phantom_density_scale: f32,
+    sprays: &[crate::world::spray::Spray],
 ) -> std::io::Result<()> {
     let mut save = build_save(
         session_name,
@@ -306,6 +323,7 @@ pub fn save_world<P: AsRef<Path>>(
         stp_carryables,
         stp_harvestables,
         phantom_density_scale,
+        sprays,
     );
     save.save_to(path)
 }
@@ -412,6 +430,7 @@ mod tests {
             &carryables,
             &harvestables,
             2.5,
+            &[],
         )
         .expect("save should succeed");
 
@@ -526,6 +545,7 @@ mod tests {
             &[],
             &[],
             2.5,
+            &[],
         )
         .expect("save should succeed");
 
@@ -667,6 +687,7 @@ mod tests {
             &[],
             &[],
             1.0,
+            &[],
         )
         .expect("first save");
 
@@ -682,6 +703,7 @@ mod tests {
             &[],
             &[],
             1.0,
+            &[],
         )
         .expect("second save");
 
@@ -716,6 +738,7 @@ mod tests {
             &[],
             &[],
             1.0,
+            &[],
         )
         .expect("first save");
         let first = load_or_fresh(&path).expect("first save must load");
@@ -728,8 +751,20 @@ mod tests {
         // Guardado 2: continuidad desde el cargado + 300 s de sesion.
         let mut meta = SaveMeta::from_loaded(&first);
         meta.play_time_seconds += 300;
-        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[], 1.0)
-            .expect("second save");
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &meta,
+            &[],
+            &[],
+            &[],
+            &[],
+            1.0,
+            &[],
+        )
+        .expect("second save");
 
         let second = load_or_fresh(&path).expect("second save must load");
         assert_eq!(
@@ -741,8 +776,20 @@ mod tests {
         // Guardado 3: el tiempo ACUMULA en vez de reiniciarse cada sesion.
         let mut meta = SaveMeta::from_loaded(&second);
         meta.play_time_seconds += 120;
-        save_world(&path, "s", &world, &player, &meta, &[], &[], &[], &[], 1.0)
-            .expect("third save");
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &meta,
+            &[],
+            &[],
+            &[],
+            &[],
+            1.0,
+            &[],
+        )
+        .expect("third save");
 
         let third = load_or_fresh(&path).expect("third save must load");
         assert_eq!(third.play_time_seconds, 420);
@@ -784,6 +831,93 @@ mod tests {
         assert!(loaded.corpses.is_empty());
         assert_eq!(loaded.next_corpse_id, 0);
         assert!(loaded.stp_buildings.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // ─────────────────────── ADR-068 — pintadas en el save ───────────────────────
+
+    fn sample_spray(id: u32, cx: i32) -> crate::world::spray::Spray {
+        crate::world::spray::Spray {
+            id,
+            cx,
+            cz: -2,
+            layer: 0,
+            local_pos: [12.5, 1.6, 33.0],
+            yaw: 90.0,
+            size: [1.5, 1.0],
+            author: 7,
+            tick: id as u64 * 10,
+            strokes: vec![crate::world::spray::SprayStroke {
+                color: 3,
+                width: 6,
+                points: vec![0, 0, 128, 200, 255, 255],
+            }],
+        }
+    }
+
+    #[test]
+    fn sprays_round_trip_through_the_save_file() {
+        // El blob de puntos es lo delicado: en wire viaja como `bin`, pero JSON no tiene tipo
+        // binario y lo escribe como lista de enteros. Debe volver byte a byte, o la pintada se
+        // recarga deformada.
+        let world = seeded_world();
+        let player = Player::new(1, "Host");
+        let path = scratch_path("spray_round_trip");
+        let sprays = vec![sample_spray(1, 3), sample_spray(2, 3)];
+
+        save_world(
+            &path,
+            "s",
+            &world,
+            &player,
+            &SaveMeta::default(),
+            &[],
+            &[],
+            &[],
+            &[],
+            1.0,
+            &sprays,
+        )
+        .expect("save with sprays must succeed");
+
+        let loaded = load_or_fresh(&path).expect("save with sprays must load");
+        assert_eq!(loaded.sprays, sprays, "las pintadas deben volver intactas");
+        assert_eq!(
+            loaded.sprays[0].strokes[0].points,
+            vec![0, 0, 128, 200, 255, 255],
+            "el blob de puntos no puede deformarse al pasar por JSON"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_save_written_before_adr_068_loads_with_an_unpainted_world() {
+        // La degradación limpia que exige el punto 5 de ADR-032: campo aditivo, sin migración
+        // y sin `.bak`. Se escribe un save SIN la clave `sprays`, como los que ya existen en
+        // disco hoy, en vez de fabricar uno con la lista vacía (que probaría otra cosa).
+        let path = scratch_path("spray_missing_key");
+        let json = r#"{
+            "version": "0.1.0",
+            "world_seed": 42,
+            "session_name": "s",
+            "created_at": "2026-08-01T00:00:00Z",
+            "last_saved": "2026-08-01T00:00:00Z",
+            "play_time_seconds": 10,
+            "config": {
+                "max_players": 50,
+                "teleport_interval_min": 120,
+                "teleport_interval_max": 600,
+                "entity_scaling": 1.0
+            }
+        }"#;
+        std::fs::write(&path, json).expect("fixture must be writable");
+
+        let loaded = load_or_fresh(&path).expect("un save pre-ADR-068 debe cargar");
+        assert!(
+            loaded.sprays.is_empty(),
+            "sin la clave, el mundo carga sin pintar"
+        );
+        assert_eq!(loaded.world_seed, 42, "y el resto del save intacto");
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -294,6 +294,25 @@ fn hydrate_from_save(
     net.stp_carryables = save.stp_carryables;
     net.stp_harvestables = save.stp_harvestables;
 
+    // ADR-068: el índice por chunk se reconstruye aquí, descartando lo que ya no valide.
+    let (sprays, dropped_sprays) = crate::world::spray::SprayStore::from_sprays(save.sprays);
+    net.sprays = sprays;
+    // Y el acuñador se re-siembra POR LA MISMA RAZÓN que los cuatro de abajo: sin esto, tras
+    // cargar, la primera pintada de la sesión reacuña un id que ya existe en el almacén.
+    let spray_id = net
+        .sprays
+        .all()
+        .iter()
+        .map(|s| s.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .max(1);
+    NEXT_SPRAY_ID.store(spray_id, std::sync::atomic::Ordering::Relaxed);
+    if dropped_sprays > 0 {
+        warn!("ADR-068: {dropped_sprays} pintadas del save descartadas (no validan o pasan del cap por chunk)");
+    }
+
     let (drop_id, building_id, carryable_id, group_id) = reseed_stp_id_allocators(net);
 
     // `occupied_stp_cells` es estado DERIVADO y no se persiste — se reconstruye aquí o queda
@@ -628,6 +647,7 @@ pub async fn run(
                                 &net.stp_carryables,
                                 &net.stp_harvestables,
                                 net.phantom_density_scale,
+                                &net.sprays.all(),
                             ) {
                                 Ok(()) => info!(
                                     "ADR-032: save-on-shutdown written to {}",
@@ -827,6 +847,7 @@ pub async fn run(
                     &net.stp_carryables,
                     &net.stp_harvestables,
                     net.phantom_density_scale,
+                    &net.sprays.all(),
                 ) {
                     Ok(()) => info!(
                         "ADR-032: world save on local IPC disconnect written to {}",
@@ -1535,6 +1556,7 @@ pub async fn run(
                 &net.stp_carryables,
                 &net.stp_harvestables,
                 net.phantom_density_scale,
+                &net.sprays.all(),
             ) {
                 Ok(()) => info!("ADR-032: autosave written to {}", save_path.display()),
                 Err(e) => warn!("ADR-032: autosave failed: {e}"),

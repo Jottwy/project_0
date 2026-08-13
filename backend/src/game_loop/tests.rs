@@ -176,6 +176,7 @@ async fn hydrate_clears_the_absolute_invulnerability_tick() {
         &[],
         &[],
         1.0,
+        &[],
     );
     hydrate_from_save(&mut world, &mut player, &mut net, save);
 
@@ -4854,6 +4855,52 @@ async fn a_joiner_never_mints_a_spray_id_of_its_own() {
     assert!(
         rx.try_recv().is_err(),
         "un joiner no puede anunciar una pintada como aceptada"
+    );
+}
+
+#[tokio::test]
+async fn loading_a_painted_world_never_reuses_a_spray_id() {
+    // El mismo fallo que `id_allocators_reseed_inside_their_own_range` documenta para los cuatro
+    // asignadores STP: sin re-sembrar, tras cargar la PRIMERA pintada de la sesión reacuña un id
+    // que ya existe en el almacén. Aquí se comprueba sobre el efecto observable — la pintada
+    // nueva no puede colisionar con ninguna cargada — y no leyendo el AtomicU32, que es estático
+    // de proceso y los tests corren en hilos del mismo proceso.
+    let mut world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+
+    let mut saved = crate::persistence::save::SaveFile::new("s", 42);
+    saved.sprays = vec![crate::world::spray::Spray {
+        id: 500,
+        cx: 0,
+        cz: 0,
+        layer: 0,
+        local_pos: [10.0, 1.6, 10.0],
+        yaw: 0.0,
+        size: [1.0, 1.0],
+        author: 1,
+        tick: 1,
+        strokes: vec![crate::world::spray::SprayStroke {
+            color: 0,
+            width: 2,
+            points: vec![1, 1, 2, 2],
+        }],
+    }];
+
+    hydrate_from_save(&mut world, &mut player, &mut net, saved);
+    assert_eq!(net.sprays.len(), 1, "la pintada guardada debe hidratarse");
+
+    let at = [10.0, 1.6, 10.0];
+    player.position = Vec3::new(at[0], at[1], at[2]);
+    process_spray_place(spray_request(1, at), &player, &mut net, 50, &tx);
+
+    let ids: Vec<u32> = net.sprays.chunk((0, 0, 0)).iter().map(|s| s.id).collect();
+    assert_eq!(ids.len(), 2);
+    assert!(
+        ids[1] > 500,
+        "el id nuevo ({}) debe quedar por encima del cargado",
+        ids[1]
     );
 }
 
