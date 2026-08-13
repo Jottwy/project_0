@@ -19,7 +19,7 @@ MonoBehaviour:
   ceilingTexture: {fileID: 2800000, guid: dd05e192d84308546afe376cd571b166, type: 3}
   ceilingTint: {r: 1, g: 1, b: 1, a: 1}
   showCeiling: 1
-  ceilingPanelVariety: 0.25
+  ceilingPanelVariety: 0
   ceilingPipeChance: 0.35
   ceilingPipes: 1
   zoneCeilingSets:
@@ -346,20 +346,10 @@ MonoBehaviour:
       spawnWeight: 1
       canBeRotated: 0
       floorOnly: 1
-  floorTintVariants:
-  - {r: 0.95, g: 0.93, b: 0.9, a: 1}
-  - {r: 0.91, g: 0.89, b: 0.87, a: 1}
-  - {r: 0.98, g: 0.96, b: 0.93, a: 1}
-  wallTintVariants:
-  - {r: 0.98, g: 0.97, b: 0.95, a: 1}
-  - {r: 0.94, g: 0.93, b: 0.91, a: 1}
-  - {r: 1, g: 0.99, b: 0.98, a: 1}
-  - {r: 0.96, g: 0.96, b: 0.93, a: 1}
-  ceilingTintVariants:
-  - {r: 0.97, g: 0.97, b: 0.94, a: 1}
-  - {r: 0.94, g: 0.94, b: 0.91, a: 1}
-  - {r: 1, g: 1, b: 0.97, a: 1}
-  wallPanelVariety: 0.08
+  floorTintVariants: []
+  wallTintVariants: []
+  ceilingTintVariants: []
+  wallPanelVariety: 0
   kneeWallHeight: 1.35
   lintelChance: 0.12
   lintelClearance: 2.2
