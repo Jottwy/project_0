@@ -337,6 +337,70 @@ mod tests {
         );
     }
 
+    /// ADR-061 keeps the client's `WireSchema.Expected` as a HAND-WRITTEN mirror of
+    /// `WIRE_SCHEMA_VERSION`, and the doc comment on that constant already records that the pair
+    /// has drifted apart twice. Drift is not a warning: the gate rejects the connection outright,
+    /// so the whole game is unstartable until someone notices which of the two numbers is stale.
+    ///
+    /// The C# side cannot check this — its EditMode suite only ever sees `Expected` and so can
+    /// only compare it against itself (`WireSchemaHelloTests`), and that suite has never been run
+    /// headless anyway. So the guard lives HERE, in the one gate this project actually runs every
+    /// session: `cargo test`. It reads the mirror as text rather than linking anything, because
+    /// nothing in this crate can reference C#.
+    #[test]
+    fn the_csharp_mirror_declares_the_same_wire_schema_version() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate directory always has a parent");
+        let assets = repo_root.join("Assets");
+
+        // The backend gets cloned on its own to run these gates when someone else's in-flight
+        // edit leaves the real tree red (docs/AUDIT-2026-08-03.md). There is no client to mirror
+        // there, so skip — but ONLY on the whole tree being absent. If `Assets/` exists and the
+        // file does not, the mirror was renamed or moved and that must fail loudly, because a
+        // guard that quietly evaporates is worse than no guard.
+        if !assets.is_dir() {
+            return;
+        }
+
+        let mirror = assets.join("Scripts").join("Network").join("WireSchema.cs");
+        let source = std::fs::read_to_string(&mirror).unwrap_or_else(|e| {
+            panic!(
+                "cannot read the C# mirror at {}: {e}. If it moved, update this test in the same \
+                 commit — do not delete it.",
+                mirror.display()
+            )
+        });
+
+        const NEEDLE: &str = "const uint Expected";
+        let after = source.split_once(NEEDLE).unwrap_or_else(|| {
+            panic!(
+                "{} no longer declares `{NEEDLE}`. The mirror was renamed or retyped; fix this \
+                 test in the same commit.",
+                mirror.display()
+            )
+        });
+        let literal = after
+            .1
+            .split_once('=')
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(value, _)| value.trim())
+            .unwrap_or_else(|| panic!("malformed `{NEEDLE}` declaration in {}", mirror.display()));
+
+        let declared: u32 = literal
+            .parse()
+            .unwrap_or_else(|e| panic!("`{NEEDLE} = {literal};` is not a plain u32 literal: {e}"));
+
+        assert_eq!(
+            declared,
+            WIRE_SCHEMA_VERSION,
+            "wire schema desync: backend says v{WIRE_SCHEMA_VERSION}, {} says v{declared}. Both \
+             numbers are bumped in the SAME commit, together with an entry in \
+             docs/systems/ipc-wire-schema.md.",
+            mirror.display()
+        );
+    }
+
     /// Reads one length-prefixed frame off the client end, the way `IPCClient.ReadFrames` does.
     async fn read_frame(stream: &mut TcpStream) -> Vec<u8> {
         let mut len_buf = [0u8; 4];
