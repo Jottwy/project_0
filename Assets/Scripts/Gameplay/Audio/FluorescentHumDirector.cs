@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.GridWorld;
+using PolymindGames; // AudioManager / AudioChannel — el mixer del juego
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.Audio
@@ -268,7 +269,43 @@ namespace BackroomsSurvival.Gameplay.Audio
                 _slots[i]     = new PoolSlot { src = src, tr = go.transform };
                 _selection[i] = HumSlotState.Free;
             }
+
+            RouteToAmbienceMixer();
         }
+
+        /// <summary>
+        /// Enruta el pool por el grupo <c>Ambience</c> del mixer del juego.
+        ///
+        /// NO ES COSMÉTICO, ERA EL BUG. Sin grupo, una AudioSource sale por el Master del
+        /// motor y se salta la cadena que SÍ atraviesan los pasos y todos los SFX del
+        /// jugador (que van por <c>Sfx</c>, ver <c>ProxyAudioSourceFactory.RouteToSfx</c>).
+        /// El zumbido no estaba "alto": estaba FUERA de la mezcla, así que competía contra
+        /// un mundo ya atenuado por las opciones de audio y ninguna bajada de
+        /// <c>humVolume</c> lo movía de primer plano — se bajó de 0.35 a 0.005 (−37 dB) sin
+        /// que se notara la diferencia, que es exactamente el síntoma de un bus equivocado.
+        ///
+        /// Ambience y no Sfx a propósito: el canal existe para "ambient background sounds"
+        /// y es el que el jugador baja cuando quiere menos fondo sin perder los efectos.
+        ///
+        /// Perezoso y reintentable: el director nace con el primer chunk y
+        /// <see cref="AudioManager"/> se auto-crea por RuntimeInitializeOnLoadMethod, pero
+        /// depender del orden sería frágil. Sin manager (escena de test pelada) el zumbido
+        /// sigue oyéndose, solo que sin mezclar — nunca una excepción.
+        /// </summary>
+        private void RouteToAmbienceMixer()
+        {
+            if (_routed) return;
+            var mgr = AudioManager.Instance;
+            if (mgr == null) return;
+            var group = mgr.GetMixerGroup(AudioChannel.Ambience);
+            if (group == null) return;
+
+            for (int i = 0; i < _slots.Length; i++)
+                if (_slots[i] != null) _slots[i].src.outputAudioMixerGroup = group;
+            _routed = true;
+        }
+
+        private bool _routed;
 
         private void OnDestroy()
         {
@@ -291,7 +328,11 @@ namespace BackroomsSurvival.Gameplay.Audio
 
             _refreshTimer -= dt;
             bool refresh = _refreshTimer <= 0f;
-            if (refresh) _refreshTimer = ReassignInterval;
+            if (refresh)
+            {
+                _refreshTimer = ReassignInterval;
+                RouteToAmbienceMixer(); // no-op en cuanto lo consigue
+            }
 
             if (!ResolveListener())
             {
