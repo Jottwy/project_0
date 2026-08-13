@@ -101,18 +101,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Volumen del zumbido de fluorescente de esta capa (FluorescentHumDirector). " +
                  "0 = capa muda. Es el volumen de UNA lámpara bajo el panel; el presupuesto " +
                  "de fuentes hace que solo suenen las más cercanas, así que subirlo no " +
-                 "multiplica el número de voces, solo lo hace más presente. VALOR DE OÍDO, " +
-                 "no calculado, y bajado TRES veces (0.35 → 0.12 → 0.05 → 0.005). El " +
-                 "zumbido tiene que leerse como profundidad de la sala, no como un objeto.\n\n" +
-                 "OJO ANTES DE VOLVER A TOCAR ESTE NÚMERO: que 0.05 ya sonara alto NO es un " +
-                 "problema de nivel — verificado, ese valor sí llegaba al runtime. A 0.05 el " +
-                 "zumbido está en torno a −28 dBFS y aun así tapaba los pasos, así que lo que " +
-                 "molesta es el TIMBRE: el clip lleva armónicos hasta 720 Hz, justo la banda " +
-                 "donde viven los pasos, y ahí enmascara por espectro y no por volumen. Si a " +
-                 "0.005 desaparece del todo en vez de quedar de fondo, la salida NO es subirlo " +
-                 "otra vez: es repartir la energía hacia el grave en " +
-                 "FluorescentHumDirector.RenderHumSamples.")]
-        [Range(0f, 1f)] public float humVolume = 0.001f;
+                 "multiplica el número de voces, solo lo hace más presente.\n\n" +
+                 "AJUSTABLE EN VIVO: muévelo DURANTE el Play y se oye en la pasada siguiente " +
+                 "(0,25 s). Es la única forma sensata de acertarlo; un ambiente se calibra de " +
+                 "oído, no de cálculo.\n\n" +
+                 "HISTORIA DEL NÚMERO, para no repetir el barrido. Bajó 0.35 → 0.12 → 0.05 → " +
+                 "0.005 sin que se notara NINGUNA diferencia, y no era culpa del valor: el " +
+                 "editor arrastraba un Editor.log de 8 GB y moría al recompilar, así que cada " +
+                 "prueba corría código viejo. Con el editor sano se midió por fin — " +
+                 "AudioSource.volume real == humVolume exacto, routed al mixer, sin ganancia " +
+                 "oculta — y 0.001 resultó ser sencillamente inaudible (−60 dBFS). 0.15 es un " +
+                 "punto de partida que SE OYE; desde aquí se baja de oído y ya sin recompilar.")]
+        [Range(0f, 1f)] public float humVolume = 0.15f;
 
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
