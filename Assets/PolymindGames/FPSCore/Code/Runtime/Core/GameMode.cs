@@ -80,16 +80,16 @@ namespace PolymindGames
             {
                 Player.PlayerCreated += DestroySceneCamera;
                 yield return null;
-                // Wait for the boot gate (e.g. IPC connection) before spawning, OR
-                // time out after 10 s as an offline fallback. GameBootGate defaults to
-                // ready, so standalone scenes spawn immediately; the networking layer
-                // feeds it in scenes that need to wait for a connection.
-                float elapsed = 0f;
-                while (!GameBootGate.IsReady() && elapsed < 10f)
-                {
-                    elapsed += Time.deltaTime;
+                // Wait for the boot gate (e.g. IPC connection) before spawning.
+                // GameBootGate defaults to ready, so standalone scenes spawn
+                // immediately; the networking layer feeds it in scenes that need to
+                // wait for a connection. NO offline timeout on purpose: it used to
+                // spawn the player after 10 s with no backend — a player in an empty
+                // world (nothing streams chunks) that breaks the whole session. If
+                // the session never starts, waiting (with the Host/Join UI up) is
+                // the correct outcome.
+                while (!GameBootGate.IsReady())
                     yield return null;
-                }
                 _localPlayer = Player.AllPlayers.FirstOrDefault() ?? SpawnPlayer();
             }
             else

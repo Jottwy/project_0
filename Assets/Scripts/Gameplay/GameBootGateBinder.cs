@@ -6,8 +6,9 @@ namespace BackroomsSurvival.Gameplay
 {
     /// <summary>
     /// Feeds PolymindGames' <see cref="GameBootGate"/> from the IPC connection state
-    /// so <c>GameMode</c> delays the player spawn until the Rust backend is connected
-    /// (with a 10 s offline fallback handled inside GameMode).
+    /// so <c>GameMode</c> delays the player spawn until the Rust backend is connected.
+    /// No offline fallback: GameMode waits indefinitely (a spawn with no backend is a
+    /// player in an empty world — worse than waiting with the Host/Join UI up).
     ///
     /// Scene-scoped: place it in scenes that use the networked flow. Standalone STP
     /// scenes omit it and keep the default always-ready gate. Awake runs before any
