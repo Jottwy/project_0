@@ -11,6 +11,8 @@ pub mod grid_gen;
 pub mod levels;
 /// ADR-043 — deterministic, lazy draw of where the world's robapieles live.
 pub mod phantom_spawn;
+/// ADR-068 — pintadas de spray, ancladas al chunk y no a coordenadas globales.
+pub mod spray;
 pub mod volumetric_grid;
 /// ADR-033: `zone_kind` → `LayerRules` para las rutas grid_gen de render y
 /// robapieles. Vive aquí (no en `grid_gen`) porque lee `world/`.
