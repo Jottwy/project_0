@@ -67,6 +67,34 @@ pub enum ClientMessage {
         #[serde(default, with = "serde_bytes")]
         data: Vec<u8>,
     },
+    /// ADR-068 — the local player painted a spray on a wall.
+    ///
+    /// A top-level variant and NOT a `PlayerAction`, for a hard technical reason on top of the
+    /// one `Voice` gives: a `PlayerAction` carries its payload in a `serde_json::Value`, and
+    /// `Value` has no byte-string type — the `bin` blob holding the stroke points would fail to
+    /// decode into it. Every other placement in this project (`stp_place`, `stp_drop`, …) is an
+    /// action precisely because its payload is all numbers.
+    SprayPlace(SprayPlaceRequest),
+}
+
+/// ADR-068 — what the client asks the host to paint. The host is the authority: it validates
+/// every cap (`world::spray::Spray::validate_from`) before minting an id, so nothing here is
+/// trusted as sent.
+///
+/// Coordinates arrive in WORLD space and the host converts them to chunk-local before storing
+/// (ADR-068 decision 3). The client does not compute the chunk — deriving it in one place keeps
+/// a client that rounds differently from anchoring a spray to the wrong chunk.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SprayPlaceRequest {
+    /// Client-generated dedup key, same role as `stp_place`'s `place_id`: a reliable
+    /// retransmit must paint exactly one spray. `0` = no dedup.
+    #[serde(default)]
+    pub place_id: u64,
+    pub layer: u8,
+    pub world_pos: [f32; 3],
+    pub yaw: f32,
+    pub size: [f32; 2],
+    pub strokes: Vec<crate::world::spray::SprayStroke>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -170,6 +198,10 @@ pub enum ServerMessage {
     /// ADR-061 — first frame of every IPC connection, before any world state. Never goes
     /// through a broadcast channel: `handle_connection` writes it straight to the socket.
     Hello(ServerHello),
+    /// ADR-068 — a spray the host ACCEPTED, with its minted id and tick. Sent live so the
+    /// painter sees the authoritative version (and every other client sees it appear) without
+    /// waiting to reload the chunk. The bulk hydration path is `GridChunkData::sprays`.
+    SprayPlaced(crate::world::spray::Spray),
 }
 
 /// ADR-061 — the schema revision this backend speaks, so Unity can refuse a desynced build
@@ -223,6 +255,16 @@ pub struct GridChunkData {
     /// `volumetric_grid`/`vertical_debug_markers`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub room_zones: Vec<RoomZone>,
+    /// ADR-068 — the sprays painted on this chunk, in RENDER ORDER (oldest first, so the
+    /// newest paints over the rest). This is the bulk hydration path: sprays ride the chunk
+    /// the client already asks for instead of a per-tick roster, because unlike the STP
+    /// rosters a spray is ~1,9 KB and 64 of them per chunk at 10 Hz would be absurd.
+    ///
+    /// Unlike `walls`/`room_zones`, this is NOT derivable from the seed — it is player-made
+    /// state the host owns. Omitted from the wire when empty, so a chunk nobody has painted
+    /// costs exactly what it cost before this field existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sprays: Vec<crate::world::spray::Spray>,
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the

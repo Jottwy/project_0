@@ -143,6 +143,15 @@ pub struct NetworkManager {
     pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
     /// Phase B2.6: client-generated harvest-hit ids already processed by the host (dedup).
     pub processed_stp_harvest_hits: std::collections::HashSet<u64>,
+    /// ADR-068: the world's sprays, indexed by chunk. It lives beside the STP rosters because
+    /// it is the same kind of state — host-authoritative, replicated, persisted — but it is
+    /// NOT relayed per tick: sprays hydrate with the chunk (`GridChunkData::sprays`) and a new
+    /// one travels alone (`ServerMessage::SprayPlaced`). On the host it grows from
+    /// `ClientMessage::SprayPlace`; on joiners it will grow from the relayed packet.
+    pub sprays: crate::world::spray::SprayStore,
+    /// ADR-068: client-generated place ids already accepted, so a reliable retransmit of one
+    /// painting paints exactly one spray. Same dedup pattern as `processed_stp_places`.
+    pub processed_spray_places: std::collections::HashSet<u64>,
     /// ADR-011 follow-up: host-assigned item ids whose StpPickupGranted the joiner already
     /// processed, so a reliable retransmit of the grant never re-stamps last_pickup_at (which
     /// would duplicate the proxy "pickup" window). Same dedup pattern as the processed_stp_* above.
@@ -309,6 +318,8 @@ impl NetworkManager {
             processed_stp_carryable_drops: std::collections::HashSet::with_capacity(64),
             stp_harvestables: Vec::new(),
             processed_stp_harvest_hits: std::collections::HashSet::with_capacity(128),
+            sprays: crate::world::spray::SprayStore::new(),
+            processed_spray_places: std::collections::HashSet::with_capacity(128),
             processed_stp_pickup_grants: std::collections::HashSet::with_capacity(128),
             processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: std::collections::HashSet::with_capacity(64),

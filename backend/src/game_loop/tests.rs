@@ -4736,3 +4736,174 @@ async fn session_ended_carries_the_disconnect_reason() {
     }
     assert_eq!(reason.as_deref(), Some("heartbeat timeout"));
 }
+
+// ─────────────────────────── ADR-068 — spray (S1) ───────────────────────────
+
+/// Una petición de pintada bien formada, centrada donde está el jugador.
+fn spray_request(place_id: u64, at: [f32; 3]) -> crate::ipc::SprayPlaceRequest {
+    crate::ipc::SprayPlaceRequest {
+        place_id,
+        layer: 0,
+        world_pos: at,
+        yaw: 90.0,
+        size: [1.0, 1.0],
+        strokes: vec![crate::world::spray::SprayStroke {
+            color: 2,
+            width: 4,
+            points: vec![0, 0, 10, 10, 20, 20],
+        }],
+    }
+}
+
+#[tokio::test]
+async fn the_host_anchors_a_spray_to_its_chunk_in_local_coordinates() {
+    // El invariante de ADR-068 decisión 3, extremo a extremo: entra en coordenadas de MUNDO y
+    // debe quedar guardado en LOCALES del chunk correcto. Se elige a propósito un chunk que no
+    // es el (0,0) — con world_pos dentro del primer chunk, local y global coinciden y el test
+    // pasaría aunque el anclaje estuviera roto.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, mut rx) = broadcast::channel(16);
+    let world_pos = [137.5, 1.6, -80.0]; // chunk (2, -2)
+    let mut player = Player::new(1, "Host");
+    player.position = Vec3::new(world_pos[0], world_pos[1], world_pos[2] + 1.0);
+
+    process_spray_place(spray_request(1, world_pos), &player, &mut net, 99, &tx);
+
+    let stored = net.sprays.chunk((2, -2, 0));
+    assert_eq!(stored.len(), 1, "la pintada debe caer en el chunk (2,-2)");
+    assert_eq!(stored[0].local_pos, [37.5, 1.6, 20.0]);
+    assert_eq!(
+        stored[0].world_pos(),
+        world_pos,
+        "y volver a su sitio al leer"
+    );
+    assert_eq!(stored[0].tick, 99, "el tick del host ES el orden de render");
+    assert_ne!(stored[0].id, 0, "el host acuña el id");
+
+    match rx.try_recv() {
+        Ok(ServerMessage::SprayPlaced(s)) => assert_eq!(s.id, stored[0].id),
+        other => panic!("el host debe hacer eco de la pintada aceptada: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_host_refuses_what_the_caps_of_decision_5_forbid() {
+    // Cada rechazo deja el almacén INTACTO. Si alguno dejara de rechazar, un cliente modificado
+    // llegaría al save por esa vía.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    let at = [10.0, 1.6, 10.0];
+    let mut player = Player::new(1, "Host");
+    player.position = Vec3::new(at[0], at[1], at[2]);
+
+    // Lienzo por encima del tope.
+    let mut req = spray_request(1, at);
+    req.size = [99.0, 1.0];
+    process_spray_place(req, &player, &mut net, 1, &tx);
+
+    // NaN: pasaría cualquier comparación de rango si la guarda no fuera lo primero.
+    let mut req = spray_request(2, at);
+    req.world_pos = [f32::NAN, 1.6, 10.0];
+    process_spray_place(req, &player, &mut net, 1, &tx);
+
+    // Blob de puntos impar: X sin su Y.
+    let mut req = spray_request(3, at);
+    req.strokes[0].points.push(7);
+    process_spray_place(req, &player, &mut net, 1, &tx);
+
+    // Fuera del alcance del brazo: pintar a través de media planta.
+    let far = [at[0] + 40.0, at[1], at[2]];
+    process_spray_place(spray_request(4, far), &player, &mut net, 1, &tx);
+
+    assert_eq!(
+        net.sprays.len(),
+        0,
+        "ningún rechazo puede llegar al almacén"
+    );
+}
+
+#[tokio::test]
+async fn a_retransmitted_place_paints_exactly_one_spray() {
+    // El `place_id` es la misma defensa que `stp_place`: el transporte fiable reenvía, y una
+    // pintada duplicada no solo se ve mal, gasta una plaza del cap del chunk.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    let at = [10.0, 1.6, 10.0];
+    let mut player = Player::new(1, "Host");
+    player.position = Vec3::new(at[0], at[1], at[2]);
+
+    process_spray_place(spray_request(77, at), &player, &mut net, 1, &tx);
+    process_spray_place(spray_request(77, at), &player, &mut net, 2, &tx);
+
+    assert_eq!(net.sprays.len(), 1);
+}
+
+#[tokio::test]
+async fn a_joiner_never_mints_a_spray_id_of_its_own() {
+    // ADR-063: los acuñadores runtime son host-only. Hasta que el commit de P2P lo reenvíe, un
+    // joiner NO pinta — pero tampoco inventa un id que colisionaría con el del host.
+    let mut net = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+    let (tx, mut rx) = broadcast::channel(16);
+    let at = [10.0, 1.6, 10.0];
+    let mut player = Player::new(1, "Joiner");
+    player.position = Vec3::new(at[0], at[1], at[2]);
+
+    process_spray_place(spray_request(1, at), &player, &mut net, 1, &tx);
+
+    assert_eq!(net.sprays.len(), 0);
+    assert!(
+        rx.try_recv().is_err(),
+        "un joiner no puede anunciar una pintada como aceptada"
+    );
+}
+
+#[tokio::test]
+async fn sprays_ride_the_chunk_the_client_already_asks_for() {
+    // La hidratación de ADR-068 §6: `GridChunkData` las lleva en ORDEN DE RENDER, y un chunk sin
+    // pintar no paga nada (`skip_serializing_if`), que es lo que permite no relayarlas por tick.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    let at = [10.0, 1.6, 10.0];
+    let mut player = Player::new(1, "Host");
+    player.position = Vec3::new(at[0], at[1], at[2]);
+
+    process_spray_place(spray_request(1, at), &player, &mut net, 10, &tx);
+    process_spray_place(spray_request(2, at), &player, &mut net, 20, &tx);
+
+    let sprays = net.sprays.chunk((0, 0, 0)).to_vec();
+    assert_eq!(sprays.len(), 2);
+    assert!(
+        sprays[0].tick < sprays[1].tick,
+        "la más nueva se dibuja la última"
+    );
+
+    let painted = crate::ipc::GridChunkData {
+        cx: 0,
+        cz: 0,
+        layer: 0,
+        walls: [[0u8; 10]; 10],
+        room_zones: vec![],
+        sprays,
+    };
+    let body = rmp_serde::to_vec_named(&painted).unwrap();
+    let decoded: crate::ipc::GridChunkData = rmp_serde::from_slice(&body).unwrap();
+    assert_eq!(
+        decoded.sprays.len(),
+        2,
+        "las pintadas deben sobrevivir al wire"
+    );
+    assert_eq!(
+        decoded.sprays[0].strokes[0].points,
+        vec![0, 0, 10, 10, 20, 20]
+    );
+
+    let clean = crate::ipc::GridChunkData {
+        sprays: vec![],
+        ..painted
+    };
+    let clean_body = rmp_serde::to_vec_named(&clean).unwrap();
+    assert!(
+        !String::from_utf8_lossy(&clean_body).contains("sprays"),
+        "un chunk sin pintar no debe pagar ni la clave"
+    );
+}

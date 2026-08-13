@@ -715,13 +715,22 @@ pub async fn run(
                     );
                     // Broadcast: in this P2P model each player runs its own backend with a
                     // single Unity client, so the only subscriber IS the requester.
+                    // ADR-068: las pintadas viajan CON el chunk. No se derivan del seed como
+                    // `walls`/`room_zones` — son estado de jugador que el host posee —, así que
+                    // esto es lo único de este mensaje que no es función pura de la coordenada.
+                    let sprays = net.sprays.chunk((cx, cz, layer)).to_vec();
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
                         cx,
                         cz,
                         layer,
                         walls,
                         room_zones,
+                        sprays,
                     }));
+                }
+                ClientMessage::SprayPlace(req) => {
+                    // ADR-068: el host valida y acuña; el jugador que pinta no decide nada.
+                    process_spray_place(req, &player, &mut net, tick, &to_clients);
                 }
                 ClientMessage::Voice { seq, data } => {
                     // ADR-046 Fase 2 — our own microphone, on its way out.
@@ -4114,6 +4123,99 @@ static NEXT_STP_BUILDING_ID: std::sync::atomic::AtomicU32 =
 
 fn next_stp_building_id() -> u32 {
     NEXT_STP_BUILDING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// ADR-068: monotonic id source for host-minted sprays. Starts at 1 so `0` stays available as
+/// "no spray". Host-only by construction — `process_spray_place` is the single call site and it
+/// returns early on a joiner, the same host-only régime ADR-063 requires of every runtime minter.
+static NEXT_SPRAY_ID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+
+fn next_spray_id() -> u32 {
+    NEXT_SPRAY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// ADR-068: the host accepts (or refuses) one painted spray.
+///
+/// Everything the client sent is a REQUEST. The host derives the chunk itself, converts the
+/// position to chunk-local, validates every cap of decision 5, and only then mints an id — so a
+/// modified client cannot inflate the save, paint through a wall from across the level, or plant
+/// a NaN. A refusal is logged with WHICH cap it crossed: a silent reject over a legitimate
+/// client is undebuggable.
+fn process_spray_place(
+    req: crate::ipc::SprayPlaceRequest,
+    player: &Player,
+    net: &mut NetworkManager,
+    tick: u64,
+    to_clients: &broadcast::Sender<ServerMessage>,
+) {
+    if !net.is_host {
+        // S1 commit 4 forwards this to the host over P2P. Until then it is refused LOUDLY —
+        // a joiner whose paint silently evaporates is exactly the failure this project keeps
+        // paying for elsewhere.
+        info!(
+            "MPTRACE step=SPRAY event=spray_place_joiner_not_forwarded place_id={} pending=s1_p2p",
+            req.place_id
+        );
+        return;
+    }
+
+    if req.place_id != 0 && !net.processed_spray_places.insert(req.place_id) {
+        info!(
+            "MPTRACE step=SPRAY event=spray_place_duplicate place_id={} ignored=true",
+            req.place_id
+        );
+        return;
+    }
+
+    // El chunk lo deriva el HOST, no el cliente: un cliente que redondee distinto anclaría la
+    // pintada al chunk equivocado, y el anclaje es justo lo que ADR-068 no puede permitirse mal.
+    let (cx, cz) = crate::world::spray::chunk_of(req.world_pos);
+    let spray = crate::world::spray::Spray {
+        id: next_spray_id(),
+        cx,
+        cz,
+        layer: req.layer,
+        local_pos: crate::world::spray::to_chunk_local(req.world_pos, cx, cz),
+        yaw: req.yaw,
+        size: req.size,
+        author: net.local_id,
+        tick,
+        strokes: req.strokes,
+    };
+
+    if let Err(reason) = spray.validate_from(player.position) {
+        info!(
+            "MPTRACE step=SPRAY event=spray_place_rejected place_id={} reason={} pos=({:.2},{:.2},{:.2})",
+            req.place_id, reason, req.world_pos[0], req.world_pos[1], req.world_pos[2]
+        );
+        return;
+    }
+
+    let id = spray.id;
+    let points = spray.point_count();
+    let evicted = net.sprays.insert(spray.clone());
+    if let Some(old) = &evicted {
+        info!(
+            "MPTRACE step=SPRAY event=spray_evicted id={} chunk=({},{},{}) reason=chunk_full",
+            old.id, old.cx, old.cz, old.layer
+        );
+    }
+
+    info!(
+        "MPTRACE step=SPRAY event=spray_placed id={} place_id={} chunk=({},{},{}) strokes={} points={} evicted={}",
+        id,
+        req.place_id,
+        cx,
+        cz,
+        req.layer,
+        spray.strokes.len(),
+        points,
+        evicted.is_some()
+    );
+
+    // Eco inmediato: el que pinta está mirando la pared, así que el round-trip se nota más aquí
+    // que en ningún otro sitio (mismo razonamiento que el relay inmediato de `stp_place`).
+    let _ = to_clients.send(ServerMessage::SprayPlaced(spray));
 }
 
 /// Phase B3: monotonic id source for host-minted STP building GROUPS. Starts at 1 so
