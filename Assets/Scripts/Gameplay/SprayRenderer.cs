@@ -86,8 +86,46 @@ namespace BackroomsSurvival.Gameplay
         /// <summary>El renderizador vivo, para que el pintor pueda pedirle la vista previa.</summary>
         public static SprayRenderer Instance => _instance;
 
+        /// <summary>
+        /// Una pintada materializada. Guarda la textura y el material APARTE del GameObject
+        /// porque destruir el objeto NO los libera: son recursos creados en runtime, y el que
+        /// sea Unity quien los referencie no los hace suyos. Sin esto, cada pintada vista deja
+        /// 256 KB de textura (256×256 RGBA) colgados para siempre — cien pintadas en una sesión
+        /// larga son 25 MB que no vuelven.
+        /// </summary>
+        private readonly struct Live
+        {
+            public readonly GameObject Go;
+            public readonly Texture2D Tex;
+            public readonly Material Mat;
+            public readonly int Cx, Cz;
+
+            public Live(GameObject go, Texture2D tex, Material mat, int cx, int cz)
+            {
+                Go = go; Tex = tex; Mat = mat; Cx = cx; Cz = cz;
+            }
+        }
+
         /// <summary>Lo pintado, por id de pintada. El id lo acuña el host y es único de mundo.</summary>
-        private readonly Dictionary<uint, GameObject> _spawned = new Dictionary<uint, GameObject>();
+        private readonly Dictionary<uint, Live> _spawned = new Dictionary<uint, Live>();
+
+        /// <summary>
+        /// Cuántas pintadas se han materializado ya en cada pared (chunk + capa). Es lo que
+        /// separa en profundidad a las que se solapan: sin ello todas se pegan a la MISMA
+        /// distancia del muro, hacen z-fighting donde coinciden, y no hay ninguna garantía de que
+        /// la nueva tape a la vieja — que es exactamente la decisión 4 de ADR-068.
+        /// </summary>
+        private readonly Dictionary<(int, int, byte), int> _stacked =
+            new Dictionary<(int, int, byte), int>();
+
+        /// <summary>
+        /// Radio de conservación en chunks alrededor del jugador. Más allá se sueltan con su
+        /// textura: vuelven solas cuando el chunk se vuelve a pedir, porque las pintadas viajan
+        /// CON el chunk. Generoso a propósito — soltar y rehidratar cuesta rasterizar otra vez.
+        /// </summary>
+        private const int KeepRadiusChunks = 3;
+        private const float SweepInterval = 5f;
+        private float _nextSweep;
 
         private Mesh _quad;
         private IPCClient _client;
@@ -113,6 +151,57 @@ namespace BackroomsSurvival.Gameplay
             // sesión lo crea más tarde). Reintento barato por frame hasta engancharse — un
             // enganche perdido significaría un mundo sin una sola pintada, en silencio.
             if (_client == null) TryHook();
+
+            if (Time.unscaledTime >= _nextSweep)
+            {
+                _nextSweep = Time.unscaledTime + SweepInterval;
+                SweepFarAway();
+            }
+        }
+
+        /// <summary>
+        /// Suelta las pintadas lejanas CON su textura y su material. Sin esta pasada el
+        /// diccionario solo crece: cada pintada vista en la sesión se queda con sus 256 KB, y
+        /// recorrer el mundo un rato basta para acumular decenas de MB que nunca se liberan.
+        ///
+        /// Soltar es seguro porque las pintadas viajan con el chunk: cuando el jugador vuelva,
+        /// `chunk_data` las trae otra vez y se rasterizan de nuevo.
+        /// </summary>
+        private void SweepFarAway()
+        {
+            if (_spawned.Count == 0) return;
+            var cam = Camera.main;
+            if (cam == null) return;
+
+            int pcx = Mathf.FloorToInt(cam.transform.position.x / SprayMsg.ChunkSize);
+            int pcz = Mathf.FloorToInt(cam.transform.position.z / SprayMsg.ChunkSize);
+
+            List<uint> drop = null;
+            foreach (var kv in _spawned)
+            {
+                if (Mathf.Abs(kv.Value.Cx - pcx) <= KeepRadiusChunks &&
+                    Mathf.Abs(kv.Value.Cz - pcz) <= KeepRadiusChunks)
+                    continue;
+                (drop ??= new List<uint>()).Add(kv.Key);
+            }
+            if (drop == null) return;
+
+            foreach (var id in drop)
+            {
+                Release(_spawned[id]);
+                _spawned.Remove(id);
+            }
+            // El contador de apilado se olvida con ellas: al rehidratar el chunk vuelven en el
+            // mismo orden y se vuelven a escalonar igual.
+            _stacked.Clear();
+        }
+
+        /// <summary>Destruye objeto, textura y material. Los tres, o la textura sobrevive.</summary>
+        private void Release(Live live)
+        {
+            if (live.Go != null) Destroy(live.Go);
+            if (live.Mat != null) Destroy(live.Mat);
+            if (live.Tex != null) Destroy(live.Tex);
         }
 
         private void TryHook()
@@ -160,19 +249,32 @@ namespace BackroomsSurvival.Gameplay
 
             // Llegó la autoritativa: fuera la previa, o se verían las dos superpuestas.
             ClearPreview();
-            _spawned[spray.id] = BuildQuadObject(spray, tex, $"Spray_{spray.id}");
+
+            // Cada pintada nueva sobre la MISMA pared se despega una pizca más que la anterior.
+            // Es lo que hace real el "pintar encima" de ADR-068: a la misma distancia del muro
+            // dos quads solapados hacen z-fighting y quién tapa a quién lo decide el azar del
+            // depth buffer, no el orden en que se pintaron.
+            var key = (spray.cx, spray.cz, spray.layer);
+            _stacked.TryGetValue(key, out int depth);
+            _stacked[key] = depth + 1;
+
+            var go = BuildQuadObject(spray, tex, $"Spray_{spray.id}", depth, out var mat);
+            _spawned[spray.id] = new Live(go, tex, mat, spray.cx, spray.cz);
         }
 
         /// <summary>El quad con su textura, colocado contra la pared. Compartido por la pintada
         /// definitiva y por la previa, para que las dos se vean EXACTAMENTE igual.</summary>
-        private GameObject BuildQuadObject(SprayMsg spray, Texture2D tex, string name)
+        private GameObject BuildQuadObject(SprayMsg spray, Texture2D tex, string name,
+            int stackDepth, out Material mat)
         {
             var go = new GameObject(name);
             go.transform.SetParent(transform, false);
             // Sin collider, y esto NO es un descuido: una pintada no puede frenar al jugador ni
             // aparecer en los raycasts de construcción o interacción. Es pintura, no geometría.
             go.transform.SetPositionAndRotation(spray.WorldPos, Quaternion.Euler(0f, spray.yaw, 0f));
-            go.transform.position += go.transform.forward * WallOffset;
+            // 0,15 mm por capa: suficiente para que el depth buffer las ordene, y con el cap de
+            // 64 por chunk el peor caso son ~10 mm de separación, invisible contra el muro.
+            go.transform.position += go.transform.forward * (WallOffset + stackDepth * StackStep);
             go.transform.localScale = new Vector3(spray.sizeX, spray.sizeY, 1f);
 
             go.AddComponent<MeshFilter>().sharedMesh = _quad;
@@ -182,7 +284,7 @@ namespace BackroomsSurvival.Gameplay
 
             // Blanco: el color va en los téxeles, no en el tinte, para que una sola pintada pueda
             // llevar trazos de varios colores.
-            var mat = MaterialHelper.MakeTransparent(Color.white);
+            mat = MaterialHelper.MakeTransparent(Color.white);
             if (mat != null)
             {
                 if (mat.HasProperty("_BaseMap")) mat.SetTexture("_BaseMap", tex);
@@ -194,6 +296,9 @@ namespace BackroomsSurvival.Gameplay
             }
             return go;
         }
+
+        /// <summary>Separación extra por cada pintada ya presente en la misma pared.</summary>
+        private const float StackStep = 0.00015f;
 
         /// <summary>Cuántas pintadas hay materializadas ahora mismo. Para diagnóstico y tests.</summary>
         public int LiveCount => _spawned.Count;
@@ -207,9 +312,14 @@ namespace BackroomsSurvival.Gameplay
         //
         // Es puramente local: no viaja, no se guarda, y desaparece en cuanto llega la pintada
         // autoritativa (que puede diferir — el host manda).
-        private GameObject _preview;
+        private Live _preview;
+        private bool _hasPreview;
 
-        /// <summary>Refresca el trazo en curso. Llamar mientras se pinta.</summary>
+        /// <summary>
+        /// Refresca el trazo en curso. Llamar mientras se pinta — se rehace 30 veces por segundo,
+        /// así que soltar bien la textura anterior aquí importa MÁS que en ninguna otra parte:
+        /// una pintada larga fabrica cientos de texturas de 256 KB, una por refresco.
+        /// </summary>
         public void ShowPreview(SprayMsg spray)
         {
             ClearPreview();
@@ -218,7 +328,14 @@ namespace BackroomsSurvival.Gameplay
             var tex = Rasterize(spray);
             if (tex == null) return;
 
-            _preview = BuildQuadObject(spray, tex, "Spray_Preview");
+            // La previa va SIEMPRE encima de lo que ya hubiera en esa pared: se está pintando
+            // ahora mismo, así que es lo más nuevo por definición.
+            var key = (spray.cx, spray.cz, spray.layer);
+            _stacked.TryGetValue(key, out int depth);
+
+            var go = BuildQuadObject(spray, tex, "Spray_Preview", depth, out var mat);
+            _preview = new Live(go, tex, mat, spray.cx, spray.cz);
+            _hasPreview = true;
         }
 
         /// <summary>
@@ -227,15 +344,19 @@ namespace BackroomsSurvival.Gameplay
         /// </summary>
         public void ClearPreview()
         {
-            if (_preview != null) Destroy(_preview);
-            _preview = null;
+            if (!_hasPreview) return;
+            Release(_preview);
+            _preview = default;
+            _hasPreview = false;
         }
 
         public void Clear()
         {
             foreach (var kv in _spawned)
-                if (kv.Value != null) Destroy(kv.Value);
+                Release(kv.Value);
             _spawned.Clear();
+            _stacked.Clear();
+            ClearPreview();
         }
 
         /// <summary>
