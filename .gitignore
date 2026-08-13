@@ -53,6 +53,8 @@ backend/.env
 
 # Rust runtime data (partidas guardadas locales, no son fuente)
 backend/saves/
+# El backend lanzado desde el editor corre con cwd = raiz del repo, asi que escribe aqui
+saves/
 
 # Imports de generadores 3D: cientos de MB de binarios, se regeneran desde la herramienta
 Assets/MeshyImports/
