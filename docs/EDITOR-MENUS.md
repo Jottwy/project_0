@@ -76,6 +76,7 @@ Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
 | `Backrooms/Build/Compile and deploy backend now` | `Editor/BackendBuildPreprocessor.cs` | compila Rust y copia el exe a `Builds/Backend/` |
 | `Backrooms/Build/Inyectar ajustes de Voz en la pestaña Audio` | `Editor/VoiceOptionsTabBuilder.cs` | modifica el prefab de opciones de STP |
 | `Backrooms/Spray/Crear bote de spray` | `Editor/BackroomsSprayCanCreator.cs` | crear-si-falta: `ItemDefinition` + prefab de wieldable (ADR-068 S3). **COMMITEAR lo generado** — el `_id` va en el wire y en los saves. NUNCA EJECUTADO todavía |
+| `Backrooms/Spray/Apagar el fuego del bote` | `Editor/BackroomsSprayCanCreator.cs` | apaga llama/brasas/chispas y TODA `Light` heredadas de la antorcha donante. Idempotente |
 | `Backrooms/Spray/Registrar bote en el jugador` | `Editor/SprayCanWieldableRegistrar.cs` | **EDITA PREFABS DEL VENDOR** (`FPS_Player`/`STP_Player`): cuelga el wieldable junto a la antorcha. Sin esto el bote no se puede empuñar. Un reimport del `.unitypackage` lo borra en silencio — reejecutar |
 | `Backrooms/Spray/Dar un bote al jugador` | `Editor/SprayCanGiver.cs` | **solo en Play**; mete un bote en el inventario vía `AddItemsById`. Provisional hasta que S4 lo ponga en el loot |
 | `Backrooms/Spray/Pintar prueba delante del jugador` | `Editor/SprayTestPainter.cs` | **solo en Play**; fabrica una pintada local (ADR-068 S2), no toca backend ni save |

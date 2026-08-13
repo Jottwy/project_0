@@ -172,6 +172,80 @@ namespace BackroomsSurvival.EditorTools
         }
 
         /// <summary>
+        /// Apaga lo que el bote heredó de la antorcha por ser un clon suyo: la llama, las brasas,
+        /// las chispas y CUALQUIER `Light`. Un bote de spray ardiendo no es "arte prestado", es un
+        /// objeto equivocado — y además la luz entraría en el criterio de `TorchShadowCaster`
+        /// (ADR-065), que promueve a sombras la luz más potente del wieldable ACTIVO: el bote se
+        /// habría llevado el único shadow map del juego.
+        ///
+        /// Se DESACTIVAN los nodos en vez de borrarlos: es reversible, y borrar dentro de una
+        /// jerarquía que vino de un prefab del vendor es más frágil que apagarla.
+        /// </summary>
+        [MenuItem("Backrooms/Spray/Apagar el fuego del bote", false, 97)]
+        public static void StripFire()
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(PrefabPath);
+            if (prefab == null)
+            {
+                Debug.LogError($"[SprayCanCreator] No hay prefab en '{PrefabPath}'.");
+                return;
+            }
+
+            var root = PrefabUtility.LoadPrefabContents(PrefabPath);
+            try
+            {
+                int off = StripFireFrom(root);
+                if (off > 0)
+                {
+                    PrefabUtility.SaveAsPrefabAsset(root, PrefabPath);
+                    AssetDatabase.SaveAssets();
+                }
+                Debug.Log($"[SprayCanCreator] {off} nodo(s)/luz(ces) de fuego apagados en el bote.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(root);
+            }
+        }
+
+        private static readonly string[] FireNodeHints =
+        {
+            "fire", "flame", "ember", "spark", "smoke", "candle", "torch",
+        };
+
+        private static int StripFireFrom(GameObject root)
+        {
+            int touched = 0;
+
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (t == root.transform) continue;
+                string n = t.name.ToLowerInvariant();
+                foreach (var hint in FireNodeHints)
+                {
+                    if (!n.Contains(hint)) continue;
+                    if (t.gameObject.activeSelf)
+                    {
+                        t.gameObject.SetActive(false);
+                        touched++;
+                    }
+                    break;
+                }
+            }
+
+            // Y las luces por tipo, no por nombre: `FireLight` cuelga de un prefab ANIDADO
+            // (`FPS_VFX_SmallFire`) y su nodo podría no llevar ninguna de las pistas de arriba.
+            foreach (var light in root.GetComponentsInChildren<Light>(true))
+            {
+                if (!light.enabled) continue;
+                light.enabled = false;
+                touched++;
+            }
+
+            return touched;
+        }
+
+        /// <summary>
         /// Repara la etiqueta de un asset YA existente. Existe porque la primera versión de este
         /// creador no copiaba `_tag`, y el resultado era un bote que aparecía en el inventario y
         /// no se dejaba equipar, sin ningún error. Solo toca la etiqueta: el `_id` no se roza,
@@ -218,6 +292,8 @@ namespace BackroomsSurvival.EditorTools
                 instance.name = "BR_Wieldable_SprayCan";
                 if (instance.GetComponentInChildren<SprayCan>(true) == null)
                     instance.AddComponent<SprayCan>();
+
+                StripFireFrom(instance);
 
                 int repointed = RepointReferencedItem(instance, definition.Id);
                 if (repointed == 0)
