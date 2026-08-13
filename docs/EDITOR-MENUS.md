@@ -75,6 +75,7 @@ Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
 | `Tools/Backrooms/Fix Runtime Materials` | `Editor/BackroomsRuntimeMaterialInstaller.cs` | **fuera del menú `Backrooms/`**, único que cuelga de `Tools/` |
 | `Backrooms/Build/Compile and deploy backend now` | `Editor/BackendBuildPreprocessor.cs` | compila Rust y copia el exe a `Builds/Backend/` |
 | `Backrooms/Build/Inyectar ajustes de Voz en la pestaña Audio` | `Editor/VoiceOptionsTabBuilder.cs` | modifica el prefab de opciones de STP |
+| `Backrooms/Spray/Crear bote de spray` | `Editor/BackroomsSprayCanCreator.cs` | crear-si-falta: `ItemDefinition` + prefab de wieldable (ADR-068 S3). **COMMITEAR lo generado** — el `_id` va en el wire y en los saves. NUNCA EJECUTADO todavía |
 | `Backrooms/Spray/Pintar prueba delante del jugador` | `Editor/SprayTestPainter.cs` | **solo en Play**; fabrica una pintada local (ADR-068 S2), no toca backend ni save |
 | `Backrooms/Spray/Borrar pintadas de prueba` | `Editor/SprayTestPainter.cs` | borra las pintadas EN PANTALLA; las reales vuelven al recargar el chunk |
 
