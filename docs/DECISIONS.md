@@ -2984,3 +2984,70 @@ Contexto: dos varamientos de arranque reportados y reproducidos. (1) Entrar en P
 Dependencias: ADR-025 (enmendado en su letra, intacto en sesión), ADR-032/ADR-045 (los dos puntos de hidratación donde vive el guardián), ADR-031 (resolve_respawn cama/starter, reutilizado tal cual), ADR-029 (la ventana de invulnerabilidad PvP NO se arma en el revive de carga — es tick-relativa y sin sentido tras un reinicio).
 
 Verificado: `cargo test` 660 en verde (tests nuevos: revive en starter, revive en cama, save vivo intacto — `a_dead_snapshot_revives_on_load`, `a_dead_snapshot_revives_at_the_bed_when_one_is_placed`, `an_alive_snapshot_hydrates_untouched`); e2e real con save fabricado (health 0, pos 999) contra el binario desplegado → `MPTRACE step=RESPAWN event=dead_save_revived_on_load pos=(22.50,1.80,22.50)` y cero `player_died` tras el boot; `CompileCheckClient.sh` → `errors: 0` en los cinco asmdef. **Validado por Joel en juego (2026-08-13): bug 1 y bug 2 resueltos.** Commits: 8659236 / a83b306 / a6e8c68.
+
+---
+
+### ADR-068 — Spray: pintadas de trazo libre, persistentes, ancladas al chunk y pisables (2026-08-13)
+
+Estado: **PROPUESTA (2026-08-13).** Cero código. Los dos forks de diseño elegidos por Joel vía `AskUserQuestion`: **trazo libre desde el primer slice** (contra la opción plantillas-primero) y **bote con cargas limitadas** (contra infinito).
+
+**Qué añade.** Un item nuevo — bote de spray, wieldable — con el que el jugador pinta sobre las paredes del mundo: marcas de orientación, códigos, murales. Las pintadas persisten en el save, las ven todos los peers, y cualquier jugador puede pintar **encima** de las de otro. Taparlas o vandalizarlas es mecánica social deliberada del juego, no grief a prevenir; lo único que este ADR trata como grief es el crecimiento sin límite de DATOS, y eso sí se capa (decisión 5).
+
+#### Decisiones
+
+**1. Contenido: trazo libre desde el día 1.** El jugador pinta de verdad moviendo la mira sobre la pared con el bote activo; no hay set de plantillas ni símbolos predefinidos. Se descartó plantillas-primero (más barato: ~20 bytes por pintada) porque los murales y las marcas propias son el corazón de la mecánica y una base de plantillas habría condicionado el formato de datos hacia algo que luego habría que tirar.
+
+**2. Formato: vectorial acotado, no raster.** Una pintada = lienzo rectangular anclado a una pared (posición local + orientación + tamaño, tope 2×2 m) + lista de trazos; cada trazo = color (índice de paleta, u8) + puntos cuantizados a u8×u8 sobre el lienzo (retícula 256×256). Metadatos: id acuñado por el host, timestamp del host, autor (`PeerId`). Topes duros por pintada: máx 64 trazos y 512 puntos ⇒ ~1,2 KB máximo en wire y en save. Los NÚMEROS de los topes son afinables en implementación; la EXISTENCIA de topes es ley. Vectorial y no raster porque el payload es órdenes de magnitud menor, es validable campo a campo en el host, y el cliente lo rasteriza una sola vez a la resolución que quiera.
+
+**3. Anclaje CHUNK-LOCAL, nunca global.** La pintada pertenece a `(cx, cz, layer)` con posición LOCAL al chunk. Razón dura: ADR-067 — cuando el displacement aterrice, la geometría viaja; una pintada en coordenadas globales quedaría flotando donde ya no hay pared. Consecuencia de diseño aceptada y DESEADA: las marcas de orientación viajan con el chunk, así que un swap convierte las señales del jugador en mentiras coherentes — sinergia directa con la mecánica núcleo, el spray hace el displacement más aterrador, no menos. Nota de deuda: esto NO agranda R1 de ADR-067; al contrario, las pintadas nacen siendo el primer dato del proyecto correctamente anclado al chunk y no entran en la auditoría pendiente de R1.
+
+**4. Pintar encima = colocar encima.** Sin merge, sin edición ni borrado de pintadas ajenas: la única interacción con la pintada de otro es colocar una nueva que la tape. Orden de render = orden de timestamp del host (la más nueva encima). Esto mantiene cada pintada como registro inmutable — simplifica wire, save y disputa de autoridad a "append con desalojo", sin estados de edición concurrente.
+
+**5. El host es la autoridad y TODO tope se valida en el host.** Caps: máx pintadas por chunk (~64, afinable) con desalojo FIFO de la más antigua al llenarse; rango jugador-pared validado (~5 m, coherente con `max_distance` de interacción); tamaño de lienzo, número de trazos/puntos y cargas del bote validados antes de aceptar. Un cliente modificado no puede inflar el save ni el wire por encima de los caps.
+
+**6. Wire y persistencia por los patrones ya sellados.** `ClientMessage::SprayPlace` (payload completo de trazos) → el host valida, acuña id+timestamp y emite `ServerMessage::SprayPlaced`; hidratación por chunk junto al streaming existente. Bump `WIRE_SCHEMA_VERSION` 28→29 **en el mismo commit** que `WireSchema.Expected` (ADR-061: desincronizarlos deja el juego inarrancable) + entrada en `systems/ipc-wire-schema.md`. Persistencia: campo aditivo con `#[serde(default)]` en `SaveFile` — mapa `(cx, cz, layer) → Vec<Spray>` — mismo patrón que R3 de ADR-067 y tolerado por el punto 5 de ADR-032; un save previo carga con el mapa vacío.
+
+**7. Render cliente: quad rasterizado, SIN DecalRendererFeature.** `PC_Renderer.asset` no tiene Decal feature y no se le añade: cada pintada se rasteriza UNA vez (al colocarla o al hidratar el chunk) a una `Texture2D` pequeña y se dibuja como quad alpha-blended a ~3 mm de la pared — el mismo truco que `ChunkRenderer.Stain()` usa ya para las manchas procedurales. Cero coste por frame, cero cambios en el renderer asset, cero riesgo sobre el pipeline recién migrado (ADR-065).
+
+**8. Economía: cargas limitadas.** El bote consume pintura proporcional a la longitud pintada; agotado, se acaba. Botes nuevos aparecen como loot por las tablas existentes (`ChunkLootRoll` pools + `ZoneLootTable`). Marcar el camino cuesta recurso, y tapar el mural de otro también — el vandalismo tiene precio. Números (capacidad, consumo por metro, rareza en loot) afinables en implementación.
+
+#### Consecuencias / qué prohíbe
+
+**PROHÍBE coordenadas globales en cualquier payload o save de pintada.** Nace chunk-local (decisión 3); guardar global reintroduciría exactamente la deuda R1 que ADR-067 documenta.
+
+**PROHÍBE aceptar una pintada sin validar los topes en el host** (decisión 5). El cap no es UX, es la frontera del tamaño del save.
+
+**PROHÍBE borrar o editar pintadas ajenas en el slice inicial.** La única interacción es tapar (decisión 4). Si algún día se quiere "limpiar" pintura (disolvente, decay temporal), es enmienda a este ADR, no un handler nuevo improvisado.
+
+**PROHÍBE habilitar DecalRendererFeature para esto** (decisión 7). Si otra feature futura lo necesita, se decide allí con su propio coste.
+
+**OBLIGA a bumpear `WIRE_SCHEMA_VERSION` + `WireSchema.Expected` en el mismo commit** (ADR-061), con entrada en el changelog `systems/ipc-wire-schema.md`.
+
+#### Plan de slices (orden, no ejecución)
+
+- **S1 — backend:** modelo `Spray` + almacén por chunk + `SprayPlace`/`SprayPlaced` + hidratación + save aditivo + caps y validación + tests. Bump wire 28→29 con espejo C#.
+- **S2 — render cliente:** rasterizado de trazos + quad sobre pared + hidratación visual. Verificable con pintadas FABRICADAS antes de que exista el item.
+- **S3 — item y captura:** ItemDefinition + wieldable del bote (patrón `BackroomsItemCreator`), modo pintar con raycast a pared (patrón `GridWallBuildingPiece.PlacementMask`), captura de trazos y gasto de cargas.
+- **S4 — economía y pulido:** entrada en tablas de loot, calibrado de cargas/consumo, z-order fino del tapado.
+
+Dependencias: ADR-067 (el anclaje chunk-local existe por él; este ADR no depende de que el swap se implemente), ADR-061 (espejo wire obligatorio), ADR-032 (campo aditivo de save, punto 5), ADR-063 (los ids de pintada los acuña solo el host, mismo régimen host-only que los acuñadores runtime existentes), ADR-065/066 (el render no toca pipeline ni luces).
+
+No verificado: **nada**. No hay código, tests ni playtest asociados a este ADR.
+
+### Enmienda ADR-068 (S1, 2026-08-13) — el presupuesto de §2 estaba mal por 2,6× y lo que lo domina no son los puntos
+
+Corrección de un error aritmético del borrador, encontrada al implementar S1 y **medida, no estimada** (`the_worst_case_spray_stays_within_its_declared_budget`, `backend/src/world/spray.rs`). Ninguna decisión del ADR cambia; cambian un número y el formato de un campo. Mismo patrón que la corrección de la fórmula de ADR-063 durante su implementación.
+
+**§2 prometía "~1,2 KB máximo por pintada". El primer peor caso medido fue 3,1 KB.** Dos causas, y la segunda es la que importa:
+
+1. **Los puntos como `Vec<[u8; 2]>` costaban 3 bytes por punto, no 2** — msgpack escribe una cabecera de array por cada punto. Corregido pasando el trazo a un blob `bin` plano con X e Y intercalados (`#[serde(with = "serde_bytes")]`), que es exactamente lo que el doc de `PeerVoice::data` ya había medido en este proyecto ("un array de enteros cuesta ~1,5× el mismo bin"). Ahorro: ~450 B. **Consecuencia de contrato:** la longitud del blob es siempre PAR, y una impar se rechaza (`SprayReject::OddPointBytes`) en vez de truncarse; el cliente lo escribirá con el mismo `MsgPackWriter.WriteBin` que ya usa para la voz.
+
+2. **Lo dominante NO eran los puntos sino la cabecera de cada TRAZO.** Un trazo se serializa como mapa con nombres (`color`/`width`/`points`): ~40 B de los que solo los puntos son dato. Con 64 trazos eso son ~2,5 KB de puros nombres de campo. **`MAX_STROKES_PER_SPRAY` baja de 64 a 32** — afinado que el propio §2 autoriza ("los NÚMEROS de los topes son afinables en implementación; la EXISTENCIA de topes es ley"). No cuesta expresividad: el tope de PUNTOS (512, intacto) es el que limita cuánto detalle cabe en un dibujo; el de trazos solo limita cuántas veces levantas el dedo del gatillo, y 32 sigue siendo más de lo que un mural real necesita.
+
+**Presupuesto real, que pasa a ser el declarado:** **1888 B por pintada en wire** (msgpack) y **3609 B en save**. Los dos tests que lo sostienen son cotas (≤ 2 KB wire, ≤ 8 KB save) y ambos imprimen la cifra con `--nocapture`, para que quien afine los topes vea el número y no solo el veredicto.
+
+**RIESGO NUEVO, declarado aquí porque el borrador no lo veía: el save es JSON y JSON no tiene tipo binario.** El mismo blob que en wire son 1024 bytes sale en el save como lista de enteros ASCII, ~4× más caro — de ahí que save (3609 B) casi doble a wire (1888 B). **Un chunk saturado cuesta 225 KB de save.** Está acotado (solo lo pagan los chunks que un jugador realmente satura, y el cap por chunk es la frontera) y se acepta para S1, pero es el primer sitio a mirar si el fichero de guardado se dispara. La salida, si hace falta, es codificar el blob como texto compacto (base64) en el camino de persistencia y no en el de wire — decisión que se toma en el commit de save de S1, no aquí.
+
+**Qué NO cambia:** el anclaje chunk-local, la inmutabilidad del registro, el tapado por timestamp, la validación host-only y el cap por chunk con desalojo FIFO siguen exactamente como los fijó el ADR.
+
+Verificado: `cargo test` 673 en verde (660 previos + 13 nuevos en `world::spray`); `clippy +stable-x86_64-pc-windows-gnu --all-targets -D warnings` limpio. Sin wire, sin save y sin cliente todavía — este commit es solo el modelo.
