@@ -137,9 +137,49 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             var d = Ensure();
             if (d == null) return;
+            bool changed = !d._hasTarget || !Same(d._target, tone);
             d._target    = tone;
             d._hasTarget = true;
+            if (changed) d._announcePending = true;
         }
+
+        private static bool Same(RoomTone a, RoomTone b) =>
+            a.dry == b.dry && a.room == b.room && a.roomHF == b.roomHF &&
+            a.decay == b.decay && a.level == b.level &&
+            a.reflect == b.reflect && a.reflectDelay == b.reflectDelay;
+
+        /// <summary>
+        /// Acuse de sala: una línea cuando el objetivo CAMBIA, y los valores no salen de lo
+        /// que creemos haber escrito sino de <c>GetFloat</c> sobre el mixer — o sea, lo que
+        /// el efecto tiene de verdad. Es la diferencia entre "el código pidió esto" y "el
+        /// reverb suena así", que es justo donde se escondió el fallo del zumbido durante
+        /// cuatro rondas. Cero salida mientras no se cruce de zona.
+        /// </summary>
+        private void AnnounceRoom()
+        {
+            if (!_announcePending || _mixer == null) return;
+            _announcePending = false;
+
+            float room, decay, refl, delay, dry;
+            bool ok = _mixer.GetFloat(ParamRoom, out room)
+                    & _mixer.GetFloat(ParamDecay, out decay)
+                    & _mixer.GetFloat(ParamReflect, out refl)
+                    & _mixer.GetFloat(ParamReflectDelay, out delay)
+                    & _mixer.GetFloat(ParamDry, out dry);
+
+            if (!ok)
+            {
+                Debug.LogWarning("[Reverb] el mixer NO devuelve los parámetros: reverb mudo. " +
+                                 "Ver docs/systems/reverb-mixer.md.");
+                return;
+            }
+            Debug.Log($"[Reverb] pedido room={_target.room:F0} decay={_target.decay:F2} " +
+                      $"reflect={_target.reflect:F0} delay={_target.reflectDelay:F4} " +
+                      $"dry={_target.dry:F0}  |  EN EL MIXER room={room:F0} decay={decay:F2} " +
+                      $"reflect={refl:F0} delay={delay:F4} dry={dry:F0}");
+        }
+
+        private bool _announcePending;
 
         /// <summary>Devuelve el reverb a silencio (menús, o capa sin autoría).</summary>
         public static void Silence() => SetRoom(RoomTone.Silent);
@@ -216,6 +256,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             // Sin movimiento no se reescribe: una vez asentada la sala, el driver deja de
             // tocar el mixer hasta el siguiente cambio de zona.
             if (moved) Write(_current);
+            else AnnounceRoom(); // ya asentado: el mixer tiene el valor final, no uno a medias
         }
 
         private static void Approach(ref float current, float target, float t, ref bool moved,
