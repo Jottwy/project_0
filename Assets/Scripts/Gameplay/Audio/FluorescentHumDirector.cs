@@ -154,6 +154,23 @@ namespace BackroomsSurvival.Gameplay.Audio
         private float     _listenerRetry;
         private float     _refreshTimer;
 
+        // ── Diagnóstico temporal ────────────────────────────────────────────────
+        //
+        // POR QUÉ EXISTE: el volumen se bajó CUATRO veces (0.35 → 0.12 → 0.05 → 0.005,
+        // −37 dB) y Joel siguió oyéndolo "exactamente igual de alto". El enrutado al mixer
+        // arregló la superposición pero no el nivel, así que sigue habiendo algo entre
+        // LayerVisualConfig.humVolume y AudioSource.volume que no se comporta como dice el
+        // código. Seguir tocando el número a ciegas es lo que ya ha fallado cuatro veces:
+        // esto imprime los valores REALES para poder mirarlos en vez de deducirlos.
+        //
+        // Se apaga solo a los DiagnosticSeconds — no hay flag que se pueda olvidar
+        // encendido, y una vez identificada la causa este bloque se borra entero.
+        private const float DiagnosticSeconds  = 30f;
+        private const float DiagnosticInterval = 2f;
+        private float _diagLife;
+        private float _diagTimer;
+        private static bool _loggedFirstBatch;
+
         private static AudioClip                _sharedClip;
         private static FluorescentHumDirector   _instance;
         private static bool                     _quitting;
@@ -179,6 +196,17 @@ namespace BackroomsSurvival.Gameplay.Audio
 
             var director = EnsureInstance();
             if (director == null) return;
+
+            if (!_loggedFirstBatch)
+            {
+                // El valor que de verdad sale de LayerVisualConfig/ZoneLightSet, impreso una
+                // sola vez. Si aqui aparece 0.005 pero el pico de arriba no baja con el, el
+                // problema esta despues de este punto; si aparece otra cosa, esta antes.
+                _loggedFirstBatch = true;
+                Debug.Log($"[FluorescentHum] primer lote: humVolume={humVolume:F5} " +
+                          $"capa={worldLayer} lamparas={worldPositions.Count} " +
+                          $"clip={(_sharedClip != null ? _sharedClip.name : "null")}");
+            }
 
             int n = worldPositions.Count;
             var pos = new Vector3[n];
@@ -235,6 +263,7 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             _quitting = false;
             _instance = null;
+            _loggedFirstBatch = false;
         }
 
         private void Awake()
@@ -348,6 +377,39 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (refresh) Reassign(_listener.position);
 
             DriveSlots(dt);
+            LogDiagnostics(dt);
+        }
+
+        // Una línea cada 2 s durante los primeros 30 s: qué volumen pide la config, qué
+        // volumen tiene de verdad cada AudioSource, y si el enrutado al mixer se logró.
+        private void LogDiagnostics(float dt)
+        {
+            if (_diagLife > DiagnosticSeconds) return;
+            _diagLife += dt;
+            _diagTimer -= dt;
+            if (_diagTimer > 0f) return;
+            _diagTimer = DiagnosticInterval;
+
+            int voiced = 0;
+            float loudest = 0f, sumVol = 0f;
+            var sb = new System.Text.StringBuilder(160);
+            for (int i = 0; i < _slots.Length; i++)
+            {
+                var s = _slots[i];
+                if (s.liveKey == NoKey) continue;
+                voiced++;
+                sumVol += s.src.volume;
+                if (s.src.volume > loudest) loudest = s.src.volume;
+                sb.Append(s.src.volume.ToString("F5")).Append('/')
+                  .Append(Vector3.Distance(s.tr.position, _listener.position).ToString("F1")).Append(' ');
+            }
+
+            // AudioListener.volume es GLOBAL y lo escriben las opciones del juego: si no es
+            // 1 multiplica todo, y explicaria por que bajar humVolume no mueve nada.
+            Debug.Log($"[FluorescentHum] routed={_routed} master={_masterVolume:F3} " +
+                      $"listenerVol={AudioListener.volume:F3} lotes={_batches.Count} " +
+                      $"voces={voiced}/{_slots.Length} pico={loudest:F5} suma={sumVol:F5} " +
+                      $"[vol/dist] {sb}");
         }
 
         // Un lote muere con la raíz de su chunk. Único punto de retirada del sistema.

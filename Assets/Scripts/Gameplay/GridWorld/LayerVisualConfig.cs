@@ -112,7 +112,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "0.005 desaparece del todo en vez de quedar de fondo, la salida NO es subirlo " +
                  "otra vez: es repartir la energía hacia el grave en " +
                  "FluorescentHumDirector.RenderHumSamples.")]
-        [Range(0f, 1f)] public float humVolume = 0.005f;
+        [Range(0f, 1f)] public float humVolume = 0.001f;
 
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
