@@ -76,6 +76,168 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
+    /// ADR-068 — un trazo de spray: el recorrido continuo de la boquilla mientras el
+    /// jugador mantiene el gatillo. Mirror de <c>world::spray::SprayStroke</c>.
+    /// </summary>
+    public struct SprayStrokeMsg
+    {
+        /// <summary>Índice en la paleta del backend (&lt; 16).</summary>
+        public byte color;
+
+        /// <summary>Grosor de boquilla, en la misma retícula de 256 que los puntos.</summary>
+        public byte width;
+
+        /// <summary>
+        /// Puntos en espacio de LIENZO, X e Y INTERCALADOS (<c>[x0,y0,x1,y1,…]</c>) sobre
+        /// una retícula de 256×256 — así que la longitud es siempre PAR y hay
+        /// <c>points.Length / 2</c> puntos.
+        ///
+        /// Viaja como <c>bin</c> y no como lista de enteros, igual que la voz de ADR-046:
+        /// un array de enteros cuesta ~1,5× los mismos bytes. Se lee con
+        /// <see cref="MsgPackReader.ReadBin"/>, el mismo método.
+        /// </summary>
+        public byte[] points;
+
+        /// <summary>Puntos reales del trazo — la MITAD de la longitud del blob.</summary>
+        public int PointCount => points == null ? 0 : points.Length / 2;
+
+        public static SprayStrokeMsg Parse(MsgPackReader r)
+        {
+            var s = new SprayStrokeMsg();
+            int n = r.ReadMapHeader();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "color")) s.color = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "width")) s.width = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "points")) s.points = r.ReadBin();
+                else r.Skip();
+            }
+            return s;
+        }
+    }
+
+    /// <summary>
+    /// ADR-068 — una pintada colocada. Mirror de <c>world::spray::Spray</c>.
+    ///
+    /// OJO con las coordenadas: el backend la guarda ANCLADA AL CHUNK (<c>local_pos</c> con
+    /// X/Z relativos al origen del chunk) porque con el displacement de ADR-067 la geometría
+    /// viaja. El cliente NO deshace ese anclaje por su cuenta: usa
+    /// <see cref="WorldPos"/>, que lo traduce en el punto de lectura igual que hace el
+    /// backend. La Y no es chunk-local — los chunks parten el mundo en X/Z.
+    /// </summary>
+    public class SprayMsg
+    {
+        /// <summary>Lado del chunk en unidades de mundo — espejo de <c>utils::CHUNK_SIZE</c>.</summary>
+        public const float ChunkSize = 50f;
+
+        public uint id;
+        public int cx;
+        public int cz;
+        public byte layer;
+
+        /// <summary>X/Z LOCALES al chunk; Y es altura de mundo. Ver <see cref="WorldPos"/>.</summary>
+        public float lx, ly, lz;
+
+        /// <summary>Giro del lienzo en grados: hacia dónde mira la pared pintada.</summary>
+        public float yaw;
+
+        /// <summary>Ancho y alto del lienzo, en metros.</summary>
+        public float sizeX = 1f, sizeY = 1f;
+
+        /// <summary>PeerId del autor. Informativo — no concede derechos sobre la pintada.</summary>
+        public ushort author;
+
+        /// <summary>
+        /// Tick del host al aceptarla. ES el orden de render: la más nueva se dibuja encima,
+        /// que es cómo funciona tapar la pintada de otro (ADR-068 decisión 4).
+        /// </summary>
+        public ulong tick;
+
+        /// <summary>NUNCA null — una pintada sin trazos no la acepta el host.</summary>
+        public SprayStrokeMsg[] strokes = new SprayStrokeMsg[0];
+
+        /// <summary>Posición de mundo de esta pintada HOY, derivada del anclaje al chunk.</summary>
+        public UnityEngine.Vector3 WorldPos => new UnityEngine.Vector3(
+            lx + cx * ChunkSize,
+            ly,
+            lz + cz * ChunkSize);
+
+        /// <summary>Anidada (dentro de <c>chunk_data.sprays</c>): la pintada trae su map header.</summary>
+        public static SprayMsg Parse(MsgPackReader r) => ParseFields(r, r.ReadMapHeader());
+
+        /// <summary>
+        /// Raíz (frame <c>spray_placed</c>): el map header y el par "type" YA los consumió
+        /// <c>IPCClient.Dispatch</c>, y serde aplana la variante de tupla — los campos de la
+        /// pintada vienen sueltos junto al tag, no anidados bajo una clave. Es la misma forma
+        /// que ya tienen <c>world_state</c>, <c>chunk_data</c> y el <c>hello</c> que el backend
+        /// fija byte a byte en su propio test.
+        /// </summary>
+        public static SprayMsg ParseFields(MsgPackReader r, int n)
+        {
+            var s = new SprayMsg();
+            for (int i = 0; i < n; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "id")) s.id = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "cx")) s.cx = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "cz")) s.cz = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "layer")) s.layer = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "local_pos"))
+                {
+                    int c = r.ReadArrayHeader();
+                    for (int j = 0; j < c; j++)
+                    {
+                        float v = r.ReadFloat();
+                        if (j == 0) s.lx = v;
+                        else if (j == 1) s.ly = v;
+                        else if (j == 2) s.lz = v;
+                    }
+                }
+                else if (MsgPackReader.Is(k, "yaw")) s.yaw = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "size"))
+                {
+                    int c = r.ReadArrayHeader();
+                    for (int j = 0; j < c; j++)
+                    {
+                        float v = r.ReadFloat();
+                        if (j == 0) s.sizeX = v;
+                        else if (j == 1) s.sizeY = v;
+                    }
+                }
+                else if (MsgPackReader.Is(k, "author")) s.author = (ushort)r.ReadInt();
+                else if (MsgPackReader.Is(k, "tick")) s.tick = (ulong)r.ReadInt();
+                else if (MsgPackReader.Is(k, "strokes"))
+                {
+                    int sc = r.ReadArrayHeader();
+                    if (sc > 0)
+                    {
+                        s.strokes = new SprayStrokeMsg[sc];
+                        for (int si = 0; si < sc; si++)
+                            s.strokes[si] = SprayStrokeMsg.Parse(r);
+                    }
+                }
+                else r.Skip();
+            }
+            return s;
+        }
+    }
+
+    /// <summary>
+    /// ADR-068 — frame raíz <c>spray_placed</c>: UNA pintada que el host acaba de aceptar.
+    /// Llega suelta y no dentro de un roster, por lo mismo que en el backend: una pintada
+    /// son ~1,9 KB y un puñado no cabría en el transporte.
+    ///
+    /// Es la ÚNICA vía por la que una pintada ajena aparece sin recargar el chunk — el
+    /// <c>chunk_data</c> de esa pared ya viajó.
+    /// </summary>
+    public static class SprayPlacedMsg
+    {
+        public static SprayMsg Parse(MsgPackReader r, int remainingPairs) =>
+            SprayMsg.ParseFields(r, remainingPairs);
+    }
+
+    /// <summary>
     /// Fase 4.1 — backend grid_gen chunk reply (ServerMessage::ChunkData, tag
     /// "chunk_data"). A 10×10 grid of 5 m tiles, each an edge-wall bitmask in the
     /// BACKEND convention: N=1 (−Z), S=2 (+Z), E=4 (+X), W=8 (−X). walls[x,z].
@@ -103,6 +265,19 @@ namespace BackroomsSurvival.Net
         /// caso "ninguna zona cubre este tile", no un caso de nulo aparte.
         /// </summary>
         public RoomZoneMsg[] roomZones = NoRoomZones;
+
+        /// <summary>Instancia compartida para "sin pintadas" — la mayoría de los chunks.</summary>
+        private static readonly SprayMsg[] NoSprays = new SprayMsg[0];
+
+        /// <summary>
+        /// ADR-068 — las pintadas de este chunk, en ORDEN DE RENDER (de la más antigua a la más
+        /// nueva, para que la última tape a las anteriores). NUNCA null, mismo criterio que
+        /// <see cref="roomZones"/>.
+        ///
+        /// A diferencia de <see cref="walls"/>, esto NO se deriva del seed: es estado de jugador
+        /// que el host posee. Un chunk que nadie ha pintado no trae ni la clave.
+        /// </summary>
+        public SprayMsg[] sprays = NoSprays;
 
         /// <summary>
         /// Root-tagged message (ServerMessage::ChunkData, "type":"chunk_data") — reads the
@@ -146,6 +321,18 @@ namespace BackroomsSurvival.Net
                         m.roomZones = new RoomZoneMsg[zc];
                         for (int zi = 0; zi < zc; zi++)
                             m.roomZones[zi] = RoomZoneMsg.Parse(r);
+                    }
+                }
+                else if (MsgPackReader.Is(k, "sprays"))
+                {
+                    // ADR-068: clave aditiva, ausente entera en un chunk sin pintar ⇒ queda el
+                    // NoSprays compartido. Mismo patrón que room_zones.
+                    int sc = r.ReadArrayHeader();
+                    if (sc > 0)
+                    {
+                        m.sprays = new SprayMsg[sc];
+                        for (int si = 0; si < sc; si++)
+                            m.sprays[si] = SprayMsg.Parse(r);
                     }
                 }
                 else r.Skip();

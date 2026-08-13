@@ -29,5 +29,10 @@ namespace BackroomsSurvival.Net
         /// <see cref="WireSchema"/> revision. Written before the write loop starts, so it
         /// precedes any world_state already buffered on the broadcast channel.</summary>
         public const string Hello = "hello";
+
+        /// <summary>ADR-068 — UNA pintada que el host acaba de aceptar. Llega suelta, no dentro
+        /// de un roster: una pintada son ~1,9 KB. Es la única vía por la que aparece sin
+        /// recargar el chunk, porque el <c>chunk_data</c> de esa pared ya viajó.</summary>
+        public const string SprayPlaced = "spray_placed";
     }
 }

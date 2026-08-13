@@ -129,6 +129,10 @@ namespace BackroomsSurvival.Net
         public delegate void ChunkDataHandler(GridChunkDataMsg data);
         private readonly List<ChunkDataHandler> _chunkDataListeners = new List<ChunkDataHandler>();
 
+        // ADR-068 — pintadas aceptadas por el host (spray_placed).
+        public delegate void SprayHandler(SprayMsg spray);
+        private readonly List<SprayHandler> _sprayListeners = new List<SprayHandler>();
+
         public void AddEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Add(handler); }
         public void RemoveEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Remove(handler); }
         public void AddStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Add(handler); }
@@ -137,6 +141,8 @@ namespace BackroomsSurvival.Net
         public void RemoveMovementDeltaListener(MovementDeltaHandler handler) { lock (_deltaListeners) _deltaListeners.Remove(handler); }
         public void AddChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Add(handler); }
         public void RemoveChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Remove(handler); }
+        public void AddSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Add(handler); }
+        public void RemoveSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Remove(handler); }
 
         private void NotifyListeners(GameEventMsg ev)
         {
@@ -164,6 +170,14 @@ namespace BackroomsSurvival.Net
             lock (_chunkDataListeners)
                 foreach (var h in _chunkDataListeners)
                     try { h(data); } catch { }
+        }
+
+        private void NotifySprayListeners(SprayMsg spray)
+        {
+            if (spray == null) return;
+            lock (_sprayListeners)
+                foreach (var h in _sprayListeners)
+                    try { h(spray); } catch { }
         }
 
         // ─── Networking internals ───
@@ -300,6 +314,7 @@ namespace BackroomsSurvival.Net
         private readonly ConcurrentQueue<WorldStateMsg> _pendingStateNotify = new ConcurrentQueue<WorldStateMsg>();
         private readonly ConcurrentQueue<MovementDeltaMsg> _pendingDeltaNotify = new ConcurrentQueue<MovementDeltaMsg>();
         private readonly ConcurrentQueue<GridChunkDataMsg> _pendingChunkDataNotify = new ConcurrentQueue<GridChunkDataMsg>();
+        private readonly ConcurrentQueue<SprayMsg> _pendingSprayNotify = new ConcurrentQueue<SprayMsg>();
 
         private void Update()
         {
@@ -314,6 +329,9 @@ namespace BackroomsSurvival.Net
 
             while (_pendingChunkDataNotify.TryDequeue(out var chunkData))
                 NotifyChunkDataListeners(chunkData);
+
+            while (_pendingSprayNotify.TryDequeue(out var spray))
+                NotifySprayListeners(spray);
         }
 
         private void OnDestroy() => Shutdown();
@@ -490,6 +508,11 @@ namespace BackroomsSurvival.Net
                 case ProtocolMessageTypes.ChunkData:
                     // Fase 4.1: grid_gen chunk reply → ChunkStreamer (drained on the main thread).
                     _pendingChunkDataNotify.Enqueue(GridChunkDataMsg.Parse(r, remaining));
+                    break;
+                case ProtocolMessageTypes.SprayPlaced:
+                    // ADR-068: una pintada aceptada → SprayRenderer, en el hilo principal (crea
+                    // Texture2D y GameObjects, que la API de Unity solo permite ahí).
+                    _pendingSprayNotify.Enqueue(SprayPlacedMsg.Parse(r, remaining));
                     break;
                 case ProtocolMessageTypes.Event:
                     var gameEvent = GameEventMsg.Parse(r, remaining);
