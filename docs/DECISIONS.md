@@ -3067,3 +3067,20 @@ Descubierto al implementar S3, depurando por qué el bote entraba en el inventar
 **Lo que esto NO cambia:** el bote sigue siendo item-agnóstico desde el lado del juego. `SprayPainter` nunca pregunta "¿es el bote de spray?" sino si el wieldable activo trae un `SprayCan` (mismo criterio que `ReadLightOn` de ADR-042), así que cualquier item futuro que quiera pintar solo tiene que traer el componente y darse de alta igual.
 
 Verificado: `CompileCheckClient.sh` → `errors: 0` en las cuatro asambleas. **PENDIENTE DE VALIDACIÓN EN JUEGO** — el registrador está escrito y compilado; que el bote aparezca en la mano y pinte no puede afirmarse hasta verlo.
+
+### ADR-068 pasa a VALIDADA (2026-08-13) — las cuatro slices implementadas, pintar confirmado en juego
+
+Estado: **VALIDADA**. S1 (backend), S2 (render), S3 (item y captura) y S4 (loot) implementadas y commiteadas. **Joel confirma en juego que el bote se equipa y que pintar funciona** ("ha funcionado muy bien lo de pintar").
+
+**Lo que cambió respecto al diseño, y ya está registrado en las enmiendas anteriores:** el presupuesto por pintada (1888 B wire / 3609 B save, medidos, no estimados), el tope de trazos de 64 a 32, y que empuñar el bote obliga a editar un prefab del vendor.
+
+**Una corrección de diseño más, salida del PLAYTEST y no del código.** La primera captura fijaba el lienzo con el primer impacto y clampeaba cada muestra contra él. En juego eso se veía como cuatro cosas distintas —el trazo no seguía a la mira, salía desplazado, se partía en pintadas sueltas y "no se sentía fluido"— y eran dos causas: **no había vista previa** (el trazo no aparecía hasta que el host lo devolvía, más de un segundo después de soltar, así que se pintaba a ciegas) y **el lienzo era fijo y pequeño** (todo lo que se saliera se apelmazaba contra el canto). Se resuelve guardando el gesto en **coordenadas de mundo** y ajustando el lienzo a lo que de verdad se pintó, más una previa local a 30 Hz que usa el MISMO camino de render que la pintada definitiva. Si el gesto va a pasarse de los 2 m, se cierra la pintada y empieza otra en vez de clampear. **La lección general, que vale más que el arreglo: una mecánica de trazo continuo sin predicción local no se siente rota por la red, se siente rota a secas** — y ningún test lo habría dicho.
+
+**Qué queda como deuda declarada, ninguna bloqueante:**
+- **El modelo del bote es el de la antorcha.** Arte prestado desde el commit del creador; el fuego, las brasas y la `Light` sí están apagados (esa `Light` habría secuestrado el único shadow map del juego vía `TorchShadowCaster`).
+- **El alta del wieldable vive en `FPS_Player.prefab`**, del vendor: un reimport del `.unitypackage` la borra en silencio. Cura: reejecutar `Backrooms/Spray/Registrar bote en el jugador`.
+- **Calibrado sin datos de sesión larga.** 40 m de pintura por bote, boquilla 8, lienzo 1,2 m y ~1/10 de los slots de la pool de materiales son valores de primera pasada. Nadie ha medido cuántos botes acumula una partida.
+- **`Backrooms/Spray/Dar un bote al jugador`** era el andamio para probar antes de S4; ahora que el bote sale en el loot, se puede retirar o quedarse como utilidad de depuración.
+- **Los tests EditMode (45) no se han ejecutado nunca**: el runner headless exige el editor cerrado y estuvo abierto toda la sesión. Compilan (`errors: 0` en las cuatro asambleas).
+
+Verificado: `cargo test` **688 en verde**, `clippy +stable-x86_64-pc-windows-gnu --all-targets -D warnings` limpio, `CompileCheckClient.sh` → `errors: 0`. **La mitad multijugador y el ciclo de guardado se validan con dos backends sobre sockets UDP reales y un fichero real en disco** (`spray_hops_round_trip_between_peers`, `a_worst_case_spray_survives_a_real_datagram`, `a_painted_wall_survives_saving_and_reloading`), no solo con lógica suelta. Binario release desplegado en `Builds/Backend` con wire 29 y su espejo C#.

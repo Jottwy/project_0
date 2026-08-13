@@ -2,6 +2,30 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-13 (spray / ADR-068, 24 commits en rama migration/worldgraph-v1) — **cargo test 688 verdes (660→688); clippy +stable-x86_64-pc-windows-gnu --all-targets -D warnings limpio; CompileCheckClient.sh errors: 0 en 4 asambleas; binario release Builds/Backend wire 29; VALIDADO EN JUEGO POR JOEL: bote se equipa y pintar funciona bien.**
+
+0. ADR-068 (pintadas de spray) de PROPUESTA a VALIDADA con 3 enmiendas ancladas. Cuatro slices: S1 backend, S2 render, S3 item y captura, S4 loot. DECISIONS.md 2986→3086 líneas.
+
+1. DISEÑO INMUTABLE: anclaje CHUNK-LOCAL (ADR-067: la geometría viaja, las pintadas con ella); registro inmutable — única interacción = TAPAR pintada ajena; validación topes en host; cap 64 por chunk (desalojo FIFO); render quad rasterizado SIN DecalRendererFeature; bote con cargas limitadas.
+
+2. WIRE 29 (28→29) + espejo C# WireSchema.Expected mismo commit. `ClientMessage::SprayPlace` NO es action: `PlayerAction` usa `serde_json::Value` sin tipificación de bytes, blob binario no decodifica ahí. Tres opcodes P2P fiables: 0x51 petición joiner, 0x52 pintada aceptada, 0x53 consulta chunk. Una pintada POR PAQUETE (~1,9 KB wire vs rosters ADR-060 paginados). Entrada nueva `docs/systems/ipc-wire-schema.md`.
+
+3. DOS ERRORES PROPIOS CAZADOS POR TESTS: (a) presupuesto borrador mal por 2,6× — prometía 1,2 KB/pintada, medida real 3,1 KB (cabecera nombres campo CADA trazo fue dominante); tope trazos 64→32, puntos → blob binario. Reales: 1888 B wire, 3609 B save, 225 KB chunk saturado (save JSON, ~4× wire). (b) quad Unity devanado a -Z pero se desplazaba +forward → DENTRO de pared, invisible; UV en espejo.
+
+4. FALLO DE DISEÑO, playtest NO código. Primera captura fijaba lienzo con impacto, clampeaba: CUATRO SÍNTOMAS (no seguía mira, desplazada, partida sueltas, "no fluido") = DOS CAUSAS: sin VISTA PREVIA (a ciegas, >1s retraso respecto host) + lienzo fijo pequeño (overflow apelmazado). RESUELTO: gesto en coords MUNDO, lienzo se ajusta a pintado, previa local 30 Hz por MISMO camino render. LECCIÓN: trazo continuo sin predicción local se siente roto a secas — ningún test lo habría dicho.
+
+5. TRES BLOQUEOS SILENCIOSOS EN CADENA PARA EMPUÑAR BOTE: (a) menú "dar item" usaba `FindFirstObjectByType<Character>` (devuelve peers remotos o robapieles sin Inventory) → `NullReferenceException` en `AddItemsById`; RESUELTO `LocalPlayerLocator` (como `InventoryRestorer`). (b) `WieldableInventory.OnBehaviourStart` escanea HIJOS DIRECTOS root buscando `WieldableItem` pre-colocados; RESUELTO: alta bote dentro `FPS_Player.prefab` (VENDOR). (c) `ItemDefinition` sin tag Wieldable (_tag 6549466): se recoge/ve inventario pero no se equipa, sin error; RESUELTO con tag.
+
+6. MULTIJUGADOR Y GUARDADO VALIDADOS DE VERDAD: `spray_hops_round_trip_between_peers` (dos NetworkManager UDP reales + handshake, tres saltos), `a_worst_case_spray_survives_a_real_datagram` (32 trazos + 512 puntos = datagrama real), `a_painted_wall_survives_saving_and_reloading` (pintar→fichero real→backend limpio→servir con chunk, cubre paso JSON donde blob pierde tipificación).
+
+7. DEUDA DECLARADA, ninguna bloqueante: (a) MODELO bote = antorcha (arte prestado; fuego/brasas/Light apagados — esa Light habría secuestrado único shadowmap). (b) alta wieldable en `FPS_Player.prefab` (VENDOR) se borra EN SILENCIO con reimport → cura: reejecutar "Backrooms/Spray/Registrar bote en el jugador". (c) calibrado sin datos sesión larga: 40 m pintura, boquilla 8, lienzo 1,2 m, ~1/10 slots pool materiales. (d) menú "Dar un bote al jugador" era andamio pre-S4, retirable. (e) 45 TESTS EDITMODE SIN EJECUTAR NUNCA — runner exige editor cerrado, estuvo abierto; compilan errors: 0.
+
+8. Menús editor nuevos (`docs/EDITOR-MENUS.md`): Backrooms/Spray/Crear bote de spray, Registrar bote en el jugador, Apagar el fuego del bote, Dar un bote al jugador, Pintar prueba delante del jugador, Borrar pintadas de prueba.
+
+9. PRÓXIMO PASO: validación visual enmienda ADR-059/066 sesión anterior + irregularidad colocación lámparas. Correr 45 tests EditMode cuando editor cerrado.
+
+---
+
 - Fecha: 2026-08-14 (audio ambiental completo: reflexiones por zona, superficie de los pasos, oclusión, parpadeo audible y dirección dinámica) — **13 commits, continuación directa de la entrada de abajo. LOS CUATRO SISTEMAS NUEVOS ESTÁN VALIDADOS DE OÍDO POR JOEL: "pasos perfecto, oscuridad perfecto, pared por medio perfecto, lámpara parpadeando perfecto". Sin ADR nuevo: nada toca wire ni schema de guardado.**
 
 0. **QUÉ CERRÓ, en orden:** `8e68df5` (reflexiones tempranas + 3 fixes de auditoría) → `1266e8b` (histéresis de zona) → `6ec42aa` (13 salas con o sin paredes + el zumbido cede ante la cola) → `1408618`/`d59f56b`/`474abce` (sondas) → `0bdac04` (SetFloat NO falla en silencio) → **`c8d2bf6` (la línea en blanco)** → `5d548a9` (retirada de sondas) → `f969a45`+`7f0d482`+`e234547` (superficie de los pasos) → `caf31d7` (oclusión y parpadeo) → `886a80e` (aislamiento).
