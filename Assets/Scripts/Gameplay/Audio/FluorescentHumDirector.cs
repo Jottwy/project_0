@@ -75,6 +75,41 @@ namespace BackroomsSurvival.Gameplay.Audio
         // tinte por tile ni con el jitter de densidad de lámparas.
         private const uint PitchSalt = 0x484D5054U;
 
+        // Sal de la fase de parpadeo ("FLKR"). Distinta de la del pitch: si compartieran
+        // hash, la lámpara más aguda sería siempre la que parpadea en el mismo instante y
+        // el patrón se leería como artificial.
+        private const uint FlickerSalt = 0x464C4B52U;
+
+        /// <summary>
+        /// Cuánto baja el zumbido cuando el tubo está en el valle del parpadeo. No es 0: un
+        /// fluorescente que titila NO deja de zumbar, cambia de timbre — el ballast sigue
+        /// alimentando aunque el arco falle. Bajar a cero sonaría a lámpara arrancada.
+        /// </summary>
+        private const float FlickerVolumeDip = 0.45f;
+
+        // ── Oclusión ────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Volumen que conserva una lámpara con una pared de por medio. No es silencio: el
+        /// sonido atraviesa el yeso, solo que apagado. Lo que de verdad delata la pared es
+        /// el filtro de abajo, no la atenuación.
+        /// </summary>
+        private const float OccludedVolume = 0.35f;
+
+        // Corte del paso-bajo. Sin ocluir se deja arriba (transparente); ocluido baja a
+        // graves, que es lo que suena "al otro lado" — 800 Hz se come el filo del zumbido
+        // sin borrarlo.
+        private const float CutoffOpen     = 22000f;
+        private const float CutoffOccluded = 800f;
+        private const float OcclusionTau   = 0.25f; // suavizado: cruzar un vano no da un salto
+
+        /// <summary>
+        /// Un raycast por FRAME en round-robin, no ocho de golpe. Con 8 fuentes cada una se
+        /// revisa ~7 veces por segundo a 60 fps, de sobra para caminar, y el coste queda
+        /// plano en vez de en picos cada vez que toca revisar.
+        /// </summary>
+        private int _occlusionCursor;
+
         // Bits de índice de lámpara dentro de la clave. Un chunk son 10×10 tiles ⇒ ≤100
         // lámparas; 12 bits (4096) sobra y deja el id de lote en los 52 restantes de long,
         // que no se agota en ninguna sesión concebible.
@@ -116,6 +151,8 @@ namespace BackroomsSurvival.Gameplay.Audio
             public int       layer;     // capa macro, para aislar verticalmente
             public Vector3[] positions; // MUNDO, muestreadas al registrar
             public float[]   pitches;
+            public float[]   flickerHz;    // 0 = lámpara fija
+            public float[]   flickerPhase; // determinista, espejo de LampFlicker.phase
             public int       count;
             public int       id;        // monótono: una clave vieja no puede aliasar un lote nuevo
 
@@ -139,6 +176,11 @@ namespace BackroomsSurvival.Gameplay.Audio
             public long        liveKey = NoKey; // lo que la fuente está reproduciendo AHORA
             public float       baseVolume;
             public float       envelope;        // 0..1, el fade de reasignación
+            public AudioLowPassFilter lowPass;  // oclusión: la pared de por medio
+            public float       occlusion;       // OBJETIVO que fija la sonda: 0 a la vista, 1 tapada
+            public float       occlusionNow;    // el suavizado, que es el que se oye
+            public float       flickerGain = 1f;// modulación del parpadeo
+            public float       lastWave    = 1f;// para detectar el valle y soltar el chasquido
         }
 
         private readonly PoolSlot[]     _slots     = new PoolSlot[SourceBudget];
@@ -154,6 +196,8 @@ namespace BackroomsSurvival.Gameplay.Audio
             public Vector3 position;
             public float   pitch;
             public float   volume;
+            public float   flickerHz;
+            public float   flickerPhase;
         }
 
         private Transform _listener;
@@ -170,6 +214,7 @@ namespace BackroomsSurvival.Gameplay.Audio
         private float _lastAnnouncedVolume = -1f;
 
         private static AudioClip                _sharedClip;
+        private static AudioClip                _tickClip;
         private static FluorescentHumDirector   _instance;
         private static bool                     _quitting;
 
@@ -192,6 +237,7 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// </summary>
         public static void RegisterChunkLamps(Transform chunkRoot, int worldLayer,
             List<Vector3> worldPositions, List<float> pitches,
+            List<float> flickerHz, List<float> flickerPhase,
             LayerVisualConfig cfg, int zoneKind)
         {
             if (chunkRoot == null || cfg == null) return;
@@ -203,10 +249,14 @@ namespace BackroomsSurvival.Gameplay.Audio
             int n = worldPositions.Count;
             var pos = new Vector3[n];
             var pit = new float[n];
+            var fhz = new float[n];
+            var fph = new float[n];
             for (int i = 0; i < n; i++)
             {
                 pos[i] = worldPositions[i];
-                pit[i] = (pitches != null && i < pitches.Count) ? pitches[i] : 1f;
+                pit[i] = (pitches      != null && i < pitches.Count)      ? pitches[i]      : 1f;
+                fhz[i] = (flickerHz    != null && i < flickerHz.Count)    ? flickerHz[i]    : 0f;
+                fph[i] = (flickerPhase != null && i < flickerPhase.Count) ? flickerPhase[i] : 0f;
             }
 
             director._batches.Add(new LampBatch
@@ -215,6 +265,8 @@ namespace BackroomsSurvival.Gameplay.Audio
                 layer     = worldLayer,
                 positions = pos,
                 pitches   = pit,
+                flickerHz    = fhz,
+                flickerPhase = fph,
                 cfg       = cfg,
                 zoneKind  = zoneKind,
                 count     = n,
@@ -233,6 +285,19 @@ namespace BackroomsSurvival.Gameplay.Audio
             float h = GridChunkBuilder.Hash01(globalTileX, globalTileZ, PitchSalt);
             return 1f + (h - 0.5f) * 2f * PitchSpread;
         }
+
+        /// <summary>
+        /// Desfase del parpadeo de la lámpara del tile GLOBAL, en segundos. Determinista por
+        /// el mismo motivo que el pitch, y además por uno nuevo: el zumbido tiene que caer
+        /// EN EL MISMO INSTANTE que el brillo, y para eso el audio necesita reconstruir la
+        /// fase de la luz sin preguntarle al componente que la anima.
+        ///
+        /// Hasta ahora era <c>Random.Range(0, 100)</c> en el Start de LampFlicker: dos
+        /// clientes veían parpadear la misma lámpara en momentos distintos, lo cual era una
+        /// isla de no-determinismo en un worldgen que es determinista en todo lo demás.
+        /// </summary>
+        public static float FlickerPhaseFor(int globalTileX, int globalTileZ) =>
+            GridChunkBuilder.Hash01(globalTileX, globalTileZ, FlickerSalt) * 100f;
 
         // ── Ciclo de vida ───────────────────────────────────────────────────────
 
@@ -264,6 +329,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             _instance = this;
 
             var clip = ResolveClip();
+            _tickClip ??= BuildTickClip();
             for (int i = 0; i < _slots.Length; i++)
             {
                 var go = new GameObject("HumSource" + i);
@@ -287,7 +353,12 @@ namespace BackroomsSurvival.Gameplay.Audio
                 src.Play();
                 src.Pause();
 
-                _slots[i]     = new PoolSlot { src = src, tr = go.transform };
+                // Un paso-bajo POR FUENTE, no uno global: la oclusión es por lámpara —
+                // puedes tener una a la vista y otra detrás de una pared a la vez.
+                var lp = go.AddComponent<AudioLowPassFilter>();
+                lp.cutoffFrequency = CutoffOpen;
+
+                _slots[i]     = new PoolSlot { src = src, tr = go.transform, lowPass = lp };
                 _selection[i] = HumSlotState.Free;
             }
 
@@ -442,9 +513,11 @@ namespace BackroomsSurvival.Gameplay.Audio
                     _candidates.Add(new HumCandidate { key = key, distance = Mathf.Sqrt(sqr) });
                     _refs[key] = new LampRef
                     {
-                        position = batch.positions[i],
-                        pitch    = batch.pitches[i],
-                        volume   = batchVolume,
+                        position     = batch.positions[i],
+                        pitch        = batch.pitches[i],
+                        volume       = batchVolume,
+                        flickerHz    = batch.flickerHz[i],
+                        flickerPhase = batch.flickerPhase[i],
                     };
                 }
             }
@@ -501,8 +574,80 @@ namespace BackroomsSurvival.Gameplay.Audio
                     if (slot.envelope < 1f) slot.envelope = Mathf.Min(1f, slot.envelope + step);
                 }
 
-                slot.src.volume = slot.baseVolume * slot.envelope * _masterVolume;
+                DriveFlicker(slot, dt);
+                DriveOcclusion(slot, dt);
+
+                // baseVolume NO se toca: lo refresca el ajuste en vivo desde la config, y
+                // meterle aquí la oclusión lo iría apagando acumulativamente cada frame.
+                float occGain = Mathf.Lerp(1f, OccludedVolume, slot.occlusionNow);
+                slot.src.volume = slot.baseVolume * slot.envelope * slot.flickerGain
+                                * occGain * _masterVolume;
             }
+
+            StepOcclusionProbe();
+        }
+
+        /// <summary>
+        /// Modula el zumbido con la MISMA onda que anima la luz, y suelta un chasquido
+        /// eléctrico cada vez que el tubo toca el valle.
+        ///
+        /// La onda no se lee del componente LampFlicker: se reconstruye con
+        /// <see cref="LampFlicker.FlickerWave"/> a partir de la fase determinista del tile.
+        /// Preguntar al componente exigiría una referencia por lámpara —justo lo que este
+        /// director evita— y ademas se rompería en cuanto la lámpara esté fuera del
+        /// presupuesto de fuentes pero siga viéndose parpadear.
+        /// </summary>
+        private void DriveFlicker(PoolSlot slot, float dt)
+        {
+            if (slot.liveKey == NoKey || !_refs.TryGetValue(slot.liveKey, out var r) ||
+                r.flickerHz <= 0f)
+            {
+                slot.flickerGain = Mathf.Lerp(slot.flickerGain, 1f, Mathf.Clamp01(dt / 0.1f));
+                slot.lastWave    = 1f;
+                return;
+            }
+
+            float wave = World.LampFlicker.FlickerWave(Time.time, r.flickerPhase, r.flickerHz);
+            slot.flickerGain = Mathf.Lerp(FlickerVolumeDip, 1f, wave);
+
+            // Flanco de bajada al cruzar el valle: un solo chasquido por ciclo, en el
+            // instante en que la luz también está en su mínimo.
+            const float ValleyThreshold = 0.12f;
+            if (slot.lastWave >= ValleyThreshold && wave < ValleyThreshold && _tickClip != null)
+                slot.src.PlayOneShot(_tickClip, slot.baseVolume * _masterVolume * 1.6f);
+            slot.lastWave = wave;
+        }
+
+        // Aplica el estado de oclusión ya medido. Se suaviza aquí y no en la sonda porque la
+        // sonda solo toca una fuente por frame: sin esto, cruzar un vano daría un escalón.
+        private void DriveOcclusion(PoolSlot slot, float dt)
+        {
+            slot.occlusionNow = Mathf.Lerp(slot.occlusionNow, slot.occlusion,
+                Mathf.Clamp01(dt / OcclusionTau));
+            // El corte se interpola sobre el VALOR ya suavizado, no sobre el objetivo: así un
+            // vano cruzado a la carrera no produce un escalón de filtro.
+            slot.lowPass.cutoffFrequency =
+                Mathf.Lerp(CutoffOpen, CutoffOccluded, slot.occlusionNow);
+        }
+
+        /// <summary>
+        /// UN raycast por frame, rotando entre las fuentes. Ocho de golpe cada X ms daría el
+        /// mismo trabajo en picos; así el coste es plano y cada fuente se revisa ~7 veces por
+        /// segundo a 60 fps, de sobra para caminar.
+        /// </summary>
+        private void StepOcclusionProbe()
+        {
+            if (_listener == null) return;
+            _occlusionCursor = (_occlusionCursor + 1) % _slots.Length;
+            var slot = _slots[_occlusionCursor];
+            if (slot.liveKey == NoKey) { slot.occlusion = 0f; return; }
+
+            // Contra la geometría del mundo y nada más: props, jugadores y el propio rig no
+            // deben tapar una lámpara, y QueryTriggerInteraction.Ignore evita que un volumen
+            // de disparo cuente como pared.
+            bool blocked = Physics.Linecast(_listener.position, slot.tr.position,
+                GridChunkBuilder.GeoMask, QueryTriggerInteraction.Ignore);
+            slot.occlusion = blocked ? 1f : 0f;
         }
 
         // ── Selección (pura, y por eso testeable) ───────────────────────────────
@@ -655,6 +800,53 @@ namespace BackroomsSurvival.Gameplay.Audio
             _sharedClip = AudioClip.Create("FluorescentHum", data.Length, 1, ClipSampleRate, false);
             _sharedClip.SetData(data, 0);
             return _sharedClip;
+        }
+
+        private static AudioClip BuildTickClip()
+        {
+            var data = RenderTickSamples(ClipSampleRate);
+            var clip = AudioClip.Create("FluorescentTick", data.Length, 1, ClipSampleRate, false);
+            clip.SetData(data, 0);
+            return clip;
+        }
+
+        /// <summary>
+        /// Chasquido del arco al fallar: 45 ms de ruido con caída exponencial y un golpe de
+        /// 120 Hz debajo. Se dispara con <c>PlayOneShot</c> SOBRE la fuente que ya está
+        /// sonando, así que el parpadeo suena sin gastar ni una AudioSource del presupuesto
+        /// — que es la restricción de la que sale todo este sistema.
+        ///
+        /// Mono y determinista, igual que el zumbido.
+        /// </summary>
+        public static float[] RenderTickSamples(int sampleRate)
+        {
+            int n = Mathf.Max(64, sampleRate * 45 / 1000);
+            var buf = new float[n];
+            var rng = new System.Random(4711);
+            const double TwoPi = 2.0 * Math.PI;
+
+            float prevIn = 0f, prevOut = 0f, peak = 0f;
+            for (int i = 0; i < n; i++)
+            {
+                float t = (float)i / n;
+                // Ataque casi instantáneo y cola corta: un arco eléctrico no tiene sustain.
+                float env = Mathf.Exp(-9f * t);
+                float x = (float)(rng.NextDouble() * 2.0 - 1.0);
+                prevOut = 0.9f * (prevOut + x - prevIn);   // paso-alto: le da el filo
+                prevIn  = x;
+                // El 120 Hz debajo lo ata al zumbido: sin él el chasquido suena a estática
+                // genérica y no a ESTE tubo fallando.
+                float body = (float)Math.Sin(TwoPi * 120.0 * i / sampleRate) * 0.35f;
+                buf[i] = (prevOut * 0.8f + body) * env;
+                float a = Mathf.Abs(buf[i]);
+                if (a > peak) peak = a;
+            }
+            if (peak > 1e-6f)
+            {
+                float norm = 0.7f / peak;
+                for (int i = 0; i < n; i++) buf[i] *= norm;
+            }
+            return buf;
         }
 
         /// <summary>Frecuencia de muestreo del clip sintetizado.</summary>

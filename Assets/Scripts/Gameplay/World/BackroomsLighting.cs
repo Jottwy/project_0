@@ -64,6 +64,10 @@ namespace BackroomsSurvival.Gameplay.World
         // el streamer tiene un único BackroomsLighting y este método no es reentrante.
         private readonly List<Vector3> _humPositions = new List<Vector3>();
         private readonly List<float>   _humPitches   = new List<float>();
+        // Hz de parpadeo por lámpara (0 = fija) y su desfase. El zumbido los necesita para
+        // caer con la luz en el mismo instante en vez de a su aire.
+        private readonly List<float>   _humFlickerHz    = new List<float>();
+        private readonly List<float>   _humFlickerPhase = new List<float>();
 
         /// <summary>
         /// Spawn luminaires across <paramref name="chunkRoot"/>'s ceiling. Positions
@@ -157,6 +161,8 @@ namespace BackroomsSurvival.Gameplay.World
             // dentro las lámparas del chunk anterior.
             _humPositions.Clear();
             _humPitches.Clear();
+            _humFlickerHz.Clear();
+            _humFlickerPhase.Clear();
 
             for (int tz = 0; tz < tilesZ; tz++)
             {
@@ -188,9 +194,12 @@ namespace BackroomsSurvival.Gameplay.World
                     // cuelga 0,25–0,70 m por debajo. Un tubo roto no zumba, por eso va tras
                     // el `continue` de arriba. El pitch sale del tile GLOBAL, así que dos
                     // clientes —y dos visitas al mismo chunk— oyen el mismo detune.
+                    int gTx = chunkX * tilesX + tx, gTz = chunkZ * tilesZ + tz;
+                    float phase = FluorescentHumDirector.FlickerPhaseFor(gTx, gTz);
                     _humPositions.Add(chunkRoot.TransformPoint(localPos));
-                    _humPitches.Add(FluorescentHumDirector.PitchFor(
-                        chunkX * tilesX + tx, chunkZ * tilesZ + tz));
+                    _humPitches.Add(FluorescentHumDirector.PitchFor(gTx, gTz));
+                    _humFlickerHz.Add(flickering ? frequency : 0f);
+                    _humFlickerPhase.Add(phase);
 
                     // One centred light per panel (4 lights/panel killed perf).
                     //
@@ -258,6 +267,7 @@ namespace BackroomsSurvival.Gameplay.World
                         f.target        = light;
                         f.baseIntensity = lampIntensity;
                         f.frequency     = frequency;
+                        f.phase         = phase;
                         f.mesh          = meshRenderer; // already resolved by MakeLuminaire
                         f.litEmission   = litEmission;
                         if (dying) f.Invoke(nameof(LampFlicker.StartDying), deathIn);
@@ -271,7 +281,8 @@ namespace BackroomsSurvival.Gameplay.World
             // hay baja explícita que se pueda olvidar, y ningún AudioSource cuelga jamás de
             // un chunk, así que descargarlo no puede dejar fuentes huérfanas.
             FluorescentHumDirector.RegisterChunkLamps(
-                chunkRoot, worldLayer, _humPositions, _humPitches, cfg, zoneKind);
+                chunkRoot, worldLayer, _humPositions, _humPitches,
+                _humFlickerHz, _humFlickerPhase, cfg, zoneKind);
         }
 
         /// <paramref name="renderer"/> is handed back so the flicker path does not look the
@@ -314,12 +325,26 @@ namespace BackroomsSurvival.Gameplay.World
         public MeshRenderer mesh;
         public Color litEmission;
 
-        private float _offset;
-        private bool  _dying;
+        /// <summary>
+        /// Desfase de la onda, en segundos. AHORA ES DETERMINISTA y viene del tile global,
+        /// no de <c>Random</c>: el zumbido tiene que modularse con la MISMA onda que la luz,
+        /// y para eso el director de audio necesita poder reconstruir esta fase sin hablar
+        /// con este componente. Efecto colateral bueno: dos clientes ven parpadear la misma
+        /// lámpara igual, que es lo que ya hacía todo lo demás del worldgen.
+        /// </summary>
+        public float phase;
+
+        private bool _dying;
         // Lazy-init at first use (same reason as BackroomsLighting._lampMpb).
         private static MaterialPropertyBlock _emb;
 
-        private void Start() => _offset = Random.Range(0f, 100f); // cosmetic phase, non-deterministic OK
+        /// <summary>
+        /// Valor de la onda de parpadeo en [0,1] — 0 = apagón momentáneo, 1 = brillo pleno.
+        /// Estático y puro para que el audio la evalúe sin tocar la Light: es la única forma
+        /// de que el zumbido y el brillo caigan en el mismo instante.
+        /// </summary>
+        public static float FlickerWave(float time, float phase, float frequency) =>
+            (Mathf.Sin((time + phase) * frequency * Mathf.PI * 2f) + 1f) * 0.5f;
 
         private void Update()
         {
@@ -334,8 +359,8 @@ namespace BackroomsSurvival.Gameplay.World
                 return;
             }
 
-            float t = Mathf.Sin((Time.time + _offset) * frequency * Mathf.PI * 2f);
-            target.intensity = Mathf.Lerp(baseIntensity * minIntensity, baseIntensity, (t + 1f) * 0.5f);
+            target.intensity = Mathf.Lerp(baseIntensity * minIntensity, baseIntensity,
+                FlickerWave(Time.time, phase, frequency));
         }
 
         public void StartDying() => _dying = true;
