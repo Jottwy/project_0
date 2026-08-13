@@ -347,7 +347,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
                     // Floor of this layer == ceiling of the layer below (one slab).
                     var floorGo = Instantiate(prefabs.floorSlab, root.transform, TileCenter(tx, tz), 0f);
-                    AddColliderIfMissing(floorGo);
+                    // ESTE es el suelo que el jugador pisa de verdad — PlaceFloorSlab solo
+                    // construye la losa de TECHO. Olvidar el material físico justo aquí dejó
+                    // los pasos sonando al default del vendor mientras el resto del chunk ya
+                    // estaba bien, o sea el arreglo entero sin el único sitio que se nota.
+                    AddColliderIfMissing(floorGo, _floorPhys);
                     if (styled)
                     {
                         // Stain multiplies AFTER the jitter, mirroring PlaceCeilingTile.

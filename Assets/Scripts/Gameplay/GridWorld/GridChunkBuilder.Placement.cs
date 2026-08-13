@@ -100,7 +100,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (string.IsNullOrEmpty(surfaceName)) return null;
             if (_physByName.TryGetValue(surfaceName, out var cached)) return cached;
 
+            // OJO CON EL NOMBRE: DataDefinition.Name devuelve name.RemovePrefix(), que corta
+            // en el primer '_'. El asset se llama "FPS_Dirt" pero su Name es "Dirt", así que
+            // GetWithName("FPS_Dirt") NUNCA casa — y como devuelve null sin quejarse, el
+            // sistema se quedaba con el default del vendor en silencio.
+            //
+            // Se prueban las dos formas para que autorar valga tanto con el nombre del asset
+            // como con el de la definición: quien abra el Inspector verá "FPS_Dirt" en el
+            // Project y no tiene por qué saber que el vendor le quita el prefijo por dentro.
             var def = PolymindGames.SurfaceSystem.SurfaceDefinition.GetWithName(surfaceName);
+            if (def == null)
+            {
+                int us = surfaceName.IndexOf('_');
+                if (us >= 0 && us + 1 < surfaceName.Length)
+                    def = PolymindGames.SurfaceSystem.SurfaceDefinition
+                        .GetWithName(surfaceName.Substring(us + 1));
+            }
             var mats = def != null ? def.Materials : null;
             // La primera de la lista: una SurfaceDefinition puede declarar varias (FPS_Light
             // Wood agrupa madera y tela), y cualquiera de ellas resuelve a la MISMA definición

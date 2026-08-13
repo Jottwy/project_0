@@ -448,6 +448,12 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             if (Mathf.Abs(volume - _lastAnnouncedVolume) < 1e-6f) return;
             _lastAnnouncedVolume = volume;
+            // Gateado igual que el acuse del reverb, y por un motivo medido: esto se llama
+            // POR LOTE dentro del reparto, y con lotes de zonas distintas el volumen oscila
+            // entre 0,025 / 0,030 / 0,038 en la misma pasada. Sin gate dejó 7.403 líneas en
+            // una sola sesión — no llegó a los 229k del mixer, pero es la misma mecánica y
+            // aquí ya sabemos cómo acaba.
+            if (!Net.NetworkInitializer.VerboseBackendLog) return;
             Debug.Log($"[FluorescentHum] humVolume ahora {volume:F4}" +
                       (volume <= 0f ? " (mudo)" : ""));
         }
