@@ -43,7 +43,8 @@ namespace BackroomsSurvival.Net
         // GameObject InstanceIDs already adopted — committed BEFORE the request is sent so a
         // re-scan or a slow/laggy frame can never send the same drop twice (dedup layer 1).
         private readonly HashSet<int> _adopted = new HashSet<int>();
-        private uint _dropCounter;
+        // static: lo comparte StpPickupController vía MintDropId — ver el doc de ese método.
+        private static uint _dropCounter;
         private float _warmupEnd;
         private float _nextScan;
         private bool _warmedUp;
@@ -172,9 +173,20 @@ namespace BackroomsSurvival.Net
             return from + Vector3.down * fallbackDrop;
         }
 
-        // Globally-unique per logical drop: NET_ID-prefixed counter, so two clients never collide
-        // and the host can dedup (layer 3).
-        private long NextDropId()
+        private long NextDropId() => MintDropId();
+
+        /// <summary>
+        /// Globally-unique per logical drop: NET_ID-prefixed counter, so two clients never colisionan
+        /// y el host puede deduplicar (capa 3).
+        ///
+        /// `static` y compartido A PROPÓSITO: <see cref="StpPickupController"/> también devuelve
+        /// items al mundo (el sobrante de una concesión que no cupo) y necesita ids de este mismo
+        /// espacio. Con un contador propio, ambos empezarían en 1 bajo el mismo prefijo de NET_ID y
+        /// los ids chocarían — el host deduplica por id, así que la colisión no daría error: se
+        /// TRAGARÍA el segundo drop en silencio, que es justo la pérdida de items que se está
+        /// arreglando.
+        /// </summary>
+        public static long MintDropId()
         {
             int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
             return (long)Mathf.Max(1, netId) * 1000000000L + (++_dropCounter);

@@ -14,6 +14,16 @@ namespace BackroomsSurvival.Net
     {
         public uint itemId;
 
+        /// <summary>
+        /// Qué es y cuántos, copiado del roster por <c>StpItemReplicator</c> al instanciar. No es
+        /// información redundante: el host concede la recogida BORRANDO el item del mundo, así que
+        /// para poder negarse antes de pedirlo hay que saber qué se va a pedir. Sin esto, la única
+        /// forma de enterarse de que no cabía era cuando ya no estaba en ningún sitio.
+        /// </summary>
+        public int defId;
+
+        public int count = 1;
+
         private IInteractable _interactable;
         private bool _subscribed;
 
@@ -44,7 +54,7 @@ namespace BackroomsSurvival.Net
             if (character == null || !character.IsLocalPlayer())
                 return;
 
-            StpPickupController.RequestPickup(itemId, character);
+            StpPickupController.RequestPickup(itemId, defId, count, character);
         }
     }
 }

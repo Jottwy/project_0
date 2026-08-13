@@ -113,6 +113,8 @@ namespace BackroomsSurvival.Net
             // Phase 2 host-authoritative pickup gate (subscribes to the item's Interacted event).
             var gate = go.AddComponent<NetworkItemPickupGate>();
             gate.itemId = it.id;
+            gate.defId = it.defId;
+            gate.count = count;
 
             Debug.Log($"[StpItemReplicator] spawned id={it.id} def_id={it.defId} '{def.Name}' at {it.position:F1}");
             return go;
