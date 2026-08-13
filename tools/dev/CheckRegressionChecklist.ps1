@@ -166,6 +166,91 @@ Check-Manual "Reconnect after disconnect works" `
     "Close joiner, relaunch, join again; should work cleanly"
 Write-Host ""
 
+# ─── Section 7: Vendor patches ───
+#
+# Todo lo que este proyecto escribió DENTRO de Assets/PolymindGames/. Un reimport del
+# .unitypackage del vendor lo borra en silencio y el síntoma aparece días después como una
+# regresión sin causa. El inventario, con qué se pierde en cada caso, está en
+# docs/systems/vendor-patches.md — si añades un parche allí, añade su comprobación aquí.
+#
+# Son comprobaciones de PRESENCIA de la marca, no de corrección del parche: lo que un reimport
+# destruye es justo la presencia.
+Write-Host "--- Parches en territorio vendor (los borra un reimport) ---" -ForegroundColor Yellow
+
+$vendorRoot = Join-Path $projectRoot "Assets\PolymindGames"
+if (-not (Test-Path $vendorRoot)) {
+    Check-Auto "Arbol del vendor presente" $false $vendorRoot
+} else {
+    # Una sola pasada por el arbol: recorrerlo seis veces cuesta segundos por nada.
+    $vendorCs = @(Get-ChildItem -Path $vendorRoot -Filter *.cs -Recurse -File -ErrorAction SilentlyContinue)
+
+    function Get-MarkedFiles {
+        param([string]$Pattern)
+        return @($vendorCs | Select-String -Pattern $Pattern -SimpleMatch |
+                 Select-Object -ExpandProperty Path -Unique)
+    }
+
+    # 1 — Hooks ADR-009: Rust es la unica fuente de verdad (guardado STP apagado,
+    #     reconciliacion de pose, freno del drenaje de stamina). Baseline: 7 ficheros.
+    $adr009 = Get-MarkedFiles "ADR-009"
+    Check-Auto "Hooks ADR-009 en codigo de vendor" `
+        ($adr009.Count -ge 7) `
+        "$($adr009.Count) ficheros con la marca (baseline 7)"
+
+    # 2 — Gate de arranque (enmienda ADR-025). DOS comprobaciones y no una: el parche de
+    #     GameMode.cs no lleva marca propia, solo la llamada, asi que con mirar un lado una
+    #     restauracion a medias pasaria por buena.
+    $bootGate = Join-Path $vendorRoot "FPSCore\Code\Runtime\Core\GameBootGate.cs"
+    $gameMode = Join-Path $vendorRoot "FPSCore\Code\Runtime\Core\GameMode.cs"
+    $gameModeCalls = $false
+    if (Test-Path $gameMode) {
+        $gameModeCalls = @(Select-String -Path $gameMode -Pattern "GameBootGate" -SimpleMatch).Count -gt 0
+    }
+    Check-Auto "Gate de arranque sin timeout (ADR-025)" `
+        ((Test-Path $bootGate) -and $gameModeCalls) `
+        $(if (Test-Path $bootGate) { "GameBootGate.cs ok; GameMode lo llama: $gameModeCalls" } else { "falta GameBootGate.cs" })
+
+    # 3 — DoF sin rama URP (ADR-065): sin el, el libro vuelve a salir borroso.
+    $dof = Get-MarkedFiles "PARCHE LOCAL (ADR-065"
+    Check-Auto "Parche DoF sin rama URP (ADR-065)" `
+        ($dof.Count -ge 1) `
+        "$($dof.Count) fichero(s)"
+
+    # 4 — Traza MPTRACE de impactos, commit 458263a. Es TEMPORAL a proposito: cuando el
+    #     diagnostico de atribucion PvP cierre, sale por decision. Mientras siga, un reimport
+    #     no puede llevarsela sin que nadie se entere.
+    $mptrace = Get-MarkedFiles "MPTRACE"
+    Check-Auto "Traza MPTRACE de impactos (temporal)" `
+        ($mptrace.Count -ge 4) `
+        "$($mptrace.Count) ficheros (baseline 4)"
+
+    # 5 — Alta del bote como wieldable en el prefab del jugador. Sin ella el bote se recoge,
+    #     se ve en el inventario y NO se equipa, sin ningun error.
+    #     Cura: menu Backrooms/Spray/Registrar bote en el jugador.
+    $playerPrefab = Join-Path $vendorRoot "FPSCore\Prefabs\Core\FPS_Player.prefab"
+    $sprayRegistered = $false
+    if (Test-Path $playerPrefab) {
+        $sprayRegistered = @(Select-String -Path $playerPrefab -Pattern "BR_Wieldable_SprayCan" -SimpleMatch).Count -gt 0
+    }
+    Check-Auto "Bote de spray dado de alta en FPS_Player" `
+        $sprayRegistered `
+        $(if ($sprayRegistered) { "BR_Wieldable_SprayCan presente" } else { "reejecuta: Backrooms/Spray/Registrar bote en el jugador" })
+
+    # 6 — Reverb por zona: los 7 parametros expuestos del mixer. Si faltan, ReverbMixerDriver
+    #     se declara mudo y el reverb se apaga en SILENCIO. Ojo: renombrarlos editando el YAML
+    #     del .mixer NO llega al runtime, hay que hacerlo desde el editor.
+    $mixer = Join-Path $vendorRoot "FPSCore\Data\Audio\FPS_AudioMixer.mixer"
+    $rvb = 0
+    if (Test-Path $mixer) {
+        $rvb = @(Select-String -Path $mixer -Pattern "Rvb" -SimpleMatch).Count
+    }
+    Check-Auto "Reverb por zona expuesto en FPS_AudioMixer" `
+        ($rvb -ge 7) `
+        "$rvb parametros Rvb* (baseline 7)"
+}
+
+Write-Host ""
+
 # ─── Summary ───
 Write-Host "============================================" -ForegroundColor Cyan
 Write-Host "  SUMMARY" -ForegroundColor Cyan

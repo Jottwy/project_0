@@ -29,6 +29,7 @@
 ## Sistemas (documentación operativa por subsistema)
 - [systems/damage-sync.md](systems/damage-sync.md) — [G] Player Damage Sync (ADR-024): hit-reaction cosmético `hit_seq` en la pose relay.
 - [systems/ipc-wire-schema.md](systems/ipc-wire-schema.md) — changelog del wire schema IPC/P2P v2→v19 (ADR-009 y siguientes): qué añadió cada bump y cómo degrada la versión anterior. El número vive en `WIRE_SCHEMA_VERSION` (`backend/src/ipc/server.rs`); este doc es el changelog.
+- [systems/vendor-patches.md](systems/vendor-patches.md) — inventario de TODO lo que este proyecto escribió dentro de `Assets/PolymindGames/` (6 familias, 13 ficheros): qué se pierde con cada reimport del `.unitypackage`, con qué marca se detecta y cuál es la cura. `CheckRegressionChecklist.ps1` lo comprueba solo. Empieza aquí después de reimportar el vendor.
 - [systems/reverb-mixer.md](systems/reverb-mixer.md) — reverb por zona: los 7 parámetros que `ReverbMixerDriver` escribe en `FPS_AudioMixer` y cómo rehacerlos. El mixer es del VENDOR: un reimport se lleva el efecto y el reverb se apaga en silencio — empieza aquí si dejó de sonar.
 
 ## Limpieza y refactor
