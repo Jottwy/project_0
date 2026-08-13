@@ -776,6 +776,50 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-068 — pide al host pintar una pintada. Frame de nivel superior y NO una "action",
+        /// por lo mismo que la voz de ADR-046 y con una razón añadida que es dura: el
+        /// <c>data</c> de una action es un <c>serde_json::Value</c> en el backend, y
+        /// <c>Value</c> no tiene tipo de bytes — el blob <c>bin</c> con los puntos del trazo no
+        /// decodificaría ahí.
+        ///
+        /// Todo lo que va aquí es una PETICIÓN: el host deriva el chunk, revalida cada tope
+        /// contra la posición que él conoce del jugador y acuña el id. Este método no valida
+        /// nada por su cuenta salvo lo que evita mandar basura por el cable.
+        ///
+        /// <paramref name="placeId"/> deduplica: el transporte reenvía, y una pintada duplicada
+        /// además de verse mal gasta una plaza del cap del chunk.
+        /// </summary>
+        public bool SendSprayPlace(long placeId, byte layer, Vector3 worldPos, float yaw,
+            float sizeX, float sizeY, IReadOnlyList<SprayStrokeMsg> strokes)
+        {
+            if (strokes == null || strokes.Count == 0) return false;
+
+            var w = RentWriter();
+            w.WriteMapHeader(7);
+            w.WriteString("type"); w.WriteString("spray_place");
+            w.WriteString("place_id"); w.WriteInt(placeId);
+            w.WriteString("layer"); w.WriteInt(layer);
+            w.WriteString("world_pos"); WriteVec3(w, worldPos);
+            w.WriteString("yaw"); w.WriteFloat(yaw);
+            w.WriteString("size");
+            w.WriteArrayHeader(2);
+            w.WriteFloat(sizeX); w.WriteFloat(sizeY);
+            w.WriteString("strokes");
+            w.WriteArrayHeader(strokes.Count);
+            for (int i = 0; i < strokes.Count; i++)
+            {
+                var s = strokes[i];
+                w.WriteMapHeader(3);
+                w.WriteString("color"); w.WriteInt(s.color);
+                w.WriteString("width"); w.WriteInt(s.width);
+                // `bin`, el mismo WriteBin de la voz: como lista de enteros costaría ~1,5x y el
+                // backend lo rechazaría (espera bin, igual que en ClientMessage::Voice).
+                w.WriteString("points"); w.WriteBin(s.points ?? System.Array.Empty<byte>());
+            }
+            return SendFrame(w);
+        }
+
+        /// <summary>
         /// Emit an {type:"action", action_type, data:{...}} frame — the shared shape of
         /// every discrete action request. <paramref name="writeData"/> writes exactly
         /// <paramref name="dataFieldCount"/> key/value pairs into the <c>data</c> map, in the
