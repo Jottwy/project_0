@@ -1,3 +1,6 @@
+using PolymindGames;
+using PolymindGames.InventorySystem;
+using PolymindGames.WieldableSystem;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay
@@ -18,12 +21,14 @@ namespace BackroomsSurvival.Gameplay
     public class SprayCan : MonoBehaviour
     {
         [Header("Carga")]
-        [Tooltip("Metros de trazo que quedan. ADR-068 decisión 8: el bote se gasta, y marcar el " +
-                 "camino cuesta recurso — igual que tapar el mural de otro.")]
-        [SerializeField] private float paintMeters = 40f;
-
-        [Tooltip("Con lo que nace un bote lleno. Solo informativo para la UI.")]
+        [Tooltip("Metros de trazo que pinta un bote LLENO. Es constante de diseño, igual para " +
+                 "todos los botes; lo que varía por bote es cuánto le queda, y eso vive en el " +
+                 "item, no aquí.")]
         [SerializeField] private float capacityMeters = 40f;
+
+        [Tooltip("Reserva para cuando no hay item detrás (arnés de editor, tests). En juego NO " +
+                 "se usa: manda la propiedad del item.")]
+        [SerializeField] private float fallbackFraction = 1f;
 
         [Header("Trazo")]
         [Tooltip("Índice en la paleta del cliente (0..15). El wire manda el índice, no el color.")]
@@ -35,10 +40,52 @@ namespace BackroomsSurvival.Gameplay
         [Tooltip("Lado del lienzo en metros. El host lo acota a [0.1, 2.0].")]
         [SerializeField] private float canvasMeters = 1.2f;
 
-        public float PaintMeters => paintMeters;
+        /// <summary>
+        /// LA CARGA VIVE EN EL ITEM, no en este componente, y ésa es la corrección que hace que
+        /// cada bote tenga la SUYA. El prefab del wieldable es único y compartido: guardar aquí
+        /// los metros restantes significaba que todos los botes del mundo compartían depósito,
+        /// que coger uno nuevo no lo llenaba, y que la carga se perdía al guardar.
+        ///
+        /// Se usa la propiedad `Durability` del vendor y no una propia por dos razones que se
+        /// obtienen gratis: `WieldableItem` ya BLOQUEA el uso cuando baja de 0,01, y la UI que
+        /// pinta el estado del wieldable equipado ya la lee — la misma barra que la antorcha,
+        /// sin escribir una línea de interfaz.
+        /// </summary>
+        private ItemProperty PaintProperty
+        {
+            get
+            {
+                if (_wieldableItem == null) _wieldableItem = GetComponentInParent<WieldableItem>();
+                var item = _wieldableItem != null ? _wieldableItem.Slot.GetItem() : null;
+                return item != null && item.TryGetProperty(ItemConstants.Durability, out var p) ? p : null;
+            }
+        }
+
+        private WieldableItem _wieldableItem;
+
+        /// <summary>Fracción de pintura que queda, 0..1. Es lo que la UI del vendor dibuja.</summary>
+        public float PaintFraction
+        {
+            get
+            {
+                var p = PaintProperty;
+                return Mathf.Clamp01(p != null ? p.Float : fallbackFraction);
+            }
+            private set
+            {
+                float v = Mathf.Clamp01(value);
+                var p = PaintProperty;
+                if (p != null) p.Float = v;
+                else fallbackFraction = v;
+            }
+        }
+
+        public float PaintMeters => PaintFraction * capacityMeters;
         public float CapacityMeters => capacityMeters;
-        public float PaintFraction => capacityMeters <= 0f ? 0f : Mathf.Clamp01(paintMeters / capacityMeters);
-        public bool IsEmpty => paintMeters <= 0f;
+
+        /// <summary>Mismo umbral que usa `WieldableItem` para bloquear el uso, para que "vacío"
+        /// signifique lo mismo aquí y en el vendor.</summary>
+        public bool IsEmpty => PaintFraction < 0.01f;
 
         public byte ColorIndex => colorIndex;
         public byte StrokeWidth => strokeWidth;
@@ -54,16 +101,21 @@ namespace BackroomsSurvival.Gameplay
         /// </summary>
         public float Spend(float meters)
         {
-            if (meters <= 0f || paintMeters <= 0f) return 0f;
-            float spent = Mathf.Min(meters, paintMeters);
-            paintMeters -= spent;
-            return spent;
+            if (meters <= 0f || capacityMeters <= 0f) return 0f;
+
+            float before = PaintFraction;
+            if (before <= 0f) return 0f;
+
+            float after = Mathf.Max(0f, before - meters / capacityMeters);
+            PaintFraction = after;
+            return (before - after) * capacityMeters;
         }
 
         /// <summary>Rellena el bote (recarga, o un bote nuevo recogido del suelo).</summary>
         public void Refill(float meters)
         {
-            paintMeters = Mathf.Clamp(paintMeters + Mathf.Max(0f, meters), 0f, capacityMeters);
+            if (capacityMeters <= 0f) return;
+            PaintFraction = PaintFraction + Mathf.Max(0f, meters) / capacityMeters;
         }
     }
 }

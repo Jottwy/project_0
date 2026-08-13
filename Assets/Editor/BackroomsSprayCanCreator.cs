@@ -95,6 +95,7 @@ namespace BackroomsSurvival.EditorTools
                 Debug.Log($"[SprayCanCreator] '{DefinitionPath}' ya existe (id={definition.Id}) — su id no se " +
                           "toca (está en el wire y en los saves); bórralo a mano si quieres uno nuevo.");
                 RepairWieldableTag(definition);
+                RepairDurabilityProperty(definition);
             }
             else
             {
@@ -143,6 +144,13 @@ namespace BackroomsSurvival.EditorTools
             // `EquipAction` compara la etiqueta del item contra esa misma. Sin ella el bote entra
             // en la mochila, se ve en el inventario y NO se deja equipar — sin un solo error.
             target.CopyFromSerializedProperty(source.FindProperty("_tag"));
+
+            // Y las PROPIEDADES del donante, que traen `Durability`. Ahí es donde vive la carga
+            // de CADA bote: el prefab del wieldable es único y compartido, así que guardar los
+            // metros restantes en su componente haría que todos los botes del mundo compartieran
+            // depósito. Además sale gratis el bloqueo de uso al vaciarse (`WieldableItem`) y la
+            // barra de estado del wieldable equipado, la misma que la antorcha.
+            target.CopyFromSerializedProperty(source.FindProperty("_properties"));
 
             target.FindProperty("_description").stringValue = Description;
             target.FindProperty("_weight").floatValue = Weight;
@@ -271,6 +279,30 @@ namespace BackroomsSurvival.EditorTools
             Debug.LogWarning($"[SprayCanCreator] Reparada la etiqueta de '{DefinitionPath}' " +
                              $"({value.intValue}). Sin ella el bote se ve en el inventario y no se " +
                              "deja equipar.");
+        }
+
+        /// <summary>
+        /// Da a un asset YA existente la propiedad `Durability`, que es donde vive la carga de
+        /// cada bote. Sin ella el bote se pinta sin gastarse, no se bloquea al vaciarse y no
+        /// aparece su barra. Solo toca `_properties`: el `_id` no se roza.
+        /// </summary>
+        private static void RepairDurabilityProperty(ItemDefinition definition)
+        {
+            var donor = AssetDatabase.LoadAssetAtPath<ItemDefinition>(DonorDefinitionPath);
+            if (donor == null) return;
+
+            var target = new SerializedObject(definition);
+            var props = target.FindProperty("_properties");
+            if (props == null || props.arraySize > 0) return;
+
+            var donorProps = new SerializedObject(donor).FindProperty("_properties");
+            if (donorProps == null || donorProps.arraySize == 0) return;
+
+            target.CopyFromSerializedProperty(donorProps);
+            target.ApplyModifiedPropertiesWithoutUndo();
+            EditorUtility.SetDirty(definition);
+            Debug.LogWarning($"[SprayCanCreator] Reparadas las propiedades de '{DefinitionPath}' " +
+                             "(Durability). Sin ella el bote pinta sin gastarse y no tiene barra.");
         }
 
         private static void CreateWieldablePrefab(GameObject donorPrefab, ItemDefinition definition)

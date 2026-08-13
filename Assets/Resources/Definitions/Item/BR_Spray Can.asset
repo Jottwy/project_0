@@ -26,7 +26,10 @@ MonoBehaviour:
     _value: 6549466
   _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
   _actions: []
-  _properties: []
+  _properties:
+  - _itemPropertyId: -8792658
+    _useRandomValue: 0
+    _valueRange: {x: 1, y: 0}
   _data: []
   references:
     version: 2
