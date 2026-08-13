@@ -59,6 +59,7 @@ pub fn is_reliable(packet_type: u16) -> bool {
         // pintada. Las dos direcciones viajan fiables.
         | 0x51          // SprayPlaceRequest         (ADR-068)
         | 0x52          // SprayPlaced               (ADR-068)
+        | 0x53          // SprayChunkRequest         (ADR-068)
         // 0x4E NoiseReport is DELIBERATELY absent: it is sent with `send_unreliable_to`, so
         // listing it would break this function's "si y solo si" invariant in the other
         // direction. A transient stimulus must not occupy the 32-slot reliable window; a lost

@@ -369,10 +369,16 @@ ahí**. Las demás colocaciones (`stp_place`, `stp_drop`) son acciones precisame
 payload es todo números. Vuelta: `ServerMessage::SprayPlaced(Spray)` (eco de la aceptada) y el
 campo aditivo `GridChunkData.sprays`, omitido del wire cuando está vacío.
 
-**P2P.** Dos opcodes nuevos, ambos fiables: `SprayPlaceRequest` **0x51** (joiner → host, petición)
-y `SprayPlaced` **0x52** (host → todos, ya aceptada). Una pintada perdida no se auto-cura como un
+**P2P.** Tres opcodes nuevos, los tres fiables: `SprayPlaceRequest` **0x51** (joiner → host,
+petición), `SprayPlaced` **0x52** (host → peers, ya aceptada) y `SprayChunkRequest` **0x53**
+(joiner → host, "qué hay pintado en este chunk"). Una pintada perdida no se auto-cura como un
 `NoiseReport` — nadie la reintenta y el jugador se queda mirando una pared que para los demás sí
 está pintada.
+
+0x53 existe porque el almacén de un joiner arranca VACÍO: la geometría cada peer la deriva del
+seed, pero una pintada no es función del seed, así que quien se une a un mundo ya pintado tiene
+que preguntar o ve paredes limpias. Se pregunta una vez por chunk (Unity vuelve a pedir el mismo
+chunk en cada pasada de streaming) y el host responde con un 0x52 por pintada.
 
 **Una pintada por paquete, NO un roster.** Es la diferencia con `StpBuildingList` y compañía: una
 pintada mide ~1,9 KB, así que hasta un puñado reventaría el datagrama que ADR-060 (d) ya tuvo que

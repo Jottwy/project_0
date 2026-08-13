@@ -739,6 +739,18 @@ pub async fn run(
                     // `walls`/`room_zones` — son estado de jugador que el host posee —, así que
                     // esto es lo único de este mensaje que no es función pura de la coordenada.
                     let sprays = net.sprays.chunk((cx, cz, layer)).to_vec();
+                    // Y si somos joiner, hay que PREGUNTAR: nuestro almacén arranca vacío al
+                    // entrar, y sin esto un jugador que se une a un mundo pintado ve paredes
+                    // limpias hasta que alguien pinte de nuevo delante de él. Una vez por chunk
+                    // — Unity vuelve a pedir el mismo chunk cada vez que entra en streaming.
+                    if !net.is_host && net.requested_spray_chunks.insert((cx, cz, layer)) {
+                        let payload = crate::network::protocol::PacketPayload::SprayChunkRequest {
+                            cx,
+                            cz,
+                            layer,
+                        };
+                        net.send_reliable(1, &payload).await;
+                    }
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
                         cx,
                         cz,
@@ -1930,9 +1942,37 @@ async fn handle_network_event(
         // malformado, y el coste es despreciable frente a lo que cuesta rasterizarla.
         NetworkEvent::SprayPlacedReceived { spray } => {
             if spray.validate().is_ok() {
-                net.sprays.insert(spray);
+                net.sprays.insert(spray.clone());
+                // Y AL CLIENTE. Guardarla sin reenviarla dejaba al joiner con el almacén al día
+                // y la pared en blanco: su `GridChunkData` ya viajó, así que ésta es la única
+                // vía por la que una pintada ajena llega a su pantalla sin recargar el chunk.
+                let _ = to_clients.send(ServerMessage::SprayPlaced(spray));
             } else {
                 info!("MPTRACE step=SPRAY event=spray_relay_rejected ignored=true");
+            }
+        }
+
+        // ADR-068: un joiner acaba de cargar un chunk y pregunta qué hay pintado en él. Su propio
+        // backend no puede derivarlo — a diferencia de la geometría, una pintada no es función del
+        // seed. Solo el host contesta, y contesta con una pintada POR PAQUETE.
+        NetworkEvent::SprayChunkRequest {
+            cx,
+            cz,
+            layer,
+            requester_id,
+        } => {
+            if net.is_host {
+                let sprays = net.sprays.chunk((cx, cz, layer)).to_vec();
+                info!(
+                    "MPTRACE step=SPRAY event=spray_chunk_served chunk=({cx},{cz},{layer}) to={requester_id} count={}",
+                    sprays.len()
+                );
+                for spray in &sprays {
+                    let payload = crate::network::protocol::PacketPayload::SprayPlaced {
+                        spray: spray.clone(),
+                    };
+                    net.send_reliable(requester_id, &payload).await;
+                }
             }
         }
 

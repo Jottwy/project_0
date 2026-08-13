@@ -131,6 +131,9 @@ pub enum PacketType {
     // valida y acuna); 0x52 lleva la pintada YA aceptada del host a todos los peers.
     SprayPlaceRequest = 0x51,
     SprayPlaced = 0x52,
+    /// ADR-068: 0x53 lo manda un joiner al cargar un chunk — "que hay pintado aqui". La
+    /// geometria la deriva cada peer del seed; una pintada NO, asi que hay que preguntar.
+    SprayChunkRequest = 0x53,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -211,6 +214,7 @@ impl PacketType {
             0x50 => Some(Self::VoiceFrame),
             0x51 => Some(Self::SprayPlaceRequest),
             0x52 => Some(Self::SprayPlaced),
+            0x53 => Some(Self::SprayChunkRequest),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -507,6 +511,13 @@ pub enum PacketPayload {
     /// elements.
     SprayPlaced {
         spray: crate::world::spray::Spray,
+    },
+    /// ADR-068: "que hay pintado en este chunk". El host responde con un `SprayPlaced` por
+    /// pintada, no con una lista: ver el porque en el doc de `SprayPlaced`.
+    SprayChunkRequest {
+        cx: i32,
+        cz: i32,
+        layer: u8,
     },
     /// ADR-037: the sender cancelled a placed-but-unbuilt piece. Only the host acts on it;
     /// it removes the entry from `stp_buildings` and the existing 10 Hz relay makes every
@@ -893,6 +904,7 @@ impl PacketPayload {
             Self::StpDemolishRequest { .. } => PacketType::StpDemolishRequest as u16,
             Self::SprayPlaceRequest { .. } => PacketType::SprayPlaceRequest as u16,
             Self::SprayPlaced { .. } => PacketType::SprayPlaced as u16,
+            Self::SprayChunkRequest { .. } => PacketType::SprayChunkRequest as u16,
             Self::PlayerUpdate { .. } => PacketType::PlayerUpdate as u16,
             Self::ChunkState { .. } => PacketType::ChunkState as u16,
             Self::ChunkDelta { .. } => PacketType::ChunkDelta as u16,

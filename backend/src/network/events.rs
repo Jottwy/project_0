@@ -105,6 +105,14 @@ pub enum NetworkEvent {
     SprayPlacedReceived {
         spray: crate::world::spray::Spray,
     },
+    /// ADR-068: a joiner loaded a chunk and asks what is painted on it. `requester_id` comes from
+    /// the packet HEADER — the reply goes back to that peer alone, not to everyone.
+    SprayChunkRequest {
+        cx: i32,
+        cz: i32,
+        layer: u8,
+        requester_id: u16,
+    },
     /// Phase B2.5: a joiner asks the host to pick up a world carryable (host-authoritative).
     StpCarryablePickupRequest {
         carryable_id: u32,

@@ -271,6 +271,17 @@ impl NetworkManager {
                 Some(NetworkEvent::SprayPlacedReceived { spray })
             }
 
+            // También lleva `requester_id` de la cabecera: la respuesta vuelve a ESE peer y no
+            // a todos, así que el remitente es parte del evento.
+            PacketPayload::SprayChunkRequest { cx, cz, layer } => {
+                Some(NetworkEvent::SprayChunkRequest {
+                    cx,
+                    cz,
+                    layer,
+                    requester_id: sender_id,
+                })
+            }
+
             PacketPayload::StpCarryableList {
                 carryables,
                 generation,

@@ -152,6 +152,10 @@ pub struct NetworkManager {
     /// ADR-068: client-generated place ids already accepted, so a reliable retransmit of one
     /// painting paints exactly one spray. Same dedup pattern as `processed_stp_places`.
     pub processed_spray_places: std::collections::HashSet<u64>,
+    /// ADR-068 (joiner-only): chunks whose sprays this peer has already asked the host for.
+    /// Unity re-requests a chunk every time it streams back in, and without this each pass
+    /// would re-ask for the same sprays it already holds.
+    pub requested_spray_chunks: std::collections::HashSet<(i32, i32, u8)>,
     /// ADR-011 follow-up: host-assigned item ids whose StpPickupGranted the joiner already
     /// processed, so a reliable retransmit of the grant never re-stamps last_pickup_at (which
     /// would duplicate the proxy "pickup" window). Same dedup pattern as the processed_stp_* above.
@@ -320,6 +324,7 @@ impl NetworkManager {
             processed_stp_harvest_hits: std::collections::HashSet::with_capacity(128),
             sprays: crate::world::spray::SprayStore::new(),
             processed_spray_places: std::collections::HashSet::with_capacity(128),
+            requested_spray_chunks: std::collections::HashSet::with_capacity(128),
             processed_stp_pickup_grants: std::collections::HashSet::with_capacity(128),
             processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: std::collections::HashSet::with_capacity(64),

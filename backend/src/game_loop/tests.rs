@@ -4859,6 +4859,76 @@ async fn a_joiner_never_mints_a_spray_id_of_its_own() {
 }
 
 #[tokio::test]
+async fn a_joiner_asks_for_a_chunks_sprays_once_and_only_once() {
+    // Sin la pregunta, quien se une a un mundo ya pintado ve paredes limpias hasta que alguien
+    // pinte delante de él: su almacén arranca vacío y la geometría, que SÍ se deriva del seed,
+    // no arrastra pintadas. Y sin el dedup la pediría en cada pasada de streaming.
+    let mut net = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+
+    assert!(net.requested_spray_chunks.insert((4, -1, 0)), "primera vez");
+    assert!(
+        !net.requested_spray_chunks.insert((4, -1, 0)),
+        "el mismo chunk no se vuelve a pedir al re-streamear"
+    );
+    assert!(
+        net.requested_spray_chunks.insert((4, -1, 3)),
+        "otra capa es otra pared, y sí se pide"
+    );
+}
+
+#[tokio::test]
+async fn the_spray_opcodes_belong_to_spray_and_travel_reliably() {
+    // Centinela de opcode, igual que los de ADR-037 y ADR-046: fija los tres códigos y que los
+    // tres van fiables. Una pintada perdida no se auto-cura — nadie la reintenta.
+    use crate::network::protocol::{PacketPayload, PacketType};
+    use crate::network::reliability::is_reliable;
+
+    let request = PacketPayload::SprayPlaceRequest {
+        place_id: 1,
+        layer: 0,
+        world_pos: [1.0, 2.0, 3.0],
+        yaw: 90.0,
+        size: [1.0, 1.0],
+        strokes: vec![],
+    };
+    let placed = PacketPayload::SprayPlaced {
+        spray: crate::world::spray::Spray {
+            id: 1,
+            cx: 0,
+            cz: 0,
+            layer: 0,
+            local_pos: [1.0, 2.0, 3.0],
+            yaw: 0.0,
+            size: [1.0, 1.0],
+            author: 1,
+            tick: 1,
+            strokes: vec![],
+        },
+    };
+    let chunk_req = PacketPayload::SprayChunkRequest {
+        cx: 1,
+        cz: 2,
+        layer: 0,
+    };
+
+    assert_eq!(request.type_code(), 0x51);
+    assert_eq!(placed.type_code(), 0x52);
+    assert_eq!(chunk_req.type_code(), 0x53);
+    assert_eq!(
+        PacketType::from_u16(0x51),
+        Some(PacketType::SprayPlaceRequest)
+    );
+    assert_eq!(PacketType::from_u16(0x52), Some(PacketType::SprayPlaced));
+    assert_eq!(
+        PacketType::from_u16(0x53),
+        Some(PacketType::SprayChunkRequest)
+    );
+    for code in [0x51, 0x52, 0x53] {
+        assert!(is_reliable(code), "el opcode {code:#x} debe viajar fiable");
+    }
+}
+
+#[tokio::test]
 async fn the_host_measures_reach_against_the_requesting_peer_not_its_own_player() {
     // El agujero que este test cierra: si el host validara el alcance contra SU propia posición,
     // un joiner al otro lado del nivel pintaría gratis, o no podría pintar nunca a su lado. La
