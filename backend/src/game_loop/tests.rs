@@ -4768,7 +4768,7 @@ async fn the_host_anchors_a_spray_to_its_chunk_in_local_coordinates() {
     let mut player = Player::new(1, "Host");
     player.position = Vec3::new(world_pos[0], world_pos[1], world_pos[2] + 1.0);
 
-    process_spray_place(spray_request(1, world_pos), &player, &mut net, 99, &tx);
+    process_spray_place(spray_request(1, world_pos), &player, &mut net, 99, &tx).await;
 
     let stored = net.sprays.chunk((2, -2, 0));
     assert_eq!(stored.len(), 1, "la pintada debe caer en el chunk (2,-2)");
@@ -4800,21 +4800,21 @@ async fn the_host_refuses_what_the_caps_of_decision_5_forbid() {
     // Lienzo por encima del tope.
     let mut req = spray_request(1, at);
     req.size = [99.0, 1.0];
-    process_spray_place(req, &player, &mut net, 1, &tx);
+    process_spray_place(req, &player, &mut net, 1, &tx).await;
 
     // NaN: pasaría cualquier comparación de rango si la guarda no fuera lo primero.
     let mut req = spray_request(2, at);
     req.world_pos = [f32::NAN, 1.6, 10.0];
-    process_spray_place(req, &player, &mut net, 1, &tx);
+    process_spray_place(req, &player, &mut net, 1, &tx).await;
 
     // Blob de puntos impar: X sin su Y.
     let mut req = spray_request(3, at);
     req.strokes[0].points.push(7);
-    process_spray_place(req, &player, &mut net, 1, &tx);
+    process_spray_place(req, &player, &mut net, 1, &tx).await;
 
     // Fuera del alcance del brazo: pintar a través de media planta.
     let far = [at[0] + 40.0, at[1], at[2]];
-    process_spray_place(spray_request(4, far), &player, &mut net, 1, &tx);
+    process_spray_place(spray_request(4, far), &player, &mut net, 1, &tx).await;
 
     assert_eq!(
         net.sprays.len(),
@@ -4833,8 +4833,8 @@ async fn a_retransmitted_place_paints_exactly_one_spray() {
     let mut player = Player::new(1, "Host");
     player.position = Vec3::new(at[0], at[1], at[2]);
 
-    process_spray_place(spray_request(77, at), &player, &mut net, 1, &tx);
-    process_spray_place(spray_request(77, at), &player, &mut net, 2, &tx);
+    process_spray_place(spray_request(77, at), &player, &mut net, 1, &tx).await;
+    process_spray_place(spray_request(77, at), &player, &mut net, 2, &tx).await;
 
     assert_eq!(net.sprays.len(), 1);
 }
@@ -4849,13 +4849,93 @@ async fn a_joiner_never_mints_a_spray_id_of_its_own() {
     let mut player = Player::new(1, "Joiner");
     player.position = Vec3::new(at[0], at[1], at[2]);
 
-    process_spray_place(spray_request(1, at), &player, &mut net, 1, &tx);
+    process_spray_place(spray_request(1, at), &player, &mut net, 1, &tx).await;
 
     assert_eq!(net.sprays.len(), 0);
     assert!(
         rx.try_recv().is_err(),
         "un joiner no puede anunciar una pintada como aceptada"
     );
+}
+
+#[tokio::test]
+async fn the_host_measures_reach_against_the_requesting_peer_not_its_own_player() {
+    // El agujero que este test cierra: si el host validara el alcance contra SU propia posición,
+    // un joiner al otro lado del nivel pintaría gratis, o no podría pintar nunca a su lado. La
+    // posición contra la que se mide es la que el host ya conoce de ESE peer.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+    let host_player = Player::new(1, "Host"); // lejísimos de donde pinta el joiner
+    let at = [300.0, 1.6, 300.0];
+
+    // Sin peer conocido no hay posición contra la que medir: se ignora en vez de asumir.
+    let accepted = accept_spray(
+        spray_request(1, at),
+        9,
+        Vec3::new(at[0], at[1], at[2]),
+        &mut net,
+        1,
+        &tx,
+    );
+    assert!(
+        accepted.is_some(),
+        "con su posición real, el joiner sí pinta"
+    );
+    assert_eq!(
+        accepted.unwrap().author,
+        9,
+        "la autoría es del peticionario"
+    );
+
+    // Y con la posición del host (lejos), el mismo trazo se rechaza.
+    let refused = accept_spray(
+        spray_request(2, at),
+        9,
+        host_player.position,
+        &mut net,
+        1,
+        &tx,
+    );
+    assert!(
+        refused.is_none(),
+        "medir contra la posición equivocada debe rechazar, no colar"
+    );
+    assert_eq!(net.sprays.len(), 1);
+}
+
+#[tokio::test]
+async fn a_relayed_spray_is_revalidated_before_entering_the_local_store() {
+    // El joiner NO se fía del paquete solo porque venga del host: un relay malformado no puede
+    // envenenar su almacén (y, si algún día ese peer guarda, tampoco su save).
+    let mut net = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+
+    let mut poisoned = crate::world::spray::Spray {
+        id: 1,
+        cx: 0,
+        cz: 0,
+        layer: 0,
+        local_pos: [f32::NAN, 1.6, 10.0],
+        yaw: 0.0,
+        size: [1.0, 1.0],
+        author: 1,
+        tick: 1,
+        strokes: vec![crate::world::spray::SprayStroke {
+            color: 0,
+            width: 2,
+            points: vec![1, 1],
+        }],
+    };
+    assert!(poisoned.validate().is_err());
+    if poisoned.validate().is_ok() {
+        net.sprays.insert(poisoned.clone());
+    }
+    assert_eq!(net.sprays.len(), 0, "un relay inválido no entra");
+
+    poisoned.local_pos = [10.0, 1.6, 10.0];
+    if poisoned.validate().is_ok() {
+        net.sprays.insert(poisoned);
+    }
+    assert_eq!(net.sprays.len(), 1, "y uno válido sí");
 }
 
 #[tokio::test]
@@ -4893,7 +4973,7 @@ async fn loading_a_painted_world_never_reuses_a_spray_id() {
 
     let at = [10.0, 1.6, 10.0];
     player.position = Vec3::new(at[0], at[1], at[2]);
-    process_spray_place(spray_request(1, at), &player, &mut net, 50, &tx);
+    process_spray_place(spray_request(1, at), &player, &mut net, 50, &tx).await;
 
     let ids: Vec<u32> = net.sprays.chunk((0, 0, 0)).iter().map(|s| s.id).collect();
     assert_eq!(ids.len(), 2);
@@ -4914,8 +4994,8 @@ async fn sprays_ride_the_chunk_the_client_already_asks_for() {
     let mut player = Player::new(1, "Host");
     player.position = Vec3::new(at[0], at[1], at[2]);
 
-    process_spray_place(spray_request(1, at), &player, &mut net, 10, &tx);
-    process_spray_place(spray_request(2, at), &player, &mut net, 20, &tx);
+    process_spray_place(spray_request(1, at), &player, &mut net, 10, &tx).await;
+    process_spray_place(spray_request(2, at), &player, &mut net, 20, &tx).await;
 
     let sprays = net.sprays.chunk((0, 0, 0)).to_vec();
     assert_eq!(sprays.len(), 2);

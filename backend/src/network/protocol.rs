@@ -127,6 +127,10 @@ pub enum PacketType {
     StruggleReport = 0x4F,
     // ADR-046: proximity voice. Claims the slot ADR-047 reserved above.
     VoiceFrame = 0x50,
+    // ADR-068: pintadas de spray. 0x51 lleva la peticion de un joiner al host (unico que
+    // valida y acuna); 0x52 lleva la pintada YA aceptada del host a todos los peers.
+    SprayPlaceRequest = 0x51,
+    SprayPlaced = 0x52,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -205,6 +209,8 @@ impl PacketType {
             0x4E => Some(Self::NoiseReport),
             0x4F => Some(Self::StruggleReport),
             0x50 => Some(Self::VoiceFrame),
+            0x51 => Some(Self::SprayPlaceRequest),
+            0x52 => Some(Self::SprayPlaced),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -483,6 +489,24 @@ pub enum PacketPayload {
         add_id: u64,
         building_id: u32,
         material_id: i32,
+    },
+    /// ADR-068: a joiner asks the host to paint a spray. Everything here is a REQUEST — the host
+    /// re-derives the chunk, re-validates every cap against the REQUESTER's own known position
+    /// and mints the id. The joiner never anchors, never validates and never numbers.
+    SprayPlaceRequest {
+        place_id: u64,
+        layer: u8,
+        world_pos: [f32; 3],
+        yaw: f32,
+        size: [f32; 2],
+        strokes: Vec<crate::world::spray::SprayStroke>,
+    },
+    /// ADR-068: a spray the host ACCEPTED, on its way to every peer. Travels one per packet and
+    /// not as a roster, unlike `StpBuildingList`: a spray is ~1,9 KB, so even a modest chunk's
+    /// worth would blow the datagram that ADR-060 (d) already had to paginate for far lighter
+    /// elements.
+    SprayPlaced {
+        spray: crate::world::spray::Spray,
     },
     /// ADR-037: the sender cancelled a placed-but-unbuilt piece. Only the host acts on it;
     /// it removes the entry from `stp_buildings` and the existing 10 Hz relay makes every
@@ -867,6 +891,8 @@ impl PacketPayload {
             Self::StpPlaceRequest { .. } => PacketType::StpPlaceRequest as u16,
             Self::StpBuildAddRequest { .. } => PacketType::StpBuildAddRequest as u16,
             Self::StpDemolishRequest { .. } => PacketType::StpDemolishRequest as u16,
+            Self::SprayPlaceRequest { .. } => PacketType::SprayPlaceRequest as u16,
+            Self::SprayPlaced { .. } => PacketType::SprayPlaced as u16,
             Self::PlayerUpdate { .. } => PacketType::PlayerUpdate as u16,
             Self::ChunkState { .. } => PacketType::ChunkState as u16,
             Self::ChunkDelta { .. } => PacketType::ChunkDelta as u16,

@@ -1,4 +1,4 @@
-# IPC wire schema — changelog v2 → v28
+# IPC wire schema — changelog v2 → v29
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
 > `WIRE_SCHEMA_VERSION` (hoy **28**). Este documento es el changelog, no la versión. Al
@@ -328,7 +328,7 @@ una sola ronda; hacia 20 000 (1 111 páginas) la ráfaga desborda el buffer de r
 generación completa. El monolito moría a ~2 200 elementos y de forma permanente. Cruzar el techo
 nuevo pediría un rediseño a deltas, explícitamente fuera de ADR-060.
 
-### v28 (ADR-063) — actual
+### v28 (ADR-063)
 
 Caso distinto de los anteriores: **ningún payload cambia de forma.** Los ids de entidad/item que ya
 viajan como `u32`/`uint` (`EntityView.id`, `ItemView.id`, `EntitySyncData.id`, `ItemSyncData.id` en
@@ -357,3 +357,33 @@ Degradación: **ninguna interop cross-versión, y no hace falta ninguna.** El ga
 rechazan cualquier mismatch de versión ANTES de que un id con significado nuevo cruce el wire hacia
 un peer que no lo entiende. Un v27 y un v28 nunca completan la conexión entre sí; no hay escenario
 de mezcla de formatos en producción.
+
+### v29 (ADR-068) — actual
+
+Pintadas de spray, en los DOS transportes.
+
+**IPC.** `ClientMessage::SprayPlace(SprayPlaceRequest)` es variante nueva de nivel superior y no
+una `PlayerAction`, por una razón dura: el `data` de `PlayerAction` es un `serde_json::Value` y
+`Value` no tiene tipo de bytes, así que el blob `bin` con los puntos del trazo **no decodifica
+ahí**. Las demás colocaciones (`stp_place`, `stp_drop`) son acciones precisamente porque su
+payload es todo números. Vuelta: `ServerMessage::SprayPlaced(Spray)` (eco de la aceptada) y el
+campo aditivo `GridChunkData.sprays`, omitido del wire cuando está vacío.
+
+**P2P.** Dos opcodes nuevos, ambos fiables: `SprayPlaceRequest` **0x51** (joiner → host, petición)
+y `SprayPlaced` **0x52** (host → todos, ya aceptada). Una pintada perdida no se auto-cura como un
+`NoiseReport` — nadie la reintenta y el jugador se queda mirando una pared que para los demás sí
+está pintada.
+
+**Una pintada por paquete, NO un roster.** Es la diferencia con `StpBuildingList` y compañía: una
+pintada mide ~1,9 KB, así que hasta un puñado reventaría el datagrama que ADR-060 (d) ya tuvo que
+paginar para elementos mucho más ligeros. La hidratación en bloque viaja por `GridChunkData`, con
+el chunk que el cliente ya pide, y no por un roster a 10 Hz.
+
+`requester_id` de `SprayPlaceRequest` sale de la CABECERA del paquete, no del payload: el host mide
+el alcance contra la posición que ya conoce de ESE peer, así que un cliente no puede reclamar estar
+pintando desde el sitio de otro.
+
+Degradación: **ninguna interop cross-versión, y no hace falta.** Igual que en v28, el gate de
+handshake P2P (corrección de ADR-060) y el `hello` IPC (ADR-061) rechazan el mismatch antes de que
+un opcode desconocido cruce. `WireSchema.Expected` (C#) bumpeado a 29 en el mismo commit — ADR-061:
+desincronizarlos deja el juego inarrancable, no con un warning.

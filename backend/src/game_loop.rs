@@ -750,7 +750,7 @@ pub async fn run(
                 }
                 ClientMessage::SprayPlace(req) => {
                     // ADR-068: el host valida y acuña; el jugador que pinta no decide nada.
-                    process_spray_place(req, &player, &mut net, tick, &to_clients);
+                    process_spray_place(req, &player, &mut net, tick, &to_clients).await;
                 }
                 ClientMessage::Voice { seq, data } => {
                     // ADR-046 Fase 2 — our own microphone, on its way out.
@@ -1886,6 +1886,53 @@ async fn handle_network_event(
             if net.is_host {
                 process_stp_demolish(demolish_id, building_id, net);
                 sync::broadcast_stp_buildings(net).await;
+            }
+        }
+
+        // ADR-068: un joiner pide pintar. El host aplica EXACTAMENTE las mismas reglas que al
+        // jugador local — mismo `accept_spray` — midiendo el alcance contra la posición que el
+        // host ya conoce de ESE peer, no contra la que el paquete pudiera reclamar.
+        NetworkEvent::SprayPlaceRequest {
+            place_id,
+            layer,
+            world_pos,
+            yaw,
+            size,
+            strokes,
+            requester_id,
+        } => {
+            if net.is_host {
+                let Some(painter) = net.peers.get(&requester_id).map(|p| p.position) else {
+                    info!(
+                        "MPTRACE step=SPRAY event=spray_place_unknown_peer requester={requester_id} ignored=true"
+                    );
+                    return;
+                };
+                let req = crate::ipc::SprayPlaceRequest {
+                    place_id,
+                    layer,
+                    world_pos,
+                    yaw,
+                    size,
+                    strokes,
+                };
+                let painter_pos = Vec3::new(painter[0], painter[1], painter[2]);
+                if let Some(spray) =
+                    accept_spray(req, requester_id, painter_pos, net, tick, to_clients)
+                {
+                    broadcast_spray(&spray, net).await;
+                }
+            }
+        }
+
+        // ADR-068: el host aceptó una pintada (de quien sea) y este peer debe verla. Se revalida
+        // aunque venga del host: es lo que separa el almacén local de cualquier paquete
+        // malformado, y el coste es despreciable frente a lo que cuesta rasterizarla.
+        NetworkEvent::SprayPlacedReceived { spray } => {
+            if spray.validate().is_ok() {
+                net.sprays.insert(spray);
+            } else {
+                info!("MPTRACE step=SPRAY event=spray_relay_rejected ignored=true");
             }
         }
 
@@ -4163,7 +4210,7 @@ fn next_spray_id() -> u32 {
 /// modified client cannot inflate the save, paint through a wall from across the level, or plant
 /// a NaN. A refusal is logged with WHICH cap it crossed: a silent reject over a legitimate
 /// client is undebuggable.
-fn process_spray_place(
+async fn process_spray_place(
     req: crate::ipc::SprayPlaceRequest,
     player: &Player,
     net: &mut NetworkManager,
@@ -4171,22 +4218,60 @@ fn process_spray_place(
     to_clients: &broadcast::Sender<ServerMessage>,
 ) {
     if !net.is_host {
-        // S1 commit 4 forwards this to the host over P2P. Until then it is refused LOUDLY —
-        // a joiner whose paint silently evaporates is exactly the failure this project keeps
-        // paying for elsewhere.
+        // El joiner no ancla, no valida y no numera: solo pide. Fiable porque una pintada
+        // perdida no se auto-cura — nadie la reintenta y el jugador se queda mirando una pared
+        // que para los demás sí está pintada.
+        let payload = crate::network::protocol::PacketPayload::SprayPlaceRequest {
+            place_id: req.place_id,
+            layer: req.layer,
+            world_pos: req.world_pos,
+            yaw: req.yaw,
+            size: req.size,
+            strokes: req.strokes,
+        };
+        net.send_reliable(1, &payload).await;
         info!(
-            "MPTRACE step=SPRAY event=spray_place_joiner_not_forwarded place_id={} pending=s1_p2p",
+            "MPTRACE step=SPRAY event=spray_place_forwarded_to_host place_id={}",
             req.place_id
         );
         return;
     }
 
+    if let Some(spray) = accept_spray(req, net.local_id, player.position, net, tick, to_clients) {
+        broadcast_spray(&spray, net).await;
+    }
+}
+
+/// ADR-068: envía a TODOS los peers una pintada ya aceptada. Uno por paquete y no como roster
+/// (a diferencia de `StpBuildingList`): una pintada son ~1,9 KB y un puñado no cabría en el
+/// datagrama que ADR-060 (d) ya tuvo que paginar para elementos mucho más ligeros.
+async fn broadcast_spray(spray: &crate::world::spray::Spray, net: &mut NetworkManager) {
+    let payload = crate::network::protocol::PacketPayload::SprayPlaced {
+        spray: spray.clone(),
+    };
+    for peer_id in net.peer_ids() {
+        net.send_reliable(peer_id, &payload).await;
+    }
+}
+
+/// El núcleo host-only: valida y acuña. Lo comparten la entrada IPC (el jugador local pinta) y
+/// la entrada P2P (un joiner lo pide), para que NO existan dos juegos de reglas — el camino del
+/// joiner es exactamente el mismo, solo cambia de quién es la posición contra la que se mide el
+/// alcance. Devuelve la pintada aceptada para que el llamante la difunda.
+fn accept_spray(
+    req: crate::ipc::SprayPlaceRequest,
+    author: u16,
+    painter_pos: Vec3,
+    net: &mut NetworkManager,
+    tick: u64,
+    to_clients: &broadcast::Sender<ServerMessage>,
+) -> Option<crate::world::spray::Spray> {
     if req.place_id != 0 && !net.processed_spray_places.insert(req.place_id) {
         info!(
             "MPTRACE step=SPRAY event=spray_place_duplicate place_id={} ignored=true",
             req.place_id
         );
-        return;
+        return None;
     }
 
     // El chunk lo deriva el HOST, no el cliente: un cliente que redondee distinto anclaría la
@@ -4200,17 +4285,17 @@ fn process_spray_place(
         local_pos: crate::world::spray::to_chunk_local(req.world_pos, cx, cz),
         yaw: req.yaw,
         size: req.size,
-        author: net.local_id,
+        author,
         tick,
         strokes: req.strokes,
     };
 
-    if let Err(reason) = spray.validate_from(player.position) {
+    if let Err(reason) = spray.validate_from(painter_pos) {
         info!(
-            "MPTRACE step=SPRAY event=spray_place_rejected place_id={} reason={} pos=({:.2},{:.2},{:.2})",
-            req.place_id, reason, req.world_pos[0], req.world_pos[1], req.world_pos[2]
+            "MPTRACE step=SPRAY event=spray_place_rejected place_id={} author={} reason={} pos=({:.2},{:.2},{:.2})",
+            req.place_id, author, reason, req.world_pos[0], req.world_pos[1], req.world_pos[2]
         );
-        return;
+        return None;
     }
 
     let id = spray.id;
@@ -4224,9 +4309,10 @@ fn process_spray_place(
     }
 
     info!(
-        "MPTRACE step=SPRAY event=spray_placed id={} place_id={} chunk=({},{},{}) strokes={} points={} evicted={}",
+        "MPTRACE step=SPRAY event=spray_placed id={} place_id={} author={} chunk=({},{},{}) strokes={} points={} evicted={}",
         id,
         req.place_id,
+        author,
         cx,
         cz,
         req.layer,
@@ -4237,7 +4323,8 @@ fn process_spray_place(
 
     // Eco inmediato: el que pinta está mirando la pared, así que el round-trip se nota más aquí
     // que en ningún otro sitio (mismo razonamiento que el relay inmediato de `stp_place`).
-    let _ = to_clients.send(ServerMessage::SprayPlaced(spray));
+    let _ = to_clients.send(ServerMessage::SprayPlaced(spray.clone()));
+    Some(spray)
 }
 
 /// Phase B3: monotonic id source for host-minted STP building GROUPS. Starts at 1 so

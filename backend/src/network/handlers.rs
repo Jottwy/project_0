@@ -247,6 +247,30 @@ impl NetworkManager {
         ]
         {
 
+            // ADR-068: `requester_id` sale de la CABECERA, no del payload — por eso este arm no
+            // puede vivir en la lista 1:1 de abajo. Es lo que impide que un cliente reclame estar
+            // pintando desde la posición de otro para saltarse el tope de alcance.
+            PacketPayload::SprayPlaceRequest {
+                place_id,
+                layer,
+                world_pos,
+                yaw,
+                size,
+                strokes,
+            } => Some(NetworkEvent::SprayPlaceRequest {
+                place_id,
+                layer,
+                world_pos,
+                yaw,
+                size,
+                strokes,
+                requester_id: sender_id,
+            }),
+
+            PacketPayload::SprayPlaced { spray } => {
+                Some(NetworkEvent::SprayPlacedReceived { spray })
+            }
+
             PacketPayload::StpCarryableList {
                 carryables,
                 generation,

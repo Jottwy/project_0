@@ -89,6 +89,22 @@ pub enum NetworkEvent {
         demolish_id: u64,
         building_id: u32,
     },
+    /// ADR-068: a joiner asks the host to paint a spray. `requester_id` comes from the packet
+    /// HEADER, not the payload — the host validates the reach against THAT peer's known position,
+    /// so a client cannot claim to be painting from someone else's spot.
+    SprayPlaceRequest {
+        place_id: u64,
+        layer: u8,
+        world_pos: [f32; 3],
+        yaw: f32,
+        size: [f32; 2],
+        strokes: Vec<crate::world::spray::SprayStroke>,
+        requester_id: u16,
+    },
+    /// ADR-068: the host accepted a spray (anybody's) and this peer must show it.
+    SprayPlacedReceived {
+        spray: crate::world::spray::Spray,
+    },
     /// Phase B2.5: a joiner asks the host to pick up a world carryable (host-authoritative).
     StpCarryablePickupRequest {
         carryable_id: u32,
