@@ -98,6 +98,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "Por encima de ~1.6 el panel vuelve a reventar con el bloom actual.")]
         [Range(0f, 3f)] public float lampEmission = 1.3f;
 
+        [Tooltip("Volumen del zumbido de fluorescente de esta capa (FluorescentHumDirector). " +
+                 "0 = capa muda. Es el volumen de UNA lámpara bajo el panel; el presupuesto " +
+                 "de fuentes hace que solo suenen las más cercanas, así que subirlo no " +
+                 "multiplica el número de voces, solo lo hace más presente.")]
+        [Range(0f, 1f)] public float humVolume = 0.35f;
+
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
                  "match) ⇒ every zone uses the layer's lamp fields — the behaviour before " +
@@ -602,6 +608,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         [Tooltip("Solo se lee con overrideLampPoint marcado. true = Point, false = Spot.")]
         public bool lampPoint;
 
+        [Tooltip("Marcado ⇒ humVolume de abajo sustituye al de la capa en esta zona. 0 es " +
+                 "autorable y significa ZONA MUDA: un pasillo sin zumbido lee como avería " +
+                 "eléctrica, que es lo contrario del canon de Level 0 pero justo lo que " +
+                 "quiere BLACKOUT. OCTAVO override del set — no cambia nada del render, el " +
+                 "zumbido es local y cosmético y no cruza el wire.")]
+        public bool overrideHumVolume;
+        [Range(0f, 1f)] public float humVolume;
+
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
         /// con un set específico; sí con uno comodín).</summary>
         public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
@@ -611,7 +625,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public bool HasAnyOverride =>
             overrideLampColor || overrideLampIntensity || overrideLampRange ||
             overrideLightDensity || overrideBrokenLampChance || overrideLampEmission ||
-            overrideLampPoint;
+            overrideLampPoint || overrideHumVolume;
     }
 
     /// <summary>

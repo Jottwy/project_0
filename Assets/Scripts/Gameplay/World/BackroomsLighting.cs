@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.Audio;
 using BackroomsSurvival.Gameplay.GridWorld;
 using UnityEngine;
 
@@ -57,6 +59,12 @@ namespace BackroomsSurvival.Gameplay.World
         // creating a MaterialPropertyBlock throws "CreateImpl not allowed from constructor".
         private static MaterialPropertyBlock _lampMpb;
 
+        // Buffers del alta de audio, reusados chunk a chunk: el director copia lo que
+        // necesita, así que aquí no queda nada retenido. De instancia y no estáticos porque
+        // el streamer tiene un único BackroomsLighting y este método no es reentrante.
+        private readonly List<Vector3> _humPositions = new List<Vector3>();
+        private readonly List<float>   _humPitches   = new List<float>();
+
         /// <summary>
         /// Spawn luminaires across <paramref name="chunkRoot"/>'s ceiling. Positions
         /// follow GridChunkBuilder's tile-centre convention ((tile + 0.5) × tileSize).
@@ -84,6 +92,9 @@ namespace BackroomsSurvival.Gameplay.World
             // Spot es el default histórico y sigue siéndolo: una zona que no autora nada
             // renderiza byte-idéntica a antes de que este override existiera.
             bool  lampIsPoint    = false;
+            // Zumbido: mismo mecanismo de zona, octavo override. No toca el rng ni ninguna
+            // decisión de render — solo cuánto suena esta capa/zona.
+            float humVolume      = cfg.humVolume;
             if (cfg.TryGetZoneLightSet(zoneKind, out var zl))
             {
                 if (zl.overrideLampColor)        lampColor     = zl.lampColor;
@@ -93,6 +104,7 @@ namespace BackroomsSurvival.Gameplay.World
                 if (zl.overrideBrokenLampChance) brokenChance  = zl.brokenLampChance;
                 if (zl.overrideLampEmission)     lampEmission  = zl.lampEmission;
                 if (zl.overrideLampPoint)        lampIsPoint   = zl.lampPoint;
+                if (zl.overrideHumVolume)        humVolume     = zl.humVolume;
             }
             // El tipo decide la caída, no al revés: son dos derivaciones distintas (ángulo de
             // corte del cono vs inverso del cuadrado) y mezclarlas es lo que quema el techo.
@@ -141,6 +153,11 @@ namespace BackroomsSurvival.Gameplay.World
             int geoLayer = GridChunkBuilder.GeoLayer(worldLayer);
             int litMask  = ~GridChunkBuilder.GeoMask | (1 << geoLayer);
 
+            // Se vacían aquí y no al final: una salida temprana del bucle nunca puede dejar
+            // dentro las lámparas del chunk anterior.
+            _humPositions.Clear();
+            _humPitches.Clear();
+
             for (int tz = 0; tz < tilesZ; tz++)
             {
                 for (int tx = 0; tx < tilesX; tx++)
@@ -165,6 +182,15 @@ namespace BackroomsSurvival.Gameplay.World
                     mesh.layer = geoLayer; // so only this layer's lamps light the tube
 
                     if (broken) continue; // dark tube, no light cast (mesh stays)
+
+                    // Alta del zumbido. La posición es la del DIFUSOR, no la de la Light:
+                    // el jugador señala el panel que ve, no el punto de emisión que le
+                    // cuelga 0,25–0,70 m por debajo. Un tubo roto no zumba, por eso va tras
+                    // el `continue` de arriba. El pitch sale del tile GLOBAL, así que dos
+                    // clientes —y dos visitas al mismo chunk— oyen el mismo detune.
+                    _humPositions.Add(chunkRoot.TransformPoint(localPos));
+                    _humPitches.Add(FluorescentHumDirector.PitchFor(
+                        chunkX * tilesX + tx, chunkZ * tilesZ + tz));
 
                     // One centred light per panel (4 lights/panel killed perf).
                     //
@@ -238,6 +264,14 @@ namespace BackroomsSurvival.Gameplay.World
                     }
                 }
             }
+
+            // Un alta por CHUNK, no por lámpara: el director no necesita que la luminaria
+            // tenga comportamiento, solo dónde está, así que no se le añade componente
+            // ninguno. El lote se retira solo cuando `chunkRoot` muera con el chunk — no
+            // hay baja explícita que se pueda olvidar, y ningún AudioSource cuelga jamás de
+            // un chunk, así que descargarlo no puede dejar fuentes huérfanas.
+            FluorescentHumDirector.RegisterChunkLamps(
+                chunkRoot, worldLayer, _humPositions, _humPitches, humVolume);
         }
 
         /// <paramref name="renderer"/> is handed back so the flicker path does not look the
