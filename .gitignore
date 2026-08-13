@@ -11,6 +11,8 @@ Logs/
 UserSettings/
 MemoryCaptures/
 Recordings/
+# Copias de recuperacion de SceneAutoBackup (fuera de Assets a proposito)
+SceneBackups/
 
 # Visual Studio / Rider / IDE
 .vs/
