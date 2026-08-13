@@ -178,7 +178,7 @@ QualitySettings:
     globalTextureMipmapLimit: 0
     textureMipmapLimitSettings: []
     anisotropicTextures: 2
-    antiAliasing: 0
+    antiAliasing: 2
     softParticles: 0
     softVegetation: 1
     realtimeReflectionProbes: 1
@@ -274,6 +274,7 @@ QualitySettings:
     Lumin: 4
     Nintendo 3DS: 4
     Nintendo Switch: 4
+    Nintendo Switch 2: 4
     PS4: 4
     PS5: 4
     Server: 0
