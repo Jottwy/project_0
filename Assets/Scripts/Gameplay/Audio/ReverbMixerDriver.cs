@@ -140,15 +140,24 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// mismo tono no reinicia la mezcla, así que el llamante no necesita detectar
         /// cambios — eso lo hace el propio driver comparando con el objetivo vigente.
         /// </summary>
-        public static void SetRoom(RoomTone tone)
+        /// <param name="zoneKind">
+        /// Solo para el acuse. Va como argumento y no se deduce aquí porque distinguir
+        /// "la zona es −1" de "la zona es 0 pero el asset no trae sus valores" es
+        /// exactamente lo que costó una ronda de diagnóstico: los dos casos producen los
+        /// mismos números y sin el zone_kind no se pueden separar.
+        /// </param>
+        public static void SetRoom(RoomTone tone, int zoneKind = int.MinValue)
         {
             var d = Ensure();
             if (d == null) return;
-            bool changed = !d._hasTarget || !Same(d._target, tone);
+            bool changed = !d._hasTarget || !Same(d._target, tone) || zoneKind != d._zone;
             d._target    = tone;
+            d._zone      = zoneKind;
             d._hasTarget = true;
             if (changed) d._announcePending = true;
         }
+
+        private int _zone = int.MinValue;
 
         private static bool Same(RoomTone a, RoomTone b) =>
             a.dry == b.dry && a.room == b.room && a.roomHF == b.roomHF &&
@@ -180,7 +189,8 @@ namespace BackroomsSurvival.Gameplay.Audio
                                  "Ver docs/systems/reverb-mixer.md.");
                 return;
             }
-            Debug.Log($"[Reverb] pedido room={_target.room:F0} decay={_target.decay:F2} " +
+            string z = _zone == int.MinValue ? "?" : (_zone < 0 ? "DESCONOCIDA" : _zone.ToString());
+            Debug.Log($"[Reverb] zona={z}  pedido room={_target.room:F0} decay={_target.decay:F2} " +
                       $"reflect={_target.reflect:F0} delay={_target.reflectDelay:F4} " +
                       $"dry={_target.dry:F0}  |  EN EL MIXER room={room:F0} decay={decay:F2} " +
                       $"reflect={refl:F0} delay={delay:F4} dry={dry:F0}");

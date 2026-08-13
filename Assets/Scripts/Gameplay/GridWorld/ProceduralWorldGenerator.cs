@@ -646,7 +646,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Se manda el TONO, no un salto: el driver interpola en su propio Update porque
             // una cola que cambia de golpe se oye como un corte, mientras que ambiente y
             // niebla sí pueden aplicarse de una vez.
-            Audio.ReverbMixerDriver.SetRoom(cfg.ReverbFor(zoneKind));
+            Audio.ReverbMixerDriver.SetRoom(cfg.ReverbFor(zoneKind), zoneKind);
         }
 
         // ── Scheduling logic (pure; unit-tested headless in ChunkStreamSchedulerTests) ──
