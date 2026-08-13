@@ -1473,3 +1473,196 @@ async fn a_relayed_voice_frame_is_attributed_to_the_speaker_not_to_the_host() {
         "la voz relayada debe atribuirse al hablante, no al host que la reenvia"
     );
 }
+
+// ─────────────────────── ADR-068 — spray sobre la red real ───────────────────────
+
+/// Una pintada de prueba, con blob de puntos reconocible para poder seguirlo por el cable.
+fn test_spray(id: u32, cx: i32, cz: i32) -> crate::world::spray::Spray {
+    crate::world::spray::Spray {
+        id,
+        cx,
+        cz,
+        layer: 0,
+        local_pos: [12.5, 1.6, 33.0],
+        yaw: 90.0,
+        size: [1.5, 1.0],
+        author: 7,
+        tick: 42,
+        strokes: vec![crate::world::spray::SprayStroke {
+            color: 3,
+            width: 6,
+            points: vec![0, 0, 128, 200, 255, 255],
+        }],
+    }
+}
+
+/// ADR-068 — los TRES saltos de spray sobre dos backends de verdad, con handshake real y
+/// sockets UDP reales. Hasta aquí la mitad multijugador solo tenía tests de lógica suelta: esto
+/// es lo que prueba que el paquete cruza, que el opcode se mapea al evento correcto y que el
+/// `requester_id` sale de la CABECERA y no del payload — el detalle que impide que un cliente
+/// reclame estar pintando desde el sitio de otro.
+///
+/// Mismo alcance que `corpse_relay_hops_round_trip_between_peers`: wire + mapeo de eventos. La
+/// autoridad (validación de topes, acuñado, desalojo) se prueba en `game_loop`.
+#[tokio::test]
+async fn spray_hops_round_trip_between_peers() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 2077, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+    assert_eq!(joiner.local_id, 2077);
+
+    // Salto 1: el joiner PIDE pintar. Nada de lo que manda es autoridad.
+    let request = PacketPayload::SprayPlaceRequest {
+        place_id: 77,
+        layer: 0,
+        world_pos: [137.5, 1.6, -80.0],
+        yaw: 90.0,
+        size: [1.5, 1.0],
+        strokes: vec![crate::world::spray::SprayStroke {
+            color: 3,
+            width: 6,
+            points: vec![0, 0, 128, 200, 255, 255],
+        }],
+    };
+    joiner.send_reliable(1, &request).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let host_events = host.process_incoming().await;
+
+    let requester = host_events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::SprayPlaceRequest {
+                place_id: 77,
+                requester_id,
+                strokes,
+                ..
+            } => {
+                assert_eq!(
+                    strokes[0].points,
+                    vec![0, 0, 128, 200, 255, 255],
+                    "el blob de puntos debe cruzar byte a byte"
+                );
+                Some(*requester_id)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("el host no recibio la peticion: {host_events:?}"));
+    assert_eq!(
+        requester, 2077,
+        "el peticionario sale de la CABECERA: es lo que impide reclamar la posicion de otro"
+    );
+
+    // Salto 2: el host difunde la pintada YA aceptada, con su id acuñado.
+    host.send_reliable(
+        2077,
+        &PacketPayload::SprayPlaced {
+            spray: test_spray(500, 2, -2),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let joiner_events = joiner.process_incoming().await;
+
+    let received = joiner_events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::SprayPlacedReceived { spray } => Some(spray.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("el joiner no recibio la pintada: {joiner_events:?}"));
+    assert_eq!(received.id, 500, "el id lo acuña el host y viaja intacto");
+    assert_eq!((received.cx, received.cz), (2, -2));
+    assert_eq!(
+        received.local_pos,
+        [12.5, 1.6, 33.0],
+        "sigue siendo LOCAL al chunk"
+    );
+    assert_eq!(received.strokes[0].points, vec![0, 0, 128, 200, 255, 255]);
+
+    // Salto 3: el joiner carga un chunk y pregunta qué hay pintado. Sin esto, quien se une a un
+    // mundo ya pintado ve paredes limpias: la geometría se deriva del seed, una pintada no.
+    joiner
+        .send_reliable(
+            1,
+            &PacketPayload::SprayChunkRequest {
+                cx: 2,
+                cz: -2,
+                layer: 0,
+            },
+        )
+        .await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let host_events = host.process_incoming().await;
+
+    let asked_by = host_events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::SprayChunkRequest {
+                cx: 2,
+                cz: -2,
+                layer: 0,
+                requester_id,
+            } => Some(*requester_id),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("el host no recibio la peticion de chunk: {host_events:?}"));
+    assert_eq!(
+        asked_by, 2077,
+        "la respuesta vuelve a ESE peer, asi que el remitente es parte del evento"
+    );
+}
+
+/// ADR-068 — una pintada REAL (32 trazos, 512 puntos) tiene que caber en un datagrama. Es la
+/// razón por la que viaja una por paquete y no en un roster: el presupuesto medido son ~1,9 KB,
+/// y los rosters de ADR-060 ya tuvieron que paginarse por reventar con elementos más ligeros.
+/// Si alguien sube los topes sin mirar, esto se cae antes que la replicación en producción.
+#[tokio::test]
+async fn a_worst_case_spray_survives_a_real_datagram() {
+    use crate::world::spray::{SprayStroke, MAX_POINTS_PER_SPRAY, MAX_STROKES_PER_SPRAY};
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 3300, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    let per_stroke = MAX_POINTS_PER_SPRAY / MAX_STROKES_PER_SPRAY;
+    let mut worst = test_spray(999, 0, 0);
+    worst.strokes = (0..MAX_STROKES_PER_SPRAY)
+        .map(|_| SprayStroke {
+            color: 0,
+            width: 8,
+            points: vec![7u8; per_stroke * 2],
+        })
+        .collect();
+    assert_eq!(worst.validate(), Ok(()), "el peor caso debe ser valido");
+
+    host.send_reliable(
+        3300,
+        &PacketPayload::SprayPlaced {
+            spray: worst.clone(),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let events = joiner.process_incoming().await;
+
+    let got = events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::SprayPlacedReceived { spray } => Some(spray.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("el peor caso no cruzo el datagrama: {events:?}"));
+
+    assert_eq!(got.strokes.len(), MAX_STROKES_PER_SPRAY);
+    assert_eq!(got.point_count(), MAX_POINTS_PER_SPRAY);
+}

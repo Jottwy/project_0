@@ -4858,6 +4858,75 @@ async fn a_joiner_never_mints_a_spray_id_of_its_own() {
     );
 }
 
+/// ADR-068 — el CICLO COMPLETO de guardado, con fichero real en disco: pintar, guardar, cargar
+/// y volver a servir la pintada con el chunk.
+///
+/// Los tests de round-trip previos prueban cada mitad por separado; éste es el único que
+/// recorre lo que hace el juego de verdad, incluido el paso por JSON, que es donde el blob de
+/// puntos deja de ser binario y podría deformarse.
+#[tokio::test]
+async fn a_painted_wall_survives_saving_and_reloading() {
+    use crate::persistence::save::{build_save, load_or_fresh, SaveMeta};
+
+    let world = World::new(42);
+    let mut player = Player::new(1, "Host");
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (tx, _rx) = broadcast::channel(16);
+
+    // 1. Pintar dos pintadas en una pared de un chunk que NO es el (0,0) — dentro del primero,
+    //    local y global coinciden y el test pasaría aunque el anclaje estuviera roto.
+    let at = [137.5, 1.6, -80.0]; // chunk (2, -2)
+    player.position = Vec3::new(at[0], at[1], at[2]);
+    process_spray_place(spray_request(1, at), &player, &mut net, 10, &tx).await;
+    process_spray_place(spray_request(2, at), &player, &mut net, 20, &tx).await;
+    assert_eq!(net.sprays.chunk((2, -2, 0)).len(), 2);
+    let painted = net.sprays.all();
+
+    // 2. Guardar a un fichero REAL.
+    let mut path = std::env::temp_dir();
+    path.push("backrooms_adr068_save_cycle.json");
+    let _ = std::fs::remove_file(&path);
+    let mut save = build_save(
+        "s",
+        &world,
+        &player,
+        &SaveMeta::default(),
+        &[],
+        &[],
+        &[],
+        &[],
+        1.0,
+        &painted,
+    );
+    save.save_to(&path).expect("el guardado debe escribir");
+
+    // 3. Cargar en un backend LIMPIO, como haría el arranque siguiente.
+    let loaded = load_or_fresh(&path).expect("el save debe cargar");
+    assert_eq!(loaded.sprays.len(), 2, "las pintadas estan en el fichero");
+
+    let mut fresh_net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut fresh_world = World::new(42);
+    let mut fresh_player = Player::new(1, "Host");
+    assert_eq!(fresh_net.sprays.len(), 0, "arranca sin nada pintado");
+    hydrate_from_save(&mut fresh_world, &mut fresh_player, &mut fresh_net, loaded);
+
+    // 4. Y el chunk vuelve a servirlas, en orden de render y con los trazos intactos.
+    let served = fresh_net.sprays.chunk((2, -2, 0));
+    assert_eq!(served.len(), 2, "la pared sigue pintada tras recargar");
+    assert!(served[0].tick < served[1].tick, "y en orden de render");
+    assert_eq!(
+        served[0].strokes[0].points,
+        vec![0, 0, 10, 10, 20, 20],
+        "el blob de puntos sobrevive al viaje por JSON"
+    );
+    assert_eq!(
+        served[0].local_pos, painted[0].local_pos,
+        "sigue anclada al chunk, no a coordenadas globales"
+    );
+
+    let _ = std::fs::remove_file(&path);
+}
+
 #[tokio::test]
 async fn a_joiner_asks_for_a_chunks_sprays_once_and_only_once() {
     // Sin la pregunta, quien se une a un mundo ya pintado ve paredes limpias hasta que alguien
