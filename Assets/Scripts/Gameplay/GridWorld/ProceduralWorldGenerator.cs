@@ -595,6 +595,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             RenderSettings.fogMode      = FogMode.ExponentialSquared;
             RenderSettings.fogDensity   = density;
             RenderSettings.fogColor     = color;
+
+            // El reverb es atmósfera igual que la niebla y el ambiente, así que se resuelve
+            // aquí y no en un segundo sondeo de zona: mismo dueño, mismo disparo, un solo
+            // punto donde el "dónde estoy" se convierte en "cómo suena y cómo se ve".
+            //
+            // Se manda el TONO, no un salto: el driver interpola en su propio Update porque
+            // una cola que cambia de golpe se oye como un corte, mientras que ambiente y
+            // niebla sí pueden aplicarse de una vez.
+            Audio.ReverbMixerDriver.SetRoom(cfg.ReverbFor(zoneKind));
         }
 
         // ── Scheduling logic (pure; unit-tested headless in ChunkStreamSchedulerTests) ──

@@ -178,6 +178,47 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "así que una capa sin tocar se ve exactamente igual que antes.")]
         public Color ambientLight = new Color(0.28f, 0.24f, 0.16f);
 
+        [Header("Reverb de sala (bus Master del mixer)")]
+        [Tooltip("Reverb base de la capa, para las zonas que no autoran el suyo. El default " +
+                 "es MUDO (−10000 dB) a propósito: añadir el sistema no cambia cómo suena " +
+                 "nada hasta que alguien describa una sala. Requiere el efecto SFX Reverb " +
+                 "expuesto en FPS_AudioMixer — ver ReverbMixerDriver.")]
+        [Range(-10000f, 0f)] public float reverbRoom = -10000f;
+
+        [Tooltip("Largo de la cola de la capa, en segundos.")]
+        [Range(0.1f, 20f)] public float reverbDecay = 1f;
+
+        [Tooltip("Agudo que sobrevive a la sala, en dB. Negativo = superficies absorbentes.")]
+        [Range(-10000f, 0f)] public float reverbRoomHF = -1500f;
+
+        [Tooltip("Nivel de la cola tardía de la capa, en dB.")]
+        [Range(-10000f, 2000f)] public float reverbLevel = 0f;
+
+        /// <summary>
+        /// La sala de <paramref name="zoneKind"/>: la de la zona si la autora, si no la de la
+        /// capa. Único resolvedor, por el mismo motivo que <see cref="HumVolumeFor"/> — dos
+        /// derivaciones del mismo dato es como se autoriza una discrepancia.
+        /// </summary>
+        public Audio.ReverbMixerDriver.RoomTone ReverbFor(int zoneKind)
+        {
+            var t = new Audio.ReverbMixerDriver.RoomTone
+            {
+                dry    = 0f,
+                room   = reverbRoom,
+                roomHF = reverbRoomHF,
+                decay  = reverbDecay,
+                level  = reverbLevel,
+            };
+            if (TryGetZoneAmbienceSet(zoneKind, out var za) && za.overrideReverb)
+            {
+                t.room   = za.reverbRoom;
+                t.roomHF = za.reverbRoomHF;
+                t.decay  = za.reverbDecay;
+                t.level  = za.reverbLevel;
+            }
+            return t;
+        }
+
         [Tooltip("ADR-066 — sparse override list: ambient light and fog by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
                  "match) ⇒ the layer's ambient/fog, unchanged. A diferencia de luz y techo, " +
@@ -731,6 +772,31 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public bool overrideFogColor;
         public Color fogColor;
 
+        [Tooltip("Marcado ⇒ esta zona describe una SALA y el reverb del bus la adopta. UN " +
+                 "SOLO booleano para los cinco valores de abajo, a diferencia del resto del " +
+                 "set: no son cinco parámetros independientes sino la descripción de un " +
+                 "espacio, y autorar la cola sin el tamaño no significa nada físicamente. " +
+                 "Sin marcar, la zona hereda el reverb de la capa.")]
+        public bool overrideReverb;
+
+        [Tooltip("Largo de la cola en segundos. Pasillo de moqueta ~0.8; nave de columnas " +
+                 "~2.5. Es el mando que más distingue un espacio de otro.")]
+        [Range(0.1f, 20f)] public float reverbDecay;
+
+        [Tooltip("Presencia del reverb en dB (−10000 = mudo, 0 = máximo). −10000 es " +
+                 "autorable y significa una zona SIN reverb — un espacio tan pequeño o tan " +
+                 "absorbente que no devuelve nada.")]
+        [Range(-10000f, 0f)] public float reverbRoom;
+
+        [Tooltip("Cuánto agudo sobrevive a la sala, en dB. Muy negativo = superficies " +
+                 "blandas (moqueta, techo acústico) que se comen el brillo; cerca de 0 = " +
+                 "hormigón y azulejo.")]
+        [Range(-10000f, 0f)] public float reverbRoomHF;
+
+        [Tooltip("Nivel de la cola tardía en dB. Súbelo para que el espacio se sienta más " +
+                 "grande sin alargar la cola.")]
+        [Range(-10000f, 2000f)] public float reverbLevel;
+
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/> (−1 nunca casa
         /// con un set específico; sí con uno comodín).</summary>
         public bool Matches(int zoneKindQuery) => anyZoneKind || zoneKind == zoneKindQuery;
@@ -738,6 +804,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>True si el autor habilitó al menos un override — un set sin ninguno es
         /// autoría a medias y no debe capturar la zona.</summary>
         public bool HasAnyOverride =>
-            overrideAmbientLight || overrideFogDensity || overrideFogColor;
+            overrideAmbientLight || overrideFogDensity || overrideFogColor || overrideReverb;
     }
 }
