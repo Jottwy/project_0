@@ -647,18 +647,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // una cola que cambia de golpe se oye como un corte, mientras que ambiente y
             // niebla sí pueden aplicarse de una vez.
             Audio.ReverbMixerDriver.SetRoom(cfg.ReverbFor(zoneKind), zoneKind);
-
-            // DIAGNÓSTICO TEMPORAL. Todo lo comprobable desde fuera sale limpio: el asset en
-            // disco trae overrideReverb, el DLL trae los campos, las zonas se resuelven — y
-            // aun así ReverbFor devuelve el fallback de capa. Lo único que queda por mirar es
-            // qué tiene el objeto CARGADO EN MEMORIA, que es justo lo que no se ve desde el
-            // repo. Se retira en cuanto la causa esté identificada.
-            bool hit = cfg.TryGetZoneAmbienceSet(zoneKind, out var dbg);
-            Debug.Log($"[Ambience] zona={zoneKind} cfg='{cfg.name}' " +
-                      $"sets={(cfg.zoneAmbienceSets == null ? -1 : cfg.zoneAmbienceSets.Length)} " +
-                      $"match={hit} overrideReverb={(hit && dbg.overrideReverb)} " +
-                      $"room={(hit ? dbg.reverbRoom : 0f):F0} " +
-                      $"capaRoom={cfg.reverbRoom:F0} capaPared={cfg.reverbWallMetres:F2}");
         }
 
         // ── Scheduling logic (pure; unit-tested headless in ChunkStreamSchedulerTests) ──

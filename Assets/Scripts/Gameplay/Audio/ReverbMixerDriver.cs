@@ -175,6 +175,11 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             if (!_announcePending || _mixer == null || _muted || _names == null) return;
             _announcePending = false;
+            // Detrás del mismo flag que el espejo del backend: durante el afinado de
+            // salas es la ÚNICA forma de saber qué zona estás pisando —no hay HUD que
+            // lo diga— pero fuera de eso es ruido, y el ruido en el log ya costó un
+            // editor. Se enciende con BACKROOMS_VERBOSE_LOG=1.
+            if (!Net.NetworkInitializer.VerboseBackendLog) return;
 
             float room, decay, refl, delay, dry;
             bool ok = _mixer.GetFloat(_names[1], out room)
