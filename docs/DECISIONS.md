@@ -3300,3 +3300,44 @@ Y desde el 2026-08-13 hay un segundo camino que lo pierde: los arreglos de recog
 - Test Rust: un save anterior a este ADR carga con `props` vacías y sin error.
 - Medición del peor caso de wire, escrita en `docs/systems/ipc-wire-schema.md` junto al bump a v30.
 - En juego: morir con la antorcha a media vida, lootearse el cadáver, y comprobar que sigue a media vida.
+
+### Enmienda ADR-069 (2026-08-13) — la pregunta 2 se cierra con datos: «props ⇒ cantidad 1» es FALSO, y aun así no bloquea
+
+Barrido de **todos** los `.asset` del vendor, no de una muestra:
+
+- **12 definiciones** llevan `ItemProperty`.
+- **10 tienen `StackSize` 1** — entre ellas todas las de `FPS_Durability` (id `-8792658`), que es la propiedad del bug que abrió este ADR.
+- **2 apilan**: `STP_Raw Meat` y `STP_Cooked Meat`, `StackSize` 5, y la propiedad que llevan es `STP_Cooked Amount` (id `6313314`), el progreso de cocinado.
+
+O sea que el invariante que se propuso afirmar **no se puede afirmar**: existen stacks de cantidad > 1 con propiedades. Pero la excepción no es desgaste, es cocinado, y eso cambia qué hay que decidir.
+
+**Decisión: las propiedades son POR STACK, no por unidad.** Un `CorpseStack` lleva un solo `Vec<ItemPropertyValue>` para toda su cantidad.
+
+**Por qué eso no pierde nada nuevo: es exactamente el modelo que STP ya tiene.** Un `ItemStack` del vendor es **un** `Item` más un contador, así que dentro del propio inventario un stack de 5 filetes ya comparte una sola instancia de propiedades. Y el vendor ya funde stacks **comparando solo el id del item, sin mirar las propiedades** (`ItemContainer.AdjustAllStacks`, llamado desde `AddItem`), y al partir un stack reparte la MISMA referencia de `Item` a las dos mitades. Es decir: la fusión de dos filetes medio cocinados en uno solo, y el reparto de un cocinado entre dos mitades, **ya pasan hoy dentro de la mochila**, sin que este ADR exista.
+
+Copiar ese modelo al botín es por tanto **fidelidad exacta con el vendor**, no una pérdida introducida por el wire. La alternativa —propiedades por unidad, `Vec<Vec<_>>`— daría una fidelidad que el juego **no tiene en ningún otro sitio**, multiplicaría el peor caso de wire por la cantidad del stack, y obligaría a decidir qué hacer al meter esas unidades en un inventario que solo sabe guardar una instancia por stack. Descartada.
+
+**El techo de fidelidad lo pone el modelo de datos de STP, no nuestro protocolo.** Queda escrito para que nadie lo lea como una carencia del wire y "lo arregle".
+
+**Consecuencia para el riesgo 1 (rollback), que sigue vivo y ahora es más concreto:** al reconstruir un item en `CorpseLootSync` hay que reponer sus propiedades ANTES de insertarlo, o un take rechazado devuelve al cadáver una antorcha reparada. Mismo trabajo en `ReconcileFromServer`.
+
+### Enmienda ADR-069 (2026-08-14) — este ADR se renumera a **ADR-072**, y el riesgo 3 se cierra con la medición
+
+**Renumeración.** Dos sesiones trabajaron esta rama a la vez y ambas acuñaron el 069. Cuando se detectó, la otra sesión ya tenía escritos sin commitear un 069 (la cama), un 070 (los objetos que caen) y acabó commiteando también un 071 (el gate de rosters). **Este ADR —propiedades de instancia en el botín— pasa a ser ADR-072.** El texto de arriba no se borra ni se reescribe: `DECISIONS.md` solo se amplía (regla dura #11), y esta enmienda ES el cambio de número. Toda referencia futura usa **ADR-072**.
+
+**La lección, que vale más que el arreglo:** dos manos en la misma rama pueden acuñar el mismo número sin que git diga nada, porque el conflicto no es textual — los apéndices caen en sitios distintos del fichero. Y el número libre es un blanco móvil: entre detectar la colisión y corregirla se consumieron dos más. **El número se fija en el momento de commitear, mirando el working tree y no solo `HEAD`.**
+
+**Wire.** El texto de arriba dice «29 → 30» y ya no vale: los ADR de la otra sesión dejaron `WIRE_SCHEMA_VERSION` en **31**. Las propiedades de instancia en el botín van a **32**, con su espejo `WireSchema.Expected` en el mismo commit —que desde `7532876` vigila un test de `cargo test`— y su entrada en `docs/systems/ipc-wire-schema.md`.
+
+**Riesgo 3 CERRADO: el presupuesto de wire, medido y no estimado.** Sonda reproducible en `corpse_view_wire_cost` (`#[ignore]`, en `world/corpse.rs`), que codifica con el MISMO encoder del IPC (`to_vec_named`) un cadáver saturado de 64 stacks:
+
+| propiedades por stack | bytes | contra la base |
+|---|---|---|
+| 0 (base) | 1836 B | — |
+| 1 | 3116 B | +1280 B, ×1,70 |
+| 3 | 5676 B | +3840 B, ×3,09 |
+| 8 (el tope) | 12076 B | +10240 B, ×6,58 |
+
+Son **20 B por propiedad**, y lo que los domina es **el nombre del campo repetido en cada entrada** — exactamente la mecánica que descuadró el presupuesto de ADR-068 por 2,6×. Con el número delante se decide dejar el tope `MAX_PROPS_PER_STACK` en **8 y no en 4**: un arma con munición, modo, mira y desgaste llega justo a 4, así que recortar ahí rozaría lo legítimo. A cambio, **el recorte avisa por log**, que es lo que convierte el tope en una red y no en una pérdida silenciosa. El caso REAL no se parece al peor: un cadáver normal trae ~20 stacks y casi ninguno lleva propiedades.
+
+**Relación con ADR-070, que no es casual.** Los arreglos del 2026-08-13 (recogida con inventario lleno, y restauración) sueltan al mundo lo que no cabe por `stp_drop`, que es justo el camino cuyo asentamiento define el 070. Ambos vuelcos mandan ya impulso (`SynthesizeTossVelocity`), pero **`stp_drop` no transporta propiedades**: lo que cae al suelo por esa vía vuelve a valor de fábrica. Esa es la Fase 2 de este ADR y sigue pendiente.
