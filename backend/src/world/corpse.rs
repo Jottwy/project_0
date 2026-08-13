@@ -310,6 +310,72 @@ mod tests {
         assert!(world.corpses.is_empty());
     }
 
+    /// El contrato que el cliente TIENE que respetar, fijado aquí porque es aquí donde se rompe.
+    ///
+    /// `take_corpse_item` hace `Vec::remove` en cuanto agota un stack, así que cada índice mayor
+    /// baja una posición EN ESE INSTANTE. Una ráfaga de peticiones calculadas todas de golpe
+    /// contra el estado inicial —que es lo que hacía "Take All", un `OnSlotChanged` por slot en el
+    /// mismo frame— no vacía el cadáver: apunta a otras entradas y deja alguna sin pedir jamás.
+    /// El cadáver sobrevive, y como el cliente despawnea por ausencia en el roster, se queda ahí
+    /// para siempre aunque en pantalla se vea vacío. Las cajas comparten este camino entero.
+    #[test]
+    fn a_burst_of_takes_with_stale_indices_cannot_empty_a_corpse() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(10.0, 1.8, 20.0);
+        let id = spawn_test_corpse(
+            &mut world,
+            pos,
+            stacks(&[(-1, 1), (-2, 1), (-3, 1), (-4, 1)]),
+        );
+
+        // Los cuatro índices resueltos ANTES de que se aplique ninguno, que es justo lo que hacía
+        // el cliente al no serializar.
+        for stale_index in 0..4 {
+            let _ = world.take_corpse_item(id, stale_index, 1, pos, CORPSE_LOOT_MAX_DISTANCE);
+        }
+
+        // La traza real, medida por este test y no supuesta:
+        //   take(0) → saca -1;              quedan [-2, -3, -4]
+        //   take(1) → índice 1 es -3 ahora; quedan [-2, -4]      ← se saltó -2
+        //   take(2) → len 2 → bad_index (la lista ya encogió por debajo del índice)
+        //   take(3) → bad_index
+        let survivor = world
+            .corpses
+            .get(&id)
+            .expect("el cadáver sobrevive a la ráfaga: ESE es el bug");
+        assert_eq!(
+            survivor.items,
+            stacks(&[(-2, 1), (-4, 1)]),
+            "quedan las entradas que el desplazamiento se saltó y las que ya no se pudieron pedir"
+        );
+    }
+
+    /// La otra mitad: resolviendo el índice en el momento de CADA petición —una en vuelo cada vez,
+    /// que es lo que hace el cliente desde el arreglo— las mismas cuatro tomas sí vacían el
+    /// cadáver y lo hacen desaparecer.
+    #[test]
+    fn takes_resolved_one_at_a_time_do_empty_the_corpse() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(10.0, 1.8, 20.0);
+        let id = spawn_test_corpse(
+            &mut world,
+            pos,
+            stacks(&[(-1, 1), (-2, 1), (-3, 1), (-4, 1)]),
+        );
+
+        for _ in 0..4 {
+            // Con el shift ya aplicado, el primer slot vivo es siempre el 0.
+            world
+                .take_corpse_item(id, 0, 1, pos, CORPSE_LOOT_MAX_DISTANCE)
+                .expect("cada toma serializada apunta a una entrada real");
+        }
+
+        assert!(
+            world.corpses.is_empty(),
+            "vaciado de verdad → despawnea por ausencia en el roster"
+        );
+    }
+
     #[test]
     fn take_corpse_item_rejects_far_missing_and_bad_index() {
         let mut world = World::new(42);

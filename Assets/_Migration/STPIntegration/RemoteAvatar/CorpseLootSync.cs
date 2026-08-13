@@ -37,8 +37,15 @@ namespace BackroomsSurvival.Migration.STPIntegration
     /// Vec index). Because of the rollback requirement above, the shift is no longer applied eagerly
     /// at the moment of local removal (a rejected take must NOT have shifted anything — the server
     /// never actually removed that Vec entry) — it is deferred until `corpse_item_taken` CONFIRMS
-    /// the removal really happened, tracked per-request in `_pending`. A PARTIAL removal (count
-    /// reduced but not to zero) never reindexes on the server either way.
+    /// the removal really happened. A PARTIAL removal (count reduced but not to zero) never
+    /// reindexes on the server either way.
+    ///
+    /// Y POR ESO LAS PETICIONES VAN DE UNA EN UNA (arreglo 2026-08-13). Diferir el shift mantiene
+    /// coherente la contabilidad local, pero no puede arreglar una petición que YA SALIÓ con un
+    /// índice viejo: el servidor reindexa en cuanto agota un stack, y "Take All" disparaba todos
+    /// los slots en el mismo frame, mucho antes de la primera confirmación. Con 4 stacks eso
+    /// dejaba uno sin pedir nunca — el cadáver no se vaciaba en el servidor y no despawneaba,
+    /// aunque en pantalla se veía vacío. Ver el bloque de `_queued`.
     ///
     /// KNOWN LIMITATION (v1, accepted): depositing an item INTO the corpse container (StorageStationUI
     /// allows dragging either direction) is NOT reported to the server — the corpse is a one-way loot
@@ -90,11 +97,41 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// real time when a looted item matches a worn equipment slot or the held item.</summary>
         public event Action<int, int> ItemTakenConfirmed;
 
-        // Keyed by the server Vec index the request targeted (== _serverIndex[localSlot] AT THE
-        // MOMENT the request was sent, before any shift). Case where multiple takes are in flight
-        // at once (e.g. "Take All" fires every slot in one frame) is handled correctly because each
-        // shift is deferred to ITS OWN confirmation, applied in confirmation-arrival order.
-        private readonly Dictionary<int, PendingTake> _pending = new Dictionary<int, PendingTake>();
+        // UNA petición en vuelo por cadáver, y las demás en cola. NO es prudencia de más: el
+        // backend hace `Vec::remove(item_index)` en cuanto un stack se agota (corpse.rs), así que
+        // TODO índice mayor baja una posición en ese mismo instante. "Take All" dispara un
+        // OnSlotChanged por slot en el MISMO frame, mucho antes de que llegue ninguna confirmación,
+        // de modo que una ráfaga de peticiones calculadas de golpe apuntaba así con 4 stacks:
+        //
+        //   take(0) → saca el 0;            quedan [1, 2, 3]
+        //   take(1) → el índice 1 es el 2;  quedan [1, 3]   ← se saltó el 1
+        //   take(2) → bad_index (la lista ya encogió por debajo del índice)
+        //   take(3) → bad_index
+        //
+        // (traza medida por `a_burst_of_takes_with_stale_indices_cannot_empty_a_corpse`, no supuesta)
+        //
+        // O sea que de cuatro stacks quedaban DOS sin pedir: el cadáver no se vaciaba en el servidor y
+        // por tanto no despawneaba (CorpseSpawner despawnea por ausencia en el roster), aunque en
+        // pantalla se veía vacío porque el movimiento local es optimista. Las cajas iban por el
+        // mismo camino (`spawn_chest` es un cadáver con bandera) y tenían el mismo síntoma.
+        //
+        // Diferir el shift a cada confirmación —lo que ya se hacía— mantiene coherente la
+        // CONTABILIDAD del cliente, pero no puede arreglar peticiones que ya salieron con índices
+        // viejos. Lo único que lo arregla es no tener dos en vuelo: el índice se calcula al ENVIAR,
+        // ya con todos los shifts anteriores aplicados.
+        private readonly Queue<PendingTake> _queued = new Queue<PendingTake>();
+        private bool _hasInFlight;
+        private PendingTake _inFlight;
+        private int _inFlightServerIndex;
+        private float _inFlightSentAt;
+
+        /// <summary>
+        /// Tras esto se da por perdida la respuesta y se deshace la petición en vuelo. Sin este
+        /// tope, un veredicto que no llega (IPC caído a media ráfaga) dejaría la cola parada para
+        /// siempre y el resto del cadáver sin poder lootearse. Generoso: el IPC es del mismo
+        /// proceso y una respuesta tarda un frame, no segundos.
+        /// </summary>
+        private const float InFlightTimeoutSeconds = 5f;
 
         private IPCClient _ipc;
         private ICharacter _looterCharacter;
@@ -132,7 +169,59 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 _ipc = ipc;
                 _ipc.AddEventListener(OnGameEvent);
+                PumpQueue(); // la cola pudo llenarse antes de que existiera el IPC
             }
+
+            if (_hasInFlight && Time.unscaledTime - _inFlightSentAt > InFlightTimeoutSeconds)
+            {
+                // Se da por perdida. Se deshace como si la hubieran rechazado: el servidor, que no
+                // contestó, lo más probable es que no la aplicara, y si SÍ la aplicó el reconcile
+                // por roster retira la copia sobrante en la siguiente pasada. Los dos caminos
+                // convergen; dejarla en vuelo para siempre no converge a nada.
+                Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: sin veredicto para item_index=" +
+                    $"{_inFlightServerIndex} tras {InFlightTimeoutSeconds}s — se deshace y sigue la cola.");
+                var lost = _inFlight;
+                _hasInFlight = false;
+                RollBack(lost);
+                PumpQueue();
+            }
+        }
+
+        /// <summary>
+        /// Envía la siguiente petición si no hay ninguna en vuelo. El índice de servidor se
+        /// resuelve AQUÍ y no al encolar: para cuando le toca, los `Vec::remove` de las peticiones
+        /// anteriores ya están reflejados en <c>_serverIndex</c>.
+        /// </summary>
+        private void PumpQueue()
+        {
+            if (_hasInFlight || _queued.Count == 0)
+                return;
+
+            var next = _queued.Dequeue();
+            int serverIdx = _serverIndex[next.LocalSlot];
+            if (serverIdx < 0)
+            {
+                // El slot ya no tiene entrada que pedir (lo vació otro peer y el reconcile lo
+                // marcó). Nada que reportar; sigue la cola.
+                Debug.Log($"[CorpseLootSync] corpse {_corpseId}: slot {next.LocalSlot} ya no apunta a " +
+                    "ninguna entrada del servidor — peticion descartada.");
+                PumpQueue();
+                return;
+            }
+
+            if (_ipc == null || !_ipc.IsConnected)
+            {
+                Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: IPC desconectado — la petición no sale " +
+                    "y no confirmará nunca (el item queda quitado optimistamente).");
+                PumpQueue();
+                return;
+            }
+
+            _inFlight = next;
+            _inFlightServerIndex = serverIdx;
+            _inFlightSentAt = Time.unscaledTime;
+            _hasInFlight = true;
+            _ipc.SendTakeCorpseItem(_corpseId, serverIdx, next.Quantity);
         }
 
         private void OnSlotChanged(in SlotReference slot, SlotChangeType changeType)
@@ -156,15 +245,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return; // E2: server-applied reduction (remote loot) — bookkeeping only, no echo
 
             int removed = -delta;
-            int serverIdx = _serverIndex[i];
             bool wasFullDepletion = newCount == 0;
 
-            _pending[serverIdx] = new PendingTake(i, oldItemId, removed, wasFullDepletion);
-
-            if (_ipc != null && _ipc.IsConnected)
-                _ipc.SendTakeCorpseItem(_corpseId, serverIdx, removed);
-            else
-                Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: IPC disconnected — take not reported, will never confirm (item stays optimistically removed).");
+            // Se ENCOLA, no se envía: el índice de servidor se resuelve al enviar. Ver el bloque
+            // de _queued para por qué calcularlo aquí rompía "Take All".
+            _queued.Enqueue(new PendingTake(i, oldItemId, removed, wasFullDepletion));
+            PumpQueue();
 
             // NOTE: the server-index shift is deferred to OnGameEvent (corpse_item_taken) — see
             // class doc. Applying it here would be wrong for a request that later gets rejected.
@@ -189,9 +275,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return;
 
             int itemIndex = (int)IPCParse.L(d, "item_index");
-            if (!_pending.TryGetValue(itemIndex, out var pending))
+            if (!_hasInFlight || itemIndex != _inFlightServerIndex)
                 return; // not ours (e.g. a stale/duplicate event) — ignore
-            _pending.Remove(itemIndex);
+            var pending = _inFlight;
+            _hasInFlight = false;
 
             if (taken)
             {
@@ -209,6 +296,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 // CONFIRMED take happened, so a looted clothing/held item can undress the ragdoll
                 // in real time instead of only at spawn.
                 ItemTakenConfirmed?.Invoke(pending.ItemId, pending.Quantity);
+                PumpQueue(); // el shift ya está aplicado: la siguiente sale con el índice correcto
                 return;
             }
 
@@ -217,6 +305,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             string reason = IPCParse.S(d, "reason");
             Debug.Log($"[CorpseLootSync] corpse {_corpseId}: take rejected (reason={reason}) — rolling back item_id={pending.ItemId} x{pending.Quantity}.");
             RollBack(pending);
+            PumpQueue();
         }
 
         /// <summary>
@@ -284,13 +373,23 @@ namespace BackroomsSurvival.Migration.STPIntegration
             }
         }
 
+        /// <summary>
+        /// ¿Tiene este slot una petición PROPIA sin liquidar? Cuenta tanto la que está en vuelo
+        /// como las que esperan en la cola: mientras una de las dos siga viva, el estado local va
+        /// por delante del roster a propósito y reconciliarlo resucitaría lo recién cogido.
+        /// </summary>
         private bool TryGetPendingForSlot(int localSlot, out int itemId)
         {
-            foreach (var kv in _pending)
+            if (_hasInFlight && _inFlight.LocalSlot == localSlot)
             {
-                if (kv.Value.LocalSlot == localSlot)
+                itemId = _inFlight.ItemId;
+                return true;
+            }
+            foreach (var q in _queued)
+            {
+                if (q.LocalSlot == localSlot)
                 {
-                    itemId = kv.Value.ItemId;
+                    itemId = q.ItemId;
                     return true;
                 }
             }
