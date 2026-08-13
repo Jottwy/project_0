@@ -51,9 +51,24 @@ namespace BackroomsSurvival.Net
         // y generar los assets es un solo paso, no dos.
         // TODO(balance) para cuando se añadan: a 13 entradas equiprobables un material sale ~4/13 de
         // los slots de esta pool, contra un T3 que cuesta 130 unidades.
+        // ADR-068 S4: "Spray Can" entra AQUÍ y no en una pool propia, por la restricción dura de
+        // arriba — una pool nueva exigiría un peso nuevo en ZoneLootProfile y en el
+        // ZoneLootTable.asset ya serializado. Va en la de materiales y no en la de armas porque
+        // se lee como el objeto encontrado en un edificio que es, y porque "Wooden Torch" ya
+        // sienta el precedente de un wieldable en esta pool.
+        //
+        // Su ItemDefinition SÍ existe y resuelve (`BR_Spray Can` → Name "Spray Can"), a
+        // diferencia de los materiales de crafteo de ADR-064 que siguen fuera a propósito: con
+        // el nombre aquí y el asset sin generar, GetWithName devolvería null y el slot se
+        // descartaría con un warning.
+        //
+        // TODO(balance): a 10 entradas equiprobables, un bote sale en ~1/10 de los slots de esta
+        // pool. Es deliberadamente encontrable — marcar el camino es la mecánica, no el premio —
+        // pero nadie ha medido todavía cuántos botes acumula una sesión larga.
         private static readonly string[] MaterialPool =
         {
-            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch"
+            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape",
+            "Wooden Torch", "Spray Can"
         };
         // Recorte de catálogo vendor: fuera el rifle y el arco (armas de fuego/caza ajenas al tono)
         // y el kit de caza (Hunting Axe/Knife, Stone/Wooden Spear). Quedan los dos que se leen como

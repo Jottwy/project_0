@@ -60,9 +60,14 @@ namespace BackroomsSurvival.Net
         // ADR-064 (DIFERIDO): los 4 materiales de crafteo entran aquí a la vez que en
         // ChunkLootRoll.MaterialPool y a la vez que se generan sus assets — si divergen, el cofre
         // sirve lo que el mundo no da (o al revés). Ver la nota larga en ChunkLootRoll.
+        // ADR-068 S4: el bote también en los cofres, por lo mismo que está en el suelo. Se
+        // mantiene en PARIDAD con ChunkLootRoll.MaterialPool a propósito: que el cofre sirva un
+        // catálogo distinto del mundo es una decisión que se toma a la vez para las dos listas,
+        // no un descuido de una.
         private static readonly string[] MaterialPool =
         {
-            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape", "Wooden Torch"
+            "Stick", "Rope", "Cloth", "Leather", "Metal Shard", "Stone Shard", "Feather", "Duct Tape",
+            "Wooden Torch", "Spray Can"
         };
         // Mismo recorte que ChunkLootRoll.WeaponPool: fuera armas de fuego/caza y kit de cazador.
         private static readonly string[] WeaponPool =
