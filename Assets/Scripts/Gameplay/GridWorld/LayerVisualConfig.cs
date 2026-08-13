@@ -102,11 +102,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "0 = capa muda. Es el volumen de UNA lámpara bajo el panel; el presupuesto " +
                  "de fuentes hace que solo suenen las más cercanas, así que subirlo no " +
                  "multiplica el número de voces, solo lo hace más presente. VALOR DE OÍDO, " +
-                 "no calculado, y bajado DOS veces: 0.35 se anteponía a los pasos, 0.12 " +
-                 "seguía sonando a primer plano. El zumbido tiene que leerse como " +
-                 "profundidad de la sala, no como un objeto — vive muy por debajo de los " +
-                 "SFX del jugador, no un poco. Cualquier subida futura parte de aquí.")]
-        [Range(0f, 1f)] public float humVolume = 0.05f;
+                 "no calculado, y bajado TRES veces (0.35 → 0.12 → 0.05 → 0.005). El " +
+                 "zumbido tiene que leerse como profundidad de la sala, no como un objeto.\n\n" +
+                 "OJO ANTES DE VOLVER A TOCAR ESTE NÚMERO: que 0.05 ya sonara alto NO es un " +
+                 "problema de nivel — verificado, ese valor sí llegaba al runtime. A 0.05 el " +
+                 "zumbido está en torno a −28 dBFS y aun así tapaba los pasos, así que lo que " +
+                 "molesta es el TIMBRE: el clip lleva armónicos hasta 720 Hz, justo la banda " +
+                 "donde viven los pasos, y ahí enmascara por espectro y no por volumen. Si a " +
+                 "0.005 desaparece del todo en vez de quedar de fondo, la salida NO es subirlo " +
+                 "otra vez: es repartir la energía hacia el grave en " +
+                 "FluorescentHumDirector.RenderHumSamples.")]
+        [Range(0f, 1f)] public float humVolume = 0.005f;
 
         [Tooltip("ADR-059 — sparse override list: lighting parameters by zone_kind. The FIRST " +
                  "matching entry with at least one override ENABLED wins. Empty/null (or no " +
