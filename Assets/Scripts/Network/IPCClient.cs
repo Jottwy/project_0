@@ -144,32 +144,59 @@ namespace BackroomsSurvival.Net
         public void AddSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Add(handler); }
         public void RemoveSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Remove(handler); }
 
+        /// <summary>
+        /// Suscriptores que ya lanzaron y cuyo fallo ya se reportó.
+        ///
+        /// El <c>catch</c> de los despachos NO se quita: sin él, un suscriptor roto se lleva por
+        /// delante el hilo de red y con él la sesión entera. Lo que sí hacía falta es que dejara
+        /// rastro — tragarse la excepción en silencio convierte el bug de UN consumidor en "el
+        /// juego a veces no se entera", que es el modo de fallo más caro que tiene este proyecto
+        /// (el mixer mudo, el YAML truncado y el falso verde del asmdef son la misma familia).
+        ///
+        /// Una vez por suscriptor y no una por mensaje: esto va a 10 Hz, y un suscriptor roto
+        /// escribiendo por cada despacho es exactamente cómo se fabricó el <c>Editor.log</c> de
+        /// 8 GB que tumbó el editor el 13/08.
+        /// </summary>
+        private readonly HashSet<Delegate> _faultedListeners = new HashSet<Delegate>();
+
+        private void ReportListenerFailure(Delegate handler, Exception e)
+        {
+            bool firstTime;
+            lock (_faultedListeners) firstTime = _faultedListeners.Add(handler);
+            if (!firstTime) return;
+
+            var m = handler.Method;
+            Debug.LogError(
+                $"[IPCClient] el suscriptor {m.DeclaringType?.Name}.{m.Name} lanzó y ese mensaje " +
+                $"se perdió; no se vuelve a reportar de este suscriptor: {e}");
+        }
+
         private void NotifyListeners(GameEventMsg ev)
         {
             lock (_eventListeners)
                 foreach (var h in _eventListeners)
-                    try { h(ev); } catch { }
+                    try { h(ev); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyStateListeners(WorldStateMsg state)
         {
             lock (_stateListeners)
                 foreach (var h in _stateListeners)
-                    try { h(state); } catch { }
+                    try { h(state); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyMovementDeltaListeners(MovementDeltaMsg delta)
         {
             lock (_deltaListeners)
                 foreach (var h in _deltaListeners)
-                    try { h(delta); } catch { }
+                    try { h(delta); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyChunkDataListeners(GridChunkDataMsg data)
         {
             lock (_chunkDataListeners)
                 foreach (var h in _chunkDataListeners)
-                    try { h(data); } catch { }
+                    try { h(data); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifySprayListeners(SprayMsg spray)
@@ -177,7 +204,7 @@ namespace BackroomsSurvival.Net
             if (spray == null) return;
             lock (_sprayListeners)
                 foreach (var h in _sprayListeners)
-                    try { h(spray); } catch { }
+                    try { h(spray); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         // ─── Networking internals ───
