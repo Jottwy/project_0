@@ -121,7 +121,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Wood agrupa madera y tela), y cualquiera de ellas resuelve a la MISMA definición
             // al ir de vuelta, que es lo único que importa aquí.
             var mat = (mats != null && mats.Length > 0) ? mats[0] : null;
-            if (mat == null)
+            // Se anuncia el ÉXITO, no solo el fallo, y es deliberado: la ausencia de aviso ya
+            // se interpretó dos veces como "funciona" cuando en realidad significaba "no se
+            // llegó a ejecutar". Una línea por nombre y sesión (el diccionario la cachea)
+            // convierte esa inferencia en un hecho comprobable.
+            if (mat != null)
+                Debug.Log($"[GridChunkBuilder] superficie '{surfaceName}' → " +
+                          $"'{mat.name}' (def '{def.Name}')");
+            else
                 Debug.LogWarning($"[GridChunkBuilder] superficie '{surfaceName}' no encontrada " +
                                  "o sin material físico: los pasos sonarán al default del vendor.");
             _physByName[surfaceName] = mat;
