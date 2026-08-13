@@ -99,11 +99,17 @@ namespace BackroomsSurvival.Gameplay
             public readonly Texture2D Tex;
             public readonly Material Mat;
             public readonly int Cx, Cz;
+            public readonly byte Layer;
 
-            public Live(GameObject go, Texture2D tex, Material mat, int cx, int cz)
+            public Live(GameObject go, Texture2D tex, Material mat, int cx, int cz, byte layer)
             {
-                Go = go; Tex = tex; Mat = mat; Cx = cx; Cz = cz;
+                Go = go; Tex = tex; Mat = mat; Cx = cx; Cz = cz; Layer = layer;
             }
+
+            /// <summary>La pared a la que pertenece, en la misma forma que usa el contador de
+            /// apilado. Se guarda para poder retirar ESA entrada al soltarla, sin tocar las
+            /// de las paredes que siguen vivas.</summary>
+            public (int, int, byte) Wall => (Cx, Cz, Layer);
         }
 
         /// <summary>Lo pintado, por id de pintada. El id lo acuña el host y es único de mundo.</summary>
@@ -155,7 +161,8 @@ namespace BackroomsSurvival.Gameplay
             if (Time.unscaledTime >= _nextSweep)
             {
                 _nextSweep = Time.unscaledTime + SweepInterval;
-                SweepFarAway();
+                var cam = Camera.main;
+                if (cam != null) SweepFarAwayFrom(cam.transform.position);
             }
         }
 
@@ -166,15 +173,15 @@ namespace BackroomsSurvival.Gameplay
         ///
         /// Soltar es seguro porque las pintadas viajan con el chunk: cuando el jugador vuelva,
         /// `chunk_data` las trae otra vez y se rasterizan de nuevo.
+        ///
+        /// Recibe la posición en vez de leer <c>Camera.main</c> para poder probarla sin escena.
         /// </summary>
-        private void SweepFarAway()
+        public void SweepFarAwayFrom(Vector3 viewer)
         {
             if (_spawned.Count == 0) return;
-            var cam = Camera.main;
-            if (cam == null) return;
 
-            int pcx = Mathf.FloorToInt(cam.transform.position.x / SprayMsg.ChunkSize);
-            int pcz = Mathf.FloorToInt(cam.transform.position.z / SprayMsg.ChunkSize);
+            int pcx = Mathf.FloorToInt(viewer.x / SprayMsg.ChunkSize);
+            int pcz = Mathf.FloorToInt(viewer.z / SprayMsg.ChunkSize);
 
             List<uint> drop = null;
             foreach (var kv in _spawned)
@@ -188,12 +195,21 @@ namespace BackroomsSurvival.Gameplay
 
             foreach (var id in drop)
             {
-                Release(_spawned[id]);
+                var live = _spawned[id];
+                // El contador de apilado se va CON su pared, y SOLO con ella. Vaciarlo entero
+                // aquí devolvía a cero paredes cuyas pintadas siguen materializadas y a su
+                // profundidad: la siguiente pintada sobre una de ellas volvía a `depth = 0`,
+                // coplanar con la más antigua, y el "pintar encima" de la decisión 4 de ADR-068
+                // dejaba de estar garantizado — z-fighting y gana el azar del depth buffer.
+                //
+                // Retirar por clave es exacto porque la purga es por chunk y la clave lleva el
+                // chunk dentro: todas las pintadas de una misma pared caen juntas o se quedan
+                // juntas, nunca a medias. Las que caen vuelven en el mismo orden al rehidratar
+                // el chunk y se vuelven a escalonar igual.
+                _stacked.Remove(live.Wall);
+                Release(live);
                 _spawned.Remove(id);
             }
-            // El contador de apilado se olvida con ellas: al rehidratar el chunk vuelven en el
-            // mismo orden y se vuelven a escalonar igual.
-            _stacked.Clear();
         }
 
         /// <summary>Destruye objeto, textura y material. Los tres, o la textura sobrevive.</summary>
@@ -259,7 +275,7 @@ namespace BackroomsSurvival.Gameplay
             _stacked[key] = depth + 1;
 
             var go = BuildQuadObject(spray, tex, $"Spray_{spray.id}", depth, out var mat);
-            _spawned[spray.id] = new Live(go, tex, mat, spray.cx, spray.cz);
+            _spawned[spray.id] = new Live(go, tex, mat, spray.cx, spray.cz, spray.layer);
         }
 
         /// <summary>El quad con su textura, colocado contra la pared. Compartido por la pintada
@@ -303,6 +319,17 @@ namespace BackroomsSurvival.Gameplay
         /// <summary>Cuántas pintadas hay materializadas ahora mismo. Para diagnóstico y tests.</summary>
         public int LiveCount => _spawned.Count;
 
+        /// <summary>
+        /// A qué profundidad saldría la SIGUIENTE pintada de esa pared. Para diagnóstico y tests:
+        /// es el estado que una purga parcial corrompía, y no se puede leer de la escena porque
+        /// vive en el contador, no en los quads ya colocados.
+        /// </summary>
+        public int NextStackDepthOn(int cx, int cz, byte layer)
+        {
+            _stacked.TryGetValue((cx, cz, layer), out int depth);
+            return depth;
+        }
+
         // ── Vista previa ──────────────────────────────────────────────────────────────────
         //
         // El trazo EN CURSO, dibujado en local mientras el jugador arrastra. No es un adorno:
@@ -334,7 +361,7 @@ namespace BackroomsSurvival.Gameplay
             _stacked.TryGetValue(key, out int depth);
 
             var go = BuildQuadObject(spray, tex, "Spray_Preview", depth, out var mat);
-            _preview = new Live(go, tex, mat, spray.cx, spray.cz);
+            _preview = new Live(go, tex, mat, spray.cx, spray.cz, spray.layer);
             _hasPreview = true;
         }
 
