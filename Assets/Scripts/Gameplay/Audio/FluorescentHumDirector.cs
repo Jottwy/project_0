@@ -116,9 +116,15 @@ namespace BackroomsSurvival.Gameplay.Audio
             public int       layer;     // capa macro, para aislar verticalmente
             public Vector3[] positions; // MUNDO, muestreadas al registrar
             public float[]   pitches;
-            public float     volume;    // volumen autorado de la capa/zona de ESTE chunk
             public int       count;
             public int       id;        // monótono: una clave vieja no puede aliasar un lote nuevo
+
+            // La CONFIG, no el volumen ya resuelto. Guardar el float congelaría el nivel en
+            // el instante en que se construyó el chunk, y el volumen de un ambiente solo se
+            // acierta de oído: así se mueve el slider durante el Play y se oye al momento.
+            // Coste: una llamada a HumVolumeFor por lote y pasada (9 lotes, 4 veces/s).
+            public LayerVisualConfig cfg;
+            public int               zoneKind;
         }
 
         private readonly List<LampBatch> _batches = new List<LampBatch>();
@@ -154,22 +160,14 @@ namespace BackroomsSurvival.Gameplay.Audio
         private float     _listenerRetry;
         private float     _refreshTimer;
 
-        // ── Diagnóstico temporal ────────────────────────────────────────────────
-        //
-        // POR QUÉ EXISTE: el volumen se bajó CUATRO veces (0.35 → 0.12 → 0.05 → 0.005,
-        // −37 dB) y Joel siguió oyéndolo "exactamente igual de alto". El enrutado al mixer
-        // arregló la superposición pero no el nivel, así que sigue habiendo algo entre
-        // LayerVisualConfig.humVolume y AudioSource.volume que no se comporta como dice el
-        // código. Seguir tocando el número a ciegas es lo que ya ha fallado cuatro veces:
-        // esto imprime los valores REALES para poder mirarlos en vez de deducirlos.
-        //
-        // Se apaga solo a los DiagnosticSeconds — no hay flag que se pueda olvidar
-        // encendido, y una vez identificada la causa este bloque se borra entero.
-        private const float DiagnosticSeconds  = 30f;
-        private const float DiagnosticInterval = 2f;
-        private float _diagLife;
-        private float _diagTimer;
-        private static bool _loggedFirstBatch;
+        // Última mezcla anunciada por el log. La sonda periódica que encontró el problema
+        // (Editor.log, cada 2 s durante 30 s) ya cumplió y se retira: confirmó que la cadena
+        // config → AudioSource.volume estaba sana y que lo inaudible era el valor autorado.
+        // Queda solo esto, que no es diagnóstico sino ACUSE del ajuste en vivo: una línea
+        // cuando el volumen cambia de verdad, para que mover el slider durante el Play
+        // confirme por escrito que llegó. Cero spam si nadie lo toca — y ese fue justamente
+        // el problema que tumbó el editor.
+        private float _lastAnnouncedVolume = -1f;
 
         private static AudioClip                _sharedClip;
         private static FluorescentHumDirector   _instance;
@@ -187,26 +185,20 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// darlo de baja explícitamente, que es justo lo que hace imposible la fuga.
         ///
         /// Las lámparas rotas no se registran: un tubo apagado no zumba.
+        ///
+        /// Se guarda la <paramref name="cfg"/>, no un volumen ya resuelto: una zona muda
+        /// (volumen 0) SÍ se da de alta y se descarta después, en cada pasada — si se
+        /// filtrara aquí, subir el slider durante el Play no despertaría nada.
         /// </summary>
         public static void RegisterChunkLamps(Transform chunkRoot, int worldLayer,
-            List<Vector3> worldPositions, List<float> pitches, float humVolume)
+            List<Vector3> worldPositions, List<float> pitches,
+            LayerVisualConfig cfg, int zoneKind)
         {
-            if (chunkRoot == null || worldPositions == null || worldPositions.Count == 0) return;
-            if (humVolume <= 0f) return; // zona sin zumbido autorado — ni se registra
+            if (chunkRoot == null || cfg == null) return;
+            if (worldPositions == null || worldPositions.Count == 0) return;
 
             var director = EnsureInstance();
             if (director == null) return;
-
-            if (!_loggedFirstBatch)
-            {
-                // El valor que de verdad sale de LayerVisualConfig/ZoneLightSet, impreso una
-                // sola vez. Si aqui aparece 0.005 pero el pico de arriba no baja con el, el
-                // problema esta despues de este punto; si aparece otra cosa, esta antes.
-                _loggedFirstBatch = true;
-                Debug.Log($"[FluorescentHum] primer lote: humVolume={humVolume:F5} " +
-                          $"capa={worldLayer} lamparas={worldPositions.Count} " +
-                          $"clip={(_sharedClip != null ? _sharedClip.name : "null")}");
-            }
 
             int n = worldPositions.Count;
             var pos = new Vector3[n];
@@ -223,7 +215,8 @@ namespace BackroomsSurvival.Gameplay.Audio
                 layer     = worldLayer,
                 positions = pos,
                 pitches   = pit,
-                volume    = humVolume,
+                cfg       = cfg,
+                zoneKind  = zoneKind,
                 count     = n,
                 id        = director._nextBatchId++,
             });
@@ -263,7 +256,6 @@ namespace BackroomsSurvival.Gameplay.Audio
         {
             _quitting = false;
             _instance = null;
-            _loggedFirstBatch = false;
         }
 
         private void Awake()
@@ -377,39 +369,16 @@ namespace BackroomsSurvival.Gameplay.Audio
             if (refresh) Reassign(_listener.position);
 
             DriveSlots(dt);
-            LogDiagnostics(dt);
         }
 
-        // Una línea cada 2 s durante los primeros 30 s: qué volumen pide la config, qué
-        // volumen tiene de verdad cada AudioSource, y si el enrutado al mixer se logró.
-        private void LogDiagnostics(float dt)
+        // Acuse del ajuste en vivo. Solo habla cuando el valor cambia de verdad — el epsilon
+        // evita que un float reescrito idéntico cuente como cambio.
+        private void AnnounceVolumeChange(float volume)
         {
-            if (_diagLife > DiagnosticSeconds) return;
-            _diagLife += dt;
-            _diagTimer -= dt;
-            if (_diagTimer > 0f) return;
-            _diagTimer = DiagnosticInterval;
-
-            int voiced = 0;
-            float loudest = 0f, sumVol = 0f;
-            var sb = new System.Text.StringBuilder(160);
-            for (int i = 0; i < _slots.Length; i++)
-            {
-                var s = _slots[i];
-                if (s.liveKey == NoKey) continue;
-                voiced++;
-                sumVol += s.src.volume;
-                if (s.src.volume > loudest) loudest = s.src.volume;
-                sb.Append(s.src.volume.ToString("F5")).Append('/')
-                  .Append(Vector3.Distance(s.tr.position, _listener.position).ToString("F1")).Append(' ');
-            }
-
-            // AudioListener.volume es GLOBAL y lo escriben las opciones del juego: si no es
-            // 1 multiplica todo, y explicaria por que bajar humVolume no mueve nada.
-            Debug.Log($"[FluorescentHum] routed={_routed} master={_masterVolume:F3} " +
-                      $"listenerVol={AudioListener.volume:F3} lotes={_batches.Count} " +
-                      $"voces={voiced}/{_slots.Length} pico={loudest:F5} suma={sumVol:F5} " +
-                      $"[vol/dist] {sb}");
+            if (Mathf.Abs(volume - _lastAnnouncedVolume) < 1e-6f) return;
+            _lastAnnouncedVolume = volume;
+            Debug.Log($"[FluorescentHum] humVolume ahora {volume:F4}" +
+                      (volume <= 0f ? " (mudo)" : ""));
         }
 
         // Un lote muere con la raíz de su chunk. Único punto de retirada del sistema.
@@ -456,6 +425,14 @@ namespace BackroomsSurvival.Gameplay.Audio
                 }
                 if (batch.layer != earLayer) continue; // aislamiento vertical, ver arriba
 
+                // Resuelto AQUÍ y no al registrar: mover humVolume en el Inspector durante
+                // el Play se oye en la siguiente pasada. Un lote a 0 (zona muda) no genera
+                // candidatos, así que no roba huecos a un lote que sí suena — pero sigue
+                // vivo y vuelve solo en cuanto el valor suba de 0.
+                float batchVolume = batch.cfg != null ? batch.cfg.HumVolumeFor(batch.zoneKind) : 0f;
+                AnnounceVolumeChange(batchVolume);
+                if (batchVolume <= 0f) continue;
+
                 for (int i = 0; i < batch.count; i++)
                 {
                     float sqr = (batch.positions[i] - ear).sqrMagnitude;
@@ -467,7 +444,7 @@ namespace BackroomsSurvival.Gameplay.Audio
                     {
                         position = batch.positions[i],
                         pitch    = batch.pitches[i],
-                        volume   = batch.volume,
+                        volume   = batchVolume,
                     };
                 }
             }
@@ -514,9 +491,14 @@ namespace BackroomsSurvival.Gameplay.Audio
                         }
                     }
                 }
-                else if (wanted != NoKey && slot.envelope < 1f)
+                else if (wanted != NoKey)
                 {
-                    slot.envelope = Mathf.Min(1f, slot.envelope + step);
+                    // Releer el volumen aunque la lámpara no haya cambiado. Sin esto el
+                    // ajuste en vivo no se oiría: baseVolume solo se escribía al ADOPTAR, así
+                    // que un slot que mantiene su lámpara se quedaba con el nivel de cuando
+                    // la cogió y el slider parecía no hacer nada.
+                    if (_refs.TryGetValue(wanted, out var live)) slot.baseVolume = live.volume;
+                    if (slot.envelope < 1f) slot.envelope = Mathf.Min(1f, slot.envelope + step);
                 }
 
                 slot.src.volume = slot.baseVolume * slot.envelope * _masterVolume;

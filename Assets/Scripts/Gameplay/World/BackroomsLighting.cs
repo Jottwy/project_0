@@ -92,9 +92,6 @@ namespace BackroomsSurvival.Gameplay.World
             // Spot es el default histórico y sigue siéndolo: una zona que no autora nada
             // renderiza byte-idéntica a antes de que este override existiera.
             bool  lampIsPoint    = false;
-            // Zumbido: mismo mecanismo de zona, octavo override. No toca el rng ni ninguna
-            // decisión de render — solo cuánto suena esta capa/zona.
-            float humVolume      = cfg.humVolume;
             if (cfg.TryGetZoneLightSet(zoneKind, out var zl))
             {
                 if (zl.overrideLampColor)        lampColor     = zl.lampColor;
@@ -104,7 +101,10 @@ namespace BackroomsSurvival.Gameplay.World
                 if (zl.overrideBrokenLampChance) brokenChance  = zl.brokenLampChance;
                 if (zl.overrideLampEmission)     lampEmission  = zl.lampEmission;
                 if (zl.overrideLampPoint)        lampIsPoint   = zl.lampPoint;
-                if (zl.overrideHumVolume)        humVolume     = zl.humVolume;
+                // humVolume NO se resuelve aquí: lo hace el director en cada pasada vía
+                // cfg.HumVolumeFor(zoneKind), para poder ajustarlo en vivo desde el
+                // Inspector durante el Play. Congelarlo aquí lo volvería a atar al momento
+                // de construir el chunk.
             }
             // El tipo decide la caída, no al revés: son dos derivaciones distintas (ángulo de
             // corte del cono vs inverso del cuadrado) y mezclarlas es lo que quema el techo.
@@ -271,7 +271,7 @@ namespace BackroomsSurvival.Gameplay.World
             // hay baja explícita que se pueda olvidar, y ningún AudioSource cuelga jamás de
             // un chunk, así que descargarlo no puede dejar fuentes huérfanas.
             FluorescentHumDirector.RegisterChunkLamps(
-                chunkRoot, worldLayer, _humPositions, _humPitches, humVolume);
+                chunkRoot, worldLayer, _humPositions, _humPitches, cfg, zoneKind);
         }
 
         /// <paramref name="renderer"/> is handed back so the flicker path does not look the

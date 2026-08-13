@@ -125,6 +125,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public ZoneLightSet[] zoneLightSets;
 
         /// <summary>
+        /// Volumen del zumbido para <paramref name="zoneKind"/>: el de la capa salvo override
+        /// de zona. ÚNICO resolvedor — lo llaman tanto el alta por chunk
+        /// (<c>BackroomsLighting</c>) como el director de audio en cada pasada, y que ambos
+        /// deriven el valor por su cuenta es justo como se autoriza una discrepancia.
+        ///
+        /// Que el director lo resuelva EN CADA PASADA y no lo congele al construir el chunk
+        /// es deliberado: permite mover este campo en el Inspector durante el Play y oír el
+        /// cambio al instante. El volumen de un ambiente solo se acierta de oído, y con el
+        /// valor congelado cada intento costaba recompilar y volver a entrar.
+        /// </summary>
+        public float HumVolumeFor(int zoneKind)
+        {
+            if (TryGetZoneLightSet(zoneKind, out var zl) && zl.overrideHumVolume)
+                return zl.humVolume;
+            return humVolume;
+        }
+
+        /// <summary>
         /// ADR-059 — el <see cref="ZoneLightSet"/> que gobierna <paramref name="zoneKind"/>,
         /// si hay uno autorado Y con algún override habilitado. Booleanos de override
         /// EXPLÍCITOS porque 0 es un valor legítimo (OFFICE quiere
