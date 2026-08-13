@@ -180,12 +180,15 @@ namespace BackroomsSurvival.Net
             }
 
             var t = recoger.transform;
-            // El transform del personaje ya está a la altura de los pies, así que no hace falta el
-            // raycast al suelo que sí necesita el drop nativo (ese nace a la altura de la mano).
+            // ADR-070: se manda la posición SIN pegar al suelo y con impulso, igual que un drop de
+            // mano. Dónde acaba reposando lo decide el host; pre-encajarlo aquí es justo lo que ese
+            // ADR quita, y sin velocidad el sobrante caería a plomo sobre los pies del jugador —
+            // donde no lo ve — en vez de salir despedido.
             Vector3 at = t.position + t.forward * 0.5f;
+            Vector3 velocity = StpNativeDropWatcher.SynthesizeTossVelocity(recoger);
             long dropId = StpNativeDropWatcher.MintDropId();
-            ipc.SendStpDrop(dropId, defId, count, at, t.eulerAngles.y);
-            Debug.Log($"[StpPickupController] devueltos {count}×def_id={defId} al mundo drop_id={dropId} en {at:F2}.");
+            ipc.SendStpDrop(dropId, defId, count, at, t.eulerAngles.y, velocity);
+            Debug.Log($"[StpPickupController] devueltos {count}×def_id={defId} al mundo drop_id={dropId} en {at:F2} vel={velocity:F2}.");
         }
 
         private void OnDestroy()

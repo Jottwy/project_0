@@ -272,10 +272,13 @@ namespace BackroomsSurvival.Net
 
             var t = _character.transform;
             Vector3 at = t.position + t.forward * 0.5f;
+            // ADR-070: con impulso, como un drop de mano — el host decide dónde reposa. Sin él, todo
+            // lo que no cupo al restaurar aparecería apilado y quieto sobre los pies del jugador.
+            Vector3 velocity = StpNativeDropWatcher.SynthesizeTossVelocity(_character);
             long dropId = StpNativeDropWatcher.MintDropId();
-            ipc.SendStpDrop(dropId, itemId, count, at, t.eulerAngles.y);
+            ipc.SendStpDrop(dropId, itemId, count, at, t.eulerAngles.y, velocity);
             Debug.LogWarning($"[InventoryRestorer] {count}×item_id={itemId} no cabían — soltados al mundo " +
-                $"drop_id={dropId} en {at:F2} (sin propiedades de instancia).");
+                $"drop_id={dropId} en {at:F2} vel={velocity:F2} (sin propiedades de instancia).");
         }
 
         /// ADR-045 Fase 3: places each stack in its EXACT saved container/slot via

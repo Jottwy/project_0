@@ -244,6 +244,17 @@ pub struct StpItemInfo {
     pub count: u16,
     pub position: [f32; 3],
     pub rotation: f32,
+    /// ADR-070: this item is still falling, so `position` MOVES between relays and the client
+    /// must interpolate toward it instead of pinning the transform. Flips to false once the host
+    /// puts it to sleep, which is the client's cue to fix the final position and hand the
+    /// Rigidbody back to `isKinematic`.
+    ///
+    /// `serde(default)` = false → everything that already exists (chunk loot, corpse drops, world
+    /// chests) keeps being born settled at zero cost, with no migration. Only the TRANSLATION is
+    /// authoritative: the roll of the model while it falls is cosmetic and stays client-side (ADR-070
+    /// decision 3), which is why no orientation field rides along here.
+    #[serde(default)]
+    pub settling: bool,
 }
 
 /// A host-authoritative STP building piece, replicated to all peers so each client
@@ -466,6 +477,12 @@ pub enum PacketPayload {
         count: u16,
         position: [f32; 3],
         rotation: f32,
+        /// ADR-070: the throw impulse the dropper reported (view direction × force). The position
+        /// above is now the HAND, not a floor-snapped resting place — the host decides where the
+        /// object comes to rest. `serde(default)` → a peer that omits it drops the object straight
+        /// down from the hand, which is the correct degradation and still falls.
+        #[serde(default)]
+        velocity: [f32; 3],
     },
     /// ADR-060 (d): paginado — ver `StpItemList`. Éste es el roster que el doc-comment de
     /// `send_datagram` señalaba como el primero en reventar (~800 piezas colocadas).

@@ -77,6 +77,105 @@ pub fn paginate<T: Serialize + Clone>(items: &[T], budget: usize) -> Vec<Vec<T>>
     pages
 }
 
+/// ADR-071: cada cuánto sale una ronda completa aunque el roster no haya cambiado.
+///
+/// NO está para detectar cambios — de eso se encarga el hash. Está para REPARAR: el transporte es
+/// no-fiable a propósito (ADR-039), así que una página perdida deja su generación incompleta y solo
+/// se cura cuando llega otra ronda entera. Sin este latido, un peer que pierde una página del
+/// último envío se queda desincronizado para siempre.
+///
+/// 3 s es el compromiso: con la base seria medida en `systems/perf-baseline.md` baja el gasto en
+/// régimen estacionario de 10 rondas/s a 1 cada 3 s (×30), y el peor caso de una página perdida es
+/// que un objeto tarde 3 s en aparecerle a alguien — frente a no aparecer nunca.
+pub const ROSTER_HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// ADR-071: decide si un roster hay que emitirlo esta ronda. Uno por roster, en el host.
+///
+/// Deja pasar la ronda si el CONTENIDO cambió, si entró un peer nuevo, o si toca latido. En
+/// cualquier otro caso corta, y con ello se ahorra tanto el envío como el `paginate` (que es la
+/// parte cara: serializa cada elemento del roster para medirlo).
+/// ADR-071 (enmienda S1): rondas que se emiten SEGUIDAS tras un cambio, antes de que el gate
+/// vuelva a cortar.
+///
+/// Sin esto el gate rompe la autocuración justo donde más importa. Hoy un roster que cambia se
+/// reenvía a 10 Hz, así que una página perdida se repone 100 ms después; con "emite una vez y
+/// calla", la reposición pasaba a esperar al latido de 3 s. Peor aún para un roster grande, que
+/// necesita VARIAS rondas para converger (la tabla de ADR-060 d): a una ronda cada 3 s, converger
+/// pasaba de medio segundo a un minuto.
+///
+/// Tres rondas ≈ 300 ms cubren la ventana en la que una pérdida es probable —justo después del
+/// cambio, cuando el roster acaba de crecer— y siguen dejando el ahorro en un orden de magnitud.
+pub const ROSTER_CHANGE_BURST: u8 = 3;
+
+#[derive(Debug, Default)]
+pub struct RosterGate {
+    last_hash: Option<u64>,
+    last_peers: usize,
+    last_sent: Option<std::time::Instant>,
+    /// Rondas que quedan de la ráfaga post-cambio. Ver `ROSTER_CHANGE_BURST`.
+    repeats_left: u8,
+}
+
+impl RosterGate {
+    /// `hash` es del roster serializado (ver `content_hash`). `peers` es el número de peers vivos.
+    ///
+    /// Actualiza el estado SOLO cuando devuelve true: si corta, el hash anterior sigue siendo el
+    /// último realmente emitido, que es lo que hay que comparar. Guardarlo al cortar haría que un
+    /// cambio seguido de una vuelta al valor anterior se tragara la emisión intermedia.
+    pub fn should_send(
+        &mut self,
+        hash: u64,
+        peers: usize,
+        now: std::time::Instant,
+        heartbeat: std::time::Duration,
+    ) -> bool {
+        let changed = self.last_hash != Some(hash);
+        // ADR-071 decisión 4: quien acaba de entrar no tiene nada. Esperar al latido le daría un
+        // mundo vacío durante segundos.
+        let joined = peers > self.last_peers;
+        let stale = self
+            .last_sent
+            .is_none_or(|t| now.duration_since(t) >= heartbeat);
+
+        // Un cambio (o un peer nuevo) rearma la ráfaga: esta ronda y las siguientes salen a 10 Hz
+        // como antes de ADR-071, que es lo que repone una página perdida en 100 ms en vez de en 3 s.
+        if changed || joined {
+            self.repeats_left = ROSTER_CHANGE_BURST;
+        }
+
+        if changed || joined || stale || self.repeats_left > 0 {
+            self.last_hash = Some(hash);
+            self.last_peers = peers;
+            self.last_sent = Some(now);
+            self.repeats_left = self.repeats_left.saturating_sub(1);
+            return true;
+        }
+        // Una salida SÍ se registra aunque no emitamos: si no, `peers > last_peers` volvería a
+        // dispararse cuando el siguiente entre y el conteo apenas recupere el valor viejo.
+        self.last_peers = peers;
+        false
+    }
+}
+
+/// ADR-071 decisión 2: la huella de un roster. Sobre el serializado y no sobre un contador que
+/// haya que acordarse de incrementar — olvidar un sitio de mutación produciría un cambio que no se
+/// propaga NUNCA, sin error ni log, que es el peor fallo que este sistema puede tener.
+///
+/// El coste no es una clase de trabajo nueva: `paginate` ya serializa cada elemento en cada ronda
+/// para medirlo. Cuando el gate corta, esto sustituye a aquello y sale ganando.
+pub fn content_hash<T: Serialize>(items: &[T]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    match rmp_serde::to_vec_named(items) {
+        Ok(bytes) => bytes.hash(&mut h),
+        // Un roster que no serializa no se puede enviar igualmente; devolver un hash distinto cada
+        // vez haría que el gate lo dejara pasar siempre, que es la degradación correcta (se
+        // comporta como antes de ADR-071).
+        Err(_) => items.len().hash(&mut h),
+    }
+    h.finish()
+}
+
 /// Reensamblado receptor de un roster paginado, por GENERACIÓN.
 ///
 /// El emisor estampa todas las páginas de una misma ronda con la misma `generation` (su
@@ -163,6 +262,284 @@ mod tests {
             position: [1.0, 2.0, 3.0],
             rotation: 90.0,
         }
+    }
+
+    /// SONDA DE MEDICIÓN, no un test — no afirma nada, imprime. `#[ignore]` a propósito: existe
+    /// para responder "¿cuántos jugadores aguanta esto?" con números en vez de con intuición.
+    ///
+    /// ```text
+    /// cargo test roster_relay_cost -- --ignored --nocapture
+    /// ```
+    ///
+    /// Qué mide y por qué ESTO y no otra cosa: el host difunde cada roster ENTERO a 10 Hz a todos
+    /// los peers, sin filtro de distancia. Ese es el único coste del proyecto que crece con el
+    /// tamaño del mundo Y con el número de jugadores a la vez, así que es el que fija el techo de
+    /// la palabra "MMO". El resto del loop crece con una cosa o con la otra, no con el producto.
+    #[test]
+    #[ignore = "sonda de medición: imprime, no afirma"]
+    fn roster_relay_cost() {
+        use crate::network::protocol::{StpBuildingInfo, StpItemInfo};
+        use std::time::Instant;
+
+        fn building(id: u32) -> StpBuildingInfo {
+            StpBuildingInfo {
+                id,
+                def_id: -4996552,
+                position: [12.5, 1.8, -40.0],
+                rotation: 90.0,
+                group_id: id / 8,
+                added: vec![crate::network::protocol::StpBuildProgress {
+                    material_id: -1234,
+                    count: 4,
+                }],
+            }
+        }
+        fn item(id: u32) -> StpItemInfo {
+            StpItemInfo {
+                id,
+                def_id: -52379,
+                count: 3,
+                position: [12.5, 1.8, -40.0],
+                rotation: 90.0,
+                settling: false,
+            }
+        }
+
+        const RELAY_HZ: f64 = 10.0;
+        println!("\n=== ADR-070 follow-up / sonda de coste del relay de rosters ===");
+        println!("presupuesto de página: {ROSTER_PAGE_BUDGET_BYTES} B | relay: {RELAY_HZ} Hz\n");
+
+        println!("--- tamaño serializado por elemento ---");
+        let b1 = rmp_serde::to_vec_named(&building(1)).unwrap().len();
+        let i1 = rmp_serde::to_vec_named(&item(1)).unwrap().len();
+        let c1 = rmp_serde::to_vec_named(&carryable(1)).unwrap().len();
+        println!("  StpBuildingInfo (1 material): {b1} B");
+        println!("  StpItemInfo:                  {i1} B");
+        println!("  StpCarryableInfo:             {c1} B\n");
+
+        // Escenarios: "una base modesta", "una base seria", "el techo medido de ADR-060 (d)".
+        for (label, n_build, n_items) in [
+            ("mundo temprano", 100usize, 40usize),
+            ("una base seria", 1_000, 300),
+            ("mundo maduro", 4_000, 1_000),
+        ] {
+            let buildings: Vec<_> = (0..n_build as u32).map(building).collect();
+            let items: Vec<_> = (0..n_items as u32).map(item).collect();
+
+            let t = Instant::now();
+            let bp = paginate(&buildings, ROSTER_PAGE_BUDGET_BYTES);
+            let ip = paginate(&items, ROSTER_PAGE_BUDGET_BYTES);
+            let paginate_us = t.elapsed().as_micros();
+
+            let bytes: usize = bp
+                .iter()
+                .map(|p| rmp_serde::to_vec_named(p).unwrap().len())
+                .sum::<usize>()
+                + ip.iter()
+                    .map(|p| rmp_serde::to_vec_named(p).unwrap().len())
+                    .sum::<usize>();
+            let pages = bp.len() + ip.len();
+            let per_peer_kbps = bytes as f64 * RELAY_HZ / 1024.0;
+
+            println!("--- {label}: {n_build} piezas + {n_items} items ---");
+            println!("  páginas por ronda:      {pages}");
+            println!("  bytes por ronda:        {bytes} B");
+            println!(
+                "  paginate() por ronda:   {paginate_us} µs  (×{RELAY_HZ}/s = {:.1} ms/s de CPU)",
+                paginate_us as f64 * RELAY_HZ / 1000.0
+            );
+            println!("  POR PEER:               {per_peer_kbps:.0} KB/s");
+            for peers in [4usize, 16, 32] {
+                println!(
+                    "    salida del host con {peers:>2} peers: {:.1} MB/s ({} datagramas/s)",
+                    per_peer_kbps * peers as f64 / 1024.0,
+                    pages * peers * RELAY_HZ as usize
+                );
+            }
+
+            // El MISMO roster viaja además por IPC al cliente LOCAL, entero y clonado, a 10 Hz
+            // (`build_world_state`: `stp_buildings: net.stp_buildings.clone()`). No es red, pero sí
+            // es memoria y CPU por tick, y es lo que el replicador de Unity vuelve a recorrer entero
+            // en CADA frame. Se mide aparte porque se cura aparte.
+            let t = Instant::now();
+            let cloned = buildings.clone();
+            let clone_us = t.elapsed().as_micros();
+            let ipc_bytes = rmp_serde::to_vec_named(&cloned).unwrap().len()
+                + rmp_serde::to_vec_named(&items).unwrap().len();
+            println!(
+                "  IPC al cliente local:   {ipc_bytes} B/ronda = {:.0} KB/s (clone {clone_us} µs/ronda)",
+                ipc_bytes as f64 * RELAY_HZ / 1024.0
+            );
+
+            // ADR-071 S2: el MISMO escenario, pasado por el gate. Se simulan 60 s de juego (600
+            // rondas a 10 Hz) con un jugador construyendo ACTIVAMENTE — una pieza nueva cada 5 s.
+            // Se cuenta cuántas rondas sobreviven al gate; el ahorro es la diferencia.
+            //
+            // `now` es sintético y avanza a mano: el latido mide tiempo real y un bucle cerrado
+            // recorrería los 60 s simulados en microsegundos, con lo que jamás vencería y el
+            // resultado saldría mejor de lo que es.
+            let mut gate = RosterGate::default();
+            let mut live = buildings.clone();
+            let t0 = Instant::now();
+            let mut sent_rounds = 0usize;
+            const ROUNDS: usize = 600;
+            for round in 0..ROUNDS {
+                if round % 50 == 0 && round > 0 {
+                    live.push(building(90_000 + round as u32)); // una pieza nueva cada 5 s
+                }
+                let now = t0 + std::time::Duration::from_millis(round as u64 * 100);
+                if gate.should_send(content_hash(&live), 1, now, ROSTER_HEARTBEAT) {
+                    sent_rounds += 1;
+                }
+            }
+            let pct = sent_rounds as f64 * 100.0 / ROUNDS as f64;
+            println!(
+                "  ADR-071 (60 s, construyendo): {sent_rounds}/{ROUNDS} rondas emiten ({pct:.1} %) → \
+                 {:.0} KB/s por peer (antes {per_peer_kbps:.0})",
+                per_peer_kbps * pct / 100.0
+            );
+            println!();
+        }
+    }
+
+    // ── ADR-071: un roster que no ha cambiado no se envía ──
+
+    fn gate_send(gate: &mut RosterGate, items: &[StpCarryableInfo], peers: usize) -> bool {
+        gate.should_send(
+            content_hash(items),
+            peers,
+            std::time::Instant::now(),
+            ROSTER_HEARTBEAT,
+        )
+    }
+
+    /// El comportamiento entero del gate en una secuencia, que es como se lee mejor: la primera
+    /// ronda sale, la ráfaga post-cambio sale, y solo DESPUÉS empieza a callar.
+    #[test]
+    fn an_unchanged_roster_stops_being_sent_after_its_burst() {
+        let items = vec![carryable(1), carryable(2)];
+        let mut gate = RosterGate::default();
+
+        assert!(
+            gate_send(&mut gate, &items, 1),
+            "la primera ronda siempre sale: el gate no ha emitido nada todavía"
+        );
+        for i in 1..ROSTER_CHANGE_BURST {
+            assert!(
+                gate_send(&mut gate, &items, 1),
+                "ronda {i} de la ráfaga post-cambio tiene que salir (autocuración a 10 Hz)"
+            );
+        }
+        assert!(
+            !gate_send(&mut gate, &items, 1),
+            "agotada la ráfaga y sin cambios, el gate TIENE que cortar — es toda la cura"
+        );
+        assert!(
+            !gate_send(&mut gate, &items, 1),
+            "y seguir cortando mientras nadie toque el roster"
+        );
+    }
+
+    /// Control positivo del anterior: en cuanto el contenido cambia de verdad, vuelve a salir. Sin
+    /// esto, un gate que cortara SIEMPRE pasaría el test de arriba y rompería el juego entero.
+    #[test]
+    fn a_changed_roster_is_sent_again_immediately() {
+        let mut items = vec![carryable(1)];
+        let mut gate = RosterGate::default();
+        for _ in 0..ROSTER_CHANGE_BURST {
+            gate_send(&mut gate, &items, 1);
+        }
+        assert!(!gate_send(&mut gate, &items, 1), "preparación: ya calla");
+
+        items.push(carryable(2)); // alguien soltó algo
+        assert!(
+            gate_send(&mut gate, &items, 1),
+            "un roster que cambió sale en la ronda siguiente, sin esperar al latido"
+        );
+    }
+
+    /// Un cambio que NO altera la longitud tiene que detectarse igual. Es el caso que se le
+    /// escaparía a cualquier atajo del tipo "comparo cuántos elementos hay", y ADR-070 lo hizo
+    /// cotidiano: un objeto asentándose cambia de posición en cada ronda sin cambiar la cuenta.
+    #[test]
+    fn a_moved_item_counts_as_a_change_even_though_the_count_is_identical() {
+        let mut items = vec![carryable(1), carryable(2)];
+        let mut gate = RosterGate::default();
+        for _ in 0..ROSTER_CHANGE_BURST {
+            gate_send(&mut gate, &items, 1);
+        }
+        assert!(!gate_send(&mut gate, &items, 1), "preparación: ya calla");
+
+        items[1].position[1] += 0.5; // cae medio metro
+        assert_eq!(
+            items.len(),
+            2,
+            "la longitud NO cambia: ese es el punto del test"
+        );
+        assert!(
+            gate_send(&mut gate, &items, 1),
+            "el hash es del contenido, no de la cuenta"
+        );
+    }
+
+    /// Decisión 4. Quien acaba de entrar no tiene roster ninguno; si el gate le hace esperar al
+    /// latido, ve un mundo vacío durante segundos y cree que el juego está roto.
+    #[test]
+    fn a_new_peer_forces_a_send_even_with_nothing_changed() {
+        let items = vec![carryable(1)];
+        let mut gate = RosterGate::default();
+        for _ in 0..ROSTER_CHANGE_BURST {
+            gate_send(&mut gate, &items, 1);
+        }
+        assert!(!gate_send(&mut gate, &items, 1), "preparación: ya calla");
+
+        assert!(
+            gate_send(&mut gate, &items, 2),
+            "un peer nuevo tiene que forzar el envío del roster entero"
+        );
+    }
+
+    /// Y la contrapartida: que alguien SE VAYA no fuerza nada. Sin registrar la bajada, el conteo
+    /// se quedaría alto y la siguiente entrada no se detectaría como tal.
+    #[test]
+    fn a_leaving_peer_neither_forces_a_send_nor_hides_the_next_join() {
+        let items = vec![carryable(1)];
+        let mut gate = RosterGate::default();
+        for _ in 0..ROSTER_CHANGE_BURST {
+            gate_send(&mut gate, &items, 2);
+        }
+        assert!(!gate_send(&mut gate, &items, 2), "preparación: ya calla");
+
+        assert!(
+            !gate_send(&mut gate, &items, 1),
+            "que uno se vaya no obliga a reenviar nada a los que quedan"
+        );
+        assert!(
+            gate_send(&mut gate, &items, 2),
+            "pero la siguiente entrada SÍ, aunque el conteo solo esté recuperando su valor viejo"
+        );
+    }
+
+    /// Decisión 3: el latido no está para detectar cambios, está para reparar páginas perdidas.
+    /// Con `heartbeat = 0` se comprueba que esa vía existe y es independiente del contenido.
+    #[test]
+    fn the_heartbeat_sends_a_round_even_with_nothing_changed() {
+        let items = vec![carryable(1)];
+        let mut gate = RosterGate::default();
+        let now = std::time::Instant::now();
+        let hash = content_hash(&items);
+        for _ in 0..ROSTER_CHANGE_BURST {
+            gate.should_send(hash, 1, now, ROSTER_HEARTBEAT);
+        }
+        assert!(
+            !gate.should_send(hash, 1, now, ROSTER_HEARTBEAT),
+            "preparación: ya calla"
+        );
+
+        assert!(
+            gate.should_send(hash, 1, now, std::time::Duration::ZERO),
+            "vencido el latido, la ronda sale aunque el roster sea idéntico"
+        );
     }
 
     #[test]

@@ -340,7 +340,7 @@ async fn corpse_relay_hops_round_trip_between_peers() {
             quantity: 3,
         }],
     );
-    super::sync::broadcast_corpses(&host, &world).await;
+    super::sync::broadcast_corpses(&mut host, &world).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     let joiner_events = joiner.process_incoming().await;
     let mirrored = joiner_events.iter().find_map(|e| match e {
@@ -473,6 +473,258 @@ async fn player_update_round_trip() {
     {
         assert_eq!(*position, [10.0, 1.8, 20.0]);
         assert_eq!(*rotation, 45.0);
+    }
+}
+
+/// LA COMPROBACIÓN PENDIENTE de `systems/perf-baseline.md`: ¿converge hoy el estado del mundo con
+/// una base mediana, o está roto y no nos hemos enterado?
+///
+/// ```text
+/// cargo test --release five_rosters_converge -- --ignored --nocapture
+/// ```
+///
+/// Por qué no lo responde ningún test existente: los que hay emiten UN roster aislado. El juego
+/// emite los CINCO seguidos en la misma ronda (`game_loop.rs`), y la medida que ADR-060 (d) dejó
+/// escrita —"a partir de ~56 páginas empezaba a perderse al menos una por ronda"— se hizo sobre un
+/// roster solo. Con una base de 1000 piezas son ~124 páginas de golpe entre dos rosters, y ~124 KB
+/// contra un buffer de recepción de ~64 KB.
+///
+/// Sondea, no afirma: mide en cuántas rondas converge cada roster sobre sockets UDP reales. Si
+/// alguno no converge, el juego tiene hoy un mundo que no se replica, y eso pesa más que cualquier
+/// número de jugadores.
+#[tokio::test]
+#[ignore = "sonda de medición: imprime, no afirma"]
+async fn five_rosters_converge() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 2001, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    // Barrido: la "base seria" de perf-baseline.md y múltiplos de ella, para encontrar DÓNDE
+    // rompe en vez de solo comprobar un punto. Un mundo que converge a 1× y no a 6× tiene un
+    // techo, y saber dónde está vale más que saber que hoy va bien.
+    for scale in [1usize, 3, 6, 10] {
+        five_rosters_converge_at(&mut host, &mut joiner, scale).await;
+    }
+}
+
+async fn five_rosters_converge_at(
+    host: &mut NetworkManager,
+    joiner: &mut NetworkManager,
+    scale: usize,
+) {
+    // La "base seria" de perf-baseline.md, más los otros tres rosters con una población plausible.
+    let buildings_n = 1000 * scale;
+    let items_n = 300 * scale;
+    let carryables_n = 200 * scale;
+    let harvestables_n = 100 * scale;
+    host.stp_buildings = (0..buildings_n as u32)
+        .map(|id| protocol::StpBuildingInfo {
+            id,
+            def_id: -4996552,
+            position: [id as f32, 1.8, 0.0],
+            rotation: 90.0,
+            group_id: id / 8,
+            added: vec![protocol::StpBuildProgress {
+                material_id: -1234,
+                count: 4,
+            }],
+        })
+        .collect();
+    host.stp_items = (0..items_n as u32)
+        .map(|id| protocol::StpItemInfo {
+            id,
+            def_id: -52379,
+            count: 3,
+            position: [id as f32, 1.8, 0.0],
+            rotation: 0.0,
+            settling: false,
+        })
+        .collect();
+    host.stp_carryables = (0..carryables_n as u32)
+        .map(|id| protocol::StpCarryableInfo {
+            id,
+            def_id: 7,
+            position: [id as f32, 1.8, 0.0],
+            rotation: 0.0,
+        })
+        .collect();
+    host.stp_harvestables = (0..harvestables_n as u32)
+        .map(|id| protocol::StpHarvestableInfo {
+            id,
+            position: [id as f32, 1.8, 0.0],
+            remaining: 3.0,
+        })
+        .collect();
+
+    println!("--- x{scale}: {buildings_n} piezas, {items_n} items, {carryables_n} carryables, {harvestables_n} harvestables ---");
+
+    const ROUNDS: usize = 30;
+    let mut converged_at = [None::<usize>; 4];
+    for round in 1..=ROUNDS {
+        // ADR-071: el gate cortaría de la ronda 4 en adelante. Se rearma porque lo que se mide
+        // aquí es la CONVERGENCIA del transporte, no la cadencia — con el gate puesto, el juego
+        // real reintenta cada 3 s en vez de cada 100 ms, así que estas rondas son las del latido.
+        host.roster_gates = Default::default();
+        sync::broadcast_stp_items(host).await;
+        sync::broadcast_stp_buildings(host).await;
+        sync::broadcast_stp_carryables(host).await;
+        sync::broadcast_stp_harvestables(host).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        joiner.process_incoming().await;
+
+        for (i, (got, want)) in [
+            (joiner.stp_items.len(), items_n),
+            (joiner.stp_buildings.len(), buildings_n),
+            (joiner.stp_carryables.len(), carryables_n),
+            (joiner.stp_harvestables.len(), harvestables_n),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if converged_at[i].is_none() && got == want {
+                converged_at[i] = Some(round);
+            }
+        }
+        if converged_at.iter().all(|c| c.is_some()) {
+            break;
+        }
+    }
+
+    for (name, at, got, want) in [
+        ("items", converged_at[0], joiner.stp_items.len(), items_n),
+        (
+            "buildings",
+            converged_at[1],
+            joiner.stp_buildings.len(),
+            buildings_n,
+        ),
+        (
+            "carryables",
+            converged_at[2],
+            joiner.stp_carryables.len(),
+            carryables_n,
+        ),
+        (
+            "harvestables",
+            converged_at[3],
+            joiner.stp_harvestables.len(),
+            harvestables_n,
+        ),
+    ] {
+        match at {
+            Some(r) => println!("  {name:<13} convergió en la ronda {r} ({got}/{want})"),
+            None => println!(
+                "  {name:<13} NO CONVERGIÓ en {ROUNDS} rondas ({got}/{want}) ← roster roto"
+            ),
+        }
+    }
+    println!();
+}
+
+/// SONDA DE MEDICIÓN (no afirma, imprime). Cierra la aritmética que `systems/perf-baseline.md`
+/// dejó a medias: el relay de poses es O(N²) y nadie lo había medido.
+///
+/// ```text
+/// cargo test --release pose_relay_cost -- --ignored --nocapture
+/// ```
+///
+/// Por qué se mide aparte de los rosters: el coste de los rosters crece con el TAMAÑO DEL MUNDO
+/// (lineal en jugadores); éste crece con el CUADRADO de los jugadores y es indiferente al mundo.
+/// Son las dos curvas que deciden el techo, y se cruzan en algún punto — este número dice dónde.
+#[tokio::test]
+#[ignore = "sonda de medición: imprime, no afirma"]
+async fn pose_relay_cost() {
+    let pose = PacketPayload::PlayerUpdate {
+        position: [10.0, 1.8, 20.0],
+        rotation: 45.0,
+        animation: "walk".into(),
+        crouch: false,
+        pitch: 3,
+        equipment: [1, 2, 3, 4],
+        held_item: -52379,
+        hit_seq: 7,
+        dead: false,
+        revealed: false,
+        vocal_seq: 2,
+        vocal_kind: 1,
+        light_on: true,
+        fire_seq: 5,
+        buttons: 3,
+        melee_seq: 4,
+        carry_def: -111,
+        carry_count: 2,
+    };
+    // +12 B de cabecera de paquete (ver el doc de ROSTER_PAGE_BUDGET_BYTES).
+    let bytes = rmp_serde::to_vec_named(&pose).unwrap().len() + 12;
+    const RELAY_HZ: f64 = 10.0;
+
+    println!("\n=== sonda: coste del relay de poses (ADR-015), O(N²) ===");
+    println!("PlayerUpdate serializado + cabecera: {bytes} B | relay: {RELAY_HZ} Hz\n");
+    println!("  peers | datagramas/s | poses del host | + rosters = total salida");
+    for n in [2usize, 4, 8, 16, 32, 64] {
+        // Cada destino real recibe la pose de todos MENOS la suya: n×(n−1) por ronda.
+        let per_round = n * n.saturating_sub(1);
+        let dgrams = per_round as f64 * RELAY_HZ;
+        let poses_kbps = per_round as f64 * bytes as f64 * RELAY_HZ / 1024.0;
+        let rosters_kbps = 94.0 * n as f64; // medido en perf-baseline.md, tras ADR-071
+        println!(
+            "  {n:>5} | {dgrams:>12.0} | {poses_kbps:>9.0} KB/s | {:>6.1} Mbps",
+            (poses_kbps + rosters_kbps) * 8.0 / 1024.0
+        );
+    }
+    println!("\n(rosters = base seria de 1000 piezas con un jugador construyendo, tras ADR-071)");
+}
+
+/// ADR-070: the throw impulse has to SURVIVE the joiner→host hop over a real socket. It is the
+/// only piece of a drop the host cannot reconstruct — position it could clamp, rotation it could
+/// ignore, but a velocity that decodes to zero silently downgrades every joiner's throw into a
+/// vertical drop, and nothing would fail. Non-default on all three axes on purpose: a per-axis
+/// serialization slip would otherwise hide behind a symmetric vector.
+#[tokio::test]
+async fn stp_drop_request_carries_the_throw_velocity_across_the_wire() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 1007, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    let payload = PacketPayload::StpDropRequest {
+        drop_id: 77,
+        def_id: -52379,
+        count: 3,
+        position: [4.0, 2.1, -6.0], // the HAND, not a resting place (ADR-070 decision 1)
+        rotation: 90.0,
+        velocity: [1.5, 3.25, -2.75],
+    };
+    joiner.send_reliable(1, &payload).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let events = host.process_incoming().await;
+    let drop = events
+        .iter()
+        .find(|e| matches!(e, NetworkEvent::StpDropRequest { .. }));
+    assert!(
+        drop.is_some(),
+        "host should see the drop request, got: {events:?}"
+    );
+    if let Some(NetworkEvent::StpDropRequest {
+        position, velocity, ..
+    }) = drop
+    {
+        assert_eq!(*position, [4.0, 2.1, -6.0]);
+        assert_eq!(
+            *velocity,
+            [1.5, 3.25, -2.75],
+            "the impulse must arrive intact — a zeroed one is an invisible downgrade to a dead drop"
+        );
     }
 }
 
@@ -1175,8 +1427,15 @@ async fn an_oversized_roster_now_survives_the_datagram_limit_and_arrives_whole()
 
     // Rondas repetidas, como el juego real (10 Hz): una pagina perdida deja su generacion
     // incompleta y la ronda siguiente la sustituye entera. Eso es la autocuracion declarada.
+    //
+    // ADR-071: el gate de emision cuenta TIEMPO REAL, y este bucle comprime dos segundos de juego
+    // en unos 400 ms — sin rearmarlo, de la ronda 4 en adelante no saldria nada y el test dejaria
+    // de probar la autocuracion en silencio (pasaria igual, porque 4000 elementos entran en una
+    // sola ronda). Se rearma a proposito: lo que se prueba aqui es el reensamblado, no el gate,
+    // que tiene sus propios tests en roster.rs.
     for _ in 0..20 {
-        sync::broadcast_stp_carryables(&host).await;
+        host.roster_gates.carryables = Default::default();
+        sync::broadcast_stp_carryables(&mut host).await;
         tokio::time::sleep(Duration::from_millis(20)).await;
         joiner.process_incoming().await;
         if joiner.stp_carryables.len() == 4000 {
@@ -1224,7 +1483,7 @@ async fn a_partially_arrived_roster_never_replaces_the_previous_one() {
             rotation: 0.0,
         })
         .collect();
-    sync::broadcast_stp_carryables(&host).await;
+    sync::broadcast_stp_carryables(&mut host).await;
     tokio::time::sleep(Duration::from_millis(20)).await;
 
     // Se drena el socket UNA sola vez y a proposito no se espera a la generacion completa.

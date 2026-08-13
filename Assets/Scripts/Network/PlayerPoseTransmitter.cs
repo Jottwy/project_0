@@ -36,6 +36,9 @@ namespace BackroomsSurvival.Net
         private CharacterControllerMotor _motor;
         private ICharacter _character;       // cached parent character (look handler + inventory source)
         private ILookHandlerCC _lookHandler; // ADR-021: source of the local camera pitch
+        // ADR-009: source of the local run state — the ONLY thing that makes the server drain
+        // stamina (game_loop::apply_client_authoritative_move gates on move_state == 2).
+        private IMovementControllerCC _movement;
         // Lean (Q/E): source of the local body-lean state, relayed as two bits of `buttons`. STP's
         // BodyLeanHandler owns the local effect (camera roll + side offset); we only READ its
         // resulting state, never the raw input — so a lean the vendor REFUSED (obstruction, speed
@@ -146,6 +149,7 @@ namespace BackroomsSurvival.Net
                 IsSending = false;
                 _hasPrev = false; // restart the finite difference after a gap / rig rebuild
                 _lookHandler = null; // the look handler is a sibling of the motor; re-resolve next time
+                _movement = null;    // idem: the movement controller dies with the rig
                 _leanHandler = null; // idem: the body-lean handler dies with the rig too
                 // ADR-022: the rig rebuild invalidates the character/inventory too — drop the cached
                 // containers so they re-resolve against the fresh character on the next valid frame.
@@ -194,9 +198,25 @@ namespace BackroomsSurvival.Net
             _hasPrev = true;
 
             // move_state only drives server-side run-stamina drain (the speed cap is always the
-            // sprint cap), so a simple idle/walk classification is sufficient and harmless.
+            // sprint cap). It MUST report 2 while sprinting: the backend gates the whole drain on
+            // `input.move_state == 2`, so the previous idle/walk-only classification meant stamina
+            // never dropped while connected — the StatInterpolator faithfully displayed a bar that
+            // the server was regenerating and never draining.
+            //
+            // The run state is READ off STP's own movement controller (rule #3: never reimplement
+            // the vendor's sprint conditions). The character is a parent of the motor; resolve it
+            // lazily here — the pitch block below reuses the same cached reference.
+            if (_character == null)
+                _character = _motor.GetComponentInParent<ICharacter>();
+            if (_movement == null && _character != null)
+                _movement = _character.GetCC<IMovementControllerCC>();
+
             Vector3 horiz = new Vector3(vel.x, 0f, vel.z);
-            byte moveState = horiz.magnitude > 0.1f ? (byte)1 : (byte)0;
+            bool moving = horiz.magnitude > 0.1f;
+            // Guard on `moving` too: STP keeps the Run state active for the tail of a stop, and a
+            // standing player must not bleed stamina.
+            bool running = moving && _movement != null && _movement.ActiveState == MovementStateType.Run;
+            byte moveState = running ? (byte)2 : moving ? (byte)1 : (byte)0;
 
             // ADR-020: report the LOCAL crouch state, derived from the motor height. STP's native
             // CharacterCrouchState lowers Motor.Height when crouching; we only READ it (never apply,
@@ -208,8 +228,6 @@ namespace BackroomsSurvival.Net
             // look angle, already clamped by CharacterLookHandler. The look handler is a sibling
             // component on the same character as the motor; resolve it lazily (it may be null for
             // a frame after a rig rebuild) and report 0 (looking forward) until it appears.
-            if (_character == null)
-                _character = _motor.GetComponentInParent<ICharacter>();
             if (_lookHandler == null && _character != null)
                 _lookHandler = _character.GetCC<ILookHandlerCC>();
             float pitch = _lookHandler != null ? _lookHandler.ViewAngles.x : 0f;

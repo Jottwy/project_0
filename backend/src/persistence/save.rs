@@ -39,6 +39,11 @@ pub struct PlayerSnapshot {
     pub equipment: [i32; 4],
     pub held_item: i32,
     pub respawn_point: Option<Vec3>,
+    /// ADR-069: a bed blueprint planted but not yet built. Persisted so the perfectly ordinary
+    /// "plant the bed, log off, come back and finish it" sequence does not silently lose the
+    /// respawn. `serde(default)` → a pre-ADR-069 save loads with `None` (ADR-032 point 5).
+    #[serde(default)]
+    pub pending_respawn_point: Option<Vec3>,
     /// ADR-032 amendment: the REAL STP inventory (client-reported via `report_inventory`,
     /// raw item ids). The `inventory` field above is the legacy disconnected model, kept
     /// intact only for shape stability — this is the one the game actually restores.
@@ -65,6 +70,7 @@ impl PlayerSnapshot {
             equipment: p.equipment,
             held_item: p.held_item,
             respawn_point: p.respawn_point,
+            pending_respawn_point: p.pending_respawn_point,
             stp_inventory: p.stp_inventory.clone(),
             inventory_v2: p.inventory_v2.clone(),
         }
@@ -397,6 +403,7 @@ mod tests {
             count: 2,
             position: [1.0, 0.0, 1.0],
             rotation: 0.0,
+            settling: false,
         }];
         let buildings = vec![StpBuildingInfo {
             id: 10,

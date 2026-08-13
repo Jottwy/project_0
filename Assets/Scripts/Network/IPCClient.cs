@@ -1126,15 +1126,21 @@ namespace BackroomsSurvival.Net
         /// The host assigns a fresh net id, adds it to stp_items, and the Phase 1 relay spawns
         /// the pickup for everyone (with the Phase 2 pickup gate).
         /// </summary>
-        public void SendStpDrop(long dropId, int defId, int count, Vector3 position, float rotation)
+        /// <param name="velocity">ADR-070: throw impulse, m/s. Omitted (zero) means a straight fall
+        /// from <paramref name="position"/> — which is what the leftover-return paths
+        /// (InventoryRestorer, StpPickupController) want: they hand over a position at chest height
+        /// and the host settling it onto the floor is strictly better than it hovering there.</param>
+        public void SendStpDrop(long dropId, int defId, int count, Vector3 position, float rotation,
+            Vector3 velocity = default)
         {
-            SendActionFrame(ProtocolActionTypes.StpDrop, 5, w =>
+            SendActionFrame(ProtocolActionTypes.StpDrop, 6, w =>
             {
                 w.WriteString("drop_id"); w.WriteInt(dropId);
                 w.WriteString("def_id"); w.WriteInt(defId);
                 w.WriteString("count"); w.WriteInt(count);
                 w.WriteString("position"); WriteVec3(w, position);
                 w.WriteString("rotation"); w.WriteFloat(rotation);
+                w.WriteString("velocity"); WriteVec3(w, velocity);
             });
         }
 
@@ -1153,6 +1159,21 @@ namespace BackroomsSurvival.Net
                 w.WriteString("rotation"); w.WriteFloat(rotation);
                 w.WriteString("group_id"); w.WriteInt(groupId);
                 w.WriteString("is_group"); w.WriteBool(isGroup);
+            });
+        }
+
+        /// <summary>
+        /// ADR-069: a bed just finished being built at this position. Sent for EVERY bed that
+        /// completes — ours or anyone else's, including beds that arrive already built on world
+        /// load — because the client cannot tell whose blueprint it was. IPC-only, never relayed:
+        /// each backend matches the position against the pending point its OWN player planted and
+        /// ignores everything else, so this cannot arm someone else's respawn.
+        /// </summary>
+        public void SendBedConstructed(Vector3 position)
+        {
+            SendActionFrame(ProtocolActionTypes.BedConstructed, 1, w =>
+            {
+                w.WriteString("position"); WriteVec3(w, position);
             });
         }
 

@@ -156,6 +156,9 @@ mod tests {
         player.equipment = [9, 0, 0, 7];
         player.held_item = 555;
         player.respawn_point = Some(Vec3::new(1.0, 1.8, 1.0));
+        // ADR-069: la cama plantada y sin construir tiene que sobrevivir al ciclo de guardado —
+        // "planto la cama, salgo, vuelvo y la termino" es la secuencia normal, no un caso raro.
+        player.pending_respawn_point = Some(Vec3::new(2.0, 1.8, 2.0));
 
         let path = scratch_path("round_trip");
         save_player(&path, "uuid:1234-5678", &player).expect("save should succeed");
@@ -169,6 +172,10 @@ mod tests {
         assert_eq!(
             loaded.snapshot.respawn_point,
             Some(Vec3::new(1.0, 1.8, 1.0))
+        );
+        assert_eq!(
+            loaded.snapshot.pending_respawn_point,
+            Some(Vec3::new(2.0, 1.8, 2.0))
         );
 
         let _ = std::fs::remove_file(&path);

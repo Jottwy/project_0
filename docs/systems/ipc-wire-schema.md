@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v29
+# IPC wire schema — changelog v2 → v31
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **28**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **31**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -393,3 +393,50 @@ Degradación: **ninguna interop cross-versión, y no hace falta.** Igual que en 
 handshake P2P (corrección de ADR-060) y el `hello` IPC (ADR-061) rechazan el mismatch antes de que
 un opcode desconocido cruce. `WireSchema.Expected` (C#) bumpeado a 29 en el mismo commit — ADR-061:
 desincronizarlos deja el juego inarrancable, no con un warning.
+
+### v30 (ADR-069)
+
+Añade la acción de cliente `bed_constructed { position: [f32;3] }` — IPC only, cliente → **su
+propio** backend, nunca P2P. Sin struct de wire nuevo: `PlayerAction` ya es genérica
+(`action_type` + `data` libre), exactamente la misma forma que `report_noise` (v13) y
+`set_identity` (v22), ambas IPC-only y ambas contadas.
+
+Qué la motiva: `stp_place` armaba `respawn_point` al plantar el **fantasma** de la cama, así que un
+jugador tenía respawn sin gastar un material. El backend no puede detectarlo solo — los requisitos
+de construcción viven en el prefab STP, del lado cliente — de ahí el mensaje.
+
+Ninguna forma existente cambia. `PlayerInput`, `RemotePlayerState` y todos los `PacketPayload`
+quedan byte-idénticos a v29; los goldens de C6 siguen válidos. El único cambio de datos es interno
+al backend (`PlayerSnapshot.pending_respawn_point`, aditivo con `serde(default)`, ADR-032 punto 5),
+que no cruza el wire.
+
+Degradación si un cliente no la manda: el respawn simplemente no se arma nunca y el jugador
+reaparece en el arranque fijo — la misma clase de degradación inerte que estableció `report_noise`.
+`WireSchema.Expected` (C#) bumpeado a 30 en el mismo commit — ADR-061.
+
+### v31 (ADR-070)
+
+Tres adiciones, todas `serde(default)`, para que los objetos soltados caigan en vez de aparecer
+posados y congelados:
+
+- `StpItemInfo.settling: bool` (roster host→clientes, IPC **y** P2P). Dice al cliente que la
+  `position` de ese ítem se MUEVE entre relays y hay que interpolarla en vez de clavarla. Ausente =
+  `false` = el comportamiento de siempre, que es justo lo que quiere todo lo que ya existe (loot de
+  chunk, cadáveres, cofres): nacen posados y no cuestan nada.
+- `stp_drop.velocity: [f32;3]` (acción IPC cliente→backend). El impulso del lanzamiento. Y un
+  cambio de SIGNIFICADO en un campo que ya existía, que importa más que el campo nuevo:
+  `stp_drop.position` pasa a ser **la mano**, no un sitio ya pegado al suelo. El cliente dejó de
+  rayear hacia abajo; dónde acaba el objeto lo decide el host.
+- `PacketPayload::StpDropRequest.velocity: [f32;3]` (P2P, joiner→host). El mismo impulso, para que
+  el drop de un joiner no se degrade a caída vertical al reenviarse. Cubierto por
+  `stp_drop_request_carries_the_throw_velocity_across_the_wire`, con valor no-default en los tres
+  ejes.
+
+**NO se añade orientación.** La rotación del objeto mientras cae es cosmética y se queda en el
+cliente (ADR-070 decisión 3): son tres floats por ítem en cada relay que no compran una sola regla
+de juego. Dos clientes acabarán viendo la lata girada distinta y da igual — la recogida va por id.
+
+Degradación: un backend viejo nunca marca `settling`, así que el cliente nuevo trata todo como
+posado y se comporta como v30. Un cliente viejo omite `velocity` y el backend nuevo lo lee como
+cero: el objeto cae recto desde la mano en vez de salir lanzado. Ninguna de las dos es un error.
+`WireSchema.Expected` (C#) bumpeado a 31 en el mismo commit — ADR-061.

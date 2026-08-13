@@ -121,10 +121,18 @@ pub struct Player {
     #[serde(default)]
     pub death_loot_reported: bool,
     /// ADR-031: the player's respawn point (a placed "Sleeping Bag" position), or None → the fixed
-    /// starter spawn. Set by the `stp_place` handler when a bed is placed ("last placed wins");
-    /// consumed by `respawn_request`. Session-transient (RAM, not persisted), like the fields above.
+    /// starter spawn. ADR-069 moved the write: the `stp_place` handler no longer sets this (placing
+    /// the BLUEPRINT armed a free respawn), only the `bed_constructed` confirmation does.
+    /// Consumed by `respawn_request`.
     #[serde(default)]
     pub respawn_point: Option<Vec3>,
+    /// ADR-069 phase 1: a bed blueprint THIS player planted, not yet built. Armed by `stp_place`
+    /// ("last placed wins", same rule the real point used to follow) and promoted into
+    /// `respawn_point` when the `bed_constructed` action arrives with a matching position.
+    /// Matched by POSITION, never by `building_id` — the id is host-minted and a joiner's backend
+    /// never learns which one its own placement got (see ADR-069 decision 4).
+    #[serde(default)]
+    pub pending_respawn_point: Option<Vec3>,
     /// ADR-032 amendment: latest client-reported snapshot of the REAL STP inventory (raw item
     /// ids, same stack shape corpses use — NOT the legacy `inventory` above, which is
     /// disconnected from the real game). Fed by the debounced `report_inventory` action
@@ -184,6 +192,7 @@ impl Player {
             carry_count: 0,
             death_loot_reported: false,
             respawn_point: None,
+            pending_respawn_point: None,
             stp_inventory: Vec::new(),
             inventory_v2: Vec::new(),
             identity_key: None,

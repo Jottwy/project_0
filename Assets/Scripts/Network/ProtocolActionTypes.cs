@@ -14,6 +14,10 @@ namespace BackroomsSurvival.Net
         public const string StpDrop = "stp_drop";
         public const string StpPlace = "stp_place";
         public const string StpBuildAdd = "stp_build_add";
+        /// <summary>ADR-069: a bed finished being BUILT (not merely placed) at a position. The
+        /// respawn point is armed here, never on stp_place — planting the blueprint used to hand
+        /// out a respawn for free.</summary>
+        public const string BedConstructed = "bed_constructed";
         public const string StpDemolish = "stp_demolish";
         public const string SetStpCarryables = "set_stp_carryables";
         public const string StpCarryablePickup = "stp_carryable_pickup";

@@ -32,12 +32,14 @@ namespace BackroomsSurvival.Net
         [Min(0.02f)] public float scanInterval = 0.1f;
         public string gameplayScene = "STP_Showcase";
 
-        [Tooltip("Down-raycast length to find the floor under a native drop.")]
-        [Min(0.5f)] public float groundRayDistance = 6f;
-        [Tooltip("How far above the floor hit the item rests.")]
-        public float groundOffset = 0.05f;
-        [Tooltip("If no floor is found, place the item this far below the hand drop position.")]
-        public float fallbackDrop = 1.4f;
+        [Tooltip("ADR-070: impulse given to a drop the vendor released with no velocity of its own, " +
+                 "so it is tossed away from the chest instead of dead-dropping onto the player's feet.")]
+        [Min(0f)] public float fallbackTossSpeed = DefaultFallbackTossSpeed;
+
+        // El default del inspector y el que usa SynthesizeTossVelocity cuando no hay instancia viva
+        // (el vuelco del restaurador puede correr antes de que este watcher arranque) son el MISMO
+        // número, y por eso es una constante y no dos literales.
+        private const float DefaultFallbackTossSpeed = 2.2f;
 
         private readonly HashSet<ItemPickup> _seen = new HashSet<ItemPickup>();
         // GameObject InstanceIDs already adopted — committed BEFORE the request is sent so a
@@ -151,26 +153,57 @@ namespace BackroomsSurvival.Net
                 int defId = stack.Item.Definition.Id;
                 int count = Mathf.Max(1, stack.Count);
                 long dropId = NextDropId();
-                Vector3 grounded = GroundPosition(p.transform.position);
+                // ADR-070 decision 1: send the HAND position, unsnapped. The floor raycast that used
+                // to run here is gone on purpose — where the object comes to rest is the host's call
+                // now, and pre-snapping it was half of why drops looked dead (the other half being
+                // the replicator freezing the Rigidbody).
+                Vector3 hand = p.transform.position;
+                Vector3 velocity = ReadTossVelocity(p, character);
                 float yaw = p.transform.eulerAngles.y;
 
                 Destroy(p.gameObject); // immediate (this frame) — closes the double-detection window
-                ipc.SendStpDrop(dropId, defId, count, grounded, yaw);
-                Debug.Log($"[StpNativeDropWatcher] adopted native drop drop_id={dropId} def_id={defId} x{count} grounded={grounded:F2} → host.");
+                ipc.SendStpDrop(dropId, defId, count, hand, yaw, velocity);
+                Debug.Log($"[StpNativeDropWatcher] adopted native drop drop_id={dropId} def_id={defId} x{count} hand={hand:F2} vel={velocity:F2} → host.");
             }
         }
 
-        // Raycast straight down from the drop point to rest the item on the floor (it spawns frozen
-        // at this position on every client, so it must already be grounded — no client-side physics).
-        private Vector3 GroundPosition(Vector3 from)
+        /// <summary>
+        /// ADR-070: the impulse to hand the host. PREFERS the velocity the vendor's own DropAction
+        /// already gave the Rigidbody — inheriting the real toss beats inventing one, and it means a
+        /// future vendor tweak to drop force carries over for free. Only when that reads as zero (the
+        /// drop landed on a frame before the force, or the prefab has no body) do we synthesize one,
+        /// away from the chest and slightly up, so the object arcs instead of dead-dropping onto the
+        /// player's own feet where they cannot see it.
+        /// </summary>
+        private Vector3 ReadTossVelocity(ItemPickup pickup, ICharacter character)
         {
-            Vector3 origin = from + Vector3.up * 0.5f;
-            if (Physics.Raycast(origin, Vector3.down, out var hit, groundRayDistance,
-                    LayerConstants.SimpleSolidObjectsMask, QueryTriggerInteraction.Ignore))
-                return hit.point + Vector3.up * groundOffset;
+            var rb = pickup.GetComponentInChildren<Rigidbody>();
+            if (rb != null && rb.linearVelocity.sqrMagnitude > 0.01f)
+                return rb.linearVelocity;
 
-            // No floor found below → approximate feet by lowering a fixed amount.
-            return from + Vector3.down * fallbackDrop;
+            return SynthesizeTossVelocity(character);
+        }
+
+        /// <summary>
+        /// ADR-070: el impulso de un vuelco que NO nace de un pickup del vendor — el sobrante de una
+        /// recogida que no cupo (<see cref="StpPickupController"/>) y lo que el restaurador no pudo
+        /// colocar (<c>InventoryRestorer</c>). Ahí no hay `Rigidbody` del que leer la velocidad real,
+        /// porque el item nunca llegó a materializarse en local: hay que sintetizarla.
+        ///
+        /// `static` y compartida por la misma razón que <see cref="MintDropId"/>: si un día se ajusta
+        /// la fuerza del vuelco, se ajusta para los tres caminos a la vez. Dos copias de esta fórmula
+        /// es garantizar que un día el sobrante sale despedido distinto que el drop de mano.
+        /// </summary>
+        public static Vector3 SynthesizeTossVelocity(ICharacter character)
+        {
+            float speed = _instance != null ? _instance.fallbackTossSpeed : DefaultFallbackTossSpeed;
+
+            Vector3 forward = character != null ? character.transform.forward : Vector3.forward;
+            forward.y = 0f;
+            if (forward.sqrMagnitude < 1e-4f)
+                forward = Vector3.forward;
+
+            return (forward.normalized + Vector3.up * 0.35f) * speed;
         }
 
         private long NextDropId() => MintDropId();

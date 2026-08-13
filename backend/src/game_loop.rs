@@ -233,6 +233,7 @@ fn apply_player_snapshot(player: &mut Player, snap: crate::persistence::save::Pl
     player.equipment = snap.equipment;
     player.held_item = snap.held_item;
     player.respawn_point = snap.respawn_point;
+    player.pending_respawn_point = snap.pending_respawn_point;
     player.stp_inventory = snap.stp_inventory;
     player.inventory_v2 = snap.inventory_v2;
 }
@@ -1203,6 +1204,28 @@ pub async fn run(
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
                 phantom_driver.wake_for_noises(&mut net);
+
+                // ADR-070: advance the falling items. Runs here, in the host-only entity block,
+                // because it is the same class of work as stepping a phantom and it feeds the same
+                // 10 Hz roster relay — one simulated tick per replicated position.
+                //
+                // It BORROWS the phantom's grid cache instead of keeping its own, and that is the
+                // point rather than a saving: the ADR-070 amendment records that the cache has to be
+                // built with the same `rules_fn` as the creature's (ADR-033) or objects would fall
+                // against a different world than the one that walks. Sharing the cache makes that
+                // impossible to get wrong, and the chunks are already warm.
+                if !net.settling_items.is_empty() {
+                    let asleep = settle_items_tick(
+                        &mut net.settling_items,
+                        &mut net.stp_items,
+                        &mut phantom_driver.grid_cache,
+                        entity_dt,
+                        SETTLE_SUBSTEPS,
+                    );
+                    for id in asleep {
+                        mark_item_settled(&mut net, id);
+                    }
+                }
                 // Copied out rather than borrowed so the driver is free again immediately — the
                 // voice echoes below need it mutably, and an attack is two `Copy` words.
                 let attacks: Vec<_> = phantom_driver
@@ -1472,12 +1495,15 @@ pub async fn run(
                 // position the roster carries) so joiners see other joiners gesture/face
                 // correctly. Host-only; no-op below two peers.
                 sync::broadcast_peer_poses(&net).await;
-                sync::broadcast_stp_items(&net).await;
-                sync::broadcast_stp_buildings(&net).await;
-                sync::broadcast_stp_carryables(&net).await;
-                sync::broadcast_stp_harvestables(&net).await;
+                // ADR-071: `&mut` now, because each of these owns a send gate that it updates when
+                // it decides a round goes out. They still run at 10 Hz — what changed is that a
+                // roster nobody touched since the last round returns immediately.
+                sync::broadcast_stp_items(&mut net).await;
+                sync::broadcast_stp_buildings(&mut net).await;
+                sync::broadcast_stp_carryables(&mut net).await;
+                sync::broadcast_stp_harvestables(&mut net).await;
                 // ADR-028 Fase E: full corpse roster (host-authoritative, self-healing).
-                sync::broadcast_corpses(&net, &world).await;
+                sync::broadcast_corpses(&mut net, &world).await;
             }
         }
 
@@ -1854,9 +1880,10 @@ async fn handle_network_event(
             count,
             position,
             rotation,
+            velocity,
         } => {
             if net.is_host {
-                process_stp_drop(drop_id, def_id, count, position, rotation, net);
+                process_stp_drop(drop_id, def_id, count, position, rotation, velocity, net);
             }
         }
 
@@ -2648,9 +2675,37 @@ fn preferred_spawn() -> Vec3 {
 }
 
 /// ADR-031: the STP "Sleeping Bag" BuildingPieceDefinition id. Placing this piece (via the existing
-/// `stp_place` action) sets the player's respawn point. TODO(config): hardcoded like the ADR-029 PvP
-/// weapon allowlist; move to a config surface when one exists.
+/// `stp_place` action) arms the player's PENDING respawn point; ADR-069 promotes it to the real one
+/// once the piece is actually built. TODO(config): hardcoded like the ADR-029 PvP weapon allowlist;
+/// move to a config surface when one exists.
 const BED_DEF_ID: i32 = -4996552;
+
+/// How close a reported bed position has to be to a stored respawn point for the two to be
+/// considered the same bed. Every bed↔point pairing in this file goes through POSITION, never
+/// `building_id` (ADR-069 decision 4: the id is host-minted and a joiner's own backend never
+/// learns which one its placement got). Used by the ADR-037 demolish cleanup and by the ADR-069
+/// `bed_constructed` promotion.
+const BED_MATCH_RADIUS_M: f32 = 0.5;
+
+/// ADR-069: promote a pending bed respawn point into the real one, if `position` is the bed this
+/// player planted. Returns whether it promoted.
+///
+/// Stores the PENDING position, not the reported one, even though the two are within
+/// `BED_MATCH_RADIUS_M` of each other: the report can come from any client that watched the bed
+/// finish, and the point this player respawns at should be the one their own placement claimed.
+///
+/// A report that matches nothing is the normal case, not an error — every client emits one per
+/// bed it sees complete, so most of them land on backends whose player planted nothing.
+fn promote_pending_respawn(player: &mut Player, position: Vec3) -> bool {
+    match player.pending_respawn_point {
+        Some(pending) if pending.distance(position) < BED_MATCH_RADIUS_M => {
+            player.respawn_point = Some(pending);
+            player.pending_respawn_point = None;
+            true
+        }
+        _ => false,
+    }
+}
 
 /// ADR-031: resolve where a respawn lands. If the player has a bed (`respawn_point`), stream its
 /// chunk in (resolve_safe_spawn only reads loaded chunks) and prefer it; else use the fixed starter
@@ -3348,8 +3403,18 @@ async fn handle_action(
                 .get("rotation")
                 .and_then(|v| v.as_f64())
                 .unwrap_or(0.0) as f32;
+            // ADR-070: the throw impulse. Absent (an older client, or a drop path that has none)
+            // decodes to zero, which is a straight fall from the hand — still a fall, never an error.
+            let velocity: [f32; 3] = serde_json::from_value(
+                action
+                    .data
+                    .get("velocity")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .unwrap_or([0.0, 0.0, 0.0]);
             if net.is_host {
-                process_stp_drop(drop_id, def_id, count, position, rotation, net);
+                process_stp_drop(drop_id, def_id, count, position, rotation, velocity, net);
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpDropRequest {
                     drop_id,
@@ -3357,6 +3422,7 @@ async fn handle_action(
                     count,
                     position,
                     rotation,
+                    velocity,
                 };
                 net.send_reliable(1, &payload).await;
             }
@@ -3398,14 +3464,18 @@ async fn handle_action(
                 .get("is_group")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            // ADR-031: placing a Sleeping Bag sets THIS player's respawn point ("last placed wins").
+            // ADR-031 + ADR-069: placing a Sleeping Bag arms this player's PENDING respawn point
+            // ("last placed wins"). It is deliberately NOT the real point: `stp_place` fires on the
+            // BLUEPRINT, so writing `respawn_point` here handed out a respawn for free, without
+            // spending a single material. The promotion happens in `bed_constructed` below.
+            //
             // Runs on the placer's own backend (host OR joiner) since the stp_place action arrives here
             // regardless of who relays the building; trust-the-client for the position (same level as
             // report_death_loot — the server validates it when resolving the spawn).
             if def_id == BED_DEF_ID {
-                player.respawn_point = Some(Vec3::from_array(position));
+                player.pending_respawn_point = Some(Vec3::from_array(position));
                 info!(
-                    "MPTRACE step=BED event=respawn_point_set pos=({:.2},{:.2},{:.2})",
+                    "MPTRACE step=BED event=pending_respawn_point_set pos=({:.2},{:.2},{:.2})",
                     position[0], position[1], position[2]
                 );
             }
@@ -3426,6 +3496,28 @@ async fn handle_action(
                     is_group,
                 };
                 net.send_reliable(1, &payload).await;
+            }
+        }
+        // ADR-069: a bed FINISHED being built somewhere in the world. IPC-only, never relayed —
+        // the client emits this for EVERY bed it sees complete (its own or somebody else's,
+        // including beds that arrive already built on world load), and each backend decides for
+        // itself whether that position is the blueprint its own player planted. The whole filter
+        // is `promote_pending_respawn`: no cross-player trust is possible, because the pending
+        // point only exists in the placer's own process.
+        "bed_constructed" => {
+            let position: [f32; 3] = serde_json::from_value(
+                action
+                    .data
+                    .get("position")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
+            )
+            .unwrap_or([0.0, 0.0, 0.0]);
+            if promote_pending_respawn(player, Vec3::from_array(position)) {
+                info!(
+                    "MPTRACE step=BED event=respawn_point_set pos=({:.2},{:.2},{:.2})",
+                    position[0], position[1], position[2]
+                );
             }
         }
         // Phase B2: a client added one unit of build material to a piece. The host advances
@@ -3491,13 +3583,27 @@ async fn handle_action(
             // stale point, not an invalid state.
             if let Some(building) = net.stp_buildings.iter().find(|b| b.id == building_id) {
                 if building.def_id == BED_DEF_ID {
+                    let bed_pos = Vec3::from_array(building.position);
                     if let Some(point) = player.respawn_point {
-                        const BED_MATCH_RADIUS_M: f32 = 0.5;
-                        if point.distance(Vec3::from_array(building.position)) < BED_MATCH_RADIUS_M
-                        {
+                        if point.distance(bed_pos) < BED_MATCH_RADIUS_M {
                             player.respawn_point = None;
                             info!(
                                 "MPTRACE step=BED event=respawn_point_cleared building_id={} pos=({:.2},{:.2},{:.2})",
+                                building_id,
+                                building.position[0],
+                                building.position[1],
+                                building.position[2]
+                            );
+                        }
+                    }
+                    // ADR-069 decision 6: the pending point needs the SAME cleanup. Cancelling a
+                    // bed blueprint must not leave a pending respawn armed on a spot where there
+                    // is no longer anything to build.
+                    if let Some(pending) = player.pending_respawn_point {
+                        if pending.distance(bed_pos) < BED_MATCH_RADIUS_M {
+                            player.pending_respawn_point = None;
+                            info!(
+                                "MPTRACE step=BED event=pending_respawn_point_cleared building_id={} pos=({:.2},{:.2},{:.2})",
                                 building_id,
                                 building.position[0],
                                 building.position[1],
@@ -4200,6 +4306,7 @@ fn process_stp_drop(
     count: u16,
     position: [f32; 3],
     rotation: f32,
+    velocity: [f32; 3],
     net: &mut NetworkManager,
 ) {
     if drop_id != 0 && !net.processed_stp_drops.insert(drop_id) {
@@ -4217,11 +4324,154 @@ fn process_stp_drop(
         count,
         position,
         rotation,
+        settling: true,
+    });
+    // ADR-070 decision 5: the cost of this feature is capped by DESIGN, not by trusting that
+    // nobody empties a backpack on the floor. At the cap the oldest faller is put to sleep where
+    // it is — a slightly abrupt landing for one object, against an unbounded per-tick cost.
+    if net.settling_items.len() >= MAX_SETTLING_ITEMS {
+        let evicted = net.settling_items.remove(0);
+        mark_item_settled(net, evicted.id);
+        info!(
+            "MPTRACE step=SD event=settle_cap_evicted id={} cap={}",
+            evicted.id, MAX_SETTLING_ITEMS
+        );
+    }
+    net.settling_items.push(crate::network::SettlingItem {
+        id,
+        velocity: Vec3::from_array(velocity),
+        quiet_ticks: 0,
+        age_ticks: 0,
     });
     info!(
-        "MPTRACE step=SD event=stp_drop_spawned id={} drop_id={} def_id={} count={} pos=({:.2},{:.2},{:.2})",
-        id, drop_id, def_id, count, position[0], position[1], position[2]
+        "MPTRACE step=SD event=stp_drop_spawned id={} drop_id={} def_id={} count={} pos=({:.2},{:.2},{:.2}) vel=({:.2},{:.2},{:.2})",
+        id, drop_id, def_id, count, position[0], position[1], position[2],
+        velocity[0], velocity[1], velocity[2]
     );
+}
+
+/// ADR-070: how many items may be falling at once. See decision 5 — a bound, not a guess.
+const MAX_SETTLING_ITEMS: usize = 32;
+/// Metres per second squared. Slightly below real gravity: a dropped object that hangs a few extra
+/// frames reads as weight, and the exact value is cosmetic (nothing gameplay-facing depends on it).
+const SETTLE_GRAVITY: f32 = 9.0;
+/// Fraction of the vertical speed kept on a bounce. Low on purpose — loot that bounces around a
+/// room like a rubber ball is worse than loot that lands.
+const SETTLE_BOUNCE: f32 = 0.25;
+/// Fraction of the horizontal speed kept per second of contact with the floor.
+const SETTLE_FRICTION: f32 = 0.08;
+/// Below this speed (m/s) an item counts as quiet for the tick.
+const SETTLE_SLEEP_SPEED: f32 = 0.35;
+/// Consecutive quiet substeps needed to fall asleep (~0.33 s).
+const SETTLE_SLEEP_TICKS: u8 = 20;
+/// ADR-070: substeps per entity tick. The roster relay runs at 10 Hz, but integrating gravity at
+/// 10 Hz would make the arc a sequence of ~1 m jumps — physically wrong even before the client
+/// interpolates it. Substepping integrates at an effective 60 Hz and still emits one position per
+/// relay, so the arc is right and the wire is untouched. Cheap by construction: at most
+/// MAX_SETTLING_ITEMS × this many iterations, and zero when nothing is falling.
+const SETTLE_SUBSTEPS: u32 = 6;
+/// Hard budget in ticks (~3 s at 60 Hz). Decision 2: an item that cannot settle on its own is put
+/// to sleep anyway.
+const SETTLE_MAX_TICKS: u16 = 180;
+/// How far above the floor a resting item's origin sits, so the model does not sink into it.
+const SETTLE_REST_OFFSET_M: f32 = 0.12;
+
+/// Clear the `settling` flag of one item in the replicated roster. Separate from removing the
+/// simulation entry because the two live in different lists, and the flag is the half the clients
+/// actually see (it is their cue to stop interpolating and pin the transform).
+fn mark_item_settled(net: &mut NetworkManager, id: u32) {
+    if let Some(item) = net.stp_items.iter_mut().find(|i| i.id == id) {
+        item.settling = false;
+    }
+}
+
+/// ADR-070: advance every falling item by one tick. Host-only.
+///
+/// Vertical is integrated here; horizontal is handed to `resolve_move_grid_gen`, the SAME engine
+/// the phantom walks on (ADR-070 amendment: the draft named `resolve_move_simulated`, which is
+/// dead outside tests AND pins Y to the floor, so it could not have produced a fall at all).
+/// That split is exactly what the grid_gen resolver is built for — it slides X/Z against walls and
+/// preserves the Y it was handed.
+///
+/// Returns the ids that fell asleep this tick, so the caller can clear their `settling` flag
+/// without holding two mutable borrows of `net` at once.
+fn settle_items_tick(
+    items: &mut Vec<crate::network::SettlingItem>,
+    positions: &mut [crate::network::protocol::StpItemInfo],
+    cache: &mut crate::world::grid_gen::GridGenChunkCache,
+    dt: f32,
+    substeps: u32,
+) -> Vec<u32> {
+    let mut asleep = Vec::new();
+    let sub_dt = dt / substeps.max(1) as f32;
+    items.retain_mut(|s| {
+        // Look the item up ONCE per tick and run every substep against that borrow. Doing the
+        // lookup inside the substep loop instead would multiply a linear scan of the whole roster
+        // by the substep count, on a list that grows with everything ever dropped in the world —
+        // the cost would scale with the map, not with what is falling.
+        let Some(item) = positions.iter_mut().find(|i| i.id == s.id) else {
+            // The item was picked up mid-fall. Nothing to simulate, nothing to report.
+            return false;
+        };
+
+        for _ in 0..substeps.max(1) {
+            s.age_ticks = s.age_ticks.saturating_add(1);
+            s.velocity.y -= SETTLE_GRAVITY * sub_dt;
+
+            let from = Vec3::from_array(item.position);
+            let layer = crate::world::grid_gen::world_pos_to_layer(from.y);
+            let floor_y = crate::world::grid_gen::grid_floor_y(layer) + SETTLE_REST_OFFSET_M;
+
+            // Horizontal first, against the live geometry. The resolver preserves the Y it is
+            // given, so this is a pure X/Z slide and the vertical below is unaffected by it.
+            let desired = Vec3::new(
+                from.x + s.velocity.x * sub_dt,
+                from.y,
+                from.z + s.velocity.z * sub_dt,
+            );
+            let mut resolved =
+                crate::world::grid_gen::resolve_move_grid_gen(cache, layer, from, desired);
+            // Hitting a wall kills the horizontal speed rather than sliding along it forever: a
+            // thrown object that hits a wall should drop, not skate.
+            if (resolved.x - desired.x).abs() > 1e-3 {
+                s.velocity.x = 0.0;
+            }
+            if (resolved.z - desired.z).abs() > 1e-3 {
+                s.velocity.z = 0.0;
+            }
+
+            resolved.y = from.y + s.velocity.y * sub_dt;
+            let grounded = resolved.y <= floor_y;
+            if grounded {
+                resolved.y = floor_y;
+                if s.velocity.y < 0.0 {
+                    s.velocity.y = -s.velocity.y * SETTLE_BOUNCE;
+                    // A bounce too small to see is not a bounce; killing it here is what lets the
+                    // quiet counter actually reach its threshold instead of chattering.
+                    if s.velocity.y < SETTLE_SLEEP_SPEED {
+                        s.velocity.y = 0.0;
+                    }
+                }
+                s.velocity.x *= SETTLE_FRICTION.powf(sub_dt);
+                s.velocity.z *= SETTLE_FRICTION.powf(sub_dt);
+            }
+
+            item.position = resolved.to_array();
+
+            if s.velocity.length() < SETTLE_SLEEP_SPEED && grounded {
+                s.quiet_ticks = s.quiet_ticks.saturating_add(1);
+            } else {
+                s.quiet_ticks = 0;
+            }
+
+            if s.quiet_ticks >= SETTLE_SLEEP_TICKS || s.age_ticks >= SETTLE_MAX_TICKS {
+                asleep.push(s.id);
+                return false;
+            }
+        }
+        true
+    });
+    asleep
 }
 
 /// Monotonic id source for host-spawned STP building pieces. Lives in its own high range

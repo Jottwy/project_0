@@ -23,6 +23,10 @@ namespace BackroomsSurvival.Net
         public int count;
         public Vector3 position;
         public float rotation;
+        // ADR-070 — the item is still falling: `position` MOVES between relays, so follow it
+        // instead of pinning the transform. Absent (older backend, or anything born settled)
+        // decodes to false and behaves exactly as before.
+        public bool settling;
 
         public static StpItemMsg Parse(MsgPackReader r)
         {
@@ -36,6 +40,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "count")) m.count = (int)r.ReadInt();
                 else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
                 else if (MsgPackReader.Is(k, "rotation")) m.rotation = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "settling")) m.settling = r.ReadBool();
                 else r.Skip();
             }
             return m;

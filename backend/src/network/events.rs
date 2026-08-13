@@ -62,12 +62,15 @@ pub enum NetworkEvent {
         count: u16,
     },
     /// Phase 3: a joiner asks the host to spawn a dropped STP item in the world.
+    /// ADR-070: `position` is the HAND, not a resting place, and `velocity` is the throw impulse —
+    /// where the object ends up is the host's call, not the dropper's.
     StpDropRequest {
         drop_id: u64,
         def_id: i32,
         count: u16,
         position: [f32; 3],
         rotation: f32,
+        velocity: [f32; 3],
     },
     /// Phase B1: a joiner asks the host to place an STP building piece in the world.
     StpPlaceRequest {

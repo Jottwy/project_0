@@ -394,7 +394,7 @@ impl NetworkManager {
         }
         [
             StpPickupGranted { item_id, def_id, count },
-            StpDropRequest { drop_id, def_id, count, position, rotation },
+            StpDropRequest { drop_id, def_id, count, position, rotation, velocity },
         ]
         {
 

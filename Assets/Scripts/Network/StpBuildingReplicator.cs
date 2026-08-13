@@ -50,7 +50,19 @@ namespace BackroomsSurvival.Net
             public long demolishId; // ADR-037: non-zero once a demolish was sent for this piece
         }
 
+        // ADR-069: the STP "Sleeping Bag" BuildingPieceDefinition id, mirroring the backend's
+        // BED_DEF_ID (game_loop.rs). Hardcoded on both sides for the same reason the backend
+        // hardcodes it — there is no shared config surface yet. Only used to decide whether a
+        // completed piece is worth reporting; the backend re-checks nothing about it, it just
+        // matches the position, so a stale value here degrades to "beds stop arming respawns",
+        // never to a wrong player getting one.
+        private const int BedDefId = -4996552;
+
         private readonly Dictionary<uint, Tracked> _spawned = new Dictionary<uint, Tracked>();
+        // ADR-069: building ids whose bed-completion has already been reported, so the per-frame
+        // sweep below emits exactly one action per bed instead of one per frame. Ids are minted
+        // fresh by the host and never recycled; entries are dropped with the piece anyway.
+        private readonly HashSet<uint> _bedReported = new HashSet<uint>();
         // B3: group_id → reconstructed BuildingPieceGroup. Pieces sharing a group_id are
         // bucketed here so their sockets cohere (membership + OccupyAdjacentSockets) on every
         // client, exactly like STP's own save/load path.
@@ -108,6 +120,19 @@ namespace BackroomsSurvival.Net
                     ApplyProgressUpdate(b, tracked);
                     tracked.addedKey = key;
                 }
+
+                // ADR-069: report a bed the FIRST frame it reads as fully built. Checked here, on
+                // the outcome, rather than at each of the three sites that write Tracked.complete
+                // — that way the "arrived already built" path (world load, late joiner) reports
+                // exactly like the completion transition does, which is what lets a pending point
+                // that outlived a disconnect repair itself on reconnect.
+                if (b.defId == BedDefId
+                    && _spawned.TryGetValue(b.id, out var bed) && bed.complete
+                    && _bedReported.Add(b.id))
+                {
+                    ipc.SendBedConstructed(b.position);
+                    Debug.Log($"[StpBuildingReplicator] bed built id={b.id} at {b.position:F2} → backend.");
+                }
             }
 
             var stale = new List<uint>();
@@ -121,7 +146,10 @@ namespace BackroomsSurvival.Net
                 }
             }
             foreach (uint k in stale)
+            {
                 _spawned.Remove(k);
+                _bedReported.Remove(k); // ADR-069: the piece is gone, so is its report record
+            }
 
             // B3: drop group buckets whose BuildingPieceGroup was auto-destroyed by the vendor
             // (it self-destructs when its last piece is removed). EnsureGroup recreates on demand.

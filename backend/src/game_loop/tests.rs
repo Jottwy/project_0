@@ -22,6 +22,7 @@ async fn id_allocators_reseed_inside_their_own_range() {
         count: 1,
         position: [0.0; 3],
         rotation: 0.0,
+        settling: false,
     });
     net.stp_buildings.push(StpBuildingInfo {
         id: STP_BUILDING_ID_BASE + 3,
@@ -323,6 +324,54 @@ fn restore_snap_window_blocks_the_stale_client_position_then_admits_it_after_exp
     );
 }
 
+/// Contrato del drain de stamina de ADR-009, por el lado del servidor. El bug real vivia en el
+/// CLIENTE (`PlayerPoseTransmitter` clasificaba `move_state` solo como 0/1 y nunca 2, asi que
+/// la barra jamas bajaba estando conectado), pero la mitad servidor no tenia guarda ninguna:
+/// nada impedia que un refactor futuro cambiara el valor sobre el que se gatea y volviera a
+/// dejar el drain muerto sin que fallara un test. Esto lo fija: 2 drena, 1 y 0 no.
+/// `god_traversal=true` por el mismo motivo que el test de arriba — el drain corre igual con o
+/// sin geometria de colision y asi no hay que fabricar un mundo con celdas libres.
+#[test]
+fn only_the_run_move_state_drains_stamina() {
+    let world = World::new(42);
+    let dt = 1.0 / 60.0;
+
+    // Control negativo primero: caminar (1) e idle (0) NO pueden tocar la stamina.
+    for state in [0u8, 1u8] {
+        let mut player = Player::new(1, "Runner");
+        let full = player.stats.stamina;
+        let input = PlayerInput {
+            position: [5.0, 1.8, 5.0],
+            move_state: state,
+            input_seq: 1,
+            ..Default::default()
+        };
+        apply_movement(&mut player, &input, dt, &world, 1, true);
+        assert_eq!(
+            player.stats.stamina, full,
+            "move_state={state} no debe drenar stamina"
+        );
+    }
+
+    // Correr (2) drena exactamente RUN_STAMINA_DRAIN por segundo.
+    let mut player = Player::new(1, "Runner");
+    let full = player.stats.stamina;
+    let input = PlayerInput {
+        position: [5.0, 1.8, 5.0],
+        move_state: 2,
+        input_seq: 1,
+        ..Default::default()
+    };
+    apply_movement(&mut player, &input, dt, &world, 1, true);
+    let drained = full - player.stats.stamina;
+    assert!(
+        (drained - RUN_STAMINA_DRAIN * dt).abs() < 1e-4,
+        "un tick corriendo debe drenar RUN_STAMINA_DRAIN*dt ({}), drenó {}",
+        RUN_STAMINA_DRAIN * dt,
+        drained
+    );
+}
+
 // P0-2: `resolve_phantom_density_scale` es la misma regla de precedencia que world_seed
 // (game_loop.rs:270-280) extraída a función pura, precisamente para poder testearla sin
 // levantar el loop entero — mismo motivo que llevó a mover el gate de `broadcast_chunk_states`
@@ -380,6 +429,7 @@ async fn drop_allocator_ignores_ids_from_the_building_range() {
         count: 1,
         position: [0.0; 3],
         rotation: 0.0,
+        settling: false,
     });
 
     let (drop_id, ..) = reseed_stp_id_allocators(&net);
@@ -1224,6 +1274,7 @@ async fn phantom_fake_pickup_touches_only_animation_not_real_state() {
         count: 1,
         position: [10.5, 1.8, 10.0],
         rotation: 0.0,
+        settling: false,
     });
     let pid = net.spawn_phantom("Robapieles_Test", [10.0, 1.8, 10.0]);
     let spawn_pos = net.peers[&pid].position; // actual (grid_gen-snapped) spawn position
@@ -4203,6 +4254,155 @@ fn apply_pvp_damage_grant_blocks_while_invulnerable_then_applies_after() {
     assert_eq!(applied, Ok(health_before - 30.0));
 }
 
+// ── ADR-070: los objetos soltados caen ──
+
+use crate::network::protocol::StpItemInfo;
+use crate::network::SettlingItem;
+
+/// Helper: un item en el aire y su entrada de simulacion, sin levantar red ni loop. El integrador
+/// es una funcion pura del par (roster, estado de caida) + la cache de colision, que es
+/// precisamente por lo que la fisica vive en el backend y no repartida por N clientes: se puede
+/// afirmar sobre ella.
+fn falling_item(id: u32, position: [f32; 3], velocity: Vec3) -> (StpItemInfo, SettlingItem) {
+    (
+        StpItemInfo {
+            id,
+            def_id: 1,
+            count: 1,
+            position,
+            rotation: 0.0,
+            settling: true,
+        },
+        SettlingItem {
+            id,
+            velocity,
+            quiet_ticks: 0,
+            age_ticks: 0,
+        },
+    )
+}
+
+/// Simula hasta que el item duerme o se agota la paciencia del test, y devuelve
+/// (ticks consumidos, se durmio). Un test que no converge tiene que FALLAR, no colgarse.
+fn settle_until_asleep(
+    item: StpItemInfo,
+    state: SettlingItem,
+    max_steps: u32,
+) -> (StpItemInfo, u32, bool) {
+    let mut cache = crate::world::grid_gen::GridGenChunkCache::with_rules(
+        42,
+        crate::world::zone_density::rules_for,
+    );
+    let mut items = vec![state];
+    let mut roster = vec![item];
+    let dt = 1.0 / 60.0;
+    for step in 0..max_steps {
+        let asleep = settle_items_tick(&mut items, &mut roster, &mut cache, dt, 1);
+        if !asleep.is_empty() {
+            return (roster[0].clone(), step + 1, true);
+        }
+    }
+    (roster[0].clone(), max_steps, false)
+}
+
+/// El comportamiento que Joel pidió, escrito como contrato: un objeto soltado en el aire CAE, y
+/// acaba parado en el suelo. Antes de ADR-070 el cliente ya mandaba la posición pegada al suelo y
+/// el objeto nacía congelado ahí — este test falla con aquel comportamiento porque no habría
+/// ninguna caída que medir.
+#[test]
+fn a_dropped_item_falls_and_comes_to_rest_on_the_floor() {
+    let drop_height = 6.0;
+    let (item, state) = falling_item(1, [30.0, drop_height, 30.0], Vec3::new(0.0, 0.0, 0.0));
+    let (rested, steps, asleep) = settle_until_asleep(item, state, 600);
+
+    assert!(asleep, "el objeto tiene que dormirse, no simular sin fin");
+    assert!(
+        rested.position[1] < drop_height - 1.0,
+        "tiene que haber CAÍDO, acabó en y={}",
+        rested.position[1]
+    );
+    let floor = crate::world::grid_gen::grid_floor_y(crate::world::grid_gen::world_pos_to_layer(
+        rested.position[1],
+    ));
+    assert!(
+        (rested.position[1] - floor).abs() < 0.5,
+        "tiene que reposar SOBRE el suelo de su capa (suelo={floor}, item={})",
+        rested.position[1]
+    );
+    assert!(
+        steps < 200,
+        "una caída de {drop_height} m no puede tardar {steps} ticks en asentarse"
+    );
+}
+
+/// El impulso importa: lanzar hacia un lado tiene que mover el objeto en horizontal. Sin esto,
+/// `velocity` podría llegar entera hasta el integrador y no usarse, y la única señal sería que en
+/// juego "se cae raro".
+#[test]
+fn the_throw_impulse_moves_the_item_sideways() {
+    let start = [30.0, 5.0, 30.0];
+    let (item, state) = falling_item(1, start, Vec3::new(4.0, 0.0, 0.0));
+    let (rested, _, asleep) = settle_until_asleep(item, state, 600);
+
+    assert!(asleep);
+    assert!(
+        rested.position[0] > start[0] + 0.5,
+        "lanzado en +X tiene que acabar más allá de donde salió (x={} vs {})",
+        rested.position[0],
+        start[0]
+    );
+
+    // Control negativo: soltado sin impulso, en el mismo sitio, apenas se mueve en horizontal.
+    let (item2, state2) = falling_item(2, start, Vec3::new(0.0, 0.0, 0.0));
+    let (dropped, _, _) = settle_until_asleep(item2, state2, 600);
+    assert!(
+        (dropped.position[0] - start[0]).abs() < 0.5,
+        "sin impulso no puede desplazarse solo, acabó en x={}",
+        dropped.position[0]
+    );
+}
+
+/// El presupuesto duro de la decisión 2. Un objeto al que se le da una velocidad absurda no puede
+/// quedarse simulando para siempre: se duerme igual al agotar el presupuesto. Es la diferencia
+/// entre un tope de diseño y confiar en que la física converja.
+#[test]
+fn a_never_settling_item_is_put_to_sleep_by_the_budget() {
+    // Velocidad vertical enorme: sube durante segundos, así que la vía de "ticks tranquilos" no
+    // puede ser la que lo duerma dentro del presupuesto.
+    let (item, state) = falling_item(1, [30.0, 3.0, 30.0], Vec3::new(0.0, 400.0, 0.0));
+    let (_, steps, asleep) = settle_until_asleep(item, state, (SETTLE_MAX_TICKS as u32) + 50);
+
+    assert!(asleep, "el presupuesto tiene que dormirlo igualmente");
+    assert_eq!(
+        steps, SETTLE_MAX_TICKS as u32,
+        "y tiene que dormirlo EXACTAMENTE al agotarse, ni antes ni después"
+    );
+}
+
+/// Un objeto recogido a media caída desaparece del roster. La entrada de simulación tiene que
+/// irse con él: si no, el integrador seguiría buscando un id que ya no existe en cada tick de cada
+/// subpaso, para siempre.
+#[test]
+fn picking_an_item_up_mid_fall_drops_its_simulation_entry() {
+    let mut cache = crate::world::grid_gen::GridGenChunkCache::with_rules(
+        42,
+        crate::world::zone_density::rules_for,
+    );
+    let (_, state) = falling_item(9, [30.0, 5.0, 30.0], Vec3::new(0.0, 0.0, 0.0));
+    let mut items = vec![state];
+    let mut roster: Vec<StpItemInfo> = Vec::new(); // recogido: ya no está en el roster
+
+    let asleep = settle_items_tick(&mut items, &mut roster, &mut cache, 1.0 / 60.0, 1);
+    assert!(
+        items.is_empty(),
+        "la entrada de simulación tiene que morir con el item"
+    );
+    assert!(
+        asleep.is_empty(),
+        "y NO cuenta como dormido: no hay nada a lo que limpiarle el flag"
+    );
+}
+
 // ── ADR-031 bed respawn ──
 
 // A clean, flat, all-walkable chunk at `pos` so resolve_safe_spawn accepts a cell there.
@@ -4246,6 +4446,75 @@ fn resolve_respawn_prefers_a_placed_bed() {
         (res.position.x - bed.x).abs() < CHUNK_SIZE && (res.position.z - bed.z).abs() < CHUNK_SIZE,
         "respawn should land in the bed's chunk near the bed, got {:?}",
         res.position
+    );
+}
+
+// ── ADR-069: la cama arma el respawn al CONSTRUIRSE, no al plantar el fantasma ──
+
+/// El bug que ADR-069 corrige, escrito como contrato: plantar el fantasma solo puede armar el
+/// PENDIENTE. Mientras `respawn_point` siga a None, `resolve_respawn` manda al arranque fijo —
+/// que es exactamente lo que se ve en juego cuando la cama no está construida.
+#[test]
+fn a_pending_bed_alone_does_not_move_the_respawn() {
+    let mut world = crate::world::World::new(1);
+    insert_clean_flat_chunk(&mut world, (10, 10));
+    let bed = Vec3::new(10.0 * CHUNK_SIZE + 25.0, 1.8, 10.0 * CHUNK_SIZE + 25.0);
+
+    let mut player = Player::new(1, "Placer");
+    player.pending_respawn_point = Some(bed); // lo que ahora hace `stp_place`
+
+    let res = resolve_respawn(&mut world, player.respawn_point, player.id);
+    assert_eq!(
+        res.chunk,
+        (0, 0),
+        "un fantasma sin construir NO puede desviar el respawn de la cama de arranque"
+    );
+}
+
+/// La promoción completa, con su control negativo: la confirmación de OTRA cama (la que llega
+/// cuando un vecino termina la suya, porque el cliente las reporta todas) no puede tocar nada.
+#[test]
+fn bed_constructed_promotes_only_the_matching_pending_point() {
+    let bed = Vec3::new(120.0, 1.8, 340.0);
+
+    // Control negativo 1: sin pendiente no hay nada que promocionar.
+    let mut nobody = Player::new(1, "Bystander");
+    assert!(
+        !promote_pending_respawn(&mut nobody, bed),
+        "sin pendiente, la confirmación es un no-op"
+    );
+    assert_eq!(nobody.respawn_point, None);
+
+    // Control negativo 2: pendiente propio, pero la cama terminada es otra (lejos).
+    let mut other = Player::new(2, "Neighbour");
+    other.pending_respawn_point = Some(Vec3::new(500.0, 1.8, 500.0));
+    assert!(
+        !promote_pending_respawn(&mut other, bed),
+        "la cama de otro jugador no puede armar mi respawn"
+    );
+    assert_eq!(other.respawn_point, None);
+    assert_eq!(
+        other.pending_respawn_point,
+        Some(Vec3::new(500.0, 1.8, 500.0)),
+        "y tampoco puede consumir mi pendiente"
+    );
+
+    // Caso real: mi cama, terminada. Se promociona y el pendiente se consume (una sola vez).
+    let mut placer = Player::new(3, "Placer");
+    placer.pending_respawn_point = Some(bed);
+    // La posición reportada llega del `StpBuildingInfo` del host, no del pendiente: se admite
+    // dentro de BED_MATCH_RADIUS_M, no por igualdad exacta.
+    let reported = Vec3::new(bed.x + 0.2, bed.y, bed.z - 0.2);
+    assert!(promote_pending_respawn(&mut placer, reported));
+    assert_eq!(
+        placer.respawn_point,
+        Some(bed),
+        "se guarda la posición que el propio jugador reclamó al colocar, no la reportada"
+    );
+    assert_eq!(placer.pending_respawn_point, None);
+    assert!(
+        !promote_pending_respawn(&mut placer, reported),
+        "el pendiente ya se consumió: los reportes repetidos (un cliente por cama) son no-ops"
     );
 }
 

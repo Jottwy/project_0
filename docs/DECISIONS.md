@@ -3087,6 +3087,170 @@ Verificado: `cargo test` **688 en verde**, `clippy +stable-x86_64-pc-windows-gnu
 
 ---
 
+### ADR-069 — La cama arma el respawn al CONSTRUIRSE, no al plantar el fantasma (2026-08-13)
+
+Estado: **PROPUESTA (2026-08-13).** Corrige un bug reportado por Joel en juego: "la cama sirve de respawn solo por poner el fantasma, eso está mal".
+
+**El bug, exacto.** El handler `stp_place` de `game_loop.rs` arma `player.respawn_point` en cuanto llega la colocación de una pieza con `def_id == BED_DEF_ID`. Pero `stp_place` lo emite `StpBuildingPlacementWatcher` desde el evento `ObjectPlaced` del vendor, y ese evento es **la colocación del blueprint**, no la construcción. Resultado: plantar el fantasma —gratis, sin gastar un solo material— ya reasigna el punto de reaparición. ADR-031 dio por hecho que colocar y construir eran el mismo acto porque el único consumidor entonces era la bolsa de dormir de prueba; no lo son.
+
+**Por qué el backend no puede arreglarlo solo.** El servidor acumula materiales en `StpBuildingInfo.added` (`process_stp_build_add`) pero **no conoce los requisitos**: viven en el prefab STP, del lado cliente, y `StpBuildingReplicator.ComputeProgress` los compara ahí. El backend sabe cuánto se ha metido, nunca cuánto falta. Cualquier arreglo pasa por que el cliente diga "esta pieza ya está terminada", y eso es un mensaje nuevo.
+
+#### Decisiones
+
+**1. El respawn es de quien PLANTÓ la cama, no de quien la termina.** Fork elegido por Joel contra las otras dos opciones (quien mete el último material; o cama construida interactuable estilo Rust/Valheim). Mantiene intacta la semántica de "last placed wins" de ADR-031, es el diff más pequeño, y cierra de paso el robo de cama por completarla. La opción interactuable queda como camino futuro si el diseño cooperativo lo pide: este ADR no la prohíbe, solo no la implementa.
+
+**2. `respawn_point` pasa a dos fases.** `Player` gana `pending_respawn_point: Option<Vec3>`. El handler `stp_place` deja de tocar `respawn_point` y arma el PENDIENTE (misma regla "last placed wins": una cama nueva pisa el pendiente anterior, el `respawn_point` ya armado sigue vigente hasta que la nueva se construya). El punto real solo se arma al llegar la confirmación de construcción.
+
+**3. Acción nueva `bed_constructed { position: [f32;3] }`, IPC-only.** Cliente → **su propio** backend, nunca P2P. Mismo régimen que `report_noise` (v13) y `set_identity` (v22): `PlayerAction` ya es genérica (`action_type` + `data` libre), así que no hay struct de wire nuevo.
+
+**4. El filtrado es por POSICIÓN y lo hace el backend receptor — cero confianza cruzada.** El cliente emite la acción para **cualquier** cama que vea terminarse, la suya o la de otro, sin filtrar. Cada backend la acepta solo si su `pending_respawn_point` cae dentro de `BED_MATCH_RADIUS_M` (0,5 m, la constante que ya usa la limpieza por demolición); si no coincide, es la cama de otro y se ignora. Es la misma decisión de arquitectura que ya toma la limpieza de ADR-037: **el punto se empareja por posición, no por id**, porque el `building_id` lo acuña el host y el backend de un joiner nunca llega a saber cuál le tocó a su propia colocación (`StpBuildingInfo` no lleva el `place_id`). Consecuencia: nadie puede armar el respawn de otro jugador ni desde un cliente modificado, porque el pendiente vive en el backend de cada uno.
+
+**5. El emisor es `StpBuildingReplicator`, no `Constructable.Constructed`.** El replicador **ya** calcula `complete` por pieza en `ComputeProgress` y lo guarda sticky en `Tracked.complete`. Engancharse ahí, y no al evento del vendor, da gratis el caso "la cama llega ya construida" (carga de mundo, joiner que entra tarde): la acción se emite igual en el spawn inicial que en la transición, así que un pendiente que sobrevivió a una desconexión se auto-repara al reconectar. Además evita tocar territorio del vendor (memoria del proyecto: nunca editar dentro de STP).
+
+**6. La demolición limpia el pendiente además del punto.** La limpieza que ADR-037 dejó escrita para `respawn_point` se duplica sobre `pending_respawn_point`, con el mismo emparejamiento por posición. Cancelar el fantasma de una cama no puede dejar un pendiente armado apuntando a un sitio donde ya no hay nada.
+
+**7. `pending_respawn_point` se persiste.** Campo aditivo con `#[serde(default)]` en el snapshot de jugador — tolerado por el punto 5 de ADR-032, un save previo carga con `None`. Sin esto, la secuencia real "planto la cama, salgo a cenar, vuelvo y la construyo" perdería el respawn en silencio.
+
+**8. Bump `WIRE_SCHEMA_VERSION` 29→30 en el MISMO commit que `WireSchema.Expected`** (ADR-061: desincronizarlos deja el juego inarrancable, no da un warning) + entrada en `systems/ipc-wire-schema.md`. Una acción IPC-only bumpea: precedente sellado en v13 y v22.
+
+#### Consecuencias / qué prohíbe
+
+**PROHÍBE armar `respawn_point` desde cualquier camino de COLOCACIÓN.** El único sitio que puede escribirlo es la confirmación de construcción. Si mañana aparece una segunda pieza-cama, entra por aquí o no entra.
+
+**PROHÍBE emparejar el punto por `building_id`** (decisión 4). El id es host-autoritativo y el backend del colocador no lo conoce; un emparejamiento por id parecería más limpio y estaría roto para todo joiner.
+
+**No cambia el resolvedor de spawn.** `resolve_respawn` y su "trust the bed" siguen exactamente igual: este ADR solo cambia **cuándo** se llena la entrada que ese resolvedor lee.
+
+#### Deuda declarada, no bloqueante
+
+- **Sigue en pie el hueco de ADR-037**: si el jugador A tiene su respawn en una cama y el jugador B la demuele, A conserva un punto obsoleto — su `Player` vive en su propio backend y el host no lo posee. Reaparecerá en una celda segura donde estuvo la cama. Este ADR no lo cierra y no lo empeora.
+- **Una cama construida y luego destruida por daño** (no por el camino `stp_demolish`) no limpia nada, porque hoy no existe destrucción por daño de piezas. Cuando exista, tendrá que pasar por la misma limpieza.
+
+---
+
+### ADR-070 — Los objetos soltados CAEN: el host simula el asentamiento (2026-08-14)
+
+Estado: **PROPUESTA (2026-08-14).** Cero código. Encargo de Joel: "al dropear los objetos que sean más dinámicos y menos estáticos como ahora". Fork elegido por él vía `AskUserQuestion`: **simulación en el backend**, contra las otras dos opciones (tumbo cosmético local con ancla del host; origen+impulso replicado y simulado por cada cliente).
+
+**Qué pasa hoy, y por qué.** Un objeto soltado aparece ya posado en el suelo y congelado. Son DOS causas sumadas, no una: `StpNativeDropWatcher` rayea al suelo (`GroundPosition`) **antes** de enviar el `stp_drop`, así que la posición que cruza el wire ya es la final; y `StpItemReplicator` fuerza `isKinematic = true; useGravity = false` en cada Rigidbody del pickup replicado. Ninguna de las dos es un descuido: la posición del ítem es host-autoritativa y tiene que ser **idéntica en todos los clientes**, o dos jugadores lo verían en sitios distintos y el gate de recogida por id se volvería incoherente con lo que se ve. Congelar era la forma barata de garantizarlo.
+
+**Por qué no vale con soltar el freno.** Dejar el Rigidbody vivo en cada cliente hace que cada máquina calcule una caída distinta (PhysX no es determinista entre ejecuciones ni entre plataformas). El ítem acabaría en un sitio diferente por cliente: no es un desajuste cosmético, es que se recoge desde donde no está. Si la caída va a ser real, la tiene que calcular UN solo sitio, y ese sitio es el host — como ya ocurre con todo lo demás del roster.
+
+#### Decisiones
+
+**1. El drop deja de llegar asentado.** `stp_drop` pasa a mandar la posición de la **mano** y una velocidad inicial (`velocity: [f32;3]` = dirección de la vista × fuerza de lanzamiento). `StpNativeDropWatcher` deja de rayear al suelo: quién decide dónde acaba el objeto es el host, no el que lo suelta. Campo aditivo con `serde(default)` → un drop sin velocidad se comporta como una caída vertical desde la mano, que es la degradación correcta.
+
+**2. El host integra la caída, y solo mientras haga falta.** Un ítem nace `settling`. Mientras lo esté, el game loop lo integra en su tick: gravedad, colisión contra `Level0Collision` **reusando `resolve_move_simulated` de ADR-017** (el camino sim-only on-demand que ya existe para el robapieles — este ADR no añade un segundo motor de colisión), y rebote amortiguado. Duerme cuando la velocidad baja de un umbral durante N ticks consecutivos, o al agotar un presupuesto de tiempo. **El presupuesto es un tope duro (~3 s), no una heurística**: un ítem no puede quedarse simulando para siempre porque encontró una esquina patológica.
+
+**3. Solo la TRASLACIÓN es autoritativa. La rotación es cosmética y local.** El wire NO gana un cuaternión. Mientras el ítem esté `settling`, cada cliente hace rodar el modelo localmente; al dormirse se queda con la orientación que tuviera. La orientación final diverge entre clientes y **eso se acepta explícitamente**: la recogida va por id y por posición, nunca por orientación, así que la divergencia no llega a tocar una sola regla del juego. A cambio se ahorran tres floats por ítem en cada relay, que es exactamente el tipo de coste que este proyecto no puede permitirse pagar por algo puramente visual.
+
+**4. `settling: bool` en `StpItemInfo`.** Es el campo que le dice al cliente "esta posición se mueve, interpólala" en vez de "clávala". Al pasar a `false`, el cliente fija la posición final y devuelve el Rigidbody a `isKinematic`. Aditivo con `serde(default)` = `false` → todo lo que ya existe (loot de chunk, cadáveres, cofres) sigue naciendo posado y con coste cero, sin una línea de migración.
+
+**5. Tope duro de ítems simulándose a la vez (~32, FIFO: al llenarse, el más viejo se duerme a la fuerza).** El coste de esta feature tiene que estar acotado por diseño, no por confianza en que nadie tire treinta cosas seguidas. Es la misma decisión que el punto 5 de ADR-068 sobre las pintadas: el cap no es UX, es la frontera del coste.
+
+**6. El replicador interpola en vez de spawnear-y-olvidar.** Hoy `StpItemReplicator` solo da de alta y de baja; no toca el transform de un ítem ya spawneado. Gana un camino de seguimiento para los `settling`, con el mismo búfer de dos muestras que ya usa `StatInterpolator` (renderiza un margen de latencia por detrás, `Clamp01`, nunca sobrepasa). Es el patrón que el proyecto ya tiene validado para "posición autoritativa a baja frecuencia".
+
+**7. Bump `WIRE_SCHEMA_VERSION` 30→31** en el mismo commit que `WireSchema.Expected` (ADR-061) + entrada en `systems/ipc-wire-schema.md`.
+
+#### Slices
+
+- **S1 (backend):** `velocity` en `stp_drop`, estado `settling` + integrador + cap + sueño, `settling` en el relay. Verificable entero con `cargo test` (la caída es una función pura del estado inicial y del mundo).
+- **S2 (cliente):** el watcher manda mano+impulso y deja de rayear; el replicador interpola mientras `settling` y clava al dormir; rodadura cosmética local.
+- **S3:** verificación en juego con dos instancias — que el objeto caiga, y que los dos clientes lo vean acabar en el MISMO sitio.
+
+#### Consecuencias / qué prohíbe
+
+**PROHÍBE que el cliente decida dónde acaba un objeto soltado** (decisión 1). Rayear al suelo en el cliente es exactamente lo que este ADR retira; reintroducirlo devuelve el problema entero.
+
+**PROHÍBE meter rotación autoritativa en el roster de ítems** (decisión 3). Si algún día se quiere, es otro ADR con su presupuesto de wire medido, no un campo que se cuela.
+
+**PROHÍBE un segundo motor de colisión.** La caída usa `Level0Collision`/ADR-017 o no se hace.
+
+#### Deuda declarada
+
+- **Esto AÑADE coste de CPU al host, no lo quita.** Va acotado (decisión 5) y solo corre durante el asentamiento, pero conviene decirlo claro porque el encargo venía en la misma frase que "debemos optimizar esto": lo que se optimiza aquí es la sensación, no el rendimiento. La medición de rendimiento es trabajo aparte.
+- **Un ítem que se duerme por presupuesto agotado puede quedar en el aire** si estaba atascado en geometría patológica. Preferido a simular sin fin; si aparece en playtest, se cura con un rayo hacia abajo al dormir.
+
+### Enmienda ADR-070 (S1, 2026-08-14) — el motor de colisión que nombraba el borrador está MUERTO en producción
+
+Corrección de un error de hecho del borrador, encontrada al abrir el código para implementar S1. Ninguna decisión del ADR cambia; cambia el nombre del motor que ejecuta la decisión 2 y, con él, la forma de la caída.
+
+**El error.** La decisión 2 mandaba reusar `Level0Collision::resolve_move_simulated` + `SimChunkCache` (ADR-017). Ese camino **solo se invoca desde `world/collision/tests.rs`**: la migración a grid_gen se llevó el movimiento real de entidades a `resolve_move_grid_gen` / `resolve_move_grid_gen_ex` sobre `GridGenChunkCache`, que es lo que el robapieles usa hoy en cada uno de sus estados. Implementar contra ADR-017 habría hecho caer los objetos contra una geometría que ya no es la que se pisa.
+
+**Lo que se usa en su lugar, y por qué encaja mejor de lo que encajaba el original.** `resolve_move_grid_gen(cache, layer, from, desired)` resuelve **solo XZ y preserva la Y de entrada** por diseño ("horizontal movement must not change height"). Eso es exactamente lo que una caída necesita: el deslizamiento contra paredes lo pone el motor existente, la vertical la integra el asentamiento. El camino de ADR-017, en cambio, **pinea la Y al suelo** en la rama de entidad (`claimed_y = None`), así que habría clavado el objeto al suelo en el primer paso y no habría habido caída ninguna. El borrador nombraba el motor equivocado Y el que además era incompatible con la feature.
+
+**Dos consecuencias que el borrador no podía prever:**
+
+1. **Altura del suelo: `grid_gen::grid_floor_y(layer)`**, con la capa derivada de la propia Y del objeto vía `world_pos_to_layer`. NO `floor_player_y`, que devuelve la Y que debe tener un JUGADOR de pie (`PLAYER_BASE_Y = 1.8` incluido), no la del suelo. Un objeto posado con `floor_player_y` flotaría a la altura del pecho.
+2. **La caché de colisión tiene que construirse con el MISMO `rules_fn` que la del robapieles** (ADR-033), o los objetos caerían contra un mundo distinto del que camina la criatura. Es la misma trampa que `resolve_spawn_near` ya documenta en su doc-comment.
+
+**Lo que NO cambia:** la prohibición de la decisión "un segundo motor de colisión" sigue en pie y se cumple mejor que en el borrador — la caída no añade motor, usa el que ya mueve a las entidades. El radio con el que se prueba el paso es el del cuerpo que ese motor ya asume; un objeto no se colará por huecos por los que no cabe el robapieles. Conservador y deliberado: reusar el motor vale más que la fidelidad de que una lata quepa por una rendija.
+
+### Enmienda ADR-070 (S2, 2026-08-14) — el Rigidbody NO se suelta en ningún momento
+
+Precisión sobre la decisión 4, no cambio de decisión. El borrador decía que al dormirse el ítem "el cliente devuelve el Rigidbody a `isKinematic`", lo que da a entender que durante la caída deja de serlo. **No lo hace: sigue kinematic toda la caída, y el transform lo mueve el interpolador.**
+
+**Por qué.** Soltar PhysX mientras cae devuelve al cliente el control de dónde va el objeto — exactamente lo que este ADR le quita — y además garantiza un tirón al final: la simulación local y la del host no coinciden, así que al llegar el `settling=false` el objeto saltaría desde donde lo dejó PhysX hasta donde dice el host. Con el cuerpo kinematic todo el rato, el paso a dormido es continuo: la última muestra que mandó el host YA es el sitio de reposo.
+
+**Lo que esto no le quita a la mecánica:** la rodadura sigue existiendo, pero es un `Rotate` proporcional a la distancia recorrida, no física. Es coherente con la decisión 3 (la orientación es cosmética y client-side): si la orientación no viaja, tampoco hace falta que la calcule un motor.
+
+**Nota de alcance de S2.** El `stp_drop` que emiten `InventoryRestorer` y `StpPickupController` (devolución de sobrantes) pasa por el mismo camino con velocidad cero, así que esos objetos ahora **caen al suelo** en lugar de quedarse a la altura del pecho donde se soltaban. Es un arreglo colateral, no un efecto secundario a vigilar. Los otros dos rosters — `stp_carryables` y `stp_harvestables` — conservan su rayo al suelo propio y quedan FUERA de ADR-070: sus watchers son código aparte y el ADR habla de `stp_items`.
+
+---
+
+### ADR-071 — Un roster que no ha cambiado no se envía (2026-08-14)
+
+Estado: **PROPUESTA (2026-08-14).** Primera de las tres curas que salen de la medición de [`systems/perf-baseline.md`](systems/perf-baseline.md), elegida por Joel por ser la de mejor relación impacto/diff.
+
+**Nota de numeración:** este ADR toma el 071 porque los números 069 y 070 quedaron en disputa — dos sesiones concurrentes escribieron un ADR-069 cada una el 2026-08-13 (la cama de respawn y las propiedades de instancia fuera del inventario). Se aplica el criterio que este mismo registro ya fijó en ADR-046: **el que aterriza segundo toma el siguiente libre**. Queda pendiente de resolver a mano cuál de los dos 069 se renumera; este documento no lo decide.
+
+**El problema, medido.** `game_loop.rs:1485` difunde cada 10 Hz los cinco rosters host-autoritativos ENTEROS, sin mirar si alguno cambió. Con una base de 1000 piezas y 300 items —y contando solo esos dos de los cinco— son **1170 KB/s por peer**: 4,6 MB/s de subida con 4 jugadores, por encima de lo que da una conexión doméstica. Los números completos, la sonda que los produce y lo que NO se midió están en `systems/perf-baseline.md`; no se repiten aquí.
+
+**Lo que hace absurdo ese gasto:** las piezas construidas de una base no cambian casi nunca. Se está reenviando 10 veces por segundo, para siempre, un dato que fue idéntico en las 10 rondas anteriores.
+
+#### Decisiones
+
+**1. Cada `broadcast_*` de roster se salta la emisión si el roster no ha cambiado desde la última que hizo.** El gate vive DENTRO de la función que emite, no en el sitio que la llama. Consecuencia importante y deliberada: el relay se sigue invocando a 10 Hz, así que **la primera ronda posterior a un cambio lo emite igual que hoy — la latencia de propagación NO empeora en ningún caso.** Esto es lo que hace que la cura no necesite añadir emisiones inmediatas a los cuatro rosters que hoy no las tienen (solo `stp_buildings` se re-emite al mutar; items, carryables, harvestables y corpses dependen enteramente del relay).
+
+**2. "Ha cambiado" se decide por HASH DEL CONTENIDO, no por un contador que alguien tenga que acordarse de incrementar.** Un contador exige disciplina en cada sitio que muta un roster, y olvidar uno produce el peor fallo posible de este sistema: un cambio que no se propaga NUNCA y que en el juego se ve como un objeto fantasma, sin error ni log. El hash es imposible de olvidar por construcción. Su coste es despreciable comparado con lo que ya se paga: `paginate` **ya** serializa cada elemento del roster en cada ronda para medirlo (7,8 ms/s medidos con la base seria), así que el hash no añade una clase de trabajo nueva — y cuando el gate corta, se ahorra incluso ese `paginate`.
+
+**3. La autocuración se conserva con un HEARTBEAT, y esto no es negociable.** Todo el esquema actual es no-fiable a propósito: una página perdida deja su generación incompleta, no se aplica nunca, y la ronda siguiente la sustituye entera (`RosterAssembler`, ADR-060 d). Esa propiedad es la razón por la que ADR-039 dejó estos cinco fuera de `is_reliable`. **Suprimir sin más la re-emisión destruye exactamente esa garantía**: un joiner que pierde una página del último envío se queda desincronizado para siempre. Por eso el gate deja pasar una ronda completa cada N segundos pase lo que pase. El ahorro sigue siendo de más de un orden de magnitud, y la propiedad se mantiene.
+
+**4. Un peer nuevo invalida el gate de todos los rosters.** Quien acaba de entrar no tiene nada, y esperar al heartbeat le daría un mundo vacío durante segundos. Al cambiar el conjunto de peers se fuerza una emisión completa en la ronda siguiente. Es más barato y más directo que un resync bajo demanda, y no necesita un mensaje nuevo.
+
+**5. Cero cambios de wire.** No hay campo nuevo, ni paquete nuevo, ni `WIRE_SCHEMA_VERSION` que bumpear: el receptor ya trata cada generación como un reemplazo verbatim del roster y no le importa cuántas rondas pasen entre dos. Lo que cambia es la CADENCIA, no el formato. Esta es la razón principal por la que esta cura va primera de las tres: es la única que devuelve casi todo el ahorro sin tocar el protocolo.
+
+#### Consecuencias / qué prohíbe
+
+**PROHÍBE suprimir el heartbeat** "porque el hash ya detecta los cambios" (decisión 3). El heartbeat no está para detectar cambios, está para reparar páginas perdidas — que es un fallo del transporte, no del contenido, y que ningún hash puede ver.
+
+**PROHÍBE sustituir el hash por un contador manual** sin, como mínimo, un test que falle cuando un sitio de mutación se olvida de incrementarlo (decisión 2).
+
+**No cambia la semántica del receptor.** `RosterAssembler` y la regla de adopción incondicional de generación quedan intactos. Un joiner con la versión anterior de este código interopera sin enterarse: solo recibe menos rondas.
+
+#### Slices
+
+- **S1:** el gate por hash + heartbeat + invalidación por peer nuevo, en los cinco `broadcast_*`. Test de que un roster inmutado no emite, de que uno mutado sí, de que el heartbeat emite igualmente, y de que un peer nuevo fuerza emisión.
+- **S2 (medición):** re-correr `roster_relay_cost` con el gate puesto y actualizar `perf-baseline.md` con el antes/después REAL. Sin este paso el ADR es una promesa, no un resultado.
+
+#### Lo que esta cura NO arregla
+
+Sigue en pie todo lo demás que midió `perf-baseline.md`: un roster que SÍ cambia se sigue enviando entero a todos los peers sin filtro de distancia (cura 2, interest management), y el replicador de Unity sigue recorriendo el roster completo cada frame con una alocación de string por pieza (cura 3). **Esta cura ataca la frecuencia, no el tamaño ni el trabajo del cliente.** Un jugador construyendo activamente sigue pagando el coste completo de la tabla mientras construye.
+
+### Enmienda ADR-071 (S1, 2026-08-14) — "emite una vez y calla" ROMPE la autocuración; hace falta una ráfaga
+
+Corrección de diseño encontrada al implementar, no cambio de decisión. Las cinco decisiones siguen en pie; se añade un mecanismo que al borrador le faltaba y sin el cual la decisión 3 no se cumple de verdad.
+
+**El fallo.** El borrador daba por hecho que el latido de 3 s bastaba como red de seguridad. No basta, y el propio código lo dice: hoy un roster que cambia se reenvía a 10 Hz, así que **una página perdida se repone 100 ms después**. Con "emite en el cambio y luego calla", esa reposición pasaba a esperar al latido: de 100 ms a 3 s, y justo en el peor momento — el instante posterior a un cambio es precisamente cuando el roster acaba de crecer y una página tiene más probabilidad de perderse. Para un roster grande, que necesita VARIAS rondas para converger (tabla de ADR-060 d), era peor todavía: a una ronda cada 3 s, converger pasaba de medio segundo a un minuto.
+
+**La cura: `ROSTER_CHANGE_BURST = 3`.** Un cambio (o un peer nuevo) no emite una ronda, rearma tres. Durante ~300 ms el roster sale a 10 Hz exactamente como antes de este ADR, y solo después el gate vuelve a cortar. La ventana en la que una pérdida es probable queda cubierta a la cadencia vieja, y el ahorro sigue siendo de más de un orden de magnitud.
+
+**Cómo se descubrió, que importa más que el fallo.** No lo encontró un test fallando: lo encontró mirar QUÉ test tocaba el cambio. `every_page_of_a_big_roster_arrives_eventually` repite 20 rondas para probar exactamente esta autocuración, **y seguía pasando en verde con el gate roto** — porque 4000 elementos entran en una sola ronda, así que el bucle salía en la primera iteración y las otras 19 nunca ejercitaban nada. Un test verde que había dejado de probar lo que dice probar. Se le añade el rearme explícito del gate y una nota de por qué: el gate cuenta TIEMPO REAL y ese bucle comprime dos segundos de juego en 400 ms.
+
+**Medido (S2), mismo escenario y misma sonda, 60 s con un jugador construyendo activamente (una pieza cada 5 s):** emiten **48 de 600 rondas (8,0 %)**. Base seria: **1170 → 94 KB/s por peer**, de 4,6 a 0,37 MB/s con 4 jugadores. En reposo, sin nadie construyendo, quedan solo los latidos. La cifra del 8 % es del caso ACTIVO, no del favorable.
+
+---
+
 ## ADR-069 — Las propiedades de instancia viajan con el item fuera del inventario (PROPUESTA)
 
 Estado: **PROPUESTA**. Nace de un bug reportado en juego por Joel el 2026-08-13, no de una revisión de escritorio.

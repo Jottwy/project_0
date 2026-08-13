@@ -384,8 +384,30 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
 /// ADR-060 (d): paginado. Ver `roster::paginate` para por qué el troceo va por bytes reales y
 /// `roster::RosterAssembler` para el reensamblado; la generación es el `timestamp()` de esta
 /// ronda, resuelto UNA vez para que todas las páginas la compartan.
-pub async fn broadcast_stp_items(net: &NetworkManager) {
+/// ADR-071: ask one roster's gate whether this round goes out. Factored so the five broadcasts
+/// share the rule instead of each carrying its own copy of it — the five differ only in which
+/// roster and which gate, and a rule copied five times is a rule that drifts in four of them.
+fn roster_gate_open<T: serde::Serialize>(
+    gate: &mut roster::RosterGate,
+    items: &[T],
+    peers: usize,
+) -> bool {
+    gate.should_send(
+        roster::content_hash(items),
+        peers,
+        std::time::Instant::now(),
+        roster::ROSTER_HEARTBEAT,
+    )
+}
+
+pub async fn broadcast_stp_items(net: &mut NetworkManager) {
     if net.peers.is_empty() {
+        return;
+    }
+    // ADR-071: skip the whole round if this roster is byte-identical to the last one that went
+    // out. The gate still gets asked at 10 Hz, so the first round AFTER a change ships it exactly
+    // as before — this costs no propagation latency, it only stops re-sending what everyone has.
+    if !roster_gate_open(&mut net.roster_gates.items, &net.stp_items, net.peers.len()) {
         return;
     }
     let generation = net.timestamp();
@@ -411,11 +433,18 @@ pub async fn broadcast_stp_items(net: &NetworkManager) {
 /// full authoritative `world.corpses` so every joiner mirrors the same lootable corpses
 /// (their own build_world_state then filters by THEIR player's proximity). Full-roster
 /// UDP at 10 Hz = self-healing, same pattern as broadcast_stp_items.
-pub async fn broadcast_corpses(net: &NetworkManager, world: &World) {
+pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     if net.peers.is_empty() {
         return;
     }
     let all: Vec<_> = world.corpses.values().cloned().collect();
+    // ADR-071. Unlike the other four this one still pays the clone above before the gate can look
+    // at it: the roster is assembled from `world.corpses` rather than stored flat. The clone is
+    // orders of magnitude cheaper than the send it prevents, so it is not worth restructuring the
+    // storage to save it.
+    if !roster_gate_open(&mut net.roster_gates.corpses, &all, net.peers.len()) {
+        return;
+    }
     let generation = net.timestamp();
     let pages = roster::paginate(&all, roster::ROSTER_PAGE_BUDGET_BYTES);
     let page_count = pages.len() as u16;
@@ -437,8 +466,17 @@ pub async fn broadcast_corpses(net: &NetworkManager, world: &World) {
 
 /// Host-as-server relay of the STP building roster: the host broadcasts its full
 /// authoritative building list so every joiner spawns the same pieces (Phase B1).
-pub async fn broadcast_stp_buildings(net: &NetworkManager) {
+pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {
     if net.peers.is_empty() {
+        return;
+    }
+    // ADR-071. This is the roster the measurement singled out: a built base is static for hours and
+    // was being re-sent 10 times a second forever.
+    if !roster_gate_open(
+        &mut net.roster_gates.buildings,
+        &net.stp_buildings,
+        net.peers.len(),
+    ) {
         return;
     }
     let generation = net.timestamp();
@@ -462,8 +500,16 @@ pub async fn broadcast_stp_buildings(net: &NetworkManager) {
 
 /// Host-as-server relay of the STP carryable roster: the host broadcasts its full
 /// authoritative carryable list so every joiner spawns the same world carryables (B2.5).
-pub async fn broadcast_stp_carryables(net: &NetworkManager) {
+pub async fn broadcast_stp_carryables(net: &mut NetworkManager) {
     if net.peers.is_empty() {
+        return;
+    }
+    // ADR-071.
+    if !roster_gate_open(
+        &mut net.roster_gates.carryables,
+        &net.stp_carryables,
+        net.peers.len(),
+    ) {
         return;
     }
     let generation = net.timestamp();
@@ -487,8 +533,16 @@ pub async fn broadcast_stp_carryables(net: &NetworkManager) {
 
 /// Host-as-server relay of the STP harvestable health roster: the host broadcasts its full
 /// authoritative harvestable list so every joiner reflects the same tree/rock health (B2.6).
-pub async fn broadcast_stp_harvestables(net: &NetworkManager) {
+pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
     if net.peers.is_empty() {
+        return;
+    }
+    // ADR-071.
+    if !roster_gate_open(
+        &mut net.roster_gates.harvestables,
+        &net.stp_harvestables,
+        net.peers.len(),
+    ) {
         return;
     }
     let generation = net.timestamp();

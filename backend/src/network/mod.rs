@@ -94,6 +94,34 @@ struct IncomingPacket {
 
 /// The central networking coordinator. Owns the UDP socket, tracks peers,
 /// handles reliability, and bridges between raw packets and game-level events.
+/// ADR-071: the per-roster send gates. Grouped in their own struct so a `broadcast_*` can borrow
+/// ONE gate mutably while the roster it guards is still borrowed from `NetworkManager` — with the
+/// gates inline as five fields the borrow checker would be right to complain.
+#[derive(Debug, Default)]
+pub struct RosterGates {
+    pub items: crate::network::roster::RosterGate,
+    pub buildings: crate::network::roster::RosterGate,
+    pub carryables: crate::network::roster::RosterGate,
+    pub harvestables: crate::network::roster::RosterGate,
+    pub corpses: crate::network::roster::RosterGate,
+}
+
+/// ADR-070: the host-only simulation state of ONE falling item. Pairs with the `StpItemInfo` of
+/// the same `id` in `stp_items`, which holds the replicated half (position + the `settling` flag).
+#[derive(Debug, Clone, Copy)]
+pub struct SettlingItem {
+    pub id: u32,
+    /// Metres per second. Integrated with gravity each tick; the item sleeps when this goes quiet.
+    pub velocity: crate::utils::Vec3,
+    /// Consecutive ticks spent below the sleep speed. Consecutive on purpose: a single slow frame
+    /// mid-bounce (at the top of an arc the vertical speed passes through zero) must not read as
+    /// "come to rest".
+    pub quiet_ticks: u8,
+    /// Ticks lived. The hard budget of ADR-070 decision 2 — an item that cannot settle on its own
+    /// gets put to sleep anyway rather than simulating forever in some pathological corner.
+    pub age_ticks: u16,
+}
+
 pub struct NetworkManager {
     socket: Arc<UdpSocket>,
     pub local_id: PeerId,
@@ -103,6 +131,18 @@ pub struct NetworkManager {
     /// host it is set from the IPC `set_stp_items` action; on joiners from the
     /// relayed `StpItemList` packet. build_world_state mirrors it to the client.
     pub stp_items: Vec<crate::network::protocol::StpItemInfo>,
+    /// ADR-070: the falling items, host-only. Deliberately a SIDE list rather than fields on
+    /// `StpItemInfo`: velocity and the age counter are simulation state that nothing outside this
+    /// process needs, and `StpItemInfo` is a wire struct — putting them there would ship two
+    /// useless vectors per item in every 10 Hz relay. An entry is dropped the moment the item
+    /// falls asleep, so the common case (a world full of settled loot) carries an EMPTY list and
+    /// the whole feature costs nothing.
+    pub settling_items: Vec<crate::network::SettlingItem>,
+    /// ADR-071: un gate por roster, host-only. Corta la emisión de un roster que no ha cambiado
+    /// desde la última que salió. Uno por roster y no uno global porque se mueven a ritmos muy
+    /// distintos: los items cambian cada vez que alguien suelta algo, las piezas construidas de
+    /// una base no cambian en horas.
+    pub roster_gates: RosterGates,
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
     pub processed_stp_drops: std::collections::HashSet<u64>,
@@ -311,6 +351,8 @@ impl NetworkManager {
             is_host,
             peers: HashMap::new(),
             stp_items: Vec::new(),
+            settling_items: Vec::new(),
+            roster_gates: RosterGates::default(),
             processed_stp_drops: std::collections::HashSet::with_capacity(256),
             stp_buildings: Vec::new(),
             processed_stp_places: std::collections::HashSet::with_capacity(256),
