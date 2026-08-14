@@ -163,3 +163,49 @@ páginas tampoco se toca: cuando una ronda sale, salen las 124 páginas igual.
 La física de caída de los objetos soltados **añade** CPU al host (acotada: 32 ítems, ~3 s cada uno,
 y cero cuando no cae nada). Está declarada como deuda en el propio ADR. No aparece en esta
 medición porque es irrelevante al lado de la tabla de arriba.
+
+## F0.0 — Línea base de subida TOTAL del host (2026-08-14, ADR-073 / gate de E0)
+
+> Sonda `host_uplink_baseline` (`backend/src/network/sync.rs`, `#[ignore]`):
+> ```
+> cd backend && cargo test --release host_uplink_baseline -- --ignored --nocapture
+> ```
+> A diferencia de `roster_relay_cost` (un componente), esto suma TODO lo que el host emite en
+> régimen permanente con **8 peers**, **contando headers UDP/IP (`datagramas × (payload + 28)`)**
+> — la unidad que ve el router, no la que ve `send_datagram`. Escenario: base seria
+> (1000 piezas + 300 items + 200 carryables + 100 harvestables), mundo de 49 chunks cargados.
+
+| componente | cadencia | dgr/s | KB/s |
+|---|---|---|---|
+| pose propia (280 B en el aire) | 10 Hz | 80 | 22 |
+| relay de poses O(N²) | 10 Hz | 560 | 153 |
+| PeerList (9 entradas, 671 B) | 10 Hz | 80 | 52 |
+| **ChunkState (49 chunks × 1751 B de media)** | **5 Hz** | **1960** | **3351** |
+| rosters con gate ADR-071, construyendo | 10 Hz gateado | — | 795 |
+| rosters con gate ADR-071, idle (latidos 3 s) | — | — | 387 |
+
+**TOTAL con 8 peers: 4373 KB/s = 35,8 Mbps de subida construyendo; 3965 KB/s = 32,5 Mbps idle.**
+
+### El hallazgo que esta sonda destapa: ChunkState era el mayor coste y NADIE lo había medido
+
+`broadcast_chunk_states` (`sync.rs:574`) reenvía cada 200 ms el `ChunkSyncData` COMPLETO
+(layout, entidades, items) de cada chunk propio a ≤3 chunks del jugador, a TODOS los peers,
+**sin mirar si algo cambió**. Son 3,35 MB/s de los 4,37 totales — el 77 % de la subida del host
+— repitiendo un dato que casi nunca cambia. Ni esta tabla ni ninguna medición anterior lo
+recogía: `roster_relay_cost` miraba rosters y poses. Es EXACTAMENTE el patrón que ADR-071 curó
+en los rosters (gate por hash + heartbeat, cadencia no formato, sin bump), sin aplicar aquí.
+**Cura candidata (decisión de Joel pendiente): F0.8, gate por hash + heartbeat por chunk en
+`broadcast_chunk_states`, mismo criterio "cuándo, no qué" de ADR-071/F0.1.**
+
+### F0.1 — el world_sync por interacción, medido (la duda que el fix debía resolver)
+
+- Un goteo completo: 49 chunks + End = 50 datagramas, **84,9 KB**; a 8 peers = **678,9 KB por
+  CADA pickup/drop legacy** (hoy).
+- 1 interacción/s sostenida = 679 KB/s (5,6 Mbps) — **NO domina** sobre el permanente de
+  4373 KB/s (lo domina ChunkState). Una ráfaga de 20 pickups en 1 s = 13,6 MB hoy;
+  coalescida a 300 ms quedan ≤4 goteos. **Veredicto: el coalescing de F0.1 procede tal cual
+  (mata el pico); la línea base la domina ChunkState, que tiene su propia cura candidata F0.8.**
+
+Excluido de la suma: voz (3,9 KB/s por hablante, ADR-046), ACKs/retransmisiones de la capa
+fiable, heartbeats a 1 Hz (~decenas de B/s). El escenario de chunks es un mundo recién
+generado en el origen; una sesión larga con más entidades por chunk pesa MÁS, no menos.
