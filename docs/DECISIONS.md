@@ -3421,3 +3421,51 @@ Estado: **PROPUESTA (2026-08-14) — pendiente de validación humana ANTES de es
 - **PROHÍBE** que el cliente aplique un radio propio de aparición/desaparición (decisión 2).
 - **PROHÍBE** suprimir el heartbeat por celda «porque el hash ya detecta cambios» (hereda la prohibición de ADR-071).
 - Deja fuera a propósito: interest management de entidades IA (hoy host-only por ADR-040, no viajan), y el chunk-scoped `world_sync` (se decidirá con la medición de F0.0, fuera de este ADR).
+
+### ADR-075 — Caza v2 del robapieles: rastreo predictivo, provocación, Peek, presión y locomoción fiable (2026-08-14)
+
+Estado: **PROPUESTA (2026-08-14), aprobada por Joel en sesión.** Sin cambio de wire: todo es host-only dentro de `game_loop/phantom.rs` y `world/grid_gen/nav.rs`. Cierra los dos pendientes decididos el 2026-08-05 (rastreo predictivo e "insistir enfurece"), construye la única pieza declarada sin construir (corner-peeking) y corrige las dos quejas de sensación del play-test: «de la nada deja de seguirte» y «se te queda mirando a distancia considerable».
+
+#### Decisiones
+
+**1. Locomoción fiable ANTES que conducta nueva.** La causa raíz de los atascos queda corregida, no mitigada: el atajo recto de `steer_heading` deja de confiar en `segment_is_clear` (línea sin radio) y pasa a `segment_is_clear_for_body` (misma marcha de sub-pasos, cada sonda prueba centro ± offsets perpendiculares de `PHANTOM_BODY_RADIUS` 0,5 m) — la línea decía «libre» donde el disco del resolver no cabía, y esa mentira era la oscilación del 45 % de embestidas wedged. Los chequeos de golpe y de vista SIGUEN con línea fina (el test `extra_reach_never_strikes_through_a_wall` es ley; reach ≠ radio de cuerpo es invariante NO-tocar). Además: `tick_search` pasa a alimentar `note_step_progress` (el detector de avance proyectado estaba ciego ahí — solo call site nuevo, mecanismo intacto) y `Hunting` gana el give-up por atasco que Stalk ya tenía.
+
+**2. La caza PRESIONA.** (a) `Hunting` deja de pararse a 9 m mirándote: cierra hasta `PHANTOM_HUNT_PRESS_DISTANCE` 4 m (por encima del reach 2,4 — quien golpea sigue siendo el re-lunge, pero ya no hay teatro de estatua entre embestidas). (b) Toda entrada a `Search` por pérdida de caza pasa por un único helper que fija paciencia escalada por hambre y rabia (12 s base × hasta 2,5 hambrienta × 1,5 enfurecida, techo 30 s) y velocidad de búsqueda 3,2 en vez de 2,2 — de paso corrige un bug latente: `search_patience`/`search_speed` quedaban pegajosos de una búsqueda por ruido anterior porque la re-adquisición no los reseteaba. (c) Anti-acampada: si el objetivo lleva ≥6 s casi inmóvil y la criatura no está saciada, la banda de acecho encoge de 9 m hacia 4 m a 0,5 m/s (creep-in). Mirarla lo sigue congelando por Statue: el creep castiga acampar DE ESPALDAS.
+
+**3. Rastreo predictivo.** El driver conserva por fin el VECTOR de velocidad observada del objetivo (hoy `target_speeds` tira el vector y guarda solo el módulo para el oído). Al perder al jugador, la búsqueda barre en orden: punto PREDICHO (`last_known + vel × 2,5 s`, solo si el objetivo llevaba ≥1 m/s y el punto es alcanzable; si no, se degrada a ×1,25 s y luego al exacto) → punto exacto → hideouts de ADR-053 (máx. 2) → rendición. Ir por delante de tu fuga en vez de detrás es la diferencia entre «me persigue» y «visita donde estuve».
+
+**4. `Peek` — la esquina te mira.** Estado nuevo: durante `Search`, a ≤6 m del goal sin línea de visión hacia él (está tras esquina — aquí la línea FINA es la correcta), la criatura se detiene 1,2–2,0 s encarando la esquina, con la respiración de acecho como única señal. Percepción normal durante el asomo: si te ve, `Stalk`; si no, continúa la búsqueda con paciencia fresca. Una vez por búsqueda (incluida la gira de hideouts). NO revela; SÍ es interrumpible por ruido (es un compás de `Search`, no un compromiso). Su timer corre sobre `state_timer` a propósito: envejece antes del congelado de gesto y no necesita exención.
+
+**5. Insistir ENFURECE.** Hoy una saciada huye de un disparo y la rabia es asignación (45/90 s), no memoria. Ahora: segundo ruido a ≤70 m con la huida ya rodada (≥1 s — una ráfaga de automática no cuenta como insistir) la PROVOCA: la rabia ACUMULA (+90 s con techo 180), cancela la huida y la manda a por el ruido. La rabia por provocación es la única que puentea la saciedad: gate de embestida, `impulse()` y `patience()` dejan de aplicar el amortiguador saciado cuando `enraged_for > 0`, y la banda de acecho vuelve a 9 m. La vía de rabia normal sigue siendo refresh, no acumulación.
+
+#### Consecuencias / qué prohíbe
+
+- Sin bump de wire, sin ADR de protocolo: nada de esto cruza el proceso.
+- El test guardián de `phantom_reveals` obliga a declarar `Peek` (no revela) — y con ADR-076, `Ambush`.
+- Las constantes nuevas nacen como `const` de código, NO como `env_tuning`: primero se juega, luego se decide qué palanca merece env (mismo criterio que ADR-050 punto 8).
+- **PROHÍBE** tocar el mecanismo de `note_step_progress` y las exenciones del congelado de gesto (invariantes del 2026-08-03): solo se añaden call sites y estados cuyo timer ya envejece antes del freeze.
+- **PROHÍBE** usar la variante con radio en los predicados de golpe/vista: engordaría el alcance efectivo contra esquinas y rompería `reach ≠ radio`.
+
+### ADR-076 — La emboscada disfrazada: `Ambush` + `Knockdown` (kind 5), wire 32 → 33 (2026-08-14)
+
+Estado: **PROPUESTA (2026-08-14), aprobada por Joel en sesión** (decisiones de diseño suyas: el derribo solo aturde, levantarse por espera pura ~2 s, carrera a velocidad creíble de jugador). Requiere bump porque añade un kind al `PhantomAttackGrant 0x4D` y un evento IPC nuevo.
+
+#### Decisiones
+
+**1. `PhantomState::Ambush` — la carrera con la piel puesta.** Desde `Stalk`, solo HAMBRIENTA (`hunger < 0.33`), solo si el jugador NO la mira (el cono ±30° de Statue, reutilizado al revés), a 5–16 m, con dado por tick ponderado por `impulse()`; una vez por caza y con cooldown de 30 s. Corre a `PHANTOM_AMBUSH_SPEED` 5,5 m/s — velocidad de jugador esprintando, DELIBERADAMENTE por debajo de los 7,29 del Sprint: hasta el impacto tiene que parecer alguien corriendo hacia ti, quizá a ayudarte. En silencio: sin vocal de entrada. **NO revela** (es el requisito entero) y NO es interrumpible por ruido (embestida comprometida, como Sprint). Que te gires a mirarla en plena carrera no la aborta: aparenta exactamente lo que aparenta. El fallo (pérdida a >25 m, atasco, o >6 s de carrera) cuesta cooldown + `strike_recover` y devuelve a `Stalk` — NUNCA a `Hunting`, que iría revelada, y nunca con la paciencia vencida lista para disparar un `enter_sprint` de regalo.
+
+**2. `PhantomAttackKind::Knockdown(seconds, dx, dz)` = kind 5 del `0x4D`, sin cambio de layout.** El stun viaja en el campo `damage` (el precedente es GrabStart, que ya transporta ahí su ventana) y el empuje en `impulse` (el carril de Knockback). CERO daño de vida: ni el host ni el joiner tocan `stats`. El grant hereda entera la tubería de ADR-047: `request_id`, dedupe, respeto de invulnerabilidad, `victim` en el tipo.
+
+**3. La cronología es la mecánica, y queda escrita para que el tuning no la rompa.** Impacto en t=0 (stun 2,0 s + empuje 6 m/s) → la criatura arma `strike_recover` 2,5 s EN EL IMPACTO y pasa a `Unmasking` encima del caído (entrada ritual de siempre: grito, 1,6 s, aún vestida) → `enter_sprint()` en t=1,6 → el jugador se levanta en t=2,0 → primer golpe posible en t=2,5. Esos 0,5 s de ventaja más la rampa del Sprint son la diferencia entre susto-y-huida y sentencia: sin el `strike_recover` del impacto, el Sprint golpearía al jugador AÚN EN EL SUELO por la espalda — Grab garantizado, derribo = muerte. Levantarse es espera pura, sin QTE: la escena es mirar cómo se te acerca gritando mientras rompe la piel.
+
+**4. Cliente: caída procedural, no autorizada.** Evento IPC nuevo `phantom_knockdown {"seconds","dx","dz"}` emitido por host y joiner (mismo nombre, misma forma — el handler no sabe dónde corre). `PhantomAttackHandler` baja `IMotorCC.Height` a 0,6 con roll de cámara (~40°), bloquea Walk/Run/Jump/Crouch con un juego de blockers PROPIO (el array compartido gobierna grab y muerte), y restaura altura y rotación EXACTAS cachadas antes de tocar nada (la lección del roll perdido de ADR-050). La mirada queda libre. Muerte y grab DESALOJAN al derribo antes de cachear su propia cámara: el knockdown es la prioridad más baja del handler. Sin animación autorizada: mismo límite declarado que el grab (ADR-050) — procedural honesto antes que clip fingido.
+
+**5. Wire 32 → 33, y por qué no es opcional.** El brazo `_` del joiner v32 trata un kind desconocido como Hit y aplica `damage` como daño: un joiner sin actualizar recibiría el derribo como 2,0 puntos de vida perdidos en silencio — degradación NO silenciosa detectada, que es exactamente el criterio de bump que fijó v20. `WIRE_SCHEMA_VERSION` y `WireSchema.Expected` a 33 en el MISMO commit (el test textual de `7532876` lo vigila), entrada v33 en `systems/ipc-wire-schema.md`.
+
+#### Consecuencias / qué prohíbe
+
+- El derribo confía en el cliente igual que el grab y el knockback (ADR-009/025): un cliente modificado puede ignorarlo y seguir andando. Declarado aquí, no descubierto en play-test — el movimiento es cliente-autoritativo hasta E3 (ADR-073) y este ADR no lo cambia.
+- El test guardián de `phantom_reveals` fuerza el veredicto: `Ambush => false`. La secuencia entera va vestida hasta el `enter_sprint` post-Unmasking.
+- **PROHÍBE** que el fallo de la emboscada termine en `Hunting` o en cualquier estado que revele: fallar el truco no puede enseñar el truco.
+- **PROHÍBE** añadir daño de vida al Knockdown sin enmienda: «solo aturde» es decisión de Joel con fecha.
+- Deja fuera a propósito: aborto de la carrera si el jugador la mira de cerca (contrajuego posible, se decidirá con play-test), animación autorizada de derribo/levantarse, y cualquier `env_tuning` de sus constantes.
