@@ -870,6 +870,109 @@ mod tests {
         }
     }
 
+    /// SONDA DE MEDICIÓN para F0.4 (E0, ADR-073): ¿cuánto del autosave es serialización (que se
+    /// queda dentro del tick) y cuánto es I/O (que se puede mover a `spawn_blocking`)?
+    ///
+    /// ```text
+    /// cargo test --release autosave_serialize_vs_io_split -- --ignored --nocapture
+    /// ```
+    ///
+    /// La pregunta decide el fix: el presupuesto de un tick a 60 Hz son 16,6 ms, y `save_world`
+    /// corre HOY entero dentro del tick (`game_loop.rs`, cada 3 min). Si la I/O domina, basta con
+    /// sacarla a un hilo; si domina la serialización, sacar la I/O no alcanza el gate y hace falta
+    /// el plan B (trocear la serialización o guardar por colección sucia). No se asume: se mide.
+    ///
+    /// El escenario que importa es el de sprays, porque el propio ADR-068 midió que una pintada
+    /// pesa ~3,6 KB en JSON y un chunk saturado llega a 225 KB.
+    #[test]
+    #[ignore = "sonda de medición: imprime, no afirma"]
+    fn autosave_serialize_vs_io_split() {
+        use std::time::Instant;
+
+        let world = seeded_world();
+        let player = Player::new(1, "Host");
+        let meta = SaveMeta {
+            created_at: None,
+            play_time_seconds: 60,
+        };
+
+        println!("\n=== F0.4 · reparto serialización vs I/O del autosave ===");
+        println!("presupuesto de un tick a 60 Hz: 16,6 ms\n");
+
+        for (label, spray_count) in [
+            ("mundo limpio (sin pintadas)", 0usize),
+            ("uso normal (200 pintadas)", 200),
+            ("un chunk saturado (~1000 pintadas)", 1000),
+        ] {
+            let sprays: Vec<_> = (0..spray_count as u32)
+                .map(|i| sample_spray(i, 3))
+                .collect();
+            let mut save = build_save(
+                "probe",
+                &world,
+                &player,
+                &meta,
+                &[],
+                &[],
+                &[],
+                &[],
+                1.0,
+                &sprays,
+            );
+
+            // Serialización sola, que es la parte que se queda dentro del tick pase lo que pase.
+            let reps = 20;
+            let t = Instant::now();
+            let mut bytes = 0usize;
+            for _ in 0..reps {
+                let json = serde_json::to_string_pretty(&save).unwrap();
+                bytes = json.len();
+                std::hint::black_box(json);
+            }
+            let ser_ms = t.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+
+            // Lo mismo en compacto: no es wire, así que el formato es libre.
+            let t = Instant::now();
+            let mut compact_bytes = 0usize;
+            for _ in 0..reps {
+                let json = serde_json::to_string(&save).unwrap();
+                compact_bytes = json.len();
+                std::hint::black_box(json);
+            }
+            let ser_compact_ms = t.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+
+            // Y el save COMPLETO (serializar + escribir + rename atómico), que es lo de hoy.
+            let path = scratch_path(&format!("f04_probe_{spray_count}"));
+            let t = Instant::now();
+            save.save_to(&path).unwrap();
+            let total_ms = t.elapsed().as_secs_f64() * 1000.0;
+            let io_ms = (total_ms - ser_ms).max(0.0);
+            let _ = std::fs::remove_file(&path);
+
+            println!("--- {label} ---");
+            println!(
+                "  tamaño: {:.1} KB pretty / {:.1} KB compacto ({:.0} % menos)",
+                bytes as f64 / 1024.0,
+                compact_bytes as f64 / 1024.0,
+                (1.0 - compact_bytes as f64 / bytes as f64) * 100.0
+            );
+            println!(
+                "  serializar (SE QUEDA en el tick): {ser_ms:.2} ms pretty / {ser_compact_ms:.2} ms compacto"
+            );
+            println!("  escribir a disco (se puede SACAR): {io_ms:.2} ms");
+            println!(
+                "  total de hoy: {total_ms:.2} ms  → tras sacar la I/O quedaría {ser_compact_ms:.2} ms \
+                 en el tick ({})",
+                if ser_compact_ms < 16.6 {
+                    "CABE en 16,6 ms"
+                } else {
+                    "NO CABE: hace falta el plan B"
+                }
+            );
+            println!();
+        }
+    }
+
     #[test]
     fn sprays_round_trip_through_the_save_file() {
         // El blob de puntos es lo delicado: en wire viaja como `bin`, pero JSON no tiene tipo

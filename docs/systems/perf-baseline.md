@@ -262,6 +262,34 @@ test). Serializaciones por ronda: **56 (P×D) → 8 (P)**; CPU **27,1 µs → 4,
 0,27 → 0,04 ms/s a 10 Hz. Irrelevante hoy (la CPU sobra) y creciente con N²: a 32 peers serían
 992 serializaciones por ronda en vez de 32.
 
+### F0.4 — el autosave NO era un problema: medido y descartado (2026-08-15)
+
+> Sonda `autosave_serialize_vs_io_split` (`backend/src/persistence/save.rs`, `#[ignore]`):
+> ```
+> cd backend && cargo test --release autosave_serialize_vs_io_split -- --ignored --nocapture
+> ```
+
+El roadmap daba por hecho que `save_world` síncrono dentro del tick era un hitch a arreglar
+(sacar la I/O a `spawn_blocking`, con plan B de trocear la serialización). **La medición dice que
+no hay nada que arreglar:**
+
+| escenario | tamaño (pretty) | serializar | escribir | **total** |
+|---|---|---|---|---|
+| mundo limpio | 2,2 KB | 0,01 ms | 0,70 ms | **0,70 ms** |
+| uso normal (200 pintadas) | 95,5 KB | 0,15 ms | 0,75 ms | **0,90 ms** |
+| un chunk saturado (~1000 pintadas) | 469,8 KB | 0,52 ms | 0,90 ms | **1,42 ms** |
+
+**1,42 ms en el peor caso contra un presupuesto de tick de 16,6 ms**, y solo una vez cada 3
+minutos. Sacar la I/O del tick ahorraría ~0,9 ms de un tick de cada 10 800: invisible. **F0.4 se
+cierra sin tocar código** — el gate de E0 ("autosave sin hitch >16 ms") ya se cumple.
+
+Queda anotado que el JSON compacto ahorraría un 62 % de tamaño (469,8 → 176,9 KB), pero se
+descarta a propósito: cuesta la legibilidad del save para depurar y compra 0,3 ms cada 3 min.
+
+**La lección, que es la misma de F0.8 en espejo:** la sonda de F0.0 encontró un cuello que nadie
+sospechaba, y esta ha desmentido uno que todo el mundo daba por hecho. Ninguna de las dos cosas
+se sabía sin medir, y una de ellas ahorró la sesión entera de trabajo que el plan reservaba.
+
 ### Lo que estos números NO dicen
 
 - **No suben el techo de jugadores por sí solos.** Bajan la subida a un tercio en el escenario

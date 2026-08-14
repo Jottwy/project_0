@@ -38,6 +38,18 @@ pub type PeerId = u16;
 /// 0xF000 (61440) clears that range with room to spare in the u16 id space.
 const PHANTOM_ID_BASE: PeerId = 0xF000;
 
+/// F0.5 (E0, ADR-073): tope de los diez sets de dedupe de peticiones. ADR-029 ya exigía poda para
+/// los suyos de PvP; el resto se quedó sin ella y crecía durante TODA la sesión — una fuga lenta
+/// pero real (cada pickup, drop, colocación, demolición, cosecha y pintada de la partida dejaba su
+/// id dentro para siempre).
+///
+/// 512 es holgado por dos órdenes de magnitud frente a lo que hay que recordar: un duplicado solo
+/// puede llegar por retransmisión fiable, que muere tras 5 intentos con backoff (~3 s,
+/// `reliability.rs`), o por la ventana de 32 en vuelo por peer. Para que una expulsión causara un
+/// doble procesamiento haría falta que un retransmit llegara 512 peticiones DESPUÉS de la suya, y
+/// a esas alturas el emisor hace rato que se rindió.
+pub const DEDUPE_CAP: usize = 512;
+
 /// ADR-029 V0: a size-bounded, insertion-ordered dedupe set. Unlike the older `processed_*`
 /// `HashSet`s elsewhere in this module (which grow unbounded for the session's lifetime),
 /// ADR-029 explicitly requires PvP dedupe structures to have pruning by size or age — this
@@ -71,6 +83,25 @@ impl<K: std::hash::Hash + Eq + Copy> BoundedDedupeSet<K> {
             }
         }
         true
+    }
+
+    /// F0.5: `HashSet::contains` para los sitios que consultan antes de decidir, sin insertar.
+    pub fn contains(&self, key: &K) -> bool {
+        self.set.contains(key)
+    }
+
+    /// F0.5: `HashSet::is_empty`, usado como "¿he procesado ya algo en esta sesión?".
+    pub fn is_empty(&self) -> bool {
+        self.set.is_empty()
+    }
+
+    /// F0.5: `HashSet::retain`. Lo usa `purge_peer_state` al desconectar un peer, para que sus
+    /// ids no ocupen sitio ni colisionen si el `PeerId` se reutiliza (que se reutiliza). Filtra
+    /// las DOS estructuras: dejar `order` sin tocar haría que la expulsión por tamaño intentara
+    /// sacar claves que ya no están en el set — inofensivo pero desalinearía el conteo.
+    pub fn retain<F: FnMut(&K) -> bool>(&mut self, mut keep: F) {
+        self.set.retain(&mut keep);
+        self.order.retain(|k| keep(k));
     }
 }
 
@@ -171,22 +202,22 @@ pub struct NetworkManager {
     pending_events: Vec<NetworkEvent>,
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
-    pub processed_stp_drops: std::collections::HashSet<u64>,
+    pub processed_stp_drops: BoundedDedupeSet<u64>,
     /// Phase B1: host-authoritative STP building pieces, replicated to peers. On the
     /// host it grows from the IPC `stp_place` action; on joiners from the relayed
     /// `StpBuildingList` packet. build_world_state mirrors it to the client.
     pub stp_buildings: Vec<crate::network::protocol::StpBuildingInfo>,
     /// Phase B1: client-generated place ids already processed by the host, so a
     /// duplicated `stp_place` (reliable retransmit) spawns exactly one piece.
-    pub processed_stp_places: std::collections::HashSet<u64>,
+    pub processed_stp_places: BoundedDedupeSet<u64>,
     /// Phase B2: client-generated add ids already processed by the host, so a
     /// duplicated `stp_build_add` (reliable retransmit) advances progress exactly once.
-    pub processed_stp_build_adds: std::collections::HashSet<u64>,
+    pub processed_stp_build_adds: BoundedDedupeSet<u64>,
     /// ADR-037: client-generated demolish ids already processed by the host, so a duplicated
     /// `stp_demolish` (reliable retransmit) can never retire a SECOND piece — building ids are
     /// handed out by a monotonic allocator, but this set is what stops a late retransmit from
     /// acting twice.
-    pub processed_stp_demolishes: std::collections::HashSet<u64>,
+    pub processed_stp_demolishes: BoundedDedupeSet<u64>,
     /// Phase B3: quantized world pose-cells already occupied by a group piece, so two
     /// players placing on the SAME socket (distinct place_ids) yield exactly one piece —
     /// the host accepts the first and rejects the rest. Key = (x,y,z,yaw) quantized.
@@ -202,13 +233,13 @@ pub struct NetworkManager {
     /// relayed `StpCarryableList` packet. build_world_state mirrors it to the client.
     pub stp_carryables: Vec<crate::network::protocol::StpCarryableInfo>,
     /// Phase B2.5: client-generated carryable drop ids already processed by the host (dedup).
-    pub processed_stp_carryable_drops: std::collections::HashSet<u64>,
+    pub processed_stp_carryable_drops: BoundedDedupeSet<u64>,
     /// Phase B2.6: host-authoritative STP scene harvestables (health), replicated to peers.
     /// On the host it is set from `set_stp_harvestables` and reduced by `stp_harvest_hit`;
     /// on joiners from the relayed `StpHarvestableList` packet.
     pub stp_harvestables: Vec<crate::network::protocol::StpHarvestableInfo>,
     /// Phase B2.6: client-generated harvest-hit ids already processed by the host (dedup).
-    pub processed_stp_harvest_hits: std::collections::HashSet<u64>,
+    pub processed_stp_harvest_hits: BoundedDedupeSet<u64>,
     /// ADR-068: the world's sprays, indexed by chunk. It lives beside the STP rosters because
     /// it is the same kind of state — host-authoritative, replicated, persisted — but it is
     /// NOT relayed per tick: sprays hydrate with the chunk (`GridChunkData::sprays`) and a new
@@ -217,7 +248,7 @@ pub struct NetworkManager {
     pub sprays: crate::world::spray::SprayStore,
     /// ADR-068: client-generated place ids already accepted, so a reliable retransmit of one
     /// painting paints exactly one spray. Same dedup pattern as `processed_stp_places`.
-    pub processed_spray_places: std::collections::HashSet<u64>,
+    pub processed_spray_places: BoundedDedupeSet<u64>,
     /// ADR-068 (joiner-only): chunks whose sprays this peer has already asked the host for.
     /// Unity re-requests a chunk every time it streams back in, and without this each pass
     /// would re-ask for the same sprays it already holds.
@@ -225,15 +256,15 @@ pub struct NetworkManager {
     /// ADR-011 follow-up: host-assigned item ids whose StpPickupGranted the joiner already
     /// processed, so a reliable retransmit of the grant never re-stamps last_pickup_at (which
     /// would duplicate the proxy "pickup" window). Same dedup pattern as the processed_stp_* above.
-    pub processed_stp_pickup_grants: std::collections::HashSet<u32>,
+    pub processed_stp_pickup_grants: BoundedDedupeSet<u32>,
     /// ADR-028 Fase E (host-only): (requester, request_id) pairs of corpse spawn/take requests
     /// already processed, so a reliable retransmit spawns exactly one corpse / takes exactly one
     /// stack. Keyed by requester too (request ids are per-peer counters, not globally unique).
-    pub processed_corpse_requests: std::collections::HashSet<(PeerId, u64)>,
+    pub processed_corpse_requests: BoundedDedupeSet<(PeerId, u64)>,
     /// ADR-028 Fase E (joiner-only): request_ids whose CorpseTakeResult we already surfaced to
     /// our Unity, so a reliable retransmit of the verdict never double-fires the IPC event
     /// (a duplicated corpse_item_taken would double-shift CorpseLootSync's index mirror).
-    pub processed_corpse_results: std::collections::HashSet<u64>,
+    pub processed_corpse_results: BoundedDedupeSet<u64>,
     /// ADR-060 (joiner-only en la práctica): completitud del goteo de snapshot de mundo.
     /// El gate de spawn del joiner consulta `is_complete()`; el host nunca la toca (resuelve
     /// su spawn en el bootstrap, antes del loop).
@@ -383,23 +414,23 @@ impl NetworkManager {
             world_sync_dirty: false,
             world_sync_last_sent: None,
             pending_events: Vec::new(),
-            processed_stp_drops: std::collections::HashSet::with_capacity(256),
+            processed_stp_drops: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             stp_buildings: Vec::new(),
-            processed_stp_places: std::collections::HashSet::with_capacity(256),
-            processed_stp_build_adds: std::collections::HashSet::with_capacity(256),
-            processed_stp_demolishes: std::collections::HashSet::with_capacity(256),
+            processed_stp_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            processed_stp_build_adds: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            processed_stp_demolishes: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             occupied_stp_cells: std::collections::HashSet::with_capacity(256),
             pending_noises: Vec::new(),
             stp_carryables: Vec::new(),
-            processed_stp_carryable_drops: std::collections::HashSet::with_capacity(64),
+            processed_stp_carryable_drops: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             stp_harvestables: Vec::new(),
-            processed_stp_harvest_hits: std::collections::HashSet::with_capacity(128),
+            processed_stp_harvest_hits: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             sprays: crate::world::spray::SprayStore::new(),
-            processed_spray_places: std::collections::HashSet::with_capacity(128),
+            processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             requested_spray_chunks: std::collections::HashSet::with_capacity(128),
-            processed_stp_pickup_grants: std::collections::HashSet::with_capacity(128),
-            processed_corpse_requests: std::collections::HashSet::with_capacity(64),
-            processed_corpse_results: std::collections::HashSet::with_capacity(64),
+            processed_stp_pickup_grants: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            processed_corpse_requests: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            processed_corpse_results: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             world_sync_progress: sync::WorldSyncProgress::default(),
             roster_assemblers: RosterAssemblers::default(),
             next_corpse_request_id: 1,
