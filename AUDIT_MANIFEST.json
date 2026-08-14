@@ -1,0 +1,258 @@
+{
+  "version": 1,
+  "comment": "Rotación de la auditoría nocturna (plan aprobado 2026-08-14, paso 1). 2 unidades por noche, las de last_audited más viejo primero; dos unidades core nunca la misma noche. deny_autofix=true: el agente JAMÁS edita ahí, solo reporta. known_issues = ruido pre-declarado: hallazgo que coincida se omite del informe nocturno. El campo baseline lo actualiza solo el gate (al alza, nunca a la baja).",
+  "baseline": {
+    "rust_tests_passed": 711,
+    "updated": "2026-08-14"
+  },
+  "rotation": {
+    "per_night": 2,
+    "policy": "oldest last_audited first; nunca dos unidades core la misma noche"
+  },
+  "modules": [
+    {
+      "id": "rust-world-grid_gen",
+      "paths": ["backend/src/world/grid_gen/"],
+      "loc": 6395,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "PHASE1_GOLDENS: 16 fingerprints en tests.rs (~linea 1525) con 4 excepciones de re-captura documentadas en su doc-comment; los goldens JAMAS se regeneran porque un test falle",
+        "layer_rules.rs LAYER_PROFILES: cambiar un valor mueve los goldens",
+        "#![allow(dead_code)] global (main.rs) enmascara scaffolding de la migracion grid_gen aqui; no reportar dead code"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-world-levels",
+      "paths": ["backend/src/world/levels/"],
+      "loc": 4323,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "level0_golden_slice.rs: goldens ASCII seed42/seed7778 (len+hash exactos); no regenerar",
+        "capas de validacion level_0 aun sin cablear (scaffolding declarado, no cruft)"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-world-structure",
+      "paths": ["backend/src/world/architecture/", "backend/src/world/graph/", "backend/src/world/chunk/"],
+      "loc": 3221,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "formato de chunk = API publica: cualquier cambio requiere ADR previo (regla dura 7 de CLAUDE.md)"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-world-volumetric",
+      "paths": ["backend/src/world/volumetric_grid.rs"],
+      "loc": 3702,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [
+        "legacy en retirada (Fase 5 de la migracion grid_gen pendiente): no proponer refactors, se retira entero"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-world-misc",
+      "paths": [
+        "backend/src/world/mod.rs",
+        "backend/src/world/zone_density.rs",
+        "backend/src/world/collision.rs",
+        "backend/src/world/collision/",
+        "backend/src/world/corpse.rs",
+        "backend/src/world/spray.rs",
+        "backend/src/world/entity.rs",
+        "backend/src/world/generator.rs",
+        "backend/src/world/generator/",
+        "backend/src/world/phantom_spawn.rs",
+        "backend/src/world/tests.rs"
+      ],
+      "loc": 5900,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [
+        "generator.rs = generador V1 legacy (convive con grid_gen durante la migracion)"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-game_loop-core",
+      "paths": ["backend/src/game_loop.rs", "backend/src/game_loop/tests.rs"],
+      "loc": 11049,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "autoridad unica de simulacion (host-authoritative)",
+        "auditar tambien calidad de tests: precedente real de test verde que dejo de probar (every_page_of_a_big_roster_arrives_eventually, STATE.md 2026-08-14)"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-game_loop-phantom",
+      "paths": ["backend/src/game_loop/phantom.rs"],
+      "loc": 3717,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [],
+      "last_audited": null
+    },
+    {
+      "id": "rust-network",
+      "paths": ["backend/src/network/"],
+      "loc": 8472,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "sync.rs cabecera declara 6 funciones sin call sites (anchor/stabilizer): llegaron al wire y nunca se cablearon; conocido, no reportar",
+        "gate de rosters ADR-071: content_hash + ROSTER_CHANGE_BURST=3; el burst es deliberado (autocuracion), no redundancia",
+        "invariante de reliability fijado por test reliability_covers_every_reliably_sent_type (ADR-039)",
+        "relay de poses O(N^2) medido y aceptado por ahora (docs/systems/perf-baseline.md); la cura planificada es interest management"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-persistence",
+      "paths": ["backend/src/persistence/", "backend/saves/"],
+      "loc": 1538,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "mod.rs sanitize_player_key/sanitize_component = superficie de path-traversal (whitelist [A-Za-z0-9:_-], MAX_KEY_LEN=128): cualquier hallazgo aqui es ESCALATE, nunca fix",
+        "backend/saves/world_42.json es un save real committeado a proposito",
+        "compat hacia atras por #[serde(default)] campo a campo; quitar un default rompe saves viejos"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-ipc",
+      "paths": ["backend/src/ipc/"],
+      "loc": 1408,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "WIRE_SCHEMA_VERSION=32 en server.rs (~linea 38); espejo manual en Assets/Scripts/Network/WireSchema.cs, bump SIEMPRE en el mismo commit o el juego queda inarrancable (ADR-061)",
+        "la guarda cruzada Rust<->C# es un test que parsea WireSchema.cs como TEXTO y se salta si Assets/ no existe",
+        "deuda ADR-072 fase 2 declarada: stp_drop viaja como def_id+count y pierde props de instancia"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-entry-misc",
+      "paths": ["backend/src/main.rs", "backend/src/player/", "backend/src/crafting/", "backend/src/utils/", "backend/build.rs"],
+      "loc": 1024,
+      "criticality": "normal",
+      "deny_autofix": false,
+      "known_issues": [
+        "#![allow(dead_code)] crate-wide en main.rs con justificacion fechada 2026-08-10 (112 warnings en bin, 121 con --all-targets): scaffolding de migracion inventariado, NO reportar dead code en ninguna unidad rust hasta que la migracion cierre",
+        "build.rs inyecta BACKROOMS_GIT_HASH/BACKROOMS_BUILD_TIMESTAMP (telemetria anti-stale-backend)"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "rust-grid_viewer",
+      "paths": ["backend/tools/grid_viewer/"],
+      "loc": 240,
+      "criticality": "low",
+      "deny_autofix": false,
+      "known_issues": [
+        "crate independiente fuera del build del server (sin workspace); comparte el codigo real de grid_gen via #[path]",
+        "0 tests propios",
+        "NO COMPILA (verificado 2026-08-14): E0432/E0433 — el codigo de grid_gen incluido via #[path] referencia crate::world y crate::utils, que no existen en este crate (bit-rot desde Fase 2). Queda FUERA de CI hasta decidir arreglo o retirada"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "cs-network",
+      "paths": ["Assets/Scripts/Network/"],
+      "loc": 15497,
+      "criticality": "core",
+      "deny_autofix": true,
+      "known_issues": [
+        "WireSchema.cs Expected=32: espejo manual del wire Rust (ADR-061); es public a proposito (el compile-check construye asambleas _check y InternalsVisibleTo no casaria",
+        "BackroomsSurvival.csproj puede estar stale y dar falso verde en CompileCheckClient.sh (documentado en el propio script y en DEV-ENVIRONMENT.md)",
+        "colas de tomas de loot con contratos ADR-072 (una peticion en vuelo por cadaver, timeout 5s): el diseno es deliberado"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "cs-gameplay-core",
+      "paths": ["Assets/Scripts/Gameplay/*.cs"],
+      "loc": 10837,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [
+        "30 ficheros en la raiz de Gameplay; unidad grande: si el presupuesto de la pasada aprieta, partir en dos noches"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "cs-gameplay-systems",
+      "paths": [
+        "Assets/Scripts/Gameplay/Audio/",
+        "Assets/Scripts/Gameplay/Building/",
+        "Assets/Scripts/Gameplay/Chunks/",
+        "Assets/Scripts/Gameplay/GridWorld/",
+        "Assets/Scripts/Gameplay/Shaft/",
+        "Assets/Scripts/Gameplay/World/"
+      ],
+      "loc": 7490,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [
+        "volumenes de audio ambiental autorados en el orden de 0.05 a proposito (muy por debajo de SFX): no son un bug",
+        "toda AudioSource propia debe enrutar a outputAudioMixerGroup (leccion de 3 commits): hallazgo valido si falta"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "cs-ui-debug",
+      "paths": ["Assets/Scripts/UI/", "Assets/Scripts/Debug/"],
+      "loc": 2460,
+      "criticality": "normal",
+      "deny_autofix": false,
+      "known_issues": [],
+      "last_audited": null
+    },
+    {
+      "id": "cs-stp-integration",
+      "paths": ["Assets/_Migration/STPIntegration/"],
+      "loc": 8386,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [
+        "Assembly-CSharp sin asmdef: puentes hacia vendor PolymindGames (la restriccion de asmdef obliga a que vivan fuera); NUNCA proponer mover logica dentro de STP",
+        "regla vendor: fix externo/correct-after, jamas editar o guardar dentro de metodos STP",
+        "BuildingPiece: el collider debe vivir en el ROOT del prefab o la construccion se bloquea en silencio"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "cs-editor-tools",
+      "paths": ["Assets/Editor/"],
+      "loc": 5938,
+      "criticality": "normal",
+      "deny_autofix": false,
+      "known_issues": [
+        "menus documentados en docs/EDITOR-MENUS.md; varios re-aplican estado que un reimport del vendor borra (p.ej. registro del bote de spray en FPS_Player.prefab)"
+      ],
+      "last_audited": null
+    },
+    {
+      "id": "cs-tests-editmode",
+      "paths": ["Assets/Tests/EditMode/"],
+      "loc": 10086,
+      "criticality": "high",
+      "deny_autofix": false,
+      "known_issues": [
+        "414 casos jamas ejecutados en CI (sin Editor licenciado); ~54 nunca ejecutados ni en local (el runner exige editor cerrado y estuvo abierto): compilan con errors: 0",
+        "auditar calidad de test (asserts que no ejercen lo que el nombre promete), no solo codigo"
+      ],
+      "last_audited": null
+    }
+  ]
+}
