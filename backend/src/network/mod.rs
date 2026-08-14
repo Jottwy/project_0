@@ -38,10 +38,16 @@ pub type PeerId = u16;
 /// 0xF000 (61440) clears that range with room to spare in the u16 id space.
 const PHANTOM_ID_BASE: PeerId = 0xF000;
 
-/// F0.5 (E0, ADR-073): tope de los diez sets de dedupe de peticiones. ADR-029 ya exigía poda para
-/// los suyos de PvP; el resto se quedó sin ella y crecía durante TODA la sesión — una fuga lenta
-/// pero real (cada pickup, drop, colocación, demolición, cosecha y pintada de la partida dejaba su
-/// id dentro para siempre).
+/// F0.5 (E0, ADR-073): tope de los nueve sets de dedupe de peticiones que se migraron. ADR-029 ya
+/// exigía poda para los suyos de PvP; el resto se quedó sin ella y crecía durante TODA la sesión —
+/// una fuga lenta pero real (cada pickup, drop, colocación, demolición, cosecha y pintada de la
+/// partida dejaba su id dentro para siempre).
+///
+/// **`processed_corpse_requests` se queda deliberadamente como `HashSet`**: es el único que además
+/// viaja como parámetro a `apply_corpse_spawn_request`/`apply_corpse_take_request`, así que
+/// migrarlo obliga a cambiar dos firmas y ~13 construcciones en `game_loop/tests.rs`. Es un
+/// refactor de otra forma y tamaño que este fix, y su fuga es la más pequeña de las diez (una
+/// entrada por petición de cadáver, no por objeto del mundo). Queda anotado, no olvidado.
 ///
 /// 512 es holgado por dos órdenes de magnitud frente a lo que hay que recordar: un duplicado solo
 /// puede llegar por retransmisión fiable, que muere tras 5 intentos con backoff (~3 s,
@@ -260,7 +266,7 @@ pub struct NetworkManager {
     /// ADR-028 Fase E (host-only): (requester, request_id) pairs of corpse spawn/take requests
     /// already processed, so a reliable retransmit spawns exactly one corpse / takes exactly one
     /// stack. Keyed by requester too (request ids are per-peer counters, not globally unique).
-    pub processed_corpse_requests: BoundedDedupeSet<(PeerId, u64)>,
+    pub processed_corpse_requests: std::collections::HashSet<(PeerId, u64)>,
     /// ADR-028 Fase E (joiner-only): request_ids whose CorpseTakeResult we already surfaced to
     /// our Unity, so a reliable retransmit of the verdict never double-fires the IPC event
     /// (a duplicated corpse_item_taken would double-shift CorpseLootSync's index mirror).
@@ -429,7 +435,7 @@ impl NetworkManager {
             processed_spray_places: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             requested_spray_chunks: std::collections::HashSet::with_capacity(128),
             processed_stp_pickup_grants: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
-            processed_corpse_requests: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             world_sync_progress: sync::WorldSyncProgress::default(),
             roster_assemblers: RosterAssemblers::default(),
