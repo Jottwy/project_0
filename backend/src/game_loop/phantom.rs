@@ -431,6 +431,13 @@ pub(super) const PHANTOM_SEARCH_LEAD_SECONDS: f32 = 2.5;
 /// lead point at all.
 pub(super) const PHANTOM_SEARCH_LEAD_MIN_SPEED: f32 = 1.0;
 
+// ── ADR-075 point 4 — Peek ──────────────────────────────────────────────────────────────────────
+/// SEARCH pauses to look, once, when the goal is this close and hidden around a corner — the
+/// piece of the design that was declared but never built (see the enum doc on `Peek`).
+pub(super) const PHANTOM_PEEK_TRIGGER_DISTANCE: f32 = 6.0;
+pub(super) const PHANTOM_PEEK_MIN: f32 = 1.2;
+pub(super) const PHANTOM_PEEK_MAX: f32 = 2.0;
+
 // ── ADR-053: it gives your own voice back ────────────────────────────────────────────────────────
 //
 // It already steals the name, the face and the posture. The voice was the one thing left, and it
@@ -869,6 +876,14 @@ pub(super) enum PhantomState {
     /// routes optimally toward your exact position is a homing missile. With it, hiding works, and
     /// the tension moves from "can it reach me" to "does it know where I went".
     Search,
+    /// ADR-075 point 4 — the corner-peek. `Search` was documented from the day it shipped as
+    /// missing exactly this: closing on its goal with no straight line to it (a wall between the
+    /// creature and the spot), it stops and looks before committing round the bend — breathing,
+    /// facing the corner, perception running the whole time. Entered only from `Search`, and only
+    /// once per hunt; expires back into `Search` with a fresh leg, or into `Stalk` if the pause
+    /// itself catches you. NOT interrupted-only-by-noise like a committed lunge — it is a beat
+    /// inside a search, not a commitment on top of one.
+    Peek,
     /// ADR-050 point 6 — IT GOT SCARED. A gunshot close to a creature that has already eaten sends
     /// it away from the noise instead of toward it. The same trigger pull produces two different
     /// animals depending on how full the one that heard it is, and that is the clearest reading of
@@ -1208,6 +1223,12 @@ pub(super) struct PhantomMover {
     /// predicted lead point first. `None` once the exact point has been visited (or was the goal
     /// from the start, when there was nothing to predict from).
     pub(super) search_fallback: Option<Vec3>,
+    /// ADR-075 point 4 — how long the CURRENT peek lasts, rolled once on entering `Peek`.
+    pub(super) peek_for: f32,
+    /// Whether the CURRENT search has already spent its one peek. Reset wherever a search starts
+    /// fresh: re-acquisition, give-up, and `enter_search_after_hunt`. A detour to a hideout does
+    /// NOT reset it — one peek per hunt-search, hideouts included.
+    pub(super) peeked_this_search: bool,
     /// Seconds left of the post-strike commitment. While positive the lunge holds (still revealed)
     /// and cannot land a second blow; at zero it bounces to STALK.
     pub(super) strike_recover: f32,
@@ -1915,6 +1936,8 @@ impl PhantomDriver {
             target_still_for: 0.0,
             last_seen_vel: None,
             search_fallback: None,
+            peek_for: 0.0,
+            peeked_this_search: false,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
@@ -2461,6 +2484,7 @@ impl PhantomDriver {
         m.search_speed = PHANTOM_SEARCH_HUNT_SPEED;
         m.noise_expiry = None; // a lost hunt is not a noise errand, whatever ran before it
         m.target_still_for = 0.0;
+        m.peeked_this_search = false; // ADR-075: a fresh hunt earns a fresh peek
         m.state = PhantomState::Search;
         m.state_timer = 0.0;
 
@@ -2534,6 +2558,7 @@ impl PhantomDriver {
                 self.movers[i].state = PhantomState::Stalk;
                 self.movers[i].state_timer = 0.0;
                 self.movers[i].hideouts_checked = 0; // see the give-up path
+                self.movers[i].peeked_this_search = false; // ADR-075: a fresh hunt earns a fresh peek
                 info!(
                     "MPTRACE step=PH_SEARCH event=phantom_reacquired phantom_id={} dist={:.2}",
                     id, dist
@@ -2551,6 +2576,30 @@ impl PhantomDriver {
             }
         };
 
+        let dist_to_goal = from.distance_xz(goal);
+
+        // ADR-075 point 4 — PEEK. Within earshot of the goal but with no straight line to it (a
+        // corner sits between the creature and the spot), pause once per search before rounding
+        // it. The THIN line is the right test here — the question is "can I see the goal", not
+        // "can my body get there", which is exactly what `segment_is_clear_for_body` would answer.
+        if !self.movers[i].peeked_this_search
+            && dist_to_goal > PHANTOM_SEARCH_ARRIVE
+            && dist_to_goal <= PHANTOM_PEEK_TRIGGER_DISTANCE
+            && !crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, goal)
+        {
+            self.movers[i].peeked_this_search = true;
+            self.movers[i].peek_for =
+                PHANTOM_PEEK_MIN + rand::random::<f32>() * (PHANTOM_PEEK_MAX - PHANTOM_PEEK_MIN);
+            self.movers[i].state = PhantomState::Peek;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].try_vocalize(VOCAL_STALK_BREATH);
+            info!(
+                "MPTRACE step=PH_SEARCH event=phantom_peeks phantom_id={} dist={:.2}",
+                id, dist_to_goal
+            );
+            return;
+        }
+
         // ADR-041: a noise in transit goes cold on its own clock, independent of the
         // arrival patience — otherwise a phantom that never reaches the spot would
         // walk toward a five-minute-old shot forever.
@@ -2562,7 +2611,7 @@ impl PhantomDriver {
             None => false,
         };
 
-        let arrived = from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE;
+        let arrived = dist_to_goal <= PHANTOM_SEARCH_ARRIVE;
 
         // ADR-075 point 3 — SWEEP STEP 2: the predicted lead point turned up nobody. Fall back to
         // the EXACT spot you were last seen at, held in reserve since the hunt was lost. Checked
@@ -2621,8 +2670,9 @@ impl PhantomDriver {
             self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
             self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
             self.movers[i].noise_expiry = None;
-            // ADR-075: no reserve point carries over into the next hunt.
+            // ADR-075: no reserve point, and no spent peek, carries over into the next hunt.
             self.movers[i].search_fallback = None;
+            self.movers[i].peeked_this_search = false;
             // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
             // never fought the journey — but without this the phantom would finish a
             // 500 m trip and immediately start walking all the way back to its spawn.
@@ -2658,6 +2708,61 @@ impl PhantomDriver {
         let yaw = h.to_degrees().rem_euclid(360.0);
         if let Some(peer) = ctx.net.peers.get_mut(&id) {
             peer.update_player_state(moved.pos.to_array(), yaw, "idle".into());
+        }
+    }
+
+    /// PEEK (ADR-075 point 4) — the corner-peek `Search` was always missing. Dead still, facing
+    /// the goal it cannot see past, breathing while it looks. Perception runs exactly as it does
+    /// mid-search (this is a PAUSE inside a hunt, not a blind spot in one), so stepping into view
+    /// here still gets you spotted straight into `Stalk`. Expires back into `Search` on its own
+    /// clock — one peek, then it commits round the corner like the design always meant to.
+    fn tick_peek(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            target,
+            ..
+        } = mt;
+
+        if let Some((tid, tpos, dist, _)) = target {
+            let crouched = target_is_crouched(ctx.net, tid, ctx.host_crouch);
+            let sight = if crouched {
+                PHANTOM_DETECT_RADIUS * PHANTOM_CROUCH_SIGHT_FACTOR
+            } else {
+                PHANTOM_DETECT_RADIUS
+            };
+            if dist <= sight && in_view_cone(self.movers[i].heading, from, tpos) {
+                self.movers[i].last_known_player_pos = Some(tpos);
+                self.movers[i].state = PhantomState::Stalk;
+                self.movers[i].state_timer = 0.0;
+                self.movers[i].hideouts_checked = 0;
+                info!(
+                    "MPTRACE step=PH_PEEK event=phantom_reacquired phantom_id={} dist={:.2}",
+                    id, dist
+                );
+                return;
+            }
+        }
+
+        // Turn to face whatever it is peeking at. `unwrap_or(from)` is a can't-happen guard, not a
+        // real branch: this state is only ever entered with a goal in hand.
+        let goal = self.movers[i].last_known_player_pos.unwrap_or(from);
+        let to_goal = (goal.x - from.x)
+            .atan2(goal.z - from.z)
+            .rem_euclid(std::f32::consts::TAU);
+        self.movers[i].heading_target = to_goal;
+        let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(from.to_array(), yaw, "idle".into());
+        }
+
+        if self.movers[i].state_timer >= self.movers[i].peek_for {
+            self.movers[i].state = PhantomState::Search;
+            self.movers[i].state_timer = 0.0;
         }
     }
 
@@ -3645,6 +3750,7 @@ impl PhantomDriver {
                 PhantomState::Statue => self.tick_statue(mt, &mut ctx),
                 PhantomState::Sprint => self.tick_sprint(mt, &mut ctx),
                 PhantomState::Search => self.tick_search(mt, &mut ctx),
+                PhantomState::Peek => self.tick_peek(mt, &mut ctx),
                 PhantomState::Flee => self.tick_flee(mt, &mut ctx),
                 PhantomState::Grab => self.tick_grab(mt, &mut ctx),
                 PhantomState::Unmasking => self.tick_unmasking(mt, &mut ctx),

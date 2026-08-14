@@ -473,6 +473,10 @@ fn phantom_reveals_only_in_sprint_and_statue() {
     // ADR-050 point 10 — GRAB does reveal, and the contrast with FLEE is the point. There is no
     // ambiguity left to protect when it is holding you at arm's length.
     assert!(phantom_reveals(PhantomState::Grab));
+    // ADR-075 point 4 — PEEK does not reveal either: it is a pause INSIDE a search, still clothed,
+    // still pretending to be a person looking for someone. Revealing here would spoil the corner
+    // before the player ever sees anything happen.
+    assert!(!phantom_reveals(PhantomState::Peek));
 
     // And the guard that makes this test worth having: `phantom_reveals` is a `matches!`, so a
     // variant added later would default to "does not reveal" and every assertion above would still
@@ -484,6 +488,7 @@ fn phantom_reveals_only_in_sprint_and_statue() {
         PhantomState::Statue,
         PhantomState::Sprint,
         PhantomState::Search,
+        PhantomState::Peek,
         PhantomState::Flee,
         PhantomState::Grab,
         PhantomState::Unmasking,
@@ -497,6 +502,7 @@ fn phantom_reveals_only_in_sprint_and_statue() {
             | PhantomState::Stalk
             | PhantomState::Statue
             | PhantomState::Search
+            | PhantomState::Peek
             | PhantomState::Flee
             | PhantomState::Unmasking => false,
         };
@@ -2226,6 +2232,168 @@ async fn an_unreachable_prediction_falls_back_to_last_known() {
     assert!(
         driver.movers[0].search_fallback.is_none(),
         "nothing is held in reserve when the prediction never went ahead of the exact point"
+    );
+}
+
+/// Probes seed 42's real world for a walkable cell `origin`, and a SECOND walkable cell `goal`
+/// within `PHANTOM_PEEK_TRIGGER_DISTANCE` such that a straight line between them is BLOCKED (an
+/// inside-corner arrangement: the L-shape's other two corners are open, the direct diagonal is
+/// not) — the exact geometry PEEK exists for. Real generated corridors always have these; hand-
+/// authoring one would test the hand-authored grid, not the resolver PEEK actually runs against.
+fn probe_blind_corner() -> (Vec3, Vec3) {
+    use crate::world::grid_gen::{
+        cell_center, is_walkable_grid_gen, segment_is_clear, GridGenChunkCache,
+    };
+    let mut probe = GridGenChunkCache::with_rules(42, crate::world::zone_density::rules_for);
+    for ax in 1..18i32 {
+        for az in 1..18i32 {
+            let origin = cell_center((ax, az), 1.8);
+            if !is_walkable_grid_gen(&mut probe, origin, 0) {
+                continue;
+            }
+            // Try both L-shapes from `origin`: two cells over on one axis, one cell over on the
+            // other, with the straight leg open and the diagonal shortcut blocked by the corner.
+            for (dx, dz) in [(2, 0), (0, 2), (-2, 0), (0, -2)] {
+                let leg = cell_center((ax + dx, az), 1.8);
+                let leg2 = cell_center((ax, az + dz), 1.8);
+                let goal = cell_center((ax + dx, az + dz), 1.8);
+                let corner_open = is_walkable_grid_gen(&mut probe, leg, 0)
+                    || is_walkable_grid_gen(&mut probe, leg2, 0);
+                if corner_open
+                    && is_walkable_grid_gen(&mut probe, goal, 0)
+                    && !segment_is_clear(&mut probe, 0, origin, goal)
+                {
+                    return (origin, goal);
+                }
+            }
+        }
+    }
+    panic!("seed 42 must have a blind corner near the origin");
+}
+
+#[tokio::test]
+async fn search_peeks_once_at_a_blind_corner() {
+    // ADR-075 point 4: SEARCH must not walk a blind corner without a beat of hesitation first —
+    // the piece the design docs flagged as never built.
+    let (origin, goal) = probe_blind_corner();
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Search;
+    driver.movers[0].last_known_player_pos = Some(goal);
+    driver.movers[0].search_patience = 999.0; // patience must never be what ends this test
+
+    let far_player = Vec3::new(9000.0, 1.8, 9000.0);
+    driver.step(&mut net, 0.1, far_player, 0.0, false, false, 0);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Peek,
+        "a blind goal within trigger range must stop and peek, not walk straight at it"
+    );
+    assert!(driver.movers[0].peeked_this_search);
+}
+
+#[tokio::test]
+async fn peek_reacquires_on_sight_into_stalk() {
+    // Perception runs during the peek exactly as it does mid-search: stepping into view must
+    // still get you spotted, not wait out a blind window.
+    let (origin, goal) = probe_blind_corner();
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Peek;
+    driver.movers[0].last_known_player_pos = Some(goal);
+    driver.movers[0].peek_for = 999.0; // the peek's own clock must never be what ends this test
+    driver.movers[0].heading = 0.0; // facing the player directly, well inside sight range
+
+    let player = Vec3::new(origin.x, 1.8, origin.z + 5.0);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Stalk,
+        "spotting the player mid-peek must re-acquire into STALK"
+    );
+}
+
+#[tokio::test]
+async fn peek_expires_back_into_search_and_never_repeats() {
+    // The peek is a beat, not a state: it must end on its own clock and hand back to SEARCH with
+    // the per-hunt flag still spent, so the very next tick cannot peek again at the same corner.
+    let (origin, goal) = probe_blind_corner();
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Peek;
+    driver.movers[0].last_known_player_pos = Some(goal);
+    driver.movers[0].peeked_this_search = true;
+    driver.movers[0].peek_for = 0.15; // expires inside two ticks
+    driver.movers[0].search_patience = 999.0;
+
+    let far_player = Vec3::new(9000.0, 1.8, 9000.0);
+    driver.step(&mut net, 0.1, far_player, 0.0, false, false, 0);
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Peek,
+        "must hold for its rolled duration"
+    );
+    driver.step(&mut net, 0.1, far_player, 0.0, false, false, 0);
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert!(
+        driver.movers[0].peeked_this_search,
+        "one peek per search — the flag must still be spent on return"
+    );
+    // And SEARCH itself must not immediately re-enter PEEK on the very next tick at the same spot.
+    driver.step(&mut net, 0.1, far_player, 0.0, false, false, 0);
+    assert_ne!(driver.movers[0].state, PhantomState::Peek);
+}
+
+#[tokio::test]
+async fn peek_is_interruptible_by_noise() {
+    // Unlike a committed lunge, a peek is a pause WITHIN a hunt — `hear_noises` must be free to
+    // redirect it, exactly as it would redirect the SEARCH the peek is a beat inside of.
+    let (origin, goal) = probe_blind_corner();
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let pid = net.spawn_phantom("Robapieles_Test", origin.to_array());
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Peek;
+    driver.movers[0].hunger = 0.0; // hungry: a noise must not divert it into FLEE
+    driver.movers[0].last_known_player_pos = Some(goal);
+    driver.movers[0].peek_for = 999.0;
+
+    net.pending_noises.push((origin.to_array(), 50.0));
+    driver.hear_noises(&mut net);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Search,
+        "a peek must be interruptible by a noise, same as the search it belongs to"
     );
 }
 
