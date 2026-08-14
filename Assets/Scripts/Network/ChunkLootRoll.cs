@@ -29,6 +29,10 @@ namespace BackroomsSurvival.Net
     public static class ChunkLootRoll
     {
         // ── Pool tables (verbatim from the two spawners; see class doc) ──────────────────────
+        // "Almond Water" is deliberately NOT here (ADR-030 amendment) — chest-only by design, see
+        // the exception note on StpChestSpawner.ConsumablePool. Not an oversight, and also can't
+        // add it here without a weight bump anyway: the hard constraint below is never change
+        // entry COUNT without a matching ZoneLootProfile/ZoneLootTable.asset change.
         private static readonly string[] ConsumablePool =
         {
             "Apple", "Cooked Meat", "Raw Meat", "Energy Bar", "Small Food Can", "Large Food Can", "Water Bottle"

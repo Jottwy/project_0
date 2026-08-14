@@ -50,9 +50,17 @@ namespace BackroomsSurvival.Net
         // materials. Pools espejan las de ChunkLootRoll (mismos nombres autorados); si allí se
         // recorta el catálogo, aquí también, o el cofre sigue sirviendo lo que el mundo ya no da.
         // TODO(balance): placeholder composition/quantities.
+        //
+        // EXCEPCIÓN DELIBERADA — "Almond Water" NO está en ChunkLootRoll.ConsumablePool ni en
+        // StpItemSpawner.ConsumablePool a propósito (decisión de Joel, no descuido): es el
+        // objeto de lore más importante del juego (ADR-030 amendment) y solo debe salir de
+        // cofres — loot concentrado que YA se lee como "encontrado", no de las cachés/chunks
+        // sueltas del mundo. A 8 entradas equiprobables sale en ~1/8 de los slots de consumible
+        // de un cofre.
         private static readonly string[] ConsumablePool =
         {
-            "Apple", "Cooked Meat", "Raw Meat", "Energy Bar", "Small Food Can", "Large Food Can", "Water Bottle"
+            "Apple", "Cooked Meat", "Raw Meat", "Energy Bar", "Small Food Can", "Large Food Can",
+            "Water Bottle", "Almond Water"
         };
         private static readonly string[] MedicalPool = { "Antibiotics", "Medicinal Corn" };
         // RECORTE DE CATÁLOGO VENDOR (2026-08-10): AmmoPool eliminada — sin rifle ni arco, la

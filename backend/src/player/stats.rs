@@ -103,6 +103,13 @@ impl PlayerStats {
         self.health = (self.health + amount).clamp(0.0, 100.0);
     }
 
+    /// ADR-030 amendment (Almond Water): restore sanity from consuming an item. Same clamp
+    /// semantics as `restore_hunger` — no other consumable restored sanity before this, only
+    /// `calculate_sanity_drain`/`update` ever lowered it.
+    pub fn restore_sanity(&mut self, amount: f32) {
+        self.sanity = (self.sanity + amount).clamp(0.0, 100.0);
+    }
+
     /// Drain stamina (from running). Applied in the movement step where the
     /// move-state is known; `update` handles passive regeneration.
     pub fn use_stamina(&mut self, amount: f32) {
@@ -204,6 +211,23 @@ mod tests {
 
         s.restore_health(55.0); // would overshoot 100 — clamp catches it
         assert_eq!(s.health, 100.0);
+    }
+
+    #[test]
+    fn restore_sanity_clamps_at_max_and_adds_normally_below_it() {
+        let mut s = PlayerStats {
+            sanity: 80.0,
+            ..Default::default()
+        };
+        s.restore_sanity(35.0); // would overshoot 100 — clamp catches it
+        assert_eq!(s.sanity, 100.0);
+
+        let mut s = PlayerStats {
+            sanity: 40.0,
+            ..Default::default()
+        };
+        s.restore_sanity(35.0);
+        assert_eq!(s.sanity, 75.0);
     }
 
     // Balance (2026-07-07): lock in the slowed decay rates (10× slower) so a future tweak that

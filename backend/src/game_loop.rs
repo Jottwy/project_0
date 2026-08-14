@@ -3040,9 +3040,10 @@ async fn handle_action(
                 player.stats.restore_hunger(spec.hunger_restore);
                 player.stats.restore_thirst(spec.thirst_restore);
                 player.stats.restore_health(spec.health_restore);
+                player.stats.restore_sanity(spec.sanity_restore);
                 info!(
-                    "MPTRACE step=CONSUME event=consume_item_applied item_id={} hunger={:.2} thirst={:.2} health={:.2}",
-                    item_id, player.stats.hunger, player.stats.thirst, player.stats.health
+                    "MPTRACE step=CONSUME event=consume_item_applied item_id={} hunger={:.2} thirst={:.2} health={:.2} sanity={:.2}",
+                    item_id, player.stats.hunger, player.stats.thirst, player.stats.health, player.stats.sanity
                 );
             } else {
                 info!(
@@ -3964,18 +3965,21 @@ fn pvp_weapon_spec(weapon_id: i32) -> Option<PvpWeaponSpec> {
     }
 }
 
-/// ADR-030: fixed per-item restoration applied by `"consume_item"`. The ids are the REAL STP
-/// `DataIdReference` ids of the item `ItemDefinition` assets (confirmed by reading the assets'
-/// `ConsumeData`). Values are the MIDPOINT of that asset's own authored `_hungerChange`/
-/// `_thirstChange`/`_healthChange` range, simplified to a single fixed number (the server has
-/// no client-reported roll to apply — trust-the-client stops at "this item was consumed", per
-/// ADR-030). Any id NOT in this table rejects `unknown_item`.
+/// ADR-030 (+ amendment, Almond Water): fixed per-item restoration applied by `"consume_item"`.
+/// The ids are the REAL STP `DataIdReference` ids of the item `ItemDefinition` assets (confirmed
+/// by reading the assets' `ConsumeData`). Values for the original seven are the MIDPOINT of that
+/// asset's own authored `_hungerChange`/`_thirstChange`/`_healthChange` range, simplified to a
+/// single fixed number (the server has no client-reported roll to apply — trust-the-client stops
+/// at "this item was consumed", per ADR-030). `sanity_restore` has no vendor range to midpoint
+/// from — STP's `ConsumeData` has no sanity field at all — so it is an authored design number,
+/// zero for every item except Almond Water. Any id NOT in this table rejects `unknown_item`.
 ///
 // TODO(balance): fixed value = midpoint of the asset's authored range, not a re-balanced number.
 struct ConsumableSpec {
     hunger_restore: f32,
     thirst_restore: f32,
     health_restore: f32,
+    sanity_restore: f32,
 }
 
 fn consumable_spec(item_id: i32) -> Option<ConsumableSpec> {
@@ -3985,42 +3989,57 @@ fn consumable_spec(item_id: i32) -> Option<ConsumableSpec> {
             hunger_restore: 17.5,
             thirst_restore: 7.5,
             health_restore: 0.0,
+            sanity_restore: 0.0,
         }),
         1045632 => Some(ConsumableSpec {
             // STP_Cooked Meat: hunger 40..50
             hunger_restore: 45.0,
             thirst_restore: 0.0,
             health_restore: 0.0,
+            sanity_restore: 0.0,
         }),
         -7862085 => Some(ConsumableSpec {
             // STP_Energy Bar: hunger 25..30
             hunger_restore: 27.5,
             thirst_restore: 0.0,
             health_restore: 0.0,
+            sanity_restore: 0.0,
         }),
         6285896 => Some(ConsumableSpec {
             // STP_Large Food Can: hunger 50..65, thirst 10..15
             hunger_restore: 57.5,
             thirst_restore: 12.5,
             health_restore: 0.0,
+            sanity_restore: 0.0,
         }),
         -7580928 => Some(ConsumableSpec {
             // STP_Small Food Can: hunger 30..40, thirst 5..10
             hunger_restore: 35.0,
             thirst_restore: 7.5,
             health_restore: 0.0,
+            sanity_restore: 0.0,
         }),
         7983286 => Some(ConsumableSpec {
             // STP_Water Bottle: thirst 40..50
             hunger_restore: 0.0,
             thirst_restore: 45.0,
             health_restore: 0.0,
+            sanity_restore: 0.0,
         }),
         -7174886 => Some(ConsumableSpec {
             // STP_Antibiotics: health 50..60
             hunger_restore: 0.0,
             thirst_restore: 0.0,
             health_restore: 55.0,
+            sanity_restore: 0.0,
+        }),
+        -1438255091 => Some(ConsumableSpec {
+            // BR_Almond Water (ADR-030 amendment): canon Backrooms find-object. Restores all
+            // three original stats AND sanity — the first (only) consumable that does.
+            hunger_restore: 20.0,
+            thirst_restore: 60.0,
+            health_restore: 8.0,
+            sanity_restore: 35.0,
         }),
         _ => None,
     }

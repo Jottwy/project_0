@@ -23,6 +23,7 @@ MonoBehaviour:
   - {fileID: 11400000, guid: b726d4aa0f6fdcb4cb70890faaed9a7e, type: 2}
   - {fileID: 11400000, guid: 11aa060024c79ac4aa3cc4bf06f54e95, type: 2}
   - {fileID: 11400000, guid: 100ffbbc70aff744f85fc5cabcac1800, type: 2}
+  - {fileID: 11400000, guid: caee7373cd892624e9bf02b4b89287f4, type: 2}
   _defaultTag:
     _value: 0
   _baseActions:

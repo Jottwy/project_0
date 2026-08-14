@@ -61,6 +61,8 @@ namespace BackroomsSurvival.Net
         private const float RetryIntervalSeconds = 10f;
         private const float RetryWindowSeconds = 180f; // ~3 minutes total, then give up silently
 
+        // "Almond Water" is deliberately NOT here (ADR-030 amendment) — chest-only by design, see
+        // the exception note on StpChestSpawner.ConsumablePool. Not an oversight.
         private static readonly string[] ConsumablePool =
         {
             "Apple", "Cooked Meat", "Raw Meat", "Energy Bar", "Small Food Can", "Large Food Can", "Water Bottle"
