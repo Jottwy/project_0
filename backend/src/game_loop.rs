@@ -5344,6 +5344,22 @@ fn parse_item_props(entry: &serde_json::Value) -> Vec<crate::player::session::It
 fn sanitize_inventory_v2_stacks(items: &mut Vec<crate::player::InventoryStackV2>) {
     items.retain(|s| s.quantity > 0);
     items.truncate(crate::world::corpse::MAX_CORPSE_STACKS);
+    // ADR-072: mismo tope de propiedades que el botín, y por la misma razón — esto también llega
+    // del cliente y también acaba en memoria del servidor (el save del host). Era un hueco de
+    // ADR-045: el botín truncaba y este camino no.
+    for stack in items.iter_mut() {
+        if stack.props.len() > crate::world::corpse::MAX_PROPS_PER_STACK {
+            log::warn!(
+                "inventory v2 stack item_id={} reportó {} propiedades (tope {}) — recortado",
+                stack.item_id,
+                stack.props.len(),
+                crate::world::corpse::MAX_PROPS_PER_STACK
+            );
+            stack
+                .props
+                .truncate(crate::world::corpse::MAX_PROPS_PER_STACK);
+        }
+    }
 }
 
 /// ADR-025 Slice B: sanitize a client-reported damage amount. Missing/NaN/∞/negative → 0

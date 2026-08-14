@@ -138,6 +138,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private PendingTake _inFlight;
         private int _inFlightServerIndex;
         private float _inFlightSentAt;
+        // Latch del warning de IPC caído: una línea por corte, no por frame de reintento.
+        private bool _warnedIpcDown;
 
         /// <summary>
         /// Tras esto se da por perdida la respuesta y se deshace la petición en vuelo. Sin este
@@ -185,8 +187,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 _ipc = ipc;
                 _ipc.AddEventListener(OnGameEvent);
-                PumpQueue(); // la cola pudo llenarse antes de que existiera el IPC
             }
+
+            // Reintento continuo, no solo en el frame del enganche: la cola retiene mientras el
+            // IPC no está (o está reconectando), así que alguien tiene que volver a bombear cuando
+            // vuelva. Es una comparación por frame en el caso normal (cola vacía).
+            if (!_hasInFlight && _queued.Count > 0)
+                PumpQueue();
 
             if (_hasInFlight && Time.unscaledTime - _inFlightSentAt > InFlightTimeoutSeconds)
             {
@@ -213,6 +220,26 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_hasInFlight || _queued.Count == 0)
                 return;
 
+            // El guard de conexión va ANTES del Dequeue, y no es estilo: con el IPC aún sin
+            // enganchar (un "Take All" en el primer frame del cadáver) desencolar aquí drenaba la
+            // cola entera descartando cada toma — y el PumpQueue del Update, que existe justo para
+            // ese caso, se encontraba la cola ya vacía. La cola ESPERA; el IPC de este proyecto es
+            // del mismo proceso y reconecta solo, así que retener es estrictamente mejor que tirar.
+            if (_ipc == null || !_ipc.IsConnected)
+            {
+                // Una vez por corte, no por intento: el Update rebombea cada frame mientras haya
+                // cola, y un warning por frame es exactamente cómo se fabricó el Editor.log de
+                // 8 GB que tumbó el editor el 13/08.
+                if (!_warnedIpcDown)
+                {
+                    _warnedIpcDown = true;
+                    Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: IPC no disponible — {_queued.Count} " +
+                        "toma(s) esperando en cola; se reintenta al engancharse.");
+                }
+                return;
+            }
+            _warnedIpcDown = false;
+
             var next = _queued.Dequeue();
             int serverIdx = _serverIndex[next.LocalSlot];
             if (serverIdx < 0)
@@ -221,14 +248,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 // marcó). Nada que reportar; sigue la cola.
                 Debug.Log($"[CorpseLootSync] corpse {_corpseId}: slot {next.LocalSlot} ya no apunta a " +
                     "ninguna entrada del servidor — peticion descartada.");
-                PumpQueue();
-                return;
-            }
-
-            if (_ipc == null || !_ipc.IsConnected)
-            {
-                Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: IPC desconectado — la petición no sale " +
-                    "y no confirmará nunca (el item queda quitado optimistamente).");
                 PumpQueue();
                 return;
             }
