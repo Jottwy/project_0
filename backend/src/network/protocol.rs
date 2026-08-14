@@ -828,7 +828,10 @@ pub enum PacketPayload {
     /// reads none of its three events for it. A field with no reader is a bad price for weakening
     /// an invariant.
     ///
-    /// `kind`: 0 = hit (`damage`), 1 = kill, 2 = knockback (`impulse`, m/s, client-applied).
+    /// `kind`: 0 = hit (`damage`), 1 = kill, 2 = knockback (`impulse`, m/s, client-applied),
+    /// 3 = grab start (`damage` carries the escape window in SECONDS, not damage — ADR-050),
+    /// 4 = grab release (no payload beyond the envelope), 5 = knockdown (`damage` carries stun
+    /// SECONDS same trick as kind 3, `impulse` carries the shove — ADR-076; zero health touch).
     /// `request_id` is minted by the host and is the dedupe key on its own.
     PhantomAttackGrant {
         request_id: u64,
@@ -1634,6 +1637,38 @@ mod tests {
                 assert_eq!(kind, 2);
                 assert_eq!(damage, 35.0);
                 assert_eq!(impulse, [2.5, -1.5]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// ADR-076. `kind = 5` (Knockdown) specifically: the whole point of the bump was that this
+    /// value used to fall through to the joiner's `_` arm and be misread as damage, so it earns
+    /// its own pinned round-trip rather than riding the generic one above.
+    #[test]
+    fn phantom_attack_grant_round_trip_knockdown() {
+        let payload = PacketPayload::PhantomAttackGrant {
+            request_id: 909,
+            victim_id: 42,
+            kind: 5,
+            damage: 2.0, // stun seconds, per the doc comment — not health damage
+            impulse: [6.0, -3.0],
+        };
+        let header = PacketHeader::new(payload.type_code(), 1, 9, 100);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &payload)).unwrap();
+        match decoded {
+            PacketPayload::PhantomAttackGrant {
+                request_id,
+                victim_id,
+                kind,
+                damage,
+                impulse,
+            } => {
+                assert_eq!(request_id, 909);
+                assert_eq!(victim_id, 42);
+                assert_eq!(kind, 5);
+                assert_eq!(damage, 2.0);
+                assert_eq!(impulse, [6.0, -3.0]);
             }
             _ => panic!("wrong variant"),
         }

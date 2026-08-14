@@ -477,6 +477,9 @@ fn phantom_reveals_only_in_sprint_and_statue() {
     // still pretending to be a person looking for someone. Revealing here would spoil the corner
     // before the player ever sees anything happen.
     assert!(!phantom_reveals(PhantomState::Peek));
+    // ADR-076 point 1 — AMBUSH does not reveal either: it is the entire point of the disguised
+    // charge. It stops being clothed only once it actually connects and moves into `Unmasking`.
+    assert!(!phantom_reveals(PhantomState::Ambush));
 
     // And the guard that makes this test worth having: `phantom_reveals` is a `matches!`, so a
     // variant added later would default to "does not reveal" and every assertion above would still
@@ -487,6 +490,7 @@ fn phantom_reveals_only_in_sprint_and_statue() {
         PhantomState::Stalk,
         PhantomState::Statue,
         PhantomState::Sprint,
+        PhantomState::Ambush,
         PhantomState::Search,
         PhantomState::Peek,
         PhantomState::Flee,
@@ -501,6 +505,7 @@ fn phantom_reveals_only_in_sprint_and_statue() {
             | PhantomState::Spotted
             | PhantomState::Stalk
             | PhantomState::Statue
+            | PhantomState::Ambush
             | PhantomState::Search
             | PhantomState::Peek
             | PhantomState::Flee
@@ -2394,6 +2399,182 @@ async fn peek_is_interruptible_by_noise() {
         driver.movers[0].state,
         PhantomState::Search,
         "a peek must be interruptible by a noise, same as the search it belongs to"
+    );
+}
+
+#[tokio::test]
+async fn ambush_needs_hunger_and_an_unwatched_back() {
+    // ADR-076 — the roll only ever fires hungry AND unwatched. Pinned structurally (impulse
+    // scaled to a near-certain roll on the very first tick) rather than left to statistics.
+    async fn try_ambush(hunger: f32, player_rot: f32) -> PhantomState {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let start = [0.0, 1.8, 0.0];
+        let pid = net.spawn_phantom("Robapieles_Test", start);
+        let mut driver = PhantomDriver::new(42);
+        driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+        driver.movers[0].state = PhantomState::Stalk;
+        driver.movers[0].hunger = hunger;
+        driver.movers[0].traits.impulse_scale = 100.0; // guaranteed roll if the gate allows it
+        driver.movers[0].traits.is_hunter = false;
+        let at = Vec3::from_array(net.peers[&pid].position);
+        let player = Vec3::new(at.x + 9.0, 1.8, at.z);
+        driver.step(&mut net, 0.1, player, player_rot, false, false, 0);
+        driver.movers[0].state
+    }
+
+    assert_eq!(
+        try_ambush(0.0, 0.0).await,
+        PhantomState::Ambush,
+        "hungry and unwatched (yaw 0°, perpendicular) must ambush on a near-certain roll"
+    );
+    assert_ne!(
+        try_ambush(1.0, 0.0).await,
+        PhantomState::Ambush,
+        "sated must never ambush, whatever the roll says"
+    );
+    assert_ne!(
+        // yaw 270°: the player faces -x, directly at the phantom — STATUE's own cone wins first.
+        try_ambush(0.0, 270.0).await,
+        PhantomState::Ambush,
+        "a watched target must never ambush"
+    );
+}
+
+#[tokio::test]
+async fn ambush_never_reveals_while_charging() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Ambush;
+    let at = Vec3::from_array(net.peers[&pid].position);
+    // Far enough not to connect on the first tick, well inside LOSE_RADIUS.
+    let player = Vec3::new(at.x + 15.0, 1.8, at.z);
+
+    for _ in 0..10 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+        assert!(
+            !net.peers[&pid].revealed,
+            "must stay disguised for as long as the charge runs"
+        );
+        if driver.movers[0].state != PhantomState::Ambush {
+            break;
+        }
+    }
+}
+
+#[test]
+fn phantom_attack_kind_name_covers_knockdown() {
+    assert_eq!(
+        phantom_attack_kind_name(PhantomAttackKind::Knockdown(2.0, 1.0, 0.0)),
+        "knockdown"
+    );
+}
+
+#[tokio::test]
+async fn knockdown_connect_arms_strike_recovery_and_enters_unmasking() {
+    // ADR-076 point 3 — the balance-critical chronology, pinned directly: the connecting strike
+    // must arm `strike_recover` on the SAME tick, or the Sprint born out of Unmasking could land
+    // on a player who is still on the ground.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Ambush;
+    let at = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(at.x + 1.0, 1.8, at.z); // inside PHANTOM_ATTACK_REACH (2.4 m)
+
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+
+    assert_eq!(driver.attacks.len(), 1);
+    match driver.attacks[0].kind {
+        PhantomAttackKind::Knockdown(seconds, ..) => {
+            assert_eq!(seconds, PHANTOM_KNOCKDOWN_SECONDS);
+        }
+        other => panic!("expected Knockdown, got {other:?}"),
+    }
+    assert!(
+        driver.movers[0].strike_recover > 0.0,
+        "strike_recover must be armed on the SAME tick as the connect, not on entering Unmasking"
+    );
+    assert_eq!(driver.movers[0].state, PhantomState::Unmasking);
+    assert!(
+        !net.peers[&pid].revealed,
+        "Unmasking still wears the skin — the tear is its own beat later"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_ambush_returns_to_stalk_without_revealing() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Ambush;
+    driver.movers[0].ambushed_this_hunt = true;
+
+    // Far beyond LOSE_RADIUS: the run is lost outright.
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(9000.0, 1.8, 9000.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Stalk,
+        "a failed ambush must return to STALK, never to HUNTING (which would reveal it)"
+    );
+    assert!(
+        driver.movers[0].ambush_cooldown > 0.0,
+        "failure must cost a cooldown"
+    );
+    assert!(
+        driver.movers[0].strike_recover > 0.0,
+        "strike_recover must be armed on failure too, or Stalk fires a free reveal next tick"
+    );
+    assert!(!net.peers[&pid].revealed);
+}
+
+#[tokio::test]
+async fn ambush_is_once_per_hunt_and_cooldown_gated() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].hunger = 0.0;
+    driver.movers[0].traits.impulse_scale = 100.0; // guaranteed roll if the gate allows it
+    driver.movers[0].traits.is_hunter = false;
+    driver.movers[0].ambushed_this_hunt = true; // already spent this hunt
+    let at = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(at.x + 9.0, 1.8, at.z);
+
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert_ne!(
+        driver.movers[0].state,
+        PhantomState::Ambush,
+        "one ambush per hunt — the flag must be respected even with a guaranteed roll"
+    );
+
+    // The cooldown gate, independent of the flag:
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].state_timer = 0.0;
+    driver.movers[0].ambushed_this_hunt = false;
+    driver.movers[0].ambush_cooldown = 30.0;
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    assert_ne!(
+        driver.movers[0].state,
+        PhantomState::Ambush,
+        "a live cooldown must gate a fresh attempt too"
     );
 }
 

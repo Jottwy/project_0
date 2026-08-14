@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v31
+# IPC wire schema — changelog v2 → v33
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **31**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **33**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -473,3 +473,23 @@ hay un test de `cargo test` que lo comprueba.
 **Pendiente (Fase 2 de ADR-072):** `stp_drop` sigue viajando como `def_id` + cantidad, así que lo
 que cae al suelo —incluido el sobrante que devuelven la recogida con inventario lleno y el
 restaurador— vuelve al mundo a valor de fábrica.
+
+## v33 — ADR-076: la emboscada disfrazada aturde, no mata (2026-08-14)
+
+`PhantomAttackGrant` (0x4D) gana el kind **5 = Knockdown**, sin cambio de layout — el mismo
+precedente que v20 sentó para los kinds 3/4: `kind` siempre fue un `u8` con 3..255 de sobra, y
+ADR-047 dejó ese sobrante por escrito a propósito. El stun (segundos) viaja en `damage` (mismo
+truco que `GrabStart`), el empuje en `impulse` (mismo carril que `Knockback`). **Cero daño de
+vida**: ni el host ni el joiner tocan `player.stats` en este kind.
+
+**Por qué bumpea y no es opcional**: el brazo `_` del joiner trata un `kind` desconocido como Hit
+y aplica `damage` como daño de vida — un joiner sin actualizar que reciba un derribo se comería
+2,0 puntos de vida en silencio. Degradación NO silenciosa, el mismo criterio de bump que fijó v20.
+El brazo `5 =>` va explícito, ANTES del `_`.
+
+Evento IPC nuevo `phantom_knockdown {"seconds", "dx", "dz"}`, emitido por host y joiner con el
+mismo nombre y forma (el cliente no necesita saber dónde corre). `WIRE_SCHEMA_VERSION` y
+`WireSchema.Expected` (C#) a 33 en el mismo commit — el test de `cargo test` que compara ambos
+como texto lo vigila.
+
+Sin cambio en `PacketType`, `from_u16` ni `type_code`: ningún opcode nuevo, ningún campo nuevo.

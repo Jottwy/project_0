@@ -1336,6 +1336,12 @@ pub async fn run(
                             // such; kind 3 has its own arm there.
                             PhantomAttackKind::GrabStart(window) => (3u8, window, [0.0, 0.0]),
                             PhantomAttackKind::GrabRelease => (4u8, 0.0, [0.0, 0.0]),
+                            // ADR-076. Same spare-kind clause as GrabStart: `seconds` rides
+                            // `damage`, and it is NOT damage — kind 5 has its own arm on the
+                            // victim side, same discipline that protects kind 3.
+                            PhantomAttackKind::Knockdown(seconds, dx, dz) => {
+                                (5u8, seconds, [dx, dz])
+                            }
                         };
                         let grant = PacketPayload::PhantomAttackGrant {
                             request_id,
@@ -1401,6 +1407,14 @@ pub async fn run(
                             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                                 event_type: "phantom_grab_release".into(),
                                 data: serde_json::json!({}),
+                            }));
+                        }
+                        // ADR-076 — ZERO health damage, by design: the knockdown only ever stuns
+                        // and shoves. `player.stats` is never touched on this arm.
+                        PhantomAttackKind::Knockdown(seconds, dx, dz) => {
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "phantom_knockdown".into(),
+                                data: serde_json::json!({ "seconds": seconds, "dx": dx, "dz": dz }),
                             }));
                         }
                     }
@@ -2451,6 +2465,19 @@ async fn handle_network_event(
                     let _ = to_clients.send(ServerMessage::Event(GameEvent {
                         event_type: "phantom_grab_release".into(),
                         data: serde_json::json!({}),
+                    }));
+                }
+                // ADR-076. MUST be its own arm for exactly the same reason as kind 3: falling
+                // through to the `_` below would apply `damage` (really the stun's seconds) as
+                // health damage on a victim backend that has not learned kind 5 yet — the whole
+                // reason this bumps the wire. Zero health touch here, same as the host's own arm.
+                5 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=knockdown seconds={damage:.1} request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "phantom_knockdown".into(),
+                        data: serde_json::json!({ "seconds": damage, "dx": impulse[0], "dz": impulse[1] }),
                     }));
                 }
                 _ => {

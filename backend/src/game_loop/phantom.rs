@@ -446,6 +446,28 @@ pub(super) const PHANTOM_PEEK_TRIGGER_DISTANCE: f32 = 6.0;
 pub(super) const PHANTOM_PEEK_MIN: f32 = 1.2;
 pub(super) const PHANTOM_PEEK_MAX: f32 = 2.0;
 
+// ── ADR-076 — the disguised ambush and the knockdown it lands ──────────────────────────────────
+/// A running player's pace, deliberately short of `PHANTOM_SPRINT_SPEED` (7.29): until the blow
+/// lands this has to look like a person, not a monster.
+pub(super) const PHANTOM_AMBUSH_SPEED: f32 = 5.5;
+/// Ambush distance window. Below the floor there is no room to build up "someone is running at
+/// you" before contact; beyond the ceiling the run itself would take long enough to become its
+/// own tell.
+pub(super) const PHANTOM_AMBUSH_MIN_DISTANCE: f32 = 5.0;
+pub(super) const PHANTOM_AMBUSH_MAX_DISTANCE: f32 = 16.0;
+/// Per-tick chance, scaled by `impulse()` exactly like the ordinary lunge roll — hunger, rage and
+/// temperament all weigh in on whether THIS moment is the one it tries the trick.
+pub(super) const PHANTOM_AMBUSH_CHANCE: f32 = 0.02;
+/// Cooldown after a FAILED ambush (lost, wedged, or timed out) before another may be attempted.
+pub(super) const PHANTOM_AMBUSH_COOLDOWN: f32 = 30.0;
+/// A run that has not connected or failed by this many seconds gives up on its own.
+pub(super) const PHANTOM_AMBUSH_MAX_SECONDS: f32 = 6.0;
+/// How long the knockdown holds the player down (s). Carried in `Knockdown`'s `damage`-shaped
+/// field, same trick `GrabStart` already uses.
+pub(super) const PHANTOM_KNOCKDOWN_SECONDS: f32 = 2.0;
+/// Shove speed on connect (m/s), same carrier as `Knockback`.
+pub(super) const PHANTOM_KNOCKDOWN_FORCE: f32 = 6.0;
+
 // ── ADR-053: it gives your own voice back ────────────────────────────────────────────────────────
 //
 // It already steals the name, the face and the posture. The voice was the one thing left, and it
@@ -860,10 +882,9 @@ pub(super) fn in_view_cone(heading: f32, from: Vec3, target: Vec3) -> bool {
 }
 
 /// ADR-016 slice 3a — the robapieles' behavioral FSM. Drives how it relates to the nearest real
-/// player. Six live states: `Wander`, `Spotted`, `Stalk`, `Statue`, `Sprint` and `Search`
-/// (last-known-position hunting, ADR-040). Corner-PEEKING was planned alongside SEARCH and is
-/// the only piece still unbuilt — there is no `Peek` variant. PURELY BEHAVIORAL — no wire flag;
-/// the state is observable only by watching, never by reading packets.
+/// player. PURELY BEHAVIORAL — no wire flag; the state is observable only by watching, never by
+/// reading packets. As of ADR-075/076 the corner-peek and the disguised ambush that were once
+/// documented as missing are both built (`Peek`, `Ambush`) — see their own doc comments below.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum PhantomState {
     /// Erratic patrol: walks its heading, pauses to "look at walls", fakes pickups, does the
@@ -879,6 +900,16 @@ pub(super) enum PhantomState {
     Statue,
     /// Lunges straight at the player with a ramped speed; "attacks" (anim-only) at point blank.
     Sprint,
+    /// ADR-076 — the disguised charge. Entered only from `Stalk`, only while hungry, only when
+    /// the player is NOT looking (the same cone STATUE reads, in reverse), and only once per
+    /// hunt. Runs at `PHANTOM_AMBUSH_SPEED` — a jogging player's pace, deliberately short of
+    /// `Sprint`'s ramp — because until the moment it connects this is meant to read as a person
+    /// running toward you, maybe to help. Does NOT reveal (the entire point), and unlike `Peek`
+    /// it IS on `hear_noises`' committed-lunge list: this is a charge in progress, not a pause.
+    /// Connecting knocks the player down and moves straight into `Unmasking`, still wearing the
+    /// skin, exactly as `Statue`'s own timeout does. A failed run costs a cooldown and returns to
+    /// `Stalk` — NEVER to `Hunting`, which would reveal what the failure was supposed to hide.
+    Ambush,
     /// ADR-040 Fase 4 — lost you, and goes to look where it last saw you instead of forgetting on
     /// the spot. This is the counterweight to the pathfinding: without it, a creature that always
     /// routes optimally toward your exact position is a homing missile. With it, hiding works, and
@@ -986,6 +1017,11 @@ pub(super) enum PhantomAttackKind {
     /// ADR-050 point 9 — you got it off you. The creature returns to stalking and does NOT feed, so
     /// it is still hungry and still around: you won, but only this exchange.
     GrabRelease,
+    /// ADR-076 — the disguised ambush connecting. `f32` is seconds of stun (same trick as
+    /// `GrabStart`: reused field, not a new one), `(f32, f32)` is the shove in the same (dx, dz)
+    /// carrier `Knockback` already uses. ZERO health damage — this is the one strike kind that
+    /// never touches `player.stats`, by design (ADR-076 point 3: "solo aturde").
+    Knockdown(f32, f32, f32),
 }
 
 /// ADR-047 — THE single gate every noise passes through, whichever door it came in by: the local
@@ -1014,6 +1050,7 @@ pub(super) fn phantom_attack_kind_name(kind: PhantomAttackKind) -> &'static str 
         PhantomAttackKind::Knockback(_, _) => "knockback",
         PhantomAttackKind::GrabStart(_) => "grab_start",
         PhantomAttackKind::GrabRelease => "grab_release",
+        PhantomAttackKind::Knockdown(_, _, _) => "knockdown",
     }
 }
 
@@ -1237,6 +1274,12 @@ pub(super) struct PhantomMover {
     /// fresh: re-acquisition, give-up, and `enter_search_after_hunt`. A detour to a hideout does
     /// NOT reset it — one peek per hunt-search, hideouts included.
     pub(super) peeked_this_search: bool,
+    /// ADR-076 — seconds left before another `Ambush` may be attempted. Ages in
+    /// `resolve_mover_tick` alongside `strike_recover`/`enraged_for`.
+    pub(super) ambush_cooldown: f32,
+    /// ADR-076 — whether the CURRENT hunt has already spent its one ambush. Reset on a kill
+    /// (`tick_grab`) and wherever the hunt itself ends (give-up, lost to Wander).
+    pub(super) ambushed_this_hunt: bool,
     /// Seconds left of the post-strike commitment. While positive the lunge holds (still revealed)
     /// and cannot land a second blow; at zero it bounces to STALK.
     pub(super) strike_recover: f32,
@@ -1951,6 +1994,8 @@ impl PhantomDriver {
             search_fallback: None,
             peek_for: 0.0,
             peeked_this_search: false,
+            ambush_cooldown: 0.0,
+            ambushed_this_hunt: false,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
@@ -2058,6 +2103,9 @@ impl PhantomDriver {
                         | PhantomState::Grab
                         | PhantomState::Unmasking
                         | PhantomState::Hunting
+                        // ADR-076: a committed lunge, same reasoning as SPRINT — this one just
+                        // happens to still be wearing the skin while it runs.
+                        | PhantomState::Ambush
                 ) {
                     continue;
                 }
@@ -2710,9 +2758,11 @@ impl PhantomDriver {
             self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
             self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
             self.movers[i].noise_expiry = None;
-            // ADR-075: no reserve point, and no spent peek, carries over into the next hunt.
+            // ADR-075/076: no reserve point, no spent peek, and no spent ambush carries over into
+            // the next hunt.
             self.movers[i].search_fallback = None;
             self.movers[i].peeked_this_search = false;
+            self.movers[i].ambushed_this_hunt = false;
             // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
             // never fought the journey — but without this the phantom would finish a
             // 500 m trip and immediately start walking all the way back to its spawn.
@@ -3010,6 +3060,7 @@ impl PhantomDriver {
             // killed them is not still coming. Rage does not survive a kill either.
             self.movers[i].hunger = 1.0;
             self.movers[i].enraged_for = 0.0;
+            self.movers[i].ambushed_this_hunt = false; // ADR-076: the hunt is over, fed and done
             self.movers[i].state = PhantomState::Wander;
             self.movers[i].state_timer = 0.0;
             self.movers[i].grab_victim = None;
@@ -3176,6 +3227,31 @@ impl PhantomDriver {
             self.movers[i].state_timer = 0.0;
             info!(
                 "MPTRACE step=PH_STATUE event=phantom_statue phantom_id={} dist={:.2}",
+                id, dist
+            );
+            return;
+        }
+
+        // ADR-076 — THE AMBUSH ROLL. Only while genuinely hungry (not merely "not sated" —
+        // `is_hunting_hungry` is the tighter band), only once per hunt, only off cooldown, only
+        // in range, and only when the player is NOT looking (the STATUE cone read backwards —
+        // check above already returned if it WAS looking, so reaching here already means "no").
+        // Scaled by `impulse()` exactly like the ordinary lunge roll: the same temperament that
+        // makes a creature erratic makes it more likely to try the trick.
+        if self.movers[i].is_hunting_hungry()
+            && !self.movers[i].ambushed_this_hunt
+            && self.movers[i].ambush_cooldown <= 0.0
+            && self.movers[i].strike_recover <= 0.0
+            && (PHANTOM_AMBUSH_MIN_DISTANCE..=PHANTOM_AMBUSH_MAX_DISTANCE).contains(&dist)
+            && rand::random::<f32>() < PHANTOM_AMBUSH_CHANCE * self.movers[i].impulse()
+        {
+            self.movers[i].ambushed_this_hunt = true;
+            self.movers[i].state = PhantomState::Ambush;
+            self.movers[i].state_timer = 0.0;
+            // Silence is the whole design here — no vocal on entry. It has to sound like nothing
+            // is happening yet.
+            info!(
+                "MPTRACE step=PH_AMBUSH event=phantom_ambush_begins phantom_id={} dist={:.2}",
                 id, dist
             );
             return;
@@ -3684,6 +3760,129 @@ impl PhantomDriver {
         }
     }
 
+    /// AMBUSH (ADR-076) — the disguised charge. Structurally `Sprint` with the costume still on:
+    /// same steering, same wedge give-up, same thin-line strike check — but no ramp, no stamina,
+    /// no hesitation (a hesitating "player" would look wrong, not tense), and it NEVER reveals.
+    ///
+    /// A failed run — lost, wedged, or timed out — costs `PHANTOM_AMBUSH_COOLDOWN` and ARMS
+    /// `strike_recover` before returning to `Stalk`. That arming matters: without it, a `Stalk`
+    /// re-entered with `state_timer` reset but `patience()` already exceeded would fire
+    /// `enter_sprint()` on the very next tick — the failed trick would hand you a free reveal.
+    /// Never returns to `Hunting` for the same reason: `Hunting` is revealed, and a failed ambush
+    /// must cost nothing but the cooldown, or the trick would be worse than not trying it.
+    fn tick_ambush(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+
+        let fail = |driver: &mut Self| {
+            driver.movers[i].ambush_cooldown = PHANTOM_AMBUSH_COOLDOWN;
+            // See the doc comment: this is what stops a failed run from handing out a free
+            // reveal the instant Stalk re-evaluates its own (already-expired) patience.
+            driver.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
+            driver.movers[i].state = PhantomState::Stalk;
+            driver.movers[i].state_timer = 0.0;
+        };
+
+        let dist_opt = target.map(|(_, _, d, _)| d);
+        if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS)
+            || self.movers[i].state_timer > PHANTOM_AMBUSH_MAX_SECONDS
+        {
+            fail(self);
+            info!(
+                "MPTRACE step=PH_AMBUSH event=phantom_ambush_failed phantom_id={} reason=lost_or_timeout",
+                id
+            );
+            return;
+        }
+        // No front/behind split, unlike SPRINT's own strike — a knockdown does not care which way
+        // you were facing — so the yaw component of `target` goes unused here.
+        let (tid, tpos, dist, _) = target.unwrap();
+        self.movers[i].last_known_player_pos = Some(tpos);
+        self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
+
+        if self.movers[i].blocked_ticks >= PHANTOM_SPRINT_GIVEUP_TICKS {
+            self.movers[i].blocked_ticks = 0;
+            fail(self);
+            info!(
+                "MPTRACE step=PH_AMBUSH event=phantom_ambush_failed phantom_id={} reason=wedged",
+                id
+            );
+            return;
+        }
+
+        // Thin line, same reasoning as SPRINT's own strike check: extra reach must never punch
+        // through geometry. Unlike SPRINT there is no front/behind split — this is one kind, and
+        // it does not care which way you are facing.
+        let in_reach = dist < PHANTOM_ATTACK_REACH
+            && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+        if in_reach {
+            let dx = tpos.x - from.x;
+            let dz = tpos.z - from.z;
+            let len = (dx * dx + dz * dz).sqrt();
+            let (ix, iz) = match len > 0.001 {
+                true => (
+                    dx / len * PHANTOM_KNOCKDOWN_FORCE,
+                    dz / len * PHANTOM_KNOCKDOWN_FORCE,
+                ),
+                false => (0.0, 0.0),
+            };
+            self.attacks.push(PhantomAttack {
+                victim: tid,
+                kind: PhantomAttackKind::Knockdown(PHANTOM_KNOCKDOWN_SECONDS, ix, iz),
+            });
+            // CRITICAL — armed on the SAME tick as the knockdown, not on entering `Unmasking`.
+            // The chronology this buys: knockdown t=0 → skin tears t=1.6 (`tick_unmasking`'s own
+            // clock) → `enter_sprint()` → player back up at t=2.0 → first possible strike at
+            // t=2.5. Without this, the Sprint born from `Unmasking` could land on a player who is
+            // still on the ground — a blow from behind on someone who cannot move is a `GrabStart`
+            // by the SAME rule Sprint always uses, and a knockdown would be a death sentence
+            // instead of the scare ADR-076 designed.
+            self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
+            // Ritual entry into UNMASKING, identical to STATUE's own timeout — still dressed,
+            // still screaming, the tear still a beat and a half away.
+            self.movers[i].state = PhantomState::Unmasking;
+            self.movers[i].state_timer = 0.0;
+            self.movers[i].vocal_cooldown = 0.0;
+            self.movers[i].try_vocalize(VOCAL_UNMASK_SCREAM);
+            info!(
+                "MPTRACE step=PH_AMBUSH event=phantom_knockdown phantom_id={} victim_id={}",
+                id, tid
+            );
+            return;
+        }
+
+        // Steering identical to SPRINT (same shortcut, same A* fallback), sprint-speed turning
+        // (a jogger still turns like a person, just not like a predator mid-lunge), and a FIXED
+        // speed — no ramp, no stamina. It either arrives looking human, or it does not arrive.
+        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let heading = self.movers[i].heading;
+        let speed = PHANTOM_AMBUSH_SPEED * self.movers[i].speed_scale();
+        let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
+        let desired = Vec3::new(
+            from.x + dir.x * speed * ctx.dt,
+            from.y,
+            from.z + dir.z * speed * ctx.dt,
+        );
+        let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+        let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+        self.movers[i].note_step_progress(advance, speed * ctx.dt);
+        let yaw = heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            // "run", not "idle": it is disguised, not motionless — the relay's animation field is
+            // cosmetic-only and this is exactly what a sprinting player looks like from outside.
+            peer.update_player_state(resolved.to_array(), yaw, "run".into());
+        }
+    }
+
     /// Advance every phantom one step at `dt` (entity-tick delta). Reads the phantom's
     /// current pose from its PeerConnection, resolves a walk-step through sim-only collision,
     /// and writes the resolved pose (grounded Y from the resolver + facing) back. A fully
@@ -3798,6 +3997,7 @@ impl PhantomDriver {
                 PhantomState::Stalk => self.tick_stalk(mt, &mut ctx),
                 PhantomState::Statue => self.tick_statue(mt, &mut ctx),
                 PhantomState::Sprint => self.tick_sprint(mt, &mut ctx),
+                PhantomState::Ambush => self.tick_ambush(mt, &mut ctx),
                 PhantomState::Search => self.tick_search(mt, &mut ctx),
                 PhantomState::Peek => self.tick_peek(mt, &mut ctx),
                 PhantomState::Flee => self.tick_flee(mt, &mut ctx),
@@ -3872,6 +4072,7 @@ impl PhantomDriver {
         self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - ctx.dt).max(0.0);
         self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - ctx.dt).max(0.0);
         self.movers[i].enraged_for = (self.movers[i].enraged_for - ctx.dt).max(0.0);
+        self.movers[i].ambush_cooldown = (self.movers[i].ambush_cooldown - ctx.dt).max(0.0);
         // BUG FIX — `winded_for` used to be ticked ONLY inside `tick_sprint`, which was fine while
         // SPRINT was the only state that could hold it. ADR-051 added `Hunting`, and a lunge that
         // gives up wedged leaves SPRINT *while still out of breath*: nothing downstream decremented
