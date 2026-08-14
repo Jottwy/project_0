@@ -242,6 +242,56 @@ pub(crate) fn relay_destinations(net: &NetworkManager) -> Vec<PeerId> {
         .collect()
 }
 
+/// E1 / ADR-074 (fase 1) — radio del área de interés de las poses, en metros.
+///
+/// **Lo elige el DISEÑO, no la red.** La fase `stalk` del robapieles es acecho a distancia: si su
+/// proxy dejara de existir a 75 m, el jugador nunca vería al que le sigue, y esa es la mecánica de
+/// horror entera. Por eso ADR-074 prohíbe un radio distinto para el fantasma —sería un oráculo:
+/// todo lo que apareciera más lejos sería siempre él— y obliga a que el radio único sea el que el
+/// diseño necesita.
+///
+/// 100 m es ese número. Lo que cuesta, medido antes de fijarlo (sonda `aoi_pose_relay_savings`,
+/// `perf-baseline.md`): con los jugadores repartidos por el mapa sobrevive el **19–21 %** del
+/// relay, y el porcentaje NO empeora al crecer N — 21 % con 8 jugadores, 21 % con 16, 19 % con
+/// 32. Es decir, el AOI convierte el O(N²) en algo proporcional a la densidad LOCAL, que es
+/// justamente lo que hacía falta.
+///
+/// Con todos los jugadores en la misma sala no ahorra nada, y eso es correcto: ahí sí hay N²
+/// poses que cada uno necesita ver.
+pub const AOI_POSE_RADIUS_M: f32 = 100.0;
+
+/// E1 / ADR-074 (fase 1) — multiplicador de salida de la histéresis. Un par entra en el relay a
+/// `AOI_POSE_RADIUS_M` y no sale hasta `AOI_POSE_RADIUS_M × este factor`; sin esa banda muerta,
+/// dos jugadores andando sobre la frontera se verían parpadear varias veces por segundo.
+pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
+
+/// E1 / ADR-074 (fase 1): ¿debe viajar la pose de `src` a `dest` esta ronda?
+///
+/// Pura y sin red para poder probar la histéresis sin sockets. `was_relaying` es lo que este par
+/// hacía en la ronda anterior: quien ya estaba dentro aguanta hasta el radio de salida, quien
+/// estaba fuera necesita cruzar el de entrada.
+///
+/// **Decide por POSICIÓN y solo por posición** — nunca consulta si el origen es un fantasma
+/// (ADR-016): si el filtro se comportara distinto con el robapieles, la propia asimetría lo
+/// delataría, que es el invariante que ADR-074 declara innegociable.
+pub fn aoi_pose_should_relay(
+    src_pos: [f32; 3],
+    dest_pos: [f32; 3],
+    was_relaying: bool,
+    radius: f32,
+) -> bool {
+    let dx = src_pos[0] - dest_pos[0];
+    let dy = src_pos[1] - dest_pos[1];
+    let dz = src_pos[2] - dest_pos[2];
+    let dist_sq = dx * dx + dy * dy + dz * dz;
+    let threshold = if was_relaying {
+        radius * AOI_POSE_EXIT_FACTOR
+    } else {
+        radius
+    };
+    dist_sq <= threshold * threshold
+}
+
 /// ADR-046 â€” how far a voice carries, in metres. Sits between the two peer sounds that already
 /// exist: a footstep dies at 22 m and a pain grunt at 28 m (`ProxyFootstepHook`,
 /// `ProxyDamageAudioHook`), so a voice reaching 25 m is louder than a step and about as far as a
@@ -302,7 +352,10 @@ pub(crate) fn voice_destinations(net: &NetworkManager, speaker: PeerId) -> Vec<P
 /// PlayerUpdate receive path. Host-only and a no-op below two peers (a joiner's peer set
 /// is just {host}, nothing to relay; with one joiner there is no second joiner to inform).
 /// Sent at the player-update cadence (`NET_BROADCAST_EVERY`, 10 Hz).
-pub async fn broadcast_peer_poses(net: &NetworkManager) {
+/// E1 / ADR-074 (fase 1): `&mut` porque el relay mantiene el estado de histéresis del AOI
+/// (`aoi_pose_pairs`). Sigue emitiendo a 10 Hz — lo que cambia es A QUIÉN, no qué ni cuándo, así
+/// que no toca un byte del wire (mismo criterio que ADR-071 y F0.8).
+pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     if net.peers.len() < 2 {
         return;
     }
@@ -320,12 +373,19 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
     if dest_ids.is_empty() {
         return; // only phantoms present: nobody to inform
     }
-    let poses: Vec<(PeerId, PacketPayload)> = net
+    // E1: las posiciones de los destinos, para el filtro de AOI. Se toman ANTES del bucle porque
+    // dentro ya no se puede leer `net.peers` (el envío toma prestado `net`).
+    let dest_pos: std::collections::HashMap<PeerId, [f32; 3]> = dest_ids
+        .iter()
+        .filter_map(|id| net.peers.get(id).map(|p| (*id, p.position)))
+        .collect();
+    let poses: Vec<(PeerId, [f32; 3], PacketPayload)> = net
         .peers
         .values()
         .map(|p| {
             (
                 p.id,
+                p.position,
                 PacketPayload::PlayerUpdate {
                     position: p.position,
                     rotation: p.rotation,
@@ -350,19 +410,51 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
         })
         .collect();
 
-    for (src_id, payload) in &poses {
+    // E1 (ADR-074 fase 1): decidir ANTES de enviar qué pares siguen dentro del AOI, y dejar el
+    // estado de histéresis ya actualizado. Se hace en un paso aparte porque el envío toma
+    // prestado `net` y aquí hace falta mutar `net.aoi_pose_pairs`.
+    // Los destinos que aún interesan, POR ORIGEN. Se agrupa así (en vez de una lista plana de
+    // pares) para que el bucle de envío consulte una sola vez por origen y no haga una búsqueda
+    // por cada par — con 32 peers, una lista plana convertiría este relay en O(N³).
+    let mut relayed: std::collections::HashMap<PeerId, Vec<PeerId>> =
+        std::collections::HashMap::with_capacity(poses.len());
+    let mut next_pairs = std::collections::HashSet::with_capacity(net.aoi_pose_pairs.len().max(16));
+    for (src_id, src_pos, _) in &poses {
+        for &dest_id in &dest_ids {
+            if dest_id == *src_id {
+                continue; // never echo a peer its own pose
+            }
+            let Some(dpos) = dest_pos.get(&dest_id) else {
+                continue;
+            };
+            let was = net.aoi_pose_pairs.contains(&(*src_id, dest_id));
+            if aoi_pose_should_relay(*src_pos, *dpos, was, AOI_POSE_RADIUS_M) {
+                next_pairs.insert((*src_id, dest_id));
+                relayed.entry(*src_id).or_default().push(dest_id);
+            }
+        }
+    }
+    let relayed_count: usize = relayed.values().map(|d| d.len()).sum();
+
+    for (src_id, payload) in poses.iter().map(|(id, _, p)| (id, p)) {
+        // E1: si este origen no le interesa a nadie, ni siquiera se serializa.
+        let Some(dests) = relayed.get(src_id) else {
+            continue;
+        };
         // F0.2: encodear UNA vez por origen en vez de una vez por par (origen, destino). Los
         // bytes no dependen del destino —el header lleva el id del origen y la secuencia de un
         // no-fiable es 0—, así que esto emite exactamente los mismos datagramas: P
         // serializaciones por ronda en vez de P×D.
         let data = net.encode_relay_as(*src_id, payload);
-        for &dest_id in &dest_ids {
-            if dest_id == *src_id {
-                continue; // never echo a peer its own pose
-            }
+        for &dest_id in dests {
             net.send_prepared_unreliable(dest_id, &data).await;
         }
     }
+
+    // Reemplazo entero, no unión: un par que dejó de cumplir el radio de SALIDA tiene que
+    // desaparecer del estado, o la histéresis lo mantendría vivo para siempre. Y los pares de un
+    // peer que se fue se van con él sin necesidad de purga aparte.
+    net.aoi_pose_pairs = next_pairs;
 
     // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
     // the relay's datagram rate so the host log can be measured in play-test. Since ADR-043
@@ -371,14 +463,20 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
     if net.session_start.elapsed().as_millis() % 1000 < 120 {
         let p = poses.len();
         let d = dest_ids.len();
-        let per_call = p * d - d.min(p); // each real destination skips its own pose
+        // E1: `relay_datagrams_per_call` sigue siendo LO QUE DE VERDAD SALE, para que el número
+        // que este log lleva midiendo desde ADR-015 no cambie de significado a mitad de serie.
+        // `without_aoi` es lo que habría salido sin filtro (cada destino real se salta su propia
+        // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
+        let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} aoi_radius_m={:.0}",
             net.local_id,
             p,
             d,
-            per_call,
-            per_call * 10
+            relayed_count,
+            relayed_count * 10,
+            without_aoi,
+            AOI_POSE_RADIUS_M
         );
     }
 }
@@ -1146,6 +1244,72 @@ mod chunk_broadcast_tests {
             joiner.peers[&1].reliable_queue.len(),
             1,
             "el handoff de propiedad SI se confirma — quien cede la autoridad quiere saber que llego"
+        );
+    }
+
+    // â”€â”€â”€ E1 / ADR-074 fase 1: area de interes de las poses â”€â”€â”€
+
+    const NEAR: [f32; 3] = [0.0, 1.8, 0.0];
+
+    #[test]
+    fn a_peer_inside_the_radius_gets_the_pose_and_one_far_away_does_not() {
+        let far = [0.0, 1.8, AOI_POSE_RADIUS_M + 50.0];
+        assert!(
+            aoi_pose_should_relay(NEAR, [5.0, 1.8, 5.0], false, AOI_POSE_RADIUS_M),
+            "dos jugadores en la misma sala tienen que verse"
+        );
+        assert!(
+            !aoi_pose_should_relay(NEAR, far, false, AOI_POSE_RADIUS_M),
+            "a 150 m no hay nada que replicar: es todo el ahorro de E1"
+        );
+    }
+
+    /// La histéresis, que es la razón de que el estado viva en el host. Un par que YA se estaba
+    /// relayando aguanta hasta el radio de salida; uno nuevo necesita cruzar el de entrada. Sin
+    /// esta banda muerta, alguien caminando sobre la frontera parpadea a 10 Hz.
+    #[test]
+    fn the_exit_radius_is_wider_than_the_entry_one() {
+        // Entre los dos radios: 110 m con R=100 y factor 1,2 (salida a 120).
+        let between = [0.0, 1.8, 110.0];
+        assert!(
+            aoi_pose_should_relay(NEAR, between, true, AOI_POSE_RADIUS_M),
+            "quien ya se estaba viendo NO desaparece por cruzar el radio de entrada"
+        );
+        assert!(
+            !aoi_pose_should_relay(NEAR, between, false, AOI_POSE_RADIUS_M),
+            "pero quien estaba fuera tampoco entra hasta cruzar el de entrada"
+        );
+        // Más allá del radio de salida: fuera pase lo que pase.
+        let beyond = [0.0, 1.8, AOI_POSE_RADIUS_M * AOI_POSE_EXIT_FACTOR + 1.0];
+        assert!(
+            !aoi_pose_should_relay(NEAR, beyond, true, AOI_POSE_RADIUS_M),
+            "pasado el radio de salida, ni la histéresis lo sostiene"
+        );
+    }
+
+    /// ADR-016 + ADR-074 decisión 1: el filtro decide por POSICIÓN y nada más. Este test fija que
+    /// la función no tiene por dónde enterarse de qué es un fantasma — si algún día alguien le
+    /// añadiera un parámetro `is_phantom`, la asimetría delataría al robapieles a 100 m y el
+    /// disfraz entero dejaría de funcionar.
+    #[test]
+    fn the_filter_cannot_tell_a_phantom_from_a_player() {
+        let a = [10.0, 1.8, 10.0];
+        let b = [40.0, 1.8, 40.0];
+        // Misma distancia, mismo veredicto: no hay tercer argumento que pueda cambiarlo.
+        assert_eq!(
+            aoi_pose_should_relay(a, b, false, AOI_POSE_RADIUS_M),
+            aoi_pose_should_relay(b, a, false, AOI_POSE_RADIUS_M),
+            "el filtro tiene que ser simétrico: quién es el origen no puede importar"
+        );
+    }
+
+    /// La distancia es 3D. Dos jugadores en la misma (x,z) pero en capas distintas no están cerca.
+    #[test]
+    fn height_counts_towards_the_radius() {
+        let below = [0.0, 1.8 - (AOI_POSE_RADIUS_M + 20.0), 0.0];
+        assert!(
+            !aoi_pose_should_relay(NEAR, below, false, AOI_POSE_RADIUS_M),
+            "misma columna pero 120 m más abajo no es 'cerca'"
         );
     }
 
@@ -2264,6 +2428,99 @@ mod uplink_probe {
             "\nNota: el ahorro de F0.8 depende de cuántos chunks cambian de verdad por ronda, que \
              es lo que no se puede saber sin una sesión real — por eso van los tres extremos y no \
              un número inventado. El de F0.1 depende del ritmo de interacción, igual."
+        );
+    }
+
+    /// SONDA DE MEDICIÓN para E1 (ADR-074): **la medición previa que el propio ADR exige antes de
+    /// fijar `R_pose`** — "cuántos peers caen dentro de 100 m en un mapa real, antes de asumir que
+    /// el radio ancho es caro".
+    ///
+    /// ```text
+    /// cargo test --release aoi_pose_relay_savings -- --ignored --nocapture
+    /// ```
+    ///
+    /// Qué decide: hoy el relay es O(N²) —la pose de cada peer va a todos los demás— y es la curva
+    /// que domina por encima de ~16 jugadores. Con AOI el coste pasa a ser proporcional a los
+    /// pares que de verdad están cerca, así que el ahorro **no depende del radio en abstracto sino
+    /// de cómo se reparten los jugadores por el mapa**. Un radio generoso puede salir casi gratis
+    /// si la gente se dispersa, y no ahorrar nada si todos están en la misma sala — que es
+    /// exactamente lo que hay que saber ANTES de elegir el número.
+    ///
+    /// El reparto se sintetiza con un LCG determinista (nada de `Math::random`, que además está
+    /// prohibido en este repo por reproducibilidad) sobre el área que ocupan los 49 chunks
+    /// cargados: 7×7 chunks de 50 m = 350×350 m.
+    #[test]
+    #[ignore = "sonda de medición: imprime, no afirma"]
+    fn aoi_pose_relay_savings() {
+        /// Reparto sintético de N jugadores. `spread_m` es el radio del área en la que caen: uno
+        /// pequeño simula "todos juntos en una sala", uno grande "cada uno en su zona".
+        fn positions(n: usize, spread_m: f32, seed: u64) -> Vec<(f32, f32)> {
+            let mut s = seed;
+            let mut next = || {
+                // LCG de Numerical Recipes: determinista y suficiente para repartir puntos.
+                s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+                ((s >> 16) & 0xFFFF) as f32 / 65535.0
+            };
+            (0..n)
+                .map(|_| {
+                    let x = (next() - 0.5) * 2.0 * spread_m;
+                    let z = (next() - 0.5) * 2.0 * spread_m;
+                    (x, z)
+                })
+                .collect()
+        }
+
+        /// Pares ORDENADOS (emisor, receptor) dentro del radio. Es la unidad del relay: la pose de
+        /// A viaja a B si B está dentro del AOI de A, y se cuenta una vez por sentido.
+        fn pairs_within(pos: &[(f32, f32)], radius: f32) -> usize {
+            let mut n = 0;
+            for (i, a) in pos.iter().enumerate() {
+                for (j, b) in pos.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    let d = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+                    if d <= radius {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        }
+
+        let pose_wire = wire_len(&pose_payload(3));
+        println!("\n=== E1 / ADR-074: ahorro del AOI en el relay de poses ===");
+        println!(
+            "PlayerUpdate en el aire: {pose_wire} B · relay a {POSE_HZ} Hz · área de 49 chunks = 350×350 m\n"
+        );
+
+        for peers in [8usize, 16, 32] {
+            let all_pairs = peers * (peers - 1);
+            println!("--- {peers} jugadores (hoy: {all_pairs} datagramas por ronda, O(N²)) ---");
+            for (label, spread) in [
+                ("todos en una sala (radio 25 m)", 25.0f32),
+                ("un par de grupos (radio 80 m)", 80.0),
+                ("repartidos por el mapa (radio 175 m)", 175.0),
+            ] {
+                let pos = positions(peers, spread, 0x5EED);
+                print!("  {label:36}");
+                for radius in [50.0f32, 75.0, 100.0, 150.0] {
+                    let p = pairs_within(&pos, radius);
+                    let pct = p as f64 * 100.0 / all_pairs as f64;
+                    print!(" | R={radius:>3.0}: {pct:>3.0}%");
+                }
+                println!();
+            }
+            // El caso que fija el techo: con TODOS dentro del radio, el AOI no ahorra nada y la
+            // salida es la de hoy. Se imprime para que el número no se lea como una promesa.
+            let worst_kbps = all_pairs as f64 * POSE_HZ * pose_wire as f64 / 1024.0;
+            println!("  peor caso (todos dentro del radio): {worst_kbps:.0} KB/s, igual que hoy\n");
+        }
+
+        println!(
+            "Cómo leerlo: el porcentaje es cuánto del relay SOBREVIVE al filtro; 100 % = no ahorra \
+             nada. El radio se elige por DISEÑO (el acecho del robapieles necesita verse de lejos, \
+             ADR-074 decisión 1), y esta tabla dice lo que cuesta esa elección — no al revés."
         );
     }
 }

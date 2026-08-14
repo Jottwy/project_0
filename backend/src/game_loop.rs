@@ -1549,7 +1549,9 @@ pub async fn run(
                 // ADR-015: relay each peer's full pose (rotation+animation, not just the
                 // position the roster carries) so joiners see other joiners gesture/face
                 // correctly. Host-only; no-op below two peers.
-                sync::broadcast_peer_poses(&net).await;
+                // E1 (ADR-074): `&mut` — el relay filtra por área de interés y mantiene el estado
+                // de histéresis de los pares que está relayando.
+                sync::broadcast_peer_poses(&mut net).await;
                 // ADR-071: `&mut` now, because each of these owns a send gate that it updates when
                 // it decides a round goes out. They still run at 10 Hz — what changed is that a
                 // roster nobody touched since the last round returns immediately.

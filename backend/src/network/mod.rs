@@ -200,6 +200,15 @@ pub struct NetworkManager {
     /// dirty de la sesión dispara sin esperar a la ventana, igual que ADR-071 no hace esperar al
     /// heartbeat a la primera ronda.
     pub world_sync_last_sent: Option<std::time::Instant>,
+    /// E1 / ADR-074 (fase 1): los pares `(origen, destino)` cuya pose se está relayando ahora
+    /// mismo. Es el estado de la HISTÉRESIS, que vive en la autoridad y no en el cliente: un par
+    /// entra al acercarse a `AOI_POSE_RADIUS_M` y no sale hasta pasar `AOI_POSE_RADIUS_M × 1,2`.
+    ///
+    /// Sin histéresis, dos jugadores caminando justo sobre la frontera se verían aparecer y
+    /// desaparecer varias veces por segundo. Y vive AQUÍ y no en Unity porque dos radios (uno del
+    /// host y otro del cliente) pueden discrepar, y el que discrepa produce exactamente el
+    /// parpadeo que la histéresis viene a evitar (ADR-074 decisión 2).
+    pub aoi_pose_pairs: std::collections::HashSet<(PeerId, PeerId)>,
     /// F0.3 (E0, ADR-073): eventos producidos FUERA del camino de recepción, que
     /// `process_incoming` emite junto a los suyos. Hoy solo lo usa `send_verdict` al desbordar la
     /// cola de un peer: así el desborde termina en la misma `PeerDisconnected` que ya manejan
@@ -419,6 +428,7 @@ impl NetworkManager {
             chunk_gates: std::collections::HashMap::with_capacity(64),
             world_sync_dirty: false,
             world_sync_last_sent: None,
+            aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
             pending_events: Vec::new(),
             processed_stp_drops: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             stp_buildings: Vec::new(),
