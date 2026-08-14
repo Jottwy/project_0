@@ -1513,6 +1513,14 @@ pub async fn run(
             sync::broadcast_chunk_states(&mut net, &world, player.position).await;
         }
 
+        // F0.1: consume el flag de world_sync coalescido en CADA tick (no solo en los de
+        // broadcast periódico), para que la latencia tras vencer la ventana de 300 ms sea de un
+        // tick, no de hasta 100 ms. No-op sin marca dirty; `is_host` porque solo el host despacha
+        // world_sync (mismo guard que `broadcast_chunk_states`, aquí explícito por claridad).
+        if net.is_host {
+            sync::maybe_flush_world_sync(&mut net, &world, &player).await;
+        }
+
         // Heartbeat every 1s.
         if tick.is_multiple_of(HEARTBEAT_EVERY) {
             net.retry_pending_connection().await;
@@ -5097,7 +5105,9 @@ async fn process_authoritative_interaction(
                         world.visible_item_views().len(),
                         world.visible_entity_views().len()
                     );
-                    sync::broadcast_world_sync(net, world, player).await;
+                    // F0.1: ya no dispara el goteo del mundo entero por CADA pickup — arma el
+                    // flag; el tick lo despacha coalescido (ver `sync::maybe_flush_world_sync`).
+                    sync::mark_world_sync_dirty(net);
                 }
                 Err(reason) => {
                     info!(
@@ -5133,7 +5143,8 @@ async fn process_authoritative_interaction(
                         world.visible_item_views().len(),
                         world.visible_entity_views().len()
                     );
-                    sync::broadcast_world_sync(net, world, player).await;
+                    // F0.1: mismo coalescing que el pickup — ver el comentario de arriba.
+                    sync::mark_world_sync_dirty(net);
                 }
                 None => {
                     info!(

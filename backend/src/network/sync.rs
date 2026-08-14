@@ -767,6 +767,59 @@ pub async fn broadcast_world_sync(net: &mut NetworkManager, world: &World, playe
     }
 }
 
+/// F0.1 (enmienda ADR-073, E0): la ventana de coalescing de `maybe_flush_world_sync`. Medido en
+/// `perf-baseline.md`: un goteo completo son 84,9 KB por peer; una ráfaga de 20 pickups sin
+/// coalescer eran 20 goteos (13,6 MB a 8 peers). A 300 ms la amplificación cae ~95 % frente al
+/// disparo por evento, y sigue por debajo del margen de reacción humana — un objeto recogido no
+/// puede leerse como "item fantasma" que otro peer intenta coger a su vez.
+///
+/// La sonda de F0.0 confirmó además que la línea base la domina `broadcast_chunk_states` (77 %),
+/// no este goteo (5,6 Mbps sostenido si se disparara 1/s, contra 35,8 Mbps totales): este fix
+/// mata el PICO de una ráfaga de interacciones, no la línea base — dicho explícito en
+/// `SCALING-ROADMAP.md`, no una promesa incumplida si el número total apenas se mueve.
+pub const WORLD_SYNC_COALESCE_WINDOW: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// F0.1: marca el mundo como "cambiado desde el último goteo despachado". Sustituye a la llamada
+/// directa a `broadcast_world_sync` en los dos sitios legacy (`game_loop.rs`, pickup y drop):
+/// antes, CADA interacción disparaba el goteo del mundo entero a todos los peers; ahora solo
+/// arma el flag, y `maybe_flush_world_sync` decide cuándo sale.
+pub fn mark_world_sync_dirty(net: &mut NetworkManager) {
+    net.world_sync_dirty = true;
+}
+
+/// Decisión pura de `maybe_flush_world_sync`, separada para poder probarla sin reloj real ni
+/// red — mismo motivo que `RosterGate::should_send` recibe `now` explícito en vez de leerlo él
+/// mismo. `last_sent: None` (nunca se despachó) siempre está listo: la primera marca dirty de la
+/// sesión no espera a la ventana, igual que ADR-071 no hace esperar al heartbeat a la primera
+/// ronda.
+fn world_sync_ready(
+    dirty: bool,
+    last_sent: Option<std::time::Instant>,
+    now: std::time::Instant,
+    window: std::time::Duration,
+) -> bool {
+    dirty && last_sent.is_none_or(|t| now.duration_since(t) >= window)
+}
+
+/// F0.1: consume el flag como mucho una vez por `WORLD_SYNC_COALESCE_WINDOW`. Se llama en CADA
+/// tick (no solo en los ticks de broadcast periódico) para que la latencia máxima tras vencer la
+/// ventana sea de un tick (~16 ms a 60 Hz), no de hasta 100 ms si se enganchara al bloque de
+/// `NET_BROADCAST_EVERY`.
+pub async fn maybe_flush_world_sync(net: &mut NetworkManager, world: &World, player: &Player) {
+    let now = std::time::Instant::now();
+    if !world_sync_ready(
+        net.world_sync_dirty,
+        net.world_sync_last_sent,
+        now,
+        WORLD_SYNC_COALESCE_WINDOW,
+    ) {
+        return;
+    }
+    net.world_sync_dirty = false;
+    net.world_sync_last_sent = Some(now);
+    broadcast_world_sync(net, world, player).await;
+}
+
 /// Send a chunk transfer to a specific peer (ownership handoff).
 pub async fn send_chunk_transfer(net: &mut NetworkManager, peer_id: PeerId, chunk: &Chunk) {
     let data = chunk_to_sync_data(chunk);
@@ -1088,6 +1141,115 @@ mod chunk_broadcast_tests {
             joiner.peers[&1].reliable_queue.len(),
             1,
             "el handoff de propiedad SI se confirma — quien cede la autoridad quiere saber que llego"
+        );
+    }
+
+    // â”€â”€â”€ F0.1 (enmienda ADR-073): coalescing de broadcast_world_sync por pickup/drop â”€â”€â”€
+
+    #[test]
+    fn a_fresh_dirty_flag_is_ready_without_waiting_for_the_window() {
+        let now = std::time::Instant::now();
+        assert!(
+            world_sync_ready(true, None, now, WORLD_SYNC_COALESCE_WINDOW),
+            "la primera marca de la sesión no puede esperar a una ventana que nunca empezó"
+        );
+    }
+
+    #[test]
+    fn a_clean_flag_is_never_ready_regardless_of_timing() {
+        let now = std::time::Instant::now();
+        assert!(
+            !world_sync_ready(false, None, now, WORLD_SYNC_COALESCE_WINDOW),
+            "sin marca dirty no hay nada que despachar, aunque la ventana esté vencida"
+        );
+    }
+
+    #[test]
+    fn a_second_mark_inside_the_window_is_not_ready() {
+        let t0 = std::time::Instant::now();
+        let just_after = t0 + std::time::Duration::from_millis(50);
+        assert!(
+            !world_sync_ready(true, Some(t0), just_after, WORLD_SYNC_COALESCE_WINDOW),
+            "una segunda interacción a 50 ms de la anterior tiene que esperar: es todo el ahorro \
+             de F0.1 frente a disparar por evento"
+        );
+    }
+
+    #[test]
+    fn once_the_window_elapses_the_flag_is_ready_again() {
+        let t0 = std::time::Instant::now();
+        let after_window = t0 + WORLD_SYNC_COALESCE_WINDOW;
+        assert!(
+            world_sync_ready(true, Some(t0), after_window, WORLD_SYNC_COALESCE_WINDOW),
+            "vencida la ventana, una marca pendiente tiene que despacharse"
+        );
+    }
+
+    /// End-to-end sobre sockets reales: una ráfaga de "interacciones" (marcas dirty) coalesce en
+    /// UN solo goteo, y una marca posterior a la ventana produce un segundo goteo — nunca cero,
+    /// nunca uno por marca.
+    #[tokio::test]
+    async fn a_burst_of_dirty_marks_coalesces_into_one_drip() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        let joiner_addr = loopback_addr(&joiner);
+        host.peers
+            .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
+
+        let pos = Vec3::new(0.0, 1.8, 0.0);
+        let mut host_world = World::new(42);
+        host_world.update_ownership(pos, host.local_id);
+        let player = Player::new(host.local_id, "Host");
+
+        async fn world_sync_ends_received(joiner: &mut NetworkManager) -> usize {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            joiner
+                .process_incoming()
+                .await
+                .iter()
+                .filter(|e| matches!(e, NetworkEvent::WorldSyncEndReceived { .. }))
+                .count()
+        }
+
+        // Ráfaga: 20 "pickups" seguidos solo arman el flag, ninguno despacha por sí mismo.
+        for _ in 0..20 {
+            mark_world_sync_dirty(&mut host);
+        }
+        assert!(
+            host.world_sync_dirty,
+            "el flag tiene que seguir armado: nada lo ha consumido todavía"
+        );
+
+        // Primera comprobación del tick: dispara de inmediato (last_sent = None).
+        maybe_flush_world_sync(&mut host, &host_world, &player).await;
+        assert!(
+            !host.world_sync_dirty,
+            "el primer flush consume el flag aunque hubiera 20 marcas apiladas detrás"
+        );
+        let n = world_sync_ends_received(&mut joiner).await;
+        assert_eq!(
+            n, 1,
+            "la ráfaga entera tiene que llegar como UN solo goteo, no veinte"
+        );
+
+        // Otra marca inmediatamente después: dentro de la ventana, no despacha.
+        mark_world_sync_dirty(&mut host);
+        maybe_flush_world_sync(&mut host, &host_world, &player).await;
+        assert!(
+            host.world_sync_dirty,
+            "una marca a milisegundos de la anterior tiene que esperar a la ventana"
+        );
+        let n = world_sync_ends_received(&mut joiner).await;
+        assert_eq!(n, 0, "nada puede salir todavía: sigue dentro de los 300 ms");
+
+        // Vencida la ventana, esa misma marca pendiente sí despacha.
+        tokio::time::sleep(WORLD_SYNC_COALESCE_WINDOW).await;
+        maybe_flush_world_sync(&mut host, &host_world, &player).await;
+        assert!(!host.world_sync_dirty);
+        let n = world_sync_ends_received(&mut joiner).await;
+        assert_eq!(
+            n, 1,
+            "pasada la ventana, la marca pendiente tiene que despachar sin más espera"
         );
     }
 

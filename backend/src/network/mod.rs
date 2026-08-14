@@ -153,6 +153,16 @@ pub struct NetworkManager {
     /// justamente el gasto que este fix elimina. Clave `(x, z, layer)`, la misma tripleta con la
     /// que `WorldSyncProgress` cuenta completitud.
     pub chunk_gates: std::collections::HashMap<(i32, i32, i8), crate::network::roster::RosterGate>,
+    /// F0.1 (enmienda ADR-073, E0): `broadcast_world_sync` (el goteo del mundo ENTERO, fiable,
+    /// chunk a chunk) se disparaba directo desde cada pickup/drop legacy — 84,9 KB por goteo a
+    /// CADA peer, medido. `true` marca "el mundo cambió desde el último goteo despachado"; el
+    /// tick lo consume como mucho una vez por `WORLD_SYNC_COALESCE_WINDOW`, ver
+    /// `sync::maybe_flush_world_sync`. Host-only, como el propio `broadcast_world_sync`.
+    pub world_sync_dirty: bool,
+    /// F0.1: instante del último goteo coalescido despachado. `None` = nunca — la primera marca
+    /// dirty de la sesión dispara sin esperar a la ventana, igual que ADR-071 no hace esperar al
+    /// heartbeat a la primera ronda.
+    pub world_sync_last_sent: Option<std::time::Instant>,
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
     pub processed_stp_drops: std::collections::HashSet<u64>,
@@ -364,6 +374,8 @@ impl NetworkManager {
             settling_items: Vec::new(),
             roster_gates: RosterGates::default(),
             chunk_gates: std::collections::HashMap::with_capacity(64),
+            world_sync_dirty: false,
+            world_sync_last_sent: None,
             processed_stp_drops: std::collections::HashSet::with_capacity(256),
             stp_buildings: Vec::new(),
             processed_stp_places: std::collections::HashSet::with_capacity(256),
