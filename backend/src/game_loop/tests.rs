@@ -1765,6 +1765,98 @@ async fn a_sprint_into_a_built_wall_registers_as_blocked() {
     );
 }
 
+#[tokio::test]
+async fn search_notices_a_wall_slide() {
+    // ADR-075: SEARCH was the one travelling state that never fed the projected-advance detector —
+    // a full block cleared the route, but the counter stayed at zero, so a search pressed into
+    // geometry was invisible to `is_wedged` and to anything reading `blocked_ticks` in the logs.
+    // Same walled-in setup as the sprint test above, through the REAL tick path.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Search;
+    driver.movers[0].last_known_player_pos = Some(Vec3::new(12.0, 1.8, 0.0));
+
+    use crate::network::protocol::StpBuildingInfo;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    for (id, (dx, dz)) in
+        (STP_BUILDING_ID_BASE..).zip([(-2.5f32, 0.0f32), (2.5, 0.0), (0.0, -2.5), (0.0, 2.5)])
+    {
+        net.stp_buildings.push(StpBuildingInfo {
+            id,
+            def_id: 1,
+            position: [here.x + dx, here.y, here.z + dz],
+            rotation: 0.0,
+            group_id: 0,
+            added: vec![],
+        });
+    }
+
+    // Player far away: no re-acquisition, no shriek range — the search only travels. Well under
+    // the 12 s search patience, so the state cannot resolve itself before the assertion.
+    let player = Vec3::new(100.0, 1.8, 0.0);
+    for _ in 0..30 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert!(
+        driver.movers[0].is_wedged(),
+        "a search that cannot advance must register as wedged, got {} blocked ticks",
+        driver.movers[0].blocked_ticks
+    );
+}
+
+#[tokio::test]
+async fn a_wedged_hunt_gives_up_into_search() {
+    // ADR-075: HUNTING had no wedge exit of its own — only the 3-tick route drop — so an unmasked
+    // hunter stuck on a corner milled there until the player left LOSE_RADIUS. It now takes the
+    // same hatch STALK got on 2026-08-05: break to SEARCH (which re-dresses it, via state change).
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Hunting;
+    // A strike recovery far longer than the test keeps the re-lunge gate closed, so the only
+    // question is what the WALK does when it cannot advance.
+    driver.movers[0].strike_recover = 100.0;
+
+    use crate::network::protocol::StpBuildingInfo;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    for (id, (dx, dz)) in
+        (STP_BUILDING_ID_BASE..).zip([(-2.5f32, 0.0f32), (2.5, 0.0), (0.0, -2.5), (0.0, 2.5)])
+    {
+        net.stp_buildings.push(StpBuildingInfo {
+            id,
+            def_id: 1,
+            position: [here.x + dx, here.y, here.z + dz],
+            rotation: 0.0,
+            group_id: 0,
+            added: vec![],
+        });
+    }
+
+    // Inside LOSE_RADIUS (the hunt must persist) and beyond the hold distance (it must travel).
+    let player = Vec3::new(12.0, 1.8, 0.0);
+    let mut reached_search = false;
+    for _ in 0..80 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+        if driver.movers[0].state == PhantomState::Search {
+            reached_search = true;
+            break;
+        }
+    }
+
+    assert!(
+        reached_search,
+        "a hunt that cannot advance must give up into SEARCH, ended in {:?} with {} blocked ticks",
+        driver.movers[0].state, driver.movers[0].blocked_ticks
+    );
+}
+
 #[test]
 fn traits_are_reproducible_per_creature_and_differ_between_them() {
     // Same promise as the spawn draw: two players meet the SAME character, and one that

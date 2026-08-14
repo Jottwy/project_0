@@ -2055,7 +2055,9 @@ impl PhantomDriver {
         target: Vec3,
         dt: f32,
     ) -> f32 {
-        use crate::world::grid_gen::{cell_of, find_path, segment_is_clear, string_pull};
+        use crate::world::grid_gen::{
+            cell_of, find_path, segment_is_clear_for_body, string_pull, PHANTOM_BODY_RADIUS,
+        };
 
         let straight = |to: Vec3| {
             (to.x - from.x)
@@ -2073,16 +2075,24 @@ impl PhantomDriver {
         // cell CENTRE, which can sit up to half a cell diagonal away from where you actually are.
         // Checking the straight line is cheap and settles both: if it is clear, take it.
         //
-        // …UNLESS the creature is wedged. `segment_is_clear` tests a SEGMENT, with no body radius,
-        // while the resolver moves a 0.5 m body: against an inside corner the line reads clear, the
-        // plan gets thrown away, the straight bearing walks into the corner, and the next tick does
-        // it again. That loop is the corner-sticking bug, and it is self-reinforcing precisely
-        // because the shortcut looks correct every single time. While wedged, the pathfinder wins.
-        // …and the cooldown keeps it that way for a moment after recovering, or one good step hands
-        // control straight back to the shortcut that wedged it (see PHANTOM_WEDGE_HYSTERESIS_TICKS).
+        // …UNLESS the creature is wedged. ADR-075 fixed the root cause here: the shortcut used to
+        // test a SEGMENT with no body radius while the resolver moves a 0.5 m body, so against an
+        // inside corner the line read clear, the plan got thrown away, and the straight bearing
+        // walked into the corner every single tick — the self-reinforcing corner-sticking loop.
+        // `segment_is_clear_for_body` probes the line at the body's width, so that corner now
+        // rejects the shortcut and the route survives. The wedge gate and its cooldown STAY as the
+        // belt to this suspender: three probe rails are still not the resolver, and while wedged
+        // the pathfinder must win regardless of what any shortcut claims
+        // (see PHANTOM_WEDGE_HYSTERESIS_TICKS).
         self.movers[i].wedge_cooldown = self.movers[i].wedge_cooldown.saturating_sub(1);
         if !self.movers[i].prefers_route()
-            && segment_is_clear(&mut self.grid_cache, layer, from, target)
+            && segment_is_clear_for_body(
+                &mut self.grid_cache,
+                layer,
+                from,
+                target,
+                PHANTOM_BODY_RADIUS,
+            )
         {
             self.movers[i].nav_waypoints.clear();
             self.movers[i].nav_cursor = 0;
@@ -2495,6 +2505,12 @@ impl PhantomDriver {
             from.z + dir.z * speed * ctx.dt,
         );
         let moved = resolve_move_grid_gen_ex(&mut self.grid_cache, layer, from, desired);
+        // ADR-075: SEARCH now feeds the projected-advance detector too — it was the one travelling
+        // state that did not, so an endless wall-slide here was invisible (a full block cleared the
+        // route below, but a diagonal slide never registered as anything). Same mechanism, one more
+        // call site; the 2026-08-03 invariant — the detector itself does not change — holds.
+        let advance = (moved.pos.x - from.x) * dir.x + (moved.pos.z - from.z) * dir.z;
+        self.movers[i].note_step_progress(advance, speed * ctx.dt);
         if moved.blocked {
             // Wedged against geometry: drop the plan so the next tick re-routes instead
             // of pressing into the same wall (the defect STALK/SPRINT used to have).
@@ -2598,6 +2614,22 @@ impl PhantomDriver {
         }
         let (_, tpos, dist, _) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
+
+        // ADR-075 — the same wedge escape STALK got on 2026-08-05. A hunt ground into geometry had
+        // no exit of its own (only the 3-tick route drop), so a hunter stuck on a corner milled
+        // there until the player left LOSE_RADIUS. Going to SEARCH re-dresses it — a state change,
+        // never a flag (invariant 1) — and re-routes the approach, same as the stalk hatch.
+        if self.movers[i].blocked_ticks >= PHANTOM_STALK_GIVEUP_TICKS {
+            self.movers[i].blocked_ticks = 0;
+            self.movers[i].nav_waypoints.clear();
+            self.movers[i].state = PhantomState::Search;
+            self.movers[i].state_timer = 0.0;
+            info!(
+                "MPTRACE step=PH_SEARCH event=phantom_hunt_gave_up phantom_id={} reason=wedged",
+                id
+            );
+            return;
+        }
 
         // No patience gate and no STATUE here: it is past pretending. It re-lunges as soon as the
         // strike recovery is spent, which is what makes an unmasked creature relentless rather than

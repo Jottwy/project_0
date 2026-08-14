@@ -301,6 +301,52 @@ pub fn segment_is_clear(cache: &mut GridGenChunkCache, layer: u8, a: Vec3, b: Ve
     true
 }
 
+/// ADR-075 — body-radius variant of [`segment_is_clear`], for the STEERING SHORTCUT only.
+///
+/// The thin line above answers "can a POINT walk this?", but the resolver moves a 0.5 m disc
+/// (`body_fits`): against an inside corner the line reads clear where the body does not fit, the
+/// shortcut throws the route away, the straight bearing grinds the corner, and the next tick does
+/// it all again — the self-reinforcing wedge loop the 2026-08-05 play-test measured at 45 % of
+/// lunges. This variant walks the same sub-steps but probes each one at the centre AND at ±`radius`
+/// perpendicular to the travel direction — a poor man's capsule cast.
+///
+/// It is deliberately STRICTER than the resolver: a rejected shortcut merely falls back to the A*
+/// route, which is always safe. It must NOT replace the thin line in strike or sight predicates —
+/// widening those would grow the effective reach around corners, and reach ≠ body radius is an
+/// invariant (ADR-075 prohibition).
+pub fn segment_is_clear_for_body(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    a: Vec3,
+    b: Vec3,
+    radius: f32,
+) -> bool {
+    let dx = b.x - a.x;
+    let dz = b.z - a.z;
+    let dist = (dx * dx + dz * dz).sqrt();
+    if dist < f32::EPSILON {
+        return true;
+    }
+    // Unit perpendicular to the travel direction, scaled to the body radius.
+    let px = -dz / dist * radius;
+    let pz = dx / dist * radius;
+    let steps = (dist / SEGMENT_PROBE_STEP).ceil() as i32;
+    let mut prev = a;
+    for i in 1..=steps {
+        let t = i as f32 / steps as f32;
+        let next = Vec3::new(a.x + dx * t, a.y, a.z + dz * t);
+        if !is_walkable_grid_gen(cache, next, layer)
+            || !is_walkable_grid_gen(cache, Vec3::new(next.x + px, next.y, next.z + pz), layer)
+            || !is_walkable_grid_gen(cache, Vec3::new(next.x - px, next.y, next.z - pz), layer)
+            || !diagonal_step_is_clear(cache, layer, prev, next)
+        {
+            return false;
+        }
+        prev = next;
+    }
+    true
+}
+
 /// Greedy string-pulling: collapse a 4-connected cell path into the fewest waypoints whose straight
 /// segments are all walkable.
 ///
@@ -347,7 +393,9 @@ pub fn string_pull(
 
 #[cfg(test)]
 mod tests {
-    use super::super::collision::{default_layer_rules, resolve_move_grid_gen_ex};
+    use super::super::collision::{
+        default_layer_rules, resolve_move_grid_gen_ex, PHANTOM_BODY_RADIUS,
+    };
     use super::*;
     use crate::world::grid_gen::{Cell, CellType, LayerGrid};
 
@@ -555,6 +603,49 @@ mod tests {
                 assert!(guard < 500, "did not converge on waypoint {n}");
             }
         }
+    }
+
+    /// ADR-075 — the wedge loop's root cause, pinned as a predicate divergence: a line that hugs a
+    /// wall closer than the body radius reads clear to the thin test and must NOT read clear to the
+    /// body test, because the resolver's 0.5 m disc will scrape that wall the whole way.
+    #[test]
+    fn body_segment_rejects_a_gap_the_thin_line_accepts() {
+        let mut g = open_grid();
+        g.set(5, 5, Cell::new(CellType::Wall, 2, 0)); // one wall cell: x ∈ [12.5, 15.0)
+        let mut cache = cache_with(g);
+
+        // A straight run parallel to the wall's face, 0.2 m away from it — closer than the body
+        // radius. The centre-line probes all land in walkable cells; the +radius rail crosses
+        // into the wall cell.
+        let a = Vec3::new(12.3, 0.0, 10.0);
+        let b = Vec3::new(12.3, 0.0, 17.0);
+
+        assert!(
+            segment_is_clear(&mut cache, 0, a, b),
+            "the thin line must accept this hug — that asymmetry IS the bug being pinned"
+        );
+        assert!(
+            !segment_is_clear_for_body(&mut cache, 0, a, b, PHANTOM_BODY_RADIUS),
+            "the body variant must reject a line the 0.5 m disc cannot actually walk"
+        );
+    }
+
+    #[test]
+    fn body_segment_accepts_open_ground() {
+        let mut cache = cache_with(open_grid());
+        // Well clear of every wall: both predicates must agree, or the shortcut would be lost on
+        // ground where it is perfectly safe (the fallback is a full A* — correctness, not speed).
+        // A diagonal whose slope never threads a lattice corner: any rational slope aligned with
+        // the 2.5 m grid (45°, or 2/3 as first tried) crosses some corner EXACTLY, and
+        // `diagonal_step_is_clear` refuses exact corner crossings by rule (zero-width gap). That
+        // rule is not under test here — the body probes are.
+        let a = Vec3::new(4.1, 0.0, 6.3);
+        let b = Vec3::new(18.7, 0.0, 15.9);
+        assert!(segment_is_clear(&mut cache, 0, a, b));
+        assert!(
+            segment_is_clear_for_body(&mut cache, 0, a, b, PHANTOM_BODY_RADIUS),
+            "open ground must not lose the shortcut to the body probes"
+        );
     }
 
     /// ADR-040 D-COTA: a search that reads cells directly must leave the cache bounded. Before
