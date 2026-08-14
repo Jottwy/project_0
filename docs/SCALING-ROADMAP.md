@@ -40,19 +40,28 @@ pickups sin rondas de world_sync amplificadas, 0 descartes de veredicto, autosav
 
 **Fixes, en orden y con su tarea:**
 
+> **Estado (2026-08-14): tareas (a) y (b) CERRADAS.** F0.0, F0.1, F0.2, F0.3 y F0.8 implementadas
+> y en verde. Queda la tarea (c): F0.4–F0.7 + re-medición del gate.
+
 | # | Fix | Dónde | Tarea |
 |---|---|---|---|
-| F0.0 | Sonda de kbps de subida (commit cero, línea base ANTES de tocar nada; mide también el payload de un world_sync completo) | nueva, estilo `roster_relay_cost` | (a) |
-| F0.1 | Coalescing de `broadcast_world_sync` por pickup/drop: flag dirty + cadencia 250–300 ms. **Si F0.0 dice que la línea base domina sobre el pico: PARAR Y PREGUNTAR** (el sync por chunk toca `WorldSyncProgress::is_complete()` = E1 anticipado, se decide con Joel fuera de sesión; E0 mata el pico, no la línea base) | `game_loop.rs:5099`, `:5135` | (b) |
-| F0.2 | Cachear serialización SOLO en el relay de poses (payload una vez por src, re-estampar header). El análogo en `broadcast_reliable` NO se hace: E1 hace ese payload por-destinatario y lo mataría | `sync.rs:353-360`; `encode_packet` en `protocol.rs:968` | (b) |
-| F0.3 | Veredictos (grants, corpse, PvP) a `send_reliable_queued` con cap por peer. Desborde = condición FATAL del peer (desconexión + resync, patrón ADR-062), nunca descarte. Cap = peor ráfaga legítima medida × 3. Tests: ráfaga legítima NO desconecta; desborde SÍ | `send.rs:104-115`, `:132` | (b) |
+| F0.0 | ✅ Sonda de kbps de subida (commit cero, línea base ANTES de tocar nada; mide también el payload de un world_sync completo) | nueva, estilo `roster_relay_cost` | (a) |
+| **F0.8** | ✅ **Gate por chunk en `broadcast_chunk_states`** (mecanismo de ADR-071 por chunk). Añadido tras la medición de F0.0: era el **77 %** de la subida | `sync.rs:583`, `mod.rs` (`chunk_gates`) | (b) |
+| F0.1 | ✅ Coalescing de `broadcast_world_sync` por pickup/drop: flag dirty + ventana de 300 ms, consumido en cada tick. **Medición de F0.0: la línea base NO la domina este goteo (5,6 Mbps sostenido contra 35,8 totales), así que no hubo que parar** — mata el pico de una ráfaga, no la línea base | `game_loop.rs` (pickup/drop), `sync.rs` (`maybe_flush_world_sync`) | (b) |
+| F0.2 | ✅ Cachear serialización SOLO en el relay de poses (payload una vez por origen). El análogo en `broadcast_reliable` NO se hace: E1 hace ese payload por-destinatario y lo mataría. Test de igualdad byte a byte | `sync.rs` (`broadcast_peer_poses`), `send.rs` (`encode_relay_as`) | (b) |
+| F0.3 | ✅ Los 6 veredictos (pickup, carryable, corpse, PvP concedido/rechazado, fantasma) a `send_verdict` → cola diferida con cap 256. Desborde = FATAL para el peer (desconexión + resync, patrón ADR-062), nunca descarte. Tests: ráfaga legítima de 70 NO desconecta; desborde SÍ | `send.rs` (`send_verdict`), 6 sitios en `game_loop.rs` | (b) |
 | F0.4 | Autosave fuera del tick: medir split serialización/IO primero; escritura en `spawn_blocking` (tmp+rename), guard anti-solape que marca dirty al saltar, JSON compacto. Plan B: serialización troceada con doble buffer o save incremental por colección sucia. Si ni así: gate relajado a número MEDIDO, nunca "sin gate" | `game_loop.rs:1586` | (c) |
 | F0.5 | Dedupe sets acotados: los ~10 `HashSet processed_*` a `BoundedDedupeSet` cap 512. `requested_spray_chunks` y `occupied_stp_cells` NO (estado semántico) | `network/mod.rs:148-210` | (c) |
 | F0.6 | Sin clones de rosters a 10 Hz en `build_world_state`: cache por `content_hash` (ADR-071) o `Arc<Vec<T>>` (bytes IPC idénticos) | `game_loop.rs:5502-5505` | (c) |
 | F0.7 | Anticheat gratis: distancia en pickup STP con margen 7,5–8 m (no 5 m: la posición que el host tiene del cliente va por detrás con RTT) y LoS real en PvP (hoy stub que nunca rechaza) | `game_loop.rs:4966-5030`, `:4137-4145` | (c) |
 
-**Secuenciación** (una tarea por sesión): **(a)** F0.0 + este doc + ADR-073/074 · **(b)**
-F0.1–F0.3 · **(c)** F0.4–F0.7 + re-medición del gate y actualización de perf-baseline.md.
+**Secuenciación** (una tarea por sesión): **(a) ✅** F0.0 + este doc + ADR-073/074 · **(b) ✅**
+F0.1–F0.3 + F0.8 · **(c)** F0.4–F0.7 + re-medición del gate y actualización de perf-baseline.md.
+
+**Lo que la tarea (b) enseñó, y que vale para la (c):** el orden correcto es medir → decidir →
+implementar, y no al revés. F0.8 no estaba en el plan (nadie había medido `broadcast_chunk_states`
+y resultó ser el 77 %), mientras que F0.1 —el fix que abría la lista por intuición— resultó ser
+un pico, no una línea base. Ninguna de las dos cosas se sabía antes de la sonda de F0.0.
 
 ### E1 — Interest management (ADR-074, en propuesta)
 
