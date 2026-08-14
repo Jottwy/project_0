@@ -3553,3 +3553,43 @@ Consecuencias aceptadas: mismo nivel de confianza que el resto de ADR-030 (trust
 **Sigue sin tocar wire**: cambia cada cuánto sale una pose hacia un destino, no qué lleva ni su formato. Mismo criterio que ADR-071, F0.8 y la fase 1 de este mismo ADR.
 
 **Lo que esta enmienda NO decide** y queda para cuando haya partida real: si 5 Hz basta para que el acecho se lea bien a 90 m. El número es defendible pero no está validado en juego, y el sitio donde se comprobará es el mismo play-test que aún debe ejercitar toda la Etapa 0.
+
+### Enmienda ADR-074 (2026-08-15) — fase 2: rosters por celda, y cómo se cierra la ambigüedad "celda vacía vs celda lejana"
+
+Esta enmienda cierra lo único que el ADR original dejó a medias de la decisión 4, y sin lo cual la fase 2 no se puede escribir: **qué significa que a un cliente no le llegue nada de una celda.**
+
+#### El problema, que no es el troceo sino la semántica
+
+Hoy el contrato es de una simplicidad valiosa: el roster viaja ENTERO y el receptor lo REEMPLAZA verbatim. De ahí sale la autocuración de ADR-039/060(d) — una página perdida deja su generación incompleta, no se aplica nada, y la ronda siguiente sustituye todo. Nunca hay medias listas.
+
+Al mandar a cada peer solo un subconjunto, ese contrato deja de servir y aparece una pregunta que HOY NO EXISTE: si no recibo nada de la celda (3, 7), **¿es que está vacía, o es que está lejos y no me la mandan?** Interpretarlo como "vacía" borra del mundo del jugador objetos que sí están; interpretarlo como "lejos" le deja para siempre objetos que otro ya recogió. Las dos son corrupción visible, y ninguna da error.
+
+#### Decisiones
+
+**1. El scope viaja EXPLÍCITO, no se infiere.** Cada ronda de roster termina con un paquete de cierre que lleva **la lista de celdas que el host considera en scope para ese peer**. El receptor ya no tiene que adivinar: sabe exactamente qué celdas debía recibir.
+
+Es el mismo patrón que ADR-060 usó para resolver el mismo tipo de problema en el goteo del mundo — allí el `WorldSyncEnd` lleva `chunk_count` para que el receptor sepa cuándo tiene todo. Aquí lleva la lista, porque no basta con contar: hay que saber CUÁLES.
+
+**2. La regla de aplicación, en tres líneas y sin casos raros.** Al llegar el cierre de una generación:
+- Celda en scope **con** contenido recibido → reemplaza el contenido de esa celda.
+- Celda en scope **sin** contenido recibido → esa celda está VACÍA (y se vacía en el cliente).
+- Celda **fuera** del scope → se descarta del cliente.
+
+La tercera es la que resuelve la memoria: un jugador que cruza el mapa no acumula el mundo entero, y si vuelve, se lo mandan otra vez. Descartar lo lejano es correcto porque son objetos que no puede ver ni tocar — el radio de scope se elige precisamente para que así sea.
+
+**3. Y esto MEJORA la autocuración en vez de degradarla, que es el argumento que decide la fase.** Hoy una sola página perdida invalida el roster ENTERO de esa ronda (todo-o-nada global). Con celdas, una página perdida invalida **solo su celda**: las demás se aplican igual, y la celda incompleta conserva su contenido anterior hasta la ronda siguiente. La granularidad no es solo ahorro de tráfico, es un modo de fallo más pequeño.
+
+**4. La celda ES el chunk (50 m), no una retícula nueva.** Reusa `world_to_chunk`, que ya existe y ya es la unidad con la que el mundo se carga, se descarga y se sincroniza. Inventar una retícula propia obligaría a mantener dos particiones del espacio en paralelo y a razonar sobre sus bordes.
+
+**5. Scope = 5×5 chunks (±2) alrededor del jugador, generoso a propósito.** El cliente solo renderiza 3×3 (`ChunkStreamer.viewRadius = 1`), así que el anillo extra es margen para que nada aparezca de golpe al caminar y para absorber el desfase de la pose que el host tiene del joiner. 25 celdas de 50 m = 250×250 m.
+
+**6. Un solo opcode de cierre para los cinco rosters**, con un campo que dice de cuál es (`kind`), en vez de cinco opcodes casi idénticos. Los cinco rosters comparten mecanismo desde ADR-060(d) y la regla que se copia cinco veces es la regla que diverge en cuatro.
+
+**7. Bump de `WIRE_SCHEMA_VERSION` 33 → 34**, con `WireSchema.Expected` y la entrada de `systems/ipc-wire-schema.md` en el MISMO commit. Cambian los cinco paquetes de roster (ganan la celda) y entra un paquete de cierre nuevo: es cambio de formato, no de cadencia — a diferencia de todo lo que E0 y la fase 1 tocaron.
+
+#### Consecuencias / qué prohíbe
+
+- **PROHÍBE inferir el scope en el cliente** calculándolo con su propia posición y radio. Dos radios (host y cliente) pueden discrepar por el desfase de la pose, y el que discrepa hace desaparecer objetos — es el mismo error que la decisión 2 de este ADR ya prohibió para la histéresis de las poses, aplicado a otro sistema.
+- **PROHÍBE aplicar una celda incompleta.** El todo-o-nada sigue vigente DENTRO de cada celda; lo que cambia es su alcance.
+- El heartbeat de ADR-071 sobrevive por celda: lo que repara son páginas perdidas, que ningún hash detecta.
+- Queda FUERA, y se dice para que nadie lo dé por hecho: los cadáveres (`visible_corpse_views`) ya filtran por proximidad en la ruta IPC local desde ADR-028, así que su relay P2P es el único de los cinco que ya tenía media cura; se le aplica el mismo mecanismo igualmente, por coherencia.
