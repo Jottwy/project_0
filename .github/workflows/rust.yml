@@ -30,3 +30,17 @@ jobs:
         run: cargo clippy --all-targets --manifest-path backend/Cargo.toml -- -D warnings
       - name: Run tests
         run: cargo test --manifest-path backend/Cargo.toml
+
+  # RustSec advisory scan over the backend lockfile. Deterministic layer of the
+  # nightly-audit plan: free tooling runs before any token is spent.
+  # grid_viewer is deliberately NOT gated here: it does not compile today
+  # (E0432/E0433 bit-rot, see AUDIT_MANIFEST.json rust-grid_viewer).
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Check RustSec advisories
+        run: cargo audit --file backend/Cargo.lock

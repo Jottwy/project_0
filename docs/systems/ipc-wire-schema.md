@@ -440,3 +440,36 @@ Degradación: un backend viejo nunca marca `settling`, así que el cliente nuevo
 posado y se comporta como v30. Un cliente viejo omite `velocity` y el backend nuevo lo lee como
 cero: el objeto cae recto desde la mano en vez de salir lanzado. Ninguna de las dos es un error.
 `WireSchema.Expected` (C#) bumpeado a 31 en el mismo commit — ADR-061.
+
+## v32 — ADR-072: el botín lleva las propiedades de instancia (2026-08-14)
+
+Sin esto **morir REPARABA el equipo**: el botín del cadáver viajaba como `{item_id, quantity}`, así
+que lootear el propio cuerpo devolvía la antorcha a valor de fábrica.
+
+- `ItemStackView.props: Vec<ItemPropertyValue>` (roster host→cliente, dentro de
+  `world_state.visible_corpses[].items`), y su gemelo autoritativo `CorpseStack.props` en el save y
+  en el relay P2P de cadáveres. `ItemPropertyValue` es el **mismo tipo** que ya usa el inventario
+  desde ADR-045 Fase 3 (`{id: i32, value: f64}`): un solo formato de propiedad en todo el proyecto.
+- `report_death_loot.items[].props` y `spawn_world_chest.items[].props` (acciones IPC
+  cliente→backend), opcionales — un cliente que no las mande produce el vector vacío de siempre.
+
+**Las propiedades son POR STACK, no por unidad**, y eso es fidelidad exacta con STP y no una
+carencia del wire: un `ItemStack` del vendor es UN `Item` más un contador. Ver la enmienda de
+ADR-072, que lo cierra con los 12 assets del proyecto medidos.
+
+**Coste MEDIDO, no estimado** (sonda `corpse_view_wire_cost`, `#[ignore]`, con el encoder real):
+cadáver saturado de 64 stacks = 1836 B sin propiedades → 3116 B con 1 por stack (×1,70), 5676 B con
+3, 12076 B con el tope de 8 (×6,58). Son **20 B por propiedad**, dominados por el nombre de campo
+repetido en cada entrada — la misma mecánica que descuadró el presupuesto de ADR-068 por 2,6×. El
+caso real es mucho menor: un cadáver normal trae ~20 stacks y casi ninguno con propiedades.
+`MAX_PROPS_PER_STACK = 8` es higiene contra un reporte del cliente y **avisa por log al recortar**.
+
+Degradación: campo aditivo con `serde(default)` en los dos lados. Un save anterior carga con
+`props` vacías y sin migración (test `a_save_written_before_adr_072_loads_its_corpses_without_props`);
+un peer o cliente de otra versión no existe como caso, porque el gate de ADR-061 es de igualdad
+exacta. `WireSchema.Expected` (C#) bumpeado a 32 en el mismo commit — ADR-061, y desde `7532876`
+hay un test de `cargo test` que lo comprueba.
+
+**Pendiente (Fase 2 de ADR-072):** `stp_drop` sigue viajando como `def_id` + cantidad, así que lo
+que cae al suelo —incluido el sobrante que devuelven la recogida con inventario lleno y el
+restaurador— vuelve al mundo a valor de fábrica.

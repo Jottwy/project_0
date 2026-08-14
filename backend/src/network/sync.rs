@@ -1,4 +1,4 @@
-﻿//! State synchronization: broadcast functions that convert game state to protocol
+//! State synchronization: broadcast functions that convert game state to protocol
 //! payloads and send them via the NetworkManager.
 //! See ARCHITECTURE_V1.md Â§5.4 and Â§3.2.
 //!
@@ -1262,5 +1262,347 @@ mod world_drip_tests {
         let mut p = WorldSyncProgress::default();
         p.note_monolith(3);
         assert!(p.is_complete());
+    }
+}
+
+/// F0.0 (ADR-073 / SCALING-ROADMAP, E0): sonda de la SUBIDA TOTAL del host con 8 peers.
+///
+/// Es la línea base del gate de E0 y el número que E1 (ADR-074) tiene que mover. Se captura
+/// ANTES del primer fix de E0 — capturarla después contaminaría el "antes".
+///
+/// A diferencia de `roster_relay_cost` (que mide UN componente), esto suma TODO lo que el host
+/// emite en régimen permanente, **contando headers UDP/IP: cada datagrama cuesta
+/// `payload + 28 B` en el aire** (8 de UDP + 20 de IPv4). Con payloads de pose de ~250 B el
+/// header es un ~10 %; con ACKs o heartbeats sería la mitad del paquete. Medir solo lo entregado
+/// a `send_datagram` daría una unidad que no existe en el router de nadie.
+///
+/// También responde la pregunta de F0.1: cuánto pesa un `broadcast_world_sync` completo (el que
+/// HOY dispara cada pickup/drop legacy hacia todos los peers) y si esa línea base domina sobre
+/// el régimen permanente — si domina, F0.1 se detiene y la decisión vuelve a Joel (ver roadmap).
+#[cfg(test)]
+mod uplink_probe {
+    use crate::network::protocol::{
+        encode_packet, PacketHeader, PacketPayload, PeerInfo, StpBuildProgress, StpBuildingInfo,
+        StpCarryableInfo, StpHarvestableInfo, StpItemInfo,
+    };
+    use crate::network::roster::{
+        content_hash, paginate, RosterGate, ROSTER_HEARTBEAT, ROSTER_PAGE_BUDGET_BYTES,
+    };
+    use crate::utils::Vec3;
+    use crate::world::World;
+
+    /// UDP (8 B) + IPv4 (20 B). Sin contar Ethernet (18 B más): el gate se mide contra el
+    /// ancho de banda IP del uplink, que es como lo reportan los routers domésticos.
+    const UDP_IP_HEADER: usize = 28;
+    const PEERS: usize = 8;
+    const POSE_HZ: f64 = 10.0;
+    const CHUNK_HZ: f64 = 5.0;
+
+    /// Bytes EN EL AIRE de un payload: header propio de 12 B + MessagePack + UDP/IP.
+    fn wire_len(payload: &PacketPayload) -> usize {
+        let header = PacketHeader::new(0, 1, 0, 0);
+        encode_packet(&header, payload).len() + UDP_IP_HEADER
+    }
+
+    fn pose_payload(seq: u8) -> PacketPayload {
+        PacketPayload::PlayerUpdate {
+            position: [123.5, 1.8, -412.0],
+            rotation: 187.5,
+            animation: "walk_slow".into(),
+            crouch: false,
+            pitch: -12,
+            equipment: [1001, 1002, 1003, 1004],
+            held_item: 2001,
+            hit_seq: seq,
+            dead: false,
+            revealed: false,
+            vocal_seq: 0,
+            vocal_kind: 0,
+            light_on: true,
+            fire_seq: seq,
+            buttons: 1,
+            melee_seq: 0,
+            carry_def: 0,
+            carry_count: 0,
+        }
+    }
+
+    fn building(id: u32) -> StpBuildingInfo {
+        StpBuildingInfo {
+            id,
+            def_id: -4996552,
+            position: [12.5, 1.8, -40.0],
+            rotation: 90.0,
+            group_id: id / 8,
+            added: vec![StpBuildProgress {
+                material_id: -1234,
+                count: 4,
+            }],
+        }
+    }
+
+    fn item(id: u32) -> StpItemInfo {
+        StpItemInfo {
+            id,
+            def_id: -52379,
+            count: 3,
+            position: [12.5, 1.8, -40.0],
+            rotation: 90.0,
+            settling: false,
+        }
+    }
+
+    fn carryable(id: u32) -> StpCarryableInfo {
+        StpCarryableInfo {
+            id,
+            def_id: 7,
+            position: [1.0, 2.0, 3.0],
+            rotation: 90.0,
+        }
+    }
+
+    fn harvestable(id: u32) -> StpHarvestableInfo {
+        StpHarvestableInfo {
+            id,
+            position: [1.0, 2.0, 3.0],
+            remaining: 0.62,
+        }
+    }
+
+    /// Bytes en el aire de UNA ronda completa de un roster (todas sus páginas), reproduciendo
+    /// la paginación real de los `broadcast_stp_*`.
+    fn roster_round_wire<T: serde::Serialize + Clone>(
+        items: &[T],
+        make: impl Fn(Vec<T>) -> PacketPayload,
+    ) -> (usize, usize) {
+        let pages = paginate(items, ROSTER_PAGE_BUDGET_BYTES);
+        let count = pages.len();
+        let bytes = pages.into_iter().map(|p| wire_len(&make(p))).sum();
+        (count, bytes)
+    }
+
+    /// SONDA DE MEDICIÓN, no un test — imprime, no afirma.
+    ///
+    /// ```text
+    /// cargo test --release host_uplink_baseline -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "sonda de medición: imprime, no afirma"]
+    fn host_uplink_baseline() {
+        println!("\n=== F0.0 / subida TOTAL del host con {PEERS} peers (headers UDP/IP incluidos: +{UDP_IP_HEADER} B/datagrama) ===\n");
+
+        // ── Poses ─────────────────────────────────────────────────────────────────────────
+        // El host emite SU pose a cada peer (broadcast_player_update) y además relaya la pose
+        // de cada peer a todos los demás (broadcast_peer_poses): P×P − P datagramas por ronda.
+        let pose_wire = wire_len(&pose_payload(3));
+        let own_pose_dgps = PEERS as f64 * POSE_HZ;
+        let relay_dgps = (PEERS * PEERS - PEERS) as f64 * POSE_HZ;
+        let own_pose_bps = own_pose_dgps * pose_wire as f64;
+        let relay_bps = relay_dgps * pose_wire as f64;
+        println!("PlayerUpdate en el aire: {pose_wire} B");
+        println!(
+            "  pose propia:    {own_pose_dgps:.0} dgr/s = {:.1} KB/s",
+            own_pose_bps / 1024.0
+        );
+        println!(
+            "  relay O(N²):    {relay_dgps:.0} dgr/s = {:.1} KB/s",
+            relay_bps / 1024.0
+        );
+
+        // ── PeerList (broadcast_peer_roster, 10 Hz) ───────────────────────────────────────
+        let peers_info: Vec<PeerInfo> = (0..=PEERS as u16)
+            .map(|id| PeerInfo {
+                id,
+                name: format!("Player_{id:02}"),
+                addr: "203.0.113.77:7778".into(),
+                position: [123.5, 1.8, -412.0],
+            })
+            .collect();
+        let peer_list_wire = wire_len(&PacketPayload::PeerList { peers: peers_info });
+        let peer_list_bps = PEERS as f64 * POSE_HZ * peer_list_wire as f64;
+        println!(
+            "PeerList({} entradas) en el aire: {peer_list_wire} B → {:.1} KB/s",
+            PEERS + 1,
+            peer_list_bps / 1024.0
+        );
+
+        // ── ChunkState (broadcast_chunk_states, 5 Hz, chunks propios a ≤3 de distancia) ───
+        // Mundo real: los chunks que update_ownership carga alrededor del jugador, con sus
+        // entidades e items seedeados — el tamaño del ChunkSyncData es el de verdad.
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(0.0, 1.0, 0.0), 1);
+        let chunk_wires: Vec<usize> = world
+            .chunks
+            .values()
+            .map(|c| {
+                wire_len(&PacketPayload::ChunkState {
+                    data: super::chunk_to_sync_data(c),
+                })
+            })
+            .collect();
+        let chunk_count = chunk_wires.len();
+        let chunk_round_bytes: usize = chunk_wires.iter().sum();
+        let chunk_bps = chunk_round_bytes as f64 * PEERS as f64 * CHUNK_HZ;
+        println!(
+            "ChunkState: {chunk_count} chunks cargados, {:.0} B de media → {:.1} KB/s ({} dgr/s)",
+            chunk_round_bytes as f64 / chunk_count.max(1) as f64,
+            chunk_bps / 1024.0,
+            chunk_count * PEERS * CHUNK_HZ as usize
+        );
+
+        // ── Rosters (base seria de five_rosters_converge: 1000/300/200/100) ───────────────
+        let buildings: Vec<_> = (0..1000).map(building).collect();
+        let items: Vec<_> = (0..300).map(item).collect();
+        let carryables: Vec<_> = (0..200).map(carryable).collect();
+        let harvestables: Vec<_> = (0..100).map(harvestable).collect();
+
+        let g = 1u32;
+        let (b_pages, b_bytes) =
+            roster_round_wire(&buildings, |p| PacketPayload::StpBuildingList {
+                buildings: p,
+                generation: g,
+                page: 0,
+                page_count: 1,
+            });
+        let (i_pages, i_bytes) = roster_round_wire(&items, |p| PacketPayload::StpItemList {
+            items: p,
+            generation: g,
+            page: 0,
+            page_count: 1,
+        });
+        let (c_pages, c_bytes) =
+            roster_round_wire(&carryables, |p| PacketPayload::StpCarryableList {
+                carryables: p,
+                generation: g,
+                page: 0,
+                page_count: 1,
+            });
+        let (h_pages, h_bytes) =
+            roster_round_wire(&harvestables, |p| PacketPayload::StpHarvestableList {
+                harvestables: p,
+                generation: g,
+                page: 0,
+                page_count: 1,
+            });
+        let round_pages = b_pages + i_pages + c_pages + h_pages;
+        let round_bytes = b_bytes + i_bytes + c_bytes + h_bytes;
+        let rosters_ungated_bps = round_bytes as f64 * PEERS as f64 * POSE_HZ;
+        println!(
+            "Rosters (1000+300+200+100, corpses=0): {round_pages} páginas, {round_bytes} B/ronda \
+             → sin gate {:.1} KB/s",
+            rosters_ungated_bps / 1024.0
+        );
+
+        // ADR-071: 60 s simulados a 10 Hz con un jugador construyendo (una pieza cada 5 s).
+        // El reloj es sintético: el latido mide tiempo real y un bucle cerrado nunca lo vencería.
+        let mut gates = [
+            RosterGate::default(),
+            RosterGate::default(),
+            RosterGate::default(),
+            RosterGate::default(),
+        ];
+        let mut live = buildings.clone();
+        let t0 = std::time::Instant::now();
+        let mut busy_bytes = 0usize;
+        const ROUNDS: usize = 600;
+        for round in 0..ROUNDS {
+            if round % 50 == 0 && round > 0 {
+                live.push(building(90_000 + round as u32));
+            }
+            let now = t0 + std::time::Duration::from_millis(round as u64 * 100);
+            let hashes = [
+                content_hash(&live),
+                content_hash(&items),
+                content_hash(&carryables),
+                content_hash(&harvestables),
+            ];
+            let sizes = [
+                roster_round_wire(&live, |p| PacketPayload::StpBuildingList {
+                    buildings: p,
+                    generation: g,
+                    page: 0,
+                    page_count: 1,
+                })
+                .1,
+                i_bytes,
+                c_bytes,
+                h_bytes,
+            ];
+            for (k, gate) in gates.iter_mut().enumerate() {
+                if gate.should_send(hashes[k], PEERS, now, ROSTER_HEARTBEAT) {
+                    busy_bytes += sizes[k];
+                }
+            }
+        }
+        let rosters_busy_bps = busy_bytes as f64 * PEERS as f64 / 60.0;
+        // Idle: solo latidos — una ronda completa cada 3 s por roster.
+        let rosters_idle_bps = round_bytes as f64 * PEERS as f64 / ROSTER_HEARTBEAT.as_secs_f64();
+        println!(
+            "  con gate ADR-071: construyendo {:.1} KB/s · idle (latidos) {:.1} KB/s",
+            rosters_busy_bps / 1024.0,
+            rosters_idle_bps / 1024.0
+        );
+
+        // ── Totales ────────────────────────────────────────────────────────────────────────
+        let fixed = own_pose_bps + relay_bps + peer_list_bps + chunk_bps;
+        let total_busy = fixed + rosters_busy_bps;
+        let total_idle = fixed + rosters_idle_bps;
+        println!("\n--- LÍNEA BASE con {PEERS} peers (gate de E0; E1 tiene que mover esto) ---");
+        println!(
+            "  construyendo: {:.0} KB/s = {:.1} Mbps de subida",
+            total_busy / 1024.0,
+            total_busy * 8.0 / 1_000_000.0
+        );
+        println!(
+            "  idle:         {:.0} KB/s = {:.1} Mbps de subida",
+            total_idle / 1024.0,
+            total_idle * 8.0 / 1_000_000.0
+        );
+
+        // ── F0.1: el world_sync completo que HOY dispara cada pickup/drop legacy ──────────
+        let sync_wires: Vec<usize> = world
+            .chunks
+            .values()
+            .map(|c| {
+                wire_len(&PacketPayload::WorldSyncChunk {
+                    world_revision: world.revision,
+                    data: super::chunk_to_sync_data(c),
+                })
+            })
+            .collect();
+        let end_wire = wire_len(&PacketPayload::WorldSyncEnd {
+            world_revision: world.revision,
+            chunk_count: chunk_count as u32,
+        });
+        let drip_bytes: usize = sync_wires.iter().sum::<usize>() + end_wire;
+        let per_interaction = drip_bytes * PEERS;
+        let sustained_1hz = per_interaction as f64; // 1 interacción/s = 1 goteo/s
+        let coalesced_bps = per_interaction as f64 / 0.3; // F0.1: máx 1 goteo por ventana de 300 ms
+        println!("\n--- F0.1: broadcast_world_sync por interacción legacy (HOY) ---");
+        println!(
+            "  un goteo completo: {} chunks + End = {} datagramas, {:.1} KB",
+            chunk_count,
+            chunk_count + 1,
+            drip_bytes as f64 / 1024.0
+        );
+        println!(
+            "  por CADA pickup/drop, a {PEERS} peers: {:.1} KB",
+            per_interaction as f64 / 1024.0
+        );
+        println!(
+            "  1 interacción/s sostenida: {:.0} KB/s ({:.1} Mbps) — contra un permanente de {:.0} KB/s",
+            sustained_1hz / 1024.0,
+            sustained_1hz * 8.0 / 1_000_000.0,
+            total_busy / 1024.0
+        );
+        println!(
+            "  coalescido a 300 ms (F0.1): máx {:.2} goteos/s = {:.0} KB/s",
+            1.0 / 0.3,
+            coalesced_bps / 1024.0
+        );
+        println!(
+            "\nexcluido de la suma: voz (3,9 KB/s por hablante, medido en ADR-046), ACKs y \
+             retransmisiones de la capa fiable, heartbeats a 1 Hz (~decenas de B/s)."
+        );
     }
 }

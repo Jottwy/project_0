@@ -1405,6 +1405,15 @@ mod tests {
             items: vec![CorpseStack {
                 item_id: -12345,
                 quantity: 3,
+                // ADR-072: valor NO default a propósito — la regla del round-trip (la misma de la
+                // pose relay): un campo nuevo se prueba cruzando el wire con un valor que el
+                // default no puede enmascarar. El botín de un JOINER llega solo por este salto
+                // P2P, así que si las props se perdieran aquí, el host las vería y el joiner no —
+                // exactamente la clase de desync que no se nota hasta un playtest de dos.
+                props: vec![crate::player::session::ItemPropertyValue {
+                    id: -8792658,
+                    value: 0.4237,
+                }],
             }],
             // ADR-028 amendment (world chests): the flag must survive the P2P mirror hop.
             is_chest: true,
@@ -1425,6 +1434,10 @@ mod tests {
                 assert_eq!(corpses[0].owner_name, "Joel");
                 assert_eq!(corpses[0].held_item, -1159981804);
                 assert_eq!(corpses[0].items[0].item_id, -12345);
+                // ADR-072: el desgaste sobrevive al salto P2P con su valor exacto.
+                assert_eq!(corpses[0].items[0].props.len(), 1);
+                assert_eq!(corpses[0].items[0].props[0].id, -8792658);
+                assert!((corpses[0].items[0].props[0].value - 0.4237).abs() < 1e-9);
                 assert!(corpses[0].is_chest);
             }
             _ => panic!("wrong variant"),
@@ -1440,6 +1453,13 @@ mod tests {
             items: vec![CorpseStack {
                 item_id: 99,
                 quantity: 1,
+                // ADR-072: este salto es el JOINER que muere reportando su botín al host. Si las
+                // props se perdieran aquí, el cadáver de un joiner tendría items a estreno aunque
+                // su propio cliente las hubiera mandado bien por IPC.
+                props: vec![crate::player::session::ItemPropertyValue {
+                    id: -8792658,
+                    value: 0.87,
+                }],
             }],
         };
         let header = PacketHeader::new(spawn.type_code(), 1004, 2, 100);
@@ -1454,6 +1474,12 @@ mod tests {
                 assert_eq!(request_id, 42);
                 assert_eq!(requester_id, 1004);
                 assert_eq!(items[0].item_id, 99);
+                assert_eq!(
+                    items[0].props.len(),
+                    1,
+                    "ADR-072: el desgaste cruza el salto"
+                );
+                assert!((items[0].props[0].value - 0.87).abs() < 1e-9);
             }
             _ => panic!("wrong variant"),
         }

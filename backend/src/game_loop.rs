@@ -3345,6 +3345,15 @@ async fn handle_action(
                 items.len()
             );
             net.stp_items = items;
+            // ADR-070 × canal full-replace: el spec de Unity no lleva `settling` (decodifica al
+            // default, false), así que este reemplazo dejaba un item EN PLENA CAÍDA marcado como
+            // posado a su altura de medio aire. El cliente clava el transform en ese flanco — los
+            // items posados no re-siguen la posición, ese es el contrato pre-070 — y el item se
+            // quedaba FLOTANDO para siempre, mientras la simulación (que vive aparte, en
+            // `settling_items`, y sobrevive al reemplazo) lo seguía bajando hasta un suelo que ya
+            // nadie mira. Disparo real: soltar algo y cruzar un límite de chunk en los ~3 s de
+            // caída. La lista de simulación es la autoridad; se restaura la marca desde ella.
+            restore_settling_flags(&mut net.stp_items, &net.settling_items);
             // ADR-014 invariant: drop reservations for items no longer present, so pending_pickups
             // never points at a vanished item.
             let present: std::collections::HashSet<u32> =
@@ -4376,6 +4385,22 @@ const SETTLE_MAX_TICKS: u16 = 180;
 /// How far above the floor a resting item's origin sits, so the model does not sink into it.
 const SETTLE_REST_OFFSET_M: f32 = 0.12;
 
+/// ADR-070: re-marca como `settling` todo item del roster que siga teniendo entrada de simulación.
+/// Existe por el canal full-replace (`set_stp_items`): el spec del cliente no transporta la marca,
+/// así que un reemplazo del roster la borraba de los items en plena caída y el cliente los dejaba
+/// flotando a media altura. La lista de simulación sobrevive al reemplazo y es la autoridad sobre
+/// qué está cayendo — el roster solo refleja.
+fn restore_settling_flags(
+    stp_items: &mut [crate::network::protocol::StpItemInfo],
+    settling: &[crate::network::SettlingItem],
+) {
+    for s in settling {
+        if let Some(item) = stp_items.iter_mut().find(|i| i.id == s.id) {
+            item.settling = true;
+        }
+    }
+}
+
 /// Clear the `settling` flag of one item in the replicated roster. Separate from removing the
 /// simulation entry because the two live in different lists, and the flag is the half the clients
 /// actually see (it is their cue to stop interpolating and pin the transform).
@@ -5264,7 +5289,15 @@ fn parse_loot_stacks(data: &serde_json::Value) -> Vec<crate::world::corpse::Corp
                     let item_id = json_i32(entry, "item_id")?;
                     let quantity =
                         json_u32(entry, "quantity").map(|q| q.min(u16::MAX as u32) as u16)?;
-                    Some(crate::world::corpse::CorpseStack { item_id, quantity })
+                    // ADR-072: las propiedades son OPCIONALES en el mensaje. Un cliente que no las
+                    // mande (o un item que no tenga) da un vector vacío, que es exactamente el
+                    // comportamiento anterior a este ADR — por eso no hace falta versionar el
+                    // parseo, solo el schema.
+                    Some(crate::world::corpse::CorpseStack {
+                        item_id,
+                        quantity,
+                        props: parse_item_props(entry),
+                    })
                 })
                 .collect()
         })
@@ -5287,19 +5320,7 @@ fn parse_inventory_v2_stacks(data: &serde_json::Value) -> Vec<crate::player::Inv
                     let container =
                         json_u32(entry, "container").and_then(|v| u8::try_from(v).ok())?;
                     let slot = json_u32(entry, "slot").and_then(|v| u8::try_from(v).ok())?;
-                    let props = entry
-                        .get("props")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|p| {
-                                    let id = json_i32(p, "id")?;
-                                    let value = p.get("value").and_then(|v| v.as_f64())?;
-                                    Some(crate::player::session::ItemPropertyValue { id, value })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let props = parse_item_props(entry);
                     Some(crate::player::InventoryStackV2 {
                         item_id,
                         quantity,
@@ -5313,12 +5334,57 @@ fn parse_inventory_v2_stacks(data: &serde_json::Value) -> Vec<crate::player::Inv
         .unwrap_or_default()
 }
 
+/// Las propiedades de instancia de UN stack, en la forma `props:[{id,value}]`.
+///
+/// Una sola función para los dos consumidores: el inventario de ADR-045 y, desde ADR-072, el
+/// botín del cadáver. Comparten la forma exacta porque comparten el tipo (`ItemPropertyValue`),
+/// y dos copias de este bucle es garantizar que un día uno acepte lo que el otro descarta.
+///
+/// Ausente, malformado o con una entrada sin `id`/`value` → esa entrada se cae, no es un error:
+/// mismo contrato de degradación que el resto del parseo del snapshot de muerte.
+fn parse_item_props(entry: &serde_json::Value) -> Vec<crate::player::session::ItemPropertyValue> {
+    entry
+        .get("props")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|p| {
+                    let id = json_i32(p, "id")?;
+                    let value = p.get("value").and_then(|v| v.as_f64())?;
+                    // Un NaN/∞ envenenaría el desgaste con un valor que no se puede comparar ni
+                    // guardar en JSON. Mismo criterio que `sanitize_reported_damage`.
+                    if !value.is_finite() {
+                        return None;
+                    }
+                    Some(crate::player::session::ItemPropertyValue { id, value })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// ADR-045 Fase 3: same hygiene as `sanitize_loot_stacks` (zero-quantity drop, cap truncate),
 /// kept as its own function because the two stacks share only their JSON key names, not a
 /// backing type — `InventoryStackV2` is not `CorpseStack`.
 fn sanitize_inventory_v2_stacks(items: &mut Vec<crate::player::InventoryStackV2>) {
     items.retain(|s| s.quantity > 0);
     items.truncate(crate::world::corpse::MAX_CORPSE_STACKS);
+    // ADR-072: mismo tope de propiedades que el botín, y por la misma razón — esto también llega
+    // del cliente y también acaba en memoria del servidor (el save del host). Era un hueco de
+    // ADR-045: el botín truncaba y este camino no.
+    for stack in items.iter_mut() {
+        if stack.props.len() > crate::world::corpse::MAX_PROPS_PER_STACK {
+            log::warn!(
+                "inventory v2 stack item_id={} reportó {} propiedades (tope {}) — recortado",
+                stack.item_id,
+                stack.props.len(),
+                crate::world::corpse::MAX_PROPS_PER_STACK
+            );
+            stack
+                .props
+                .truncate(crate::world::corpse::MAX_PROPS_PER_STACK);
+        }
+    }
 }
 
 /// ADR-025 Slice B: sanitize a client-reported damage amount. Missing/NaN/∞/negative → 0

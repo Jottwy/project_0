@@ -363,6 +363,7 @@ mod tests {
             vec![CorpseStack {
                 item_id: -12345,
                 quantity: 3,
+                props: Vec::new(),
             }],
         );
         world.spawn_chest(
@@ -370,6 +371,7 @@ mod tests {
             vec![CorpseStack {
                 item_id: 9692212,
                 quantity: 1,
+                props: Vec::new(),
             }],
         );
         world
@@ -390,10 +392,12 @@ mod tests {
             CorpseStack {
                 item_id: -52379,
                 quantity: 2,
+                props: Vec::new(),
             },
             CorpseStack {
                 item_id: 3621376,
                 quantity: 30,
+                props: Vec::new(),
             },
         ];
 
@@ -469,11 +473,13 @@ mod tests {
             vec![
                 CorpseStack {
                     item_id: -52379,
-                    quantity: 2
+                    quantity: 2,
+                    props: Vec::new(),
                 },
                 CorpseStack {
                     item_id: 3621376,
-                    quantity: 30
+                    quantity: 30,
+                    props: Vec::new(),
                 },
             ]
         );
@@ -625,11 +631,13 @@ mod tests {
             vec![
                 CorpseStack {
                     item_id: -52379,
-                    quantity: 2
+                    quantity: 2,
+                    props: Vec::new(),
                 },
                 CorpseStack {
                     item_id: 3621376,
-                    quantity: 30
+                    quantity: 30,
+                    props: Vec::new(),
                 },
             ],
             "stp_inventory from a real Fase 1+2 playtest save must survive untouched"
@@ -925,6 +933,88 @@ mod tests {
             "sin la clave, el mundo carga sin pintar"
         );
         assert_eq!(loaded.world_seed, 42, "y el resto del save intacto");
+        let _ = std::fs::remove_file(&path);
+    }
+    /// ADR-072, la validación que el propio ADR exige: el desgaste tiene que sobrevivir al
+    /// FICHERO, no solo a la memoria. Es el paso donde se perdía — el botín del cadáver viajaba
+    /// como `{item_id, quantity}` y la antorcha volvía a valor de fábrica al lootear el cuerpo.
+    #[test]
+    fn a_worn_torch_survives_saving_and_reloading_inside_a_corpse() {
+        let path = scratch_path("corpse_props_round_trip");
+        let mut save = SaveFile::new("s", 42);
+        save.corpses = vec![CorpseData {
+            id: 7,
+            owner_id: 1,
+            owner_name: "joel".into(),
+            position: Vec3::new(1.0, 2.0, 3.0),
+            equipment: [0; 4],
+            held_item: 0,
+            items: vec![CorpseStack {
+                item_id: -8792658,
+                quantity: 1,
+                // Media antorcha: un valor que NO es ni el default ni un entero, para que un
+                // redondeo o un campo perdido por el camino se vean.
+                props: vec![ItemPropertyValue {
+                    id: -8792658,
+                    value: 0.4237,
+                }],
+            }],
+            is_chest: false,
+        }];
+        save.save_to(&path)
+            .expect("el save con cadáver debe escribir");
+
+        let loaded = load_or_fresh(&path).expect("y volver a cargar");
+        let stack = &loaded.corpses[0].items[0];
+        assert_eq!(stack.props.len(), 1, "la propiedad sobrevive al fichero");
+        assert_eq!(stack.props[0].id, -8792658);
+        assert!(
+            (stack.props[0].value - 0.4237).abs() < 1e-9,
+            "y su valor exacto: {}",
+            stack.props[0].value
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// La otra mitad de la degradación exigida por ADR-072: un save escrito ANTES del campo carga
+    /// sin él y sin migración. Se fabrica sin la clave `props` (no con la lista vacía, que probaría
+    /// otra cosa), igual que el fixture de ADR-068 de arriba.
+    #[test]
+    fn a_save_written_before_adr_072_loads_its_corpses_without_props() {
+        let path = scratch_path("corpse_props_missing_key");
+        let json = r#"{
+            "version": "0.1.0",
+            "world_seed": 42,
+            "session_name": "s",
+            "created_at": "2026-08-01T00:00:00Z",
+            "last_saved": "2026-08-01T00:00:00Z",
+            "play_time_seconds": 10,
+            "config": {
+                "max_players": 50,
+                "teleport_interval_min": 120,
+                "teleport_interval_max": 600,
+                "entity_scaling": 1.0
+            },
+            "corpses": [{
+                "id": 7,
+                "owner_id": 1,
+                "owner_name": "joel",
+                "position": {"x": 1.0, "y": 2.0, "z": 3.0},
+                "equipment": [0, 0, 0, 0],
+                "held_item": 0,
+                "items": [{"item_id": -8792658, "quantity": 1}]
+            }]
+        }"#;
+        std::fs::write(&path, json).expect("fixture must be writable");
+
+        let loaded = load_or_fresh(&path).expect("un save pre-ADR-072 debe cargar");
+        let stack = &loaded.corpses[0].items[0];
+        assert_eq!(stack.item_id, -8792658, "el stack se lee igual que antes");
+        assert_eq!(stack.quantity, 1);
+        assert!(
+            stack.props.is_empty(),
+            "sin la clave, el item carga sin propiedades — el comportamiento de siempre"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

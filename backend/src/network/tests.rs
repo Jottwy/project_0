@@ -310,6 +310,7 @@ async fn corpse_relay_hops_round_trip_between_peers() {
         items: vec![CorpseStack {
             item_id: -12345,
             quantity: 3,
+            props: Vec::new(),
         }],
     };
     joiner.send_reliable(1, &spawn).await;
@@ -338,6 +339,7 @@ async fn corpse_relay_hops_round_trip_between_peers() {
         vec![CorpseStack {
             item_id: -12345,
             quantity: 3,
+            props: Vec::new(),
         }],
     );
     super::sync::broadcast_corpses(&mut host, &world).await;

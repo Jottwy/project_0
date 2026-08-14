@@ -18,17 +18,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::ipc::{CorpseView, ItemStackView};
 use crate::network::PeerId;
+use crate::player::session::ItemPropertyValue;
 use crate::utils::{world_to_chunk, Vec3};
 
 use super::World;
 
 /// One loot stack inside a corpse. Mirrors `ItemStackView` (the wire shape) but is
 /// the authoritative storage form.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// ADR-072: lleva las propiedades de instancia (desgaste, munición cargada...) porque sin ellas
+/// morir REPARABA el equipo — se looteaba el propio cadáver y la antorcha volvía a valor de
+/// fábrica. Reutiliza `ItemPropertyValue` de ADR-045 en vez de inventar un segundo formato.
+///
+/// **Las propiedades son POR STACK, no por unidad**, y eso es fidelidad exacta con STP, no una
+/// pérdida del wire: un `ItemStack` del vendor es UN `Item` más un contador, funde stacks
+/// comparando solo el id sin mirar propiedades, y al partirlos reparte la misma referencia. Ver la
+/// enmienda de ADR-072 que cierra esa pregunta con los 12 assets medidos.
+///
+/// `Eq` cae con este campo: un `f64` no lo admite. Nadie lo usaba como clave de mapa.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CorpseStack {
     /// Raw STP item id (`DataIdReference` — may be negative). Never the legacy enum.
     pub item_id: i32,
     pub quantity: u16,
+    /// Vacío en un save anterior a ADR-072 y en cualquier item sin propiedades — que es la
+    /// mayoría. `serde(default)` es lo que hace que esos saves carguen sin migración.
+    #[serde(default)]
+    pub props: Vec<ItemPropertyValue>,
+}
+
+impl CorpseStack {
+    /// Un stack sin propiedades, que es el caso común. Existe para que los sitios que no tienen
+    /// nada que decir sobre propiedades no tengan que escribir `props: Vec::new()` y para que
+    /// añadir un campo mañana no vuelva a tocar cincuenta literales.
+    pub fn plain(item_id: i32, quantity: u16) -> Self {
+        Self {
+            item_id,
+            quantity,
+            props: Vec::new(),
+        }
+    }
 }
 
 /// Authoritative corpse record. Created from the client-reported death-loot
@@ -75,7 +104,39 @@ pub fn corpse_loot_is_empty(items: &[CorpseStack]) -> bool {
 pub fn sanitize_loot_stacks(items: &mut Vec<CorpseStack>) {
     items.retain(|s| s.quantity > 0);
     items.truncate(MAX_CORPSE_STACKS);
+    for stack in items.iter_mut() {
+        if stack.props.len() > MAX_PROPS_PER_STACK {
+            // A diferencia del recorte de stacks, este SÍ avisa. El tope está por encima de
+            // cualquier item real, así que llegar aquí significa una de dos: un reporte
+            // malformado/malicioso, o un item nuevo que de verdad necesita más — y ese segundo
+            // caso hay que poder verlo, no descubrirlo como "a esta arma se le olvida la mira".
+            log::warn!(
+                "corpse loot stack item_id={} reportó {} propiedades (tope {}) — recortado",
+                stack.item_id,
+                stack.props.len(),
+                MAX_PROPS_PER_STACK
+            );
+            stack.props.truncate(MAX_PROPS_PER_STACK);
+        }
+    }
 }
+
+/// ADR-072: tope de propiedades por stack. Higiene contra un reporte del CLIENTE, igual que
+/// `MAX_CORPSE_STACKS` y por la misma razón: sin tope, 64 stacks × propiedades sin límite entran
+/// en memoria del servidor y en cada `world_state` a 10 Hz.
+///
+/// **8 y no 4, con el coste medido delante.** Un cadáver saturado de 64 stacks pesa 1836 B sin
+/// propiedades; con 1 por stack 3116 B (×1,70), con 3 → 5676 B (×3,09), con 8 → 12076 B (×6,58).
+/// Son **20 B por propiedad**, dominados por el nombre de campo repetido en cada entrada — la
+/// misma mecánica que descuadró el presupuesto de ADR-068 por 2,6×. Un tope de 4 habría acotado
+/// el abuso más, pero de las 12 definiciones con propiedades del proyecto ninguna pasa de 1 hoy y
+/// un arma con munición, modo, mira y desgaste llegaría justo a 4: recortar ahí es rozar lo
+/// legítimo. Se deja holgura y **el recorte avisa**, que es lo que convierte el tope en una red y
+/// no en una pérdida silenciosa.
+///
+/// El caso REAL no se parece al peor: un cadáver normal trae ~20 stacks y casi ninguno lleva
+/// propiedades, así que el sobrecoste típico es de unos pocos cientos de bytes.
+pub const MAX_PROPS_PER_STACK: usize = 8;
 
 /// Loot interaction range (meters). Was 5.0 (mirroring `interact_with_item`'s convention) until
 /// Fase D play-test: the client-side interaction collider lives on the ragdoll's pelvis bone
@@ -179,9 +240,15 @@ impl World {
 
         let stack = &mut corpse.items[item_index];
         let granted = quantity.min(stack.quantity);
+        // ADR-072: lo que sale lleva las propiedades del stack, y en una toma PARCIAL las dos
+        // mitades se quedan con las mismas. No es un descuido ni una duplicación inventada aquí:
+        // es lo que hace STP al partir un `ItemStack`, que reparte la MISMA referencia de `Item` a
+        // las dos partes. Un modelo por unidad daría una fidelidad que el juego no tiene en ningún
+        // otro sitio y que el inventario del cliente no sabría ni guardar.
         let taken = CorpseStack {
             item_id: stack.item_id,
             quantity: granted,
+            props: stack.props.clone(),
         };
         stack.quantity -= granted;
         if stack.quantity == 0 {
@@ -224,6 +291,7 @@ impl World {
                     .map(|s| ItemStackView {
                         item_id: s.item_id,
                         quantity: s.quantity,
+                        props: s.props.clone(),
                     })
                     .collect(),
                 is_chest: c.is_chest,
@@ -243,7 +311,11 @@ mod tests {
     fn stacks(pairs: &[(i32, u16)]) -> Vec<CorpseStack> {
         pairs
             .iter()
-            .map(|&(item_id, quantity)| CorpseStack { item_id, quantity })
+            .map(|&(item_id, quantity)| CorpseStack {
+                item_id,
+                quantity,
+                props: Vec::new(),
+            })
             .collect()
     }
 
@@ -275,6 +347,7 @@ mod tests {
             items.push(CorpseStack {
                 item_id: i,
                 quantity: 1,
+                props: Vec::new(),
             });
         }
         let id = spawn_test_corpse(&mut world, Vec3::new(0.0, 0.0, 0.0), items);
@@ -297,7 +370,8 @@ mod tests {
             taken,
             CorpseStack {
                 item_id: -12345,
-                quantity: 2
+                quantity: 2,
+                props: Vec::new(),
             }
         );
         assert_eq!(world.corpses[&id].items, stacks(&[(-12345, 3)]));
@@ -376,6 +450,112 @@ mod tests {
         );
     }
 
+    /// ADR-072: lo que sale del cadáver lleva el desgaste del stack del que salió. Sin esto,
+    /// lootear el propio cuerpo REPARABA el equipo — el bug que abrió el ADR.
+    #[test]
+    fn a_taken_stack_carries_the_wear_of_the_stack_it_came_from() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(10.0, 1.8, 20.0);
+        let worn = vec![CorpseStack {
+            item_id: -8792658,
+            quantity: 3,
+            props: vec![ItemPropertyValue {
+                id: -8792658,
+                value: 0.4237,
+            }],
+        }];
+        let id = spawn_test_corpse(&mut world, pos, worn);
+
+        // Toma PARCIAL: 1 de 3.
+        let taken = world
+            .take_corpse_item(id, 0, 1, pos, CORPSE_LOOT_MAX_DISTANCE)
+            .unwrap();
+        assert_eq!(taken.props.len(), 1, "lo que sale lleva su desgaste");
+        assert!((taken.props[0].value - 0.4237).abs() < 1e-9);
+
+        // Y lo que queda conserva el mismo, que es lo que hace STP al partir un ItemStack.
+        let left = &world.corpses[&id].items[0];
+        assert_eq!(left.quantity, 2);
+        assert_eq!(
+            left.props, taken.props,
+            "las dos mitades comparten propiedades, igual que dentro del inventario"
+        );
+    }
+
+    /// El tope de `MAX_PROPS_PER_STACK` es higiene contra un reporte del cliente, igual que el de
+    /// stacks: sin él, 64 stacks × propiedades sin límite entran en memoria del servidor.
+    #[test]
+    fn sanitize_truncates_the_property_list_of_each_stack() {
+        let mut items = vec![CorpseStack {
+            item_id: 1,
+            quantity: 1,
+            props: (0..MAX_PROPS_PER_STACK as i32 + 5)
+                .map(|i| ItemPropertyValue {
+                    id: i,
+                    value: i as f64,
+                })
+                .collect(),
+        }];
+
+        sanitize_loot_stacks(&mut items);
+
+        assert_eq!(items[0].props.len(), MAX_PROPS_PER_STACK);
+        assert_eq!(items[0].props[0].id, 0, "se quedan las primeras, no otras");
+    }
+
+    /// ADR-072 exige MEDIR el peor caso del wire, no estimarlo: el presupuesto de ADR-068 se
+    /// equivocó por 2,6× y lo cazó un test, no el diseño. Esto codifica con el MISMO encoder que
+    /// usa el IPC (`to_vec_named`) un cadáver saturado —64 stacks, cada uno con el tope de 8
+    /// propiedades— y compara contra el mismo cadáver sin propiedades.
+    ///
+    /// `#[ignore]`: es una medición, no una aserción de comportamiento. Correr con
+    /// `cargo test -- --ignored corpse_view_wire_cost --nocapture`.
+    #[test]
+    #[ignore]
+    fn corpse_view_wire_cost() {
+        let mut world = World::new(42);
+        let pos = Vec3::new(10.0, 1.8, 20.0);
+
+        let plain: Vec<CorpseStack> = (0..MAX_CORPSE_STACKS as i32)
+            .map(|i| CorpseStack::plain(i, 1))
+            .collect();
+        let id_plain = spawn_test_corpse(&mut world, pos, plain);
+        let bytes_plain = rmp_serde::to_vec_named(&world.visible_corpse_views(pos))
+            .unwrap()
+            .len();
+        world.corpses.remove(&id_plain);
+
+        println!("ADR-072 wire, cadáver de {MAX_CORPSE_STACKS} stacks:");
+        println!("  sin props            = {bytes_plain} B  (línea base)");
+
+        // Varias densidades, porque el peor caso teórico y el real no se parecen: de las 12
+        // definiciones con propiedades del proyecto, 10 tienen UNA y ninguna llega a 3.
+        for n in [1usize, 3, MAX_PROPS_PER_STACK] {
+            let worn: Vec<CorpseStack> = (0..MAX_CORPSE_STACKS as i32)
+                .map(|i| CorpseStack {
+                    item_id: i,
+                    quantity: 1,
+                    props: (0..n as i32)
+                        .map(|p| ItemPropertyValue {
+                            id: p,
+                            value: 0.4237,
+                        })
+                        .collect(),
+                })
+                .collect();
+            let id = spawn_test_corpse(&mut world, pos, worn);
+            let bytes = rmp_serde::to_vec_named(&world.visible_corpse_views(pos))
+                .unwrap()
+                .len();
+            world.corpses.remove(&id);
+            println!(
+                "  {n} props por stack    = {bytes} B  (+{} B, ×{:.2})",
+                bytes as i64 - bytes_plain as i64,
+                bytes as f64 / bytes_plain as f64
+            );
+        }
+    }
+
     #[test]
     fn take_corpse_item_rejects_far_missing_and_bad_index() {
         let mut world = World::new(42);
@@ -447,7 +627,8 @@ mod tests {
             taken,
             CorpseStack {
                 item_id: -5498592,
-                quantity: 3
+                quantity: 3,
+                props: Vec::new(),
             }
         );
         let taken = world
@@ -457,7 +638,8 @@ mod tests {
             taken,
             CorpseStack {
                 item_id: 9692212,
-                quantity: 1
+                quantity: 1,
+                props: Vec::new(),
             }
         );
         assert!(!world.corpses.contains_key(&id));
@@ -474,11 +656,13 @@ mod tests {
         let mut items = vec![CorpseStack {
             item_id: -1,
             quantity: 0,
+            props: Vec::new(),
         }];
         for i in 0..(MAX_CORPSE_STACKS as i32 + 6) {
             items.push(CorpseStack {
                 item_id: i,
                 quantity: 1,
+                props: Vec::new(),
             });
         }
         sanitize_loot_stacks(&mut items);

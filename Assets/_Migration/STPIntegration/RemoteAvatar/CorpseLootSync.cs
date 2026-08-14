@@ -76,12 +76,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
             public readonly int Quantity;
             public readonly bool WasFullDepletion;
 
-            public PendingTake(int localSlot, int itemId, int quantity, bool wasFullDepletion)
+            /// <summary>
+            /// ADR-072: el desgaste que tenía el item cuando se lo llevaron. Va en la petición
+            /// porque el rollback ocurre cuando el item YA no está en el slot: reconstruirlo desde
+            /// la definición a secas devolvería al cadáver una antorcha REPARADA, que es el mismo
+            /// bug que este ADR arregla, colado por el camino que solo corre cuando algo va mal.
+            /// </summary>
+            public readonly List<ItemPropertyValue> Props;
+
+            public PendingTake(int localSlot, int itemId, int quantity, bool wasFullDepletion,
+                List<ItemPropertyValue> props)
             {
                 LocalSlot = localSlot;
                 ItemId = itemId;
                 Quantity = quantity;
                 WasFullDepletion = wasFullDepletion;
+                Props = props;
             }
         }
 
@@ -91,6 +101,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private int[] _serverIndex;
         private int[] _lastKnownCount;
         private int[] _lastKnownItemId;
+        /// <summary>ADR-072: el desgaste del item que había en cada slot en el último evento —
+        /// espejo de <see cref="_lastKnownItemId"/> y por el mismo motivo (el rollback llega
+        /// cuando el item ya no está donde leerlo).</summary>
+        private List<ItemPropertyValue>[] _lastKnownProps;
 
         /// <summary>Fires (itemId, quantity) once the server CONFIRMS a take — not on the
         /// optimistic local removal. CorpseSpawner.WireLoot subscribes to undress the ragdoll in
@@ -124,6 +138,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private PendingTake _inFlight;
         private int _inFlightServerIndex;
         private float _inFlightSentAt;
+        // Latch del warning de IPC caído: una línea por corte, no por frame de reintento.
+        private bool _warnedIpcDown;
 
         /// <summary>
         /// Tras esto se da por perdida la respuesta y se deshace la petición en vuelo. Sin este
@@ -152,12 +168,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _serverIndex = new int[n];
             _lastKnownCount = new int[n];
             _lastKnownItemId = new int[n];
+            _lastKnownProps = new List<ItemPropertyValue>[n];
             for (int i = 0; i < n; i++)
             {
                 var stack = container.GetItemAtIndex(i);
                 _serverIndex[i] = i;
                 _lastKnownCount[i] = stack.Count;
                 _lastKnownItemId[i] = stack.Item?.Id ?? 0;
+                _lastKnownProps[i] = ItemProps.Read(stack.Item);
             }
 
             container.SlotChanged += OnSlotChanged;
@@ -169,8 +187,13 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 _ipc = ipc;
                 _ipc.AddEventListener(OnGameEvent);
-                PumpQueue(); // la cola pudo llenarse antes de que existiera el IPC
             }
+
+            // Reintento continuo, no solo en el frame del enganche: la cola retiene mientras el
+            // IPC no está (o está reconectando), así que alguien tiene que volver a bombear cuando
+            // vuelva. Es una comparación por frame en el caso normal (cola vacía).
+            if (!_hasInFlight && _queued.Count > 0)
+                PumpQueue();
 
             if (_hasInFlight && Time.unscaledTime - _inFlightSentAt > InFlightTimeoutSeconds)
             {
@@ -197,6 +220,26 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (_hasInFlight || _queued.Count == 0)
                 return;
 
+            // El guard de conexión va ANTES del Dequeue, y no es estilo: con el IPC aún sin
+            // enganchar (un "Take All" en el primer frame del cadáver) desencolar aquí drenaba la
+            // cola entera descartando cada toma — y el PumpQueue del Update, que existe justo para
+            // ese caso, se encontraba la cola ya vacía. La cola ESPERA; el IPC de este proyecto es
+            // del mismo proceso y reconecta solo, así que retener es estrictamente mejor que tirar.
+            if (_ipc == null || !_ipc.IsConnected)
+            {
+                // Una vez por corte, no por intento: el Update rebombea cada frame mientras haya
+                // cola, y un warning por frame es exactamente cómo se fabricó el Editor.log de
+                // 8 GB que tumbó el editor el 13/08.
+                if (!_warnedIpcDown)
+                {
+                    _warnedIpcDown = true;
+                    Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: IPC no disponible — {_queued.Count} " +
+                        "toma(s) esperando en cola; se reintenta al engancharse.");
+                }
+                return;
+            }
+            _warnedIpcDown = false;
+
             var next = _queued.Dequeue();
             int serverIdx = _serverIndex[next.LocalSlot];
             if (serverIdx < 0)
@@ -205,14 +248,6 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 // marcó). Nada que reportar; sigue la cola.
                 Debug.Log($"[CorpseLootSync] corpse {_corpseId}: slot {next.LocalSlot} ya no apunta a " +
                     "ninguna entrada del servidor — peticion descartada.");
-                PumpQueue();
-                return;
-            }
-
-            if (_ipc == null || !_ipc.IsConnected)
-            {
-                Debug.LogWarning($"[CorpseLootSync] corpse {_corpseId}: IPC desconectado — la petición no sale " +
-                    "y no confirmará nunca (el item queda quitado optimistamente).");
                 PumpQueue();
                 return;
             }
@@ -234,8 +269,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
             int newItemId = slot.HasItem() ? slot.GetItem().Id : 0;
             int oldCount = _lastKnownCount[i];
             int oldItemId = _lastKnownItemId[i];
+            // ADR-072: el desgaste de ANTES del cambio, por la misma razón que `oldItemId` — para
+            // cuando esto es una retirada, el item ya no está en el slot del que habría que leerlo.
+            var oldProps = _lastKnownProps[i];
             _lastKnownCount[i] = newCount;
             _lastKnownItemId[i] = newItemId;
+            _lastKnownProps[i] = slot.HasItem() ? ItemProps.Read(slot.GetItem()) : null;
 
             int delta = newCount - oldCount;
             if (delta >= 0)
@@ -249,7 +288,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
 
             // Se ENCOLA, no se envía: el índice de servidor se resuelve al enviar. Ver el bloque
             // de _queued para por qué calcularlo aquí rompía "Take All".
-            _queued.Enqueue(new PendingTake(i, oldItemId, removed, wasFullDepletion));
+            _queued.Enqueue(new PendingTake(i, oldItemId, removed, wasFullDepletion, oldProps));
             PumpQueue();
 
             // NOTE: the server-index shift is deferred to OnGameEvent (corpse_item_taken) — see
@@ -427,8 +466,14 @@ namespace BackroomsSurvival.Migration.STPIntegration
             try
             {
                 if (pending.WasFullDepletion)
-                    _container.SetItemAtIndex(pending.LocalSlot, new ItemStack(new Item(def), pending.Quantity));
+                    // ADR-072: se repone CON su desgaste. Un `new Item(def)` a secas devolvería al
+                    // cadáver una antorcha reparada, y encima solo en el camino de rechazo, que es
+                    // el que menos se mira.
+                    _container.SetItemAtIndex(pending.LocalSlot,
+                        new ItemStack(ItemProps.Build(def, pending.Props), pending.Quantity));
                 else
+                    // Retirada parcial: el item sigue en el slot con sus propiedades intactas, así
+                    // que solo hay que devolver la cantidad.
                     _container.AdjustStackAtIndex(pending.LocalSlot, pending.Quantity);
             }
             finally

@@ -60,6 +60,7 @@ fn world_chest_is_not_reseeded_over_one_already_loaded() {
     let loot = vec![crate::world::corpse::CorpseStack {
         item_id: 1,
         quantity: 3,
+        props: Vec::new(),
     }];
 
     // Arranque 1: se siembra.
@@ -528,6 +529,7 @@ fn corpse_spawn_request_dedupes_under_retransmit() {
     let items = vec![crate::world::corpse::CorpseStack {
         item_id: -12345,
         quantity: 3,
+        props: Vec::new(),
     }];
 
     let spawn_data = |items: Vec<crate::world::corpse::CorpseStack>| CorpseSpawnData {
@@ -590,6 +592,7 @@ fn corpse_take_request_dedupes_validates_and_reports_verdict() {
         vec![crate::world::corpse::CorpseStack {
             item_id: -55,
             quantity: 2,
+            props: Vec::new(),
         }],
     );
 
@@ -712,6 +715,52 @@ fn parse_death_loot_reads_negative_ids_and_degrades_malformed_to_empty() {
     // Short equipment array fills what it has; extra entries beyond 4 are ignored.
     let (equipment, _, _) = parse_death_loot(&serde_json::json!({ "equipment": [1, 2] }));
     assert_eq!(equipment, [1, 2, 0, 0]);
+}
+
+/// ADR-072: el snapshot de muerte trae el desgaste, y este es el punto de entrada donde se perdía.
+/// Cubre también lo que NO debe entrar: un cliente viejo que no manda `props`, y una propiedad con
+/// un valor que no es finito (envenenaría el desgaste con algo que ni se compara ni se guarda).
+#[test]
+fn parse_death_loot_reads_instance_properties_and_rejects_the_unusable() {
+    let data = serde_json::json!({
+        "items": [
+            {
+                "item_id": -8792658,
+                "quantity": 1,
+                "props": [
+                    { "id": -8792658, "value": 0.4237 },
+                    { "id": 6313314, "value": 1.0 },
+                ],
+            },
+            // Sin la clave: un cliente anterior a este ADR. Vector vacío, no error.
+            { "item_id": 99, "quantity": 2 },
+            {
+                "item_id": 7,
+                "quantity": 1,
+                "props": [
+                    { "id": 1 },                    // sin valor → se cae
+                    { "value": 0.5 },               // sin id → se cae
+                    { "id": 2, "value": "medio" },  // valor no numérico → se cae
+                ],
+            },
+        ],
+    });
+
+    let (_, _, items) = parse_death_loot(&data);
+    assert_eq!(items.len(), 3);
+
+    assert_eq!(items[0].props.len(), 2, "las dos propiedades buenas entran");
+    assert_eq!(items[0].props[0].id, -8792658);
+    assert!((items[0].props[0].value - 0.4237).abs() < 1e-9);
+
+    assert!(
+        items[1].props.is_empty(),
+        "sin la clave `props` se degrada al comportamiento de siempre"
+    );
+    assert!(
+        items[2].props.is_empty(),
+        "las entradas incompletas o con valor no numérico se caen una a una"
+    );
 }
 
 // ADR-032 amendment: a valid report_inventory mirrors the client's real STP inventory into
@@ -4114,6 +4163,7 @@ fn spawn_world_chest_gates_dedupes_and_seeds() {
         vec![CorpseStack {
             item_id: -5498592,
             quantity: 2,
+            props: Vec::new(),
         }]
     };
 
@@ -4303,6 +4353,50 @@ fn settle_until_asleep(
         }
     }
     (roster[0].clone(), max_steps, false)
+}
+
+/// ADR-070 × canal full-replace (`set_stp_items`): el spec de Unity no transporta `settling`, así
+/// que un reemplazo del roster mientras algo caía dejaba ese item marcado como posado a su altura
+/// de medio aire — el cliente clava el transform en ese flanco y lo deja FLOTANDO, mientras la
+/// simulación (que sobrevive aparte) lo baja hasta un suelo que ya nadie mira. Disparo real:
+/// soltar algo y cruzar un límite de chunk en los ~3 s de caída.
+///
+/// El contrato: la lista de simulación es la AUTORIDAD sobre qué está cayendo; el roster refleja.
+#[test]
+fn a_roster_replace_does_not_freeze_a_falling_item_in_mid_air() {
+    let (falling, sim) = falling_item(1, [30.0, 4.0, 30.0], Vec3::new(0.0, 0.0, 0.0));
+    let mut settled = falling.clone();
+    settled.id = 2;
+    settled.settling = false;
+
+    // Lo que llega del cliente en el full-replace: los MISMOS items, decodificados sin la marca
+    // (serde default = false) — que es exactamente cómo los re-emite ChunkLootManager.
+    let mut replaced: Vec<StpItemInfo> = vec![falling.clone(), settled.clone()]
+        .into_iter()
+        .map(|mut i| {
+            i.settling = false;
+            i
+        })
+        .collect();
+
+    // La lista de simulación lleva ADEMÁS un id que ya no está en el roster (recogido en plena
+    // caída y ausente del replace): no debe hacer nada, ni mucho menos entrar en pánico.
+    let ghost = SettlingItem {
+        id: 99,
+        velocity: Vec3::new(0.0, 0.0, 0.0),
+        quiet_ticks: 0,
+        age_ticks: 0,
+    };
+    restore_settling_flags(&mut replaced, &[sim, ghost]);
+
+    assert!(
+        replaced[0].settling,
+        "el item con simulación viva recupera su marca: sigue cayendo"
+    );
+    assert!(
+        !replaced[1].settling,
+        "el item posado se queda posado — la marca solo vuelve donde hay simulación"
+    );
 }
 
 /// El comportamiento que Joel pidió, escrito como contrato: un objeto soltado en el aire CAE, y
