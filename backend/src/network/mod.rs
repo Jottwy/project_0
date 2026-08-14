@@ -143,6 +143,16 @@ pub struct NetworkManager {
     /// distintos: los items cambian cada vez que alguien suelta algo, las piezas construidas de
     /// una base no cambian en horas.
     pub roster_gates: RosterGates,
+    /// F0.8 (enmienda ADR-073/074): el mismo gate de ADR-071, aplicado al emisor que la sonda
+    /// `host_uplink_baseline` destapó como el 77 % de la subida del host — `broadcast_chunk_states`
+    /// reenviaba el `ChunkSyncData` COMPLETO de cada chunk propio a 5 Hz sin mirar si había
+    /// cambiado.
+    ///
+    /// Uno POR CHUNK y no uno por ronda: un chunk con una entidad moviéndose cambia en cada ronda,
+    /// y con un gate global arrastraría a los otros ~48 que llevan horas idénticos — que es
+    /// justamente el gasto que este fix elimina. Clave `(x, z, layer)`, la misma tripleta con la
+    /// que `WorldSyncProgress` cuenta completitud.
+    pub chunk_gates: std::collections::HashMap<(i32, i32, i8), crate::network::roster::RosterGate>,
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
     pub processed_stp_drops: std::collections::HashSet<u64>,
@@ -353,6 +363,7 @@ impl NetworkManager {
             stp_items: Vec::new(),
             settling_items: Vec::new(),
             roster_gates: RosterGates::default(),
+            chunk_gates: std::collections::HashMap::with_capacity(64),
             processed_stp_drops: std::collections::HashSet::with_capacity(256),
             stp_buildings: Vec::new(),
             processed_stp_places: std::collections::HashSet::with_capacity(256),

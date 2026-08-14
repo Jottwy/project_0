@@ -571,11 +571,25 @@ pub async fn broadcast_stp_harvestables(net: &mut NetworkManager) {
 /// this too made every overlapping backend reclaim the other's chunks every 200ms â€”
 /// last-writer-wins with no arbiter, ping-ponging `owner` and re-seeding entities/items
 /// on both sides.
-pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_pos: Vec3) {
+/// F0.8 (enmienda ADR-073/074, 2026-08-14): `&mut` porque cada chunk lleva ahora su propio gate,
+/// que se actualiza cuando decide que una ronda sale. Sigue corriendo a 5 Hz — lo que cambia es
+/// que un chunk que nadie ha tocado desde la última ronda ya no se reenvía.
+///
+/// Es el mecanismo de ADR-071 aplicado al mayor emisor del host: medido con 8 peers, este relay
+/// eran 3351 de los 4373 KB/s de subida (77 %), repitiendo layout, entidades e items de chunks
+/// que en su inmensa mayoría llevaban horas idénticos. Igual que allí: cambia la CADENCIA, no el
+/// formato — `apply_chunk_sync` sigue siendo un reemplazo verbatim idempotente, así que un peer
+/// sin actualizar solo recibe menos rondas y no se entera de nada. Cero cambios de wire.
+pub async fn broadcast_chunk_states(net: &mut NetworkManager, world: &World, player_pos: Vec3) {
     if !net.is_host || net.peers.is_empty() {
         return;
     }
     let player_chunk = world_to_chunk(player_pos);
+    let peers = net.peers.len();
+    // Las claves visitadas en ESTA ronda. Se recogen para poder tirar después los gates de chunks
+    // que ya no se emiten (descargados o alejados): sin la poda el mapa crece con cada chunk que
+    // el jugador visita y no vuelve a pisar, durante toda la sesión.
+    let mut seen: Vec<(i32, i32, i8)> = Vec::with_capacity(net.chunk_gates.len().max(16));
     for chunk in world.chunks.values() {
         if chunk.owner != Some(net.local_id) {
             continue;
@@ -587,6 +601,24 @@ pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_
             continue;
         }
         let data = chunk_to_sync_data(chunk);
+        let key = (chunk.pos.0, chunk.pos.1, chunk.layer);
+        seen.push(key);
+        // El hash es del dato que VIAJA, no del `Chunk` de origen: así el gate no puede cortar por
+        // un estado interno que el wire no transporta, ni dejar pasar un cambio que sí transporta.
+        // Cuesta una serialización que el envío repite — la CPU está sobradísima (27 ms/s medidos
+        // en el peor caso) y lo que este fix compra son bytes, que es el recurso escaso.
+        let open = {
+            let gate = net.chunk_gates.entry(key).or_default();
+            gate.should_send(
+                roster::content_hash(std::slice::from_ref(&data)),
+                peers,
+                std::time::Instant::now(),
+                roster::ROSTER_HEARTBEAT,
+            )
+        };
+        if !open {
+            continue;
+        }
         let payload = PacketPayload::ChunkState { data };
         net.broadcast_unreliable(&payload).await;
         // ADR-060 (d): ceder entre páginas. Sin esto la ronda entera sale como una ráfaga
@@ -594,6 +626,12 @@ pub async fn broadcast_chunk_states(net: &NetworkManager, world: &World, player_
         // defecto): MEDIDO, a partir de ~56 páginas empezaba a perderse al menos una por ronda,
         // y con reensamblado todo-o-nada eso significa que el roster no converge NUNCA.
         tokio::task::yield_now().await;
+    }
+    // Poda: solo cuando hay más gates que chunks emitidos, para no pagar el retain en la ronda
+    // normal (que es la mayoría). Un chunk que vuelve al radio re-emite en su primera ronda con el
+    // gate limpio — correcto: mientras estuvo fuera, el peer pudo perderse cualquier cambio.
+    if net.chunk_gates.len() > seen.len() {
+        net.chunk_gates.retain(|k, _| seen.contains(k));
     }
 }
 
@@ -922,6 +960,7 @@ mod chunk_broadcast_tests {
     use super::*;
     use crate::network::peer::PeerConnection;
     use crate::network::NetworkEvent;
+    use crate::world::chunk::ChunkLayoutV1;
     use std::net::SocketAddr;
     use std::time::Duration;
 
@@ -960,7 +999,7 @@ mod chunk_broadcast_tests {
             "setup bug: the joiner needs an owned chunk in range or this test is vacuous"
         );
 
-        broadcast_chunk_states(&joiner, &joiner_world, pos).await;
+        broadcast_chunk_states(&mut joiner, &joiner_world, pos).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         let host_events = host.process_incoming().await;
         assert!(
@@ -974,7 +1013,7 @@ mod chunk_broadcast_tests {
         // silence above is the guard firing, not an unrelated setup mistake.
         let mut host_world = World::new(42);
         host_world.update_ownership(pos, host.local_id);
-        broadcast_chunk_states(&host, &host_world, pos).await;
+        broadcast_chunk_states(&mut host, &host_world, pos).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         let joiner_events = joiner.process_incoming().await;
         assert!(
@@ -1013,7 +1052,7 @@ mod chunk_broadcast_tests {
         let mut joiner_world = World::new(42);
 
         // NEGATIVO: broadcast periodico -> se aplica, no se confirma.
-        broadcast_chunk_states(&host, &host_world, pos).await;
+        broadcast_chunk_states(&mut host, &host_world, pos).await;
         tokio::time::sleep(Duration::from_millis(100)).await;
         let mut applied = 0usize;
         for e in joiner.process_incoming().await {
@@ -1049,6 +1088,127 @@ mod chunk_broadcast_tests {
             joiner.peers[&1].reliable_queue.len(),
             1,
             "el handoff de propiedad SI se confirma — quien cede la autoridad quiere saber que llego"
+        );
+    }
+
+    // â”€â”€â”€ F0.8 (enmienda ADR-073/074): gate por chunk en broadcast_chunk_states â”€â”€â”€
+
+    /// Positivo/negativo sobre sockets reales: dos rondas seguidas sin tocar el mundo mandan el
+    /// chunk la primera vez y lo callan la segunda. Sin el par, un gate que corta SIEMPRE pasaria
+    /// la mitad negativa por accidente.
+    #[tokio::test]
+    async fn an_unchanged_chunk_stops_being_sent_after_its_burst() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let mut joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        let joiner_addr = loopback_addr(&joiner);
+        host.peers
+            .insert(2, PeerConnection::new(2, "Joiner".into(), joiner_addr));
+
+        let pos = Vec3::new(0.0, 1.8, 0.0);
+        let mut host_world = World::new(42);
+        host_world.update_ownership(pos, host.local_id);
+
+        async fn received_chunk_states(joiner: &mut NetworkManager) -> usize {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            joiner
+                .process_incoming()
+                .await
+                .iter()
+                .filter(|e| matches!(e, NetworkEvent::ChunkStateReceived { .. }))
+                .count()
+        }
+
+        // Ráfaga post-"cambio" inicial (ROSTER_CHANGE_BURST rondas, ADR-071): las primeras
+        // salidas del gate siempre emiten, para que el joiner recién unido no vea el mundo vacío.
+        for _ in 0..roster::ROSTER_CHANGE_BURST {
+            broadcast_chunk_states(&mut host, &host_world, pos).await;
+            let n = received_chunk_states(&mut joiner).await;
+            assert!(
+                n > 0,
+                "cada ronda de la ráfaga tiene que emitir todos los chunks"
+            );
+        }
+
+        // Agotada la ráfaga y sin cambios: el gate corta, ronda vacía.
+        broadcast_chunk_states(&mut host, &host_world, pos).await;
+        let n = received_chunk_states(&mut joiner).await;
+        assert_eq!(
+            n, 0,
+            "un chunk sin cambios no puede seguir viajando a 5 Hz: es todo el ahorro de F0.8"
+        );
+
+        // Positivo: tocar el mundo (mover al jugador, lo que cambia la vecindad de owner y
+        // dispara `update_ownership`) genera al menos un chunk nuevo/relimitado y ese SÍ sale de
+        // inmediato, sin esperar al latido — mismo criterio que ADR-071.
+        let pos2 = Vec3::new(80.0, 1.8, 0.0);
+        host_world.update_ownership(pos2, host.local_id);
+        broadcast_chunk_states(&mut host, &host_world, pos2).await;
+        let n = received_chunk_states(&mut joiner).await;
+        assert!(
+            n > 0,
+            "un chunk que cambia (o uno nuevo por la vecindad) tiene que salir sin esperar latido"
+        );
+    }
+
+    /// El heartbeat de ADR-071 es "está para reparar páginas perdidas, no para detectar
+    /// cambios" — el mismo criterio se hereda aquí. Con `heartbeat = 0` se demuestra que esa vía
+    /// existe también por chunk y es independiente del contenido.
+    #[test]
+    fn chunk_gate_heartbeat_repairs_independently_of_content() {
+        let mut gate = roster::RosterGate::default();
+        let data = ChunkSyncData {
+            pos: [0, 0],
+            layer: 0,
+            seed: 42,
+            template_id: 1,
+            rotation: 0,
+            mirrored: false,
+            has_workbench: false,
+            layout: ChunkLayoutV1::default(),
+            stabilized: false,
+            anchored: false,
+            teleport_timer: 0.0,
+            entities: vec![],
+            items: vec![],
+        };
+        let now = std::time::Instant::now();
+        let hash = roster::content_hash(std::slice::from_ref(&data));
+        for _ in 0..roster::ROSTER_CHANGE_BURST {
+            gate.should_send(hash, 1, now, roster::ROSTER_HEARTBEAT);
+        }
+        assert!(
+            !gate.should_send(hash, 1, now, roster::ROSTER_HEARTBEAT),
+            "preparación: ya calla"
+        );
+        assert!(
+            gate.should_send(hash, 1, now, std::time::Duration::ZERO),
+            "vencido el latido, la ronda sale aunque el chunk sea idéntico"
+        );
+    }
+
+    /// El gate es POR CHUNK: un chunk que cambia no puede arrastrar a los que no cambiaron. Es
+    /// la razón entera de usar un `HashMap` de gates en vez de uno global (que sería lo mismo que
+    /// ADR-071 ya hace para rosters, y aquí rompería la propiedad exacta que se quiere).
+    #[test]
+    fn each_chunk_gates_independently_of_its_neighbours() {
+        let mut a = roster::RosterGate::default();
+        let mut b = roster::RosterGate::default();
+        let now = std::time::Instant::now();
+        for _ in 0..roster::ROSTER_CHANGE_BURST {
+            a.should_send(1, 1, now, roster::ROSTER_HEARTBEAT);
+            b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT);
+        }
+        assert!(!a.should_send(1, 1, now, roster::ROSTER_HEARTBEAT));
+        assert!(!b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT));
+
+        // Solo `a` cambia (hash distinto). `b` con el mismo hash de siempre sigue callado.
+        assert!(
+            a.should_send(2, 1, now, roster::ROSTER_HEARTBEAT),
+            "el chunk que cambió tiene que salir"
+        );
+        assert!(
+            !b.should_send(1, 1, now, roster::ROSTER_HEARTBEAT),
+            "el chunk vecino, sin cambios, tiene que seguir callado"
         );
     }
 

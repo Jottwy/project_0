@@ -1508,8 +1508,9 @@ pub async fn run(
         }
 
         // Broadcast chunk states at 5hz.
+        // F0.8: `&mut` — cada chunk lleva su gate de emisión (mismo mecanismo que ADR-071).
         if tick.is_multiple_of(CHUNK_BROADCAST_EVERY) {
-            sync::broadcast_chunk_states(&net, &world, player.position).await;
+            sync::broadcast_chunk_states(&mut net, &world, player.position).await;
         }
 
         // Heartbeat every 1s.
