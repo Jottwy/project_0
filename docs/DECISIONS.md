@@ -3593,3 +3593,13 @@ La tercera es la que resuelve la memoria: un jugador que cruza el mapa no acumul
 - **PROHÍBE aplicar una celda incompleta.** El todo-o-nada sigue vigente DENTRO de cada celda; lo que cambia es su alcance.
 - El heartbeat de ADR-071 sobrevive por celda: lo que repara son páginas perdidas, que ningún hash detecta.
 - Queda FUERA, y se dice para que nadie lo dé por hecho: los cadáveres (`visible_corpse_views`) ya filtran por proximidad en la ruta IPC local desde ADR-028, así que su relay P2P es el único de los cinco que ya tenía media cura; se le aplica el mismo mecanismo igualmente, por coherencia.
+
+#### Corrección a la decisión 2, encontrada al escribir los tests del receptor (2026-08-15)
+
+**La regla "celda en scope y sin datos → está vacía" es incompatible con el gate de ADR-071 tal como estaba escrita, y la incompatibilidad borra el mundo del cliente.** ADR-071 corta las rondas en las que un roster no ha cambiado — que en régimen estacionario son el 92 % de ellas. Si en una de esas rondas cortadas llegara un cierre de scope, el receptor no recibiría páginas de NINGUNA celda y las vaciaría todas: el jugador vería desaparecer de golpe cada objeto y cada construcción del mundo, y volverían tres segundos después con el latido.
+
+Lo cazó un test, no el diseño, y merece quedar escrito porque es la clase de fallo que reaparece: dos mecanismos correctos por separado cuya composición no lo es.
+
+**Decisión: el cierre pertenece a la RONDA EMITIDA, no al reloj.** Si el gate de ADR-071 corta un roster, esa ronda no manda páginas **ni cierre**, y el receptor no aplica nada — conserva lo que tiene, exactamente lo que ADR-071 promete ("solo deja de reenviar lo que todos ya tienen"). El cierre solo sale detrás de las páginas que sí salieron.
+
+**Consecuencia práctica**: `RosterScopeEnd` no es un latido independiente ni puede emitirse "por si acaso". Emitir un cierre sin sus páginas es exactamente el bug. El test `a_round_the_gate_cut_must_not_arrive_as_a_scope_end` fija la mitad receptora del invariante; la emisora se fija en el sitio donde el gate decide.

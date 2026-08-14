@@ -250,6 +250,133 @@ impl<T> RosterAssembler<T> {
     }
 }
 
+/// E1 fase 2 (ADR-074): reensamblado POR CELDA, el receptor del troceo espacial.
+///
+/// Sustituye al todo-o-nada global de `RosterAssembler` cuando el emisor manda subconjuntos. La
+/// diferencia que decide la fase no es el ahorro de tráfico: hoy **una sola página perdida
+/// invalida el roster ENTERO de esa ronda**, y aquí invalida solo su celda — las demás se aplican
+/// igual y la incompleta conserva lo que ya tenía hasta la ronda siguiente. La granularidad es un
+/// modo de fallo más pequeño.
+///
+/// La regla de aplicación vive entera en `accept_scope_end`, y es la que cierra la ambigüedad que
+/// el troceo introduce ("¿esta celda está vacía o solo lejos?"): **no se infiere, el host manda la
+/// lista de celdas en scope**.
+#[derive(Debug)]
+pub struct CellRosterAssembler<T> {
+    /// Celdas ya completas de la generación en curso, esperando su cierre.
+    staged: std::collections::HashMap<[i32; 2], Vec<T>>,
+    /// Celdas a medias: páginas recibidas de una generación que aún no está completa.
+    partial: std::collections::HashMap<[i32; 2], PartialCell<T>>,
+    /// Lo último aplicado, por celda. Es de aquí de donde sale el roster plano que ve el resto
+    /// del código, y lo que conserva una celda cuya ronda llegó rota.
+    applied: std::collections::HashMap<[i32; 2], Vec<T>>,
+}
+
+#[derive(Debug)]
+struct PartialCell<T> {
+    generation: u32,
+    page_count: u16,
+    pages: Vec<Option<Vec<T>>>,
+}
+
+/// `Default` a mano y no `derive`, por lo mismo que `RosterAssembler`: el derive exigiría
+/// `T: Default` y ninguno de los cinco tipos de roster lo cumple ni tiene por qué.
+impl<T> Default for CellRosterAssembler<T> {
+    fn default() -> Self {
+        Self {
+            staged: std::collections::HashMap::new(),
+            partial: std::collections::HashMap::new(),
+            applied: std::collections::HashMap::new(),
+        }
+    }
+}
+
+impl<T> CellRosterAssembler<T> {
+    /// Acepta una página de una celda. No entrega nada: el roster no cambia hasta que llega el
+    /// cierre de la ronda, porque hasta entonces no se sabe qué celdas debían venir.
+    pub fn accept_page(
+        &mut self,
+        cell: [i32; 2],
+        generation: u32,
+        page: u16,
+        page_count: u16,
+        items: Vec<T>,
+    ) {
+        if page_count == 0 || page >= page_count {
+            return; // emisor incoherente o corrupción: se ignora, la ronda siguiente cura
+        }
+
+        let entry = self.partial.entry(cell).or_insert_with(|| PartialCell {
+            generation,
+            page_count,
+            pages: (0..page_count).map(|_| None).collect(),
+        });
+        // Una generación distinta (o un `page_count` distinto) descarta lo acumulado y empieza de
+        // nuevo — adopción incondicional, igual que `RosterAssembler`, y por la misma razón: el
+        // `timestamp` de la generación es u32 de ms y envuelve, así que "la mayor gana" congelaría
+        // el roster para siempre a los ~49 días.
+        if entry.generation != generation || entry.page_count != page_count {
+            entry.generation = generation;
+            entry.page_count = page_count;
+            entry.pages = (0..page_count).map(|_| None).collect();
+        }
+        entry.pages[page as usize] = Some(items);
+
+        if entry.pages.iter().all(|p| p.is_some()) {
+            let complete: Vec<T> = std::mem::take(&mut entry.pages)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .collect();
+            self.partial.remove(&cell);
+            self.staged.insert(cell, complete);
+        }
+    }
+
+    /// Cierra la ronda y devuelve el roster COMPLETO y plano que el consumidor debe adoptar.
+    ///
+    /// La regla de tres líneas de la enmienda de ADR-074, y no hay una cuarta:
+    /// - celda en scope de la que llegó contenido completo → se reemplaza;
+    /// - celda en scope de la que no llegó NADA → está vacía (el host no tenía nada que mandar);
+    /// - celda fuera del scope → se descarta (está lejos; si el jugador vuelve, se la remandan).
+    ///
+    /// Una celda en scope que llegó A MEDIAS no entra en ninguna de las tres: conserva lo que ya
+    /// tenía. Se distingue de la vacía porque de aquella no llegó ninguna página y de esta sí
+    /// llegaron algunas — si el host tiene contenido manda al menos una.
+    pub fn accept_scope_end(&mut self, generation: u32, cells_in_scope: &[[i32; 2]]) -> Vec<T>
+    where
+        T: Clone,
+    {
+        let scope: std::collections::HashSet<[i32; 2]> = cells_in_scope.iter().copied().collect();
+
+        for cell in &scope {
+            if let Some(complete) = self.staged.remove(cell) {
+                self.applied.insert(*cell, complete);
+            } else if self
+                .partial
+                .get(cell)
+                .is_none_or(|p| p.generation != generation)
+            {
+                // Ni completa ni a medias EN ESTA generación: el host no mandó nada de aquí.
+                self.applied.insert(*cell, Vec::new());
+            }
+            // else: a medias en esta generación → se conserva lo aplicado, y la ronda siguiente
+            // (o el heartbeat de ADR-071) la repone.
+        }
+
+        // Fuera de scope: se olvida. Es lo que impide que un jugador que cruza el mapa acumule el
+        // mundo entero en memoria.
+        self.applied.retain(|cell, _| scope.contains(cell));
+        self.staged.retain(|cell, _| scope.contains(cell));
+        self.partial.retain(|cell, _| scope.contains(cell));
+
+        self.applied
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,6 +667,148 @@ mod tests {
             gate.should_send(hash, 1, now, std::time::Duration::ZERO),
             "vencido el latido, la ronda sale aunque el roster sea idéntico"
         );
+    }
+
+    // ─── E1 fase 2 (ADR-074): reensamblado por celda ───
+
+    const C1: [i32; 2] = [1, 1];
+    const C2: [i32; 2] = [2, 2];
+    const C3: [i32; 2] = [3, 3];
+
+    fn ids(v: &[StpCarryableInfo]) -> Vec<u32> {
+        let mut out: Vec<u32> = v.iter().map(|c| c.id).collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// El caso normal: dos celdas, ambas en scope, ambas completas.
+    #[test]
+    fn cells_in_scope_replace_their_own_contents() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        asm.accept_page(C2, 100, 0, 1, vec![carryable(2)]);
+        let roster = asm.accept_scope_end(100, &[C1, C2]);
+        assert_eq!(ids(&roster), vec![1, 2]);
+    }
+
+    /// LA regla que la enmienda cierra, primera mitad: una celda EN SCOPE de la que no llegó nada
+    /// está VACÍA. Sin esto, un objeto recogido por otro jugador seguiría en el mundo del cliente
+    /// para siempre.
+    #[test]
+    fn a_cell_in_scope_with_nothing_received_is_emptied() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        assert_eq!(ids(&asm.accept_scope_end(100, &[C1])), vec![1]);
+
+        // Ronda siguiente: C1 sigue en scope pero el host ya no manda nada de ella.
+        let roster = asm.accept_scope_end(101, &[C1]);
+        assert!(
+            roster.is_empty(),
+            "en scope y sin datos significa vacía: el host no tenía nada que mandar"
+        );
+    }
+
+    /// Segunda mitad de la regla: una celda FUERA de scope se descarta. Es lo que impide que un
+    /// jugador que cruza el mapa acumule el mundo entero en memoria.
+    #[test]
+    fn a_cell_out_of_scope_is_dropped_not_kept() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        asm.accept_page(C2, 100, 0, 1, vec![carryable(2)]);
+        assert_eq!(ids(&asm.accept_scope_end(100, &[C1, C2])), vec![1, 2]);
+
+        // El jugador se aleja: C1 sale del scope. La ronda emite C2 igualmente — ver
+        // `a_round_the_gate_cut_must_not_arrive_as_a_scope_end` para por qué esto NO es opcional.
+        asm.accept_page(C2, 101, 0, 1, vec![carryable(2)]);
+        let roster = asm.accept_scope_end(101, &[C2]);
+        assert_eq!(
+            ids(&roster),
+            vec![2],
+            "lo que queda lejos se olvida; si vuelve, se lo remandan"
+        );
+    }
+
+    /// **La interacción con ADR-071 que este test existe para fijar, y que se descubrió aquí:**
+    /// el gate de emisión corta las rondas en las que un roster no ha cambiado. Si en una de esas
+    /// rondas cortadas llegara un cierre de scope, la regla "en scope y sin datos = vacía"
+    /// borraría del cliente un mundo que está perfectamente vivo.
+    ///
+    /// La regla que lo cierra: **el cierre pertenece a la ronda EMITIDA.** Si el gate corta, no
+    /// hay páginas y tampoco cierre, y el cliente conserva lo que tiene. Este test no puede
+    /// comprobar el emisor desde aquí, así que fija la otra mitad: sin `accept_scope_end` no se
+    /// toca nada, por muchas rondas que pasen.
+    #[test]
+    fn a_round_the_gate_cut_must_not_arrive_as_a_scope_end() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        assert_eq!(ids(&asm.accept_scope_end(100, &[C1])), vec![1]);
+
+        // Diez rondas en las que el gate cortó: ni páginas ni cierre. El roster sigue intacto,
+        // que es justo lo que ADR-071 promete ("solo deja de re-enviar lo que todos ya tienen").
+        let still: Vec<u32> = asm.applied.values().flatten().map(|c| c.id).collect();
+        assert_eq!(
+            still,
+            vec![1],
+            "sin cierre no se aplica nada: una ronda que el gate corta no puede vaciar nada"
+        );
+    }
+
+    /// **El argumento que justifica la fase entera**: una página perdida ya no invalida el roster
+    /// completo, solo su celda. Antes de esto, perder una página de cualquier sitio dejaba al
+    /// jugador sin NINGUNA actualización esa ronda.
+    #[test]
+    fn a_lost_page_only_invalidates_its_own_cell() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        // Ronda 100: las dos celdas llegan enteras.
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        asm.accept_page(C2, 100, 0, 1, vec![carryable(2)]);
+        assert_eq!(ids(&asm.accept_scope_end(100, &[C1, C2])), vec![1, 2]);
+
+        // Ronda 101: C1 cambia y llega entera; de C2 se pierde una de sus dos páginas.
+        asm.accept_page(C1, 101, 0, 1, vec![carryable(11)]);
+        asm.accept_page(C2, 101, 0, 2, vec![carryable(22)]); // falta la página 1 de 2
+        let roster = asm.accept_scope_end(101, &[C1, C2]);
+        assert_eq!(
+            ids(&roster),
+            vec![2, 11],
+            "C1 se actualiza pese al fallo de C2, y C2 conserva su contenido anterior en vez de \
+             vaciarse — eso es lo que la granularidad compra"
+        );
+    }
+
+    /// Y la contrapartida del anterior: la celda rota se repone en la ronda siguiente, no se queda
+    /// congelada. Sin esto, "conservar lo anterior" sería una fuga permanente.
+    #[test]
+    fn a_broken_cell_recovers_on_the_next_round() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        asm.accept_scope_end(100, &[C1]);
+
+        asm.accept_page(C1, 101, 0, 2, vec![carryable(9)]); // incompleta
+        assert_eq!(ids(&asm.accept_scope_end(101, &[C1])), vec![1], "conserva");
+
+        asm.accept_page(C1, 102, 0, 1, vec![carryable(9)]); // ronda entera
+        assert_eq!(ids(&asm.accept_scope_end(102, &[C1])), vec![9], "repuesta");
+    }
+
+    /// Una celda que entra en scope por primera vez y de la que no hay nada NO puede arrastrar
+    /// basura de otra: cada celda es independiente.
+    #[test]
+    fn a_new_empty_cell_does_not_inherit_anything() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 0, 1, vec![carryable(1)]);
+        let roster = asm.accept_scope_end(100, &[C1, C3]);
+        assert_eq!(ids(&roster), vec![1], "C3 entra vacía, sin heredar de C1");
+    }
+
+    /// Igual que el assembler global: un índice de página incoherente se ignora en vez de romper
+    /// el hilo de red con un panic por un datagrama de fuera.
+    #[test]
+    fn an_incoherent_cell_page_is_ignored_instead_of_panicking() {
+        let mut asm: CellRosterAssembler<StpCarryableInfo> = CellRosterAssembler::default();
+        asm.accept_page(C1, 100, 5, 2, vec![carryable(1)]);
+        asm.accept_page(C1, 100, 0, 0, vec![carryable(1)]);
+        assert!(asm.accept_scope_end(100, &[C1]).is_empty());
     }
 
     #[test]
