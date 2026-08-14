@@ -32,6 +32,12 @@ fd-lock = "4.0.4"
 
 # P2P networking uses tokio::net::UdpSocket (included in tokio "full").
 
+# CONVENTIONS.md: `unsafe` prohibido salvo ADR. Declarado aqui para que cualquier
+# `cargo` local lo aplique sin depender de la CLI del workflow (main.rs lo repite como
+# atributo por visibilidad). Verificado 2026-08-14: cero `unsafe` en el crate.
+[lints.rust]
+unsafe_code = "forbid"
+
 [profile.release]
 opt-level = 3
 lto = true

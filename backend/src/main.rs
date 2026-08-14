@@ -21,6 +21,8 @@
 // diff enorme y volátil que se reescribiría en cada sesión de migración. Ver STATE.md
 // "Auditoría: dead_code inventariado".
 #![allow(dead_code)]
+// CONVENTIONS.md: `unsafe` prohibido salvo ADR. Espejo del [lints] de Cargo.toml.
+#![forbid(unsafe_code)]
 
 mod crafting;
 mod game_loop;
