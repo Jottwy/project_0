@@ -89,11 +89,20 @@ ADR-029 en cualquiera de los tres casos.
 
 ### E1 — Interest management (ADR-074, VALIDADA; fase 1 IMPLEMENTADA 2026-08-15)
 
-> **Fase 1 (AOI de poses) hecha y en verde**, sin tocar wire — cambia a quién se envía, no qué.
-> `AOI_POSE_RADIUS_M = 100` con histéresis de salida ×1,2 en la autoridad; el cliente hace snap
-> al reentrar. Medido antes de fijar el radio (ver `perf-baseline.md`): con los jugadores
-> repartidos sobrevive el **19–21 %** del relay y **el porcentaje no empeora al crecer N**.
-> Pendientes de E1: la fase 2 (rosters por celda, la que sí bumpea wire) y la cadencia LOD.
+> **Fase 1 (AOI de poses) + cadencia LOD hechas y en verde**, sin tocar wire — cambian a quién se
+> envía y cada cuánto, no qué. `AOI_POSE_RADIUS_M = 100` con histéresis de salida ×1,2 en la
+> autoridad; dentro de 50 m a 10 Hz, en el anillo 50–100 m a ~5 Hz escalonado por paridad; el
+> cliente hace snap al reentrar. Medido antes de fijar el radio (ver `perf-baseline.md`): con los
+> jugadores repartidos sobrevive el **19–21 %** del relay y **el porcentaje no empeora al crecer
+> N**; el LOD recorta ~37,5 % de lo que quede.
+>
+> **Pendiente de E1: solo la fase 2** — rosters por celda, la única parte que bumpea wire. Ahí
+> está ahora el 54–57 % de la subida del host, y arreglaría de paso el techo de convergencia
+> (hoy los rosters dejan de replicarse EN SILENCIO entre 4800 y 9600 elementos). Antes de tocar
+> código hay que cerrar en una enmienda a ADR-074 la ambigüedad que introduce el troceo: **si a un
+> cliente no le llega nada de una celda, ¿está vacía o simplemente lejos?** Hoy no existe esa duda
+> porque el roster viaja entero y el reemplazo es verbatim; interpretarla mal hace desaparecer
+> objetos del mundo de un jugador, o dejarle para siempre objetos que otro ya recogió.
 
 
 **Objetivo**: 16–24 doméstico / 32–48 VPS con jugadores dispersos (agrupados ≈ hoy: el AOI
