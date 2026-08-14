@@ -2,6 +2,24 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-14 (escalado hacia el MMO: análisis completo, ADR-073/074 propuesta, sonda F0.0 línea base) — **cargo test 711 verdes; clippy GNU -D warnings limpio; fmt limpio; ADR-073 + ADR-074 escritos y enmiendados en propuesta (validación humana pendiente ANTES de código); DECISIONS.md 3343→3423 líneas verificado; docs/SCALING-ROADMAP.md nuevo (gates E0–E5, tareas (a)/(b)/(c), calendario); sonda host_uplink_baseline medida en backend con 8 peers: 35,8 Mbps construcción / 32,5 Mbps idle; hallazgo broadcast_chunk_states = 77% de la subida (3,35 MB/s), cura F0.8 candidata pendiente de OK de Joel.**
+
+0. ANÁLISIS RED COMPLETO (docs + backend + cliente, todos los sistemas). Alcance decidido por Joel: roadmap + Etapa 0 + ADRs E1 en propuesta. Topología final HÍBRIDO (varios hosts por zona descargando el relay) aplazada al gate E2→E3 con medidas de 16+ jugadores. ADR-003 cierra con ADR-073 nuevo (reemplaza PROPUESTA 1992 original).
+
+1. COMMITS `390a7145` (ADR-073/074 escritos) + `c2412fe9` (SCALING-ROADMAP.md nuevo, entrada INDEX.md) + `40c19f0d` (F0.0: sonda reproducible, línea base registrada). ADR-073 = phasing E0–E5, cierra ADR-003 original, PROPUESTA. ADR-074 = interest management AOI, rosters por celda, PROPUESTA pendiente validación humana.
+
+2. DOCS NUEVOS: `docs/SCALING-ROADMAP.md` (operativo: fixes F0.0–F0.7 ruta file:linea, secuenciación tareas, gates, calendario Alpha 1 itch nov 2026, Next Fest feb 2027 NO oct, EA primavera 2027). Entrada en INDEX.md para SCALING-ROADMAP. DECISIONS.md verificado línea a línea: 3343→3423 (+80 líneas, ADR-073 + ADR-074 + enmiendas).
+
+3. **F0.0 HECHA: sonda `host_uplink_baseline`** (#[ignore] backend/src/network/sync.rs). Mide subida TOTAL del host (datagramas × (payload+28 bytes headers UDP/IP)) con 8 peers. Línea base en perf-baseline.md: **35,8 Mbps construyendo / 32,5 Mbps idle**, gate de E0.
+
+4. **HALLAZGO CRÍTICO F0.0:** `broadcast_chunk_states` (sync.rs:574) = 77% de la subida del host (3,35 MB/s de 4,37 MB/s). Reenvía ChunkSyncData completo (49 chunks × 1751 B) a 5 Hz a TODOS los peers sin mirar si cambió. Nunca medido antes, sin cobertura de perf. **Cura candidata F0.8:** gate por hash + heartbeat por chunk (patrón ADR-071, sin bump wire) — PENDIENTE DECISIÓN JOEL para incorporarla a tarea (b).
+
+5. MEDICIÓN F0.1 (world_sync completo): 84,9 KB total (50 datagramas); pickup/drop legacy = 678,9 KB por CADA evento a 8 peers. NO domina línea base (domina ChunkState) → coalescing F0.1 procede sin cambios. Suite backend: 711 tests verdes, clippy -D limpio, fmt limpio.
+
+6. PRÓXIMO PASO INMEDIATO: validación humana de ADR-073 y ADR-074. Tarea (b) = F0.1–F0.3 (+F0.8 si Joel aprueba). Tarea (c) = F0.4–F0.7 + re-medición gate.
+
+---
+
 - Fecha: 2026-08-14 (blindaje de loot/inventario + ADR-072, 14 commits en migration/worldgraph-v1) — **cargo test 711 verdes (688→711); clippy GNU -D warnings limpio; fmt limpio; CompileCheckClient.sh errors: 0 en 4 asambleas. NADA de esta sesión validado en juego todavía — toda la tanda nace de bugs que Joel reportó jugando.**
 
 0. CUATRO BUGS DE LOOT REPORTADOS POR JOEL, TRES ARREGLADOS + UNO CON ADR: (a) cuerpos y cajas vaciados que no desaparecían — commit d32e51c: "Take All" disparaba todas las tomas en el mismo frame con índices sin desplazar contra el Vec::remove del backend (traza medida por test: de 4 stacks quedaban 2 sin pedir); fix = UNA petición en vuelo por cadáver, cola, índice resuelto al ENVIAR, timeout 5s. 2 tests Rust fijan el contrato. (b) items desaparecen con inventario lleno — commit 5e2584c: StpPickupController tiraba el retorno de AddItem con el item ya borrado del mundo; fix = dos puertas (SpaceFor sonda GetAllowedCount antes de pedir; el sobrante vuelve al mundo por SendStpDrop con impulso). NetworkItemPickupGate lleva ahora defId+count. MintDropId pasó a static compartido (colisión de ids = drop tragado en silencio por dedup del host). (c) restore pierde lo que no cabe — commit 1311290: InventoryRestorer.ApplyV2 resolvía def DESPUÉS del hueco; ahora def primero (lo único irrecuperable), segundo intento en cualquier hueco conservando props de instancia, y lo que sobre cae al suelo. (d) desgaste de antorchas se reseteaba al morir → ADR-072.
