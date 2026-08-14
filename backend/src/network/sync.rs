@@ -1149,6 +1149,79 @@ mod chunk_broadcast_tests {
         );
     }
 
+    // â”€â”€â”€ F0.3 (E0): los veredictos esperan en cola con cap, y el desborde es fatal â”€â”€â”€
+
+    fn a_verdict() -> PacketPayload {
+        PacketPayload::StpPickupGranted {
+            item_id: 7,
+            def_id: -52379,
+            count: 1,
+        }
+    }
+
+    /// La mitad que MÁS importa: una ráfaga legítima no puede desconectar a nadie. Un cap mal
+    /// dimensionado convierte 20 pickups seguidos (o un goteo de mundo aparcado por delante) en
+    /// desconexiones aleatorias, que es peor que el descarte que F0.3 vino a arreglar.
+    #[tokio::test]
+    async fn a_legitimate_burst_of_verdicts_never_disconnects_a_peer() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        host.peers.insert(
+            2,
+            PeerConnection::new(2, "Joiner".into(), loopback_addr(&joiner)),
+        );
+
+        // Peor caso legítimo del dimensionado: el goteo de un mundo entero aparcado por delante
+        // (50) más una ráfaga de loot intensa (20). Muy por debajo del cap de 256.
+        for _ in 0..70 {
+            host.send_verdict(2, &a_verdict()).await;
+        }
+
+        assert!(
+            host.peers.contains_key(&2),
+            "70 veredictos seguidos son tráfico legítimo: desconectar aquí sería el bug nuevo"
+        );
+        let events = host.process_incoming().await;
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, NetworkEvent::PeerDisconnected { .. })),
+            "y no puede colarse ninguna desconexión por la puerta de atrás: {events:?}"
+        );
+    }
+
+    /// La mitad negativa: superado el cap, el peer CAE — no se le descarta el veredicto y se
+    /// sigue como si nada. Su inventario ya divergió del host y solo un re-sync lo arregla.
+    #[tokio::test]
+    async fn a_verdict_queue_overflow_disconnects_the_peer_instead_of_dropping_the_verdict() {
+        let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let joiner = NetworkManager::bind(0, 2, 42, false).await.unwrap();
+        host.peers.insert(
+            2,
+            PeerConnection::new(2, "Joiner".into(), loopback_addr(&joiner)),
+        );
+
+        // Nadie ACKea (el joiner ni siquiera lee), así que la ventana se llena y todo lo demás
+        // se aparca: exactamente el escenario que antes descartaba veredictos en silencio.
+        for _ in 0..(NetworkManager::VERDICT_QUEUE_CAP + 40) {
+            host.send_verdict(2, &a_verdict()).await;
+        }
+
+        assert!(
+            !host.peers.contains_key(&2),
+            "pasado el cap, el peer tiene que salir: seguir encolando o descartar deja su \
+             inventario divergido para siempre"
+        );
+        let events = host.process_incoming().await;
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, NetworkEvent::PeerDisconnected { id: 2, .. })),
+            "la caída tiene que salir como PeerDisconnected — es lo que dispara el teardown de \
+             ADR-056 en un joiner: {events:?}"
+        );
+    }
+
     // â”€â”€â”€ F0.2 (E0): el relay encodea una vez por origen, no una por par â”€â”€â”€
 
     /// EL invariante de F0.2: cachear el encode por origen no puede cambiar un solo byte de lo

@@ -1350,7 +1350,8 @@ pub async fn run(
                             phantom_attack_kind_name(attack.kind),
                             request_id
                         );
-                        net.send_reliable(attack.victim, &grant).await;
+                        // F0.3: veredicto — cola diferida con cap, no descarte silencioso.
+                        net.send_verdict(attack.victim, &grant).await;
                         continue;
                     }
 
@@ -2079,7 +2080,6 @@ async fn handle_network_event(
                 Vec3::from_array(player_position),
                 world,
                 net,
-                player,
                 processed_interactions,
             )
             .await;
@@ -2233,7 +2233,9 @@ async fn handle_network_event(
                             if reason.is_empty() { "-" } else { reason }
                         );
                     }
-                    net.send_reliable(requester_id, &result).await;
+                    // F0.3: veredicto — un resultado de toma perdido deja el cadáver y el
+                    // inventario del cliente en desacuerdo, y nada lo repone.
+                    net.send_verdict(requester_id, &result).await;
                 }
                 None => info!(
                     "MPTRACE step=CORPSE event=corpse_take_duplicate requester_id={} request_id={} ignored=true",
@@ -3289,7 +3291,6 @@ async fn handle_action(
                     player.position,
                     world,
                     net,
-                    player,
                     processed_interactions,
                 )
                 .await;
@@ -4256,7 +4257,9 @@ async fn process_pvp_hit_candidate_host(
                     damage: clamped_damage,
                     reason: "validated".into(),
                 };
-                net.send_reliable(victim_peer, &grant).await;
+                // F0.3: veredicto — la víctima es quien APLICA el daño (ADR-025); si el grant se
+                // descarta, el golpe simplemente no existe para nadie.
+                net.send_verdict(victim_peer, &grant).await;
             }
 
             if attacker_is_local {
@@ -4292,7 +4295,8 @@ async fn process_pvp_hit_candidate_host(
                     victim_id: candidate.victim_id,
                     reason: reason.into(),
                 };
-                net.send_reliable(attacker_peer, &payload).await;
+                // F0.3: veredicto — el rechazo es lo que devuelve el control al atacante.
+                net.send_verdict(attacker_peer, &payload).await;
             }
         }
     }
@@ -4924,7 +4928,8 @@ async fn process_stp_carryable_pickup(
             carryable_id,
             def_id: carryable.def_id,
         };
-        net.send_reliable(requester_id, &payload).await;
+        // F0.3: veredicto — sin él, el carryable queda reservado en el host y ausente del cliente.
+        net.send_verdict(requester_id, &payload).await;
     }
 }
 
@@ -5033,7 +5038,9 @@ async fn process_stp_pickup(
             def_id,
             count,
         };
-        net.send_reliable(requester_id, &payload).await;
+        // F0.3: veredicto — la reserva de ADR-014 ya retiró el item en el host; perder esto deja
+        // al cliente sin el objeto y sin forma de volver a pedirlo.
+        net.send_verdict(requester_id, &payload).await;
     }
 }
 
@@ -5048,7 +5055,6 @@ async fn process_authoritative_interaction(
     requester_pos: Vec3,
     world: &mut World,
     net: &mut NetworkManager,
-    player: &Player,
     processed_interactions: &mut HashSet<(u16, u64)>,
 ) {
     if requester_id != net.local_id && !net.peers.contains_key(&requester_id) {

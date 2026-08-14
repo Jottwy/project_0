@@ -163,6 +163,12 @@ pub struct NetworkManager {
     /// dirty de la sesión dispara sin esperar a la ventana, igual que ADR-071 no hace esperar al
     /// heartbeat a la primera ronda.
     pub world_sync_last_sent: Option<std::time::Instant>,
+    /// F0.3 (E0, ADR-073): eventos producidos FUERA del camino de recepción, que
+    /// `process_incoming` emite junto a los suyos. Hoy solo lo usa `send_verdict` al desbordar la
+    /// cola de un peer: así el desborde termina en la misma `PeerDisconnected` que ya manejan
+    /// ADR-056 (fin de sesión en un joiner) y el teardown del host, en vez de estrenar un
+    /// segundo camino de desconexión que habría que mantener en paralelo.
+    pending_events: Vec<NetworkEvent>,
     /// Phase 3: client-generated drop ids already processed by the host, so a
     /// duplicated `stp_drop` (watcher race OR reliable retransmit) spawns one item.
     pub processed_stp_drops: std::collections::HashSet<u64>,
@@ -376,6 +382,7 @@ impl NetworkManager {
             chunk_gates: std::collections::HashMap::with_capacity(64),
             world_sync_dirty: false,
             world_sync_last_sent: None,
+            pending_events: Vec::new(),
             processed_stp_drops: std::collections::HashSet::with_capacity(256),
             stp_buildings: Vec::new(),
             processed_stp_places: std::collections::HashSet::with_capacity(256),
@@ -499,11 +506,21 @@ impl NetworkManager {
             incoming.push(pkt);
         }
 
-        let mut events = Vec::new();
+        // F0.3: las desconexiones decididas fuera del camino de recepción (hoy: desborde de la
+        // cola de veredictos en `send_verdict`) salen por aquí, para que el game loop las vea
+        // como cualquier otra `PeerDisconnected` y no haga falta un segundo camino de teardown.
+        let mut events: Vec<NetworkEvent> = self.pending_events.drain(..).collect();
         for pkt in incoming {
             events.extend(self.handle_packet(pkt).await);
         }
         events
+    }
+
+    /// F0.3: encola un evento para que `process_incoming` lo emita en su próxima pasada.
+    /// `pub(super)` a propósito: el único productor legítimo es el camino fatal de
+    /// `send_verdict`, no cualquiera que quiera fabricar eventos de red sintéticos.
+    pub(super) fn push_pending_event(&mut self, event: NetworkEvent) {
+        self.pending_events.push(event);
     }
 
     /// Send heartbeats to all peers.

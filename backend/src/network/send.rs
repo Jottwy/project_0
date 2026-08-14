@@ -145,6 +145,74 @@ impl NetworkManager {
         }
     }
 
+    /// F0.3 (E0, ADR-073): tope de la cola diferida de VEREDICTOS de un peer, antes de tratar el
+    /// desborde como condición fatal de ese peer.
+    ///
+    /// Dimensionado contra la peor ráfaga LEGÍTIMA medida, con margen ×3 — un cap corto convierte
+    /// una ráfaga honesta en desconexiones aleatorias, que es peor que el bug que F0.3 cierra. El
+    /// peor caso legítimo es un goteo de mundo completo aparcado por delante (49 chunks + End =
+    /// 50 entradas, medido en `perf-baseline.md`) más una ráfaga de loot intensa (~20 veredictos
+    /// entre pickups, tomas de cadáver y veredictos PvP): ~70, ×3 ≈ 210, redondeado a 256.
+    pub const VERDICT_QUEUE_CAP: usize = 256;
+
+    /// F0.3: envío de un VEREDICTO host→cliente (pickup concedido, resultado de una toma de
+    /// cadáver, daño PvP concedido o rechazado, ataque de fantasma concedido).
+    ///
+    /// El defecto que cierra: estos iban por `send_reliable`, que con la ventana llena (32)
+    /// **DESCARTA el paquete nuevo** y solo deja un warn. Un veredicto perdido no se auto-cura
+    /// —no hay roster que lo reponga— así que el cliente se queda creyendo que tiene un objeto
+    /// que el host ya no le da, o al revés. Ahora van por la cola diferida (ADR-060), que los
+    /// entrega en cuanto los ACKs abren hueco.
+    ///
+    /// **Política de desborde: fatal para ese peer, nunca descarte.** Si su cola supera
+    /// `VERDICT_QUEUE_CAP`, ese peer lleva ya cientos de veredictos sin confirmar: su inventario
+    /// y el del host divergieron hace rato, y seguir descartando (aunque sea con log) es
+    /// reintroducir el bug con más pasos. Se le desconecta por el MISMO camino que ADR-062 usa al
+    /// agotar retransmisiones —`peers.remove` + `purge_peer_state` + `PeerDisconnected`—, que en
+    /// un joiner termina la sesión (ADR-056) y le hace re-sincronizar entero al volver.
+    pub async fn send_verdict(&mut self, peer_id: PeerId, payload: &PacketPayload) {
+        let queued = self
+            .peers
+            .get(&peer_id)
+            .map(|p| p.deferred_reliable.len())
+            .unwrap_or(0);
+        if queued >= Self::VERDICT_QUEUE_CAP {
+            self.drop_peer_over_verdict_backlog(peer_id, queued);
+            return;
+        }
+        self.send_reliable_queued(peer_id, payload).await;
+    }
+
+    /// F0.3: el desborde de arriba. Separado para que el camino fatal se lea de un vistazo y sea
+    /// testeable sin fabricar 256 veredictos reales.
+    fn drop_peer_over_verdict_backlog(&mut self, peer_id: PeerId, queued: usize) {
+        let Some(peer) = self.peers.remove(&peer_id) else {
+            return;
+        };
+        self.purge_peer_state(peer_id);
+        log::warn!(
+            "Peer {} ({}) disconnected: verdict queue overflow ({} deferred >= cap {}) — its \
+             inventory state has diverged from the host's and cannot be reconciled in place",
+            peer.name,
+            peer.addr,
+            queued,
+            Self::VERDICT_QUEUE_CAP
+        );
+        log::info!(
+            "MPTRACE step=F03 event=peer_removed reason=verdict_queue_overflow self_id={} peer_id={} endpoint={} queued_deferred={} cap={} peer_count_after={}",
+            self.local_id,
+            peer_id,
+            peer.addr,
+            queued,
+            Self::VERDICT_QUEUE_CAP,
+            self.peers.len()
+        );
+        self.push_pending_event(crate::network::NetworkEvent::PeerDisconnected {
+            id: peer_id,
+            reason: "verdict queue overflow".into(),
+        });
+    }
+
     /// ADR-060: reliable con espera en vez de descarte. Igual que `send_reliable` salvo el caso
     /// de ventana llena: el paquete se aparca en la cola diferida FIFO del peer y
     /// `pump_deferred_reliable` lo emitirá cuando los ACKs abran hueco. También se aparca si ya
