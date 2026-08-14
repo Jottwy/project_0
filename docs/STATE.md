@@ -16,7 +16,15 @@
 
 5. MEDICIÓN F0.1 (world_sync completo): 84,9 KB total (50 datagramas); pickup/drop legacy = 678,9 KB por CADA evento a 8 peers. NO domina línea base (domina ChunkState) → coalescing F0.1 procede sin cambios. Suite backend: 711 tests verdes, clippy -D limpio, fmt limpio.
 
-6. PRÓXIMO PASO INMEDIATO: validación humana de ADR-073 y ADR-074. Tarea (b) = F0.1–F0.3 (+F0.8 si Joel aprueba). Tarea (c) = F0.4–F0.7 + re-medición gate.
+**TAREA (B) — Etapa 0 del escalado: 5 fixes en verde**
+
+6. JOEL VALIDÓ ADR-073 Y ADR-074 Y APROBÓ F0.8.** Commits: `639845bc` — enmienda DECISIONS.md: ADR-073/074 → VALIDADA; F0.8 entra en E0 con tabla de reparto. `176078dd` — **F0.8**: gate por chunk en `broadcast_chunk_states` (sync.rs), `HashMap<(x,z,layer), RosterGate>` en `NetworkManager`, podado al salir rango. Mecanismo ADR-071 por chunk (no por ronda). Cero wire. `4ef899c3` + `d4e746aa` — **F0.1**: coalescing `broadcast_world_sync`; pickup/drop legacy solo arman `world_sync_dirty`, tick despacha máximo 1× por 300 ms (`maybe_flush_world_sync`). `world_sync_ready` función pura testeada. Cero wire. `21db2642` — **F0.2**: relay de poses encodea UNA vez por origen (P vs P×D). `send_unreliable_as` redefinido sobre `encode_relay_as` + `send_prepared_unreliable`. Test igualdad byte a byte. NO análogo en `broadcast_reliable` (cada peer necesita sequence; E1 lo mataría). `215bf377` — **F0.3**: 6 veredictos host→cliente pasan de `send_reliable` (descarta con ventana llena) a `send_verdict` → cola diferida cap 256 (peor ráfaga legítima ~70×3). Desborde = FATAL (desconexión ADR-062 + `PeerDisconnected`), nunca descarte. Dos tests: ráfaga 70 NO desconecta, desborde SÍ. De paso, `process_authoritative_interaction` pierde parámetro `player` (muerto desde F0.1). `db50b956` — SCALING-ROADMAP.md actualizado con estado y lección.
+
+7. **VERIFICACIÓN**: 753 tests verdes working tree; 6 migraciones F0.3 validadas aparte contra versión completa (752 verdes árbol aislado). fmt y clippy limpios en ficheros propios.
+
+8. **AVISO IMPORTANTE PRÓXIMA SESIÓN**: sesión concurrente dejó `docs/game_loop/tests.rs` commiteado en HEAD con 4 referencias a `spec.sanity_restore` mientras `game_loop.rs` en HEAD NO tiene ese campo. **HEAD NO COMPILA SOLO** (`cargo build --tests` = 2× E0609 `no field sanity_restore`). No es rama escalado; resuelve solo cuando esa sesión commitee Almond Water/sanity. Verificado: HEAD ya fallaba igual ANTES de estos commits.
+
+9. PRÓXIMO PASO: Tarea (c) = F0.4 (autosave fuera del tick, plan B si serialización rompe 16 ms) + F0.5 (dedupe sets acotados) + F0.6 (clones rosters 10 Hz) + F0.7 (anticheat: distancia pickup margen 7,5–8 m + LoS PvP real) + re-medición gate E0 con `host_uplink_baseline` + actualización perf-baseline.md.
 
 ---
 
