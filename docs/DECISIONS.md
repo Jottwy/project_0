@@ -3469,3 +3469,25 @@ Estado: **PROPUESTA (2026-08-14), aprobada por Joel en sesión** (decisiones de 
 - **PROHÍBE** que el fallo de la emboscada termine en `Hunting` o en cualquier estado que revele: fallar el truco no puede enseñar el truco.
 - **PROHÍBE** añadir daño de vida al Knockdown sin enmienda: «solo aturde» es decisión de Joel con fecha.
 - Deja fuera a propósito: aborto de la carrera si el jugador la mira de cerca (contrajuego posible, se decidirá con play-test), animación autorizada de derribo/levantarse, y cualquier `env_tuning` de sus constantes.
+
+### Enmienda ADR-073 / ADR-074 (2026-08-14) — VALIDADAS por Joel, y la medición añade un sexto fix a E0
+
+**Ambos ADR pasan de PROPUESTA a VALIDADA.** Joel aprobó el escalado por etapas, los gates y la política de interest management tal como quedaron escritos, incluida la topología final aplazada al gate E2→E3. ADR-074 sigue sin implementarse: validado el DISEÑO, su código es E1 y llega después de E0.
+
+**F0.8 entra en E0, y no estaba en el plan porque nadie lo había medido.** La sonda `host_uplink_baseline` (F0.0, `network/sync.rs`) reveló que el mayor emisor del host no es ninguno de los dos sospechosos conocidos:
+
+| componente | KB/s con 8 peers | % de la subida |
+|---|---|---|
+| **`broadcast_chunk_states`** | **3351** | **77 %** |
+| rosters con gate ADR-071 (construyendo) | 795 | 18 % |
+| relay de poses O(N²) | 153 | 3,5 % |
+| PeerList | 52 | 1,2 % |
+| pose propia | 22 | 0,5 % |
+
+`broadcast_chunk_states` (`sync.rs:574`) reenvía cada 200 ms el `ChunkSyncData` COMPLETO —layout, entidades e items— de cada chunk propio a ≤3 chunks del jugador, a todos los peers, **sin mirar si cambió**. Son 49 chunks × 1751 B × 5 Hz × 8 peers. Es exactamente el defecto que ADR-071 curó en los cinco rosters, en el único emisor al que no se le aplicó: ni `perf-baseline.md` ni la auditoría de escalado del 2026-08-01 lo miraron, porque ambos fueron a buscar donde ya se sabía que había algo.
+
+**Decisión: F0.8 aplica a `broadcast_chunk_states` el mismo mecanismo de ADR-071** — gate por hash del contenido, ráfaga post-cambio y heartbeat obligatorio, **por chunk y no por ronda** (un chunk que cambia no debe arrastrar a los otros 48). Hereda las tres prohibiciones de ADR-071 sin reescribirlas: no se suprime el heartbeat, no se sustituye el hash por un contador manual, y el receptor no cambia (`apply_chunk_sync` sigue siendo un reemplazo verbatim idempotente, así que un peer sin actualizar solo recibe menos rondas). **Cero cambios de wire: cambia la CADENCIA, no el formato** — mismo criterio que ADR-071 y que la nota de comportamiento de F0.1 en ADR-073.
+
+**Consecuencia sobre el gate de E0, dicha antes de medir:** con el 77 % concentrado aquí, F0.8 es el único fix de E0 capaz de mover la línea base de 35,8 Mbps de forma visible. Los otros tres atacan picos (F0.1), CPU (F0.2) y corrección (F0.3), y el gate no debe interpretarse como que fracasan si el número apenas se mueve: cada uno tiene su propio criterio en `SCALING-ROADMAP.md`.
+
+**Y la lección que sobrevive a este fix:** el cuello se buscó dos veces con la intuición y las dos veces salió el sospechoso equivocado. Lo que lo encontró fue sumar TODOS los emisores en una unidad real (bytes en el aire, headers UDP/IP incluidos) en vez de medir el que ya se sospechaba. Regla que ADR-073 ya fija para el futuro y que aquí se justifica con un caso: todo sistema de red nuevo entra con su contador, y los gates se miden sobre el total, nunca sobre el componente que se está tocando.
