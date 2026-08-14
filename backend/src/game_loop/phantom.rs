@@ -266,6 +266,14 @@ pub(super) const PHANTOM_RAGE_IMPULSE: f32 = 2.5;
 /// Movement multiplier while enraged. Small on purpose: rage should change what it DECIDES far more
 /// than how fast it moves, or the speed tuning below becomes meaningless.
 pub(super) const PHANTOM_RAGE_SPEED: f32 = 1.15;
+/// ADR-075 point 5 — INSISTING ENFURECES. A provoked flee ADDS rage instead of refreshing it, so a
+/// ceiling exists for the same reason `blocked_ticks` needs a saturation policy: without one, a
+/// long enough burst would leave the creature enraged for the rest of the session.
+pub(super) const PHANTOM_RAGE_CEILING_SECONDS: f32 = 180.0;
+/// How long a flee must have been running before a second noise can turn it around. Below this, a
+/// second shot from the SAME burst that started the flee would look like it never fled at all —
+/// the fear has to read as real before it can be overridden.
+pub(super) const PHANTOM_PROVOKE_MIN_FLEE_SECONDS: f32 = 1.0;
 
 // ── ADR-050: HUNGER, the slow state that governs everything else ─────────────────────────────────
 //
@@ -1322,7 +1330,10 @@ impl PhantomMover {
         if self.enraged_for > 0.0 {
             p *= PHANTOM_RAGE_PATIENCE;
         }
-        if self.is_sated() {
+        // ADR-075 point 5 — a PROVOKED saciada is the only sated creature that can ever be
+        // enraged, and the calm multiplier must not also apply, or the two would cancel into
+        // 30 s+ of patience and the provocation would never actually be read.
+        if self.is_sated() && self.enraged_for <= 0.0 {
             p *= PHANTOM_CALM_PATIENCE;
         }
         p
@@ -1352,7 +1363,9 @@ impl PhantomMover {
         if self.enraged_for > 0.0 {
             k *= PHANTOM_RAGE_IMPULSE;
         }
-        if self.is_sated() {
+        // ADR-075 point 5 — same bridge as `patience()`: a provoked sated creature must not also
+        // be muffled by the calm multiplier, or the provocation would take minutes to matter.
+        if self.is_sated() && self.enraged_for <= 0.0 {
             k *= PHANTOM_CALM_IMPULSE;
         }
         // ADR-050 point 4 — THE DICE STOP BEING THE ENGINE. Scaling by how empty it is means a full
@@ -1994,18 +2007,46 @@ impl PhantomDriver {
                 if dist > loudness {
                     continue;
                 }
+
+                // ADR-075 point 5 — INSISTING ENFURECES, handled AHEAD of the immunity list below.
+                // A fleeing creature used to be flatly immune to every later noise — the right fix
+                // for the burst-of-fire bug (many noises restarting the same flee on the same
+                // trigger pull), but it also meant no amount of gunfire could ever turn one around.
+                // Close enough, and given a beat to actually be running (not the SAME burst that
+                // started the flee), a second noise turns it: rage ACCUMULATES rather than resets
+                // — this is the only path that can ever enrage a sated creature — and it goes to
+                // investigate instead of running. Anything else (too far, too soon) still falls
+                // through to plain immunity, exactly as before this point existed.
+                if self.movers[i].state == PhantomState::Flee {
+                    if dist <= PHANTOM_RAGE_MAX_DISTANCE
+                        && self.movers[i].state_timer >= PHANTOM_PROVOKE_MIN_FLEE_SECONDS
+                    {
+                        self.movers[i].enraged_for = (self.movers[i].enraged_for
+                            + PHANTOM_RAGE_SECONDS * 2.0)
+                            .min(PHANTOM_RAGE_CEILING_SECONDS);
+                        self.movers[i].flee_goal = None;
+                        self.movers[i].last_known_player_pos = Some(blur_noise(source, dist, id));
+                        self.movers[i].state = PhantomState::Search;
+                        self.movers[i].state_timer = 0.0;
+                        self.movers[i].search_patience = PHANTOM_NOISE_SEARCH_PATIENCE;
+                        self.movers[i].search_speed = PHANTOM_NOISE_TRAVEL_SPEED;
+                        self.movers[i].noise_expiry = Some(PHANTOM_NOISE_EXPIRY);
+                        self.movers[i].nav_waypoints.clear();
+                        info!(
+                            "MPTRACE step=PH_FLEE event=phantom_provoked phantom_id={} dist={:.0} enraged_for={:.1}",
+                            id, dist, self.movers[i].enraged_for
+                        );
+                    }
+                    continue;
+                }
+
                 // A committed lunge or a freeze is NOT interrupted by a noise somewhere else. It
                 // already has a target in front of it; being distractible there would read as
                 // stupidity, not as curiosity.
                 //
-                // ADR-050: `Flee` joins that list, and it is load-bearing rather than tidy. A burst
-                // of fire is many noises: without this, every shot after the first would restart the
-                // scare timer and re-aim the goal at a creature already running, so it would flee
-                // forever and never settle. The ADR calls this out as one of the four sites the
-                // compiler cannot catch.
-                // ADR-050: `Grab` too, and for the starkest reason on the list — a creature that
-                // let go of the player it is killing because somebody fired a gun across the map
-                // would be dropping the one thing it committed to.
+                // ADR-050: `Grab` — a creature that let go of the player it is killing because
+                // somebody fired a gun across the map would be dropping the one thing it committed
+                // to.
                 // ADR-051: `Unmasking` and `Hunting` join the list. The first is a committed beat
                 // that a distant gunshot must not cancel halfway through; the second is a creature
                 // that has already torn out of its skin for YOU and has no business wandering off
@@ -2014,7 +2055,6 @@ impl PhantomDriver {
                     self.movers[i].state,
                     PhantomState::Sprint
                         | PhantomState::Statue
-                        | PhantomState::Flee
                         | PhantomState::Grab
                         | PhantomState::Unmasking
                         | PhantomState::Hunting
@@ -3145,7 +3185,12 @@ impl PhantomDriver {
         // elapsed patience changes that: it shadows you, breathes, and waits to get hungry. This is
         // the line that removes "it attacks out of nowhere", because when it finally does come, the
         // reason existed for minutes beforehand and was visible in how it behaved.
-        if !self.movers[i].is_sated()
+        //
+        // ADR-075 point 5 — the ONE exception: a PROVOKED saciada (rage from a second noise while
+        // fleeing, the only path that can enrage a sated creature — see `hear_noises`) can still
+        // charge. `patience()`/`impulse()` already suppress their own calm multiplier under the
+        // same condition, so the gate and the numbers behind it agree with each other.
+        if (!self.movers[i].is_sated() || self.movers[i].enraged_for > 0.0)
             && (self.movers[i].state_timer > self.movers[i].patience()
                 || rand::random::<f32>()
                     < PHANTOM_SPRINT_RANDOM_CHANCE * 2.0 * self.movers[i].impulse())
@@ -3174,7 +3219,11 @@ impl PhantomDriver {
         // ADR-050 point 8: a sated creature accompanies you at arm's length instead of breathing
         // down your neck. Same state, same code — a wider band is the whole difference between
         // being followed and being hunted.
-        let band = match self.movers[i].is_sated() {
+        //
+        // ADR-075 point 5: a PROVOKED saciada falls through to the tighter band (and is eligible
+        // for the creep below) — same bridge condition as the gate and the two multipliers. A
+        // creature you just made angry does not get to keep its polite fourteen metres.
+        let band = match self.movers[i].is_sated() && self.movers[i].enraged_for <= 0.0 {
             true => PHANTOM_FOLLOW_DISTANCE,
             false => {
                 // ADR-075 point 2c — CREEP-IN. A player glued to a wall used to earn a polite

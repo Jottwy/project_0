@@ -3862,9 +3862,13 @@ async fn the_same_shot_scares_a_full_creature_and_summons_a_hungry_one() {
 #[tokio::test]
 async fn a_burst_of_fire_does_not_restart_the_same_scare_forever() {
     // ADR-050 names this as one of the four sites the compiler cannot catch. `hear_noises` skips
-    // states that must not be distracted, and FLEE has to be on that list: a burst is MANY noises,
-    // so without it every shot after the first would re-arm the timer and re-aim the goal at a
-    // creature already running, and it would flee forever and never settle.
+    // states that must not be distracted, and a JUST-STARTED flee has to behave like it — a burst
+    // is MANY noises within the same instant, so without a same-burst grace every shot after the
+    // first would re-arm the timer and re-aim the goal, and it would flee forever and never settle.
+    //
+    // ADR-075 point 5 narrowed the immunity to that grace window (`PHANTOM_PROVOKE_MIN_FLEE_SECONDS`)
+    // rather than the whole flee — see `a_second_close_noise_during_flee_turns_it_around` for what
+    // happens past it. This test stays entirely inside the window on purpose.
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let start = [0.0, 1.8, 0.0];
     let pid = net.spawn_phantom("Robapieles_Test", start);
@@ -3879,8 +3883,9 @@ async fn a_burst_of_fire_does_not_restart_the_same_scare_forever() {
     assert_eq!(driver.movers[0].state, PhantomState::Flee);
     let first_goal = driver.movers[0].flee_goal.unwrap();
 
-    // Keep firing while it runs. Half the scare's worth of ticks, with a fresh shot on each.
-    for _ in 0..30 {
+    // Keep firing while it runs, but stay under the same-burst grace window (1.0 s): 8 ticks of
+    // 0.1 s each, a fresh shot on every one.
+    for _ in 0..8 {
         let p = Vec3::from_array(net.peers[&pid].position);
         net.pending_noises.push(([p.x + 20.0, p.y, p.z], 500.0));
         driver.hear_noises(&mut net);
@@ -3895,20 +3900,25 @@ async fn a_burst_of_fire_does_not_restart_the_same_scare_forever() {
         );
     }
     assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Flee,
+        "the same burst must not provoke it early"
+    );
+    assert_eq!(
         driver.movers[0].flee_goal,
         Some(first_goal),
-        "later shots must not re-aim a scare already in progress"
+        "later shots in the same burst must not re-aim a scare already in progress"
     );
-    // 30 ticks of 0.1 accumulate to 2.9999993, not 3.0 — the point is that the clock was never
+    // 8 ticks of 0.1 accumulate to 0.7999999, not 0.8 — the point is that the clock was never
     // rewound, not its exact value.
     assert!(
-        driver.movers[0].state_timer > 2.9,
+        driver.movers[0].state_timer > 0.7,
         "…nor rewind its clock: the timer must have kept running, got {}",
         driver.movers[0].state_timer
     );
 
-    // And it does settle, rather than fleeing forever.
-    for _ in 0..40 {
+    // And it does settle, rather than fleeing forever, once the noise stops.
+    for _ in 0..60 {
         driver.step(
             &mut net,
             0.1,
@@ -3927,6 +3937,150 @@ async fn a_burst_of_fire_does_not_restart_the_same_scare_forever() {
     assert_eq!(
         driver.movers[0].flee_goal, None,
         "and clear up after itself"
+    );
+}
+
+#[tokio::test]
+async fn a_second_close_noise_during_flee_turns_it_around() {
+    // ADR-075 point 5 — INSISTING ENFURECES. Past the same-burst grace window, a second close
+    // noise cancels the flee outright and sends it to investigate, enraged.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Flee;
+    driver.movers[0].state_timer = 1.5; // past PHANTOM_PROVOKE_MIN_FLEE_SECONDS
+    driver.movers[0].flee_goal = Some(Vec3::new(-50.0, 1.8, 0.0));
+    let here = Vec3::from_array(net.peers[&pid].position);
+    net.pending_noises
+        .push(([here.x + 20.0, here.y, here.z], 500.0));
+
+    driver.hear_noises(&mut net);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Search,
+        "insisting must turn a stale flee around"
+    );
+    assert!(
+        driver.movers[0].flee_goal.is_none(),
+        "the flee must be cancelled outright, not left running underneath"
+    );
+    assert!(
+        driver.movers[0].enraged_for > 0.0,
+        "the provoking shot must actually anger it"
+    );
+}
+
+#[tokio::test]
+async fn an_early_burst_does_not_cancel_a_fresh_flee() {
+    // The other half of the same-burst grace window, isolated: a noise inside the first second
+    // must leave a just-started flee completely untouched.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Flee;
+    driver.movers[0].state_timer = 0.3; // inside the grace window
+    let goal = Vec3::new(-50.0, 1.8, 0.0);
+    driver.movers[0].flee_goal = Some(goal);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    net.pending_noises
+        .push(([here.x + 20.0, here.y, here.z], 500.0));
+
+    driver.hear_noises(&mut net);
+
+    assert_eq!(driver.movers[0].state, PhantomState::Flee);
+    assert_eq!(
+        driver.movers[0].flee_goal,
+        Some(goal),
+        "a shot from the same burst must not touch the goal already in flight"
+    );
+}
+
+#[tokio::test]
+async fn a_distant_noise_never_provokes_a_fleeing_creature() {
+    // Past the hear radius for RAGE specifically (but still within earshot): the noise still
+    // exists, but ADR-050 point 12's distinction — hearing is not the same as being angered —
+    // applies to a fleeing creature exactly as it applies to any other.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Flee;
+    driver.movers[0].state_timer = 2.0; // well past the grace window
+    let goal = Vec3::new(-50.0, 1.8, 0.0);
+    driver.movers[0].flee_goal = Some(goal);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    // Beyond PHANTOM_RAGE_MAX_DISTANCE (70 m) but well inside the loudness, so it is heard.
+    net.pending_noises
+        .push(([here.x + 80.0, here.y, here.z], 500.0));
+
+    driver.hear_noises(&mut net);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Flee,
+        "a distant shot must never provoke, only a close one may"
+    );
+    assert_eq!(driver.movers[0].flee_goal, Some(goal));
+}
+
+#[tokio::test]
+async fn provoked_rage_accumulates_to_a_ceiling() {
+    // Provoked rage ADDS instead of refreshing — the one path that can ever compound — so it
+    // needs its own saturation policy, same reasoning as the wedge counter's `u8`.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Flee;
+    driver.movers[0].state_timer = 1.5;
+    driver.movers[0].enraged_for = 170.0; // one provocation short of the 180 s ceiling
+    let here = Vec3::from_array(net.peers[&pid].position);
+    net.pending_noises
+        .push(([here.x + 20.0, here.y, here.z], 500.0));
+
+    driver.hear_noises(&mut net);
+
+    assert_eq!(
+        driver.movers[0].enraged_for, PHANTOM_RAGE_CEILING_SECONDS,
+        "must saturate at the ceiling, not overflow past it"
+    );
+}
+
+#[tokio::test]
+async fn rage_bridges_the_satiety_gate() {
+    // ADR-075 point 5 — a sated creature can still be talked into charging, but ONLY through
+    // provoked rage, never through elapsed patience alone. `patience()`/`impulse()` already
+    // suppress their calm multiplier under `enraged_for > 0`; this pins the GATE that reads them.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].hunger = 1.0; // sated
+    driver.movers[0].enraged_for = 50.0; // provoked
+    driver.movers[0].traits.patience_scale = 1.0;
+    driver.movers[0].traits.is_hunter = false;
+    driver.movers[0].traits.impulse_scale = 0.0; // isolate the timer path from the dice roll
+    driver.movers[0].state_timer = 11.0; // patience() = 25 * 1.0 * 0.4 (RAGE_PATIENCE) = 10.0
+
+    let at = Vec3::from_array(net.peers[&pid].position);
+    // Perpendicular to yaw 0.0: never looking, so STATUE cannot intervene on this single tick.
+    let player = Vec3::new(at.x + 9.5, 1.8, at.z);
+
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Sprint,
+        "provoked rage must be able to push a sated creature past the satiety gate"
     );
 }
 
