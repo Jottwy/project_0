@@ -38,10 +38,35 @@ impl NetworkManager {
         dest_peer: PeerId,
         payload: &PacketPayload,
     ) {
+        let data = self.encode_relay_as(sender_id, payload);
+        self.send_prepared_unreliable(dest_peer, &data).await;
+    }
+
+    /// F0.2 (E0, ADR-073): la mitad de `send_unreliable_as` que NO depende del destino.
+    ///
+    /// El relay de poses es O(N²) y re-serializaba el MISMO `PlayerUpdate` una vez por cada par
+    /// (origen, destino): con 8 peers son 56 serializaciones por ronda a 10 Hz para 8 payloads
+    /// distintos. Nada del contenido cambia entre destinos —el header lleva el id del ORIGEN, y
+    /// la secuencia de un no-fiable es 0—, así que encodear una vez por origen produce
+    /// exactamente los mismos bytes en el aire. No es un cambio de wire: es la misma cadena de
+    /// bytes, calculada una vez en vez de D veces.
+    ///
+    /// Deliberadamente NO se hace lo análogo en `broadcast_reliable`: allí cada peer necesita su
+    /// propia `sequence` en el header (es lo que rastrea el ACK), y además E1 (ADR-074) va a
+    /// hacer el payload de los rosters dependiente del destinatario, con lo que ese cacheo
+    /// tendría dos meses de vida. Este sobrevive a E1: la pose de A es idéntica para todo destino
+    /// dentro de su AOI.
+    pub(super) fn encode_relay_as(&self, sender_id: PeerId, payload: &PacketPayload) -> Vec<u8> {
+        let header = PacketHeader::new(payload.type_code(), sender_id, 0, self.timestamp());
+        encode_packet(&header, payload)
+    }
+
+    /// F0.2: la otra mitad — enviar bytes YA encodeados a un destino. `send_unreliable_as` se
+    /// define sobre estas dos para que no existan dos caminos de encode que puedan divergir; el
+    /// test `a_cached_relay_encode_is_byte_identical_to_the_per_destination_one` lo congela.
+    pub(super) async fn send_prepared_unreliable(&self, dest_peer: PeerId, data: &[u8]) {
         if let Some(peer) = self.peers.get(&dest_peer) {
-            let header = PacketHeader::new(payload.type_code(), sender_id, 0, self.timestamp());
-            let data = encode_packet(&header, payload);
-            self.send_datagram(&data, peer.addr, "relay_as").await;
+            self.send_datagram(data, peer.addr, "relay_as").await;
         }
     }
 

@@ -351,11 +351,16 @@ pub async fn broadcast_peer_poses(net: &NetworkManager) {
         .collect();
 
     for (src_id, payload) in &poses {
+        // F0.2: encodear UNA vez por origen en vez de una vez por par (origen, destino). Los
+        // bytes no dependen del destino —el header lleva el id del origen y la secuencia de un
+        // no-fiable es 0—, así que esto emite exactamente los mismos datagramas: P
+        // serializaciones por ronda en vez de P×D.
+        let data = net.encode_relay_as(*src_id, payload);
         for &dest_id in &dest_ids {
             if dest_id == *src_id {
                 continue; // never echo a peer its own pose
             }
-            net.send_unreliable_as(*src_id, dest_id, payload).await;
+            net.send_prepared_unreliable(dest_id, &data).await;
         }
     }
 
@@ -1141,6 +1146,60 @@ mod chunk_broadcast_tests {
             joiner.peers[&1].reliable_queue.len(),
             1,
             "el handoff de propiedad SI se confirma — quien cede la autoridad quiere saber que llego"
+        );
+    }
+
+    // â”€â”€â”€ F0.2 (E0): el relay encodea una vez por origen, no una por par â”€â”€â”€
+
+    /// EL invariante de F0.2: cachear el encode por origen no puede cambiar un solo byte de lo
+    /// que sale al aire. Si alguna vez el header dependiera del destino (una secuencia por peer,
+    /// por ejemplo), este test falla y el cacheo hay que deshacerlo — que es exactamente la razón
+    /// por la que `broadcast_reliable` NO lo lleva.
+    #[tokio::test]
+    async fn a_cached_relay_encode_is_byte_identical_to_the_per_destination_one() {
+        let host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let payload = PacketPayload::PlayerUpdate {
+            position: [12.5, 1.8, -40.0],
+            rotation: 90.0,
+            animation: "walk_slow".into(),
+            crouch: true,
+            pitch: -12,
+            equipment: [1001, 1002, 1003, 1004],
+            held_item: 2001,
+            hit_seq: 7,
+            dead: false,
+            revealed: false,
+            vocal_seq: 3,
+            vocal_kind: 1,
+            light_on: true,
+            fire_seq: 9,
+            buttons: 1,
+            melee_seq: 4,
+            carry_def: 55,
+            carry_count: 2,
+        };
+
+        // Un solo encode reutilizado para tres destinos distintos...
+        let cached = host.encode_relay_as(77, &payload);
+        // ...contra el encode que el camino viejo hacía POR destino. `send_unreliable_as` sigue
+        // definido sobre `encode_relay_as`, así que se comparan las dos llamadas que antes eran
+        // dos serializaciones independientes.
+        for _dest in [2u16, 3, 4] {
+            let per_destination = host.encode_relay_as(77, &payload);
+            assert_eq!(
+                cached, per_destination,
+                "el payload relayado no puede depender del destino: si depende, el cacheo de F0.2 \
+                 cambia lo que viaja"
+            );
+        }
+
+        // Y el origen SÍ tiene que seguir viajando en el header: sin esto el test pasaría aunque
+        // el encode ignorara `sender_id` y todos los peers se vieran como el mismo.
+        let other_source = host.encode_relay_as(78, &payload);
+        assert_ne!(
+            cached, other_source,
+            "el id del origen viaja en el header (ADR-015): dos orígenes no pueden producir los \
+             mismos bytes"
         );
     }
 
