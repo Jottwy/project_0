@@ -1199,6 +1199,16 @@ mod chunk_broadcast_tests {
         let pos = Vec3::new(0.0, 1.8, 0.0);
         let mut host_world = World::new(42);
         host_world.update_ownership(pos, host.local_id);
+        // El test solo necesita CONTAR goteos, no completarlos: recortar a un único chunk
+        // mantiene el envío dentro de la ventana fiable (32) y evita la danza de ACK/pump que
+        // `send_world_sync` sí necesita con un mundo grande (ver
+        // `the_world_snapshot_travels_as_many_small_datagrams_and_completes`, más abajo).
+        let one_chunk_key = *host_world
+            .chunks
+            .keys()
+            .next()
+            .expect("setup: el jugador necesita al menos un chunk propio");
+        host_world.chunks.retain(|k, _| *k == one_chunk_key);
         let player = Player::new(host.local_id, "Host");
 
         async fn world_sync_ends_received(joiner: &mut NetworkManager) -> usize {
