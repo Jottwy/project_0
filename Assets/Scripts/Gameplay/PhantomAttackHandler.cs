@@ -35,6 +35,8 @@ namespace BackroomsSurvival.Gameplay
         // ADR-050 point 9: the grab is now a LIVE window rather than a death epilogue.
         private const string GrabStartEvent = "phantom_grab_start";
         private const string GrabReleaseEvent = "phantom_grab_release";
+        // ADR-076: the disguised ambush connecting.
+        private const string KnockdownEvent = "phantom_knockdown";
 
         // Death fade timing (presentation only — the backend respawn is instant).
         private const float FadeInTime = 0.5f;
@@ -112,6 +114,26 @@ namespace BackroomsSurvival.Gameplay
             MovementStateType.Walk, MovementStateType.Run, MovementStateType.Jump
         };
 
+        // ── Knockdown (ADR-076) ─────────────────────────────────────────────────────────────────
+        // A SEPARATE array from `BlockedStates` on purpose: that one is shared by grab and death,
+        // and a knockdown adds `Crouch` to the set (a derailed player should not be able to duck
+        // out of the fall) without changing what those two other sequences block.
+        private static readonly MovementStateType[] KnockdownBlockedStates =
+        {
+            MovementStateType.Walk, MovementStateType.Run, MovementStateType.Jump,
+            MovementStateType.Crouch
+        };
+        // How low the collider drops (m) — the same lever CharacterCrouchState uses, borrowed
+        // procedurally: there is no authored knockdown/rise animation (same declared limit as the
+        // grab above).
+        private const float KnockdownHeight = 0.6f;
+        private const float KnockdownFallTime = 0.25f;
+        private const float KnockdownRiseTime = 0.35f;
+        // Camera tilt while down (degrees). Applied relative to the rotation cached at the start
+        // of the knockdown, never accumulated — see EndKnockdown for why an un-restored roll is a
+        // standing bug in this file already (the grab's own camera-roll fix, above).
+        private const float KnockdownRollMax = 40f;
+
         private static PhantomAttackHandler _instance;
 
         private IPCClient _ipc;
@@ -145,6 +167,15 @@ namespace BackroomsSurvival.Gameplay
         // would be nothing correct left to restore to.
         private Transform _camRestore;
         private Quaternion _camRotationAtGrab;
+
+        // Knockdown (ADR-076).
+        private bool _knockedDown;
+        private float _knockdownTimer;
+        private float _knockdownTotal;
+        private float _kdHeightRestore;
+        private IMovementControllerCC _kdBlock;
+        private Transform _kdCam;
+        private Quaternion _kdCamRestore;
 
         /// <summary>
         /// The proxy currently holding the local player, or null. Read by <c>ProxyGrabHook</c>,
@@ -239,6 +270,11 @@ namespace BackroomsSurvival.Gameplay
                 TickGrab();
             else if (_dying)
                 TickDeath();
+            // ADR-076: lowest priority of the four — death and the grab both own the camera and
+            // both call EndKnockdown() on entry (below), so by the time either is active a
+            // knockdown in progress has already been unwound.
+            else if (_knockedDown)
+                TickKnockdown();
             if (_shakeTimer > 0f)
                 TickShake();
             if (_flashTimer > 0f)
@@ -278,6 +314,11 @@ namespace BackroomsSurvival.Gameplay
                 case GrabReleaseEvent:
                     EndLiveGrab();
                     break;
+
+                case KnockdownEvent:
+                    var k = ev.data as Dictionary<string, object>;
+                    StartKnockdown(IPCParse.F(k, "seconds"), IPCParse.F(k, "dx"), IPCParse.F(k, "dz"));
+                    break;
             }
         }
 
@@ -297,6 +338,11 @@ namespace BackroomsSurvival.Gameplay
         {
             if (_dying)
                 return; // already gone; a grab means nothing now
+
+            // ADR-076: a knockdown owns the collider height and (if still falling) the camera
+            // tilt. A grab landing on a downed player has to unwind that first, or the two
+            // sequences fight over the same camera transform and the height never gets restored.
+            EndKnockdown();
 
             // TWO CREATURES CAN GRAB YOU IN THE SAME TICK — seen in the play-test log at 23:11:53,
             // phantom 61440 and 61441 both opening on victim 1. Without this guard the second call
@@ -435,6 +481,10 @@ namespace BackroomsSurvival.Gameplay
             // the camera. Note this runs before `_dying` is set, so `EndLiveGrab` correctly hands
             // the camera back to be re-borrowed below rather than leaving it half-owned.
             EndLiveGrab();
+            // ADR-076: same reasoning — a downed player can still be killed by something else
+            // while on the ground, and the death sequence needs the collider height and camera
+            // back to normal before it takes them over.
+            EndKnockdown();
 
             _dying = true;
             _deathElapsed = 0f;
@@ -732,6 +782,120 @@ namespace BackroomsSurvival.Gameplay
             // One-shot horizontal shove; gravity reasserts the next frame. The backend already
             // pre-scaled (dx, dz) by the knockback force.
             motor.SetVelocity(new Vector3(dx, 0f, dz));
+        }
+
+        // ── Knockdown (ADR-076) ─────────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// The disguised ambush connected: no health lost, just a fall and a scare. Zero-daño by
+        /// design (ADR-076 point 1, Joel's call) — the derived clip is the collider dropping and
+        /// the camera tilting, both procedural, same declared-limit reasoning as the grab above:
+        /// there is no authored knockdown/rise animation to align the creature to.
+        /// </summary>
+        private void StartKnockdown(float seconds, float dx, float dz)
+        {
+            // Death and the live grab both outrank a knockdown outright — see the doc comment on
+            // the Update() tick order.
+            if (_dying || _heldAlive)
+                return;
+
+            // Same reentrancy shape as StartLiveGrab's two-creatures-same-tick guard: a second
+            // knockdown must extend the hold, never stack a second set of blockers under the same
+            // key (the guard above it exists BECAUSE that bug already happened once, in the grab).
+            if (_knockedDown)
+            {
+                _knockdownTimer = Mathf.Max(_knockdownTimer, seconds > 0.05f ? seconds : _knockdownTimer);
+                return;
+            }
+
+            _knockedDown = true;
+            _knockdownTotal = seconds > 0.05f ? seconds : 2.0f; // floor, same reasoning as the grab window
+            _knockdownTimer = _knockdownTotal;
+
+            var motor = ResolveMotor();
+            if (motor != null)
+            {
+                // Cache BEFORE touching anything — the lesson the grab's camera-roll bug already
+                // paid for in this file. Height first: if `CanSetHeight` refuses, nothing else
+                // about this knockdown should apply either.
+                _kdHeightRestore = motor.Height;
+                if (motor.CanSetHeight(KnockdownHeight))
+                    motor.SetVelocity(new Vector3(dx, 0f, dz));
+            }
+
+            var cam = ResolveCam();
+            if (cam != null)
+            {
+                _kdCam = cam.transform;
+                _kdCamRestore = _kdCam.localRotation;
+            }
+
+            var movement = ResolveMovement();
+            if (movement != null)
+            {
+                for (int i = 0; i < KnockdownBlockedStates.Length; i++)
+                    movement.AddStateBlocker(this, KnockdownBlockedStates[i]);
+                _kdBlock = movement;
+            }
+        }
+
+        /// <summary>
+        /// No QTE, deliberately (Joel's call): the scare IS watching it close the distance while
+        /// you cannot get up. Looking around stays free — only locomotion is blocked — so the
+        /// player can at least see it coming.
+        /// </summary>
+        private void TickKnockdown()
+        {
+            _knockdownTimer -= Time.unscaledDeltaTime;
+            float elapsed = _knockdownTotal - _knockdownTimer;
+
+            // Multiplicative blend, not two independent clamps: `fallT` ramps 0→1 over the first
+            // `KnockdownFallTime` seconds, `riseT` ramps 0→1 over the LAST `KnockdownRiseTime`
+            // seconds (counting down). Their product is 0 at both ends and 1 through the middle,
+            // so even a very short `seconds` still falls and rises instead of snapping to down.
+            float fallT = Mathf.Clamp01(elapsed / KnockdownFallTime);
+            float riseT = Mathf.Clamp01(1f - _knockdownTimer / KnockdownRiseTime);
+            float down = fallT * (1f - riseT);
+
+            var motor = ResolveMotor();
+            if (motor != null && motor.CanSetHeight(KnockdownHeight))
+                motor.Height = Mathf.Lerp(_kdHeightRestore, KnockdownHeight, down);
+
+            if (_kdCam != null)
+                _kdCam.localRotation = _kdCamRestore * Quaternion.Euler(KnockdownRollMax * down, 0f, 0f);
+
+            if (_knockdownTimer <= 0f)
+                EndKnockdown();
+        }
+
+        /// <summary>
+        /// Restores EXACTLY what was cached at the start — height and camera rotation — and drops
+        /// the locomotion blockers. Safe to call when no knockdown is active (the death and grab
+        /// entry points both call it unconditionally) and safe to call twice.
+        /// </summary>
+        private void EndKnockdown()
+        {
+            if (!_knockedDown)
+                return;
+            _knockedDown = false;
+            _knockdownTimer = 0f;
+
+            var motor = ResolveMotor();
+            if (motor != null && motor.CanSetHeight(_kdHeightRestore))
+                motor.Height = _kdHeightRestore;
+
+            if (_kdCam != null)
+            {
+                _kdCam.localRotation = _kdCamRestore;
+                _kdCam = null;
+            }
+
+            if (_kdBlock != null)
+            {
+                for (int i = 0; i < KnockdownBlockedStates.Length; i++)
+                    _kdBlock.RemoveStateBlocker(this, KnockdownBlockedStates[i]);
+                _kdBlock = null;
+            }
         }
 
         // ── Resolvers (local player only; remote avatars are excluded) ─────────────────────────────
