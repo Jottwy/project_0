@@ -27,6 +27,12 @@ namespace BackroomsSurvival.Net
                  "(respawn / chunk displacement / instant 180° turns).")]
         [Min(0f)] public float yawSnapThreshold = 120f;
 
+        [Tooltip("If the position error exceeds this (metres) the proxy SNAPS instead of " +
+                 "interpolating. Covers re-entry into the pose area of interest (ADR-074), " +
+                 "respawn and chunk displacement. At sprint speed a peer only moves ~0.73 m " +
+                 "between 10 Hz poses, so several metres is always a discontinuity.")]
+        [Min(0f)] public float positionSnapThreshold = 5f;
+
         [Header("Name Tag")]
         [Min(0f)] public float nameTagHeight = 2.2f;
         [Min(0.1f)] public float nameTagFontSize = 3f;
@@ -218,8 +224,26 @@ namespace BackroomsSurvival.Net
                 if (view == null || view.root == null)
                     continue;
 
-                float posT = 1f - Mathf.Exp(-Mathf.Max(0f, positionSmoothing) * dt);
-                view.root.position = Vector3.Lerp(view.root.position, view.targetPosition, posT);
+                // E1 (ADR-074): snap por error grande, mismo criterio que el yaw de abajo y por la
+                // misma razón. Con el área de interés, un peer deja de relayarse al alejarse y
+                // vuelve al acercarse; si reentra DENTRO de los 3 s de gracia (missingRemote-
+                // GraceSeconds) su proxy sigue vivo en su última posición conocida, y sin esto lo
+                // veríamos cruzar el mapa interpolando. También cubre lo que ya pasaba antes de
+                // E1: respawn y desplazamiento de chunk.
+                //
+                // El umbral no puede confundirse con movimiento normal: a sprint (7,29 m/s) y con
+                // poses a 10 Hz un peer avanza ~0,73 m entre muestras, así que cualquier salto de
+                // varios metros es discontinuidad, no carrera.
+                if ((view.root.position - view.targetPosition).sqrMagnitude >
+                    positionSnapThreshold * positionSnapThreshold)
+                {
+                    view.root.position = view.targetPosition;
+                }
+                else
+                {
+                    float posT = 1f - Mathf.Exp(-Mathf.Max(0f, positionSmoothing) * dt);
+                    view.root.position = Vector3.Lerp(view.root.position, view.targetPosition, posT);
+                }
 
                 // [C] Critically-damped yaw (SmoothDampAngle) — less lag in sustained turns than the
                 // old exponential lerp, no overshoot. Snap past a large error so respawn / chunk
