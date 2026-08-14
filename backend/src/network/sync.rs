@@ -265,6 +265,44 @@ pub const AOI_POSE_RADIUS_M: f32 = 100.0;
 /// dos jugadores andando sobre la frontera se verían parpadear varias veces por segundo.
 pub const AOI_POSE_EXIT_FACTOR: f32 = 1.2;
 
+/// E1 / ADR-074 (enmienda 2026-08-15) — radio del anillo INTERIOR: dentro de él las poses van a
+/// la cadencia completa (10 Hz), fuera van a media (una ronda de cada dos, ~5 Hz).
+///
+/// La mitad del radio del AOI, que con reparto uniforme deja ~25 % de los pares en el anillo
+/// interior y ~75 % en el exterior (el área crece con el cuadrado).
+pub const AOI_POSE_NEAR_RADIUS_M: f32 = AOI_POSE_RADIUS_M * 0.5;
+
+/// E1 / ADR-074 (enmienda) — ¿le toca a este par emitir en esta ronda?
+///
+/// Dentro del anillo interior, siempre. Fuera, una de cada dos rondas (~5 Hz), **escalonando por
+/// la paridad de `(src + dest)`** para que la mitad de los pares lejanos vaya en las rondas pares
+/// y la otra mitad en las impares: sin ese reparto, "media cadencia" produciría una ronda cara y
+/// otra vacía en vez de una carga plana.
+///
+/// El anillo exterior va a 5 Hz y no a los 2 Hz que ADR-074 escribió primero porque 50–100 m es
+/// exactamente donde vive la fase `stalk` del robapieles, y a 500 ms entre poses se vería a
+/// saltos. **No se le puede exceptuar** —una cadencia propia lo delataría igual que un radio
+/// propio— así que sube la del anillo entero. La decisión y su precio están en la enmienda.
+///
+/// Como todo en este filtro: decide por DISTANCIA y por el par, jamás por qué es la fuente.
+pub fn aoi_pose_due_this_round(
+    src_pos: [f32; 3],
+    dest_pos: [f32; 3],
+    src: PeerId,
+    dest: PeerId,
+    round: u64,
+) -> bool {
+    let dx = src_pos[0] - dest_pos[0];
+    let dy = src_pos[1] - dest_pos[1];
+    let dz = src_pos[2] - dest_pos[2];
+    let dist_sq = dx * dx + dy * dy + dz * dz;
+    if dist_sq <= AOI_POSE_NEAR_RADIUS_M * AOI_POSE_NEAR_RADIUS_M {
+        return true; // anillo interior: cadencia completa
+    }
+    let phase = (src as u64).wrapping_add(dest as u64) & 1;
+    round & 1 == phase
+}
+
 /// E1 / ADR-074 (fase 1): ¿debe viajar la pose de `src` a `dest` esta ronda?
 ///
 /// Pura y sin red para poder probar la histéresis sin sockets. `was_relaying` es lo que este par
@@ -428,8 +466,16 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
                 continue;
             };
             let was = net.aoi_pose_pairs.contains(&(*src_id, dest_id));
-            if aoi_pose_should_relay(*src_pos, *dpos, was, AOI_POSE_RADIUS_M) {
-                next_pairs.insert((*src_id, dest_id));
+            if !aoi_pose_should_relay(*src_pos, *dpos, was, AOI_POSE_RADIUS_M) {
+                continue;
+            }
+            // El par SIGUE dentro del AOI aunque esta ronda no le toque emitir: el estado de la
+            // histéresis es "nos estamos viendo", no "emití hace 100 ms". Si se registrara solo al
+            // emitir, un par del anillo exterior perdería su marca en las rondas alternas y
+            // volvería a exigir el radio de ENTRADA cada dos rondas — justo el parpadeo en la
+            // frontera que la histéresis existe para evitar.
+            next_pairs.insert((*src_id, dest_id));
+            if aoi_pose_due_this_round(*src_pos, *dpos, *src_id, dest_id, net.pose_relay_round) {
                 relayed.entry(*src_id).or_default().push(dest_id);
             }
         }
@@ -455,6 +501,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
     // desaparecer del estado, o la histéresis lo mantendría vivo para siempre. Y los pares de un
     // peer que se fue se van con él sin necesidad de purga aparte.
     net.aoi_pose_pairs = next_pairs;
+    net.pose_relay_round = net.pose_relay_round.wrapping_add(1);
 
     // ADR-015 traffic gate instrumentation: throttled (~1/s, no mutable state) report of
     // the relay's datagram rate so the host log can be measured in play-test. Since ADR-043
@@ -469,14 +516,18 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
         // pose), y su cociente es el ahorro real de la partida — no una estimación de sonda.
         let without_aoi = p * d - d.min(p);
         info!(
-            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} aoi_radius_m={:.0}",
+            "MPTRACE step=R15 event=peer_pose_relay self_id={} peer_count={} real_dest_count={} relay_datagrams_per_call={} approx_per_sec={} without_aoi={} in_aoi={} aoi_radius_m={:.0} near_radius_m={:.0}",
             net.local_id,
             p,
             d,
             relayed_count,
             relayed_count * 10,
             without_aoi,
-            AOI_POSE_RADIUS_M
+            // Pares dentro del AOI, emitan o no esta ronda: su diferencia con
+            // `relay_datagrams_per_call` es lo que ahorra el LOD, separado de lo que ahorra el AOI.
+            net.aoi_pose_pairs.len(),
+            AOI_POSE_RADIUS_M,
+            AOI_POSE_NEAR_RADIUS_M
         );
     }
 }
@@ -1301,6 +1352,66 @@ mod chunk_broadcast_tests {
             aoi_pose_should_relay(b, a, false, AOI_POSE_RADIUS_M),
             "el filtro tiene que ser simétrico: quién es el origen no puede importar"
         );
+    }
+
+    /// LOD: cerca se emite en TODAS las rondas. Sin esto, un tiroteo a cinco metros se vería a
+    /// media cadencia, que es justo donde más se nota.
+    #[test]
+    fn a_peer_in_the_inner_ring_is_relayed_every_round() {
+        let close = [10.0, 1.8, 0.0]; // 10 m: dentro del anillo interior
+        for round in 0..6u64 {
+            assert!(
+                aoi_pose_due_this_round(NEAR, close, 1, 2, round),
+                "ronda {round}: dentro del anillo interior no hay LOD que valga"
+            );
+        }
+    }
+
+    /// LOD: en el anillo exterior se emite una de cada dos rondas — ni todas (no ahorraría) ni
+    /// ninguna (desaparecería).
+    #[test]
+    fn a_peer_in_the_outer_ring_is_relayed_every_other_round() {
+        let far = [0.0, 1.8, 80.0]; // 80 m: fuera del interior (50), dentro del AOI (100)
+        let hits = (0..10u64)
+            .filter(|r| aoi_pose_due_this_round(NEAR, far, 1, 2, *r))
+            .count();
+        assert_eq!(
+            hits, 5,
+            "el anillo exterior va a media cadencia: 5 de cada 10 rondas"
+        );
+    }
+
+    /// El escalonado, que es la diferencia entre media cadencia y una ronda cara alternando con
+    /// una vacía: dos pares lejanos con paridad distinta NO emiten en la misma ronda.
+    #[test]
+    fn outer_ring_pairs_are_staggered_across_rounds() {
+        let far = [0.0, 1.8, 80.0];
+        // (1,2) suma 3 → impar; (1,3) suma 4 → par. Nunca coinciden.
+        for round in 0..6u64 {
+            let a = aoi_pose_due_this_round(NEAR, far, 1, 2, round);
+            let b = aoi_pose_due_this_round(NEAR, far, 1, 3, round);
+            assert_ne!(
+                a, b,
+                "ronda {round}: dos pares de paridad distinta tienen que repartirse, no agolparse"
+            );
+        }
+    }
+
+    /// Y el invariante que la enmienda añade: la cadencia tampoco puede depender de QUÉ es la
+    /// fuente. Un fantasma y un jugador a la misma distancia emiten en las mismas rondas — si
+    /// alguien exceptuara a la IA "para que su acecho se vea fluido", moverse suave a 80 m sería
+    /// un oráculo que lo delata igual que aparecer más lejos.
+    #[test]
+    fn the_cadence_cannot_tell_a_phantom_from_a_player() {
+        let far = [0.0, 1.8, 80.0];
+        // Mismo par, misma distancia: el veredicto solo puede salir de la posición y los ids.
+        for round in 0..4u64 {
+            assert_eq!(
+                aoi_pose_due_this_round(NEAR, far, 1, 2, round),
+                aoi_pose_due_this_round(NEAR, far, 1, 2, round),
+                "la función no tiene por dónde enterarse de qué es la fuente, y así debe seguir"
+            );
+        }
     }
 
     /// La distancia es 3D. Dos jugadores en la misma (x,z) pero en capas distintas no están cerca.

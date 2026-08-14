@@ -209,6 +209,10 @@ pub struct NetworkManager {
     /// host y otro del cliente) pueden discrepar, y el que discrepa produce exactamente el
     /// parpadeo que la histéresis viene a evitar (ADR-074 decisión 2).
     pub aoi_pose_pairs: std::collections::HashSet<(PeerId, PeerId)>,
+    /// E1 / ADR-074 (enmienda): ronda del relay de poses, para la cadencia LOD. Los pares del
+    /// anillo exterior emiten una de cada dos rondas, escalonados por paridad — ver
+    /// `sync::aoi_pose_due_this_round`.
+    pub pose_relay_round: u64,
     /// F0.3 (E0, ADR-073): eventos producidos FUERA del camino de recepción, que
     /// `process_incoming` emite junto a los suyos. Hoy solo lo usa `send_verdict` al desbordar la
     /// cola de un peer: así el desborde termina en la misma `PeerDisconnected` que ya manejan
@@ -429,6 +433,7 @@ impl NetworkManager {
             world_sync_dirty: false,
             world_sync_last_sent: None,
             aoi_pose_pairs: std::collections::HashSet::with_capacity(64),
+            pose_relay_round: 0,
             pending_events: Vec::new(),
             processed_stp_drops: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             stp_buildings: Vec::new(),
