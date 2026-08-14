@@ -17,6 +17,11 @@
 ## ADRs
 - [adr/INDEX.md](adr/INDEX.md) — índice de los ficheros ADR individuales; el registro completo sigue en `DECISIONS.md`.
 
+## Escalado
+- [SCALING-ROADMAP.md](SCALING-ROADMAP.md) — hoja de ruta E0–E5 hacia el MMO (ADR-073): dónde
+  estamos medido, fixes de E0 con archivo:línea, gates por etapa, calendario contra hitos y qué
+  da Steam de verdad. Empieza aquí antes de cualquier trabajo de red orientado a capacidad.
+
 ## Herramientas
 - [EDITOR-MENUS.md](EDITOR-MENUS.md) — qué hace cada una de las 22 entradas de menú del Editor,
   cuáles son idempotentes y cuáles rehacen assets. Léelo antes de ejecutar un bake.
