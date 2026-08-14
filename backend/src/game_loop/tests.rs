@@ -4355,6 +4355,50 @@ fn settle_until_asleep(
     (roster[0].clone(), max_steps, false)
 }
 
+/// ADR-070 × canal full-replace (`set_stp_items`): el spec de Unity no transporta `settling`, así
+/// que un reemplazo del roster mientras algo caía dejaba ese item marcado como posado a su altura
+/// de medio aire — el cliente clava el transform en ese flanco y lo deja FLOTANDO, mientras la
+/// simulación (que sobrevive aparte) lo baja hasta un suelo que ya nadie mira. Disparo real:
+/// soltar algo y cruzar un límite de chunk en los ~3 s de caída.
+///
+/// El contrato: la lista de simulación es la AUTORIDAD sobre qué está cayendo; el roster refleja.
+#[test]
+fn a_roster_replace_does_not_freeze_a_falling_item_in_mid_air() {
+    let (falling, sim) = falling_item(1, [30.0, 4.0, 30.0], Vec3::new(0.0, 0.0, 0.0));
+    let mut settled = falling.clone();
+    settled.id = 2;
+    settled.settling = false;
+
+    // Lo que llega del cliente en el full-replace: los MISMOS items, decodificados sin la marca
+    // (serde default = false) — que es exactamente cómo los re-emite ChunkLootManager.
+    let mut replaced: Vec<StpItemInfo> = vec![falling.clone(), settled.clone()]
+        .into_iter()
+        .map(|mut i| {
+            i.settling = false;
+            i
+        })
+        .collect();
+
+    // La lista de simulación lleva ADEMÁS un id que ya no está en el roster (recogido en plena
+    // caída y ausente del replace): no debe hacer nada, ni mucho menos entrar en pánico.
+    let ghost = SettlingItem {
+        id: 99,
+        velocity: Vec3::new(0.0, 0.0, 0.0),
+        quiet_ticks: 0,
+        age_ticks: 0,
+    };
+    restore_settling_flags(&mut replaced, &[sim, ghost]);
+
+    assert!(
+        replaced[0].settling,
+        "el item con simulación viva recupera su marca: sigue cayendo"
+    );
+    assert!(
+        !replaced[1].settling,
+        "el item posado se queda posado — la marca solo vuelve donde hay simulación"
+    );
+}
+
 /// El comportamiento que Joel pidió, escrito como contrato: un objeto soltado en el aire CAE, y
 /// acaba parado en el suelo. Antes de ADR-070 el cliente ya mandaba la posición pegada al suelo y
 /// el objeto nacía congelado ahí — este test falla con aquel comportamiento porque no habría

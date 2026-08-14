@@ -3345,6 +3345,15 @@ async fn handle_action(
                 items.len()
             );
             net.stp_items = items;
+            // ADR-070 × canal full-replace: el spec de Unity no lleva `settling` (decodifica al
+            // default, false), así que este reemplazo dejaba un item EN PLENA CAÍDA marcado como
+            // posado a su altura de medio aire. El cliente clava el transform en ese flanco — los
+            // items posados no re-siguen la posición, ese es el contrato pre-070 — y el item se
+            // quedaba FLOTANDO para siempre, mientras la simulación (que vive aparte, en
+            // `settling_items`, y sobrevive al reemplazo) lo seguía bajando hasta un suelo que ya
+            // nadie mira. Disparo real: soltar algo y cruzar un límite de chunk en los ~3 s de
+            // caída. La lista de simulación es la autoridad; se restaura la marca desde ella.
+            restore_settling_flags(&mut net.stp_items, &net.settling_items);
             // ADR-014 invariant: drop reservations for items no longer present, so pending_pickups
             // never points at a vanished item.
             let present: std::collections::HashSet<u32> =
@@ -4375,6 +4384,22 @@ const SETTLE_SUBSTEPS: u32 = 6;
 const SETTLE_MAX_TICKS: u16 = 180;
 /// How far above the floor a resting item's origin sits, so the model does not sink into it.
 const SETTLE_REST_OFFSET_M: f32 = 0.12;
+
+/// ADR-070: re-marca como `settling` todo item del roster que siga teniendo entrada de simulación.
+/// Existe por el canal full-replace (`set_stp_items`): el spec del cliente no transporta la marca,
+/// así que un reemplazo del roster la borraba de los items en plena caída y el cliente los dejaba
+/// flotando a media altura. La lista de simulación sobrevive al reemplazo y es la autoridad sobre
+/// qué está cayendo — el roster solo refleja.
+fn restore_settling_flags(
+    stp_items: &mut [crate::network::protocol::StpItemInfo],
+    settling: &[crate::network::SettlingItem],
+) {
+    for s in settling {
+        if let Some(item) = stp_items.iter_mut().find(|i| i.id == s.id) {
+            item.settling = true;
+        }
+    }
+}
 
 /// Clear the `settling` flag of one item in the replicated roster. Separate from removing the
 /// simulation entry because the two live in different lists, and the flag is the half the clients
