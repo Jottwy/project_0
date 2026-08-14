@@ -91,6 +91,46 @@ const RUN_STAMINA_DRAIN: f32 = 15.0;
 /// ProxyAnimatorControllerBuilder) → if PickupSpeed changes, re-tune this by hand.
 const PICKUP_REMOVE_DELAY: Duration = Duration::from_millis(600);
 
+/// F0.7 (E0, ADR-073): radio máximo, en metros, para conceder un `stp_pickup`.
+///
+/// El camino STP no comprobaba proximidad NINGUNA — cualquier cliente podía pedir cualquier item
+/// del mundo desde cualquier distancia y el host se lo concedía. El camino legacy sí exigía 5 m
+/// (`world.interact_with_item(..., 5.0)`), así que la validación existía y solo faltaba en el
+/// camino que hoy usa el juego.
+///
+/// **8 m y no 5**, y el margen es deliberado: la posición que el host tiene de un joiner es su
+/// pose relayada, que llega a 10 Hz y va por detrás por el RTT. Un jugador corriendo a 5,5 m/s
+/// recorre ~0,55 m entre poses, más lo que tarde el `stp_pickup` en llegar; con 5 m clavados se
+/// rechazarían recogidas legítimas al límite del alcance, que es un fallo MUCHO peor que el que
+/// esto cierra. 8 m deja ~3 m de holgura sobre el alcance real de interacción del cliente y sigue
+/// convirtiendo "cualquier item del mapa" en "un item que tengo delante".
+///
+/// La validación contra posición HISTÓRICA (lag compensation, ADR-010) queda fuera: ese es su
+/// propio ADR y no hace falta para cerrar el agujero.
+///
+/// El número coincide con `CORPSE_LOOT_MAX_DISTANCE` y NO por casualidad: aquel empezó en 5 m y
+/// hubo que ampliarlo a 8 en el play-test de ADR-028 Fase D, precisamente porque 5 m clavados
+/// producían `too_far` contra un cuerpo al lado del que el jugador estaba de pie. Se aprende el
+/// precedente en vez de repetir el error.
+const STP_PICKUP_MAX_DISTANCE: f32 = 8.0;
+
+/// F0.7: la decisión de proximidad del pickup, pura y sin red, para poder probarla sin levantar
+/// un `NetworkManager` ni un socket — el mismo motivo por el que `RosterGate::should_send` recibe
+/// `now` en vez de leer el reloj.
+///
+/// `None` (no sabemos dónde está el solicitante, su primera pose aún no llegó) devuelve `true`:
+/// negar por falta de dato convertiría un hueco de información en un rechazo injusto, y las demás
+/// validaciones —que el item exista y no esté reservado— siguen en pie.
+fn pickup_within_reach(requester_pos: Option<Vec3>, item_pos: [f32; 3]) -> bool {
+    let Some(pos) = requester_pos else {
+        return true;
+    };
+    let item = Vec3::from_array(item_pos);
+    let dist =
+        ((pos.x - item.x).powi(2) + (pos.y - item.y).powi(2) + (pos.z - item.z).powi(2)).sqrt();
+    dist <= STP_PICKUP_MAX_DISTANCE
+}
+
 /// Forces the god-traversal COLLISION BYPASS on (the player's claimed pose is trusted without
 /// clamping against the BACKEND world, which doesn't match the rendered ChunkStreamer — the known
 /// world-migration debt). NOTE (ADR-016 slice 1): this no longer gates death — that is a SEPARATE
@@ -1864,7 +1904,13 @@ async fn handle_network_event(
             requester_id,
         } => {
             if net.is_host {
-                process_stp_pickup(item_id, requester_id, net, to_clients).await;
+                // F0.7: la pose relayada del joiner es lo que el host sabe de él. Va por detrás
+                // (10 Hz + RTT), y por eso el radio lleva margen.
+                let requester_pos = net
+                    .peers
+                    .get(&requester_id)
+                    .map(|p| Vec3::from_array(p.position));
+                process_stp_pickup(item_id, requester_id, requester_pos, net, to_clients).await;
             }
         }
 
@@ -3408,7 +3454,16 @@ async fn handle_action(
                 return;
             }
             if net.is_host {
-                process_stp_pickup(item_id, net.local_id, net, to_clients).await;
+                // F0.7: el host se valida contra su propia pose, que es exacta y local. No aporta
+                // anticheat (nadie se engaña a sí mismo) pero mantiene una sola regla para todos.
+                process_stp_pickup(
+                    item_id,
+                    net.local_id,
+                    Some(player.position),
+                    net,
+                    to_clients,
+                )
+                .await;
             } else {
                 let payload = crate::network::protocol::PacketPayload::StpPickupRequest {
                     item_id,
@@ -5026,6 +5081,8 @@ fn process_stp_harvest_hit(
 async fn process_stp_pickup(
     item_id: u32,
     requester_id: crate::network::PeerId,
+    // F0.7: dónde está el solicitante según el host. `None` cuando aún no se conoce su pose.
+    requester_pos: Option<Vec3>,
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
 ) {
@@ -5041,8 +5098,8 @@ async fn process_stp_pickup(
 
     // The item must still exist. We do NOT remove it here (ADR-014 deferred removal): copy the
     // fields the grant needs, then reserve it; the per-tick drain removes it at remove_at.
-    let (def_id, count) = match net.stp_items.iter().find(|it| it.id == item_id) {
-        Some(it) => (it.def_id, it.count),
+    let (def_id, count, item_pos) = match net.stp_items.iter().find(|it| it.id == item_id) {
+        Some(it) => (it.def_id, it.count, it.position),
         None => {
             info!(
                 "MPTRACE step=SP event=stp_pickup_rejected item_id={} requester_id={} reason=not_found",
@@ -5051,6 +5108,16 @@ async fn process_stp_pickup(
             return;
         }
     };
+
+    // F0.7: proximidad. Antes de esto, cualquier cliente podía pedir cualquier item del mapa
+    // desde cualquier distancia y el host se lo concedía.
+    if !pickup_within_reach(requester_pos, item_pos) {
+        info!(
+            "MPTRACE step=SP event=stp_pickup_rejected item_id={} requester_id={} reason=too_far max={:.2}",
+            item_id, requester_id, STP_PICKUP_MAX_DISTANCE
+        );
+        return;
+    }
 
     info!(
         "MPTRACE step=SP event=stp_pickup_granted item_id={} requester_id={} def_id={} count={}",

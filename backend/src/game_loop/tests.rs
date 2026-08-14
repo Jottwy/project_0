@@ -6531,3 +6531,58 @@ async fn sprays_ride_the_chunk_the_client_already_asks_for() {
         "un chunk sin pintar no debe pagar ni la clave"
     );
 }
+
+// ─── F0.7 (E0, ADR-073): el pickup STP valida proximidad ───
+
+/// El agujero que cierra: hasta F0.7 el camino STP no comprobaba distancia NINGUNA, así que un
+/// cliente modificado podía vaciar el mapa entero sin moverse. El camino legacy sí exigía 5 m.
+#[test]
+fn a_pickup_from_across_the_map_is_rejected() {
+    let item = [100.0, 1.8, 100.0];
+    let far_away = Vec3::new(0.0, 1.8, 0.0); // ~141 m
+    assert!(
+        !pickup_within_reach(Some(far_away), item),
+        "pedir un item a 141 m tiene que rechazarse: es el agujero entero de F0.7"
+    );
+}
+
+/// El control positivo, que importa tanto como el negativo: un pickup normal NO puede rechazarse.
+/// Un radio demasiado estrecho rompería el juego de forma mucho más visible que el cheat que evita.
+#[test]
+fn a_pickup_at_arms_length_is_granted() {
+    let item = [10.0, 1.8, 10.0];
+    let next_to_it = Vec3::new(10.5, 1.8, 11.0); // ~1,1 m
+    assert!(
+        pickup_within_reach(Some(next_to_it), item),
+        "recoger algo que tienes al lado tiene que concederse siempre"
+    );
+}
+
+/// El margen es deliberado y esta es su prueba: la pose que el host tiene de un joiner va por
+/// detrás (10 Hz + RTT), así que el límite se fijó en 8 m y no en el alcance real de interacción.
+/// Mismo número y misma razón que `CORPSE_LOOT_MAX_DISTANCE`, que ya tuvo que ampliarse de 5 a 8
+/// por rechazos espurios en play-test.
+#[test]
+fn the_radius_keeps_headroom_for_a_stale_relayed_pose() {
+    let item = [0.0, 1.8, 0.0];
+    // Un jugador a 6 m: dentro del alcance de interacción del cliente aun contando el desfase.
+    assert!(
+        pickup_within_reach(Some(Vec3::new(6.0, 1.8, 0.0)), item),
+        "6 m tiene que caber: con 5 m clavados esto sería un rechazo injusto"
+    );
+    // Justo por encima del radio: fuera.
+    assert!(
+        !pickup_within_reach(Some(Vec3::new(8.5, 1.8, 0.0)), item),
+        "8,5 m ya está fuera del radio"
+    );
+}
+
+/// Sin pose conocida se CONCEDE: negar por falta de dato convertiría un hueco de información en
+/// un rechazo injusto, y el item sigue teniendo que existir y no estar reservado.
+#[test]
+fn an_unknown_requester_position_grants_instead_of_rejecting() {
+    assert!(
+        pickup_within_reach(None, [500.0, 1.8, 500.0]),
+        "sin pose del solicitante no se puede afirmar que esté lejos"
+    );
+}
