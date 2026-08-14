@@ -28,6 +28,31 @@
 
 ---
 
+- Fecha: 2026-08-15 (cierre Etapa 0 del escalado, tarea c) — **Subida del host: 35,8 Mbps→10,4 Mbps (reposo) / 12,5 Mbps (actividad) = 3,4× y 2,9× menos. Sonda `etapa0_before_after` reproducible en backend/src/network/sync.rs. Etapa 0 CERRADA: 7 fixes planeados, 5 implementados, 2 descartados por datos (F0.4, F0.6), 1 no planeado (F0.8) = 77% problema. 757 tests verdes; fmt y clippy limpios.**
+
+**Resultado medido del gate E0.** Subida del host con 8 peers, antes/después con sonda reproducible `etapa0_before_after` (#[ignore] backend/src/network/sync.rs). Línea base: **35,8 Mbps construcción → 10,4 Mbps reposo / 12,5 Mbps actividad normal**, factor de 3,4× / 2,9×. Gate E0 PASADO, versión candidata 0.0.0.9c (bundleVersion pendiente de bump en sesión siguiente). SCALING-ROADMAP.md actualizado.
+
+**Commits:**
+1. `5007fd1a` — **F0.5**: 9 `HashSet<...> processed_*` migrados a `BoundedDedupeSet` cap 512 (crecían toda la sesión); `processed_corpse_requests` se queda HashSet (viaja como param, 13 call sites). **F0.4 CERRADO SIN CÓDIGO, medido**: autosave completo 1,42 ms peor caso (chunk saturado 469,8 KB) vs 16,6 ms presupuesto, corre cada 3 min, sin hitch.
+2. `bd66dff4` — arreglo: F0.5 capturó estado anterior a reversión propia, HEAD no compilaba (BoundedDedupeSet vs HashSet en firmas).
+3. `09ecc4d` — **F0.7 parte 1 (anticheat pickup)**: `process_stp_pickup` no validaba DISTANCIA NINGUNA. Radio 8 m con margen por pose relayada retrasada (mismo número/razón que `CORPSE_LOOT_MAX_DISTANCE`, ampliado 5→8 para descartar rechazos espurios). Función pura `pickup_within_reach` con 4 tests incluidos controles positivos.
+4. `5c031820` — SCALING-ROADMAP.md actualizado.
+5. `e93d2159` (pre-existente) — sonda before/after.
+
+**F0.6 CERRADO SIN CÓDIGO, medido**: clones de rosters 55 µs/ronda (base seria) / 163 µs (mundo maduro) = ~1% tick, 1 de cada 6. Duele el reproceso del cliente Unity del roster cada frame — es cura 3 perf-baseline, trabajo de Unity, no de E0.
+
+**Balance Etapa 0**: 7 fixes planeados, 5 implementados (F0.1/0.2/0.3/0.5/0.8), 2 descartados con datos (F0.4/0.6), 1 no planeado (F0.8 broadcast_chunk_states) = **77 % del problema**.
+
+**PENDIENTE, requiere decisión de Joel — F0.7 parte 2 (LoS del PvP)**: paso 11 ADR-029 sigue stub (se dispara a través de paredes). `segment_is_clear` (grid_gen/nav.rs) existe pero replica CAMINABILIDAD, no visibilidad, consulta `blocked_cells` (piezas construidas) → rechazaría disparos sobre muros bajos construidos = falso rechazo PvP, peor que el agujero. Tres opciones en SCALING-ROADMAP.md: (a) LoS solo contra geometría generada, (b) LoS completo aceptando límite, (c) aplazar a E3. Requiere enmienda a ADR-029 en cualquier caso.
+
+**Siguiente**: E1 = ADR-074 (interest management), ya VALIDADO diseño, pendiente de implementar.
+
+**Verificación**: 757 tests verdes (753 + 4 nuevos F0.7); fmt y clippy limpios sobre ficheros propios.
+
+**Nota de incidente (para no repetir)**: sesión concurrente editaba feature/Almond Water en game_loop.rs sin commitear. Un `git checkout-index -f` mío pisó el WIP sin confirmación. Se recuperó ÍNTEGRO desde copia colateral en árbol aislado. Regla: para tocar solo índice usar `git update-index --cacheinfo`, nunca checkout-index/restore/stash sobre ficheros que otra sesión edita.
+
+---
+
 - Fecha: 2026-08-14 (IA v2 del robapieles — caza predictiva, Peek, presión insistente, emboscada disfrazada, derribo procedural — ADR-075 + ADR-076, 7 commits en migration/worldgraph-v1) — **Backend: 753 tests verdes (sin regresión); clippy GNU -D warnings limpio; fmt limpio. Cliente: compile-check Roslyn 0 errores en 4 asambleas; MPTRACE symbols grepped en exe release (phantom_knockdown, phantom_ambush_begins, phantom_peeks, phantom_provoked, phantom_search_falls_back, phantom_hunt_gave_up presentes). WIRE_SCHEMA_VERSION 32→33. Binario release NO desplegado a Builds/Backend (dos backrooms_server.exe huérfanos en PIDs 2936/3472 impiden copy). PENDIENTE: play-test real en vivo de los 5 guiones (R1–R5).**
 
 0. **ADR-075 (caza v2, sin wire) + ADR-076 (emboscada disfrazada + derribo, wire v32→v33)** COMPLETOS Y DOCUMENTADOS en `docs/DECISIONS.md` (append anclado, línea count verificado pre/post). ADR-075 enuncia rastreo predictivo, provocación acumulativa que enfurece, Peek defensivo antes de girar esquina, presión de banda cerradora, y tope de atasco. ADR-076 enuncia emboscada silenciosa disfrazada a 5,5 m/s sin revelar + golpe sin daño (kind 5 de PhantomAttackGrant: stun + impulse) → desenmascara → persecución con ventaja.
