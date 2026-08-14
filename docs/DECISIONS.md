@@ -3341,3 +3341,83 @@ Copiar ese modelo al botín es por tanto **fidelidad exacta con el vendor**, no 
 Son **20 B por propiedad**, y lo que los domina es **el nombre del campo repetido en cada entrada** — exactamente la mecánica que descuadró el presupuesto de ADR-068 por 2,6×. Con el número delante se decide dejar el tope `MAX_PROPS_PER_STACK` en **8 y no en 4**: un arma con munición, modo, mira y desgaste llega justo a 4, así que recortar ahí rozaría lo legítimo. A cambio, **el recorte avisa por log**, que es lo que convierte el tope en una red y no en una pérdida silenciosa. El caso REAL no se parece al peor: un cadáver normal trae ~20 stacks y casi ninguno lleva propiedades.
 
 **Relación con ADR-070, que no es casual.** Los arreglos del 2026-08-13 (recogida con inventario lleno, y restauración) sueltan al mundo lo que no cabe por `stp_drop`, que es justo el camino cuyo asentamiento define el 070. Ambos vuelcos mandan ya impulso (`SynthesizeTossVelocity`), pero **`stp_drop` no transporta propiedades**: lo que cae al suelo por esa vía vuelve a valor de fábrica. Esa es la Fase 2 de este ADR y sigue pendiente.
+
+### ADR-073 — Escalado por etapas hacia el MMO: cierra ADR-003 (2026-08-14)
+
+Estado: **PROPUESTA (2026-08-14).** Encargo de Joel: escalar gradualmente el multijugador actual hacia el MMO survival (miles de jugadores por mapa como horizonte), preparando el terreno sin romper lo que hoy funciona. Sale del análisis completo de red de esta fecha (ADRs 009–072, `systems/perf-baseline.md`, auditoría de escalado del 2026-08-01 y su refutación del 08-02).
+
+**El hueco que cierra.** ADR-003 (topología de red) lleva EN PROPUESTA desde el día uno, con TODO el código de red ya escrito bajo el supuesto de host único que ADR-003 nunca validó. Este ADR lo cierra: valida lo que existe, fija el camino por etapas con gates medibles, y aplaza formalmente la única decisión que hoy no se puede tomar con datos.
+
+#### Decisiones
+
+**1. La topología actual host-as-server queda VALIDADA como fundación de las etapas E0–E2.** Cada cliente lanza su backend; el host es autoridad y relay (ADR-015); la sesión muere con el host (ADR-056). No es la topología del MMO final: es la fundación correcta HOY porque las tres primeras etapas de escalado son idénticas bajo cualquier topología final.
+
+**2. El escalado es por ETAPAS CON GATE MEDIBLE, nunca por salto de fe.** El detalle vivo (fixes, números, calendario) está en [`SCALING-ROADMAP.md`](SCALING-ROADMAP.md); aquí queda la ley:
+
+| Etapa | Qué | Capacidad objetivo (números de la refutación 08-02, no del plan optimista) | Wire |
+|---|---|---|---|
+| E0 saneamiento | fixes de amplificación/CPU sin tocar protocolo | 8–12 domésticos ESTABLES | sin bump |
+| E1 interest management | AOI de poses + rosters por celda + on-change | 16–24 doméstico / 32–48 VPS | ADR-074 + bump |
+| E2 transporte | trait `Transport` + SteamNetworkingSockets/SDR; UDP crudo sigue de primera clase (itch.io no tiene Steam) | no sube techo; da NAT, cifrado, identidad autenticada | ADR propio |
+| E3 dedicado + autoridad | `--dedicated`, auth tickets, anticheat real, inventario server-side | 32–40 por instancia VPS | ADRs propios |
+| E4 instancias por capa | matchmaking simple, persistencia central, cambio de capa = re-join | 100+ concurrentes totales en instancias de 25–40 | ADRs propios |
+| E5 (condicional) zonas continuas + handoff | procesos de zona con autoridad territorial | cientos–miles en mapa continuo | familia de ADRs |
+
+El gate de cada etapa es un número reproducible (la métrica de E0/E1: **kbps de subida del host con 8 peers, contando headers UDP/IP — `datagramas × (payload + 28)`**), registrado en `systems/perf-baseline.md` antes y después. Una etapa sin su gate pasado no habilita la siguiente.
+
+**3. La decisión de topología final queda APLAZADA al gate E2→E3, y esto es deliberado.** Los dos candidatos: (a) servidores propios dedicados shardados (el backend YA corre headless; ~32 peers medidos como techo estimado en VPS), (b) la idea original de Joel: hosts-cliente por zona. La evidencia actual es desfavorable a (b) y queda registrada para que la decisión futura no la redescubra: el host de una zona es árbitro con autoridad total sobre ella (trampa indetectable por construcción); el churn de hosts domésticos exige migración de autoridad y la auditoría del 08-02 estableció que «no hay malla entre joiners y el código la destruye activamente»; y el coste que (b) ahorra —decenas de €/mes de VPS— no guarda proporción con la complejidad que añade. La decisión se tomará con medidas reales de 16+ jugadores, no con estimaciones.
+
+**4. Reglas permanentes de preparación, vigentes desde YA en todo código nuevo:**
+- Lógica de autoridad nueva se escribe contra «la autoridad», no contra `is_host` ni contra el `player` local del host — cada acoplamiento nuevo encarece E3 directamente.
+- Persistencia y mensajes nuevos identifican jugadores por la clave opaca de ADR-045 (`uuid:`/`steam:`), nunca por `PeerId` (u16, reutilizable, no cabe un SteamId).
+- Todo sistema de red nuevo entra con su contador de bytes/datagramas por segundo (precedente: `relay_datagrams_per_call`). Lo que no se mide no pasa gates.
+- Cualquier trabajo de transporte mantiene UDP crudo como backend de primera clase, no como fallback en decadencia (regla de coexistencia de ADR-034/038 aplicada al transporte: las builds de itch.io no tienen Steam).
+
+**5. Nota de comportamiento sin bump (E0/F0.1):** el `broadcast_world_sync` disparado por cada pickup/drop legacy pasa a coalescerse por flag con cadencia acotada (~250–300 ms). Cambia CUÁNDO se emite, no un byte del formato — mismo criterio que ADR-071 usó para su gate de rosters.
+
+**6. Calendario contra hitos.** Alpha 1 en itch.io (noviembre 2026) solo necesita E0. En la Next Fest de octubre 2026 **no se participa** (se usa una vez por juego; quemarla con una build pre-Alpha es irreversible): la cita es **febrero 2027**, con E1 validada y E2 si llegó. Early Access primavera 2027: E3 operativo.
+
+#### Consecuencias / qué prohíbe
+
+- **PROHÍBE** implementar E1+ sin su ADR validado y sin el gate de la etapa anterior pasado.
+- **PROHÍBE** presentar estimaciones como capacidad: todo número de jugadores que se comunique sale de una medición con sonda reproducible.
+- **Steam queda dimensionado a lo que es**: Steam Cloud = sincronización de saves del CLIENTE (inservible como persistencia del MMO — esa será nuestra, E4); SNS/SDR = transporte (E2); auth tickets (E3); VAC = complemento, jamás sustituto de validación server-side. Steam no da servidores de juego.
+- ADR-003 queda CERRADO por este ADR. ADR-009 declaraba que `ack_input_seq` exigiría revisión si ADR-003 se resolvía a topología distribuida: E0–E2 no son distribuidas, así que no se activa; la revisión quedará en el ADR de E3/E4 si la topología elegida lo exige.
+
+### ADR-074 — Interest management: AOI de poses y rosters por celda (E1) (2026-08-14)
+
+Estado: **PROPUESTA (2026-08-14) — pendiente de validación humana ANTES de escribir código.** Es la cura 2 de `systems/perf-baseline.md`, que la declaró explícitamente «cambio de protocolo → ADR antes de código». Segunda etapa del roadmap de ADR-073.
+
+**El problema, medido.** Dos curvas cortadas por lo mismo: el relay de poses es O(N²) (242 B por `PlayerUpdate` a 10 Hz; 9920 datagramas/s con 32 peers; domina sobre los rosters a partir de ~16 jugadores) y los cinco rosters viajan ENTEROS a todos los peers cuando el gate de ADR-071 abre (la convergencia muere en silencio entre 4800 y 9600 elementos de mundo). Filtrar por distancia convierte ambos costes de «tamaño del mundo × jugadores» en «lo que cada jugador tiene cerca».
+
+#### Decisiones
+
+**1. AOI de poses con radio GLOBAL ÚNICO `R_pose`, dimensionado por el DISEÑO, no por la red.** El host relaya la pose de A a B solo si `dist(A,B) < R_pose`. **No existe `R_pose_phantom`**: un radio observable distinto por tipo de fuente es un oráculo — todo lo que apareciera a más distancia que un jugador sería siempre el fantasma, y ADR-016 quedaría roto por metadatos. Si la fase `stalk` del robapieles exige acecho visible a 100 m, `R_pose` = 100 m para todos. El coste del radio ancho es menor de lo que parece: en Level 0 las paredes rompen la línea de visión mucho antes de 75 m — el anti-ESP real lo da la topología del laberinto, no el radio. **Medición previa obligatoria antes de fijar el número:** cuántos peers caen dentro de 100 m en un mapa real con jugadores dispersos y agrupados.
+
+**2. La histéresis pertenece a la AUTORIDAD, no al cliente.** El host aplica entrada a `R_pose` y salida a `R_pose × 1,2`; el cliente SOLO reacciona a que la pose llegue o deje de llegar. Dos radios (host y cliente) podrían discrepar, y el que discrepa produce exactamente el parpadeo que la histéresis evita.
+
+**3. Cadencia LOD + on-change dentro del AOI.** 10 Hz en el radio interior (`R_pose / 2`), 2 Hz en el anillo exterior, heartbeat de 1 Hz como suelo para cualquier par dentro de AOI. Una pose solo entra en su ronda si cambió más de un épsilon desde la última enviada A ESE destino — el mismo espíritu que el gate por hash de ADR-071: no reenviar lo que el receptor ya tiene.
+
+**4. Rosters por CELDA espacial, con hash y generación POR CELDA.** Los cinco `broadcast_*` pasan de «roster entero a todos» a «celdas dentro de `R_roster` de cada peer». Se reutiliza la paginación de ADR-060(d) con la celda como unidad de scope; el `RosterAssembler` del joiner pasa de generación global todo-o-nada a generación por celda — **ese es el cambio de wire principal**. El patrón ya existe en el código: `visible_corpse_views` filtra por proximidad desde el día del ADR-028; esto lo consagra como regla general, no como excepción de cadáveres.
+
+**5. Lo que NO cambia.** `PeerList` sigue siendo global y completo (nombres e identidad son baratos y la UI de roster no debe parpadear). El filtro AOI decide por POSICIÓN, jamás consulta `is_phantom` para decidir inclusión como fuente (invariante ADR-016). El heartbeat de autocuración de ADR-071 sobrevive dentro del nuevo scope (repara páginas perdidas, que ningún hash ve). La voz conserva su filtro propio de 25 m (ADR-046): es frontera de SEGURIDAD, no optimización, y no se fusiona con `R_pose`.
+
+**6. Política de CLIENTE — E1 no es solo backend.** El ADR fija, antes de implementar: (a) despawn del proxy remoto cuando la pose deja de llegar — decidir entre el `missingRemoteGraceSeconds = 3 s` existente (`RemotePlayerManager.cs:37`) o un mensaje explícito de salida de AOI; (b) al REENTRAR en AOI, reset de interpolación por snap, nunca lerp desde la posición vieja; (c) el estado cosmético se reconstruye vía `ResetCosmetics` (el patrón de pool acquire/release de `RemotePlayerManager.cs:337-355`) y los ~30 `Proxy*Hook` deben tolerar reinicialización — mismo camino que ya recorre un peer que se reconecta.
+
+**7. Un solo bump de `WIRE_SCHEMA_VERSION` para todo el paquete**, con `WireSchema.Expected` en el mismo commit (ADR-061 lo hace inarrancable si se olvida; el test de `7532876` lo vigila).
+
+**Dicho en voz alta:** con todos los jugadores agrupados en un punto, el comportamiento converge al actual — el AOI no crea capacidad, la concentra donde importa. El gate se mide con dispersión realista Y con el peor caso agrupado.
+
+#### Gate de validación (antes de declarar E1 cerrada)
+
+- `relay_datagrams_per_call` con 8 peers dispersos: reducción >70 % contra la línea base de E0.
+- kbps de subida del host (sonda de F0.0, headers incluidos) antes/después, en `systems/perf-baseline.md`.
+- Convergencia de rosters con >9600 elementos de mundo (hoy imposible).
+- Fantasmas indistinguibles: test ADR-016 existente + sesión visual.
+
+#### Consecuencias / qué prohíbe
+
+- **PROHÍBE** cualquier radio de AOI distinto por tipo de fuente (decisión 1).
+- **PROHÍBE** que el cliente aplique un radio propio de aparición/desaparición (decisión 2).
+- **PROHÍBE** suprimir el heartbeat por celda «porque el hash ya detecta cambios» (hereda la prohibición de ADR-071).
+- Deja fuera a propósito: interest management de entidades IA (hoy host-only por ADR-040, no viajan), y el chunk-scoped `world_sync` (se decidirá con la medición de F0.0, fuera de este ADR).
