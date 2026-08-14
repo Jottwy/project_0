@@ -28,6 +28,29 @@
 
 ---
 
+- Fecha: 2026-08-15 (E1 — interest management, ADR-074: fase 1 y LOD completas; fase 2 a medias) — **ADR-074 implementación: AOI relay poses (100 m, histéresis autoridad entrada R, salida R×1,2), snap cliente 5 m, cadencia LOD 10 Hz ≤50 m / ~5 Hz anillo 50–100 m. Scope explícito (cierre de ronda, 3 reglas: reemplaza/vacía/descarta). `CellRosterAssembler` 8 tests, aún sin cablear. Wire 33→34 APARCADO en scratchpad. 769 tests verdes; fmt y clippy limpios; cliente C# 4 assemblies, 0 errores.**
+
+**Medición AOI:** `aoi_pose_relay_savings` sonda reproducible en backend. Con jugadores repartidos: **19–21% supervivencia relay** sin empeoramiento al crecer N (21% con 8 peers, 21% con 16, 19% con 32). O(N²) → proporcional a densidad local. Todo en una sala = 0 ahorro (correcto). Etapa 0 y E1 validadas por sonda, sin juego aún.
+
+**Commits (6 totales):**
+1. `9b90dc04` — **E1 fase 1**: AOI relay poses, histéresis en autoridad, `aoi_pose_relay_savings` sonda.
+2. `a2cd0e84` — **E1 fase 1 (cliente)**: `positionSnapThreshold = 5 m`, snap en reentrada AOI, cubre respawn + chunk displacement.
+3. `1a8012e8` — **enmienda ADR-074**: PROHIBIDO AOI sobre IA (oráculo delata al robapieles). Regla: ninguna propiedad observable del relay depende de si fuente es fantasma. Rosters sin disfraz = filtrado agresivo permitido.
+4. `26dc492f` — **cadencia LOD**: 10 Hz ≤50 m, ~5 Hz anillo 50–100 m, paridad (src+dest) para carga plana. Histéresis registra par pese a no emitir. Log `MPTRACE step=R15` gana `without_aoi` e `in_aoi`.
+5. `d64cf530` — **enmienda ADR-074 fase 2**: cierra ambigüedad "celda vacía vs lejana". Scope EXPLÍCITO en cierre de ronda, 3 líneas: en scope+datos reemplaza / en scope sin datos vacía / fuera de scope descarta. Celda = chunk (50 m), scope 5×5. Opcode cierre para 5 rosters. Bump 33→34 pendiente.
+6. `a581f32a` — **fase 2 (receptor)**: `CellRosterAssembler` 8 tests, ADITIVO sin cablear. Corrección de diseño encontrada en test: regla "en scope sin datos = vacía" incompatible con gate ADR-071 (corta 92% rondas) — cierre pertenece a RONDA EMITIDA, no existe si gate la corta.
+
+**PENDIENTE fase 2, en orden:**
+(1) 5 emisores agrupan por celda, per-peer (cambio forma mayor); (2) 5 receptores + cierre handlers.rs; (3) espejo C# replicadores; (4) bump 33→34 WireSchema.Expected. Wire (campo `cell`, opcode `RosterScopeEnd 0x54`) APARCADO en scratchpad, FUERA repo, porque sin (1)-(2) rompe 10 sitios.
+
+**Recomendación registrada:** hacer partida real antes de fase 2. Todo E0 + E1 medido en sonda, sin juego.
+
+**Verificación:** 769 tests verdes, fmt limpio, clippy limpio, cliente C# 4 assemblies, 0 errores.
+
+**Nota de sesión concurrente:** dos incidentes cruzados de working tree pisado (yo pisé su WIP sanity con `checkout-index`; después su árbol revirtió mi F0.7 + AOI en game_loop.rs). Nada se perdió: todo en commits o recuperable desde árboles aislados. Regla: para tocar solo índice usar `git update-index --cacheinfo`, nunca checkout-index/restore sobre ficheros que otra sesión edita.
+
+---
+
 - Fecha: 2026-08-15 (cierre Etapa 0 del escalado, tarea c) — **Subida del host: 35,8 Mbps→10,4 Mbps (reposo) / 12,5 Mbps (actividad) = 3,4× y 2,9× menos. Sonda `etapa0_before_after` reproducible en backend/src/network/sync.rs. Etapa 0 CERRADA: 7 fixes planeados, 5 implementados, 2 descartados por datos (F0.4, F0.6), 1 no planeado (F0.8) = 77% problema. 757 tests verdes; fmt y clippy limpios.**
 
 **Resultado medido del gate E0.** Subida del host con 8 peers, antes/después con sonda reproducible `etapa0_before_after` (#[ignore] backend/src/network/sync.rs). Línea base: **35,8 Mbps construcción → 10,4 Mbps reposo / 12,5 Mbps actividad normal**, factor de 3,4× / 2,9×. Gate E0 PASADO, versión candidata 0.0.0.9c (bundleVersion pendiente de bump en sesión siguiente). SCALING-ROADMAP.md actualizado.

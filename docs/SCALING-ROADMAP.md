@@ -96,13 +96,19 @@ ADR-029 en cualquiera de los tres casos.
 > jugadores repartidos sobrevive el **19–21 %** del relay y **el porcentaje no empeora al crecer
 > N**; el LOD recorta ~37,5 % de lo que quede.
 >
-> **Pendiente de E1: solo la fase 2** — rosters por celda, la única parte que bumpea wire. Ahí
-> está ahora el 54–57 % de la subida del host, y arreglaría de paso el techo de convergencia
-> (hoy los rosters dejan de replicarse EN SILENCIO entre 4800 y 9600 elementos). Antes de tocar
-> código hay que cerrar en una enmienda a ADR-074 la ambigüedad que introduce el troceo: **si a un
-> cliente no le llega nada de una celda, ¿está vacía o simplemente lejos?** Hoy no existe esa duda
-> porque el roster viaja entero y el reemplazo es verbatim; interpretarla mal hace desaparecer
-> objetos del mundo de un jugador, o dejarle para siempre objetos que otro ya recogió.
+> **Fase 2 EN CURSO.** Diseño cerrado (enmienda a ADR-074: el scope de celdas viaja explícito) y
+> **receptor implementado con tests** (`CellRosterAssembler`), pero todavía no cableado: es código
+> aditivo que aún no usa nadie.
+>
+> **Lo que falta, en orden:** (1) los cinco emisores agrupan por celda y mandan solo el scope de
+> cada peer — dejan de ser `broadcast` y pasan a ser por-peer, que es el cambio de forma más
+> grande; (2) los cinco receptores en `handlers.rs` + el consumidor del cierre; (3) el espejo C#
+> de los replicadores; (4) bump 33 → 34 con `WireSchema.Expected` en el mismo commit. El wire ya
+> escrito (campo `cell` en los cinco paquetes + opcode `RosterScopeEnd 0x54`) está aparcado en el
+> scratchpad de la sesión, fuera del repo, porque sin (1) y (2) rompe diez sitios.
+>
+> Ahí está el 54–57 % de la subida del host, y arregla de paso el techo de convergencia (hoy los
+> rosters dejan de replicarse EN SILENCIO entre 4800 y 9600 elementos).
 
 
 **Objetivo**: 16–24 doméstico / 32–48 VPS con jugadores dispersos (agrupados ≈ hoy: el AOI
