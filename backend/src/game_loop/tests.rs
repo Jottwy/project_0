@@ -1857,6 +1857,378 @@ async fn a_wedged_hunt_gives_up_into_search() {
     );
 }
 
+#[tokio::test]
+async fn hunting_presses_to_point_blank_between_lunges() {
+    // ADR-075 point 2a: HUNTING used to hold the 9 m stalk band while its strike recovered — "se
+    // te queda mirando a distancia considerable", verbatim from the play-test. It now presses to
+    // PHANTOM_HUNT_PRESS_DISTANCE. Single-step assertions on the DECISION, so real geometry luck
+    // never enters: one step from outside the floor must advance, one step inside it must hold.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Hunting;
+    // The re-lunge gate stays closed for the whole test: the walk is what is under test.
+    driver.movers[0].strike_recover = 1000.0;
+
+    let at = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(at.x + 8.0, 1.8, at.z);
+    let before = at.distance_xz(player);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    let after = Vec3::from_array(net.peers[&pid].position).distance_xz(player);
+    assert_eq!(driver.movers[0].state, PhantomState::Hunting);
+    assert!(
+        after < before - 0.2,
+        "at 8 m the recovery must PRESS, not hold the old band: {before:.2} -> {after:.2}"
+    );
+
+    // Teleport it inside the press floor: now it holds (the re-lunge is what closes from here).
+    let near = Vec3::new(
+        player.x - (PHANTOM_HUNT_PRESS_DISTANCE - 1.0),
+        1.8,
+        player.z,
+    );
+    net.peers.get_mut(&pid).unwrap().position = near.to_array();
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    let held = Vec3::from_array(net.peers[&pid].position).distance_xz(player);
+    assert!(
+        (held - (PHANTOM_HUNT_PRESS_DISTANCE - 1.0)).abs() < 0.2,
+        "inside the press floor it must hold its ground, got {held:.2}"
+    );
+}
+
+/// Probes seed 42's REAL procedurally generated world for a straight open run of `cells` steps
+/// along +x from some walkable origin, near the world origin. Behaviour tests that move a mover
+/// any real distance need this — a hand-picked coordinate can land inside generated geometry, and
+/// the resolver deflecting the creature off-axis around a wall corner is exactly the kind of
+/// confound (`clear_line_of_travel_beats_the_plan` established the same idiom for nav tests).
+fn probe_open_run(cells: i32) -> Vec3 {
+    use crate::world::grid_gen::{cell_center, is_walkable_grid_gen, GridGenChunkCache};
+    let mut probe = GridGenChunkCache::with_rules(42, crate::world::zone_density::rules_for);
+    for ax in 1..(19 - cells) {
+        for az in 1..19i32 {
+            let ok = (0..=cells)
+                .all(|k| is_walkable_grid_gen(&mut probe, cell_center((ax + k, az), 1.8), 0));
+            if ok {
+                return cell_center((ax, az), 1.8);
+            }
+        }
+    }
+    panic!("seed 42 must have an open straight run of {cells} cells near the origin");
+}
+
+#[tokio::test]
+async fn a_camping_target_shrinks_the_stalk_band() {
+    // ADR-075 point 2c — the anti-camping creep. A still player inside the stalk band used to be
+    // stared at from nine metres forever; after PHANTOM_CREEP_AFTER_SECONDS the band shrinks and
+    // the creature drifts closer.
+    let at = probe_open_run(6); // 15 m of open corridor: the 9.5 m start plus creep headroom
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let pid = net.spawn_phantom("Robapieles_Test", at.to_array());
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].hunger = 0.5; // hungry-ish: the creep never arms on a sated creature
+    driver.movers[0].traits.impulse_scale = 0.0; // silence the lunge roulette — the band is under test
+    driver.movers[0].traits.patience_scale = 1.6; // patience 40 s, beyond the test window
+    driver.movers[0].traits.is_hunter = false;
+
+    // Inside the hold zone [9, 11], player facing +z (perpendicular): never looking → no STATUE.
+    let player = Vec3::new(at.x + 9.5, 1.8, at.z);
+
+    for _ in 0..40 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+    assert_eq!(driver.movers[0].state, PhantomState::Stalk);
+    let mid = Vec3::from_array(net.peers[&pid].position).distance_xz(player);
+    assert!(
+        mid >= PHANTOM_STALK_DISTANCE - 0.5,
+        "before the creep arms (4 s still) the band must hold, got {mid:.2}"
+    );
+
+    for _ in 0..110 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+    assert_eq!(driver.movers[0].state, PhantomState::Stalk);
+    let end = Vec3::from_array(net.peers[&pid].position).distance_xz(player);
+    // 15 s still → band = 9 − (15−6)×0.5 = 4.5. Geometry may cost a step or two; well inside the
+    // old band is the claim.
+    assert!(
+        end < PHANTOM_STALK_DISTANCE - 1.5,
+        "a camping target must be crept up on, still at {end:.2}"
+    );
+}
+
+#[tokio::test]
+async fn a_sated_creature_never_creeps_in() {
+    // The creep is a hunger behaviour: a sated creature keeps its polite 14 m follow distance no
+    // matter how long you stand still (ADR-050 point 8 is not amended by the creep).
+    let at = probe_open_run(6); // 15 m of open corridor around the 14.5 m hold point
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let pid = net.spawn_phantom("Robapieles_Test", at.to_array());
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].hunger = 1.0;
+    driver.movers[0].traits.impulse_scale = 0.0;
+    driver.movers[0].traits.is_hunter = false;
+
+    let player = Vec3::new(at.x + 14.5, 1.8, at.z); // inside the sated hold zone [14, 16]
+
+    for _ in 0..150 {
+        driver.step(&mut net, 0.1, player, 0.0, false, false, 0);
+    }
+    assert_eq!(driver.movers[0].state, PhantomState::Stalk);
+    let end = Vec3::from_array(net.peers[&pid].position).distance_xz(player);
+    assert!(
+        end >= PHANTOM_FOLLOW_DISTANCE - 0.5,
+        "a sated follower must keep its distance however still you stand, got {end:.2}"
+    );
+}
+
+#[tokio::test]
+async fn a_hungry_hunt_searches_longer_and_faster_than_default() {
+    // ADR-075 point 2b — the post-hunt search scales with hunger: a famished creature gets the
+    // full 2.5× patience (capped at the noise ceiling) and the hunt stride, not the idle amble.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].hunger = 0.0;
+    driver.movers[0].last_known_player_pos = Some(Vec3::new(5.0, 1.8, 0.0));
+
+    // Player far beyond LOSE_RADIUS: this tick loses the hunt and enters SEARCH.
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(200.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert!(
+        (driver.movers[0].search_patience - PHANTOM_NOISE_SEARCH_PATIENCE).abs() < 0.05,
+        "famished: 12 × 2.5 hits the 30 s cap, got {:.2}",
+        driver.movers[0].search_patience
+    );
+    assert!(
+        (driver.movers[0].search_speed - PHANTOM_SEARCH_HUNT_SPEED).abs() < 1e-3,
+        "a lost hunt searches at the hunt stride, got {:.2}",
+        driver.movers[0].search_speed
+    );
+}
+
+#[tokio::test]
+async fn search_entry_always_resets_patience_and_speed() {
+    // The latent bug ADR-075's helper retires: search_patience/search_speed/noise_expiry are
+    // sticky mover fields, reset only on the give-up path — so a hunt that lost you could inherit
+    // the 30 s patience, 4.5 m/s stride and live noise clock of an old investigation that had
+    // ended in re-acquisition instead of giving up.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].hunger = 1.0; // sated: scaling factor 1.0, so the bare base shows the reset
+    driver.movers[0].last_known_player_pos = Some(Vec3::new(5.0, 1.8, 0.0));
+    // The stale residue of a noise errand that ended in re-acquisition:
+    driver.movers[0].search_patience = PHANTOM_NOISE_SEARCH_PATIENCE;
+    driver.movers[0].search_speed = PHANTOM_NOISE_TRAVEL_SPEED;
+    driver.movers[0].noise_expiry = Some(99.0);
+
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(200.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert!(
+        (driver.movers[0].search_patience - PHANTOM_SEARCH_MAX).abs() < 0.05,
+        "sated and calm: the reset must land on the plain base, got {:.2}",
+        driver.movers[0].search_patience
+    );
+    assert!(
+        (driver.movers[0].search_speed - PHANTOM_SEARCH_HUNT_SPEED).abs() < 1e-3,
+        "the noise stride must not leak into a hunt search"
+    );
+    assert!(
+        driver.movers[0].noise_expiry.is_none(),
+        "a lost hunt is not a noise errand — the stale clock must be cleared"
+    );
+}
+
+#[tokio::test]
+async fn search_sweeps_the_predicted_point_then_the_exact_one() {
+    // ADR-075 point 3: losing a target running steadily to one side must aim the first leg of the
+    // search AHEAD of the last exact sighting, and only fall back to the exact spot once arrived
+    // there empty-handed. `exact` is probed open ground (real seed-42 geometry) so the 7.5 m lead
+    // segment is guaranteed walkable — the sweep logic is under test, not the terrain underneath.
+    let exact = probe_open_run(4); // 10 m of open corridor, clearing the 7.5 m lead
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(
+        pid,
+        PHANTOM_INITIAL_HEADING,
+        Vec3::from_array(net.peers[&pid].position),
+        true,
+    );
+    driver.movers[0].state = PhantomState::Stalk;
+    driver.movers[0].last_known_player_pos = Some(exact);
+    driver.movers[0].last_seen_vel = Some((3.0, 0.0)); // running steadily along +x
+
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(200.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    let predicted = exact.x + 3.0 * PHANTOM_SEARCH_LEAD_SECONDS;
+    let goal = driver.movers[0]
+        .last_known_player_pos
+        .expect("a lost hunt must leave a goal to search");
+    assert!(
+        (goal.x - predicted).abs() < 0.1,
+        "must aim ahead of the sighting first: expected x~={predicted:.2}, got {:.2}",
+        goal.x
+    );
+    assert_eq!(
+        driver.movers[0].search_fallback,
+        Some(exact),
+        "the exact sighting must be held in reserve, not discarded"
+    );
+
+    // Teleport it to the predicted goal and let it arrive: the fallback must take over.
+    net.peers.get_mut(&pid).unwrap().position = goal.to_array();
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(200.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert_eq!(
+        driver.movers[0].last_known_player_pos,
+        Some(exact),
+        "arriving at the predicted point with nobody there must fall back to the exact spot"
+    );
+    assert!(
+        driver.movers[0].search_fallback.is_none(),
+        "the fallback is spent once used"
+    );
+}
+
+#[tokio::test]
+async fn a_stationary_target_gets_no_prediction() {
+    // Below PHANTOM_SEARCH_LEAD_MIN_SPEED, predicting is noise: the goal must be the exact spot
+    // from the start, with no fallback held in reserve (there is nothing to fall back FROM).
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Stalk;
+    let exact = Vec3::new(5.0, 1.8, 0.0);
+    driver.movers[0].last_known_player_pos = Some(exact);
+    driver.movers[0].last_seen_vel = Some((0.05, 0.0)); // far under the minimum
+
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(200.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert_eq!(driver.movers[0].last_known_player_pos, Some(exact));
+    assert!(driver.movers[0].search_fallback.is_none());
+}
+
+#[tokio::test]
+async fn an_unreachable_prediction_falls_back_to_last_known() {
+    // A "running" target whose projected lead point is sealed behind geometry must not be chased
+    // through a wall: both lead attempts fail the straight-line check, and the goal degrades to
+    // exactly the pre-ADR-075 behaviour — the exact sighting, with nothing held in reserve. Same
+    // STP-overlay wall the wedge tests use (F1): a blocked cell rejects the shortcut unconditionally,
+    // regardless of the procedurally generated layout underneath it.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].state = PhantomState::Stalk;
+
+    let exact = Vec3::new(0.0, 1.8, 0.0);
+    driver.movers[0].last_known_player_pos = Some(exact);
+    driver.movers[0].last_seen_vel = Some((3.0, 0.0)); // running straight at the wall below
+
+    use crate::network::protocol::StpBuildingInfo;
+    net.stp_buildings.push(StpBuildingInfo {
+        id: STP_BUILDING_ID_BASE,
+        def_id: 1,
+        position: [exact.x + 2.5, exact.y, exact.z], // the very next cell along +x
+        rotation: 0.0,
+        group_id: 0,
+        added: vec![],
+    });
+
+    driver.step(
+        &mut net,
+        0.1,
+        Vec3::new(200.0, 1.8, 0.0),
+        0.0,
+        false,
+        false,
+        0,
+    );
+
+    assert_eq!(driver.movers[0].state, PhantomState::Search);
+    assert_eq!(
+        driver.movers[0].last_known_player_pos,
+        Some(exact),
+        "a sealed lead point must degrade straight to the exact sighting"
+    );
+    assert!(
+        driver.movers[0].search_fallback.is_none(),
+        "nothing is held in reserve when the prediction never went ahead of the exact point"
+    );
+}
+
 #[test]
 fn traits_are_reproducible_per_creature_and_differ_between_them() {
     // Same promise as the spawn draw: two players meet the SAME character, and one that
@@ -4311,6 +4683,34 @@ fn consumable_spec_rejects_unknown_id() {
     assert!(consumable_spec(0).is_none());
     assert!(consumable_spec(9692212).is_none()); // a real weapon id, not a consumable
     assert!(consumable_spec(123456789).is_none());
+}
+
+#[test]
+fn consumable_spec_sanity_restore_is_zero_for_the_original_seven() {
+    // ADR-030 amendment (Almond Water): sanity_restore is a new field on ConsumableSpec. None of
+    // the original seven consumables restore sanity — only Almond Water does.
+    let real_ids: [i32; 7] = [
+        -5498592, 1045632, -7862085, 6285896, -7580928, 7983286, -7174886,
+    ];
+    for id in real_ids {
+        let spec = consumable_spec(id).expect("real consumable id must resolve");
+        assert_eq!(
+            spec.sanity_restore, 0.0,
+            "item {id} should not restore sanity"
+        );
+    }
+}
+
+#[test]
+fn consumable_spec_almond_water_restores_all_four_stats() {
+    // ADR-030 amendment: BR_Almond Water.asset's real minted _id (BackroomsAlmondWaterCreator.cs,
+    // Assets/Resources/Definitions/Item/BR_Almond Water.asset). The only consumable that restores
+    // sanity — the canon Backrooms find-object, per design.
+    let spec = consumable_spec(-1438255091).expect("Almond Water id must resolve");
+    assert_eq!(spec.hunger_restore, 20.0);
+    assert_eq!(spec.thirst_restore, 60.0);
+    assert_eq!(spec.health_restore, 8.0);
+    assert_eq!(spec.sanity_restore, 35.0);
 }
 
 #[test]

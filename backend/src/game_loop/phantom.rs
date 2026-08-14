@@ -399,6 +399,38 @@ pub(super) const PHANTOM_WEDGE_HYSTERESIS_TICKS: u8 = 12;
 /// (`PHANTOM_SPRINT_GIVEUP_TICKS`); STALK never did, which is exactly how a creature reached 255.
 pub(super) const PHANTOM_STALK_GIVEUP_TICKS: u8 = 40;
 
+// ── ADR-075 point 2 — the hunt PRESSES ──────────────────────────────────────────────────────────
+/// HUNTING closes to this distance between lunges instead of holding the 9 m stalk band. Above the
+/// strike reach (2.4 m) on purpose: the re-lunge is still the only thing that hits, but the
+/// recovery no longer looks like a creature politely waiting at conversation distance — which was
+/// the play-test complaint, verbatim.
+pub(super) const PHANTOM_HUNT_PRESS_DISTANCE: f32 = 4.0;
+/// Search speed after LOSING A HUNT (the noise channel keeps its own 4.5). Faster than the idle
+/// investigation amble: it just had you, and 2.2 m/s read as instant indifference.
+pub(super) const PHANTOM_SEARCH_HUNT_SPEED: f32 = 3.2;
+/// Hunger scaling of the post-hunt search patience: base × (1 + (1 − hunger) × THIS), so a
+/// starving creature searches up to 2.5× longer. Capped at `PHANTOM_NOISE_SEARCH_PATIENCE`.
+pub(super) const PHANTOM_SEARCH_HUNGER_BONUS: f32 = 1.5;
+/// Rage multiplier on the same post-hunt patience, under the same cap.
+pub(super) const PHANTOM_SEARCH_RAGE_MULT: f32 = 1.5;
+/// ADR-075 point 2c — anti-camping creep. After the target has been effectively still this long,
+/// a non-sated stalker stops honouring the full band…
+pub(super) const PHANTOM_CREEP_AFTER_SECONDS: f32 = 6.0;
+/// …and shrinks it at this rate (metres per still second)…
+pub(super) const PHANTOM_CREEP_RATE: f32 = 0.5;
+/// …down to this floor. STATUE still wins when the player turns to look, so what the creep
+/// punishes is camping with your back turned, not standing still as such.
+pub(super) const PHANTOM_CREEP_MIN_BAND: f32 = 4.0;
+
+// ── ADR-075 point 3 — predictive tracking ───────────────────────────────────────────────────────
+/// How far ahead a lost target's last observed velocity is projected before SEARCH is even
+/// entered. Long enough to land somewhere you would plausibly have reached by the time the
+/// creature arrives, short enough that a turn you made after being seen is not chased forever.
+pub(super) const PHANTOM_SEARCH_LEAD_SECONDS: f32 = 2.5;
+/// Below this speed, projecting is noise, not prediction — a nearly-stationary target gets no
+/// lead point at all.
+pub(super) const PHANTOM_SEARCH_LEAD_MIN_SPEED: f32 = 1.0;
+
 // ── ADR-053: it gives your own voice back ────────────────────────────────────────────────────────
 //
 // It already steals the name, the face and the posture. The voice was the one thing left, and it
@@ -1163,6 +1195,19 @@ pub(super) struct PhantomMover {
     pub(super) hideouts: Vec<Vec3>,
     /// How many remembered spots the CURRENT hunt has already been to. Reset on entering SEARCH.
     pub(super) hideouts_checked: u8,
+    /// ADR-075 point 2c — seconds the current target has been effectively still (below walking-
+    /// noise speed). Drives the anti-camping creep of the stalk band; reset whenever the target
+    /// moves, a lunge starts, or the hunt is lost.
+    pub(super) target_still_for: f32,
+    /// ADR-075 point 3 — the target's velocity at the moment it was last actually observed
+    /// (STALK/SPRINT/HUNTING/UNMASKING all write it alongside `last_known_player_pos`). Read once,
+    /// on entering SEARCH, to aim the first leg of the sweep ahead of where you were rather than
+    /// straight at it.
+    pub(super) last_seen_vel: Option<(f32, f32)>,
+    /// ADR-075 point 3 — the EXACT last-known point, held in reserve while SEARCH investigates the
+    /// predicted lead point first. `None` once the exact point has been visited (or was the goal
+    /// from the start, when there was nothing to predict from).
+    pub(super) search_fallback: Option<Vec3>,
     /// Seconds left of the post-strike commitment. While positive the lunge holds (still revealed)
     /// and cannot land a second blow; at zero it bounces to STALK.
     pub(super) strike_recover: f32,
@@ -1366,6 +1411,8 @@ impl PhantomMover {
         // left behind. Re-entering SPRINT is a new decision, not a continuation.
         self.stamina = PHANTOM_SPRINT_BURST_SECONDS;
         self.winded_for = 0.0;
+        // ADR-075: the lunge is the creep's payoff — the camping clock does not survive it.
+        self.target_still_for = 0.0;
         // ADR-048 point 6: the reveal-scream is now EMITTED, not inferred by each client from the
         // `revealed` edge, so everyone hears it at the same instant.
         self.try_vocalize(VOCAL_REVEAL);
@@ -1455,6 +1502,10 @@ struct TickCtx<'a> {
     /// Planar speed of every real target this tick, for ADR-040's sound tiers. Derived from the
     /// position delta because peers send no velocity.
     target_speeds: &'a HashMap<PeerId, f32>,
+    /// ADR-075 point 3 — the SAME per-tick delta as `target_speeds`, kept as a vector instead of
+    /// collapsed to a scalar. `target_speeds` exists for the sound tiers, which only ever needed
+    /// magnitude; predictive tracking needs direction too, so this is the one place that keeps it.
+    target_vels: &'a HashMap<PeerId, (f32, f32)>,
     /// The HOST player's crouch. Remote peers carry their own on `PeerConnection` (ADR-020 relays
     /// it), but the host's local player is not a peer, so it has to be handed in.
     host_crouch: bool,
@@ -1861,6 +1912,9 @@ impl PhantomDriver {
             wedge_cooldown: 0,
             hideouts: Vec::new(),
             hideouts_checked: 0,
+            target_still_for: 0.0,
+            last_seen_vel: None,
+            search_fallback: None,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
@@ -2381,6 +2435,72 @@ impl PhantomDriver {
     /// Slower than a walk: it is looking, not commuting. Re-acquiring you resumes the hunt; running
     /// out of patience returns it to WANDER and it FORGETS, which is what makes hiding a real escape
     /// and not just a delay.
+    /// ADR-075 point 2 — EVERY hunt-loss entry into SEARCH goes through here, and "every" matters
+    /// twice over. First the feel: patience and speed scale with hunger and rage, so a creature
+    /// that just lost you keeps looking in proportion to how much it wanted you — breaking line of
+    /// sight stops reading as instant amnesia. Second, a latent bug this retires:
+    /// `search_patience`/`search_speed`/`noise_expiry` are sticky mover fields reset only on the
+    /// give-up path, so a hunt that entered SEARCH directly could inherit the 30 s patience and
+    /// 4.5 m/s stride of an unrelated noise errand that had ended in re-acquisition.
+    ///
+    /// ADR-075 point 3 — this is also where the predictive lead is aimed. `last_known_player_pos`
+    /// is still the point you were ACTUALLY seen at; `last_seen_vel` is the velocity at that same
+    /// instant. If it clears the minimum speed, the goal becomes a point ahead of you on that
+    /// heading — checked against the SAME steering shortcut the creature already trusts to walk,
+    /// so a lead point behind a wall never gets chased into geometry — with the exact point held
+    /// in `search_fallback` for the moment SEARCH arrives and finds nobody there.
+    fn enter_search_after_hunt(&mut self, i: usize, layer: u8) {
+        let m = &mut self.movers[i];
+        let hunger_factor = 1.0 + (1.0 - m.hunger) * PHANTOM_SEARCH_HUNGER_BONUS;
+        let rage_factor = match m.enraged_for > 0.0 {
+            true => PHANTOM_SEARCH_RAGE_MULT,
+            false => 1.0,
+        };
+        m.search_patience =
+            (PHANTOM_SEARCH_MAX * hunger_factor * rage_factor).min(PHANTOM_NOISE_SEARCH_PATIENCE);
+        m.search_speed = PHANTOM_SEARCH_HUNT_SPEED;
+        m.noise_expiry = None; // a lost hunt is not a noise errand, whatever ran before it
+        m.target_still_for = 0.0;
+        m.state = PhantomState::Search;
+        m.state_timer = 0.0;
+
+        let exact = match m.last_known_player_pos {
+            Some(p) => p,
+            None => return, // nothing to predict from, and SEARCH needs no fallback either
+        };
+        let vel = m.last_seen_vel.unwrap_or((0.0, 0.0));
+        let speed = (vel.0 * vel.0 + vel.1 * vel.1).sqrt();
+        if speed < PHANTOM_SEARCH_LEAD_MIN_SPEED {
+            return; // near-stationary: predicting would be aiming at noise
+        }
+        let dir = (vel.0 / speed, vel.1 / speed);
+        // Two lead distances tried in order, both derived from the SAME observed heading — the
+        // shorter one is what a target that slowed down after being seen would actually reach.
+        for lead_seconds in [
+            PHANTOM_SEARCH_LEAD_SECONDS,
+            PHANTOM_SEARCH_LEAD_SECONDS * 0.5,
+        ] {
+            let predicted = Vec3::new(
+                exact.x + dir.0 * speed * lead_seconds,
+                exact.y,
+                exact.z + dir.1 * speed * lead_seconds,
+            );
+            if crate::world::grid_gen::segment_is_clear(
+                &mut self.grid_cache,
+                layer,
+                exact,
+                predicted,
+            ) {
+                let m = &mut self.movers[i];
+                m.last_known_player_pos = Some(predicted);
+                m.search_fallback = Some(exact);
+                return;
+            }
+        }
+        // Neither lead point is reachable in a straight line: go straight to the exact spot, same
+        // as before ADR-075. No fallback needed — there is nothing held in reserve.
+    }
+
     fn tick_search(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
         let MoverTick {
             i,
@@ -2442,10 +2562,27 @@ impl PhantomDriver {
             None => false,
         };
 
+        let arrived = from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE;
+
+        // ADR-075 point 3 — SWEEP STEP 2: the predicted lead point turned up nobody. Fall back to
+        // the EXACT spot you were last seen at, held in reserve since the hunt was lost. Checked
+        // before hideouts on purpose — a predicted miss should not skip straight to old habits.
+        if arrived {
+            if let Some(fallback) = self.movers[i].search_fallback.take() {
+                self.movers[i].last_known_player_pos = Some(fallback);
+                self.movers[i].nav_waypoints.clear();
+                self.movers[i].state_timer = 0.0;
+                info!(
+                    "MPTRACE step=PH_SEARCH event=phantom_search_falls_back phantom_id={} spot=({:.1},{:.1})",
+                    id, fallback.x, fallback.z
+                );
+                return;
+            }
+        }
+
         // ADR-053 — BEFORE GIVING UP, CHECK WHERE YOU HID LAST TIME. Only on arrival: running out
         // of patience or losing the trail still ends the hunt, so a detour can never make a search
         // unbounded. This is the whole "it learns" mechanic — no model, a list of four places.
-        let arrived = from.distance_xz(goal) <= PHANTOM_SEARCH_ARRIVE;
         if arrived && self.movers[i].noise_expiry.is_none() {
             if let Some(spot) = self.movers[i].recall_hideout(from) {
                 self.movers[i].hideouts_checked += 1;
@@ -2484,6 +2621,8 @@ impl PhantomDriver {
             self.movers[i].search_patience = PHANTOM_SEARCH_MAX;
             self.movers[i].search_speed = PHANTOM_SEARCH_SPEED;
             self.movers[i].noise_expiry = None;
+            // ADR-075: no reserve point carries over into the next hunt.
+            self.movers[i].search_fallback = None;
             // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
             // never fought the journey — but without this the phantom would finish a
             // 500 m trip and immediately start walking all the way back to its spawn.
@@ -2547,8 +2686,9 @@ impl PhantomDriver {
             self.movers[i].state_timer = 0.0;
             return;
         }
-        let (_, tpos, _, _) = target.unwrap();
+        let (tid, tpos, _, _) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
+        self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
 
         if self.movers[i].state_timer >= self.unmask_seconds {
             // THE TEAR. Straight into the lunge, which is the first state that reveals — so the
@@ -2600,20 +2740,21 @@ impl PhantomDriver {
         if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
             // THE ONLY WAY THE SKIN GOES BACK ON: it lost you. Both destinations are clothed
             // states, so the recomposition rides the state change and never a flag (invariant 1).
-            self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
-                PhantomState::Search
+            if self.movers[i].last_known_player_pos.is_some() {
+                self.enter_search_after_hunt(i, layer); // ADR-075
             } else {
-                PhantomState::Wander
-            };
-            self.movers[i].state_timer = 0.0;
+                self.movers[i].state = PhantomState::Wander;
+                self.movers[i].state_timer = 0.0;
+            }
             info!(
                 "MPTRACE step=PH_HUNT event=phantom_redresses phantom_id={} note=lost_contact",
                 id
             );
             return;
         }
-        let (_, tpos, dist, _) = target.unwrap();
+        let (tid, tpos, dist, _) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
+        self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
 
         // ADR-075 — the same wedge escape STALK got on 2026-08-05. A hunt ground into geometry had
         // no exit of its own (only the 3-tick route drop), so a hunter stuck on a corner milled
@@ -2622,8 +2763,7 @@ impl PhantomDriver {
         if self.movers[i].blocked_ticks >= PHANTOM_STALK_GIVEUP_TICKS {
             self.movers[i].blocked_ticks = 0;
             self.movers[i].nav_waypoints.clear();
-            self.movers[i].state = PhantomState::Search;
-            self.movers[i].state_timer = 0.0;
+            self.enter_search_after_hunt(i, layer); // ADR-075 (last_known written just above)
             info!(
                 "MPTRACE step=PH_SEARCH event=phantom_hunt_gave_up phantom_id={} reason=wedged",
                 id
@@ -2649,8 +2789,10 @@ impl PhantomDriver {
         self.movers[i].heading =
             lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
         let heading = self.movers[i].heading;
-        // Circles at strike distance while it recovers, rather than backing off politely.
-        let (move_dir, speed) = match dist > PHANTOM_STALK_DISTANCE {
+        // ADR-075 point 2a — it PRESSES to point blank while it recovers instead of holding the
+        // 9 m stalk band ("se te queda mirando a distancia considerable", the play-test words).
+        // The floor stays above the strike reach: the re-lunge is still the only thing that hits.
+        let (move_dir, speed) = match dist > PHANTOM_HUNT_PRESS_DISTANCE {
             true => (heading, PHANTOM_STALK_CLOSE_SPEED),
             false => (heading, 0.0),
         };
@@ -2821,16 +2963,26 @@ impl PhantomDriver {
         if dist_opt.is_none_or(|d| d > PHANTOM_LOSE_RADIUS) {
             // ADR-040 Fase 4: it does not forget on the spot any more — it goes to look
             // where it last saw you. Only with no memory at all does it resume wandering.
-            self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
-                PhantomState::Search
+            if self.movers[i].last_known_player_pos.is_some() {
+                self.enter_search_after_hunt(i, layer); // ADR-075: scaled patience, sticky fields reset
             } else {
-                PhantomState::Wander
-            };
-            self.movers[i].state_timer = 0.0;
+                self.movers[i].state = PhantomState::Wander;
+                self.movers[i].state_timer = 0.0;
+            }
             return;
         }
-        let (_, tpos, dist, tyaw) = target.unwrap();
+        let (tid, tpos, dist, tyaw) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
+        self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
+
+        // ADR-075 point 2c — how long the target has been effectively still, off the same derived
+        // speed the sound tiers already use. Below walking-noise speed counts as camping.
+        let tspeed = ctx.target_speeds.get(&tid).copied().unwrap_or(0.0);
+        if tspeed < PHANTOM_WALK_NOISE_SPEED {
+            self.movers[i].target_still_for += ctx.dt;
+        } else {
+            self.movers[i].target_still_for = 0.0;
+        }
 
         // ADR-051 follow-up — STALK GETS AN ESCAPE HATCH. Play-test: `blocked_ticks` hit 255 here,
         // a saturated u8, i.e. twenty-five seconds pressed into geometry with no way out. SPRINT
@@ -2841,8 +2993,7 @@ impl PhantomDriver {
         if self.movers[i].blocked_ticks >= PHANTOM_STALK_GIVEUP_TICKS {
             self.movers[i].blocked_ticks = 0;
             self.movers[i].nav_waypoints.clear();
-            self.movers[i].state = PhantomState::Search;
-            self.movers[i].state_timer = 0.0;
+            self.enter_search_after_hunt(i, layer); // ADR-075 (last_known written just above)
             info!(
                 "MPTRACE step=PH_SEARCH event=phantom_stalk_gave_up phantom_id={} reason=wedged",
                 id
@@ -2920,7 +3071,20 @@ impl PhantomDriver {
         // being followed and being hunted.
         let band = match self.movers[i].is_sated() {
             true => PHANTOM_FOLLOW_DISTANCE,
-            false => PHANTOM_STALK_DISTANCE,
+            false => {
+                // ADR-075 point 2c — CREEP-IN. A player glued to a wall used to earn a polite
+                // statue at nine metres forever (the dead band held, and only SPRINT ever
+                // closes). After a few still seconds the band starts shrinking toward its floor:
+                // it drifts nearer, slowly, while you are not moving — and turning to face it
+                // still freezes it through STATUE above.
+                let still = self.movers[i].target_still_for;
+                match still >= PHANTOM_CREEP_AFTER_SECONDS {
+                    true => (PHANTOM_STALK_DISTANCE
+                        - (still - PHANTOM_CREEP_AFTER_SECONDS) * PHANTOM_CREEP_RATE)
+                        .max(PHANTOM_CREEP_MIN_BAND),
+                    false => PHANTOM_STALK_DISTANCE,
+                }
+            }
         };
         let (move_dir, speed) = if dist > band + 2.0 {
             // ADR-050 point 16: closing is faster than wandering, or running away always worked.
@@ -3152,12 +3316,12 @@ impl PhantomDriver {
             // ADR-040 Fase 4 — same as STALK: a lost lunge becomes a search, not
             // amnesia. This is what makes breaking line of sight a tactic rather than
             // an off switch.
-            self.movers[i].state = if self.movers[i].last_known_player_pos.is_some() {
-                PhantomState::Search
+            if self.movers[i].last_known_player_pos.is_some() {
+                self.enter_search_after_hunt(i, layer); // ADR-075
             } else {
-                PhantomState::Wander
-            };
-            self.movers[i].state_timer = 0.0;
+                self.movers[i].state = PhantomState::Wander;
+                self.movers[i].state_timer = 0.0;
+            }
             // Losing the target ends the commitment with it.
             self.movers[i].strike_recover = 0.0;
             self.movers[i].sprint_blind_for = 0.0;
@@ -3166,6 +3330,7 @@ impl PhantomDriver {
         // ADR-047: `tid` BOUND (see STATUE) — the strike below must name its victim.
         let (tid, tpos, dist, tyaw) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
+        self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
 
         // Ground down against geometry for seconds without landing anything: stop
         // pushing and go back to stalking. The creature re-approaches from somewhere
@@ -3220,8 +3385,7 @@ impl PhantomDriver {
             if self.movers[i].sprint_blind_for >= blind_limit {
                 self.movers[i].sprint_blind_for = 0.0;
                 self.movers[i].strike_recover = 0.0;
-                self.movers[i].state = PhantomState::Search;
-                self.movers[i].state_timer = 0.0;
+                self.enter_search_after_hunt(i, layer); // ADR-075 (last_known kept fresh above)
                 info!(
                     "MPTRACE step=PH_SEARCH event=phantom_lost_the_line phantom_id={} note=player_broke_line_of_sight",
                     id
@@ -3415,19 +3579,26 @@ impl PhantomDriver {
             }
         }
         let mut target_speeds: HashMap<PeerId, f32> = HashMap::with_capacity(cur_positions.len());
+        // ADR-075 point 3 — the vector this same delta already carries, kept instead of discarded.
+        // `target_speeds` only ever needed the magnitude (the sound tiers); predictive tracking is
+        // the first consumer that needs the heading too.
+        let mut target_vels: HashMap<PeerId, (f32, f32)> =
+            HashMap::with_capacity(cur_positions.len());
         for (tid, cur) in &cur_positions {
-            let speed = match self.prev_target_pos.get(tid) {
+            let (speed, vel) = match self.prev_target_pos.get(tid) {
                 Some(prev) => {
-                    let d = ((cur.x - prev.x).powi(2) + (cur.z - prev.z).powi(2)).sqrt() / dt;
+                    let (dx, dz) = (cur.x - prev.x, cur.z - prev.z);
+                    let d = (dx * dx + dz * dz).sqrt() / dt;
                     if d > PHANTOM_SPEED_SANITY_MAX {
-                        0.0 // teleport / chunk displacement — not a footstep
+                        (0.0, (0.0, 0.0)) // teleport / chunk displacement — not a footstep
                     } else {
-                        d
+                        (d, (dx / dt, dz / dt))
                     }
                 }
-                None => 0.0,
+                None => (0.0, (0.0, 0.0)),
             };
             target_speeds.insert(*tid, speed);
+            target_vels.insert(*tid, vel);
         }
         self.prev_target_pos = cur_positions.into_iter().collect();
 
@@ -3447,6 +3618,7 @@ impl PhantomDriver {
                 dt,
                 now,
                 target_speeds: &target_speeds,
+                target_vels: &target_vels,
                 host_crouch: host_player_crouch,
                 host_held_item: host_player_held_item,
             };
