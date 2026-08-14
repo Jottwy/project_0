@@ -290,6 +290,43 @@ descarta a propósito: cuesta la legibilidad del save para depurar y compra 0,3 
 sospechaba, y esta ha desmentido uno que todo el mundo daba por hecho. Ninguna de las dos cosas
 se sabía sin medir, y una de ellas ahorró la sesión entera de trabajo que el plan reservaba.
 
+### E1 fase 1 — el AOI de poses, medido ANTES de fijar el radio (2026-08-15)
+
+> Sonda `aoi_pose_relay_savings` (`backend/src/network/sync.rs`, `#[ignore]`):
+> ```
+> cd backend && cargo test --release aoi_pose_relay_savings -- --ignored --nocapture
+> ```
+> ADR-074 decisión 1 exige esta medición antes de elegir `R_pose`: "cuántos peers caen dentro de
+> 100 m en un mapa real, antes de asumir que el radio ancho es caro". Reparto sintético
+> determinista (LCG) sobre el área de los 49 chunks cargados = 350×350 m.
+
+**Porcentaje del relay que SOBREVIVE al filtro** (100 % = no ahorra nada):
+
+| reparto de los jugadores | R=50 | R=75 | **R=100** | R=150 |
+|---|---|---|---|---|
+| todos en una sala (radio 25 m) | 96–99 % | 100 % | **100 %** | 100 % |
+| un par de grupos (radio 80 m) | 21–24 % | 45–50 % | **66–71 %** | 96–98 % |
+| repartidos por el mapa (radio 175 m) | 4–6 % | 11–13 % | **19–21 %** | 37–43 % |
+
+(rangos = los tres tamaños de partida medidos: 8, 16 y 32 jugadores)
+
+**El hallazgo que decide el radio: el ahorro NO se degrada al crecer N.** Con los jugadores
+repartidos y R=100 m sobrevive el 21 % con 8 jugadores, el 21 % con 16 y el **19 % con 32** — es
+decir, el AOI convierte el O(N²) en algo proporcional a la DENSIDAD LOCAL, que era exactamente el
+objetivo. Un radio generoso sale casi gratis si la gente se dispersa.
+
+Por eso `AOI_POSE_RADIUS_M = 100`: lo pide el diseño (la fase `stalk` del robapieles es acecho a
+distancia, y ADR-074 prohíbe darle un radio propio porque sería un oráculo), y la tabla dice que
+esa elección cuesta ~5× menos relay en vez de los ~8× de un radio de 75 m. Se paga la diferencia
+a cambio de no romper la mecánica de horror.
+
+**Con todos en la misma sala no ahorra nada, y es correcto**: ahí sí hay N² poses que cada
+jugador necesita ver. El AOI no crea capacidad, la concentra donde importa — dicho también en
+ADR-074 para que el número no se lea como una promesa.
+
+En partida real el ahorro es medible sin sonda: el log `MPTRACE step=R15` lleva
+`relay_datagrams_per_call` (lo que sale) junto a `without_aoi` (lo que habría salido).
+
 ### Lo que estos números NO dicen
 
 - **No suben el techo de jugadores por sí solos.** Bajan la subida a un tercio en el escenario

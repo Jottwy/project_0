@@ -87,7 +87,14 @@ construcciones, aceptando que no se dispara por encima de piezas bajas; (c) deja
 hasta E3, donde el anticheat se hace en serio con el servidor dedicado. Requiere enmienda a
 ADR-029 en cualquiera de los tres casos.
 
-### E1 — Interest management (ADR-074, en propuesta)
+### E1 — Interest management (ADR-074, VALIDADA; fase 1 IMPLEMENTADA 2026-08-15)
+
+> **Fase 1 (AOI de poses) hecha y en verde**, sin tocar wire — cambia a quién se envía, no qué.
+> `AOI_POSE_RADIUS_M = 100` con histéresis de salida ×1,2 en la autoridad; el cliente hace snap
+> al reentrar. Medido antes de fijar el radio (ver `perf-baseline.md`): con los jugadores
+> repartidos sobrevive el **19–21 %** del relay y **el porcentaje no empeora al crecer N**.
+> Pendientes de E1: la fase 2 (rosters por celda, la que sí bumpea wire) y la cadencia LOD.
+
 
 **Objetivo**: 16–24 doméstico / 32–48 VPS con jugadores dispersos (agrupados ≈ hoy: el AOI
 concentra capacidad, no la crea). El detalle es ley en ADR-074; lo esencial:
