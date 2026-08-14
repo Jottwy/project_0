@@ -2069,4 +2069,201 @@ mod uplink_probe {
              retransmisiones de la capa fiable, heartbeats a 1 Hz (~decenas de B/s)."
         );
     }
+
+    /// SONDA DE MEDICIÓN: el ANTES vs DESPUÉS de la Etapa 0 (F0.1, F0.2, F0.8).
+    ///
+    /// ```text
+    /// cargo test --release etapa0_before_after -- --ignored --nocapture
+    /// ```
+    ///
+    /// `host_uplink_baseline` mide el coste BRUTO de cada emisor: es la foto del "antes" y sigue
+    /// siendo la línea base contra la que E1 tendrá que competir. Esta sonda mide lo que los tres
+    /// fixes de E0 realmente ahorran, simulando el gate por chunk de F0.8 y el coalescing de F0.1
+    /// sobre 60 s de juego con el mismo reloj sintético que usa la sonda de ADR-071 (un bucle
+    /// cerrado con `Instant::now()` real recorrería los 60 s simulados en microsegundos y el
+    /// latido no vencería nunca, dando un resultado mejor que el real).
+    ///
+    /// **Lo que NO cambia y por qué está fuera:** F0.2 no toca un solo byte del aire —ahorra
+    /// serializaciones, no tráfico— así que se mide aparte, en CPU. Los rosters ya los curó
+    /// ADR-071 y su ahorro no es de esta etapa.
+    #[test]
+    #[ignore = "sonda de medición: imprime, no afirma"]
+    fn etapa0_before_after() {
+        use std::time::{Duration, Instant};
+
+        println!("\n=== Etapa 0: ANTES vs DESPUÉS ({PEERS} peers, headers UDP/IP incluidos) ===\n");
+
+        // ── Mundo real, el mismo de la línea base ────────────────────────────────────────────
+        let mut world = World::new(42);
+        world.update_ownership(Vec3::new(0.0, 1.0, 0.0), 1);
+        let chunk_wires: Vec<(usize, usize)> = world
+            .chunks
+            .values()
+            .enumerate()
+            .map(|(i, c)| {
+                (
+                    i,
+                    wire_len(&PacketPayload::ChunkState {
+                        data: super::chunk_to_sync_data(c),
+                    }),
+                )
+            })
+            .collect();
+        let chunk_count = chunk_wires.len();
+        let round_bytes: usize = chunk_wires.iter().map(|(_, b)| b).sum();
+
+        // ── F0.8: ChunkState, antes (todo cada ronda) vs después (gate por chunk) ────────────
+        // 300 rondas a 5 Hz = 60 s. `churn` = cuántos de los 49 chunks cambian en cada ronda:
+        // un chunk cambia si sus entidades se mueven o sus items cambian, así que el número real
+        // depende de cuánta IA y cuánto loot activo haya cerca. Se dan los tres extremos en vez
+        // de inventar uno: reposo (nadie cerca), actividad normal y el peor caso absoluto.
+        const ROUNDS: usize = 300;
+        const CHUNK_HZ_F: f64 = 5.0;
+        let before_bps = round_bytes as f64 * PEERS as f64 * CHUNK_HZ_F;
+        println!("--- F0.8 · ChunkState ({chunk_count} chunks, {round_bytes} B por ronda) ---");
+        println!(
+            "  ANTES (sin gate, todas las rondas): {:.0} KB/s = {:.1} Mbps",
+            before_bps / 1024.0,
+            before_bps * 8.0 / 1_000_000.0
+        );
+
+        for (label, churn) in [
+            ("reposo (nadie cerca mutando nada)", 0usize),
+            ("actividad normal (~4 de 49 chunks)", 4),
+            ("peor caso (los 49 cambian siempre)", chunk_count),
+        ] {
+            let mut gates: Vec<RosterGate> =
+                (0..chunk_count).map(|_| RosterGate::default()).collect();
+            let t0 = Instant::now();
+            let mut sent_bytes = 0usize;
+            for round in 0..ROUNDS {
+                let now = t0 + Duration::from_millis(round as u64 * 200);
+                for (i, wire) in &chunk_wires {
+                    // Un chunk "activo" cambia de contenido en cada ronda; el resto es idéntico.
+                    let hash = if *i < churn { round as u64 + 1 } else { 0 };
+                    if gates[*i].should_send(hash, PEERS, now, ROSTER_HEARTBEAT) {
+                        sent_bytes += wire;
+                    }
+                }
+            }
+            let after_bps = sent_bytes as f64 * PEERS as f64 / 60.0;
+            println!(
+                "  DESPUÉS · {label}: {:.0} KB/s = {:.1} Mbps  ({:.1}× menos)",
+                after_bps / 1024.0,
+                after_bps * 8.0 / 1_000_000.0,
+                before_bps / after_bps.max(1.0)
+            );
+        }
+
+        // ── F0.1: world_sync por interacción, antes (1 por evento) vs después (coalescido) ───
+        let drip_bytes: usize = world
+            .chunks
+            .values()
+            .map(|c| {
+                wire_len(&PacketPayload::WorldSyncChunk {
+                    world_revision: world.revision,
+                    data: super::chunk_to_sync_data(c),
+                })
+            })
+            .sum::<usize>()
+            + wire_len(&PacketPayload::WorldSyncEnd {
+                world_revision: world.revision,
+                chunk_count: chunk_count as u32,
+            });
+        let per_drip = drip_bytes * PEERS;
+        println!(
+            "\n--- F0.1 · world_sync por interacción ({:.1} KB por goteo a {PEERS} peers) ---",
+            per_drip as f64 / 1024.0
+        );
+        for (label, interactions_per_s) in [
+            ("un pickup cada 2 s (juego tranquilo)", 0.5f64),
+            ("2 interacciones/s (loot activo)", 2.0),
+            ("ráfaga de 20 en 1 s (vaciar un cofre)", 20.0),
+        ] {
+            let before = per_drip as f64 * interactions_per_s;
+            // F0.1: como mucho un goteo por ventana de 300 ms.
+            let after = per_drip as f64 * interactions_per_s.min(1.0 / 0.3);
+            println!(
+                "  {label}: ANTES {:.0} KB/s → DESPUÉS {:.0} KB/s  ({:.1}× menos)",
+                before / 1024.0,
+                after / 1024.0,
+                (before / after.max(1.0)).max(1.0)
+            );
+        }
+
+        // ── F0.2: mismos bytes, menos CPU. Se mide en serializaciones, no en tráfico ─────────
+        let pose = pose_payload(3);
+        let reps = 2_000;
+        let t = Instant::now();
+        for _ in 0..reps {
+            // ANTES: una serialización por PAR (origen, destino).
+            for _dest in 0..(PEERS - 1) {
+                std::hint::black_box(rmp_serde::to_vec_named(&pose).unwrap());
+            }
+        }
+        let before_us = t.elapsed().as_secs_f64() / reps as f64 * 1e6;
+        let t = Instant::now();
+        for _ in 0..reps {
+            // DESPUÉS: una por ORIGEN, reutilizada para todos los destinos.
+            std::hint::black_box(rmp_serde::to_vec_named(&pose).unwrap());
+        }
+        let after_us = t.elapsed().as_secs_f64() / reps as f64 * 1e6;
+        let per_round_before = before_us * PEERS as f64;
+        let per_round_after = after_us * PEERS as f64;
+        println!("\n--- F0.2 · relay de poses: CPU, no tráfico (los bytes son idénticos) ---");
+        println!(
+            "  serializaciones por ronda: ANTES {} (P×D) → DESPUÉS {} (P)",
+            PEERS * (PEERS - 1),
+            PEERS
+        );
+        println!(
+            "  CPU por ronda: ANTES {per_round_before:.1} µs → DESPUÉS {per_round_after:.1} µs \
+             ({:.1}× menos, {:.2} ms/s a 10 Hz frente a {:.2})",
+            per_round_before / per_round_after.max(0.001),
+            per_round_after * 10.0 / 1000.0,
+            per_round_before * 10.0 / 1000.0
+        );
+
+        // ── El total, que es la única cifra que Joel puede comparar contra su router ─────────
+        // Los otros emisores no los toca esta etapa: rosters ya gateados por ADR-071 (795 KB/s
+        // construyendo), relay de poses (153), PeerList (52) y pose propia (22). Se toman de
+        // `host_uplink_baseline`, misma sonda y mismo escenario.
+        const OTHER_EMITTERS_KBPS: f64 = 795.0 + 153.0 + 52.0 + 22.0;
+        let before_total = before_bps / 1024.0 + OTHER_EMITTERS_KBPS;
+        println!("\n--- TOTAL de subida del host con {PEERS} peers ---");
+        println!(
+            "  ANTES:  {:.0} KB/s = {:.1} Mbps",
+            before_total,
+            before_total * 1024.0 * 8.0 / 1_000_000.0
+        );
+        for (label, churn) in [("reposo", 0usize), ("actividad normal", 4)] {
+            let mut gates: Vec<RosterGate> =
+                (0..chunk_count).map(|_| RosterGate::default()).collect();
+            let t0 = Instant::now();
+            let mut sent_bytes = 0usize;
+            for round in 0..ROUNDS {
+                let now = t0 + Duration::from_millis(round as u64 * 200);
+                for (i, wire) in &chunk_wires {
+                    let hash = if *i < churn { round as u64 + 1 } else { 0 };
+                    if gates[*i].should_send(hash, PEERS, now, ROSTER_HEARTBEAT) {
+                        sent_bytes += wire;
+                    }
+                }
+            }
+            let after_total =
+                sent_bytes as f64 * PEERS as f64 / 60.0 / 1024.0 + OTHER_EMITTERS_KBPS;
+            println!(
+                "  DESPUÉS · {label}: {:.0} KB/s = {:.1} Mbps  ({:.1}× menos de subida)",
+                after_total,
+                after_total * 1024.0 * 8.0 / 1_000_000.0,
+                before_total / after_total
+            );
+        }
+
+        println!(
+            "\nNota: el ahorro de F0.8 depende de cuántos chunks cambian de verdad por ronda, que \
+             es lo que no se puede saber sin una sesión real — por eso van los tres extremos y no \
+             un número inventado. El de F0.1 depende del ritmo de interacción, igual."
+        );
+    }
 }

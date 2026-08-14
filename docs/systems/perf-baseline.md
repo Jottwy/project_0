@@ -209,3 +209,65 @@ en los rosters (gate por hash + heartbeat, cadencia no formato, sin bump), sin a
 Excluido de la suma: voz (3,9 KB/s por hablante, ADR-046), ACKs/retransmisiones de la capa
 fiable, heartbeats a 1 Hz (~decenas de B/s). El escenario de chunks es un mundo recién
 generado en el origen; una sesión larga con más entidades por chunk pesa MÁS, no menos.
+
+## Etapa 0 — ANTES vs DESPUÉS (2026-08-14, mismo escenario y misma sonda)
+
+> Sonda `etapa0_before_after` (`backend/src/network/sync.rs`, `#[ignore]`):
+> ```
+> cd backend && cargo test --release etapa0_before_after -- --ignored --nocapture
+> ```
+> Simula 60 s (300 rondas a 5 Hz) con el mismo reloj sintético que la sonda de ADR-071 — un
+> bucle cerrado con `Instant::now()` real recorrería los 60 s en microsegundos y el latido no
+> vencería nunca, dando un resultado mejor que el real.
+
+### El titular
+
+| escenario | subida del host con 8 peers | contra el antes |
+|---|---|---|
+| **ANTES de la Etapa 0** | **4373 KB/s = 35,8 Mbps** | — |
+| DESPUÉS · en reposo (nadie mutando chunks cerca) | **1268 KB/s = 10,4 Mbps** | **3,4× menos** |
+| DESPUÉS · actividad normal (~4 de 49 chunks vivos) | **1527 KB/s = 12,5 Mbps** | **2,9× menos** |
+
+35,8 Mbps estaban por encima de lo que sube una conexión doméstica típica; 10–12,5 Mbps caben.
+
+### De dónde sale, fix por fix
+
+**F0.8 — `ChunkState` (el 77 % del antes: 3351 KB/s):**
+
+| | KB/s | Mbps | |
+|---|---|---|---|
+| ANTES (sin gate, las 300 rondas) | 3351 | 27,4 | — |
+| DESPUÉS · reposo | 246 | 2,0 | **13,6× menos** |
+| DESPUÉS · ~4 de 49 chunks activos | 500 | 4,1 | **6,7× menos** |
+| DESPUÉS · peor caso, los 49 cambian siempre | 3351 | 27,4 | 1,0× (sin ahorro, por diseño) |
+
+El peor caso está en la tabla a propósito: **el gate no inventa ancho de banda, solo deja de
+repetir lo que no cambió.** Con los 49 chunks mutando en cada ronda el coste es idéntico al de
+antes, y eso es correcto — ahí sí hay 49 chunks de información nueva que enviar.
+
+**F0.1 — `world_sync` por interacción (678,9 KB por goteo a 8 peers):**
+
+| ritmo de interacción | ANTES | DESPUÉS | |
+|---|---|---|---|
+| un pickup cada 2 s (juego tranquilo) | 339 KB/s | 339 KB/s | 1,0× |
+| 2 interacciones/s (loot activo) | 1358 KB/s | 1358 KB/s | 1,0× |
+| ráfaga de 20 en 1 s (vaciar un cofre) | 13 577 KB/s | 2263 KB/s | **6,0× menos** |
+
+La ventana de 300 ms deja pasar hasta 3,3 goteos/s, así que **por debajo de ese ritmo F0.1 no
+ahorra nada, y no debe**: cada interacción aislada se propaga igual de rápido que antes. Lo que
+corta es la ráfaga, que es donde estaba el pico de 13,6 MB/s.
+
+**F0.2 — relay de poses: CPU, no tráfico.** Los bytes en el aire son idénticos (congelado por
+test). Serializaciones por ronda: **56 (P×D) → 8 (P)**; CPU **27,1 µs → 4,4 µs por ronda**, o
+0,27 → 0,04 ms/s a 10 Hz. Irrelevante hoy (la CPU sobra) y creciente con N²: a 32 peers serían
+992 serializaciones por ronda en vez de 32.
+
+### Lo que estos números NO dicen
+
+- **No suben el techo de jugadores por sí solos.** Bajan la subida a un tercio en el escenario
+  medido, lo que da margen; el techo real lo fija E1 (ADR-074), que ataca el crecimiento con N.
+- El churn de chunks (cuántos cambian por ronda) **no está medido en sesión real** — por eso van
+  tres extremos y no un número. Con IA activa cerca del jugador estará por encima del caso de
+  reposo; medirlo pide una partida instrumentada.
+- El escenario sigue siendo el mundo recién generado de 49 chunks. Una base grande mueve la
+  aguja de los rosters, no de esta tabla.
