@@ -28,6 +28,41 @@
 
 ---
 
+- Fecha: 2026-08-14 (IA v2 del robapieles — caza predictiva, Peek, presión insistente, emboscada disfrazada, derribo procedural — ADR-075 + ADR-076, 7 commits en migration/worldgraph-v1) — **Backend: 753 tests verdes (sin regresión); clippy GNU -D warnings limpio; fmt limpio. Cliente: compile-check Roslyn 0 errores en 4 asambleas; MPTRACE symbols grepped en exe release (phantom_knockdown, phantom_ambush_begins, phantom_peeks, phantom_provoked, phantom_search_falls_back, phantom_hunt_gave_up presentes). WIRE_SCHEMA_VERSION 32→33. Binario release NO desplegado a Builds/Backend (dos backrooms_server.exe huérfanos en PIDs 2936/3472 impiden copy). PENDIENTE: play-test real en vivo de los 5 guiones (R1–R5).**
+
+0. **ADR-075 (caza v2, sin wire) + ADR-076 (emboscada disfrazada + derribo, wire v32→v33)** COMPLETOS Y DOCUMENTADOS en `docs/DECISIONS.md` (append anclado, línea count verificado pre/post). ADR-075 enuncia rastreo predictivo, provocación acumulativa que enfurece, Peek defensivo antes de girar esquina, presión de banda cerradora, y tope de atasco. ADR-076 enuncia emboscada silenciosa disfrazada a 5,5 m/s sin revelar + golpe sin daño (kind 5 de PhantomAttackGrant: stun + impulse) → desenmascara → persecución con ventaja.
+
+1. **Commits en orden (7 totales + F8 verificación sin commit):**
+   - `docs(adr): ADR-075 caza v2 y ADR-076 emboscada-derribo del robapieles` — ADRs escritos, enmiendas, INDEX entrada.
+   - `fix(phantom): el atajo de steering respeta el radio del cuerpo -- ADR-075 F1` — `segment_is_clear_for_body`, `note_step_progress` en `tick_search`, give-up por atasco.
+   - `feat(phantom): la caza presiona y predice -- ADR-075 F2+F3` — `tick_hunting` cierra a 4 m (antes 9 m), `enter_search_after_hunt` (paciencia/velocidad escaladas), creep-in anti-acampada Stalk 9→4 m, `target_vels` guarda vector completo.
+   - `feat(phantom): asomarse a la esquina antes de doblar -- ADR-075 F4` — estado Peek (Search pausa 1.2–2.0 s, ≤6 m sin LoS), sin revelar, una vez por búsqueda.
+   - `feat(phantom): insistir enfurece -- ADR-075 F5` — `hear_noises` intercepta Flee: ruido 2 con huida ≥1 s enfurece (ACUMULATIVO, techo 180 s).
+   - `feat(phantom): la emboscada disfrazada -- ADR-076 F6, wire v32→v33` — estado Ambush (Stalk, hambrienta, sin observar, 5,5 m/s, once/hunt+cooldown 30s) + ataque kind 5 (stun+impulso, daño=0), Unmasking, Sprint, strike_recover en tick del golpe, wire bump.
+   - `feat(phantom): derribo procedural del jugador -- ADR-076 F7 (cliente)` — `PhantomAttackHandler.StartKnockdown/TickKnockdown/EndKnockdown`, array blockers {Walk,Run,Jump,Crouch}, caída/levantada vía Height+camera tilt, ~2s espera, sin QTE.
+
+2. **Verificación (F8, sin commit):**
+   - Backend: 753/753 tests verdes, `cargo fmt --check` limpio, `cargo clippy --all-targets -- -D warnings` limpio, `cargo build --release` limpio.
+   - Cliente C#: compile-check headless de BackroomsSurvival/EditModeTests/Assembly-CSharp en 0 errores; Assembly-CSharp-Editor da 1 error CS2001 (fichero `Assets/Editor/_TempFixTrigger.cs` NO existe en disco — disparador obsoleto de automatización previa, no relacionado con este trabajo, no tocado).
+   - MPTRACE symbols confirmados en `backend/target/release/backrooms_server.exe` vía grep `-aoc`: phantom_knockdown, phantom_ambush_begins, phantom_peeks, phantom_provoked, phantom_search_falls_back, phantom_hunt_gave_up (todos presentes).
+
+3. **PENDIENTE: despliegue a `Builds/Backend/backrooms_server.exe`.** Dos procesos backrooms_server.exe activos (PIDs 2936 y 3472, arranque 23:24 y 23:41) de sesión concurrente (scaling network). Bloquean el copy con "archivo en uso". Solución (manual): terminar PIDs, copiar `backend/target/release/backrooms_server.exe` a `Builds/Backend/`, verificar con `grep -aoc phantom_knockdown Builds/Backend/backrooms_server.exe`.
+
+4. **PENDIENTE: play-test real en vivo.** Nada de esta sesión ha sido visto por humano ni en partida real. Guión de verificación (con `DEBUG_SPAWN_PHANTOM=1`):
+   - **R3b:** Dejarse cazar revelada, quedarse quieta → debe cerrar a ~4 m entre embestidas (no plantarse a 9 m como antes).
+   - **R3c:** Acampar de espaldas 10–15 s en Stalk → banda debe encoger 9→4 m (creep-in).
+   - **R1:** Correr, romper LoS en esquina, seguir corriendo → debe aparecer POR DELANTE del punto de corte (predicción de trayectoria).
+   - **R4:** Esconderse tras esquina a <6 m → pausa 1.2–2 s asomándose (respiración visible) antes de doblar (Peek).
+   - **R2:** Después de kill (saciada), dos disparos ≥1 s separados → debe venir y embestir pese a estar saciada (provocación enfurece).
+   - **R5:** Hambrienta, darle la espalda → carrera silenciosa 5.5 m/s SIN revelar → derribo sin daño en HUD → grito encima aún disfrazada → piel se rompe ~1,6 s → jugador levantado ~2,0 s → persecución con ~0,5 s ventaja.
+   - **Joiner:** Segundo cliente (joiner) verifica que kind 5 del wire viaja y aplica correctamente.
+
+5. **DEUDA ARQUITECTÓNICA ACEPTADA (sin riesgo operativo):** Colisión del robapieles sigue consultando `grid_gen` backend (determinista, correcto) pero lo que se RENDERIZA y colisiona es el `ChunkStreamer` cliente — dos mundos distintos. Robapieles respeta paredes del backend que no existen visibles y puede atravesar paredes visibles. Los slices de ADR-076 (pickup, visión, identidad) NO dependen de colisión perfecta — son complete y se validan igual. Desalineación se cierra con migración worldgraph-v1 (backend-authoritative).
+
+PRÓXIMO PASO: Play-test real ejecutando R1–R5 en orden, binario desplegado, partida multijugador con joiner. Si todo sale como diseño, ADR-075 + ADR-076 pasan a VALIDADA.
+
+---
+
 - Fecha: 2026-08-14 (blindaje de loot/inventario + ADR-072, 14 commits en migration/worldgraph-v1) — **cargo test 711 verdes (688→711); clippy GNU -D warnings limpio; fmt limpio; CompileCheckClient.sh errors: 0 en 4 asambleas. NADA de esta sesión validado en juego todavía — toda la tanda nace de bugs que Joel reportó jugando.**
 
 0. CUATRO BUGS DE LOOT REPORTADOS POR JOEL, TRES ARREGLADOS + UNO CON ADR: (a) cuerpos y cajas vaciados que no desaparecían — commit d32e51c: "Take All" disparaba todas las tomas en el mismo frame con índices sin desplazar contra el Vec::remove del backend (traza medida por test: de 4 stacks quedaban 2 sin pedir); fix = UNA petición en vuelo por cadáver, cola, índice resuelto al ENVIAR, timeout 5s. 2 tests Rust fijan el contrato. (b) items desaparecen con inventario lleno — commit 5e2584c: StpPickupController tiraba el retorno de AddItem con el item ya borrado del mundo; fix = dos puertas (SpaceFor sonda GetAllowedCount antes de pedir; el sobrante vuelve al mundo por SendStpDrop con impulso). NetworkItemPickupGate lleva ahora defId+count. MintDropId pasó a static compartido (colisión de ids = drop tragado en silencio por dedup del host). (c) restore pierde lo que no cabe — commit 1311290: InventoryRestorer.ApplyV2 resolvía def DESPUÉS del hueco; ahora def primero (lo único irrecuperable), segundo intento en cualquier hueco conservando props de instancia, y lo que sobre cae al suelo. (d) desgaste de antorchas se reseteaba al morir → ADR-072.
