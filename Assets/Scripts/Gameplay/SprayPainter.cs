@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay.Audio;
 using BackroomsSurvival.Net;
 using BackroomsSurvival.UI;
 using PolymindGames;
@@ -68,6 +69,14 @@ namespace BackroomsSurvival.Gameplay
         private float _nextPreview;
         private long _nextPlaceId = 1;
 
+        // Sonido. Se decide por FRAME y no por evento: "está saliendo pintura" es un estado
+        // continuo, y mandarlo entero cada frame evita el fallo clásico del loop que se queda
+        // encendido porque el evento de apagar se perdió en una rama de salida temprana.
+        private SpraySfx _sfx;
+        private bool _hissThisFrame;
+        private bool _sputterThisFrame;
+        private SprayCan _sfxLastCan;
+
         /// <summary>Diagnóstico y tests: hay una pintada a medias esperando a cerrarse.</summary>
         public bool HasPendingSpray => !_gesture.IsEmpty;
 
@@ -83,10 +92,16 @@ namespace BackroomsSurvival.Gameplay
         private void OnDestroy()
         {
             if (_instance == this) _instance = null;
+            // El emisor es un GameObject suelto (no hijo, para que no herede escala del rig): si
+            // no se retira aquí, cada recarga de escena deja uno mudo colgando para siempre.
+            if (_sfx != null) Destroy(_sfx.gameObject);
         }
 
         private void Update()
         {
+            _hissThisFrame = false;
+            _sputterThisFrame = false;
+
             if (Time.time >= _nextPoll)
             {
                 _nextPoll = Time.time + WieldablePollSeconds;
@@ -99,6 +114,9 @@ namespace BackroomsSurvival.Gameplay
             {
                 if (HasPendingSpray) Commit();
                 Reset();
+                // Sin llamar al sonido: su objetivo se consume cada frame, así que guardar el
+                // bote lo apaga por la rampa sin necesidad de un "apágate" explícito.
+                _sfxLastCan = null;
                 return;
             }
 
@@ -111,6 +129,34 @@ namespace BackroomsSurvival.Gameplay
                 _idleSeconds += Time.deltaTime;
                 if (_idleSeconds >= CommitDelaySeconds) Commit();
             }
+
+            ApplySfx();
+        }
+
+        /// <summary>
+        /// Traslada lo que ha pasado este frame al emisor, y le saca el cascabel al bote la
+        /// primera vez que aparece en la mano.
+        /// </summary>
+        private void ApplySfx()
+        {
+            if (_sfx == null) _sfx = SpraySfx.Create("SpraySfx_Local", spatial: false);
+
+            // La cámara se re-resuelve: el rig del jugador se reconstruye en runtime y la
+            // referencia vieja queda en el null falso de Unity (misma lección que el motor).
+            if (_sfx.follow == null)
+            {
+                var cam = Camera.main;
+                if (cam != null) _sfx.follow = cam.transform;
+            }
+
+            if (!ReferenceEquals(_can, _sfxLastCan))
+            {
+                _sfxLastCan = _can;
+                _sfx.Shake();
+            }
+
+            if (_hissThisFrame) _sfx.SetSpraying(true);
+            else if (_sputterThisFrame) _sfx.SetSputtering(true);
         }
 
         /// <summary>
@@ -166,7 +212,9 @@ namespace BackroomsSurvival.Gameplay
 
         private void Paint()
         {
-            if (_can.IsEmpty) { EndStroke(); return; }
+            // Bote vacío pero el jugador sigue apretando: escupe aire. Es la única señal de que
+            // se acabó la pintura que llega sin mirar la barra del item.
+            if (_can.IsEmpty) { _sputterThisFrame = true; EndStroke(); return; }
 
             var cam = Camera.main;
             if (cam == null) return;
@@ -176,6 +224,10 @@ namespace BackroomsSurvival.Gameplay
                 EndStroke();
                 return;
             }
+
+            // Hay pared y hay pintura: sale chorro, se mueva la mira o no. Cobrar el siseo por
+            // punto añadido lo cortaría cada vez que el jugador se queda quieto apuntando.
+            _hissThisFrame = true;
 
             _gesture.SetWall(SprayCanvas.YawFromNormal(hit.normal));
 
@@ -203,7 +255,14 @@ namespace BackroomsSurvival.Gameplay
             {
                 float meters = Vector3.Distance(last, hit.point);
                 if (meters < MinStepMeters) return;
-                if (_can.Spend(meters) <= 0f) { EndStroke(); return; }
+                if (_can.Spend(meters) <= 0f)
+                {
+                    // Se acabó a mitad de trazo: el siseo de este frame ya no vale, escupitajo.
+                    _hissThisFrame = false;
+                    _sputterThisFrame = true;
+                    EndStroke();
+                    return;
+                }
             }
 
             _gesture.Add(hit.point);
