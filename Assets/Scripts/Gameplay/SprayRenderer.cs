@@ -215,9 +215,25 @@ namespace BackroomsSurvival.Gameplay
         /// <summary>Destruye objeto, textura y material. Los tres, o la textura sobrevive.</summary>
         private void Release(Live live)
         {
-            if (live.Go != null) Destroy(live.Go);
-            if (live.Mat != null) Destroy(live.Mat);
-            if (live.Tex != null) Destroy(live.Tex);
+            Discard(live.Go);
+            Discard(live.Mat);
+            Discard(live.Tex);
+        }
+
+        /// <summary>
+        /// Destruye eligiendo la llamada que toca según dónde se esté.
+        ///
+        /// No es cosmético: en modo edición <c>Destroy</c> NO destruye, escribe un error
+        /// ("Destroy may not be called from edit mode!") y sigue. Los tres tests de apilado de
+        /// esta clase se caían por ese error — no por sus aserciones — así que la purga y sus
+        /// texturas de 256 KB no se estaban comprobando en ninguna parte. En juego el
+        /// comportamiento no cambia.
+        /// </summary>
+        private static void Discard(Object obj)
+        {
+            if (obj == null) return;
+            if (Application.isPlaying) Destroy(obj);
+            else DestroyImmediate(obj);
         }
 
         private void TryHook()
@@ -238,7 +254,7 @@ namespace BackroomsSurvival.Gameplay
                 _client = null;
             }
             Clear();
-            if (_quad != null) Destroy(_quad);
+            Discard(_quad);
         }
 
         private void OnChunkData(GridChunkDataMsg data)
