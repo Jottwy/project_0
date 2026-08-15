@@ -1927,3 +1927,110 @@ async fn a_worst_case_spray_survives_a_real_datagram() {
     assert_eq!(got.strokes.len(), MAX_STROKES_PER_SPRAY);
     assert_eq!(got.point_count(), MAX_POINTS_PER_SPRAY);
 }
+
+// ─── E1 / ADR-074: el AOI de poses, verificado sobre sockets UDP REALES ───
+
+/// Coloca a un peer ya conectado en una posición concreta, como haría su `PlayerUpdate`.
+fn place_peer(net: &mut NetworkManager, id: PeerId, pos: [f32; 3]) {
+    if let Some(p) = net.peers.get_mut(&id) {
+        p.position = pos;
+    }
+}
+
+/// Cuenta los `PlayerUpdate` que un peer recibe de verdad por el socket.
+async fn drain_pose_updates(net: &mut NetworkManager) -> usize {
+    net.process_incoming()
+        .await
+        .iter()
+        .filter(|e| matches!(e, NetworkEvent::RemotePlayerUpdate { .. }))
+        .count()
+}
+
+/// **La verificación de E1 que las sondas no dan**: tres backends reales hablando por UDP, y se
+/// cuenta lo que cada joiner RECIBE — no lo que el emisor cree que manda.
+///
+/// El montaje reproduce el caso que el AOI existe para cortar: dos joiners lejos el uno del otro
+/// (300 m, muy por encima de `AOI_POSE_RADIUS_M`) pero ambos cerca del host. Sin AOI, el host
+/// relaya la pose de cada uno al otro; con AOI, no. Y lo que NO puede pasar es que deje de llegar
+/// la pose del host, que está al lado de los dos.
+#[tokio::test]
+async fn far_apart_joiners_stop_receiving_each_others_poses_over_real_sockets() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut a = NetworkManager::bind(0, 3001, 0, false).await.unwrap();
+    let mut b = NetworkManager::bind(0, 3002, 0, false).await.unwrap();
+
+    a.initiate_connection(host_addr).await;
+    b.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    a.process_incoming().await;
+    b.process_incoming().await;
+    assert_eq!(host.peers.len(), 2, "setup: los dos joiners conectados");
+
+    // Lejos entre sí, cerca del host: A en el origen, B a 300 m.
+    place_peer(&mut host, 3001, [0.0, 1.8, 0.0]);
+    place_peer(&mut host, 3002, [300.0, 1.8, 0.0]);
+
+    // Dos rondas, porque el anillo exterior emite en rondas alternas (LOD): con una sola no se
+    // podría distinguir "filtrado por AOI" de "esta ronda no le tocaba".
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let a_got = drain_pose_updates(&mut a).await;
+    let b_got = drain_pose_updates(&mut b).await;
+
+    assert_eq!(
+        a_got, 0,
+        "A no puede recibir NADA de B, que está a 300 m: es el ahorro entero de E1 \
+         (recibidos: {a_got})"
+    );
+    assert_eq!(b_got, 0, "y simétricamente B tampoco de A");
+
+    // Control positivo, y es el que impide que este test pase por estar todo roto: acercamos B a
+    // 20 m de A y su pose TIENE que empezar a llegar.
+    place_peer(&mut host, 3002, [20.0, 1.8, 0.0]);
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    let a_now = drain_pose_updates(&mut a).await;
+    assert!(
+        a_now > 0,
+        "con B a 20 m, su pose tiene que llegarle a A — si no, el filtro está cortando de más"
+    );
+}
+
+/// El invariante de ADR-016 medido donde importa, en los datagramas: un fantasma (id ≥ 0xF000)
+/// dentro del AOI se relaya EXACTAMENTE igual que un jugador a la misma distancia. Si el AOI lo
+/// tratara distinto, el joiner podría distinguirlo sin verlo.
+#[tokio::test]
+async fn a_phantom_inside_the_aoi_is_relayed_like_any_player() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 4001, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    // Fantasma sintético al lado del joiner (ADR-016: entra fuera del handshake).
+    let phantom_id = host.spawn_phantom("robapieles", [10.0, 1.8, 0.0]);
+    // El snap de ADR-018 puede moverlo a la celda caminable más próxima; se recoloca al lado del
+    // joiner para que la prueba sea sobre el AOI y no sobre dónde aterrizó.
+    place_peer(&mut host, phantom_id, [10.0, 1.8, 0.0]);
+    place_peer(&mut host, 4001, [0.0, 1.8, 0.0]);
+
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    assert!(
+        drain_pose_updates(&mut joiner).await > 0,
+        "la pose del fantasma cercano tiene que llegar como la de cualquier peer: tratarlo \
+         distinto lo delataría"
+    );
+}
