@@ -3,6 +3,7 @@ using BackroomsSurvival.Net;
 using NUnit.Framework;
 using PolymindGames;
 using PolymindGames.InventorySystem;
+using UnityEngine;
 
 namespace BackroomsSurvival.Tests
 {
@@ -21,6 +22,8 @@ namespace BackroomsSurvival.Tests
     {
         private const string ItemName = "Spray Can";
         private const long Seed = 987654321L;
+
+        private const string BakedMeshPath = "Assets/Art/Items/SprayCan/BR_SprayCan_Mesh.asset";
 
         private static ZoneLootProfile DefaultProfile => ZoneLootProfile.Default;
 
@@ -94,6 +97,102 @@ namespace BackroomsSurvival.Tests
             var definition = ItemDefinition.GetWithName(ItemName);
             Assert.IsNotNull(definition);
             Assert.AreEqual(1, definition.StackSize);
+        }
+
+        /// <summary>
+        /// EL FALLO QUE ESTE FICHERO NO VEÍA. `Pickup != null` pasaba en verde con el pickup de la
+        /// ANTORCHA, que es lo que el bote heredó del donante — y ese prefab es el que instancian
+        /// las tres rutas: el `DropAction` del vendor al soltarlo, `StpItemReplicator` en todos los
+        /// clientes, y los spawns de loot. Una lata en el suelo era una antorcha para todo el
+        /// mundo, y no había test que lo dijera.
+        ///
+        /// Se comprueba la MALLA y no el nombre del prefab: el nombre se puede cambiar sin arreglar
+        /// nada, la malla es lo que se ve.
+        /// </summary>
+        [Test]
+        public void TheDroppedSprayCanShowsTheCanAndNotTheDonorTorch()
+        {
+            var definition = ItemDefinition.GetWithName(ItemName);
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup, "sin _pickup no aparece nunca en el suelo");
+
+            var baked = UnityEditor.AssetDatabase.LoadAssetAtPath<Mesh>(BakedMeshPath);
+            Assert.IsNotNull(baked,
+                $"falta '{BakedMeshPath}'. Ejecuta 'Backrooms/Spray/Aplicar modelo Meshy al bote'.");
+
+            var filter = definition.Pickup.GetComponent<MeshFilter>();
+            Assert.IsNotNull(filter, "el prefab del suelo tiene que traer su malla en el root");
+            Assert.AreSame(baked, filter.sharedMesh,
+                "el objeto del suelo no enseña la lata horneada. Ejecuta " +
+                "'Backrooms/Spray/Crear el bote del suelo'.");
+        }
+
+        /// <summary>
+        /// Y que dentro del pickup vaya el item CORRECTO: un clon del prefab de la antorcha llega
+        /// con el id del donante, así que recoger la lata metería una antorcha en la mochila.
+        /// </summary>
+        [Test]
+        public void ThePickupHandsBackTheSprayCanAndNotTheDonorItem()
+        {
+            var definition = ItemDefinition.GetWithName(ItemName);
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+
+            var serialized = new UnityEditor.SerializedObject(definition.Pickup);
+            var value = serialized.FindProperty("_item").FindPropertyRelative("_value");
+
+            Assert.AreEqual(definition.Id, value.intValue,
+                "el ItemPickup del suelo entrega otro item distinto del bote");
+        }
+
+        /// <summary>
+        /// Ni un trozo del objeto del suelo puede seguir siendo geometría del vendor. La trampa
+        /// concreta son los dos hijos de LOD que traía el prefab donante: llevan la malla de la
+        /// ANTORCHA, así que sin quitarlos la lata se convierte en antorcha a partir de cierta
+        /// distancia — el mismo fallo, en una banda donde nadie mira mientras prueba.
+        /// </summary>
+        [Test]
+        public void NoPartOfTheDroppedSprayCanIsStillVendorGeometry()
+        {
+            var definition = ItemDefinition.GetWithName(ItemName);
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+
+            foreach (var filter in definition.Pickup.GetComponentsInChildren<MeshFilter>(true))
+            {
+                if (filter.sharedMesh == null) continue;
+                string path = UnityEditor.AssetDatabase.GetAssetPath(filter.sharedMesh);
+                StringAssert.DoesNotStartWith("Assets/PolymindGames/", path,
+                    $"'{filter.name}' sigue dibujando una malla del vendor ({path})");
+            }
+        }
+
+        /// <summary>
+        /// El root a escala 1 y la lata midiendo lo que mide una lata. Las dos cosas en el mismo
+        /// test porque son la misma decisión: la malla se hornea en metros para que el root NO
+        /// tenga que escalar, y el root no puede escalar porque el resaltado del vendor
+        /// (`MaterialEffect`) es en espacio de OBJETO y se infla con él.
+        /// </summary>
+        [Test]
+        public void TheDroppedSprayCanIsCanSizedWithoutScalingItsRoot()
+        {
+            var definition = ItemDefinition.GetWithName(ItemName);
+            Assert.IsNotNull(definition);
+            Assert.IsNotNull(definition.Pickup);
+
+            var root = definition.Pickup.transform;
+            Assert.AreEqual(1f, root.localScale.x, 1e-3f, "el root del pickup no puede ir escalado");
+            Assert.AreEqual(1f, root.localScale.y, 1e-3f);
+            Assert.AreEqual(1f, root.localScale.z, 1e-3f);
+
+            var filter = definition.Pickup.GetComponent<MeshFilter>();
+            Assert.IsNotNull(filter);
+            Assert.IsNotNull(filter.sharedMesh);
+
+            var size = filter.sharedMesh.bounds.size;
+            Assert.AreEqual(0.19f, size.y, 0.02f, "una lata mide ~19 cm de alto");
+            Assert.AreEqual(0.066f, size.x, 0.01f, "y ~6,6 cm de diámetro");
+            Assert.AreEqual(0.066f, size.z, 0.01f);
         }
     }
 }
