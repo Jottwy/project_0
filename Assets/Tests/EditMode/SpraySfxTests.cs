@@ -72,8 +72,10 @@ namespace BackroomsSurvival.Tests
             for (int i = 1; i < data.Length; i++)
                 if ((data[i - 1] < 0f) != (data[i] < 0f)) crossings++;
 
-            // 1 s de clip ⇒ cruces por segundo. 3,5 kHz ⇒ ~7000, con margen ancho para no atarse
-            // a la implementación exacta del filtro.
+            // 1 s de clip ⇒ cruces por segundo. Medido: ~11.600. El techo de 16.000 es lo que
+            // separa un chorro de ruido blanco a secas, que cruza ~22.000 veces (media frecuencia
+            // de muestreo) — y es justo lo que este test cazó la primera vez que corrió: con el
+            // pasa-banda ancho y sin pasa-bajo salían 21.845, o sea siseo de cinta.
             Assert.Greater(crossings, 3500, "demasiado grave para ser una boquilla");
             Assert.Less(crossings, 16000, "demasiado agudo, eso ya es siseo de cinta");
         }

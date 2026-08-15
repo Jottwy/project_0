@@ -188,9 +188,15 @@ namespace BackroomsSurvival.Gameplay.Audio
 
             // Filtro de variable de estado: f fija la frecuencia central, q el ancho de banda.
             double f = 2.0 * System.Math.Sin(System.Math.PI * 3500.0 / sampleRate);
-            const double q = 1.1;                    // ~Q 0,9: boquilla, no silbato
+            const double q = 0.6;                    // boquilla, no silbato
             double low = 0.0, band = 0.0;
             float maxAbs = 0f;
+
+            // Y un pasa-bajo de una polo a 7 kHz por encima de todo. NO sobra: sin él el ruido
+            // cruzaba el cero 21.900 veces por segundo (contenido dominante cerca de 11 kHz), que
+            // es siseo de cinta, no bote. Con él baja a ~11.600, que es un chorro con cuerpo.
+            double lpCoeff = System.Math.Exp(-2.0 * System.Math.PI * 7000.0 / sampleRate);
+            double lpState = 0.0;
 
             for (int i = 0; i < total; i++)
             {
@@ -201,7 +207,10 @@ namespace BackroomsSurvival.Gameplay.Audio
                 low += f * band;
 
                 // Banda (cuerpo del chorro) + una pizca de agudo sin filtrar (el aire suelto).
-                double s = band + 0.25 * high;
+                double s = band + 0.05 * high;
+
+                lpState = (1.0 - lpCoeff) * s + lpCoeff * lpState;
+                s = lpState;
 
                 // Respiración lenta: la presión del bote no es constante.
                 double t = (double)i / sampleRate;
