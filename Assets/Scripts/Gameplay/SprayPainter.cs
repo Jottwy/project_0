@@ -77,6 +77,25 @@ namespace BackroomsSurvival.Gameplay
         private bool _sputterThisFrame;
         private SprayCan _sfxLastCan;
 
+        /// <summary>
+        /// Hasta cuándo se considera que sale pintura, para quien lo consulte desde fuera.
+        ///
+        /// ES UN PESTILLO CON TIEMPO, no el booleano del frame, y la razón es el orden de ejecución:
+        /// <c>PlayerPoseTransmitter</c> muestrea a 10 Hz desde SU propio Update, que puede correr
+        /// antes que el nuestro. Leyendo el booleano crudo, el chorro que ven los demás parpadearía
+        /// según qué componente actualice primero.
+        /// </summary>
+        private float _sprayingUntil;
+
+        private const float SprayingLatchSeconds = 0.2f;
+
+        /// <summary>
+        /// ¿Está el jugador local pintando ahora mismo? Solo pintura DE VERDAD: quedarse sin bote y
+        /// seguir apretando escupe aire, y eso no pinta nada ni debe dibujar chorro a los demás.
+        /// </summary>
+        public static bool IsSprayingNow =>
+            _instance != null && Time.time <= _instance._sprayingUntil;
+
         /// <summary>Diagnóstico y tests: hay una pintada a medias esperando a cerrarse.</summary>
         public bool HasPendingSpray => !_gesture.IsEmpty;
 
@@ -155,8 +174,15 @@ namespace BackroomsSurvival.Gameplay
                 _sfx.Shake();
             }
 
-            if (_hissThisFrame) _sfx.SetSpraying(true);
-            else if (_sputterThisFrame) _sfx.SetSputtering(true);
+            if (_hissThisFrame)
+            {
+                _sfx.SetSpraying(true);
+                _sprayingUntil = Time.time + SprayingLatchSeconds;
+            }
+            else if (_sputterThisFrame)
+            {
+                _sfx.SetSputtering(true);
+            }
         }
 
         /// <summary>

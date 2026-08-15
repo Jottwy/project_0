@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Gameplay.GridWorld;
 using PolymindGames;
 using PolymindGames.InventorySystem;
@@ -442,6 +443,12 @@ namespace BackroomsSurvival.Net
                     case BodyLeanState.Right: bits |= RemoteButtons.LeanRight; break;
                 }
             }
+
+            // ADR-068 fase A: "está saliendo pintura". Va ANTES del corte por arma de fuego de
+            // abajo — un bote no es un `IFirearm`, así que puesto después no se enviaría nunca.
+            // Lectura pura, como todo lo de este método (regla #3: el transmisor informa, no aplica).
+            if (SprayPainter.IsSprayingNow)
+                bits |= RemoteButtons.Spraying;
 
             var wieldable = ActiveWieldable();
             if (wieldable is not IFirearm firearm)

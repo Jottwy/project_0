@@ -111,6 +111,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireMeleeHook(instance);
                 WireStanceHook(instance);
                 WireLeanHook(instance);
+                WireSprayHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -843,6 +844,24 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetFeederFloat(so, "_leanAngle", 20f);
             SetFeederFloat(so, "_headAngle", 6f);
             SetFeederFloat(so, "_blendTime", 0.15f);
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        // ADR-068 fase A: el chorro y el siseo de un peer que está pintando. Misma forma que
+        // WireLeanHook y por el mismo motivo no toca wire: viaja en otro bit libre de `buttons`.
+        // El bit no se declara aquí — vive una sola vez en RemoteButtons, así que el builder no
+        // puede desincronizarse del transmisor. Idempotente.
+        private static void WireSprayHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxySprayHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxySprayHook>();
+
+            var so = new SerializedObject(hook);
+            SetFeederFloat(so, "_speed", 7f);
+            SetFeederFloat(so, "_lifetime", 0.22f);
+            SetFeederFloat(so, "_size", 0.025f);
+            SetFeederFloat(so, "_rate", 70f);
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

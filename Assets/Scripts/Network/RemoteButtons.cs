@@ -33,6 +33,17 @@ namespace BackroomsSurvival.Net
         /// source (<c>BodyLeanState</c> is a single enum), so the two bits are never both set.</summary>
         public const int LeanRight = 1 << 3;
 
+        /// <summary>
+        /// Está saliendo pintura del bote AHORA MISMO (ADR-068). Otro estado SOSTENIDO en los bits
+        /// libres que ADR-044 dejó: cero campos nuevos, cero bump de esquema y cero cambios en el
+        /// backend, que relaya `buttons` sin mirarlo. Un peer con la versión vieja decodifica el bit
+        /// y no lo interpreta — deja de ver el chorro, que es la degradación correcta.
+        ///
+        /// NIVEL y no contador: pintar dura, no es un evento. Un datagrama perdido lo corrige el
+        /// siguiente, así que no hay nada que secuenciar (mismo criterio que `lightOn`).
+        /// </summary>
+        public const int Spraying = 1 << 4;
+
         public static bool Has(int buttons, int bit) => (buttons & bit) != 0;
     }
 }

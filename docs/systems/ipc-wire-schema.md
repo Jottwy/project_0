@@ -29,6 +29,20 @@ Patrón invariante de compatibilidad: campos nuevos siempre `#[serde(default)]`,
 un peer con la versión vieja interopera decodificando el default — nunca error, degradación
 cosmética.
 
+## Regla: qué NO obliga a bumpear
+
+Un **bit nuevo dentro de un campo que ya viaja** no bumpea: el esquema no cambia de forma,
+los dos lados decodifican igual y un peer viejo simplemente no interpreta el bit. El sitio
+para eso es `buttons` (u16), que ADR-044 creó como bitfield de estados SOSTENIDOS y dejó con
+14 bits libres a propósito; lo único que ese ADR prohíbe es reusar los bits 0 y 1 con otro
+significado. Precedentes: el lean Q/E (bits 2 y 3) y el chorro de spray de ADR-068 fase A
+(bit 4), ninguno de los dos con campo nuevo ni una línea de Rust — el backend relaya
+`buttons` sin mirarlo.
+
+La asignación de bits vive **una sola vez** en `Assets/Scripts/Network/RemoteButtons.cs`, y
+`SprayRelayTests` comprueba que nadie pida uno ya cogido. Un choque de bits no da error: se
+manifiesta como "el chorro sale cuando el otro se asoma".
+
 ## Changelog
 
 > Entradas transcritas literalmente del doc-comment que vivía sobre la constante (inglés

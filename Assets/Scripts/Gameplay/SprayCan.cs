@@ -31,8 +31,16 @@ namespace BackroomsSurvival.Gameplay
         [SerializeField] private float fallbackFraction = 1f;
 
         [Header("Trazo")]
+        /// <summary>
+        /// Color con el que pinta un bote recién creado. Constante y no un 2 suelto porque hay dos
+        /// consumidores más lejos del inspector: el chorro que ven los demás
+        /// (<c>ProxySprayHook</c>) tiene que salir del MISMO color que la pintada que aparecerá
+        /// después, o el trazo cambia de color al terminarlo.
+        /// </summary>
+        public const byte DefaultColorIndex = 2;
+
         [Tooltip("Índice en la paleta del cliente (0..15). El wire manda el índice, no el color.")]
-        [SerializeField] private byte colorIndex = 2;
+        [SerializeField] private byte colorIndex = DefaultColorIndex;
 
         [Tooltip("Grosor de boquilla en la retícula de 256 del lienzo.")]
         [SerializeField] private byte strokeWidth = 8;
