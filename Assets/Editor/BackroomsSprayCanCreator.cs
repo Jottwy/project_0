@@ -154,6 +154,12 @@ namespace BackroomsSurvival.EditorTools
             var source = new SerializedObject(donor);
             var target = new SerializedObject(definition);
             target.CopyFromSerializedProperty(source.FindProperty("_icon"));
+
+            // ANDAMIO, no destino: este `_pickup` prestado es el de la ANTORCHA, y es lo que hacía
+            // que una lata tirada al suelo fuera una antorcha para todos los clientes y para el
+            // loot. Se copia solo para que el item exista y se pueda soltar desde el primer
+            // momento; quien lo deja bien es "Backrooms/Spray/Crear el bote del suelo"
+            // (`BackroomsSprayPickupCreator`), que hay que ejecutar detrás de éste.
             target.CopyFromSerializedProperty(source.FindProperty("_pickup"));
 
             // LA ETIQUETA NO ES DECORACIÓN: es la que decide si el item se puede EMPUÑAR.

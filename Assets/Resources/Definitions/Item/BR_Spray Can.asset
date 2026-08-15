@@ -20,7 +20,7 @@ MonoBehaviour:
     lata. Sirve para dejar dicho por d\xF3nde has pasado: una flecha, un n\xFAmero,
     una raya en la esquina que ma\xF1ana te diga que ya estuviste aqu\xED.\n\nSirve
     igual de bien para tachar lo que dej\xF3 dicho otro, y eso no lo pone en la lata."
-  _pickup: {fileID: 8296172669144270187, guid: 320f9d5c5f1873442818fc5b70dda38d, type: 3}
+  _pickup: {fileID: 8296172669144270187, guid: f413ab1f565eb23459c7860c451dcb09, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
   _weight: 0.4
   _stackSize: 1

@@ -92,9 +92,11 @@ namespace BackroomsSurvival.EditorTools
 
         /// <summary>
         /// El eje largo de la lata en su espacio local, y hacia dónde cae la BOQUILLA en ese eje.
-        /// Se descubre mirando el render, no se deduce del FBX: Meshy no promete orientación.
+        /// Desde que la malla se hornea canónica (<see cref="MakeCanonical"/>) el eje es +Y por
+        /// construcción; el sentido de la boquilla se descubre mirando el render, no se deduce del
+        /// FBX, porque Meshy no promete orientación.
         /// </summary>
-        private static readonly Vector3 CanLongAxis = Vector3.forward;
+        private static readonly Vector3 CanLongAxis = Vector3.up;
         private const bool NozzleTowardsAxis = true;
 
         /// <summary>Un palmo de pantalla no necesita 8K.</summary>
@@ -136,6 +138,108 @@ namespace BackroomsSurvival.EditorTools
             if (material == null) return;
 
             AttachToPrefab(mesh, material);
+
+            // Y el mismo arte al objeto del SUELO. Encadenado aquí a propósito: la mano y el
+            // suelo comen de la misma malla horneada, y dejarlos en dos botones distintos es
+            // pedir que uno se quede atrás sin que nadie lo note.
+            BackroomsSprayPickupCreator.Apply();
+        }
+
+        /// <summary>
+        /// Deja la malla CANÓNICA: tamaño real, de pie (eje largo a +Y, boquilla arriba) y
+        /// centrada en su caja. Se hace sobre los VÉRTICES y no con la escala de un Transform, y
+        /// eso no es preferencia: el prefab del suelo tiene que quedarse con escala 1 en el root
+        /// porque el <c>MaterialEffect</c> del vendor (el resaltado al mirar el objeto) es en
+        /// espacio de OBJETO — escalar el root lo infla por el mismo factor, que es como salió una
+        /// "marca" enorme sobre la botella de agua de almendras. Con la malla ya en metros, la
+        /// mano y el suelo usan la misma sin compensar nada.
+        ///
+        /// Las NORMALES no se escalan como los vértices: con escala no uniforme eso las tuerce.
+        /// Se rotan y se multiplican por la INVERSA de cada factor (traspuesta de la inversa, que
+        /// en una diagonal es esto), y se renormalizan. Las tangentes sí van como los vértices en
+        /// su `xyz`, conservando la `w` (el signo de la bitangente).
+        /// </summary>
+        private static void MakeCanonical(Mesh mesh)
+        {
+            // Las deltas de un blendshape son vectores en espacio local que este método NO
+            // transforma: una lata con formas se horneaba deformándose al animarla. Hoy el FBX no
+            // trae ninguna; si algún día trae, mejor un error que un fallo callado.
+            if (mesh.blendShapeCount > 0)
+            {
+                Debug.LogError($"[SprayModel] La malla trae {mesh.blendShapeCount} blendshape(s) y este " +
+                               "horneado no transforma sus deltas. Nada tocado.");
+                return;
+            }
+
+            var size = mesh.bounds.size;
+            int longAxis = size.x >= size.y && size.x >= size.z ? 0 : (size.y >= size.z ? 1 : 2);
+
+            // Rotación que lleva el eje largo actual a +Y. Si ya es +Y no rota nada.
+            Vector3 from = longAxis == 0 ? Vector3.right : longAxis == 1 ? Vector3.up : Vector3.forward;
+            var rotation = Quaternion.FromToRotation(from, Vector3.up);
+
+            // Factores POR EJE tras rotar: alto contra alto, y el resto contra el diámetro. El
+            // modelo viene achaparrado (2,3:1 contra 2,9:1 de una lata de verdad).
+            float longest = size[longAxis];
+            float girth = 0f;
+            for (int a = 0; a < 3; a++)
+                if (a != longAxis) girth = Mathf.Max(girth, size[a]);
+
+            float sy = longest > 1e-6f ? CanHeightMeters / longest : 1f;
+            float sxz = girth > 1e-6f ? CanDiameterMeters / girth : 1f;
+            var scale = new Vector3(sxz, sy, sxz);
+
+            var vertices = mesh.vertices;
+            for (int i = 0; i < vertices.Length; i++)
+                vertices[i] = Vector3.Scale(rotation * vertices[i], scale);
+            mesh.vertices = vertices;
+
+            var normals = mesh.normals;
+            if (normals != null && normals.Length == vertices.Length)
+            {
+                var inverse = new Vector3(1f / scale.x, 1f / scale.y, 1f / scale.z);
+                for (int i = 0; i < normals.Length; i++)
+                    normals[i] = Vector3.Scale(rotation * normals[i], inverse).normalized;
+                mesh.normals = normals;
+            }
+
+            var tangents = mesh.tangents;
+            if (tangents != null && tangents.Length == vertices.Length)
+            {
+                for (int i = 0; i < tangents.Length; i++)
+                {
+                    var t = tangents[i];
+                    var xyz = Vector3.Scale(rotation * new Vector3(t.x, t.y, t.z), scale).normalized;
+                    tangents[i] = new Vector4(xyz.x, xyz.y, xyz.z, t.w);
+                }
+                mesh.tangents = tangents;
+            }
+
+            mesh.RecalculateBounds();
+
+            // Centrada en su caja: así el collider del pickup sale de `bounds` sin corrección y el
+            // objeto no cuelga desplazado de donde se le ponga.
+            var centre = mesh.bounds.center;
+            if (centre.sqrMagnitude > 1e-10f)
+            {
+                vertices = mesh.vertices;
+                for (int i = 0; i < vertices.Length; i++) vertices[i] -= centre;
+                mesh.vertices = vertices;
+                mesh.RecalculateBounds();
+            }
+
+            // Guarda de cordura, calcada de BackroomsAlmondWaterCreator: si alguien revierte el
+            // horneado, lo que se ve NO es un error sino una lata de 2 cm o de tres metros, y eso
+            // no lo dice ningún log.
+            float widest = Mathf.Max(mesh.bounds.size.x, Mathf.Max(mesh.bounds.size.y, mesh.bounds.size.z));
+            if (widest < 0.05f || widest > 0.6f)
+            {
+                Debug.LogError($"[SprayModel] La malla canónica mide {widest:F3} m de lado mayor, fuera del " +
+                               "rango sano de una lata (0,05–0,6). Revisa la transformación.");
+            }
+
+            Debug.Log($"[SprayModel] Malla canónica: caja {mesh.bounds.size.x:F3} x " +
+                      $"{mesh.bounds.size.y:F3} x {mesh.bounds.size.z:F3} m, centro {mesh.bounds.center}.");
         }
 
         /// <summary>
@@ -146,7 +250,10 @@ namespace BackroomsSurvival.EditorTools
         private static Mesh BakeMesh(Mesh source)
         {
             var copy = Object.Instantiate(source);
-            copy.name = "BR_SprayCan";
+            // Mismo nombre que el fichero: si no, Unity avisa en cada import ("Main Object Name
+            // does not match filename").
+            copy.name = "BR_SprayCan_Mesh";
+            MakeCanonical(copy);
 
             var existing = AssetDatabase.LoadAssetAtPath<Mesh>(BakedMeshPath);
             if (existing == null)
@@ -160,8 +267,18 @@ namespace BackroomsSurvival.EditorTools
             Object.DestroyImmediate(copy);
             EditorUtility.SetDirty(existing);
             AssetDatabase.SaveAssets();
-            Debug.Log($"[SprayModel] Malla horneada actualizada en '{BakedMeshPath}' (mismo GUID).");
-            return existing;
+
+            // REIMPORTAR, y esto costó tres rondas de "pero si el fichero está bien": `SaveAssets`
+            // deja el `.asset` correcto en disco, pero la malla que YA estaba cargada sigue
+            // dibujándose con sus búferes viejos. Síntoma: la caja mide 19 cm y lo que se ve mide
+            // 2, o directamente no se ve. Sin error, sin warning, y el fichero en disco te da la
+            // razón mientras la pantalla te la quita.
+            AssetDatabase.ImportAsset(BakedMeshPath, ImportAssetOptions.ForceUpdate);
+            var reloaded = AssetDatabase.LoadAssetAtPath<Mesh>(BakedMeshPath);
+
+            Debug.Log($"[SprayModel] Malla horneada actualizada en '{BakedMeshPath}' (mismo GUID), " +
+                      $"reimportada: caja {reloaded.bounds.size.y:F3} m de alto.");
+            return reloaded;
         }
 
         /// <summary>
@@ -260,9 +377,14 @@ namespace BackroomsSurvival.EditorTools
             // Legible SÍ, al revés de lo que pediría un modelo que se dibuja y ya: de este FBX no
             // se dibuja nada, se HORNEA — y copiar la malla a un asset propio necesita leerla.
             if (!importer.isReadable) { importer.isReadable = true; dirty = true; }
-            if (importer.meshCompression != ModelImporterMeshCompression.Medium)
+            // SIN COMPRIMIR, y esto costó un ciclo entero de "la lata ha desaparecido": la
+            // compresión de malla cuantiza las posiciones RELATIVAS A LA CAJA del import. Este
+            // horneado reescribe los vértices después (`MakeCanonical`), así que la geometría
+            // quedaba cuantizada contra una caja que ya no era la suya: bounds de 19 cm, dibujo de
+            // 2 cm, y en la mano directamente nada. Ni un error en consola.
+            if (importer.meshCompression != ModelImporterMeshCompression.Off)
             {
-                importer.meshCompression = ModelImporterMeshCompression.Medium;
+                importer.meshCompression = ModelImporterMeshCompression.Off;
                 dirty = true;
             }
             if (!importer.optimizeMeshPolygons) { importer.optimizeMeshPolygons = true; dirty = true; }
@@ -423,24 +545,13 @@ namespace BackroomsSurvival.EditorTools
                     go.transform.localEulerAngles = FallbackEuler + EulerNudge;
                 }
 
-                // La escala se deriva de la caja de la malla, y por EJES: el largo pasa a medir lo
-                // que mide una lata y el ancho lo que mide su diámetro. Uniforme salía una lata de
-                // 8,3 cm de gruesa — la proporción que trae el modelo de Meshy es 2,3:1 y la de
-                // una lata real 2,9:1, o sea un bote achaparrado. Y se divide por la escala
-                // acumulada del hueso, que en un rig de brazos no tiene por qué ser 1.
-                Vector3 size = mesh.bounds.size;
-                int longAxis = size.x >= size.y && size.x >= size.z ? 0 : (size.y >= size.z ? 1 : 2);
+                // La malla ya viene en metros y de pie desde `MakeCanonical`, así que aquí no hay
+                // nada que redimensionar: solo deshacer la escala acumulada del hueso, que en un
+                // rig de brazos no tiene por qué ser 1.
                 var boneScale = hand.lossyScale;
                 float boneFactor = Mathf.Max(1e-5f, Mathf.Max(boneScale.x,
                     Mathf.Max(boneScale.y, boneScale.z)));
-
-                var scale = Vector3.one;
-                for (int a = 0; a < 3; a++)
-                {
-                    float want = a == longAxis ? CanHeightMeters : CanDiameterMeters;
-                    scale[a] = size[a] > 1e-5f ? want / size[a] / boneFactor : 1f;
-                }
-                go.transform.localScale = scale;
+                go.transform.localScale = Vector3.one / boneFactor;
 
                 // La capa manda MÁS que el renderer: el arma se dibuja con la cámara de primera
                 // persona, que filtra por capa. En la capa del mundo la lata sale detrás de las
