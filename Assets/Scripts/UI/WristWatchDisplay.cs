@@ -291,16 +291,17 @@ namespace BackroomsSurvival.UI
             AnchorBand(track.rectTransform,
                 rowTopFraction + RowHeightFraction * 0.5f, RowHeightFraction * 0.22f, 14f);
 
+            // Relleno por geometría (anchorMax.x), NUNCA por Image.Type.Filled: Filled sin
+            // sprite es inerte (pinta el rect entero, sin error), y el único sprite builtin
+            // (UI/Skin/UISprite.psd) vive en unity_builtin_extra, fuera del alcance de
+            // Resources.GetBuiltinResource en runtime — devuelve null. Equivale a fillOrigin
+            // Left; si el espejado de la cara lo invirtiera, recortar anchorMin en vez de
+            // anchorMax. Nace vacía.
             var fill = CreateImage("Fill_" + RowLabels[index], track.rectTransform, RowColors[index]);
             fill.rectTransform.anchorMin = Vector2.zero;
-            fill.rectTransform.anchorMax = Vector2.one;
+            fill.rectTransform.anchorMax = new Vector2(0f, 1f);
             fill.rectTransform.offsetMin = Vector2.zero;
             fill.rectTransform.offsetMax = Vector2.zero;
-            fill.sprite = Resources.GetBuiltinResource<Sprite>("UI/Skin/UISprite.psd");
-            fill.type = Image.Type.Filled;
-            fill.fillMethod = Image.FillMethod.Horizontal;
-            fill.fillOrigin = (int)Image.OriginHorizontal.Left;
-            fill.fillAmount = 0f;
 
             _fills[index] = fill;
         }
@@ -452,8 +453,13 @@ namespace BackroomsSurvival.UI
         private void SetBar(int index, float value0To100)
         {
             var fill = _fills[index];
-            if (fill != null)
-                fill.fillAmount = Mathf.Clamp01(value0To100 / 100f);
+            if (fill == null)
+                return;
+
+            var rt = fill.rectTransform;
+            var max = rt.anchorMax;
+            max.x = Mathf.Clamp01(value0To100 / 100f);
+            rt.anchorMax = max;
         }
     }
 }
