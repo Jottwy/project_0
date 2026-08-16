@@ -75,6 +75,30 @@ pub enum ClientMessage {
     /// decode into it. Every other placement in this project (`stp_place`, `stp_drop`, …) is an
     /// action precisely because its payload is all numbers.
     SprayPlace(SprayPlaceRequest),
+    /// ADR-078 — el jugador local está pintando AHORA MISMO y esto es el trozo nuevo del trazo.
+    /// Variante propia y no `PlayerAction` por lo mismo que `SprayPlace`: lleva un blob binario.
+    SprayDraft(SprayDraftRequest),
+}
+
+/// ADR-078 — un trozo de trazo en vivo, del cliente a su propio backend, que lo reparte.
+///
+/// NADA de esto se valida ni se guarda: es presentación efímera y la autoridad sigue siendo
+/// `SprayPlace`. Lo único que el backend decide es a QUIÉN se lo manda (por distancia) — ver
+/// `network::sync::spray_draft_destinations`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SprayDraftRequest {
+    /// El mismo id que llevará la pintada definitiva: es lo que empareja borrador y pintada
+    /// para que el receptor retire uno al llegar la otra.
+    pub place_id: u64,
+    pub layer: u8,
+    /// Ancla en coordenadas de MUNDO (ADR-078 decisión 4), no chunk-local.
+    pub anchor: [f32; 3],
+    pub yaw: f32,
+    pub color: u8,
+    pub width: f32,
+    pub first_index: u16,
+    /// Pares (u, v) en milímetros sobre el plano del ancla.
+    pub points_mm: Vec<i16>,
 }
 
 /// ADR-068 — what the client asks the host to paint. The host is the authority: it validates
@@ -202,6 +226,25 @@ pub enum ServerMessage {
     /// painter sees the authoritative version (and every other client sees it appear) without
     /// waiting to reload the chunk. The bulk hydration path is `GridChunkData::sprays`.
     SprayPlaced(crate::world::spray::Spray),
+    /// ADR-078 — trozo de un trazo que OTRO jugador está pintando ahora. Efímero: el cliente lo
+    /// dibuja como previa y lo tira al llegar el `SprayPlaced` con el mismo `place_id`.
+    SprayDraft(SprayDraftView),
+}
+
+/// ADR-078 — lo que el backend entrega a Unity por cada trozo de trazo ajeno. Es
+/// `SprayDraftRequest` más de quién es: sin el `painter` el cliente no podría separar dos
+/// trazos simultáneos que compartieran `place_id` por casualidad.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SprayDraftView {
+    pub painter: u16,
+    pub place_id: u64,
+    pub layer: u8,
+    pub anchor: [f32; 3],
+    pub yaw: f32,
+    pub color: u8,
+    pub width: f32,
+    pub first_index: u16,
+    pub points_mm: Vec<i16>,
 }
 
 /// ADR-061 — the schema revision this backend speaks, so Unity can refuse a desynced build

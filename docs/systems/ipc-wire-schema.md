@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v33
+# IPC wire schema — changelog v2 → v34
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **33**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **34**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
@@ -507,3 +507,31 @@ mismo nombre y forma (el cliente no necesita saber dónde corre). `WIRE_SCHEMA_V
 como texto lo vigila.
 
 Sin cambio en `PacketType`, `from_u16` ni `type_code`: ningún opcode nuevo, ningún campo nuevo.
+
+## v34 — ADR-078: el trazo de spray se dibuja mientras se pinta (2026-08-16)
+
+Opcode nuevo **`0x54 SprayDraft`**, y por eso bumpea: la regla de arriba fija que añadir un
+`PacketPayload` cuenta, aditivo o no. Lleva un trozo de un trazo EN CURSO — `place_id`, `layer`,
+ancla en mundo + `yaw` (que definen el plano), color, grosor, `first_index` y los puntos nuevos
+como pares `i16` en milímetros sobre ese plano (4 B por punto).
+
+**Deliberadamente fuera de `is_reliable`**, como el `NoiseReport` de 0x4E: son ~10 paquetes por
+segundo mientras dura un trazo y no pueden ocupar la ventana de 32 huecos. Un borrador perdido no
+se reintenta y no hace falta — la pintada autoritativa (`0x52`, fiable) llega entera al soltar y
+sustituye lo dibujado.
+
+Transporte calcado de la voz (ADR-046/050): el host reenvía con `send_unreliable_as(pintor, dest)`
+y elige destinos por DISTANCIA al pintor (`spray_draft_destinations`, 40 m). El filtro vive en el
+host porque un filtro en el receptor es un filtro que el receptor puede quitar. Un joiner
+precomprueba que haya alguien cerca y manda solo al host.
+
+Dos mensajes IPC nuevos: `ClientMessage::SprayDraft` (Unity → su backend) y
+`ServerMessage::SprayDraft` (backend → Unity, con el `painter` añadido). Variantes propias y no
+`PlayerAction` por lo mismo que `SprayPlace`: llevan blob binario, y `serde_json::Value` no tiene
+tipo de bytes.
+
+Degradación: un cliente o peer sin actualizar no decodifica `0x54` y no ve dibujarse nada — o sea,
+el comportamiento de antes de este ADR. `WireSchema.Expected` (C#) a 34 en el mismo commit.
+
+**Nada de esto es autoridad**: el borrador no entra en `SprayStore`, no se guarda, no cuenta para
+el cap de 64 por chunk y no se valida contra ningún tope. Eso sigue siendo íntegramente `0x52`.

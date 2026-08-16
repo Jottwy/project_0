@@ -134,6 +134,10 @@ pub enum PacketType {
     /// ADR-068: 0x53 lo manda un joiner al cargar un chunk — "que hay pintado aqui". La
     /// geometria la deriva cada peer del seed; una pintada NO, asi que hay que preguntar.
     SprayChunkRequest = 0x53,
+    /// ADR-078: 0x54 es el trazo EN VIVO, no fiable. Deliberadamente fuera de `is_reliable`:
+    /// son ~10 paquetes por segundo mientras dura el trazo y no pueden ocupar la ventana de 32
+    /// huecos, igual que el `NoiseReport` de 0x4E.
+    SprayDraft = 0x54,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -215,6 +219,7 @@ impl PacketType {
             0x51 => Some(Self::SprayPlaceRequest),
             0x52 => Some(Self::SprayPlaced),
             0x53 => Some(Self::SprayChunkRequest),
+            0x54 => Some(Self::SprayDraft),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -535,6 +540,31 @@ pub enum PacketPayload {
         cx: i32,
         cz: i32,
         layer: u8,
+    },
+    /// ADR-078 (fase B de ADR-068): trozo de un trazo que se esta pintando AHORA. Efimero: no
+    /// entra en `SprayStore`, no se guarda y no cuenta para ningun tope — la autoridad sigue
+    /// siendo `SprayPlaced`, que llega entera al soltar y sustituye lo dibujado.
+    ///
+    /// Solo los puntos NUEVOS desde el ultimo envio (`first_index`), no el gesto entero: mandar
+    /// el gesto completo a 10 Hz seria 1,9 KB x 10 x peers.
+    ///
+    /// `anchor` + `yaw` definen el plano y los puntos van en MILIMETROS sobre el (pares i16 en
+    /// `points_mm`). Anclaje en MUNDO y no chunk-local al reves que la pintada: esto vive 3 s y
+    /// muere, y resolver chunk en cada envio seria trabajo para nada (ADR-078 decision 4).
+    SprayDraft {
+        place_id: u64,
+        layer: u8,
+        anchor: [f32; 3],
+        yaw: f32,
+        color: u8,
+        width: f32,
+        /// Indice del primer punto de este paquete dentro del trazo, para que el receptor sepa
+        /// si se ha perdido algo por el camino y no cosa dos trozos que no van seguidos.
+        first_index: u16,
+        /// Pares (u, v) en milimetros sobre el plano del ancla. Blob y no `Vec<[i16; 2]>`: es el
+        /// mismo motivo por el que ADR-068 paso los puntos a binario, la cabecera de nombres por
+        /// elemento dominaba el tamano.
+        points_mm: Vec<i16>,
     },
     /// ADR-037: the sender cancelled a placed-but-unbuilt piece. Only the host acts on it;
     /// it removes the entry from `stp_buildings` and the existing 10 Hz relay makes every
@@ -925,6 +955,7 @@ impl PacketPayload {
             Self::SprayPlaceRequest { .. } => PacketType::SprayPlaceRequest as u16,
             Self::SprayPlaced { .. } => PacketType::SprayPlaced as u16,
             Self::SprayChunkRequest { .. } => PacketType::SprayChunkRequest as u16,
+            Self::SprayDraft { .. } => PacketType::SprayDraft as u16,
             Self::PlayerUpdate { .. } => PacketType::PlayerUpdate as u16,
             Self::ChunkState { .. } => PacketType::ChunkState as u16,
             Self::ChunkDelta { .. } => PacketType::ChunkDelta as u16,

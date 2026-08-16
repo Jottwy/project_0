@@ -108,6 +108,20 @@ pub enum NetworkEvent {
     SprayPlacedReceived {
         spray: crate::world::spray::Spray,
     },
+    /// ADR-078: a chunk of a stroke somebody is painting RIGHT NOW. `painter_id` comes from the
+    /// packet HEADER, like every other spray event — on the host it decides who gets a relayed
+    /// copy (by distance to THAT peer), and on a joiner it says whose stroke this is.
+    SprayDraftReceived {
+        place_id: u64,
+        layer: u8,
+        anchor: [f32; 3],
+        yaw: f32,
+        color: u8,
+        width: f32,
+        first_index: u16,
+        points_mm: Vec<i16>,
+        painter_id: u16,
+    },
     /// ADR-068: a joiner loaded a chunk and asks what is painted on it. `requester_id` comes from
     /// the packet HEADER — the reply goes back to that peer alone, not to everyone.
     SprayChunkRequest {

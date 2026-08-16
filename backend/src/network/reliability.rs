@@ -60,6 +60,11 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x51          // SprayPlaceRequest         (ADR-068)
         | 0x52          // SprayPlaced               (ADR-068)
         | 0x53          // SprayChunkRequest         (ADR-068)
+        // 0x54 SprayDraft is DELIBERATELY absent too (ADR-078): the live stroke is ~10 packets
+        // per second while a stroke lasts, and a lost one self-heals in the strongest possible
+        // sense — the authoritative 0x52 arrives complete on release and replaces whatever was
+        // drawn. Making it reliable would occupy the 32-slot window to guarantee the delivery of
+        // a draft that is worthless by the time it lands.
         // 0x4E NoiseReport is DELIBERATELY absent: it is sent with `send_unreliable_to`, so
         // listing it would break this function's "si y solo si" invariant in the other
         // direction. A transient stimulus must not occupy the 32-slot reliable window; a lost

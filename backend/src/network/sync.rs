@@ -381,6 +381,52 @@ pub(crate) fn voice_destinations(net: &NetworkManager, speaker: PeerId) -> Vec<P
         .collect()
 }
 
+/// ADR-078 — hasta dónde se reenvía un trazo en vivo. Más largo que el de la voz porque esto
+/// es VISTA: se ve pintar a alguien desde el fondo de un pasillo, y cortarlo a distancia de
+/// conversación haría que el trazo apareciera de golpe justo cuando te acercas, que es
+/// exactamente el defecto que la fase B viene a quitar.
+pub const SPRAY_DRAFT_RADIUS_M: f32 = 40.0;
+
+/// True cuando `a` está lo bastante cerca de `b` para ver dibujarse un trazo.
+///
+/// 3D como el de la voz: las capas están apiladas en vertical, así que el término Y ya impide
+/// que se vea pintar a alguien que está un piso más abajo.
+pub fn within_spray_draft_range(a: [f32; 3], b: [f32; 3]) -> bool {
+    distance_sq(a, b) <= SPRAY_DRAFT_RADIUS_M * SPRAY_DRAFT_RADIUS_M
+}
+
+/// ADR-078 — quién recibe copia del trazo de `painter`, decidido por el HOST.
+///
+/// Espejo exacto de `voice_destinations`, y las exclusiones son las mismas por las mismas
+/// razones: el propio pintor (a nadie se le reenvía lo suyo), los fantasmas (cuyo `addr` es el
+/// inerte `127.0.0.1:1`) y quien esté lejos. Esta última NO es una optimización: es lo único
+/// que impide que un cliente modificado vea dibujarse pintadas al otro lado del nivel. Un
+/// filtro que viviera en el receptor sería un filtro que el receptor puede quitar.
+///
+/// A diferencia de la voz, un peer MUERTO sí recibe: un muerto no habla ni oye (ADR-046) pero
+/// sigue viendo el mundo hasta que reaparece, y una pintada es mundo.
+pub(crate) fn spray_draft_destinations(net: &NetworkManager, painter: PeerId) -> Vec<PeerId> {
+    let Some(origin) = net.peers.get(&painter).map(|p| p.position) else {
+        return Vec::new();
+    };
+    spray_draft_destinations_from(net, origin, painter)
+}
+
+/// La misma decisión pero con el origen DADO, para el jugador local del host: su posición no
+/// vive en `net.peers` (no es un peer para sí mismo), así que no hay entrada de la que sacarla.
+pub(crate) fn spray_draft_destinations_from(
+    net: &NetworkManager,
+    origin: [f32; 3],
+    exclude: PeerId,
+) -> Vec<PeerId> {
+    net.peers
+        .values()
+        .filter(|p| p.id != exclude && !net.is_phantom(p.id))
+        .filter(|p| within_spray_draft_range(origin, p.position))
+        .map(|p| p.id)
+        .collect()
+}
+
 /// ADR-015: host-as-server relay of per-peer POSE (rotation + animation included).
 /// The roster relay (`broadcast_peer_roster` / `PeerList`) carries only POSITION, so a
 /// joiner â€” which only connects to the host â€” never learns the rotation or animation of

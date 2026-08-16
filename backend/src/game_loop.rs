@@ -805,6 +805,46 @@ pub async fn run(
                     // ADR-068: el host valida y acuña; el jugador que pinta no decide nada.
                     process_spray_place(req, &player, &mut net, tick, &to_clients).await;
                 }
+                ClientMessage::SprayDraft(req) => {
+                    // ADR-078: trazo en vivo. NO se valida, NO se guarda y NO se acuña nada —
+                    // esto es presentación efímera y la autoridad sigue siendo SprayPlace. Lo
+                    // único que se decide aquí es a quién se le manda.
+                    let me = [player.position.x, player.position.y, player.position.z];
+                    let payload = crate::network::protocol::PacketPayload::SprayDraft {
+                        place_id: req.place_id,
+                        layer: req.layer,
+                        anchor: req.anchor,
+                        yaw: req.yaw,
+                        color: req.color,
+                        width: req.width,
+                        first_index: req.first_index,
+                        points_mm: req.points_mm,
+                    };
+                    if net.is_host {
+                        // Somos el relay: una copia por cada quien esté lo bastante cerca para
+                        // verlo. Misma forma que la voz (ADR-046).
+                        let dests = crate::network::sync::spray_draft_destinations_from(
+                            &net,
+                            me,
+                            net.local_id,
+                        );
+                        for dest in dests {
+                            net.send_unreliable_to(dest, &payload).await;
+                        }
+                    } else {
+                        // El único enlace real de un joiner es el host, que es quien decide
+                        // quién más lo ve. La precomprobación NO es el filtro de seguridad (ése
+                        // vive en el host): solo evita pagar subida por un trazo que no va a ver
+                        // nadie.
+                        let anyone_near = net.peers.values().any(|p| {
+                            !net.is_phantom(p.id)
+                                && crate::network::sync::within_spray_draft_range(me, p.position)
+                        });
+                        if anyone_near {
+                            net.send_unreliable_to(1, &payload).await; // 1 = host
+                        }
+                    }
+                }
                 ClientMessage::Voice { seq, data } => {
                     // ADR-046 Fase 2 — our own microphone, on its way out.
                     voice_frames_in = voice_frames_in.wrapping_add(1);
@@ -2049,6 +2089,68 @@ async fn handle_network_event(
             } else {
                 info!("MPTRACE step=SPRAY event=spray_relay_rejected ignored=true");
             }
+        }
+
+        // ADR-078: un trozo de trazo en vivo de OTRO jugador. Dos trabajos, y solo el host tiene
+        // el primero — calcado de `VoiceReceived` (ADR-046), que resolvió este mismo reparto.
+        //
+        // NADA de esto entra en `net.sprays`, ni se valida, ni se guarda: es presentación
+        // efímera. Un borrador malformado dibuja un garabato durante 3 s y desaparece; la
+        // pintada de verdad sigue pasando por `accept_spray`, que es donde están los topes.
+        NetworkEvent::SprayDraftReceived {
+            place_id,
+            layer,
+            anchor,
+            yaw,
+            color,
+            width,
+            first_index,
+            points_mm,
+            painter_id,
+        } => {
+            if net.is_host {
+                // 1) Reenviar a quien esté cerca DEL PINTOR, sellado con su id — el mismo
+                //    mecanismo de ADR-015 que usa el relay de poses, así que el receptor no
+                //    necesita ningún caso especial.
+                let payload = crate::network::protocol::PacketPayload::SprayDraft {
+                    place_id,
+                    layer,
+                    anchor,
+                    yaw,
+                    color,
+                    width,
+                    first_index,
+                    points_mm: points_mm.clone(),
+                };
+                for dest in crate::network::sync::spray_draft_destinations(net, painter_id) {
+                    net.send_unreliable_as(painter_id, dest, &payload).await;
+                }
+
+                // 2) Y decidir si lo ve el jugador DEL HOST. En un joiner esa pregunta ya está
+                //    contestada — el host no habría mandado el paquete —, pero aquí no la ha
+                //    hecho nadie todavía.
+                let me = [player.position.x, player.position.y, player.position.z];
+                let visible = net
+                    .peers
+                    .get(&painter_id)
+                    .map(|p| crate::network::sync::within_spray_draft_range(me, p.position))
+                    .unwrap_or(false);
+                if !visible {
+                    return;
+                }
+            }
+
+            let _ = to_clients.send(ServerMessage::SprayDraft(crate::ipc::SprayDraftView {
+                painter: painter_id,
+                place_id,
+                layer,
+                anchor,
+                yaw,
+                color,
+                width,
+                first_index,
+                points_mm,
+            }));
         }
 
         // ADR-068: un joiner acaba de cargar un chunk y pregunta qué hay pintado en él. Su propio

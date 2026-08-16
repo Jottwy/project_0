@@ -1878,6 +1878,118 @@ async fn spray_hops_round_trip_between_peers() {
     );
 }
 
+/// ADR-078 — el trazo EN VIVO cruza, no es fiable, y el pintor sale de la CABECERA.
+///
+/// Las tres cosas juntas porque las tres son el ADR: si el borrador viajara fiable ocuparía la
+/// ventana de 32 para entregar un dato que caduca en 100 ms, y si el pintor saliera del payload
+/// un cliente podría dibujar en nombre de otro (el mismo agujero que `SprayPlaceRequest` cerró
+/// sacando el `requester_id` de la cabecera).
+#[tokio::test]
+async fn a_live_spray_draft_hops_unreliably_and_is_stamped_by_its_sender() {
+    use crate::network::protocol::PacketType;
+    use crate::network::reliability::is_reliable;
+
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 4242, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+    assert_eq!(joiner.local_id, 4242);
+
+    let draft = PacketPayload::SprayDraft {
+        place_id: 77,
+        layer: 0,
+        anchor: [137.5, 1.6, -80.0],
+        yaw: 90.0,
+        color: 3,
+        width: 0.08,
+        first_index: 12,
+        points_mm: vec![-1200, 340, 0, 0, 32767, -32768],
+    };
+    assert_eq!(draft.type_code(), 0x54);
+    assert_eq!(PacketType::from_u16(0x54), Some(PacketType::SprayDraft));
+    assert!(
+        !is_reliable(0x54),
+        "un borrador fiable ocuparia la ventana de 32 para entregar algo ya caducado"
+    );
+
+    joiner.send_unreliable_to(1, &draft).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let host_events = host.process_incoming().await;
+
+    let (painter, points, first) = host_events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::SprayDraftReceived {
+                place_id: 77,
+                painter_id,
+                points_mm,
+                first_index,
+                ..
+            } => Some((*painter_id, points_mm.clone(), *first_index)),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("el host no recibio el borrador: {host_events:?}"));
+
+    assert_eq!(
+        painter, 4242,
+        "el pintor sale de la CABECERA: es lo que impide dibujar en nombre de otro"
+    );
+    assert_eq!(
+        points,
+        vec![-1200, 340, 0, 0, 32767, -32768],
+        "los milimetros cruzan intactos, extremos del i16 incluidos"
+    );
+    assert_eq!(
+        first, 12,
+        "sin el indice, dos trozos no consecutivos se cosen"
+    );
+}
+
+/// ADR-078 — el peor caso de un borrador (64 puntos) cabe de sobra en un datagrama. El tope no
+/// es decoración: sin él, un cliente con un pico de lag acumularía puntos y mandaría un paquete
+/// que no cruza, justo cuando la red ya va mal.
+#[tokio::test]
+async fn a_worst_case_spray_draft_survives_a_real_datagram() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 4343, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    joiner.process_incoming().await;
+
+    // 64 puntos = 128 i16. El cliente no puede mandar mas en un paquete (ADR-078 decision 6).
+    let points: Vec<i16> = (0..128).map(|i| (i * 251) as i16).collect();
+    let draft = PacketPayload::SprayDraft {
+        place_id: u64::MAX,
+        layer: 3,
+        anchor: [-4096.0, 12.5, 4096.0],
+        yaw: 359.9,
+        color: 15,
+        width: 0.25,
+        first_index: u16::MAX - 64,
+        points_mm: points.clone(),
+    };
+
+    joiner.send_unreliable_to(1, &draft).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let host_events = host.process_incoming().await;
+
+    let received = host_events
+        .iter()
+        .find_map(|e| match e {
+            NetworkEvent::SprayDraftReceived { points_mm, .. } => Some(points_mm.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("el borrador de peor caso no cruzo: {host_events:?}"));
+    assert_eq!(received, points, "los 64 puntos cruzan enteros");
+}
+
 /// ADR-068 — una pintada REAL (32 trazos, 512 puntos) tiene que caber en un datagrama. Es la
 /// razón por la que viaja una por paquete y no en un roster: el presupuesto medido son ~1,9 KB,
 /// y los rosters de ADR-060 ya tuvieron que paginarse por reventar con elementos más ligeros.

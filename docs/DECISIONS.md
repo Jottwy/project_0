@@ -3674,3 +3674,42 @@ Apéndice al L2 del interpolador de stats (ADR-009 §6), tras diagnosticar en se
 2. **El modo de fallo es SILENCIOSO.** Escribir en un manager destruido no lanza ni deja rastro en consola: los setters de stats (`Hunger`, `Thirst`, `Stamina`, `SetHealthSilent`) son C# puro y no tocan API de Unity, así que el fake-null nunca se materializa en error. El síntoma es una UI congelada contra un servidor que sigue drenando. Lo que SÍ lanza es el API de Unity (`.enabled` sobre un destruido) — de ahí las guardas en `ReleaseControl`.
 
 3. **`== null` sobre una referencia de tipo INTERFAZ no ve el fake-null.** El operador sobrecargado vive en `UnityEngine.Object`; una interfaz compara por referencia pura, y un manager destruido pasa por vivo. Detección correcta: castear al tipo concreto o a `UnityEngine.Object` antes de comparar.
+
+### ADR-078 — Spray en vivo: el trazo se dibuja mientras se pinta (ADR-068 fase B), wire 33 → 34 (2026-08-16)
+
+Nació como 077 y colisionó con el ADR-077 del viewmodel, que aterrizó primero desde la sesión paralela — tercera vez que pasa (ver ADR-072 y la lección que dejó escrita: **el número se fija AL COMMITEAR mirando el working tree, no solo HEAD**). Renumerado a 078 antes de tocar código.
+
+Estado: **PROPUESTA** (2026-08-16). Fase B de ADR-068. La fase A ya está en juego y NO se toca: el bit `Spraying` de `buttons` (bits libres de ADR-044) pone chorro y siseo en el proxy sin gastar wire, y sigue siendo lo que dice "ese de ahí está pintando". Esto añade lo otro: QUÉ está pintando.
+
+**Contexto.** ADR-068 manda la pintada ENTERA al cerrarse: un paquete fiable de ~1,9 KB (opcode `0x52`), disparado tras `CommitDelaySeconds` de inactividad. Entre que alguien empieza un trazo y el resto lo ve pasa más de un segundo, y el dibujo aparece de golpe y terminado. Para quien pinta no se nota — tiene previa local desde la enmienda de S2 —, pero para el que mira, el momento en que se hace la pintada no existe.
+
+**Decisión.**
+
+**1. Opcode nuevo `0x54 SprayDraft`, NO fiable.** Fuera de `is_reliable`, y no por ahorro: son ~10 paquetes por segundo mientras dura un trazo, y meterlos en la ventana fiable de 32 huecos es exactamente lo que ADR-039 evitó al dejar fuera el `NoiseReport`. Un borrador perdido no se reintenta ni se auto-cura, y da igual: lo que manda es la pintada autoritativa que llega entera al soltar, y el borrador solo tiene que existir mientras tanto.
+
+**2. El transporte se copia de la VOZ (ADR-046/050), no del roster.** El host relaya con `send_unreliable_as(pintor, dest)` — el receptor decodifica por el mismo camino que si viniera del pintor directamente, sin caso especial — y elige destinos por DISTANCIA al pintor (`spray_draft_destinations`, espejo de `voice_destinations`). El filtro vive en el host y no en el receptor: un filtro en el receptor es un filtro que el receptor puede quitar, y aquí eso sería ver dibujarse pintadas al otro lado del nivel. Un joiner precomprueba que haya alguien cerca y manda solo al host, que es su único enlace real.
+
+**3. Viajan solo los puntos NUEVOS.** Delta por índice (`first_index`), no el gesto entero: mandar el gesto completo a 10 Hz es 1,9 KB × 10 × peers, que es justo el presupuesto que la enmienda S1 de ADR-068 ya midió y recortó una vez. `place_id` (el mismo u64 que la pintada final) empareja borrador y pintada: el receptor tira el borrador al recibir `0x52` con ese id, o a los 3 s sin noticias.
+
+**4. Ancla en MUNDO, al revés que la pintada.** ADR-067/068 anclan chunk-local porque la pintada persiste y la geometría viaja. El borrador vive 3 s y muere; resolver chunk en cada envío para eso es trabajo por nada. Si un chunk se desplaza a media pintada, el borrador queda mal colocado durante <100 ms y lo sustituye la pintada final, que sí es chunk-local.
+
+**5. Cuantización: ancla + yaw definen el plano; los puntos van como pares `i16` en MILÍMETROS sobre ese plano.** 4 B por punto. El rango de un `i16` en mm es ±32,7 m contra un lienzo de 1,2 m: sobra tanto que el desbordamiento no es un modo de fallo, y la resolución (1 mm) está por debajo de lo que la boquilla puede dibujar.
+
+**6. Topes duros, por diseño y no por confianza:** ≤64 puntos por paquete (256 B de carga útil), ≤8 borradores vivos por cliente (FIFO al llenarse), 10 Hz de emisión. Presupuesto: un trazo rápido genera ~40 puntos/s ⇒ ~160 B/s de carga + cabeceras por destino. Es dos órdenes de magnitud por debajo de los 94 KB/s por peer que `perf-baseline.md` midió tras ADR-071.
+
+**7. El receptor dibuja por el MISMO camino que la previa local.** La decisión 4 de ADR-068 (previa local a 30 Hz por el camino de render normal) ya dejó ese camino hecho; aquí solo pasa a ser MULTISLOT, con una previa por `(peer, place_id)` en vez de una sola. Cada previa reusa su `Texture2D` en vez de recrearla, que es la fuga que la segunda tanda de ADR-068 ya pagó una vez (256 KB por pintada, 30 veces por segundo).
+
+**Alternativas rechazadas.**
+- **(A) Mandar el gesto entero cada 100 ms.** Simple y ya escrito, pero son 1,9 KB × 10 Hz × peers: el presupuesto entero de la sesión para un adorno.
+- **(B) Fiable.** Ocupa la ventana de 32 y garantiza que llegue... un borrador viejo, que no sirve para nada. La utilidad de un borrador caduca en 100 ms.
+- **(C) Anclaje chunk-local.** Coherente con ADR-067 pero paga resolución de chunk por envío para algo que muere en 3 s.
+- **(D) Estirar `buttons` (fase A).** Un bit no lleva geometría; era el techo de la fase A y por eso hay fase B.
+- **(E) Que el host reenvíe el borrador a TODOS y filtre el cliente.** Rechazada por lo mismo que la voz: el filtro que puede quitarse no es un filtro.
+
+**Consecuencias / qué prohíbe.** El borrador es presentación pura y efímera: **PROHÍBE** que entre en `SprayStore`, que se guarde, que cuente para el cap de 64 pintadas por chunk o que se le mire para validar alcance, topes o tinta — la autoridad sigue siendo íntegramente `0x52` y su `accept_spray`. **PROHÍBE** reintentar un borrador perdido. **PROHÍBE** que un borrador sobreviva a su pintada: al llegar la definitiva con ese `place_id`, el borrador se retira en el mismo frame o habrá doble trazo. Un cliente con la versión vieja no decodifica `0x54` y simplemente no ve dibujarse nada, que es el comportamiento de hoy.
+
+**Por qué es ADR (reglas duras 4 y 7).** Añade una variante de `PacketPayload` y un par de mensajes IPC, así que bumpea `WIRE_SCHEMA_VERSION` 33 → 34 — lo que la cabecera de `docs/systems/ipc-wire-schema.md` fija como obligatorio ("añadir un `PacketPayload` bumpea"), con su entrada de changelog y el espejo `WireSchema.Expected` en el MISMO commit (ADR-061).
+
+**Dependencias.** ADR-068 (la pintada, su previa y su `place_id`), ADR-046/050 (el transporte no fiable con destinos por distancia, que este ADR copia en vez de inventar), ADR-039 (por qué esto NO puede ser fiable), ADR-015 (el relay del host), ADR-061 (el espejo del schema en C#).
+
+**Verificación exigida antes de pasar a VALIDADA:** round-trip P2P sobre sockets UDP reales con dos `NetworkManager`, un datagrama de peor caso (64 puntos), sonda de coste reproducible `#[ignore]` como las de `perf-baseline.md`, y en juego con dos clientes: uno pinta, el otro ve el trazo crecer y luego lo sustituye la pintada definitiva sin doble trazo.

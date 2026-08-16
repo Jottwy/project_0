@@ -271,6 +271,30 @@ impl NetworkManager {
                 Some(NetworkEvent::SprayPlacedReceived { spray })
             }
 
+            // ADR-078: el `painter_id` sale de la CABECERA por el mismo motivo que en
+            // `SprayPlaceRequest` — el host reparte copias por distancia a ESE peer, y dejar que
+            // el payload dijera quién pinta permitiría dibujar en nombre de otro.
+            PacketPayload::SprayDraft {
+                place_id,
+                layer,
+                anchor,
+                yaw,
+                color,
+                width,
+                first_index,
+                points_mm,
+            } => Some(NetworkEvent::SprayDraftReceived {
+                place_id,
+                layer,
+                anchor,
+                yaw,
+                color,
+                width,
+                first_index,
+                points_mm,
+                painter_id: sender_id,
+            }),
+
             // También lleva `requester_id` de la cabecera: la respuesta vuelve a ESE peer y no
             // a todos, así que el remitente es parte del evento.
             PacketPayload::SprayChunkRequest { cx, cz, layer } => {
