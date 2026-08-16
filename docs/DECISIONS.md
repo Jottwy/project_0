@@ -3664,3 +3664,13 @@ Al cerrar la proyección quedó a la vista un síntoma que **precedía a todo es
 Corolario para la UI diegética que venga: el signo del espejado debe vivir **separado** de cualquier compensación de escala del rig (`inherited = Mathf.Abs(...)`). Mezclarlos hace que el espejado dependa del tamaño del esqueleto.
 
 Efecto lateral asumido y ya conocido: con la cara espejada, un `Image` de tipo `Filled` rellena hacia el lado contrario. `GenerateFilledSprite` genera la geometría en el rect local del propio `Image` y no consulta la escala de ningún ancestro, así que el ancho es correcto pero queda anclado al borde opuesto; se corrige con `fillOrigin`, no tocando la escala.
+
+## Enmienda a ADR-009 (2026-08-16): las referencias a managers del player se re-resuelven por estado, nunca se cachean
+
+Apéndice al L2 del interpolador de stats (ADR-009 §6), tras diagnosticar en sesión un HUD congelado con el backend drenando correctamente. Tres hechos medidos, elevados a norma:
+
+1. **Cachear referencias del player en `Awake` es incorrecto.** El rig rebuild destruye y recrea los managers de STP; los recreados nacen `enabled=true` / `_serverControlled=false` y reanudan su drain local mientras el consumidor cacheado sigue escribiendo en los destruidos. El patrón correcto — re-resolver por estado, con reintento a reloj y no por frame — ya existía en seis componentes de red (el contrato está documentado en `LocalPlayerLocator`); esta enmienda lo hace norma explícita para TODO consumidor de managers del player. `StatInterpolator` (`bfc2fa99`) y `WristWatchDisplay` (`28104ad4`) quedan migrados.
+
+2. **El modo de fallo es SILENCIOSO.** Escribir en un manager destruido no lanza ni deja rastro en consola: los setters de stats (`Hunger`, `Thirst`, `Stamina`, `SetHealthSilent`) son C# puro y no tocan API de Unity, así que el fake-null nunca se materializa en error. El síntoma es una UI congelada contra un servidor que sigue drenando. Lo que SÍ lanza es el API de Unity (`.enabled` sobre un destruido) — de ahí las guardas en `ReleaseControl`.
+
+3. **`== null` sobre una referencia de tipo INTERFAZ no ve el fake-null.** El operador sobrecargado vive en `UnityEngine.Object`; una interfaz compara por referencia pura, y un manager destruido pasa por vivo. Detección correcta: castear al tipo concreto o a `UnityEngine.Object` antes de comparar.
