@@ -2,6 +2,53 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-16 (reloj de muñeca diegético, placeholder jugable) — **commit b1938783, 27 ficheros 6271 líneas. Reloj táctico en muñeca con tecla T, overlay con inercia y muelle. PLACEHOLDER: esfera sin colocar. Gate verificado: compile-check 0 errores (4 asambleas C# cliente). Riesgo crítico: warp FOV del vendor bloquea toda UI diegética en primera persona (11 prefabs vendor afectados, bloquea mapa/notas/radio/inventario diegético). Pendiente: decisión arquitectura UI diegética (opciones A/B/C/D), todo lo demás depende.**
+
+0. **COMMIT b1938783** — 27 ficheros, 6271 líneas de diff. Reloj de muñeca diegético en primera persona, sacar con tecla `T` (provisional; `TAB` está atado a Inventario, libres: k/l/m/o/p/x/z/9/0). Rig brazo + reloj en `ViewModel`, exhiben inercia (sway giro, hundimiento velocidad real) + impulso muelle al equipar. PLACEHOLDER: esfera stats sin colocar.
+
+1. **FICHEROS NUEVOS:**
+   - `Assets/Scripts/Gameplay/WristWatchHandler.cs` — instancia y toggle con `T`
+   - `Assets/Scripts/Gameplay/WristWatchOverlay.cs` — overlay: poda pipeline vendor, inercia, muelle
+   - `Assets/Scripts/Gameplay/WristPoseOverride.cs` — captura pose huesos (código muerto desde overlay)
+   - `Assets/Scripts/UI/WristWatchDisplay.cs` — cara reloj (canvas world-space, 5 barras) sin colocar
+   - `Assets/Editor/BackroomsWatchCreator.cs` — genera prefab clonando `STP_Wieldable_Compass`
+   - `Assets/Editor/BackroomsWatchMeshApplier.cs` — hornea malla Meshy
+   - `Assets/Resources/Wieldables/BR_Wieldable_Watch.prefab` + `BR_Watch_Motion.asset`
+   - `Assets/Art/Watch/` — malla 12,7 MB densa, 2 texturas 1024, material reloj + clon brazo sin warp
+
+2. **FALLOS DIAGNOSTICADOS Y ARREGLADOS (4, documentados en código):**
+   - Prefab raíz apagada: `WieldableMotion.Awake` corre antes de `RegisterWieldable` → `_character` null → NullRef en `OnEnable` antes de `ResetMixer`.
+   - `WieldableRotatingElement` huérfano: 1 NullRef/frame (3664 en 3 s), ralentización sin error visible.
+   - Warp FOV deforma brazo no canvas: reloj despegado. Solución: clon material `_FOV_Enabled = 0`.
+   - Malla en `ViewModel` vs muñeca: movimiento divergente. Ahora en `ForearmTwist.4.L`.
+
+3. **PROYECCIÓN COMPARTIDA — COMPROMISO CONSCIENTE:** `IFOVHandlerCC` una ranura, cada wieldable escribe su valor. Reloj fuera → reloj; reloj dentro → otro objeto reactiva suyo. Alternativa (contraescala) descartada en juego: reloj salía al doble.
+
+4. **MÉTODO SONDA AUTOMÁTICA:** script temporal Play arranca Unity CLI `-executeMethod`, equipa reloj por código, volcaba estado. Identificó `WieldableRotatingElement` huérfano, confirmó funcionamiento.
+
+5. **RIESGO NUEVO / BLOQUEO ARQUITECTURA (crítico, reaparece):**
+   FPSCore/STP logra FOV 45–56° viewmodel (cámara 100°) con WARP DE VÉRTICES (`_FOV`, `_FOV_Enabled` por material), NO segunda cámara. Bloquea TODA UI diegética (mapa, notas, radio, inventario 1P) — 11 prefabs vendor. Cuatro salidas evaluadas, NINGUNA DECIDIDA: (A) reloj SkinnedMesh + esfera RenderTexture; (B) `viewModelFov 100` / `viewModelSize 1` los 11 prefabs + remover warp (reversible); (C) statu quo; (D) segunda cámara viewmodel (estándar industria, URP 17 Forward+ sin medir aún). **ARQUITECTURA BLOQUEADA**: esfera y todo lo demás dependen de decisión.
+
+6. **TRAMPA GEOMETRÍA (3 veces):** rig donante pies origen, reloj 1,578 m arriba. Cambio escala/posición root = desplazamiento sin error consola. Escalar+contraescalar se cancela solo alrededor del MISMO punto; vendor escala alrededor del ojo.
+
+7. **PENDIENTES A MEDIAS:**
+   - Esfera stats sin colocar (depende arquitectura)
+   - Código muerto: `WristWatchOverlay.cs` (ancla contraescala descartada, `ApplyProjection`/`RestoreProjection` parcial) + `WristPoseOverride.cs` entero
+   - Malla 12,7 MB densa; conviene decimar o re-exportar
+   - `Anchor Bone Name` display aún `Hand.L`; física `ForearmTwist.4.L`
+   - DE ANTES: HEAD no compila por Almond Water / `sanity_restore` sin commitear backend/src/game_loop.rs
+
+8. **NO TOCAR (validado en juego Joel):**
+   - Pose brazo (22 huesos) + encuadre `ViewModel`
+   - Defaults inercia: `lookSwayDegrees 2.5`, `verticalInertia 0.008`, `equipKickDegrees 14`, `springRecovery 7`, `viewModelFov 100`, `viewModelSize 1`
+   - Warp brazo apagado por material; reactivar despega reloj y esfera futura
+   - NO hacer reloj inmune escala vendor (probado, descartado)
+
+9. **PRÓXIMO PASO ÚNICO:**
+   Investigar y DECIDIR arquitectura UI diegética primera persona (opciones A/B/C/D), evaluar opción D (segunda cámara viewmodel URP 17 Forward+: coste, capas, composición, profundidad). Solo lectura hasta decisión. Todo reloj incluyendo esfera depende.
+
+---
+
 - Fecha: 2026-08-14 (escalado hacia el MMO: análisis completo, ADR-073/074 propuesta, sonda F0.0 línea base) — **cargo test 711 verdes; clippy GNU -D warnings limpio; fmt limpio; ADR-073 + ADR-074 escritos y enmiendados en propuesta (validación humana pendiente ANTES de código); DECISIONS.md 3343→3423 líneas verificado; docs/SCALING-ROADMAP.md nuevo (gates E0–E5, tareas (a)/(b)/(c), calendario); sonda host_uplink_baseline medida en backend con 8 peers: 35,8 Mbps construcción / 32,5 Mbps idle; hallazgo broadcast_chunk_states = 77% de la subida (3,35 MB/s), cura F0.8 candidata pendiente de OK de Joel.**
 
 0. ANÁLISIS RED COMPLETO (docs + backend + cliente, todos los sistemas). Alcance decidido por Joel: roadmap + Etapa 0 + ADRs E1 en propuesta. Topología final HÍBRIDO (varios hosts por zona descargando el relay) aplazada al gate E2→E3 con medidas de 16+ jugadores. ADR-003 cierra con ADR-073 nuevo (reemplaza PROPUESTA 1992 original).
