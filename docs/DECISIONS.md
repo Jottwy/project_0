@@ -3603,3 +3603,51 @@ Lo cazó un test, no el diseño, y merece quedar escrito porque es la clase de f
 **Decisión: el cierre pertenece a la RONDA EMITIDA, no al reloj.** Si el gate de ADR-071 corta un roster, esa ronda no manda páginas **ni cierre**, y el receptor no aplica nada — conserva lo que tiene, exactamente lo que ADR-071 promete ("solo deja de reenviar lo que todos ya tienen"). El cierre solo sale detrás de las páginas que sí salieron.
 
 **Consecuencia práctica**: `RosterScopeEnd` no es un latido independiente ni puede emitirse "por si acaso". Emitir un cierre sin sus páginas es exactamente el bug. El test `a_round_the_gate_cut_must_not_arrive_as_a_scope_end` fija la mitad receptora del invariante; la emisora se fija en el sitio donde el gate decide.
+
+---
+
+## ADR-077 — Proyección unificada del viewmodel: todas las superficies pasan por el warp (2026-08-16) — VALIDADA
+
+**Estado:** VALIDADA (verificada en runtime: brazo, cuerpo del reloj y esfera de stats son solidarios bajo cualquier FOV, y el reloj ya no altera la proyección de los items de mano derecha).
+
+### Contexto
+
+FPSCore dibuja los brazos de primera persona con un FOV propio y estrecho mientras la cámara va al FOV del jugador, y lo consigue con un **warp de vértices en el shader** (`LitFieldOfView.shadergraph` y `LitFieldOfView_SSS.shadergraph`), gobernado por dos uniforms globales `_FOV` y `_FOVEnabled` que escribe `CameraFOVHandler`. Solo participa del warp lo que use ese shader.
+
+ADR-065 dio por heredado del vendor un mecanismo para **apagar** ese warp por material, y el reloj de muñeca de `b1938783` se construyó encima de esa premisa: la esfera de stats es un Canvas, no puede usar el shader del vendor, así que se "apagó" el warp del brazo del reloj y se forzó `_FOV = 100` para que ambos coincidieran.
+
+**Ese mecanismo nunca existió.** El síntoma que lo destapó fue el cuerpo del reloj dibujándose desproporcionadamente grande respecto a su propio brazo.
+
+### Hallazgos verificados
+
+1. **El nombre de la propiedad era incorrecto.** El código escribía `_FOV_Enabled`; el reference name real es `_FOVEnabled` (`m_OverrideReferenceName` en el shadergraph pisa al default). `Material.HasProperty("_FOV_Enabled")` devolvía false y el `SetFloat` ni llegaba a ejecutarse.
+2. **Aunque el nombre fuese correcto, no habría funcionado.** `_FOV` y `_FOVEnabled` se declaran con `m_GeneratePropertyBlock: false` y `hlslDeclarationOverride: 1` — son uniforms **globales**, no están en el bloque `Properties` del shader y ningún material puede pisarlos. El brazo warpeó siempre.
+3. **El subtarget Canvas de ShaderGraph no puede mover vértices en URP 17.0.4.** `CanvasPass.hlsl` resuelve `output.positionCS` a partir de `input.positionOS` **antes** de llamar a `ApplyVertexModification`, y nunca reutiliza el `positionWS` que esa función modifica. `VertexDescription.Position` es un no-op en ese subtarget. Por eso el shader de UI va escrito a mano.
+4. **`_GlossMapScale` está muerto en URP 17.** El multiplicador real de smoothness es `_Smoothness` (`LitInput.hlsl:146`). Un material con `_GlossMapScale: 0` y `_Smoothness: 1` sale **brillante**, no mate — leer el primero lleva a conclusiones invertidas sobre el aspecto actual de un material.
+
+### Decisión
+
+**Unificar la proyección hacia arriba, no hacia abajo: que TODAS las superficies del viewmodel pasen por el warp, en vez de intentar aislar unas del warp.**
+
+- El cuerpo del reloj pasa de URP/Lit a `LitFieldOfView_SSS`.
+- La esfera de stats usa `BR_UIWarp.shader`, copia de `UI/Default` con la misma cadena de warp replicada literalmente en el vertex stage — mismo signo y misma matriz, para que cualquier convención de signo de `UNITY_MATRIX_P[1][1]` se cancele igual en ambos sitios.
+- **Regla general**: cualquier superficie nueva que deba seguir a la mano warpea. `_FOV` y `_FOVEnabled` se leen del global y **nunca** se declaran en el bloque `Properties` de un material, para que el valor serializado no pueda pisar al global.
+- En consecuencia, ningún componente vuelve a forzar `_FOV` ni la escala del viewmodel: los dicta el `WieldableFOV` del item equipado.
+
+### Alternativas descartadas
+
+- **Segunda cámara overlay de viewmodel con su propio FOV.** Es lo estándar en la industria y URP 17 Forward+ lo soporta con cámara Overlay sin custom render pass. Descartada porque los brazos quedan fuera del pase de la cámara base: pierden sombras en tiempo real, SSAO y DoF, y las partículas del mundo dejan de intercalarse con ellos.
+- **Quad + RenderTexture con el material ya warpeado.** Funciona, pero cobra un peaje recurrente: cada UI diegética futura (mapa, notas, radio, inventario) necesitaría su propia RenderTexture y su cámara de horneado. Arregla el reloj, no la clase de problema.
+- **Apagar `_FOVEnabled` global y quitar el warp del juego entero.** Obligaría a reencuadrar a mano los 13 prefabs con `WieldableFOV`: el warp magnifica hasta ~2.9x y los `viewModelSize` de 0.45–0.75 compensaban justo eso. Además los brazos empezarían a clipear contra las paredes, que en pasillos Backrooms es inaceptable.
+
+### Consecuencias
+
+- **Patrón reutilizable para la dirección de UI diegética**: mapa dibujado a mano, notas, radio e inventario pueden montarse como Canvas normales pegados al rig; basta darles `BR_UIWarp`.
+- **Deuda de nombres, asumida a conciencia**: `BR_Watch_FP_Arm_NoWarp.mat` **sí** warpea — el nombre nació de la premisa falsa y renombrarlo rompería la referencia del prefab. Igual con `screenMaterial` en `WristWatchDisplay`, que ya no es solo el fondo sino los 17 Graphics de la cara.
+- El reloj vuelve a ser consistente con el juego: al equipar o enfundar en la mano derecha, el conjunto entero cambia de tamaño junto, en vez de quedarse inmune.
+
+### Limitaciones abiertas
+
+- **`_FOV` es único y simultáneo.** Solo puede haber una proyección de viewmodel activa a la vez. Dos superficies que quisieran FOV distintos al mismo tiempo (por ejemplo, una mira con zoom mientras el reloj está fuera) no caben en este mecanismo.
+- **Skinning latente del reloj.** `WatchMesh` es un `MeshRenderer` rígido colgado del hueso `ForearmTwist.4.L`, mientras la piel del brazo se deforma con pesos mezclados. Hoy no se manifiesta porque `WristWatchOverlay` destruye el `Animator` y los huesos están congelados. Despertaría en cuanto el reloj recupere animación. Solución conocida y ya usada por el vendor: skinnear el objeto al rig dentro del FBX, que es exactamente lo que hace la brújula donante.
+- **`WieldableFOV` no tiene `OnDisable`.** Al enfundar un item, `_FOV` se queda en el valor de ese item en vez de volver al `_baseViewModelFOV` del rig. Es comportamiento preexistente del vendor; antes quedaba tapado por el forzado del reloj y ahora es visible.

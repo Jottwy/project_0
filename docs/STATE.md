@@ -2,6 +2,31 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
+- Fecha: 2026-08-16 (proyección unificada del viewmodel — CIERRA la sesión b1938783) — **ADR-077 VALIDADA. Tres commits: `c56ed884` (cuerpo del reloj), `70fd8912` (esfera de stats), `2b5b94b4` (deja de forzar el FOV global). Verificado en runtime: brazo, cuerpo y esfera son solidarios bajo cualquier FOV, y el reloj ya no pisa la proyección de los items de mano derecha. Compile-check 0 errores en las 4 asambleas. DECISIONS.md 3605→3653 líneas verificado.**
+
+0. **LA PREMISA DE b1938783 ERA FALSA.** Aquella sesión creyó apagar el warp del brazo por material (`_FOV_Enabled = 0`) y forzó `_FOV = 100` para que la esfera coincidiera. Ninguna de las dos cosas hacía lo que decía: el nombre real de la propiedad es `_FOVEnabled`, y además es un uniform GLOBAL (`m_GeneratePropertyBlock: false`) que ningún material puede pisar. **El brazo warpeó siempre.** El síntoma que lo destapó fue el cuerpo del reloj dibujándose ~1.55x más grande que su propio brazo, porque `_FOV`=100 contra una cámara a 75 encoge lo warpeado al 64,4%.
+
+1. **DECISIÓN (ADR-077): unificar hacia arriba, no aislar.** Warpean las TRES superficies en vez de intentar sacar una del warp. Cuerpo del reloj a `LitFieldOfView_SSS`; esfera a `BR_UIWarp.shader`, copia de `UI/Default` con la cadena de warp replicada literal en el vertex stage. Regla: `_FOV`/`_FOVEnabled` se leen del global y NUNCA se declaran en `Properties` de un material.
+
+2. **COMMITS:**
+   - `c56ed884` — `BR_WristWatch.mat` de URP/Lit a `LitFieldOfView_SSS`, con `BR_WristWatch_MaskMap.png` nuevo (R=metallic del original píxel a píxel, G=255, A=0) porque el shader destino usa convención HDRP R/G/A y la textura original era 24bpp sin alfa. Único delta visual: smoothness 1→0.
+   - `70fd8912` — `BR_UIWarp.shader`/`.mat` + `ApplyCanvasMaterial` sobre los 17 Graphics de la cara. Los `Text` legacy entran sin perder la fuente: `Graphic.UpdateMaterial` asigna material y textura por separado, y `Text.mainTexture` devuelve el atlas antes de mirar el material.
+   - `2b5b94b4` — −274/+30 en `WristWatchOverlay.cs`. Fuera `ApplyProjection`/`ReassertProjection`/`RestoreProjection`/`RestoreWhenVendorReady`/`ResolveFovHandler`, el bloque muerto de escala (cero call sites) y el bucle de materiales de `Setup` (no-op que además clonaba arrays y rompía batching).
+
+3. **CALLEJONES CERRADOS, para no repetirlos:** el subtarget Canvas de ShaderGraph NO puede mover vértices en URP 17.0.4 (`CanvasPass.hlsl` resuelve `positionCS` antes de `ApplyVertexModification`) — por eso el shader de UI va a mano. Y `_GlossMapScale` está muerto en URP 17: el multiplicador real de smoothness es `_Smoothness` (`LitInput.hlsl:146`).
+
+4. **PENDIENTE — texto espejado en el canvas.** Observado en juego. Sospecha principal, registrada mientras está fresca: `BR_UIWarp` va a clip por `UNITY_MATRIX_P` directo mientras `UI/Default` usa `unity_MatrixVP`; si discrepan en el y-flip de render-a-textura, la geometría sale espejada. **Afectaría a TODOS los Graphics, pero solo se nota en el texto** — un quad espejado sigue pareciendo el mismo quad. Primer sitio a mirar: el signo de `k` en `WarpToViewModelFOV`.
+
+5. **PENDIENTE — ajuste milimétrico de posiciones en `BuildFace`.** Se aplazó a propósito hasta tener el FOV definitivo: con las tres superficies ya solidarias, los offsets se pueden fijar de una vez sin que los mueva el siguiente cambio de proyección.
+
+6. **PENDIENTE — `Debug.LogError` en cada spawn del reloj.** Lo emite el `WieldableFOV` que el prefab todavía lleva: su `Awake` corre antes de que `Setup` lo destruya, encuentra `Character` null y protesta. Cura: quitar el componente de `BR_Wieldable_Watch.prefab`. Quedó fuera de alcance por ser cambio de prefab.
+
+7. **DEUDA DE NOMBRES, asumida:** `BR_Watch_FP_Arm_NoWarp.mat` SÍ warpea, y `screenMaterial` ya no es solo el fondo sino los 17 Graphics. Renombrar cualquiera de los dos rompe una referencia serializada, y el síntoma sería un null en silencio.
+
+8. **SIGUIENTE PASO:** arreglar el espejado, luego el encuadre fino. Con eso, el patrón queda listo para la dirección de UI diegética (mapa dibujado a mano, notas, radio, inventario): Canvas normal pegado al rig + `BR_UIWarp`.
+
+---
+
 - Fecha: 2026-08-16 (reloj de muñeca diegético, placeholder jugable) — **commit b1938783, 27 ficheros 6271 líneas. Reloj táctico en muñeca con tecla T, overlay con inercia y muelle. PLACEHOLDER: esfera sin colocar. Gate verificado: compile-check 0 errores (4 asambleas C# cliente). Riesgo crítico: warp FOV del vendor bloquea toda UI diegética en primera persona (11 prefabs vendor afectados, bloquea mapa/notas/radio/inventario diegético). Pendiente: decisión arquitectura UI diegética (opciones A/B/C/D), todo lo demás depende.**
 
 0. **COMMIT b1938783** — 27 ficheros, 6271 líneas de diff. Reloj de muñeca diegético en primera persona, sacar con tecla `T` (provisional; `TAB` está atado a Inventario, libres: k/l/m/o/p/x/z/9/0). Rig brazo + reloj en `ViewModel`, exhiben inercia (sway giro, hundimiento velocidad real) + impulso muelle al equipar. PLACEHOLDER: esfera stats sin colocar.
