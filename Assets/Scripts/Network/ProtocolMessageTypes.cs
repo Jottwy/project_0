@@ -34,5 +34,10 @@ namespace BackroomsSurvival.Net
         /// de un roster: una pintada son ~1,9 KB. Es la única vía por la que aparece sin
         /// recargar el chunk, porque el <c>chunk_data</c> de esa pared ya viajó.</summary>
         public const string SprayPlaced = "spray_placed";
+
+        /// <summary>ADR-078 — un trozo del trazo que OTRO jugador está pintando ahora mismo.
+        /// Efímero: se dibuja como previa y se tira al llegar el <c>spray_placed</c> con el
+        /// mismo <c>place_id</c>, o a los tres segundos sin noticias.</summary>
+        public const string SprayDraft = "spray_draft";
     }
 }

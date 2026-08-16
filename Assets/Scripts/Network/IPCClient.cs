@@ -133,6 +133,10 @@ namespace BackroomsSurvival.Net
         public delegate void SprayHandler(SprayMsg spray);
         private readonly List<SprayHandler> _sprayListeners = new List<SprayHandler>();
 
+        /// <summary>ADR-078 — trozos de trazo ajeno en vivo.</summary>
+        public delegate void SprayDraftHandler(SprayDraftMsg draft);
+        private readonly List<SprayDraftHandler> _sprayDraftListeners = new List<SprayDraftHandler>();
+
         public void AddEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Add(handler); }
         public void RemoveEventListener(GameEventHandler handler) { lock (_eventListeners) _eventListeners.Remove(handler); }
         public void AddStateListener(WorldStateHandler handler) { lock (_stateListeners) _stateListeners.Add(handler); }
@@ -143,6 +147,8 @@ namespace BackroomsSurvival.Net
         public void RemoveChunkDataListener(ChunkDataHandler handler) { lock (_chunkDataListeners) _chunkDataListeners.Remove(handler); }
         public void AddSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Add(handler); }
         public void RemoveSprayListener(SprayHandler handler) { lock (_sprayListeners) _sprayListeners.Remove(handler); }
+        public void AddSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) _sprayDraftListeners.Add(handler); }
+        public void RemoveSprayDraftListener(SprayDraftHandler handler) { lock (_sprayDraftListeners) _sprayDraftListeners.Remove(handler); }
 
         /// <summary>
         /// Suscriptores que ya lanzaron y cuyo fallo ya se reportó.
@@ -205,6 +211,14 @@ namespace BackroomsSurvival.Net
             lock (_sprayListeners)
                 foreach (var h in _sprayListeners)
                     try { h(spray); } catch (Exception e) { ReportListenerFailure(h, e); }
+        }
+
+        private void NotifySprayDraftListeners(SprayDraftMsg draft)
+        {
+            if (draft == null) return;
+            lock (_sprayDraftListeners)
+                foreach (var h in _sprayDraftListeners)
+                    try { h(draft); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         // ─── Networking internals ───
@@ -342,6 +356,7 @@ namespace BackroomsSurvival.Net
         private readonly ConcurrentQueue<MovementDeltaMsg> _pendingDeltaNotify = new ConcurrentQueue<MovementDeltaMsg>();
         private readonly ConcurrentQueue<GridChunkDataMsg> _pendingChunkDataNotify = new ConcurrentQueue<GridChunkDataMsg>();
         private readonly ConcurrentQueue<SprayMsg> _pendingSprayNotify = new ConcurrentQueue<SprayMsg>();
+        private readonly ConcurrentQueue<SprayDraftMsg> _pendingSprayDraftNotify = new ConcurrentQueue<SprayDraftMsg>();
 
         private void Update()
         {
@@ -359,6 +374,8 @@ namespace BackroomsSurvival.Net
 
             while (_pendingSprayNotify.TryDequeue(out var spray))
                 NotifySprayListeners(spray);
+            while (_pendingSprayDraftNotify.TryDequeue(out var draft))
+                NotifySprayDraftListeners(draft);
         }
 
         private void OnDestroy() => Shutdown();
@@ -540,6 +557,11 @@ namespace BackroomsSurvival.Net
                     // ADR-068: una pintada aceptada → SprayRenderer, en el hilo principal (crea
                     // Texture2D y GameObjects, que la API de Unity solo permite ahí).
                     _pendingSprayNotify.Enqueue(SprayPlacedMsg.Parse(r, remaining));
+                    break;
+                case ProtocolMessageTypes.SprayDraft:
+                    // ADR-078: trozo de un trazo ajeno en curso. Por la misma cola de hilo
+                    // principal y por la misma razón: acaba creando texturas.
+                    _pendingSprayDraftNotify.Enqueue(SprayDraftMsg.Parse(r, remaining));
                     break;
                 case ProtocolMessageTypes.Event:
                     var gameEvent = GameEventMsg.Parse(r, remaining);
@@ -857,6 +879,37 @@ namespace BackroomsSurvival.Net
                 // backend lo rechazaría (espera bin, igual que en ClientMessage::Voice).
                 w.WriteString("points"); w.WriteBin(s.points ?? System.Array.Empty<byte>());
             }
+            return SendFrame(w);
+        }
+
+        /// <summary>
+        /// ADR-078 — un trozo del trazo que se está pintando AHORA, para que los demás lo vean
+        /// crecer en vez de verlo aparecer entero al soltar.
+        ///
+        /// Solo los puntos NUEVOS (<paramref name="firstIndex"/> dice cuáles son dentro del
+        /// trazo). Nada de esto es autoridad: el backend no lo valida, no lo guarda y no lo
+        /// cuenta para ningún tope — solo decide a quién se lo reparte, por distancia.
+        ///
+        /// Los milímetros van como blob binario por el mismo motivo que los puntos de
+        /// `spray_place`: una lista de enteros con nombres cuesta ~1,5× y el backend espera
+        /// `bin`.
+        /// </summary>
+        public bool SendSprayDraft(long placeId, byte layer, Vector3 anchor, float yaw,
+            byte color, float width, ushort firstIndex, byte[] pointsMm)
+        {
+            if (pointsMm == null || pointsMm.Length == 0) return false;
+
+            var w = RentWriter();
+            w.WriteMapHeader(9);
+            w.WriteString("type"); w.WriteString("spray_draft");
+            w.WriteString("place_id"); w.WriteInt(placeId);
+            w.WriteString("layer"); w.WriteInt(layer);
+            w.WriteString("anchor"); WriteVec3(w, anchor);
+            w.WriteString("yaw"); w.WriteFloat(yaw);
+            w.WriteString("color"); w.WriteInt(color);
+            w.WriteString("width"); w.WriteFloat(width);
+            w.WriteString("first_index"); w.WriteInt(firstIndex);
+            w.WriteString("points_mm"); w.WriteBin(pointsMm);
             return SendFrame(w);
         }
 

@@ -355,17 +355,33 @@ namespace BackroomsSurvival.Gameplay
         //
         // Es puramente local: no viaja, no se guarda, y desaparece en cuanto llega la pintada
         // autoritativa (que puede diferir — el host manda).
-        private Live _preview;
-        private bool _hasPreview;
+        /// <summary>
+        /// Previas vivas, UNA POR PINTOR. La 0 es la del jugador local (ADR-068); las demás son
+        /// los trazos en vivo que llegan de otros (ADR-078), y la clave es su `place_id`, que es
+        /// lo que empareja el borrador con la pintada definitiva.
+        ///
+        /// Diccionario y no una sola desde ADR-078: dos jugadores pintando a la vez en la misma
+        /// sala son dos previas simultáneas, y con una sola ranura se pisaban.
+        /// </summary>
+        private readonly Dictionary<long, Live> _previews = new Dictionary<long, Live>();
+
+        /// <summary>La del jugador local. Un `place_id` real nunca es 0 (ver `Commit`).</summary>
+        public const long LocalPreviewKey = 0;
 
         /// <summary>
         /// Refresca el trazo en curso. Llamar mientras se pinta — se rehace 30 veces por segundo,
         /// así que soltar bien la textura anterior aquí importa MÁS que en ninguna otra parte:
         /// una pintada larga fabrica cientos de texturas de 256 KB, una por refresco.
         /// </summary>
-        public void ShowPreview(SprayMsg spray)
+        public void ShowPreview(SprayMsg spray) => ShowPreview(LocalPreviewKey, spray);
+
+        /// <summary>
+        /// La misma previa, para un pintor concreto. `key` es 0 para el jugador local y el
+        /// `place_id` del trazo para cualquier otro.
+        /// </summary>
+        public void ShowPreview(long key, SprayMsg spray)
         {
-            ClearPreview();
+            ClearPreview(key);
             if (spray == null || spray.strokes == null || spray.strokes.Length == 0) return;
 
             var tex = Rasterize(spray);
@@ -373,25 +389,28 @@ namespace BackroomsSurvival.Gameplay
 
             // La previa va SIEMPRE encima de lo que ya hubiera en esa pared: se está pintando
             // ahora mismo, así que es lo más nuevo por definición.
-            var key = (spray.cx, spray.cz, spray.layer);
-            _stacked.TryGetValue(key, out int depth);
+            var wall = (spray.cx, spray.cz, spray.layer);
+            _stacked.TryGetValue(wall, out int depth);
 
             var go = BuildQuadObject(spray, tex, "Spray_Preview", depth, out var mat);
-            _preview = new Live(go, tex, mat, spray.cx, spray.cz, spray.layer);
-            _hasPreview = true;
+            _previews[key] = new Live(go, tex, mat, spray.cx, spray.cz, spray.layer);
         }
 
         /// <summary>
         /// Retira la previa. Se llama al mandar la pintada: a partir de ahí manda la copia
         /// autoritativa, y tener las dos a la vez daría doble trazo mientras llega el eco.
         /// </summary>
-        public void ClearPreview()
+        public void ClearPreview() => ClearPreview(LocalPreviewKey);
+
+        public void ClearPreview(long key)
         {
-            if (!_hasPreview) return;
-            Release(_preview);
-            _preview = default;
-            _hasPreview = false;
+            if (!_previews.TryGetValue(key, out var live)) return;
+            Release(live);
+            _previews.Remove(key);
         }
+
+        /// <summary>Cuántas previas hay vivas ahora mismo — la local cuenta.</summary>
+        public int PreviewCount => _previews.Count;
 
         public void Clear()
         {
@@ -399,7 +418,12 @@ namespace BackroomsSurvival.Gameplay
                 Release(kv.Value);
             _spawned.Clear();
             _stacked.Clear();
-            ClearPreview();
+
+            // TODAS las previas, no solo la local: las de los otros pintores también tienen su
+            // textura de 256 KB, y limpiar a medias es la fuga de siempre con otro nombre.
+            foreach (var kv in _previews)
+                Release(kv.Value);
+            _previews.Clear();
         }
 
         /// <summary>

@@ -118,6 +118,78 @@ namespace BackroomsSurvival.Net
     }
 
     /// <summary>
+    /// ADR-078 — un trozo del trazo que otro jugador está pintando AHORA. Mirror de
+    /// <c>ipc::SprayDraftView</c>.
+    ///
+    /// A diferencia de <see cref="SprayMsg"/>, el ancla viaja en coordenadas de MUNDO: esto
+    /// vive tres segundos y muere, así que no se paga la traducción a chunk-local (ADR-078
+    /// decisión 4). Los puntos son pares (u, v) en MILÍMETROS sobre el plano que definen el
+    /// ancla y el giro, como <c>i16</c> little-endian: 4 bytes por punto.
+    /// </summary>
+    public class SprayDraftMsg
+    {
+        public int painter;
+        public long placeId;
+        public byte layer;
+        public float ax, ay, az;
+        public float yaw;
+        public byte color;
+        public float width;
+
+        /// <summary>
+        /// Índice del primer punto DENTRO DEL TRAZO. Cero significa trazo NUEVO: es como el
+        /// receptor sabe que hay que abrir una polilínea en vez de continuar la anterior, sin
+        /// gastar un campo en decirlo.
+        /// </summary>
+        public int firstIndex;
+
+        public byte[] pointsMm;
+
+        public Vector3 Anchor => new Vector3(ax, ay, az);
+
+        /// <summary>Puntos reales: cada uno son cuatro bytes (u, v como i16).</summary>
+        public int PointCount => pointsMm == null ? 0 : pointsMm.Length / 4;
+
+        /// <summary>Lee el punto <paramref name="i"/> en milímetros.</summary>
+        public void PointAt(int i, out short u, out short v)
+        {
+            int o = i * 4;
+            u = (short)(pointsMm[o] | (pointsMm[o + 1] << 8));
+            v = (short)(pointsMm[o + 2] | (pointsMm[o + 3] << 8));
+        }
+
+        public static SprayDraftMsg Parse(MsgPackReader r, int remainingPairs)
+        {
+            var d = new SprayDraftMsg();
+            for (int i = 0; i < remainingPairs; i++)
+            {
+                var k = r.ReadKey();
+                if (MsgPackReader.Is(k, "painter")) d.painter = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "place_id")) d.placeId = r.ReadInt();
+                else if (MsgPackReader.Is(k, "layer")) d.layer = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "anchor"))
+                {
+                    int n = r.ReadArrayHeader();
+                    for (int a = 0; a < n; a++)
+                    {
+                        float f = r.ReadFloat();
+                        if (a == 0) d.ax = f;
+                        else if (a == 1) d.ay = f;
+                        else if (a == 2) d.az = f;
+                    }
+                }
+                else if (MsgPackReader.Is(k, "yaw")) d.yaw = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "color")) d.color = (byte)r.ReadInt();
+                else if (MsgPackReader.Is(k, "width")) d.width = r.ReadFloat();
+                else if (MsgPackReader.Is(k, "first_index")) d.firstIndex = (int)r.ReadInt();
+                else if (MsgPackReader.Is(k, "points_mm")) d.pointsMm = r.ReadBin();
+                else r.Skip();
+            }
+            return d;
+        }
+    }
+
+    /// <summary>
     /// ADR-068 — una pintada colocada. Mirror de <c>world::spray::Spray</c>.
     ///
     /// OJO con las coordenadas: el backend la guarda ANCLADA AL CHUNK (<c>local_pos</c> con

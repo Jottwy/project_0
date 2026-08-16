@@ -89,6 +89,22 @@ namespace BackroomsSurvival.Gameplay
 
         private const float SprayingLatchSeconds = 0.2f;
 
+        // ─── ADR-078: el trazo en vivo hacia los demás ───
+        //
+        // El `place_id` se acuña al EMPEZAR el gesto y no al soltarlo, que es el cambio que hace
+        // posible la fase B: es la etiqueta que empareja los borradores con la pintada definitiva,
+        // así que tiene que existir antes de mandar el primer borrador.
+        private long _activePlaceId;
+        private float _nextDraftAt;
+        private int _draftSentPoints;
+        private Vector3 _draftAnchor;
+
+        /// <summary>10 Hz, la misma cadencia que la pose. Más no se nota; menos se ve a tirones.</summary>
+        private const float DraftIntervalSeconds = 0.1f;
+
+        /// <summary>Tope por paquete (ADR-078 decisión 6): 64 puntos = 256 B de carga útil.</summary>
+        private const int MaxDraftPointsPerPacket = 64;
+
         /// <summary>
         /// ¿Está el jugador local pintando ahora mismo? Solo pintura DE VERDAD: quedarse sin bote y
         /// seguir apretando escupe aire, y eso no pinta nada ni debe dibujar chorro a los demás.
@@ -273,6 +289,12 @@ namespace BackroomsSurvival.Gameplay
                 _gesture.BeginStroke();
                 _gesture.Add(hit.point);
                 _idleSeconds = 0f;
+                // ADR-078: trazo nuevo ⇒ el borrador vuelve a empezar por el índice 0, que es
+                // como el receptor sabe que hay que abrir una polilínea y no continuar la
+                // anterior. Sin esto, levantar el dedo y volver a pintar dibujaría en casa del
+                // que mira una raya recta entre los dos trazos.
+                _draftSentPoints = 0;
+                _nextDraftAt = 0f;
                 RefreshPreview();
                 return;
             }
@@ -294,6 +316,7 @@ namespace BackroomsSurvival.Gameplay
             _gesture.Add(hit.point);
             _idleSeconds = 0f;
             RefreshPreview();
+            PumpDraft();
 
             // Al tocar el tope de puntos se cierra Y se manda: seguir muestreando sin sitio sería
             // pintar en el vacío, con el jugador moviendo el bote y sin que salga nada.
@@ -368,42 +391,60 @@ namespace BackroomsSurvival.Gameplay
         /// Lo comparten la previa y el envío, así que lo que se ve mientras se pinta es lo mismo
         /// que se manda — si divergieran, el trazo saltaría al soltar.
         /// </summary>
-        private SprayMsg BuildMessage()
+        /// <summary>
+        /// ADR-078 — manda a 10 Hz los puntos NUEVOS del trazo abierto, para que los demás lo
+        /// vean crecer en vez de verlo aparecer entero al soltar.
+        ///
+        /// El ancla se fija con el PRIMER punto del gesto y no se vuelve a mover: es el origen
+        /// contra el que se miden los milímetros, y cambiarlo a mitad de trazo desplazaría todo
+        /// lo ya dibujado en la pantalla del que mira.
+        ///
+        /// Best-effort de verdad: si no hay IPC, si no hay bote o si no hay puntos nuevos, no se
+        /// manda nada y no pasa nada — al soltar llega la pintada entera igual.
+        /// </summary>
+        private void PumpDraft()
         {
-            if (!_gesture.TryFit(out var centre, out float sizeX, out float sizeY)) return null;
+            if (Time.time < _nextDraftAt) return;
+            if (!_gesture.TryGetAnchor(out var anchor)) return;
 
-            int total = _gesture.TotalStrokesIncludingOpen;
-            var strokes = new List<SprayStrokeMsg>(total);
-            for (int i = 0; i < total; i++)
-            {
-                var points = _gesture.ProjectStroke(i, centre, sizeX, sizeY);
-                if (points.Length < 2) continue;
-                strokes.Add(new SprayStrokeMsg
-                {
-                    color = _can != null ? _can.ColorIndex : (byte)0,
-                    width = _can != null ? _can.StrokeWidth : (byte)4,
-                    points = points,
-                });
-            }
-            if (strokes.Count == 0) return null;
+            var ipc = IPCClient.Instance;
+            if (ipc == null || !ipc.IsConnected) return;
 
-            int cx = Mathf.FloorToInt(centre.x / SprayMsg.ChunkSize);
-            int cz = Mathf.FloorToInt(centre.z / SprayMsg.ChunkSize);
-            return new SprayMsg
-            {
-                id = 0,
-                cx = cx,
-                cz = cz,
-                layer = _canvasLayer,
-                lx = centre.x - cx * SprayMsg.ChunkSize,
-                ly = centre.y,
-                lz = centre.z - cz * SprayMsg.ChunkSize,
-                yaw = _gesture.Yaw,
-                sizeX = sizeX,
-                sizeY = sizeY,
-                strokes = strokes.ToArray(),
-            };
+            if (_draftSentPoints == 0) _draftAnchor = anchor;
+
+            var bytes = _gesture.OpenStrokeToMillimetres(
+                _draftSentPoints, MaxDraftPointsPerPacket, _draftAnchor);
+            if (bytes == null) return;
+
+            EnsurePlaceId();
+            _nextDraftAt = Time.time + DraftIntervalSeconds;
+
+            ipc.SendSprayDraft(_activePlaceId, _canvasLayer, _draftAnchor, _gesture.Yaw,
+                _can != null ? _can.ColorIndex : (byte)0,
+                _can != null ? _can.StrokeWidth / 255f : 0.02f,
+                (ushort)Mathf.Min(_draftSentPoints, ushort.MaxValue), bytes);
+
+            _draftSentPoints += bytes.Length / 4;
         }
+
+        /// <summary>
+        /// Acuña el id de esta pintada si aún no lo tiene. Se llama al mandar el primer borrador
+        /// y otra vez al commitear, para que el gesto que nunca mandó borrador (sin red, o tan
+        /// corto que no llegó a los 100 ms) siga teniendo su id como antes de ADR-078.
+        /// </summary>
+        private void EnsurePlaceId()
+        {
+            if (_activePlaceId != 0) return;
+            int selfId = NetworkInitializer.Instance != null
+                ? NetworkInitializer.Instance.LastSelectedNetId
+                : 0;
+            _activePlaceId = ((long)Mathf.Max(1, selfId) * 1000000000L) + _nextPlaceId++;
+        }
+
+        private SprayMsg BuildMessage() => _gesture.BuildMessage(
+            _can != null ? _can.ColorIndex : (byte)0,
+            _can != null ? _can.StrokeWidth : (byte)4,
+            _canvasLayer);
 
         /// <summary>
         /// Manda la pintada y vacía el estado. El id se particiona por peer con el mismo esquema
@@ -420,10 +461,11 @@ namespace BackroomsSurvival.Gameplay
             var ipc = IPCClient.Instance;
             if (ipc != null)
             {
-                int selfId = NetworkInitializer.Instance != null
-                    ? NetworkInitializer.Instance.LastSelectedNetId
-                    : 0;
-                long placeId = ((long)Mathf.Max(1, selfId) * 1000000000L) + _nextPlaceId++;
+                // Desde ADR-078 el id puede venir ya acuñado: los borradores lo llevan escrito
+                // desde el primer paquete, y la pintada TIENE que traer el mismo o el receptor
+                // se quedará con el borrador colgado hasta que caduque, doble trazo incluido.
+                EnsurePlaceId();
+                long placeId = _activePlaceId;
 
                 ipc.SendSprayPlace(placeId, msg.layer, msg.WorldPos, msg.yaw,
                     msg.sizeX, msg.sizeY, msg.strokes);
@@ -441,6 +483,9 @@ namespace BackroomsSurvival.Gameplay
         {
             _gesture.Clear();
             _idleSeconds = 0f;
+            _activePlaceId = 0;
+            _draftSentPoints = 0;
+            _nextDraftAt = 0f;
             // La previa NO se retira aquí: se queda hasta que llegue la copia autoritativa, o
             // el trazo parpadearía en el hueco entre soltar y recibir el eco del host.
         }

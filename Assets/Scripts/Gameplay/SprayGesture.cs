@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Net;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay
@@ -139,6 +140,105 @@ namespace BackroomsSurvival.Gameplay
 
         /// <summary>Trazos cerrados MÁS el abierto, que es lo que hay que dibujar en la previa.</summary>
         public int TotalStrokesIncludingOpen => _strokes.Count + (_current != null && _current.Count > 0 ? 1 : 0);
+
+        /// <summary>
+        /// El gesto convertido a lo que viaja por el wire, con el lienzo AJUSTADO a lo pintado.
+        ///
+        /// Vive AQUÍ y no en <c>SprayPainter</c> desde ADR-078 porque ahora tiene dos usuarios:
+        /// quien pinta (previa local + envío) y quien MIRA pintar a otro, que reconstruye el
+        /// gesto ajeno y lo dibuja por este mismo camino. Dos copias de esta aritmética
+        /// divergirían, y la divergencia se vería como un trazo que salta al soltar.
+        /// </summary>
+        public SprayMsg BuildMessage(byte color, byte width, byte layer)
+        {
+            if (!TryFit(out var centre, out float sizeX, out float sizeY)) return null;
+
+            int total = TotalStrokesIncludingOpen;
+            var strokes = new List<SprayStrokeMsg>(total);
+            for (int i = 0; i < total; i++)
+            {
+                var points = ProjectStroke(i, centre, sizeX, sizeY);
+                if (points.Length < 4) continue; // menos de dos puntos no es una línea
+                strokes.Add(new SprayStrokeMsg { color = color, width = width, points = points });
+            }
+            if (strokes.Count == 0) return null;
+
+            int cx = Mathf.FloorToInt(centre.x / SprayMsg.ChunkSize);
+            int cz = Mathf.FloorToInt(centre.z / SprayMsg.ChunkSize);
+            return new SprayMsg
+            {
+                id = 0,
+                cx = cx,
+                cz = cz,
+                layer = layer,
+                lx = centre.x - cx * SprayMsg.ChunkSize,
+                ly = centre.y,
+                lz = centre.z - cz * SprayMsg.ChunkSize,
+                yaw = Yaw,
+                sizeX = sizeX,
+                sizeY = sizeY,
+                strokes = strokes.ToArray(),
+            };
+        }
+
+        /// <summary>
+        /// ADR-078 — el ancla del gesto: el PRIMER punto, que es el origen del plano contra el
+        /// que se miden los milímetros que viajan. Público porque el borrador lo manda y el
+        /// receptor lo necesita para deshacer la cuenta.
+        /// </summary>
+        public bool TryGetAnchor(out Vector3 anchor)
+        {
+            anchor = FirstPoint();
+            return !IsEmpty;
+        }
+
+        /// <summary>Cuántos puntos lleva el trazo ABIERTO. Es lo que el borrador va mandando.</summary>
+        public int OpenStrokePointCount => _current != null ? _current.Count : 0;
+
+        /// <summary>
+        /// Vuelca a milímetros los puntos del trazo abierto desde <paramref name="from"/>, contra
+        /// el plano del ancla. Pares (u, v) `i16` little-endian: 4 bytes por punto, el mismo
+        /// formato binario que ya usan los puntos de un trazo.
+        ///
+        /// Devuelve null si no hay nada nuevo que mandar, para que el llamante no gaste un
+        /// paquete en decir "sigo aquí".
+        /// </summary>
+        public byte[] OpenStrokeToMillimetres(int from, int maxPoints, Vector3 anchor)
+        {
+            if (_current == null || from < 0 || from >= _current.Count) return null;
+
+            int count = Mathf.Min(_current.Count - from, maxPoints);
+            if (count <= 0) return null;
+
+            Vector3 right = SprayCanvas.RightOf(Yaw);
+            var bytes = new byte[count * 4];
+            for (int i = 0; i < count; i++)
+            {
+                Vector3 d = _current[from + i] - anchor;
+                // Clamp explícito: a ±32,7 m no se llega pintando (el lienzo son 1,2 m), pero un
+                // desbordamiento silencioso dibujaría el punto en la esquina opuesta.
+                short u = (short)Mathf.Clamp(Mathf.RoundToInt(Vector3.Dot(d, right) * 1000f),
+                    short.MinValue, short.MaxValue);
+                short v = (short)Mathf.Clamp(Mathf.RoundToInt(d.y * 1000f),
+                    short.MinValue, short.MaxValue);
+                bytes[i * 4] = (byte)(u & 0xFF);
+                bytes[i * 4 + 1] = (byte)((u >> 8) & 0xFF);
+                bytes[i * 4 + 2] = (byte)(v & 0xFF);
+                bytes[i * 4 + 3] = (byte)((v >> 8) & 0xFF);
+            }
+            return bytes;
+        }
+
+        /// <summary>
+        /// El camino inverso: mete en el gesto un punto que llegó en milímetros. Lo usa quien
+        /// MIRA pintar — reconstruye el trazo ajeno en mundo para dibujarlo por el mismo camino
+        /// que la previa propia.
+        /// </summary>
+        public void AddFromMillimetres(Vector3 anchor, short u, short v)
+        {
+            Vector3 right = SprayCanvas.RightOf(Yaw);
+            Add(anchor + right * (u / 1000f) + Vector3.up * (v / 1000f));
+        }
 
         private List<Vector3> StrokeAt(int index)
         {
