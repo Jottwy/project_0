@@ -2,7 +2,7 @@
 > Actualizado por /checkpoint al cierre de cada sesión. Leído al inicio de cada sesión.
 
 ## Última sesión
-- Fecha: 2026-08-16 (proyección unificada del viewmodel — CIERRA la sesión b1938783) — **ADR-077 VALIDADA. Tres commits: `c56ed884` (cuerpo del reloj), `70fd8912` (esfera de stats), `2b5b94b4` (deja de forzar el FOV global). Verificado en runtime: brazo, cuerpo y esfera son solidarios bajo cualquier FOV, y el reloj ya no pisa la proyección de los items de mano derecha. Compile-check 0 errores en las 4 asambleas. DECISIONS.md 3605→3653 líneas verificado.**
+- Fecha: 2026-08-16 (proyección unificada del viewmodel — CIERRA la sesión b1938783) — **ADR-077 VALIDADA + enmienda. Cuatro commits: `c56ed884` (cuerpo del reloj), `70fd8912` (esfera de stats), `2b5b94b4` (deja de forzar el FOV global), `672d72b7` (espejado + encaje final). Verificado en runtime: brazo, cuerpo y esfera son solidarios bajo cualquier FOV, el reloj ya no pisa la proyección de los items de mano derecha, y la cara se lee bien. Compile-check 0 errores en las 4 asambleas. DECISIONS.md 3605→3666 líneas verificado.**
 
 0. **LA PREMISA DE b1938783 ERA FALSA.** Aquella sesión creyó apagar el warp del brazo por material (`_FOV_Enabled = 0`) y forzó `_FOV = 100` para que la esfera coincidiera. Ninguna de las dos cosas hacía lo que decía: el nombre real de la propiedad es `_FOVEnabled`, y además es un uniform GLOBAL (`m_GeneratePropertyBlock: false`) que ningún material puede pisar. **El brazo warpeó siempre.** El síntoma que lo destapó fue el cuerpo del reloj dibujándose ~1.55x más grande que su propio brazo, porque `_FOV`=100 contra una cámara a 75 encoge lo warpeado al 64,4%.
 
@@ -15,15 +15,19 @@
 
 3. **CALLEJONES CERRADOS, para no repetirlos:** el subtarget Canvas de ShaderGraph NO puede mover vértices en URP 17.0.4 (`CanvasPass.hlsl` resuelve `positionCS` antes de `ApplyVertexModification`) — por eso el shader de UI va a mano. Y `_GlossMapScale` está muerto en URP 17: el multiplicador real de smoothness es `_Smoothness` (`LitInput.hlsl:146`).
 
-4. **PENDIENTE — texto espejado en el canvas.** Observado en juego. Sospecha principal, registrada mientras está fresca: `BR_UIWarp` va a clip por `UNITY_MATRIX_P` directo mientras `UI/Default` usa `unity_MatrixVP`; si discrepan en el y-flip de render-a-textura, la geometría sale espejada. **Afectaría a TODOS los Graphics, pero solo se nota en el texto** — un quad espejado sigue pareciendo el mismo quad. Primer sitio a mirar: el signo de `k` en `WarpToViewModelFOV`.
+4. **RESUELTO — texto espejado en el canvas** (`672d72b7`). **Mi hipótesis inicial era falsa y queda anulada**: no tenía nada que ver con el y-flip de `UNITY_MATRIX_P` en `BR_UIWarp`, y de hecho el síntoma precedía a todo el trabajo de proyección. Medido: determinante acumulado `ViewModel → WatchMesh` = **+1.728**, cero escalas negativas en el prefab, o sea que la cadena de huesos no espejaba nada. La causa era la normal del canvas apuntando al ojo (se ve por detrás; se dibuja igual porque el material de UI lleva `Cull Off`). **`localEuler.x = -90` se probó y NO lo arregló: una inversión de handedness no la deshace ningún giro, solo una escala negativa.** Cura: campo `mirrorX` en `WristWatchDisplay`, signo solo en X, separado a propósito de `inherited` (`Mathf.Abs` del lossyScale del padre) para que el espejado no dependa de la escala del rig. Enmienda escrita en ADR-077.
 
-5. **PENDIENTE — ajuste milimétrico de posiciones en `BuildFace`.** Se aplazó a propósito hasta tener el FOV definitivo: con las tres superficies ya solidarias, los offsets se pueden fijar de una vez sin que los mueva el siguiente cambio de proyección.
+5. **HECHO — encaje de la cara.** El prefab lleva ya los valores ajustados en juego: `localOffset (0, -0.025, 0.002)`, `faceSizeMeters (0.018, 0.025)`, `mirrorX: 1`. `localEuler (90, 180, 0)` sin tocar.
+
+5b. **PENDIENTE PROBABLE — dirección de relleno de las barras.** Con la cara espejada, los `Fill_*` deberían rellenar de derecha a izquierda: `GenerateFilledSprite` construye la geometría en el rect local del `Image` y no consulta la escala de ningún ancestro, así que el espejado la voltea entera. El ancho es correcto, solo está anclado al borde contrario, y con las barras a cero no se aprecia. Cura de dos caracteres cuando se confirme en juego: `fillOrigin` a `Right` en `BuildRow` (`WristWatchDisplay.cs:289`). **No verificado todavía** — es predicción, no observación.
 
 6. **PENDIENTE — `Debug.LogError` en cada spawn del reloj.** Lo emite el `WieldableFOV` que el prefab todavía lleva: su `Awake` corre antes de que `Setup` lo destruya, encuentra `Character` null y protesta. Cura: quitar el componente de `BR_Wieldable_Watch.prefab`. Quedó fuera de alcance por ser cambio de prefab.
 
 7. **DEUDA DE NOMBRES, asumida:** `BR_Watch_FP_Arm_NoWarp.mat` SÍ warpea, y `screenMaterial` ya no es solo el fondo sino los 17 Graphics. Renombrar cualquiera de los dos rompe una referencia serializada, y el síntoma sería un null en silencio.
 
-8. **SIGUIENTE PASO:** arreglar el espejado, luego el encuadre fino. Con eso, el patrón queda listo para la dirección de UI diegética (mapa dibujado a mano, notas, radio, inventario): Canvas normal pegado al rig + `BR_UIWarp`.
+7b. **PENDIENTE (vendor) — `_FOV` no vuelve a base al enfundar.** `WieldableFOV` no tiene `OnDisable`, así que al guardar un item el global se queda en el valor de ese item en vez de volver al `_baseViewModelFOV: 60` del rig. Preexistente del vendor; antes quedaba tapado por el forzado del reloj. Tocarlo significa editar código del vendor o añadir un hook externo (regla `stp-no-direct-edits`).
+
+8. **SIGUIENTE PASO:** el reloj está terminado a efectos de proyección. Lo que queda son dos menores, ambos anotados arriba (6 y 7b) más la comprobación de 5b. **El patrón ya está listo para la dirección de UI diegética** — mapa dibujado a mano, notas, radio, inventario —: Canvas WorldSpace pegado al rig + `BR_UIWarp` en todos sus Graphic, con `mirrorX` si la normal queda del lado equivocado.
 
 ---
 

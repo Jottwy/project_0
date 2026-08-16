@@ -3651,3 +3651,16 @@ ADR-065 dio por heredado del vendor un mecanismo para **apagar** ese warp por ma
 - **`_FOV` es único y simultáneo.** Solo puede haber una proyección de viewmodel activa a la vez. Dos superficies que quisieran FOV distintos al mismo tiempo (por ejemplo, una mira con zoom mientras el reloj está fuera) no caben en este mecanismo.
 - **Skinning latente del reloj.** `WatchMesh` es un `MeshRenderer` rígido colgado del hueso `ForearmTwist.4.L`, mientras la piel del brazo se deforma con pesos mezclados. Hoy no se manifiesta porque `WristWatchOverlay` destruye el `Animator` y los huesos están congelados. Despertaría en cuanto el reloj recupere animación. Solución conocida y ya usada por el vendor: skinnear el objeto al rig dentro del FBX, que es exactamente lo que hace la brújula donante.
 - **`WieldableFOV` no tiene `OnDisable`.** Al enfundar un item, `_FOV` se queda en el valor de ese item en vez de volver al `_baseViewModelFOV` del rig. Es comportamiento preexistente del vendor; antes quedaba tapado por el forzado del reloj y ahora es visible.
+
+#### Enmienda: el texto espejado del canvas era handedness, no orientación (2026-08-16)
+
+Al cerrar la proyección quedó a la vista un síntoma que **precedía a todo este trabajo**: los `Text` de la cara se leían invertidos. Se descartaron por medición las dos causas que uno mira primero:
+
+- **No era escala negativa heredada del rig.** Determinante acumulado `ViewModel → WatchMesh` = **+1.728**, y ninguna componente de `m_LocalScale` es negativa en todo el prefab.
+- **No se corregía por rotación.** La normal del canvas apunta hacia el ojo en vez de alejándose, así que la cara se ve por detrás — y se dibuja igual porque el material de UI lleva `Cull Off`. Pero `localEuler.x = -90` se probó en juego y no lo arregló.
+
+**La lección, que es lo que ahorra tiempo la próxima vez: una inversión de handedness no la deshace ningún giro.** Ninguna composición de rotaciones cambia el signo del determinante. Si el texto sale en espejo y la cadena de transforms es dextrógira, la única cura es una **escala negativa** en el eje afectado. De ahí el campo `mirrorX` de `WristWatchDisplay`, que aplica el signo solo a X y mantiene el factor de tamaño intacto.
+
+Corolario para la UI diegética que venga: el signo del espejado debe vivir **separado** de cualquier compensación de escala del rig (`inherited = Mathf.Abs(...)`). Mezclarlos hace que el espejado dependa del tamaño del esqueleto.
+
+Efecto lateral asumido y ya conocido: con la cara espejada, un `Image` de tipo `Filled` rellena hacia el lado contrario. `GenerateFilledSprite` genera la geometría en el rect local del propio `Image` y no consulta la escala de ningún ancestro, así que el ancho es correcto pero queda anclado al borde opuesto; se corrige con `fillOrigin`, no tocando la escala.
