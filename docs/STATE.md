@@ -21,13 +21,20 @@
 
 5b. **PENDIENTE PROBABLE — dirección de relleno de las barras.** Con la cara espejada, los `Fill_*` deberían rellenar de derecha a izquierda: `GenerateFilledSprite` construye la geometría en el rect local del `Image` y no consulta la escala de ningún ancestro, así que el espejado la voltea entera. El ancho es correcto, solo está anclado al borde contrario, y con las barras a cero no se aprecia. Cura de dos caracteres cuando se confirme en juego: `fillOrigin` a `Right` en `BuildRow` (`WristWatchDisplay.cs:289`). **No verificado todavía** — es predicción, no observación.
 
-6. **PENDIENTE — `Debug.LogError` en cada spawn del reloj.** Lo emite el `WieldableFOV` que el prefab todavía lleva: su `Awake` corre antes de que `Setup` lo destruya, encuentra `Character` null y protesta. Cura: quitar el componente de `BR_Wieldable_Watch.prefab`. Quedó fuera de alcance por ser cambio de prefab.
+6. **HECHO, SIN COMMITEAR — `Debug.LogError` en cada spawn del reloj.** Lo emitía el `WieldableFOV` del prefab: su `Awake` corría antes de que `Setup` lo destruyera, encontraba `Character` null y protestaba. Quitado el componente de `BR_Wieldable_Watch.prefab` — NO es una línea: son la entrada en `m_Component` del nodo `ViewModel` **y** el bloque `MonoBehaviour &6096389203700268405` entero, 16 líneas en dos sitios (2624→2608, 0 líneas en blanco, 0 referencias huérfanas, 55 GameObjects = 55 Transforms). `DestroyAll<WieldableFOV>()` se queda en `Setup`: ahora es no-op, pero es defensa si alguien lo re-añade.
+
+⚠️ **6b. DOS CAMBIOS EN EL ÁRBOL SIN COMMITEAR Y SIN VALIDAR EN RUNTIME** (estado al hacer `/clear`):
+   - `Assets/Resources/Wieldables/BR_Wieldable_Watch.prefab` — el `WieldableFOV` quitado (punto 6).
+   - `Assets/Scripts/UI/WristWatchDisplay.cs` — **arreglo de escala**: `ApplyPlacement` ya no divide entre `inherited = Mathf.Abs(parent.lossyScale.x)`. Esa división hacía al canvas INMUNE a la escala del viewmodel, así que con la antorcha equipada (`_viewModelSize: 0.5`) el reloj se encogía a la mitad y la cara no: se veía al **doble**. Verificado que `Wieldables` cuelga directo del nodo `Camera`, que es el que escala `CameraFOVHandler.SetViewModelSize` (`:55`). `inherited` eliminado por quedar sin uso.
+   - **PASO MANUAL PENDIENTE ANTES DE PROBAR**: el prefab sigue con `faceSizeMeters: {x: 0.018, y: 0.025}`, ajustado cuando la división existía. El equivalente exacto sin ella es **`{x: 0.015, y: 0.0208333}`** (÷1.2, que era el `lossyScale` del `WatchMesh`). Conserva la proporción, así que `DesignHeight` y la maquetación no cambian. Si se prueba sin cambiarlo, la cara sale un 20% grande — eso sería el valor pendiente, no un fallo nuevo.
 
 7. **DEUDA DE NOMBRES, asumida:** `BR_Watch_FP_Arm_NoWarp.mat` SÍ warpea, y `screenMaterial` ya no es solo el fondo sino los 17 Graphics. Renombrar cualquiera de los dos rompe una referencia serializada, y el síntoma sería un null en silencio.
 
 7b. **PENDIENTE (vendor) — `_FOV` no vuelve a base al enfundar.** `WieldableFOV` no tiene `OnDisable`, así que al guardar un item el global se queda en el valor de ese item en vez de volver al `_baseViewModelFOV: 60` del rig. Preexistente del vendor; antes quedaba tapado por el forzado del reloj. Tocarlo significa editar código del vendor o añadir un hook externo (regla `stp-no-direct-edits`).
 
-8. **SIGUIENTE PASO:** el reloj está terminado a efectos de proyección. Lo que queda son dos menores, ambos anotados arriba (6 y 7b) más la comprobación de 5b. **El patrón ya está listo para la dirección de UI diegética** — mapa dibujado a mano, notas, radio, inventario —: Canvas WorldSpace pegado al rig + `BR_UIWarp` en todos sus Graphic, con `mirrorX` si la normal queda del lado equivocado.
+8. **SIGUIENTE PASO, en orden:** (1) poner `faceSizeMeters` a `0.015 × 0.0208333` en el prefab; (2) probar en juego reloj + antorcha — cara y esfera deben mantener proporción, y el conjunto cambiar de tamaño junto al equipar/desequipar; (3) comprobar 5b, la dirección de relleno de las barras; (4) commitear los dos cambios de 6b, por separado, cuando estén validados. Queda 7b, que es del vendor.
+
+   **El patrón ya está listo para la dirección de UI diegética** — mapa dibujado a mano, notas, radio, inventario —: Canvas WorldSpace pegado al rig + `BR_UIWarp` en todos sus Graphic, con `mirrorX` si la normal queda del lado equivocado, y `faceSizeMeters` en metros del espacio del hueso (ya no del mundo).
 
 ---
 
