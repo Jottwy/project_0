@@ -20,6 +20,10 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<TeleportationVFX>();
             EnsureComponent<MinimapRenderer>();
             EnsureComponent<PoiDebugHud>();
+            // PLACEHOLDER (2026-08-15): reloj de muñeca diegético, tecla T. Aditivo — las barras
+            // del vendor siguen en pantalla y no se quita ninguna hasta que el reloj demuestre
+            // que se lee en movimiento.
+            EnsureComponent<WristWatchHandler>();
             EnsureComponent<VerticalDebugMarkerRenderer>();
             EnsureComponent<NetworkInitializer>();
             // ADR-041: turns a local gunshot into a noise the robapieles can hear. Hooks the
