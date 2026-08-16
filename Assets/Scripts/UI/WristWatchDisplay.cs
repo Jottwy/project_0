@@ -1,4 +1,5 @@
 using BackroomsSurvival.Net;
+using PolymindGames;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -17,10 +18,15 @@ namespace BackroomsSurvival.UI
     /// por el near clip de la cámara principal, o directamente no sale. Es el fallo que se lleva
     /// la primera tarde si no se sabe.
     ///
-    /// LAS CINCO BARRAS LLEVAN DATO REAL — los cinco campos que el backend manda en
-    /// <c>StatsMsg</c> (0..100), leídos CRUDOS de <c>IPCClient.LatestState</c>: el snapshot llega
-    /// a 10 Hz y aquí no se interpola (eso lo hace StatInterpolator, pero hacia los managers del
-    /// vendor, no hacia este estado). FATIGA es la <c>stamina</c> del backend por decisión de
+    /// FUENTE DE LAS BARRAS (2026-08-16): los managers de STP — la MISMA fuente que pollea el
+    /// HUD del vendor (PlayerStatsUI), así que reloj y HUD coinciden POR CONSTRUCCIÓN, con
+    /// conexión (StatInterpolator escribe el snapshot en los managers) y sin ella (drenan en
+    /// local; el reloj muestra ese drain local igual que el HUD — es el precio asumido del
+    /// cambio). Antes se leía <c>IPCClient.LatestState</c> crudo y las dos superficies podían
+    /// divergir cuando el snapshot dejaba de llegar con el HUD aún vivo.
+    ///
+    /// CORDURA es la excepción: el vendor NO tiene manager de cordura (es stat del backend),
+    /// así que sigue leyendo el snapshot IPC. FATIGA es la <c>stamina</c> por decisión de
     /// diseño (2026-08-16): fatiga ES stamina, no una stat lenta aparte.
     ///
     /// LA HORA TAMPOCO ES REAL: el backend no tiene reloj de mundo (<c>remaining_hours</c> es
@@ -96,6 +102,15 @@ namespace BackroomsSurvival.UI
         private RectTransform _canvasRt;
         private Image[] _fills;
         private Text _clockText;
+
+        // Fuentes de stats — misma fuente que el HUD del vendor. Se re-resuelven por estado
+        // (fake-null tras el rig rebuild), nunca se cachean de por vida. Ver UpdateBars.
+        private Character _character;
+        private IHungerManagerCC _hunger;
+        private IThirstManagerCC _thirst;
+        private IStaminaManagerCC _stamina;
+        private IHealthManager _health;
+        private float _nextResolveRetry;
 
         // Orden y color copiados del concepto, de arriba abajo.
         private static readonly string[] RowLabels = { "HAMBRE", "SED", "CORDURA", "FATIGA", "SALUD" };
@@ -281,6 +296,7 @@ namespace BackroomsSurvival.UI
             fill.rectTransform.anchorMax = Vector2.one;
             fill.rectTransform.offsetMin = Vector2.zero;
             fill.rectTransform.offsetMax = Vector2.zero;
+            fill.sprite = Resources.GetBuiltinResource<Sprite>("UI/Skin/UISprite.psd");
             fill.type = Image.Type.Filled;
             fill.fillMethod = Image.FillMethod.Horizontal;
             fill.fillOrigin = (int)Image.OriginHorizontal.Left;
@@ -351,24 +367,76 @@ namespace BackroomsSurvival.UI
                 return;
 
             UpdateClock();
-
-            // Sin backend (menú, desconexión) las barras se quedan como estaban en vez de caer a
-            // cero: un reloj que marca todo vacío al perder conexión se lee como "te estás
-            // muriendo", que es exactamente la lectura contraria a la real.
-            if (!IPCClient.TryGetInstance(out var ipc))
-                return;
-
-            var state = ipc.LatestState;
-            if (state == null || state.localPlayer == null)
-                return;
-
-            var stats = state.localPlayer.stats;
-            SetBar(0, stats.hunger);
-            SetBar(1, stats.thirst);
-            SetBar(2, stats.sanity);
-            SetBar(3, stats.stamina);
-            SetBar(4, stats.health);
+            UpdateBars();
         }
+
+        /// <summary>
+        /// Lee los managers de STP y actualiza las barras. Sigue el patrón de re-resolución
+        /// del proyecto (contrato en <c>LocalPlayerLocator</c>): el rig rebuild destruye y
+        /// recrea los managers, así que cachear en Awake dejaría al reloj leyendo cadáveres —
+        /// exactamente el fallo que tuvo StatInterpolator. Detección por estado y reintento a
+        /// reloj de 0.5 s, no un barrido por frame.
+        ///
+        /// RETENCIÓN: una fuente ausente (mitad de rebuild, menú, desconexión) deja su barra
+        /// como estaba en vez de caer a cero — un reloj que marca todo vacío al perder la
+        /// fuente se lee como "te estás muriendo", que es la lectura contraria a la real.
+        /// </summary>
+        private void UpdateBars()
+        {
+            if (AnyStatSourceLost() && Time.unscaledTime >= _nextResolveRetry)
+            {
+                _nextResolveRetry = Time.unscaledTime + 0.5f;
+                ResolveStatSources();
+            }
+
+            // Rangos heterogéneos — normalización por stat a los 0..100 que espera SetBar:
+            // hambre/sed van 0..Max (100 por defecto), stamina la normaliza STP a 0..1,
+            // salud es absoluta sobre MaxHealth.
+            if (Alive(_hunger))
+                SetBar(0, _hunger.Hunger / Mathf.Max(1e-4f, _hunger.MaxHunger) * 100f);
+            if (Alive(_thirst))
+                SetBar(1, _thirst.Thirst / Mathf.Max(1e-4f, _thirst.MaxThirst) * 100f);
+            if (Alive(_stamina))
+                SetBar(3, _stamina.Stamina * 100f);
+            if (Alive(_health))
+                SetBar(4, _health.Health / Mathf.Max(1e-4f, _health.MaxHealth) * 100f);
+
+            // CORDURA: sin manager en el vendor (stat del backend) — snapshot IPC, con la
+            // misma retención que el resto.
+            if (IPCClient.TryGetInstance(out var ipc))
+            {
+                var state = ipc.LatestState;
+                if (state != null && state.localPlayer != null)
+                    SetBar(2, state.localPlayer.stats.sanity);
+            }
+        }
+
+        private void ResolveStatSources()
+        {
+            _character = LocalPlayerLocator.Find<Character>();
+
+            _hunger = null;
+            _thirst = null;
+            _stamina = null;
+            _health = null;
+
+            if (_character == null)
+                return;
+
+            _character.TryGetCC(out _hunger);
+            _character.TryGetCC(out _thirst);
+            _character.TryGetCC(out _stamina);
+            _health = _character.HealthManager;
+        }
+
+        private bool AnyStatSourceLost() =>
+            !Alive(_hunger) || !Alive(_thirst) || !Alive(_stamina) || !Alive(_health);
+
+        // Los managers se guardan como interfaz, y el `== null` sobre una interfaz es igualdad
+        // de referencia pura: NO ve el fake-null de Unity. El cast a UnityEngine.Object
+        // recupera el operador sobrecargado, que es lo que detecta el componente destruido.
+        private static bool Alive(object source) =>
+            source != null && !(source is Object obj && obj == null);
 
         private void UpdateClock()
         {

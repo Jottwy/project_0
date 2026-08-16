@@ -783,7 +783,6 @@ GameObject:
   - component: {fileID: 7667086562528450782}
   - component: {fileID: 5331677721064079183}
   - component: {fileID: 5867225385403730877}
-  - component: {fileID: 6096389203700268405}
   m_Layer: 10
   m_Name: ViewModel
   m_TagString: Untagged
@@ -1146,21 +1145,6 @@ MonoBehaviour:
   _positionOffset: {x: 0.05, y: 0.21, z: -0.11}
   _rotationOffset: {x: -1.95, y: 0, z: 0}
   _motionProfile: {fileID: 11400000, guid: d88987b4ff8b8874099d8610e060ff10, type: 2}
---- !u!114 &6096389203700268405
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4857804031381051748}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: b348558de08d7494fabe320e8d297a31, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
-  _cameraFOV: 1
-  _viewModelFOV: 100
-  _viewModelSize: 1
 --- !u!1 &4896178022233989397
 GameObject:
   m_ObjectHideFlags: 0
