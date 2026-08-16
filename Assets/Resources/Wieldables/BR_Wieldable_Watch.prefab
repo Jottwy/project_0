@@ -1526,9 +1526,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   anchorBoneName: WatchMesh
-  localOffset: {x: 0, y: 0.012, z: 0}
+  localOffset: {x: 0, y: -0.025, z: 0.002}
   localEuler: {x: 90, y: 180, z: 0}
-  faceSizeMeters: {x: 0.036, y: 0.042}
+  faceSizeMeters: {x: 0.018, y: 0.025}
+  mirrorX: 1
   fatiguePlaceholder: 59
   screenMaterial: {fileID: 2100000, guid: 356bac258dc74bddab39808d30b6c5bd, type: 2}
 --- !u!114 &7178486306559496083

@@ -52,6 +52,16 @@ namespace BackroomsSurvival.UI
                  "cara que el concepto. Con pose propia esto baja a ~0.04 (reloj real).")]
         public Vector2 faceSizeMeters = new Vector2(0.09f, 0.11f);
 
+        [Tooltip("Espeja la cara horizontalmente (escala X negativa).\n\n" +
+                 "PARA QUÉ: la normal del canvas acaba mirando hacia el ojo en vez de alejándose, " +
+                 "así que la cara se ve POR DETRÁS y el texto sale invertido. Se dibuja igualmente " +
+                 "porque el material de UI lleva Cull Off.\n\n" +
+                 "Corregir la orientación por rotación (localEuler.x = -90) se probó y no salió; " +
+                 "esto invierte la geometría en su sitio, sin mover el encaje ya resuelto.\n\n" +
+                 "Solo el eje X: Y y Z se quedan positivos, y el factor de tamaño es el mismo, así " +
+                 "que la cara no cambia ni de sitio ni de tamaño — solo de mano.")]
+        [SerializeField] private bool mirrorX = false;
+
         [Header("Contenido")]
         [Tooltip("Valor fijo 0..100 de FATIGA hasta que se decida si es la stamina del backend.")]
         [Range(0f, 100f)] public float fatiguePlaceholder = 59f;
@@ -248,7 +258,12 @@ namespace BackroomsSurvival.UI
                 inherited = 1f;
 
             // Una sola escala para los dos ejes: deformar la rejilla estiraría también el texto.
-            _canvasRt.localScale = Vector3.one * (faceSizeMeters.x / DesignWidth / inherited);
+            // El signo de mirrorX va SOLO en X y no entra en `inherited`, que sigue siendo un
+            // valor absoluto: son dos cosas distintas — uno compensa el tamaño que trae el
+            // esqueleto, el otro invierte la cara. Mezclarlos haría que el espejado dependiera de
+            // la escala del rig.
+            float faceScale = faceSizeMeters.x / DesignWidth / inherited;
+            _canvasRt.localScale = new Vector3(mirrorX ? -faceScale : faceScale, faceScale, faceScale);
         }
 
         private void BuildRow(RectTransform parent, int index, float rowTopFraction)
