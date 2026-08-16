@@ -16,7 +16,13 @@ namespace BackroomsSurvival.Gameplay
     /// Four per-stat binders, each with its own "set" hook (the managers are not
     /// uniform — Health has no setter/drain, Stamina is event+blocking driven and
     /// normalized 0..1, Hunger/Thirst are disabled outright). Sanity is handled
-    /// elsewhere (SanityEffectsController, ADR-009 §9), not here.
+    /// elsewhere (SanityEffects, ADR-009 §9), not here.
+    ///
+    /// Manager references SELF-HEAL (2026-08-16): the rig rebuild destroys and recreates the
+    /// STP managers, and every write this component does to a destroyed one is plain C# — no
+    /// exception, no log, just a HUD frozen against a server that keeps draining. Update
+    /// re-resolves whenever a bound manager reads as destroyed and re-asserts control over
+    /// the replacements. See ResolveBinders.
     /// </summary>
     public sealed class StatInterpolator : MonoBehaviour
     {
@@ -31,13 +37,32 @@ namespace BackroomsSurvival.Gameplay
         private StaminaBinder _stamina;
         private HealthBinder _health;
         private StatBinder[] _binders;
+        private float _nextResolveRetry;
 
         private void Awake()
+        {
+            ResolveBinders();
+        }
+
+        /// <summary>
+        /// Finds the STP managers and builds one binder per stat found. Called from Awake AND
+        /// from the self-heal in Update: the rig rebuild (ADR-024) destroys and recreates the
+        /// managers, so an Awake-only cache goes stale and this component ends up writing into
+        /// destroyed components — with no exception, because every write it does is plain C#
+        /// (field setters, SetHealthSilent). The visible failure is a HUD that silently stops
+        /// following the server while the NEW managers resume their local drain.
+        /// </summary>
+        private void ResolveBinders()
         {
             var hunger = GetComponentInChildren<HungerManager>(true);
             var thirst = GetComponentInChildren<ThirstManager>(true);
             var stamina = GetComponentInChildren<StaminaManager>(true);
             var health = GetComponentInChildren<HealthManager>(true);
+
+            _hunger = null;
+            _thirst = null;
+            _stamina = null;
+            _health = null;
 
             var binders = new List<StatBinder>(4);
             // Hunger/Thirst need the health manager to hook its Respawn event.
@@ -77,9 +102,38 @@ namespace BackroomsSurvival.Gameplay
             if (_binders == null)
                 return;
 
+            // Self-heal after a rig rebuild (ADR-024): detection is by STATE (a bound manager
+            // reads as destroyed), not by event, so any current or future rebuild path is
+            // covered without subscribing to it — the same re-resolve contract every networked
+            // consumer of the rig already follows (LocalPlayerLocator's doc comment). Mid-
+            // rebuild the new rig may not exist yet, hence the 0.5 s retry clock instead of a
+            // per-frame GetComponentInChildren sweep while headless.
+            bool lost = AnyBinderLost();
+            if (lost || (_binders.Length == 0 && Time.unscaledTime >= _nextResolveRetry))
+            {
+                _nextResolveRetry = Time.unscaledTime + 0.5f;
+                if (lost)
+                    SetControlled(false); // guarded per-binder: skips destroyed managers
+                ResolveBinders();
+                // Re-assert control over the NEW managers right away: they are born with
+                // enabled=true / _serverControlled=false and would drain locally this frame.
+                if (connected && _binders.Length > 0)
+                    SetControlled(true);
+            }
+
             float now = Time.time;
             for (int i = 0; i < _binders.Length; i++)
                 _binders[i].Tick(now, latencyMarginSec);
+        }
+
+        private bool AnyBinderLost()
+        {
+            for (int i = 0; i < _binders.Length; i++)
+            {
+                if (_binders[i].Lost)
+                    return true;
+            }
+            return false;
         }
 
         // 5 Hz (nested in the WorldState snapshot). Update all four targets at once.
@@ -156,6 +210,10 @@ namespace BackroomsSurvival.Gameplay
                 else ReleaseControl();
             }
 
+            /// <summary>True when the bound manager was destroyed (rig rebuild) — Unity's
+            /// overloaded == on the CONCRETE component type is what detects the fake null.</summary>
+            public abstract bool Lost { get; }
+
             protected abstract void WriteDisplay(float value);
             protected abstract void TakeControl();
             protected abstract void ReleaseControl();
@@ -172,6 +230,8 @@ namespace BackroomsSurvival.Gameplay
                 _health = health;
             }
 
+            public override bool Lost => _m == null;
+
             protected override void WriteDisplay(float value) => _m.Hunger = value;
 
             protected override void TakeControl()
@@ -182,7 +242,10 @@ namespace BackroomsSurvival.Gameplay
 
             protected override void ReleaseControl()
             {
-                _m.enabled = true;
+                // `.enabled` on a destroyed component throws (it IS a Unity API call, unlike
+                // the plain-C# stat setters); the event unsubscribe is managed-only and safe.
+                if (_m != null)
+                    _m.enabled = true;
                 _health.Respawn -= OnRespawn;
             }
 
@@ -202,6 +265,8 @@ namespace BackroomsSurvival.Gameplay
                 _health = health;
             }
 
+            public override bool Lost => _m == null;
+
             protected override void WriteDisplay(float value) => _m.Thirst = value;
 
             protected override void TakeControl()
@@ -212,7 +277,8 @@ namespace BackroomsSurvival.Gameplay
 
             protected override void ReleaseControl()
             {
-                _m.enabled = true;
+                if (_m != null)
+                    _m.enabled = true;
                 _health.Respawn -= OnRespawn;
             }
 
@@ -225,10 +291,17 @@ namespace BackroomsSurvival.Gameplay
 
             public StaminaBinder(StaminaManager m) => _m = m;
 
+            public override bool Lost => _m == null;
+
             // Setter fires StaminaChanged + runs movement-blocking/audio.
             protected override void WriteDisplay(float value) => _m.Stamina = value;
             protected override void TakeControl() => _m.SetServerControlled(true);
-            protected override void ReleaseControl() => _m.SetServerControlled(false);
+
+            protected override void ReleaseControl()
+            {
+                if (_m != null)
+                    _m.SetServerControlled(false);
+            }
         }
 
         private sealed class HealthBinder : StatBinder
@@ -236,6 +309,8 @@ namespace BackroomsSurvival.Gameplay
             private readonly HealthManager _m;
 
             public HealthBinder(HealthManager m) => _m = m;
+
+            public override bool Lost => _m == null;
 
             protected override void WriteDisplay(float value) => _m.SetHealthSilent(value);
             protected override void TakeControl() { }   // health has no local drain
