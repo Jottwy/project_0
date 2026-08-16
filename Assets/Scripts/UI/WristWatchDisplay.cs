@@ -56,6 +56,19 @@ namespace BackroomsSurvival.UI
         [Tooltip("Valor fijo 0..100 de FATIGA hasta que se decida si es la stamina del backend.")]
         [Range(0f, 100f)] public float fatiguePlaceholder = 59f;
 
+        [Header("Proyección del canvas")]
+        [Tooltip("Material que reproyecta el vértice al FOV del viewmodel (BR_UIWarp), para que " +
+                 "la cara comparta proyección con el brazo y con el cuerpo del reloj, que warpean " +
+                 "por shader.\n\n" +
+                 "Se aplica a TODOS los Graphic de la cara — fondo, etiquetas, canales de barra y " +
+                 "sus rellenos. Vaciar el campo devuelve la cara entera a UI/Default sin tocar " +
+                 "código, y entonces vuelve a despegarse del reloj.\n\n" +
+                 "El nombre se queda en 'screenMaterial' aunque ya no sea solo el fondo: " +
+                 "renombrarlo rompería la referencia serializada en BR_Wieldable_Watch.prefab, y " +
+                 "el síntoma sería un campo a null en silencio, o sea la cara despegada sin más " +
+                 "aviso.")]
+        public Material screenMaterial;
+
         // Unidades de diseño del canvas. La escala del transform las convierte a metros, así que
         // este número es solo la rejilla en la que se dibuja: subirlo NO agranda el reloj.
         private const float DesignWidth = 180f;
@@ -126,7 +139,37 @@ namespace BackroomsSurvival.UI
             for (int i = 0; i < RowLabels.Length; i++)
                 BuildRow(canvasRt, i, RowsTopFraction + i * RowHeightFraction);
 
+            ApplyCanvasMaterial(canvasGo);
             SetLayerRecursive(canvasGo, ViewModelLayer);
+        }
+
+        /// <summary>
+        /// Pone el material de warp en TODOS los Graphic de la cara, de una pasada y al final —
+        /// cuando ya existen todos.
+        ///
+        /// UN RECORRIDO Y NO UNA LISTA: los <c>Fill_*</c> cuelgan de su <c>Track_*</c>, no del
+        /// canvas, así que enumerar variable a variable se los dejaría fuera y las barras serían
+        /// lo único que no seguiría a la muñeca. <c>GetComponentsInChildren</c> los coge sin
+        /// nombrarlos, y cubre de paso cualquier Graphic que se añada aquí en el futuro. El
+        /// <c>true</c> incluye inactivos: hoy no hay ninguno, pero una fila que naciera apagada
+        /// se quedaría sin material y el fallo aparecería solo al encenderla.
+        ///
+        /// LOS <c>Text</c> ENTRAN TAMBIÉN, y no rompen la fuente. <c>Graphic.UpdateMaterial</c>
+        /// (Graphic.cs:669-677) asigna material y textura por SEPARADO al CanvasRenderer:
+        /// <c>SetMaterial(materialForRendering)</c> y <c>SetTexture(mainTexture)</c>. Y
+        /// <c>Text.mainTexture</c> (Text.cs:55-67) devuelve el atlas de la fuente ANTES de mirar
+        /// el material, así que el atlas gana y se enlaza igual sobre el <c>_MainTex</c> del
+        /// nuestro. BR_UIWarp puede recibirlo porque copia el fragment de UI/Default entero,
+        /// incluido el <c>_TextureSampleAdd</c> que convierte un atlas de solo-alfa en glifo
+        /// blanco; sin esa línea el texto saldría negro.
+        /// </summary>
+        private void ApplyCanvasMaterial(GameObject canvasGo)
+        {
+            if (screenMaterial == null)
+                return;
+
+            foreach (var graphic in canvasGo.GetComponentsInChildren<Graphic>(true))
+                graphic.material = screenMaterial;
         }
 
         /// <summary>

@@ -1530,6 +1530,7 @@ MonoBehaviour:
   localEuler: {x: 90, y: 180, z: 0}
   faceSizeMeters: {x: 0.036, y: 0.042}
   fatiguePlaceholder: 59
+  screenMaterial: {fileID: 2100000, guid: 356bac258dc74bddab39808d30b6c5bd, type: 2}
 --- !u!114 &7178486306559496083
 MonoBehaviour:
   m_ObjectHideFlags: 0
