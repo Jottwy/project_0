@@ -1,6 +1,5 @@
 using System.Collections;
 using System.Collections.Generic;
-using PolymindGames;
 using PolymindGames.WieldableSystem;
 using UnityEngine;
 
@@ -22,12 +21,22 @@ namespace BackroomsSurvival.Gameplay
     /// Component. Lo que se ve en el prefab es lo que sale en juego. Los únicos números de
     /// runtime son los dos del balanceo y el encuadre inicial de ViewModel, aquí abajo.
     ///
-    /// EL WARP DE FOV SE APAGA POR MATERIAL (`_FOV_Enabled = 0`): la malla del brazo usa
-    /// LitFieldOfView_SSS, que re-proyecta vértices con el global `_FOV`. Ese global lo pisa CADA
-    /// wieldable equipado (linterna, spray...) vía WieldableFOV, así que un brazo overlay que lo
-    /// respetase saltaría de tamaño al cambiar de item en la otra mano. Con el warp apagado, el
-    /// brazo y el canvas de la cara se dibujan con la misma proyección SIEMPRE — la divergencia
-    /// brazo/cara que costó medio día de sondas no puede volver.
+    /// EL WARP DE FOV NO SE APAGA: SE COMPARTE (2026-08-16). Hasta esta fecha aquí ponía que el
+    /// warp se desactivaba por material con `_FOV_Enabled = 0`. Era falso por partida doble: el
+    /// nombre real de la propiedad es `_FOVEnabled`, y además está declarada GLOBAL en
+    /// LitFieldOfView_SSS.shadergraph (`m_GeneratePropertyBlock: false`), así que ningún material
+    /// puede pisarla. El brazo warpeó SIEMPRE; lo que no warpeaba era todo lo demás del reloj.
+    ///
+    /// La solución fue la contraria a la que describía el comentario: hacer que warpen las TRES
+    /// superficies. El brazo ya lo hacía, el cuerpo del reloj pasó a LitFieldOfView_SSS y el
+    /// canvas de la cara a BR_UIWarp (mismo warp, escrito a mano porque el subtarget Canvas de
+    /// URP ignora VertexDescription.Position). Al compartir proyección, el VALOR de `_FOV` deja
+    /// de importar: las tres se mueven juntas con cualquiera.
+    ///
+    /// POR ESO ESTE COMPONENTE YA NO TOCA `_FOV` NI LA ESCALA DEL VIEWMODEL. Los dicta el
+    /// wieldable que lleves en la derecha, como para cualquier otro item. Forzarlos era una
+    /// muleta para que la esfera no-warpeada coincidiera con el brazo, y tenía un precio: con el
+    /// reloj fuera, la antorcha y su brazo se dibujaban al 64% de su tamaño.
     ///
     /// CONVIVE CON LA OTRA MANO: al no pasar por el WieldablesController, sacar el reloj no
     /// enfunda la linterna. Mirar la hora mientras alumbras es exactamente el gesto del concepto.
@@ -54,21 +63,6 @@ namespace BackroomsSurvival.Gameplay
         [Tooltip("Segundos del deslizamiento de mostrar/ocultar.")]
         public float slideSeconds = 0.15f;
 
-        [Header("Proyección — que Play se vea como el prefab")]
-        [Tooltip("FOV del viewmodel mientras el reloj está fuera. IGUAL que el de la cámara (100) " +
-                 "a propósito: con el warp de shader apagado por material, cualquier otro valor " +
-                 "haría que el brazo se dibujara con una proyección distinta a la del mundo.")]
-        public float viewModelFov = 100f;
-
-        [Tooltip("Escala del rig de viewmodel mientras el reloj está fuera. Sin fijarla, el reloj " +
-                 "hereda la del último wieldable equipado y la perspectiva cambia sola.\n\n" +
-                 "NO intentes compensar esto escalando el overlay: la escala se aplica alrededor " +
-                 "del origen del root, a la altura de los PIES del rig donante, y el reloj vive " +
-                 "1.578 m por encima — cada 0.1 de escala lo mueve 16 cm en vertical. Se intentó y " +
-                 "mandó el reloj fuera del encuadre.")]
-        public float viewModelSize = 1f;
-
-
         [Tooltip("Sin Animator, el brazo derecho queda congelado en la pose de agarrar la brújula " +
                  "del donante — flotando sin sentido. La referencia enseña solo el izquierdo; " +
                  "apagado por defecto.")]
@@ -86,14 +80,6 @@ namespace BackroomsSurvival.Gameplay
                                    // el techo del kick (14°) y el brazo barría 15 cm de arco
         private float _yLag;       // hundimiento vertical en metros
         private Coroutine _slide;
-        private Coroutine _restore;
-        private MonoBehaviour _runner;
-        private Transform _scaleAnchor;
-        private Vector3 _baseLocalPosition;
-        private IFOVHandlerCC _fovHandler;
-        private float _savedViewModelFov;
-        private float _savedViewModelSize;
-        private bool _projectionSaved;
 
         /// <summary>
         /// Poda el pipeline del vendor y cuelga la instancia del rig de cámara. DEBE llamarse con
@@ -104,16 +90,13 @@ namespace BackroomsSurvival.Gameplay
         /// el Awake ganaría la carrera.
         /// </summary>
         /// <param name="coroutineRunner">
-        /// Objeto SIEMPRE ACTIVO donde correr la restauración de proyección. No puede correr en
-        /// este componente: al guardar el reloj el GameObject se desactiva al acabar el
-        /// deslizamiento, y desactivar un objeto MATA sus corrutinas — la restauración se quedaría
-        /// a medias justo en el caso que intenta cubrir (esperar a que el objeto de la otra mano
-        /// termine de equiparse).
+        /// SIN USO desde que el componente dejó de forzar la proyección (2026-08-16): existía para
+        /// correr la restauración de `_FOV` fuera de este objeto, que se desactiva al guardar el
+        /// reloj. Ya no hay nada que restaurar. El parámetro se conserva porque quien llama vive
+        /// en WristWatchHandler y cambiar la firma queda fuera del alcance de este cambio.
         /// </param>
         public void Setup(Transform wieldablesRoot, MonoBehaviour coroutineRunner)
         {
-            _runner = coroutineRunner;
-
             // Orden: primero los que dependen de IWieldable, el propio WieldableTool al final.
             DestroyAll<WieldableCameraCurvesAnimator>();
             DestroyAll<WieldableRotatingElement>();
@@ -138,104 +121,17 @@ namespace BackroomsSurvival.Gameplay
                 _viewModelBaseRot = _viewModel.localRotation;
             }
 
-            // Instancias de material por renderer (r.material clona): apagar el warp aquí no toca
-            // el material compartido del vendor ni a la brújula real.
+            // Solo visibilidad. Aquí había además un intento de apagar el warp por material
+            // (`m.SetFloat("_FOV_Enabled", 0f)`) que no hacía nada: el nombre correcto es
+            // `_FOVEnabled` y la propiedad es global, así que `HasProperty` devolvía false y el
+            // SetFloat ni se ejecutaba. De paso, `r.materials` clonaba el array de materiales de
+            // TODOS los renderers en cada equipado — instancias huérfanas y batching roto a cambio
+            // de nada.
             foreach (var r in GetComponentsInChildren<Renderer>(true))
             {
                 if (hideRightArm && r.name == "RightArm")
                     r.enabled = false;
-
-                foreach (var m in r.materials)
-                    if (m.HasProperty("_FOV_Enabled"))
-                        m.SetFloat("_FOV_Enabled", 0f);
             }
-        }
-
-        /// <summary>
-        /// Cuelga el reloj de un nodo propio que ANULA la escala del viewmodel, y lo hace en el
-        /// único sitio donde la anulación es exacta: con el MISMO ORIGEN que el nodo que escala.
-        ///
-        /// EL ACOPLE QUE ROMPE: <c>viewModelSize</c> no es un shader — <c>CameraFOVHandler</c>
-        /// escala el transform del nodo `Camera`, y de ahí cuelgan los dos brazos. Cuando la
-        /// antorcha pone 0.5, el brazo del reloj se encoge con ella. El FOV en cambio NO acopla:
-        /// el brazo del reloj lleva `_FOV_Enabled = 0` por material, así que ignora el global.
-        /// Por eso aquí solo se neutraliza la escala y no se toca el FOV de nadie.
-        ///
-        /// POR QUÉ EN UN NODO NUEVO Y NO EN EL PROPIO OVERLAY, que es como falló la primera vez:
-        /// escalar por s y contra-escalar por 1/s solo se cancela si ambas ocurren alrededor del
-        /// MISMO punto. El vendor escala alrededor del ojo; el overlay colgaba de
-        /// `Wieldables/Root`, desplazado (0,-1.6,+0.35). Centros distintos dejan una traslación
-        /// residual proporcional a ese desplazamiento — 1,58 m que mandaron el brazo fuera del
-        /// encuadre. Con el ancla a localPosition cero bajo el nodo que escala, S(s)·S(1/s) es la
-        /// identidad exacta y no queda residuo.
-        ///
-        /// El offset de `Wieldables/Root` se reaplica a mano al overlay, sumando localPosition por
-        /// la cadena: esos nodos tienen rotación identidad (verificado), así que sumar basta.
-        /// </summary>
-        private void BuildScaleAnchor(Transform wieldablesRoot)
-        {
-            var scaler = ResolveScalerTransform();
-
-            if (scaler == null)
-            {
-                // Sin nodo que escale, el montaje de siempre: colgar del root del vendor.
-                transform.SetParent(wieldablesRoot, false);
-                transform.localPosition = Vector3.zero;
-                transform.localRotation = Quaternion.identity;
-                Debug.LogWarning("[WristWatch] No se encontró el nodo que escala el viewmodel; " +
-                                 "el reloj heredará la escala de lo que lleves en la otra mano.");
-                return;
-            }
-
-            var rootOffset = Vector3.zero;
-            for (var t = wieldablesRoot; t != null && t != scaler; t = t.parent)
-                rootOffset += t.localPosition;
-
-            var anchorGo = new GameObject("BR_WristWatch_ScaleAnchor");
-            _scaleAnchor = anchorGo.transform;
-            _scaleAnchor.SetParent(scaler, false);
-            _scaleAnchor.localPosition = Vector3.zero;
-            _scaleAnchor.localRotation = Quaternion.identity;
-
-            transform.SetParent(_scaleAnchor, false);
-            transform.localPosition = rootOffset;
-            transform.localRotation = Quaternion.identity;
-
-            // Se guarda como BASE porque LateUpdate reescribe localPosition cada frame para la
-            // inercia vertical. Sin esto, ese cero borraba el offset y dejaba los pies del rig en
-            // el ojo — con el reloj 1,58 m por encima y fuera del encuadre.
-            _baseLocalPosition = rootOffset;
-
-            Debug.Log($"[WristWatch] Ancla de escala bajo '{scaler.name}'. " +
-                      $"Offset de Wieldables/Root reaplicado: {rootOffset}.", this);
-        }
-
-        private Transform ResolveScalerTransform()
-        {
-            var fov = ResolveFovHandler();
-            return fov is Component c ? c.transform : null;
-        }
-
-        /// <summary>
-        /// Anula cada frame la escala que el vendor ponga. Cada frame y no solo al sacar el reloj:
-        /// basta equipar la antorcha con el reloj ya fuera para que el vendor la reescriba.
-        /// </summary>
-        private void ApplyScaleImmunity()
-        {
-            if (_scaleAnchor == null) return;
-
-            float s = _scaleAnchor.parent != null ? _scaleAnchor.parent.localScale.x : 1f;
-            if (Mathf.Abs(s) < 1e-4f) s = 1f;
-
-            _scaleAnchor.localScale = Vector3.one / s;
-        }
-
-        private void OnDestroy()
-        {
-            // El ancla vive bajo la cámara del jugador, no bajo el reloj: si no se destruye a mano
-            // se queda ahí para siempre con la escala congelada del último frame.
-            if (_scaleAnchor != null)
-                Destroy(_scaleAnchor.gameObject);
         }
 
         private void DestroyAll<T>() where T : Component
@@ -256,8 +152,6 @@ namespace BackroomsSurvival.Gameplay
         {
             gameObject.SetActive(true);
 
-            ApplyProjection();
-
             // El "equipar" es este impulso: el brazo entra girado de más y su muelle lo asienta.
             // Da el peso de una animación de sacar sin autorar ningún clip. Muelle PROPIO: el del
             // ratón tiene un techo mucho más bajo y no debe heredar este recorrido.
@@ -270,138 +164,8 @@ namespace BackroomsSurvival.Gameplay
 
         public void Hide()
         {
-            RestoreProjection();
             if (_slide != null) StopCoroutine(_slide);
             _slide = StartCoroutine(Slide(shown: false));
-        }
-
-        /// <summary>
-        /// Fija FOV y escala del viewmodel al sacar el reloj, y los devuelve al guardarlo. Es el
-        /// estado con el que el conjunto quedó validado en juego.
-        ///
-        /// LIMITACIÓN CONOCIDA, no resuelta: <c>IFOVHandlerCC</c> es un recurso COMPARTIDO de una
-        /// sola ranura, así que equipar otro wieldable con el reloj ya fuera lo reescribe y el
-        /// reloj cambia de tamaño. Se intentó arreglar haciendo al reloj inmune (compensando la
-        /// escala heredada) y FUE PEOR: la escala se aplica alrededor del origen del root, a la
-        /// altura de los pies del rig donante, y el reloj vive 1.578 m por encima — compensar un
-        /// 0.5 exige escala 2.0 y eso lo manda 1.58 m hacia arriba, fuera del encuadre. Cualquier
-        /// intento futuro tiene que corregir además localPosition por ese desplazamiento.
-        /// </summary>
-        private void ApplyProjection()
-        {
-            var fov = ResolveFovHandler();
-            if (fov == null || _projectionSaved) return;
-
-            _savedViewModelFov = fov.ViewModelFOV;
-            _savedViewModelSize = fov.ViewModelSize;
-            _projectionSaved = true;
-
-            fov.SetViewModelFOV(viewModelFov, 0.12f);
-            fov.SetViewModelSize(viewModelSize);
-        }
-
-        /// <summary>
-        /// Devuelve la proyección al guardar el reloj — pidiéndosela al wieldable que esté en la
-        /// mano AHORA, no restaurando lo que había cuando se sacó.
-        ///
-        /// EL BUG QUE ARREGLA: restaurar los valores guardados al SACAR el reloj los aplica ya
-        /// caducados. Si entre medias equipaste la antorcha (que pone 45 grados y escala 0.5),
-        /// guardar el reloj le devolvía a la antorcha unos valores que no son suyos y quedaba con
-        /// el FOV cambiado — el "equipo algo en la derecha y luego se bugea" que reportó Joel.
-        ///
-        /// El toggle de `enabled` dispara el `OnEnable` del propio <c>WieldableFOV</c>, que es
-        /// quien sabe cuáles son sus números. Nadie tiene que adivinarlos ni guardarlos.
-        ///
-        /// Sin wieldable activo se cae a los valores guardados: es el caso de manos vacías, donde
-        /// no hay nadie a quien preguntar y lo de antes sí era correcto.
-        /// </summary>
-        private void RestoreProjection()
-        {
-            if (!_projectionSaved) return;
-            _projectionSaved = false;
-
-            var runner = _runner != null ? _runner : this;
-            if (_restore != null) runner.StopCoroutine(_restore);
-            _restore = runner.StartCoroutine(RestoreWhenVendorReady());
-        }
-
-        /// <summary>
-        /// Insiste durante unos frames hasta que el wieldable de la otra mano pueda reaplicar SU
-        /// proyección.
-        ///
-        /// POR QUÉ INSISTIR: al guardar el reloj, el objeto de la otra mano puede estar a mitad de
-        /// equiparse — su GameObject aún inactivo — y entonces no hay a quien preguntarle. Un solo
-        /// intento fallaba en silencio y caía a los valores guardados, ya caducados: la antorcha
-        /// se quedaba con una proyección que no es la suya y se veía lejos. Intermitente, porque
-        /// depende de en qué punto de su animación de equipar pilles el momento.
-        /// </summary>
-        private IEnumerator RestoreWhenVendorReady()
-        {
-            for (int i = 0; i < 30; i++)
-            {
-                var character = Net.LocalPlayerLocator.Find<Character>();
-                if (character != null && character.TryGetCC(out IWieldablesControllerCC controller))
-                {
-                    var active = controller.ActiveWieldable;
-                    if (active != null && active.gameObject != null)
-                    {
-                        var vendorFov = active.gameObject.GetComponentInChildren<WieldableFOV>(true);
-                        if (vendorFov != null && vendorFov.gameObject.activeInHierarchy)
-                        {
-                            // El toggle dispara su OnEnable, que es quien sabe sus números.
-                            vendorFov.enabled = false;
-                            vendorFov.enabled = true;
-                            _restore = null;
-                            yield break;
-                        }
-                    }
-                }
-
-                yield return null;
-            }
-
-            // Manos vacías o nadie con WieldableFOV: no hay a quien preguntar y los valores
-            // guardados son lo correcto.
-            var fov = ResolveFovHandler();
-            if (fov != null)
-            {
-                fov.SetViewModelFOV(_savedViewModelFov, 0f);
-                fov.SetViewModelSize(_savedViewModelSize);
-            }
-            _restore = null;
-        }
-
-        /// <summary>
-        /// Reafirma FOV y escala si alguien los ha cambiado.
-        ///
-        /// DURACIÓN CERO, y es la corrección de un fallo real: <c>ViewModelFOV</c> devuelve el
-        /// valor EN CURSO del tween, no su destino. Con una duración >0, mientras el tween viaja
-        /// la diferencia contra el objetivo sigue siendo grande, así que el frame siguiente vuelve
-        /// a llamar y REINICIA el tween — que así nunca llega. El síntoma es un FOV congelado a
-        /// medio camino que aparece "a veces", según lo que estuviera pasando ese frame.
-        /// Instantáneo no puede entrar en ese bucle: al frame siguiente la diferencia ya es cero.
-        /// </summary>
-        private void ReassertProjection()
-        {
-            if (!_projectionSaved) return;
-
-            var fov = ResolveFovHandler();
-            if (fov == null) return;
-
-            if (Mathf.Abs(fov.ViewModelSize - viewModelSize) > 0.001f)
-                fov.SetViewModelSize(viewModelSize);
-
-            if (Mathf.Abs(fov.ViewModelFOV - viewModelFov) > 0.5f)
-                fov.SetViewModelFOV(viewModelFov, 0f);
-        }
-
-        private IFOVHandlerCC ResolveFovHandler()
-        {
-            if (_fovHandler != null) return _fovHandler;
-
-            var character = Net.LocalPlayerLocator.Find<Character>();
-            if (character != null) character.TryGetCC(out _fovHandler);
-            return _fovHandler;
         }
 
         /// <summary>Desliza el brazo desde abajo al mostrar y hacia abajo al ocultar — el
@@ -513,17 +277,6 @@ namespace BackroomsSurvival.Gameplay
             if (cam == null)
                 return;
 
-            // Reafirma la proyección del reloj cada frame mientras está fuera. Mientras miras la
-            // hora manda el reloj; al guardarlo, RestoreProjection le devuelve la suya al objeto
-            // de la otra mano preguntándosela a él.
-            //
-            // SE PROBÓ LA ALTERNATIVA "INDEPENDENCIA TOTAL" (un ancla que anula la escala del
-            // vendor) Y SE DESCARTÓ EN JUEGO: funciona como promete —el reloj deja de seguir la
-            // escala ajena— pero eso es justo lo que NO se quiere. Con la antorcha en 0.5, el
-            // brazo del reloj se quedaba a tamaño 1 y salía al doble que todo lo demás, llenando
-            // la pantalla. Ser inmune a la escala del vendor es ser inconsistente con el juego.
-            ReassertProjection();
-
             float dt = Mathf.Max(Time.deltaTime, 1e-5f);
             float damp = 1f - Mathf.Exp(-springRecovery * dt);
 
@@ -567,7 +320,10 @@ namespace BackroomsSurvival.Gameplay
             // Al ROOT: ejes de cámara. El slide de mostrar/ocultar toca el ViewModel, así que no
             // se pisan aunque coincidan en el tiempo.
             transform.localRotation = Quaternion.Euler(pitchTotal, yawTotal, yawTotal * 0.3f);
-            transform.localPosition = _baseLocalPosition + new Vector3(0f, _yLag, 0f);
+            // Cero como base: Setup cuelga el overlay de `wieldablesRoot` con localPosition cero.
+            // Aquí había un `_baseLocalPosition` que solo escribía el ancla de escala, código
+            // muerto sin call sites, así que el campo valía siempre Vector3.zero.
+            transform.localPosition = new Vector3(0f, _yLag, 0f);
         }
     }
 }
