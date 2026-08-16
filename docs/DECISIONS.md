@@ -3713,3 +3713,13 @@ Estado: **PROPUESTA** (2026-08-16). Fase B de ADR-068. La fase A ya está en jue
 **Dependencias.** ADR-068 (la pintada, su previa y su `place_id`), ADR-046/050 (el transporte no fiable con destinos por distancia, que este ADR copia en vez de inventar), ADR-039 (por qué esto NO puede ser fiable), ADR-015 (el relay del host), ADR-061 (el espejo del schema en C#).
 
 **Verificación exigida antes de pasar a VALIDADA:** round-trip P2P sobre sockets UDP reales con dos `NetworkManager`, un datagrama de peor caso (64 puntos), sonda de coste reproducible `#[ignore]` como las de `perf-baseline.md`, y en juego con dos clientes: uno pinta, el otro ve el trazo crecer y luego lo sustituye la pintada definitiva sin doble trazo.
+
+### ADR-078 pasa a VALIDADA (2026-08-16) — probado en juego con dos clientes
+
+Estado: **VALIDADA**. Joel lo prueba con dos clientes y confirma que funciona: se ve el trazo ajeno dibujarse en vivo y la pintada definitiva lo sustituye sin doble trazo.
+
+Se cumplen las tres verificaciones automáticas exigidas arriba salvo una: el round-trip P2P sobre sockets reales y el datagrama de peor caso están (`a_live_spray_draft_hops_unreliably_and_is_stamped_by_its_sender`, `a_worst_case_spray_draft_survives_a_real_datagram`, `cargo test` 773/773). **La sonda de coste reproducible NO se escribió** — el presupuesto de la decisión 6 (~160 B/s de carga por pintor) sigue siendo aritmética del ADR y no una medida, exactamente lo que la enmienda S1 de ADR-068 castigó cuando su propio presupuesto salió 2,6× corto. Queda como deuda declarada, y con precedente de que este proyecto ya se equivocó una vez estimando justo esto.
+
+Lo que la fase B NO cambia y conviene no olvidar al leer esto dentro de seis meses: la autoridad sigue siendo `0x52`. Lo que se ve mientras alguien pinta es presentación que no se guarda, no se valida y desaparece sola — si el borrador y la pintada final llegaran a discrepar, manda la pintada, siempre.
+
+Fase A (el bit `Spraying` en los bits libres de `buttons`, ADR-044) queda validada con esto también: el chorro y el siseo del proxy son lo que se ve mientras el trazo crece.
