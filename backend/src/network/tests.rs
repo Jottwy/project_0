@@ -1907,7 +1907,9 @@ async fn a_live_spray_draft_hops_unreliably_and_is_stamped_by_its_sender() {
         color: 3,
         width: 0.08,
         first_index: 12,
-        points_mm: vec![-1200, 340, 0, 0, 32767, -32768],
+        // (-1200, 340), (0, 0), (32767, -32768) como i16 little-endian: los extremos del
+        // rango entran a proposito, son el limite del formato.
+        points_mm: vec![0x50, 0xFB, 0x54, 0x01, 0, 0, 0, 0, 0xFF, 0x7F, 0x00, 0x80],
     };
     assert_eq!(draft.type_code(), 0x54);
     assert_eq!(PacketType::from_u16(0x54), Some(PacketType::SprayDraft));
@@ -1940,8 +1942,8 @@ async fn a_live_spray_draft_hops_unreliably_and_is_stamped_by_its_sender() {
     );
     assert_eq!(
         points,
-        vec![-1200, 340, 0, 0, 32767, -32768],
-        "los milimetros cruzan intactos, extremos del i16 incluidos"
+        vec![0x50, 0xFB, 0x54, 0x01, 0, 0, 0, 0, 0xFF, 0x7F, 0x00, 0x80],
+        "el blob cruza byte a byte, extremos del i16 incluidos"
     );
     assert_eq!(
         first, 12,
@@ -1963,8 +1965,8 @@ async fn a_worst_case_spray_draft_survives_a_real_datagram() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     joiner.process_incoming().await;
 
-    // 64 puntos = 128 i16. El cliente no puede mandar mas en un paquete (ADR-078 decision 6).
-    let points: Vec<i16> = (0..128).map(|i| (i * 251) as i16).collect();
+    // 64 puntos = 256 bytes. El cliente no puede mandar mas en un paquete (ADR-078 decision 6).
+    let points: Vec<u8> = (0..256).map(|i| (i * 7 % 251) as u8).collect();
     let draft = PacketPayload::SprayDraft {
         place_id: u64::MAX,
         layer: 3,

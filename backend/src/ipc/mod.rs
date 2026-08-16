@@ -97,8 +97,15 @@ pub struct SprayDraftRequest {
     pub color: u8,
     pub width: f32,
     pub first_index: u16,
-    /// Pares (u, v) en milímetros sobre el plano del ancla.
-    pub points_mm: Vec<i16>,
+    /// Pares (u, v) en milímetros sobre el plano del ancla, `i16` little-endian en un blob:
+    /// 4 bytes por punto, el mismo formato que los puntos de un trazo en ADR-068.
+    ///
+    /// `serde_bytes` NO es decoración: un `Vec<u8>` pelado solo deserializa desde un ARRAY de
+    /// msgpack y RECHAZA el `bin` que escribe el cliente, con `invalid type: byte array,
+    /// expected a sequence`. Está escrito en `ClientMessage::Voice` y en `SprayStroke::points`,
+    /// y se vuelve a pagar cada vez que se olvida.
+    #[serde(with = "serde_bytes")]
+    pub points_mm: Vec<u8>,
 }
 
 /// ADR-068 — what the client asks the host to paint. The host is the authority: it validates
@@ -244,7 +251,8 @@ pub struct SprayDraftView {
     pub color: u8,
     pub width: f32,
     pub first_index: u16,
-    pub points_mm: Vec<i16>,
+    #[serde(with = "serde_bytes")]
+    pub points_mm: Vec<u8>,
 }
 
 /// ADR-061 — the schema revision this backend speaks, so Unity can refuse a desynced build

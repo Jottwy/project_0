@@ -119,7 +119,7 @@ pub enum NetworkEvent {
         color: u8,
         width: f32,
         first_index: u16,
-        points_mm: Vec<i16>,
+        points_mm: Vec<u8>,
         painter_id: u16,
     },
     /// ADR-068: a joiner loaded a chunk and asks what is painted on it. `requester_id` comes from

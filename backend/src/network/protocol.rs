@@ -561,10 +561,13 @@ pub enum PacketPayload {
         /// Indice del primer punto de este paquete dentro del trazo, para que el receptor sepa
         /// si se ha perdido algo por el camino y no cosa dos trozos que no van seguidos.
         first_index: u16,
-        /// Pares (u, v) en milimetros sobre el plano del ancla. Blob y no `Vec<[i16; 2]>`: es el
-        /// mismo motivo por el que ADR-068 paso los puntos a binario, la cabecera de nombres por
-        /// elemento dominaba el tamano.
-        points_mm: Vec<i16>,
+        /// Pares (u, v) en milimetros sobre el plano del ancla, como `i16` little-endian
+        /// empaquetados en un BLOB: 4 bytes por punto. Blob y no `Vec<i16>` por lo mismo que
+        /// ADR-068 paso los puntos de un trazo a binario — un array de enteros msgpack cuesta
+        /// hasta 3 bytes por valor (6 B/punto) y ademas obliga a que las dos puntas se pongan de
+        /// acuerdo en el tipo, cuando el cliente ya escribe `bin` para el otro camino.
+        #[serde(with = "serde_bytes")]
+        points_mm: Vec<u8>,
     },
     /// ADR-037: the sender cancelled a placed-but-unbuilt piece. Only the host acts on it;
     /// it removes the entry from `stp_buildings` and the existing 10 Hz relay makes every
