@@ -17,12 +17,11 @@ namespace BackroomsSurvival.UI
     /// por el near clip de la cámara principal, o directamente no sale. Es el fallo que se lleva
     /// la primera tarde si no se sabe.
     ///
-    /// CUATRO BARRAS LLEVAN DATO REAL — salud, hambre, sed y cordura, que son cuatro de los cinco
-    /// campos que el backend manda en <c>PlayerStats</c> y que ya llegan interpolados. FATIGA es
-    /// RELLENO VISUAL FIJO: el backend tiene <c>stamina</c>, pero decidir si "fatiga" ES esa
-    /// stamina o una stat lenta aparte está sin resolver, y meter stamina bajo una etiqueta que
-    /// quizá signifique otra cosa haría que el playtest juzgara un dato equivocado. Se pinta fija
-    /// para poder juzgar la composición de cinco filas del concepto sin comprometer el dato.
+    /// LAS CINCO BARRAS LLEVAN DATO REAL — los cinco campos que el backend manda en
+    /// <c>StatsMsg</c> (0..100), leídos CRUDOS de <c>IPCClient.LatestState</c>: el snapshot llega
+    /// a 10 Hz y aquí no se interpola (eso lo hace StatInterpolator, pero hacia los managers del
+    /// vendor, no hacia este estado). FATIGA es la <c>stamina</c> del backend por decisión de
+    /// diseño (2026-08-16): fatiga ES stamina, no una stat lenta aparte.
     ///
     /// LA HORA TAMPOCO ES REAL: el backend no tiene reloj de mundo (<c>remaining_hours</c> es
     /// caducidad por item, otra cosa). Se deriva del tiempo de sesión arrancando en
@@ -61,10 +60,6 @@ namespace BackroomsSurvival.UI
                  "Solo el eje X: Y y Z se quedan positivos, y el factor de tamaño es el mismo, así " +
                  "que la cara no cambia ni de sitio ni de tamaño — solo de mano.")]
         [SerializeField] private bool mirrorX = false;
-
-        [Header("Contenido")]
-        [Tooltip("Valor fijo 0..100 de FATIGA hasta que se decida si es la stamina del backend.")]
-        [Range(0f, 100f)] public float fatiguePlaceholder = 59f;
 
         [Header("Proyección del canvas")]
         [Tooltip("Material que reproyecta el vértice al FOV del viewmodel (BR_UIWarp), para que " +
@@ -250,19 +245,21 @@ namespace BackroomsSurvival.UI
             // cara en vivo, que es la mitad del sentido de tener estos campos expuestos.
             _canvasRt.sizeDelta = new Vector2(DesignWidth, DesignHeight);
 
-            // Se compensa la escala heredada del rig para que faceSizeMeters signifique metros de
-            // verdad y no "metros multiplicados por lo que traiga el esqueleto".
-            var parent = _canvasRt.parent;
-            float inherited = parent != null ? Mathf.Abs(parent.lossyScale.x) : 1f;
-            if (inherited < 1e-6f)
-                inherited = 1f;
-
-            // Una sola escala para los dos ejes: deformar la rejilla estiraría también el texto.
-            // El signo de mirrorX va SOLO en X y no entra en `inherited`, que sigue siendo un
-            // valor absoluto: son dos cosas distintas — uno compensa el tamaño que trae el
-            // esqueleto, el otro invierte la cara. Mezclarlos haría que el espejado dependiera de
-            // la escala del rig.
-            float faceScale = faceSizeMeters.x / DesignWidth / inherited;
+            // LA CARA HEREDA LA ESCALA DEL RIG, igual que la malla del reloj. Aquí se dividía entre
+            // `Mathf.Abs(parent.lossyScale.x)` para que `faceSizeMeters` significara metros de
+            // mundo exactos — y eso hacía al canvas INMUNE a la escala del viewmodel: se quedaba
+            // del mismo tamaño mientras el reloj seguía al nodo `Camera`, que `CameraFOVHandler`
+            // escala con el `viewModelSize` del item equipado. Con la antorcha (0.5) el reloj se
+            // encogía a la mitad y la esfera no: se veía al DOBLE.
+            //
+            // No se notaba antes porque `WristWatchOverlay` clavaba `viewModelSize = 1` mientras
+            // el reloj estaba fuera. Al quitar aquel forzado, cada item impone la suya y el resto
+            // de esta división quedó al descubierto. Es el mismo error que ya se probó y descartó
+            // en juego para el brazo: ser inmune a la escala del vendor es ser inconsistente.
+            //
+            // `faceSizeMeters` pasa por tanto a estar en metros DEL ESPACIO DEL HUESO, no del
+            // mundo. Es lo que se quiere: el reloj entero, cara incluida, cambia de tamaño junto.
+            float faceScale = faceSizeMeters.x / DesignWidth;
             _canvasRt.localScale = new Vector3(mirrorX ? -faceScale : faceScale, faceScale, faceScale);
         }
 
@@ -369,7 +366,7 @@ namespace BackroomsSurvival.UI
             SetBar(0, stats.hunger);
             SetBar(1, stats.thirst);
             SetBar(2, stats.sanity);
-            SetBar(3, fatiguePlaceholder); // relleno: ver la cabecera de la clase
+            SetBar(3, stats.stamina);
             SetBar(4, stats.health);
         }
 
