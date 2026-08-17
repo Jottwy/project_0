@@ -6037,18 +6037,18 @@ async fn the_claim_dies_with_its_marker() {
     );
 }
 
-/// El claim es un BLOQUE de la rejilla global (15 × 15 m), no un disco ni una esfera. Se comprueba
+/// El claim es un BLOQUE de la rejilla global (10 × 10 m), no un disco ni una esfera. Se comprueba
 /// dentro del bloque, en el bloque de al lado, y desde muy arriba — que es donde una medida en 3D
 /// daría otra respuesta.
 #[tokio::test]
 async fn the_claim_is_a_grid_block_measured_in_xz() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    // Centro del bloque (3,3): x,z ∈ [45, 60). Bien dentro de la zona segura del cluster.
-    claim_at(&mut net, 1, [52.5, 0.0, 52.5]);
+    // Centro del bloque (5,5): x,z ∈ [50, 60). Bien dentro de la zona segura del cluster.
+    claim_at(&mut net, 1, [55.0, 0.0, 55.0]);
 
-    let same_block = [58.0, 0.0, 47.0];
-    let next_block = [61.0, 0.0, 52.5]; // bloque (4,3), a 3 m del anterior pero ya es otro
-    let high_above = [52.5, 30.0, 52.5];
+    let same_block = [59.0, 0.0, 51.0];
+    let next_block = [61.0, 0.0, 55.0]; // bloque (6,5), a 2 m del anterior pero ya es otro
+    let high_above = [55.0, 30.0, 55.0];
 
     process_stp_place(1, 111, same_block, 0.0, 0, false, 1, &mut net);
     assert_eq!(placed_pieces(&net).len(), 1, "dentro del bloque: acepta");
@@ -6069,16 +6069,31 @@ async fn the_claim_is_a_grid_block_measured_in_xz() {
 }
 
 /// La rejilla es GLOBAL y se parte en `floor`, no truncando hacia cero. Con un cast a entero el
-/// bloque del origen mediría 30 m de lado en vez de 15 y se comería el de sus vecinos al oeste y al
+/// bloque del origen mediría 20 m de lado en vez de 10 y se comería el de sus vecinos al oeste y al
 /// norte — un claim plantado en x=−5 reclamaría también x=+5.
 #[tokio::test]
 async fn claim_blocks_west_and_north_of_the_origin_do_not_swallow_their_neighbour() {
     assert_eq!(claim_block([1.0, 0.0, 1.0]), (0, 0));
-    assert_eq!(claim_block([14.9, 0.0, 14.9]), (0, 0));
-    assert_eq!(claim_block([15.1, 0.0, 15.1]), (1, 1));
+    assert_eq!(claim_block([9.9, 0.0, 9.9]), (0, 0));
+    assert_eq!(claim_block([10.1, 0.0, 10.1]), (1, 1));
     assert_eq!(claim_block([-0.1, 0.0, -0.1]), (-1, -1));
-    assert_eq!(claim_block([-14.9, 0.0, -14.9]), (-1, -1));
-    assert_eq!(claim_block([-15.1, 0.0, -15.1]), (-2, -2));
+    assert_eq!(claim_block([-9.9, 0.0, -9.9]), (-1, -1));
+    assert_eq!(claim_block([-10.1, 0.0, -10.1]), (-2, -2));
+}
+
+/// La propiedad que hace a 10 m mejor que a 15: el bloque encaja EXACTO en el chunk de 50 m, así que
+/// ninguna casilla queda partida entre dos chunks — que era el coste declarado del tamaño anterior.
+/// Si alguien cambia `CLAIM_BLOCK_M` a un valor que no divide a 50, esto lo dice.
+#[test]
+fn the_claim_block_tiles_the_chunk_exactly() {
+    let blocks_per_chunk = crate::utils::CHUNK_SIZE / CLAIM_BLOCK_M;
+    assert_eq!(
+        blocks_per_chunk.fract(),
+        0.0,
+        "un bloque de {CLAIM_BLOCK_M} m no divide al chunk de {} m: habría claims a caballo de dos chunks",
+        crate::utils::CHUNK_SIZE
+    );
+    assert_eq!(blocks_per_chunk as i32, 5);
 }
 
 // ── ADR-037: stp_demolish ───────────────────────────────────────────────────

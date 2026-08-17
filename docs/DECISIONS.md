@@ -3959,3 +3959,26 @@ arregla, la hace observable al primer intento.
 
 Sin cambio de wire: la geometría del claim se DERIVA de la posición del marcador en las dos puntas,
 y esa posición ya viajaba.
+
+#### Enmienda 4 a ADR-081 (2026-08-17, misma sesión) — el bloque baja a 2 × 2 tiles (10 m), que es el único tamaño que además cuadra con el chunk
+
+Joel preguntó, viendo el resultado de la enmienda 3: «pero no son 3×3 de tiles, son más espacios,
+¿no?». Tiene razón y la ambigüedad era mía: el mundo tiene DOS rejillas —celda de 2,5 m (con la que
+`grid_gen` genera) y tile de 5 m (la unidad de pared y render)— y «3 × 3» se pidió sin decir de cuál.
+3 × 3 tiles son 15 × 15 m, que en celdas son **6 × 6 = 36 espacios**, no 9.
+
+**`CLAIM_BLOCK_M` pasa de 15 a 10 m** (2 × 2 tiles, 100 m²). Lo decisivo no es el tamaño sino que
+**10 divide exacto los 50 m del chunk**: desaparece el coste declarado en la enmienda 3 —bloques a
+caballo de dos chunks, con media casilla inedificable— y salen 25 casillas limpias por sala. Los
+únicos lados que dividen a 50 son 5, 10 y 25; de los tres, 10 es el que cae en «habitáculo pequeño».
+
+Sigue encajando con la unidad de construcción, que es el otro requisito duro: un lado son exactamente
+**2 paredes de 5 m**, 8 para cerrar el recinto. Por eso se descartó el 3 × 3 literal de la rejilla
+fina (7,5 m): la pared de 5 m no cabe dos veces en 7,5 m, así que el recinto no se puede cerrar sin
+salirse del bloque o dejar hueco.
+
+Ningún código se apoya en la divisibilidad — la puerta de ZONA va por posición y la de PROPIEDAD por
+bloque, independientes—, así que volver a un lado que no divida degrada igual que antes y no rompe.
+Lo fija un test a cada lado (`the_claim_block_tiles_the_chunk_exactly`,
+`TheClaimBlockTilesTheChunkExactly`) para que el día que alguien mueva la constante se entere de lo
+que pierde.

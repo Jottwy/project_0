@@ -4929,15 +4929,18 @@ fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
 /// reclamar nada. El propio menú lo avisa y se niega a regenerar el asset si ya existe.
 const CLAIM_MARKER_DEF_ID: i32 = -1977919096;
 
-/// Lado del bloque que un marcador reclama, en metros: 3 × 3 tiles de 5 m.
+/// Lado del bloque que un marcador reclama, en metros: 2 × 2 tiles de 5 m.
 ///
-/// Enmienda 3 a ADR-081 (petición de Joel tras el primer intento en juego): el radio de 25 m daba
-/// ~1.960 m² por claim y el cluster de arranque son 10.000 m² seguidos — eso no es un habitáculo,
-/// es un solar. 15 × 15 m es una casa pequeña, y el tile de 5 m es la unidad con la que ya está
-/// construido el mundo: un lado son exactamente 3 paredes construibles de las que hay.
+/// Enmienda 4 a ADR-081. El radio de 25 m original daba ~1.960 m² por claim y el cluster de arranque
+/// son 10.000 m² seguidos — un solar, no un habitáculo. La enmienda 3 lo bajó a 15 m y esta a 10.
 ///
-/// TODO(balance): primera pasada, nunca jugado — y Joel lo pidió dudando de él a propósito.
-const CLAIM_BLOCK_M: f32 = 15.0;
+/// **10 m es el único tamaño que además arregla un defecto**: divide EXACTO los 50 m del chunk, así
+/// que ningún bloque queda a caballo de dos chunks (que era el coste declarado de los 15 m) y salen
+/// 25 casillas limpias por sala. Y sigue encajando con la unidad de construcción: un lado son
+/// exactamente 2 de las paredes de 5 m que existen, 8 para cerrar el recinto entero.
+///
+/// TODO(balance): nunca jugado.
+const CLAIM_BLOCK_M: f32 = 10.0;
 
 /// Bloque de la rejilla global de claims que contiene `position`.
 ///
@@ -4949,11 +4952,11 @@ const CLAIM_BLOCK_M: f32 = 15.0;
 /// bloque, o sea que el bloque del origen sería del doble de ancho en las dos direcciones y los
 /// claims al oeste/norte del spawn pisarían el de al lado.
 ///
-/// 15 no divide a los 50 m del chunk, así que un bloque puede quedar a caballo de dos chunks. Es
-/// consciente: la puerta de ZONA se resuelve por posición y la de PROPIEDAD por bloque, y son
-/// independientes — la mitad de tu bloque que caiga fuera de la zona construible sigue sin poder
-/// edificarse. Alinear el bloque al chunk exigiría un lado que divida a 10 tiles (2 o 5), y 3 es lo
-/// que se pidió.
+/// Con 10 m el bloque divide exacto el chunk de 50 m, así que ninguna casilla queda partida entre
+/// dos chunks. NO se apoya código en esa propiedad: la puerta de ZONA se resuelve por posición y la
+/// de PROPIEDAD por bloque, y son independientes — si `CLAIM_BLOCK_M` volviera a un valor que no
+/// divide a 50, la mitad del bloque que cayera fuera de la zona construible simplemente seguiría sin
+/// poder edificarse. Los lados que dividen son 5, 10 y 25.
 fn claim_block(position: [f32; 3]) -> (i32, i32) {
     (
         (position[0] / CLAIM_BLOCK_M).floor() as i32,

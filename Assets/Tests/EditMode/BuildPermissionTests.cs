@@ -119,14 +119,27 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ClaimBlockOfMirrorsTheBackendGrid()
         {
-            Assert.AreEqual(15f, BuildPermission.ClaimBlockMeters, "espejo de CLAIM_BLOCK_M");
+            Assert.AreEqual(10f, BuildPermission.ClaimBlockMeters, "espejo de CLAIM_BLOCK_M");
 
             Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(1f, 0f, 1f)));
-            Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(14.9f, 0f, 14.9f)));
-            Assert.AreEqual((1, 1), BuildPermission.ClaimBlockOf(new Vector3(15.1f, 0f, 15.1f)));
+            Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(9.9f, 0f, 9.9f)));
+            Assert.AreEqual((1, 1), BuildPermission.ClaimBlockOf(new Vector3(10.1f, 0f, 10.1f)));
             Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-0.1f, 0f, -0.1f)));
-            Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-14.9f, 0f, -14.9f)));
-            Assert.AreEqual((-2, -2), BuildPermission.ClaimBlockOf(new Vector3(-15.1f, 0f, -15.1f)));
+            Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-9.9f, 0f, -9.9f)));
+            Assert.AreEqual((-2, -2), BuildPermission.ClaimBlockOf(new Vector3(-10.1f, 0f, -10.1f)));
+        }
+
+        /// <summary>
+        /// El bloque encaja exacto en el chunk de 50 m, que es la razón de ser de los 10 m frente a
+        /// los 15 de la enmienda anterior. Espejo de `the_claim_block_tiles_the_chunk_exactly`.
+        /// </summary>
+        [Test]
+        public void TheClaimBlockTilesTheChunkExactly()
+        {
+            float blocksPerChunk = BackroomsSurvival.Net.SprayMsg.ChunkSize / BuildPermission.ClaimBlockMeters;
+
+            Assert.AreEqual(5f, blocksPerChunk,
+                "un bloque que no divida al chunk deja claims a caballo de dos chunks");
         }
 
         /// <summary>La altura tampoco cuenta para el bloque: un claim es una casilla de suelo.</summary>
@@ -143,8 +156,8 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void ClaimBlockOriginIsTheLowCorner()
         {
-            Assert.AreEqual(new Vector3(0f, 0f, 15f), BuildPermission.ClaimBlockOrigin(0, 1));
-            Assert.AreEqual(new Vector3(-15f, 0f, -15f), BuildPermission.ClaimBlockOrigin(-1, -1));
+            Assert.AreEqual(new Vector3(0f, 0f, 10f), BuildPermission.ClaimBlockOrigin(0, 1));
+            Assert.AreEqual(new Vector3(-10f, 0f, -10f), BuildPermission.ClaimBlockOrigin(-1, -1));
         }
     }
 }

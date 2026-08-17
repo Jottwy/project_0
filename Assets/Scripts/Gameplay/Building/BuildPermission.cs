@@ -41,13 +41,13 @@ namespace BackroomsSurvival.Gameplay.Building
         public const int ClaimMarkerDefId = -1977919096;
 
         /// <summary>
-        /// Espejo de `CLAIM_BLOCK_M` (backend/src/game_loop.rs): 3 × 3 tiles de 5 m.
+        /// Espejo de `CLAIM_BLOCK_M` (backend/src/game_loop.rs): 2 × 2 tiles de 5 m.
         ///
-        /// Enmienda 3 a ADR-081. El radio de 25 m daba ~1.960 m² por claim, y el cluster de arranque
-        /// son 10.000 m² seguidos: un solar, no un habitáculo. Un lado de 15 m son exactamente 3
-        /// paredes construibles de las que hay.
+        /// Enmienda 4 a ADR-081. Un lado de 10 m son exactamente 2 de las paredes construibles que
+        /// existen (8 para cerrar el recinto), y divide EXACTO los 50 m del chunk — así ninguna
+        /// casilla queda partida entre dos chunks, que era el coste declarado de los 15 m.
         /// </summary>
-        public const float ClaimBlockMeters = 15f;
+        public const float ClaimBlockMeters = 10f;
 
         /// <summary>
         /// True si <paramref name="worldPosition"/> cae en una columna de zona construible.
