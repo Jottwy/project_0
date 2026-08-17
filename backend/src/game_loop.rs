@@ -79,11 +79,6 @@ const AUTOSAVE_EVERY: u64 = TICK_HZ * 180;
 /// this fix does not touch).
 const RESTORE_SNAP_SUPPRESS_TICKS: u64 = (0.35 * TICK_HZ as f64) as u64;
 
-const BASE_SPEED: f32 = 5.0;
-const SPRINT_MULT: f32 = 1.5;
-/// ADR-009 Option B: tolerance added to the speed cap when validating the
-/// client-reported velocity before accepting its predicted position.
-const SPEED_TOLERANCE: f32 = 0.5;
 /// Stamina drained per second while the client reports the run move-state.
 const RUN_STAMINA_DRAIN: f32 = 15.0;
 /// ADR-014: delay between granting a pickup and removing the item from `stp_items` (the

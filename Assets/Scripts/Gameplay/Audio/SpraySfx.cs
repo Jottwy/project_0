@@ -7,7 +7,7 @@ namespace BackroomsSurvival.Gameplay.Audio
     /// El ruido del bote de spray: siseo mientras se pinta, cascabel de la bolita al sacarlo y
     /// escupitajo cuando ya no queda pintura.
     ///
-    /// SINTETIZADO Y NO GRABADO, igual que <see cref="FluorescentAudio.GenerateHum"/>: un siseo
+    /// SINTETIZADO Y NO GRABADO, igual que el zumbido de <see cref="FluorescentHumDirector"/>: un siseo
     /// es ruido filtrado, no hay nada que grabar que salga mejor, y así no entra un .wav al
     /// repositorio ni hay que importarlo. Si algún día hay clip autorado, se deja caer en
     /// <c>Resources/Audio/SprayHiss</c> y este componente lo prefiere sin tocar código.

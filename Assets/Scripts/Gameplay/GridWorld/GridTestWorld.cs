@@ -164,20 +164,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             _streamer.layerVisuals = ResolveLayerVisuals();
             _streamer.lighting = _lighting;
 
-            // Global audio director: listener consolidation, reverb zone,
-            // flicker and oppressive-silence filter.
-            //
-            // BUG (sound) — left as-is on purpose, only documented:
-            // BackroomsAudioSystem was built around the old auto-spawned player,
-            // which carried its own AudioListener on a camera child. On Start it
-            // calls ConsolidateListener(), which remounts the AudioListener on the
-            // player ROOT and destroys every other one — including the real scene
-            // player's camera listener. With that player this mis-orients
-            // positional audio: lamp-hum panning, flicker direction and the
-            // distance-based "oppressive silence" low-pass all key off the root,
-            // which doesn't follow camera pitch. Not fixed here per request.
-            // gameObject.AddComponent<BackroomsAudioSystem>();
-
             // Snapshot destruction zones AFTER rooms spawn, so room-borne zones are
             // included alongside any hand-placed scene zones. CollectZones scans the
             // scene once; chunks (built next frame) are carved against this snapshot.

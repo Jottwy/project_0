@@ -41,7 +41,6 @@ pub const ROSTER_PAGE_BUDGET_BYTES: usize = 1000;
 /// Cruzar ese techo pide un rediseño a deltas, que ADR-060 deja explícitamente FUERA. Los
 /// órdenes de magnitud reales están muy por debajo: el doc-comment de `send_datagram` situaba el
 /// primer roster en riesgo (`StpBuildingList`) en ~800 piezas.
-pub const MEASURED_CONVERGENCE_CEILING_ITEMS: usize = 4000;
 
 /// Trocea `items` en páginas cuyo contenido serializado no supera `budget` bytes.
 ///

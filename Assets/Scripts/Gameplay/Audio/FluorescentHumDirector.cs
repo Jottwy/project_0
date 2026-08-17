@@ -11,9 +11,9 @@ namespace BackroomsSurvival.Gameplay.Audio
     /// espacializado, con presupuesto FIJO de <see cref="SourceBudget"/> AudioSource para
     /// todo el mundo.
     ///
-    /// POR QUÉ ASÍ Y NO UNA FUENTE POR LÁMPARA. Eso ya se intentó y se apagó: el
-    /// <c>Awake</c> de <see cref="FluorescentAudio"/> está comentado entero con el motivo
-    /// escrito ("cientos de AudioSource simultáneos, uno por lámpara × muchas lámparas ×
+    /// POR QUÉ ASÍ Y NO UNA FUENTE POR LÁMPARA. Eso ya se intentó (prototipo
+    /// <c>FluorescentAudio</c>, retirado) y se apagó por el motivo escrito en su día
+    /// ("cientos de AudioSource simultáneos, uno por lámpara × muchas lámparas ×
     /// muchos chunks"). Con densidad 1.0 en ZONE_NORMAL un chunk son ~100 lámparas y hay
     /// decenas de chunks cargados; el presupuesto no es una optimización posterior, es la
     /// restricción de la que sale el diseño. Las lámparas fuera del presupuesto NO suenan:
@@ -26,7 +26,7 @@ namespace BackroomsSurvival.Gameplay.Audio
     /// retira solo cuando su <c>root</c> pasa a null.
     ///
     /// NO TOCA EL AudioListener, y esto es deliberado. El director viejo
-    /// (<see cref="BackroomsAudioSystem"/>) sigue desconectado justamente porque su
+    /// (<c>BackroomsAudioSystem</c>, retirado) se dejó desconectado justamente porque su
     /// <c>ConsolidateListener</c> remonta el listener en la raíz del jugador y destruye el
     /// de la cámara: la raíz no sigue el pitch de cámara, así que la panorámica quedaba
     /// mal orientada. Aquí el listener se LEE y nada más.

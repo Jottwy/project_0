@@ -37,10 +37,6 @@ impl Vec3 {
         (self.x * self.x + self.y * self.y + self.z * self.z).sqrt()
     }
 
-    pub fn length_sq(self) -> f32 {
-        self.x * self.x + self.y * self.y + self.z * self.z
-    }
-
     /// Returns the vector scaled to unit length, or `ZERO` if it has no length.
     pub fn normalized(self) -> Vec3 {
         let len = self.length();
