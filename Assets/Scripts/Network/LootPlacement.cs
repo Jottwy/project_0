@@ -19,6 +19,12 @@ namespace BackroomsSurvival.Net
         private const float RaycastUpOffset = 1f;
         private const float RaycastDownRange = 3f;
 
+        /// Shared retry cadence: same three spawners re-poll a pending candidate every
+        /// <see cref="RetryIntervalSeconds"/> for up to <see cref="RetryWindowSeconds"/> before
+        /// giving up silently. Also carried as byte-identical copies before this file existed.
+        internal const float RetryIntervalSeconds = 10f;
+        internal const float RetryWindowSeconds = 180f; // ~3 minutes total, then give up silently
+
         /// Rejection-samples a point on a ring around <paramref name="center"/> that has real
         /// rendered geometry under it. Returns false (and <paramref name="point"/> = center) when
         /// no attempt lands on the floor.

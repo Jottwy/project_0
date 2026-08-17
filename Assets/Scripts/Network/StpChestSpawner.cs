@@ -40,9 +40,7 @@ namespace BackroomsSurvival.Net
         private const float ScatterMaxRadius = 200f;
         // Placement attempts + ray geometry live in LootPlacement (shared with the item and
         // carryable spawners); the ray origin MUST stay under LAYER_HEIGHT — see the note there.
-
-        private const float RetryIntervalSeconds = 10f;
-        private const float RetryWindowSeconds = 180f;
+        // Retry cadence (RetryIntervalSeconds/RetryWindowSeconds) lives there too.
 
         // High-namespace base for the per-chest request_id (see class doc). Arbitrary constant,
         // stable across sessions by design.
@@ -133,7 +131,7 @@ namespace BackroomsSurvival.Net
                 if (Time.unscaledTime < _warmupEnd)
                     return;
                 _warmedUp = true;
-                _retryDeadline = Time.unscaledTime + RetryWindowSeconds;
+                _retryDeadline = Time.unscaledTime + LootPlacement.RetryWindowSeconds;
                 _nextAttemptAt = Time.unscaledTime;
             }
 
@@ -147,7 +145,7 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            _nextAttemptAt = Time.unscaledTime + RetryIntervalSeconds;
+            _nextAttemptAt = Time.unscaledTime + LootPlacement.RetryIntervalSeconds;
 
             var cam = Camera.main;
             if (cam == null)
@@ -196,10 +194,15 @@ namespace BackroomsSurvival.Net
         ///
         /// ⚠ CUENTA DE AGUA DE TODA LA PARTIDA: 4 cofres × 1 botella = **4 aguas de almendras**,
         /// sembradas de una sola vez alrededor del host y sin re-siembra. No hay ninguna otra
-        /// fuente (ChunkLootRoll solo da botes de spray por la enmienda de ADR-030). Contra el
-        /// drenaje de sed actual del backend (−0,07/s ⇒ ~24 min de barra llena) y los +50..70 de
-        /// sed por botella, eso cubre del orden de **45 min a 1 h de sed por partida**. Es un
-        /// número deliberadamente brutal, elegido por Joel. Si el playtest sale injugable, el
+        /// fuente (ChunkLootRoll solo da botes de spray por la enmienda de ADR-030).
+        ///
+        /// ACTUALIZADO 2026-08-17 tras la rebaja de drenajes (sed −0,007/s): el depósito lleno da
+        /// 3 h 58 min y cada botella (+60 de sed) otras 2 h 22 min, así que los 4 cofres cubren
+        /// ~13 h 30 min de sed. **Esta cuenta pasó de brutal a irrelevante**: la escasez de agua ya
+        /// no es lo que limita una sesión. La cuenta anterior (−0,07/s ⇒ 24 min de barra, 45 min–1 h
+        /// por partida) queda aquí a propósito para que nadie balancee contra ella por error.
+        ///
+        /// Si el playtest sale injugable, el
         /// orden de los diales es: primero bajar el drenaje del backend, después subir ChestCount
         /// — NO volver a meter agua en las cachés del mundo, que es lo que la enmienda de ADR-030
         /// decidió a propósito.

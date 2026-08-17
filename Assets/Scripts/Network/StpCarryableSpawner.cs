@@ -54,8 +54,7 @@ namespace BackroomsSurvival.Net
 
         // Retry cadence: same simple Update()-polling this file already used for the authored
         // scan, just kept alive for the procedural zones instead of stopping after one attempt.
-        private const float RetryIntervalSeconds = 10f;
-        private const float RetryWindowSeconds = 180f; // ~3 minutes total, then give up silently
+        // Lives in LootPlacement — shared with StpItemSpawner and StpChestSpawner.
         // Small settle delay before the FIRST zone attempt, so ipc.LatestState.stpCarryables has
         // round-tripped through the backend and reflects the just-registered authored carryables
         // (else the zone merge could momentarily see an empty/stale list and reuse colliding ids).
@@ -204,7 +203,8 @@ namespace BackroomsSurvival.Net
         /// <summary>
         /// Procedural resource-zone scatter, polled every Update() like the rest of this file.
         /// Zones that fail the walkable check stay pending and are retried every
-        /// RetryIntervalSeconds for up to RetryWindowSeconds; each zone seals individually the
+        /// <see cref="LootPlacement.RetryIntervalSeconds"/> for up to
+        /// <see cref="LootPlacement.RetryWindowSeconds"/>; each zone seals individually the
         /// moment its centre raycast succeeds (partial fill within a zone — some of its
         /// CarryablesPerZone points failing — does not block sealing the zone, same tolerance
         /// StpItemSpawner already applies per-item within a cache).
@@ -217,7 +217,7 @@ namespace BackroomsSurvival.Net
             if (!_zoneDeadlineArmed)
             {
                 _zoneDeadlineArmed = true;
-                _zoneDeadline = Time.unscaledTime + RetryWindowSeconds;
+                _zoneDeadline = Time.unscaledTime + LootPlacement.RetryWindowSeconds;
                 _nextZoneAttemptAt = Time.unscaledTime + FirstZoneAttemptDelay;
             }
 
@@ -231,7 +231,7 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            _nextZoneAttemptAt = Time.unscaledTime + RetryIntervalSeconds;
+            _nextZoneAttemptAt = Time.unscaledTime + LootPlacement.RetryIntervalSeconds;
 
             var cam = Camera.main;
             if (cam == null)

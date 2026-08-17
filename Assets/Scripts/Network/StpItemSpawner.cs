@@ -26,8 +26,9 @@ namespace BackroomsSurvival.Net
     /// (ProceduralWorldGenerator viewRadius=1 → 3x3 chunks of 50 m) and it FOLLOWS the host as it
     /// walks, not the spawn point. A one-shot scatter at scene-load time would silently fail any
     /// cache whose random candidate lands outside that small initial window. Caches that fail the
-    /// walkable check stay PENDING (not discarded) and are retried every <see cref="RetryIntervalSeconds"/>
-    /// for up to <see cref="RetryWindowSeconds"/>, so caches further out get a real chance to land
+    /// walkable check stay PENDING (not discarded) and are retried every
+    /// <see cref="LootPlacement.RetryIntervalSeconds"/> for up to
+    /// <see cref="LootPlacement.RetryWindowSeconds"/>, so caches further out get a real chance to land
     /// as the host explores and more chunks stream in. Each cache seals individually the moment its
     /// raycast succeeds — the run does not wait for every cache before sending anything.
     /// No hook into ProceduralWorldGenerator/ChunkStreamer: purely polling the same raycast.
@@ -57,9 +58,8 @@ namespace BackroomsSurvival.Net
         // chest spawners); the ray origin MUST stay under LAYER_HEIGHT — see the note there.
 
         // Retry cadence: same simple Update()-polling this file already used, just kept alive
-        // past the first attempt instead of stopping at _sent=true.
-        private const float RetryIntervalSeconds = 10f;
-        private const float RetryWindowSeconds = 180f; // ~3 minutes total, then give up silently
+        // past the first attempt instead of stopping at _sent=true. Cadence lives in
+        // LootPlacement — shared with StpChestSpawner and StpCarryableSpawner.
 
         // "Almond Water" is deliberately NOT here (ADR-030 amendment) — chest-only by design, see
         // the exception note on StpChestSpawner.ConsumablePool. Not an oversight.
@@ -132,7 +132,7 @@ namespace BackroomsSurvival.Net
                 if (Time.unscaledTime < _warmupEnd)
                     return; // let the chunks around the host stream in first
                 _warmedUp = true;
-                _retryDeadline = Time.unscaledTime + RetryWindowSeconds;
+                _retryDeadline = Time.unscaledTime + LootPlacement.RetryWindowSeconds;
                 _nextAttemptAt = Time.unscaledTime; // allow an immediate first attempt
             }
 
@@ -146,7 +146,7 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            _nextAttemptAt = Time.unscaledTime + RetryIntervalSeconds;
+            _nextAttemptAt = Time.unscaledTime + LootPlacement.RetryIntervalSeconds;
 
             var cam = Camera.main;
             if (cam == null)
