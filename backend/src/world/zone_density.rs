@@ -33,7 +33,7 @@ use crate::world::architecture::layout_grammars::{
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
     TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
     TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
-    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_SAFE_ROOM, TEMPLATE_STORAGE_ROOM,
 };
 use crate::world::chunk::{ChunkLayer, ZONE_OFFICE, ZONE_PILLAR_HALL};
 use crate::world::generator::{generate_initial_structures, structure_zone_kind};
@@ -119,8 +119,9 @@ fn expansion_template_id(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u
     let mut rng = StdRng::seed_from_u64(seed);
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
-        35..=38 => TEMPLATE_OFFICE, // ver el comentario del original, en `world::generator`
+        0..=31 => TEMPLATE_HALLWAY_STRAIGHT,
+        32..=34 => TEMPLATE_SAFE_ROOM, // ADR-081 pieza 2 — ver el original, en `world::generator`
+        35..=38 => TEMPLATE_OFFICE,    // ver el comentario del original, en `world::generator`
         39..=51 => TEMPLATE_HALLWAY_CORNER,
         52..=61 => TEMPLATE_HALLWAY_T,
         62..=70 => TEMPLATE_INTERSECTION,
@@ -819,6 +820,78 @@ mod tests {
             hits > 50,
             "solo {hits} chunks resolvieron a OFFICE en el barrido — el flip no llegó al resolver"
         );
+    }
+
+    /// ADR-081 pieza 2 — LA PRUEBA DE QUE LA FUNCIÓN EXISTE EN EL MUNDO INFINITO.
+    ///
+    /// Antes de este ADR, `ZONE_SAFE` solo salía del conjunto FINITO de estructuras iniciales, así
+    /// que la única zona construible del juego era un puñado de salas junto al spawn. Este test
+    /// exige zonas seguras LEJOS del origen y fuera de toda estructura inicial: si alguien retira la
+    /// banda 32..=34 del sorteo (o la retira solo de uno de los dos espejos), el mundo se queda otra
+    /// vez sin sitio donde construir y esto se pone rojo diciendo exactamente eso.
+    #[test]
+    fn safe_rooms_are_reachable_out_in_the_infinite_world() {
+        use crate::world::chunk::ZONE_SAFE;
+
+        for seed in SEEDS {
+            let structure_keys: std::collections::HashSet<_> =
+                generate_initial_structure_chunks(seed)
+                    .iter()
+                    .map(|(_, c)| (c.pos.0, c.pos.1, c.layer))
+                    .collect();
+
+            let mut hits = 0usize;
+            // Barrido deliberadamente LEJANO (|cx|,|cz| ≥ 20): a esa distancia no queda ninguna
+            // estructura inicial, así que todo acierto viene del sorteo de expansión y solo de él.
+            for cx in 20..=60 {
+                for cz in 20..=60 {
+                    if structure_keys.contains(&(cx, cz, 0)) {
+                        continue;
+                    }
+                    if zone_kind_for(seed, cx, cz, 0) == ZONE_SAFE {
+                        hits += 1;
+                    }
+                }
+            }
+
+            assert!(
+                hits > 0,
+                "seed {seed}: ni una zona segura en 41x41 chunks de expansión — el mundo infinito \
+                 no tiene dónde construir"
+            );
+        }
+    }
+
+    /// SONDA DE DENSIDAD, no test (`#[ignore]`, patrón de `docs/systems/perf-baseline.md`).
+    ///
+    /// El 3 % de ADR-081 es la banda del sorteo, no la densidad OBSERVADA: las estructuras iniciales
+    /// pisan zonas cerca del origen y los umbrales de `depth` mueven el reparto. Se mide en vez de
+    /// estimarse porque la enmienda S1 de ADR-068 ya falló 2,6× calculando a ojo justo esto.
+    ///
+    /// `cargo test measure_safe_zone_density -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_safe_zone_density() {
+        use crate::world::chunk::ZONE_SAFE;
+
+        for seed in SEEDS {
+            let mut safe = 0usize;
+            let mut total = 0usize;
+            for cx in -50..=50 {
+                for cz in -50..=50 {
+                    total += 1;
+                    if zone_kind_for(seed, cx, cz, 0) == ZONE_SAFE {
+                        safe += 1;
+                    }
+                }
+            }
+            let pct = 100.0 * safe as f64 / total as f64;
+            // Un chunk son 50 m: la media entre salas es la raíz del área por sala.
+            let spacing_m = (2500.0 * total as f64 / safe.max(1) as f64).sqrt();
+            println!(
+                "MEASURED seed={seed} safe_chunks={safe}/{total} ({pct:.2}%) spacing≈{spacing_m:.0} m"
+            );
+        }
     }
 
     /// El resolver es una función pura del seed: misma entrada → misma salida,

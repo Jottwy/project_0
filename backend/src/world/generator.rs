@@ -46,7 +46,7 @@ use crate::world::architecture::layout_grammars::{
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
     TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
     TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
-    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_SAFE_ROOM, TEMPLATE_STORAGE_ROOM,
 };
 
 pub use crate::world::levels::level_0::structure::StructureV0;
@@ -87,7 +87,16 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // punctuated by occasional halls, column rooms and strange lighting zones.
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
+        0..=31 => TEMPLATE_HALLWAY_STRAIGHT,
+        // ADR-081 pieza 2 — SAFE_ROOM: la ÚNICA zona construible del juego, y hasta ahora solo
+        // existía en el conjunto finito de estructuras iniciales. Sin esta banda, "zona
+        // construible" significaba un puñado de salas junto al spawn y nada más en todo el
+        // mundo infinito. Banda tallada a HALLWAY_STRAIGHT (era 0..=34) por el mismo criterio
+        // con el que entró OFFICE: el brazo más ancho es el que puede ceder sin borrar carácter.
+        // 3 % = la banda de STORAGE_ROOM, escasa a propósito (una base es un hallazgo, no un
+        // trámite). Sin gate de `depth`: el cluster de arranque ya es ZONE_SAFE, así que una sala
+        // segura cerca no rompe nada, y lejos es justo lo que hace habitable la exploración.
+        32..=34 => TEMPLATE_SAFE_ROOM,
         // OFFICE — banda tallada a HALLWAY_STRAIGHT (era 0..=38), el brazo más ancho del
         // sorteo, para que el 4% salga del pasillo genérico y no de un template que ya
         // aportaba carácter propio. Sin gate de `depth`: una planta de oficinas cerca de
