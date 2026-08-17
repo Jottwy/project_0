@@ -24,23 +24,25 @@ use serde::Serialize;
 /// exactamente lo que hace que apurar al MTU exacto vuelva a fragmentar.
 pub const ROSTER_PAGE_BUDGET_BYTES: usize = 1000;
 
-/// TECHO PRÁCTICO, MEDIDO (2026-08-10, loopback, `StpCarryableInfo`): la paginación no vuelve
-/// infinito el roster, solo mueve el límite ~50×. Rondas necesarias para que el roster llegue
-/// entero, con el `yield_now` entre páginas ya puesto:
-///
-/// | elementos | páginas | rondas |
-/// |-----------|---------|--------|
-/// | 4 000     | 222     | 1      |
-/// | 20 000    | 1 111   | nunca (20 rondas) |
-///
-/// El monolito moría a ~2 200 elementos (65 507 B) y de forma PERMANENTE; esto entrega 4 000 en
-/// una sola ronda. Por encima, la ráfaga vuelve a desbordar el buffer de recepción y, con
-/// reensamblado todo-o-nada, ninguna generación completa — el roster deja de actualizarse
-/// (aunque el joiner conserva el último completo, en vez de perderlo todo).
-///
-/// Cruzar ese techo pide un rediseño a deltas, que ADR-060 deja explícitamente FUERA. Los
-/// órdenes de magnitud reales están muy por debajo: el doc-comment de `send_datagram` situaba el
-/// primer roster en riesgo (`StpBuildingList`) en ~800 piezas.
+// TECHO PRÁCTICO, MEDIDO (2026-08-10, loopback, `StpCarryableInfo`): la paginación no vuelve
+// infinito el roster, solo mueve el límite ~50×. Rondas necesarias para que el roster llegue
+// entero, con el `yield_now` entre páginas ya puesto:
+//
+// | elementos | páginas | rondas |
+// |-----------|---------|--------|
+// | 4 000     | 222     | 1      |
+// | 20 000    | 1 111   | nunca (20 rondas) |
+//
+// El monolito moría a ~2 200 elementos (65 507 B) y de forma PERMANENTE; esto entrega 4 000 en
+// una sola ronda. Por encima, la ráfaga vuelve a desbordar el buffer de recepción y, con
+// reensamblado todo-o-nada, ninguna generación completa — el roster deja de actualizarse
+// (aunque el joiner conserva el último completo, en vez de perderlo todo).
+//
+// Cruzar ese techo pide un rediseño a deltas, que ADR-060 deja explícitamente FUERA. Los
+// órdenes de magnitud reales están muy por debajo: el doc-comment de `send_datagram` situaba el
+// primer roster en riesgo (`StpBuildingList`) en ~800 piezas.
+// (Comentario plano a propósito: documentaba `MEASURED_CONVERGENCE_CEILING_ITEMS`, retirada en
+// la auditoría 2026-08-17; la medición sigue valiendo para quien toque la paginación.)
 
 /// Trocea `items` en páginas cuyo contenido serializado no supera `budget` bytes.
 ///
