@@ -16,6 +16,9 @@ impl NetworkManager {
     /// Send an unreliable packet to a specific peer.
     pub async fn send_unreliable_to(&self, peer_id: PeerId, payload: &PacketPayload) {
         if let Some(peer) = self.peers.get(&peer_id) {
+            if peer.relay_only {
+                return; // ADR-079: unreachable by contract — a datagram here is H10 poison
+            }
             let seq = 0; // unreliable packets don't need meaningful sequence
             let header =
                 PacketHeader::new(payload.type_code(), self.local_id, seq, self.timestamp());
@@ -66,6 +69,9 @@ impl NetworkManager {
     /// test `a_cached_relay_encode_is_byte_identical_to_the_per_destination_one` lo congela.
     pub(super) async fn send_prepared_unreliable(&self, dest_peer: PeerId, data: &[u8]) {
         if let Some(peer) = self.peers.get(&dest_peer) {
+            if peer.relay_only {
+                return; // ADR-079: never a legal relay destination
+            }
             self.send_datagram(data, peer.addr, "relay_as").await;
         }
     }
@@ -103,7 +109,9 @@ impl NetworkManager {
     pub(super) fn broadcast_destinations(&self) -> Vec<(PeerId, SocketAddr)> {
         self.peers
             .values()
-            .filter(|p| !self.is_phantom(p.id))
+            // ADR-079: relay_only is the receiver-side twin of the phantom mark — same inert
+            // addr, same H10 poison if addressed. Both are filtered here.
+            .filter(|p| !self.is_phantom(p.id) && !p.relay_only)
             .map(|p| (p.id, p.addr))
             .collect()
     }
@@ -119,6 +127,9 @@ impl NetworkManager {
         let Some(peer) = self.peers.get(&peer_id) else {
             return;
         };
+        if peer.relay_only {
+            return; // ADR-079: nunca se encola reliable hacia un inalcanzable
+        }
         let addr = peer.addr;
 
         // Control de ventana. `can_queue_reliable` existía desde la Fase 3 y NO lo llamaba
@@ -230,6 +241,9 @@ impl NetworkManager {
         let Some(peer) = self.peers.get(&peer_id) else {
             return;
         };
+        if peer.relay_only {
+            return; // ADR-079: mismo contrato que send_reliable
+        }
         let addr = peer.addr;
 
         if !peer.can_queue_reliable() || !peer.deferred_reliable.is_empty() {
@@ -254,7 +268,10 @@ impl NetworkManager {
         let peer_addrs: Vec<(PeerId, SocketAddr)> = self
             .peers
             .iter()
-            .filter(|(id, _)| !self.phantom_ids.contains(id))
+            // ADR-079: relay_only peers are as unACKable as phantoms — a reliable packet to
+            // one would pile retransmits until ADR-062 evicted it, then the roster re-adds
+            // it: an evict/re-add loop for free.
+            .filter(|(id, p)| !self.phantom_ids.contains(id) && !p.relay_only)
             .map(|(id, p)| (*id, p.addr))
             .collect();
 

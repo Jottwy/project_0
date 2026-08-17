@@ -236,6 +236,13 @@ pub struct PeerInfo {
     pub name: String,
     pub addr: String,
     pub position: [f32; 3],
+    /// ADR-079: reachability, not identity — `true` means "register this peer so relayed poses
+    /// apply, but you cannot ADDRESS it" (the host's injected phantoms). The receiver ignores
+    /// `addr` on such entries and stamps its own inert address; every send path skips them
+    /// (H10: one datagram at an inert addr poisons the sender's socket on Windows). A v34
+    /// decoder defaults this to false — noisy but non-silent degradation, hence wire v35.
+    #[serde(default)]
+    pub relay_only: bool,
 }
 
 /// A host-authoritative STP world item instance, replicated to all peers so each
@@ -1109,6 +1116,8 @@ mod tests {
                 name: "Host".into(),
                 addr: "127.0.0.1:7778".into(),
                 position: [0.0, 1.8, 0.0],
+                // ADR-079: non-default so the round-trip proves the field survives the wire.
+                relay_only: true,
             }],
             anchors: vec![],
             stabilizers: vec![],
@@ -1121,12 +1130,15 @@ mod tests {
             PacketPayload::HandshakeAck {
                 assigned_id,
                 world_seed,
+                peers,
                 phantom_density_scale,
                 ..
             } => {
                 assert_eq!(assigned_id, 2);
                 assert_eq!(world_seed, 42);
                 assert_eq!(phantom_density_scale, 2.5);
+                // ADR-079: the non-default value must survive the round trip.
+                assert!(peers[0].relay_only);
             }
             _ => panic!("wrong variant"),
         }

@@ -82,31 +82,36 @@ pub fn build_session_config(world: &World) -> SessionConfig {
     }
 }
 
-/// ADR-043 gap (auditoría 2026-08-10, playtest H10): antes de este filtro, esta era la ÚNICA
-/// función del archivo que ponía un peer en el WIRE sin excluir fantasmas — `broadcast_player_update`,
-/// `voice_destinations` y `broadcast_world_sync` ya lo hacían. Un fantasma aquí no es solo un
-/// destino de más: su `PeerInfo` (id, nombre, la dirección INERTE `127.0.0.1:1`) viaja dentro del
-/// `PeerList` hacia un peer real, que la adopta sin saber que es un fantasma (esa marca vive solo
-/// en `phantom_ids`, local a quien lo inyectó, y no cruza el wire) — ver `PacketPayload::PeerList`
-/// en `handlers.rs`, que inserta un `PeerConnection` real para cada entrada. Ese peer real acaba
-/// con un "peer" fantasma en su propio `net.peers` que SU `is_phantom` no reconoce, y sus propios
-/// broadcasts (ya filtrados por `broadcast_destinations`) lo tratarían como real.
+/// ADR-043 gap (auditoría 2026-08-10, playtest H10) + enmienda ADR-079. H10 encontró que un
+/// fantasma anunciado aquí con su addr inerte era adoptado como peer REAL por el receptor, cuyos
+/// broadcasts le disparaban datagramas (veneno de socket, 1M de `os error 10054`), y lo EXCLUYÓ.
+/// La exclusión causó el bug simétrico: sin entrada en `net.peers` del joiner, la rama
+/// `PlayerUpdate` de `handlers.rs` descartaba toda pose relayada del fantasma — el joiner nunca
+/// lo vio. ADR-079: la entrada VIAJA marcada `relay_only` con addr placeholder; el receptor la
+/// registra con su propia addr inerte y TODA la superficie de envío la excluye. El receptor debe
+/// CONOCER al fantasma sin poder DIRIGIRSE a él.
 pub fn build_peer_list(net: &NetworkManager, local_player: &Player) -> Vec<PeerInfo> {
     let mut peers = vec![PeerInfo {
         id: net.local_id,
         name: local_player.name.clone(),
         addr: net.local_addr().to_string(),
         position: local_player.position.to_array(),
+        relay_only: false,
     }];
     for peer in net.peers.values() {
-        if net.is_phantom(peer.id) {
-            continue;
-        }
+        let relay_only = net.is_phantom(peer.id) || peer.relay_only;
         peers.push(PeerInfo {
             id: peer.id,
             name: peer.name.clone(),
-            addr: peer.addr.to_string(),
+            // ADR-079: la addr real de un relay_only es la inerte local y no pinta nada en el
+            // wire — viaja un placeholder que el receptor ignora por contrato.
+            addr: if relay_only {
+                "0.0.0.0:0".to_string()
+            } else {
+                peer.addr.to_string()
+            },
             position: peer.position,
+            relay_only,
         });
     }
     peers
@@ -117,11 +122,14 @@ mod peer_list_tests {
     use super::*;
     use crate::network::peer::PeerConnection;
 
-    /// ADR-043 gap cerrado (auditoría 2026-08-10, playtest H10): sin el filtro, un fantasma
-    /// aparecía en el `PeerList` con su dirección inerte `127.0.0.1:1` como si fuera un peer
-    /// real, y quien lo recibiera lo adoptaba sin saber que era un fantasma.
+    /// H10 (2026-08-10) excluyó al fantasma del roster para que su addr inerte no cruzara el
+    /// wire; ADR-079 lo reincorpora MARCADO `relay_only` y con addr placeholder, porque la
+    /// exclusión dejaba al joiner sin entrada donde aplicar las poses relayadas (el fantasma
+    /// era invisible para todo joiner). Las dos protecciones conviven: el real viaja con su
+    /// addr, el fantasma viaja sin addr utilizable y con la bandera que obliga al receptor a
+    /// registrarlo como inalcanzable.
     #[tokio::test]
-    async fn build_peer_list_excludes_phantoms() {
+    async fn build_peer_list_marks_phantoms_relay_only() {
         let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
         let real_addr: std::net::SocketAddr = "127.0.0.1:9800".parse().unwrap();
         host.peers
@@ -131,13 +139,19 @@ mod peer_list_tests {
         let player = Player::new(host.local_id, "Host");
         let list = build_peer_list(&host, &player);
 
-        assert!(
-            list.iter().any(|p| p.id == 2),
-            "un peer real SI debe aparecer en el roster"
-        );
-        assert!(
-            !list.iter().any(|p| p.id == phantom_id),
-            "un fantasma no puede aparecer en el PeerList — su addr inerte cruzaria el wire"
+        let real = list.iter().find(|p| p.id == 2).expect("real en el roster");
+        assert!(!real.relay_only, "un peer real nunca viaja relay_only");
+        assert_eq!(real.addr, "127.0.0.1:9800");
+
+        let ghost = list
+            .iter()
+            .find(|p| p.id == phantom_id)
+            .expect("ADR-079: el fantasma DEBE viajar en el roster");
+        assert!(ghost.relay_only, "el fantasma viaja marcado relay_only");
+        assert_eq!(ghost.name, "Skinwalker", "el nombre del disfraz viaja");
+        assert_eq!(
+            ghost.addr, "0.0.0.0:0",
+            "la addr inerte real no cruza el wire — placeholder por contrato"
         );
     }
 }
@@ -2201,6 +2215,7 @@ mod uplink_probe {
                 name: format!("Player_{id:02}"),
                 addr: "203.0.113.77:7778".into(),
                 position: [123.5, 1.8, -412.0],
+                relay_only: false,
             })
             .collect();
         let peer_list_wire = wire_len(&PacketPayload::PeerList { peers: peers_info });

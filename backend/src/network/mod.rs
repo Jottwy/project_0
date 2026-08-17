@@ -38,6 +38,15 @@ pub type PeerId = u16;
 /// 0xF000 (61440) clears that range with room to spare in the u16 id space.
 const PHANTOM_ID_BASE: PeerId = 0xF000;
 
+/// ADR-016/ADR-079: the inert, non-routable address stamped on peers nobody may send to — the
+/// host stamps it on injected phantoms at spawn, and a joiner stamps it on `relay_only` PeerList
+/// entries (NEVER the addr that came over the wire). 127.0.0.1:1 is never a real peer endpoint;
+/// every send path must skip such peers anyway (H10: a datagram at a dead loopback port comes
+/// back as WSAECONNRESET on Windows and poisons the sender's own socket).
+pub(crate) const INERT_PEER_ADDR: std::net::SocketAddr = std::net::SocketAddr::V4(
+    std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1),
+);
+
 /// F0.5 (E0, ADR-073): tope de los nueve sets de dedupe de peticiones que se migraron. ADR-029 ya
 /// exigía poda para los suyos de PvP; el resto se quedó sin ella y crecía durante TODA la sesión —
 /// una fuga lenta pero real (cada pickup, drop, colocación, demolición, cosecha y pintada de la

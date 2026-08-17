@@ -14,11 +14,13 @@ impl NetworkManager {
     /// Number of REAL connected peers, excluding injected phantoms. Used by the internal
     /// count gates that must not count a phantom (joiner spawn gate, sanity context). The
     /// rendered roster (`build_world_state`) still includes phantoms so they appear as
-    /// players. On a joiner `phantom_ids` is empty, so this equals `peer_count`.
+    /// players. ADR-079: on a joiner `phantom_ids` is empty but the host's phantoms now
+    /// arrive as `relay_only` entries — excluded here too, so both backends agree that a
+    /// phantom is not a player.
     pub fn real_peer_count(&self) -> usize {
         self.peers
-            .keys()
-            .filter(|id| !self.phantom_ids.contains(id))
+            .values()
+            .filter(|p| !self.phantom_ids.contains(&p.id) && !p.relay_only)
             .count()
     }
 
@@ -69,9 +71,9 @@ impl NetworkManager {
             crate::world::grid_gen::world_pos_to_layer(position[1]),
         ) + crate::world::collision::PLAYER_BASE_Y;
         let id = self.allocate_phantom_id();
-        // Inert, non-routable addr: nobody sends to it on the normal path, and reliable
-        // broadcasts skip it explicitly. 127.0.0.1:1 is never a real peer endpoint.
-        let addr: SocketAddr = (std::net::Ipv4Addr::LOCALHOST, 1).into();
+        // Inert, non-routable addr (shared sentinel, see INERT_PEER_ADDR): nobody sends to it
+        // on the normal path, and reliable broadcasts skip it explicitly.
+        let addr: SocketAddr = super::INERT_PEER_ADDR;
         let mut conn = PeerConnection::new(id, name.to_string(), addr);
         conn.update_player_state(position, 0.0, "idle".into());
         self.peers.insert(id, conn);
@@ -122,9 +124,9 @@ impl NetworkManager {
     pub fn real_peer_names(&self) -> Vec<String> {
         let mut ids: Vec<PeerId> = self
             .peers
-            .keys()
-            .copied()
-            .filter(|id| !self.phantom_ids.contains(id))
+            .values()
+            .filter(|p| !self.phantom_ids.contains(&p.id) && !p.relay_only)
+            .map(|p| p.id)
             .collect();
         ids.sort_unstable();
         ids.into_iter()

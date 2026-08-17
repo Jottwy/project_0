@@ -2148,3 +2148,109 @@ async fn a_phantom_inside_the_aoi_is_relayed_like_any_player() {
          distinto lo delataría"
     );
 }
+
+/// ADR-079, extremo a extremo sobre sockets reales: el roster lleva la entrada `relay_only`, el
+/// joiner REGISTRA al fantasma (nombre del disfraz incluido, addr inerte local), y la siguiente
+/// pose relayada APLICA sobre esa entrada — que es exactamente lo que faltaba: el test de arriba
+/// probaba que la pose LLEGABA, pero sin entrada en `net.peers` el receptor la descartaba y el
+/// robapieles fue invisible para todo joiner desde ADR-016.
+#[tokio::test]
+async fn a_relay_only_roster_entry_makes_the_phantom_visible_to_the_joiner() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_addr = loopback_addr(&host);
+    let mut joiner = NetworkManager::bind(0, 4001, 0, false).await.unwrap();
+    joiner.initiate_connection(host_addr).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    host.process_incoming().await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    let phantom_id = host.spawn_phantom("Skinwalker", [10.0, 1.8, 0.0]);
+    place_peer(&mut host, phantom_id, [10.0, 1.8, 0.0]);
+    place_peer(&mut host, 4001, [0.0, 1.8, 0.0]);
+
+    // El roster con la entrada relay_only (10 Hz en producción; aquí un envío bastan).
+    let host_player = crate::player::session::Player::new(host.local_id, "Host");
+    crate::network::sync::broadcast_peer_roster(&host, &host_player).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    joiner.process_incoming().await;
+
+    let entry = joiner
+        .peers
+        .get(&phantom_id)
+        .expect("ADR-079: el joiner registra al fantasma del roster");
+    assert!(entry.relay_only, "registrado como inalcanzable");
+    assert_eq!(entry.name, "Skinwalker", "el nombre del disfraz llegó");
+    assert_eq!(
+        entry.addr, INERT_PEER_ADDR,
+        "la addr es la inerte LOCAL, nunca la del wire"
+    );
+
+    // La pose relayada aplica sobre la entrada — incluidos los cosméticos que sella el driver.
+    host.peers.get_mut(&phantom_id).unwrap().revealed = true;
+    for _ in 0..2 {
+        crate::network::sync::broadcast_peer_poses(&mut host).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+    }
+    joiner.process_incoming().await;
+    assert!(
+        joiner.peers.get(&phantom_id).unwrap().revealed,
+        "la pose relayada APLICA: el joiner ve exactamente lo que ve el host"
+    );
+
+    // Inalcanzable de verdad: fuera de todo destino de broadcast y fuera del conteo de reales.
+    assert!(
+        joiner
+            .broadcast_destinations()
+            .iter()
+            .all(|(id, _)| *id != phantom_id),
+        "ni un datagrama del joiner puede apuntar al fantasma (H10)"
+    );
+    assert_eq!(
+        joiner.real_peer_count(),
+        1,
+        "el fantasma no cuenta como jugador en el joiner (solo el host)"
+    );
+}
+
+/// ADR-079: ni `send_reliable` ni `broadcast_reliable` encolan jamás hacia una entrada
+/// `relay_only` — una cola reliable a un inalcanzable agota reintentos y ADR-062 lo evictaría,
+/// que con el roster re-insertándolo sería un bucle evict/re-add perpetuo.
+#[tokio::test]
+async fn no_reliable_is_ever_queued_to_a_relay_only_peer() {
+    let mut joiner = NetworkManager::bind(0, 4001, 0, false).await.unwrap();
+    let mut conn = PeerConnection::new(0xF000, "Skinwalker".into(), INERT_PEER_ADDR);
+    conn.relay_only = true;
+    joiner.peers.insert(0xF000, conn);
+
+    joiner
+        .send_reliable(0xF000, &PacketPayload::Heartbeat)
+        .await;
+    joiner
+        .send_reliable_queued(0xF000, &PacketPayload::Heartbeat)
+        .await;
+    joiner.broadcast_reliable(&PacketPayload::Heartbeat).await;
+
+    let peer = joiner.peers.get(&0xF000).unwrap();
+    assert!(peer.reliable_queue.is_empty(), "cola reliable intacta");
+    assert!(peer.deferred_reliable.is_empty(), "cola diferida intacta");
+}
+
+/// ADR-079: el ciclo de vida es el silencio — cuando el fantasma despawnea (o sale del roster),
+/// la entrada deja de refrescar heartbeat y `check_timeouts` la cosecha a los 5 s, igual que a
+/// cualquier peer. Sin protocolo de despedida: el fantasma nunca handshakeó (ADR-016).
+#[tokio::test]
+async fn a_silent_relay_only_entry_is_reaped_by_the_heartbeat_timeout() {
+    let mut joiner = NetworkManager::bind(0, 4001, 0, false).await.unwrap();
+    let mut conn = PeerConnection::new(0xF000, "Skinwalker".into(), INERT_PEER_ADDR);
+    conn.relay_only = true;
+    conn.last_heartbeat = std::time::Instant::now() - Duration::from_secs(10);
+    joiner.peers.insert(0xF000, conn);
+
+    let events = joiner.check_timeouts();
+    assert_eq!(events.len(), 1, "una cosecha, un evento");
+    assert!(
+        joiner.peers.is_empty(),
+        "la entrada silenciosa desaparece del mapa del joiner"
+    );
+}

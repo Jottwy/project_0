@@ -115,6 +115,11 @@ pub struct PeerConnection {
     /// haul building material it does not have.
     pub carry_def: i32,
     pub carry_count: u8,
+    /// ADR-079: this peer is known only through the host's relay (a phantom registered from a
+    /// `relay_only` PeerList entry). Its `addr` is the local inert sentinel and every send path
+    /// must skip it — one datagram at an inert addr is the H10 socket poison. Poses relayed by
+    /// the host still apply through `handle_packet` exactly like any peer's.
+    pub relay_only: bool,
 }
 
 impl PeerConnection {
@@ -146,6 +151,7 @@ impl PeerConnection {
             melee_seq: 0,
             carry_def: 0,
             carry_count: 0,
+            relay_only: false,
         }
     }
 

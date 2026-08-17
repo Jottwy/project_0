@@ -186,6 +186,31 @@ impl NetworkManager {
                     if info.id == self.local_id {
                         continue; // never track ourselves as a remote
                     }
+                    if info.relay_only {
+                        // ADR-079: entrada solo-relay (el fantasma del host). Se registra para
+                        // que las poses relayadas (ADR-015) tengan dónde aplicar — sin esto la
+                        // rama PlayerUpdate las descartaba y el joiner nunca vio al robapieles.
+                        // La addr del wire es un placeholder y NO se usa: se estampa la inerte
+                        // local (H10: un datagrama a una addr inerte envenena el socket), y toda
+                        // la superficie de envío salta `relay_only`. El heartbeat se refresca en
+                        // cada roster; cuando el fantasma despawnea deja de venir y
+                        // check_timeouts lo cosecha a los 5 s — retirada silenciosa
+                        // (`player_left` no tiene suscriptores en Unity).
+                        let entry = self.peers.entry(info.id).or_insert_with(|| {
+                            let mut conn = PeerConnection::new(
+                                info.id,
+                                info.name.clone(),
+                                super::INERT_PEER_ADDR,
+                            );
+                            conn.relay_only = true;
+                            conn
+                        });
+                        entry.relay_only = true;
+                        let rot = entry.rotation;
+                        let anim = entry.animation.clone();
+                        entry.update_player_state(info.position, rot, anim);
+                        continue;
+                    }
                     if let Some(peer) = self.peers.get_mut(&info.id) {
                         let rot = peer.rotation;
                         let anim = peer.animation.clone();
@@ -924,11 +949,23 @@ impl NetworkManager {
             peers: self
                 .peers
                 .values()
-                .map(|p| PeerInfo {
-                    id: p.id,
-                    name: p.name.clone(),
-                    addr: p.addr.to_string(),
-                    position: p.position,
+                .map(|p| {
+                    // ADR-079: misma regla que build_peer_list — la marca viaja y la addr
+                    // inerte de un fantasma no. handle_handshake_ack ignora esta lista hoy
+                    // (solo registra al host), pero una superficie que emite peers al wire
+                    // sin la regla es exactamente cómo nació el agujero H10.
+                    let relay_only = self.is_phantom(p.id) || p.relay_only;
+                    PeerInfo {
+                        id: p.id,
+                        name: p.name.clone(),
+                        addr: if relay_only {
+                            "0.0.0.0:0".to_string()
+                        } else {
+                            p.addr.to_string()
+                        },
+                        position: p.position,
+                        relay_only,
+                    }
                 })
                 .collect(),
             anchors: vec![],
