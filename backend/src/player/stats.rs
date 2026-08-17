@@ -118,10 +118,26 @@ impl PlayerStats {
 
     /// Advance survival simulation by `dt` seconds.
     pub fn update(&mut self, dt: f32, ctx: &StatContext) {
-        // Base decay. Balance (2026-07-07): slowed 10× (was 0.5 / 0.7 per second) so a session
-        // lasts far longer before survival pressure bites. TODO(balance): playtest values.
-        self.hunger -= 0.05 * dt;
-        self.thirst -= 0.07 * dt;
+        // Base decay. Balance (2026-08-17): slowed another 10× (100× vs the original 0.5 / 0.7),
+        // porque el objetivo de diseño cambió de "una sesión" a "una jornada administrable": con
+        // 0.07/s la ventana en la que beber un agua de almendras era EFICIENTE eran 4 min 46 s
+        // (por debajo pierdes la botella contra el clamp a 100 de `restore_thirst`, por encima ya
+        // estás en peligro), y racionar algo con una ventana de 5 minutos no es racionar.
+        //
+        // Depósito lleno: hambre 100/0.005 = 20000 s = 5 h 33 min; sed 100/0.007 = 14285 s =
+        // 3 h 58 min. La SED sigue siendo la restricción vinculante (muerte a 4 h 00 min 52 s
+        // contando el daño de deshidratación), y eso es deliberado: la única comida alcanzable en
+        // juego es el propio agua de almendras, así que un hambre vinculante sería una muerte sin
+        // respuesta posible.
+        //
+        // ESPEJO OBLIGATORIO EN EL CLIENTE: los managers del vendor drenan en LOCAL cuando el IPC
+        // está caído (`StatInterpolator` los apaga al conectar y los reenciende al perder la
+        // conexión), y sus tasas viven en `_depletionSpeed` de
+        // Assets/PolymindGames/STP/Prefabs/Core/STP_Player.prefab. Tocar solo este fichero deja al
+        // jugador offline drenando al ritmo viejo. Clavado por `VendorStatDepletionTests`.
+        // TODO(balance): playtest values.
+        self.hunger -= 0.005 * dt;
+        self.thirst -= 0.007 * dt;
         self.sanity -= calculate_sanity_drain(ctx) * dt;
 
         // Passive stamina regeneration (run-drain is applied in the movement step).
@@ -230,22 +246,26 @@ mod tests {
         assert_eq!(s.sanity, 75.0);
     }
 
-    // Balance (2026-07-07): lock in the slowed decay rates (10× slower) so a future tweak that
-    // silently reverts them fails here. Uses a full-health, well-fed default so no clamp/damage
-    // path interferes.
+    // Balance (2026-08-17): lock in the decay rates, ahora 100× más lentas que las originales
+    // (0.5 / 0.7), so a future tweak that silently reverts them fails here. Uses a full-health,
+    // well-fed default so no clamp/damage path interferes.
+    //
+    // La tolerancia de 1e-4 se conserva a propósito aunque los valores sean 10× más pequeños: el
+    // error de f32 a esta escala es ~6e-6, y una reversión a las tasas viejas desviaría 0.045 y
+    // 0.063, o sea 450× y 630× la tolerancia. Sigue fallando ruidoso, que es para lo que está.
     #[test]
-    fn base_decay_rates_are_slowed_10x() {
+    fn base_decay_rates_are_slowed_100x() {
         let mut s = PlayerStats::default();
         s.update(1.0, &StatContext::default());
-        // 100 - 0.05, 100 - 0.07 over one second.
+        // 100 - 0.005, 100 - 0.007 over one second.
         assert!(
-            (s.hunger - 99.95).abs() < 1e-4,
-            "hunger decay should be 0.05/s, got {}",
+            (s.hunger - 99.995).abs() < 1e-4,
+            "hunger decay should be 0.005/s, got {}",
             s.hunger
         );
         assert!(
-            (s.thirst - 99.93).abs() < 1e-4,
-            "thirst decay should be 0.07/s, got {}",
+            (s.thirst - 99.993).abs() < 1e-4,
+            "thirst decay should be 0.007/s, got {}",
             s.thirst
         );
     }

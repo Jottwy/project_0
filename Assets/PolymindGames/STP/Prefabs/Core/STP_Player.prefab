@@ -1323,7 +1323,7 @@ MonoBehaviour:
   _maxHunger: 100
   _settings:
     _depletionType: 1
-    _depletionSpeed: 0.05
+    _depletionSpeed: 0.005
     _damageThresholdType: 1
     _damageValueThreshold: 5
     _damage: 0.5
@@ -1346,7 +1346,7 @@ MonoBehaviour:
   _maxThirst: 100
   _settings:
     _depletionType: 1
-    _depletionSpeed: 0.09
+    _depletionSpeed: 0.007
     _damageThresholdType: 1
     _damageValueThreshold: 5
     _damage: 0.5
