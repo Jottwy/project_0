@@ -65,13 +65,41 @@ impl Default for PlayerStats {
     }
 }
 
+/// Suelo de gracia de hambre/sed al reaparecer. NO es un relleno: solo se aplica a quien llega a
+/// la muerte por debajo de él (ver `on_respawn`).
+///
+/// 25 puntos son ~59 min de sed y ~83 min de hambre con las tasas de 2026-08-17. Suficiente para
+/// buscar agua sin que reaparecer sea una fuente: la única forma de tocar el suelo es haber
+/// llegado a la muerte con el depósito casi vacío.
+pub const RESPAWN_GRACE_HUNGER: f32 = 25.0;
+pub const RESPAWN_GRACE_THIRST: f32 = 25.0;
+
 impl PlayerStats {
-    /// Stats reset on (re)spawn — see ARCHITECTURE_V1.md §9.2.
-    pub fn on_respawn() -> Self {
+    /// Stats reset on (re)spawn.
+    ///
+    /// HAMBRE Y SED SE CONSERVAN A TRAVÉS DE LA MUERTE, con un suelo de gracia. Antes se
+    /// rellenaban a 100 y eso hacía que **suicidarse dominara cualquier economía de agua**: morir
+    /// inyectaba 100 puntos de sed = 1,67 aguas de almendras, instantáneo y gratis, contra un
+    /// mundo que da 4 botellas por partida. Cualquier diseño de escasez medía un balde con
+    /// agujero mientras esto siguiera así.
+    ///
+    /// POR QUÉ CONSERVAR Y NO BAJAR A UN FIJO: un relleno fijo (50, p. ej.) sigue regalando 40
+    /// puntos a quien se suicida con sed 10 — el exploit sobrevive, más pequeño. Conservando, la
+    /// muerte no produce NADA de agua, y el suelo solo lo alcanza quien ya estaba a punto de
+    /// morir de sed, que es el caso que hay que rescatar para no dejarlo en una espiral de
+    /// reaparecer-y-volver-a-morir sin margen para buscar.
+    ///
+    /// Salud vuelve a 100 y cordura a 50 como siempre: eso no es un recurso acumulable del mundo.
+    /// El coste de morir sigue siendo el de ADR-028 (el cadáver con tu inventario) más la
+    /// recolocación de ADR-025/031.
+    ///
+    /// (La referencia anterior a `ARCHITECTURE_V1.md §9.2` estaba colgada: ese fichero no existe
+    /// en el repo — solo `docs/ARCHITECTURE.md`, que no habla de stats de respawn.)
+    pub fn on_respawn(previous: &Self) -> Self {
         Self {
             health: 100.0,
-            hunger: 100.0,
-            thirst: 100.0,
+            hunger: previous.hunger.max(RESPAWN_GRACE_HUNGER),
+            thirst: previous.thirst.max(RESPAWN_GRACE_THIRST),
             sanity: 50.0,
             ..Default::default()
         }
@@ -214,6 +242,80 @@ mod tests {
         };
         s.restore_thirst(50.0);
         assert_eq!(s.thirst, 100.0);
+    }
+
+    // ── Respawn: hambre/sed se CONSERVAN (2026-08-17) ──────────────────────────────────────
+    // El agujero que cierran estos tres: rellenar a 100 al reaparecer inyectaba 1,67 aguas de
+    // almendras por muerte, gratis e instantáneo, contra un mundo que da 4 botellas por partida.
+    // Suicidarse dominaba cualquier economía de agua.
+
+    #[test]
+    fn respawn_does_not_refill_hunger_and_thirst() {
+        let dying = PlayerStats {
+            health: 0.0,
+            hunger: 62.0,
+            thirst: 48.0,
+            ..Default::default()
+        };
+        let fresh = PlayerStats::on_respawn(&dying);
+
+        assert_eq!(
+            fresh.hunger, 62.0,
+            "morir no debe producir comida: el hambre se conserva tal cual"
+        );
+        assert_eq!(
+            fresh.thirst, 48.0,
+            "morir no debe producir agua: la sed se conserva tal cual"
+        );
+        assert!(
+            (fresh.health - 100.0).abs() < 1e-4,
+            "la salud sí vuelve a 100 — no es un recurso acumulable del mundo"
+        );
+        assert_eq!(fresh.sanity, 50.0, "la cordura sigue volviendo a 50");
+    }
+
+    #[test]
+    fn respawn_applies_the_grace_floor_only_when_below_it() {
+        // Muerto de deshidratación: sin suelo, reaparecería en 0 y volvería a morir sin margen
+        // para buscar agua — espiral irrecuperable.
+        let dehydrated = PlayerStats {
+            health: 0.0,
+            hunger: 0.0,
+            thirst: 0.0,
+            ..Default::default()
+        };
+        let fresh = PlayerStats::on_respawn(&dehydrated);
+        assert_eq!(fresh.hunger, RESPAWN_GRACE_HUNGER);
+        assert_eq!(fresh.thirst, RESPAWN_GRACE_THIRST);
+
+        // Y por encima del suelo el suelo no toca nada (es un `max`, no un `set`).
+        let stabbed = PlayerStats {
+            health: 0.0,
+            hunger: RESPAWN_GRACE_HUNGER + 1.0,
+            thirst: RESPAWN_GRACE_THIRST + 1.0,
+            ..Default::default()
+        };
+        let fresh = PlayerStats::on_respawn(&stabbed);
+        assert_eq!(fresh.hunger, RESPAWN_GRACE_HUNGER + 1.0);
+        assert_eq!(fresh.thirst, RESPAWN_GRACE_THIRST + 1.0);
+    }
+
+    #[test]
+    fn repeated_respawns_never_ratchet_above_the_grace_floor() {
+        // El bucle que cerraba el exploit: morir en cadena no puede escalar la sed. Tres muertes
+        // seguidas partiendo de seco dejan exactamente el suelo, nunca más.
+        let mut s = PlayerStats {
+            health: 0.0,
+            hunger: 0.0,
+            thirst: 0.0,
+            ..Default::default()
+        };
+        for _ in 0..3 {
+            s = PlayerStats::on_respawn(&s);
+            s.health = 0.0; // vuelve a morir sin beber
+        }
+        assert_eq!(s.thirst, RESPAWN_GRACE_THIRST);
+        assert_eq!(s.hunger, RESPAWN_GRACE_HUNGER);
     }
 
     #[test]

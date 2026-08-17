@@ -287,7 +287,7 @@ fn revive_if_dead_on_load(player: &mut Player, world: &mut World) {
     if !player.stats.is_dead() {
         return;
     }
-    player.stats = crate::player::stats::PlayerStats::on_respawn();
+    player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
     let res = resolve_respawn(world, player.respawn_point, player.id);
     player.position = res.position;
     world.update_ownership(player.position, player.id);
@@ -3204,7 +3204,7 @@ async fn handle_action(
         // and arms the client's AuthoritativePoseApplier snap.
         "respawn_request" => {
             if player.stats.is_dead() {
-                player.stats = crate::player::stats::PlayerStats::on_respawn();
+                player.stats = crate::player::stats::PlayerStats::on_respawn(&player.stats);
                 // ADR-029 V0 invulnerability amendment: a fresh respawn is immune to PvP
                 // damage for RESPAWN_INVULN_TICKS (tick-based, no spatial safe zone).
                 player.stats.invuln_until_tick = (tick as u32).wrapping_add(RESPAWN_INVULN_TICKS);

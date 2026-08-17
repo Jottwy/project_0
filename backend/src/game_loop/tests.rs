@@ -5645,9 +5645,17 @@ fn a_dead_snapshot_revives_on_load() {
         "cargar un save muerto debe revivir al jugador"
     );
     assert!((player.stats.health - 100.0).abs() < 1e-4);
+    // 2026-08-17: el revive sigue usando on_respawn, pero on_respawn ya NO rellena hunger/thirst
+    // — los conserva con un suelo de gracia. Este save llega seco (0/0), así que aterriza en el
+    // suelo. El agujero que cerró ese cambio pasaba JUSTO por aquí: morir, salir y recargar era
+    // un relleno gratis a 100, indistinguible de suicidarse.
     assert!(
-        (player.stats.hunger - 100.0).abs() < 1e-4,
-        "el revive usa on_respawn — hunger/thirst llenos, no los del save muerto"
+        (player.stats.hunger - crate::player::stats::RESPAWN_GRACE_HUNGER).abs() < 1e-4,
+        "un save muerto y seco revive en el suelo de gracia, no lleno"
+    );
+    assert!(
+        (player.stats.thirst - crate::player::stats::RESPAWN_GRACE_THIRST).abs() < 1e-4,
+        "la sed sigue la misma regla que el hambre en el revive por carga"
     );
     assert_ne!(
         player.position,

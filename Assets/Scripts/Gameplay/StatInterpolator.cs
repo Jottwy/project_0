@@ -190,6 +190,20 @@ namespace BackroomsSurvival.Gameplay
                 _hasSample = true;
             }
 
+            /// <summary>
+            /// Reset duro que NO inventa un valor: colapsa la interpolación sobre la muestra más
+            /// reciente del SERVIDOR. Es lo que necesita el respawn desde 2026-08-17, cuando
+            /// hambre y sed dejaron de rellenarse a 100 al reaparecer: saltar al máximo pintaría
+            /// una barra llena que acto seguido se desliza hasta el valor real, o sea una mentira
+            /// visible. No-op si aún no ha llegado ninguna muestra.
+            /// </summary>
+            protected void SnapToLatestServerSample(float now)
+            {
+                if (!_hasSample)
+                    return;
+                SnapTo(_v1, now);
+            }
+
             public void Tick(float now, float latency)
             {
                 if (!Controlled || !_hasSample)
@@ -249,9 +263,13 @@ namespace BackroomsSurvival.Gameplay
                 _health.Respawn -= OnRespawn;
             }
 
-            // On respawn the manager is disabled, so its own OnRespawn (→ max) would
-            // be overwritten by our stale target. Snap the buffer to full instead.
-            private void OnRespawn() => SnapTo(_m.MaxHunger, Time.time);
+            // On respawn the manager is disabled, so its own OnRespawn (→ max) would be
+            // overwritten by our stale target. Antes se saltaba a MaxHunger para coincidir con el
+            // vendor; desde 2026-08-17 el backend CONSERVA el hambre a través de la muerte
+            // (`PlayerStats::on_respawn`), así que saltar al máximo pintaría una barra llena que
+            // luego se desliza hasta el valor real. Se colapsa sobre la última muestra del
+            // servidor en vez de inventar.
+            private void OnRespawn() => SnapToLatestServerSample(Time.time);
         }
 
         private sealed class ThirstBinder : StatBinder
@@ -282,7 +300,8 @@ namespace BackroomsSurvival.Gameplay
                 _health.Respawn -= OnRespawn;
             }
 
-            private void OnRespawn() => SnapTo(_m.MaxThirst, Time.time);
+            // Misma razón que en HungerBinder: la sed se conserva a través de la muerte.
+            private void OnRespawn() => SnapToLatestServerSample(Time.time);
         }
 
         private sealed class StaminaBinder : StatBinder
