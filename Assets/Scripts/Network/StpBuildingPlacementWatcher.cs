@@ -115,18 +115,29 @@ namespace BackroomsSurvival.Net
 
             // ADR-081 fase 1: no se le manda al host lo que el host ya va a rechazar. Se mide contra
             // la posición de la PIEZA y no la del jugador, que es exactamente lo que valida
-            // `process_stp_place` — de pie dentro de la zona se puede apuntar fuera de ella, y ese
-            // caso lo cubre esta guarda y no la de BuildZoneGate.
+            // `process_stp_place` — de pie dentro de la zona se puede apuntar fuera de ella.
+            //
+            // Esta guarda es lo que hace REAL el rojo de `BuildPlacementFeedback`: aquel solo pinta,
+            // el vendor deja pulsar igual, y es aquí donde la colocación muere sin cruzar la red.
             //
             // Va DESPUÉS de la guarda de conexión a propósito: sin host no hay regla de territorio
             // que aplicar y la partida offline se queda como estaba.
-            if (!BuildPermission.CanPlaceAt(placed.transform.position, placed.Definition != null ? placed.Definition.Id : 0))
+            var deniedDefinition = placed.Definition;
+            if (!BuildPermission.CanPlaceAt(placed.transform.position,
+                    deniedDefinition != null ? deniedDefinition.Id : 0))
             {
                 var owner = GameMode.HasInstance ? GameMode.Instance.LocalPlayer : null;
                 DestroyLocalPiece(placed);
                 _placedCandidate = null;
                 if (owner != null)
                     MessageDispatcher.Instance.Dispatch(owner, MsgType.Error, BuildPermission.DeniedMessage);
+
+                // La pieza vuelve a la mano. Sin esto el vendor cierra el modo construcción tras
+                // CUALQUIER colocación de pieza suelta (`createNew: _buildingPiece is GroupBuildingPiece`),
+                // así que un click en sitio prohibido obligaría a reabrir el libro — justo cuando el
+                // jugador está barriendo la sala buscando dónde SÍ. Mismo diferido de un frame y por
+                // el mismo motivo que el re-armado de las piezas de rejilla (ver RearmPreview).
+                CoroutineUtility.InvokeNextFrameSafe(this, () => RearmPreview(deniedDefinition));
                 return;
             }
 

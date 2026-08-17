@@ -26,10 +26,9 @@ namespace BackroomsSurvival.Gameplay.Building
         public const byte BuildableZoneKind = 2;
 
         /// <summary>
-        /// Lo que ve el jugador cuando la regla le para. Vive aquí y no en cada guarda porque son
-        /// DOS las que lo emiten (<see cref="BuildZoneGate"/> al cancelar el modo,
-        /// <c>StpBuildingPlacementWatcher</c> al descartar una colocación apuntada fuera de la zona)
-        /// y leer dos textos distintos para la misma regla se lee como dos reglas distintas.
+        /// Lo que ve el jugador cuando la regla le para, además del fantasma en rojo de
+        /// <see cref="BuildPlacementFeedback"/>. Lo emite `StpBuildingPlacementWatcher` al descartar
+        /// una colocación que el host iba a rechazar; vive aquí para que la regla tenga UN texto.
         /// </summary>
         public const string DeniedMessage = "Aquí no se puede construir.";
 
@@ -119,7 +118,7 @@ namespace BackroomsSurvival.Gameplay.Building
         /// El `PeerId` de este cliente — el mismo `NET_ID` que el backend estampa en la cabecera de
         /// cada paquete y que acaba en `owner_id`. 0 si no hay sesión: nunca dueño de nada.
         /// </summary>
-        private static ushort LocalPeerId()
+        public static ushort LocalPeerId()
         {
             int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
             return netId > 0 && netId <= ushort.MaxValue ? (ushort)netId : (ushort)0;

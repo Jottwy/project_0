@@ -3861,3 +3861,53 @@ mover si sale mal — no el radio del claim ni el coste del marcador.
 
 La banda del sorteo (`32..=34`) es lo único que hay que tocar para cambiarlo, y **se toca en los DOS
 espejos o `resolver_matches_real_world_zone_kind` falla**.
+
+#### Enmienda 2 a ADR-081 (2026-08-17, misma sesión) — la regla se VE: fantasma rojo, círculo del claim y cartel de zona; y la decisión 4 estaba fundada en una premisa falsa
+
+Pedido de Joel tras leer la fase 3: «pon marca visual del claim, que salga el fantasma en rojo, y
+¿cómo sabe el jugador que esa zona es buildeable?». La tercera pregunta no tenía respuesta: **no
+había ninguna señal de nada**. La regla existía y era invisible entera.
+
+**0. LA DECISIÓN 4 SE CORRIGE, Y SU MOTIVO ERA FALSO.** Aquella decisión decía que el cliente cerraba
+el modo construcción porque teñir el fantasma «solo se puede editando el vendor», y la alternativa
+(G) se rechazó por eso. Es incorrecto: `BuildingPiece.SetState` sí es `protected`, pero **el tinte no
+lo hace el estado**. Lo hace `MaterialEffect.EnableEffect`, que es **público**, con el
+`MaterialEffectConfig` que `BuildingManager.PlacementDeniedMaterialEffect` expone, también **público**.
+Se pinta con el MISMO rojo del vendor sin tocar una línea suya. El análisis paró en el primer
+miembro inaccesible que encontró en vez de seguir hasta el que hace el trabajo.
+
+**1. FANTASMA ROJO, MODO ABIERTO** (`BuildPlacementFeedback`, sustituye a `BuildZoneGate`). El
+veredicto se mide contra la posición del FANTASMA, no la del jugador — es la que valida el host, y
+es lo que hace que el color cambie en vivo al barrer la mira sobre el borde del claim. El modo ya no
+se cierra al salir de zona: se puede caminar con la pieza en la mano buscando sitio y ver dónde se
+pone verde. Sigue sin ser autoridad: el vendor deja pulsar igual, y quien mata la colocación son
+`StpBuildingPlacementWatcher` (no la manda) y el host (la rechaza). Tras un click denegado la pieza
+vuelve a la mano (`RearmPreview`), porque si no el vendor cierra el modo tras CUALQUIER colocación de
+pieza suelta y habría que reabrir el libro justo mientras buscas dónde sí.
+
+**Límite conocido y aceptado, precio de no tocar el vendor:** cuando nuestra regla dice que sí hay
+que devolver el tinte a «permitido», y ahí se pisa el veredicto propio del vendor. Si el vendor
+denegaba por su cuenta (sin superficie bajo la mira, o solape), el fantasma se verá verde aunque el
+click falle con su sonido de colocación inválida. Leerlo exigiría un accesor que el vendor no expone,
+y duplicar su raycast sería reimplementarlo.
+
+**2. CÍRCULO DEL CLAIM** (`ClaimCircleRenderer`), **solo mientras hay pieza en la mano** (decisión de
+Joel): es cuando el borde importa y deja el mundo limpio el resto del tiempo. Color por propiedad
+—tuyo / de otro— derivado de la MISMA lista replicada de marcadores que usa la regla, así que un
+círculo no puede mentir sobre dónde te dejarán construir. `LineRenderer` + `MaterialHelper`, cero
+assets nuevos.
+
+**3. CARTEL DE ZONA** (`BuildZoneSign`), la respuesta a la pregunta de Joel, y **elegida diegética
+antes que un aviso de HUD**: un cartel de obra laminado es el vocabulario de los Backrooms y se ve
+desde el pasillo, cosa que un mensaje no. Hasta dos por chunk `ZONE_SAFE`, colgados de una pared real
+del tile a 1,75 m, con los mismos dos rechazos que props y escalera (tile macizo, tile con columna).
+**Geometría de cliente derivada por hash puro de las coordenadas del chunk**, exactamente como
+`OfficeStairs`: `zone_kind` ya viaja, todos los peers derivan el mismo cartel en el mismo sitio y no
+hace falta una sola línea de protocolo. Decorativo y sin collider — cuelga a la altura de los ojos
+justo en la sala donde el jugador se pasa el rato construyendo. Texto con `TextMesh` legacy y la
+fuente incorporada, NO TextMeshPro: TMP exige un `defaultFontAsset` que este proyecto no tiene
+asignado, así que el primer cartel escribiría un error en vez de una letra.
+
+Nada de esto toca el wire, el backend ni la autoridad: las tres piezas son cliente puro y solo
+cuentan lo que el host ya iba a hacer. Lo que esta enmienda SÍ cambia es la decisión 4 y el rechazo
+de la alternativa (G) del ADR original, por el motivo del punto 0.

@@ -466,6 +466,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, zoneKindQuery,
                     roomZones, stairPlan);
 
+            // Enmienda a ADR-081 — el cartel que anuncia que en esta sala se puede construir. Va
+            // fuera del gate de `cfg.props` a propósito: los props son decorado y pueden faltar en
+            // una capa entera, pero este cartel es la ÚNICA señal de una regla del juego, y una capa
+            // sin catálogo de muebles no debe quedarse sin ella.
+            if (styled)
+                BuildZoneSign.Place(root.transform, walls, zoneKindQuery, chunkX, chunkZ);
+
             // Fase 5A (Bug #1): tag the whole chunk to its macro-layer's Unity layer so
             // per-layer lamp culling isolates it (see GeoLayers). Lamps/luminaires added
             // afterwards by BackroomsLighting set their own layer. Pipes (above) are children
