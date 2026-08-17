@@ -3839,3 +3839,25 @@ Consecuencias / qué prohíbe: PROHÍBE que el cliente sea la autoridad de nada 
 Por qué es ADR (reglas duras 2 y 7): cambia el formato del wire y del guardado (`StpBuildingInfo.owner_id` + `claims`, bump 35 → 36), y cambia el worldgen (`TEMPLATE_SAFE_ROOM` en el sorteo de expansión altera la distribución de plantillas de TODO el mundo infinito).
 
 Dependencias: ADR-033 (`zone_density::zone_kind_for` como resolutor puro por seed), ADR-068 (identidad del solicitante desde la cabecera), ADR-061 (el espejo `WireSchema.Expected` se bumpea con el backend o el juego no arranca), ADR-060 (roster paginado por el que viajarán los claims), ADR-037 (`process_stp_demolish`, que heredará la regla de dueño cuando se aborde).
+
+#### Enmienda ADR-081 (2026-08-17, misma sesión) — la densidad de zonas construibles, MEDIDA
+
+La pieza 2 prometía medir la densidad en vez de estimarla. Hecho, con sonda reproducible
+(`measure_safe_zone_density`, `#[ignore]`, patrón de `perf-baseline.md`), 10.201 chunks por seed en
+la capa 0, contando `ZONE_SAFE` tal y como lo resuelve `zone_kind_for` (o sea: estructuras iniciales
+incluidas, que es lo que ve el jugador):
+
+| seed | chunks seguros | % | separación media |
+|---|---|---|---|
+| 42 | 337 / 10201 | 3,30 % | ≈ 275 m |
+| 7778 | 297 / 10201 | 2,91 % | ≈ 293 m |
+| 1 | 311 / 10201 | 3,05 % | ≈ 286 m |
+| 9999999 | 325 / 10201 | 3,19 % | ≈ 280 m |
+
+La observada queda por encima del 3 % nominal del sorteo porque las estructuras iniciales aportan
+las suyas cerca del origen. **Lo que hay que retener no es el porcentaje sino la separación: una
+sala construible cada ~280 m.** Ese es el número contra el que se juzgará el playtest, y el dial a
+mover si sale mal — no el radio del claim ni el coste del marcador.
+
+La banda del sorteo (`32..=34`) es lo único que hay que tocar para cambiarlo, y **se toca en los DOS
+espejos o `resolver_matches_real_world_zone_kind` falla**.
