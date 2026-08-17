@@ -29,6 +29,31 @@ namespace BackroomsSurvival.Tests
         // identical to the flat pre-Pieza-3 constants (see ZoneLootProfile.Default's doc-comment).
         private static readonly ZoneLootProfile DefaultProfile = ZoneLootProfile.Default;
 
+        /// <summary>
+        /// Perfiles de PRUEBA con las probabilidades forzadas, introducidos por el recorte de
+        /// escasez de 2026-08-17. Antes de ese recorte los tests de MECÁNICA (determinismo,
+        /// influencia de coord/semilla, filtro de recogidos, mezcla de materiales, invariante de
+        /// COUNT) se apoyaban en que el perfil enviado fuera abundante: escaneaban una banda de
+        /// chunks confiando en encontrar loot. Con la caché al 4% y las zonas de carryable a CERO,
+        /// esos escaneos salen vacíos y el test falla por RAREZA, no por la mecánica que mide —
+        /// uno de ellos (Roll_DiffersAcrossChunksAndSeeds) habría fallado ~1 de cada 3
+        /// ejecuciones, que es la peor clase de rojo.
+        ///
+        /// Separar las dos cosas es deliberado: la mecánica se prueba con estos perfiles y el
+        /// balance enviado se prueba aparte, en la región "Recorte de escasez" del final. Así
+        /// afinar rareza nunca vuelve a tocar los tests de mecánica.
+        /// </summary>
+        private static ZoneLootProfile RichProfile(float itemChance, float carryChance)
+        {
+            var p = ZoneLootProfile.Default;
+            p.itemCacheChance = itemChance;
+            p.carryableZoneChance = carryChance;
+            return p;
+        }
+
+        private static readonly ZoneLootProfile RichItemProfile = RichProfile(0.40f, 0f);
+        private static readonly ZoneLootProfile RichCarryProfile = RichProfile(0f, 0.60f);
+
         private static bool SameEntries(List<ChunkLootRoll.Entry> a, List<ChunkLootRoll.Entry> b)
         {
             if (a.Count != b.Count) return false;
@@ -51,8 +76,8 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void RollCarryables_SameSeedAndChunk_IsDeterministic()
         {
-            var a = ChunkLootRoll.RollCarryables(Seed, -10, 22, DefaultProfile);
-            var b = ChunkLootRoll.RollCarryables(Seed, -10, 22, DefaultProfile);
+            var a = ChunkLootRoll.RollCarryables(Seed, -10, 22, RichCarryProfile);
+            var b = ChunkLootRoll.RollCarryables(Seed, -10, 22, RichCarryProfile);
             Assert.IsTrue(SameEntries(a, b));
         }
 
@@ -65,7 +90,7 @@ namespace BackroomsSurvival.Tests
             List<ChunkLootRoll.Entry> zone = null;
             for (int cx = 0; cx < 200; cx++)
             {
-                var roll = ChunkLootRoll.RollCarryables(Seed, cx, 7, DefaultProfile);
+                var roll = ChunkLootRoll.RollCarryables(Seed, cx, 7, RichCarryProfile);
                 if (roll.Count > 0) { zone = roll; break; }
             }
             Assert.IsNotNull(zone, "expected at least one carryable zone in the scanned band");
@@ -85,12 +110,22 @@ namespace BackroomsSurvival.Tests
             // changes a fixed chunk's roll.
             var seen = new HashSet<string>();
             for (int cx = 0; cx < 24; cx++)
-                seen.Add(Signature(ChunkLootRoll.RollItems(Seed, cx, 0, DefaultProfile)));
+                seen.Add(Signature(ChunkLootRoll.RollItems(Seed, cx, 0, RichItemProfile)));
             Assert.Greater(seen.Count, 1, "coord must influence the roll");
 
-            string s1 = Signature(ChunkLootRoll.RollItems(Seed, 5, 5, DefaultProfile));
-            string s2 = Signature(ChunkLootRoll.RollItems(Seed + 1, 5, 5, DefaultProfile));
-            Assert.AreNotEqual(s1, s2, "seed must influence the roll");
+            // Con el catálogo recortado a un solo nombre, la FIRMA de dos cachés no vacías es
+            // idéntica ("0:Spray Can|1:Spray Can"), así que lo que distingue una tirada de otra es
+            // que la caché exista o no. Basta para probar que la semilla entra en el mezclador, y
+            // es lo mismo que medía antes con nombres distintos. Se busca un par de chunks donde
+            // difieran en vez de fijar uno a mano: fijarlo lo ataría al valor concreto de Seed.
+            bool seedChangedSomething = false;
+            for (int cx = 0; cx < 64 && !seedChangedSomething; cx++)
+            {
+                string s1 = Signature(ChunkLootRoll.RollItems(Seed, cx, 5, RichItemProfile));
+                string s2 = Signature(ChunkLootRoll.RollItems(Seed + 1, cx, 5, RichItemProfile));
+                seedChangedSomething = s1 != s2;
+            }
+            Assert.IsTrue(seedChangedSomething, "seed must influence the roll");
         }
 
         [Test]
@@ -98,7 +133,7 @@ namespace BackroomsSurvival.Tests
         {
             // The collected-set keys on (chunk, slot); slots must be a stable 0..N-1 range so a
             // collected slot addresses the same entry on every reload.
-            var items = ChunkLootRoll.RollItems(Seed, 100, 100, DefaultProfile);
+            var items = ChunkLootRoll.RollItems(Seed, 100, 100, RichItemProfile);
             for (int i = 0; i < items.Count; i++)
                 Assert.AreEqual(i, items[i].Slot);
         }
@@ -111,7 +146,7 @@ namespace BackroomsSurvival.Tests
             List<ChunkLootRoll.Entry> entries = null;
             for (int i = 0; i < 200 && (entries == null || entries.Count < 2); i++)
             {
-                var roll = ChunkLootRoll.RollItems(Seed, i, 0, DefaultProfile);
+                var roll = ChunkLootRoll.RollItems(Seed, i, 0, RichItemProfile);
                 if (roll.Count >= 2) { cx = i; entries = roll; break; }
             }
             Assert.IsNotNull(entries, "expected at least one item chunk in the scanned band");
@@ -121,7 +156,7 @@ namespace BackroomsSurvival.Tests
             var collected = new HashSet<(int, int, int)> { (cx, cz, takenSlot) };
 
             // Simulate reload: fresh deterministic roll, then filter the collected slot.
-            var reloaded = ChunkLootRoll.RollItems(Seed, cx, cz, DefaultProfile);
+            var reloaded = ChunkLootRoll.RollItems(Seed, cx, cz, RichItemProfile);
             ChunkLootRoll.RemoveCollected(reloaded, cx, cz, collected);
 
             Assert.IsFalse(reloaded.Exists(e => e.Slot == takenSlot), "collected slot must not reappear");
@@ -131,8 +166,8 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void RemoveCollected_AllSlots_YieldsEmpty()
         {
-            var entries = ChunkLootRoll.RollCarryables(Seed, 40, -40, DefaultProfile);
-            if (entries.Count == 0) entries = ChunkLootRoll.RollCarryables(Seed, 41, -40, DefaultProfile);
+            var entries = ChunkLootRoll.RollCarryables(Seed, 40, -40, RichCarryProfile);
+            if (entries.Count == 0) entries = ChunkLootRoll.RollCarryables(Seed, 41, -40, RichCarryProfile);
             Assume.That(entries.Count, Is.GreaterThan(0));
 
             var collected = new HashSet<(int, int, int)>();
@@ -191,8 +226,13 @@ namespace BackroomsSurvival.Tests
             // pickup memory on (cx,cz,slot), a bare ordinal from THIS roll. ItemsPerCache is a
             // fixed const, not a profile field, specifically so two different profiles rolling the
             // same (seed,cx,cz) either both roll empty or both roll the exact same non-empty count.
-            var normal = DefaultProfile;
-            var storage = ChunkLootRoll.DefaultZoneLootProfiles()[1]; // ZONE_STORAGE — deliberately different chance/pools/weapon rarity
+            // Las dos probabilidades se fuerzan al mismo valor alto: lo que este test mide es que
+            // dos perfiles con POOLS y RAREZA distintas den el mismo COUNT, no cuál de los dos
+            // saca caché más a menudo. Sin forzarlas, tras el recorte de escasez el escaneo sale
+            // casi vacío y el test mediría rareza (ver RichProfile).
+            var normal = RichItemProfile;
+            var storage = ChunkLootRoll.DefaultZoneLootProfiles()[1]; // ZONE_STORAGE — deliberately different pools/weapon rarity
+            storage.itemCacheChance = RichItemProfile.itemCacheChance;
 
             int? expectedCount = null;
             int nonEmptySamples = 0;
@@ -217,8 +257,12 @@ namespace BackroomsSurvival.Tests
         public void RollCarryables_DifferentProfiles_AlwaysProduceTheSameNonEmptySlotCount()
         {
             // Mirror of the RollItems test above, for the carryables channel (CarryablesPerZone).
-            var normal = DefaultProfile;
-            var humid = ChunkLootRoll.DefaultZoneLootProfiles()[6]; // ZONE_HUMID — deliberately different chance/material weights
+            // Mismo forzado de probabilidad que el test de RollItems, y por la misma razón — aquí
+            // además es obligatorio: el recorte dejó carryableZoneChance a CERO en las 13 zonas,
+            // así que sin forzarla NINGUNA tirada saldría no vacía.
+            var normal = RichCarryProfile;
+            var humid = ChunkLootRoll.DefaultZoneLootProfiles()[6]; // ZONE_HUMID — deliberately different material weights
+            humid.carryableZoneChance = RichCarryProfile.carryableZoneChance;
 
             int? expectedCount = null;
             int nonEmptySamples = 0;
@@ -285,6 +329,71 @@ namespace BackroomsSurvival.Tests
             finally
             {
                 Object.DestroyImmediate(table);
+            }
+        }
+
+        // ── Recorte de escasez (2026-08-17) ────────────────────────────────────────────────
+        // Fijan el BALANCE ENVIADO, no la mecánica (que se prueba arriba con RichProfile). Un
+        // rojo aquí significa "alguien deshizo el recorte", no "la lógica está mal" — si el
+        // recorte se levanta a propósito, estos tests se borran o se invierten en el mismo
+        // commit que lo levante.
+        //
+        // El asset serializado se comprueba APARTE de los defaults de C#: es el que manda en
+        // juego (ChunkLootManager lo carga con Resources.Load) y los defaults solo aplican a un
+        // asset que nunca se ha serializado, así que tocar únicamente el C# no cambiaría nada de
+        // lo que ve el jugador. Además se editó por script, y el YAML de Unity se corrompe en
+        // silencio.
+
+        /// <summary>Techo de rareza del recorte: la zona más rica (ZONE_PIT) se quedó en 0.07.</summary>
+        private const float MaxCacheChanceAfterCut = 0.07f;
+
+        [Test]
+        public void Recorte_CachesDelMundo_SoloSueltanSprayCan()
+        {
+            // El agua de almendras NO puede aparecer aquí: es chest-only por la enmienda de
+            // ADR-030, y ese es justo el reparto que el recorte conserva.
+            int sampled = 0;
+            for (int cx = 0; cx < 200; cx++)
+            {
+                foreach (var e in ChunkLootRoll.RollItems(Seed, cx, 3, RichItemProfile))
+                {
+                    sampled++;
+                    Assert.AreEqual("Spray Can", e.Name,
+                        "el recorte de 2026-08-17 deja el mundo suelto con un solo objeto");
+                }
+            }
+            Assert.Greater(sampled, 0, "expected at least one item across the scanned band");
+        }
+
+        [Test]
+        public void Recorte_TodasLasZonas_TienenCarryablesApagadosYCachesRaras()
+        {
+            var profiles = ChunkLootRoll.DefaultZoneLootProfiles();
+            for (int zone = 0; zone < profiles.Length; zone++)
+            {
+                Assert.AreEqual(0f, profiles[zone].carryableZoneChance,
+                    $"zone_kind {zone}: las zonas de carryable están apagadas por el recorte");
+                Assert.LessOrEqual(profiles[zone].itemCacheChance, MaxCacheChanceAfterCut,
+                    $"zone_kind {zone}: la rareza de caché no debe volver a subir sin deshacer el recorte");
+            }
+        }
+
+        [Test]
+        public void Recorte_AssetEnviado_CoincideConLosDefaultsDeCodigo()
+        {
+            var table = Resources.Load<ZoneLootTable>("Loot/ZoneLootTable");
+            Assert.IsNotNull(table, "Assets/Resources/Loot/ZoneLootTable.asset debe existir — es lo que ChunkLootManager carga en juego");
+
+            var defaults = ChunkLootRoll.DefaultZoneLootProfiles();
+            Assert.AreEqual(defaults.Length, table.profiles.Length,
+                "un asset más corto NO lanza: ZoneLootTable.Profile hace Clamp y sirve la última entrada a toda zona superior");
+
+            for (int zone = 0; zone < table.profiles.Length; zone++)
+            {
+                Assert.AreEqual(0f, table.profiles[zone].carryableZoneChance,
+                    $"zone_kind {zone}: el asset serializado también debe traer los carryables apagados");
+                Assert.AreEqual(defaults[zone].itemCacheChance, table.profiles[zone].itemCacheChance, 0.0001f,
+                    $"zone_kind {zone}: asset y defaults de código se desincronizaron — manda el asset");
             }
         }
 

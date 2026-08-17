@@ -83,6 +83,23 @@ namespace BackroomsSurvival.Net
         };
         private static readonly string[] CarryableTypes = { "Log", "Stone", "Metal" };
 
+        // ── RECORTE TOTAL DE CATÁLOGO (2026-08-17), prueba de escasez ────────────────────────
+        // El mundo suelto solo suelta "Spray Can". El agua de almendras NO entra aquí: sigue
+        // siendo chest-only por la enmienda de ADR-030, así que las dos únicas fuentes de loot
+        // del juego pasan a ser esta pool y StpChestSpawner (que en la misma tanda queda
+        // reducido a esos mismos dos objetos).
+        //
+        // Las cuatro pools de arriba quedan VIVAS y sin editar A PROPÓSITO: la única puerta es
+        // RestrictCacheCatalog, así que levantar el recorte es poner un bool a false, no
+        // reconstruir listas. Criterio deliberadamente distinto al del recorte de catálogo
+        // vendor de 2026-08-10, que borró entradas y por eso no se puede revertir de un tirón —
+        // aquel era permanente (arte fuera de tono), este es una prueba de balance.
+        private static readonly string[] RestrictedCachePool = { "Spray Can" };
+        // `static readonly` y no `const` a propósito: con un `const bool` el compilador pliega el
+        // `if` de RollItemName y marca el resto del método como código muerto (CS0162), que en un
+        // build con warnings-as-errors sería un error por una decisión de balance.
+        private static readonly bool RestrictCacheCatalog = true;
+
         // ── Density (TODO(balance): first-playtest placeholders, mirror the old per-cache/zone
         // counts but now rolled PER CHUNK COLUMN so the live total is bounded by the ~3×3 ring
         // instead of a one-shot world-wide scatter). ──────────────────────────────────────────
@@ -90,7 +107,12 @@ namespace BackroomsSurvival.Net
         // ZoneLootProfile below, resolved by ChunkLootManager via ZoneRegistry). These two counts
         // stay FIXED consts on purpose — Pieza 3 hard constraint: a zone's profile may vary
         // chance/pools/rarity but never the slot COUNT (see ZoneLootProfile's doc-comment).
-        private const int ItemsPerCache = 6;
+        // RECORTE 2026-08-17: 6 → 2. Con el catálogo reducido a un solo objeto, una caché de 6
+        // slots era una pila de 6 botes idénticos. Mover este const es seguro porque la memoria
+        // de recogida (`ChunkLootManager._collectedItems`) es un HashSet EN MEMORIA que no
+        // sobrevive a la sesión: ninguna clave (cx,cz,slot) vieja puede quedar fuera de rango
+        // tras el cambio, porque cambiar este número exige recompilar y por tanto reiniciar.
+        private const int ItemsPerCache = 2;
         // TODO(balance): construction-material abundance test (2026-07-07) — carryable zones are
         // 100% construction materials (Log/Stone/Metal). Chance 0.30→0.60 and per-zone 8→16
         // (~x4 more materials). Not tuned final values.
@@ -162,78 +184,85 @@ namespace BackroomsSurvival.Net
         /// would have been looted as ZONE_PIT (richest caches, weapon-heavy) with nothing to
         /// notice it by.
         /// </summary>
+        ///
+        /// RECORTE 2026-08-17 (prueba de escasez): `itemCacheChance` de cada zona bajó ×10 y
+        /// `carryableZoneChance` está a CERO en las 13. El reparto relativo entre zonas se
+        /// conserva (PIT/RED siguen siendo las más ricas, PILLAR/HUMID las más pobres) para que
+        /// la prueba mida la RAREZA y no un rediseño de zonas encima. Los pesos de pool y
+        /// `weaponRollChance` NO se tocaron: quedan sin leer mientras `RestrictCacheCatalog` esté
+        /// activo, y así el día que baje no hay que reconstruirlos de memoria.
         public static ZoneLootProfile[] DefaultZoneLootProfiles() => new[]
         {
             ZoneLootProfile.Default, // 0  ZONE_NORMAL      — baseline, unchanged from pre-Pieza-3
             new ZoneLootProfile // 1  ZONE_STORAGE — abundant, material/metal-heavy
             {
-                itemCacheChance = 0.55f, carryableZoneChance = 0.75f, weaponRollChance = 0.10f,
+                itemCacheChance = 0.05f, carryableZoneChance = 0f, weaponRollChance = 0.10f,
                 consumableWeight = 1f, medicalWeight = 1f, ammoWeight = 1f, materialWeight = 3f,
                 logWeight = 25f, stoneWeight = 25f, metalWeight = 50f,
             },
             new ZoneLootProfile // 2  ZONE_SAFE — utility-heavy, low weapon rarity
             {
-                itemCacheChance = 0.60f, carryableZoneChance = 0.30f, weaponRollChance = 0.05f,
+                itemCacheChance = 0.06f, carryableZoneChance = 0f, weaponRollChance = 0.05f,
                 consumableWeight = 3f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 1f,
                 logWeight = 40f, stoneWeight = 35f, metalWeight = 25f,
             },
             new ZoneLootProfile // 3  ZONE_DANGER — weapon/ammo/medical-heavy
             {
-                itemCacheChance = 0.45f, carryableZoneChance = 0.40f, weaponRollChance = 0.35f,
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.35f,
                 consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 3f, materialWeight = 1f,
                 logWeight = 30f, stoneWeight = 30f, metalWeight = 40f,
             },
             new ZoneLootProfile // 4  ZONE_OPEN_HALL — near-baseline, slightly sparser
             {
-                itemCacheChance = 0.35f, carryableZoneChance = 0.55f, weaponRollChance = 0.15f,
+                itemCacheChance = 0.03f, carryableZoneChance = 0f, weaponRollChance = 0.15f,
                 consumableWeight = 2f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
                 logWeight = 45f, stoneWeight = 35f, metalWeight = 20f,
             },
             new ZoneLootProfile // 5  ZONE_PILLAR_HALL — stone-leaning, cache-sparse
             {
-                itemCacheChance = 0.30f, carryableZoneChance = 0.65f, weaponRollChance = 0.12f,
+                itemCacheChance = 0.03f, carryableZoneChance = 0f, weaponRollChance = 0.12f,
                 consumableWeight = 2f, medicalWeight = 1f, ammoWeight = 1f, materialWeight = 2f,
                 logWeight = 30f, stoneWeight = 45f, metalWeight = 25f,
             },
             new ZoneLootProfile // 6  ZONE_HUMID — medical-leaning (mould/rot), stone-heavy
             {
-                itemCacheChance = 0.30f, carryableZoneChance = 0.50f, weaponRollChance = 0.10f,
+                itemCacheChance = 0.03f, carryableZoneChance = 0f, weaponRollChance = 0.10f,
                 consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 2f,
                 logWeight = 20f, stoneWeight = 50f, metalWeight = 30f,
             },
             new ZoneLootProfile // 7  ZONE_BLACKOUT — TODO(balance): no battery/flashlight item yet; material-heavy stand-in
             {
-                itemCacheChance = 0.50f, carryableZoneChance = 0.40f, weaponRollChance = 0.10f,
+                itemCacheChance = 0.05f, carryableZoneChance = 0f, weaponRollChance = 0.10f,
                 consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 3f,
                 logWeight = 20f, stoneWeight = 20f, metalWeight = 60f,
             },
             new ZoneLootProfile // 8  ZONE_MANILA — office/safe-pocket, consumable-leaning
             {
-                itemCacheChance = 0.45f, carryableZoneChance = 0.45f, weaponRollChance = 0.08f,
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.08f,
                 consumableWeight = 3f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
                 logWeight = 35f, stoneWeight = 35f, metalWeight = 30f,
             },
             new ZoneLootProfile // 9  ZONE_CLEANING — chemicals/tools stand-in, medical+metal-heavy
             {
-                itemCacheChance = 0.40f, carryableZoneChance = 0.35f, weaponRollChance = 0.05f,
+                itemCacheChance = 0.04f, carryableZoneChance = 0f, weaponRollChance = 0.05f,
                 consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 1f, materialWeight = 2f,
                 logWeight = 15f, stoneWeight = 25f, metalWeight = 60f,
             },
             new ZoneLootProfile // 10 ZONE_RED — signalled danger, high weapon/ammo rarity
             {
-                itemCacheChance = 0.65f, carryableZoneChance = 0.25f, weaponRollChance = 0.45f,
+                itemCacheChance = 0.06f, carryableZoneChance = 0f, weaponRollChance = 0.45f,
                 consumableWeight = 1f, medicalWeight = 2f, ammoWeight = 3f, materialWeight = 1f,
                 logWeight = 25f, stoneWeight = 25f, metalWeight = 50f,
             },
             new ZoneLootProfile // 11 ZONE_PIT — rare/deep, richest cache odds, medical-heavy (fall risk)
             {
-                itemCacheChance = 0.70f, carryableZoneChance = 0.20f, weaponRollChance = 0.30f,
+                itemCacheChance = 0.07f, carryableZoneChance = 0f, weaponRollChance = 0.30f,
                 consumableWeight = 1f, medicalWeight = 3f, ammoWeight = 2f, materialWeight = 1f,
                 logWeight = 20f, stoneWeight = 40f, metalWeight = 40f,
             },
             new ZoneLootProfile // 12 ZONE_OFFICE — compartmented floor: many small caches, few materials
             {
-                itemCacheChance = 0.60f, carryableZoneChance = 0.20f, weaponRollChance = 0.08f,
+                itemCacheChance = 0.06f, carryableZoneChance = 0f, weaponRollChance = 0.08f,
                 consumableWeight = 3f, medicalWeight = 2f, ammoWeight = 1f, materialWeight = 1f,
                 logWeight = 15f, stoneWeight = 20f, metalWeight = 65f,
             },
@@ -328,6 +357,14 @@ namespace BackroomsSurvival.Net
         // profile instead of a flat 1/3-1/3-1/6-1/6 split).
         private static string RollItemName(ref DeterministicRng rng, ZoneLootProfile profile)
         {
+            // RECORTE TOTAL DE CATÁLOGO (2026-08-17) — ver RestrictedCachePool. Consume UN draw,
+            // igual que el que gasta la tirada de arma en la ruta completa, para que levantar el
+            // recorte no reordene el stream de posiciones de un chunk ya explorado. Mientras esté
+            // activo, `weaponRollChance` y los cuatro pesos de pool del perfil quedan SIN LEER:
+            // siguen vivos en el asset y vuelven a mandar en cuanto el bool baje a false.
+            if (RestrictCacheCatalog)
+                return RestrictedCachePool[rng.NextInt(RestrictedCachePool.Length)];
+
             if (rng.NextFloat() < profile.weaponRollChance)
                 return WeaponPool[rng.NextInt(WeaponPool.Length)];
 
@@ -450,14 +487,16 @@ namespace BackroomsSurvival.Net
         public float stoneWeight;
         public float metalWeight;
 
-        /// <summary>ZONE_NORMAL's profile — the same numbers as the pre-Pieza-3 flat constants
-        /// (0.40 cache chance, 0.60 zone chance, 0.15 weapon chance, 2:2:1:1 pool split, 40:35:25
-        /// material split), so the ~83%-of-the-world default zone keeps the already-playtested
-        /// ADR-030 feel.</summary>
+        /// <summary>ZONE_NORMAL's profile, y también el fallback de una tabla nula/vacía.
+        /// RECORTE 2026-08-17: la caché baja 0.40 → 0.04 y las zonas de carryable se APAGAN
+        /// (0.60 → 0). Ya no son "los números pre-Pieza-3": la zona que cubre ~83% del mundo es
+        /// justo donde más se nota la prueba de escasez, así que dejarla intacta la habría
+        /// anulado. Los pesos de pool y `weaponRollChance` sí siguen en su valor playtesteado —
+        /// están sin leer bajo `RestrictCacheCatalog`, no borrados.</summary>
         public static ZoneLootProfile Default => new ZoneLootProfile
         {
-            itemCacheChance = 0.40f,
-            carryableZoneChance = 0.60f,
+            itemCacheChance = 0.04f,
+            carryableZoneChance = 0f,
             weaponRollChance = 0.15f,
             consumableWeight = 2f,
             medicalWeight = 2f,

@@ -13,8 +13,8 @@ MonoBehaviour:
   m_Name: ZoneLootTable
   m_EditorClassIdentifier: 
   profiles:
-  - itemCacheChance: 0.4
-    carryableZoneChance: 0.6
+  - itemCacheChance: 0.04
+    carryableZoneChance: 0
     weaponRollChance: 0.15
     consumableWeight: 2
     medicalWeight: 2
@@ -23,8 +23,8 @@ MonoBehaviour:
     logWeight: 40
     stoneWeight: 35
     metalWeight: 25
-  - itemCacheChance: 0.55
-    carryableZoneChance: 0.75
+  - itemCacheChance: 0.05
+    carryableZoneChance: 0
     weaponRollChance: 0.1
     consumableWeight: 1
     medicalWeight: 1
@@ -33,8 +33,8 @@ MonoBehaviour:
     logWeight: 25
     stoneWeight: 25
     metalWeight: 50
-  - itemCacheChance: 0.6
-    carryableZoneChance: 0.3
+  - itemCacheChance: 0.06
+    carryableZoneChance: 0
     weaponRollChance: 0.05
     consumableWeight: 3
     medicalWeight: 3
@@ -43,8 +43,8 @@ MonoBehaviour:
     logWeight: 40
     stoneWeight: 35
     metalWeight: 25
-  - itemCacheChance: 0.45
-    carryableZoneChance: 0.4
+  - itemCacheChance: 0.04
+    carryableZoneChance: 0
     weaponRollChance: 0.35
     consumableWeight: 1
     medicalWeight: 2
@@ -53,8 +53,8 @@ MonoBehaviour:
     logWeight: 30
     stoneWeight: 30
     metalWeight: 40
-  - itemCacheChance: 0.35
-    carryableZoneChance: 0.55
+  - itemCacheChance: 0.03
+    carryableZoneChance: 0
     weaponRollChance: 0.15
     consumableWeight: 2
     medicalWeight: 2
@@ -63,8 +63,8 @@ MonoBehaviour:
     logWeight: 45
     stoneWeight: 35
     metalWeight: 20
-  - itemCacheChance: 0.3
-    carryableZoneChance: 0.65
+  - itemCacheChance: 0.03
+    carryableZoneChance: 0
     weaponRollChance: 0.12
     consumableWeight: 2
     medicalWeight: 1
@@ -73,8 +73,8 @@ MonoBehaviour:
     logWeight: 30
     stoneWeight: 45
     metalWeight: 25
-  - itemCacheChance: 0.3
-    carryableZoneChance: 0.5
+  - itemCacheChance: 0.03
+    carryableZoneChance: 0
     weaponRollChance: 0.1
     consumableWeight: 1
     medicalWeight: 3
@@ -83,8 +83,8 @@ MonoBehaviour:
     logWeight: 20
     stoneWeight: 50
     metalWeight: 30
-  - itemCacheChance: 0.5
-    carryableZoneChance: 0.4
+  - itemCacheChance: 0.05
+    carryableZoneChance: 0
     weaponRollChance: 0.1
     consumableWeight: 1
     medicalWeight: 2
@@ -93,8 +93,8 @@ MonoBehaviour:
     logWeight: 20
     stoneWeight: 20
     metalWeight: 60
-  - itemCacheChance: 0.45
-    carryableZoneChance: 0.45
+  - itemCacheChance: 0.04
+    carryableZoneChance: 0
     weaponRollChance: 0.08
     consumableWeight: 3
     medicalWeight: 2
@@ -103,8 +103,8 @@ MonoBehaviour:
     logWeight: 35
     stoneWeight: 35
     metalWeight: 30
-  - itemCacheChance: 0.4
-    carryableZoneChance: 0.35
+  - itemCacheChance: 0.04
+    carryableZoneChance: 0
     weaponRollChance: 0.05
     consumableWeight: 1
     medicalWeight: 3
@@ -113,8 +113,8 @@ MonoBehaviour:
     logWeight: 15
     stoneWeight: 25
     metalWeight: 60
-  - itemCacheChance: 0.65
-    carryableZoneChance: 0.25
+  - itemCacheChance: 0.06
+    carryableZoneChance: 0
     weaponRollChance: 0.45
     consumableWeight: 1
     medicalWeight: 2
@@ -123,8 +123,8 @@ MonoBehaviour:
     logWeight: 25
     stoneWeight: 25
     metalWeight: 50
-  - itemCacheChance: 0.7
-    carryableZoneChance: 0.2
+  - itemCacheChance: 0.07
+    carryableZoneChance: 0
     weaponRollChance: 0.3
     consumableWeight: 1
     medicalWeight: 3
@@ -133,8 +133,8 @@ MonoBehaviour:
     logWeight: 20
     stoneWeight: 40
     metalWeight: 40
-  - itemCacheChance: 0.6
-    carryableZoneChance: 0.2
+  - itemCacheChance: 0.06
+    carryableZoneChance: 0
     weaponRollChance: 0.08
     consumableWeight: 3
     medicalWeight: 2
