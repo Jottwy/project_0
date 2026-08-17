@@ -535,3 +535,22 @@ el comportamiento de antes de este ADR. `WireSchema.Expected` (C#) a 34 en el mi
 
 **Nada de esto es autoridad**: el borrador no entra en `SprayStore`, no se guarda, no cuenta para
 el cap de 64 por chunk y no se valida contra ningún tope. Eso sigue siendo íntegramente `0x52`.
+
+## v35 — ADR-079: el joiner ve al robapieles (`PeerInfo.relay_only`) (2026-08-17)
+
+Campo aditivo **`relay_only: bool`** (`#[serde(default)]`) en `PeerInfo` — las entradas del
+`PeerList`/`HandshakeAck`. El host marca con `true` sus fantasmas inyectados (ADR-016), que hasta
+ahora se EXCLUÍAN del roster (H10) y por eso ningún joiner los registraba ni les aplicaba las
+poses relayadas: el robapieles era invisible para todo cliente no-host desde siempre.
+
+Contrato: en una entrada `relay_only` la `addr` es el placeholder `"0.0.0.0:0"` y el receptor NO
+la usa — registra el peer con su propia addr inerte local (`127.0.0.1:1`) y TODA la superficie de
+envío lo salta (`broadcast_destinations`, `broadcast_reliable`, `send_reliable`,
+`send_reliable_queued`, `send_unreliable_to`, `send_prepared_unreliable`). Conocerlo sin poder
+dirigirse a él: es la protección H10 (veneno de socket por datagramas a addr inerte) movida del
+emisor al contrato del campo.
+
+Degradación v34: decodifica `relay_only` ausente → false y adopta la entrada como peer real con
+la addr placeholder — warns de envío troteados 1/s + ciclo evict/re-add del reliable (ADR-062).
+NO silenciosa, y por eso bumpea (criterio v20/v33). `WireSchema.Expected` (C#) a 35 en el mismo
+commit.
