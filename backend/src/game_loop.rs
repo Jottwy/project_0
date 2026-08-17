@@ -2005,10 +2005,18 @@ async fn handle_network_event(
             rotation,
             group_id,
             is_group,
+            requester_id,
         } => {
             if net.is_host {
                 process_stp_place(
-                    place_id, def_id, position, rotation, group_id, is_group, net,
+                    place_id,
+                    def_id,
+                    position,
+                    rotation,
+                    group_id,
+                    is_group,
+                    requester_id,
+                    net,
                 );
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
                 // arrives within ~RTT, closing the round-trip gap when chaining pieces.
@@ -3685,8 +3693,19 @@ async fn handle_action(
                 );
             }
             if net.is_host {
+                // ADR-081: el host coloca en su propio nombre. `local_id` es la misma identidad
+                // que un joiner trae en la cabecera de su paquete, así que las dos rutas llegan
+                // a `process_stp_place` con un `requester_id` del mismo espacio de ids.
+                let requester_id = net.local_id;
                 process_stp_place(
-                    place_id, def_id, position, rotation, group_id, is_group, net,
+                    place_id,
+                    def_id,
+                    position,
+                    rotation,
+                    group_id,
+                    is_group,
+                    requester_id,
+                    net,
                 );
                 // Phase B3: relay immediately so the placer's replicated copy (with its group)
                 // arrives within ~RTT, closing the round-trip gap when chaining pieces.
@@ -4882,11 +4901,32 @@ fn stp_pose_cell(position: [f32; 3], rotation: f32) -> (i32, i32, i32, i32) {
     )
 }
 
+/// ADR-081 pieza 1: ¿es construible el suelo bajo `position`? La zona construible del mundo es
+/// `ZONE_SAFE` y nada más.
+///
+/// La zona se resuelve SIEMPRE en la **capa 0** de la columna, no en la capa real del jugador. No es
+/// un descuido: el cliente solo conoce el `zone_kind` de la capa 0 (`ZoneRegistry.Refresh` descarta
+/// `layer != 0` a propósito, tras el bug que keyeaba cada columna por su capa MÁS ALTA), así que
+/// resolver aquí por la capa real haría que el aviso del cliente y la decisión del host discrepasen
+/// justo en el sitio al que el jugador está mirando. Consecuencia aceptada y escrita en el ADR:
+/// construir en una capa superior sobre una sala segura también está permitido.
+///
+/// `zone_kind_for` es el resolutor PURO por seed de ADR-033 (memoizado por seed, sin leer el mundo
+/// vivo), así que esta comprobación da el mismo resultado en todo peer y en cualquier momento —
+/// incluido antes de que el chunk se haya cargado nunca.
+fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
+    let (cx, cz) = crate::utils::world_to_chunk(Vec3::from_array(position));
+    crate::world::zone_density::zone_kind_for(world_seed, cx, cz, 0)
+        == crate::world::chunk::ZONE_SAFE
+}
+
 /// Phase B1: host adds a placed STP building piece to the authoritative `stp_buildings`
 /// list. The 10 Hz relay (broadcast_stp_buildings) propagates it to all peers, where
 /// StpBuildingReplicator spawns it. Deduped by the client-generated `place_id`: a repeated
 /// request (reliable retransmit when the host is slow) is ignored, so one logical placement
 /// spawns exactly one piece.
+// TODO(refactor): group into a params struct; deferred to keep this diff to the territory gate.
+#[allow(clippy::too_many_arguments)]
 fn process_stp_place(
     place_id: u64,
     def_id: i32,
@@ -4894,8 +4934,24 @@ fn process_stp_place(
     rotation: f32,
     req_group_id: u32,
     is_group: bool,
+    requester_id: crate::network::PeerId,
     net: &mut NetworkManager,
 ) {
+    // ADR-081 fase 1: la puerta de TERRITORIO va antes que cualquier otra cosa, incluido el dedup.
+    // Antes de esto se podía construir en todo el mundo: esta función solo deduplicaba, y el único
+    // filtro vivo era el del vendor en el cliente — cosmético, y por tanto quitable por cualquiera.
+    //
+    // El dedup se deja DETRÁS a propósito: un `place_id` rechazado por zona no debe consumir su
+    // entrada en `processed_stp_places`, porque el rechazo no es un efecto que haya que proteger de
+    // una retransmisión — repetirlo da exactamente el mismo rechazo.
+    if !position_is_buildable(net.world_seed, position) {
+        info!(
+            "MPTRACE step=BP event=stp_place_denied_zone place_id={} def_id={} requester_id={} pos=({:.2},{:.2},{:.2}) rejected=true",
+            place_id, def_id, requester_id, position[0], position[1], position[2]
+        );
+        return;
+    }
+
     if place_id != 0 && !net.processed_stp_places.insert(place_id) {
         info!(
             "MPTRACE step=BP event=stp_place_duplicate place_id={} ignored=true",

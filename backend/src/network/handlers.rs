@@ -266,11 +266,29 @@ impl NetworkManager {
 
         }
         [
-            StpPlaceRequest { place_id, def_id, position, rotation, group_id, is_group },
             StpBuildAddRequest { add_id, building_id, material_id },
             StpDemolishRequest { demolish_id, building_id },
         ]
         {
+            // ADR-081: igual que los dos de abajo, `requester_id` sale de la CABECERA — es contra
+            // esa identidad contra la que el host comprueba la propiedad del claim, y el payload
+            // no puede tener voz en quién dice ser el que construye.
+            PacketPayload::StpPlaceRequest {
+                place_id,
+                def_id,
+                position,
+                rotation,
+                group_id,
+                is_group,
+            } => Some(NetworkEvent::StpPlaceRequest {
+                place_id,
+                def_id,
+                position,
+                rotation,
+                group_id,
+                is_group,
+                requester_id: sender_id,
+            }),
 
             // ADR-068: `requester_id` sale de la CABECERA, no del payload — por eso este arm no
             // puede vivir en la lista 1:1 de abajo. Es lo que impide que un cliente reclame estar

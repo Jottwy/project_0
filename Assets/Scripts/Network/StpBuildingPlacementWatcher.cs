@@ -113,6 +113,23 @@ namespace BackroomsSurvival.Net
             if (!IPCClient.TryGetInstance(out var ipc) || !ipc.IsConnected)
                 return; // no host link → leave the local piece as-is (offline/solo fallback)
 
+            // ADR-081 fase 1: no se le manda al host lo que el host ya va a rechazar. Se mide contra
+            // la posición de la PIEZA y no la del jugador, que es exactamente lo que valida
+            // `process_stp_place` — de pie dentro de la zona se puede apuntar fuera de ella, y ese
+            // caso lo cubre esta guarda y no la de BuildZoneGate.
+            //
+            // Va DESPUÉS de la guarda de conexión a propósito: sin host no hay regla de territorio
+            // que aplicar y la partida offline se queda como estaba.
+            if (!BuildPermission.CanBuildAt(placed.transform.position))
+            {
+                var owner = GameMode.HasInstance ? GameMode.Instance.LocalPlayer : null;
+                DestroyLocalPiece(placed);
+                _placedCandidate = null;
+                if (owner != null)
+                    MessageDispatcher.Instance.Dispatch(owner, MsgType.Error, BuildPermission.DeniedMessage);
+                return;
+            }
+
             // Captured before DestroyLocalPiece: the re-arm below needs the definition, and reading
             // it off a destroyed component is a trap waiting for the day Destroy stops being
             // end-of-frame.

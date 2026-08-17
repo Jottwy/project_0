@@ -80,6 +80,11 @@ pub enum NetworkEvent {
         rotation: f32,
         group_id: u32,
         is_group: bool,
+        /// ADR-081: quién pide colocar, tomado de la CABECERA del paquete y nunca del payload
+        /// (mismo motivo que `SprayPlaceRequest.requester_id`, ADR-068). Es la identidad contra
+        /// la que se comprueba la propiedad del claim, así que dejar que el payload la declarase
+        /// permitiría construir dentro del territorio de otro sin más que mentir en un campo.
+        requester_id: PeerId,
     },
     /// Phase B2: a joiner asks the host to add one unit of a build material to a piece.
     StpBuildAddRequest {

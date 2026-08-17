@@ -5774,6 +5774,99 @@ fn bounded_dedupe_set_evicts_oldest_past_capacity() {
     );
 }
 
+// ── ADR-081 fase 1: solo se construye en zona segura ────────────────────────
+
+/// Los tres tests de abajo se apoyan en el mapa de zonas del seed 42, que se MIDIÓ (sonda
+/// temporal sobre `zone_density::zone_kind_for`, capa 0) en vez de suponerse: el cluster de
+/// arranque ocupa los chunks (0,0), (1,0), (0,1) y (1,1) con `ZONE_SAFE`, o sea el cuadrado
+/// x,z ∈ [0, 100). El chunk (2,2) — x,z ∈ [100, 150) — sale `ZONE_NORMAL`.
+///
+/// Cada test reafirma esa premisa con el resolutor ANTES de usarla, para que un cambio futuro del
+/// worldgen falle diciendo "la premisa del test ya no se cumple" en vez de "la puerta no funciona",
+/// que es la clase de rojo que cuesta media sesión leer.
+const SAFE_SPOT: [f32; 3] = [10.0, 0.0, 20.0]; // chunk (0,0), cluster de arranque
+const OPEN_WORLD_SPOT: [f32; 3] = [110.0, 0.0, 120.0]; // chunk (2,2), pasillo cualquiera
+
+#[tokio::test]
+async fn stp_place_outside_a_safe_zone_is_rejected() {
+    assert_ne!(
+        crate::world::zone_density::zone_kind_for(42, 2, 2, 0),
+        crate::world::chunk::ZONE_SAFE,
+        "premisa del test: el chunk (2,2) del seed 42 NO es zona segura"
+    );
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    process_stp_place(1, 111, OPEN_WORLD_SPOT, 0.0, 0, false, 1, &mut net);
+
+    assert!(
+        net.stp_buildings.is_empty(),
+        "construir en mundo abierto tiene que rechazarse en el HOST, no solo avisarse en el cliente"
+    );
+}
+
+#[tokio::test]
+async fn stp_place_inside_a_safe_zone_is_accepted() {
+    assert_eq!(
+        crate::world::zone_density::zone_kind_for(42, 0, 0, 0),
+        crate::world::chunk::ZONE_SAFE,
+        "premisa del test: el chunk (0,0) del seed 42 es zona segura"
+    );
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    process_stp_place(1, 111, SAFE_SPOT, 0.0, 0, false, 1, &mut net);
+
+    assert_eq!(
+        net.stp_buildings.len(),
+        1,
+        "la zona segura sigue construible"
+    );
+}
+
+/// La puerta de zona va ANTES del dedup a propósito, y esta es la consecuencia observable: un
+/// `place_id` rechazado por zona no se quema. Si el orden se invirtiera, el jugador que intenta
+/// colocar en mundo abierto gastaría el id, y el reintento legítimo en zona segura con ese mismo id
+/// (la retransmisión fiable existe y es conocida) desaparecería en silencio.
+#[tokio::test]
+async fn a_place_rejected_by_zone_does_not_burn_its_place_id() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    process_stp_place(77, 111, OPEN_WORLD_SPOT, 0.0, 0, false, 1, &mut net);
+    assert!(net.stp_buildings.is_empty());
+
+    process_stp_place(77, 111, SAFE_SPOT, 0.0, 0, false, 1, &mut net);
+
+    assert_eq!(
+        net.stp_buildings.len(),
+        1,
+        "el place_id rechazado por zona no puede quedar consumido"
+    );
+}
+
+/// La zona se resuelve en la CAPA 0 de la columna, no en la capa real de la Y. Documentado en el
+/// ADR y aquí: sobre una sala segura se puede construir a cualquier altura, y sobre mundo abierto no
+/// se puede construir a ninguna. Es lo que mantiene la decisión del host en fase con lo único que el
+/// cliente sabe (`ZoneRegistry` solo guarda la capa 0).
+#[tokio::test]
+async fn the_zone_gate_reads_layer_zero_whatever_the_height() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let high_over_safe = [SAFE_SPOT[0], 12.0, SAFE_SPOT[2]];
+    let high_over_open = [OPEN_WORLD_SPOT[0], 12.0, OPEN_WORLD_SPOT[2]];
+
+    process_stp_place(1, 111, high_over_safe, 0.0, 0, false, 1, &mut net);
+    assert_eq!(
+        net.stp_buildings.len(),
+        1,
+        "altura sobre zona segura: acepta"
+    );
+
+    process_stp_place(2, 111, high_over_open, 0.0, 0, false, 1, &mut net);
+    assert_eq!(
+        net.stp_buildings.len(),
+        1,
+        "altura sobre mundo abierto: sigue rechazando"
+    );
+}
+
 // ── ADR-037: stp_demolish ───────────────────────────────────────────────────
 
 /// The headline behaviour AND the trap: freeing the pose cell. Without the release, placing,
@@ -5785,7 +5878,7 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
     let position = [10.0, 0.0, 20.0];
     let rotation = 90.0;
 
-    process_stp_place(1, 111, position, rotation, 0, true, &mut net);
+    process_stp_place(1, 111, position, rotation, 0, true, 1, &mut net);
     assert_eq!(net.stp_buildings.len(), 1);
     let id = net.stp_buildings[0].id;
     assert!(
@@ -5804,7 +5897,7 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
     );
 
     // The real proof: the same socket accepts a new piece again.
-    process_stp_place(2, 111, position, rotation, 0, true, &mut net);
+    process_stp_place(2, 111, position, rotation, 0, true, 1, &mut net);
     assert_eq!(
         net.stp_buildings.len(),
         1,
@@ -5817,8 +5910,8 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
 #[tokio::test]
 async fn stp_demolish_dedupes_under_retransmit() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, &mut net);
-    process_stp_place(2, 111, [50.0, 0.0, 50.0], 0.0, 0, false, &mut net);
+    process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, 1, &mut net);
+    process_stp_place(2, 111, [50.0, 0.0, 50.0], 0.0, 0, false, 1, &mut net);
     let first = net.stp_buildings[0].id;
 
     process_stp_demolish(900, first, &mut net);
@@ -5836,7 +5929,7 @@ async fn stp_demolish_dedupes_under_retransmit() {
 #[tokio::test]
 async fn stp_demolish_of_unknown_building_is_ignored() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, &mut net);
+    process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, 1, &mut net);
 
     // Two clients cancelling the same piece in one window: the loser finds it already gone.
     process_stp_demolish(901, 0xDEAD_BEEF, &mut net);
@@ -5856,8 +5949,8 @@ async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let position = [30.0, 0.0, 30.0];
 
-    process_stp_place(1, 111, position, 0.0, 0, true, &mut net); // group piece: claims the cell
-    process_stp_place(2, 222, position, 0.0, 0, false, &mut net); // free piece: claims nothing
+    process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net); // group piece: claims the cell
+    process_stp_place(2, 222, position, 0.0, 0, false, 1, &mut net); // free piece: claims nothing
     let free_id = net.stp_buildings[1].id;
 
     process_stp_demolish(902, free_id, &mut net);
@@ -5881,7 +5974,7 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
     let mut processed: HashSet<(u16, u64)> = HashSet::new();
 
     let bed_position = [12.0, 0.0, 34.0];
-    process_stp_place(1, BED_DEF_ID, bed_position, 0.0, 0, false, &mut net);
+    process_stp_place(1, BED_DEF_ID, bed_position, 0.0, 0, false, 1, &mut net);
     let bed_id = net.stp_buildings[0].id;
     player.respawn_point = Some(Vec3::from_array(bed_position));
 
@@ -5919,7 +6012,7 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
 
     let live_bed = [12.0, 0.0, 34.0];
     let doomed_bed = [80.0, 0.0, 90.0];
-    process_stp_place(1, BED_DEF_ID, doomed_bed, 0.0, 0, false, &mut net);
+    process_stp_place(1, BED_DEF_ID, doomed_bed, 0.0, 0, false, 1, &mut net);
     let doomed_id = net.stp_buildings[0].id;
     player.respawn_point = Some(Vec3::from_array(live_bed));
 
