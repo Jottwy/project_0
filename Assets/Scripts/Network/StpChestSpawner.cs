@@ -179,28 +179,53 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
-        /// One chest's contents. RECORTE 2026-08-17 (prueba de escasez): 2 stacks de 1–2 "Almond
-        /// Water" y 1 stack de 1 "Spray Can", en vez de los 7–8 stacks previos (arma garantizada +
-        /// 1–2 médicos + 3 consumibles + 4 materiales). Sigue siendo más rico que una caché suelta
-        /// —que ahora son 2 botes— que es lo que justifica que el cofre exista.
+        /// One chest's contents. SEGUNDO RECORTE 2026-08-17 (pedido de Joel, tras ver el primero
+        /// en juego): **exactamente UNA agua de almendras por cofre**, y el TOTAL de objetos del
+        /// cofre sale del reparto 80% uno / 15% dos / 5% tres. O sea: 4 de cada 5 cofres son una
+        /// botella y nada más; el sobrante (0–2 objetos) son botes de spray.
         ///
-        /// ⚠ CUENTA DE AGUA DE TODA LA PARTIDA: 4 cofres × 2 stacks × 1–2 botellas = 8–16 aguas de
-        /// almendras, sembradas de una sola vez alrededor del host. No hay ninguna otra fuente
-        /// (ChunkLootRoll solo da botes de spray por la enmienda de ADR-030). Contra el drenaje de
-        /// sed actual del backend (−0,07/s ⇒ ~24 min de barra llena) y los +50..70 de sed por
-        /// botella, eso es del orden de 1,5–4 h de sed cubierta por partida. Si el playtest sale
-        /// injugable, el orden de los diales es: primero bajar el drenaje del backend, después
-        /// subir ChestCount — NO volver a meter agua en las cachés del mundo, que es lo que la
-        /// enmienda de ADR-030 decidió a propósito.
+        /// Antes de este recorte eran 2 stacks de 1–2 aguas + 1 bote; antes del primer recorte,
+        /// 7–8 stacks con arma garantizada, médicos, consumibles y materiales.
+        ///
+        /// El reparto es el MISMO que el de las cachés del mundo (ChunkLootRoll.RollItemCount) y
+        /// está duplicado a propósito en vez de compartido: aquel es puro y determinista por chunk
+        /// (DeterministicRng sembrado con worldSeed+coord, tiene que ser reproducible entre
+        /// recargas), y este es una tirada de sesión con UnityEngine.Random sobre un cofre que solo
+        /// se siembra una vez. Compartir el helper obligaría a arrastrar el rng determinista hasta
+        /// aquí para nada. Si se toca uno, tocar el otro.
+        ///
+        /// ⚠ CUENTA DE AGUA DE TODA LA PARTIDA: 4 cofres × 1 botella = **4 aguas de almendras**,
+        /// sembradas de una sola vez alrededor del host y sin re-siembra. No hay ninguna otra
+        /// fuente (ChunkLootRoll solo da botes de spray por la enmienda de ADR-030). Contra el
+        /// drenaje de sed actual del backend (−0,07/s ⇒ ~24 min de barra llena) y los +50..70 de
+        /// sed por botella, eso cubre del orden de **45 min a 1 h de sed por partida**. Es un
+        /// número deliberadamente brutal, elegido por Joel. Si el playtest sale injugable, el
+        /// orden de los diales es: primero bajar el drenaje del backend, después subir ChestCount
+        /// — NO volver a meter agua en las cachés del mundo, que es lo que la enmienda de ADR-030
+        /// decidió a propósito.
         ///
         /// Unresolved item names are skipped with a warning, mirroring StpItemSpawner's tolerance.
         /// </summary>
         private static List<CorpseLootStack> RollChestLoot()
         {
             var loot = new List<CorpseLootStack>();
-            AddRoll(loot, ConsumablePool, 2, 1, 2);
-            AddRoll(loot, MaterialPool, 1, 1, 1);
+            AddRoll(loot, ConsumablePool, 1, 1, 1); // exactamente 1 agua, sin rango
+
+            int extra = RollObjectCount() - 1; // el agua ya ocupa el primer objeto del reparto
+            if (extra > 0)
+                AddRoll(loot, MaterialPool, extra, 1, 1);
             return loot;
+        }
+
+        /// <summary>Reparto de tamaño de contenedor: 80% un objeto, 15% dos, 5% tres. Espejo de
+        /// <c>ChunkLootRoll.RollItemCount</c> — ver la nota de RollChestLoot sobre por qué está
+        /// duplicado en vez de compartido.</summary>
+        private static int RollObjectCount()
+        {
+            float r = Random.value;
+            if (r < 0.05f) return 3;
+            if (r < 0.20f) return 2;
+            return 1;
         }
 
         private static void AddRoll(List<CorpseLootStack> loot, string[] pool, int rolls, int minQty, int maxQty)

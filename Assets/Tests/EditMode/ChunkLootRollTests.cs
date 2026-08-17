@@ -234,21 +234,19 @@ namespace BackroomsSurvival.Tests
             var storage = ChunkLootRoll.DefaultZoneLootProfiles()[1]; // ZONE_STORAGE — deliberately different pools/weapon rarity
             storage.itemCacheChance = RichItemProfile.itemCacheChance;
 
-            int? expectedCount = null;
+            // La comparación es POR CHUNK, no global. Desde el reparto 80/15/5 (2026-08-17) el
+            // count varía ENTRE chunks a propósito; lo que la restricción dura exige es que no
+            // varíe entre PERFILES sobre el MISMO chunk. La versión anterior de este test
+            // comparaba todas las muestras contra la primera, así que a partir del reparto habría
+            // fallado por el motivo equivocado.
             int nonEmptySamples = 0;
             for (int cx = 0; cx < 100 && nonEmptySamples < 10; cx++)
             {
-                foreach (var profile in new[] { normal, storage })
-                {
-                    var entries = ChunkLootRoll.RollItems(Seed, cx, 0, profile);
-                    if (entries.Count == 0) continue;
-                    nonEmptySamples++;
-                    if (expectedCount == null)
-                        expectedCount = entries.Count;
-                    else
-                        Assert.AreEqual(expectedCount.Value, entries.Count,
-                            "ItemsPerCache must be profile-independent — pickup-memory slot keys rely on a stable count");
-                }
+                var a = ChunkLootRoll.RollItems(Seed, cx, 0, normal);
+                var b = ChunkLootRoll.RollItems(Seed, cx, 0, storage);
+                Assert.AreEqual(a.Count, b.Count,
+                    $"chunk {cx}: el COUNT debe ser independiente del perfil — las claves de la memoria de recogida dependen de ello");
+                if (a.Count > 0) nonEmptySamples++;
             }
             Assert.Greater(nonEmptySamples, 0, "expected at least one non-empty roll across the scanned band");
         }
@@ -363,6 +361,41 @@ namespace BackroomsSurvival.Tests
                 }
             }
             Assert.Greater(sampled, 0, "expected at least one item across the scanned band");
+        }
+
+        [Test]
+        public void Recorte_TamanoDeCache_SigueElReparto80_15_5()
+        {
+            // Reparto pedido por Joel (2026-08-17): 80% un objeto, 15% dos, 5% tres. Se mide sobre
+            // RollItems (el camino real) y no sobre RollItemCount, que es internal y además dejaría
+            // sin cubrir que el count se tira ANTES de leer el perfil.
+            //
+            // Muestra grande y márgenes anchos (±3 puntos) a propósito: esto fija la FORMA del
+            // reparto —la mayoría de cachés son un objeto suelto y tres es raro— no los decimales
+            // exactos de un generador concreto. Un margen estrecho lo convertiría en un test que
+            // se rompe al tocar la semilla.
+            var histogram = new Dictionary<int, int>();
+            int caches = 0;
+            for (int cx = 0; cx < 300; cx++)
+                for (int cz = 0; cz < 40; cz++)
+                {
+                    int n = ChunkLootRoll.RollItems(Seed, cx, cz, RichItemProfile).Count;
+                    if (n == 0) continue;
+                    caches++;
+                    histogram.TryGetValue(n, out int prev);
+                    histogram[n] = prev + 1;
+                }
+
+            Assert.Greater(caches, 2000, "muestra insuficiente para medir un reparto");
+            foreach (var size in histogram.Keys)
+                Assert.That(size, Is.InRange(1, 3), "una caché nunca trae menos de 1 ni más de 3 objetos");
+
+            double one = 100.0 * histogram[1] / caches;
+            double two = 100.0 * histogram[2] / caches;
+            double three = 100.0 * histogram[3] / caches;
+            Assert.That(one, Is.EqualTo(80.0).Within(3.0), $"un objeto debería ser ~80% (medido {one:F1}%)");
+            Assert.That(two, Is.EqualTo(15.0).Within(3.0), $"dos objetos debería ser ~15% (medido {two:F1}%)");
+            Assert.That(three, Is.EqualTo(5.0).Within(3.0), $"tres objetos debería ser ~5% (medido {three:F1}%)");
         }
 
         [Test]

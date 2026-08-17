@@ -104,15 +104,25 @@ namespace BackroomsSurvival.Net
         // counts but now rolled PER CHUNK COLUMN so the live total is bounded by the ~3×3 ring
         // instead of a one-shot world-wide scatter). ──────────────────────────────────────────
         // Cache/zone existence chance and pool/material weights are now PER-ZONE (see
-        // ZoneLootProfile below, resolved by ChunkLootManager via ZoneRegistry). These two counts
-        // stay FIXED consts on purpose — Pieza 3 hard constraint: a zone's profile may vary
-        // chance/pools/rarity but never the slot COUNT (see ZoneLootProfile's doc-comment).
-        // RECORTE 2026-08-17: 6 → 2. Con el catálogo reducido a un solo objeto, una caché de 6
-        // slots era una pila de 6 botes idénticos. Mover este const es seguro porque la memoria
-        // de recogida (`ChunkLootManager._collectedItems`) es un HashSet EN MEMORIA que no
-        // sobrevive a la sesión: ninguna clave (cx,cz,slot) vieja puede quedar fuera de rango
-        // tras el cambio, porque cambiar este número exige recompilar y por tanto reiniciar.
-        private const int ItemsPerCache = 2;
+        // ZoneLootProfile below, resolved by ChunkLootManager via ZoneRegistry). El COUNT no es
+        // per-zone — Pieza 3 hard constraint: un perfil puede variar chance/pools/rareza pero
+        // NUNCA el número de slots (ver el doc-comment de ZoneLootProfile).
+        //
+        // RECORTE 2026-08-17: 6 → 2 → reparto 1/2/3 pedido por Joel (80% / 15% / 5%). Con el
+        // catálogo reducido a un solo objeto, una caché de tamaño fijo era una pila de N botes
+        // idénticos; ahora casi siempre es UN bote suelto y encontrar tres es raro de verdad.
+        //
+        // EL COUNT PASA DE CONST A TIRADA, y eso NO rompe la restricción dura: `RollItemCount`
+        // consume del mismo `DeterministicRng` sembrado con (worldSeed, cx, cz, ItemSalt) y se
+        // tira ANTES de mirar el perfil, así que dos perfiles distintos sobre el mismo chunk
+        // siguen dando el mismo número de slots — que es exactamente lo que la restricción exige.
+        // Lo que cambia es que el count ya no es igual entre CHUNKS distintos, cosa que la
+        // memoria de recogida nunca necesitó: sus claves son (cx,cz,slot) y el slot se compara
+        // dentro de su propio chunk.
+        private const float ThreeItemChance = 0.05f;
+        private const float TwoItemChance = 0.15f;
+        /// <summary>Techo del reparto — el tamaño máximo que puede devolver <see cref="RollItemCount"/>.</summary>
+        internal const int MaxItemsPerCache = 3;
         // TODO(balance): construction-material abundance test (2026-07-07) — carryable zones are
         // 100% construction materials (Log/Stone/Metal). Chance 0.30→0.60 and per-zone 8→16
         // (~x4 more materials). Not tuned final values.
@@ -278,7 +288,8 @@ namespace BackroomsSurvival.Net
                 return result; // no cache in this chunk
 
             RollCentre(ref rng, out float cu, out float cv);
-            for (int slot = 0; slot < ItemsPerCache; slot++)
+            int count = RollItemCount(ref rng); // ANTES de leer el perfil — ver la nota del reparto
+            for (int slot = 0; slot < count; slot++)
             {
                 string name = RollItemName(ref rng, profile);
                 ClusterAround(ref rng, cu, cv, CacheClusterRadius, out float u, out float v);
@@ -307,6 +318,20 @@ namespace BackroomsSurvival.Net
                 result.Add(new Entry(slot, name, 1, u, v, rng.NextFloat() * 360f));
             }
             return result;
+        }
+
+        /// <summary>
+        /// Cuántos objetos trae una caché: 80% uno, 15% dos, 5% tres (reparto pedido por Joel,
+        /// 2026-08-17). Esperanza 1,25 objetos por caché. NO recibe el perfil a propósito: el
+        /// count tiene que salir igual para dos zonas distintas sobre el mismo chunk, ver la nota
+        /// larga en las constantes del reparto.
+        /// </summary>
+        internal static int RollItemCount(ref DeterministicRng rng)
+        {
+            float r = rng.NextFloat();
+            if (r < ThreeItemChance) return MaxItemsPerCache;
+            if (r < ThreeItemChance + TwoItemChance) return 2;
+            return 1;
         }
 
         // Per-slot construction-material pick, weighted by the zone's profile (relative weights,
@@ -460,11 +485,16 @@ namespace BackroomsSurvival.Net
     ///
     /// HARD CONSTRAINT — never add a field that changes entry COUNT (e.g. a per-zone item/carryable
     /// count override). <see cref="ChunkLootManager"/> keys its pickup memory on (cx,cz,slot),
-    /// where slot is a bare 0..N-1 ordinal from THIS roll (ItemsPerCache / CarryablesPerZone stay
-    /// fixed consts above, deliberately NOT profile fields). A chunk re-rolled under a different
+    /// where slot is a bare 0..N-1 ordinal from THIS roll. A chunk re-rolled under a different
     /// profile — e.g. zone_kind resolved after this column's zone was unknown at an earlier roll —
     /// must always yield the same slot COUNT as before, or old collected-slot keys go out of range
     /// or orphan still-live loot. See docs/STATE.md Pieza 3 for the full reasoning.
+    ///
+    /// OJO (2026-08-17): "COUNT estable" significa **estable frente al PERFIL**, no constante.
+    /// Desde el reparto 80/15/5, el número de slots de una caché lo tira
+    /// <see cref="ChunkLootRoll.RollItemCount"/> desde el RNG sembrado con (worldSeed, cx, cz), y
+    /// varía entre chunks. Lo que la restricción prohíbe sigue prohibido: que el COUNT dependa de
+    /// algo del perfil. `CarryablesPerZone` sí sigue siendo un const fijo.
     /// </summary>
     [System.Serializable]
     public struct ZoneLootProfile
