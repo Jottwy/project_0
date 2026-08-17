@@ -67,6 +67,51 @@ pub(super) const PHANTOM_DETECT_RADIUS: f32 = 15.0;
 pub(super) const PHANTOM_LOSE_RADIUS: f32 = 25.0;
 pub(super) const PHANTOM_DETECT_HALF_FOV: f32 = std::f32::consts::FRAC_PI_3; // 60° half → 120° cone
 
+/// ADR-080 point 2 — A LIT TORCH IS SEEN FROM FURTHER AWAY. `light_on` has ridden the pose relay
+/// since ADR-042 and the perception model never consulted it: carrying the brightest object in the
+/// game had no cost. A candidate holding a lit wieldable inside the SAME 120° cone, with the same
+/// thin line of sight the eye uses, is detected out to this radius instead of the bare 15 m.
+///
+/// The crouch multiplier deliberately does NOT apply: crouching does not put out a torch. Turning
+/// the light off is the counterplay, and that is the whole point.
+pub(super) const PHANTOM_LIGHT_DETECT_RADIUS: f32 = 38.0;
+
+/// ADR-080 point 1 — head-tracking clamp, in degrees. `pitch` is quantized to `i8` and the client
+/// (`ProxyPitchHook`) spreads anything past ~30° into a spine lean, so a full ±90° would fold the
+/// proxy in half when the target stands right under it. ±60 keeps the stare readable.
+pub(super) const PHANTOM_LOOK_PITCH_CLAMP_DEG: f32 = 60.0;
+
+/// ADR-080 point 4 — degrees the stalking band swings towards the target's back per replan while
+/// the creature sits inside its victim's view cone. Small on purpose: an instant teleport to the
+/// blind side reads as cheating, whereas drifting out of view reads as a thing that knows it is
+/// being watched.
+pub(super) const PHANTOM_FLANK_STEP_DEG: f32 = 22.0;
+
+/// ADR-080 point 4 — how far inside the target's own view cone counts as "being looked at" for the
+/// flanking decision. Wider than the kill cone: the point is to leave the field of view entirely,
+/// not to hug its edge.
+pub(super) const PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG: f32 = 75.0;
+
+/// ADR-080 point 4 — how close to the flank point counts as having arrived. Generous on purpose:
+/// the goal is "out of your view at roughly band distance", not a coordinate, and a tight radius
+/// against a 10 Hz step would have it shuffling to hit an exact spot.
+pub(super) const PHANTOM_FLANK_ARRIVE: f32 = 1.5;
+
+/// ADR-080 point 3 — cooldown (s) of the missed-swing roar. Its own budget, well under the 6 s
+/// global one: the whole point is that it lands on the swing that did NOT connect, and the global
+/// cooldown is already spent by the reveal scream that opened the charge.
+pub(super) const PHANTOM_MISS_VOCAL_COOLDOWN: f32 = 2.5;
+
+/// ADR-080 point 5 — the band inside which another creature answers a scream. Nearer than 60 m and
+/// the "answer" reads as an echo of the same thing; past 220 m nobody would hear it anyway.
+pub(super) const PHANTOM_CHORUS_MIN_DISTANCE: f32 = 60.0;
+pub(super) const PHANTOM_CHORUS_MAX_DISTANCE: f32 = 220.0;
+/// ADR-080 point 5 — the answer is delayed by a deterministic beat in this window, so several
+/// creatures never answer in unison (which would read as one big thing, the same trap the staggered
+/// breath already avoids).
+pub(super) const PHANTOM_CHORUS_DELAY_MIN: f32 = 0.8;
+pub(super) const PHANTOM_CHORUS_DELAY_MAX: f32 = 3.5;
+
 // ADR-016 slice 3a — Stalker FSM (Wander / Spotted / Stalk / Sprint). Peek/Search land in 3b.
 pub(super) const PHANTOM_STALK_DISTANCE: f32 = 9.0; // STALK keeps roughly this gap from the player
 /// ADR-050 point 16 — speed (m/s) used by STALK to CLOSE the gap, as opposed to the walk it uses
@@ -220,6 +265,11 @@ pub(super) const PHANTOM_UNMASK_SECONDS: f32 = 1.6;
 /// (`VOCAL_REVEAL`, which now lands a beat later, on the tear itself) — this one is still coming
 /// out of something that looks like a player.
 pub(super) const VOCAL_UNMASK_SCREAM: u8 = 8;
+
+/// ADR-080 point 3 — the roar of a swing that did NOT land: at arm's length with the blow locked
+/// out by `strike_recover`. Until now that frame was silent, so a claw that grazed you and a claw
+/// that missed by ten metres sounded identical (which is to say, not at all).
+pub(super) const VOCAL_STRIKE_MISS: u8 = 9;
 
 // ── ADR-050 point 9: the grab ────────────────────────────────────────────────────────────────────
 /// How long the victim has to break free before the grab becomes a kill.
@@ -636,6 +686,16 @@ pub(super) fn target_is_crouched(net: &NetworkManager, tid: PeerId, host_crouch:
     net.peers.get(&tid).is_some_and(|p| p.crouch)
 }
 
+/// ADR-080 point 2 — is this target carrying a LIT wieldable? Exact twin of `target_is_crouched`,
+/// down to why the host needs a separate channel: `light_on` has been relayed per peer since
+/// ADR-042, but the host's own player is not a peer.
+pub(super) fn target_has_light_on(net: &NetworkManager, tid: PeerId, host_light_on: bool) -> bool {
+    if tid == net.local_id {
+        return host_light_on;
+    }
+    net.peers.get(&tid).is_some_and(|p| p.light_on)
+}
+
 /// ADR-041 — displace a heard position by an error that grows with distance, DETERMINISTICALLY.
 ///
 /// Deterministic and not per-tick random on purpose: a wandering estimate would make the phantom
@@ -969,6 +1029,67 @@ pub(super) fn phantom_reveals(state: PhantomState) -> bool {
         PhantomState::Sprint | PhantomState::Grab | PhantomState::Hunting
     )
 }
+
+/// ADR-080 point 1 — the states in which the creature's HEAD follows its target, sealed as `pitch`
+/// (ADR-021). Every other state writes 0 and looks straight ahead, which is what the phantom did in
+/// every state until now — including while holding you at arm's length.
+///
+/// Exhaustive `match` on purpose, exactly like the reveal test's: a new `PhantomState` must not be
+/// able to compile without someone deciding whether that state stares at you.
+pub(super) fn phantom_tracks_with_head(state: PhantomState) -> bool {
+    match state {
+        // Committed to a target: it is watching, closing, freezing, tearing or holding you.
+        // `Statue` included deliberately — ADR-038 freezes the BODY, and a frozen body whose head
+        // keeps following you is the entire image that state is trying to produce.
+        PhantomState::Spotted
+        | PhantomState::Stalk
+        | PhantomState::Statue
+        | PhantomState::Sprint
+        | PhantomState::Ambush
+        | PhantomState::Unmasking
+        | PhantomState::Hunting
+        | PhantomState::Grab => true,
+        // No target to track, or deliberately not looking at you: patrolling, searching a place it
+        // guessed, peeking round a corner at a GOAL rather than at a player, or running away.
+        PhantomState::Wander | PhantomState::Search | PhantomState::Peek | PhantomState::Flee => {
+            false
+        }
+    }
+}
+
+/// ADR-080 point 1 — the head angle towards `tpos`, in the quantized `i8` degrees of ADR-021
+/// (POSITIVE = looking DOWN, the convention that ADR fixed and `ProxyPitchHook` renders).
+///
+/// `dist` is the XZ distance the tick already computed, so this costs one `atan2` and no square
+/// root. Both bodies report their pose at the player pivot convention (`PLAYER_BASE_Y`), so the
+/// vertical difference needs no eye-height correction to be right for equal footing — the only case
+/// where it matters is a target on another layer, where the sign is what carries the information.
+pub(super) fn quantize_look_pitch(from: Vec3, tpos: Vec3, dist: f32) -> i8 {
+    // Point blank: an atan2 against a ~0 baseline swings wildly frame to frame. Look level.
+    if dist < 0.2 {
+        return 0;
+    }
+    let degrees = (from.y - tpos.y).atan2(dist).to_degrees();
+    degrees.clamp(-PHANTOM_LOOK_PITCH_CLAMP_DEG, PHANTOM_LOOK_PITCH_CLAMP_DEG) as i8
+}
+
+/// ADR-080 point 5 — the deterministic 0..1 that spreads chorus answers apart in time.
+///
+/// Same mixing chain as `derive_hunger`, and deterministic for the same reason: a play-test has to
+/// be repeatable, and `rand` here would mean the same encounter never sounds the same twice — which
+/// makes "did the answer come from over there?" impossible to check.
+pub(super) fn chorus_delay_fraction(key: u64) -> f32 {
+    let mut z = key.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f32 / (1u64 << 53) as f32
+}
+
+/// ADR-080 point 6 — the `buttons` bits a sated creature may copy: lean left/right (2-3, ADR-044)
+/// and the spray jet (4, ADR-078 phase A). Bits 0-1 are aim/reload and stay masked OUT — a phantom
+/// carries no weapon, so mirroring an aim would be a tell rather than a disguise.
+pub(super) const PHANTOM_MIMIC_BUTTON_MASK: u16 = 0b1_1100;
 
 /// ADR-016 slice 1 (phantom damage) — what `PhantomDriver::step` produced this tick, and for
 /// WHOM. Returned to the game loop, which routes each one to the backend that owns that player's
@@ -1333,9 +1454,10 @@ pub(super) struct PhantomMover {
     /// ADR-050 point 8 — the pose being copied while sated, and how long until it is worn.
     /// `(crouch, held_item, seconds_left)`. A tiny one-slot buffer rather than a queue: at 10 Hz a
     /// queue would hold eight samples to reproduce a lag anyone can get from one.
-    pub(super) mimic_pending: Option<(bool, i32, f32)>,
+    /// ADR-080 point 6 widened it to `(crouch, held_item, buttons, seconds_left)`.
+    pub(super) mimic_pending: Option<(bool, i32, u16, f32)>,
     /// What it is wearing right now, i.e. the last pending sample whose delay ran out.
-    pub(super) mimic_worn: (bool, i32),
+    pub(super) mimic_worn: (bool, i32, u16),
     /// ADR-050 — where a startled creature is running TO. Resolved once on the scare, from the
     /// noise position, and held: recomputing it per tick against a stimulus that no longer exists
     /// would make it wander in a circle instead of clearing the area.
@@ -1351,6 +1473,23 @@ pub(super) struct PhantomMover {
     /// hangs there for a moment, and only then comes at you. Without it, reveal and charge are the
     /// same instant and there is nothing to read.
     pub(super) hesitate_timer: f32,
+    /// ADR-080 point 1 — the angle towards the current target, in the `i8` degrees of ADR-021
+    /// (positive = looking DOWN), staged by the preamble for `seal_cosmetics`.
+    ///
+    /// The angle is staged UNCONDITIONALLY and the state gate is applied at the SEAL, not here: the
+    /// preamble runs before the FSM, so gating at stage time would dress the stare with LAST tick's
+    /// state — a creature that spots you this tick would keep looking straight ahead for one more
+    /// frame, and one that lost you would hold the stare for one frame too long. `revealed` is
+    /// sealed from the post-tick state for exactly this reason (ADR-038).
+    pub(super) look_pitch: i8,
+    /// ADR-080 point 4 — WHICH SIDE it is walking around you: `-1.0`, `+1.0`, or `0.0` for "not
+    /// currently flanking". Remembered rather than recomputed because a creature sitting dead centre
+    /// in your view has two equally good ways out, and picking again every tick at 10 Hz would make
+    /// it shuffle left-right on the spot instead of leaving your field of view.
+    pub(super) flank_offset: f32,
+    /// ADR-080 point 5 — seconds until this creature answers a distant scream, if it is going to.
+    /// `None` = nothing to answer. Audio only: it never moves the creature and never chains.
+    pub(super) chorus_pending: Option<f32>,
 }
 
 /// The creature's temperament, resolved to the number the FSM actually needs, RIGHT NOW.
@@ -1591,6 +1730,12 @@ struct TickCtx<'a> {
     /// one. Without this a sated creature would copy remote joiners and stand there empty-handed
     /// next to the host, which is the one case a solo play-test can actually see.
     host_held_item: i32,
+    /// ADR-080 point 2 — the HOST player's lit-wieldable flag. Same reason as the two above: peers
+    /// carry `light_on` on `PeerConnection` since ADR-042, the host does not.
+    host_light_on: bool,
+    /// ADR-080 point 6 — the HOST player's sustained-state bits, for the imitation. Same reason
+    /// again; masked to the copyable bits at the point of use, not here.
+    host_buttons: u16,
 }
 
 /// The per-MOVER half: what the preamble already resolved about THIS creature before dispatching.
@@ -2018,11 +2163,15 @@ impl PhantomDriver {
                 + rand::random::<f32>() * (PHANTOM_ECHO_MAX - PHANTOM_ECHO_MIN),
             sated_threshold: self.sated_threshold,
             mimic_pending: None,
-            mimic_worn: (false, 0),
+            mimic_worn: (false, 0, 0),
             // Staggered at birth, not zeroed: several creatures waking on the same tick would
             // otherwise breathe in unison, which reads as one big thing rather than as several.
             breath_in: PHANTOM_BREATH_MIN
                 + rand::random::<f32>() * (PHANTOM_BREATH_MAX - PHANTOM_BREATH_MIN),
+            // ADR-080: looks straight ahead, has not drifted, has nothing to answer.
+            look_pitch: 0,
+            flank_offset: 0.0,
+            chorus_pending: None,
         });
     }
 
@@ -3279,17 +3428,6 @@ impl PhantomDriver {
             return;
         }
 
-        // ADR-040: navigated heading. Where this used to point straight at the player —
-        // and grind into whatever wall was in between — it now follows a string-pulled
-        // route. With no plan it falls back to the straight bearing, i.e. the old code.
-        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
-        // Ease toward the player instead of snapping (a 10 Hz snap reads as lag);
-        // movement follows the smoothed heading → a curved, less robotic track.
-        self.movers[i].heading_target = to_player;
-        let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
-        self.movers[i].heading =
-            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
-        let heading = self.movers[i].heading;
         // Maintain STALK_DISTANCE: close in if too far, ease back if too near (it
         // backs away while still facing you — unsettling), else hold.
         // ADR-050 point 8: a sated creature accompanies you at arm's length instead of breathing
@@ -3299,6 +3437,10 @@ impl PhantomDriver {
         // ADR-075 point 5: a PROVOKED saciada falls through to the tighter band (and is eligible
         // for the creep below) — same bridge condition as the gate and the two multipliers. A
         // creature you just made angry does not get to keep its polite fourteen metres.
+        //
+        // ADR-080 point 4 moved this ABOVE the steering (it reads only mover state, never the
+        // heading): the flank point sits ON this band, so the radius has to exist before the route
+        // to it can be planned.
         let band = match self.movers[i].is_sated() && self.movers[i].enraged_for <= 0.0 {
             true => PHANTOM_FOLLOW_DISTANCE,
             false => {
@@ -3316,16 +3458,41 @@ impl PhantomDriver {
                 }
             }
         };
-        let (move_dir, speed) = if dist > band + 2.0 {
-            // ADR-050 point 16: closing is faster than wandering, or running away always worked.
-            (heading, PHANTOM_STALK_CLOSE_SPEED)
-        } else if dist < band {
-            (
+        // ADR-080 point 4: resolved BEFORE the steering, because when a flank is on it is the
+        // flank point — not the player — that the route is planned to.
+        let flank_goal = self.resolve_flank_goal(i, from, tpos, tyaw, band);
+        // ADR-040: navigated heading. Where this used to point straight at the player —
+        // and grind into whatever wall was in between — it now follows a string-pulled
+        // route. With no plan it falls back to the straight bearing, i.e. the old code.
+        let to_player = self.steer_heading(i, layer, from, flank_goal.unwrap_or(tpos), ctx.dt);
+        // Ease toward the player instead of snapping (a 10 Hz snap reads as lag);
+        // movement follows the smoothed heading → a curved, less robotic track.
+        self.movers[i].heading_target = to_player;
+        let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+        self.movers[i].heading =
+            lerp_heading(self.movers[i].heading, self.movers[i].heading_target, t);
+        let heading = self.movers[i].heading;
+        // ADR-080 point 4 — IT DOES NOT WAIT WHERE YOU LEFT IT. While the creature sits inside the
+        // target's own view cone it walks around them, at band radius, towards the nearest edge of
+        // that cone. Preference, never a compulsion: `steer_heading` already falls back to the
+        // straight bearing when the route is unreachable, so a flank the geometry forbids simply
+        // degrades to the approach this code has always done.
+        let (move_dir, speed) = match flank_goal {
+            Some(goal) => match from.distance_xz(goal) > PHANTOM_FLANK_ARRIVE {
+                true => (heading, PHANTOM_STALK_CLOSE_SPEED),
+                // Already out of sight at band distance: hold. Standing still just outside what
+                // somebody can see is the whole point of having walked there.
+                false => (heading, 0.0),
+            },
+            None if dist > band + 2.0 => {
+                // ADR-050 point 16: closing is faster than wandering, or running away always worked.
+                (heading, PHANTOM_STALK_CLOSE_SPEED)
+            }
+            None if dist < band => (
                 (heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU),
                 PHANTOM_WALK_SPEED * 0.6,
-            )
-        } else {
-            (heading, 0.0)
+            ),
+            None => (heading, 0.0),
         };
         let dir = Vec3::new(move_dir.sin(), 0.0, move_dir.cos());
         let desired = Vec3::new(
@@ -3390,7 +3557,33 @@ impl PhantomDriver {
                     PHANTOM_WALK_HEAR_RADIUS
                 };
                 let sound = hear_radius > 0.0 && dist <= hear_radius;
-                (normal || sound, sound && !normal)
+                // ADR-080 point 2 — LIGHT: a lit torch inside the same cone reads from much
+                // further out. Unlike sound, this one DOES need geometry: a lamp two rooms away
+                // through a wall is not visible, and the thin line (the one the eye uses, never
+                // the body-radius variant — ADR-075 forbids it for sight predicates) is the
+                // correct probe. The crouch factor is deliberately absent: crouching does not
+                // put out a torch. Checked last and only when it can change the answer, so the
+                // common case pays nothing for it.
+                let light = !normal
+                    && !sound
+                    && dist <= PHANTOM_LIGHT_DETECT_RADIUS
+                    && target_has_light_on(ctx.net, tid, ctx.host_light_on)
+                    && in_view_cone(self.movers[i].heading, from, tpos)
+                    && crate::world::grid_gen::segment_is_clear(
+                        &mut self.grid_cache,
+                        layer,
+                        from,
+                        tpos,
+                    );
+                if light {
+                    info!(
+                        "MPTRACE step=PH_LIGHT event=phantom_sees_your_light phantom_id={} target_id={} dist={:.1}",
+                        id, tid, dist
+                    );
+                }
+                // `by_sound` stays false for a light sighting: it IS a sighting, so it gets the
+                // longer sight-stare rather than the twitchier sound one.
+                (normal || sound || light, sound && !normal && !light)
             }
             None => (false, false),
         };
@@ -3663,6 +3856,13 @@ impl PhantomDriver {
         // through geometry. See `PHANTOM_ATTACK_REACH`.
         let in_reach = dist < PHANTOM_ATTACK_REACH
             && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+        // ADR-080 point 3 — THE SWING THAT DOES NOT LAND MAKES A SOUND. Being at arm's length
+        // while the blow is locked out (recovering from the previous one) was completely silent:
+        // the claw that grazed you registered as nothing at all. Its own short cooldown, because
+        // the global 6 s budget was already spent by the reveal scream that opened this charge.
+        if in_reach && self.movers[i].strike_recover > 0.0 {
+            self.movers[i].try_vocalize_for(VOCAL_STRIKE_MISS, PHANTOM_MISS_VOCAL_COOLDOWN);
+        }
         if in_reach && self.movers[i].strike_recover <= 0.0 {
             self.movers[i].pickup_until = Some(ctx.now + PHANTOM_PICKUP_GESTURE);
             self.movers[i].strike_recover = PHANTOM_STRIKE_RECOVERY;
@@ -3910,6 +4110,10 @@ impl PhantomDriver {
         host_player_dead: bool,
         // ADR-050 point 8: and its held item, for the imitation. Same reason again.
         host_player_held_item: i32,
+        // ADR-080: its lit-wieldable flag (point 2, detection) and its sustained-state bits
+        // (point 6, imitation). Same reason as every other `host_player_*` here.
+        host_player_light_on: bool,
+        host_player_buttons: u16,
     ) -> &[PhantomAttack] {
         let now = Instant::now();
         self.step_counter = self.step_counter.wrapping_add(1);
@@ -3974,6 +4178,8 @@ impl PhantomDriver {
                 target_vels: &target_vels,
                 host_crouch: host_player_crouch,
                 host_held_item: host_player_held_item,
+                host_light_on: host_player_light_on,
+                host_buttons: host_player_buttons,
             };
             // `None` = this creature is done for the tick: it has no peer any more, or it is frozen
             // mid-gesture. Both used to be `continue`s in the middle of the preamble.
@@ -4007,10 +4213,163 @@ impl PhantomDriver {
             }
         }
 
+        // ADR-080 point 5: the chorus reads the screams this tick staged and hands OTHER creatures
+        // a delayed answer. Between the FSM and the seal on purpose — after every state has had its
+        // say about `pending_vocal`, before those get consumed into `vocal_seq`.
+        self.spread_chorus(net, dt);
+
         self.seal_cosmetics(net);
         self.report_step_cost(net, now);
 
         &self.attacks
+    }
+
+    /// ADR-080 point 4 — where to walk to in order to get out of your victim's field of view while
+    /// keeping the stalking band. `None` = not being looked at, so nothing to do: approach exactly
+    /// as `Stalk` always has.
+    ///
+    /// The goal is expressed relative to WHERE THE TARGET IS LOOKING, never accumulated per tick.
+    /// An accumulated swing plus a bearing that moves as the creature walks double-counts, and the
+    /// result is something that orbits you forever; aiming just past the edge of the cone instead
+    /// means that if you keep turning to track it, it keeps sliding around, and if you look away it
+    /// simply stops. The side is remembered (`flank_offset`) so a creature sitting dead centre does
+    /// not shuffle between two equally good exits.
+    fn resolve_flank_goal(
+        &mut self,
+        i: usize,
+        from: Vec3,
+        tpos: Vec3,
+        tyaw: f32,
+        band: f32,
+    ) -> Option<Vec3> {
+        // Where the target is looking, and where the creature sits relative to that. Unity yaw:
+        // 0 = +Z, so forward = (sin, cos) — the same convention the whole driver uses.
+        let view = tyaw.to_radians().rem_euclid(std::f32::consts::TAU);
+        let bearing = (from.x - tpos.x)
+            .atan2(from.z - tpos.z)
+            .rem_euclid(std::f32::consts::TAU);
+        // Signed shortest angle from the target's forward to the creature: sign says which side.
+        let mut rel = bearing - view;
+        while rel > std::f32::consts::PI {
+            rel -= std::f32::consts::TAU;
+        }
+        while rel < -std::f32::consts::PI {
+            rel += std::f32::consts::TAU;
+        }
+        if rel.abs() >= PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG.to_radians() {
+            self.movers[i].flank_offset = 0.0; // already out of sight — nothing to flank
+            return None;
+        }
+        // Which way round. Keeps whichever side it committed to; picks the nearer one when starting
+        // (and `rel == 0.0` exactly resolves to +1 rather than to a coin toss every tick).
+        let side = match self.movers[i].flank_offset {
+            s if s != 0.0 => s,
+            _ => {
+                let s = if rel < 0.0 { -1.0 } else { 1.0 };
+                self.movers[i].flank_offset = s;
+                s
+            }
+        };
+        // Just past the edge of the cone, at band radius: the nearest place it can stand where you
+        // are not looking at it. `PHANTOM_FLANK_STEP_DEG` of margin so it clears the boundary
+        // instead of straddling it, which at 10 Hz would flicker in and out of the flank.
+        let goal_angle = view
+            + side * (PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG + PHANTOM_FLANK_STEP_DEG).to_radians();
+        Some(Vec3::new(
+            tpos.x + goal_angle.sin() * band,
+            from.y,
+            tpos.z + goal_angle.cos() * band,
+        ))
+    }
+
+    /// ADR-080 point 5 — THE WORLD ANSWERS. A reveal or unmask scream staged this tick makes other
+    /// creatures, far enough away to be a separate voice, answer after a beat.
+    ///
+    /// Deliberately AUDIO ONLY. It does not set targets, does not move anybody, does not wake
+    /// sleepers and — the load-bearing part — an answer NEVER seeds another chorus: only the two
+    /// scream kinds do, and `VOCAL_DISTANT_ANSWER` is not one of them. That is what keeps a
+    /// revelation from cascading into a pack, which is the swarm ADR-053 rejected by another door.
+    fn spread_chorus(&mut self, net: &NetworkManager, dt: f32) {
+        // Who screamed, and from where. Positions come off the roster because that is where the
+        // post-tick pose lives.
+        let mut screams: Vec<(PeerId, Vec3, u8)> = Vec::new();
+        for m in &self.movers {
+            let Some(kind) = m.pending_vocal else {
+                continue;
+            };
+            if kind != VOCAL_REVEAL && kind != VOCAL_UNMASK_SCREAM {
+                continue;
+            }
+            if let Some(peer) = net.peers.get(&m.id) {
+                screams.push((m.id, Vec3::from_array(peer.position), m.vocal_seq));
+            }
+        }
+
+        if !screams.is_empty() {
+            // Snapshot first: `movers` is borrowed immutably above, and a listener needs its own
+            // position to measure the distance to a screamer.
+            let listeners: Vec<(usize, PeerId, Vec3, PhantomState, bool)> = self
+                .movers
+                .iter()
+                .enumerate()
+                .filter_map(|(j, m)| {
+                    net.peers
+                        .get(&m.id)
+                        .map(|p| (j, m.id, Vec3::from_array(p.position), m.state, p.revealed))
+                })
+                .collect();
+            for (j, listener_id, listener_pos, state, revealed) in listeners {
+                // Only a creature WEARING ITS SKIN and not committed to anything answers: one that
+                // is hunting you has better things to do, and one already revealed answering would
+                // just add noise on top of its own.
+                if revealed || !matches!(state, PhantomState::Wander | PhantomState::Search) {
+                    continue;
+                }
+                if self.movers[j].chorus_pending.is_some() {
+                    continue; // already has an answer queued; it does not stack
+                }
+                for (screamer_id, spos, seq) in &screams {
+                    if *screamer_id == listener_id {
+                        continue;
+                    }
+                    // Same layer only: a voice from another floor is not the scene this builds.
+                    if world_pos_to_layer(spos.y) != world_pos_to_layer(listener_pos.y) {
+                        continue;
+                    }
+                    let d = listener_pos.distance_xz(*spos);
+                    if !(PHANTOM_CHORUS_MIN_DISTANCE..=PHANTOM_CHORUS_MAX_DISTANCE).contains(&d) {
+                        continue;
+                    }
+                    // Deterministic delay from (listener, screamer, seq): the same scream always
+                    // gets the same answer from the same creature, and two of them never answer on
+                    // the same tick. `rand` here would make a play-test unrepeatable for free.
+                    let key =
+                        ((listener_id as u64) << 32) ^ ((*screamer_id as u64) << 8) ^ (*seq as u64);
+                    let t = chorus_delay_fraction(key);
+                    self.movers[j].chorus_pending = Some(
+                        PHANTOM_CHORUS_DELAY_MIN
+                            + t * (PHANTOM_CHORUS_DELAY_MAX - PHANTOM_CHORUS_DELAY_MIN),
+                    );
+                    break; // one answer per creature per scream, whoever was heard first
+                }
+            }
+        }
+
+        // Age the queued answers and let the ones that come due speak. Uses the ambient budget on
+        // purpose: an answer must never be able to mute a nearby lunge's scream.
+        for m in &mut self.movers {
+            let Some(left) = m.chorus_pending else {
+                continue;
+            };
+            let left = left - dt;
+            m.chorus_pending = match left <= 0.0 {
+                true => {
+                    m.try_vocalize_for(VOCAL_DISTANT_ANSWER, PHANTOM_BREATH_COOLDOWN);
+                    None
+                }
+                false => Some(left),
+            };
+        }
     }
 
     /// Everything that has to happen to a creature BEFORE its state gets a say: read its pose off
@@ -4120,11 +4479,20 @@ impl PhantomDriver {
         // may be the host's own local player, which is not a peer: reading it off `net.peers` found
         // nothing and a sated creature stood there copying no one. This is the same reason
         // `host_crouch` is handed into the tick at all.
+        // ADR-080 point 6: the copied pose grows to include the LEAN and the SPRAY jet — bits 2-4
+        // of `buttons`, which ADR-044 already relays. Bits 0-1 (aim/reload) stay masked out: the
+        // phantom still carries no weapon, so aiming one would be a tell, not a disguise.
         let observed = match (self.movers[i].is_sated(), target.map(|(tid, _, _, _)| tid)) {
-            (true, Some(tid)) if tid == ctx.net.local_id => {
-                Some((ctx.host_crouch, ctx.host_held_item))
-            }
-            (true, Some(tid)) => ctx.net.peers.get(&tid).map(|p| (p.crouch, p.held_item)),
+            (true, Some(tid)) if tid == ctx.net.local_id => Some((
+                ctx.host_crouch,
+                ctx.host_held_item,
+                ctx.host_buttons & PHANTOM_MIMIC_BUTTON_MASK,
+            )),
+            (true, Some(tid)) => ctx
+                .net
+                .peers
+                .get(&tid)
+                .map(|p| (p.crouch, p.held_item, p.buttons & PHANTOM_MIMIC_BUTTON_MASK)),
             _ => None,
         };
         match observed {
@@ -4132,29 +4500,41 @@ impl PhantomDriver {
                 // Only restart the clock when the target actually DID something. Re-arming it every
                 // tick against an unchanged pose would mean the delay never elapses and the
                 // creature ends up copying nothing at all.
-                Some((crouch, held, _)) if (crouch, held) == pose => {}
-                _ => self.movers[i].mimic_pending = Some((pose.0, pose.1, PHANTOM_MIMIC_DELAY)),
+                Some((crouch, held, buttons, _)) if (crouch, held, buttons) == pose => {}
+                _ => {
+                    self.movers[i].mimic_pending =
+                        Some((pose.0, pose.1, pose.2, PHANTOM_MIMIC_DELAY))
+                }
             },
             // Out of the sated band, or nobody to copy: drop the act. Both fields fall back to
             // their defaults, so the disguise recomposes with no reset logic — the same discipline
             // that makes `revealed` a derived level rather than a latch (STATE.md invariant 1).
             None => {
                 self.movers[i].mimic_pending = None;
-                self.movers[i].mimic_worn = (false, 0);
+                self.movers[i].mimic_worn = (false, 0, 0);
             }
         }
         // When the beat elapses, what was observed becomes what is worn, and `seal_cosmetics` puts
         // it on the wire.
-        if let Some((crouch, held, left)) = self.movers[i].mimic_pending {
+        if let Some((crouch, held, buttons, left)) = self.movers[i].mimic_pending {
             let left = left - ctx.dt;
             self.movers[i].mimic_pending = match left <= 0.0 {
                 true => {
-                    self.movers[i].mimic_worn = (crouch, held);
+                    self.movers[i].mimic_worn = (crouch, held, buttons);
                     None
                 }
-                false => Some((crouch, held, left)),
+                false => Some((crouch, held, buttons, left)),
             };
         }
+
+        // ADR-080 point 1 — HEAD-TRACKING. Staged here, next to the imitation and for the same
+        // reason: this is the one place that runs before the FSM on EVERY path, so a state with an
+        // early exit cannot leave a stale stare behind. The state GATE lives at the seal, because
+        // this runs before the FSM and would otherwise dress the stare with last tick's state.
+        self.movers[i].look_pitch = match target {
+            Some((_, tpos, dist, _)) => quantize_look_pitch(from, tpos, dist),
+            None => 0,
+        };
 
         // ── Gesture freeze (ANY state): the faked-pickup imitation and the SPRINT "attack"
         // are PURE THEATER — only the `animation` field. While active, freeze in place holding
@@ -4230,6 +4610,17 @@ impl PhantomDriver {
                 peer.revealed = phantom_reveals(m.state);
                 peer.crouch = m.mimic_worn.0;
                 peer.held_item = m.mimic_worn.1;
+                // ADR-080 point 6: the lean and the spray jet ride along, already masked to the
+                // bits a phantom may wear (`PHANTOM_MIMIC_BUTTON_MASK`).
+                peer.buttons = m.mimic_worn.2;
+                // ADR-080 point 1: the stare. The ANGLE is staged by `resolve_mover_tick` on every
+                // path (so no early exit can leave a stale one) and the STATE GATE is applied here,
+                // against the POST-tick state — exactly like `revealed` above. Gating at stage time
+                // would look at last tick's state and lag the stare by a frame in both directions.
+                peer.pitch = match phantom_tracks_with_head(m.state) {
+                    true => m.look_pitch,
+                    false => 0,
+                };
                 if let Some(kind) = m.pending_vocal.take() {
                     // Wrapping, but never back onto 0: the client treats 0 as "has never
                     // vocalised", so landing there would silently swallow one scream every 255.

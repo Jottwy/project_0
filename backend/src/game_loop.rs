@@ -1312,6 +1312,10 @@ pub async fn run(
                         player.crouch,
                         player.stats.is_dead(),
                         player.held_item,
+                        // ADR-080: la linterna encendida delata (punto 2) y los bits sostenidos se
+                        // imitan (punto 6). Ambos existen ya en `Player`; el fantasma no los leía.
+                        player.light_on,
+                        player.buttons,
                     )
                     .to_vec();
 
