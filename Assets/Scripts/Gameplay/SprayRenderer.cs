@@ -26,11 +26,11 @@ namespace BackroomsSurvival.Gameplay
     public class SprayRenderer : MonoBehaviour
     {
         /// <summary>
-        /// Lado de la textura rasterizada. Es la MISMA retícula en la que el backend cuantiza los
-        /// puntos (256×256), así que un punto del wire cae en un téxel exacto y no hay
-        /// re-muestreo que emborrone el trazo.
+        /// Lado de la textura rasterizada. Es la MISMA retícula que <see cref="SprayCanvas.Grid"/>
+        /// (la que el backend cuantiza), así que un punto del wire cae en un téxel exacto y no
+        /// hay re-muestreo que emborrone el trazo.
         /// </summary>
-        public const int CanvasPixels = 256;
+        public const int CanvasPixels = SprayCanvas.Grid;
 
         /// <summary>
         /// Entradas de la paleta. Espejo de <c>world::spray::PALETTE_LEN</c>: el backend rechaza
