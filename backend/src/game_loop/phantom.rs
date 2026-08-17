@@ -4346,9 +4346,15 @@ impl PhantomDriver {
                     let key =
                         ((listener_id as u64) << 32) ^ ((*screamer_id as u64) << 8) ^ (*seq as u64);
                     let t = chorus_delay_fraction(key);
-                    self.movers[j].chorus_pending = Some(
-                        PHANTOM_CHORUS_DELAY_MIN
-                            + t * (PHANTOM_CHORUS_DELAY_MAX - PHANTOM_CHORUS_DELAY_MIN),
+                    let delay = PHANTOM_CHORUS_DELAY_MIN
+                        + t * (PHANTOM_CHORUS_DELAY_MAX - PHANTOM_CHORUS_DELAY_MIN);
+                    self.movers[j].chorus_pending = Some(delay);
+                    // Logged like every other behaviour in this driver, and for a specific reason:
+                    // the chorus is heard and never seen, so without a line in the log a play-test
+                    // cannot tell "it answered" from "I imagined it".
+                    info!(
+                        "MPTRACE step=PH_CHORUS event=phantom_will_answer phantom_id={} screamer_id={} dist={:.0} delay={:.2}",
+                        listener_id, screamer_id, d, delay
                     );
                     break; // one answer per creature per scream, whoever was heard first
                 }
