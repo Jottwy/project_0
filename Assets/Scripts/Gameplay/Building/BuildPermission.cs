@@ -40,8 +40,14 @@ namespace BackroomsSurvival.Gameplay.Building
         /// </summary>
         public const int ClaimMarkerDefId = -1977919096;
 
-        /// <summary>Espejo de `CLAIM_RADIUS_M` (backend/src/game_loop.rs). Medio chunk.</summary>
-        public const float ClaimRadiusMeters = 25f;
+        /// <summary>
+        /// Espejo de `CLAIM_BLOCK_M` (backend/src/game_loop.rs): 3 × 3 tiles de 5 m.
+        ///
+        /// Enmienda 3 a ADR-081. El radio de 25 m daba ~1.960 m² por claim, y el cluster de arranque
+        /// son 10.000 m² seguidos: un solar, no un habitáculo. Un lado de 15 m son exactamente 3
+        /// paredes construibles de las que hay.
+        /// </summary>
+        public const float ClaimBlockMeters = 15f;
 
         /// <summary>
         /// True si <paramref name="worldPosition"/> cae en una columna de zona construible.
@@ -71,22 +77,69 @@ namespace BackroomsSurvival.Gameplay.Building
         /// La regla completa, con la pieza en la mano: el marcador se coloca en terreno sin reclamar,
         /// todo lo demás dentro del claim propio. Espejo literal de la puerta del host.
         /// </summary>
-        public static bool CanPlaceAt(Vector3 worldPosition, int defId)
+        public static bool CanPlaceAt(Vector3 worldPosition, int defId) =>
+            Explain(worldPosition, defId) == Verdict.Allowed;
+
+        /// <summary>Por qué la regla dice que no. Existe para poder TRAZARLO: sin esto, "no me deja
+        /// construir" es indistinguible entre cuatro causas muy distintas.</summary>
+        public enum Verdict
+        {
+            Allowed,
+            /// <summary>El snapshot IPC todavía no ha traído el `zone_kind` de esta columna.</summary>
+            ZoneUnknown,
+            /// <summary>La columna es de una zona que no se construye.</summary>
+            ZoneNotBuildable,
+            /// <summary>Terreno sin reclamar y la pieza no es el marcador.</summary>
+            Unclaimed,
+            /// <summary>El bloque tiene dueño y no eres tú.</summary>
+            ClaimedByOther,
+            /// <summary>Es el marcador, pero este bloque ya está reclamado.</summary>
+            AlreadyClaimed,
+        }
+
+        /// <summary>
+        /// La regla completa con su motivo. `CanPlaceAt` es esta función mirando solo si el veredicto
+        /// es <see cref="Verdict.Allowed"/>; el motivo lo consume la traza de diagnóstico.
+        /// </summary>
+        public static Verdict Explain(Vector3 worldPosition, int defId)
         {
             var (cx, cz) = ChunkOf(worldPosition);
-            if (!ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind) || !IsBuildableZone(zoneKind))
-                return false;
+            if (!ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind))
+                return Verdict.ZoneUnknown;
+            if (!IsBuildableZone(zoneKind))
+                return Verdict.ZoneNotBuildable;
 
             ushort owner = ClaimOwnerAt(worldPosition);
-            return defId == ClaimMarkerDefId ? owner == 0 : owner == LocalPeerId();
+            if (defId == ClaimMarkerDefId)
+                return owner == 0 ? Verdict.Allowed : Verdict.AlreadyClaimed;
+
+            if (owner == 0)
+                return Verdict.Unclaimed;
+
+            return owner == LocalPeerId() ? Verdict.Allowed : Verdict.ClaimedByOther;
         }
+
+        /// <summary>
+        /// Bloque de la rejilla GLOBAL de claims que contiene <paramref name="worldPosition"/>.
+        /// Espejo de `claim_block` (backend/src/game_loop.rs).
+        ///
+        /// `FloorToInt` y no un cast: truncar hacia cero haría el bloque del origen del doble de
+        /// ancho en las dos direcciones, comiéndose el de sus vecinos al oeste y al norte.
+        /// </summary>
+        public static (int bx, int bz) ClaimBlockOf(Vector3 worldPosition) => (
+            Mathf.FloorToInt(worldPosition.x / ClaimBlockMeters),
+            Mathf.FloorToInt(worldPosition.z / ClaimBlockMeters));
+
+        /// <summary>Esquina de menor coordenada del bloque, en el mundo.</summary>
+        public static Vector3 ClaimBlockOrigin(int bx, int bz) =>
+            new Vector3(bx * ClaimBlockMeters, 0f, bz * ClaimBlockMeters);
 
         /// <summary>
         /// Dueño del claim que cubre <paramref name="worldPosition"/>, o 0 si el terreno está libre.
         ///
         /// Derivado de los marcadores replicados, exactamente como lo deriva el host de su propia
-        /// lista — no hay tabla de claims que pueda desincronizarse. Distancia en XZ: un claim es una
-        /// superficie de suelo, no una esfera.
+        /// lista — no hay tabla de claims que pueda desincronizarse. Se compara el BLOQUE, no la
+        /// distancia: un claim es una casilla de una rejilla de suelo, y por eso la Y no entra.
         ///
         /// Sin snapshot IPC devuelve 0 (terreno libre); es el mismo transitorio de arranque que la
         /// zona desconocida, y lo cubre el hecho de que la zona se comprueba ANTES en las dos
@@ -97,7 +150,7 @@ namespace BackroomsSurvival.Gameplay.Building
             if (!IPCClient.TryGetInstance(out var ipc) || ipc.LatestState == null)
                 return 0;
 
-            float radiusSq = ClaimRadiusMeters * ClaimRadiusMeters;
+            var block = ClaimBlockOf(worldPosition);
             var buildings = ipc.LatestState.stpBuildings;
             for (int i = 0; i < buildings.Count; i++)
             {
@@ -105,9 +158,7 @@ namespace BackroomsSurvival.Gameplay.Building
                 if (b.defId != ClaimMarkerDefId)
                     continue;
 
-                float dx = b.position.x - worldPosition.x;
-                float dz = b.position.z - worldPosition.z;
-                if (dx * dx + dz * dz <= radiusSq)
+                if (ClaimBlockOf(b.position) == block)
                     return b.ownerId;
             }
 

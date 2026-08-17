@@ -21,12 +21,17 @@ namespace BackroomsSurvival.Gameplay.Building
     /// Cero assets: `LineRenderer` + material de <see cref="MaterialHelper"/>, que se apoya en los
     /// `.mat` ya commiteados de `Resources/BackroomsRuntimeMaterials` (y por eso no lo puede podar el
     /// stripping de shaders de un build, que es lo que le pasaría a un `Shader.Find` a pelo).
+    ///
+    /// DEUDA DE NOMBRE, asumida: desde la enmienda 3 dibuja un CUADRADO (el bloque de rejilla), no un
+    /// círculo. El nombre se conserva porque es el que citan la enmienda 2 de ADR-081 y el commit que
+    /// lo introdujo, y un ADR no se reescribe; renombrarlo dejaría esas referencias apuntando a nada.
     /// </summary>
     public sealed class ClaimCircleRenderer : MonoBehaviour
     {
-        /// <summary>Segmentos del círculo. 64 a 25 m de radio = una cuerda de 2,5 cm: ya es una
-        /// curva y no un polígono, y sigue siendo un draw call por círculo.</summary>
-        private const int Segments = 64;
+        /// <summary>Cuatro esquinas: desde la enmienda 3 el claim es un BLOQUE de rejilla de
+        /// 15 × 15 m, no un disco, así que el borde son cuatro segmentos y no una curva. Dibujar el
+        /// borde real y no una aproximación es lo que permite al jugador contar tiles con la vista.</summary>
+        private const int Segments = 4;
 
         /// <summary>Levantado del suelo para no pelearse en z-fighting con la losa.</summary>
         private const float GroundOffset = 0.05f;
@@ -97,24 +102,27 @@ namespace BackroomsSurvival.Gameplay.Building
                    && controller.BuildingPiece != null;
         }
 
-        private void Draw(int index, Vector3 centre, bool own)
+        private void Draw(int index, Vector3 markerPos, bool own)
         {
             var line = Circle(index);
             line.gameObject.SetActive(true);
             line.sharedMaterial = own ? OwnMaterial() : OtherMaterial();
 
+            // El borde del BLOQUE, no un cuadrado centrado en el marcador: la rejilla es global y
+            // fija, así que el marcador puede estar en cualquier punto de su casilla y el borde
+            // dibujado sigue siendo el mismo que aplica el host.
+            var (bx, bz) = BuildPermission.ClaimBlockOf(markerPos);
+            var origin = BuildPermission.ClaimBlockOrigin(bx, bz);
+            float side = BuildPermission.ClaimBlockMeters;
+
             // El marcador se planta con su pivote en el suelo, así que su propia Y ES la del suelo —
-            // no hace falta raycast. En un suelo con desnivel el círculo cortaría la geometría, y eso
-            // es aceptable: la regla del host también es un disco plano en XZ.
-            float y = centre.y + GroundOffset;
-            for (int s = 0; s < Segments; s++)
-            {
-                float angle = s * Mathf.PI * 2f / Segments;
-                line.SetPosition(s, new Vector3(
-                    centre.x + Mathf.Cos(angle) * BuildPermission.ClaimRadiusMeters,
-                    y,
-                    centre.z + Mathf.Sin(angle) * BuildPermission.ClaimRadiusMeters));
-            }
+            // no hace falta raycast. En un suelo con desnivel el borde cortaría la geometría, y eso
+            // es aceptable: la regla del host también es una casilla plana en XZ.
+            float y = markerPos.y + GroundOffset;
+            line.SetPosition(0, new Vector3(origin.x, y, origin.z));
+            line.SetPosition(1, new Vector3(origin.x + side, y, origin.z));
+            line.SetPosition(2, new Vector3(origin.x + side, y, origin.z + side));
+            line.SetPosition(3, new Vector3(origin.x, y, origin.z + side));
         }
 
         private LineRenderer Circle(int index)

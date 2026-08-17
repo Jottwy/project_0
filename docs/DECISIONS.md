@@ -3911,3 +3911,51 @@ asignado, así que el primer cartel escribiría un error en vez de una letra.
 Nada de esto toca el wire, el backend ni la autoridad: las tres piezas son cliente puro y solo
 cuentan lo que el host ya iba a hacer. Lo que esta enmienda SÍ cambia es la decisión 4 y el rechazo
 de la alternativa (G) del ADR original, por el motivo del punto 0.
+
+#### Enmienda 3 a ADR-081 (2026-08-17, misma sesión) — el claim pasa de disco de 25 m a BLOQUE de 3 × 3 tiles, y una traza para el fallo que no se pudo diagnosticar
+
+Dos cosas, las dos salidas del primer intento de Joel en juego.
+
+**1. EL TAMAÑO ESTABA MAL, y él lo vio antes que nadie.** Un claim de radio 25 m son ~1.960 m², y el
+cluster de arranque son cuatro chunks seguidos: 10.000 m² construibles de una pieza. Eso no es un
+habitáculo, es un solar, y no se parece a lo que el juego quiere ser. **El claim pasa a ser un BLOQUE
+de 3 × 3 tiles = 15 × 15 m** (`CLAIM_BLOCK_M`), y no un cuadrado centrado en el marcador sino una
+casilla de una **rejilla global fija**: plantar el marcador reclama la casilla que lo contiene,
+entera y nada más.
+
+Por qué rejilla y no radio, ahora que el tamaño baja: los bordes son los mismos para todos, los
+solapes son **imposibles por construcción** en vez de por una comprobación que alguien pueda romper,
+el jugador puede predecir dónde acaba su terreno sin medirlo, y el borde se dibuja como el cuadrado
+que de verdad es (`ClaimCircleRenderer` pasa de 64 segmentos a 4). El tile de 5 m es además la unidad
+con la que ya está construido el mundo: un lado del bloque son exactamente 3 de las paredes
+construibles que existen.
+
+Coste aceptado y escrito: **15 no divide a los 50 m del chunk**, así que un bloque puede quedar a
+caballo de dos chunks. La puerta de ZONA (por posición) y la de PROPIEDAD (por bloque) son
+independientes, de modo que la mitad de tu bloque que caiga fuera de zona construible sigue sin poder
+edificarse. Alinear el bloque al chunk exigiría un lado que divida a 10 tiles —2 o 5—, y 3 es lo que
+se pidió; el dial es `CLAIM_BLOCK_M`, en las dos puntas.
+
+`floor` y no truncado hacia cero en las dos implementaciones, con test espejo a cada lado
+(`claim_blocks_west_and_north_of_the_origin_do_not_swallow_their_neighbour` en Rust,
+`ClaimBlockOfMirrorsTheBackendGrid` en C#, los mismos seis puntos): truncando, el bloque del origen
+mediría 30 m de lado y se comería el de sus vecinos al oeste y al norte.
+
+**2. UN FALLO EN JUEGO QUE NO SE PUDO DIAGNOSTICAR, y la traza que lo arregla para la próxima.** Joel
+fue a una zona construible, intentó plantar el MARCADOR —lo único colocable en terreno sin reclamar—
+y no le dejó. No se pudo perseguir: el backend solo escribe sus MPTRACE al `Editor.log` con
+`BACKROOMS_VERBOSE_LOG=1`, que no estaba puesto, y **el cliente no trazaba nada en absoluto**. Cuatro
+causas con arreglos completamente distintos eran indistinguibles desde fuera: la zona no conocida
+todavía por `ZoneRegistry` (que solo aprende de los chunks que el backend publica en
+`visible_chunks`), la zona conocida pero no construible, el terreno sin reclamar, o el bloque de
+otro.
+
+`BuildPermission.CanPlaceAt` se parte en `Explain`, que devuelve un `Verdict` con el motivo, y
+`BuildPlacementFeedback` lo escribe como `MPTRACE step=BP event=build_verdict` con zona, chunk,
+bloque, dueño del bloque e id propio. Va en el sitio que YA calcula el veredicto por frame y detrás
+de su filtro de cambio, no en un modo debug que haya que acordarse de encender: **la instrumentación
+que hay que activar es la que no está cuando hace falta.** La causa sigue sin conocerse — esto no la
+arregla, la hace observable al primer intento.
+
+Sin cambio de wire: la geometría del claim se DERIVA de la posición del marcador en las dos puntas,
+y esa posición ya viajaba.

@@ -4929,10 +4929,37 @@ fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
 /// reclamar nada. El propio menú lo avisa y se niega a regenerar el asset si ya existe.
 const CLAIM_MARKER_DEF_ID: i32 = -1977919096;
 
-/// Radio del territorio que un marcador reclama, en metros. Un chunk mide 50 m, así que 25 m es
-/// medio chunk: caben uno o dos claims en una sala segura y ninguno se come una columna entera.
-/// TODO(balance): primera pasada, nunca jugado.
-const CLAIM_RADIUS_M: f32 = 25.0;
+/// Lado del bloque que un marcador reclama, en metros: 3 × 3 tiles de 5 m.
+///
+/// Enmienda 3 a ADR-081 (petición de Joel tras el primer intento en juego): el radio de 25 m daba
+/// ~1.960 m² por claim y el cluster de arranque son 10.000 m² seguidos — eso no es un habitáculo,
+/// es un solar. 15 × 15 m es una casa pequeña, y el tile de 5 m es la unidad con la que ya está
+/// construido el mundo: un lado son exactamente 3 paredes construibles de las que hay.
+///
+/// TODO(balance): primera pasada, nunca jugado — y Joel lo pidió dudando de él a propósito.
+const CLAIM_BLOCK_M: f32 = 15.0;
+
+/// Bloque de la rejilla global de claims que contiene `position`.
+///
+/// REJILLA FIJA, no un cuadrado centrado en el marcador: los bordes son los mismos para todos, dos
+/// claims no pueden solaparse por construcción (no por una comprobación que alguien pueda romper) y
+/// el jugador puede predecir dónde acaba su terreno sin medirlo.
+///
+/// `floor` y no un cast a entero: truncar hacia cero mandaría todo el intervalo (−15, 15) al mismo
+/// bloque, o sea que el bloque del origen sería del doble de ancho en las dos direcciones y los
+/// claims al oeste/norte del spawn pisarían el de al lado.
+///
+/// 15 no divide a los 50 m del chunk, así que un bloque puede quedar a caballo de dos chunks. Es
+/// consciente: la puerta de ZONA se resuelve por posición y la de PROPIEDAD por bloque, y son
+/// independientes — la mitad de tu bloque que caiga fuera de la zona construible sigue sin poder
+/// edificarse. Alinear el bloque al chunk exigiría un lado que divida a 10 tiles (2 o 5), y 3 es lo
+/// que se pidió.
+fn claim_block(position: [f32; 3]) -> (i32, i32) {
+    (
+        (position[0] / CLAIM_BLOCK_M).floor() as i32,
+        (position[2] / CLAIM_BLOCK_M).floor() as i32,
+    )
+}
 
 /// Dueño del claim que cubre `position`, si hay alguno.
 ///
@@ -4941,26 +4968,22 @@ const CLAIM_RADIUS_M: f32 = 25.0;
 /// retire con su marcador (`process_stp_demolish` ya lo saca de la lista) sin una línea dedicada, y
 /// lo que garantiza que no puedan desincronizarse.
 ///
-/// Distancia en XZ, no en 3D: un claim es una superficie de suelo. Medirlo en 3D dejaría construir
-/// libremente en la capa de arriba de tu propio territorio, que es justo lo que la puerta de zona
-/// (resuelta en la capa 0) ya decidió que NO es una excepción.
+/// Se compara el BLOQUE, no la distancia: un claim es una casilla de una rejilla de suelo. Por eso
+/// la Y no entra — medirlo en 3D dejaría construir libremente en la capa de arriba de tu propio
+/// territorio, que es justo lo que la puerta de zona (resuelta en la capa 0) ya decidió que NO es
+/// una excepción.
 ///
-/// Solapes: gana el primero que encuentra. No puede haber dos claims solapados vivos, porque la
-/// regla de colocación rechaza un marcador dentro de un claim ajeno — así que el orden de iteración
-/// no cambia la respuesta salvo en un empate imposible.
+/// Solapes: imposibles por construcción desde que el claim es una casilla de rejilla. Dos
+/// marcadores en el mismo bloque tampoco, porque la regla de colocación rechaza el segundo.
 fn claim_owner_at(
     buildings: &[crate::network::protocol::StpBuildingInfo],
     position: [f32; 3],
 ) -> Option<u16> {
-    let radius_sq = CLAIM_RADIUS_M * CLAIM_RADIUS_M;
+    let block = claim_block(position);
     buildings
         .iter()
         .filter(|b| b.def_id == CLAIM_MARKER_DEF_ID)
-        .find(|b| {
-            let dx = b.position[0] - position[0];
-            let dz = b.position[2] - position[2];
-            dx * dx + dz * dz <= radius_sq
-        })
+        .find(|b| claim_block(b.position) == block)
         .map(|b| b.owner_id)
 }
 

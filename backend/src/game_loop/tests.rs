@@ -5978,7 +5978,14 @@ async fn a_marker_cannot_be_planted_inside_a_live_claim() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     claim_at(&mut net, 1, SAFE_SPOT);
 
-    let inside = [SAFE_SPOT[0] + 5.0, SAFE_SPOT[1], SAFE_SPOT[2]];
+    // +3 y no +5: SAFE_SPOT cae en x=10 y el bloque de 15 m acaba en x=15, así que +5 aterrizaría
+    // en el bloque de al lado y el test pasaría por el motivo contrario al que mide.
+    let inside = [SAFE_SPOT[0] + 3.0, SAFE_SPOT[1], SAFE_SPOT[2]];
+    assert_eq!(
+        claim_block(inside),
+        claim_block(SAFE_SPOT),
+        "premisa: mismo bloque"
+    );
     process_stp_place(1, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 2, &mut net);
 
     assert_eq!(
@@ -6030,34 +6037,48 @@ async fn the_claim_dies_with_its_marker() {
     );
 }
 
-/// El claim es un DISCO medido en XZ, no una esfera: la altura no entra. Se comprueba justo dentro
-/// y justo fuera del radio, y además desde muy arriba, que es donde una distancia 3D daría otra
-/// respuesta.
+/// El claim es un BLOQUE de la rejilla global (15 × 15 m), no un disco ni una esfera. Se comprueba
+/// dentro del bloque, en el bloque de al lado, y desde muy arriba — que es donde una medida en 3D
+/// daría otra respuesta.
 #[tokio::test]
-async fn the_claim_is_a_disc_measured_in_xz() {
+async fn the_claim_is_a_grid_block_measured_in_xz() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, [50.0, 0.0, 50.0]); // centro de la zona segura, lejos de sus bordes
+    // Centro del bloque (3,3): x,z ∈ [45, 60). Bien dentro de la zona segura del cluster.
+    claim_at(&mut net, 1, [52.5, 0.0, 52.5]);
 
-    let just_inside = [50.0 + CLAIM_RADIUS_M - 0.5, 0.0, 50.0];
-    let just_outside = [50.0 + CLAIM_RADIUS_M + 0.5, 0.0, 50.0];
-    let high_above = [50.0, 30.0, 50.0];
+    let same_block = [58.0, 0.0, 47.0];
+    let next_block = [61.0, 0.0, 52.5]; // bloque (4,3), a 3 m del anterior pero ya es otro
+    let high_above = [52.5, 30.0, 52.5];
 
-    process_stp_place(1, 111, just_inside, 0.0, 0, false, 1, &mut net);
-    assert_eq!(placed_pieces(&net).len(), 1, "dentro del radio: acepta");
+    process_stp_place(1, 111, same_block, 0.0, 0, false, 1, &mut net);
+    assert_eq!(placed_pieces(&net).len(), 1, "dentro del bloque: acepta");
 
-    process_stp_place(2, 111, just_outside, 0.0, 0, false, 1, &mut net);
+    process_stp_place(2, 111, next_block, 0.0, 0, false, 1, &mut net);
     assert_eq!(
         placed_pieces(&net).len(),
         1,
-        "fuera del radio ya no es tu territorio, aunque la zona siga siendo construible"
+        "el bloque de al lado ya no es tu territorio, aunque la zona siga siendo construible"
     );
 
     process_stp_place(3, 111, high_above, 0.0, 0, false, 1, &mut net);
     assert_eq!(
         placed_pieces(&net).len(),
         2,
-        "30 m por encima del marcador sigue siendo su columna: con distancia 3D esto se habría rechazado"
+        "30 m por encima del marcador sigue siendo su bloque: con una medida 3D esto se habría rechazado"
     );
+}
+
+/// La rejilla es GLOBAL y se parte en `floor`, no truncando hacia cero. Con un cast a entero el
+/// bloque del origen mediría 30 m de lado en vez de 15 y se comería el de sus vecinos al oeste y al
+/// norte — un claim plantado en x=−5 reclamaría también x=+5.
+#[tokio::test]
+async fn claim_blocks_west_and_north_of_the_origin_do_not_swallow_their_neighbour() {
+    assert_eq!(claim_block([1.0, 0.0, 1.0]), (0, 0));
+    assert_eq!(claim_block([14.9, 0.0, 14.9]), (0, 0));
+    assert_eq!(claim_block([15.1, 0.0, 15.1]), (1, 1));
+    assert_eq!(claim_block([-0.1, 0.0, -0.1]), (-1, -1));
+    assert_eq!(claim_block([-14.9, 0.0, -14.9]), (-1, -1));
+    assert_eq!(claim_block([-15.1, 0.0, -15.1]), (-2, -2));
 }
 
 // ── ADR-037: stp_demolish ───────────────────────────────────────────────────

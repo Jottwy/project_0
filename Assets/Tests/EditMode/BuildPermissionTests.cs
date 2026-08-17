@@ -106,5 +106,45 @@ namespace BackroomsSurvival.Tests
                 BuildPermission.ChunkOf(new Vector3(10f, 0f, 20f)),
                 BuildPermission.ChunkOf(new Vector3(10f, 128f, 20f)));
         }
+
+        /// <summary>
+        /// Enmienda 3 — la rejilla de claims. Misma trampa del `floor` que en `ChunkOf` y con la
+        /// misma consecuencia: truncando hacia cero, el bloque del origen mediría 30 m de lado y se
+        /// comería el de sus vecinos al oeste y al norte.
+        ///
+        /// Espejo EXACTO de `claim_blocks_west_and_north_of_the_origin_do_not_swallow_their_neighbour`
+        /// (backend/src/game_loop/tests.rs): los mismos seis puntos, los mismos seis bloques. Si las
+        /// dos puntas divergen, el cliente pinta un borde donde el host no lo aplica.
+        /// </summary>
+        [Test]
+        public void ClaimBlockOfMirrorsTheBackendGrid()
+        {
+            Assert.AreEqual(15f, BuildPermission.ClaimBlockMeters, "espejo de CLAIM_BLOCK_M");
+
+            Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(1f, 0f, 1f)));
+            Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(14.9f, 0f, 14.9f)));
+            Assert.AreEqual((1, 1), BuildPermission.ClaimBlockOf(new Vector3(15.1f, 0f, 15.1f)));
+            Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-0.1f, 0f, -0.1f)));
+            Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-14.9f, 0f, -14.9f)));
+            Assert.AreEqual((-2, -2), BuildPermission.ClaimBlockOf(new Vector3(-15.1f, 0f, -15.1f)));
+        }
+
+        /// <summary>La altura tampoco cuenta para el bloque: un claim es una casilla de suelo.</summary>
+        [Test]
+        public void ClaimBlockOfIgnoresHeight()
+        {
+            Assert.AreEqual(
+                BuildPermission.ClaimBlockOf(new Vector3(52.5f, 0f, 52.5f)),
+                BuildPermission.ClaimBlockOf(new Vector3(52.5f, 30f, 52.5f)));
+        }
+
+        /// <summary>El borde que dibuja el círculo/cuadrado sale de aquí, así que una esquina mal
+        /// puesta pinta un territorio que no coincide con el que aplica el host.</summary>
+        [Test]
+        public void ClaimBlockOriginIsTheLowCorner()
+        {
+            Assert.AreEqual(new Vector3(0f, 0f, 15f), BuildPermission.ClaimBlockOrigin(0, 1));
+            Assert.AreEqual(new Vector3(-15f, 0f, -15f), BuildPermission.ClaimBlockOrigin(-1, -1));
+        }
     }
 }

@@ -71,7 +71,10 @@ namespace BackroomsSurvival.Gameplay.Building
 
             var definition = piece.Definition;
             int defId = definition != null ? definition.Id : 0;
-            bool allowed = BuildPermission.CanPlaceAt(piece.transform.position, defId);
+            var verdict = BuildPermission.Explain(piece.transform.position, defId);
+            bool allowed = verdict == BuildPermission.Verdict.Allowed;
+
+            TraceVerdict(piece.transform.position, defId, verdict);
 
             // Solo al cambiar de veredicto o de pieza. `MaterialEffect.SetEffect` ya sale temprano si
             // el efecto es el mismo, así que esto no es por coste: es para no pisar CADA frame el
@@ -83,6 +86,33 @@ namespace BackroomsSurvival.Gameplay.Building
             _tinted = piece;
             _lastAllowed = allowed;
             Tint(piece, allowed);
+        }
+
+        /// <summary>
+        /// UNA línea por cambio de veredicto, con todo lo que hace falta para saber cuál de las
+        /// cuatro puertas paró la colocación.
+        ///
+        /// Existe porque el primer intento en juego terminó en "no me deja construir" y no había
+        /// forma de distinguir "el cliente no conoce la zona" de "la zona no es construible", de
+        /// "falta reclamar" o de "es de otro" — cuatro causas con arreglos completamente distintos.
+        /// Va aquí, en el sitio que YA calcula el veredicto por frame, en vez de en un modo debug
+        /// aparte que habría que acordarse de encender.
+        ///
+        /// No es spam: solo se llama tras el filtro de cambio de veredicto/pieza del llamador, así
+        /// que en el peor caso escribe cuando el color cambia — que es exactamente cuando interesa.
+        /// </summary>
+        private static void TraceVerdict(Vector3 position, int defId, BuildPermission.Verdict verdict)
+        {
+            var (cx, cz) = BuildPermission.ChunkOf(position);
+            var (bx, bz) = BuildPermission.ClaimBlockOf(position);
+            bool zoneKnown = ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind);
+
+            Debug.Log($"MPTRACE step=BP event=build_verdict verdict={verdict} def_id={defId} " +
+                      $"pos=({position.x:F1},{position.y:F1},{position.z:F1}) chunk=({cx},{cz}) " +
+                      $"zone_known={zoneKnown} zone_kind={(zoneKnown ? zoneKind : (byte)255)} " +
+                      $"block=({bx},{bz}) claim_owner={BuildPermission.ClaimOwnerAt(position)} " +
+                      $"self_id={BuildPermission.LocalPeerId()} " +
+                      $"is_marker={defId == BuildPermission.ClaimMarkerDefId}");
         }
 
         private static void Tint(BuildingPiece piece, bool allowed)
