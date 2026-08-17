@@ -57,7 +57,11 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// from KindReveal, which now lands on the tear itself — this one still comes out of
         /// something wearing a player's face, and that is what makes it work.
         private const int KindUnmaskScream = 8;
-        private const int KindCount = 9;
+        /// ADR-080 point 3: the swing that did NOT land. Rides the ordinary (revealed) curve rather
+        /// than a wide one — a claw missing you is by definition happening at arm's length, so it has
+        /// no business being audible across the level.
+        private const int KindStrikeMiss = 9;
+        private const int KindCount = 10;
 
         // No counter can hold this, so the first sample is always "no change" and never a trigger.
         private const int NoSample = int.MinValue;
@@ -260,6 +264,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             KindHungryMoan => "HungryMoan",
             KindWinded => "Winded",
             KindUnmaskScream => "UnmaskScream",
+            KindStrikeMiss => "StrikeMiss",
             _ => "Unknown",
         };
     }

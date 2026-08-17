@@ -568,8 +568,10 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices == null)
                 return;
 
-            if (voices.arraySize < 9)
-                voices.arraySize = 9;
+            // ADR-080 added bank 9 (the missed swing). Sized from the bank table below rather than a
+            // literal, so the next voice is one row and not two edits.
+            if (voices.arraySize < 10)
+                voices.arraySize = 10;
 
             // Bank → filename prefix. SELECTED BY PREFIX AND NOT "everything in the folder", which
             // is what this did while only the screams existed: the moment a second voice landed in
@@ -598,6 +600,10 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 // would make the first play-test unable to tell "the tell is broken" from "nobody
                 // authored a clip". Swap for its own family when one exists.
                 "PhantomScream_",        // 8 the warning, a beat before the skin tears
+                // ADR-080 point 3. Ships UNAUTHORED, like banks 6 and 7 and for the same reason: a
+                // roar is not a scream and borrowing one would teach the player the wrong tell. Drop
+                // `PhantomVoice_Miss*` into the audio folder and re-bake.
+                "PhantomVoice_Miss",     // 9 the swing that did not land
             };
 
             for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)
