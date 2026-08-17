@@ -894,6 +894,64 @@ mod tests {
         }
     }
 
+    /// SONDA DE COORDENADAS, no test (`#[ignore]`). Lista las zonas construibles más cercanas al
+    /// origen con una posición CAMINABLE de verdad en cada una.
+    ///
+    /// Existe porque "el chunk (2,3) es construible" no sirve para ir andando, y el centro
+    /// geométrico de un chunk cae dentro de una pared más veces de las que uno esperaría — es la
+    /// misma trampa que se comió tres iteraciones de la sonda de línea de visión de ADR-080. Por eso
+    /// cada punto pasa por `resolve_spawn_near`, el mismo resolutor que ajusta un spawn (ADR-018).
+    ///
+    /// `WORLD_SEED=<n> cargo test list_buildable_zones -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn list_buildable_zones() {
+        use crate::world::chunk::ZONE_SAFE;
+        use crate::world::grid_gen::{grid_floor_y, resolve_spawn_near};
+
+        let seed: u64 = std::env::var("WORLD_SEED")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(42);
+
+        // Ordenadas por distancia al origen, que es donde aparece el jugador: lo que quiere saber
+        // es cuál le pilla más cerca, no cuáles existen.
+        let mut found: Vec<(f32, i32, i32, [f32; 3])> = Vec::new();
+        for cx in -12..=12 {
+            for cz in -12..=12 {
+                if zone_kind_for(seed, cx, cz, 0) != ZONE_SAFE {
+                    continue;
+                }
+
+                let centre = [
+                    (cx as f32 + 0.5) * 50.0,
+                    grid_floor_y(0),
+                    (cz as f32 + 0.5) * 50.0,
+                ];
+                let spot = resolve_spawn_near(seed, centre, rules_for);
+                found.push(((spot[0] * spot[0] + spot[2] * spot[2]).sqrt(), cx, cz, spot));
+            }
+        }
+        found.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        println!(
+            "BUILDABLE seed={seed} zones={} (radio de 12 chunks)",
+            found.len()
+        );
+        for (dist, cx, cz, spot) in &found {
+            println!(
+                "BUILDABLE chunk=({cx},{cz}) x=[{:.0},{:.0}] z=[{:.0},{:.0}] walkable=({:.1}, {:.1}, {:.1}) dist={dist:.0}m",
+                *cx as f32 * 50.0,
+                (*cx as f32 + 1.0) * 50.0,
+                *cz as f32 * 50.0,
+                (*cz as f32 + 1.0) * 50.0,
+                spot[0],
+                spot[1],
+                spot[2]
+            );
+        }
+    }
+
     /// El resolver es una función pura del seed: misma entrada → misma salida,
     /// también tras poblar la memoización. Es el contrato del que depende que
     /// todos los peers generen la misma geometría.
