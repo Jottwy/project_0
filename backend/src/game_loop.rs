@@ -4920,6 +4920,50 @@ fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
         == crate::world::chunk::ZONE_SAFE
 }
 
+/// ADR-081 pieza 3: la definición del marcador de territorio (`BR_Claim Marker.asset`, autorado por
+/// "Backrooms ▸ Create Building Pieces"). Colocarlo en zona segura sin reclamar acuña el claim.
+///
+/// Hardcodeado igual que `BED_DEF_ID` de ADR-031, y con la misma deuda: TODO(config), a una
+/// superficie de configuración cuando exista. **Si alguien regenera esa definición, mintará un id
+/// nuevo y este número deja de casar**: el marcador se vuelve un poste decorativo y nadie puede
+/// reclamar nada. El propio menú lo avisa y se niega a regenerar el asset si ya existe.
+const CLAIM_MARKER_DEF_ID: i32 = -1977919096;
+
+/// Radio del territorio que un marcador reclama, en metros. Un chunk mide 50 m, así que 25 m es
+/// medio chunk: caben uno o dos claims en una sala segura y ninguno se come una columna entera.
+/// TODO(balance): primera pasada, nunca jugado.
+const CLAIM_RADIUS_M: f32 = 25.0;
+
+/// Dueño del claim que cubre `position`, si hay alguno.
+///
+/// NO HAY TABLA DE CLAIMS: un claim ES un marcador plantado. Derivarlo en vez de almacenarlo es lo
+/// que hace que se persista (`stp_buildings` ya se guarda), se replique (el roster ya viaja) y se
+/// retire con su marcador (`process_stp_demolish` ya lo saca de la lista) sin una línea dedicada, y
+/// lo que garantiza que no puedan desincronizarse.
+///
+/// Distancia en XZ, no en 3D: un claim es una superficie de suelo. Medirlo en 3D dejaría construir
+/// libremente en la capa de arriba de tu propio territorio, que es justo lo que la puerta de zona
+/// (resuelta en la capa 0) ya decidió que NO es una excepción.
+///
+/// Solapes: gana el primero que encuentra. No puede haber dos claims solapados vivos, porque la
+/// regla de colocación rechaza un marcador dentro de un claim ajeno — así que el orden de iteración
+/// no cambia la respuesta salvo en un empate imposible.
+fn claim_owner_at(
+    buildings: &[crate::network::protocol::StpBuildingInfo],
+    position: [f32; 3],
+) -> Option<u16> {
+    let radius_sq = CLAIM_RADIUS_M * CLAIM_RADIUS_M;
+    buildings
+        .iter()
+        .filter(|b| b.def_id == CLAIM_MARKER_DEF_ID)
+        .find(|b| {
+            let dx = b.position[0] - position[0];
+            let dz = b.position[2] - position[2];
+            dx * dx + dz * dz <= radius_sq
+        })
+        .map(|b| b.owner_id)
+}
+
 /// Phase B1: host adds a placed STP building piece to the authoritative `stp_buildings`
 /// list. The 10 Hz relay (broadcast_stp_buildings) propagates it to all peers, where
 /// StpBuildingReplicator spawns it. Deduped by the client-generated `place_id`: a repeated
@@ -4948,6 +4992,34 @@ fn process_stp_place(
         info!(
             "MPTRACE step=BP event=stp_place_denied_zone place_id={} def_id={} requester_id={} pos=({:.2},{:.2},{:.2}) rejected=true",
             place_id, def_id, requester_id, position[0], position[1], position[2]
+        );
+        return;
+    }
+
+    // ADR-081 fase 3: la puerta de PROPIEDAD, justo después de la de zona y por el mismo motivo
+    // delante del dedup. Es la regla entera del claim, y se lee de arriba abajo:
+    //  · el marcador se acepta si no pisa un claim vivo (y al aceptarse ACUÑA el suyo, porque un
+    //    claim no es más que un marcador plantado — ver `claim_owner_at`);
+    //  · cualquier otra pieza exige caer dentro de un claim y que ese claim sea TUYO.
+    // Sin claim en la zona, entonces, lo único colocable es el marcador: toda pieza construida
+    // tiene dueño desde el primer instante y no hay estructuras huérfanas.
+    let owner_here = claim_owner_at(&net.stp_buildings, position);
+    let allowed = if def_id == CLAIM_MARKER_DEF_ID {
+        owner_here.is_none()
+    } else {
+        owner_here == Some(requester_id)
+    };
+    if !allowed {
+        info!(
+            "MPTRACE step=BP event=stp_place_denied_claim place_id={} def_id={} requester_id={} claim_owner={:?} is_marker={} pos=({:.2},{:.2},{:.2}) rejected=true",
+            place_id,
+            def_id,
+            requester_id,
+            owner_here,
+            def_id == CLAIM_MARKER_DEF_ID,
+            position[0],
+            position[1],
+            position[2]
         );
         return;
     }
@@ -4993,6 +5065,7 @@ fn process_stp_place(
             position,
             rotation,
             group_id,
+            owner_id: requester_id,
             added: Vec::new(),
         });
     info!(

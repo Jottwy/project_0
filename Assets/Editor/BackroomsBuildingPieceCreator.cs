@@ -43,6 +43,10 @@ namespace BackroomsSurvival.EditorTools
 
         private const string PanelPrefabPath = PrefabFolder + "/BR_BuildingPiece_GridPanel_Drywall.prefab";
         private const string PanelDefinitionPath = DefinitionFolder + "/BR_Backrooms Drywall.asset";
+
+        // ADR-081 pieza 3 — el marcador de territorio.
+        private const string MarkerPrefabPath = PrefabFolder + "/BR_BuildingPiece_ClaimMarker.prefab";
+        private const string MarkerDefinitionPath = DefinitionFolder + "/BR_Claim Marker.asset";
         private const string PanelMeshPath =
             "Assets/MeshyImports/Back of a Flight Case_20260803_121714/Meshy_AI_Back_of_a_Flight_Case_0803101651_texture.fbx";
         private const string PanelMaterialPath =
@@ -97,11 +101,123 @@ namespace BackroomsSurvival.EditorTools
         private const int PanelFootprintColumns = 2;
         private const int PanelFootprintRows = 2;
 
+        // ADR-081 pieza 3: un poste de 1,8 m que se ve desde lejos y no se confunde con nada.
+        private const float MarkerHeight = 1.8f;
+        private const float MarkerSide = 0.35f;
+
+        // TODO(balance): primera pasada, nunca jugado. Reclamar tiene que costar MÁS que una pared
+        // suelta (4 metal) porque abre un territorio entero, y menos que un edificio, porque sin
+        // reclamar no se puede construir nada — un marcador impagable cierra el juego, no lo protege.
+        private const int MarkerMetalCost = 6;
+
         [MenuItem("Backrooms/Create Building Pieces")]
         public static void CreateIfMissing()
         {
             CreateWallIfMissing();
             CreatePanelIfMissing();
+            CreateClaimMarkerIfMissing();
+        }
+
+        /// <summary>
+        /// ADR-081 pieza 3 — el marcador de territorio: la única pieza colocable en una zona segura
+        /// SIN reclamar, y la que acuña el claim a nombre de quien la pone.
+        ///
+        /// Es un <see cref="FreeBuildingPiece"/> del vendor y no una subclase propia a propósito: no
+        /// necesita encajar en la rejilla ni en sockets, y la tubería de colocación/replicación/
+        /// persistencia no distingue subclases. Lo que lo hace especial NO vive en el prefab sino en
+        /// el `def_id`, que el backend conoce por constante (`CLAIM_MARKER_DEF_ID`, mismo patrón que
+        /// el `BED_DEF_ID` de ADR-031) — así que este asset es el que fija ese número.
+        ///
+        /// Mismo contrato crear-si-falta y la misma trampa que los dos de arriba: el `def_id` viaja
+        /// por el wire, regenerarlo rompería todo claim ya plantado en un save. COMMITEAR AMBOS.
+        /// </summary>
+        private static void CreateClaimMarkerIfMissing()
+        {
+            var existingDefinition = AssetDatabase.LoadAssetAtPath<BuildingPieceDefinition>(MarkerDefinitionPath);
+            var existingPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(MarkerPrefabPath);
+            if (existingDefinition != null && existingPrefab != null)
+            {
+                Debug.Log($"[BackroomsBuildingPieceCreator] '{MarkerDefinitionPath}' and '{MarkerPrefabPath}' " +
+                          $"already exist (def_id={existingDefinition.Id}) — left untouched. That id is hardcoded " +
+                          "in the backend as CLAIM_MARKER_DEF_ID; regenerating it would orphan every claim.");
+                return;
+            }
+
+            if (existingDefinition != null || existingPrefab != null)
+            {
+                Debug.LogError("[BackroomsBuildingPieceCreator] Half the claim-marker pair exists " +
+                               $"(definition={existingDefinition != null}, prefab={existingPrefab != null}). " +
+                               "Refusing to regenerate: recreating the definition would mint a new def_id and the " +
+                               "backend constant would stop matching. Restore the missing file from git.");
+                return;
+            }
+
+            var metal = ResolveBuildMaterial(MetalMaterialName);
+            if (metal == null)
+                return;
+
+            if (!TryResolveShared(out var category, out var placeEffects, out var constructEffects))
+                return;
+
+            EnsureFolders();
+
+            var definition = CreateDefinition(MarkerDefinitionPath, category, placeEffects, constructEffects,
+                "Reclama el terreno a tu alrededor. Solo quien lo planta puede construir dentro.");
+            var prefab = CreateMarkerPrefab(definition, metal);
+            AssignPrefabToDefinition(definition, prefab);
+
+            BuildingPieceDefinition.ReloadDefinitions_EditorOnly();
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"[BackroomsBuildingPieceCreator] Created '{MarkerDefinitionPath}' " +
+                      $"(def_id={definition.Id}) and '{MarkerPrefabPath}' — {MarkerMetalCost}× " +
+                      $"{MetalMaterialName}. PON ESTE def_id EN `CLAIM_MARKER_DEF_ID` (backend/src/game_loop.rs) " +
+                      "y commitea los dos assets: sin esa constante el marcador es un poste decorativo.");
+        }
+
+        private static GameObject CreateMarkerPrefab(BuildingPieceDefinition definition, BuildMaterialDefinition metal)
+        {
+            var root = new GameObject("BR_BuildingPiece_ClaimMarker")
+            {
+                layer = LayerConstants.Building
+            };
+
+            var post = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            post.name = "Post";
+            post.layer = LayerConstants.Building;
+            post.transform.SetParent(root.transform, false);
+            post.transform.localPosition = new Vector3(0f, MarkerHeight * 0.5f, 0f);
+            post.transform.localScale = new Vector3(MarkerSide, MarkerHeight, MarkerSide);
+            Object.DestroyImmediate(post.GetComponent<Collider>());
+
+            // En la RAÍZ, por lo mismo que la pared y el panel: los dos detectores del vendor resuelven
+            // su componente desde el GameObject del collider que golpean, así que un collider en el
+            // hijo deja la pieza invisible para ellos y no se le podría añadir material nunca.
+            var collider = root.AddComponent<BoxCollider>();
+            collider.center = new Vector3(0f, MarkerHeight * 0.5f, 0f);
+            collider.size = new Vector3(MarkerSide, MarkerHeight, MarkerSide);
+
+            var material = AssetDatabase.LoadAssetAtPath<Material>(WallMaterialPath);
+            if (material != null)
+                post.GetComponent<MeshRenderer>().sharedMaterial = material;
+            else
+                Debug.LogWarning($"[BackroomsBuildingPieceCreator] '{WallMaterialPath}' not found; the claim marker " +
+                                 "keeps the default primitive material.");
+
+            // RequireComponent trae MaterialEffect (el tinte del fantasma) con esta llamada.
+            var piece = root.AddComponent<FreeBuildingPiece>();
+            var constructable = root.AddComponent<Constructable>();
+
+            ConfigurePiece(piece, definition,
+                new Bounds(new Vector3(0f, MarkerHeight * 0.5f, 0f),
+                    new Vector3(MarkerSide, MarkerHeight, MarkerSide)));
+            ConfigureConstructable(constructable, metal, MarkerMetalCost);
+            ConfigureMaterialEffect(root.GetComponent<MaterialEffect>(), post.GetComponent<MeshRenderer>());
+
+            var saved = PrefabUtility.SaveAsPrefabAsset(root, MarkerPrefabPath);
+            Object.DestroyImmediate(root);
+            return saved;
         }
 
         private static void CreateWallIfMissing()

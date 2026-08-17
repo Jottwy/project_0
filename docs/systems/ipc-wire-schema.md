@@ -554,3 +554,21 @@ Degradación v34: decodifica `relay_only` ausente → false y adopta la entrada 
 la addr placeholder — warns de envío troteados 1/s + ciclo evict/re-add del reliable (ADR-062).
 NO silenciosa, y por eso bumpea (criterio v20/v33). `WireSchema.Expected` (C#) a 35 en el mismo
 commit.
+
+## v36 — ADR-081: territorio (`StpBuildingInfo.owner_id`) (2026-08-17)
+
+Campo aditivo **`owner_id: u16`** (`#[serde(default)]`) en `StpBuildingInfo` — o sea, en el roster
+`StpBuildingList` y en el `SaveFile`. Es el `PeerId` de quien colocó la pieza, tomado de la
+CABECERA del paquete y nunca del payload (mismo criterio que `SprayPlaceRequest.requester_id` de
+ADR-068).
+
+Hoy solo se lee en la pieza del MARCADOR de territorio: **un claim no es una tabla aparte, es un
+marcador plantado**, así que la propiedad de una zona se deriva de `stp_buildings` y se persiste,
+replica y retira con su marcador sin estado propio. `StpPlaceRequest` NO cambia de forma: el
+`requester_id` ya viajaba en la cabecera de todo paquete.
+
+Degradación v35: un peer viejo decodifica `owner_id` ausente → 0, y 0 no es dueño de nada para
+ninguna comprobación — o sea, sus marcadores existen pero no reclaman, y sus dueños no pueden
+construir en su propio territorio. Silenciosamente equivocado, no un error visible, que es
+exactamente el caso que el criterio v20/v33 manda bumpear. `WireSchema.Expected` (C#) a 36 en el
+mismo commit.

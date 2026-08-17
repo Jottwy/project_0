@@ -53,6 +53,30 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
+        /// ADR-081 fase 3 — EL GUARDIÁN DEL `def_id` DEL MARCADOR, y el más valioso de este fichero.
+        ///
+        /// El id del marcador está hardcodeado en TRES sitios que tienen que coincidir: el asset que
+        /// lo genera, `BuildPermission.ClaimMarkerDefId` (cliente) y `CLAIM_MARKER_DEF_ID`
+        /// (backend/src/game_loop.rs). Si alguien regenera la definición, minta un id nuevo y las
+        /// otras dos constantes dejan de casar: el marcador se vuelve un poste decorativo, nadie
+        /// puede reclamar nada y NO hay ningún error — simplemente todo se rechaza. Este test lo
+        /// convierte en un rojo inmediato leyendo el asset de verdad.
+        /// </summary>
+        [Test]
+        public void ClaimMarkerDefIdMatchesTheAuthoredDefinition()
+        {
+            var definition = Resources.Load<PolymindGames.BuildingSystem.BuildingPieceDefinition>(
+                "Definitions/BuildingPiece/BR_Claim Marker");
+
+            Assert.IsNotNull(definition,
+                "no está el asset 'BR_Claim Marker' — sin él no se puede reclamar terreno. " +
+                "Ejecuta \"Backrooms ▸ Create Building Pieces\".");
+            Assert.AreEqual(BuildPermission.ClaimMarkerDefId, definition.Id,
+                "el def_id del marcador cambió. Actualiza BuildPermission.ClaimMarkerDefId Y " +
+                "CLAIM_MARKER_DEF_ID en backend/src/game_loop.rs, en el mismo commit.");
+        }
+
+        /// <summary>
         /// La trampa real de esta función: al oeste/norte del origen las coordenadas son negativas, y
         /// un cast a int (truncado hacia cero) mandaría todo el intervalo (-50, 50) al chunk 0. Media
         /// zona construible leería la zona de su vecina.

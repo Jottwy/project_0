@@ -56,7 +56,13 @@ namespace BackroomsSurvival.Gameplay.Building
             if (!character.TryGetCC(out IBuildControllerCC controller) || controller.BuildingPiece == null)
                 return;
 
-            if (BuildPermission.CanBuildAt(character.transform.position))
+            // Con el def_id de la pieza en la mano, no solo la posición: el MARCADOR de territorio se
+            // coloca precisamente donde nada más se puede (zona construible sin reclamar), así que
+            // preguntar "¿puedo construir aquí?" en vez de "¿puedo colocar ESTO aquí?" haría
+            // imposible reclamar nada — se cancelaría el modo justo al sacar el marcador.
+            var definition = controller.BuildingPiece.Definition;
+            int defId = definition != null ? definition.Id : 0;
+            if (BuildPermission.CanPlaceAt(character.transform.position, defId))
                 return;
 
             controller.SetBuildingPiece(null);

@@ -284,6 +284,17 @@ pub struct StpBuildingInfo {
     /// the socket cohesion. `0` = standalone (free pieces, e.g. campfire). Host-assigned.
     #[serde(default)]
     pub group_id: u32,
+    /// ADR-081 pieza 3: quién la colocó (`PeerId`, tomado de la cabecera del paquete y nunca del
+    /// payload). `0` = desconocido, que es lo que trae un save anterior a este ADR y lo que ninguna
+    /// comprobación de propiedad acepta jamás como dueño.
+    ///
+    /// Hoy solo se lee en la pieza del MARCADOR, que es de donde sale el dueño de un claim: los
+    /// claims no son una tabla aparte, son los marcadores plantados. Por eso el campo vive aquí y no
+    /// en un `ZoneClaim` propio — así el claim se persiste, se replica y se retira con su marcador
+    /// sin una sola línea de código dedicada. La demolición por dueño (que leería este campo en TODA
+    /// pieza) queda declarada fuera de alcance en el ADR.
+    #[serde(default)]
+    pub owner_id: u16,
     /// Phase B2: host-authoritative construction progress — how many units of each
     /// build material have been accepted for this piece. Clients derive completion by
     /// comparing against the prefab-authored required amounts. Omitted when empty.

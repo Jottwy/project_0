@@ -120,7 +120,7 @@ namespace BackroomsSurvival.Net
             //
             // Va DESPUÉS de la guarda de conexión a propósito: sin host no hay regla de territorio
             // que aplicar y la partida offline se queda como estaba.
-            if (!BuildPermission.CanBuildAt(placed.transform.position))
+            if (!BuildPermission.CanPlaceAt(placed.transform.position, placed.Definition != null ? placed.Definition.Id : 0))
             {
                 var owner = GameMode.HasInstance ? GameMode.Instance.LocalPlayer : null;
                 DestroyLocalPiece(placed);

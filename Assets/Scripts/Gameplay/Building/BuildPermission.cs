@@ -34,6 +34,17 @@ namespace BackroomsSurvival.Gameplay.Building
         public const string DeniedMessage = "Aquí no se puede construir.";
 
         /// <summary>
+        /// Espejo de `CLAIM_MARKER_DEF_ID` (backend/src/game_loop.rs) — el id de
+        /// `Assets/Resources/Definitions/BuildingPiece/BR_Claim Marker.asset`, autorado por
+        /// "Backrooms ▸ Create Building Pieces". Si ese asset se regenerase mintaría un id nuevo y
+        /// las dos constantes dejarían de casar a la vez; el menú se niega a regenerarlo por eso.
+        /// </summary>
+        public const int ClaimMarkerDefId = -1977919096;
+
+        /// <summary>Espejo de `CLAIM_RADIUS_M` (backend/src/game_loop.rs). Medio chunk.</summary>
+        public const float ClaimRadiusMeters = 25f;
+
+        /// <summary>
         /// True si <paramref name="worldPosition"/> cae en una columna de zona construible.
         ///
         /// Una zona todavía DESCONOCIDA (el snapshot con ese chunk aún no ha llegado) cuenta como no
@@ -47,7 +58,71 @@ namespace BackroomsSurvival.Gameplay.Building
         public static bool CanBuildAt(Vector3 worldPosition)
         {
             var (cx, cz) = ChunkOf(worldPosition);
-            return ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind) && IsBuildableZone(zoneKind);
+            if (!ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind) || !IsBuildableZone(zoneKind))
+                return false;
+
+            // ADR-081 fase 3, espejo de la regla del host (`process_stp_place`): en zona construible
+            // solo se construye dentro del claim propio. Sin claim, lo único colocable es el marcador
+            // — y eso lo decide `CanPlaceAt`, no esta función, que responde a "¿puedo construir aquí?"
+            // y por tanto habla de piezas normales.
+            return ClaimOwnerAt(worldPosition) == LocalPeerId();
+        }
+
+        /// <summary>
+        /// La regla completa, con la pieza en la mano: el marcador se coloca en terreno sin reclamar,
+        /// todo lo demás dentro del claim propio. Espejo literal de la puerta del host.
+        /// </summary>
+        public static bool CanPlaceAt(Vector3 worldPosition, int defId)
+        {
+            var (cx, cz) = ChunkOf(worldPosition);
+            if (!ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind) || !IsBuildableZone(zoneKind))
+                return false;
+
+            ushort owner = ClaimOwnerAt(worldPosition);
+            return defId == ClaimMarkerDefId ? owner == 0 : owner == LocalPeerId();
+        }
+
+        /// <summary>
+        /// Dueño del claim que cubre <paramref name="worldPosition"/>, o 0 si el terreno está libre.
+        ///
+        /// Derivado de los marcadores replicados, exactamente como lo deriva el host de su propia
+        /// lista — no hay tabla de claims que pueda desincronizarse. Distancia en XZ: un claim es una
+        /// superficie de suelo, no una esfera.
+        ///
+        /// Sin snapshot IPC devuelve 0 (terreno libre); es el mismo transitorio de arranque que la
+        /// zona desconocida, y lo cubre el hecho de que la zona se comprueba ANTES en las dos
+        /// funciones de arriba.
+        /// </summary>
+        public static ushort ClaimOwnerAt(Vector3 worldPosition)
+        {
+            if (!IPCClient.TryGetInstance(out var ipc) || ipc.LatestState == null)
+                return 0;
+
+            float radiusSq = ClaimRadiusMeters * ClaimRadiusMeters;
+            var buildings = ipc.LatestState.stpBuildings;
+            for (int i = 0; i < buildings.Count; i++)
+            {
+                var b = buildings[i];
+                if (b.defId != ClaimMarkerDefId)
+                    continue;
+
+                float dx = b.position.x - worldPosition.x;
+                float dz = b.position.z - worldPosition.z;
+                if (dx * dx + dz * dz <= radiusSq)
+                    return b.ownerId;
+            }
+
+            return 0;
+        }
+
+        /// <summary>
+        /// El `PeerId` de este cliente — el mismo `NET_ID` que el backend estampa en la cabecera de
+        /// cada paquete y que acaba en `owner_id`. 0 si no hay sesión: nunca dueño de nada.
+        /// </summary>
+        private static ushort LocalPeerId()
+        {
+            int netId = NetworkInitializer.Instance != null ? NetworkInitializer.Instance.LastSelectedNetId : 0;
+            return netId > 0 && netId <= ushort.MaxValue ? (ushort)netId : (ushort)0;
         }
 
         /// <summary>

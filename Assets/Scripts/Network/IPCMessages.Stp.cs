@@ -71,6 +71,10 @@ namespace BackroomsSurvival.Net
         // Phase B3 — host-assigned group identity (0 = standalone). Pieces sharing a groupId
         // are bucketed into one BuildingPieceGroup so sockets cohere across all clients.
         public uint groupId;
+        // ADR-081 — quién la colocó (PeerId). 0 = desconocido, y 0 nunca es dueño de nada. Hoy solo
+        // se lee en la pieza del MARCADOR de territorio: el claim ES el marcador, así que la
+        // propiedad de una zona se deriva de esta lista y no de una tabla aparte.
+        public ushort ownerId;
         // Phase B2 — host-authoritative construction progress (units of each material accepted).
         public List<StpBuildProgressMsg> added = new List<StpBuildProgressMsg>();
 
@@ -86,6 +90,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "position")) m.position = r.ReadVec3();
                 else if (MsgPackReader.Is(k, "rotation")) m.rotation = r.ReadFloat();
                 else if (MsgPackReader.Is(k, "group_id")) m.groupId = (uint)r.ReadInt();
+                else if (MsgPackReader.Is(k, "owner_id")) m.ownerId = (ushort)r.ReadInt();
                 else if (MsgPackReader.Is(k, "added"))
                 {
                     int ac = r.ReadArrayHeader();

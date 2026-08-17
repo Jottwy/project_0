@@ -415,6 +415,7 @@ mod tests {
             position: [2.0, 0.0, 2.0],
             rotation: 90.0,
             group_id: 0,
+            owner_id: 7,
             added: vec![],
         }];
         let carryables = vec![StpCarryableInfo {

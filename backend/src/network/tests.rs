@@ -531,6 +531,7 @@ async fn five_rosters_converge_at(
             position: [id as f32, 1.8, 0.0],
             rotation: 90.0,
             group_id: id / 8,
+            owner_id: 0,
             added: vec![protocol::StpBuildProgress {
                 material_id: -1234,
                 count: 4,

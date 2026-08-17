@@ -416,6 +416,7 @@ mod tests {
                 position: [12.5, 1.8, -40.0],
                 rotation: 90.0,
                 group_id: id / 8,
+                owner_id: 0,
                 added: vec![crate::network::protocol::StpBuildProgress {
                     material_id: -1234,
                     count: 4,
