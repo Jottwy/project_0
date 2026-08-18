@@ -5783,25 +5783,49 @@ fn bounded_dedupe_set_evicts_oldest_past_capacity() {
     );
 }
 
-// ── ADR-081 fase 1: solo se construye en zona segura ────────────────────────
+// ── ADR-081: solo se construye DENTRO de una habitación construible ─────
 
-/// Los tres tests de abajo se apoyan en el mapa de zonas del seed 42, que se MIDIÓ (sonda
-/// temporal sobre `zone_density::zone_kind_for`, capa 0) en vez de suponerse: el cluster de
-/// arranque ocupa los chunks (0,0), (1,0), (0,1) y (1,1) con `ZONE_SAFE`, o sea el cuadrado
-/// x,z ∈ [0, 100). El chunk (2,2) — x,z ∈ [100, 150) — sale `ZONE_NORMAL`.
-///
-/// Cada test reafirma esa premisa con el resolutor ANTES de usarla, para que un cambio futuro del
-/// worldgen falle diciendo "la premisa del test ya no se cumple" en vez de "la puerta no funciona",
-/// que es la clase de rojo que cuesta media sesión leer.
-const SAFE_SPOT: [f32; 3] = [10.0, 0.0, 20.0]; // chunk (0,0), cluster de arranque
-const OPEN_WORLD_SPOT: [f32; 3] = [110.0, 0.0, 120.0]; // chunk (2,2), pasillo cualquiera
+/// El sitio construible del seed 42 no se escribe a mano: se BUSCA con el mismo resolutor que talla
+/// el mundo. Escribir coordenadas a mano es lo que obligó a reescribir estos tests cada vez que
+/// cambió la regla, y además hace que un rojo diga "aquí no se puede construir" cuando lo que pasa
+/// de verdad es que la premisa del test caducó.
+fn build_room_centre(seed: u64) -> [f32; 3] {
+    use crate::world::grid_gen::{room_in_chunk, CELL_SIZE_M, CHUNK_CELLS, ROOM_SIZE_M};
+    let chunk_size = CHUNK_CELLS as f32 * CELL_SIZE_M;
+    for cx in 0..40 {
+        for cz in 0..40 {
+            let Some(plan) = room_in_chunk(seed, cx, cz, 0) else {
+                continue;
+            };
+            let (x0, z0) = plan.cell_origin();
+            return [
+                cx as f32 * chunk_size + x0 as f32 * CELL_SIZE_M + ROOM_SIZE_M * 0.5,
+                0.0,
+                cz as f32 * chunk_size + z0 as f32 * CELL_SIZE_M + ROOM_SIZE_M * 0.5,
+            ];
+        }
+    }
+    panic!("seed {seed}: ni una habitación construible en 40x40 chunks");
+}
+
+/// Una posición del mundo abierto, garantizada FUERA de toda habitación: se busca igual que la de
+/// dentro, en vez de confiar en que un chunk concreto siga sin tenerla.
+fn open_world_spot(seed: u64) -> [f32; 3] {
+    use crate::world::grid_gen::position_in_build_room;
+    for i in 1..500i32 {
+        let (x, z) = (i as f32 * 37.0, i as f32 * 53.0);
+        if !position_in_build_room(seed, x, z) {
+            return [x, 0.0, z];
+        }
+    }
+    panic!("seed {seed}: no se encontró un punto fuera de habitación");
+}
 
 /// Planta un marcador de territorio a nombre de `owner` y devuelve su id de red.
 ///
-/// Existe porque desde la fase 3 NADA se coloca en terreno sin reclamar salvo el propio marcador, y
-/// los tests de mecánica de colocación/demolición no van de territorio: pasan por él como pasaría un
-/// jugador real, reclamando primero. Los `place_id` de los marcadores arrancan en 900_000 para no
-/// chocar nunca con los que el test de turno esté usando para lo suyo.
+/// Existe porque NADA se coloca en una habitación sin reclamar salvo el propio marcador, y los tests
+/// de mecánica de colocación/demolición no van de territorio: pasan por él como pasaría un jugador
+/// real, reclamando primero. Los `place_id` arrancan en 900_000 para no chocar con los del test.
 fn claim_at(net: &mut NetworkManager, owner: u16, position: [f32; 3]) -> u32 {
     let place_id = 900_000 + net.stp_buildings.len() as u64;
     process_stp_place(
@@ -5830,82 +5854,73 @@ fn placed_pieces(net: &NetworkManager) -> Vec<u32> {
         .collect()
 }
 
+/// LA REGLA, y lo que faltaba: en el mundo abierto no se construye. Antes de la enmienda 5 el
+/// criterio era "zona segura", y el cluster de arranque son 100 × 100 m de zona segura seguidos.
 #[tokio::test]
-async fn stp_place_outside_a_safe_zone_is_rejected() {
-    assert_ne!(
-        crate::world::zone_density::zone_kind_for(42, 2, 2, 0),
-        crate::world::chunk::ZONE_SAFE,
-        "premisa del test: el chunk (2,2) del seed 42 NO es zona segura"
-    );
+async fn stp_place_outside_a_build_room_is_rejected() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let outside = open_world_spot(42);
 
-    process_stp_place(1, 111, OPEN_WORLD_SPOT, 0.0, 0, false, 1, &mut net);
+    process_stp_place(1, CLAIM_MARKER_DEF_ID, outside, 0.0, 0, false, 1, &mut net);
 
     assert!(
         net.stp_buildings.is_empty(),
-        "construir en mundo abierto tiene que rechazarse en el HOST, no solo avisarse en el cliente"
+        "en mundo abierto no se coloca NADA, ni siquiera el marcador"
     );
 }
 
 #[tokio::test]
-async fn stp_place_inside_a_safe_zone_is_accepted() {
-    assert_eq!(
-        crate::world::zone_density::zone_kind_for(42, 0, 0, 0),
-        crate::world::chunk::ZONE_SAFE,
-        "premisa del test: el chunk (0,0) del seed 42 es zona segura"
-    );
+async fn stp_place_inside_a_build_room_is_accepted() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, SAFE_SPOT);
+    let inside = build_room_centre(42);
 
-    process_stp_place(1, 111, SAFE_SPOT, 0.0, 0, false, 1, &mut net);
+    claim_at(&mut net, 1, inside);
+    process_stp_place(1, 111, inside, 0.0, 0, false, 1, &mut net);
+
+    assert_eq!(placed_pieces(&net).len(), 1, "la habitación es construible");
+}
+
+/// La puerta de habitación va ANTES del dedup, y esta es la consecuencia observable: un `place_id`
+/// rechazado no se quema, así que el reintento legítimo en sitio válido con ese mismo id (la
+/// retransmisión fiable existe y es conocida) no desaparece en silencio.
+#[tokio::test]
+async fn a_place_rejected_outside_a_room_does_not_burn_its_place_id() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let outside = open_world_spot(42);
+    let inside = build_room_centre(42);
+
+    process_stp_place(77, CLAIM_MARKER_DEF_ID, outside, 0.0, 0, false, 1, &mut net);
+    assert!(net.stp_buildings.is_empty());
+
+    process_stp_place(77, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 1, &mut net);
 
     assert_eq!(
-        placed_pieces(&net).len(),
+        net.stp_buildings.len(),
         1,
-        "la zona segura reclamada sigue construible"
+        "el place_id rechazado por sitio no puede quedar consumido"
     );
 }
 
-/// La puerta de zona va ANTES del dedup a propósito, y esta es la consecuencia observable: un
-/// `place_id` rechazado por zona no se quema. Si el orden se invirtiera, el jugador que intenta
-/// colocar en mundo abierto gastaría el id, y el reintento legítimo en zona segura con ese mismo id
-/// (la retransmisión fiable existe y es conocida) desaparecería en silencio.
+/// La habitación se resuelve por XZ: la altura no entra. Construir en la vertical de tu propia sala
+/// vale; sobre mundo abierto no, a ninguna altura.
 #[tokio::test]
-async fn a_place_rejected_by_zone_does_not_burn_its_place_id() {
+async fn the_room_gate_ignores_height() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, SAFE_SPOT);
+    let inside = build_room_centre(42);
+    claim_at(&mut net, 1, inside);
 
-    process_stp_place(77, 111, OPEN_WORLD_SPOT, 0.0, 0, false, 1, &mut net);
-    assert!(placed_pieces(&net).is_empty());
+    let high_inside = [inside[0], 12.0, inside[2]];
+    let outside = open_world_spot(42);
+    let high_outside = [outside[0], 12.0, outside[2]];
 
-    process_stp_place(77, 111, SAFE_SPOT, 0.0, 0, false, 1, &mut net);
-
+    process_stp_place(1, 111, high_inside, 0.0, 0, false, 1, &mut net);
     assert_eq!(
         placed_pieces(&net).len(),
         1,
-        "el place_id rechazado por zona no puede quedar consumido"
-    );
-}
-
-/// La zona se resuelve en la CAPA 0 de la columna, no en la capa real de la Y. Documentado en el
-/// ADR y aquí: sobre una sala segura se puede construir a cualquier altura, y sobre mundo abierto no
-/// se puede construir a ninguna. Es lo que mantiene la decisión del host en fase con lo único que el
-/// cliente sabe (`ZoneRegistry` solo guarda la capa 0).
-#[tokio::test]
-async fn the_zone_gate_reads_layer_zero_whatever_the_height() {
-    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, SAFE_SPOT);
-    let high_over_safe = [SAFE_SPOT[0], 12.0, SAFE_SPOT[2]];
-    let high_over_open = [OPEN_WORLD_SPOT[0], 12.0, OPEN_WORLD_SPOT[2]];
-
-    process_stp_place(1, 111, high_over_safe, 0.0, 0, false, 1, &mut net);
-    assert_eq!(
-        placed_pieces(&net).len(),
-        1,
-        "altura sobre zona segura: acepta"
+        "altura dentro de la sala: acepta"
     );
 
-    process_stp_place(2, 111, high_over_open, 0.0, 0, false, 1, &mut net);
+    process_stp_place(2, 111, high_outside, 0.0, 0, false, 1, &mut net);
     assert_eq!(
         placed_pieces(&net).len(),
         1,
@@ -5913,187 +5928,74 @@ async fn the_zone_gate_reads_layer_zero_whatever_the_height() {
     );
 }
 
-// ── ADR-081 fase 3: el claim y su marcador ──────────────────────────────────
-
-/// La regla que hace que NUNCA exista una pieza sin dueño: en zona construible sin reclamar lo
-/// único colocable es el marcador.
+/// En una habitación SIN reclamar lo único colocable es el marcador. Es lo que garantiza que toda
+/// pieza construida tenga dueño y no queden estructuras huérfanas que nadie pueda demoler.
 #[tokio::test]
-async fn only_the_marker_is_placeable_on_unclaimed_ground() {
+async fn only_the_marker_can_be_placed_in_an_unclaimed_room() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let inside = build_room_centre(42);
 
-    process_stp_place(1, 111, SAFE_SPOT, 0.0, 0, false, 1, &mut net);
+    process_stp_place(1, 111, inside, 0.0, 0, false, 1, &mut net);
     assert!(
         net.stp_buildings.is_empty(),
-        "sin claim no se coloca nada que no sea el marcador, ni en zona segura"
+        "sin reclamar no entra una pieza normal"
     );
 
+    process_stp_place(2, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 1, &mut net);
+    assert_eq!(net.stp_buildings.len(), 1, "el marcador sí entra");
+}
+
+/// Un segundo marcador en una habitación ya reclamada se rechaza: si no, cualquiera reclamaría
+/// encima de tu base y el dueño lo decidiría el orden de la lista.
+#[tokio::test]
+async fn a_marker_cannot_be_planted_in_a_claimed_room() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let inside = build_room_centre(42);
+    claim_at(&mut net, 1, inside);
+
+    let elsewhere = [inside[0] + 3.0, inside[1], inside[2] + 3.0];
     process_stp_place(
-        2,
+        1,
         CLAIM_MARKER_DEF_ID,
-        SAFE_SPOT,
+        elsewhere,
         0.0,
         0,
         false,
-        1,
+        2,
         &mut net,
     );
-    assert_eq!(
-        net.stp_buildings.len(),
-        1,
-        "el marcador SÍ se planta en terreno libre — es lo único que abre el territorio"
-    );
-    assert_eq!(
-        net.stp_buildings[0].owner_id, 1,
-        "el marcador guarda a su dueño, que sale de la cabecera del paquete"
-    );
-}
+    assert_eq!(net.stp_buildings.len(), 1, "no se reclama lo ya reclamado");
 
-/// El corazón del anti-griefing: dentro del territorio de otro no construyes.
-#[tokio::test]
-async fn building_inside_another_players_claim_is_rejected() {
-    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, SAFE_SPOT); // el territorio es del jugador 1
-
-    // Jugador 2, a dos metros del marcador ajeno.
-    let inside = [SAFE_SPOT[0] + 2.0, SAFE_SPOT[1], SAFE_SPOT[2]];
-    process_stp_place(1, 111, inside, 0.0, 0, false, 2, &mut net);
-    assert!(
-        placed_pieces(&net).is_empty(),
-        "un jugador no puede construir dentro del claim de otro"
-    );
-
-    // El dueño, en el mismo sitio exacto: sí.
-    process_stp_place(2, 111, inside, 0.0, 0, false, 1, &mut net);
-    assert_eq!(
-        placed_pieces(&net).len(),
-        1,
-        "el dueño sí construye en su propio territorio"
-    );
-}
-
-/// Un segundo marcador dentro de un claim vivo se rechaza: si no, cualquiera reclamaría encima de
-/// tu base y el `find` de `claim_owner_at` decidiría el dueño por orden de lista.
-#[tokio::test]
-async fn a_marker_cannot_be_planted_inside_a_live_claim() {
-    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, SAFE_SPOT);
-
-    // +3 y no +5: SAFE_SPOT cae en x=10 y el bloque de 15 m acaba en x=15, así que +5 aterrizaría
-    // en el bloque de al lado y el test pasaría por el motivo contrario al que mide.
-    let inside = [SAFE_SPOT[0] + 3.0, SAFE_SPOT[1], SAFE_SPOT[2]];
-    assert_eq!(
-        claim_block(inside),
-        claim_block(SAFE_SPOT),
-        "premisa: mismo bloque"
-    );
-    process_stp_place(1, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 2, &mut net);
-
-    assert_eq!(
-        net.stp_buildings.len(),
-        1,
-        "no se puede reclamar encima del territorio de otro"
-    );
-    // Ni siquiera el propio dueño: dos marcadores solapados harían ambiguo el dueño de la zona.
-    process_stp_place(2, CLAIM_MARKER_DEF_ID, inside, 0.0, 0, false, 1, &mut net);
-    assert_eq!(
-        net.stp_buildings.len(),
-        1,
-        "tampoco el dueño duplica su claim"
-    );
-}
-
-/// El claim ES el marcador: no hay tabla aparte que pueda desincronizarse. Retirar el marcador
-/// devuelve el terreno a "sin reclamar", y eso se observa aquí sin mirar ninguna estructura interna.
-#[tokio::test]
-async fn the_claim_dies_with_its_marker() {
-    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let marker_id = claim_at(&mut net, 1, SAFE_SPOT);
-
-    process_stp_demolish(1, marker_id, &mut net);
-    assert!(net.stp_buildings.is_empty());
-
-    // Terreno libre otra vez: una pieza normal vuelve a rechazarse...
-    process_stp_place(1, 111, SAFE_SPOT, 0.0, 0, false, 1, &mut net);
-    assert!(
-        net.stp_buildings.is_empty(),
-        "sin marcador el terreno vuelve a estar sin reclamar"
-    );
-
-    // ...y otro jugador puede reclamarlo.
+    // Ni el propio dueño: dos marcadores en la misma sala harían ambiguo de quién es.
     process_stp_place(
         2,
         CLAIM_MARKER_DEF_ID,
-        SAFE_SPOT,
+        elsewhere,
         0.0,
         0,
         false,
-        9,
+        1,
         &mut net,
     );
     assert_eq!(net.stp_buildings.len(), 1);
-    assert_eq!(
-        net.stp_buildings[0].owner_id, 9,
-        "el terreno cambió de dueño"
-    );
 }
 
-/// El claim es un BLOQUE de la rejilla global (10 × 10 m), no un disco ni una esfera. Se comprueba
-/// dentro del bloque, en el bloque de al lado, y desde muy arriba — que es donde una medida en 3D
-/// daría otra respuesta.
+/// Construir dentro del territorio de otro se rechaza. Es el griefing que ADR-081 existe para cerrar.
 #[tokio::test]
-async fn the_claim_is_a_grid_block_measured_in_xz() {
+async fn building_inside_another_players_claim_is_rejected() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    // Centro del bloque (5,5): x,z ∈ [50, 60). Bien dentro de la zona segura del cluster.
-    claim_at(&mut net, 1, [55.0, 0.0, 55.0]);
+    let inside = build_room_centre(42);
+    claim_at(&mut net, 1, inside);
 
-    let same_block = [59.0, 0.0, 51.0];
-    let next_block = [61.0, 0.0, 55.0]; // bloque (6,5), a 2 m del anterior pero ya es otro
-    let high_above = [55.0, 30.0, 55.0];
-
-    process_stp_place(1, 111, same_block, 0.0, 0, false, 1, &mut net);
-    assert_eq!(placed_pieces(&net).len(), 1, "dentro del bloque: acepta");
-
-    process_stp_place(2, 111, next_block, 0.0, 0, false, 1, &mut net);
-    assert_eq!(
-        placed_pieces(&net).len(),
-        1,
-        "el bloque de al lado ya no es tu territorio, aunque la zona siga siendo construible"
+    let spot = [inside[0] + 2.0, inside[1], inside[2]];
+    process_stp_place(1, 111, spot, 0.0, 0, false, 2, &mut net);
+    assert!(
+        placed_pieces(&net).is_empty(),
+        "un jugador ajeno no construye en tu sala"
     );
 
-    process_stp_place(3, 111, high_above, 0.0, 0, false, 1, &mut net);
-    assert_eq!(
-        placed_pieces(&net).len(),
-        2,
-        "30 m por encima del marcador sigue siendo su bloque: con una medida 3D esto se habría rechazado"
-    );
-}
-
-/// La rejilla es GLOBAL y se parte en `floor`, no truncando hacia cero. Con un cast a entero el
-/// bloque del origen mediría 20 m de lado en vez de 10 y se comería el de sus vecinos al oeste y al
-/// norte — un claim plantado en x=−5 reclamaría también x=+5.
-#[tokio::test]
-async fn claim_blocks_west_and_north_of_the_origin_do_not_swallow_their_neighbour() {
-    assert_eq!(claim_block([1.0, 0.0, 1.0]), (0, 0));
-    assert_eq!(claim_block([9.9, 0.0, 9.9]), (0, 0));
-    assert_eq!(claim_block([10.1, 0.0, 10.1]), (1, 1));
-    assert_eq!(claim_block([-0.1, 0.0, -0.1]), (-1, -1));
-    assert_eq!(claim_block([-9.9, 0.0, -9.9]), (-1, -1));
-    assert_eq!(claim_block([-10.1, 0.0, -10.1]), (-2, -2));
-}
-
-/// La propiedad que hace a 10 m mejor que a 15: el bloque encaja EXACTO en el chunk de 50 m, así que
-/// ninguna casilla queda partida entre dos chunks — que era el coste declarado del tamaño anterior.
-/// Si alguien cambia `CLAIM_BLOCK_M` a un valor que no divide a 50, esto lo dice.
-#[test]
-fn the_claim_block_tiles_the_chunk_exactly() {
-    let blocks_per_chunk = crate::utils::CHUNK_SIZE / CLAIM_BLOCK_M;
-    assert_eq!(
-        blocks_per_chunk.fract(),
-        0.0,
-        "un bloque de {CLAIM_BLOCK_M} m no divide al chunk de {} m: habría claims a caballo de dos chunks",
-        crate::utils::CHUNK_SIZE
-    );
-    assert_eq!(blocks_per_chunk as i32, 5);
+    process_stp_place(2, 111, spot, 0.0, 0, false, 1, &mut net);
+    assert_eq!(placed_pieces(&net).len(), 1, "el dueño sí construye");
 }
 
 // ── ADR-037: stp_demolish ───────────────────────────────────────────────────
@@ -6110,7 +6012,7 @@ fn the_claim_block_tiles_the_chunk_exactly() {
 #[tokio::test]
 async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let position = [10.0, 0.0, 20.0];
+    let position = build_room_centre(42);
     let rotation = 90.0;
     claim_at(&mut net, 1, position);
 
@@ -6146,11 +6048,12 @@ async fn stp_demolish_retires_the_piece_and_frees_its_pose_cell() {
 #[tokio::test]
 async fn stp_demolish_dedupes_under_retransmit() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    // Dos claims: las dos piezas de este test están a 70 m una de otra, más que un radio de claim.
-    claim_at(&mut net, 1, [0.0, 0.0, 0.0]);
-    claim_at(&mut net, 1, [50.0, 0.0, 50.0]);
-    process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, 1, &mut net);
-    process_stp_place(2, 111, [50.0, 0.0, 50.0], 0.0, 0, false, 1, &mut net);
+    // Un solo claim: las dos piezas de este test caben de sobra dentro de la misma sala de 15 m.
+    let room = build_room_centre(42);
+    let other = [room[0] + 4.0, room[1], room[2] + 4.0];
+    claim_at(&mut net, 1, room);
+    process_stp_place(1, 111, room, 0.0, 0, false, 1, &mut net);
+    process_stp_place(2, 111, other, 0.0, 0, false, 1, &mut net);
     let first = placed_pieces(&net)[0];
 
     process_stp_demolish(900, first, &mut net);
@@ -6168,8 +6071,9 @@ async fn stp_demolish_dedupes_under_retransmit() {
 #[tokio::test]
 async fn stp_demolish_of_unknown_building_is_ignored() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    claim_at(&mut net, 1, [0.0, 0.0, 0.0]);
-    process_stp_place(1, 111, [0.0, 0.0, 0.0], 0.0, 0, false, 1, &mut net);
+    let room = build_room_centre(42);
+    claim_at(&mut net, 1, room);
+    process_stp_place(1, 111, room, 0.0, 0, false, 1, &mut net);
 
     // Two clients cancelling the same piece in one window: the loser finds it already gone.
     process_stp_demolish(901, 0xDEAD_BEEF, &mut net);
@@ -6187,7 +6091,7 @@ async fn stp_demolish_of_unknown_building_is_ignored() {
 #[tokio::test]
 async fn stp_demolish_of_a_standalone_piece_leaves_pose_cells_alone() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let position = [30.0, 0.0, 30.0];
+    let position = build_room_centre(42);
     claim_at(&mut net, 1, position);
 
     process_stp_place(1, 111, position, 0.0, 0, true, 1, &mut net); // group piece: claims the cell
@@ -6214,7 +6118,7 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
     let (tx, _rx) = broadcast::channel(16);
     let mut processed: HashSet<(u16, u64)> = HashSet::new();
 
-    let bed_position = [12.0, 0.0, 34.0];
+    let bed_position = build_room_centre(42);
     claim_at(&mut net, 1, bed_position);
     process_stp_place(1, BED_DEF_ID, bed_position, 0.0, 0, false, 1, &mut net);
     let bed_id = placed_pieces(&net)[0];
@@ -6252,8 +6156,8 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
     let (tx, _rx) = broadcast::channel(16);
     let mut processed: HashSet<(u16, u64)> = HashSet::new();
 
-    let live_bed = [12.0, 0.0, 34.0];
-    let doomed_bed = [80.0, 0.0, 90.0];
+    let live_bed = build_room_centre(42);
+    let doomed_bed = [live_bed[0] + 4.0, live_bed[1], live_bed[2] + 4.0];
     claim_at(&mut net, 1, doomed_bed);
     process_stp_place(1, BED_DEF_ID, doomed_bed, 0.0, 0, false, 1, &mut net);
     let doomed_id = placed_pieces(&net)[0];

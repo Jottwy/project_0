@@ -46,7 +46,7 @@ use crate::world::architecture::layout_grammars::{
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
     TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
     TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
-    TEMPLATE_ROOM_BASIC, TEMPLATE_SAFE_ROOM, TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
 };
 
 pub use crate::world::levels::level_0::structure::StructureV0;
@@ -87,16 +87,11 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // punctuated by occasional halls, column rooms and strange lighting zones.
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=31 => TEMPLATE_HALLWAY_STRAIGHT,
-        // ADR-081 pieza 2 — SAFE_ROOM: la ÚNICA zona construible del juego, y hasta ahora solo
-        // existía en el conjunto finito de estructuras iniciales. Sin esta banda, "zona
-        // construible" significaba un puñado de salas junto al spawn y nada más en todo el
-        // mundo infinito. Banda tallada a HALLWAY_STRAIGHT (era 0..=34) por el mismo criterio
-        // con el que entró OFFICE: el brazo más ancho es el que puede ceder sin borrar carácter.
-        // 3 % = la banda de STORAGE_ROOM, escasa a propósito (una base es un hallazgo, no un
-        // trámite). Sin gate de `depth`: el cluster de arranque ya es ZONE_SAFE, así que una sala
-        // segura cerca no rompe nada, y lejos es justo lo que hace habitable la exploración.
-        32..=34 => TEMPLATE_SAFE_ROOM,
+        // ADR-081 enmienda 5 REVIRTIÓ la banda 32..=34 de TEMPLATE_SAFE_ROOM que la pieza 2 metió
+        // aquí. Existía solo para que hubiera `ZONE_SAFE` en el mundo infinito cuando "zona segura"
+        // era el criterio de construcción; desde que lo construible son las habitaciones talladas
+        // (`grid_gen::build_rooms`) no compra nada, y era un cambio de worldgen que nadie pidió.
+        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
         // OFFICE — banda tallada a HALLWAY_STRAIGHT (era 0..=38), el brazo más ancho del
         // sorteo, para que el 4% salga del pasillo genérico y no de un template que ya
         // aportaba carácter propio. Sin gate de `depth`: una planta de oficinas cerca de
@@ -151,6 +146,14 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // (structure_zone_kind's `_ => template_zone_kind(...)` arm) so zone_kind
     // reflects this chunk's actual template instead of staying ZONE_NORMAL.
     layout.zone_kind = template_zone_kind(template_id);
+
+    // ADR-081 enmienda 5: la habitacion construible tambien se talla en el layout de COLISION, con
+    // el mismo `RoomPlan` que ya talló la rejilla fina de `grid_gen`. Tallar solo aquella daría
+    // paredes que se ven y se atraviesan; tallar solo esta, paredes invisibles que frenan.
+    if let Some(plan) = crate::world::grid_gen::room_in_chunk(world_seed, pos.0, pos.1, layer as u8)
+    {
+        crate::world::build_room_layout::carve_into_layout(&mut layout, &plan);
+    }
 
     let mut chunk = Chunk {
         pos,

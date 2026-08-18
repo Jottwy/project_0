@@ -1523,7 +1523,13 @@ fn grid_fingerprint(grid: &LayerGrid) -> u64 {
 /// que no sea una de estas 4 excepciones documentadas (11 entradas en
 /// total: 4 de #1, 1 de #2, 4 de #3, 2 de #4).
 const PHASE1_GOLDENS: [((i32, u64), u64); 16] = [
-    ((0, 3133931653), 0x5F9BD9144AA0AABB),
+    // EXCEPCIÓN #5 (ADR-081 enmienda 5, 2026-08-18): esta huella cambió A PROPÓSITO. El chunk de
+    // prueba de esta seed aloja una HABITACIÓN CONSTRUIBLE en la capa 0, y el tallado la reescribe
+    // — es el cambio pedido ("cárgate lo que aparezca ahí"), no una deriva. Solo derivó ESTA de las
+    // 16: las habitaciones son 5 % de los chunks y solo en capa 0, así que las otras 15 huellas
+    // siguen clavadas y el test conserva todo su valor como red de seguridad.
+    // Consecuencia declarada: el mundo de una seed ya jugada cambia en los chunks con habitación.
+    ((0, 3133931653), 0x867209D37F198232),
     ((0, 1), 0x73D5E0C79F6BD617),
     ((0, 42), 0x5A0CE53A141D4C6E),
     ((0, 7778), 0x0BA91250637AD619),

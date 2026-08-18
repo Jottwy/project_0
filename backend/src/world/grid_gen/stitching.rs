@@ -43,6 +43,29 @@ pub fn generate_chunk_layer(
 ) -> LayerOutput {
     let mut out = generate_layer(rules, world_seed, chunk_coord, layer_index, forced_walkable);
     stitch_edges(&mut out.grid, rules, world_seed, chunk_coord, layer_index);
+
+    // ADR-081 enmienda 5: la habitacion construible se talla AQUI, en el generador compartido, y no
+    // en cada consumidor. Render (`chunk_tile_walls`) y colision del robapieles
+    // (`GridGenChunkCache`) salen los dos de esta funcion, asi que tallarla una vez es lo unico que
+    // garantiza que vean la MISMA habitacion. Va detras del cosido a proposito — ver `carve_into_grid`.
+    if layer_index >= 0 && layer_index <= u8::MAX as i32 {
+        if let Some(plan) = super::build_rooms::room_in_chunk(
+            world_seed,
+            chunk_coord.0,
+            chunk_coord.1,
+            layer_index as u8,
+        ) {
+            let carved =
+                super::build_rooms::carve_into_grid(&mut out.grid, &plan, rules.ceiling_open);
+            // Segunda pasada de reparacion, obligatoria: el anillo de la habitacion puede haber
+            // dejado un trozo del laberinto incomunicado, y sin esto el chunk sale con zonas
+            // inalcanzables (es lo que rompio cinco tests de conectividad al primer intento). El
+            // anillo es SealedWall, asi que esta pasada no puede perforarlo; `carved` protege el
+            // interior y el tunel de la puerta de acabar sellados si el bolsillo fuera irreparable.
+            repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
+        }
+    }
+
     out
 }
 

@@ -33,7 +33,7 @@ use crate::world::architecture::layout_grammars::{
     TEMPLATE_HALLWAY_CORNER, TEMPLATE_HALLWAY_STRAIGHT, TEMPLATE_HALLWAY_T, TEMPLATE_HUMID_ZONE,
     TEMPLATE_INTERSECTION, TEMPLATE_MANILA_ROOM, TEMPLATE_OFFICE, TEMPLATE_OPEN_HALL,
     TEMPLATE_PILLAR_ROOM, TEMPLATE_PIT_ROOM_PLACEHOLDER, TEMPLATE_RED_ROOM_WARNING,
-    TEMPLATE_ROOM_BASIC, TEMPLATE_SAFE_ROOM, TEMPLATE_STORAGE_ROOM,
+    TEMPLATE_ROOM_BASIC, TEMPLATE_STORAGE_ROOM,
 };
 use crate::world::chunk::{ChunkLayer, ZONE_OFFICE, ZONE_PILLAR_HALL};
 use crate::world::generator::{generate_initial_structures, structure_zone_kind};
@@ -119,9 +119,8 @@ fn expansion_template_id(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> u
     let mut rng = StdRng::seed_from_u64(seed);
     let depth = (pos.0.abs() + pos.1.abs()) as u32;
     let template_id = match rng.gen_range(0..100u32) {
-        0..=31 => TEMPLATE_HALLWAY_STRAIGHT,
-        32..=34 => TEMPLATE_SAFE_ROOM, // ADR-081 pieza 2 — ver el original, en `world::generator`
-        35..=38 => TEMPLATE_OFFICE,    // ver el comentario del original, en `world::generator`
+        0..=34 => TEMPLATE_HALLWAY_STRAIGHT,
+        35..=38 => TEMPLATE_OFFICE, // ver el comentario del original, en `world::generator`
         39..=51 => TEMPLATE_HALLWAY_CORNER,
         52..=61 => TEMPLATE_HALLWAY_T,
         62..=70 => TEMPLATE_INTERSECTION,
@@ -822,132 +821,46 @@ mod tests {
         );
     }
 
-    /// ADR-081 pieza 2 — LA PRUEBA DE QUE LA FUNCIÓN EXISTE EN EL MUNDO INFINITO.
+    /// SONDA DE COORDENADAS, no test (`#[ignore]`). Lista las HABITACIONES CONSTRUIBLES más cercanas
+    /// al origen, con el centro de cada una.
     ///
-    /// Antes de este ADR, `ZONE_SAFE` solo salía del conjunto FINITO de estructuras iniciales, así
-    /// que la única zona construible del juego era un puñado de salas junto al spawn. Este test
-    /// exige zonas seguras LEJOS del origen y fuera de toda estructura inicial: si alguien retira la
-    /// banda 32..=34 del sorteo (o la retira solo de uno de los dos espejos), el mundo se queda otra
-    /// vez sin sitio donde construir y esto se pone rojo diciendo exactamente eso.
-    #[test]
-    fn safe_rooms_are_reachable_out_in_the_infinite_world() {
-        use crate::world::chunk::ZONE_SAFE;
-
-        for seed in SEEDS {
-            let structure_keys: std::collections::HashSet<_> =
-                generate_initial_structure_chunks(seed)
-                    .iter()
-                    .map(|(_, c)| (c.pos.0, c.pos.1, c.layer))
-                    .collect();
-
-            let mut hits = 0usize;
-            // Barrido deliberadamente LEJANO (|cx|,|cz| ≥ 20): a esa distancia no queda ninguna
-            // estructura inicial, así que todo acierto viene del sorteo de expansión y solo de él.
-            for cx in 20..=60 {
-                for cz in 20..=60 {
-                    if structure_keys.contains(&(cx, cz, 0)) {
-                        continue;
-                    }
-                    if zone_kind_for(seed, cx, cz, 0) == ZONE_SAFE {
-                        hits += 1;
-                    }
-                }
-            }
-
-            assert!(
-                hits > 0,
-                "seed {seed}: ni una zona segura en 41x41 chunks de expansión — el mundo infinito \
-                 no tiene dónde construir"
-            );
-        }
-    }
-
-    /// SONDA DE DENSIDAD, no test (`#[ignore]`, patrón de `docs/systems/perf-baseline.md`).
+    /// Existe porque "el chunk (5,2) tiene habitación" no sirve para ir andando. El centro de la
+    /// habitación SÍ es seguro por construcción: el tallado deja sus 3 × 3 tiles huecos, así que a
+    /// diferencia del centro de un chunk cualquiera no puede caer dentro de una pared.
     ///
-    /// El 3 % de ADR-081 es la banda del sorteo, no la densidad OBSERVADA: las estructuras iniciales
-    /// pisan zonas cerca del origen y los umbrales de `depth` mueven el reparto. Se mide en vez de
-    /// estimarse porque la enmienda S1 de ADR-068 ya falló 2,6× calculando a ojo justo esto.
-    ///
-    /// `cargo test measure_safe_zone_density -- --ignored --nocapture`
+    /// `WORLD_SEED=<n> cargo test list_buildable_rooms -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn measure_safe_zone_density() {
-        use crate::world::chunk::ZONE_SAFE;
-
-        for seed in SEEDS {
-            let mut safe = 0usize;
-            let mut total = 0usize;
-            for cx in -50..=50 {
-                for cz in -50..=50 {
-                    total += 1;
-                    if zone_kind_for(seed, cx, cz, 0) == ZONE_SAFE {
-                        safe += 1;
-                    }
-                }
-            }
-            let pct = 100.0 * safe as f64 / total as f64;
-            // Un chunk son 50 m: la media entre salas es la raíz del área por sala.
-            let spacing_m = (2500.0 * total as f64 / safe.max(1) as f64).sqrt();
-            println!(
-                "MEASURED seed={seed} safe_chunks={safe}/{total} ({pct:.2}%) spacing≈{spacing_m:.0} m"
-            );
-        }
-    }
-
-    /// SONDA DE COORDENADAS, no test (`#[ignore]`). Lista las zonas construibles más cercanas al
-    /// origen con una posición CAMINABLE de verdad en cada una.
-    ///
-    /// Existe porque "el chunk (2,3) es construible" no sirve para ir andando, y el centro
-    /// geométrico de un chunk cae dentro de una pared más veces de las que uno esperaría — es la
-    /// misma trampa que se comió tres iteraciones de la sonda de línea de visión de ADR-080. Por eso
-    /// cada punto pasa por `resolve_spawn_near`, el mismo resolutor que ajusta un spawn (ADR-018).
-    ///
-    /// `WORLD_SEED=<n> cargo test list_buildable_zones -- --ignored --nocapture`
-    #[test]
-    #[ignore]
-    fn list_buildable_zones() {
-        use crate::world::chunk::ZONE_SAFE;
-        use crate::world::grid_gen::{grid_floor_y, resolve_spawn_near};
+    fn list_buildable_rooms() {
+        use crate::world::grid_gen::{room_in_chunk, CELL_SIZE_M, CHUNK_CELLS, ROOM_SIZE_M};
 
         let seed: u64 = std::env::var("WORLD_SEED")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(42);
 
-        // Ordenadas por distancia al origen, que es donde aparece el jugador: lo que quiere saber
-        // es cuál le pilla más cerca, no cuáles existen.
-        let mut found: Vec<(f32, i32, i32, [f32; 3])> = Vec::new();
+        let chunk_size = CHUNK_CELLS as f32 * CELL_SIZE_M;
+        let mut found: Vec<(f32, i32, i32, f32, f32)> = Vec::new();
         for cx in -12..=12 {
             for cz in -12..=12 {
-                if zone_kind_for(seed, cx, cz, 0) != ZONE_SAFE {
+                let Some(plan) = room_in_chunk(seed, cx, cz, 0) else {
                     continue;
-                }
-
-                let centre = [
-                    (cx as f32 + 0.5) * 50.0,
-                    grid_floor_y(0),
-                    (cz as f32 + 0.5) * 50.0,
-                ];
-                let spot = resolve_spawn_near(seed, centre, rules_for);
-                found.push(((spot[0] * spot[0] + spot[2] * spot[2]).sqrt(), cx, cz, spot));
+                };
+                let (x0, z0) = plan.cell_origin();
+                let cxm = cx as f32 * chunk_size + x0 as f32 * CELL_SIZE_M + ROOM_SIZE_M * 0.5;
+                let czm = cz as f32 * chunk_size + z0 as f32 * CELL_SIZE_M + ROOM_SIZE_M * 0.5;
+                found.push(((cxm * cxm + czm * czm).sqrt(), cx, cz, cxm, czm));
             }
         }
         found.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
 
         println!(
-            "BUILDABLE seed={seed} zones={} (radio de 12 chunks)",
+            "BUILDROOM seed={seed} rooms={} (radio de 12 chunks)",
             found.len()
         );
-        for (dist, cx, cz, spot) in &found {
+        for (dist, cx, cz, x, z) in &found {
             println!(
-                "BUILDABLE chunk=({cx},{cz}) x=[{:.0},{:.0}] z=[{:.0},{:.0}] walkable=({:.1}, {:.1}, {:.1}) dist={dist:.0}m",
-                *cx as f32 * 50.0,
-                (*cx as f32 + 1.0) * 50.0,
-                *cz as f32 * 50.0,
-                (*cz as f32 + 1.0) * 50.0,
-                spot[0],
-                spot[1],
-                spot[2]
+                "BUILDROOM chunk=({cx},{cz}) centro=({x:.1}, 0.0, {z:.1}) lado={ROOM_SIZE_M:.0}m dist={dist:.0}m"
             );
         }
     }

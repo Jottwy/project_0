@@ -4901,27 +4901,8 @@ fn stp_pose_cell(position: [f32; 3], rotation: f32) -> (i32, i32, i32, i32) {
     )
 }
 
-/// ADR-081 pieza 1: ¿es construible el suelo bajo `position`? La zona construible del mundo es
-/// `ZONE_SAFE` y nada más.
-///
-/// La zona se resuelve SIEMPRE en la **capa 0** de la columna, no en la capa real del jugador. No es
-/// un descuido: el cliente solo conoce el `zone_kind` de la capa 0 (`ZoneRegistry.Refresh` descarta
-/// `layer != 0` a propósito, tras el bug que keyeaba cada columna por su capa MÁS ALTA), así que
-/// resolver aquí por la capa real haría que el aviso del cliente y la decisión del host discrepasen
-/// justo en el sitio al que el jugador está mirando. Consecuencia aceptada y escrita en el ADR:
-/// construir en una capa superior sobre una sala segura también está permitido.
-///
-/// `zone_kind_for` es el resolutor PURO por seed de ADR-033 (memoizado por seed, sin leer el mundo
-/// vivo), así que esta comprobación da el mismo resultado en todo peer y en cualquier momento —
-/// incluido antes de que el chunk se haya cargado nunca.
-fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
-    let (cx, cz) = crate::utils::world_to_chunk(Vec3::from_array(position));
-    crate::world::zone_density::zone_kind_for(world_seed, cx, cz, 0)
-        == crate::world::chunk::ZONE_SAFE
-}
-
-/// ADR-081 pieza 3: la definición del marcador de territorio (`BR_Claim Marker.asset`, autorado por
-/// "Backrooms ▸ Create Building Pieces"). Colocarlo en zona segura sin reclamar acuña el claim.
+/// ADR-081 pieza 3 — el `def_id` de la pieza MARCADOR (`BR_Claim Marker.asset`), la única
+/// colocable en una habitación construible sin reclamar y la que acuña el claim.
 ///
 /// Hardcodeado igual que `BED_DEF_ID` de ADR-031, y con la misma deuda: TODO(config), a una
 /// superficie de configuración cuando exista. **Si alguien regenera esa definición, mintará un id
@@ -4929,65 +4910,55 @@ fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
 /// reclamar nada. El propio menú lo avisa y se niega a regenerar el asset si ya existe.
 const CLAIM_MARKER_DEF_ID: i32 = -1977919096;
 
-/// Lado del bloque que un marcador reclama, en metros: 2 × 2 tiles de 5 m.
+/// Identidad del claim que cubre `position`.
 ///
-/// Enmienda 4 a ADR-081. El radio de 25 m original daba ~1.960 m² por claim y el cluster de arranque
-/// son 10.000 m² seguidos — un solar, no un habitáculo. La enmienda 3 lo bajó a 15 m y esta a 10.
+/// Enmienda 5 a ADR-081: **la HABITACIÓN es el claim**. Se acabó la rejilla de bloques de 10 m de la
+/// enmienda 4 — reclamar una casilla abstracta encima de una sala existente dejó de tener sentido en
+/// cuanto la sala pasó a estar tallada a propósito. Y como `grid_gen::build_rooms` pone como mucho
+/// UNA habitación por chunk, la coordenada de chunk basta para identificarla: dos posiciones caen en
+/// el mismo claim si y solo si están en el mismo chunk.
 ///
-/// **10 m es el único tamaño que además arregla un defecto**: divide EXACTO los 50 m del chunk, así
-/// que ningún bloque queda a caballo de dos chunks (que era el coste declarado de los 15 m) y salen
-/// 25 casillas limpias por sala. Y sigue encajando con la unidad de construcción: un lado son
-/// exactamente 2 de las paredes de 5 m que existen, 8 para cerrar el recinto entero.
+/// La Y no entra, igual que antes: medirlo en 3D dejaría construir libremente en la capa de arriba
+/// de tu propio territorio.
 ///
-/// TODO(balance): nunca jugado.
-const CLAIM_BLOCK_M: f32 = 10.0;
-
-/// Bloque de la rejilla global de claims que contiene `position`.
-///
-/// REJILLA FIJA, no un cuadrado centrado en el marcador: los bordes son los mismos para todos, dos
-/// claims no pueden solaparse por construcción (no por una comprobación que alguien pueda romper) y
-/// el jugador puede predecir dónde acaba su terreno sin medirlo.
-///
-/// `floor` y no un cast a entero: truncar hacia cero mandaría todo el intervalo (−15, 15) al mismo
-/// bloque, o sea que el bloque del origen sería del doble de ancho en las dos direcciones y los
-/// claims al oeste/norte del spawn pisarían el de al lado.
-///
-/// Con 10 m el bloque divide exacto el chunk de 50 m, así que ninguna casilla queda partida entre
-/// dos chunks. NO se apoya código en esa propiedad: la puerta de ZONA se resuelve por posición y la
-/// de PROPIEDAD por bloque, y son independientes — si `CLAIM_BLOCK_M` volviera a un valor que no
-/// divide a 50, la mitad del bloque que cayera fuera de la zona construible simplemente seguiría sin
-/// poder edificarse. Los lados que dividen son 5, 10 y 25.
-fn claim_block(position: [f32; 3]) -> (i32, i32) {
-    (
-        (position[0] / CLAIM_BLOCK_M).floor() as i32,
-        (position[2] / CLAIM_BLOCK_M).floor() as i32,
-    )
+/// Esto NO comprueba que la posición esté DENTRO de la habitación — de eso se encarga
+/// `position_is_buildable`, que corre siempre antes. Aquí solo se responde "¿de quién es este sitio?".
+fn claim_key(position: [f32; 3]) -> ChunkPos {
+    world_to_chunk(Vec3::from_array(position))
 }
 
-/// Dueño del claim que cubre `position`, si hay alguno.
+/// Dueño del claim que cubre `position`, o `None` si nadie ha plantado marcador ahí.
 ///
-/// NO HAY TABLA DE CLAIMS: un claim ES un marcador plantado. Derivarlo en vez de almacenarlo es lo
-/// que hace que se persista (`stp_buildings` ya se guarda), se replique (el roster ya viaja) y se
-/// retire con su marcador (`process_stp_demolish` ya lo saca de la lista) sin una línea dedicada, y
-/// lo que garantiza que no puedan desincronizarse.
+/// Derivado de la lista de marcadores plantados y no de una tabla aparte: así el claim se persiste,
+/// se replica y se retira con su marcador sin una sola línea de código dedicada.
 ///
-/// Se compara el BLOQUE, no la distancia: un claim es una casilla de una rejilla de suelo. Por eso
-/// la Y no entra — medirlo en 3D dejaría construir libremente en la capa de arriba de tu propio
-/// territorio, que es justo lo que la puerta de zona (resuelta en la capa 0) ya decidió que NO es
-/// una excepción.
-///
-/// Solapes: imposibles por construcción desde que el claim es una casilla de rejilla. Dos
-/// marcadores en el mismo bloque tampoco, porque la regla de colocación rechaza el segundo.
+/// Solapes: imposibles por construcción — un claim es una habitación, hay como mucho una por chunk,
+/// y la regla de colocación rechaza un segundo marcador en una ya reclamada.
 fn claim_owner_at(
     buildings: &[crate::network::protocol::StpBuildingInfo],
     position: [f32; 3],
 ) -> Option<u16> {
-    let block = claim_block(position);
+    let key = claim_key(position);
     buildings
         .iter()
         .filter(|b| b.def_id == CLAIM_MARKER_DEF_ID)
-        .find(|b| claim_block(b.position) == block)
+        .find(|b| claim_key(b.position) == key)
         .map(|b| b.owner_id)
+}
+
+/// ADR-081 enmienda 5: ¿es construible el suelo bajo `position`?
+///
+/// La respuesta ya NO es "está en una zona segura". Es "está dentro de una HABITACIÓN CONSTRUIBLE",
+/// las de 3 × 3 tiles que `grid_gen::build_rooms` talla en el mundo. En el resto del mundo —zona
+/// segura incluida— no se construye, que es exactamente lo que faltaba: con el criterio anterior el
+/// cluster de arranque eran 100 × 100 m edificables de una pieza.
+///
+/// `position_in_build_room` es puro por seed (memoizable, sin leer el mundo vivo), así que da el
+/// mismo resultado en todo peer y en cualquier momento — incluido antes de que el chunk se haya
+/// generado nunca. Y es LA MISMA función que decide dónde se talla la habitación, así que la regla
+/// no puede desalinearse de la geometría: si se mueve una, se mueve la otra.
+fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
+    crate::world::grid_gen::position_in_build_room(world_seed, position[0], position[2])
 }
 
 /// Phase B1: host adds a placed STP building piece to the authoritative `stp_buildings`

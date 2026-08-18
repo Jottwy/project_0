@@ -1,6 +1,7 @@
 //! World domain: chunks, procedural generation, entities.
 
 pub mod architecture;
+pub mod build_room_layout;
 pub mod chunk;
 pub mod collision;
 pub mod corpse;
