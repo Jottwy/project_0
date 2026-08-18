@@ -13,17 +13,30 @@
 > **68 ítems: 27 de código muerto + 41 bugs reales** (6 Muy grave, 13 Grave, 9 Medio, 8 Leve, 5 Muy
 > leve). Cada ítem lleva nota 1-10, el porqué de esa nota, y un plan de arreglo.
 >
-> **Actualizado 2026-08-18 (mismo día):** dos pasadas de implementación sobre Código muerto.
-> **17 ítems ✅ RESUELTOS + 1 🟡 PARCIAL** en tres commits — Rust `0da821ca` (7 ficheros, −91/+1
-> líneas), C# `91c9f62a` (12 ficheros, −123 líneas) y C# `1c7840e0` (1 fichero, −16 líneas).
-> `cargo build`+`cargo test` verdes; `CompileCheckClient.sh` 0 errores en las 4 asambleas. **2
-> hallazgos corregidos al verificar antes de tocar** (`Chunk3DLayout` ❌ resultó tener uso real —
-> no se tocó; `BoundedDedupeSet` 🟡 solo `retain` era muerto de verdad, `contains`/`is_empty`
-> restaurados). **3 ítems 🔒 CONSERVADOS a propósito** (`RoomSpawner`, `RemoteVoicePlayer.SetMuted`,
-> `HostEndpointConfig`) — los tres tienen diseño documentado con motivo propio (ADR-005, ADR-045,
-> o su propio comentario de clase), no cruft sin explicación: borrarlos tiraría una feature
-> completa, no limpiaría un resto confuso. **1 pendiente** (`PacketType`) por tocar protocolo y
-> pedir ADR. El resto de categorías (Muy leve → Muy grave) sigue sin tocar.
+> **Actualizado 2026-08-18 (mismo día):** tres pasadas de implementación — Código muerto, luego Muy
+> leve + Leve, con la misma regla en las tres: **nunca tocar nada cuyo comportamiento cambie para
+> un caller/escenario que se ejerza HOY** — solo bordes inalcanzables, guardas sobre estados que no
+> ocurren, o cosas puramente aditivas (tests, comentarios).
+>
+> **Código muerto: 17 ✅ + 1 🟡** en tres commits (`0da821ca` Rust, `91c9f62a` + `1c7840e0` C#). 2
+> hallazgos corregidos al reverificar antes de tocar (`Chunk3DLayout` ❌ tenía uso real; de
+> `BoundedDedupeSet` solo `retain` 🟡 estaba muerto de verdad). 3 🔒 conservados a propósito
+> (`RoomSpawner`, `RemoteVoicePlayer.SetMuted`, `HostEndpointConfig` — diseño documentado con
+> motivo propio, ADR-005/ADR-045/comentario de clase, no cruft). 1 pendiente de ADR (`PacketType`).
+>
+> **Muy leve: 5/5 ✅** en un commit Rust (`40493fcd`) + parte del commit C# de abajo — los cinco
+> confirmados cero-impacto para todo input/caller conocido hoy antes de tocar.
+>
+> **Leve: 4/8 ✅**, commits `40493fcd` (Rust: test nuevo) y `dbab66e9` (C#: 3 fixes). **4 diferidos**
+> (⏸️, no por indecisión): cambian comportamiento observable en un camino que SÍ se ejerce en juego
+> normal hoy — throttle de build de chunk, orden de paquetes de spray, conteo de fantasmas en el
+> roster gate, y el crecimiento de `BuildRoomRegistry` (que depende del fix de reconexión, sección
+> Grave, sin acción propia). Se tratan con el mismo rigor que Medio/Grave, no como limpieza
+> automática.
+>
+> `cargo build`+`cargo test` verdes (801 passed, mismos 9 fallos preexistentes de un WIP ajeno sin
+> commitear); `CompileCheckClient.sh` 0 errores en las 4 asambleas, verificado tras cada tanda.
+> El resto de categorías (Medio → Muy grave) sigue sin tocar.
 
 ## Índice por categoría
 
@@ -284,11 +297,12 @@ futuro, reabrir como tarea nueva con un consumidor explícito.
 
 ## 2. Muy leve
 
-5 ítems, nota 1-2. Bugs reales pero de impacto casi nulo hoy — bordes teóricos, probabilidad
-ínfima, o ya mitigados por otro mecanismo. Buen calentamiento tras el código muerto: arreglos de
-una línea, cero riesgo.
+5 ítems, nota 1-2 — **5/5 ✅ RESUELTOS** (commit `40493fcd` Rust + parte de `dbab66e9` C#). Bugs
+reales pero de impacto casi nulo hoy — bordes teóricos, probabilidad ínfima, o ya mitigados por
+otro mecanismo — confirmados cero-impacto en todo caller conocido antes de tocar.
 
 ### [1] Nombres reservados de Windows (CON/NUL/COM1) — **REFUTADO, sin bug real**
+**Estado:** ✅ RESUELTO — commit `40493fcd` (comentario documentando la refutación, sin cambio de código)
 **Ubicación:** `backend/src/persistence/mod.rs:14-38`, `player_save.rs:128-133`
 **Por qué:** Investigado y refutado empíricamente en la máquina real de desarrollo: escribir/
 renombrar/releer `CON.json`/`NUL.json`/`COM1.json` no produjo ningún error. Windows solo
@@ -298,6 +312,7 @@ intercepta el nombre BASE sin extensión, y el código siempre añade `.json`.
 que un audit futuro no la reabra sin motivo.
 
 ### [2] Nombre de `.tmp` sin sufijo de PID (riesgo latente, hoy mitigado)
+**Estado:** ✅ RESUELTO — commit `40493fcd`
 **Ubicación:** `backend/src/persistence/save.rs:196-198`, `player_save.rs:45-47`
 **Por qué:** Dos `save_to` concurrentes sobre el mismo path se pisarían el `.tmp` — pero esa
 concurrencia ya está serializada por el lock exclusivo de `persistence/lock.rs`, así que no es
@@ -307,6 +322,7 @@ una sonda existente) reintroduce el riesgo.
 dos sitios, mismo idiom que `lock.rs` ya usa para su propio PID. Cambio de una línea por sitio.
 
 ### [2] `layoutGridSize` sin techo permite overflow teórico en `SplitPackedLayout`
+**Estado:** ✅ RESUELTO — commit `dbab66e9`
 **Ubicación:** `Assets/Scripts/Network/IPCMessages.ChunkView.cs:105` (usado en 169, 222, 234, 246)
 **Por qué:** Solo `Mathf.Max(1, ...)` por abajo, sin techo. Con `g` grande, `cellCount=g*g`
 desborda `int32`. No explotable hoy: el backend Rust es el único emisor y es de confianza en el
@@ -316,6 +332,7 @@ despliegue actual.
 los 4 usos posteriores.
 
 ### [2] `take_damage` sin `.clamp` superior (solo `.max(0.0)`)
+**Estado:** ✅ RESUELTO — commit `40493fcd`
 **Ubicación:** `backend/src/player/stats.rs:113-115`
 **Por qué:** Invariante 0..100 no protegido dentro de la función, rompiendo la simetría con
 `restore_*`/`use_stamina` (todos `.clamp(0.0,100.0)`). Los 3 llamadores conocidos ya fuerzan
@@ -326,6 +343,7 @@ Una palabra. Cero riesgo de romper los 3 llamadores actuales. De paso corregir e
 `restore_health` ("mirrors take_damage"), que dejará de ser falso.
 
 ### [2] `next_sequence()` puede emitir `sequence==0`, ese paquete nunca se ACKea
+**Estado:** ✅ RESUELTO — commit `40493fcd`
 **Ubicación:** `backend/src/network/mod.rs:506-509`; guarda relacionada en `handlers.rs:23`
 **Por qué:** `wrapping_add(1)` de `u32::MAX` da 0, y `handlers.rs:23` trata `sequence==0` como "no
 ACKear". Requiere ~4.29×10⁹ envíos fiables acumulados — ninguna sesión del proyecto se acerca. En
@@ -337,10 +355,16 @@ más si el wrap aterriza en 0). `sequence` sigue siendo `u32`, sin cambio de wir
 
 ## 3. Leve
 
-8 ítems, nota 3-4. Reales pero de bajo impacto, difíciles de notar en juego normal, o exigen una
-secuencia de eventos poco común.
+8 ítems, nota 3-4 — **4/8 ✅ RESUELTOS** (commits `40493fcd`/`dbab66e9`), **4 ⏸️ DIFERIDOS** a
+propósito: cambian comportamiento observable en un camino que sí se ejerce en juego normal hoy
+(no un edge case inalcanzable), así que se tratan con el mismo rigor que Medio/Grave en vez de
+como limpieza automática — ver el porqué en cada entrada.
 
 ### [3] Falta test que cruce `carve_into_layout` contra `carve_into_grid`/`carve_door`
+**Estado:** ✅ RESUELTO — commit `40493fcd`. Verde hoy sobre 4 seeds × 1600 chunks (~1280 salas): el
+fallback de `carve_into_grid` no tuvo que activarse en esa muestra, así que la divergencia sigue sin
+observarse en juego — pero el hueco de diseño del hallazgo Grave sigue ahí, este test solo lo
+atraparía si algún día una seed/chunk sí fuerza el fallback.
 **Ubicación:** `backend/src/world/build_room_layout.rs:88-217`, `grid_gen/build_rooms.rs:241+`
 **Por qué:** Brecha de cobertura, no un bug ejecutable por sí sola — pero es la causa directa de
 que el desync de la puerta de sala construible (ver sección Grave) lleve sin detectarse desde
@@ -352,6 +376,7 @@ la arista `EDGE_KIND_DOOR` del `ChunkLayoutV1` corresponde al MISMO lado. Inclui
 que fuerce el fallback a propósito.
 
 ### [3] Reentrada rompe el `foreach` en `NotifyXListeners` de `IPCClient`
+**Estado:** ✅ RESUELTO — commit `dbab66e9`
 **Ubicación:** `Assets/Scripts/Network/IPCClient.cs:180-227` (los 6 métodos `NotifyXListeners`)
 **Por qué:** El lock de C# es reentrante en el mismo hilo; un handler que se auto-desuscribe
 dentro de su propio callback muta la lista mientras el `foreach` la recorre, y el
@@ -363,6 +388,8 @@ array. Cambio mecánico repetido 6 veces (no introducir un helper genérico — 
 distintas, y CLAUDE.md prohíbe abstracciones no pedidas para deuda de este tamaño).
 
 ### [3] `BuildRoomRegistry` crece sin poda durante toda la sesión
+**Estado:** ⏸️ Sin acción propia — no hay nada que hacer aquí hasta que se implemente el fix de
+"no se limpia al reconectar" (sección Grave): ese fix acota el crecimiento como efecto colateral.
 **Ubicación:** `Assets/Scripts/Gameplay/BuildRoomRegistry.cs:45-46`
 **Por qué:** Cada entrada es un struct minúsculo, la clave está acotada por columnas de chunk
 realmente visitadas (cientos, no miles, por sesión típica). Puro overhead de memoria de cliente,
@@ -372,6 +399,10 @@ sin vector de ataque.
 reconexión".
 
 ### [4] Build de chunk sin throttle interno por tile
+**Estado:** ⏸️ Diferido — se dispara en TODO chunk nuevo durante la exploración normal (no es un
+edge case), y arreglarlo bien implica repartir el build en corutinas/varios frames: cambia timing
+y orden real de aparición de chunks, no es un parche de una línea. Tratarlo con el mismo rigor que
+Medio/Grave, no como limpieza automática.
 **Ubicación:** `Assets/Scripts/Gameplay/GridWorld/ProceduralWorldGenerator.cs:446-501`,
 `GridChunkBuilder.cs:319-451`
 **Por qué:** El doble bucle de tiles hace `Instantiate`/`AddComponent` de suelo/techo/paredes/
@@ -382,6 +413,7 @@ TILE dentro de un chunk, vía corutina que haga `yield return null` cada N tiles
 marcar `_loaded` hasta terminar (regla ya exigida por `GridTestWorld`).
 
 ### [3] `prefabs.wall` sin null-check antes de `Instantiate`
+**Estado:** ✅ RESUELTO — commit `dbab66e9`
 **Ubicación:** `Assets/Scripts/Gameplay/GridWorld/GridChunkBuilder.Placement.cs:166,241,298`
 **Por qué:** Solo `floor` tiene null-check explícito; `wall` no. Si `Resources.Load` falla solo
 para Wall (import parcial de Resources), `Instantiate(null)` revienta en el primer panel de pared.
@@ -391,6 +423,7 @@ y en `ChunkStreamer.Start()`, mismo patrón que ya usa `prefabs.pillar` como def
 profundidad.
 
 ### [3] `CaptureRebind()` falta null-check de `VoiceCapture`
+**Estado:** ✅ RESUELTO — commit `dbab66e9`
 **Ubicación:** `Assets/Scripts/UI/VoiceSettingsUI.cs:110`
 **Por qué:** El NRE es real (única línea sin el `if (vc != null)` que sí tienen todos los demás
 manejadores del fichero), pero re-trazando el único punto de instanciación (`GameBootstrap.Awake`)
@@ -400,6 +433,10 @@ es alcanzable en una escena de prueba que no existe hoy en el repo.
 Voice(); if (vc != null) vc.PushToTalkKey = control.keyCode;`.
 
 ### [4] `OnDraft` no valida el orden de `firstIndex` antes de anexar puntos
+**Estado:** ⏸️ Diferido — cambia qué pasa con un paquete de red real (fuera de orden/duplicado) hoy
+lo dibuja igual (zigzag temporal), con el fix se descarta en silencio. Es un cambio de
+comportamiento observable ante un caso vivo, no una guarda sobre algo inalcanzable — mismo rigor
+que Medio/Grave.
 **Ubicación:** `Assets/Scripts/Gameplay/SprayDraftReceiver.cs:145-171`
 **Por qué:** Solo se manifiesta cuando UDP reordena/duplica paquetes de continuación durante el
 dibujo en vivo de OTRO jugador; el resultado es un zigzag cosmético menor en una preview efímera
@@ -408,6 +445,9 @@ que se autocorrige sola al llegar la pintada autoritativa.
 draft.NextIndex) return;` para descartar silenciosamente paquetes fuera de orden o duplicados.
 
 ### [3] `roster_gate_open` cuenta fantasmas vía `peers.len()`, fuerza reenvío por churn no-jugador
+**Estado:** ⏸️ Diferido — se dispara en CADA spawn/despawn de fantasma, un evento normal y regular
+de esta partida (no un edge case). Cambia tráfico real emitido en cada sesión jugada hoy, así que
+se trata con el mismo rigor que Medio/Grave aunque el arreglo en sí sea mecánico.
 **Ubicación:** `backend/src/network/sync.rs:604-615` y sus 5 call sites
 **Por qué:** Cualquier alta/baja de fantasma dispara reenvío completo de rosters — solo tráfico
 desperdiciado, contradice ADR-071 pero no rompe ninguna garantía de corrección.
@@ -794,9 +834,10 @@ mismo patrón F0.7 que `process_stp_pickup`.
    `0da821ca`/`91c9f62a`/`1c7840e0`). Quedan 3 conservados a propósito (diseño documentado con
    motivo propio — `RoomSpawner`, `RemoteVoicePlayer.SetMuted`, `HostEndpointConfig`) y el de
    `PacketType`, que necesita confirmación del lado C# antes de tocar nada (protocolo).
-2. **Muy leve + Leve** (secciones 2-3) — 13 arreglos pequeños, en su mayoría de una línea o un
-   método. Buen momento para consolidar el hábito de "un test que fije el comportamiento" antes de
-   cada fix.
+2. **Muy leve + Leve** (secciones 2-3) — ✅ **9/13 hecho** (commits `40493fcd`/`dbab66e9`). Los 4
+   diferidos (`BuildRoomRegistry` sin acción propia, throttle de chunk, orden de spray, conteo de
+   fantasmas en roster gate) cambian comportamiento en un camino real de hoy — pasan a tratarse
+   con el mismo rigor que Medio/Grave, no como arreglo automático.
 3. **Medio** (sección 4) — 9 ítems. Incluye los dos registros estáticos que no se resetean al
    reconectar (`BuildRoomRegistry`/`ZoneRegistry`) — arreglarlos juntos en el mismo cambio, como
    señalan sus propios planes.
