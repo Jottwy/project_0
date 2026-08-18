@@ -2327,10 +2327,6 @@ async fn handle_network_event(
             world.set_chunk_stabilized(chunk_pos);
         }
 
-        NetworkEvent::HandshakeReceived { .. } => {
-            // Handled internally by NetworkManager.
-        }
-
         // ─── ADR-028 Fase E: corpse relay (host-authoritative) ───
         NetworkEvent::CorpseSpawnRequest {
             request_id,

@@ -102,13 +102,6 @@ impl Default for WorldConfig {
     }
 }
 
-/// Result of a world tick — events to emit + damage to apply to the player.
-pub struct WorldTickResult {
-    pub events: Vec<GameEvent>,
-    pub player_damage: f32,
-    pub stat_context: StatContext,
-}
-
 /// One chunk displacement, with everything the caller needs to both notify the local
 /// client and replicate the displacement to peers.
 ///

@@ -25,7 +25,6 @@ use crate::world::chunk::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutGrammarType {
     CorridorSpine,
-    CorridorBroken,
     RoomCluster,
     OpenHall,
     PillarGrid,
@@ -121,28 +120,8 @@ fn set_cell(cells: &mut [u16], x: usize, z: usize, flags: u16) {
     }
 }
 
-fn open_cell(cells: &mut [u16], x: usize, z: usize, extra: u16) {
-    set_cell(cells, x, z, CELL_WALKABLE | extra);
-}
-
 fn block_cell(cells: &mut [u16], x: usize, z: usize, extra: u16) {
     set_cell(cells, x, z, CELL_BLOCKED | extra);
-}
-
-fn carve_rect(cells: &mut [u16], x0: usize, z0: usize, x1: usize, z1: usize, extra: u16) {
-    for x in x0..=x1 {
-        for z in z0..=z1 {
-            open_cell(cells, x, z, extra);
-        }
-    }
-}
-
-fn fill_rect_blocked(cells: &mut [u16], x0: usize, z0: usize, x1: usize, z1: usize, extra: u16) {
-    for x in x0..=x1 {
-        for z in z0..=z1 {
-            block_cell(cells, x, z, extra);
-        }
-    }
 }
 
 fn pillar_cell(layout: &mut ChunkLayoutV1, x: usize, z: usize) {
@@ -181,15 +160,6 @@ fn room_box(layout: &mut ChunkLayoutV1, x0: usize, z0: usize, x1: usize, z1: usi
     wall_v(layout, x1 + 1, z0, z1, kind);
 }
 
-fn set_cell_side_edge_kind(layout: &mut ChunkLayoutV1, x: usize, z: usize, side: u8, kind: u8) {
-    match side {
-        0 => layout.set_edge_h(x, z, kind),
-        1 => layout.set_edge_v(x + 1, z, kind),
-        2 => layout.set_edge_h(x, z + 1, kind),
-        _ => layout.set_edge_v(x, z, kind),
-    }
-}
-
 // ─────────────────────────────────────────────────────────────
 // Gramáticas g_* Backrooms
 // ─────────────────────────────────────────────────────────────
@@ -218,29 +188,6 @@ fn g_corridor_spine(layout: &mut ChunkLayoutV1) {
     layout.set_edge_h(2, 7, EDGE_KIND_LOW_WALL);
     // False door on the corridor wall face.
     layout.set_edge_v(6, 1, EDGE_KIND_FALSE_DOOR);
-}
-
-fn g_broken_corridor(layout: &mut ChunkLayoutV1) {
-    // E–W corridor (rows 4–5) with displaced walls and side doorways.
-    wall_h(layout, 0, 9, 4, EDGE_KIND_WALL);
-    wall_h(layout, 0, 9, 6, EDGE_KIND_WALL);
-    layout.set_edge_h(2, 4, EDGE_KIND_DOOR);
-    layout.set_edge_h(7, 6, EDGE_KIND_DOOR);
-    // Chicane half walls inside the corridor (one row each → still passable).
-    layout.set_edge_v(3, 4, EDGE_KIND_HALF_WALL);
-    layout.set_edge_v(7, 5, EDGE_KIND_HALF_WALL);
-    // North + south side rooms.
-    wall_v(layout, 4, 0, 3, EDGE_KIND_WALL);
-    layout.set_edge_v(4, 1, EDGE_KIND_DOOR);
-    wall_v(layout, 6, 7, 9, EDGE_KIND_WALL);
-    layout.set_edge_v(6, 8, EDGE_KIND_ARCH);
-    for z in 4..=5 {
-        for x in 4..=5 {
-            if let Some(idx) = layout.cell_index(x, z) {
-                layout.cells[idx] = CELL_WALKABLE | CELL_HAZARD;
-            }
-        }
-    }
 }
 
 fn g_room_cluster(layout: &mut ChunkLayoutV1) {
@@ -608,7 +555,6 @@ pub fn generate_layout_from_template(template_id: u8, _rotation: u16) -> ChunkLa
 
     match grammar {
         LayoutGrammarType::CorridorSpine => g_corridor_spine(&mut layout),
-        LayoutGrammarType::CorridorBroken => g_broken_corridor(&mut layout),
         LayoutGrammarType::RoomCluster => g_room_cluster(&mut layout),
         LayoutGrammarType::OpenHall => g_open_hall(&mut layout),
         LayoutGrammarType::PillarGrid => g_pillar_field(&mut layout),

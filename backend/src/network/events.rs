@@ -3,8 +3,6 @@
 //! Split out of `mod.rs` verbatim; `network` re-exports it, so `network::NetworkEvent`
 //! is still the only path anyone outside this module uses.
 
-use std::net::SocketAddr;
-
 use super::protocol::ChunkSyncData;
 use super::PeerId;
 
@@ -316,10 +314,6 @@ pub enum NetworkEvent {
         chunk_pos: [i32; 2],
         tier: u8,
         remaining_hours: f32,
-    },
-    HandshakeReceived {
-        from_addr: SocketAddr,
-        player_name: String,
     },
     /// Corrección adosada a ADR-060 (docs/DECISIONS.md, 2026-08-10): a joiner's `Handshake` was
     /// rejected BEFORE it got registered (session full, or now also a `WIRE_SCHEMA_VERSION`

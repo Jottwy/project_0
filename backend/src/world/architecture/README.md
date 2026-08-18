@@ -24,7 +24,7 @@ The **single source of truth** for what each template looks like.
 - All `TEMPLATE_*` constants (re-exported via `generator.rs`)
 
 One `LayoutGrammarType` per template family:
-`CorridorSpine CorridorBroken RoomCluster OpenHall PillarGrid MazePocket ArchTransition
+`CorridorSpine RoomCluster OpenHall PillarGrid MazePocket ArchTransition
 SideRooms HubAndSpokes ServiceArea BlackoutPocket RedWarningPocket ManilaRoom PitGridRoom
 VerticalTransition PoiLandmark PoiAnomaly PoiDangerPocket PoiSafePocket`
 

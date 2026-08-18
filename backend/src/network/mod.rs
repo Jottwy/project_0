@@ -109,15 +109,6 @@ impl<K: std::hash::Hash + Eq + Copy> BoundedDedupeSet<K> {
     pub fn is_empty(&self) -> bool {
         self.set.is_empty()
     }
-
-    /// F0.5: `HashSet::retain`. Lo usa `purge_peer_state` al desconectar un peer, para que sus
-    /// ids no ocupen sitio ni colisionen si el `PeerId` se reutiliza (que se reutiliza). Filtra
-    /// las DOS estructuras: dejar `order` sin tocar haría que la expulsión por tamaño intentara
-    /// sacar claves que ya no están en el set — inofensivo pero desalinearía el conteo.
-    pub fn retain<F: FnMut(&K) -> bool>(&mut self, mut keep: F) {
-        self.set.retain(&mut keep);
-        self.order.retain(|k| keep(k));
-    }
 }
 
 /// ADR-060 (d): los cinco ensambladores de roster, agrupados en un solo campo de

@@ -273,16 +273,6 @@ impl ChunkLayoutV1 {
             .filter(|&&f| f & (CELL_PILLAR | CELL_PIT | CELL_BLOCKED) != 0)
             .count()
     }
-
-    /// Combined architectural density: solid + transition edges plus blocked
-    /// cells, over the total number of edges and cells. Meaningful for the
-    /// edge-wall model where most architecture lives on edges, not cells.
-    pub fn edge_architecture_density(&self) -> f32 {
-        let arch =
-            self.solid_edge_count() + self.transition_edge_count() + self.blocked_cell_count();
-        let denom = (self.total_edge_count() + self.cells.len()).max(1);
-        arch as f32 / denom as f32
-    }
 }
 
 impl Default for ChunkLayoutV1 {
