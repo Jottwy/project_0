@@ -151,6 +151,11 @@ namespace BackroomsSurvival.Gameplay.Audio
         /// corrige — ya pasó con el zumbido y costó tres commits encontrarlo. Perezoso y
         /// reintentable porque el AudioManager puede no existir todavía (o nunca, en una escena
         /// de test pelada: entonces suena sin mezclar, jamás una excepción).
+        ///
+        /// Enruta LAS DOS fuentes en la misma pasada: <see cref="_source"/> (el siseo) y
+        /// <see cref="_oneShot"/> (el cascabel de <see cref="Shake"/>) nacen juntas en
+        /// <c>Build()</c> y comparten el mismo <see cref="AudioManager.GetMixerGroup"/> — un solo
+        /// flag <see cref="_routed"/> basta para las dos.
         /// </summary>
         private void RouteToSfxMixer()
         {
@@ -160,6 +165,7 @@ namespace BackroomsSurvival.Gameplay.Audio
             var group = mgr.GetMixerGroup(AudioChannel.Sfx);
             if (group == null) return;
             _source.outputAudioMixerGroup = group;
+            if (_oneShot != null) _oneShot.outputAudioMixerGroup = group;
             _routed = true;
         }
 

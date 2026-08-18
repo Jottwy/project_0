@@ -55,6 +55,16 @@ namespace BackroomsSurvival.Gameplay
         public static bool TryGetZone(int cx, int cz, out byte zoneKind) =>
             _zoneByChunk.TryGetValue((cx, cz), out zoneKind);
 
+        /// <summary>
+        /// Vacía SOLO <see cref="_zoneByChunk"/> al arrancar una conexión nueva (host o joiner), no
+        /// solo al arrancar el proceso — mismo motivo que <see cref="BuildRoomRegistry.ResetForNewConnection"/>,
+        /// con el que se llama junto desde <c>NetworkInitializer</c>. Deliberadamente NO toca
+        /// <see cref="ZoneArrived"/>: si se limpiaran también sus suscriptores, `ChunkStreamer`
+        /// perdería para siempre su enganche al aviso de "reconstruir chunk que se pintó en blanco" —
+        /// cambiaría un bug (zona fantasma) por otro (chunks nunca se corrigen).
+        /// </summary>
+        public static void ResetForNewSession() => _zoneByChunk.Clear();
+
         internal static void Refresh(WorldStateMsg state)
         {
             if (state?.visibleChunks == null)

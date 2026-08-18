@@ -172,5 +172,44 @@ namespace BackroomsSurvival.Tests
                 BuildPermission.ChunkOf(new Vector3(10f, 0f, 20f)),
                 BuildPermission.ChunkOf(new Vector3(10f, 128f, 20f)));
         }
+
+        /// <summary>
+        /// `ResetForNewConnection` es lo que hace que reconectar a otro mundo (seed distinta) sin
+        /// reiniciar Unity no deje salas fantasma — sin esto, solo `ResetStatics` (una vez por
+        /// proceso) vacía el registro.
+        /// </summary>
+        [Test]
+        public void ResetForNewConnectionClearsKnownRooms()
+        {
+            BuildRoomRegistry.Observe(ChunkWithRoom(5, 5, 2, 2));
+            Assert.AreEqual(1, BuildRoomRegistry.KnownRoomCount);
+
+            BuildRoomRegistry.ResetForNewConnection();
+
+            Assert.AreEqual(0, BuildRoomRegistry.KnownRoomCount);
+            Assert.IsFalse(BuildRoomRegistry.Contains(new Vector3(5 * 50f + 12f, 0f, 5 * 50f + 12f)));
+        }
+
+        /// <summary>
+        /// EL GUARDIÁN DEL `def_id` DEL MARCADOR. El id está hardcodeado en TRES sitios que tienen
+        /// que coincidir: el asset que lo genera, `BuildPermission.ClaimMarkerDefId` (cliente) y
+        /// `CLAIM_MARKER_DEF_ID` (backend/src/game_loop.rs). Si alguien regenera la definición,
+        /// minta un id nuevo y las otras dos constantes dejan de casar: el marcador se vuelve un
+        /// poste decorativo, nadie puede reclamar nada y NO hay ningún error — simplemente todo se
+        /// rechaza. Este test lo convierte en un rojo inmediato leyendo el asset de verdad.
+        /// </summary>
+        [Test]
+        public void ClaimMarkerDefIdMatchesTheAuthoredDefinition()
+        {
+            var definition = Resources.Load<PolymindGames.BuildingSystem.BuildingPieceDefinition>(
+                "Definitions/BuildingPiece/BR_Claim Marker");
+
+            Assert.IsNotNull(definition,
+                "no está el asset 'BR_Claim Marker' — sin él no se puede reclamar terreno. " +
+                "Ejecuta \"Backrooms ▸ Create Building Pieces\".");
+            Assert.AreEqual(BuildPermission.ClaimMarkerDefId, definition.Id,
+                "el def_id del marcador cambió. Actualiza BuildPermission.ClaimMarkerDefId Y " +
+                "CLAIM_MARKER_DEF_ID en backend/src/game_loop.rs, en el mismo commit.");
+        }
     }
 }

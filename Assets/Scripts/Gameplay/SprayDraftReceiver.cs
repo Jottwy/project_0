@@ -153,9 +153,15 @@ namespace BackroomsSurvival.Gameplay
             else if (!draft.Gesture.StrokeOpen)
             {
                 // Llegamos a mitad de trazo (paquete perdido, o entramos en alcance ahora). Se
-                // abre igual: media raya es mejor que nada, y la pintada final la corrige.
+                // abre igual: media raya es mejor que nada, y la pintada final la corrige. Color/
+                // Width/Layer también se fijan aquí — SprayPainter los manda en TODO paquete, no
+                // solo en el de firstIndex==0, así que sin esto el trazo nacía negro y fino en vez
+                // del color/grosor real del bote emisor.
                 draft.Gesture.SetWall(msg.yaw);
                 draft.Anchor = msg.Anchor;
+                draft.Color = msg.color;
+                draft.Width = (byte)Mathf.Clamp(Mathf.RoundToInt(msg.width * 255f), 1, 255);
+                draft.Layer = msg.layer;
                 draft.Gesture.BeginStroke();
             }
 

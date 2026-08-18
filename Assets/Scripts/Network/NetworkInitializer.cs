@@ -125,6 +125,7 @@ namespace BackroomsSurvival.Net
             LastConnectTo = "<none>";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
             ArmSessionEndHandler();
+            ResetSessionScopedRegistries();
 
             var env = new Dictionary<string, string>
             {
@@ -176,6 +177,7 @@ namespace BackroomsSurvival.Net
             LastConnectTo = $"{serverIP}:{serverNetPort}";
             ConfigureIpcClient(config.IpcAddress, config.IpcPort);
             ArmSessionEndHandler();
+            ResetSessionScopedRegistries();
 
             var env = new Dictionary<string, string>
             {
@@ -642,6 +644,18 @@ namespace BackroomsSurvival.Net
             var handler = GetComponent<SessionEndHandler>();
             if (handler != null)
                 handler.ResetForNewSession();
+        }
+
+        // Paired with ArmSessionEndHandler for the same reason: BuildRoomRegistry y ZoneRegistry
+        // solo se vacían por su cuenta en RuntimeInitializeOnLoadMethod(SubsystemRegistration), es
+        // decir una vez por proceso — sin esto, reconectar a un mundo con seed distinta sin
+        // reiniciar Unity deja salas/zonas fantasma del mundo anterior hasta que cada chunk se
+        // vuelva a pedir. Los dos comparten causa raíz (mismo patrón de reset-solo-al-arrancar-
+        // proceso) y se limpian en el mismo punto a propósito.
+        private static void ResetSessionScopedRegistries()
+        {
+            BackroomsSurvival.Gameplay.BuildRoomRegistry.ResetForNewConnection();
+            BackroomsSurvival.Gameplay.ZoneRegistry.ResetForNewSession();
         }
 
         private static void ConfigureIpcClient(string address, int localIpcPort)

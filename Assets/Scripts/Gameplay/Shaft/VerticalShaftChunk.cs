@@ -242,16 +242,26 @@ namespace BackroomsSurvival.Gameplay.Shaft
         // ── Materials & grate texture ─────────────────────────────────────────
         private struct Mats { public Material wall, floor, grate; }
 
+        // Cacheados igual que FluorescentHumDirector.ResolveClip (mismo directorio): construidos
+        // una vez por proceso y reutilizados (sharedMaterial) en cada Generate(), en vez de un
+        // Material + una Texture2D nuevos por cada regeneración. Sin reset en ResetStatics a
+        // propósito, mismo criterio que _sharedClip allí — no son objetos de escena, sobreviven a
+        // salir de Play sin que nada los destruya.
+        private static Material _sharedWallMat, _sharedFloorMat, _sharedGrateMat;
+
         private static Mats BuildMaterials()
         {
+            if (_sharedWallMat != null && _sharedFloorMat != null && _sharedGrateMat != null)
+                return new Mats { wall = _sharedWallMat, floor = _sharedFloorMat, grate = _sharedGrateMat };
+
             Shader lit = Shader.Find("Universal Render Pipeline/Lit");
             if (lit == null) lit = Shader.Find("Standard");
 
-            var wall  = NewLit(lit, "ShaftWall",  new Color(0.78f, 0.70f, 0.38f)); // Backrooms yellow
-            var floor = NewLit(lit, "ShaftFloor", new Color(0.30f, 0.28f, 0.22f)); // dark concrete
-            var grate = NewLit(lit, "ShaftGrate", new Color(0.40f, 0.40f, 0.44f)); // metal
-            SetupCutout(grate, BuildGrateTexture());
-            return new Mats { wall = wall, floor = floor, grate = grate };
+            _sharedWallMat  = NewLit(lit, "ShaftWall",  new Color(0.78f, 0.70f, 0.38f)); // Backrooms yellow
+            _sharedFloorMat = NewLit(lit, "ShaftFloor", new Color(0.30f, 0.28f, 0.22f)); // dark concrete
+            _sharedGrateMat = NewLit(lit, "ShaftGrate", new Color(0.40f, 0.40f, 0.44f)); // metal
+            SetupCutout(_sharedGrateMat, BuildGrateTexture());
+            return new Mats { wall = _sharedWallMat, floor = _sharedFloorMat, grate = _sharedGrateMat };
         }
 
         private static Material NewLit(Shader shader, string name, Color color)

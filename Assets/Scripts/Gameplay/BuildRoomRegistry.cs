@@ -55,10 +55,19 @@ namespace BackroomsSurvival.Gameplay
         /// Vacía el registro. Existe para los tests EditMode, que fabrican chunks a mano y no pueden
         /// heredar los de otro test — y es público porque el compile-check headless construye la
         /// asamblea con sufijo `_check`, así que un `InternalsVisibleTo` nunca casaría (mismo motivo
-        /// que en `WireSchema`). En runtime no lo llama nadie: el reset entre sesiones lo hace
-        /// `ResetStatics`.
+        /// que en `WireSchema`).
         /// </summary>
         public static void Clear_EditorTestsOnly() => _rooms.Clear();
+
+        /// <summary>
+        /// Vacía el registro al arrancar una conexión NUEVA (host o joiner), no solo al arrancar el
+        /// proceso: `ResetStatics` solo corre una vez por `SubsystemRegistration`, así que sin esto
+        /// reconectar a otro mundo (seed distinta) sin reiniciar Unity deja salas fantasma del mundo
+        /// anterior hasta que cada chunk se vuelva a pedir. Llamado desde `NetworkInitializer` en el
+        /// mismo punto donde ya se llama a <c>ZoneRegistry.ResetForNewSession</c> — los dos registros
+        /// comparten la misma causa raíz y se limpian juntos a propósito.
+        /// </summary>
+        public static void ResetForNewConnection() => _rooms.Clear();
 
         /// <summary>
         /// Registra (o no) la habitación de un chunk recién llegado. Solo capa 0: es la única en la
