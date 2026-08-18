@@ -13,10 +13,13 @@
 > **68 ítems: 27 de código muerto + 41 bugs reales** (6 Muy grave, 13 Grave, 9 Medio, 8 Leve, 5 Muy
 > leve). Cada ítem lleva nota 1-10, el porqué de esa nota, y un plan de arreglo.
 >
-> **Actualizado 2026-08-18 (mismo día):** tres pasadas de implementación — Código muerto, luego Muy
-> leve + Leve, con la misma regla en las tres: **nunca tocar nada cuyo comportamiento cambie para
-> un caller/escenario que se ejerza HOY** — solo bordes inalcanzables, guardas sobre estados que no
-> ocurren, o cosas puramente aditivas (tests, comentarios).
+> **Actualizado 2026-08-18 (mismo día):** cuatro pasadas de implementación — Código muerto, Muy
+> leve + Leve, y Medio, con la misma regla en las tres primeras: **nunca tocar nada cuyo
+> comportamiento cambie para un caller/escenario que se ejerza HOY** — solo bordes inalcanzables,
+> guardas sobre estados que no ocurren, o cosas puramente aditivas (tests, comentarios). En Medio
+> esa regla ya no aplicaba tal cual (varios ítems SÍ cambian comportamiento real) — se implementó
+> lo que tenía un plan bien acotado y se pausaron los dos que son rearquitectura real, a la espera
+> de confirmar antes de tocarlos.
 >
 > **Código muerto: 17 ✅ + 1 🟡** en tres commits (`0da821ca` Rust, `91c9f62a` + `1c7840e0` C#). 2
 > hallazgos corregidos al reverificar antes de tocar (`Chunk3DLayout` ❌ tenía uso real; de
@@ -24,15 +27,21 @@
 > (`RoomSpawner`, `RemoteVoicePlayer.SetMuted`, `HostEndpointConfig` — diseño documentado con
 > motivo propio, ADR-005/ADR-045/comentario de clase, no cruft). 1 pendiente de ADR (`PacketType`).
 >
-> **Muy leve: 5/5 ✅** en un commit Rust (`40493fcd`) + parte del commit C# de abajo — los cinco
-> confirmados cero-impacto para todo input/caller conocido hoy antes de tocar.
+> **Muy leve: 5/5 ✅** en un commit Rust (`40493fcd`) + parte del commit C# de esa pasada — los
+> cinco confirmados cero-impacto para todo input/caller conocido hoy antes de tocar.
 >
-> **Leve: 4/8 ✅**, commits `40493fcd` (Rust: test nuevo) y `dbab66e9` (C#: 3 fixes). **4 diferidos**
-> (⏸️, no por indecisión): cambian comportamiento observable en un camino que SÍ se ejerce en juego
-> normal hoy — throttle de build de chunk, orden de paquetes de spray, conteo de fantasmas en el
-> roster gate, y el crecimiento de `BuildRoomRegistry` (que depende del fix de reconexión, sección
-> Grave, sin acción propia). Se tratan con el mismo rigor que Medio/Grave, no como limpieza
-> automática.
+> **Leve: 5/8 ✅** (commits `40493fcd`, `dbab66e9`, y `e0f7e42d` — este último de rebote, ver Medio
+> abajo). **3 diferidos** (⏸️, no por indecisión): cambian comportamiento observable en un camino
+> que SÍ se ejerce en juego normal hoy — throttle de build de chunk, orden de paquetes de spray,
+> conteo de fantasmas en el roster gate.
+>
+> **Medio: 7/9 ✅** en dos commits (`b8fc7b63` Rust, `e0f7e42d` C#) — el fix de "`BuildRoomRegistry`
+> no se limpia al reconectar" también resolvió de rebote el hallazgo Grave gemelo de `ZoneRegistry`
+> (mismo commit `e0f7e42d`, mismo punto de enganche en `NetworkInitializer`) y el Leve de
+> crecimiento sin poda. **2 pausados para confirmar** (⏸️): `select!` sin shutdown ordenado
+> (rearquitectura de control de flujo) y la guardia anti-overflow del anillo de voz (rework de
+> concurrencia con `Interlocked` entre el hilo de audio y el principal) — ya investigados y con
+> plan escrito, solo falta luz verde antes de tocar algo de ese calibre.
 >
 > `cargo build`+`cargo test` verdes (801 passed, mismos 9 fallos preexistentes de un WIP ajeno sin
 > commitear); `CompileCheckClient.sh` 0 errores en las 4 asambleas, verificado tras cada tanda.
@@ -355,10 +364,10 @@ más si el wrap aterriza en 0). `sequence` sigue siendo `u32`, sin cambio de wir
 
 ## 3. Leve
 
-8 ítems, nota 3-4 — **4/8 ✅ RESUELTOS** (commits `40493fcd`/`dbab66e9`), **4 ⏸️ DIFERIDOS** a
-propósito: cambian comportamiento observable en un camino que sí se ejerce en juego normal hoy
-(no un edge case inalcanzable), así que se tratan con el mismo rigor que Medio/Grave en vez de
-como limpieza automática — ver el porqué en cada entrada.
+8 ítems, nota 3-4 — **5/8 ✅ RESUELTOS** (commits `40493fcd`/`dbab66e9`/`e0f7e42d`), **3 ⏸️
+DIFERIDOS** a propósito: cambian comportamiento observable en un camino que sí se ejerce en juego
+normal hoy (no un edge case inalcanzable), así que se tratan con el mismo rigor que Medio/Grave en
+vez de como limpieza automática — ver el porqué en cada entrada.
 
 ### [3] Falta test que cruce `carve_into_layout` contra `carve_into_grid`/`carve_door`
 **Estado:** ✅ RESUELTO — commit `40493fcd`. Verde hoy sobre 4 seeds × 1600 chunks (~1280 salas): el
@@ -388,8 +397,8 @@ array. Cambio mecánico repetido 6 veces (no introducir un helper genérico — 
 distintas, y CLAUDE.md prohíbe abstracciones no pedidas para deuda de este tamaño).
 
 ### [3] `BuildRoomRegistry` crece sin poda durante toda la sesión
-**Estado:** ⏸️ Sin acción propia — no hay nada que hacer aquí hasta que se implemente el fix de
-"no se limpia al reconectar" (sección Grave): ese fix acota el crecimiento como efecto colateral.
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`, efecto colateral del fix Medio "no se limpia al
+reconectar": ahora acota a "chunks vistos desde la última reconexión" en vez de toda la sesión.
 **Ubicación:** `Assets/Scripts/Gameplay/BuildRoomRegistry.cs:45-46`
 **Por qué:** Cada entrada es un struct minúsculo, la clave está acotada por columnas de chunk
 realmente visitadas (cientos, no miles, por sesión típica). Puro overhead de memoria de cliente,
@@ -459,10 +468,13 @@ llamadas. Cambio mecánico de una línea por call site.
 
 ## 4. Medio
 
-9 ítems, nota 5-6. Reales, alcanzables en juego normal, pero de impacto acotado a un sistema
-secundario o requieren una secuencia de eventos poco común aunque posible.
+9 ítems, nota 5-6 — **7/9 ✅ RESUELTOS** (commits `b8fc7b63` Rust, `e0f7e42d` C#), **2 ⏸️
+PAUSADOS para confirmar** (rearquitectura real, no limpieza automática). Reales, alcanzables en
+juego normal, pero de impacto acotado a un sistema secundario o requieren una secuencia de eventos
+poco común aunque posible.
 
 ### [5] `processed_interactions` es un `HashSet` sin poda ni tope
+**Estado:** ✅ RESUELTO — commit `b8fc7b63`
 **Ubicación:** `backend/src/game_loop.rs:534`
 **Por qué:** A diferencia de sus 6 hermanos ya migrados a `BoundedDedupeSet`, crece sin límite
 durante toda la vida del proceso. Crecimiento de memoria, no corrupción — pero un cliente puede
@@ -473,6 +485,7 @@ sites/inserts siguen funcionando igual porque `BoundedDedupeSet::insert` devuelv
 misma semántica.
 
 ### [6] Colisión de namespace `"name:"` en `sanitize_player_key`
+**Estado:** ✅ RESUELTO — commit `b8fc7b63`
 **Ubicación:** `backend/src/persistence/mod.rs:25-38`
 **Por qué:** `raw="name:Joel"` produce la MISMA key que el fallback anónimo de un "Joel" sin
 identidad. Vector real pero acotado: el IPC es loopback-only, cada jugador tiene su propio
@@ -486,6 +499,9 @@ Spray/StpPlaceRequest. Añadir un test que fije el comportamiento.
 
 ### [5] `select!` sin shutdown ordenado: un fallo transitorio del `accept()` del IPC aborta
 `game_loop` a mitad de tick
+**Estado:** ⏸️ Pausado para confirmar — es rearquitectura real de control de flujo (señal de
+apagado ordenado entre `ipc_handle`/`game_handle`, tolerancia a errores transitorios en el accept
+loop), no un parche de una línea. Se implementa siguiendo el plan de abajo en cuanto se confirme.
 **Ubicación:** `backend/src/main.rs:198-203`
 **Por qué:** Si `ipc_handle` termina primero, `select!` sale de inmediato y tokio aborta
 `game_handle` sin flush ni aviso a peers. El disparador (un `accept()` fallando en un listener
@@ -498,6 +514,7 @@ cualquiera de las dos tareas termine, dar a la otra una última oportunidad de g
 peers, en vez de un abort implícito.
 
 ### [6] Registro de salas construibles no se limpia al reconectar a otro mundo
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`
 **Ubicación:** `Assets/Scripts/Gameplay/BuildRoomRegistry.cs:44-49`; disparador en
 `NetworkInitializer.StartAsHost`/`StartAsJoiner`
 **Por qué:** Alcanzable en juego normal (reconectar sin reiniciar el proceso). Pero los 4
@@ -510,6 +527,7 @@ sesión. `ZoneRegistry.cs` tiene EXACTAMENTE el mismo patrón (ver más abajo) �
 otro reintroduce el desacople al instante, así que un solo cambio debe limpiar ambos registros.
 
 ### [5] `ClaimMarkerDefId` sin test que lo ate al asset ni al backend
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`
 **Ubicación:** `Assets/Scripts/Gameplay/Building/BuildPermission.cs:30-35`; hueco de cobertura en
 `BuildPermissionTests.cs`
 **Por qué:** Los tres valores coinciden HOY, pero ya hay precedente real (no hipotético) de que la
@@ -522,6 +540,7 @@ regenerarlo si ya existe.
 comentario apuntando a `game_loop.rs:4919`.
 
 ### [6] Cascabel de spray (`_oneShot`) nunca enruta al mixer SFX
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`
 **Ubicación:** `Assets/Scripts/Gameplay/Audio/SpraySfx.cs:85-94,113-118,155-164`
 **Por qué:** `RouteToSfxMixer()` solo enruta `_source` (el siseo), nunca `_oneShot` (el cascabel).
 Alcanzable en cada uso del spray, pero acotado a un único cue de audio cosmético — no rompe una
@@ -532,6 +551,7 @@ que hoy afirma el enrutado resuelto cubriendo solo la mitad. Ampliar el test exi
 (`SpraySfxTests.cs`) para afirmar que ambas fuentes comparten mixer group tras `Shake()`.
 
 ### [5] Material/Texture del shaft nunca se liberan en cada regeneración
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`
 **Ubicación:** `Assets/Scripts/Gameplay/Shaft/VerticalShaftChunk.cs:245-353` (mismo patrón en
 `VerticalShaftGrid.cs`)
 **Por qué:** Fuga real y acumulativa, pero el propio fichero se documenta como "standalone
@@ -543,6 +563,7 @@ patrón que `FluorescentHumDirector.ResolveClip()` y los `_sharedHiss`/`_sharedR
 entre instancias). Añadir un test EditMode (hoy no existe ninguno para `Shaft/`).
 
 ### [6] Trazo ajeno nace negro y fino si el primer paquete se pierde
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`
 **Ubicación:** `Assets/Scripts/Gameplay/SprayDraftReceiver.cs:136-163`
 **Por qué:** Paquete inicial perdido, o entrar en alcance a mitad del trazo de otro jugador, son
 eventos normales. El efecto (Color=0, Width=0) es visualmente persistente mientras dura el trazo,
@@ -552,6 +573,10 @@ no un parpadeo — pero acotado a una preview efímera que no se guarda y se aut
 el emisor ya manda color/width/layer en TODOS los paquetes, no solo el primero.
 
 ### [5] Guardia anti-overflow del anillo de voz (`Available()<0`) inalcanzable
+**Estado:** ⏸️ Pausado para confirmar — el fix rediseña la detección de overflow con contadores
+`Interlocked` compartidos entre el hilo de audio y el principal (single-writer/single-reader sin
+locks); es rework de concurrencia real, no un guard mecánico. Se implementa siguiendo el plan de
+abajo en cuanto se confirme.
 **Ubicación:** `Assets/_Migration/STPIntegration/RemoteAvatar/RemoteVoicePlayer.cs:257`
 **Por qué:** `Available()` normaliza matemáticamente su resultado a `[0, ring.Length)` por
 construcción — la condición es una tautología falsa, no una condición de carrera real. Tras un
@@ -567,9 +592,10 @@ real del anillo. Añadir un test que fuerce una ráfaga de más de `RingFrames` 
 
 ## 5. Grave
 
-13 ítems, nota 6-8. Bugs reales y alcanzables en juego normal (no requieren laboratorio), rompen
-una garantía importante — pero no llegan al nivel de "cualquiera puede afectar el estado de otro
-jugador sin límite" de la sección Muy grave.
+13 ítems, nota 6-8 — **1/13 ✅ RESUELTO** de rebote (`ZoneRegistry`, commit `e0f7e42d`, junto con
+el fix Medio gemelo de `BuildRoomRegistry`). Bugs reales y alcanzables en juego normal (no
+requieren laboratorio), rompen una garantía importante — pero no llegan al nivel de "cualquiera
+puede afectar el estado de otro jugador sin límite" de la sección Muy grave.
 
 ### [8] `handle_packet` migra `addr` de un peer activo sin prueba
 **Ubicación:** `backend/src/network/handlers.rs:19-70`; `send.rs:120-153`
@@ -726,6 +752,9 @@ líneas que ya limpian `v30a_chunk_cache`/`world_graph`. Añadir un test que com
 nunca retiene más de 1 entrada viva tras un reset.
 
 ### [8] `ZoneRegistry` no se limpia al reconectar a otro servidor
+**Estado:** ✅ RESUELTO — commit `e0f7e42d`. Efecto colateral correcto del fix Medio de
+`BuildRoomRegistry`: los dos registros comparten causa raíz (mismo patrón reset-solo-al-arrancar-
+proceso) y se limpian juntos desde el mismo punto en `NetworkInitializer`.
 **Ubicación:** `Assets/Scripts/Gameplay/ZoneRegistry.cs:36-42`
 **Por qué:** Mismo patrón que `BuildRoomRegistry` mas arriba, pero PEOR: `TryGetZone` devuelve
 `true` de inmediato con el dato del mundo anterior, contaminando SIMULTÁNEAMENTE
@@ -834,16 +863,18 @@ mismo patrón F0.7 que `process_stp_pickup`.
    `0da821ca`/`91c9f62a`/`1c7840e0`). Quedan 3 conservados a propósito (diseño documentado con
    motivo propio — `RoomSpawner`, `RemoteVoicePlayer.SetMuted`, `HostEndpointConfig`) y el de
    `PacketType`, que necesita confirmación del lado C# antes de tocar nada (protocolo).
-2. **Muy leve + Leve** (secciones 2-3) — ✅ **9/13 hecho** (commits `40493fcd`/`dbab66e9`). Los 4
-   diferidos (`BuildRoomRegistry` sin acción propia, throttle de chunk, orden de spray, conteo de
-   fantasmas en roster gate) cambian comportamiento en un camino real de hoy — pasan a tratarse
-   con el mismo rigor que Medio/Grave, no como arreglo automático.
-3. **Medio** (sección 4) — 9 ítems. Incluye los dos registros estáticos que no se resetean al
-   reconectar (`BuildRoomRegistry`/`ZoneRegistry`) — arreglarlos juntos en el mismo cambio, como
-   señalan sus propios planes.
-4. **Grave** (sección 5) — 13 ítems. El de `handle_packet`/secuestro de `addr` pide visto bueno
-   explícito antes de tocar el modelo de confianza de red (ADR-015/079). El resto son fixes
-   contenidos por fichero.
+2. **Muy leve + Leve** (secciones 2-3) — ✅ **10/13 hecho** (commits `40493fcd`/`dbab66e9`/`e0f7e42d`).
+   Los 3 diferidos (throttle de chunk, orden de spray, conteo de fantasmas en roster gate) cambian
+   comportamiento en un camino real de hoy — pasan a tratarse con el mismo rigor que Medio/Grave.
+3. **Medio** (sección 4) — ✅ **7/9 hecho** (commits `b8fc7b63`/`e0f7e42d`), incluidos los dos
+   registros estáticos que no se reseteaban al reconectar (`BuildRoomRegistry`/`ZoneRegistry`,
+   arreglados juntos como señalaban sus propios planes — el de `ZoneRegistry` era Grave y cayó de
+   rebote). Quedan 2 pausados para confirmar: `select!` sin shutdown ordenado y la guardia
+   anti-overflow del anillo de voz — ambos son rearquitectura real (control de flujo /
+   concurrencia), no limpieza mecánica.
+4. **Grave** (sección 5) — 12 ítems restantes (1/13 ya resuelto de rebote). El de
+   `handle_packet`/secuestro de `addr` pide visto bueno explícito antes de tocar el modelo de
+   confianza de red (ADR-015/079). El resto son fixes contenidos por fichero.
 5. **Muy grave** (sección 6) — 6 ítems, el bloque de seguridad de red. Dos de ellos
    (`StpBuildAddRequest`/`StpDemolishRequest` y, en su fix de seguimiento, `harvest_hit`) requieren
    ADR nuevo por tocar el formato de wire — **parar y decidir con Joel antes de implementar**,
