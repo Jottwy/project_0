@@ -176,8 +176,8 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f7df4377af128bc42a1b48cb48ab198f, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _hingeLocalPosition: {x: -0.45, y: 0, z: 0}
-  _leafSize: {x: 0.9, y: 2.5, z: 0.05}
+  _hingeLocalPosition: {x: -0.752, y: 0, z: 0}
+  _leafSize: {x: 1.385, y: 2.618, z: 0.05}
 --- !u!1 &8068354981344248195
 GameObject:
   m_ObjectHideFlags: 0

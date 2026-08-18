@@ -144,20 +144,21 @@ namespace BackroomsSurvival.EditorTools
         // a door disturbs the wall row it sits in more than a bare panel, less than claiming ground.
         private const int DoorFrameMetalCost = 5;
 
-        // The visual frame is a 5-column x 2-row grid (rendered off Measure Door Frame's screenshots)
-        // with its door cut into the middle column, opening from the floor up to roughly 2.7 m at
-        // native-to-envelope scale. Both half-widths below are a hair SMALLER than that visual
-        // opening — the solid jamb/header collider blocks reach slightly INTO the visible gap rather
-        // than stopping short of it, so a player grazes an invisible edge near the frame at worst,
-        // never clips through steel that reads as solid.
-        private const float DoorOpeningHalfWidth = 0.45f;
-        private const float DoorOpeningHeight = 2.5f;
+        // RECONCILED 2026-08-18: Joel widened the frame's jamb/header colliders by hand in the editor
+        // after the first generation (the original symmetric ±0.45/2.5 read too tight against the
+        // visual opening). These edges are read straight off the adjusted prefab on disk
+        // (BR_BuildingPiece_GridDoorFrame.prefab), not re-guessed — left/right are no longer
+        // mirror-symmetric because a hand-drag in the Inspector isn't. A clean re-run of this creator
+        // on a fresh clone now reproduces the same opening Joel left behind, not the original one.
+        private const float DoorOpeningLeftEdge = -0.752f;
+        private const float DoorOpeningRightEdge = 0.633f;
+        private const float DoorOpeningHeight = 2.618f;
 
-        // Door leaf: hangs in the frame's opening above, hinged on the LEFT jamb (negative X) to
-        // match GridDoorFrameOpening's default _hingeLocalPosition. Sized to fill the opening exactly.
+        // Door leaf: hangs in the frame's opening above, hinged on the LEFT jamb (DoorOpeningLeftEdge)
+        // to match GridDoorFrameOpening's _hingeLocalPosition. Sized to fill the opening exactly.
         private const string DoorLeafPrefabPath = PrefabFolder + "/BR_BuildingPiece_GridDoorLeaf.prefab";
         private const string DoorLeafDefinitionPath = DefinitionFolder + "/BR_Door Leaf.asset";
-        private const float DoorLeafWidth = DoorOpeningHalfWidth * 2f;
+        private const float DoorLeafWidth = DoorOpeningRightEdge - DoorOpeningLeftEdge;
         private const float DoorLeafHeight = DoorOpeningHeight;
         private const float DoorLeafThickness = 0.05f;
 
@@ -666,21 +667,24 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         private static void AddDoorFrameColliders(GameObject root)
         {
-            float jambWidth = Length * 0.5f - DoorOpeningHalfWidth;
-            float jambCentreX = DoorOpeningHalfWidth + jambWidth * 0.5f;
+            float halfLength = Length * 0.5f;
 
+            float leftWidth = DoorOpeningLeftEdge - (-halfLength);
             var left = root.AddComponent<BoxCollider>();
-            left.center = new Vector3(-jambCentreX, Height * 0.5f, 0f);
-            left.size = new Vector3(jambWidth, Height, Thickness);
+            left.center = new Vector3(-halfLength + leftWidth * 0.5f, Height * 0.5f, 0f);
+            left.size = new Vector3(leftWidth, Height, Thickness);
 
+            float rightWidth = halfLength - DoorOpeningRightEdge;
             var right = root.AddComponent<BoxCollider>();
-            right.center = new Vector3(jambCentreX, Height * 0.5f, 0f);
-            right.size = new Vector3(jambWidth, Height, Thickness);
+            right.center = new Vector3(DoorOpeningRightEdge + rightWidth * 0.5f, Height * 0.5f, 0f);
+            right.size = new Vector3(rightWidth, Height, Thickness);
 
             float headerHeight = Height - DoorOpeningHeight;
+            float headerWidth = DoorOpeningRightEdge - DoorOpeningLeftEdge;
             var header = root.AddComponent<BoxCollider>();
-            header.center = new Vector3(0f, DoorOpeningHeight + headerHeight * 0.5f, 0f);
-            header.size = new Vector3(DoorOpeningHalfWidth * 2f, headerHeight, Thickness);
+            header.center = new Vector3((DoorOpeningLeftEdge + DoorOpeningRightEdge) * 0.5f,
+                DoorOpeningHeight + headerHeight * 0.5f, 0f);
+            header.size = new Vector3(headerWidth, headerHeight, Thickness);
         }
 
         private static GameObject CreateDoorFramePrefab(BuildingPieceDefinition definition,
@@ -735,22 +739,69 @@ namespace BackroomsSurvival.EditorTools
                 // a stray non-origin root never lingers into a re-save.
                 contents.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
 
-                if (contents.GetComponent<GridDoorFrameOpening>() != null)
-                {
-                    PrefabUtility.SaveAsPrefabAsset(contents, path);
-                    return;
-                }
+                // Not add-once: the hinge/leaf size are RE-APPLIED every run, even when the marker
+                // already exists, so a reconciliation of DoorOpeningLeftEdge/RightEdge/Height (like
+                // 2026-08-18's, after Joel hand-widened the frame's colliders) actually reaches an
+                // already-existing frame instead of silently going stale.
+                var opening = contents.GetComponent<GridDoorFrameOpening>();
+                bool wasMissing = opening == null;
+                if (wasMissing)
+                    opening = contents.AddComponent<GridDoorFrameOpening>();
 
-                var opening = contents.AddComponent<GridDoorFrameOpening>();
                 var serialized = new SerializedObject(opening);
                 serialized.FindProperty("_hingeLocalPosition").vector3Value =
-                    new Vector3(-DoorOpeningHalfWidth, 0f, 0f);
+                    new Vector3(DoorOpeningLeftEdge, 0f, 0f);
                 serialized.FindProperty("_leafSize").vector3Value =
                     new Vector3(DoorLeafWidth, DoorLeafHeight, DoorLeafThickness);
                 serialized.ApplyModifiedPropertiesWithoutUndo();
 
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[BackroomsBuildingPieceCreator] Added GridDoorFrameOpening marker to '{path}'.");
+                Debug.Log($"[BackroomsBuildingPieceCreator] " +
+                          $"{(wasMissing ? "Added" : "Synced")} GridDoorFrameOpening on '{path}' — hinge=" +
+                          $"({DoorOpeningLeftEdge}, 0, 0), leafSize=({DoorLeafWidth}, {DoorLeafHeight}, " +
+                          $"{DoorLeafThickness}).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        /// <summary>
+        /// Idempotent sync: resizes the leaf's Model/collider/bounds to the CURRENT DoorLeafWidth/
+        /// Height/Thickness, without touching its def_id. The leaf's whole footprint is derived from
+        /// the frame's opening (<see cref="DoorOpeningLeftEdge"/> etc.) — if that changes (like
+        /// 2026-08-18's reconciliation against Joel's hand-widened colliders), the leaf has to follow
+        /// or it stops filling the gap it hangs in.
+        /// </summary>
+        private static void EnsureDoorLeafGeometry(GameObject prefabAsset)
+        {
+            string path = AssetDatabase.GetAssetPath(prefabAsset);
+            var contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var model = contents.transform.Find("Model");
+                var collider = contents.GetComponent<BoxCollider>();
+                var piece = contents.GetComponent<GridDoorLeafBuildingPiece>();
+                if (model == null || collider == null || piece == null)
+                {
+                    Debug.LogError($"[BackroomsBuildingPieceCreator] '{path}' is missing an expected " +
+                                   $"child/component (Model={model != null}, collider={collider != null}, " +
+                                   $"piece={piece != null}) — cannot sync geometry. Nothing changed.");
+                    return;
+                }
+
+                var centre = new Vector3(DoorLeafWidth * 0.5f, DoorLeafHeight * 0.5f, 0f);
+                var size = new Vector3(DoorLeafWidth, DoorLeafHeight, DoorLeafThickness);
+
+                model.localPosition = centre;
+                model.localScale = size;
+                collider.center = centre;
+                collider.size = size;
+                ConfigurePiece(piece, piece.Definition, new Bounds(centre, size));
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[BackroomsBuildingPieceCreator] Synced '{path}' geometry to size={size}.");
             }
             finally
             {
@@ -771,8 +822,8 @@ namespace BackroomsSurvival.EditorTools
             if (existingDefinition != null && existingPrefab != null)
             {
                 Debug.Log($"[BackroomsBuildingPieceCreator] '{DoorLeafDefinitionPath}' and '{DoorLeafPrefabPath}' " +
-                          "already exist — left untouched (the definition id is on the wire; regenerating it " +
-                          "would break replication).");
+                          "already exist (def_id untouched) — syncing geometry to the current opening size.");
+                EnsureDoorLeafGeometry(existingPrefab);
                 return;
             }
 
