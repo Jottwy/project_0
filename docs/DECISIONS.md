@@ -4080,3 +4080,96 @@ presencia —la mirada, la detección por luz, el rugido del golpe fallido, el f
 capa de audio— están construidas, con tests y desplegadas, pero **su calibración no la decide ningún
 test**: los números (38 m de luz, 22° de flanqueo, 25 m de la capa de audio, 2,5 s del rugido) siguen
 siendo primera aproximación a la espera de una sesión que los juzgue por cómo se sienten.
+
+### ADR-082 — El cuerpo y el brazo, terminado: punto de contacto, bigotes laterales y margen de pared (enmienda a ADR-040 y ADR-075) (2026-08-17)
+
+Estado: **PROPUESTA (2026-08-17), aprobada por Joel en sesión** tras reportar en playtest, con estas
+palabras: *"se bugea en la pared"*, *"sigue sin atacar cuando te pegas a una pared"*, *"se queda
+pillado a una distancia, no es como que se acerca"*.
+
+**Los tres síntomas son el MISMO defecto, y ya se arregló a medias una vez.** `PHANTOM_ATTACK_REACH`
+(2,4 m) nació justo para esto: su propio doc-comment nombra el bug —*"pegado a la pared no puede
+hacer nada"*— y separa el ALCANCE del brazo del VOLUMEN del cuerpo (0,5 m de radio). Esa mitad
+funciona. Lo que quedó sin migrar son las tres pruebas de LÍNEA, que siguen exigiendo geometría legal
+para un cuerpo entero allí donde solo tiene que pasar un brazo:
+
+1. **El atajo de acercamiento** (`steer_heading`) pide `segment_is_clear_for_body` con radio 0,5 m.
+   Contra un jugador pegado a un muro, el último tramo nunca admite un cuerpo de 1 m de diámetro ⇒
+   atajo rechazado ⇒ se usa la ruta ⇒ el A* no puede alcanzar la celda del jugador (para `grid_gen`
+   es sólida) ⇒ la ruta termina una celda antes ⇒ **se planta a ~2 m**. Es literalmente el caso que
+   el comentario de ese mismo `steer_heading` dice haber cerrado: lo cerró para el PATHFINDER, no
+   para el atajo.
+2. **El golpe** exige `segment_is_clear(from, tpos)`. Si la posición del jugador cuantiza dentro de
+   una celda que `grid_gen` llama pared, esa línea NUNCA está limpia ⇒ **no ataca jamás**.
+3. **`has_line` de `tick_sprint`** usa la misma prueba ⇒ `sprint_blind_for` crece ⇒ a los 5 s se
+   rinde y pasa a SEARCH. Desde fuera: "se queda pillado y luego se desengancha".
+
+**Causa de fondo, ya documentada y aceptada:** la colisión XZ del JUGADOR sigue siendo el laberinto
+legacy y no `grid_gen` (ADR-026 partes 1–2, BLOQUEADAS; divergencia declarada en ADR-033). El jugador
+puede estar legítimamente de pie dentro de lo que para la IA es un muro. **Este ADR no desbloquea
+ADR-026 ni lo intenta**: hace que la IA se comporte bien A PESAR de la divergencia, que es lo que hay
+que hacer mientras esa migración siga bloqueada.
+
+Y el cuarto síntoma, distinto: **el raspado**. `resolve_move_grid_gen_ex` desliza SOLO por ejes (X, y
+si no Z). Contra una esquina interior o un muro en diagonal eso significa avanzar a toda velocidad
+sin acercarse — `note_step_progress` lo detecta y replanifica, pero lo que se ve es una criatura
+arañando la pared.
+
+Decisión, tres piezas:
+
+1. **PUNTO DE CONTACTO (cierra 1, 2 y 3).** Función nueva `contact_stance(cache, layer, from,
+   target, radius)`: el punto más cercano a `target`, sobre el segmento `target → from`, donde el
+   CUERPO cabe. Devuelve `target` cuando ya cabe ahí, y `None` cuando no hay ninguno dentro de una
+   ventana corta (entonces todo degrada al comportamiento de hoy). Se usa en tres sitios:
+   (a) como destino de `steer_heading` en los estados que CIERRAN distancia (`Sprint`, `Hunting`,
+   `Ambush`) — nunca en `Stalk`, cuyo destino ya es la banda o el punto de flanqueo;
+   (b) en la prueba del golpe: `dist(from, tpos) < PHANTOM_ATTACK_REACH` **y**
+   `segment_is_clear(from, contacto)` — la distancia se sigue midiendo contra TI, y lo que tiene que
+   estar despejado es hasta donde el cuerpo puede llegar. El brazo cruza el resto;
+   (c) en `has_line`, para que pegarte a un muro deje de contar como "ha perdido la línea".
+2. **BIGOTES LATERALES.** Antes de aplicar el paso, sondas a ±40° y ±75° a `PHANTOM_WHISKER_LENGTH`.
+   Si la de delante está obstruida y un lado está libre, el rumbo gira hacia la TANGENTE del
+   obstáculo en vez de fiarlo todo al deslizamiento por ejes. Es dirección, no colisión: el
+   resolutor sigue siendo la única autoridad sobre dónde se puede estar.
+3. **MARGEN DE PARED.** Repulsión suave cuando hay muro a menos de `PHANTOM_WALL_MARGIN` (0,35 m) de
+   la piel del cuerpo, para que mantenga distancia sin chocar. Deliberadamente débil: un pasillo mide
+   2,5 m y el cuerpo 1 m, así que un sesgo fuerte le impediría entrar por las puertas — el fallo que
+   este ADR NO puede permitirse introducir.
+
+Alternativas rechazadas:
+- **(A) Bajar `PHANTOM_BODY_RADIUS` para que quepa más cerca.** RECHAZADA: el radio existe porque sin
+  él el modelo se metía medio cuerpo dentro de los paneles (enmienda de ADR-040). Cambiar un valor
+  validado para tapar un problema de otra capa es exactamente lo que la nota "no tocar valores ya
+  validados" prohíbe.
+- **(B) Quitar la exigencia de línea al golpe.** RECHAZADA: sería pegar a través de las paredes, que
+  es peor que no pegar. La línea se conserva; lo que cambia es HASTA DÓNDE se exige.
+- **(C) Desbloquear ADR-026 partes 1–2 y migrar la colisión del jugador a `grid_gen`.** RECHAZADA
+  para esta tanda: es la cura de fondo y sigue atada a la atribución de TP, un trabajo mucho mayor y
+  con su propio riesgo. Este ADR queda COMPATIBLE con ella: el día que el jugador colisione contra
+  `grid_gen`, `contact_stance` devolverá `target` casi siempre y estas tres piezas se vuelven inertes
+  solas, sin nada que deshacer.
+- **(D) Sustituir el deslizamiento por ejes por un resolutor de barrido continuo.** RECHAZADA por
+  alcance: reescribir la colisión del fantasma es un ADR propio, y los bigotes obtienen la mayor
+  parte del beneficio dirigiendo ANTES de chocar.
+
+Consecuencias / qué prohíbe. **PROHÍBE** que el punto de contacto se use para medir la DISTANCIA de
+ataque (se mide contra el jugador; usar el contacto regalaría alcance gratis) y para el daño, que
+sigue rigiéndose por `PHANTOM_ATTACK_REACH` y sus conos. **PROHÍBE** que los bigotes decidan dónde se
+puede estar: solo sesgan el rumbo, y `resolve_move_grid_gen_ex` sigue teniendo la última palabra.
+**PROHÍBE** subir el margen de pared hasta un valor que impida cruzar una puerta de una celda — si
+alguna vez no entra por un vano, ese número es el primer sospechoso.
+
+Verificación exigida antes de VALIDADA: tests de (a) `contact_stance` devolviendo el objetivo cuando
+el cuerpo cabe y un punto más cercano cuando no; (b) un jugador dentro de una celda-pared recibiendo
+golpe (hoy imposible); (c) `has_line` sobreviviendo a un objetivo pegado a un muro; (d) los bigotes
+girando por la tangente en una esquina interior en vez de raspar; (e) el margen NO impidiendo cruzar
+un vano de una celda. Y en juego: pegarse a una pared y que el bicho llegue y pegue.
+
+Por qué es ADR (reglas duras 2 y 4): enmienda decisiones registradas de ADR-040 (la regla de línea
+recta y el atajo) y ADR-075 (el atajo con radio de cuerpo, que se conserva para el ACERCAMIENTO y se
+deja de exigir para el GOLPE), y toca navegación y colisión, que son sistema núcleo. No cambia wire
+ni formato de chunk, así que la regla 7 no aplica.
+
+Dependencias: ADR-040 (A* y regla diagonal), ADR-075 (atajo con cuerpo, banda de acecho), ADR-018
+(el fantasma colisiona contra `grid_gen`), ADR-026 partes 1–2 (BLOQUEADAS — la divergencia que este
+ADR sortea sin resolver), ADR-033 (esa divergencia, ya declarada).
