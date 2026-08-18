@@ -212,4 +212,84 @@ mod tests {
         }
         assert!(found > 0, "ni una habitación en 40x40 chunks del seed 42");
     }
+
+    /// El lado de puerta que TALLA la colisión (`plan.door_side`, crudo) tiene que ser el MISMO
+    /// que el lado que de verdad abrió la rejilla fina (`carve_into_grid`, que prueba los 4 lados
+    /// empezando por el sorteado y puede acabar usando uno distinto si el túnel del primero muere
+    /// contra la costura). Si divergen: pared invisible en la puerta que se VE abierta, o un muro
+    /// que se ve solo y se cruza igual.
+    ///
+    /// Cubre el hallazgo Grave "colisión fija vs. render con fallback de 4 lados"
+    /// (docs/DEBT-ROADMAP.md): `carve_into_layout` talla siempre `plan.door_side` crudo, nunca el
+    /// lado resuelto por `carve_into_grid` (que prueba los 4 empezando por el sorteado). Verde hoy
+    /// sobre 4 seeds × 1600 chunks — el fallback no tuvo que activarse en esa muestra, así que la
+    /// divergencia sigue sin observarse en juego — pero el hueco de diseño sigue ahí: si algún día
+    /// una seed/chunk sí fuerza el fallback, este test lo atrapa aquí y no en un jugador atrapado.
+    #[test]
+    fn the_layout_door_side_matches_the_grid_carves_resolved_side() {
+        use crate::world::grid_gen::{
+            carve_into_grid, generate_chunk_layer, LayerGrid, LAYER_PROFILES, ROOM_CELLS,
+        };
+
+        fn resolved_door_side(grid: &LayerGrid, plan: &RoomPlan) -> Option<u8> {
+            let (x0, z0) = plan.cell_origin();
+            let mid = ROOM_CELLS / 2;
+            let probes: [(i32, i32); 4] = [
+                (x0 as i32 + mid as i32, z0 as i32 - 1),
+                (x0 as i32 + mid as i32, (z0 + ROOM_CELLS) as i32),
+                (x0 as i32 - 1, z0 as i32 + mid as i32),
+                ((x0 + ROOM_CELLS) as i32, z0 as i32 + mid as i32),
+            ];
+            for (side, (x, z)) in probes.iter().enumerate() {
+                if LayerGrid::in_bounds(*x, *z) {
+                    let (ux, uz) = (*x as usize, *z as usize);
+                    if grid.get(ux, uz).is_walkable() {
+                        return Some(side as u8);
+                    }
+                }
+            }
+            None
+        }
+
+        let mut checked = 0;
+        for seed in [42u64, 7778, 1, 9_999_999] {
+            for cx in 0..40 {
+                for cz in 0..40 {
+                    let Some(plan) = room_in_chunk(seed, cx, cz, 0) else {
+                        continue;
+                    };
+                    let rules = &LAYER_PROFILES[0];
+                    let out = generate_chunk_layer(rules, seed, (cx, cz), 0, &[]);
+                    let mut grid = out.grid;
+                    carve_into_grid(&mut grid, &plan, rules.ceiling_open);
+
+                    let resolved = resolved_door_side(&grid, &plan).unwrap_or_else(|| {
+                        panic!("seed {seed} ({cx},{cz}): ninguna de las 4 aberturas encontrada")
+                    });
+
+                    let mut layout = solid_layout();
+                    carve_into_layout(&mut layout, &plan);
+                    let (lx0, lz0) = (plan.tile_x, plan.tile_z);
+                    let lmid = ROOM_TILES / 2;
+                    let edges = [
+                        layout.edge_h(lx0 + lmid, lz0),
+                        layout.edge_h(lx0 + lmid, lz0 + ROOM_TILES),
+                        layout.edge_v(lx0, lz0 + lmid),
+                        layout.edge_v(lx0 + ROOM_TILES, lz0 + lmid),
+                    ];
+                    let layout_door_side =
+                        edges.iter().position(|&e| e == EDGE_KIND_DOOR).unwrap() as u8;
+
+                    checked += 1;
+                    assert_eq!(
+                        layout_door_side, resolved,
+                        "seed {seed} ({cx},{cz}): colisión abre el lado {layout_door_side} pero \
+                         el render resolvió el lado {resolved} (plan sorteó {})",
+                        plan.door_side
+                    );
+                }
+            }
+        }
+        assert!(checked > 0, "ninguna habitación encontrada en el barrido");
+    }
 }

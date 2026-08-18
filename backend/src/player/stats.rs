@@ -111,7 +111,7 @@ impl PlayerStats {
 
     /// Apply direct damage to health (from entities, starvation, etc.).
     pub fn take_damage(&mut self, amount: f32) {
-        self.health = (self.health - amount).max(0.0);
+        self.health = (self.health - amount).clamp(0.0, 100.0);
     }
 
     /// ADR-030: restore hunger from consuming an item. Clamped — consuming at/near 100 is a

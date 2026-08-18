@@ -43,7 +43,7 @@ impl PlayerFile {
         }
 
         let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
+        tmp.push(format!(".{}.tmp", std::process::id()));
         let tmp = PathBuf::from(tmp);
         std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, path)
@@ -125,6 +125,11 @@ fn filesystem_safe_component(key: &str) -> String {
 /// uses. `key` must already be sanitized (`persistence::sanitize_player_key`) — this function only
 /// additionally guards the filesystem boundary (see `filesystem_safe_component`), it does not
 /// re-validate the whitelist.
+///
+/// Windows reserved device names (`CON`, `NUL`, `COM1`...) tested empirically 2026-08-18 and
+/// refuted as a risk here: Windows only intercepts the BASE name without extension, and the
+/// `.json` suffix below is always present, so a key that sanitizes to e.g. `"CON"` still
+/// produces an ordinary `CON.json` file — writes/renames/reads it without error.
 pub fn resolve_player_save_path(world_seed: u64, key: &str) -> PathBuf {
     player_save_root()
         .join("players")

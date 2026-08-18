@@ -194,7 +194,7 @@ impl SaveFile {
         }
 
         let mut tmp = path.as_os_str().to_owned();
-        tmp.push(".tmp");
+        tmp.push(format!(".{}.tmp", std::process::id()));
         let tmp = std::path::PathBuf::from(tmp);
         std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, path)

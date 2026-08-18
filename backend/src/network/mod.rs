@@ -496,6 +496,9 @@ impl NetworkManager {
 
     fn next_sequence(&mut self) -> u32 {
         self.global_sequence = self.global_sequence.wrapping_add(1);
+        if self.global_sequence == 0 {
+            self.global_sequence = 1;
+        }
         self.global_sequence
     }
 
