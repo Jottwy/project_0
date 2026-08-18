@@ -74,7 +74,9 @@
 
 **Sección "NO tocar":** la exigencia de línea de visión de la detección por luz (punto 4 — el radio ya está calibrado contra una medición real) y la regla de que una respuesta del coro no siembra coro (punto 2.5).
 
-**PRÓXIMO PASO ÚNICO:** playtest a DOS clientes (todo lo automatizable ya está en verde). Orden: (1) que el joiner vea al robapieles disfrazado, con nombre, y lo vea revelarse — es el fix de ADR-079 y lo único que puede confirmarlo son dos clientes; (2) que la mirada se lea (una estatua que te sigue con la cabeza); (3) R1–R5 de ADR-075/076, que siguen sin correr.
+**ADR-079 VALIDADA (2026-08-17, en juego).** Joel lo prueba con el fix desplegado: *"lo he probado y la ia sync bien"*. El robapieles se ve desde un cliente no-host — lo que no había funcionado nunca desde ADR-016 y lo único que ningún test automático podía demostrar. **ADR-080 sigue SIN validar**: lo probado es la sincronía, no la calibración de las siete piezas de presencia.
+
+**PRÓXIMO PASO ÚNICO:** sesión de calibración de ADR-080 con el robapieles delante — la mirada, el flanqueo, el coro y la capa de audio están desplegados y sus números (38 m de luz, 22° de flanqueo, 25 m de audio, 2,5 s del rugido) son primera aproximación sin juicio humano. Pendientes que la acompañan: R1–R5 de ADR-075/076 (nunca corridos) y los tres bancos vocales sin clips (6 `Moan`, 7 `Winded`, 9 `Miss`; el 9 además pide re-bake del prefab para pasar de 9 a 10 huecos).
 
 ---
 - Fecha: 2026-08-17 (auditoría de código muerto y duplicación, dos ciclos multi-agente) — **3 commits, `869be8ed` → `3426ea6f`. `cargo build`+`cargo test` 773/773 verdes tras la limpieza Rust; SUITE EDITMODE COMPLETA: 442/442 con 1 rojo conocido (`HostLaunchOverRealProcessIgnoresPoisonedParentConnectTo`, exige `BACKROOMS_VERBOSE_LOG=1`), 0 huérfanos de backend.**

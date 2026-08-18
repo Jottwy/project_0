@@ -4059,3 +4059,24 @@ Alternativas rechazadas:
   perfora para reconectar bolsillos, y la sala nacería con agujeros aleatorios en el muro.
 - **(D) Que la habitación sea el chunk entero, o alinearla a él.** RECHAZADA: es exactamente el
   problema que esta enmienda arregla.
+
+### ADR-079 pasa a VALIDADA (2026-08-17) — probado en juego por Joel
+
+Estado: **VALIDADA**. Joel lo prueba y confirma: *"lo he probado y la ia sync bien"*. El robapieles
+se ve desde un cliente no-host, que es precisamente lo que no había funcionado NUNCA desde ADR-016 y
+lo único que ningún test podía demostrar (todos los automáticos corren contra un solo backend, y el
+defecto solo existe entre dos).
+
+Se cumplen las verificaciones exigidas arriba: round-trip de `PeerInfo` con `relay_only` no-default,
+`build_peer_list` marcando fantasmas con placeholder, el receptor registrando la entrada pasiva y
+aplicando la pose relayada posterior, la exclusión de `broadcast_destinations`/`broadcast_reliable`,
+la cosecha por timeout y `real_peer_count` excluyéndola (`cargo test` 791 verdes; suite EditMode
+442/443 con el único rojo conocido). El log del propio test confirmó además el bump en runtime
+(`[IPCClient] Wire schema v35 confirmed`, `remote_players_ids=[61440]` = `0xF000`).
+
+**ADR-080 NO queda validada con esto** y conviene que se lea claro dentro de seis meses: lo que Joel
+probó es la SINCRONÍA (que el fantasma se ve y se mueve bien desde el joiner). Las siete piezas de
+presencia —la mirada, la detección por luz, el rugido del golpe fallido, el flanqueo, el coro y la
+capa de audio— están construidas, con tests y desplegadas, pero **su calibración no la decide ningún
+test**: los números (38 m de luz, 22° de flanqueo, 25 m de la capa de audio, 2,5 s del rugido) siguen
+siendo primera aproximación a la espera de una sesión que los juzgue por cómo se sienten.
