@@ -1,4 +1,5 @@
 #if UNITY_EDITOR
+using System.IO;
 using BackroomsSurvival.Gameplay.Building;
 using BackroomsSurvival.Gameplay.GridWorld;
 using PolymindGames;
@@ -110,12 +111,73 @@ namespace BackroomsSurvival.EditorTools
         // reclamar no se puede construir nada — un marcador impagable cierra el juego, no lo protege.
         private const int MarkerMetalCost = 6;
 
+        // Steel door frame, imported 2026-08-18. A drop-in alternate to the plain wall: same 5 x 4 x
+        // 0.2 slot, same GridWallBuildingPiece, but a compound collider leaves its door column open.
+        private const string DoorFramePrefabPath = PrefabFolder + "/BR_BuildingPiece_GridDoorFrame.prefab";
+        private const string DoorFrameDefinitionPath = DefinitionFolder + "/BR_Door Frame.asset";
+
+        private const string DoorFrameSourceFbxPath =
+            "Assets/MeshyImports/steel-door-frame-remesh_20260818_140152/Meshy_AI_steel_door_frame_reme_0818120142_texture.fbx";
+        private const string DoorFrameSourceBaseColorPath =
+            "Assets/MeshyImports/steel-door-frame-remesh_20260818_140152/meshy_basecolor.png";
+        private const string DoorFrameSourceMetallicPath =
+            "Assets/MeshyImports/steel-door-frame-remesh_20260818_140152/meshy_metallic_smoothness.png";
+
+        // Baked, versioned copy — Assets/MeshyImports/ is gitignored (line 60: "cientos de MB, se
+        // regeneran desde la herramienta"), so a prefab pointing at the FBX directly would render
+        // fine here and be invisible on every other machine. See memory meshy-imports-gitignored-bake.
+        private const string DoorFrameBakedFolder = "Assets/Art/Building/DoorFrame";
+        private const string DoorFrameBakedMeshPath = DoorFrameBakedFolder + "/BR_DoorFrame_Mesh.asset";
+        private const string DoorFrameBakedBaseColorPath = DoorFrameBakedFolder + "/BR_DoorFrame_BaseColor.png";
+        private const string DoorFrameBakedMetallicPath = DoorFrameBakedFolder + "/BR_DoorFrame_Metallic.png";
+        private const string DoorFrameBakedMaterialPath = DoorFrameBakedFolder + "/BR_DoorFrame_Mat.mat";
+        private const int DoorFrameBakedTextureSize = 1024;
+
+        // Measured once (Backrooms ▸ Diagnostics ▸ Measure Door Frame) against this specific import:
+        // width x height x thickness once its own node rotation (270° on X) and scale (x100, a Meshy
+        // unit-conversion leftover) are applied. Re-export from Meshy and these need re-measuring.
+        private const float DoorFrameNativeWidth = 1.9033f;
+        private const float DoorFrameNativeHeight = 1.3553f;
+        private const float DoorFrameNativeThickness = 0.1811f;
+
+        // TODO(balance): first pass, never played. Between the wall (4) and the claim marker (6) —
+        // a door disturbs the wall row it sits in more than a bare panel, less than claiming ground.
+        private const int DoorFrameMetalCost = 5;
+
+        // The visual frame is a 5-column x 2-row grid (rendered off Measure Door Frame's screenshots)
+        // with its door cut into the middle column, opening from the floor up to roughly 2.7 m at
+        // native-to-envelope scale. Both half-widths below are a hair SMALLER than that visual
+        // opening — the solid jamb/header collider blocks reach slightly INTO the visible gap rather
+        // than stopping short of it, so a player grazes an invisible edge near the frame at worst,
+        // never clips through steel that reads as solid.
+        private const float DoorOpeningHalfWidth = 0.45f;
+        private const float DoorOpeningHeight = 2.5f;
+
+        // Door leaf: hangs in the frame's opening above, hinged on the LEFT jamb (negative X) to
+        // match GridDoorFrameOpening's default _hingeLocalPosition. Sized to fill the opening exactly.
+        private const string DoorLeafPrefabPath = PrefabFolder + "/BR_BuildingPiece_GridDoorLeaf.prefab";
+        private const string DoorLeafDefinitionPath = DefinitionFolder + "/BR_Door Leaf.asset";
+        private const float DoorLeafWidth = DoorOpeningHalfWidth * 2f;
+        private const float DoorLeafHeight = DoorOpeningHeight;
+        private const float DoorLeafThickness = 0.05f;
+
+        // TODO(balance): first pass, never played. Less than the frame (5) — hanging a leaf in an
+        // already-built frame disturbs less than the frame itself did.
+        private const int DoorLeafMetalCost = 2;
+
+        // Reused straight from the vendor's own wood door — same sound, different frame. Not owned
+        // by this project, never edited, just referenced.
+        private const string DoorOpenAudioPath = "Assets/PolymindGames/STP/Audio/SFX/Interactables/STP_Door_Open.wav";
+        private const string DoorCloseAudioPath = "Assets/PolymindGames/STP/Audio/SFX/Interactables/STP_Door_Close.wav";
+
         [MenuItem("Backrooms/Create Building Pieces")]
         public static void CreateIfMissing()
         {
             CreateWallIfMissing();
             CreatePanelIfMissing();
             CreateClaimMarkerIfMissing();
+            CreateDoorFrameIfMissing();
+            CreateDoorLeafIfMissing();
         }
 
         /// <summary>
@@ -269,6 +331,577 @@ namespace BackroomsSurvival.EditorTools
             Debug.Log($"[BackroomsBuildingPieceCreator] Created '{DefinitionPath}' (def_id={definition.Id}) and " +
                       $"'{PrefabPath}' — {MetalCost}× {MetalMaterialName}, category '{category.Name}'. " +
                       "COMMIT BOTH: the def_id travels over the wire.");
+        }
+
+        /// <summary>
+        /// Authors the door frame: same crear-si-falta contract and def_id-on-the-wire hazard as the
+        /// wall and panel — COMMIT BOTH GENERATED ASSETS (the definition AND the baked mesh/textures
+        /// under <see cref="DoorFrameBakedFolder"/>, which live outside Assets/MeshyImports/ so a
+        /// fresh clone actually renders them).
+        /// </summary>
+        private static void CreateDoorFrameIfMissing()
+        {
+            var existingDefinition = AssetDatabase.LoadAssetAtPath<BuildingPieceDefinition>(DoorFrameDefinitionPath);
+            var existingPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(DoorFramePrefabPath);
+            if (existingDefinition != null && existingPrefab != null)
+            {
+                Debug.Log($"[BackroomsBuildingPieceCreator] '{DoorFrameDefinitionPath}' and '{DoorFramePrefabPath}' " +
+                          "already exist — left untouched (the definition id is on the wire; regenerating it would " +
+                          "break replication).");
+                EnsureDoorFrameOpeningMarker(existingPrefab);
+                return;
+            }
+
+            if (existingDefinition != null || existingPrefab != null)
+            {
+                Debug.LogError("[BackroomsBuildingPieceCreator] Half the door-frame pair exists " +
+                               $"(definition={existingDefinition != null}, prefab={existingPrefab != null}). " +
+                               "Refusing to regenerate: recreating the definition would mint a new def_id, " +
+                               "recreating the prefab would orphan the existing one. Delete the survivor by hand " +
+                               "and re-run, or restore the missing file from git.");
+                return;
+            }
+
+            var metal = ResolveBuildMaterial(MetalMaterialName);
+            if (metal == null)
+                return;
+
+            if (!TryResolveShared(out var category, out var placeEffects, out var constructEffects))
+                return;
+
+            EnsureFolders();
+            BackroomsEditorFolders.EnsureFolder("Assets/Art");
+            BackroomsEditorFolders.EnsureFolder("Assets/Art/Building");
+            BackroomsEditorFolders.EnsureFolder(DoorFrameBakedFolder);
+
+            var mesh = BakeDoorFrameMesh();
+            if (mesh == null)
+                return;
+
+            var material = BakeDoorFrameMaterial();
+            if (material == null)
+                return;
+
+            var definition = CreateDefinition(DoorFrameDefinitionPath, category, placeEffects, constructEffects,
+                "A steel frame with a door-shaped opening. Snaps to the floor grid like the plain wall — " +
+                "build it into a wall row to leave a walkable gap instead of a solid panel.");
+            var prefab = CreateDoorFramePrefab(definition, metal, mesh, material);
+            AssignPrefabToDefinition(definition, prefab);
+            EnsureDoorFrameOpeningMarker(prefab);
+
+            BuildingPieceDefinition.ReloadDefinitions_EditorOnly();
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"[BackroomsBuildingPieceCreator] Created '{DoorFrameDefinitionPath}' (def_id={definition.Id}) " +
+                      $"and '{DoorFramePrefabPath}' — {DoorFrameMetalCost}× {MetalMaterialName}, category " +
+                      $"'{category.Name}'. COMMIT BOTH plus everything under '{DoorFrameBakedFolder}': the def_id " +
+                      "travels over the wire and the baked art is what makes the piece visible off this machine.");
+        }
+
+        /// <summary>
+        /// Sets the FBX importer up for baking rather than direct rendering: our own URP material
+        /// replaces whatever the FBX carries (imported materials come in Built-in shader and render
+        /// magenta since ADR-065), and the mesh needs to be CPU-readable to copy its vertex data out.
+        /// Mirrors BackroomsSprayModelSwapper.ConfigureModel.
+        /// </summary>
+        private static void ConfigureDoorFrameModelImport()
+        {
+            var importer = AssetImporter.GetAtPath(DoorFrameSourceFbxPath) as ModelImporter;
+            if (importer == null)
+            {
+                Debug.LogWarning($"[BackroomsBuildingPieceCreator] '{DoorFrameSourceFbxPath}' has no ModelImporter.");
+                return;
+            }
+
+            bool dirty = false;
+            if (importer.materialImportMode != ModelImporterMaterialImportMode.None)
+            {
+                importer.materialImportMode = ModelImporterMaterialImportMode.None;
+                dirty = true;
+            }
+            if (importer.importAnimation) { importer.importAnimation = false; dirty = true; }
+            if (importer.importCameras) { importer.importCameras = false; dirty = true; }
+            if (importer.importLights) { importer.importLights = false; dirty = true; }
+            if (!importer.isReadable) { importer.isReadable = true; dirty = true; }
+            // Off, not the default: mesh compression quantizes positions RELATIVE TO THE IMPORT
+            // BOX, and this bake rewrites the vertices afterward into a different box entirely
+            // (same trap documented in BackroomsSprayModelSwapper.ConfigureModel).
+            if (importer.meshCompression != ModelImporterMeshCompression.Off)
+            {
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                dirty = true;
+            }
+            if (!importer.optimizeMeshPolygons) { importer.optimizeMeshPolygons = true; dirty = true; }
+            if (!importer.optimizeMeshVertices) { importer.optimizeMeshVertices = true; dirty = true; }
+
+            if (!dirty) return;
+            importer.SaveAndReimport();
+        }
+
+        /// <summary>
+        /// Bakes the door frame FBX into a versioned <c>.asset</c> mesh, already at its FINAL world
+        /// size: the FBX's own node rotation/scale (Meshy's unit + axis correction, measured as
+        /// <see cref="DoorFrameNativeWidth"/> etc.) is baked in alongside the extra scale that
+        /// stretches it onto the wall's 5 x 4 slot, so the finished piece needs no scale anywhere in
+        /// its hierarchy — which matters because <c>MaterialEffect</c>'s ghost tint is object-space
+        /// and a scaled root would distort it (the almond water bottle's oversized "highlight" was
+        /// exactly this bug).
+        ///
+        /// Width and height share one pair of factors (the door column and its opening scale up
+        /// together with the whole frame); thickness gets its OWN factor rather than following
+        /// width's the way the drywall sheet does — following width would balloon a ~0.18 m frame to
+        /// ~0.48 m instead of landing near the wall's fixed 0.2 m.
+        /// </summary>
+        private static Mesh BakeDoorFrameMesh()
+        {
+            var sourceAsset = AssetDatabase.LoadAssetAtPath<GameObject>(DoorFrameSourceFbxPath);
+            if (sourceAsset == null)
+            {
+                Debug.LogError($"[BackroomsBuildingPieceCreator] Door frame FBX missing at " +
+                               $"'{DoorFrameSourceFbxPath}'. Nothing created.");
+                return null;
+            }
+
+            ConfigureDoorFrameModelImport();
+
+            var extraScale = new Vector3(
+                Length / DoorFrameNativeWidth,
+                Height / DoorFrameNativeHeight,
+                Thickness / DoorFrameNativeThickness);
+
+            var temp = (GameObject)Object.Instantiate(sourceAsset);
+            Mesh baked;
+            try
+            {
+                var filter = temp.GetComponentInChildren<MeshFilter>();
+                if (filter == null || filter.sharedMesh == null)
+                {
+                    Debug.LogError($"[BackroomsBuildingPieceCreator] '{DoorFrameSourceFbxPath}' has no readable " +
+                                   "MeshFilter. Nothing created.");
+                    return null;
+                }
+
+                // The node's own authored rotation/scale (identity parent, so world == local here).
+                var rotation = filter.transform.rotation;
+                var unitScale = filter.transform.lossyScale;
+
+                baked = Object.Instantiate(filter.sharedMesh);
+                baked.name = "BR_DoorFrame_Mesh";
+
+                var vertices = baked.vertices;
+                for (int i = 0; i < vertices.Length; i++)
+                    vertices[i] = Vector3.Scale(rotation * Vector3.Scale(vertices[i], unitScale), extraScale);
+                baked.vertices = vertices;
+
+                // unitScale is authored UNIFORM (Meshy's flat x100), so it drops out of a normal's
+                // direction entirely (only ever rescales length, which RecalculateNormals-adjacent
+                // renormalizing below undoes) — only extraScale, being non-uniform, needs the
+                // inverse-transpose treatment here.
+                var normals = baked.normals;
+                if (normals != null && normals.Length == vertices.Length)
+                {
+                    var invExtra = new Vector3(1f / extraScale.x, 1f / extraScale.y, 1f / extraScale.z);
+                    for (int i = 0; i < normals.Length; i++)
+                        normals[i] = Vector3.Scale(rotation * normals[i], invExtra).normalized;
+                    baked.normals = normals;
+                }
+
+                var tangents = baked.tangents;
+                if (tangents != null && tangents.Length == vertices.Length)
+                {
+                    for (int i = 0; i < tangents.Length; i++)
+                    {
+                        var t = tangents[i];
+                        var xyz = Vector3.Scale(rotation * Vector3.Scale(new Vector3(t.x, t.y, t.z), unitScale),
+                            extraScale).normalized;
+                        tangents[i] = new Vector4(xyz.x, xyz.y, xyz.z, t.w);
+                    }
+                    baked.tangents = tangents;
+                }
+
+                baked.RecalculateBounds();
+            }
+            finally
+            {
+                Object.DestroyImmediate(temp);
+            }
+
+            var existing = AssetDatabase.LoadAssetAtPath<Mesh>(DoorFrameBakedMeshPath);
+            if (existing == null)
+            {
+                AssetDatabase.CreateAsset(baked, DoorFrameBakedMeshPath);
+                AssetDatabase.SaveAssets();
+                Debug.Log($"[BackroomsBuildingPieceCreator] Door frame mesh baked to '{DoorFrameBakedMeshPath}' " +
+                          $"(bounds size {baked.bounds.size}).");
+                return baked;
+            }
+
+            // Overwritten in place, not deleted and recreated: a fresh GUID would break every
+            // reference into this asset on the next run (same rule as the spray can bake).
+            EditorUtility.CopySerialized(baked, existing);
+            Object.DestroyImmediate(baked);
+            EditorUtility.SetDirty(existing);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.ImportAsset(DoorFrameBakedMeshPath, ImportAssetOptions.ForceUpdate);
+            var reloaded = AssetDatabase.LoadAssetAtPath<Mesh>(DoorFrameBakedMeshPath);
+            Debug.Log($"[BackroomsBuildingPieceCreator] Door frame mesh re-baked at '{DoorFrameBakedMeshPath}' " +
+                      $"(same GUID), bounds size {reloaded.bounds.size}.");
+            return reloaded;
+        }
+
+        /// <summary>
+        /// Bakes one source texture (read UNCOMPRESSED and linear, which is how Meshy's own import
+        /// settings must be temporarily forced — reading pixels off an already-compressed texture
+        /// shuffles the channels) down to <see cref="DoorFrameBakedTextureSize"/> px, then restores
+        /// the source import settings. Mirrors BackroomsSprayModelSwapper.BakeTexture.
+        /// </summary>
+        private static void BakeDoorFrameTexture(string sourcePath, string bakedPath, bool sRgb)
+        {
+            var importer = AssetImporter.GetAtPath(sourcePath) as TextureImporter;
+            if (importer == null)
+            {
+                Debug.LogWarning($"[BackroomsBuildingPieceCreator] No texture at '{sourcePath}' — door frame " +
+                                 "baked without it.");
+                return;
+            }
+
+            var prevType = importer.textureType;
+            var prevCompression = importer.textureCompression;
+            bool prevReadable = importer.isReadable;
+            bool prevSrgb = importer.sRGBTexture;
+            int prevMax = importer.maxTextureSize;
+
+            try
+            {
+                importer.textureType = TextureImporterType.Default;
+                importer.textureCompression = TextureImporterCompression.Uncompressed;
+                importer.isReadable = true;
+                importer.sRGBTexture = sRgb;
+                importer.maxTextureSize = DoorFrameBakedTextureSize;
+                importer.SaveAndReimport();
+
+                var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(sourcePath);
+                if (tex == null)
+                {
+                    Debug.LogWarning($"[BackroomsBuildingPieceCreator] '{sourcePath}' did not load as Texture2D.");
+                    return;
+                }
+
+                File.WriteAllBytes(bakedPath, tex.EncodeToPNG());
+                AssetDatabase.ImportAsset(bakedPath, ImportAssetOptions.ForceUpdate);
+            }
+            finally
+            {
+                importer.textureType = prevType;
+                importer.textureCompression = prevCompression;
+                importer.isReadable = prevReadable;
+                importer.sRGBTexture = prevSrgb;
+                importer.maxTextureSize = prevMax;
+                importer.SaveAndReimport();
+            }
+
+            var baked = AssetImporter.GetAtPath(bakedPath) as TextureImporter;
+            if (baked == null) return;
+
+            baked.textureType = TextureImporterType.Default;
+            baked.sRGBTexture = sRgb;
+            baked.maxTextureSize = DoorFrameBakedTextureSize;
+            baked.textureCompression = TextureImporterCompression.Compressed;
+            baked.mipmapEnabled = true;
+            baked.SaveAndReimport();
+        }
+
+        /// <summary>
+        /// Bakes both source textures and builds the URP Lit material. No normal map this import
+        /// (unlike the spray can's source) — Meshy simply did not produce one, so the frame reads
+        /// slightly flatter than it could; not a bug, just what shipped.
+        /// </summary>
+        private static Material BakeDoorFrameMaterial()
+        {
+            BackroomsEditorFolders.EnsureFolder(DoorFrameBakedFolder);
+            BakeDoorFrameTexture(DoorFrameSourceBaseColorPath, DoorFrameBakedBaseColorPath, sRgb: true);
+            BakeDoorFrameTexture(DoorFrameSourceMetallicPath, DoorFrameBakedMetallicPath, sRgb: false);
+
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+            {
+                Debug.LogError("[BackroomsBuildingPieceCreator] No 'Universal Render Pipeline/Lit' shader. " +
+                               "Nothing created.");
+                return null;
+            }
+
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(DoorFrameBakedMaterialPath);
+            if (mat == null)
+            {
+                mat = new Material(shader);
+                AssetDatabase.CreateAsset(mat, DoorFrameBakedMaterialPath);
+            }
+            mat.shader = shader;
+
+            var baseColor = AssetDatabase.LoadAssetAtPath<Texture2D>(DoorFrameBakedBaseColorPath);
+            var metallic = AssetDatabase.LoadAssetAtPath<Texture2D>(DoorFrameBakedMetallicPath);
+
+            if (baseColor != null) mat.SetTexture("_BaseMap", baseColor);
+            if (metallic != null)
+            {
+                mat.SetTexture("_MetallicGlossMap", metallic);
+                mat.EnableKeyword("_METALLICSPECGLOSSMAP");
+                mat.SetFloat("_Metallic", 1f);
+                mat.SetFloat("_Smoothness", 1f);
+                mat.SetFloat("_SmoothnessTextureChannel", 0f); // alpha of the metallic map
+            }
+
+            EditorUtility.SetDirty(mat);
+            AssetDatabase.SaveAssets();
+            return mat;
+        }
+
+        /// <summary>
+        /// Two jambs plus a header, all on the ROOT (same load-bearing reason as every other piece
+        /// in this file: both vendor detectors resolve their component from the GameObject of the
+        /// collider they hit). Left as three separate boxes rather than one box with a hole because
+        /// Unity colliders cannot express a hole — this is the standard decomposition for a solid
+        /// frame around an opening.
+        /// </summary>
+        private static void AddDoorFrameColliders(GameObject root)
+        {
+            float jambWidth = Length * 0.5f - DoorOpeningHalfWidth;
+            float jambCentreX = DoorOpeningHalfWidth + jambWidth * 0.5f;
+
+            var left = root.AddComponent<BoxCollider>();
+            left.center = new Vector3(-jambCentreX, Height * 0.5f, 0f);
+            left.size = new Vector3(jambWidth, Height, Thickness);
+
+            var right = root.AddComponent<BoxCollider>();
+            right.center = new Vector3(jambCentreX, Height * 0.5f, 0f);
+            right.size = new Vector3(jambWidth, Height, Thickness);
+
+            float headerHeight = Height - DoorOpeningHeight;
+            var header = root.AddComponent<BoxCollider>();
+            header.center = new Vector3(0f, DoorOpeningHeight + headerHeight * 0.5f, 0f);
+            header.size = new Vector3(DoorOpeningHalfWidth * 2f, headerHeight, Thickness);
+        }
+
+        private static GameObject CreateDoorFramePrefab(BuildingPieceDefinition definition,
+            BuildMaterialDefinition metal, Mesh mesh, Material material)
+        {
+            var root = new GameObject("BR_BuildingPiece_GridDoorFrame")
+            {
+                layer = LayerConstants.Building
+            };
+
+            // RENDER ONLY, bare MeshFilter/MeshRenderer — same split as every piece here, the
+            // collider belongs on the root, never on this child.
+            var model = new GameObject("Model") { layer = LayerConstants.Building };
+            model.transform.SetParent(root.transform, false);
+            model.transform.localPosition = new Vector3(0f, Height * 0.5f, 0f);
+            var filter = model.AddComponent<MeshFilter>();
+            filter.sharedMesh = mesh;
+            var renderer = model.AddComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+
+            AddDoorFrameColliders(root);
+
+            // RequireComponent pulls in MaterialEffect (the ghost tint) with this call.
+            var piece = root.AddComponent<GridWallBuildingPiece>();
+            var constructable = root.AddComponent<Constructable>();
+
+            ConfigurePiece(piece, definition,
+                new Bounds(new Vector3(0f, Height * 0.5f, 0f), new Vector3(Length, Height, Thickness)));
+            ConfigureConstructable(constructable, metal, DoorFrameMetalCost);
+            ConfigureMaterialEffect(root.GetComponent<MaterialEffect>(), renderer);
+
+            var saved = PrefabUtility.SaveAsPrefabAsset(root, DoorFramePrefabPath);
+            Object.DestroyImmediate(root);
+            return saved;
+        }
+
+        /// <summary>
+        /// Idempotent patch: adds <see cref="GridDoorFrameOpening"/> to the frame prefab if it is not
+        /// already there, and nothing else. The frame's definition id must never be regenerated once
+        /// minted, so this is how the marker reaches a frame prefab authored before the marker
+        /// existed (or repairs one where it was somehow lost) without touching the def_id at all.
+        /// </summary>
+        private static void EnsureDoorFrameOpeningMarker(GameObject prefabAsset)
+        {
+            string path = AssetDatabase.GetAssetPath(prefabAsset);
+            var contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                // Defensive: this piece's authored pivot is the floor origin like every other piece
+                // in this file (GridWallSnap overwrites position/rotation on every placement anyway,
+                // so nothing depends on whatever the asset's root happens to say) — reset it here so
+                // a stray non-origin root never lingers into a re-save.
+                contents.transform.SetPositionAndRotation(Vector3.zero, Quaternion.identity);
+
+                if (contents.GetComponent<GridDoorFrameOpening>() != null)
+                {
+                    PrefabUtility.SaveAsPrefabAsset(contents, path);
+                    return;
+                }
+
+                var opening = contents.AddComponent<GridDoorFrameOpening>();
+                var serialized = new SerializedObject(opening);
+                serialized.FindProperty("_hingeLocalPosition").vector3Value =
+                    new Vector3(-DoorOpeningHalfWidth, 0f, 0f);
+                serialized.FindProperty("_leafSize").vector3Value =
+                    new Vector3(DoorLeafWidth, DoorLeafHeight, DoorLeafThickness);
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[BackroomsBuildingPieceCreator] Added GridDoorFrameOpening marker to '{path}'.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        /// <summary>
+        /// Authors the door leaf: same crear-si-falta contract as every other piece here. Reuses the
+        /// door frame's own baked material (a plain metal plank, per the user's call — no separate
+        /// leaf mesh was imported) and the vendor's own <c>Door</c> component unmodified for the
+        /// actual swing/open/close/damage behaviour, wired the same way its own inspector would.
+        /// </summary>
+        private static void CreateDoorLeafIfMissing()
+        {
+            var existingDefinition = AssetDatabase.LoadAssetAtPath<BuildingPieceDefinition>(DoorLeafDefinitionPath);
+            var existingPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(DoorLeafPrefabPath);
+            if (existingDefinition != null && existingPrefab != null)
+            {
+                Debug.Log($"[BackroomsBuildingPieceCreator] '{DoorLeafDefinitionPath}' and '{DoorLeafPrefabPath}' " +
+                          "already exist — left untouched (the definition id is on the wire; regenerating it " +
+                          "would break replication).");
+                return;
+            }
+
+            if (existingDefinition != null || existingPrefab != null)
+            {
+                Debug.LogError("[BackroomsBuildingPieceCreator] Half the door-leaf pair exists " +
+                               $"(definition={existingDefinition != null}, prefab={existingPrefab != null}). " +
+                               "Refusing to regenerate: recreating the definition would mint a new def_id, " +
+                               "recreating the prefab would orphan the existing one. Delete the survivor by hand " +
+                               "and re-run, or restore the missing file from git.");
+                return;
+            }
+
+            var metal = ResolveBuildMaterial(MetalMaterialName);
+            if (metal == null)
+                return;
+
+            if (!TryResolveShared(out var category, out var placeEffects, out var constructEffects))
+                return;
+
+            EnsureFolders();
+
+            var material = AssetDatabase.LoadAssetAtPath<Material>(DoorFrameBakedMaterialPath);
+            if (material == null)
+            {
+                Debug.LogError($"[BackroomsBuildingPieceCreator] No baked material at '{DoorFrameBakedMaterialPath}'. " +
+                               "Run \"Backrooms ▸ Create Building Pieces\" once fully so the door frame bakes its " +
+                               "own material first. Nothing created.");
+                return;
+            }
+
+            var definition = CreateDefinition(DoorLeafDefinitionPath, category, placeEffects, constructEffects,
+                "A hinged door leaf. Aim near a built door frame's opening to hang it — opens on interact, " +
+                "or with enough of a hit.");
+            var prefab = CreateDoorLeafPrefab(definition, metal, material);
+            AssignPrefabToDefinition(definition, prefab);
+
+            BuildingPieceDefinition.ReloadDefinitions_EditorOnly();
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"[BackroomsBuildingPieceCreator] Created '{DoorLeafDefinitionPath}' (def_id={definition.Id}) " +
+                      $"and '{DoorLeafPrefabPath}' — {DoorLeafMetalCost}× {MetalMaterialName}, category " +
+                      $"'{category.Name}'. COMMIT BOTH: the def_id travels over the wire.");
+        }
+
+        private static GameObject CreateDoorLeafPrefab(BuildingPieceDefinition definition,
+            BuildMaterialDefinition metal, Material material)
+        {
+            // Root pivot IS the hinge, unlike every other piece in this file (bottom-centre or
+            // cell-centre): the vendor's Door swings by rotating transform.localRotation on whatever
+            // GameObject it lives on, so the root has to BE the swing axis. The visual leaf and the
+            // collider both sit offset sideways from it instead of centred on it.
+            var root = new GameObject("BR_BuildingPiece_GridDoorLeaf")
+            {
+                layer = LayerConstants.Building
+            };
+
+            var centre = new Vector3(DoorLeafWidth * 0.5f, DoorLeafHeight * 0.5f, 0f);
+            var size = new Vector3(DoorLeafWidth, DoorLeafHeight, DoorLeafThickness);
+
+            var panel = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            panel.name = "Model";
+            panel.layer = LayerConstants.Building;
+            panel.transform.SetParent(root.transform, false);
+            panel.transform.localPosition = centre;
+            panel.transform.localScale = size;
+            Object.DestroyImmediate(panel.GetComponent<Collider>());
+            panel.GetComponent<MeshRenderer>().sharedMaterial = material;
+
+            // On the ROOT — the usual load-bearing reason (vendor build detectors resolve their
+            // component off the collider's own GameObject) AND what Door.cs itself demands
+            // ([RequireComponent(typeof(BoxCollider), typeof(IHoverableInteractable))]): both
+            // constraints point at the same GameObject, so there is nothing to reconcile.
+            var collider = root.AddComponent<BoxCollider>();
+            collider.center = centre;
+            collider.size = size;
+
+            // RequireComponent pulls in MaterialEffect (the ghost tint) with this call.
+            var piece = root.AddComponent<GridDoorLeafBuildingPiece>();
+            var constructable = root.AddComponent<Constructable>();
+
+            ConfigurePiece(piece, definition, new Bounds(centre, size));
+            ConfigureConstructable(constructable, metal, DoorLeafMetalCost);
+            ConfigureMaterialEffect(root.GetComponent<MaterialEffect>(), panel.GetComponent<MeshRenderer>());
+
+            // Vendor components, unmodified — Door.Awake() requires IHoverableInteractable to already
+            // be present, so Interactable is added first.
+            root.AddComponent<Interactable>();
+            var door = root.AddComponent<Door>();
+            ConfigureDoor(door);
+
+            var saved = PrefabUtility.SaveAsPrefabAsset(root, DoorLeafPrefabPath);
+            Object.DestroyImmediate(root);
+            return saved;
+        }
+
+        /// <summary>
+        /// Sets the vendor Door's private serialized fields the same way its own inspector would: a
+        /// 90° swing (vendor default) and its two audio clips reused straight from the vendor's own
+        /// wood door — same sound, different frame.
+        /// </summary>
+        private static void ConfigureDoor(Door door)
+        {
+            var serialized = new SerializedObject(door);
+            serialized.FindProperty("_openRotation").vector3Value = new Vector3(0f, 90f, 0f);
+            serialized.FindProperty("_damageRequiredToOpen").floatValue = 30f;
+            serialized.FindProperty("_openTitle").stringValue = "Open";
+            serialized.FindProperty("_closeTitle").stringValue = "Close";
+
+            SetDoorAudioClip(serialized, "_openAudio", DoorOpenAudioPath);
+            SetDoorAudioClip(serialized, "_closeAudio", DoorCloseAudioPath);
+
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void SetDoorAudioClip(SerializedObject serialized, string fieldName, string clipPath)
+        {
+            var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(clipPath);
+            if (clip == null)
+            {
+                Debug.LogWarning($"[BackroomsBuildingPieceCreator] No audio clip at '{clipPath}' — door leaf " +
+                                 "built without it.");
+                return;
+            }
+
+            var field = serialized.FindProperty(fieldName);
+            field.FindPropertyRelative("Clip").objectReferenceValue = clip;
+            field.FindPropertyRelative("Volume").floatValue = 1f;
         }
 
         /// <summary>
