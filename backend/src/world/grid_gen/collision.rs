@@ -374,6 +374,106 @@ fn body_fits(cache: &mut GridGenChunkCache, layer: u8, pos: Vec3, from_fits: boo
     true
 }
 
+/// ADR-082 — THE CLOSEST PLACE THE BODY CAN STAND, on the line from `target` back towards `from`.
+///
+/// `Some(target)` when the body already fits there. Otherwise the first point, stepping back along
+/// that line, where it does. `None` when nothing within `PHANTOM_CONTACT_SEARCH` fits — the caller
+/// then does exactly what it did before this existed.
+///
+/// This is the other half of the split `PHANTOM_ATTACK_REACH` started. That constant separated how
+/// far an ARM reaches from how much room a BODY needs, but three line-of-sight tests kept demanding
+/// body-legal geometry all the way to the player: pressed against a wall, the last stretch never
+/// admits a 1 m-wide body, so the approach shortcut was refused, the route stopped a cell short, the
+/// strike's clear-line test never passed and the lunge's `has_line` decayed into a give-up. Aiming
+/// at the contact stance instead of at the player settles all three, and it does so WITHOUT relaxing
+/// any geometry rule: what changes is how far the line has to be clear, not whether it must be.
+///
+/// It stays correct once ADR-026 parts 1–2 unblock and the player collides against grid_gen too:
+/// then the body fits where the player stands, this returns `target`, and every caller silently
+/// goes back to the straight answer.
+pub fn contact_stance(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    from: Vec3,
+    target: Vec3,
+    radius: f32,
+) -> Option<Vec3> {
+    // WHY THE TARGET'S OWN CELL DECIDES, and not merely whether a body fits there. Backing off to
+    // a legal stance is only ever legitimate as compensation for ONE thing: the player standing
+    // where grid_gen says solid, which happens because their collision is still the legacy maze
+    // (ADR-026 parts 1–2, blocked). Applied more widely it silently becomes "strike through
+    // walls", and the suite proved it: an unconditional backoff made `extra_reach_never_strikes_
+    // through_a_wall` land a blow through a player-BUILT wall and let a hidden player be hunted
+    // through a corner, i.e. it deleted the hiding mechanic. Three cases, three answers:
+    let (gx, gz) = global_cell(target);
+    if cache.is_blocked_cell(gx, gz) {
+        // (1) A player-BUILT piece. That wall is real for everyone — the player collides with
+        // their own buildings — so there is nothing to compensate for and nothing to forgive.
+        return None;
+    }
+    if is_walkable_grid_gen(cache, target, layer) {
+        // (2) The target stands on legal ground. Normal play, including hiding behind a corner:
+        // the line must be clear all the way to them, so hand back the target untouched even if a
+        // 1 m-wide body could not stand exactly there.
+        return Some(target);
+    }
+    if body_fits_with_radius(cache, layer, target, radius) {
+        return Some(target);
+    }
+
+    let (dx, dz) = (from.x - target.x, from.z - target.z);
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < 1e-4 {
+        return None; // standing on top of each other: nothing to step back along
+    }
+    let (ux, uz) = (dx / len, dz / len);
+
+    // Stepping back from the target rather than forward from the creature: the answer wanted is the
+    // NEAREST legal stance to the player, and searching from the other end would return the first
+    // legal point next to the creature instead — which is where it already is.
+    let steps = (PHANTOM_CONTACT_SEARCH / PHANTOM_CONTACT_STEP).ceil() as i32;
+    for s in 1..=steps {
+        let d = (s as f32 * PHANTOM_CONTACT_STEP).min(len);
+        let p = Vec3::new(target.x + ux * d, target.y, target.z + uz * d);
+        if body_fits_with_radius(cache, layer, p, radius) {
+            return Some(p);
+        }
+        if d >= len {
+            break; // reached the creature itself without finding room
+        }
+    }
+    None
+}
+
+/// ADR-082 — how far back from an unreachable target the contact search may look. HALF A CELL, and
+/// the number is load-bearing: it is the most the creature is allowed to forgive about a target
+/// standing where its own map says solid.
+///
+/// It started at 3.0 m and that broke hiding, which the suite caught: the terrain/player collision
+/// divergence (ADR-026 parts 1–2) is not confined to wall faces, so a generous backoff would find a
+/// legal stance on the NEAR side of a genuine obstruction, the line to that stance read clear, and
+/// `sprint_blind_for` reset every tick — a lunge that could never be shaken. At 1.25 m the stance is
+/// necessarily just the far side of the surface the creature is already touching: a player hugging a
+/// wall is inside it, a player behind it is not.
+pub const PHANTOM_CONTACT_SEARCH: f32 = 1.25;
+/// Sampling step of that search. A quarter of the body radius: fine enough that the stance lands
+/// where an observer would expect, coarse enough to stay a handful of cell lookups.
+const PHANTOM_CONTACT_STEP: f32 = 0.125;
+
+/// `body_fits` with an explicit radius and no wedge valve — the shape test on its own, for callers
+/// asking "could a body stand HERE" about a place it is not currently in.
+fn body_fits_with_radius(cache: &mut GridGenChunkCache, layer: u8, pos: Vec3, radius: f32) -> bool {
+    if !is_walkable_grid_gen(cache, pos, layer) {
+        return false;
+    }
+    for (dx, dz) in [(radius, 0.0), (-radius, 0.0), (0.0, radius), (0.0, -radius)] {
+        if !is_walkable_grid_gen(cache, Vec3::new(pos.x + dx, pos.y, pos.z + dz), layer) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Resolve a move against grid_gen with axis sliding: try the full move, then X-only, then
 /// Z-only, else stay. Horizontal-only: `from.y` is PRESERVED (the phantom keeps the Y it spawned
 /// with, which is the player's spawn Y). `layer` selects which grid_gen layer's cells to test.
@@ -730,6 +830,93 @@ mod tests {
             "a wedged phantom must degrade to point collision and be able to leave"
         );
         assert!(r.pos.x > from.x, "it must actually move toward the exit");
+    }
+
+    // ── ADR-082: el punto de contacto ────────────────────────────────────────────────────────────
+
+    /// Caso trivial y el que valdrá SIEMPRE el día que ADR-026 partes 1–2 se desbloqueen: si el
+    /// cuerpo cabe donde está el objetivo, el contacto ES el objetivo y todo esto se vuelve inerte.
+    #[test]
+    fn contact_stance_is_the_target_when_the_body_fits_there() {
+        let mut grid = LayerGrid::new_solid();
+        for x in 3..9 {
+            for z in 3..9 {
+                grid.set(x, z, Cell::new(CellType::Open, 2, 0));
+            }
+        }
+        let mut c = cache_with_grid(grid);
+        let target = cell_center(6, 6);
+        let from = cell_center(4, 6);
+        assert_eq!(
+            contact_stance(&mut c, 0, from, target, PHANTOM_BODY_RADIUS),
+            Some(target),
+            "en campo abierto no hay nada que retroceder"
+        );
+    }
+
+    /// EL CASO DEL PLAYTEST: el objetivo está DENTRO de una celda que grid_gen llama pared (puede
+    /// estarlo de verdad — la colisión del jugador sigue siendo legacy, ADR-026 partes 1–2). Antes
+    /// de ADR-082 esto no tenía respuesta y la criatura se plantaba a dos metros: ahora devuelve el
+    /// sitio legal más cercano, que además está MÁS CERCA del objetivo que de la criatura.
+    #[test]
+    fn contact_stance_backs_off_a_target_inside_a_wall() {
+        let mut grid = LayerGrid::new_solid();
+        // Pasillo abierto en x = 4, de z = 3 a z = 10; el resto sólido.
+        for z in 3..11 {
+            grid.set(4, z, Cell::new(CellType::Corridor, 2, 0));
+        }
+        let mut c = cache_with_grid(grid);
+        // La criatura AL LADO, en el pasillo: es la situación que importa (ha llegado hasta ti y
+        // tiene que rematar). La ventana de búsqueda es corta a propósito, así que si la línea de
+        // retroceso sale muy oblicua no encuentra hueco y se degrada — ver el test de abajo.
+        let from = cell_center(4, 8);
+        // El "jugador" PEGADO al muro: dentro de la celda sólida contigua, pero a 0,3 m de su cara
+        // — que es donde acaba un jugador de verdad, porque su propia colisión lo frena ahí. El
+        // centro de la celda (1,25 m adentro) sería un caso que la ventana de media celda rechaza a
+        // propósito: a esa profundidad ya no es "pegado a la pared", es "mi mapa está mal aquí", y
+        // perdonar tanto es lo que rompía el escondite.
+        let wall_face_x = cell_center(5, 8).x - CELL_SIZE_M * 0.5;
+        let target = Vec3::new(wall_face_x + 0.3, cell_center(5, 8).y, cell_center(5, 8).z);
+
+        let stance = contact_stance(&mut c, 0, from, target, PHANTOM_BODY_RADIUS)
+            .expect("hay pasillo libre entre medias: tiene que existir un sitio donde plantarse");
+        assert!(
+            body_fits_with_radius(&mut c, 0, stance, PHANTOM_BODY_RADIUS),
+            "el contacto tiene que ser un sitio donde el cuerpo cabe de verdad"
+        );
+        let d_target = stance.distance_xz(target);
+        assert!(
+            d_target <= PHANTOM_CONTACT_SEARCH,
+            "cae dentro de la ventana de búsqueda, got {d_target:.2} m"
+        );
+        // El número no es arbitrario: el objetivo está 0,3 m dentro de la celda sólida y el cuerpo
+        // necesita 0,5 m de holgura, así que el sitio legal más cercano cae a ~0,8 m. Si esto se
+        // dispara, o cambió CELL_SIZE_M o cambió el radio del cuerpo.
+        assert!(
+            (0.6..=1.1).contains(&d_target),
+            "el contacto se planta justo al borde de lo que el cuerpo admite, got {d_target:.2} m"
+        );
+        // Y lo que de verdad arregla el bug: la criatura AVANZA hacia el objetivo en vez de
+        // plantarse donde estaba.
+        assert!(
+            d_target < from.distance_xz(target),
+            "el contacto está más cerca del objetivo que la propia criatura"
+        );
+    }
+
+    /// Sin sitio legal en toda la ventana ⇒ `None`, y el llamante se queda con el comportamiento de
+    /// siempre. Es la degradación que impide que este arreglo invente contactos imposibles.
+    #[test]
+    fn contact_stance_gives_up_when_nothing_fits() {
+        let mut grid = LayerGrid::new_solid();
+        grid.set(5, 5, Cell::new(CellType::Corridor, 2, 0)); // celda suelta: el cuerpo no cabe
+        let mut c = cache_with_grid(grid);
+        let from = cell_center(5, 5);
+        let target = cell_center(5, 7); // sólida, y sin nada legal entre medias
+        assert_eq!(
+            contact_stance(&mut c, 0, from, target, PHANTOM_BODY_RADIUS),
+            None
+        );
     }
 
     /// ADR-040: a spawn must land on the cell CENTRE, so the first step is never an ambiguous

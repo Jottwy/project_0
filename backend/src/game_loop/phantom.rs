@@ -3127,7 +3127,19 @@ impl PhantomDriver {
             return;
         }
 
-        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
+        // ADR-082: presses towards the CONTACT STANCE, same as the lunge. Without it, an unmasked
+        // creature pressing on somebody backed into a wall aims at a cell the router cannot reach
+        // and stalls a cell short — with its skin off, in plain sight, which is the worst possible
+        // moment for it to look broken.
+        let press_to = crate::world::grid_gen::contact_stance(
+            &mut self.grid_cache,
+            layer,
+            from,
+            tpos,
+            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
+        )
+        .unwrap_or(tpos);
+        let to_player = self.steer_heading(i, layer, from, press_to, ctx.dt);
         self.movers[i].heading_target = to_player;
         let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
         self.movers[i].heading =
@@ -3792,8 +3804,22 @@ impl PhantomDriver {
         // No clear line to you = going blind. `segment_is_clear` is the same test the
         // steering already trusts, so a corner that stops the creature seeing you is
         // exactly the corner the geometry says it is.
+        //
+        // ADR-082: measured to the CONTACT STANCE, not to the player. Pressed against a wall your
+        // own position quantizes into a cell grid_gen calls solid, so the line to it was never
+        // clear, `sprint_blind_for` ran out and the lunge gave up — hugging geometry worked as a
+        // perfect hiding place while standing in the open. Falling back to `tpos` when there is no
+        // stance keeps a genuine corner working exactly as before.
+        let contact = crate::world::grid_gen::contact_stance(
+            &mut self.grid_cache,
+            layer,
+            from,
+            tpos,
+            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
+        );
+        let line_to = contact.unwrap_or(tpos);
         let has_line =
-            crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+            crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, line_to);
         if has_line {
             self.movers[i].sprint_blind_for = 0.0;
         } else {
@@ -3837,7 +3863,12 @@ impl PhantomDriver {
 
         // ADR-040: navigated heading (see STALK). The lunge routes around geometry
         // instead of pinning itself to a wall between it and you.
-        let to_player = self.steer_heading(i, layer, from, tpos, ctx.dt);
+        //
+        // ADR-082: it closes on the CONTACT STANCE. Aiming at a player standing inside a cell the
+        // pathfinder calls solid made the A* return best-effort and stop a cell short — the "se
+        // queda pillado a una distancia" of the play-test. The stance is a place the body can
+        // actually be, so the route reaches it and the arm covers the rest.
+        let to_player = self.steer_heading(i, layer, from, line_to, ctx.dt);
         // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
         self.movers[i].heading_target = to_player;
         let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
@@ -3854,8 +3885,15 @@ impl PhantomDriver {
         // condition stops it re-striking inside that window.
         // REACH, not travel distance, and a clear line so the extra reach cannot strike
         // through geometry. See `PHANTOM_ATTACK_REACH`.
+        //
+        // ADR-082 — THE DISTANCE IS TO YOU, THE CLEAR LINE IS TO THE STANCE. Requiring the line all
+        // the way to `tpos` meant that pressing yourself against a wall made the strike impossible
+        // FOREVER (your position quantizes into a solid cell, so that line is never clear), which is
+        // the "sigue sin atacar cuando te pegas a una pared" of the play-test. Measuring the
+        // distance against the stance instead would have been the wrong fix in the other direction:
+        // it would hand out free reach. So: `dist` stays yours, the line stops where the body can.
         let in_reach = dist < PHANTOM_ATTACK_REACH
-            && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+            && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, line_to);
         // ADR-080 point 3 — THE SWING THAT DOES NOT LAND MAKES A SOUND. Being at arm's length
         // while the blow is locked out (recovering from the previous one) was completely silent:
         // the claw that grazed you registered as nothing at all. Its own short cooldown, because
@@ -4018,8 +4056,25 @@ impl PhantomDriver {
         // Thin line, same reasoning as SPRINT's own strike check: extra reach must never punch
         // through geometry. Unlike SPRINT there is no front/behind split — this is one kind, and
         // it does not care which way you are facing.
+        //
+        // ADR-082: to the contact stance, for the same reason and with the same fallback as SPRINT.
+        // An ambush that cannot land on somebody with their back to a wall is an ambush that fails
+        // in exactly the spot people back into when something charges them.
+        let ambush_line_to = crate::world::grid_gen::contact_stance(
+            &mut self.grid_cache,
+            layer,
+            from,
+            tpos,
+            crate::world::grid_gen::PHANTOM_BODY_RADIUS,
+        )
+        .unwrap_or(tpos);
         let in_reach = dist < PHANTOM_ATTACK_REACH
-            && crate::world::grid_gen::segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+            && crate::world::grid_gen::segment_is_clear(
+                &mut self.grid_cache,
+                layer,
+                from,
+                ambush_line_to,
+            );
         if in_reach {
             let dx = tpos.x - from.x;
             let dz = tpos.z - from.z;
