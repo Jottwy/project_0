@@ -15,7 +15,7 @@ use crate::ipc::{
 };
 use crate::network::protocol::PacketPayload;
 use crate::network::sync;
-use crate::network::{BoundedDedupeSet, NetworkEvent, NetworkManager, PeerId};
+use crate::network::{BoundedDedupeSet, NetworkEvent, NetworkManager, PeerId, DEDUPE_CAP};
 use crate::player::Player;
 use crate::utils::{world_to_chunk, ChunkPos, Vec3, CHUNK_SIZE};
 use crate::world::collision::{resolve_safe_spawn, Level0Collision};
@@ -531,7 +531,8 @@ pub async fn run(
     // Authoritative velocity echoed in the 20 Hz delta: the accepted client
     // velocity, or zero when the speed cap rejected the move (held in place).
     let mut authoritative_velocity = Vec3::ZERO;
-    let mut processed_interactions: HashSet<(u16, u64)> = HashSet::with_capacity(256);
+    let mut processed_interactions: BoundedDedupeSet<(u16, u64)> =
+        BoundedDedupeSet::with_capacity(DEDUPE_CAP);
     // Track the last chunk position used for ownership so we only call
     // update_ownership when the player crosses a chunk boundary, not every tick.
     let mut last_ownership_chunk: Option<ChunkPos> = None;
@@ -1781,7 +1782,7 @@ async fn handle_network_event(
     // ADR-046 — voice out to Unity. Deliberately NOT `to_clients`: that channel evicts its
     // OLDEST messages on overflow, `player_died` among them.
     to_clients_voice: &broadcast::Sender<ServerMessage>,
-    processed_interactions: &mut HashSet<(u16, u64)>,
+    processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
     tick: u64,
     // ADR-056: needed by the host-departure arm below, which persists the player file before
     // announcing the end of the session. `None` means no file was ever resolved (no identity, or
@@ -3065,7 +3066,7 @@ async fn handle_action(
     world: &mut World,
     net: &mut NetworkManager,
     to_clients: &broadcast::Sender<ServerMessage>,
-    processed_interactions: &mut HashSet<(u16, u64)>,
+    processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
     tick: u64,
 ) {
     match action.action_type.as_str() {
@@ -5401,7 +5402,7 @@ async fn process_authoritative_interaction(
     requester_pos: Vec3,
     world: &mut World,
     net: &mut NetworkManager,
-    processed_interactions: &mut HashSet<(u16, u64)>,
+    processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
 ) {
     if requester_id != net.local_id && !net.peers.contains_key(&requester_id) {
         info!(
@@ -5576,7 +5577,7 @@ fn handle_spawn_world_chest(
     request_id: u64,
     position: Vec3,
     items: Vec<crate::world::corpse::CorpseStack>,
-    processed_interactions: &mut HashSet<(u16, u64)>,
+    processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
 ) -> Result<u32, &'static str> {
     if !is_host {
         return Err("not_host");

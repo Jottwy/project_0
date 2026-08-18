@@ -22,9 +22,16 @@ fn sanitize_component(raw: &str) -> String {
 /// whitelist) falls back to `"name:{sanitized_player_name}"`; if even the player's name sanitizes
 /// to empty, the last resort is `"name:player"`. Always returns something non-empty and
 /// filesystem-safe, truncated to `MAX_KEY_LEN`.
+///
+/// The `"name:"` prefix is reserved EXCLUSIVELY for that server-derived fallback: a `raw` that
+/// itself sanitizes to something starting with `"name:"` (a client claiming e.g. `"name:Joel"`
+/// verbatim) is treated as if it had arrived empty, same as the absent/whitelist-empty case,
+/// instead of being used as-is. Without this, a client-supplied `raw` could collide with the
+/// namespace the fallback derives from the SERVER's own knowledge of `player_name` — the
+/// difference between "this client's opaque id" and "whoever the server thinks is playing".
 pub fn sanitize_player_key(raw: Option<&str>, player_name: &str) -> String {
     let key = match raw.map(sanitize_component) {
-        Some(sanitized) if !sanitized.is_empty() => sanitized,
+        Some(sanitized) if !sanitized.is_empty() && !sanitized.starts_with("name:") => sanitized,
         _ => {
             let sanitized_name = sanitize_component(player_name);
             if sanitized_name.is_empty() {
@@ -83,6 +90,22 @@ mod tests {
             !key.contains('/') && !key.contains('.') && !key.contains('\\'),
             "no debe sobrevivir ningun separador de ruta ni punto: {key}"
         );
+    }
+
+    /// El namespace `"name:"` es del SERVIDOR, no del cliente: un `raw` que ya sanitiza a algo con
+    /// ese prefijo no debe poder colisionar con la clave que el propio fallback deriva del nombre
+    /// que el servidor conoce de otro jugador.
+    #[test]
+    fn sanitize_player_key_does_not_let_raw_claim_the_name_namespace() {
+        let claimed = sanitize_player_key(Some("name:Joel"), "Attacker");
+        let real_fallback = sanitize_player_key(None, "Joel");
+        assert_ne!(
+            claimed, real_fallback,
+            "un raw que se hace pasar por \"name:Joel\" no debe caer en la misma clave que el \
+             fallback real de un jugador anónimo llamado Joel"
+        );
+        // Cae en SU PROPIO fallback (derivado de su propio player_name), no en el raw declarado.
+        assert_eq!(claimed, sanitize_player_key(None, "Attacker"));
     }
 
     #[test]

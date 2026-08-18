@@ -56,7 +56,7 @@ async fn id_allocators_reseed_inside_their_own_range() {
 #[test]
 fn world_chest_is_not_reseeded_over_one_already_loaded() {
     let mut world = World::new(42);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
     let spot = Vec3::new(10.0, 0.0, 20.0);
     let loot = vec![crate::world::corpse::CorpseStack {
         item_id: 1,
@@ -78,7 +78,8 @@ fn world_chest_is_not_reseeded_over_one_already_loaded() {
 
     // Arranque 2: MISMO request_id (el contador reinicia) y dedup vacio, como en un
     // relanzamiento real del backend.
-    let mut fresh_dedupe: HashSet<(u16, u64)> = HashSet::new();
+    let mut fresh_dedupe: BoundedDedupeSet<(u16, u64)> =
+        BoundedDedupeSet::with_capacity(DEDUPE_CAP);
     let second = handle_spawn_world_chest(
         &mut world,
         true,
@@ -786,7 +787,7 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
     let mut world = World::new(42);
     let mut player = Player::new(1, "Host");
     let (tx, _rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     // 1 zero-quantity (dropped) + 70 valid (truncated to 64, first-come order).
     let mut items = vec![serde_json::json!({ "item_id": -999, "quantity": 0 })];
@@ -848,7 +849,7 @@ async fn report_inventory_with_container_and_slot_also_populates_inventory_v2() 
     let mut world = World::new(42);
     let mut player = Player::new(1, "Host");
     let (tx, _rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     let action = crate::ipc::PlayerAction {
         action_type: "report_inventory".into(),
@@ -894,7 +895,7 @@ async fn report_inventory_legacy_only_leaves_inventory_v2_empty() {
     let mut world = World::new(42);
     let mut player = Player::new(1, "Host");
     let (tx, _rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     let action = crate::ipc::PlayerAction {
         action_type: "report_inventory".into(),
@@ -5167,7 +5168,7 @@ fn spawn_world_chest_gates_dedupes_and_seeds() {
     use crate::world::corpse::CorpseStack;
 
     let mut world = World::new(42);
-    let mut processed = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
     let pos = Vec3::new(10.0, 1.8, 20.0);
     let loot = || {
         vec![CorpseStack {
@@ -6116,7 +6117,7 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
     let mut world = World::new(42);
     let mut player = Player::new(1, "Host");
     let (tx, _rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     let bed_position = build_room_centre(42);
     claim_at(&mut net, 1, bed_position);
@@ -6154,7 +6155,7 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
     let mut world = World::new(42);
     let mut player = Player::new(1, "Host");
     let (tx, _rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     let live_bed = build_room_centre(42);
     let doomed_bed = [live_bed[0] + 4.0, live_bed[1], live_bed[2] + 4.0];
@@ -6214,7 +6215,7 @@ async fn host_departure_saves_the_player_and_announces_session_ended() {
     player.identity_key = Some("uuid:adr056".into());
     player.stats.health = 61.0;
     let (tx, mut rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     let host_id = 1;
     net.host_peer_id = Some(host_id);
@@ -6266,7 +6267,7 @@ async fn a_non_host_peer_leaving_does_not_end_the_session() {
     let mut player = Player::new(7, "Joiner");
     player.identity_key = Some("uuid:adr056b".into());
     let (tx, mut rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     net.host_peer_id = Some(1);
     let path = scratch_player_path("non_host_departure");
@@ -6311,7 +6312,7 @@ async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
     let mut world = World::new(42);
     let mut player = Player::new(1, "Host");
     let (tx, mut rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
 
     assert!(net.host_peer_id.is_none(), "precondition: this IS the host");
 
@@ -6346,7 +6347,7 @@ async fn session_ended_carries_the_disconnect_reason() {
     let mut world = World::new(42);
     let mut player = Player::new(7, "Joiner");
     let (tx, mut rx) = broadcast::channel(16);
-    let mut processed: HashSet<(u16, u64)> = HashSet::new();
+    let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
     net.host_peer_id = Some(1);
 
     handle_network_event(
