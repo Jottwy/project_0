@@ -637,9 +637,6 @@ namespace BackroomsSurvival.Net
 
         public static bool EdgeIsOpen(byte k) => k == Open;
 
-        // Matches backend edge_is_full_wall.
-        public static bool EdgeIsFullWall(byte k) => k == Wall || k == Partition || k == FalseDoor;
-
         // Matches backend edge_blocks_movement.
         public static bool EdgeBlocksMovement(byte k) =>
             k == Wall || k == LowWall || k == HalfWall || k == Partition || k == FalseDoor;

@@ -36,29 +36,6 @@ namespace BackroomsSurvival.Gameplay.Building
 
 
         /// <summary>
-        /// True si <paramref name="worldPosition"/> cae en una columna de zona construible.
-        ///
-        /// Una zona todavía DESCONOCIDA (el snapshot con ese chunk aún no ha llegado) cuenta como no
-        /// construible a propósito: es un transitorio de arranque de un par de frames, y decir "sí"
-        /// mientras no se sabe pondría al jugador a colocar piezas que el host va a rechazar.
-        ///
-        /// Solo esta función depende de <see cref="ZoneRegistry"/>, que se puebla del snapshot IPC en
-        /// vivo y por tanto es Play-only — misma frontera declarada que `ChunkLootRollTests`. Las dos
-        /// mitades comprobables sin Play viven aparte, abajo, y son las que los tests EditMode cubren.
-        /// </summary>
-        public static bool CanBuildAt(Vector3 worldPosition)
-        {
-            if (!BuildRoomRegistry.Contains(worldPosition))
-                return false;
-
-            // ADR-081 fase 3, espejo de la regla del host (`process_stp_place`): en zona construible
-            // solo se construye dentro del claim propio. Sin claim, lo único colocable es el marcador
-            // — y eso lo decide `CanPlaceAt`, no esta función, que responde a "¿puedo construir aquí?"
-            // y por tanto habla de piezas normales.
-            return ClaimOwnerAt(worldPosition) == LocalPeerId();
-        }
-
-        /// <summary>
         /// La regla completa, con la pieza en la mano: el marcador se coloca en terreno sin reclamar,
         /// todo lo demás dentro del claim propio. Espejo literal de la puerta del host.
         /// </summary>

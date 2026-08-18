@@ -30,13 +30,6 @@ namespace BackroomsSurvival.Gameplay
         [Tooltip("How quickly the body eases toward the backend's authoritative position.")]
         public float positionSmoothing = 18f;
 
-        [Header("Collision Proxy V0")]
-        public bool enableClientCollision = true;
-        public LayerMask worldCollisionMask = Physics.DefaultRaycastLayers;
-        public float collisionRadius = 0.35f;
-        public float collisionHeight = 1.75f;
-        public float collisionProbeDistance = 0.70f;
-
         private IPCClient _ipc;
         private Transform _camera;
         private float _yaw;
@@ -99,8 +92,6 @@ namespace BackroomsSurvival.Gameplay
 
             HandleCursorToggle(keyboard);
             HandleLook(mouse, out Vector2 lookDelta);
-            Vector3 movement = ReadMovement(keyboard, out bool sprint);
-            movement = FilterMovementForCollision(movement);
             CollectActions(keyboard, mouse);
 
             // ADR-009: PlayerController is DEPRECATED and is NOT an IPC sender. It used to emit
@@ -124,65 +115,6 @@ namespace BackroomsSurvival.Gameplay
 
             transform.localRotation = Quaternion.Euler(0f, _yaw, 0f);
             if (_camera != null) _camera.localRotation = Quaternion.Euler(_pitch, 0f, 0f);
-        }
-
-        private Vector3 ReadMovement(Keyboard keyboard, out bool sprint)
-        {
-            float h = 0f, v = 0f;
-            sprint = false;
-            if (keyboard != null)
-            {
-                if (keyboard.wKey.isPressed) v += 1f;
-                if (keyboard.sKey.isPressed) v -= 1f;
-                if (keyboard.dKey.isPressed) h += 1f;
-                if (keyboard.aKey.isPressed) h -= 1f;
-                sprint = keyboard.leftShiftKey.isPressed;
-            }
-
-            // Camera-relative direction on the XZ plane. The backend normalizes,
-            // so magnitude here only needs to encode direction + intent to move.
-            Vector3 dir = transform.forward * v + transform.right * h;
-            dir.y = 0f;
-            if (dir.sqrMagnitude > 1f) dir.Normalize();
-            return dir;
-        }
-
-        private Vector3 FilterMovementForCollision(Vector3 movement)
-        {
-            // Phase 3.2E: god traversal bypasses all collision so walls are passable.
-            if (GodTraversalMode.IsEnabled)
-                return movement;
-            if (!enableClientCollision || !_hasSpawned || movement.sqrMagnitude < 0.0001f)
-                return movement;
-
-            Vector3 desired = movement.normalized;
-            if (!CapsuleBlocked(desired, out RaycastHit hit))
-                return movement;
-
-            Vector3 slide = Vector3.ProjectOnPlane(movement, hit.normal);
-            slide.y = 0f;
-            if (slide.sqrMagnitude < 0.0001f)
-                return Vector3.zero;
-
-            slide.Normalize();
-            return CapsuleBlocked(slide, out _) ? Vector3.zero : slide;
-        }
-
-        private bool CapsuleBlocked(Vector3 direction, out RaycastHit hit)
-        {
-            Vector3 p = transform.position;
-            Vector3 bottom = new Vector3(p.x, collisionRadius + 0.05f, p.z);
-            Vector3 top = new Vector3(p.x, Mathf.Max(collisionHeight - collisionRadius, bottom.y + 0.1f), p.z);
-
-            return Physics.CapsuleCast(
-                bottom,
-                top,
-                collisionRadius,
-                direction,
-                out hit,
-                collisionProbeDistance,
-                worldCollisionMask,
-                QueryTriggerInteraction.Ignore);
         }
 
         private void CollectActions(Keyboard keyboard, Mouse mouse)

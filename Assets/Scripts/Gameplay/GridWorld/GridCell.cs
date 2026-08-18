@@ -115,8 +115,5 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// Visual wall thickness (render-only, not in Rust collision).
         public const float WallThickness = 0.2f;
-
-        /// Inset from cell edge to wall face.
-        public const float WallInset = (GridConstants.CellSize - WallThickness) / 2f;
     }
 }

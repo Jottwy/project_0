@@ -55,9 +55,6 @@ namespace BackroomsSurvival.Gameplay
         public static bool TryGetZone(int cx, int cz, out byte zoneKind) =>
             _zoneByChunk.TryGetValue((cx, cz), out zoneKind);
 
-        /// <summary>Diagnostic only — Pieza 2/3 should use TryGetZone, not the raw count.</summary>
-        public static int KnownChunkCount => _zoneByChunk.Count;
-
         internal static void Refresh(WorldStateMsg state)
         {
             if (state?.visibleChunks == null)

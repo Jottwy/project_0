@@ -59,8 +59,6 @@ namespace BackroomsSurvival.Gameplay.Audio
         private const float DecayStretch = 1.6f;   // × sobre la cola de la zona
         private const float HumDuck      = 0.55f;  // × sobre el volumen del zumbido
 
-        /// <summary>0 = bajo una lámpara, 1 = solo en la oscuridad. Suavizado.</summary>
-        public static float Isolation => _isolation;
         private static float _isolation;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]

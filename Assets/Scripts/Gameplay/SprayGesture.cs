@@ -192,9 +192,6 @@ namespace BackroomsSurvival.Gameplay
             return !IsEmpty;
         }
 
-        /// <summary>Cuántos puntos lleva el trazo ABIERTO. Es lo que el borrador va mandando.</summary>
-        public int OpenStrokePointCount => _current != null ? _current.Count : 0;
-
         /// <summary>
         /// Vuelca a milímetros los puntos del trazo abierto desde <paramref name="from"/>, contra
         /// el plano del ancla. Pares (u, v) `i16` little-endian: 4 bytes por punto, el mismo

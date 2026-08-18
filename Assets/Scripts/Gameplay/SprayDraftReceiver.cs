@@ -65,9 +65,6 @@ namespace BackroomsSurvival.Gameplay
         private readonly Dictionary<long, Draft> _drafts = new Dictionary<long, Draft>();
         private IPCClient _client;
 
-        /// <summary>Borradores vivos ahora mismo. Para tests y para el log.</summary>
-        public int LiveDraftCount => _drafts.Count;
-
         private void Awake()
         {
             if (_instance != null && _instance != this)

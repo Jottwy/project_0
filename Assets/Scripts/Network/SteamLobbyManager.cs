@@ -48,12 +48,7 @@ namespace BackroomsSurvival.Net
         /// Nombre de persona Steam, o null si Steam no está disponible.
         public static string SteamPersonaName => IsAvailable ? SteamClient.Name : null;
 
-        /// SteamId del usuario local (u64). NO viaja al wire — ver el reporte de
-        /// identidad: PeerId del backend es u16 y no puede alojarlo.
-        public static ulong LocalSteamId => IsAvailable ? SteamClient.SteamId.Value : 0UL;
-
         public string StatusMessage { get; private set; } = "";
-        public bool HasLobby => _hostedLobby.HasValue || _currentLobby.HasValue;
 
         private bool _initialized;
 

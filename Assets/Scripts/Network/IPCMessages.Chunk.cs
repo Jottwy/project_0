@@ -449,11 +449,5 @@ namespace BackroomsSurvival.Net
             }
             return m;
         }
-
-        /// <summary>¿Cae el tile (tx, tz) de este chunk dentro de su habitación construible?</summary>
-        public bool TileIsBuildRoom(int tx, int tz) =>
-            hasBuildRoom
-            && tx >= buildRoomTileX && tx < buildRoomTileX + BuildRoomTiles
-            && tz >= buildRoomTileZ && tz < buildRoomTileZ + BuildRoomTiles;
     }
 }

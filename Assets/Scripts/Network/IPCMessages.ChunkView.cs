@@ -48,8 +48,6 @@ namespace BackroomsSurvival.Net
         public bool hasBackendLayout;
         public bool hasEdgeLayout;
 
-        /// <summary>The full packed array exactly as received from the backend.</summary>
-        public ushort[] LayoutCellsRaw => layoutCells;
         public bool HasEdgeLayout => hasEdgeLayout;
         public bool HasBackendLayout => hasBackendLayout;
 

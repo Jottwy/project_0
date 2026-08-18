@@ -605,8 +605,6 @@ namespace BackroomsSurvival.UI
             if (_nameField != null) _nameField.interactable = value;
         }
 
-        public void SetInteractable(bool value) => SetUiInteractable(value);
-
         public void CancelAutoHostBecauseUserInteracted()
         {
             if (_autoHostCoroutine != null)
