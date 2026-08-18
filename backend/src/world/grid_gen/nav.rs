@@ -667,3 +667,185 @@ mod tests {
         );
     }
 }
+
+// ── ADR-082 piezas B y C: bigotes laterales y margen de pared ────────────────────────────────────
+
+/// ADR-082 piece B — how far ahead the whiskers look (m). Roughly half a cell: far enough to turn
+/// before the contact, short enough that it reacts to the wall it is about to touch rather than to
+/// one across the room.
+pub const PHANTOM_WHISKER_LENGTH: f32 = 1.5;
+/// ADR-082 piece B — deflections tried when the way ahead is blocked, shallowest first, each one
+/// tried to both sides. 40° recovers most obliquely-met walls; 75° is what gets it round an inside
+/// corner without turning back on itself.
+pub const PHANTOM_WHISKER_ANGLES_DEG: [f32; 2] = [40.0, 75.0];
+/// ADR-082 piece C — clearance the creature tries to keep from a wall it walks alongside (m),
+/// measured past the body radius.
+pub const PHANTOM_WALL_MARGIN: f32 = 0.35;
+/// ADR-082 piece C — how hard it leans away from that wall. Small ON PURPOSE: see the doorway
+/// warning below, and the ADR's explicit prohibition on raising it until somebody has watched a
+/// creature walk through a one-cell doorway.
+pub const PHANTOM_WALL_NUDGE_DEG: f32 = 8.0;
+
+/// ADR-082 pieces B and C — takes the heading the navigation wants and returns the one to travel
+/// on, having looked left and right first.
+///
+/// Why it exists: `resolve_move_grid_gen_ex` slides on ONE AXIS (full step, then X-only, then
+/// Z-only). Against an inside corner, or a wall the route meets obliquely, that means moving at full
+/// speed while getting nowhere — the scraping reported in the 2026-08-17 play-test as *"se bugea en
+/// la pared"*. `note_step_progress` does catch it and replan, but only after the creature has spent
+/// a second grinding. This turns BEFORE the contact instead of recovering after it.
+///
+/// STEERING ONLY, NEVER COLLISION: `resolve_move_grid_gen_ex` stays the single authority on where a
+/// body may be, so nothing here can push a creature through geometry. The worst a bad deflection
+/// costs is a wasted tick, with the wedge detector still behind it.
+pub fn steer_around_walls(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    from: Vec3,
+    heading: f32,
+) -> f32 {
+    use super::collision::PHANTOM_BODY_RADIUS;
+
+    let probe = |cache: &mut GridGenChunkCache, angle: f32, length: f32| {
+        let to = Vec3::new(
+            from.x + angle.sin() * length,
+            from.y,
+            from.z + angle.cos() * length,
+        );
+        segment_is_clear_for_body(cache, layer, from, to, PHANTOM_BODY_RADIUS)
+    };
+
+    // The common case — an open corridor — costs exactly this one probe and returns unchanged.
+    if probe(cache, heading, PHANTOM_WHISKER_LENGTH) {
+        // Piece C: forward is fine, but a wall close on ONE side earns a few degrees of margin so
+        // the creature stops shaving it. Deliberately tiny: a one-cell doorway is 2.5 m against a
+        // 1 m body, and a strong push here would stop it fitting through doors — the one regression
+        // this piece must not introduce.
+        let side = PHANTOM_BODY_RADIUS + PHANTOM_WALL_MARGIN;
+        let left_clear = probe(cache, heading - std::f32::consts::FRAC_PI_2, side);
+        let right_clear = probe(cache, heading + std::f32::consts::FRAC_PI_2, side);
+        let nudge = PHANTOM_WALL_NUDGE_DEG.to_radians();
+        return match (left_clear, right_clear) {
+            (false, true) => (heading + nudge).rem_euclid(std::f32::consts::TAU),
+            (true, false) => (heading - nudge).rem_euclid(std::f32::consts::TAU),
+            // Both sides tight (a corridor) or both open: hold the line. Nudging inside a corridor
+            // would make it weave down every hallway in the game.
+            _ => heading,
+        };
+    }
+
+    // Blocked ahead: take the nearest opening, shallowest deflection first so it keeps as much of
+    // its intended direction as it can, alternating sides so a symmetric obstacle does not always
+    // resolve the same way.
+    for degrees in PHANTOM_WHISKER_ANGLES_DEG {
+        let rad = degrees.to_radians();
+        for signed in [rad, -rad] {
+            let candidate = (heading + signed).rem_euclid(std::f32::consts::TAU);
+            if probe(cache, candidate, PHANTOM_WHISKER_LENGTH) {
+                return candidate;
+            }
+        }
+    }
+
+    // Boxed in on every whisker: keep the intended heading and let the resolver and the wedge
+    // detector deal with it, exactly as before this existed. Turning to a direction that is ALSO
+    // blocked would only add jitter.
+    heading
+}
+
+#[cfg(test)]
+mod whisker_tests {
+    use super::super::collision::default_layer_rules;
+    use super::*;
+    use crate::world::grid_gen::{Cell, CellType, LayerGrid};
+
+    fn cache_with(grid: LayerGrid) -> GridGenChunkCache {
+        let mut c = GridGenChunkCache::with_rules(1, default_layer_rules);
+        c.insert_for_test((0, 0, 0), grid);
+        c
+    }
+
+    fn center(cx: usize, cz: usize) -> Vec3 {
+        Vec3::new(
+            cx as f32 * CELL_SIZE_M + CELL_SIZE_M * 0.5,
+            0.0,
+            cz as f32 * CELL_SIZE_M + CELL_SIZE_M * 0.5,
+        )
+    }
+
+    /// Rumbos como los usa el driver: 0 = +Z, y crecen hacia +X.
+    const NORTH: f32 = 0.0;
+    const EAST: f32 = std::f32::consts::FRAC_PI_2;
+
+    /// En campo abierto no se toca el rumbo: los bigotes son para las paredes, no para desviar
+    /// gratis a una criatura que va bien.
+    #[test]
+    fn open_ground_leaves_the_heading_alone() {
+        let mut g = LayerGrid::new_solid();
+        for x in 2..18 {
+            for z in 2..18 {
+                g.set(x, z, Cell::new(CellType::Open, 2, 0));
+            }
+        }
+        let mut c = cache_with(g);
+        assert_eq!(steer_around_walls(&mut c, 0, center(10, 10), NORTH), NORTH);
+    }
+
+    /// EL CASO DEL PLAYTEST: pared de frente y hueco a un lado. Antes de esto el rumbo se mantenía
+    /// contra el muro y el resolutor deslizaba por un eje a toda velocidad sin avanzar — el raspado.
+    #[test]
+    fn a_wall_ahead_turns_towards_the_opening() {
+        let mut g = LayerGrid::new_solid();
+        // Pasillo en +X (este) desde (10,10); el norte, tapiado.
+        for x in 10..16 {
+            g.set(x, 10, Cell::new(CellType::Corridor, 2, 0));
+        }
+        let mut c = cache_with(g);
+        let out = steer_around_walls(&mut c, 0, center(10, 10), NORTH);
+        assert_ne!(out, NORTH, "con un muro delante hay que girar");
+        // Gira HACIA el este, que es donde está el hueco.
+        let delta = (out - EAST)
+            .abs()
+            .min((out - EAST + std::f32::consts::TAU).abs());
+        assert!(
+            delta < std::f32::consts::FRAC_PI_2,
+            "el giro tiene que ir hacia el hueco (este), got {:.2} rad",
+            out
+        );
+    }
+
+    /// LA REGRESIÓN QUE ESTA PIEZA NO PUEDE INTRODUCIR (prohibición explícita de ADR-082): el
+    /// margen de pared NO puede impedir cruzar un vano de una celda. Un pasillo de 2,5 m contra un
+    /// cuerpo de 1 m tiene sitio de sobra, pero un empujón fuerte lo estrellaría contra la jamba.
+    #[test]
+    fn the_wall_margin_still_fits_through_a_one_cell_doorway() {
+        let mut g = LayerGrid::new_solid();
+        for z in 6..15 {
+            g.set(10, z, Cell::new(CellType::Corridor, 2, 0)); // pasillo de UNA celda
+        }
+        let mut c = cache_with(g);
+        let from = center(10, 8);
+        let out = steer_around_walls(&mut c, 0, from, NORTH);
+        assert_eq!(
+            out, NORTH,
+            "dentro de un pasillo estrecho el rumbo se mantiene: ambos lados están igual de \
+             apretados y desviarse haría zigzaguear por cada pasillo del juego"
+        );
+        // Y el paso que sale de ese rumbo sigue avanzando de verdad.
+        let desired = Vec3::new(from.x, from.y, from.z + 0.9);
+        let moved = super::super::collision::resolve_move_grid_gen_ex(&mut c, 0, from, desired);
+        assert!(!moved.blocked, "tiene que poder recorrer el vano");
+        assert!(moved.pos.z > from.z, "y avanzar de verdad");
+    }
+
+    /// Encajonado por los cuatro costados: se devuelve el rumbo pedido tal cual. Girar hacia otra
+    /// dirección TAMBIÉN bloqueada solo añadiría temblor, y de sacarlo de ahí ya se encargan el
+    /// resolutor y el detector de atasco.
+    #[test]
+    fn boxed_in_keeps_the_intended_heading() {
+        let mut g = LayerGrid::new_solid();
+        g.set(10, 10, Cell::new(CellType::Corridor, 2, 0)); // una celda suelta
+        let mut c = cache_with(g);
+        assert_eq!(steer_around_walls(&mut c, 0, center(10, 10), NORTH), NORTH);
+    }
+}

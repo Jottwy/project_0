@@ -2369,6 +2369,17 @@ impl PhantomDriver {
         target: Vec3,
         dt: f32,
     ) -> f32 {
+        let heading = self.steer_heading_raw(i, layer, from, target, dt);
+        // ADR-082 piece B: the route (or the straight bearing) says WHERE to go; the whiskers say
+        // how to get there without scraping. Applied here, at the single point every pursuing state
+        // takes its heading from, rather than at the seven places a step is applied.
+        crate::world::grid_gen::steer_around_walls(&mut self.grid_cache, layer, from, heading)
+    }
+
+    /// The pre-ADR-082 `steer_heading`, verbatim: route planning and waypoint following, with no
+    /// idea that walls have sides. Kept separate so the whisker filter above is one wrapper instead
+    /// of an edit at each of this function's three exits.
+    fn steer_heading_raw(&mut self, i: usize, layer: u8, from: Vec3, target: Vec3, dt: f32) -> f32 {
         use crate::world::grid_gen::{
             cell_of, find_path, segment_is_clear_for_body, string_pull, PHANTOM_BODY_RADIUS,
         };
