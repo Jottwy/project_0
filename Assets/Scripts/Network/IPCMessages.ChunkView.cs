@@ -11,6 +11,12 @@ namespace BackroomsSurvival.Net
 {
     public class ChunkViewMsg
     {
+        /// <summary>Techo defensivo de <c>layoutGridSize</c>: muy por encima de cualquier tamaño
+        /// de rejilla real y muy por debajo de donde <c>g*g</c> desbordaría <c>int32</c> (~46340).
+        /// El backend es de confianza hoy, así que esto no se ha visto disparar nunca — es
+        /// endurecimiento, no una corrección de un bug observado.</summary>
+        private const int MaxLayoutGridSize = 64;
+
         public int chunkSchema = 1;
         public int[] pos = new int[2];
         public int layer;
@@ -100,7 +106,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "mirrored")) c.mirrored = r.ReadBool();
                 else if (MsgPackReader.Is(k, "state")) c.state = r.ReadStringCached();
                 else if (MsgPackReader.Is(k, "has_workbench")) c.hasWorkbench = r.ReadBool();
-                else if (MsgPackReader.Is(k, "layout_grid_size")) c.layoutGridSize = Mathf.Max(1, (int)r.ReadInt());
+                else if (MsgPackReader.Is(k, "layout_grid_size")) c.layoutGridSize = Mathf.Clamp((int)r.ReadInt(), 1, MaxLayoutGridSize);
                 else if (MsgPackReader.Is(k, "layout_cell_size")) c.layoutCellSize = r.ReadFloat();
                 else if (MsgPackReader.Is(k, "layout_cells")) c.layoutCells = r.ReadUShortArrayValues();
                 else if (MsgPackReader.Is(k, "edge_openings")) c.edgeOpenings = (int)r.ReadInt();

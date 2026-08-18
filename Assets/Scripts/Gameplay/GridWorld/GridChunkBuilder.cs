@@ -36,6 +36,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (set.floor == null)
                 Debug.LogError("[GridPrefabSet] GridPrefabs not found in Resources. " +
                                "Run Backrooms/Create Grid Prefabs first.");
+            if (set.wall == null)
+                Debug.LogError("[GridPrefabSet] GridPrefabs/Wall not found in Resources. " +
+                               "Run Backrooms/Create Grid Prefabs first.");
             // FloorSlab is the shared floor/ceiling plane; fall back to Floor so
             // the build still runs before Create Grid Prefabs is re-run.
             if (set.floorSlab == null)

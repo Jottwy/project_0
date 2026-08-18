@@ -177,25 +177,36 @@ namespace BackroomsSurvival.Net
                 $"se perdió; no se vuelve a reportar de este suscriptor: {e}");
         }
 
+        // Patrón snapshot-e-invoca en las seis: copiar la lista viva a un array DENTRO del lock,
+        // soltarlo, e iterar la copia. Si un handler se desuscribe (o suscribe otro) durante su
+        // propio despacho — reentrada, el lock de C# es reentrante en el mismo hilo — muta la
+        // lista original sin afectar al array que se está recorriendo. Sin esto, ese mismo caso
+        // rompería el foreach con InvalidOperationException FUERA del try/catch de abajo, cortando
+        // el resto de notificaciones de ese mensaje para todos los demás suscriptores. Ningún
+        // caller actual reentra (todo Add/Remove vive en Awake/OnDestroy), así que esto no cambia
+        // ningún comportamiento hoy — es endurecimiento contra un futuro handler que sí lo haga.
         private void NotifyListeners(GameEventMsg ev)
         {
-            lock (_eventListeners)
-                foreach (var h in _eventListeners)
-                    try { h(ev); } catch (Exception e) { ReportListenerFailure(h, e); }
+            GameEventHandler[] snapshot;
+            lock (_eventListeners) snapshot = _eventListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(ev); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyStateListeners(WorldStateMsg state)
         {
-            lock (_stateListeners)
-                foreach (var h in _stateListeners)
-                    try { h(state); } catch (Exception e) { ReportListenerFailure(h, e); }
+            WorldStateHandler[] snapshot;
+            lock (_stateListeners) snapshot = _stateListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(state); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyMovementDeltaListeners(MovementDeltaMsg delta)
         {
-            lock (_deltaListeners)
-                foreach (var h in _deltaListeners)
-                    try { h(delta); } catch (Exception e) { ReportListenerFailure(h, e); }
+            MovementDeltaHandler[] snapshot;
+            lock (_deltaListeners) snapshot = _deltaListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(delta); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifyChunkDataListeners(GridChunkDataMsg data)
@@ -205,25 +216,28 @@ namespace BackroomsSurvival.Net
             // jugador tenga cargada — sin depender de que un consumidor concreto esté suscrito.
             BackroomsSurvival.Gameplay.BuildRoomRegistry.Observe(data);
 
-            lock (_chunkDataListeners)
-                foreach (var h in _chunkDataListeners)
-                    try { h(data); } catch (Exception e) { ReportListenerFailure(h, e); }
+            ChunkDataHandler[] snapshot;
+            lock (_chunkDataListeners) snapshot = _chunkDataListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(data); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifySprayListeners(SprayMsg spray)
         {
             if (spray == null) return;
-            lock (_sprayListeners)
-                foreach (var h in _sprayListeners)
-                    try { h(spray); } catch (Exception e) { ReportListenerFailure(h, e); }
+            SprayHandler[] snapshot;
+            lock (_sprayListeners) snapshot = _sprayListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(spray); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         private void NotifySprayDraftListeners(SprayDraftMsg draft)
         {
             if (draft == null) return;
-            lock (_sprayDraftListeners)
-                foreach (var h in _sprayDraftListeners)
-                    try { h(draft); } catch (Exception e) { ReportListenerFailure(h, e); }
+            SprayDraftHandler[] snapshot;
+            lock (_sprayDraftListeners) snapshot = _sprayDraftListeners.ToArray();
+            foreach (var h in snapshot)
+                try { h(draft); } catch (Exception e) { ReportListenerFailure(h, e); }
         }
 
         // ─── Networking internals ───

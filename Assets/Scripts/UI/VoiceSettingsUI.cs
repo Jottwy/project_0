@@ -107,7 +107,8 @@ namespace BackroomsSurvival.UI
                     UpdatePttLabel();
                     return;
                 }
-                Voice().PushToTalkKey = control.keyCode;
+                var vc = Voice();
+                if (vc != null) vc.PushToTalkKey = control.keyCode;
                 UpdatePttLabel();
                 return;
             }

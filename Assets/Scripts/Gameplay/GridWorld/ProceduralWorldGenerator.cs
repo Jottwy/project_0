@@ -168,6 +168,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             ZoneRegistry.ZoneArrived += OnZoneArrived;
             _prefabs = GridPrefabSet.LoadFromResources();
             if (_prefabs.floor == null) return;
+            if (_prefabs.wall == null) return;
             if (playerTransform == null) return;
 
             // Fase 4.1: subscribe to backend chunk replies before requesting anything.
