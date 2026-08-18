@@ -22,6 +22,12 @@
   estamos medido, fixes de E0 con archivo:línea, gates por etapa, calendario contra hitos y qué
   da Steam de verdad. Empieza aquí antes de cualquier trabajo de red orientado a capacidad.
 
+## Deuda técnica
+- [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — auditoría de solo-lectura (2026-08-18, 68 ítems: 27 código
+  muerto + 41 bugs) puntuada 1-10 con plan de arreglo por ítem, ordenada de menos a más grave. El
+  bloque de seguridad de red (Muy grave) es el más serio — dos ítems ahí necesitan ADR nuevo antes
+  de tocar código (regla dura #7).
+
 ## Herramientas
 - [EDITOR-MENUS.md](EDITOR-MENUS.md) — qué hace cada una de las 22 entradas de menú del Editor,
   cuáles son idempotentes y cuáles rehacen assets. Léelo antes de ejecutar un bake.
