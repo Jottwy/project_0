@@ -251,21 +251,5 @@ namespace BackroomsSurvival.Migration.STPIntegration
             kind = view.vocalKind;
             return true;
         }
-
-        /// <summary>Kind ids, exposed so the prefab builder can label the banks it wires.</summary>
-        public static string KindName(int kind) => kind switch
-        {
-            KindReveal => "Reveal",
-            KindSearchShriek => "SearchShriek",
-            KindNoiseGrunt => "NoiseGrunt",
-            KindStalkBreath => "StalkBreath",
-            KindDistantAnswer => "DistantAnswer",
-            KindSated => "Sated",
-            KindHungryMoan => "HungryMoan",
-            KindWinded => "Winded",
-            KindUnmaskScream => "UnmaskScream",
-            KindStrikeMiss => "StrikeMiss",
-            _ => "Unknown",
-        };
     }
 }
