@@ -1,4 +1,5 @@
 using BackroomsSurvival.Gameplay;
+using BackroomsSurvival.Net;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -6,16 +7,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// <summary>
     /// Enmienda a ADR-081 — el cartel que dice que en esta sala SÍ se puede construir.
     ///
-    /// EL PROBLEMA QUE RESUELVE: la zona construible (`ZONE_SAFE`) no se distinguía en nada de
-    /// cualquier otra sala. El jugador solo podía enterarse probando a construir y viendo si le
-    /// dejaban — descubrir una regla por prueba y error, que es la peor forma de enseñarla. Se eligió
+    /// EL PROBLEMA QUE RESUELVE: la zona construible no se distinguía de ninguna otra sala. El
+    /// jugador solo podía enterarse probando a construir y viendo si le dejaban — descubrir una regla por prueba y error, que es la peor forma de enseñarla. Se eligió
     /// señalización dentro del mundo antes que un aviso en el HUD: un cartel de oficina laminado ES
     /// el vocabulario de los Backrooms, y además se ve desde el pasillo, cosa que un mensaje no.
     ///
-    /// GEOMETRÍA DE CLIENTE, derivada por hash puro de las coordenadas del chunk, igual que
-    /// <see cref="OfficeStairs"/>, las knee walls y los props: `zone_kind` ya viaja y todos los peers
-    /// derivan el mismo cartel en el mismo sitio sin una sola línea de protocolo. Es DECORATIVO —
-    /// sin collider, sin lógica: quien decide de verdad dónde se construye es el host
+    /// Desde la enmienda 5 cuelga DENTRO de la habitación construible, cuyo emplazamiento manda el
+    /// backend con el chunk (`build_room`) — no se re-deriva aquí, y por eso todos los peers cuelgan
+    /// el mismo cartel en el mismo sitio. Es DECORATIVO — sin collider, sin lógica: quien decide de verdad dónde se construye es el host
     /// (`position_is_buildable`), y este cartel solo cuenta lo que ese host ya va a hacer.
     ///
     /// TEXTO CON `TextMesh` LEGACY y la fuente incorporada de Unity, no TextMeshPro: TMP necesita un
@@ -25,13 +24,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
     /// </summary>
     public static class BuildZoneSign
     {
-        /// <summary>Espejo de `ZONE_SAFE` (backend/src/world/chunk/surface_profiles.rs) — la única
-        /// zona construible del mundo (ADR-081).</summary>
-        public const int ZoneSafe = 2;
-
-        /// <summary>Dos por chunk, no uno: un chunk son 50 m con paredes de por medio, y con un
-        /// solo cartel es perfectamente posible cruzar la sala entera sin verlo. Cuatro ya sería
-        /// decorado repetido — el mismo criterio que fija UNA escalera por chunk en OfficeStairs.</summary>
+        /// <summary>Dos por habitación, no uno: la sala tiene cuatro paredes y con un solo cartel es
+        /// perfectamente posible entrar de espaldas a él. Cuatro ya sería decorado repetido.</summary>
         private const int SignsPerChunk = 2;
 
         private const float PlateWidth = 1.30f;
@@ -59,28 +53,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static Font _font;
 
         /// <summary>
-        /// Cuelga los carteles de este chunk bajo <paramref name="parent"/>. No hace nada si el chunk
-        /// no es zona construible.
+        /// Cuelga los carteles de la habitación de este chunk bajo <paramref name="parent"/>. No hace
+        /// nada si el chunk no tiene habitación (`roomTileX < 0`), que es la inmensa mayoría.
         ///
         /// Se le pasa el MISMO <paramref name="walls"/> que usan props y escalera, y se aplican los
         /// mismos dos rechazos (tile macizo, tile con columna) para no colgar un cartel dentro de
         /// una pared.
         /// </summary>
-        public static void Place(Transform parent, byte[,] walls, int zoneKind, int chunkX, int chunkZ)
+        public static void Place(Transform parent, byte[,] walls, int roomTileX, int roomTileZ,
+            int chunkX, int chunkZ)
         {
-            if (zoneKind != ZoneSafe || walls == null)
+            if (roomTileX < 0 || walls == null)
                 return;
 
             int tiles = GridChunkBuilder.TilesPerChunk;
             int placed = 0;
 
-            // Barrido determinista: se recorren todos los tiles en orden fijo y se queda con los
-            // primeros que superen el sorteo. No se sortea "un tile al azar" y ya, porque un tile
-            // sorteado puede ser macizo y entonces el chunk se quedaría sin cartel — que es
-            // justamente el chunk donde más falta hace.
-            for (int tz = 0; tz < tiles && placed < SignsPerChunk; tz++)
+            // Barrido determinista, acotado a los 3 x 3 tiles de la habitación: el cartel cuelga
+            // DENTRO, que es donde el jugador necesita leerlo.
+            int lastX = Mathf.Min(roomTileX + GridChunkDataMsg.BuildRoomTiles, tiles);
+            int lastZ = Mathf.Min(roomTileZ + GridChunkDataMsg.BuildRoomTiles, tiles);
+            for (int tz = roomTileZ; tz < lastZ && placed < SignsPerChunk; tz++)
             {
-                for (int tx = 0; tx < tiles && placed < SignsPerChunk; tx++)
+                for (int tx = roomTileX; tx < lastX && placed < SignsPerChunk; tx++)
                 {
                     byte b = walls[tx, tz];
                     byte edges = (byte)(b & 0x0F);
@@ -89,9 +84,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (edges == 0) continue;                                     // sin pared donde colgar
                     if ((b & GridChunkBuilder.PillarMask) != 0) continue;         // columna en el tile
 
+                    // Sin sorteo: la habitación son 9 tiles, no 100, y el cartel es la señal de
+                    // una REGLA. Un 6 % sobre 9 tiles dejaría a la mayoría de las salas sin cartel,
+                    // que es justo el fallo que este cartel existe para arreglar. El orden de barrido
+                    // es fijo, así que los dos primeros tiles con pared se lo llevan siempre.
                     int gx = chunkX * tiles + tx, gz = chunkZ * tiles + tz;
-                    if (GridChunkBuilder.Hash01(gx, gz, SignSaltTile) > 0.06f)
-                        continue;
 
                     if (!TryPickEdge(edges, gx, gz, out float ox, out float oz, out float yaw))
                         continue;

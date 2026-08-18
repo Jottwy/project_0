@@ -28,9 +28,9 @@ namespace BackroomsSurvival.Gameplay.Building
     /// </summary>
     public sealed class ClaimCircleRenderer : MonoBehaviour
     {
-        /// <summary>Cuatro esquinas: desde la enmienda 3 el claim es un BLOQUE de rejilla de
-        /// 15 × 15 m, no un disco, así que el borde son cuatro segmentos y no una curva. Dibujar el
-        /// borde real y no una aproximación es lo que permite al jugador contar tiles con la vista.</summary>
+        /// <summary>Cuatro esquinas: el claim es una HABITACIÓN rectangular, no un disco, así que el
+        /// borde son cuatro segmentos y no una curva. Dibujar el borde real y no una aproximación es
+        /// lo que permite al jugador contar tiles con la vista.</summary>
         private const int Segments = 4;
 
         /// <summary>Levantado del suelo para no pelearse en z-fighting con la losa.</summary>
@@ -108,12 +108,16 @@ namespace BackroomsSurvival.Gameplay.Building
             line.gameObject.SetActive(true);
             line.sharedMaterial = own ? OwnMaterial() : OtherMaterial();
 
-            // El borde del BLOQUE, no un cuadrado centrado en el marcador: la rejilla es global y
-            // fija, así que el marcador puede estar en cualquier punto de su casilla y el borde
-            // dibujado sigue siendo el mismo que aplica el host.
-            var (bx, bz) = BuildPermission.ClaimBlockOf(markerPos);
-            var origin = BuildPermission.ClaimBlockOrigin(bx, bz);
-            float side = BuildPermission.ClaimBlockMeters;
+            // El borde REAL de la habitación tallada, tal cual lo mandó el backend: el marcador
+            // puede estar en cualquier punto de la sala y el rectángulo dibujado sigue siendo el que
+            // aplica el host. Si el chunk aún no ha llegado no se dibuja nada — mejor sin borde que
+            // con uno inventado.
+            if (!BuildRoomRegistry.TryGetRoomOrigin(markerPos, out var origin))
+            {
+                line.gameObject.SetActive(false);
+                return;
+            }
+            float side = BuildRoomRegistry.RoomSizeMeters;
 
             // El marcador se planta con su pivote en el suelo, así que su propia Y ES la del suelo —
             // no hace falta raycast. En un suelo con desnivel el borde cortaría la geometría, y eso

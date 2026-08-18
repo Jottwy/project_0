@@ -286,7 +286,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public static GameObject BuildFromWalls(byte[,] walls, GridPrefabSet prefabs,
             Vector3 origin, string name, int layerIndex, int layerCount,
             LayerVisualConfig cfg = null, LayerVisualMaterials mats = null,
-            int chunkX = 0, int chunkZ = 0, RoomZoneMsg[] roomZones = null)
+            int chunkX = 0, int chunkZ = 0, RoomZoneMsg[] roomZones = null,
+            int buildRoomTileX = -1, int buildRoomTileZ = -1)
         {
             var root = new GameObject(name);
             root.transform.position = origin;
@@ -357,7 +358,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // Stain multiplies AFTER the jitter, mirroring PlaceCeilingTile.
                         Color t = JitterValue(floorBase * zoneTint, rng);
                         if (floorDamp) t *= FloorStain;
-                        Paint(floorGo, mats.floor, t);
+                        // ADR-081 enmienda 5: dentro de la habitación construible, material propio y
+                        // plano. El jitter se calcula IGUAL aunque se descarte — consume su draw del
+                        // `rng`, y saltárselo movería el tinte de todos los tiles siguientes del
+                        // chunk (misma disciplina que PlaceLintels con su rng).
+                        if (IsBuildRoomTile(tx, tz, buildRoomTileX, buildRoomTileZ))
+                            Paint(floorGo, BuildRoomMaterial(), Color.white);
+                        else
+                            Paint(floorGo, mats.floor, t);
                     }
 
                     if (roofSlab)
@@ -368,7 +376,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // por tile a propósito — no consume una draw del rng, así que los
                         // tintes de suelo/pared del tile no se mueven (misma disciplina que
                         // PlaceLintels).
-                        if (styled) Paint(roofGo, mats.ceiling, zoneTint);
+                        if (styled)
+                        {
+                            if (IsBuildRoomTile(tx, tz, buildRoomTileX, buildRoomTileZ))
+                                Paint(roofGo, BuildRoomMaterial(), Color.white);
+                            else
+                                Paint(roofGo, mats.ceiling, zoneTint);
+                        }
                     }
 
                     // Per-tile ceiling with Fase 5B procedural variety (panel type + moisture
@@ -471,7 +485,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // una capa entera, pero este cartel es la ÚNICA señal de una regla del juego, y una capa
             // sin catálogo de muebles no debe quedarse sin ella.
             if (styled)
-                BuildZoneSign.Place(root.transform, walls, zoneKindQuery, chunkX, chunkZ);
+                BuildZoneSign.Place(root.transform, walls, buildRoomTileX, buildRoomTileZ, chunkX, chunkZ);
 
             // Fase 5A (Bug #1): tag the whole chunk to its macro-layer's Unity layer so
             // per-layer lamp culling isolates it (see GeoLayers). Lamps/luminaires added
@@ -480,6 +494,35 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             SetLayerRecursively(root, GeoLayer(layerIndex));
             return root;
         }
+
+        /// <summary>
+        /// ADR-081 enmienda 5 — ¿es (tx, tz) uno de los 3 × 3 tiles de la habitación construible de
+        /// este chunk? `buildRoomTileX < 0` significa "este chunk no tiene", que es la inmensa
+        /// mayoría.
+        /// </summary>
+        private static bool IsBuildRoomTile(int tx, int tz, int roomTileX, int roomTileZ) =>
+            roomTileX >= 0
+            && tx >= roomTileX && tx < roomTileX + GridChunkDataMsg.BuildRoomTiles
+            && tz >= roomTileZ && tz < roomTileZ + GridChunkDataMsg.BuildRoomTiles;
+
+        /// <summary>
+        /// Material de la habitación construible: liso, SIN TEXTURA, deliberadamente distinto de
+        /// todo lo demás. Es la señal de "aquí sí" que pidió Joel, y es provisional — la textura
+        /// definitiva es trabajo de arte.
+        ///
+        /// Se crea una vez y se comparte entre todos los chunks: un material por sala rompería el
+        /// batching y no aportaría nada, porque todas se pintan igual.
+        /// </summary>
+        private static Material BuildRoomMaterial() =>
+            _buildRoomMat != null
+                ? _buildRoomMat
+                : _buildRoomMat = MaterialHelper.MakeLit(BuildRoomColour);
+
+        private static Material _buildRoomMat;
+
+        /// <summary>Gris claro neutro, a propósito más frío y plano que el amarillo sucio del resto
+        /// del nivel: se tiene que leer como "sitio preparado", no como más Backrooms.</summary>
+        private static readonly Color BuildRoomColour = new Color(0.62f, 0.63f, 0.60f);
 
         // Logged once per session (not once per tile/chunk) so a world with many
         // PILLAR_HALL chunks doesn't flood the console — see the call site in

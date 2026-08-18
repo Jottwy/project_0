@@ -572,3 +572,23 @@ ninguna comprobación — o sea, sus marcadores existen pero no reclaman, y sus 
 construir en su propio territorio. Silenciosamente equivocado, no un error visible, que es
 exactamente el caso que el criterio v20/v33 manda bumpear. `WireSchema.Expected` (C#) a 36 en el
 mismo commit.
+
+
+## v36 -> v37 — `GridChunkData.build_room` (ADR-081 enmienda 5)
+
+`GridChunkData` gana `build_room: Option<[u8; 3]>` — `[tile_x, tile_z, door_side]` de la HABITACIÓN
+CONSTRUIBLE del chunk, en tiles de 5 m, u omitido si el chunk no tiene ninguna. Campo ADITIVO y
+`skip_serializing_if`, mismo patrón que `room_zones` y `sprays`: un chunk sin sala pesa lo mismo que
+antes de que este campo existiera.
+
+**Por qué viaja en vez de re-derivarse en el cliente**, que es lo que se hace con todo lo demás que
+sale del seed (los carteles de zona, la escalera de OFFICE): el emplazamiento sortea con `StdRng`
+—ChaCha— y eso no se replica en C# sin reimplementar el generador entero. Se eligió mandar 3 bytes
+antes que mantener dos generadores de aleatorios en fase, que es el tipo de espejo que se pudre en
+silencio.
+
+Degradación v36: un cliente viejo no ve la clave y no sabe dónde están las habitaciones. Como desde
+esta enmienda la habitación es el ÚNICO sitio construible, ese cliente pinta el fantasma en rojo en
+todas partes y no manda ni una colocación — no puede construir en absoluto, y además la sala se
+renderiza con el material del pasillo y con luces de techo. Roto de forma visible, no silenciosa,
+pero roto: por eso bumpea. `WireSchema.Expected` (C#) a 37 en el mismo commit.

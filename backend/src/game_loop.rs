@@ -787,6 +787,13 @@ pub async fn run(
                         };
                         net.send_reliable(1, &payload).await;
                     }
+                    // ADR-081 enmienda 5: la habitacion construible viaja con el chunk que el
+                    // cliente ya estaba pidiendo. Es el MISMO resolutor que la talla, asi que lo
+                    // que el cliente pinta de material propio no puede caer en otro sitio que la
+                    // sala que se genero.
+                    let build_room =
+                        crate::world::grid_gen::room_in_chunk(net.world_seed, cx, cz, layer)
+                            .map(|plan| [plan.tile_x as u8, plan.tile_z as u8, plan.door_side]);
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
                         cx,
                         cz,
@@ -794,6 +801,7 @@ pub async fn run(
                         walls,
                         room_zones,
                         sprays,
+                        build_room,
                     }));
                 }
                 ClientMessage::SprayPlace(req) => {

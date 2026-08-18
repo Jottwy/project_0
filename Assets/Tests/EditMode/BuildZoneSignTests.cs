@@ -5,15 +5,15 @@ using UnityEngine;
 namespace BackroomsSurvival.Tests
 {
     /// <summary>
-    /// Enmienda a ADR-081 — el cartel de "zona construible" es la ÚNICA forma que tiene el jugador
-    /// de saber que una sala se puede edificar, así que lo que se prueba aquí no es decorado: es que
-    /// la señal aparezca donde debe, no aparezca donde no, y sea la misma en todas las máquinas.
+    /// ADR-081 enmienda 5 — el cartel es la única forma que tiene el jugador de saber que una sala
+    /// se puede edificar, así que lo que se prueba aquí no es decorado: que la señal aparezca donde
+    /// debe, no aparezca donde no, y sea la misma en todas las máquinas.
     /// </summary>
     [TestFixture]
     public class BuildZoneSignTests
     {
-        /// <summary>Espejo de `ZONE_NORMAL` — cualquier zona que no sea la construible.</summary>
-        private const int ZoneNormal = 0;
+        /// <summary>Un chunk SIN habitación: es lo que dice el backend en la inmensa mayoría.</summary>
+        private const int NoRoom = -1;
 
         private Transform _root;
 
@@ -27,7 +27,7 @@ namespace BackroomsSurvival.Tests
                 Object.DestroyImmediate(_root.gameObject);
         }
 
-        /// <summary>Rejilla de tiles donde todos tienen pared sur y ninguno es macizo ni tiene
+        /// <summary>Rejilla donde todos los tiles tienen pared sur y ninguno es macizo ni tiene
         /// columna: el caso más favorable posible, para que un cero signifique "no coloca" y no
         /// "no había sitio".</summary>
         private static byte[,] OpenTilesWithSouthWall()
@@ -43,44 +43,69 @@ namespace BackroomsSurvival.Tests
         private int SignCount() => _root.childCount;
 
         [Test]
-        public void NoSignOutsideABuildableZone()
+        public void NoSignInAChunkWithoutARoom()
         {
-            BuildZoneSign.Place(_root, OpenTilesWithSouthWall(), ZoneNormal, 0, 0);
+            BuildZoneSign.Place(_root, OpenTilesWithSouthWall(), NoRoom, NoRoom, 0, 0);
 
             Assert.AreEqual(0, SignCount(),
-                "un cartel de 'se puede construir' en una zona donde NO se puede es peor que no tener cartel");
+                "un cartel de 'se puede construir' donde NO se puede es peor que no tener cartel");
         }
 
-        /// <summary>
-        /// El chunk (0,0) es zona segura en el seed por defecto y es donde aparece el jugador, así
-        /// que es el primer sitio donde tiene que ver la señal.
-        /// </summary>
         [Test]
-        public void ABuildableZoneGetsSignsAndNeverMoreThanTwo()
+        public void ARoomGetsSignsAndNeverMoreThanTwo()
         {
-            BuildZoneSign.Place(_root, OpenTilesWithSouthWall(), BuildZoneSign.ZoneSafe, 0, 0);
+            BuildZoneSign.Place(_root, OpenTilesWithSouthWall(), 3, 4, 0, 0);
 
             int count = SignCount();
-            Assert.Greater(count, 0, "una sala construible sin ningún cartel deja la regla invisible");
-            Assert.LessOrEqual(count, 2, "más de dos por chunk es decorado repetido, no señalización");
+            Assert.Greater(count, 0, "una habitación sin ningún cartel deja la regla invisible");
+            Assert.LessOrEqual(count, 2, "más de dos es decorado repetido, no señalización");
         }
 
         /// <summary>
-        /// El cartel se deriva por hash puro de las coordenadas del chunk, sin wire: si dos clientes
-        /// no derivasen lo mismo, un jugador vería la señal donde otro no. Esto es lo que hace que
-        /// no haga falta protocolo.
+        /// Los carteles cuelgan DENTRO de los 3 × 3 tiles de la sala. Antes de la enmienda 5 barrían
+        /// el chunk entero, y con la habitación tallada eso los dejaría por los pasillos de fuera,
+        /// anunciando que se puede construir justo donde no.
         /// </summary>
         [Test]
-        public void SignPlacementIsDeterministicForTheSameChunk()
+        public void SignsHangInsideTheRoomAndNowhereElse()
+        {
+            const int tileX = 3, tileZ = 4;
+            BuildZoneSign.Place(_root, OpenTilesWithSouthWall(), tileX, tileZ, 0, 0);
+
+            float tile = GridVisualConstants.TileSize;
+            float minX = tileX * tile, minZ = tileZ * tile;
+            float side = GridChunkDataMsg_BuildRoomTiles * tile;
+
+            Assert.Greater(_root.childCount, 0);
+            for (int i = 0; i < _root.childCount; i++)
+            {
+                var p = _root.GetChild(i).localPosition;
+                Assert.GreaterOrEqual(p.x, minX - tile, $"cartel {i} al oeste de la sala");
+                Assert.LessOrEqual(p.x, minX + side + tile, $"cartel {i} al este de la sala");
+                Assert.GreaterOrEqual(p.z, minZ - tile, $"cartel {i} al sur de la sala");
+                Assert.LessOrEqual(p.z, minZ + side + tile, $"cartel {i} al norte de la sala");
+            }
+        }
+
+        /// <summary>Espejo local de `GridChunkDataMsg.BuildRoomTiles` para no arrastrar el
+        /// namespace de red a este fixture.</summary>
+        private const int GridChunkDataMsg_BuildRoomTiles = 3;
+
+        /// <summary>
+        /// El cartel se deriva de datos que todos los clientes reciben igual: si dos derivasen
+        /// distinto, un jugador vería la señal donde otro no.
+        /// </summary>
+        [Test]
+        public void SignPlacementIsDeterministicForTheSameRoom()
         {
             var walls = OpenTilesWithSouthWall();
-            BuildZoneSign.Place(_root, walls, BuildZoneSign.ZoneSafe, 3, -7);
+            BuildZoneSign.Place(_root, walls, 2, 5, 3, -7);
             var first = Poses();
 
             var second = new GameObject("SecondPass").transform;
             try
             {
-                BuildZoneSign.Place(second, walls, BuildZoneSign.ZoneSafe, 3, -7);
+                BuildZoneSign.Place(second, walls, 2, 5, 3, -7);
 
                 Assert.AreEqual(first.Length, second.childCount, "distinto número de carteles");
                 for (int i = 0; i < first.Length; i++)
@@ -97,9 +122,8 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// Un tile macizo (las cuatro aristas con pared) no tiene interior donde estar de pie, y uno
-        /// sin ninguna arista no tiene pared donde colgar nada. Los dos rechazos son los mismos que
-        /// aplican props y escalera, y sin ellos el cartel acaba dentro de la geometría.
+        /// Un tile macizo no tiene interior donde estar de pie, y uno sin aristas no tiene pared
+        /// donde colgar nada. Sin estos dos rechazos el cartel acaba dentro de la geometría.
         /// </summary>
         [Test]
         public void SolidTilesAndTilesWithoutWallsAreRejected()
@@ -110,11 +134,11 @@ namespace BackroomsSurvival.Tests
             for (int x = 0; x < n; x++)
                 for (int z = 0; z < n; z++)
                     solid[x, z] = 0x0F;
-            BuildZoneSign.Place(_root, solid, BuildZoneSign.ZoneSafe, 0, 0);
+            BuildZoneSign.Place(_root, solid, 3, 4, 0, 0);
             Assert.AreEqual(0, SignCount(), "un tile macizo no puede alojar un cartel");
 
             var open = new byte[n, n]; // todo a 0: sin una sola pared
-            BuildZoneSign.Place(_root, open, BuildZoneSign.ZoneSafe, 0, 0);
+            BuildZoneSign.Place(_root, open, 3, 4, 0, 0);
             Assert.AreEqual(0, SignCount(), "sin pared no hay dónde colgarlo");
         }
 

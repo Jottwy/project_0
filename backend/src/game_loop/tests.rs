@@ -6790,6 +6790,7 @@ async fn sprays_ride_the_chunk_the_client_already_asks_for() {
         walls: [[0u8; 10]; 10],
         room_zones: vec![],
         sprays,
+        build_room: None,
     };
     let body = rmp_serde::to_vec_named(&painted).unwrap();
     let decoded: crate::ipc::GridChunkData = rmp_serde::from_slice(&body).unwrap();

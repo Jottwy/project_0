@@ -1,85 +1,155 @@
+using BackroomsSurvival.Gameplay;
 using BackroomsSurvival.Gameplay.Building;
+using BackroomsSurvival.Net;
 using NUnit.Framework;
 using UnityEngine;
 
 namespace BackroomsSurvival.Tests
 {
     /// <summary>
-    /// ADR-081 fase 1 — las dos mitades PURAS de la puerta de territorio del cliente: a qué columna
-    /// de chunk pertenece una posición, y qué `zone_kind` es construible.
+    /// ADR-081 enmienda 5 — las mitades PURAS de la puerta de territorio del cliente: a qué columna
+    /// de chunk pertenece una posición, qué identifica un claim, y el registro de habitaciones que
+    /// el backend manda con cada chunk.
     ///
-    /// `BuildPermission.CanBuildAt` entero queda FUERA de alcance a propósito: depende de
-    /// <c>ZoneRegistry</c>, que se puebla del snapshot IPC en vivo y no es algo que fingir en un
-    /// fixture headless. Misma frontera declarada que `ChunkLootRollTests` para su propia puerta de
-    /// zona. Lo que sí se prueba aquí es todo lo que puede romperse en silencio sin Play.
+    /// `CanPlaceAt` entero queda fuera de alcance a propósito: la parte que falta depende de
+    /// `IPCClient.LatestState` (los marcadores replicados), que es Play-only. Misma frontera
+    /// declarada que `ChunkLootRollTests`. Lo que sí se prueba aquí es todo lo que puede romperse en
+    /// silencio sin Play — y el registro de habitaciones SÍ entra, porque se puebla de un mensaje
+    /// que se puede fabricar a mano.
     /// </summary>
     [TestFixture]
     public class BuildPermissionTests
     {
-        /// <summary>Espejo de `ZONE_OFFICE`, el último zone_kind del backend
-        /// (backend/src/world/chunk/surface_profiles.rs).</summary>
-        private const byte LastZoneKind = 12;
+        [SetUp]
+        public void ResetRegistry() => BuildRoomRegistry.Clear_EditorTestsOnly();
 
-        /// <summary>
-        /// La regla completa, enumerada: `ZONE_SAFE` (2) construye y los otros doce NO. Escrito como
-        /// barrido y no como un par de casos sueltos porque el fallo que importa es que alguien
-        /// abra la puerta a una zona más sin decirlo.
-        /// </summary>
-        [Test]
-        public void OnlyTheSafeZoneIsBuildable()
+        private static GridChunkDataMsg ChunkWithRoom(int cx, int cz, int tileX, int tileZ)
         {
-            Assert.IsTrue(BuildPermission.IsBuildableZone(BuildPermission.BuildableZoneKind),
-                "ZONE_SAFE es la zona construible de ADR-081");
-
-            for (byte zoneKind = 0; zoneKind <= LastZoneKind; zoneKind++)
+            return new GridChunkDataMsg
             {
-                if (zoneKind == BuildPermission.BuildableZoneKind)
-                    continue;
-
-                Assert.IsFalse(BuildPermission.IsBuildableZone(zoneKind),
-                    $"zone_kind {zoneKind} no es construible");
-            }
+                cx = cx,
+                cz = cz,
+                layer = 0,
+                hasBuildRoom = true,
+                buildRoomTileX = tileX,
+                buildRoomTileZ = tileZ,
+                buildRoomDoorSide = 0,
+            };
         }
 
         /// <summary>
-        /// El espejo del backend. `ZONE_SAFE` vale 2 en `surface_profiles.rs`; si allí cambiara y
-        /// aquí no, el cliente avisaría de la zona equivocada mientras el host aplica la correcta —
-        /// un desacuerdo sin excepción y sin log, que es la peor clase.
+        /// El espejo del backend. `ROOM_SIZE_M` vale 15 en `build_rooms.rs`; si allí cambiara y aquí
+        /// no, el cliente pintaría un borde y aplicaría un rectángulo que el host no aplica — un
+        /// desacuerdo sin excepción y sin log, la peor clase.
         /// </summary>
         [Test]
-        public void BuildableZoneKindMirrorsBackendZoneSafe()
+        public void RoomSizeMirrorsTheBackend()
         {
-            Assert.AreEqual(2, BuildPermission.BuildableZoneKind);
+            Assert.AreEqual(15f, BuildRoomRegistry.RoomSizeMeters);
+            Assert.AreEqual(3, GridChunkDataMsg.BuildRoomTiles);
         }
 
         /// <summary>
-        /// ADR-081 fase 3 — EL GUARDIÁN DEL `def_id` DEL MARCADOR, y el más valioso de este fichero.
-        ///
-        /// El id del marcador está hardcodeado en TRES sitios que tienen que coincidir: el asset que
-        /// lo genera, `BuildPermission.ClaimMarkerDefId` (cliente) y `CLAIM_MARKER_DEF_ID`
-        /// (backend/src/game_loop.rs). Si alguien regenera la definición, minta un id nuevo y las
-        /// otras dos constantes dejan de casar: el marcador se vuelve un poste decorativo, nadie
-        /// puede reclamar nada y NO hay ningún error — simplemente todo se rechaza. Este test lo
-        /// convierte en un rojo inmediato leyendo el asset de verdad.
+        /// El rectángulo de la habitación sale de (chunk, tile) y tiene que caer donde el backend la
+        /// talló. Se comprueban las cuatro esquinas y un metro fuera de cada una: es donde un error
+        /// de medio tile se nota y donde no se notaría probando solo el centro.
         /// </summary>
         [Test]
-        public void ClaimMarkerDefIdMatchesTheAuthoredDefinition()
+        public void TheRoomRectMatchesChunkAndTileOrigin()
         {
-            var definition = Resources.Load<PolymindGames.BuildingSystem.BuildingPieceDefinition>(
-                "Definitions/BuildingPiece/BR_Claim Marker");
+            // Chunk (2,3) → esquina en (100, 150); tile (2,4) → +10 m en x, +20 m en z.
+            BuildRoomRegistry.Observe(ChunkWithRoom(2, 3, 2, 4));
 
-            Assert.IsNotNull(definition,
-                "no está el asset 'BR_Claim Marker' — sin él no se puede reclamar terreno. " +
-                "Ejecuta \"Backrooms ▸ Create Building Pieces\".");
-            Assert.AreEqual(BuildPermission.ClaimMarkerDefId, definition.Id,
-                "el def_id del marcador cambió. Actualiza BuildPermission.ClaimMarkerDefId Y " +
-                "CLAIM_MARKER_DEF_ID en backend/src/game_loop.rs, en el mismo commit.");
+            const float minX = 2 * 50f + 2 * 5f;   // 110
+            const float minZ = 3 * 50f + 4 * 5f;   // 170
+            float side = BuildRoomRegistry.RoomSizeMeters;
+
+            Assert.IsTrue(BuildRoomRegistry.Contains(new Vector3(minX + 0.5f, 0f, minZ + 0.5f)));
+            Assert.IsTrue(BuildRoomRegistry.Contains(new Vector3(minX + side - 0.5f, 0f, minZ + side - 0.5f)));
+
+            Assert.IsFalse(BuildRoomRegistry.Contains(new Vector3(minX - 0.5f, 0f, minZ + 0.5f)));
+            Assert.IsFalse(BuildRoomRegistry.Contains(new Vector3(minX + 0.5f, 0f, minZ - 0.5f)));
+            Assert.IsFalse(BuildRoomRegistry.Contains(new Vector3(minX + side + 0.5f, 0f, minZ + 0.5f)));
+            Assert.IsFalse(BuildRoomRegistry.Contains(new Vector3(minX + 0.5f, 0f, minZ + side + 0.5f)));
         }
 
         /// <summary>
-        /// La trampa real de esta función: al oeste/norte del origen las coordenadas son negativas, y
-        /// un cast a int (truncado hacia cero) mandaría todo el intervalo (-50, 50) al chunk 0. Media
-        /// zona construible leería la zona de su vecina.
+        /// Un chunk que no trae la clave no crea habitación. Es lo que hace que el resto del mundo
+        /// sea no construible por DEFECTO en vez de por una comprobación que alguien pueda olvidar.
+        /// </summary>
+        [Test]
+        public void AChunkWithoutARoomRegistersNothing()
+        {
+            BuildRoomRegistry.Observe(new GridChunkDataMsg { cx = 0, cz = 0, layer = 0 });
+
+            Assert.AreEqual(0, BuildRoomRegistry.KnownRoomCount);
+            Assert.IsFalse(BuildRoomRegistry.Contains(new Vector3(25f, 0f, 25f)));
+        }
+
+        /// <summary>
+        /// Las habitaciones solo existen en la capa 0. Un chunk de otra capa que trajera la clave no
+        /// debe registrar nada: la columna se identifica por (cx,cz), así que aceptarlo sobrescribiría
+        /// lo que se sabe del suelo con datos de un piso distinto.
+        /// </summary>
+        [Test]
+        public void OnlyLayerZeroRoomsAreRegistered()
+        {
+            var upstairs = ChunkWithRoom(0, 0, 2, 2);
+            upstairs.layer = 1;
+
+            BuildRoomRegistry.Observe(upstairs);
+
+            Assert.AreEqual(0, BuildRoomRegistry.KnownRoomCount);
+        }
+
+        /// <summary>La altura no cuenta: la habitación es una superficie de suelo, igual que en el
+        /// host, donde la puerta se resuelve solo con XZ.</summary>
+        [Test]
+        public void TheRoomRectIgnoresHeight()
+        {
+            BuildRoomRegistry.Observe(ChunkWithRoom(0, 0, 2, 2));
+            var onFloor = new Vector3(12f, 0f, 12f);
+
+            Assert.AreEqual(
+                BuildRoomRegistry.Contains(onFloor),
+                BuildRoomRegistry.Contains(new Vector3(onFloor.x, 128f, onFloor.z)));
+        }
+
+        /// <summary>
+        /// La esquina que se le da al dibujo del borde es la misma que usa la comprobación. Si
+        /// divergieran, el jugador vería un rectángulo y el host aplicaría otro.
+        /// </summary>
+        [Test]
+        public void TheDrawnOriginIsTheRectOrigin()
+        {
+            BuildRoomRegistry.Observe(ChunkWithRoom(1, 1, 3, 3));
+
+            Assert.IsTrue(BuildRoomRegistry.TryGetRoomOrigin(new Vector3(70f, 0f, 70f), out var origin));
+            Assert.AreEqual(new Vector3(65f, 0f, 65f), origin);
+            Assert.IsTrue(BuildRoomRegistry.Contains(origin + new Vector3(0.5f, 0f, 0.5f)));
+        }
+
+        /// <summary>
+        /// El claim es la HABITACIÓN, y como hay como mucho una por chunk, la coordenada de chunk lo
+        /// identifica. Espejo de `claim_key` (backend/src/game_loop.rs): dos puntos de la misma sala
+        /// son el mismo claim, y uno del chunk de al lado no.
+        /// </summary>
+        [Test]
+        public void ClaimKeyIsTheChunkOfTheRoom()
+        {
+            Assert.AreEqual(
+                BuildPermission.ClaimKeyOf(new Vector3(12f, 0f, 20f)),
+                BuildPermission.ClaimKeyOf(new Vector3(24f, 30f, 33f)));
+
+            Assert.AreNotEqual(
+                BuildPermission.ClaimKeyOf(new Vector3(49f, 0f, 20f)),
+                BuildPermission.ClaimKeyOf(new Vector3(51f, 0f, 20f)));
+        }
+
+        /// <summary>
+        /// La trampa real de `ChunkOf`: al oeste/norte del origen las coordenadas son negativas, y un
+        /// cast a int (truncado hacia cero) mandaría todo el intervalo (-50, 50) al chunk 0. Media
+        /// zona leería el chunk de su vecina.
         /// </summary>
         [Test]
         public void ChunkOfFloorsInsteadOfTruncating()
@@ -88,76 +158,19 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual((0, 0), BuildPermission.ChunkOf(new Vector3(49.9f, 0f, 49.9f)));
             Assert.AreEqual((1, 1), BuildPermission.ChunkOf(new Vector3(50f, 0f, 50f)));
 
-            // Sin FloorToInt estos tres darían (0,0) y (0,-1)/(−1,0) respectivamente.
+            // Sin FloorToInt estos tres darían (0,0).
             Assert.AreEqual((-1, -1), BuildPermission.ChunkOf(new Vector3(-0.1f, 0f, -0.1f)));
             Assert.AreEqual((-1, -1), BuildPermission.ChunkOf(new Vector3(-49.9f, 0f, -49.9f)));
             Assert.AreEqual((-2, -2), BuildPermission.ChunkOf(new Vector3(-50.1f, 0f, -50.1f)));
         }
 
-        /// <summary>
-        /// La altura no entra en la cuenta: la columna es cosa de XZ, y la zona se resuelve en la capa
-        /// 0 tanto aquí como en el host (`position_is_buildable`). Es lo que mantiene en fase el aviso
-        /// del cliente y la decisión del backend.
-        /// </summary>
+        /// <summary>La altura no entra en la columna tampoco.</summary>
         [Test]
         public void ChunkOfIgnoresHeight()
         {
             Assert.AreEqual(
                 BuildPermission.ChunkOf(new Vector3(10f, 0f, 20f)),
                 BuildPermission.ChunkOf(new Vector3(10f, 128f, 20f)));
-        }
-
-        /// <summary>
-        /// Enmienda 3 — la rejilla de claims. Misma trampa del `floor` que en `ChunkOf` y con la
-        /// misma consecuencia: truncando hacia cero, el bloque del origen mediría 30 m de lado y se
-        /// comería el de sus vecinos al oeste y al norte.
-        ///
-        /// Espejo EXACTO de `claim_blocks_west_and_north_of_the_origin_do_not_swallow_their_neighbour`
-        /// (backend/src/game_loop/tests.rs): los mismos seis puntos, los mismos seis bloques. Si las
-        /// dos puntas divergen, el cliente pinta un borde donde el host no lo aplica.
-        /// </summary>
-        [Test]
-        public void ClaimBlockOfMirrorsTheBackendGrid()
-        {
-            Assert.AreEqual(10f, BuildPermission.ClaimBlockMeters, "espejo de CLAIM_BLOCK_M");
-
-            Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(1f, 0f, 1f)));
-            Assert.AreEqual((0, 0), BuildPermission.ClaimBlockOf(new Vector3(9.9f, 0f, 9.9f)));
-            Assert.AreEqual((1, 1), BuildPermission.ClaimBlockOf(new Vector3(10.1f, 0f, 10.1f)));
-            Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-0.1f, 0f, -0.1f)));
-            Assert.AreEqual((-1, -1), BuildPermission.ClaimBlockOf(new Vector3(-9.9f, 0f, -9.9f)));
-            Assert.AreEqual((-2, -2), BuildPermission.ClaimBlockOf(new Vector3(-10.1f, 0f, -10.1f)));
-        }
-
-        /// <summary>
-        /// El bloque encaja exacto en el chunk de 50 m, que es la razón de ser de los 10 m frente a
-        /// los 15 de la enmienda anterior. Espejo de `the_claim_block_tiles_the_chunk_exactly`.
-        /// </summary>
-        [Test]
-        public void TheClaimBlockTilesTheChunkExactly()
-        {
-            float blocksPerChunk = BackroomsSurvival.Net.SprayMsg.ChunkSize / BuildPermission.ClaimBlockMeters;
-
-            Assert.AreEqual(5f, blocksPerChunk,
-                "un bloque que no divida al chunk deja claims a caballo de dos chunks");
-        }
-
-        /// <summary>La altura tampoco cuenta para el bloque: un claim es una casilla de suelo.</summary>
-        [Test]
-        public void ClaimBlockOfIgnoresHeight()
-        {
-            Assert.AreEqual(
-                BuildPermission.ClaimBlockOf(new Vector3(52.5f, 0f, 52.5f)),
-                BuildPermission.ClaimBlockOf(new Vector3(52.5f, 30f, 52.5f)));
-        }
-
-        /// <summary>El borde que dibuja el círculo/cuadrado sale de aquí, así que una esquina mal
-        /// puesta pinta un territorio que no coincide con el que aplica el host.</summary>
-        [Test]
-        public void ClaimBlockOriginIsTheLowCorner()
-        {
-            Assert.AreEqual(new Vector3(0f, 0f, 10f), BuildPermission.ClaimBlockOrigin(0, 1));
-            Assert.AreEqual(new Vector3(-10f, 0f, -10f), BuildPermission.ClaimBlockOrigin(-1, -1));
         }
     }
 }

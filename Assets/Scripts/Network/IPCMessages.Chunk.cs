@@ -356,6 +356,25 @@ namespace BackroomsSurvival.Net
         public SprayMsg[] sprays = NoSprays;
 
         /// <summary>
+        /// ADR-081 enmienda 5 — la HABITACIÓN CONSTRUIBLE de este chunk, o `false` si no tiene.
+        /// `buildRoomTileX`/`buildRoomTileZ` son el tile (5 m) de su esquina de menor x/z y
+        /// `buildRoomDoorSide` el lado por el que se entra (0=S, 1=N, 2=W, 3=E).
+        ///
+        /// Viene por el wire y no se re-deriva aquí, a diferencia de todo lo demás que sale del
+        /// seed: el emplazamiento sortea con el `StdRng` de Rust (ChaCha) y replicarlo en C#
+        /// significaría mantener dos generadores de aleatorios en fase — el tipo de espejo que se
+        /// pudre en silencio. Clave aditiva: un chunk sin sala no la trae, igual que `room_zones`.
+        /// </summary>
+        public bool hasBuildRoom;
+        public int buildRoomTileX;
+        public int buildRoomTileZ;
+        public int buildRoomDoorSide;
+
+        /// <summary>Lado de la habitación en TILES. Espejo de `ROOM_TILES`
+        /// (backend/src/world/grid_gen/build_rooms.rs).</summary>
+        public const int BuildRoomTiles = 3;
+
+        /// <summary>
         /// Root-tagged message (ServerMessage::ChunkData, "type":"chunk_data") — reads the
         /// REMAINING <paramref name="remainingPairs"/> pairs after IPCClient.Dispatch already
         /// consumed the map header and the "type" pair.
@@ -411,9 +430,30 @@ namespace BackroomsSurvival.Net
                             m.sprays[si] = SprayMsg.Parse(r);
                     }
                 }
+                else if (MsgPackReader.Is(k, "build_room"))
+                {
+                    // [tile_x, tile_z, door_side]. Clave aditiva y ausente en la inmensa mayoría
+                    // de los chunks; se consume TODO lo que venga aunque sean más de tres, para no
+                    // descolocar el cursor de los campos que vengan detrás.
+                    int n = r.ReadArrayHeader();
+                    for (int bi = 0; bi < n; bi++)
+                    {
+                        int v = (int)r.ReadInt();
+                        if (bi == 0) m.buildRoomTileX = v;
+                        else if (bi == 1) m.buildRoomTileZ = v;
+                        else if (bi == 2) m.buildRoomDoorSide = v;
+                    }
+                    m.hasBuildRoom = n >= 2;
+                }
                 else r.Skip();
             }
             return m;
         }
+
+        /// <summary>¿Cae el tile (tx, tz) de este chunk dentro de su habitación construible?</summary>
+        public bool TileIsBuildRoom(int tx, int tz) =>
+            hasBuildRoom
+            && tx >= buildRoomTileX && tx < buildRoomTileX + BuildRoomTiles
+            && tz >= buildRoomTileZ && tz < buildRoomTileZ + BuildRoomTiles;
     }
 }

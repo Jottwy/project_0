@@ -104,13 +104,13 @@ namespace BackroomsSurvival.Gameplay.Building
         private static void TraceVerdict(Vector3 position, int defId, BuildPermission.Verdict verdict)
         {
             var (cx, cz) = BuildPermission.ChunkOf(position);
-            var (bx, bz) = BuildPermission.ClaimBlockOf(position);
+            var (kx, kz) = BuildPermission.ClaimKeyOf(position);
             bool zoneKnown = ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind);
 
             Debug.Log($"MPTRACE step=BP event=build_verdict verdict={verdict} def_id={defId} " +
                       $"pos=({position.x:F1},{position.y:F1},{position.z:F1}) chunk=({cx},{cz}) " +
-                      $"zone_known={zoneKnown} zone_kind={(zoneKnown ? zoneKind : (byte)255)} " +
-                      $"block=({bx},{bz}) claim_owner={BuildPermission.ClaimOwnerAt(position)} " +
+                      $"chunk_known={zoneKnown} in_room={BuildRoomRegistry.Contains(position)} " +
+                      $"claim_key=({kx},{kz}) claim_owner={BuildPermission.ClaimOwnerAt(position)} " +
                       $"self_id={BuildPermission.LocalPeerId()} " +
                       $"is_marker={defId == BuildPermission.ClaimMarkerDefId}");
         }

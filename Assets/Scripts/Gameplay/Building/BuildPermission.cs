@@ -12,18 +12,12 @@ namespace BackroomsSurvival.Gameplay.Building
     /// antes de gastar el gesto, y para no mandarle al host una petición que el host ya va a tirar.
     /// Si esta clase mintiera diciendo que sí, no pasaría nada: el host seguiría diciendo que no.
     ///
-    /// La zona sale de <see cref="ZoneRegistry"/>, que ya guarda el `zone_kind` de la CAPA 0 de cada
-    /// columna leído del snapshot IPC. Que sea la capa 0 no es un atajo: es exactamente el criterio
-    /// que aplica el host (ver `position_is_buildable`), y mantenerlos en fase es lo que evita que el
-    /// aviso del cliente y la decisión del host discrepen justo donde el jugador está mirando.
+    /// Desde la enmienda 5 el sitio construible NO es una zona sino una HABITACIÓN tallada
+    /// (<see cref="BuildRoomRegistry"/>), y su posición llega del backend con el propio chunk. El
+    /// cliente no la deriva porque no puede: el emplazamiento sortea con el `StdRng` de Rust.
     /// </summary>
     public static class BuildPermission
     {
-        /// <summary>
-        /// `ZONE_SAFE` del backend (`world/chunk/surface_profiles.rs`). Es el único `zone_kind`
-        /// construible del mundo — decisión de ADR-081, pieza 1.
-        /// </summary>
-        public const byte BuildableZoneKind = 2;
 
         /// <summary>
         /// Lo que ve el jugador cuando la regla le para, además del fantasma en rojo de
@@ -40,14 +34,6 @@ namespace BackroomsSurvival.Gameplay.Building
         /// </summary>
         public const int ClaimMarkerDefId = -1977919096;
 
-        /// <summary>
-        /// Espejo de `CLAIM_BLOCK_M` (backend/src/game_loop.rs): 2 × 2 tiles de 5 m.
-        ///
-        /// Enmienda 4 a ADR-081. Un lado de 10 m son exactamente 2 de las paredes construibles que
-        /// existen (8 para cerrar el recinto), y divide EXACTO los 50 m del chunk — así ninguna
-        /// casilla queda partida entre dos chunks, que era el coste declarado de los 15 m.
-        /// </summary>
-        public const float ClaimBlockMeters = 10f;
 
         /// <summary>
         /// True si <paramref name="worldPosition"/> cae en una columna de zona construible.
@@ -62,8 +48,7 @@ namespace BackroomsSurvival.Gameplay.Building
         /// </summary>
         public static bool CanBuildAt(Vector3 worldPosition)
         {
-            var (cx, cz) = ChunkOf(worldPosition);
-            if (!ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind) || !IsBuildableZone(zoneKind))
+            if (!BuildRoomRegistry.Contains(worldPosition))
                 return false;
 
             // ADR-081 fase 3, espejo de la regla del host (`process_stp_place`): en zona construible
@@ -85,15 +70,15 @@ namespace BackroomsSurvival.Gameplay.Building
         public enum Verdict
         {
             Allowed,
-            /// <summary>El snapshot IPC todavía no ha traído el `zone_kind` de esta columna.</summary>
+            /// <summary>El chunk de esta columna aún no ha llegado: no se sabe qué hay.</summary>
             ZoneUnknown,
-            /// <summary>La columna es de una zona que no se construye.</summary>
+            /// <summary>El chunk se conoce y aquí no hay habitación construible.</summary>
             ZoneNotBuildable,
             /// <summary>Terreno sin reclamar y la pieza no es el marcador.</summary>
             Unclaimed,
-            /// <summary>El bloque tiene dueño y no eres tú.</summary>
+            /// <summary>La habitación tiene dueño y no eres tú.</summary>
             ClaimedByOther,
-            /// <summary>Es el marcador, pero este bloque ya está reclamado.</summary>
+            /// <summary>Es el marcador, pero esta habitación ya está reclamada.</summary>
             AlreadyClaimed,
         }
 
@@ -104,9 +89,9 @@ namespace BackroomsSurvival.Gameplay.Building
         public static Verdict Explain(Vector3 worldPosition, int defId)
         {
             var (cx, cz) = ChunkOf(worldPosition);
-            if (!ZoneRegistry.TryGetZone(cx, cz, out byte zoneKind))
+            if (!ChunkKnown(cx, cz))
                 return Verdict.ZoneUnknown;
-            if (!IsBuildableZone(zoneKind))
+            if (!BuildRoomRegistry.Contains(worldPosition))
                 return Verdict.ZoneNotBuildable;
 
             ushort owner = ClaimOwnerAt(worldPosition);
@@ -120,26 +105,22 @@ namespace BackroomsSurvival.Gameplay.Building
         }
 
         /// <summary>
-        /// Bloque de la rejilla GLOBAL de claims que contiene <paramref name="worldPosition"/>.
-        /// Espejo de `claim_block` (backend/src/game_loop.rs).
+        /// Identidad del claim que cubre <paramref name="worldPosition"/>. Espejo de `claim_key`
+        /// (backend/src/game_loop.rs).
         ///
-        /// `FloorToInt` y no un cast: truncar hacia cero haría el bloque del origen del doble de
-        /// ancho en las dos direcciones, comiéndose el de sus vecinos al oeste y al norte.
+        /// Enmienda 5: **la HABITACIÓN es el claim**. Como el backend talla como mucho UNA por
+        /// chunk, la coordenada de chunk la identifica — dos posiciones son del mismo claim si y
+        /// solo si están en el mismo chunk. Fuera la rejilla de bloques de 10 m de la enmienda 4:
+        /// reclamar una casilla abstracta dejó de tener sentido cuando la sala pasó a estar tallada.
         /// </summary>
-        public static (int bx, int bz) ClaimBlockOf(Vector3 worldPosition) => (
-            Mathf.FloorToInt(worldPosition.x / ClaimBlockMeters),
-            Mathf.FloorToInt(worldPosition.z / ClaimBlockMeters));
-
-        /// <summary>Esquina de menor coordenada del bloque, en el mundo.</summary>
-        public static Vector3 ClaimBlockOrigin(int bx, int bz) =>
-            new Vector3(bx * ClaimBlockMeters, 0f, bz * ClaimBlockMeters);
+        public static (int cx, int cz) ClaimKeyOf(Vector3 worldPosition) => ChunkOf(worldPosition);
 
         /// <summary>
         /// Dueño del claim que cubre <paramref name="worldPosition"/>, o 0 si el terreno está libre.
         ///
         /// Derivado de los marcadores replicados, exactamente como lo deriva el host de su propia
-        /// lista — no hay tabla de claims que pueda desincronizarse. Se compara el BLOQUE, no la
-        /// distancia: un claim es una casilla de una rejilla de suelo, y por eso la Y no entra.
+        /// lista — no hay tabla de claims que pueda desincronizarse. Se compara la HABITACIÓN (vía
+        /// su chunk), no la distancia: un claim es una sala, y por eso la Y no entra.
         ///
         /// Sin snapshot IPC devuelve 0 (terreno libre); es el mismo transitorio de arranque que la
         /// zona desconocida, y lo cubre el hecho de que la zona se comprueba ANTES en las dos
@@ -150,7 +131,7 @@ namespace BackroomsSurvival.Gameplay.Building
             if (!IPCClient.TryGetInstance(out var ipc) || ipc.LatestState == null)
                 return 0;
 
-            var block = ClaimBlockOf(worldPosition);
+            var key = ClaimKeyOf(worldPosition);
             var buildings = ipc.LatestState.stpBuildings;
             for (int i = 0; i < buildings.Count; i++)
             {
@@ -158,7 +139,7 @@ namespace BackroomsSurvival.Gameplay.Building
                 if (b.defId != ClaimMarkerDefId)
                     continue;
 
-                if (ClaimBlockOf(b.position) == block)
+                if (ClaimKeyOf(b.position) == key)
                     return b.ownerId;
             }
 
@@ -187,7 +168,16 @@ namespace BackroomsSurvival.Gameplay.Building
             Mathf.FloorToInt(worldPosition.x / SprayMsg.ChunkSize),
             Mathf.FloorToInt(worldPosition.z / SprayMsg.ChunkSize));
 
-        /// <summary>La regla en sí: de los 13 `zone_kind` del backend, solo uno se construye.</summary>
-        public static bool IsBuildableZone(byte zoneKind) => zoneKind == BuildableZoneKind;
+        /// <summary>
+        /// ¿Ha llegado ya el chunk de esta columna? Distingue "todavía no lo sé" de "sé que no", que
+        /// es la diferencia entre un transitorio de carga y una regla del juego — y sin ella la
+        /// traza de diagnóstico no podría decir cuál de las dos te paró.
+        ///
+        /// Se pregunta a <see cref="ZoneRegistry"/> porque su fuente (el snapshot de 10 Hz) llega
+        /// para TODO chunk cargado, mientras que el registro de habitaciones solo gana una entrada
+        /// cuando el chunk resulta tener sala: sin este desempate, un chunk perfectamente conocido y
+        /// sin habitación sería indistinguible de uno que aún no ha llegado.
+        /// </summary>
+        public static bool ChunkKnown(int cx, int cz) => ZoneRegistry.TryGetZone(cx, cz, out _);
     }
 }

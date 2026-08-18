@@ -316,6 +316,18 @@ pub struct GridChunkData {
     /// costs exactly what it cost before this field existed.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sprays: Vec<crate::world::spray::Spray>,
+    /// ADR-081 enmienda 5 — la HABITACIÓN CONSTRUIBLE de este chunk, si la tiene:
+    /// `[tile_x, tile_z, door_side]`, en TILES de 5 m dentro del chunk.
+    ///
+    /// Viaja por el wire y no se re-deriva en el cliente, que es lo que se hace con todo lo demás
+    /// que sale del seed (los carteles, la escalera de OFFICE). Aquí no se puede: el emplazamiento
+    /// sortea con `StdRng` —ChaCha— y eso no se replica en C# sin reimplementar el generador entero.
+    /// Se eligió mandar 3 bytes antes que mantener dos generadores de números aleatorios en fase.
+    ///
+    /// Campo ADITIVO y omitido cuando el chunk no tiene sala, mismo patrón que `room_zones` y
+    /// `sprays`: un chunk sin habitación cuesta exactamente lo que costaba antes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_room: Option<[u8; 3]>,
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the

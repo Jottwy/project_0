@@ -465,9 +465,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // ADR-035: los rects de sala salen del cache, no del mensaje — una
             // reconstrucción desde _wallsCache (chunk revisitado, o reintento tras el gate
             // de zona) tiene que ver las mismas zonas que la construcción original.
+            // ADR-081 enmienda 5: la habitacion construible del chunk, si la tiene. Sale del
+            // registro que se puebla del propio mensaje de chunk, asi que una reconstruccion
+            // (chunk revisitado, o el reintento tras el gate de zona) ve exactamente la misma sala.
+            int roomTileX = -1, roomTileZ = -1;
+            BuildRoomRegistry.TryGetRoomTile(ccx, ccz, layer, out roomTileX, out roomTileZ);
+
             var go = GridChunkBuilder.BuildFromWalls(walls, _prefabs, origin,
                 $"Chunk_L{layer}_{ccx}_{ccz}", layer, layerCount, cfg, mats, ccx, ccz,
-                GetRoomZones(ccx, ccz, layer));
+                GetRoomZones(ccx, ccz, layer), roomTileX, roomTileZ);
             go.transform.SetParent(transform, true);
             _loaded[key] = go;
 
@@ -491,7 +497,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 lighting.PlaceFluorescentLights(go.transform, tiles, tiles,
                     GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
                     cfg, mats.lamp, ccx, ccz, layer, walls,
-                    zoneKnownAtBuild ? zoneKindByte : -1);
+                    zoneKnownAtBuild ? zoneKindByte : -1, roomTileX, roomTileZ);
             }
         }
 

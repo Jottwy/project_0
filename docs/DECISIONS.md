@@ -3982,3 +3982,80 @@ bloque, independientes—, así que volver a un lado que no divida degrada igual
 Lo fija un test a cada lado (`the_claim_block_tiles_the_chunk_exactly`,
 `TheClaimBlockTilesTheChunkExactly`) para que el día que alguien mueva la constante se entere de lo
 que pierde.
+
+#### Enmienda 5 a ADR-081 (2026-08-18) — la zona construible pasa a ser una HABITACIÓN tallada en el mundo; wire 36 → 37
+
+Pedido de Joel, después de que las enmiendas 3 y 4 siguieran sin darle lo que quería: **generar un
+3 × 3 propio que PISE lo que hubiera ahí**, hueco por dentro y con pared alrededor, con su propio
+material sin textura y sin luces de techo. Y — recalcado — que **SOLO ahí** se pueda construir: en el
+resto del mundo no, zona segura incluida. Con el criterio anterior el cluster de arranque eran
+100 × 100 m edificables de una pieza, que era el fallo que las enmiendas 3 y 4 estaban intentando
+tapar bajando el tamaño del claim en vez de cambiar el criterio.
+
+**1. LA HABITACIÓN.** 3 × 3 tiles (15 × 15 m), interior hueco, perímetro con muro, una puerta.
+Emplazamiento puro por seed, 5 % de los chunks, **solo capa 0** (las superiores son verticalidad
+decorativa mientras ADR-026 siga bloqueado, y una sala construible ahí sería un sitio al que no se
+llega de forma fiable).
+
+**2. HAY QUE TALLARLA DOS VECES, y no es opcional.** El mundo existe en dos representaciones y esa
+deuda ya estaba declarada en ADR-026/033:
+
+| representación | celda | quién la usa |
+|---|---|---|
+| `chunk.layout` | 5 m | la colisión del JUGADOR (`Level0Collision::resolve_move`) |
+| `LayerGrid` (`grid_gen`) | 2,5 m | lo que se VE y el robapieles |
+
+Tallar solo el render da paredes que ves y atraviesas; tallar solo la colisión, paredes invisibles
+que te frenan. Las dos leen el MISMO `RoomPlan` — es lo único que impide que diverjan con el tiempo.
+El emplazamiento vive en `grid_gen::build_rooms` (y no en `world/`) porque `grid_gen` no puede
+importar `world/` pero `world/` sí importa `grid_gen`: el lado común va al que puede ser leído por
+los dos. Sale gratis una coincidencia: la celda de layout mide 5 m, o sea un tile, así que la sala
+son 3 × 3 celdas de esa rejilla sin conversión.
+
+**3. DOS FALLOS PROPIOS, cazados por tests ajenos, y los dos escritos en el código.**
+(a) El anillo de muro dejaba trozos del laberinto incomunicados — **cinco tests de conectividad en
+rojo**. Cura: el anillo es `SealedWall`, el único tipo que `repair_connectivity` no puede perforar
+(existe justamente para perímetros estampados), y se pasa una segunda reparación DESPUÉS del tallado
+con el interior y el túnel protegidos.
+(b) La habitación nacía **sellada** cuando el túnel de la puerta topaba con la fila de costura del
+chunk — construible sobre el papel e inalcanzable en juego. Cura: el rango de emplazamiento deja una
+celda de holgura a los cuatro lados, MEDIDA y no elegida, y la puerta prueba los cuatro lados.
+
+**4. LA PUERTA DE CONSTRUCCIÓN es ahora "¿estás dentro de una habitación?"** y nada más.
+`ZONE_SAFE` deja de ser el criterio, y con él se **revierte la pieza 2** del ADR original: la banda
+`32..=34` de `TEMPLATE_SAFE_ROOM` en el sorteo de expansión existía solo para sostener aquel
+criterio, y era un cambio de worldgen que nadie pidió. **El claim pasa a ser LA HABITACIÓN**: fuera
+la rejilla de bloques de 10 m de la enmienda 4. Como hay como mucho una sala por chunk, la coordenada
+de chunk identifica el claim (`claim_key`).
+
+**5. WIRE 36 → 37: `GridChunkData.build_room`.** Y esto es lo que NO se pudo hacer como todo lo
+demás derivado del seed: el cliente **no puede** re-derivar el emplazamiento, porque sortea con
+`StdRng` —ChaCha— y replicarlo en C# significaría mantener dos generadores de aleatorios en fase, el
+tipo de espejo que se pudre en silencio. Los carteles y la escalera de OFFICE sí se derivan porque
+son aritmética simple; esto no lo es. Se mandan 3 bytes (`[tile_x, tile_z, door_side]`), aditivos y
+omitidos en el chunk que no tiene sala. El cliente los guarda en `BuildRoomRegistry`, que es a
+`GridChunkData` lo que `ZoneRegistry` es al snapshot de 10 Hz.
+
+**6. CÓMO SE VE** (cliente, todo derivado del campo anterior): suelo y techo de la sala con material
+propio, liso y **sin textura** — provisional, la definitiva es trabajo de arte —; **ninguna lámpara**
+dentro; el cartel se muda del chunk `ZONE_SAFE` al interior de la habitación; y el borde que dibuja
+`ClaimCircleRenderer` pasa a ser el rectángulo REAL que el backend talló, no una aproximación.
+
+Consecuencia declarada y aceptada: **el mundo de una seed ya jugada cambia** en los chunks que ahora
+llevan habitación. Una huella de `PHASE1_GOLDENS` derivó por eso y queda documentada como excepción
+#5 — solo esa de las 16, porque las salas son el 5 % y solo en capa 0.
+
+Deuda declarada: las PAREDES de la habitación siguen con el material del nivel (solo suelo y techo
+llevan el propio); y nada de esto se ha visto en juego todavía.
+
+Alternativas rechazadas:
+- **(A) Derivar el emplazamiento en el cliente con un hash propio, como los carteles.** RECHAZADA: no
+  es un hash, es un `StdRng` con `gen_bool`/`gen_range`; reproducirlo en C# es reimplementar ChaCha y
+  su secuencia de consumo, y el día que uno de los dos cambie nadie se entera hasta que dos jugadores
+  ven salas distintas.
+- **(B) Tallar solo la rejilla fina de `grid_gen`.** RECHAZADA: es la representación del RENDER; el
+  jugador chocaría con las paredes viejas y atravesaría las nuevas.
+- **(C) Dejar el anillo como `Wall` normal.** RECHAZADA por medición: `repair_connectivity` lo
+  perfora para reconectar bolsillos, y la sala nacería con agujeros aleatorios en el muro.
+- **(D) Que la habitación sea el chunk entero, o alinearla a él.** RECHAZADA: es exactamente el
+  problema que esta enmienda arregla.

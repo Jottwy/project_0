@@ -200,6 +200,11 @@ namespace BackroomsSurvival.Net
 
         private void NotifyChunkDataListeners(GridChunkDataMsg data)
         {
+            // ADR-081 enmienda 5: TODO chunk pasa por aquí, así que registrar la habitación en este
+            // punto es lo que garantiza que la puerta de construcción conozca cualquier sala que el
+            // jugador tenga cargada — sin depender de que un consumidor concreto esté suscrito.
+            BackroomsSurvival.Gameplay.BuildRoomRegistry.Observe(data);
+
             lock (_chunkDataListeners)
                 foreach (var h in _chunkDataListeners)
                     try { h(data); } catch (Exception e) { ReportListenerFailure(h, e); }

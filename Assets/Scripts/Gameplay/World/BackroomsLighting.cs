@@ -81,7 +81,8 @@ namespace BackroomsSurvival.Gameplay.World
         /// </summary>
         public void PlaceFluorescentLights(Transform chunkRoot, int tilesX, int tilesZ,
             float tileSize, float ceilingHeight, LayerVisualConfig cfg, Material lampMat,
-            int chunkX, int chunkZ, int worldLayer, byte[,] walls, int zoneKind = -1)
+            int chunkX, int chunkZ, int worldLayer, byte[,] walls, int zoneKind = -1,
+            int buildRoomTileX = -1, int buildRoomTileZ = -1)
         {
             if (cfg == null) return;
 
@@ -169,6 +170,13 @@ namespace BackroomsSurvival.Gameplay.World
                 for (int tx = 0; tx < tilesX; tx++)
                 {
                     if (!HasCeilingSpace(tx, tz)) continue;   // solid tile — nothing to light
+                    // ADR-081 enmienda 5: la habitacion construible va SIN luces de techo, por
+                    // peticion expresa. El `continue` va antes de la tirada de densidad a proposito:
+                    // consumir el rng aqui movería el patron de luces del resto del chunk, y una
+                    // sala oscura no debe reordenar las lamparas de los pasillos de al lado.
+                    if (buildRoomTileX >= 0
+                        && tx >= buildRoomTileX && tx < buildRoomTileX + 3
+                        && tz >= buildRoomTileZ && tz < buildRoomTileZ + 3) continue;
                     if (rng.NextDouble() >= density) continue; // no luminaire here
 
                     var localPos = new Vector3(
