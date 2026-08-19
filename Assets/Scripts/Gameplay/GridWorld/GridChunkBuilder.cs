@@ -711,6 +711,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static RoomPool _roomPool;
         private static bool _roomPoolLoaded;
 
+        // Tabla (entrada del pool, giro) → (footprint ya girado, lado al que mira la puerta).
+        // Depende SOLO del pool: ni del chunk ni de la zona. Antes se rehacía entera —
+        // `pool.rooms.Length` × 4 `Quaternion.Euler` — por cada zona sellada de cada chunk.
+        // `_roomVariantsSource` es la salvaguarda de editor: hornear una sala reemplaza el
+        // array `rooms` del asset (ArrayUtility.Add), así que comparar la REFERENCIA detecta
+        // cualquier reescritura del pool sin esperar a una recarga de dominio.
+        private static readonly List<RoomVariant> _roomVariants = new List<RoomVariant>();
+        private static RoomPool.RoomEntry[] _roomVariantsSource;
+
         // Scratch de PlanAuthoredRooms/PlaceAuthoredRooms, reutilizado: se construye una
         // lista por chunk y los chunks se construyen de uno en uno (mismo patrón y misma
         // no-reentrancia que _propScratch).

@@ -26,6 +26,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 tx >= tx0 && tx < tx1 && tz >= tz0 && tz < tz1;
         }
 
+        /// <summary>
+        /// Una entrada del pool vista con UN giro concreto: el footprint ya girado y el lado al
+        /// que mira su puerta. Se resuelve una vez por pool porque no depende de la zona que se
+        /// esté amueblando — ver <see cref="EnsureRoomVariants"/>.
+        /// </summary>
+        private struct RoomVariant
+        {
+            public int entry;
+            public float yaw;
+            public int fw, fh;
+            public byte side;
+        }
+
         /// <summary>El pool autorado, o null si nadie ha horneado una sala todavía.</summary>
         private static RoomPool AuthoredRoomPool()
         {
@@ -34,6 +47,41 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             _roomPoolLoaded = true;
             _roomPool = Resources.Load<RoomPool>("Rooms/RoomPool");
             return _roomPool;
+        }
+
+        /// <summary>
+        /// Rellena <c>_roomVariants</c> con las 4 orientaciones de cada entrada válida del pool,
+        /// si no está ya al día. El ORDEN importa: entrada por fuera, giro por dentro, que es el
+        /// mismo en el que se enumeraban antes. La elección final es un hash sobre el índice
+        /// dentro de la lista de candidatas, así que reordenar aquí cambiaría qué sala sale en
+        /// cada sitio del mundo — y dos clientes con versiones distintas verían salas distintas.
+        /// </summary>
+        private static void EnsureRoomVariants(RoomPool pool)
+        {
+            if (ReferenceEquals(_roomVariantsSource, pool.rooms)) return;
+            _roomVariantsSource = pool.rooms;
+            _roomVariants.Clear();
+
+            for (int e = 0; e < pool.rooms.Length; e++)
+            {
+                var entry = pool.rooms[e];
+                if (entry == null || entry.prefab == null) continue;
+                if (entry.tilesX < 1 || entry.tilesZ < 1) continue;
+
+                for (int q = 0; q < 4; q++)
+                {
+                    float yaw = q * 90f;
+                    bool swapped = q == 1 || q == 3;
+                    _roomVariants.Add(new RoomVariant
+                    {
+                        entry = e,
+                        yaw = yaw,
+                        fw = swapped ? entry.tilesZ : entry.tilesX,
+                        fh = swapped ? entry.tilesX : entry.tilesZ,
+                        side = SideOf(Quaternion.Euler(0f, yaw, 0f) * entry.doorLocalForward),
+                    });
+                }
+            }
         }
 
         /// <summary>
@@ -59,6 +107,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (roomZones == null || roomZones.Length == 0) return;
             var pool = AuthoredRoomPool();
             if (pool == null || pool.rooms == null || pool.rooms.Length == 0) return;
+            EnsureRoomVariants(pool);
+            if (_roomVariants.Count == 0) return;
 
             for (int i = 0; i < roomZones.Length; i++)
             {
@@ -89,25 +139,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 // Candidatas: (entrada del pool, giro) cuyo footprint casa con el rect Y cuya
                 // puerta mira a un lado que de verdad está abierto.
                 _roomFitScratch.Clear();
-                for (int e = 0; e < pool.rooms.Length; e++)
+                for (int v = 0; v < _roomVariants.Count; v++)
                 {
-                    var entry = pool.rooms[e];
-                    if (entry == null || entry.prefab == null) continue;
-                    if (entry.tilesX < 1 || entry.tilesZ < 1) continue;
+                    var variant = _roomVariants[v];
+                    if (variant.fw != tw || variant.fh != th) continue;
+                    if (variant.side == 0 || (apertures & variant.side) == 0) continue;
 
-                    for (int q = 0; q < 4; q++)
-                    {
-                        float yaw = q * 90f;
-                        bool swapped = q == 1 || q == 3;
-                        int fw = swapped ? entry.tilesZ : entry.tilesX;
-                        int fh = swapped ? entry.tilesX : entry.tilesZ;
-                        if (fw != tw || fh != th) continue;
-
-                        byte side = SideOf(Quaternion.Euler(0f, yaw, 0f) * entry.doorLocalForward);
-                        if (side == 0 || (apertures & side) == 0) continue;
-
-                        _roomFitScratch.Add((e, yaw));
-                    }
+                    _roomFitScratch.Add((variant.entry, variant.yaw));
                 }
                 if (_roomFitScratch.Count == 0) continue;
 
