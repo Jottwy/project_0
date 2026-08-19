@@ -49,12 +49,25 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddLevelBoxes(boxes, def, bb, t, def.MinCeilingOver(inner));
 
             int n = inner.Length;
+            // Contra el techo MAS BAJO menos el mismo dintel minimo que usa la malla
+            // (RoomMeshBuilder.MinLintel), no contra la altura nominal: con techo inclinado la
+            // malla recorta ahi un hueco alto, y si aqui se recortara contra yCeil el hueco de
+            // colision llegaria mas arriba que el de la malla -- pared solida que se atraviesa,
+            // o al reves, justo en el remate del boquete.
+            float minCeil = def.MinCeilingOver(inner);
+
             // La MISMA resolución que usa la malla, no una copia: cuando eran dos bucles gemelos,
             // cualquier arreglo había que aplicarlo dos veces, y olvidarse de uno es exactamente
             // el fallo de "veo una puerta y me choco contra ella".
             var sideHoles = new List<HoleRect>[n];
             for (int i = 0; i < n; i++) sideHoles[i] = new List<HoleRect>();
-            def.ResolveHoles(inner, yFloor, yCeil, sideHoles);
+            def.ResolveHoles(inner, yFloor, minCeil - RoomMeshBuilder.MinLintel, sideHoles);
+
+            // Una reja bloquea el paso aunque la malla dibuje un hueco real con barrotes
+            // cruzandolo: para la colision NO es una abertura, es pared entera. Es la unica
+            // discrepancia adrede entre malla y colision de este archivo -- todo lo demas se
+            // resuelve igual a proposito.
+            for (int i = 0; i < n; i++) sideHoles[i].RemoveAll(h => h.bars > 0);
 
             for (int i = 0; i < n; i++)
             {
@@ -246,8 +259,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (b > lo && b < hi) cuts.Add(b);
             }
             cuts.Sort();
+            // MISMA tolerancia que la malla usa para fundir estos mismos HoleRect
+            // (RoomMeshBuilder.UCutTolerance/CutTolerance) -- un epsilon mas fino que esa fusion
+            // deja una caja de colision en forma de loncha entre dos cortes casi-coincidentes.
+            float eps = horizontal ? RoomMeshBuilder.UCutTolerance : RoomMeshBuilder.CutTolerance;
             for (int i = cuts.Count - 1; i > 0; i--)
-                if (cuts[i] - cuts[i - 1] < 1e-5f) cuts.RemoveAt(i);
+                if (cuts[i] - cuts[i - 1] < eps) cuts.RemoveAt(i);
             return cuts;
         }
 
@@ -284,7 +301,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (def.floorHoles != null)
                 foreach (var f in def.floorHoles)
                 {
-                    if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f || f.depth <= 0.01f) continue;
+                    if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f
+                        || (!f.bottomless && f.depth <= 0.01f)) continue;
                     pits.Add(XZBounds(RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees)));
                 }
             AddSlabWithHoles(boxes, bb, (yBottom + yFloor) * 0.5f, t, pits);
