@@ -626,12 +626,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>Dintel minimo: ningun boquete puede llegar al techo. La fila de arriba de la
-        /// pared es la que sigue a la pendiente, y un hueco dentro de ella se estiraria con ella.</summary>
-        private const float MinLintel = 0.05f;
+        /// pared es la que sigue a la pendiente, y un hueco dentro de ella se estiraria con ella.
+        /// Internal: <see cref="RoomColliderBuilder"/> tiene que recortar los huecos contra el
+        /// MISMO techo, o el hueco de colision llega mas arriba que el de la malla en una sala
+        /// con techo inclinado -- pared solida que se atraviesa, o al reves.</summary>
+        internal const float MinLintel = 0.05f;
 
         /// <summary>Dos cortes mas juntos que esto son el mismo corte: 1 mm, que es lo mas fino
-        /// que puede llegar a significar algo en una sala de metros.</summary>
-        private const float CutTolerance = 0.001f;
+        /// que puede llegar a significar algo en una sala de metros. Internal por el mismo motivo
+        /// que <see cref="MinLintel"/>: <see cref="RoomColliderBuilder"/> reimplementa su propia
+        /// lista de cortes sobre los mismos <c>HoleRect</c> y necesita la MISMA tolerancia para
+        /// fundir cortes casi-coincidentes, o deja una caja de colision en forma de loncha.</summary>
+        internal const float CutTolerance = 0.001f;
+
+        /// <summary>Igual que <see cref="CutTolerance"/> pero en fraccion de pared (eje U), no en
+        /// metros: 1e-4 ronda el milimetro en una pared de unos metros. Nombrada para no repetir
+        /// el mismo literal en <see cref="UCuts"/> y en el corte horizontal de <see cref="AddJamb"/>
+        /// con valores que puedan divergir sin querer.</summary>
+        internal const float UCutTolerance = 1e-4f;
 
         /// <summary>Sublista de <paramref name="cuts"/> recortada a [lo, hi], con los extremos
         /// incluidos — lo que hace que un trozo de jamba corte por los mismos sitios que la
@@ -666,7 +678,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // En fraccion de pared: la misma idea que CutTolerance, pero u va de 0 a 1 sobre un
             // lado que suele medir unos metros, asi que 1e-4 ronda el milimetro.
             for (int i = cuts.Count - 1; i > 0; i--)
-                if (cuts[i] - cuts[i - 1] < 1e-4f) cuts.RemoveAt(i);
+                if (cuts[i] - cuts[i - 1] < UCutTolerance) cuts.RemoveAt(i);
             return cuts;
         }
 
@@ -735,7 +747,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Alféizar y dintel, partidos por los cortes horizontales que caen dentro del hueco:
             // su arista interior la comparten con la celda de pared (o con la tapa de suelo, si
             // el hueco llega al suelo), y esa está partida por los mismos sitios.
-            SubCuts(uCuts, hr.u0, hr.u1, _jambCuts);
+            SubCuts(uCuts, hr.u0, hr.u1, _jambCuts, UCutTolerance);
             for (int k = 0; k < _jambCuts.Count - 1; k++)
             {
                 float ua = _jambCuts[k], ub = _jambCuts[k + 1];
@@ -1143,8 +1155,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             Vector2 ia = Vector2.Lerp(p0, p1, hr.u0) - along * TrimSeamGap;
             Vector2 ib = Vector2.Lerp(p0, p1, hr.u1) + along * TrimSeamGap;
 
-            AddClosedPrism(TrimRect(ia - along * TrimWidth, ia, TrimDepth), hr.y0, hr.y1);
-            AddClosedPrism(TrimRect(ib, ib + along * TrimWidth, TrimDepth), hr.y0, hr.y1);
+            // Un lado por el que la abertura SIGUE a la pared vecina (spanCorners) no tiene jamba
+            // real ahi -- AddJamb ya lo sabe (openStart/openEnd) y esto tiene que estar de
+            // acuerdo, o sale una moldura flotando en el aire justo donde el hueco continua.
+            if (!hr.openStart)
+                AddClosedPrism(TrimRect(ia - along * TrimWidth, ia, TrimDepth), hr.y0, hr.y1);
+            if (!hr.openEnd)
+                AddClosedPrism(TrimRect(ib, ib + along * TrimWidth, TrimDepth), hr.y0, hr.y1);
 
             // El dintel y el umbral, separados de las jambas por el mismo hueco: sin él, la
             // esquina donde jamba y dintel se tocan comparte una arista EXACTA entre las dos
