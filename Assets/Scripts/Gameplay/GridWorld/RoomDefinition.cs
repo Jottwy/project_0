@@ -992,6 +992,34 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
+        /// True si dos aristas NO adyacentes de <paramref name="p"/> se cruzan (contorno en forma
+        /// de lazo/mariposa). Solo hace falta para <see cref="PlanMode.Manual"/>: un contorno
+        /// procedural nunca puede salir cruzado por construcción, pero uno dibujado a mano arrastrando
+        /// vértices en la vista de escena sí — y el recorte de orejas de <c>PolygonTriangulator</c>
+        /// solo comprueba que cada oreja candidata esté vacía de OTROS vértices, no que el polígono
+        /// sea simple, así que un contorno cruzado puede triangular "bien" y colarse como sala válida.
+        /// </summary>
+        public static bool ContourSelfIntersects(Vector2[] p)
+        {
+            int n = p.Length;
+            for (int i = 0; i < n; i++)
+                for (int j = i + 1; j < n; j++)
+                {
+                    if (j == i || (j + 1) % n == i || (i + 1) % n == j) continue;
+                    if (SegmentsCross(p[i], p[(i + 1) % n], p[j], p[(j + 1) % n])) return true;
+                }
+            return false;
+        }
+
+        private static bool SegmentsCross(Vector2 a, Vector2 b, Vector2 c, Vector2 d)
+        {
+            float Side(Vector2 p0, Vector2 p1, Vector2 p2) =>
+                (p1.x - p0.x) * (p2.y - p0.y) - (p1.y - p0.y) * (p2.x - p0.x);
+            float d1 = Side(a, b, c), d2 = Side(a, b, d), d3 = Side(c, d, a), d4 = Side(c, d, b);
+            return ((d1 > 0f) != (d2 > 0f)) && ((d3 > 0f) != (d4 > 0f));
+        }
+
+        /// <summary>
         /// Desplaza cada vértice a lo largo de su propia normal (la bisectriz de sus dos aristas).
         /// A lo largo de la normal y no en cualquier dirección: mover un vértice de lado lo
         /// arrastra hacia sus vecinos y es la forma rápida de que dos paredes se crucen.
