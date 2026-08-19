@@ -110,7 +110,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             int oi = -1;
             foreach (int cand in order)
-                if (BridgeIsClear(outer, cand, hole[hi]))
+                if (BridgeIsClear(outer, cand, hole[hi]) && BridgeMissesHole(hole, hi, outer[cand]))
                 {
                     oi = cand;
                     break;
@@ -140,6 +140,40 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int j = (i + 1) % n;
                 if (i == oi || j == oi) continue;
                 if (SegmentsCross(from, to, poly[i], poly[j])) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// ¿El puente se mete por el AGUJERO QUE VA A COSER? <see cref="BridgeIsClear"/> no puede
+        /// verlo: mira las aristas del polígono, y este agujero todavía no está dentro.
+        ///
+        /// Lo destapa un agujero DESCENTRADO. El puente sale del vértice más a la derecha del
+        /// agujero hacia el vértice del contorno MÁS CERCANO, y con el agujero corrido a la
+        /// izquierda el más cercano pasa a ser una esquina del otro lado: el camino recto vuelve
+        /// a entrar por el hueco. El polígono "simple" resultante se cruza a sí mismo, el recorte
+        /// de orejas no encuentra ninguna válida —contra el teorema de las dos orejas, que solo
+        /// vale para polígonos simples— y la sala entera se queda sin suelo. Centrado no pasaba
+        /// porque el vértice más cercano cae al lado contrario del hueco.
+        ///
+        /// Con esto la candidata se descarta y se prueba la siguiente por cercanía, que es
+        /// exactamente lo que ya hacía cuando el estorbo era OTRO agujero ya cosido — de ahí que
+        /// añadir un segundo agujero al lado a veces lo arreglara por accidente.
+        ///
+        /// Igual que <see cref="BridgeIsClear"/>, solo detecta cruces PROPIOS: un puente que
+        /// saliera rozando un vértice del agujero pasa el filtro. No se ha visto en la práctica y
+        /// tratarlo pediría decidir de qué lado del vértice se va, que es otra discusión.
+        /// </summary>
+        private static bool BridgeMissesHole(List<Vector2> hole, int hi, Vector2 to)
+        {
+            Vector2 from = hole[hi];
+            int n = hole.Count;
+            for (int i = 0; i < n; i++)
+            {
+                int j = (i + 1) % n;
+                // Las dos aristas que nacen del extremo del puente lo tocan por definición.
+                if (i == hi || j == hi) continue;
+                if (SegmentsCross(from, to, hole[i], hole[j])) return false;
             }
             return true;
         }

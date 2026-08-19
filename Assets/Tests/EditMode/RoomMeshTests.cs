@@ -1273,19 +1273,21 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// Bug conocido en <see cref="PolygonTriangulator"/>, encontrado autorando las
-        /// entreplantas: un ÚNICO agujero rectangular, DESCENTRADO respecto a la sala, puede
-        /// hacer que el recorte de orejas se quede sin ninguna oreja válida a mitad de camino —
-        /// pese a que el teorema de las dos orejas garantiza que un polígono simple siempre tiene
-        /// alguna. El mismo agujero centrado (x=0) triangula bien; corrido a x=-2, no. Ni
-        /// siquiera es monótono: añadirle un SEGUNDO agujero al lado a veces lo arregla, porque
-        /// cambia el orden de cosido de los puentes. No se ha localizado la causa exacta —
-        /// probablemente el puente roza algo lo bastante cerca como para que el margen de
-        /// <c>Eps</c> lo cuente como bloqueo — y no se ha intentado arreglar: es del triangulador,
-        /// no de las entreplantas, y las entreplantas ya evitan la posición que lo dispara.
+        /// Regresión del bug del puente de <see cref="PolygonTriangulator"/>, encontrado autorando
+        /// las entreplantas: un ÚNICO agujero rectangular, DESCENTRADO respecto a la sala, dejaba
+        /// al recorte de orejas sin ninguna oreja válida a mitad de camino — pese al teorema de
+        /// las dos orejas, que garantiza que un polígono SIMPLE siempre tiene alguna. Lo que
+        /// fallaba era justo eso: el polígono no era simple.
+        ///
+        /// El puente sale del vértice más a la derecha del agujero hacia el vértice del contorno
+        /// más cercano, y con el agujero corrido a x=−2 el más cercano pasa a ser la esquina
+        /// inferior IZQUIERDA: el camino recto vuelve a entrar por el propio hueco. Centrado (x=0)
+        /// el más cercano cae al otro lado y por eso triangulaba bien; y añadir un segundo agujero
+        /// al lado a veces lo "arreglaba" porque sus aristas ya bloqueaban esa candidata.
+        ///
+        /// Con esta geometría exacta el puente cruzaba la jamba izquierda del hueco en y≈−6.28.
         /// </summary>
         [Test]
-        [Ignore("Bug conocido en PolygonTriangulator: un agujero rectangular descentrado puede dejar el recorte de orejas sin ninguna oreja valida.")]
         public void Off_center_hole_triangulates()
         {
             var outer = new List<Vector2>
@@ -1295,9 +1297,22 @@ namespace BackroomsSurvival.Tests
             };
             var hole = new List<Vector2> { new Vector2(-3f, -5.24f), new Vector2(-1f, -5.24f),
                 new Vector2(-1f, -10f), new Vector2(-3f, -10f) };
+            var verts = new List<Vector2>();
+            var tris = new List<int>();
             bool ok = PolygonTriangulator.Triangulate(outer, new List<IList<Vector2>> { hole },
-                new List<Vector2>(), new List<int>());
+                verts, tris);
             Assert.IsTrue(ok, "the off-center hole failed to triangulate");
+
+            // Devolver true no basta: un puente que cruza el hueco puede recortar igualmente y
+            // dejar el agujero TAPADO. El área es lo que distingue las dos cosas.
+            float area = 0f;
+            for (int i = 0; i < tris.Count; i += 3)
+            {
+                Vector2 a = verts[tris[i]], b = verts[tris[i + 1]], c = verts[tris[i + 2]];
+                area += Mathf.Abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) * 0.5f;
+            }
+            Assert.AreEqual(30f * 25f - 2f * 4.76f, area, 1e-2f,
+                "the triangulation does not cover the room minus the hole");
         }
 
         [Test]
