@@ -347,6 +347,8 @@ namespace BackroomsSurvival.EditorTools
             DrawStairs();
             EditorGUILayout.Space();
             DrawLevels();
+            EditorGUILayout.Space();
+            DrawMarkers();
         }
 
         private void DrawFloorHoles()
@@ -675,6 +677,68 @@ namespace BackroomsSurvival.EditorTools
             }
         }
 
+        /// <summary>
+        /// Sitios que no son geometría: dónde va una luz, un prop o un punto de aparición. Al
+        /// guardar se convierten en hijos de verdad del prefab — una luz en un
+        /// <see cref="Light"/> real, prop y spawn en <see cref="RoomMarker"/> — ver
+        /// <see cref="CreateMarkers"/>. La posición se arrastra en la vista de escena
+        /// (<see cref="OnSceneGUI"/>), igual que el contorno manual.
+        /// </summary>
+        private void DrawMarkers()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField($"Markers ({_def.markers.Length})", EditorStyles.boldLabel);
+                if (GUILayout.Button("+ Light", GUILayout.Width(60)))
+                    AddMarker(RoomDefinition.MarkerKind.Light);
+                if (GUILayout.Button("+ Prop", GUILayout.Width(60)))
+                    AddMarker(RoomDefinition.MarkerKind.Prop);
+                if (GUILayout.Button("+ Spawn", GUILayout.Width(65)))
+                    AddMarker(RoomDefinition.MarkerKind.Spawn);
+            }
+            EditorGUILayout.HelpBox(
+                "No cambian la geometría: son sitios que otro sistema resuelve después (luces, "
+                + "props, puntos de aparición). Arrástralos en la vista de escena.",
+                MessageType.None);
+
+            for (int i = 0; i < _def.markers.Length; i++)
+            {
+                var m = _def.markers[i];
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    string label = m.kind == RoomDefinition.MarkerKind.Light
+                        ? $"#{i}  Light" : $"#{i}  {m.kind} \"{m.tag}\"";
+                    if (!ItemHeader(ref _def.markers, i, "mk", label)) continue;
+
+                    m.kind = (RoomDefinition.MarkerKind)EditorGUILayout.EnumPopup("Kind", m.kind);
+                    m.position = EditorGUILayout.Vector2Field("Position (XZ)", m.position);
+                    m.y = EditorGUILayout.FloatField("Height off floor (m)", m.y);
+                    m.yawDegrees = EditorGUILayout.Slider("Yaw", m.yawDegrees, -180f, 180f);
+
+                    if (m.kind == RoomDefinition.MarkerKind.Light)
+                    {
+                        m.lightColor = EditorGUILayout.ColorField("Color", m.lightColor);
+                        m.lightIntensity = EditorGUILayout.FloatField("Intensity", m.lightIntensity);
+                        m.lightRange = EditorGUILayout.FloatField("Range (m)", m.lightRange);
+                    }
+                    else
+                    {
+                        m.tag = EditorGUILayout.TextField(
+                            new GUIContent("Tag",
+                                "Texto libre que resuelve un catálogo externo -- \"crate\", "
+                                + "\"player\", \"loot_common\"..."),
+                            m.tag);
+                    }
+                }
+            }
+        }
+
+        private void AddMarker(RoomDefinition.MarkerKind kind)
+        {
+            ArrayUtility.Add(ref _def.markers, new RoomDefinition.Marker { kind = kind });
+            RebuildIfLive();
+        }
+
         private void DrawSaveTab()
         {
             using (new EditorGUI.DisabledScope(_preview == null))
@@ -798,6 +862,8 @@ namespace BackroomsSurvival.EditorTools
                 anchor.transform.localPosition = doorPos;
                 anchor.transform.localRotation = Quaternion.LookRotation(doorFwd);
 
+                CreateMarkers(root.transform, def);
+
                 var prefab = PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
                 if (prefab == null)
                 {
@@ -861,6 +927,40 @@ namespace BackroomsSurvival.EditorTools
             if (Vector2.Dot(nrm, (p0 + p1) * 0.5f) < 0f) nrm = -nrm;
 
             return (new Vector3(p.x, 0f, p.y), new Vector3(nrm.x, 0f, nrm.y));
+        }
+
+        /// <summary>
+        /// Los marcadores de la sala, convertidos a hijos de verdad del prefab. Una luz se
+        /// convierte en un <see cref="Light"/> real — ya está lista al instanciar la sala, sin
+        /// esperar a que nadie la resuelva. Prop y Spawn no tienen un componente de motor
+        /// equivalente, así que llevan <see cref="RoomMarker"/> con su etiqueta.
+        /// </summary>
+        private static void CreateMarkers(Transform parent, RoomDefinition def)
+        {
+            if (def.markers == null) return;
+            foreach (var m in def.markers)
+            {
+                if (m == null) continue;
+                var go = new GameObject($"{m.kind}_{m.tag}");
+                go.transform.SetParent(parent, false);
+                go.transform.localPosition = new Vector3(m.position.x, m.y, m.position.y);
+                go.transform.localRotation = Quaternion.Euler(0f, m.yawDegrees, 0f);
+
+                if (m.kind == RoomDefinition.MarkerKind.Light)
+                {
+                    var light = go.AddComponent<Light>();
+                    light.type = LightType.Point;
+                    light.color = m.lightColor;
+                    light.intensity = m.lightIntensity;
+                    light.range = m.lightRange;
+                }
+                else
+                {
+                    var marker = go.AddComponent<RoomMarker>();
+                    marker.kind = m.kind;
+                    marker.label = m.tag;
+                }
+            }
         }
 
         /// <summary>
@@ -986,7 +1086,13 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         private void OnSceneGUI(SceneView view)
         {
-            if (_def.planMode != RoomDefinition.PlanMode.Manual || _preview == null) return;
+            if (_preview == null) return;
+            if (_def.planMode == RoomDefinition.PlanMode.Manual) DrawManualContourHandles();
+            DrawMarkerHandles();
+        }
+
+        private void DrawManualContourHandles()
+        {
             var pts = _def.manualContour;
             if (pts == null || pts.Length == 0) return;
 
@@ -1048,6 +1154,61 @@ namespace BackroomsSurvival.EditorTools
                 changed = true;
             }
 
+            if (changed)
+            {
+                RebuildIfLive();
+                Repaint();
+            }
+        }
+
+        private static readonly Color LightMarkerColor = new Color(1f, 0.9f, 0.3f);
+        private static readonly Color PropMarkerColor = new Color(0.3f, 0.7f, 1f);
+        private static readonly Color SpawnMarkerColor = new Color(0.3f, 1f, 0.4f);
+
+        /// <summary>Tiradores de los marcadores: arrastrables como los del contorno manual, con
+        /// un cubito rojo para borrar. No dependen de <c>planMode</c> — un marcador tiene
+        /// sentido en cualquier planta.</summary>
+        private void DrawMarkerHandles()
+        {
+            var markers = _def.markers;
+            if (markers == null || markers.Length == 0) return;
+
+            var tf = _preview.transform;
+            bool changed = false;
+            int deleteAt = -1;
+
+            for (int i = 0; i < markers.Length; i++)
+            {
+                var m = markers[i];
+                if (m == null) continue;
+                Vector3 world = tf.TransformPoint(new Vector3(m.position.x, m.y, m.position.y));
+                float size = HandleUtility.GetHandleSize(world);
+
+                Handles.color = m.kind == RoomDefinition.MarkerKind.Light ? LightMarkerColor
+                    : m.kind == RoomDefinition.MarkerKind.Prop ? PropMarkerColor : SpawnMarkerColor;
+                EditorGUI.BeginChangeCheck();
+                Vector3 moved = Handles.FreeMoveHandle(world, size * 0.1f, Vector3.zero, Handles.SphereHandleCap);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    Vector3 local = tf.InverseTransformPoint(moved);
+                    m.position = new Vector2(local.x, local.z);
+                    m.y = local.y;
+                    changed = true;
+                }
+                Handles.Label(world + Vector3.up * (size * 0.35f),
+                    m.kind == RoomDefinition.MarkerKind.Light ? $"{i}: Light" : $"{i}: {m.kind} {m.tag}");
+
+                Handles.color = Color.red;
+                Vector3 delPos = world + Vector3.up * (size * 0.6f);
+                if (Handles.Button(delPos, Quaternion.identity, size * 0.1f, size * 0.15f, Handles.CubeHandleCap))
+                    deleteAt = i;
+            }
+
+            if (deleteAt >= 0)
+            {
+                ArrayUtility.RemoveAt(ref _def.markers, deleteAt);
+                changed = true;
+            }
             if (changed)
             {
                 RebuildIfLive();

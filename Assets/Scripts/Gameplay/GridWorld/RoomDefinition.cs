@@ -441,6 +441,49 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public float height = 3f;
         }
 
+        /// <summary>Qué es un <see cref="Marker"/>: no cambia geometría, solo dónde va algo que
+        /// otro sistema resuelve después.</summary>
+        public enum MarkerKind { Prop, Light, Spawn }
+
+        /// <summary>
+        /// Un punto guardado con la sala que NO es geometría: dónde va una luz, un prop o un
+        /// punto de aparición. Vive como hijo del prefab, no dentro de la malla única — la malla
+        /// es la que se optimiza a un solo draw call; esto es justo lo contrario, sitios que
+        /// otro sistema tiene que poder encontrar y recorrer por su cuenta.
+        ///
+        /// <see cref="tag"/> y no una referencia directa a prefab: <see cref="RoomDefinition"/>
+        /// viaja por <c>JsonUtility</c> (la sala guardada se clona así al volver a cargarla en
+        /// el editor — ver <c>RoomAuthoringWindow.LoadRoom</c>), y una referencia a
+        /// <c>UnityEngine.Object</c> no sobrevive ese viaje de ida y vuelta. Un texto libre que
+        /// un catálogo resuelva después es el mismo indirection que ya usa
+        /// <c>LayerVisualConfig.PropEntry.placeholderType</c> para el resto de props del mundo.
+        /// </summary>
+        [Serializable]
+        public sealed class Marker
+        {
+            public MarkerKind kind = MarkerKind.Prop;
+
+            /// <summary>En metros, relativo al centro de la sala — mismo convenio que todo lo
+            /// demás.</summary>
+            public Vector2 position;
+
+            /// <summary>Altura sobre el suelo de la sala, en metros.</summary>
+            public float y;
+
+            public float yawDegrees;
+
+            /// <summary>Para Prop: qué prop, resuelto luego por un catálogo. Para Spawn: una
+            /// etiqueta libre ("player", "loot_common"...). Sin efecto en Light.</summary>
+            public string tag = "";
+
+            // Solo relevantes con kind == Light: al guardar se convierten en un componente
+            // Light de verdad (ver RoomAuthoringWindow.SaveGeneratedRoom), así que una luz no
+            // necesita esperar a que nadie la resuelva — ya está lista al instanciar la sala.
+            public Color lightColor = Color.white;
+            [Min(0f)] public float lightIntensity = 1f;
+            [Min(0f)] public float lightRange = 5f;
+        }
+
         public WallHole[] holes = Array.Empty<WallHole>();
         public Pillar[] pillars = Array.Empty<Pillar>();
         public PillarGrid[] pillarGrids = Array.Empty<PillarGrid>();
@@ -448,6 +491,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public Stairs[] stairs = Array.Empty<Stairs>();
         public FloorHole[] floorHoles = Array.Empty<FloorHole>();
         public Level[] levels = Array.Empty<Level>();
+        public Marker[] markers = Array.Empty<Marker>();
 
         /// <summary>
         /// Altura de nivel ya recortada: al menos <see cref="MinCeilingHeight"/> de hueco por

@@ -452,6 +452,29 @@ namespace BackroomsSurvival.Tests
             AssertRoom("bottomless pit next to a normal pit", d);
         }
 
+        // ── marcadores ────────────────────────────────────────────────────────
+
+        /// <summary>Los marcadores no son geometría: la malla tiene que salir IDÉNTICA con o sin
+        /// ellos. RoomMeshBuilder ni siquiera lee <c>def.markers</c> — esto es la prueba
+        /// documentada de esa afirmación, no una comprobación de "algo raro pasó".</summary>
+        [Test]
+        public void Markers_do_not_affect_the_mesh()
+        {
+            var withMarkers = Box(4, 3);
+            withMarkers.markers = new[]
+            {
+                new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Light, position = new Vector2(1f, 1f), y = 2f },
+                new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Spawn, position = new Vector2(-1f, 0f), tag = "player" },
+            };
+            var mWith = AssertRoom("room with markers", withMarkers);
+
+            var without = Box(4, 3);
+            var mWithout = RoomMeshBuilder.Build(without);
+
+            Assert.AreEqual(mWithout.vertexCount, mWith.vertexCount);
+            Assert.AreEqual(mWithout.triangles.Length, mWith.triangles.Length);
+        }
+
         // ── planta dibujada a mano ───────────────────────────────────────────
 
         [Test]
@@ -983,6 +1006,13 @@ namespace BackroomsSurvival.Tests
             d.pillars = new[] { new RoomDefinition.Pillar { position = new Vector2(3f, 1f), size = 0.9f, sides = 8 } };
             d.stairs = new[] { new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f } };
             d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.markers = new[]
+            {
+                new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Light, position = new Vector2(1f, 1f),
+                    y = 2f, lightColor = Color.cyan, lightIntensity = 2.5f, lightRange = 6f },
+                new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Prop, position = new Vector2(-1f, -1f),
+                    tag = "crate" },
+            };
 
             var clone = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(d));
 
@@ -998,6 +1028,11 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(d.stairs[0].steps, clone.stairs[0].steps);
             Assert.AreEqual(d.levels.Length, clone.levels.Length);
             Assert.AreEqual(d.levels[0].height, clone.levels[0].height);
+            Assert.AreEqual(d.markers.Length, clone.markers.Length);
+            Assert.AreEqual(d.markers[0].kind, clone.markers[0].kind);
+            Assert.AreEqual(d.markers[0].lightColor, clone.markers[0].lightColor);
+            Assert.AreEqual(d.markers[0].lightIntensity, clone.markers[0].lightIntensity);
+            Assert.AreEqual(d.markers[1].tag, clone.markers[1].tag);
 
             // Y no solo los campos: el CLON tiene que producir la MISMA planta, que es lo que de
             // verdad importa para poder seguir editando donde se dejó.
