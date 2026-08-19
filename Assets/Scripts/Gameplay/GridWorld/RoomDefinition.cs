@@ -565,8 +565,65 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             stairs = newStairs.ToArray();
         }
 
-        public Vector2[] InnerContour() =>
-            planMode == PlanMode.Blocks ? BlockContour() : PolygonContour();
+        /// <summary>
+        /// Cuánto se tuercen las paredes. 0 = geometría perfecta. Subirlo desplaza cada vértice
+        /// de la planta y las paredes dejan de ser exactas: esquinas que no son rectas del todo,
+        /// muros ligeramente fuera de escuadra. Es lo que separa "generado" de "construido".
+        /// </summary>
+        [Range(0f, 1f)] public float irregularity;
+
+        /// <summary>Semilla de la irregularidad. Misma semilla, misma planta torcida.</summary>
+        public int irregularitySeed = 1;
+
+        public Vector2[] InnerContour() => ApplyIrregularity(
+            planMode == PlanMode.Blocks ? BlockContour() : PolygonContour());
+
+        /// <summary>
+        /// Desplaza cada vértice a lo largo de su propia normal (la bisectriz de sus dos aristas).
+        /// A lo largo de la normal y no en cualquier dirección: mover un vértice de lado lo
+        /// arrastra hacia sus vecinos y es la forma rápida de que dos paredes se crucen.
+        ///
+        /// El tope es una fracción de la arista MÁS CORTA que toca ese vértice. Un desplazamiento
+        /// fijo en metros se comería una pared de medio metro y dejaría la planta hecha un nudo,
+        /// mientras que en una nave de 40 m no se notaría; atado a la arista, el efecto es el
+        /// mismo en una sala pequeña que en una grande y nunca puede plegar la geometría.
+        ///
+        /// DETERMINISTA por (índice de vértice, semilla), sin estado compartido: esta función la
+        /// llaman la malla, los colliders y los tests por separado, y todos tienen que ver
+        /// exactamente la misma planta.
+        /// </summary>
+        private Vector2[] ApplyIrregularity(Vector2[] pts)
+        {
+            if (irregularity <= 0.001f || pts == null || pts.Length < 3) return pts;
+
+            int n = pts.Length;
+            var outPts = new Vector2[n];
+            for (int i = 0; i < n; i++)
+            {
+                Vector2 prev = pts[(i - 1 + n) % n], cur = pts[i], next = pts[(i + 1) % n];
+
+                Vector2 nrm = (OutwardNormal(prev, cur) + OutwardNormal(cur, next)).normalized;
+                if (nrm.sqrMagnitude < 0.5f) { outPts[i] = cur; continue; } // aristas opuestas
+
+                float shortest = Mathf.Min(Vector2.Distance(prev, cur), Vector2.Distance(cur, next));
+                float limit = Mathf.Min(1.5f, shortest * 0.25f) * irregularity;
+
+                outPts[i] = cur + nrm * ((Hash01(i, irregularitySeed) * 2f - 1f) * limit);
+            }
+            return outPts;
+        }
+
+        /// <summary>Hash entero → [0,1). Sin `System.Random`: hace falta que el valor dependa SOLO
+        /// del índice y la semilla, no del orden en que se pidan.</summary>
+        private static float Hash01(int i, int seed)
+        {
+            unchecked
+            {
+                uint h = (uint)(i * 374761393) + (uint)(seed * 668265263);
+                h = (h ^ (h >> 13)) * 1274126177u;
+                return (h ^ (h >> 16)) / (float)uint.MaxValue;
+            }
+        }
 
         /// <summary>
         /// Contorno del modo BLOQUES: el footprint en celdas de tile menos las muescas, recorrido

@@ -139,6 +139,19 @@ namespace BackroomsSurvival.EditorTools
                     _def.ceilingTiltYaw, -180f, 180f);
 
             EditorGUILayout.Space();
+            _def.irregularity = EditorGUILayout.Slider(
+                new GUIContent("Irregularity", "0 = perfect geometry. Raise it and the walls go slightly out of square."),
+                _def.irregularity, 0f, 1f);
+            using (new EditorGUI.DisabledScope(_def.irregularity <= 0.001f))
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    _def.irregularitySeed = EditorGUILayout.IntField(
+                        new GUIContent("  Seed"), _def.irregularitySeed);
+                    if (GUILayout.Button("Roll", GUILayout.Width(50)))
+                        _def.irregularitySeed = UnityEngine.Random.Range(1, 999999);
+                }
+
+            EditorGUILayout.Space();
             _def.planMode = (RoomDefinition.PlanMode)EditorGUILayout.EnumPopup(
                 new GUIContent("Plan", "Polygon = round/boxy convex plans. Blocks = bite tiles out for L / T / U."),
                 _def.planMode);
