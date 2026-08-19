@@ -60,21 +60,52 @@ namespace BackroomsSurvival.Tests
             var m = RoomMeshBuilder.Build(def);
             Assert.Greater(m.vertexCount, 0, $"{name}: no geometry");
             Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, $"{name}: triangulation fell back");
-            Assert.IsTrue(ClosedManifold(m, out string why), $"{name}: not a closed shell :: {why}");
+            Assert.IsTrue(ClosedManifold(m, ExpectedOpenEdges(def), out string why),
+                $"{name}: not a closed shell :: {why}");
             Assert.IsTrue(WindingOk(m, out int bw), $"{name}: {bw} triangles face the wrong way");
             Assert.IsTrue(UvWorldScale(m, out int bu), $"{name}: {bu} edges with stretched texture");
             return m;
         }
 
+        /// <summary>
+        /// Las aristas que un pozo <c>bottomless</c> deja SIN pareja a propósito: el borde de su
+        /// propio remate abierto. Es la única abertura que el generador admite a sabiendas —
+        /// cualquier otra arista sin pareja sigue siendo un bug.
+        /// </summary>
+        private static HashSet<(int, int, int, int, int, int)> ExpectedOpenEdges(RoomDefinition def)
+        {
+            var set = new HashSet<(int, int, int, int, int, int)>();
+            (int, int, int) K(Vector2 p, float y) => (Mathf.RoundToInt(p.x * 1000f),
+                Mathf.RoundToInt(y * 1000f), Mathf.RoundToInt(p.y * 1000f));
+            foreach (var (rect, y) in RoomMeshBuilder.BottomlessPitOpenings(def))
+                for (int i = 0; i < rect.Length; i++)
+                {
+                    var (ax, ay, az) = K(rect[i], y);
+                    var (bx, by, bz) = K(rect[(i + 1) % rect.Length], y);
+                    // No se sabe de antemano en qué sentido queda sin pareja la arista del
+                    // rectángulo, así que se admiten los dos.
+                    set.Add((ax, ay, az, bx, by, bz));
+                    set.Add((bx, by, bz, ax, ay, az));
+                }
+            return set;
+        }
+
         // ── propiedades ───────────────────────────────────────────────────────
+
+        internal static bool ClosedManifold(Mesh m, out string why) => ClosedManifold(m, null, out why);
 
         /// <summary>
         /// Cada arista dirigida exactamente una vez ⇒ cerrada y con winding coherente.
         ///
         /// Se emparejan por POSICIÓN (el generador duplica vértices a propósito) y con clave
         /// EXACTA: con un hash XOR las colisiones acusaban en falso a las plantas redondas.
+        ///
+        /// <paramref name="allowedOpen"/> son las únicas aristas a las que SÍ se les permite
+        /// quedar sin pareja: el remate de un pozo sin fondo, que el diseño deja abierto a
+        /// propósito. Cualquier otra arista sin pareja sigue siendo un fallo.
         /// </summary>
-        internal static bool ClosedManifold(Mesh m, out string why)
+        internal static bool ClosedManifold(Mesh m,
+            HashSet<(int, int, int, int, int, int)> allowedOpen, out string why)
         {
             var v = m.vertices;
             var seen = new Dictionary<(int, int, int, int, int, int), int>();
@@ -103,7 +134,7 @@ namespace BackroomsSurvival.Tests
                 }
             }
 
-            int open = 0, dup = 0;
+            int open = 0, dup = 0, expected = 0;
             var samples = new List<string>();
             foreach (var kv in seen)
             {
@@ -117,11 +148,13 @@ namespace BackroomsSurvival.Tests
                 var rev = (k.Item4, k.Item5, k.Item6, k.Item1, k.Item2, k.Item3);
                 if (!seen.TryGetValue(rev, out int back) || back != 1)
                 {
+                    if (allowedOpen != null && allowedOpen.Contains(k)) { expected++; continue; }
                     open++;
                     if (samples.Count < 3) samples.Add($"open ({k.Item1},{k.Item2},{k.Item3})->({k.Item4},{k.Item5},{k.Item6})");
                 }
             }
             why = open == 0 && dup == 0 ? "" : $"{open} open, {dup} dup | {string.Join(" ; ", samples)}";
+            if (why.Length == 0 && expected > 0) why = $"({expected} open edges allowed: bottomless pit rim)";
             return open == 0 && dup == 0;
         }
 

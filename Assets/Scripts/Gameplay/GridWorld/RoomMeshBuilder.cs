@@ -417,6 +417,27 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// trozos se emparejaban entre sí y dejaban el borde de la tapa exterior sin pareja:
         /// 4 aristas abiertas por pozo. Un tubo sin grosor no es un sólido.
         /// </summary>
+        /// <summary>
+        /// El rectángulo y la altura del remate de cada pozo <see cref="RoomDefinition.FloorHole.bottomless"/>:
+        /// el sitio donde esta malla deja el borde SIN cerrar a propósito, porque ahí el diseño
+        /// pide que no haya nada — ni suelo ni pared, para poder seguir cayendo.
+        ///
+        /// Es la única excepción admitida a "la malla es siempre un cascarón cerrado", y por eso
+        /// vive expuesta y con nombre propio: los tests la usan para no confundir esta abertura
+        /// pedida con una fuga de verdad en cualquier otro sitio.
+        /// </summary>
+        public static IEnumerable<(Vector2[] rect, float y)> BottomlessPitOpenings(RoomDefinition def)
+        {
+            if (def.floorHoles == null) yield break;
+            float t = Mathf.Max(0.001f, def.wallThickness);
+            foreach (var f in def.floorHoles)
+            {
+                if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f || !f.bottomless) continue;
+                float yShaft = -Mathf.Max(f.depth, t);   // yFloor de la sala es siempre 0
+                yield return (BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees), yShaft);
+            }
+        }
+
         private static void AddPits(RoomDefinition def, float yFloor, float yBottom, float t,
             List<Vector2[]> pitsIn, List<Vector2[]> pitsOut)
         {
@@ -429,19 +450,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
                 if (f.bottomless)
                 {
-                    // Tiene paredes hasta Depth metros, igual que un pozo con fondo — Depth SIGUE
-                    // mandando, no se ignora por estar sin fondo. Lo único que cambia es que en
-                    // vez de una losa pisable, remata en una tapa que no lo es (SubmeshWall, no
-                    // SubmeshFloor): ahí se acaba lo modelado, no un sitio en el que aterrizar.
-                    //
-                    // Remata DENTRO de sí mismo y nunca toca la tapa exterior de la sala (a
-                    // diferencia de un pozo con fondo, que sí cuelga de ella): por eso esta rama
-                    // no usa `pitsOut` en absoluto. Es la misma construcción exacta que el
-                    // fondo+tapa de un pozo normal (mismo tubo `inward: true`, misma tapa
-                    // `Vector3.up`, solo con otro submesh) — no hace falta reinventar el cierre.
+                    // Tiene paredes hasta Depth metros, igual que un pozo con fondo — Depth
+                    // SIGUE mandando. Y al final de esas paredes, literalmente NADA: sin tapa.
+                    // Es la única abertura que esta malla deja sin cerrar A PROPÓSITO — ver
+                    // <see cref="BottomlessPitOpenings"/>, que es donde los tests saben que este
+                    // hueco concreto no es una fuga sino el diseño pedido: "en el último metro
+                    // se abre el fondo", no "se tapa con otra cosa que no es suelo".
                     float yShaft = yFloor - Mathf.Max(f.depth, t);
                     AddPitTube(rin, yShaft, yFloor, inward: true);
-                    AddCap(rin, yShaft, Vector3.up, SubmeshWall);
                     continue;
                 }
 
