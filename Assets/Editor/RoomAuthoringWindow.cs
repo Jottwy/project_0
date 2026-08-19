@@ -385,23 +385,74 @@ namespace BackroomsSurvival.EditorTools
             CreateOrRebuild();
         }
 
+        /// <summary>
+        /// La pestaña, en cuatro secciones plegables en vez de ocho listas seguidas: con todo
+        /// abierto el scroll era más largo que la ventana y encontrar "la lista de bloques"
+        /// costaba más que editarla. El plegado es pegajoso (mismo diccionario que los ítems).
+        /// </summary>
         private void DrawFeaturesTab()
         {
-            DrawHoles();
+            if (Section("secOpenings",
+                    $"Openings — doors, windows, pits ({_def.holes.Length + _def.floorHoles.Length})"))
+            {
+                DrawHoles();
+                EditorGUILayout.Space();
+                DrawFloorHoles();
+            }
             EditorGUILayout.Space();
-            DrawFloorHoles();
+
+            if (Section("secFloors",
+                    $"Floors & stairs ({_def.levels.Length + _def.stairs.Length})"))
+            {
+                DrawLevels();
+                EditorGUILayout.Space();
+                DrawStairs();
+            }
             EditorGUILayout.Space();
-            DrawPillarGrids();
+
+            if (Section("secSolids",
+                    $"Solids — pillars, blocks ({_def.pillarGrids.Length + _def.pillars.Length + _def.blocks.Length})"))
+            {
+                DrawPillarGrids();
+                EditorGUILayout.Space();
+                DrawPillars();
+                EditorGUILayout.Space();
+                DrawBlocks();
+            }
             EditorGUILayout.Space();
-            DrawPillars();
-            EditorGUILayout.Space();
-            DrawBlocks();
-            EditorGUILayout.Space();
-            DrawStairs();
-            EditorGUILayout.Space();
-            DrawLevels();
-            EditorGUILayout.Space();
-            DrawMarkers();
+
+            if (Section("secMarkers", $"Markers ({_def.markers.Length})"))
+                DrawMarkers();
+        }
+
+        /// <summary>Cabecera de sección: como <see cref="Foldout"/> pero ABIERTA por defecto —
+        /// una sección que nace cerrada esconde las listas a quien abre la ventana por primera
+        /// vez, que es justo cuando más hace falta verlas.</summary>
+        private bool Section(string key, string label)
+        {
+            if (!_foldouts.TryGetValue(key, out bool open)) open = true;
+            bool now = EditorGUILayout.Foldout(open, label, true, EditorStyles.foldoutHeader);
+            _foldouts[key] = now;
+            return now;
+        }
+
+        /// <summary>El suelo del piso <paramref name="level"/> con el contorno actual — el mismo
+        /// número que usarán la malla y los colliders al reconstruir.</summary>
+        private float StoreyBase(int level) =>
+            _def.StoreyBaseY(level, _def.MinCeilingOver(_def.InnerContour()));
+
+        /// <summary>
+        /// Selector de piso de un elemento. Solo aparece cuando hay entreplantas: sin losas no
+        /// hay pisos que elegir y el campo solo estorbaría.
+        /// </summary>
+        private int FloorField(int level)
+        {
+            if (_def.levels == null || _def.levels.Length == 0) return level;
+            return EditorGUILayout.IntSlider(
+                new GUIContent("Floor",
+                    "0 = planta baja; k = sobre la k-esima losa contando desde abajo EN ALTURA. "
+                    + "Las posiciones verticales del elemento pasan a medirse desde ese suelo."),
+                level, 0, _def.levels.Length);
         }
 
         private void DrawFloorHoles()
@@ -475,6 +526,7 @@ namespace BackroomsSurvival.EditorTools
                         "Move the centre and all of them move. Change the spacing and they " +
                         "space themselves. Yaw turns the whole grid, not each pillar.",
                         MessageType.None);
+                    g.level = FloorField(g.level);
                     g.center = EditorGUILayout.Vector2Field("Centre (XZ)", g.center);
                     g.countX = EditorGUILayout.IntSlider("Count X", g.countX, 1, 12);
                     g.countZ = EditorGUILayout.IntSlider("Count Z", g.countZ, 1, 12);
@@ -521,6 +573,19 @@ namespace BackroomsSurvival.EditorTools
                     if (GUILayout.Button("▼", EditorStyles.miniButtonMid, GUILayout.Width(24)))
                     { Swap(array, i, i + 1); GUIUtility.ExitGUI(); }
 
+                // Duplicar: el gesto de "otro igual y le cambio una cosa", que es como se ponen
+                // de verdad cuatro ventanas iguales. Clon por JSON — el mismo viaje que LoadRoom —
+                // para no compartir arrays anidados (boquetes de un bloque) entre los dos.
+                if (GUILayout.Button(new GUIContent("⧉", "Duplicate"),
+                        EditorStyles.miniButtonMid, GUILayout.Width(24)))
+                {
+                    var copy = JsonUtility.FromJson<T>(JsonUtility.ToJson(array[i]));
+                    ArrayUtility.Insert(ref array, i + 1, copy);
+                    _foldouts.Clear(); // los índices se han corrido, igual que al borrar
+                    RebuildIfLive();
+                    GUIUtility.ExitGUI();
+                }
+
                 if (GUILayout.Button("×", EditorStyles.miniButtonRight, GUILayout.Width(24)))
                 {
                     ArrayUtility.RemoveAt(ref array, i);
@@ -549,22 +614,40 @@ namespace BackroomsSurvival.EditorTools
         }
 
         /// <summary>
-        /// Con 2 o más elementos del mismo tipo, un panel "All N" antes de la lista. Tocar un
-        /// campo ahí no fija el mismo valor en todos: aplica el MISMO DESPLAZAMIENTO a cada
-        /// elemento, igual que mover un Transform con varios objetos seleccionados en Unity — el
-        /// número que se ve aquí es solo el mando de partida (el valor del primer elemento), lo
-        /// que persiste es la diferencia relativa entre ellos. Un elemento que ya se había
-        /// tocado a mano se mueve CON el grupo sin perder lo que lo hacía distinto.
+        /// Con 2 o más elementos del mismo tipo, un panel "All N" antes de la lista, con DOS
+        /// modos y un botón que los alterna:
+        ///
+        ///  · Δ (el de siempre): tocar un campo aplica el MISMO DESPLAZAMIENTO a cada elemento,
+        ///    igual que mover un Transform con varios objetos seleccionados — lo que persiste es
+        ///    la diferencia relativa entre ellos, y un elemento tocado a mano se mueve CON el
+        ///    grupo sin perder lo que lo hacía distinto.
+        ///  · = : fija el MISMO VALOR en todos — "todas las ventanas a 1,2 m del suelo" es una
+        ///    frase de valor absoluto, y conseguirla con desplazamientos era hacer la cuenta a
+        ///    mano por cada elemento, que es justo lo que este panel existe para evitar.
         ///
         /// Con 0 o 1 elemento no hay grupo que editar y no se dibuja nada.
         /// </summary>
-        private static void DrawGroupPanel<T>(T[] items, string title, params GroupField<T>[] fields)
+        private void DrawGroupPanel<T>(T[] items, string title, params GroupField<T>[] fields)
         {
             if (items == null || items.Length < 2) return;
 
+            _groupSetMode.TryGetValue(title, out bool setMode);
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
-                EditorGUILayout.LabelField($"All {items.Length} {title}", EditorStyles.boldLabel);
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField($"All {items.Length} {title}", EditorStyles.boldLabel);
+                    GUILayout.FlexibleSpace();
+                    if (GUILayout.Button(new GUIContent(setMode ? "= set" : "Δ offset",
+                            "Δ: desplaza todos lo mismo, manteniendo sus diferencias.\n"
+                            + "=: fija el mismo valor en todos."),
+                            EditorStyles.miniButton, GUILayout.Width(64)))
+                    {
+                        setMode = !setMode;
+                        _groupSetMode[title] = setMode;
+                    }
+                }
+
                 foreach (var f in fields)
                 {
                     float shown = f.get(items[0]);
@@ -572,12 +655,23 @@ namespace BackroomsSurvival.EditorTools
                     float next = EditorGUILayout.FloatField(new GUIContent(f.label, f.tooltip), shown);
                     if (EditorGUI.EndChangeCheck())
                     {
-                        float delta = next - shown;
-                        foreach (var item in items) f.set(item, f.get(item) + delta);
+                        if (setMode)
+                        {
+                            foreach (var item in items) f.set(item, next);
+                        }
+                        else
+                        {
+                            float delta = next - shown;
+                            foreach (var item in items) f.set(item, f.get(item) + delta);
+                        }
                     }
                 }
             }
         }
+
+        // Modo del panel de grupo por lista ("pillars", "blocks"...). Fuera del modelo por lo
+        // mismo que _foldouts: es cómo se está editando, no parte de la sala.
+        private readonly Dictionary<string, bool> _groupSetMode = new Dictionary<string, bool>();
 
         private void DrawBlocks()
         {
@@ -607,10 +701,12 @@ namespace BackroomsSurvival.EditorTools
                 {
                     if (!ItemHeader(ref _def.blocks, i, "b",
                             $"#{i}  {b.sizeX:0.#} × {b.sizeZ:0.#} × {b.height:0.#} m")) continue;
+                    b.level = FloorField(b.level);
                     b.position = EditorGUILayout.Vector2Field("Position (XZ)", b.position);
                     b.sizeX = EditorGUILayout.FloatField("Size X (m)", b.sizeX);
                     b.sizeZ = EditorGUILayout.FloatField("Size Z (m)", b.sizeZ);
-                    b.baseY = EditorGUILayout.FloatField("Base Y (m)", b.baseY);
+                    b.baseY = EditorGUILayout.FloatField(
+                        new GUIContent("Base Y (m)", "Sobre el suelo de SU piso (Floor)."), b.baseY);
                     b.height = EditorGUILayout.FloatField("Height (m)", b.height);
                     b.yawDegrees = EditorGUILayout.Slider("Yaw", b.yawDegrees, -180f, 180f);
                     DrawBlockHoles(b, i);
@@ -680,6 +776,7 @@ namespace BackroomsSurvival.EditorTools
                 {
                     if (!ItemHeader(ref _def.stairs, i, "s",
                             $"#{i}  {s.steps} steps, rises {s.steps * s.rise:0.#} m")) continue;
+                    s.level = FloorField(s.level);
                     s.position = EditorGUILayout.Vector2Field("Bottom step (XZ)", s.position);
                     s.yawDegrees = EditorGUILayout.Slider(
                         new GUIContent("Facing", "Direction it climbs towards."),
@@ -692,9 +789,46 @@ namespace BackroomsSurvival.EditorTools
                     EditorGUILayout.LabelField(" ",
                         $"Total: {s.steps * s.rise:0.##} m up, {s.steps * s.run:0.##} m long",
                         EditorStyles.miniLabel);
+                    DrawStairsReachButtons(s);
                 }
             }
         }
+
+        /// <summary>
+        /// El "llega justo" calculado en vez de a mano: un botón por losa alcanzable ajusta
+        /// Steps para que el último peldaño llegue a esa losa desde el piso del tramo. Antes era
+        /// dividir alturas entre rise con la calculadora y equivocarse por un peldaño — y un
+        /// tramo un pelo corto ni siquiera abre su hueco.
+        /// </summary>
+        private void DrawStairsReachButtons(RoomDefinition.Stairs s)
+        {
+            if (_def.levels == null || _def.levels.Length == 0 || s.rise <= 0.001f) return;
+
+            float minCeil = _def.MinCeilingOver(_def.InnerContour());
+            float baseY = _def.StoreyBaseY(s.level, minCeil);
+            _def.SortedLevelTops(minCeil, _levelTopsScratch);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.PrefixLabel(new GUIContent("Reach",
+                    "Ajusta Steps para llegar justo a esa losa desde el piso del tramo."));
+                for (int k = 0; k < _levelTopsScratch.Count; k++)
+                {
+                    float top = _levelTopsScratch[k];
+                    if (top <= baseY + 0.05f) continue; // su propio suelo, o uno de más abajo
+                    if (!GUILayout.Button($"floor {k + 1}", EditorStyles.miniButton)) continue;
+
+                    int steps = Mathf.CeilToInt((top - baseY) / s.rise);
+                    s.steps = Mathf.Clamp(steps, 1, 40);
+                    if (steps > 40)
+                        Debug.LogWarning($"[RoomAuthoringWindow] {steps} steps needed but 40 is "
+                                         + "the cap -- raise Rise per step.");
+                    RebuildIfLive();
+                }
+            }
+        }
+
+        private static readonly List<float> _levelTopsScratch = new List<float>();
 
         private void DrawLevels()
         {
@@ -704,6 +838,18 @@ namespace BackroomsSurvival.EditorTools
                 if (GUILayout.Button("+ Level", GUILayout.Width(70)))
                 {
                     ArrayUtility.Add(ref _def.levels, new RoomDefinition.Level());
+                    RebuildIfLive();
+                }
+                // Repartir: N losas a alturas iguales entre suelo y techo. Es LA colocación que
+                // se acaba haciendo a mano casi siempre, así que un botón.
+                if (_def.levels.Length >= 2 && GUILayout.Button(
+                        new GUIContent("Distribute", "Reparte las losas a alturas iguales entre "
+                                                     + "suelo y techo."), GUILayout.Width(75)))
+                {
+                    int n = _def.levels.Length;
+                    for (int k = 0; k < n; k++)
+                        if (_def.levels[k] != null)
+                            _def.levels[k].height = _def.heightMeters * (k + 1) / (n + 1);
                     RebuildIfLive();
                 }
             }
@@ -720,7 +866,15 @@ namespace BackroomsSurvival.EditorTools
                 var lvl = _def.levels[i];
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
-                    if (!ItemHeader(ref _def.levels, i, "lvl", $"#{i}  {lvl.height:0.#} m up")) continue;
+                    // La cabecera dice QUÉ PISO es (por altura, no por posición en la lista) y
+                    // cuántas features viven encima: es el resumen de "cada detalle en su piso"
+                    // sin tener que recorrer las otras listas contándolas a mano.
+                    int storey = StoreyRankOf(i);
+                    int onIt = FeaturesOnStorey(storey);
+                    string label = onIt > 0
+                        ? $"#{i}  floor {storey}: {lvl.height:0.#} m up · {onIt} feature(s) on it"
+                        : $"#{i}  floor {storey}: {lvl.height:0.#} m up";
+                    if (!ItemHeader(ref _def.levels, i, "lvl", label)) continue;
                     lvl.height = EditorGUILayout.FloatField(
                         new GUIContent("Height (m)",
                             "Altura del canto superior sobre el suelo de la sala. Se recorta "
@@ -728,6 +882,38 @@ namespace BackroomsSurvival.EditorTools
                         lvl.height);
                 }
             }
+        }
+
+        /// <summary>Puesto EN ALTURA de la losa <paramref name="levelIndex"/> entre todas
+        /// (1 = la más baja): el mismo criterio de orden que <see cref="RoomDefinition.SortedLevelTops"/>,
+        /// que es el que da sentido al campo Floor de cada feature.</summary>
+        private int StoreyRankOf(int levelIndex)
+        {
+            float minCeil = _def.MinCeilingOver(_def.InnerContour());
+            float mine = _def.ClampLevelHeight(_def.levels[levelIndex].height, minCeil);
+            int rank = 1;
+            for (int i = 0; i < _def.levels.Length; i++)
+            {
+                if (i == levelIndex || _def.levels[i] == null) continue;
+                float other = _def.ClampLevelHeight(_def.levels[i].height, minCeil);
+                if (other < mine || (Mathf.Approximately(other, mine) && i < levelIndex)) rank++;
+            }
+            return rank;
+        }
+
+        /// <summary>Cuántas features viven en el piso <paramref name="storey"/> — con el mismo
+        /// recorte de "más allá de la última losa cae a la última" que aplica el modelo, para que
+        /// el recuento diga lo que de verdad se va a construir.</summary>
+        private int FeaturesOnStorey(int storey)
+        {
+            int Clamp(int level) => Mathf.Clamp(level, 0, _def.levels.Length);
+            int c = 0;
+            foreach (var p in _def.pillars) if (p != null && Clamp(p.level) == storey) c++;
+            foreach (var g in _def.pillarGrids) if (g != null && Clamp(g.level) == storey) c += g.countX * g.countZ;
+            foreach (var b in _def.blocks) if (b != null && Clamp(b.level) == storey) c++;
+            foreach (var s in _def.stairs) if (s != null && Clamp(s.level) == storey) c++;
+            foreach (var m in _def.markers) if (m != null && Clamp(m.level) == storey) c++;
+            return c;
         }
 
         /// <summary>
@@ -764,8 +950,10 @@ namespace BackroomsSurvival.EditorTools
                     if (!ItemHeader(ref _def.markers, i, "mk", label)) continue;
 
                     m.kind = (RoomDefinition.MarkerKind)EditorGUILayout.EnumPopup("Kind", m.kind);
+                    m.level = FloorField(m.level);
                     m.position = EditorGUILayout.Vector2Field("Position (XZ)", m.position);
-                    m.y = EditorGUILayout.FloatField("Height off floor (m)", m.y);
+                    m.y = EditorGUILayout.FloatField(
+                        new GUIContent("Height off floor (m)", "Sobre el suelo de SU piso (Floor)."), m.y);
                     m.yawDegrees = EditorGUILayout.Slider("Yaw", m.yawDegrees, -180f, 180f);
 
                     if (m.kind == RoomDefinition.MarkerKind.Light)
@@ -1025,12 +1213,16 @@ namespace BackroomsSurvival.EditorTools
         private static void CreateMarkers(Transform parent, RoomDefinition def)
         {
             if (def.markers == null) return;
+            // El mismo suelo por piso que usan malla y colliders: un marcador del piso 1 nace
+            // sobre su losa, no flotando a su Y "cruda" desde el suelo de la sala.
+            float minCeil = def.MinCeilingOver(def.InnerContour());
             foreach (var m in def.markers)
             {
                 if (m == null) continue;
                 var go = new GameObject($"{m.kind}_{m.tag}");
                 go.transform.SetParent(parent, false);
-                go.transform.localPosition = new Vector3(m.position.x, m.y, m.position.y);
+                go.transform.localPosition = new Vector3(
+                    m.position.x, def.StoreyBaseY(m.level, minCeil) + m.y, m.position.y);
                 go.transform.localRotation = Quaternion.Euler(0f, m.yawDegrees, 0f);
 
                 if (m.kind == RoomDefinition.MarkerKind.Light)
@@ -1135,6 +1327,7 @@ namespace BackroomsSurvival.EditorTools
                     if (!ItemHeader(ref _def.pillars, i, "p",
                             $"#{i}  {p.size:0.##} m, {p.sides} sides")) continue;
 
+                    p.level = FloorField(p.level);
                     p.position = EditorGUILayout.Vector2Field("Position (XZ)", p.position);
                     p.size = EditorGUILayout.FloatField(
                         new GUIContent("Size (m)", "Width across the flats."), p.size);
@@ -1268,7 +1461,10 @@ namespace BackroomsSurvival.EditorTools
             {
                 var m = markers[i];
                 if (m == null) continue;
-                Vector3 world = tf.TransformPoint(new Vector3(m.position.x, m.y, m.position.y));
+                // El tirador vive donde el marcador nacera de verdad: sobre el suelo de SU piso.
+                // Al arrastrar se guarda la Y RELATIVA a ese suelo, que es lo que edita el campo.
+                float floorY = StoreyBase(m.level);
+                Vector3 world = tf.TransformPoint(new Vector3(m.position.x, floorY + m.y, m.position.y));
                 float size = HandleUtility.GetHandleSize(world);
 
                 Handles.color = m.kind == RoomDefinition.MarkerKind.Light ? LightMarkerColor
@@ -1279,7 +1475,7 @@ namespace BackroomsSurvival.EditorTools
                 {
                     Vector3 local = tf.InverseTransformPoint(moved);
                     m.position = new Vector2(local.x, local.z);
-                    m.y = local.y;
+                    m.y = local.y - floorY;
                     changed = true;
                 }
                 Handles.Label(world + Vector3.up * (size * 0.35f),
