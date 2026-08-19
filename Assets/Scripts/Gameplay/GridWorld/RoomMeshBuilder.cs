@@ -216,8 +216,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (def.blocks != null)
                 foreach (var b in def.blocks)
                     if (b != null && b.sizeX > 0.001f && b.sizeZ > 0.001f && b.height > 0.001f)
-                        AddClosedPrism(BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees),
-                            b.baseY, b.baseY + b.height);
+                    {
+                        if (b.holes != null && b.holes.Length > 0)
+                            AddBlockWithHoles(b);
+                        else
+                            AddClosedPrism(BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees),
+                                b.baseY, b.baseY + b.height);
+                    }
 
             if (def.stairs != null)
                 foreach (var s in def.stairs)
@@ -787,6 +792,187 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
                 Quad(SubmeshWall, V(a, y0), V(b, y0), V(b, y1), V(a, y1), nrm);
             }
+        }
+
+        private static readonly List<HoleRect> _blockHolesA = new List<HoleRect>();
+        private static readonly List<HoleRect> _blockHolesB = new List<HoleRect>();
+        private static readonly List<HoleRect> _blockHolesC = new List<HoleRect>();
+        private static readonly List<HoleRect> _blockHolesD = new List<HoleRect>();
+        private static readonly List<float>[] _blockSideCuts = new List<float>[4];
+
+        /// <summary>
+        /// Un bloque con boquetes: en vez del prisma macizo de siempre, un cascarón hueco con
+        /// un túnel por cada boquete. Los boquetes de lado 0/2 comparten el MISMO túnel (a
+        /// través de Z) y los de 1/3 el otro (a través de X) — un bloque solo tiene dos caras
+        /// enfrentadas por eje, así que un boquete en cualquiera de las dos perfora las DOS.
+        ///
+        /// Sin inglete: a diferencia de un <see cref="RoomDefinition.WallHole"/>, las dos caras
+        /// de un bloque miden exactamente lo mismo (un bloque no tiene "grosor de muro" que
+        /// ensanche la cara exterior), así que el hueco se mapea igual en las dos, solo
+        /// ESPEJADO en la cara opuesta — recorrerla de p0 a p1 va en el sentido contrario.
+        /// </summary>
+        private static void AddBlockWithHoles(RoomDefinition.Block b)
+        {
+            var corners = BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees);
+            float y0 = b.baseY, y1 = b.baseY + b.height;
+
+            // Resolución COMPARTIDA con los colliders — la misma que evita que una puerta se
+            // vea en un sitio y bloquee en otro. Llega sin espejar (en la "u" de la cara par de
+            // cada eje); espejar para la cara impar es cosa de la malla, no de la resolución.
+            b.ResolveHoles(_blockHolesA, _blockHolesC);
+            _blockHolesB.Clear();
+            foreach (var h in _blockHolesA)
+                _blockHolesB.Add(new HoleRect { u0 = 1f - h.u1, u1 = 1f - h.u0, y0 = h.y0, y1 = h.y1 });
+            _blockHolesD.Clear();
+            foreach (var h in _blockHolesC)
+                _blockHolesD.Add(new HoleRect { u0 = 1f - h.u1, u1 = 1f - h.u0, y0 = h.y0, y1 = h.y1 });
+
+            // Cortes de ALTURA compartidos por las CUATRO caras, no solo por la del eje con
+            // hueco — el mismo motivo que en la sala: la arista vertical de una esquina la
+            // comparten dos caras, y si una se parte por su hueco y la otra no, la esquina
+            // queda con una T-junction (28 aristas abiertas por bloque, todas justo en las
+            // esquinas — así se detectó).
+            _blockYCutsRaw.Clear();
+            foreach (var h in _blockHolesA) { _blockYCutsRaw.Add(h.y0); _blockYCutsRaw.Add(h.y1); }
+            foreach (var h in _blockHolesC) { _blockYCutsRaw.Add(h.y0); _blockYCutsRaw.Add(h.y1); }
+            var yCuts = LevelCuts(_blockYCutsRaw, y0, y1);
+
+            AddBlockFace(corners[0], corners[1], yCuts, _blockHolesA);
+            AddBlockFace(corners[2], corners[3], yCuts, _blockHolesB);
+            AddBlockFace(corners[1], corners[2], yCuts, _blockHolesC);
+            AddBlockFace(corners[3], corners[0], yCuts, _blockHolesD);
+
+            // Cortes en U compartidos entre cada cara y la tapa: si la cara de un lado tiene
+            // jamba+hueco+jamba y la tapa solo lleva su esquina de siempre, el borde compartido
+            // entre las dos deja de casar (T-junction otra vez, esta vez cara↔tapa).
+            _blockSideCuts[0] = UCuts(_blockHolesA);
+            _blockSideCuts[1] = UCuts(_blockHolesC);
+            _blockSideCuts[2] = UCuts(_blockHolesB);
+            _blockSideCuts[3] = UCuts(_blockHolesD);
+
+            float r = b.yawDegrees * Mathf.Deg2Rad;
+            var ax = new Vector2(Mathf.Cos(r), -Mathf.Sin(r));
+            var az = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+            float hx = b.sizeX * 0.5f, hz = b.sizeZ * 0.5f;
+
+            // Las tapas siempre son macizas, sin recorte — la jamba mínima que reserva
+            // ResolveHoles bajo el dintel garantiza que ningún túnel llega a la de ARRIBA. La de
+            // ABAJO sí puede coincidir con un boquete que llegue al propio suelo del bloque (una
+            // puerta, no una ventana): ahí no hace falta recortarla porque no hay nada que
+            // recortar EN LA TAPA — el suelo de la sala ya está justo debajo, al mismo nivel, y
+            // es él quien se pisa. Ver <see cref="BlockDoorFloorOpenings"/> para el hueco que
+            // eso deja adrede en el propio umbral.
+            AddCap(corners, y0, Vector3.down, SubmeshWall, _blockSideCuts);
+            AddCap(corners, y1, Vector3.up, SubmeshWall, _blockSideCuts);
+
+            foreach (var hole in _blockHolesA)
+                AddBlockTunnel(b.position, ax, az, hx, hz, y0, hole, throughZ: true);
+            foreach (var hole in _blockHolesC)
+                AddBlockTunnel(b.position, ax, az, hx, hz, y0, hole, throughZ: false);
+        }
+
+        /// <summary>Una cara plana del bloque con sus huecos ya resueltos: exactamente lo mismo
+        /// que la pared de una sala, así que reusa <see cref="AddPanel"/> en vez de reinventar
+        /// la rejilla de cortes. <paramref name="yCuts"/> viene COMPARTIDO por las cuatro caras
+        /// — ver el porqué en <see cref="AddBlockWithHoles"/>.</summary>
+        private static void AddBlockFace(Vector2 p0, Vector2 p1, List<float> yCuts, List<HoleRect> holes)
+        {
+            var uCuts = UCuts(holes);
+            AddPanel(p0, p1, uCuts, yCuts, inward: false, holes);
+        }
+
+        private static readonly List<float> _blockYCutsRaw = new List<float>();
+
+        /// <summary>
+        /// El túnel de un boquete de bloque: dos jambas laterales, un dintel siempre y un
+        /// umbral solo si el hueco NO llega al propio suelo del bloque — igual que un boquete
+        /// de pared no lleva umbral cuando es una puerta a ras de suelo. Cuando sí llega, el
+        /// umbral no hace ninguna falta: el suelo de la sala ya está ahí, al mismo nivel, y es
+        /// él quien se pisa — meter una losa propia solo la duplicaría (y con normales opuestas
+        /// a la tapa del bloque, que da geometría sin pareja: la primera versión de esto
+        /// intentaba cerrarlo con una losa arriba Y un recorte en la tapa abajo, dos piezas para
+        /// la misma costura, y "0 dup" se volvía "2 dup" en vez de cerrar nada).
+        /// </summary>
+        private static void AddBlockTunnel(Vector2 centre, Vector2 ax, Vector2 az, float hx, float hz,
+            float blockY0, HoleRect hole, bool throughZ)
+        {
+            float half = throughZ ? hx : hz;
+            float thru = throughZ ? hz : hx;
+            Vector2 uDir = throughZ ? ax : az;
+            Vector2 vDir = throughZ ? az : ax;
+
+            float uA = -half + hole.u0 * (2f * half);
+            float uB = -half + hole.u1 * (2f * half);
+
+            Vector2 P(float u, float v) => centre + uDir * u + vDir * v;
+
+            var nA = new Vector3(uDir.x, 0f, uDir.y);
+            Quad(SubmeshWall, V(P(uA, -thru), hole.y0), V(P(uA, thru), hole.y0),
+                V(P(uA, thru), hole.y1), V(P(uA, -thru), hole.y1), nA);
+            Quad(SubmeshWall, V(P(uB, thru), hole.y0), V(P(uB, -thru), hole.y0),
+                V(P(uB, -thru), hole.y1), V(P(uB, thru), hole.y1), -nA);
+
+            Quad(SubmeshWall, V(P(uA, -thru), hole.y1), V(P(uB, -thru), hole.y1),
+                V(P(uB, thru), hole.y1), V(P(uA, thru), hole.y1), Vector3.down);
+
+            if (hole.y0 > blockY0 + 1e-4f)
+                Quad(SubmeshWall, V(P(uA, -thru), hole.y0), V(P(uA, thru), hole.y0),
+                    V(P(uB, thru), hole.y0), V(P(uB, -thru), hole.y0), Vector3.up);
+        }
+
+        /// <summary>
+        /// El rectángulo y la altura de cada boquete de bloque que llega al propio suelo del
+        /// bloque: la única abertura que un BLOQUE deja sin cerrar a propósito, por el mismo
+        /// motivo que un pozo <see cref="RoomDefinition.FloorHole.bottomless"/> — ahí no hace
+        /// falta nada porque el suelo de la sala ya está justo debajo. Ver
+        /// <see cref="BottomlessPitOpenings"/>; esta es su misma idea, aplicada a un bloque en
+        /// vez de a un pozo. Los tests la usan para no confundir esta abertura pedida con una
+        /// fuga de verdad en cualquier otro sitio.
+        /// </summary>
+        public static IEnumerable<(Vector2[] rect, float y)> BlockDoorFloorOpenings(RoomDefinition def)
+        {
+            if (def.blocks == null) yield break;
+            foreach (var b in def.blocks)
+            {
+                if (b == null || b.holes == null || b.holes.Length == 0) continue;
+                if (b.sizeX <= 0.001f || b.sizeZ <= 0.001f || b.height <= 0.001f) continue;
+
+                float r = b.yawDegrees * Mathf.Deg2Rad;
+                var ax = new Vector2(Mathf.Cos(r), -Mathf.Sin(r));
+                var az = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+                float hx = b.sizeX * 0.5f, hz = b.sizeZ * 0.5f;
+
+                var zHoles = new List<HoleRect>();
+                var xHoles = new List<HoleRect>();
+                b.ResolveHoles(zHoles, xHoles);
+
+                foreach (var h in zHoles)
+                    if (h.y0 <= b.baseY + 1e-4f)
+                        yield return (BlockHoleFootprint(b.position, ax, az, hx, hz, h, throughZ: true), b.baseY);
+                foreach (var h in xHoles)
+                    if (h.y0 <= b.baseY + 1e-4f)
+                        yield return (BlockHoleFootprint(b.position, ax, az, hx, hz, h, throughZ: false), b.baseY);
+            }
+        }
+
+        /// <summary>El rectángulo que un boquete de bloque ocupa en planta, del ancho de TODO el
+        /// espesor del bloque en la dirección perpendicular al túnel.</summary>
+        private static Vector2[] BlockHoleFootprint(Vector2 centre, Vector2 ax, Vector2 az,
+            float hx, float hz, HoleRect hole, bool throughZ)
+        {
+            float half = throughZ ? hx : hz;
+            float thru = throughZ ? hz : hx;
+            Vector2 uDir = throughZ ? ax : az;
+            Vector2 vDir = throughZ ? az : ax;
+            float uA = -half + hole.u0 * (2f * half);
+            float uB = -half + hole.u1 * (2f * half);
+            return new[]
+            {
+                centre + uDir * uA - vDir * thru,
+                centre + uDir * uB - vDir * thru,
+                centre + uDir * uB + vDir * thru,
+                centre + uDir * uA + vDir * thru,
+            };
         }
 
         /// <summary>

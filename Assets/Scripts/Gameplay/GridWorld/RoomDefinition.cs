@@ -215,6 +215,83 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public float baseY;
             public float height = 2f;
             public float yawDegrees;
+
+            /// <summary>
+            /// Boquetes que atraviesan el bloque de lado a lado — lo que hace falta para que un
+            /// tabique tenga puerta. Vacío = el bloque sigue siendo el prisma macizo de siempre.
+            /// </summary>
+            public BlockHole[] holes = Array.Empty<BlockHole>();
+
+            /// <summary>Jamba mínima que un boquete de bloque reserva en cada extremo y bajo el
+            /// dintel: 5 cm, lo mismo que un boquete de pared. Sin esto un hueco pedido al ras de
+            /// una esquina se comería el machón entero.</summary>
+            private const float MinJamb = 0.05f;
+
+            /// <summary>
+            /// Los boquetes de este bloque, resueltos y repartidos en dos listas por eje: a
+            /// través de Z (side 0/2) y a través de X (side 1/3) — un bloque solo tiene dos
+            /// caras enfrentadas por eje, así que un boquete en cualquiera de las dos perfora
+            /// las DOS. Las dos listas quedan en la "u" de la cara PAR de su eje (side 0 o 1);
+            /// espejar para la cara impar es cosa de quien llame, no de esta resolución.
+            ///
+            /// Vive aquí y no en la malla ni en los colliders porque los dos necesitan EL MISMO
+            /// hueco en el mismo sitio — el motivo de siempre: "veo una puerta y me choco".
+            /// </summary>
+            public void ResolveHoles(List<HoleRect> throughZ, List<HoleRect> throughX)
+            {
+                throughZ.Clear();
+                throughX.Clear();
+                if (holes == null) return;
+
+                float y0 = baseY, y1 = baseY + height;
+                foreach (var h in holes)
+                {
+                    if (h == null || h.width <= 0.001f || h.height <= 0.001f) continue;
+                    int side = ((h.side % 4) + 4) % 4;
+                    bool throughThisZ = side == 0 || side == 2;
+                    float faceLen = throughThisZ ? sizeX : sizeZ;
+                    if (faceLen < 1e-4f) continue;
+
+                    float along = (side == 0 || side == 1) ? h.along : 1f - h.along;
+                    float margin = Mathf.Clamp(MinJamb / faceLen, 0.001f, 0.45f);
+                    float half = h.width * 0.5f / faceLen;
+                    float u0 = Mathf.Clamp(along - half, margin, 1f - margin);
+                    float u1 = Mathf.Clamp(along + half, margin, 1f - margin);
+                    float hy0 = Mathf.Clamp(y0 + h.baseY, y0, y1 - MinJamb);
+                    float hy1 = Mathf.Clamp(y0 + h.baseY + h.height, y0, y1 - MinJamb);
+                    if (u1 - u0 < 1e-4f || hy1 - hy0 < 1e-4f) continue;
+
+                    (throughThisZ ? throughZ : throughX).Add(
+                        new HoleRect { u0 = u0, u1 = u1, y0 = hy0, y1 = hy1 });
+                }
+                MergeOverlapping(throughZ);
+                MergeOverlapping(throughX);
+            }
+        }
+
+        /// <summary>
+        /// Un boquete en un BLOQUE: mismo concepto que <see cref="WallHole"/> pero para un
+        /// tabique suelto, no para el perímetro de la sala. Atraviesa siempre hasta la cara
+        /// OPUESTA a <see cref="side"/> — un bloque es solo una caja, así que no hace falta el
+        /// mapeo a una cara exterior más ancha que un <see cref="WallHole"/> sí necesita: las
+        /// dos caras de un bloque son EXACTAMENTE del mismo tamaño, sin inglete que abocine el
+        /// hueco.
+        /// </summary>
+        [Serializable]
+        public sealed class BlockHole
+        {
+            /// <summary>Cara de la que sale, 0..3 en el mismo orden que las esquinas del bloque
+            /// (<see cref="RoomMeshBuilder.BoxCorners"/>).</summary>
+            public int side;
+
+            /// <summary>Centro a lo largo de esa cara: 0 = una esquina, 1 = la otra.</summary>
+            [Range(0f, 1f)] public float along = 0.5f;
+
+            /// <summary>Sobre el propio suelo del bloque (<c>baseY</c> del bloque), no el de la
+            /// sala. 0 = puerta.</summary>
+            public float baseY;
+            public float width = 1.6f;
+            public float height = 2.2f;
         }
 
         /// <summary>

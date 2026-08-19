@@ -511,6 +511,41 @@ namespace BackroomsSurvival.EditorTools
                     b.baseY = EditorGUILayout.FloatField("Base Y (m)", b.baseY);
                     b.height = EditorGUILayout.FloatField("Height (m)", b.height);
                     b.yawDegrees = EditorGUILayout.Slider("Yaw", b.yawDegrees, -180f, 180f);
+                    DrawBlockHoles(b, i);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Boquetes del bloque, anidados dentro de su propio ítem — un tabique con puerta es un
+        /// bloque con un hueco, no un tipo de feature aparte.
+        /// </summary>
+        private void DrawBlockHoles(RoomDefinition.Block b, int blockIndex)
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField($"Doors/windows ({b.holes.Length})");
+                if (GUILayout.Button("+ Door", GUILayout.Width(70)))
+                {
+                    ArrayUtility.Add(ref b.holes, new RoomDefinition.BlockHole { side = 0, along = 0.5f });
+                    RebuildIfLive();
+                }
+            }
+
+            for (int i = 0; i < b.holes.Length; i++)
+            {
+                var h = b.holes[i];
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    if (!ItemHeader(ref b.holes, i, $"bh{blockIndex}_", $"#{i}  wall {h.side}")) continue;
+                    h.side = EditorGUILayout.IntSlider(
+                        new GUIContent("Wall", "0..3, en el mismo orden que las esquinas del bloque."),
+                        h.side, 0, 3);
+                    h.along = EditorGUILayout.Slider("Along wall", h.along, 0f, 1f);
+                    h.baseY = EditorGUILayout.FloatField(
+                        new GUIContent("Height off block base (m)", "0 = puerta."), h.baseY);
+                    h.width = EditorGUILayout.FloatField("Width (m)", h.width);
+                    h.height = EditorGUILayout.FloatField("Height (m)", h.height);
                 }
             }
         }

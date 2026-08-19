@@ -77,7 +77,8 @@ namespace BackroomsSurvival.Tests
             var set = new HashSet<(int, int, int, int, int, int)>();
             (int, int, int) K(Vector2 p, float y) => (Mathf.RoundToInt(p.x * 1000f),
                 Mathf.RoundToInt(y * 1000f), Mathf.RoundToInt(p.y * 1000f));
-            foreach (var (rect, y) in RoomMeshBuilder.BottomlessPitOpenings(def))
+            void AddRect(Vector2[] rect, float y)
+            {
                 for (int i = 0; i < rect.Length; i++)
                 {
                     var (ax, ay, az) = K(rect[i], y);
@@ -87,6 +88,9 @@ namespace BackroomsSurvival.Tests
                     set.Add((ax, ay, az, bx, by, bz));
                     set.Add((bx, by, bz, ax, ay, az));
                 }
+            }
+            foreach (var (rect, y) in RoomMeshBuilder.BottomlessPitOpenings(def)) AddRect(rect, y);
+            foreach (var (rect, y) in RoomMeshBuilder.BlockDoorFloorOpenings(def)) AddRect(rect, y);
             return set;
         }
 

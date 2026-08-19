@@ -263,6 +263,108 @@ namespace BackroomsSurvival.Tests
             AssertRoom("pit next to a door", d);
         }
 
+        // ── boquetes en bloques ───────────────────────────────────────────────
+
+        [Test]
+        public void Block_door_pierces_both_faces_and_walks_through()
+        {
+            var d = Box(6, 5);
+            d.blocks = new[]
+            {
+                new RoomDefinition.Block
+                {
+                    position = new Vector2(0f, 0f), sizeX = 3f, sizeZ = 0.4f, height = 2.4f,
+                    holes = new[] { new RoomDefinition.BlockHole { side = 0, along = 0.5f, baseY = 0f, width = 1.2f, height = 2.1f } },
+                },
+            };
+            AssertRoom("block with a door", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            // Justo en el centro del tabique, a media altura de la puerta: se anda.
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 1f, 0f)), "the doorway stayed sealed");
+            // A los lados del hueco, el tabique sigue en pie.
+            Assert.IsTrue(Inside(cb, new Vector3(-1.3f, 1f, 0f)), "the jamb is missing");
+            Assert.IsTrue(Inside(cb, new Vector3(1.3f, 1f, 0f)), "the jamb is missing");
+            // Por encima de la puerta, el dintel bloquea.
+            Assert.IsTrue(Inside(cb, new Vector3(0f, 2.3f, 0f)), "the lintel is missing");
+        }
+
+        /// <summary>Un boquete pedido en la cara OPUESTA (side 2) tiene que dar el mismo hueco
+        /// físico que uno en side 0 con el mismo `along`: las dos caras describen el MISMO
+        /// túnel.</summary>
+        [Test]
+        public void Block_door_on_opposite_face_is_the_same_hole()
+        {
+            var a = Box(6, 5);
+            a.blocks = new[] { new RoomDefinition.Block { sizeX = 3f, sizeZ = 0.4f, height = 2.4f,
+                holes = new[] { new RoomDefinition.BlockHole { side = 0, along = 0.3f, width = 1f, height = 2f } } } };
+            var b = Box(6, 5);
+            b.blocks = new[] { new RoomDefinition.Block { sizeX = 3f, sizeZ = 0.4f, height = 2.4f,
+                holes = new[] { new RoomDefinition.BlockHole { side = 2, along = 0.7f, width = 1f, height = 2f } } } };
+
+            var cbA = RoomColliderBuilder.Build(a);
+            var cbB = RoomColliderBuilder.Build(b);
+            // along=0.3 en side0 y along=0.7 en side2 (su espejo) tienen que caer en el MISMO
+            // punto del mundo.
+            Vector3 probe = new Vector3(3f * 0.3f - 1.5f, 1f, 0f);
+            Assert.IsFalse(Inside(cbA, probe), "side 0 baseline is not open");
+            Assert.IsFalse(Inside(cbB, probe), "side 2, mirrored, does not match side 0");
+        }
+
+        [Test]
+        public void Block_window_does_not_reach_the_floor()
+        {
+            var d = Box(6, 5);
+            d.blocks = new[]
+            {
+                new RoomDefinition.Block
+                {
+                    sizeX = 3f, sizeZ = 0.4f, height = 2.4f,
+                    holes = new[] { new RoomDefinition.BlockHole { side = 0, along = 0.5f, baseY = 1.1f, width = 1.5f, height = 0.8f } },
+                },
+            };
+            AssertRoom("block with a window", d);
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(0f, 0.5f, 0f)), "a window opened down to the floor");
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 1.4f, 0f)), "the window stayed sealed");
+        }
+
+        /// <summary>Un tabique orientado (yaw != 0) tiene que abrir el hueco donde el bloque
+        /// caiga, no donde caería sin girar.</summary>
+        [Test]
+        public void Block_door_on_a_rotated_partition()
+        {
+            var d = Box(6, 5);
+            d.blocks = new[]
+            {
+                new RoomDefinition.Block
+                {
+                    position = new Vector2(1f, 1f), sizeX = 3f, sizeZ = 0.4f, height = 2.4f,
+                    yawDegrees = 90f,
+                    holes = new[] { new RoomDefinition.BlockHole { side = 0, along = 0.5f, width = 1.2f, height = 2.1f } },
+                },
+            };
+            AssertRoom("rotated block with a door", d);
+            var cb = RoomColliderBuilder.Build(d);
+            // Girado 90°, el eje largo del tabique pasa a ser Z; el centro de la puerta cae en
+            // el propio centro del bloque.
+            Assert.IsFalse(Inside(cb, new Vector3(1f, 1f, 1f)), "the doorway stayed sealed after rotating");
+        }
+
+        [Test]
+        public void Two_blocks_with_doors()
+        {
+            var d = Box(8, 6);
+            d.blocks = new[]
+            {
+                new RoomDefinition.Block { position = new Vector2(-6f, 0f), sizeX = 4f, sizeZ = 0.3f, height = 2.4f,
+                    holes = new[] { new RoomDefinition.BlockHole { side = 0, along = 0.5f, width = 1.2f, height = 2.1f } } },
+                new RoomDefinition.Block { position = new Vector2(6f, 0f), sizeX = 3f, sizeZ = 0.3f, height = 2.6f,
+                    holes = new[] { new RoomDefinition.BlockHole { side = 0, along = 0.4f, baseY = 1f, width = 1.5f, height = 1f } } },
+            };
+            AssertRoom("two blocks with doors", d);
+        }
+
         // ── pozos sin fondo ───────────────────────────────────────────────────
 
         /// <summary>Un pozo <c>bottomless</c> SIGUE teniendo paredes hasta Depth metros, igual

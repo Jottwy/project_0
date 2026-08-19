@@ -97,8 +97,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 foreach (var b in def.blocks)
                 {
                     if (b == null || b.sizeX <= 0.001f || b.sizeZ <= 0.001f || b.height <= 0.001f) continue;
-                    boxes.Add(Box(new Vector3(b.position.x, b.baseY + b.height * 0.5f, b.position.y),
-                        new Vector3(b.sizeX, b.height, b.sizeZ), b.yawDegrees));
+                    AddBlockBoxes(boxes, b);
                 }
 
             // Escaleras: una caja por peldaño, calcada de la malla. Es escalonada y no una rampa
@@ -169,6 +168,71 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             Vector2 mid = Vector2.Lerp(p0, p1, (ua + ub) * 0.5f) + nrm * (t * 0.5f);
             into.Add(Box(new Vector3(mid.x, (ya + yb) * 0.5f, mid.y),
                 new Vector3((ub - ua) * len, yb - ya, t), yaw));
+        }
+
+        /// <summary>
+        /// Caja única si el bloque no tiene boquetes (lo de siempre); si tiene, una tira por eje
+        /// CON hueco — un eje sin boquete no necesita tira propia, ya lo cubre por completo la
+        /// tira del otro eje (que abarca el espesor entero en esa dirección).
+        /// </summary>
+        private static void AddBlockBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition.Block b)
+        {
+            var holesZ = new List<HoleRect>();
+            var holesX = new List<HoleRect>();
+            b.ResolveHoles(holesZ, holesX);
+
+            if (holesZ.Count == 0 && holesX.Count == 0)
+            {
+                boxes.Add(Box(new Vector3(b.position.x, b.baseY + b.height * 0.5f, b.position.y),
+                    new Vector3(b.sizeX, b.height, b.sizeZ), b.yawDegrees));
+                return;
+            }
+
+            float r = b.yawDegrees * Mathf.Deg2Rad;
+            var ax = new Vector2(Mathf.Cos(r), -Mathf.Sin(r));
+            var az = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+            float y0 = b.baseY, y1 = b.baseY + b.height;
+
+            if (holesZ.Count > 0)
+                AddBlockAxisBoxes(boxes, b.position, ax, b.sizeX, b.sizeZ, b.yawDegrees, y0, y1, holesZ);
+            if (holesX.Count > 0)
+                AddBlockAxisBoxes(boxes, b.position, az, b.sizeZ, b.sizeX, b.yawDegrees - 90f, y0, y1, holesX);
+        }
+
+        /// <summary>Tiras a lo largo de <paramref name="uDir"/>, cada una del espesor COMPLETO
+        /// <paramref name="sizeV"/> perpendicular — el túnel atraviesa el bloque entero en esa
+        /// dirección, así que no hace falta partir también por ahí.</summary>
+        private static void AddBlockAxisBoxes(List<RoomPool.CollisionBox> boxes, Vector2 centre,
+            Vector2 uDir, float sizeU, float sizeV, float yaw, float y0, float y1, List<HoleRect> holes)
+        {
+            var uCuts = Cuts(0f, 1f, holes, horizontal: true);
+            var yCuts = Cuts(y0, y1, holes, horizontal: false);
+
+            for (int vi = 0; vi < yCuts.Count - 1; vi++)
+            {
+                float ya = yCuts[vi], yb = yCuts[vi + 1];
+                if (yb - ya < 1e-4f) continue;
+
+                int runStart = -1;
+                for (int ui = 0; ui < uCuts.Count - 1; ui++)
+                {
+                    bool solid = !InsideAnyHole(holes,
+                        (uCuts[ui] + uCuts[ui + 1]) * 0.5f, (ya + yb) * 0.5f);
+                    if (solid && runStart < 0) runStart = ui;
+                    bool runEnds = !solid || ui == uCuts.Count - 2;
+                    if (runStart < 0 || !runEnds) continue;
+
+                    int last = solid ? ui : ui - 1;
+                    float ua = uCuts[runStart], ub = uCuts[last + 1];
+                    if (ub - ua >= 1e-5f)
+                    {
+                        Vector2 mid = centre + uDir * ((ua + ub) * 0.5f * sizeU - sizeU * 0.5f);
+                        boxes.Add(Box(new Vector3(mid.x, (ya + yb) * 0.5f, mid.y),
+                            new Vector3((ub - ua) * sizeU, yb - ya, sizeV), yaw));
+                    }
+                    runStart = -1;
+                }
+            }
         }
 
         private static List<float> Cuts(float lo, float hi, List<HoleRect> holes, bool horizontal)
