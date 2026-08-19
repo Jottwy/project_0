@@ -842,6 +842,124 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(UvWorldScale(m, out int bu), $"two levels, two stairs: {bu} edges with stretched texture");
         }
 
+        // ── features por piso ─────────────────────────────────────────────────
+
+        /// <summary>Una columna del piso 1 arranca en la losa y llega al techo — y NO existe en
+        /// la planta baja. La misma sonda al collider que todo lo demás: lo que importa es dónde
+        /// bloquea, no cuántos triángulos tiene.</summary>
+        [Test]
+        public void Pillar_on_storey_1_spans_its_own_floor_only()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.pillars = new[] { new RoomDefinition.Pillar { position = Vector2.zero, size = 0.7f, level = 1 } };
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(0f, 3.5f, 0f)), "no pillar above the slab");
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 1.5f, 0f)), "the pillar leaked into the ground floor");
+        }
+
+        /// <summary>La contraparte: una columna de la planta baja para JUSTO bajo la losa en vez
+        /// de atravesarla — una columna sostiene su losa, no es un mástil que cruza pisos. Para
+        /// la parte de arriba se pone otra columna con level 1.</summary>
+        [Test]
+        public void Ground_pillar_stops_under_the_slab()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.pillars = new[] { new RoomDefinition.Pillar { position = Vector2.zero, size = 0.7f } };
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(0f, 1.5f, 0f)), "no pillar on the ground floor");
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 3.5f, 0f)), "the pillar pierced through the slab");
+        }
+
+        /// <summary>Un bloque del piso 1 mide su Base Y desde la LOSA, no desde el suelo de la
+        /// sala: "encima de la losa" se escribe 0, no la altura de la losa calculada a mano.</summary>
+        [Test]
+        public void Block_on_storey_1_sits_on_the_slab()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.blocks = new[] { new RoomDefinition.Block
+                { position = new Vector2(4f, 4f), sizeX = 2f, sizeZ = 2f, height = 1f, level = 1 } };
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(4f, 3.5f, 4f)), "no block on top of the slab");
+            Assert.IsFalse(Inside(cb, new Vector3(4f, 0.5f, 4f)), "the block stayed on the ground floor");
+        }
+
+        /// <summary>
+        /// Una escalera del piso 1 sube DESDE la losa, abre hueco en la losa del piso 2, y no
+        /// toca la suya propia — perforaría el suelo en el que apoya. Es el cableado completo de
+        /// "cada detalle en su propio piso" aplicado a la pieza que conecta pisos.
+        /// </summary>
+        [Test]
+        public void Stairs_on_storey_1_open_the_slab_above_not_their_own()
+        {
+            var d = Box(6, 5); d.heightMeters = 9f;
+            d.levels = new[]
+            {
+                new RoomDefinition.Level { height = 3f },
+                new RoomDefinition.Level { height = 6f },
+            };
+            // 12 × 0,25 = 3 m de subida propia; desde la losa de 3 llega justo a la de 6.
+            d.stairs = new[] { new RoomDefinition.Stairs
+                { position = new Vector2(0f, -8f), width = 2f, steps = 12, rise = 0.25f, run = 0.28f, level = 1 } };
+            var s = d.stairs[0];
+
+            var m = RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "storey stairs: triangulation fell back");
+            Assert.IsTrue(WindingOk(m, out int bw), $"storey stairs: {bw} triangles face the wrong way");
+            Assert.IsTrue(UvWorldScale(m, out int bu), $"storey stairs: {bu} edges with stretched texture");
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 c = s.FootprintCentre();
+            // El primer peldaño apoya en la losa: hay caja justo encima de la losa de 3 m.
+            Assert.IsTrue(Inside(cb, new Vector3(s.position.x, 3.1f, s.position.y)),
+                "the stairs did not start on their slab");
+            // La losa de 6 tiene el hueco del tramo…
+            Assert.IsFalse(Inside(cb, new Vector3(c.x, 5.95f, c.y)), "the upper slab stayed sealed");
+            // …y la de 3, DEBAJO del tramo, sigue entera: es el suelo en el que apoya.
+            Assert.IsTrue(Inside(cb, new Vector3(c.x, 2.9f, c.y)), "the stairs pierced their own slab");
+        }
+
+        /// <summary>El orden del ARRAY no es el orden de los pisos: el piso 1 es la losa más BAJA
+        /// aunque se haya añadido la última. Reordenar la lista en el editor no puede cambiar la
+        /// sala.</summary>
+        [Test]
+        public void Storey_order_follows_height_not_array_order()
+        {
+            var d = Box(6, 5); d.heightMeters = 9f;
+            d.levels = new[]
+            {
+                new RoomDefinition.Level { height = 6f }, // añadida primero, pero es el piso 2
+                new RoomDefinition.Level { height = 3f },
+            };
+            d.pillars = new[] { new RoomDefinition.Pillar { position = Vector2.zero, size = 0.7f, level = 1 } };
+
+            var cb = RoomColliderBuilder.Build(d);
+            // Piso 1 = losa de 3 m: la columna vive entre 3 y 5,8 (bajo la losa de 6).
+            Assert.IsTrue(Inside(cb, new Vector3(0f, 4f, 0f)), "no pillar on storey 1");
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 1.5f, 0f)), "the pillar fell to the ground floor");
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 6.5f, 0f)), "the pillar pierced storey 2");
+        }
+
+        /// <summary>Un piso pedido más allá de la última losa recorta a la última que exista: un
+        /// marcador o pilar guardado con level 3 en una sala que pierde una losa cae al piso real
+        /// de arriba, no al vacío.</summary>
+        [Test]
+        public void Storey_beyond_the_last_slab_clamps_to_the_top_one()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.pillars = new[] { new RoomDefinition.Pillar { position = Vector2.zero, size = 0.7f, level = 7 } };
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(0f, 3.5f, 0f)), "the pillar vanished instead of clamping");
+            Assert.IsFalse(Inside(cb, new Vector3(0f, 1.5f, 0f)), "it clamped to the wrong storey");
+        }
+
         // ── colisión coherente con lo que se ve ───────────────────────────────
 
         /// <summary>El modo de fallo peligroso del sistema: la malla dibuja suelo sólido donde el

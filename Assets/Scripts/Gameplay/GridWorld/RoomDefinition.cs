@@ -224,6 +224,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             [Range(3, 32)] public int sides = 4;
 
             public float yawDegrees;
+
+            /// <summary>Piso al que pertenece — ver <see cref="StoreyBaseY"/>. La columna va del
+            /// suelo de SU piso al techo de SU piso (la losa siguiente, o el techo de la sala si
+            /// no hay más): una columna es del piso que sostiene, no un mástil que cruza losas.</summary>
+            [Min(0)] public int level;
         }
 
         /// <summary>
@@ -237,9 +242,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public Vector2 position;
             public float sizeX = 2f;
             public float sizeZ = 0.6f;
+
+            /// <summary>Sobre el suelo de SU piso (<see cref="level"/>), no siempre el de la
+            /// sala: con level 0 son lo mismo y todo sigue como antes.</summary>
             public float baseY;
             public float height = 2f;
             public float yawDegrees;
+
+            /// <summary>Piso al que pertenece — ver <see cref="StoreyBaseY"/>.</summary>
+            [Min(0)] public int level;
 
             /// <summary>
             /// Boquetes que atraviesan el bloque de lado a lado — lo que hace falta para que un
@@ -262,13 +273,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// Vive aquí y no en la malla ni en los colliders porque los dos necesitan EL MISMO
             /// hueco en el mismo sitio — el motivo de siempre: "veo una puerta y me choco".
             /// </summary>
-            public void ResolveHoles(List<HoleRect> throughZ, List<HoleRect> throughX)
+            /// <param name="baseOffset">El suelo del PISO del bloque (<see cref="StoreyBaseY"/>),
+            /// que los dos llamadores ya conocen. Va por parámetro y no se calcula aquí porque
+            /// necesita el contorno y el techo de la sala, que un bloque no tiene.</param>
+            public void ResolveHoles(List<HoleRect> throughZ, List<HoleRect> throughX,
+                float baseOffset = 0f)
             {
                 throughZ.Clear();
                 throughX.Clear();
                 if (holes == null) return;
 
-                float y0 = baseY, y1 = baseY + height;
+                float y0 = baseOffset + baseY, y1 = y0 + height;
                 foreach (var h in holes)
                 {
                     if (h == null || h.width <= 0.001f || h.height <= 0.001f) continue;
@@ -340,6 +355,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public float rise = 0.18f;
             public float run = 0.28f;
 
+            /// <summary>Piso del que ARRANCA — ver <see cref="StoreyBaseY"/>. El primer peldaño
+            /// apoya en el suelo de ese piso, y <see cref="TopHeight"/> se mide desde ahí.</summary>
+            [Min(0)] public int level;
+
             /// <summary>Hacia dónde sube, como vector unitario en XZ.</summary>
             public Vector2 Forward()
             {
@@ -389,6 +408,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             /// <summary>Gira la retícula ENTERA, no cada columna por su cuenta.</summary>
             public float yawDegrees;
+
+            /// <summary>Piso al que pertenece la retícula entera — ver <see cref="StoreyBaseY"/>.
+            /// Mismo criterio que <see cref="Pillar.level"/>.</summary>
+            [Min(0)] public int level;
 
             /// <summary>Posición de la columna (ix, iz), ya girada y centrada.</summary>
             public Vector2 PositionOf(int ix, int iz)
@@ -475,10 +498,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// demás.</summary>
             public Vector2 position;
 
-            /// <summary>Altura sobre el suelo de la sala, en metros.</summary>
+            /// <summary>Altura sobre el suelo de SU piso (<see cref="level"/>), en metros.</summary>
             public float y;
 
             public float yawDegrees;
+
+            /// <summary>Piso al que pertenece — ver <see cref="StoreyBaseY"/>.</summary>
+            [Min(0)] public int level;
 
             /// <summary>Para Prop: qué prop, resuelto luego por un catálogo. Para Spawn: una
             /// etiqueta libre ("player", "loot_common"...). Sin efecto en Light.</summary>
@@ -516,12 +542,70 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
+        /// Alturas del canto SUPERIOR de cada losa, ya recortadas y ORDENADAS de abajo a arriba.
+        /// El orden es lo que da sentido a "piso k": el array <see cref="levels"/> se edita en
+        /// cualquier orden, pero el k-ésimo piso es el que queda k-ésimo EN ALTURA, no el que se
+        /// añadió en k-ésimo lugar — reordenar la lista en el editor no puede cambiar la sala.
+        /// </summary>
+        public void SortedLevelTops(float minCeiling, List<float> into)
+        {
+            into.Clear();
+            if (levels == null) return;
+            foreach (var l in levels)
+                if (l != null) into.Add(ClampLevelHeight(l.height, minCeiling));
+            into.Sort();
+        }
+
+        /// <summary>
+        /// El suelo del piso <paramref name="storey"/>: 0 = el de la sala; k = el canto superior
+        /// de la k-ésima losa contando desde abajo. Pedir un piso que no existe recorta al último
+        /// que sí — un marcador guardado con level 3 en una sala a la que luego se le quita una
+        /// losa cae al piso de arriba real, no al vacío.
+        ///
+        /// Vive aquí, con <paramref name="minCeiling"/> por parámetro igual que
+        /// <see cref="ClampLevelHeight"/>, porque malla y colliders tienen que anclar cada
+        /// feature EXACTAMENTE al mismo suelo — el motivo de siempre.
+        /// </summary>
+        public float StoreyBaseY(int storey, float minCeiling)
+        {
+            if (storey <= 0 || levels == null || levels.Length == 0) return 0f;
+            SortedLevelTops(minCeiling, _storeyScratch);
+            if (_storeyScratch.Count == 0) return 0f;
+            return _storeyScratch[Mathf.Min(storey, _storeyScratch.Count) - 1];
+        }
+
+        /// <summary>
+        /// El techo del piso <paramref name="storey"/>: el canto INFERIOR de la primera losa que
+        /// quede por encima de su suelo, o la altura nominal de la sala si no hay más losas.
+        /// Es lo que hace que una columna "del piso 1" pare justo bajo la losa del piso 2 en vez
+        /// de atravesarla.
+        /// </summary>
+        public float StoreyCeilingY(int storey, float minCeiling)
+        {
+            float baseY = StoreyBaseY(storey, minCeiling);
+            SortedLevelTops(minCeiling, _storeyScratch);
+            float t = Mathf.Max(0.001f, wallThickness);
+            foreach (float top in _storeyScratch)
+                if (top > baseY + 0.001f) return top - t;
+            return heightMeters;
+        }
+
+        // Scratch de StoreyBaseY/StoreyCeilingY. Estático y reutilizado como los de los
+        // builders: se llama varias veces por reconstrucción y las salas se construyen de una
+        // en una (misma no-reentrancia que _jambCuts y compañía).
+        private static readonly List<float> _storeyScratch = new List<float>();
+
+        /// <summary>
         /// Los tramos de escalera cuyo último peldaño llega a esta losa (o más arriba): son los
         /// que la atraviesan y por tanto los que le abren hueco. Vive aquí y no en cada
         /// generador porque la malla y los colliders tienen que abrir EXACTAMENTE el mismo hueco
         /// en el mismo sitio, igual que un boquete de pared.
         /// </summary>
-        public IEnumerable<Stairs> StairsReaching(float levelHeight)
+        /// <param name="minCeiling">Para resolver el suelo del piso del que arranca cada tramo
+        /// (<see cref="Stairs.level"/>): su altura real es base del piso + subida propia. Un
+        /// tramo nunca abre hueco en su PROPIA losa ni en las de más abajo — perforaría el
+        /// suelo en el que apoya.</param>
+        public IEnumerable<Stairs> StairsReaching(float levelHeight, float minCeiling)
         {
             if (stairs == null) yield break;
             // Tolerancia de 5 cm: el mismo margen que usa la malla para "el ultimo peldaño llega
@@ -529,8 +613,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // llegar EXACTO se quedaria un pelo corto por redondeo y perderia su hueco.
             const float margin = 0.05f;
             foreach (var s in stairs)
-                if (s != null && s.IsValid() && s.TopHeight() >= levelHeight - margin)
+            {
+                if (s == null || !s.IsValid()) continue;
+                float baseY = StoreyBaseY(s.level, minCeiling);
+                if (levelHeight <= baseY + margin) continue; // su propio suelo, o uno de más abajo
+                if (baseY + s.TopHeight() >= levelHeight - margin)
                     yield return s;
+            }
         }
 
         /// <summary>

@@ -89,20 +89,25 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // `size` es el ancho ENTRE CARAS, así que una columna de 4 lados da una caja
                     // de ese ancho exacto. Con más lados la caja la circunscribe de sobra, que es
                     // el lado correcto por el que equivocarse en colisión.
-                    boxes.Add(Box(new Vector3(p.position.x, (yFloor + yCeil) * 0.5f, p.position.y),
-                        new Vector3(p.size, h, p.size), p.yawDegrees));
+                    // Del suelo de SU piso al techo de SU piso, EXACTAMENTE igual que la malla.
+                    float py0 = def.StoreyBaseY(p.level, minCeil);
+                    float py1 = def.StoreyCeilingY(p.level, minCeil);
+                    boxes.Add(Box(new Vector3(p.position.x, (py0 + py1) * 0.5f, p.position.y),
+                        new Vector3(p.size, py1 - py0, p.size), p.yawDegrees));
                 }
 
             if (def.pillarGrids != null)
                 foreach (var g in def.pillarGrids)
                 {
                     if (g == null || g.size <= 0.001f) continue;
+                    float gy0 = def.StoreyBaseY(g.level, minCeil);
+                    float gy1 = def.StoreyCeilingY(g.level, minCeil);
                     for (int ix = 0; ix < g.countX; ix++)
                         for (int iz = 0; iz < g.countZ; iz++)
                         {
                             Vector2 pos = g.PositionOf(ix, iz);
-                            boxes.Add(Box(new Vector3(pos.x, (yFloor + yCeil) * 0.5f, pos.y),
-                                new Vector3(g.size, h, g.size), g.yawDegrees));
+                            boxes.Add(Box(new Vector3(pos.x, (gy0 + gy1) * 0.5f, pos.y),
+                                new Vector3(g.size, gy1 - gy0, g.size), g.yawDegrees));
                         }
                 }
 
@@ -110,7 +115,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 foreach (var b in def.blocks)
                 {
                     if (b == null || b.sizeX <= 0.001f || b.sizeZ <= 0.001f || b.height <= 0.001f) continue;
-                    AddBlockBoxes(boxes, b);
+                    AddBlockBoxes(boxes, b, def.StoreyBaseY(b.level, minCeil));
                 }
 
             // Escaleras: una caja por peldaño, calcada de la malla. Es escalonada y no una rampa
@@ -123,13 +128,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (s == null || s.steps < 1 || s.width <= 0.001f
                         || s.rise <= 0.001f || s.run <= 0.001f) continue;
 
+                    // Cada peldaño desde el suelo de SU piso, igual que la malla.
+                    float baseY = def.StoreyBaseY(s.level, minCeil);
                     float rad = s.yawDegrees * Mathf.Deg2Rad;
                     var forward = new Vector2(Mathf.Sin(rad), Mathf.Cos(rad));
                     for (int i = 0; i < s.steps; i++)
                     {
                         Vector2 c = s.position + forward * (s.run * (i + 0.5f));
                         float top = s.rise * (i + 1);
-                        boxes.Add(Box(new Vector3(c.x, top * 0.5f, c.y),
+                        boxes.Add(Box(new Vector3(c.x, baseY + top * 0.5f, c.y),
                             new Vector3(s.width, top, s.run), s.yawDegrees));
                     }
                 }
@@ -188,15 +195,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// CON hueco — un eje sin boquete no necesita tira propia, ya lo cubre por completo la
         /// tira del otro eje (que abarca el espesor entero en esa dirección).
         /// </summary>
-        private static void AddBlockBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition.Block b)
+        private static void AddBlockBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition.Block b,
+            float baseOffset)
         {
             var holesZ = new List<HoleRect>();
             var holesX = new List<HoleRect>();
-            b.ResolveHoles(holesZ, holesX);
+            // El MISMO offset de piso que la malla — mismo motivo de siempre.
+            b.ResolveHoles(holesZ, holesX, baseOffset);
+            float y0 = baseOffset + b.baseY, y1 = y0 + b.height;
 
             if (holesZ.Count == 0 && holesX.Count == 0)
             {
-                boxes.Add(Box(new Vector3(b.position.x, b.baseY + b.height * 0.5f, b.position.y),
+                boxes.Add(Box(new Vector3(b.position.x, y0 + b.height * 0.5f, b.position.y),
                     new Vector3(b.sizeX, b.height, b.sizeZ), b.yawDegrees));
                 return;
             }
@@ -204,7 +214,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             float r = b.yawDegrees * Mathf.Deg2Rad;
             var ax = new Vector2(Mathf.Cos(r), -Mathf.Sin(r));
             var az = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
-            float y0 = b.baseY, y1 = b.baseY + b.height;
 
             if (holesZ.Count > 0)
                 AddBlockAxisBoxes(boxes, b.position, ax, b.sizeX, b.sizeZ, b.yawDegrees, y0, y1, holesZ);
@@ -324,7 +333,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 float top = def.ClampLevelHeight(lvl.height, minCeil);
 
                 var holes = new List<Bounds>();
-                foreach (var s in def.StairsReaching(top))
+                foreach (var s in def.StairsReaching(top, minCeil))
                     holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
                         s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees)));
 

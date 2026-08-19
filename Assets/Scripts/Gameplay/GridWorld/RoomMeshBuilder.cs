@@ -201,7 +201,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // que se escribió, con cualquier número de lados.
                         int ps = Mathf.Clamp(p.sides, 3, 32);
                         float radius = p.size * 0.5f / Mathf.Cos(Mathf.PI / ps);
-                        AddPrism(p.position, radius, ps, yFloor, yCeil, p.yawDegrees);
+                        // Del suelo de SU piso al techo de SU piso: una columna sostiene la losa
+                        // de encima, no la atraviesa. Sin entreplantas los dos devuelven el
+                        // suelo y el techo de la sala y todo queda como siempre.
+                        AddPrism(p.position, radius, ps,
+                            def.StoreyBaseY(p.level, minCeil), def.StoreyCeilingY(p.level, minCeil),
+                            p.yawDegrees);
                     }
 
             if (def.pillarGrids != null)
@@ -210,25 +215,28 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (g == null || g.size <= 0.001f) continue;
                     int gs = Mathf.Clamp(g.sides, 3, 32);
                     float radius = g.size * 0.5f / Mathf.Cos(Mathf.PI / gs);
+                    float gy0 = def.StoreyBaseY(g.level, minCeil);
+                    float gy1 = def.StoreyCeilingY(g.level, minCeil);
                     for (int ix = 0; ix < g.countX; ix++)
                         for (int iz = 0; iz < g.countZ; iz++)
-                            AddPrism(g.PositionOf(ix, iz), radius, gs, yFloor, yCeil, g.yawDegrees);
+                            AddPrism(g.PositionOf(ix, iz), radius, gs, gy0, gy1, g.yawDegrees);
                 }
 
             if (def.blocks != null)
                 foreach (var b in def.blocks)
                     if (b != null && b.sizeX > 0.001f && b.sizeZ > 0.001f && b.height > 0.001f)
                     {
+                        float off = def.StoreyBaseY(b.level, minCeil);
                         if (b.holes != null && b.holes.Length > 0)
-                            AddBlockWithHoles(b);
+                            AddBlockWithHoles(b, off);
                         else
                             AddClosedPrism(BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees),
-                                b.baseY, b.baseY + b.height);
+                                off + b.baseY, off + b.baseY + b.height);
                     }
 
             if (def.stairs != null)
                 foreach (var s in def.stairs)
-                    AddStairs(s);
+                    AddStairs(s, def.StoreyBaseY(s?.level ?? 0, minCeil));
 
             // Entreplantas: una losa por nivel, del ancho de la sala entera y con hueco donde
             // una escalera llegue lo bastante alto para atravesarla. Van DESPUÉS de las
@@ -531,7 +539,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             float bottom = top - t;
 
             _levelHoles.Clear();
-            foreach (var s in def.StairsReaching(top))
+            foreach (var s in def.StairsReaching(top, minCeil))
                 _levelHoles.Add(BoxCorners(s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees));
 
             AddCap(contour, bottom, Vector3.down, SubmeshCeiling, null, _levelHoles);
@@ -849,15 +857,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// ensanche la cara exterior), así que el hueco se mapea igual en las dos, solo
         /// ESPEJADO en la cara opuesta — recorrerla de p0 a p1 va en el sentido contrario.
         /// </summary>
-        private static void AddBlockWithHoles(RoomDefinition.Block b)
+        private static void AddBlockWithHoles(RoomDefinition.Block b, float baseOffset)
         {
             var corners = BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees);
-            float y0 = b.baseY, y1 = b.baseY + b.height;
+            float y0 = baseOffset + b.baseY, y1 = y0 + b.height;
 
             // Resolución COMPARTIDA con los colliders — la misma que evita que una puerta se
             // vea en un sitio y bloquee en otro. Llega sin espejar (en la "u" de la cara par de
             // cada eje); espejar para la cara impar es cosa de la malla, no de la resolución.
-            b.ResolveHoles(_blockHolesA, _blockHolesC);
+            b.ResolveHoles(_blockHolesA, _blockHolesC, baseOffset);
             _blockHolesB.Clear();
             foreach (var h in _blockHolesA)
                 _blockHolesB.Add(new HoleRect { u0 = 1f - h.u1, u1 = 1f - h.u0, y0 = h.y0, y1 = h.y1 });
@@ -971,6 +979,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public static IEnumerable<(Vector2[] rect, float y)> BlockDoorFloorOpenings(RoomDefinition def)
         {
             if (def.blocks == null) yield break;
+            float minCeil = def.MinCeilingOver(def.InnerContour());
             foreach (var b in def.blocks)
             {
                 if (b == null || b.holes == null || b.holes.Length == 0) continue;
@@ -981,16 +990,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 var az = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
                 float hx = b.sizeX * 0.5f, hz = b.sizeZ * 0.5f;
 
+                // El MISMO offset de piso que usa la malla del bloque: el borde abierto está
+                // donde el bloque apoya de verdad, no siempre en el suelo de la sala.
+                float off = def.StoreyBaseY(b.level, minCeil);
+                float floorY = off + b.baseY;
+
                 var zHoles = new List<HoleRect>();
                 var xHoles = new List<HoleRect>();
-                b.ResolveHoles(zHoles, xHoles);
+                b.ResolveHoles(zHoles, xHoles, off);
 
                 foreach (var h in zHoles)
-                    if (h.y0 <= b.baseY + 1e-4f)
-                        yield return (BlockHoleFootprint(b.position, ax, az, hx, hz, h, throughZ: true), b.baseY);
+                    if (h.y0 <= floorY + 1e-4f)
+                        yield return (BlockHoleFootprint(b.position, ax, az, hx, hz, h, throughZ: true), floorY);
                 foreach (var h in xHoles)
-                    if (h.y0 <= b.baseY + 1e-4f)
-                        yield return (BlockHoleFootprint(b.position, ax, az, hx, hz, h, throughZ: false), b.baseY);
+                    if (h.y0 <= floorY + 1e-4f)
+                        yield return (BlockHoleFootprint(b.position, ax, az, hx, hz, h, throughZ: false), floorY);
             }
         }
 
@@ -1039,7 +1053,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// flotante. Así se sube andando sin lógica ninguna, y la colisión sale exactamente de la
         /// misma forma que se ve.
         /// </summary>
-        private static void AddStairs(RoomDefinition.Stairs s)
+        private static void AddStairs(RoomDefinition.Stairs s, float baseY)
         {
             if (s == null || !s.IsValid()) return;
 
@@ -1047,7 +1061,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             for (int i = 0; i < s.steps; i++)
             {
                 Vector2 c = s.position + forward * (s.run * (i + 0.5f));
-                AddClosedPrism(BoxCorners(c, s.width, s.run, s.yawDegrees), 0f, s.rise * (i + 1));
+                // Cada peldaño macizo desde el suelo de SU piso, no siempre el de la sala.
+                AddClosedPrism(BoxCorners(c, s.width, s.run, s.yawDegrees),
+                    baseY, baseY + s.rise * (i + 1));
             }
         }
 
