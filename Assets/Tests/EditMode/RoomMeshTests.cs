@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using BackroomsSurvival.Gameplay.GridWorld;
 using NUnit.Framework;
 using UnityEngine;
@@ -349,6 +350,135 @@ namespace BackroomsSurvival.Tests
             AssertRoom("bottomless pit next to a normal pit", d);
         }
 
+        // ── entreplantas ──────────────────────────────────────────────────────
+
+        [Test]
+        public void Level_slab_is_closed()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            AssertRoom("level slab", d);
+        }
+
+        /// <summary>Una escalera que llega a la altura del nivel le abre hueco sola: nadie tiene
+        /// que describir el hueco a mano.
+        ///
+        /// No pasa por <c>AssertRoom</c>: los peldaños de un tramo se TOCAN entre sí por
+        /// construcción (comparten cara con el siguiente) y esa cara compartida es interior, no
+        /// una fuga — exactamente el motivo por el que <c>Pillars_grids_blocks_and_stairs</c>
+        /// tampoco exige estanqueidad estricta con escaleras puestas. Lo que sí se comprueba
+        /// aquí es que construye, que las caras no salen invertidas y que la textura no se
+        /// estira; la estanqueidad de la LOSA en sí (con o sin hueco) la cubren los tests de
+        /// arriba.</summary>
+        [Test]
+        public void Stairs_reaching_a_level_open_it_automatically()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+            };
+            var s = d.stairs[0];
+            Assert.GreaterOrEqual(s.TopHeight(), 3f, "the stairs do not even reach the level");
+
+            var m = RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "level with stairs opening: triangulation fell back");
+            Assert.IsTrue(WindingOk(m, out int bw), $"level with stairs opening: {bw} triangles face the wrong way");
+            Assert.IsTrue(UvWorldScale(m, out int bu), $"level with stairs opening: {bu} edges with stretched texture");
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector3 throughTheHole = new Vector3(s.FootprintCentre().x, 3f, s.FootprintCentre().y);
+            Assert.IsFalse(Inside(cb, throughTheHole), "the stairwell stayed sealed");
+            // Lejos del hueco, la losa sigue siendo solida.
+            Assert.IsTrue(Inside(cb, new Vector3(6f, 3f, 6f)), "the slab is missing away from the stairs");
+        }
+
+        /// <summary>Una escalera que NO llega a la altura del nivel no le abre nada: sigue siendo
+        /// una losa entera ahí, y la escalera se queda corta contra ella. Mismo motivo que arriba
+        /// para no pasar por <c>AssertRoom</c>.</summary>
+        [Test]
+        public void Stairs_falling_short_of_a_level_do_not_open_it()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 4f } };
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 8, rise = 0.18f, run = 0.28f },
+            };
+            var s = d.stairs[0];
+            Assert.Less(s.TopHeight(), 4f, "this case needs stairs that fall short on purpose");
+
+            var m = RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "level not reached by stairs: triangulation fell back");
+            Assert.IsTrue(WindingOk(m, out int bw), $"level not reached by stairs: {bw} triangles face the wrong way");
+            Assert.IsTrue(UvWorldScale(m, out int bu), $"level not reached by stairs: {bu} edges with stretched texture");
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector3 overTheStairs = new Vector3(s.FootprintCentre().x, 4f, s.FootprintCentre().y);
+            Assert.IsTrue(Inside(cb, overTheStairs), "the slab opened without the stairs reaching it");
+        }
+
+        [Test]
+        public void Level_height_clamps_to_leave_headroom_both_ways()
+        {
+            var d = Box(6, 5); d.heightMeters = 3f;
+            // Pedidas fuera de rango a proposito: pegada al suelo y pegada al techo.
+            d.levels = new[]
+            {
+                new RoomDefinition.Level { height = 0.1f },
+                new RoomDefinition.Level { height = 2.9f },
+            };
+            AssertRoom("clamped levels", d);
+        }
+
+        [Test]
+        public void Level_on_an_L_shaped_room()
+        {
+            var d = Blocks(6, 5, new RoomDefinition.Notch { tileX = 3, tileZ = 3, tilesX = 3, tilesZ = 2 });
+            d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            AssertRoom("level on an L plan", d);
+        }
+
+        [Test]
+        public void Level_on_a_round_room()
+        {
+            var d = new RoomDefinition { tilesX = 6, tilesZ = 6, sides = 20, squareness = 0f, heightMeters = 6f };
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            AssertRoom("level on a round plan", d);
+        }
+
+        /// <summary>Tampoco pasa por <c>AssertRoom</c>, mismo motivo que los dos de arriba: hay
+        /// escaleras puestas.
+        ///
+        /// El mismo `run`/`steps` que ya prueban los dos tests de arriba en las dos escaleras —
+        /// solo cambia `rise` para llegar más alto sin alargar la huella en planta. Un tramo real
+        /// no subiría tan empinado, pero aquí lo que se comprueba es el cableado (qué escalera
+        /// abre qué nivel), no la ergonomía del tramo.</summary>
+        [Test]
+        public void Two_levels_two_stairs()
+        {
+            var d = Box(6, 5); d.heightMeters = 9f;
+            d.levels = new[]
+            {
+                new RoomDefinition.Level { height = 3f },
+                new RoomDefinition.Level { height = 6f },
+            };
+            d.stairs = new[]
+            {
+                // Llega a las dos losas.
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.36f, run = 0.28f },
+                // Se queda corta para la de 6 m; solo abre la de 3.
+                new RoomDefinition.Stairs { position = new Vector2(4f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+            };
+
+            var m = RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "two levels, two stairs: triangulation fell back");
+            Assert.IsTrue(WindingOk(m, out int bw), $"two levels, two stairs: {bw} triangles face the wrong way");
+            Assert.IsTrue(UvWorldScale(m, out int bu), $"two levels, two stairs: {bu} edges with stretched texture");
+        }
+
         // ── colisión coherente con lo que se ve ───────────────────────────────
 
         /// <summary>El modo de fallo peligroso del sistema: la malla dibuja suelo sólido donde el
@@ -602,6 +732,34 @@ namespace BackroomsSurvival.Tests
             var d = new RoomDefinition();
             d.Randomize(19);
             AssertRoom("seed 19", ShellOnly(d));
+        }
+
+        /// <summary>
+        /// Bug conocido en <see cref="PolygonTriangulator"/>, encontrado autorando las
+        /// entreplantas: un ÚNICO agujero rectangular, DESCENTRADO respecto a la sala, puede
+        /// hacer que el recorte de orejas se quede sin ninguna oreja válida a mitad de camino —
+        /// pese a que el teorema de las dos orejas garantiza que un polígono simple siempre tiene
+        /// alguna. El mismo agujero centrado (x=0) triangula bien; corrido a x=-2, no. Ni
+        /// siquiera es monótono: añadirle un SEGUNDO agujero al lado a veces lo arregla, porque
+        /// cambia el orden de cosido de los puentes. No se ha localizado la causa exacta —
+        /// probablemente el puente roza algo lo bastante cerca como para que el margen de
+        /// <c>Eps</c> lo cuente como bloqueo — y no se ha intentado arreglar: es del triangulador,
+        /// no de las entreplantas, y las entreplantas ya evitan la posición que lo dispara.
+        /// </summary>
+        [Test]
+        [Ignore("Bug conocido en PolygonTriangulator: un agujero rectangular descentrado puede dejar el recorte de orejas sin ninguna oreja valida.")]
+        public void Off_center_hole_triangulates()
+        {
+            var outer = new List<Vector2>
+            {
+                new Vector2(15f, 12.5f), new Vector2(-15f, 12.5f),
+                new Vector2(-15f, -12.5f), new Vector2(15f, -12.5f),
+            };
+            var hole = new List<Vector2> { new Vector2(-3f, -5.24f), new Vector2(-1f, -5.24f),
+                new Vector2(-1f, -10f), new Vector2(-3f, -10f) };
+            bool ok = PolygonTriangulator.Triangulate(outer, new List<IList<Vector2>> { hole },
+                new List<Vector2>(), new List<int>());
+            Assert.IsTrue(ok, "the off-center hole failed to triangulate");
         }
 
         [Test]

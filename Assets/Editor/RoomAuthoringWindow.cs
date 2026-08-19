@@ -236,6 +236,8 @@ namespace BackroomsSurvival.EditorTools
             DrawBlocks();
             EditorGUILayout.Space();
             DrawStairs();
+            EditorGUILayout.Space();
+            DrawLevels();
         }
 
         private void DrawFloorHoles()
@@ -420,6 +422,37 @@ namespace BackroomsSurvival.EditorTools
                     EditorGUILayout.LabelField(" ",
                         $"Total: {s.steps * s.rise:0.##} m up, {s.steps * s.run:0.##} m long",
                         EditorStyles.miniLabel);
+                }
+            }
+        }
+
+        private void DrawLevels()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField($"Levels ({_def.levels.Length})", EditorStyles.boldLabel);
+                if (GUILayout.Button("+ Level", GUILayout.Width(70)))
+                {
+                    ArrayUtility.Add(ref _def.levels, new RoomDefinition.Level());
+                    RebuildIfLive();
+                }
+            }
+            EditorGUILayout.HelpBox(
+                "Una entreplanta a media altura, del ancho de TODA la sala. Cualquier tramo de "
+                + "escalera que llegue a su altura le abre hueco solo -- no hace falta abrirlo "
+                + "a mano.", MessageType.None);
+
+            for (int i = 0; i < _def.levels.Length; i++)
+            {
+                var lvl = _def.levels[i];
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    if (!ItemHeader(ref _def.levels, i, "lvl", $"#{i}  {lvl.height:0.#} m up")) continue;
+                    lvl.height = EditorGUILayout.FloatField(
+                        new GUIContent("Height (m)",
+                            "Altura del canto superior sobre el suelo de la sala. Se recorta "
+                            + "solo para dejar hueco de sobra por debajo y por encima."),
+                        lvl.height);
                 }
             }
         }

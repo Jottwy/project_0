@@ -223,6 +223,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 foreach (var s in def.stairs)
                     AddStairs(s);
 
+            // Entreplantas: una losa por nivel, del ancho de la sala entera y con hueco donde
+            // una escalera llegue lo bastante alto para atravesarla. Van DESPUÉS de las
+            // escaleras y no antes por orden de lectura nada más — no comparten geometría, cada
+            // una es su propio cascarón cerrado.
+            if (def.levels != null)
+                foreach (var lvl in def.levels)
+                    if (lvl != null)
+                        AddLevelSlab(def, inner, lvl, t, minCeil);
+
             var mesh = into != null ? into : new Mesh();
             mesh.Clear();
             mesh.name = $"Room_{def.tilesX}x{def.tilesZ}_{def.sides}s";
@@ -492,6 +501,54 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
+        /// <summary>
+        /// Una entreplanta: dos tapas (suelo pisable arriba, techo visto desde abajo debajo) del
+        /// ancho de TODA la sala, con hueco donde una escalera la atraviese, y un remate en el
+        /// borde exterior que la sella contra la pared — la misma losa que trae el suelo de la
+        /// sala, solo que a media altura.
+        /// </summary>
+        private static void AddLevelSlab(RoomDefinition def, Vector2[] contour,
+            RoomDefinition.Level lvl, float t, float minCeil)
+        {
+            float top = def.ClampLevelHeight(lvl.height, minCeil);
+            float bottom = top - t;
+
+            _levelHoles.Clear();
+            foreach (var s in def.StairsReaching(top))
+                _levelHoles.Add(BoxCorners(s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees));
+
+            AddCap(contour, bottom, Vector3.down, SubmeshCeiling, null, _levelHoles);
+            AddCap(contour, top, Vector3.up, SubmeshFloor, null, _levelHoles);
+
+            // El agujero de cada escalera: el mismo tubo recto que un pozo sin inglete, porque
+            // aquí tampoco hay nada por debajo contra lo que encajarlo — las dos tapas de la
+            // losa usan EL MISMO rectángulo.
+            foreach (var hole in _levelHoles)
+                AddPitTube(hole, bottom, top, inward: true);
+
+            AddSlabRim(contour, bottom, top);
+        }
+
+        /// <summary>
+        /// El canto exterior de una losa que ocupa TODA la planta de la sala: una tira vertical
+        /// por cada lado del contorno, sellando la losa contra la pared. Normal del sentido de
+        /// giro del contorno y no del centro — en una planta en L el centro puede caer fuera y
+        /// esa tira saldría del revés.
+        /// </summary>
+        private static void AddSlabRim(Vector2[] poly, float y0, float y1)
+        {
+            int n = poly.Length;
+            for (int i = 0; i < n; i++)
+            {
+                Vector2 a = poly[i], b = poly[(i + 1) % n];
+                Vector2 n2 = RoomDefinition.OutwardNormal(a, b);
+                var nrm = new Vector3(n2.x, 0f, n2.y);
+                Quad(SubmeshWall, V(a, y0), V(b, y0), V(b, y1), V(a, y1), nrm);
+            }
+        }
+
+        private static readonly List<Vector2[]> _levelHoles = new List<Vector2[]>();
+
         private static readonly List<Vector2> _capRing = new List<Vector2>();
         private static readonly List<IList<Vector2>> _capHoles = new List<IList<Vector2>>();
         private static readonly List<Vector2> _triVerts = new List<Vector2>();
@@ -759,11 +816,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// </summary>
         private static void AddStairs(RoomDefinition.Stairs s)
         {
-            if (s == null || s.steps < 1 || s.width <= 0.001f
-                || s.rise <= 0.001f || s.run <= 0.001f) return;
+            if (s == null || !s.IsValid()) return;
 
-            float r = s.yawDegrees * Mathf.Deg2Rad;
-            var forward = new Vector2(Mathf.Sin(r), Mathf.Cos(r)); // hacia dónde sube
+            var forward = s.Forward();
             for (int i = 0; i < s.steps; i++)
             {
                 Vector2 c = s.position + forward * (s.run * (i + 0.5f));

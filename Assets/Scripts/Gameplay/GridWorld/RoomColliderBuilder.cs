@@ -46,6 +46,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddFloorSlab(boxes, def, bb, t, yBottom, yFloor);
             AddCeilingSlab(boxes, def, bb, t);
             AddPitBoxes(boxes, def, yFloor, t);
+            AddLevelBoxes(boxes, def, bb, t, def.MinCeilingOver(inner));
 
             int n = inner.Length;
             // La MISMA resolución que usa la malla, no una copia: cuando eran dos bucles gemelos,
@@ -215,22 +216,49 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static void AddFloorSlab(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
             Bounds bb, float t, float yBottom, float yFloor)
         {
-            float y = (yBottom + yFloor) * 0.5f;
-
             var pits = new List<Bounds>();
             if (def.floorHoles != null)
                 foreach (var f in def.floorHoles)
                 {
                     if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f || f.depth <= 0.01f) continue;
-                    var corners = RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees);
-                    var mn = new Vector2(float.MaxValue, float.MaxValue);
-                    var mx = new Vector2(float.MinValue, float.MinValue);
-                    foreach (var c in corners) { mn = Vector2.Min(mn, c); mx = Vector2.Max(mx, c); }
-                    pits.Add(new Bounds(new Vector3((mn.x + mx.x) * 0.5f, 0f, (mn.y + mx.y) * 0.5f),
-                        new Vector3(mx.x - mn.x, 1f, mx.y - mn.y)));
+                    pits.Add(XZBounds(RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees)));
                 }
+            AddSlabWithHoles(boxes, bb, (yBottom + yFloor) * 0.5f, t, pits);
+        }
 
-            if (pits.Count == 0)
+        /// <summary>
+        /// Las losas de las entreplantas: la misma losa completa que trae el suelo de la sala,
+        /// solo que a media altura y con el hueco donde una escalera la atraviese en vez del de
+        /// un pozo. Comparte la partición en tiras con <see cref="AddFloorSlab"/> — es la misma
+        /// idea (una losa, unos huecos rectangulares) aplicada a otra altura.
+        /// </summary>
+        private static void AddLevelBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
+            Bounds bb, float t, float minCeil)
+        {
+            if (def.levels == null) return;
+            foreach (var lvl in def.levels)
+            {
+                if (lvl == null) continue;
+                float top = def.ClampLevelHeight(lvl.height, minCeil);
+
+                var holes = new List<Bounds>();
+                foreach (var s in def.StairsReaching(top))
+                    holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
+                        s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees)));
+
+                AddSlabWithHoles(boxes, bb, top - t * 0.5f, t, holes);
+            }
+        }
+
+        /// <summary>
+        /// Una losa horizontal partida en tiras alrededor de <paramref name="holes"/>, saltando
+        /// las celdas que caigan dentro de alguno. Sin huecos, una sola caja — partir de más no
+        /// aporta nada y multiplica cajas sin necesidad.
+        /// </summary>
+        private static void AddSlabWithHoles(List<RoomPool.CollisionBox> boxes, Bounds bb, float y,
+            float t, List<Bounds> holes)
+        {
+            if (holes.Count == 0)
             {
                 boxes.Add(Box(new Vector3(bb.center.x, y, bb.center.z),
                     new Vector3(bb.size.x, t, bb.size.z), 0f));
@@ -239,10 +267,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             var xs = new List<float> { bb.min.x, bb.max.x };
             var zs = new List<float> { bb.min.z, bb.max.z };
-            foreach (var p in pits)
+            foreach (var h in holes)
             {
-                xs.Add(p.min.x); xs.Add(p.max.x);
-                zs.Add(p.min.z); zs.Add(p.max.z);
+                xs.Add(h.min.x); xs.Add(h.max.x);
+                zs.Add(h.min.z); zs.Add(h.max.z);
             }
             Tidy(xs, bb.min.x, bb.max.x);
             Tidy(zs, bb.min.z, bb.max.z);
@@ -251,10 +279,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 for (int k = 0; k < zs.Count - 1; k++)
                 {
                     float cx = (xs[i] + xs[i + 1]) * 0.5f, cz = (zs[k] + zs[k + 1]) * 0.5f;
-                    bool inPit = false;
-                    foreach (var p in pits)
-                        if (cx > p.min.x && cx < p.max.x && cz > p.min.z && cz < p.max.z) inPit = true;
-                    if (inPit) continue;
+                    bool inHole = false;
+                    foreach (var h in holes)
+                        if (cx > h.min.x && cx < h.max.x && cz > h.min.z && cz < h.max.z) inHole = true;
+                    if (inHole) continue;
 
                     boxes.Add(Box(new Vector3(cx, y, cz),
                         new Vector3(xs[i + 1] - xs[i], t, zs[k + 1] - zs[k]), 0f));

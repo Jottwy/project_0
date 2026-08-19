@@ -237,6 +237,28 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// <summary>Alto y fondo de cada peldaño. 0,18 × 0,28 es cómodo de subir.</summary>
             public float rise = 0.18f;
             public float run = 0.28f;
+
+            /// <summary>Hacia dónde sube, como vector unitario en XZ.</summary>
+            public Vector2 Forward()
+            {
+                float r = yawDegrees * Mathf.Deg2Rad;
+                return new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+            }
+
+            /// <summary>Cuánto mide el tramo en planta, de la base al último peldaño.</summary>
+            public float FootprintLength() => run * steps;
+
+            /// <summary>Centro del rectángulo que ocupa el tramo entero en planta — lo que hace
+            /// falta para abrir el hueco correspondiente en la losa de un nivel.</summary>
+            public Vector2 FootprintCentre() => position + Forward() * (FootprintLength() * 0.5f);
+
+            /// <summary>Altura del último peldaño: hasta dónde llega subiendo.</summary>
+            public float TopHeight() => rise * steps;
+
+            /// <summary>Descartable: sin peldaños, sin ancho o sin medidas no hay tramo que
+            /// construir. La misma condición la usan la malla, los colliders y las losas de
+            /// nivel — separarla evita que una acabe considerando un tramo que la otra ignora.</summary>
+            public bool IsValid() => steps >= 1 && width > 0.001f && rise > 0.001f && run > 0.001f;
         }
 
         /// <summary>
@@ -310,12 +332,60 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public bool bottomless;
         }
 
+        /// <summary>
+        /// Una entreplanta: una losa horizontal a media altura, del ancho de toda la sala, con
+        /// hueco automático donde una escalera llegue lo bastante alto para atravesarla. Es lo
+        /// que convierte "una sala alta" en "una sala de dos pisos" sin que haga falta describir
+        /// su propio contorno — usa el de la sala, igual que el suelo y el techo.
+        /// </summary>
+        [Serializable]
+        public sealed class Level
+        {
+            /// <summary>Altura del canto superior de la losa sobre el suelo de la sala, en
+            /// metros. Se recorta para dejar paso por debajo y por encima — ver
+            /// <see cref="ClampLevelHeight"/>.</summary>
+            public float height = 3f;
+        }
+
         public WallHole[] holes = Array.Empty<WallHole>();
         public Pillar[] pillars = Array.Empty<Pillar>();
         public PillarGrid[] pillarGrids = Array.Empty<PillarGrid>();
         public Block[] blocks = Array.Empty<Block>();
         public Stairs[] stairs = Array.Empty<Stairs>();
         public FloorHole[] floorHoles = Array.Empty<FloorHole>();
+        public Level[] levels = Array.Empty<Level>();
+
+        /// <summary>
+        /// Altura de nivel ya recortada: al menos <see cref="MinCeilingHeight"/> de hueco por
+        /// debajo (más el grosor de la propia losa) y al menos <see cref="MinCeilingHeight"/>
+        /// bajo <paramref name="minCeiling"/> por encima. Una losa sin hueco por el que pasar
+        /// por alguno de los dos lados no es un piso, es un techo bajado.
+        /// </summary>
+        public float ClampLevelHeight(float requested, float minCeiling)
+        {
+            float t = Mathf.Max(0.001f, wallThickness);
+            float lo = MinCeilingHeight + t;
+            float hi = Mathf.Max(lo, minCeiling - MinCeilingHeight);
+            return Mathf.Clamp(requested, lo, hi);
+        }
+
+        /// <summary>
+        /// Los tramos de escalera cuyo último peldaño llega a esta losa (o más arriba): son los
+        /// que la atraviesan y por tanto los que le abren hueco. Vive aquí y no en cada
+        /// generador porque la malla y los colliders tienen que abrir EXACTAMENTE el mismo hueco
+        /// en el mismo sitio, igual que un boquete de pared.
+        /// </summary>
+        public IEnumerable<Stairs> StairsReaching(float levelHeight)
+        {
+            if (stairs == null) yield break;
+            // Tolerancia de 5 cm: el mismo margen que usa la malla para "el ultimo peldaño llega
+            // AL TECHO", aqui aplicado a "llega A LA LOSA". Sin margen, un tramo calculado para
+            // llegar EXACTO se quedaria un pelo corto por redondeo y perderia su hueco.
+            const float margin = 0.05f;
+            foreach (var s in stairs)
+                if (s != null && s.IsValid() && s.TopHeight() >= levelHeight - margin)
+                    yield return s;
+        }
 
         /// <summary>
         /// Un boquete ya resuelto sobre una pared concreta: fracción a lo largo (u) y metros de
