@@ -760,6 +760,10 @@ namespace BackroomsSurvival.EditorTools
                 return false;
             }
             mesh.name = id;
+            // UV2 de lightmap: sin esto no hay iluminación horneada, y en Backrooms la luz es
+            // la mitad del sitio. Se genera UNA vez, al guardar — no en cada reconstrucción en
+            // vivo del preview, que sería carísimo y para nada: el preview no se hornea.
+            Unwrapping.GenerateSecondaryUVSet(mesh);
             AssetDatabase.CreateAsset(mesh, meshPath);
 
             var root = new GameObject(id);
