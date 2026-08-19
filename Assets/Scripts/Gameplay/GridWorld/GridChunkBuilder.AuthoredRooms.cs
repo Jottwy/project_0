@@ -53,7 +53,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// su propia decisión.
         /// </summary>
         private static void PlanAuthoredRooms(byte[,] walls, RoomZoneMsg[] roomZones,
-            int chunkX, int chunkZ, List<RoomPlan> into)
+            int chunkX, int chunkZ, OfficeStairs.Plan stairPlan, List<RoomPlan> into)
         {
             into.Clear();
             if (roomZones == null || roomZones.Length == 0) return;
@@ -74,6 +74,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int tx0 = z.x0 / 2, tz0 = z.z0 / 2;
                 int tw = (z.x1 - z.x0) / 2, th = (z.z1 - z.z0) / 2;
                 if (tw < 1 || th < 1) continue;
+
+                // OfficeStairs.PlanFor hashea sobre las mismas roomZones SIN filtrar por Kind
+                // (a propósito, ver su propio comentario), así que una SealedRoom puede ser
+                // justo la zona que ya reservó la escalera. Sin este check, la escalera y una
+                // sala autorada se instancian las dos en el mismo tile — geometría atravesada.
+                if (stairPlan.valid && stairPlan.tx >= tx0 && stairPlan.tx < tx0 + tw
+                    && stairPlan.tz >= tz0 && stairPlan.tz < tz0 + th)
+                    continue;
 
                 byte apertures = ApertureSides(walls, tx0, tz0, tw, th);
                 if (apertures == 0) continue; // sala sin entrada conocida — no se amuebla

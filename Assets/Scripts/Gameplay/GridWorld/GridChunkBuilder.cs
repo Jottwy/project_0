@@ -468,7 +468,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // motivo que la escalera: los props tienen que ver el espacio ya reservado o
             // spawnearían dentro de la geometría autorada. Se instancian después del plan
             // para no meter nada entre el plan y su consumidor.
-            PlanAuthoredRooms(walls, roomZones, chunkX, chunkZ, _roomPlanScratch);
+            PlanAuthoredRooms(walls, roomZones, chunkX, chunkZ, stairPlan, _roomPlanScratch);
             if (_roomPlanScratch.Count > 0)
                 PlaceAuthoredRooms(root.transform, _roomPlanScratch);
             if (styled && stairPlan.valid)
