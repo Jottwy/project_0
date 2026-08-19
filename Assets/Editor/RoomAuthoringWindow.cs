@@ -314,6 +314,14 @@ namespace BackroomsSurvival.EditorTools
                 }
             }
 
+            DrawGroupPanel(_def.floorHoles, "floor pits",
+                new GroupField<RoomDefinition.FloorHole>("Position X", f => f.position.x, (f, v) => f.position.x = v),
+                new GroupField<RoomDefinition.FloorHole>("Position Z", f => f.position.y, (f, v) => f.position.y = v),
+                new GroupField<RoomDefinition.FloorHole>("Size X (m)", f => f.sizeX, (f, v) => f.sizeX = v),
+                new GroupField<RoomDefinition.FloorHole>("Size Z (m)", f => f.sizeZ, (f, v) => f.sizeZ = v),
+                new GroupField<RoomDefinition.FloorHole>("Depth (m)", f => f.depth, (f, v) => f.depth = v),
+                new GroupField<RoomDefinition.FloorHole>("Yaw", f => f.yawDegrees, (f, v) => f.yawDegrees = v));
+
             for (int i = 0; i < _def.floorHoles.Length; i++)
             {
                 var f = _def.floorHoles[i];
@@ -424,6 +432,51 @@ namespace BackroomsSurvival.EditorTools
 
         private static void Swap<T>(T[] a, int i, int j) { (a[i], a[j]) = (a[j], a[i]); }
 
+        /// <summary>Un campo que un panel de grupo sabe leer y escribir de cada elemento.</summary>
+        private readonly struct GroupField<T>
+        {
+            public readonly string label, tooltip;
+            public readonly System.Func<T, float> get;
+            public readonly System.Action<T, float> set;
+
+            public GroupField(string label, System.Func<T, float> get, System.Action<T, float> set,
+                string tooltip = "")
+            {
+                this.label = label; this.tooltip = tooltip; this.get = get; this.set = set;
+            }
+        }
+
+        /// <summary>
+        /// Con 2 o más elementos del mismo tipo, un panel "All N" antes de la lista. Tocar un
+        /// campo ahí no fija el mismo valor en todos: aplica el MISMO DESPLAZAMIENTO a cada
+        /// elemento, igual que mover un Transform con varios objetos seleccionados en Unity — el
+        /// número que se ve aquí es solo el mando de partida (el valor del primer elemento), lo
+        /// que persiste es la diferencia relativa entre ellos. Un elemento que ya se había
+        /// tocado a mano se mueve CON el grupo sin perder lo que lo hacía distinto.
+        ///
+        /// Con 0 o 1 elemento no hay grupo que editar y no se dibuja nada.
+        /// </summary>
+        private static void DrawGroupPanel<T>(T[] items, string title, params GroupField<T>[] fields)
+        {
+            if (items == null || items.Length < 2) return;
+
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField($"All {items.Length} {title}", EditorStyles.boldLabel);
+                foreach (var f in fields)
+                {
+                    float shown = f.get(items[0]);
+                    EditorGUI.BeginChangeCheck();
+                    float next = EditorGUILayout.FloatField(new GUIContent(f.label, f.tooltip), shown);
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        float delta = next - shown;
+                        foreach (var item in items) f.set(item, f.get(item) + delta);
+                    }
+                }
+            }
+        }
+
         private void DrawBlocks()
         {
             using (new EditorGUILayout.HorizontalScope())
@@ -435,6 +488,15 @@ namespace BackroomsSurvival.EditorTools
                     RebuildIfLive();
                 }
             }
+
+            DrawGroupPanel(_def.blocks, "blocks",
+                new GroupField<RoomDefinition.Block>("Position X", b => b.position.x, (b, v) => b.position.x = v),
+                new GroupField<RoomDefinition.Block>("Position Z", b => b.position.y, (b, v) => b.position.y = v),
+                new GroupField<RoomDefinition.Block>("Size X (m)", b => b.sizeX, (b, v) => b.sizeX = v),
+                new GroupField<RoomDefinition.Block>("Size Z (m)", b => b.sizeZ, (b, v) => b.sizeZ = v),
+                new GroupField<RoomDefinition.Block>("Base Y (m)", b => b.baseY, (b, v) => b.baseY = v),
+                new GroupField<RoomDefinition.Block>("Height (m)", b => b.height, (b, v) => b.height = v),
+                new GroupField<RoomDefinition.Block>("Yaw", b => b.yawDegrees, (b, v) => b.yawDegrees = v));
 
             for (int i = 0; i < _def.blocks.Length; i++)
             {
@@ -464,6 +526,15 @@ namespace BackroomsSurvival.EditorTools
                     RebuildIfLive();
                 }
             }
+
+            DrawGroupPanel(_def.stairs, "stairs",
+                new GroupField<RoomDefinition.Stairs>("Position X", s => s.position.x, (s, v) => s.position.x = v),
+                new GroupField<RoomDefinition.Stairs>("Position Z", s => s.position.y, (s, v) => s.position.y = v),
+                new GroupField<RoomDefinition.Stairs>("Facing", s => s.yawDegrees, (s, v) => s.yawDegrees = v),
+                new GroupField<RoomDefinition.Stairs>("Width (m)", s => s.width, (s, v) => s.width = v),
+                new GroupField<RoomDefinition.Stairs>("Steps", s => s.steps, (s, v) => s.steps = Mathf.Clamp(Mathf.RoundToInt(v), 1, 40)),
+                new GroupField<RoomDefinition.Stairs>("Rise per step (m)", s => s.rise, (s, v) => s.rise = v),
+                new GroupField<RoomDefinition.Stairs>("Run per step (m)", s => s.run, (s, v) => s.run = v));
 
             for (int i = 0; i < _def.stairs.Length; i++)
             {
@@ -503,6 +574,9 @@ namespace BackroomsSurvival.EditorTools
                 "Una entreplanta a media altura, del ancho de TODA la sala. Cualquier tramo de "
                 + "escalera que llegue a su altura le abre hueco solo -- no hace falta abrirlo "
                 + "a mano.", MessageType.None);
+
+            DrawGroupPanel(_def.levels, "levels",
+                new GroupField<RoomDefinition.Level>("Height (m)", l => l.height, (l, v) => l.height = v));
 
             for (int i = 0; i < _def.levels.Length; i++)
             {
@@ -719,6 +793,15 @@ namespace BackroomsSurvival.EditorTools
                     AddHole(baseY: 1.1f, w: 2.0f, h: 1.2f);
             }
 
+            DrawGroupPanel(_def.holes, "holes",
+                new GroupField<RoomDefinition.WallHole>("Wall", h => h.side, (h, v) => h.side = Mathf.RoundToInt(v),
+                    "Desplaza a que pared apunta cada uno, todos a la vez."),
+                new GroupField<RoomDefinition.WallHole>("Along wall", h => h.along, (h, v) => h.along = v),
+                new GroupField<RoomDefinition.WallHole>("Height off floor (m)", h => h.baseY, (h, v) => h.baseY = v),
+                new GroupField<RoomDefinition.WallHole>("Width (m)", h => h.width, (h, v) => h.width = v),
+                new GroupField<RoomDefinition.WallHole>("Height (m)", h => h.height, (h, v) => h.height = v),
+                new GroupField<RoomDefinition.WallHole>("Grate bars", h => h.grateBars, (h, v) => h.grateBars = Mathf.Max(0, Mathf.RoundToInt(v))));
+
             for (int i = 0; i < _def.holes.Length; i++)
             {
                 var hole = _def.holes[i];
@@ -763,6 +846,13 @@ namespace BackroomsSurvival.EditorTools
                     RebuildIfLive();
                 }
             }
+
+            DrawGroupPanel(_def.pillars, "pillars",
+                new GroupField<RoomDefinition.Pillar>("Position X", p => p.position.x, (p, v) => p.position.x = v),
+                new GroupField<RoomDefinition.Pillar>("Position Z", p => p.position.y, (p, v) => p.position.y = v),
+                new GroupField<RoomDefinition.Pillar>("Size (m)", p => p.size, (p, v) => p.size = v),
+                new GroupField<RoomDefinition.Pillar>("Sides", p => p.sides, (p, v) => p.sides = Mathf.Clamp(Mathf.RoundToInt(v), 3, 32)),
+                new GroupField<RoomDefinition.Pillar>("Yaw", p => p.yawDegrees, (p, v) => p.yawDegrees = v));
 
             for (int i = 0; i < _def.pillars.Length; i++)
             {
