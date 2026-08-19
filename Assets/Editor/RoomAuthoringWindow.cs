@@ -27,7 +27,10 @@ namespace BackroomsSurvival.EditorTools
         /// con geometría que Joel haya puesto a mano.</summary>
         private const string PreviewName = "Room_Preview";
 
-        private readonly RoomDefinition _def = new RoomDefinition();
+        // No es readonly: cargar una sala ya guardada REEMPLAZA el modelo entero, no lo parchea
+        // campo a campo -- son decenas de campos y arrays, y parchear a mano es justo donde se
+        // olvida uno.
+        private RoomDefinition _def = new RoomDefinition();
         private GameObject _preview;
         private Mesh _previewMesh;
 
@@ -86,11 +89,70 @@ namespace BackroomsSurvival.EditorTools
                     }
                 }
 
+                DrawLoadButton();
+
                 GUILayout.FlexibleSpace();
                 if (_previewMesh != null)
                     GUILayout.Label($"{_previewMesh.vertexCount} verts · " +
                                     $"{_previewMesh.triangles.Length / 3} tris", EditorStyles.miniLabel);
             }
+        }
+
+        /// <summary>
+        /// Cargar una sala YA GUARDADA de vuelta al editor. Sin esto, hornear era un callejón
+        /// sin salida: la sala quedaba como malla + prefab, pero mover una puerta o ensanchar un
+        /// pasillo significaba rehacerla entera desde cero en vez de retocar la que ya existe.
+        ///
+        /// Solo aparecen las entradas con <see cref="RoomPool.RoomEntry.definition"/> — las
+        /// horneadas a mano desde una escena (<c>Bake</c>, no <c>Save Room To Pool</c>) no salen
+        /// de un modelo y no hay parámetros que traer de vuelta.
+        /// </summary>
+        private void DrawLoadButton()
+        {
+            if (!GUILayout.Button("Load ▾", EditorStyles.toolbarDropDown, GUILayout.Width(60)))
+                return;
+
+            var pool = AssetDatabase.LoadAssetAtPath<RoomPool>(PoolPath);
+            var menu = new GenericMenu();
+            if (pool == null || pool.rooms == null || pool.rooms.Length == 0)
+            {
+                menu.AddDisabledItem(new GUIContent("(no saved rooms)"));
+            }
+            else
+            {
+                foreach (var entry in pool.rooms)
+                {
+                    if (entry == null) continue;
+                    if (entry.definition == null)
+                    {
+                        menu.AddDisabledItem(new GUIContent($"{entry.id} (hand-built, no parameters)"));
+                        continue;
+                    }
+                    // Captura local: `entry` es la variable de bucle, y el lambda se dispara
+                    // mucho después de que el bucle haya terminado.
+                    var captured = entry;
+                    menu.AddItem(new GUIContent(captured.id), false, () => LoadRoom(captured));
+                }
+            }
+            menu.ShowAsContext();
+        }
+
+        /// <summary>
+        /// Clona el modelo guardado y lo pone en el editor. CLONA y no asigna la referencia
+        /// directa: <c>entry.definition</c> es la MISMA instancia que vive dentro del asset del
+        /// pool, y tocar sus arrays desde aquí (añadir una puerta, mover un pilar) ensuciaría el
+        /// asset ya guardado sin pasar por un guardado explícito.
+        ///
+        /// El clon es un viaje de ida y vuelta por JSON: es el modo estándar de Unity para
+        /// clonar un árbol de clases `[Serializable]` con arrays anidados (huecos, pilares,
+        /// bloques, escaleras, niveles...) sin tener que mantener a mano una copia campo a campo
+        /// que se desincroniza en cuanto se añade un feature nuevo.
+        /// </summary>
+        private void LoadRoom(RoomPool.RoomEntry entry)
+        {
+            _def = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(entry.definition));
+            CreateOrRebuild();
+            Debug.Log($"[RoomAuthoringWindow] Loaded '{entry.id}' for editing.");
         }
 
         private int _seed = 1;

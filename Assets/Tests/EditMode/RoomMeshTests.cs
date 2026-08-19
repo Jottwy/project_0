@@ -771,5 +771,54 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(a.sides, b.sides);
             Assert.AreEqual(a.holes.Length, b.holes.Length);
         }
+
+        /// <summary>
+        /// La herramienta clona una sala guardada con un viaje de ida y vuelta por JSON
+        /// (<c>RoomAuthoringWindow.LoadRoom</c>) para no aliasear los arrays del pool. Esto
+        /// comprueba que ese viaje sobrevive con TODOS los features encima, incluidos los más
+        /// nuevos (niveles, pozos sin fondo, huecos que doblan esquina) — un campo olvidado en
+        /// un <c>[Serializable]</c> nuevo no da error de compilación, solo una sala cargada con
+        /// ese dato perdido en silencio.
+        /// </summary>
+        [Test]
+        public void Definition_survives_a_json_round_trip()
+        {
+            var d = Blocks(6, 5, new RoomDefinition.Notch { tileX = 3, tileZ = 3, tilesX = 3, tilesZ = 2 });
+            d.ceilingTilt = 18f; d.ceilingTiltYaw = 40f;
+            d.irregularity = 0.4f; d.irregularitySeed = 5;
+            d.holes = new[] { Door(0, 0.5f) };
+            d.holes[0].spanCorners = true;
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            d.floorHoles[0].bottomless = true;
+            d.pillars = new[] { new RoomDefinition.Pillar { position = new Vector2(3f, 1f), size = 0.9f, sides = 8 } };
+            d.stairs = new[] { new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f } };
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+
+            var clone = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(d));
+
+            Assert.AreEqual(d.tilesX, clone.tilesX);
+            Assert.AreEqual(d.planMode, clone.planMode);
+            Assert.AreEqual(d.notches.Length, clone.notches.Length);
+            Assert.AreEqual(d.ceilingTilt, clone.ceilingTilt);
+            Assert.AreEqual(d.irregularitySeed, clone.irregularitySeed);
+            Assert.AreEqual(d.holes.Length, clone.holes.Length);
+            Assert.AreEqual(d.holes[0].spanCorners, clone.holes[0].spanCorners);
+            Assert.AreEqual(d.floorHoles[0].bottomless, clone.floorHoles[0].bottomless);
+            Assert.AreEqual(d.pillars[0].sides, clone.pillars[0].sides);
+            Assert.AreEqual(d.stairs[0].steps, clone.stairs[0].steps);
+            Assert.AreEqual(d.levels.Length, clone.levels.Length);
+            Assert.AreEqual(d.levels[0].height, clone.levels[0].height);
+
+            // Y no solo los campos: el CLON tiene que producir la MISMA planta, que es lo que de
+            // verdad importa para poder seguir editando donde se dejó.
+            Assert.Less(ContourDiff(d.InnerContour(), clone.InnerContour()), 1e-4f,
+                "the clone's plan drifted from the original");
+
+            // Sin AssertRoom: hay escaleras, y sus peldaños se tocan entre sí por construcción
+            // (ver los tests de niveles de más arriba) — no es lo que este test comprueba.
+            var m = RoomMeshBuilder.Build(clone);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "round-tripped clone: triangulation fell back");
+            Assert.IsTrue(WindingOk(m, out int bw), $"round-tripped clone: {bw} triangles face the wrong way");
+        }
     }
 }
