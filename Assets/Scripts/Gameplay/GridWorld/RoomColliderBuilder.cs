@@ -56,7 +56,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (len < 1e-4f) continue;
 
                 Vector2 dir = (p1 - p0) / len;
-                Vector2 nrm = OutwardNormal(p0, p1);
+                Vector2 nrm = RoomDefinition.OutwardNormal(p0, p1);
                 float yaw = Mathf.Atan2(-dir.y, dir.x) * Mathf.Rad2Deg;
 
                 CollectHoles(def, i, n, len, yFloor, yCeil, holes);
@@ -218,15 +218,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (u > holes[i].u0 && u < holes[i].u1 && y > holes[i].y0 && y < holes[i].y1)
                     return true;
             return false;
-        }
-
-        /// <summary>Normal exterior de la arista, comprobada contra el centro en vez de deducida
-        /// del sentido de giro — misma disciplina que el generador de malla.</summary>
-        private static Vector2 OutwardNormal(Vector2 p0, Vector2 p1)
-        {
-            var nrm = new Vector2(p1.y - p0.y, -(p1.x - p0.x)).normalized;
-            Vector2 mid = (p0 + p1) * 0.5f;
-            return Vector2.Dot(nrm, mid) < 0f ? -nrm : nrm;
         }
 
         private static Bounds XZBounds(Vector2[] poly)

@@ -203,8 +203,15 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public float u0, u1, y0, y1;
             public int bars;
 
+            /// <summary>
+            /// Solape O CONTACTO. La tolerancia no es paranoia numérica: dos aberturas que se
+            /// tocan justo en el borde dejarían entre ellas un machón de grosor cero, y ahí las
+            /// dos jambas caen una encima de otra. Un pilar de 0 mm no es geometría — si las has
+            /// puesto pegadas, lo que quieres es una abertura más ancha.
+            /// </summary>
             public bool Overlaps(HoleRect o) =>
-                u0 < o.u1 && o.u0 < u1 && y0 < o.y1 && o.y0 < y1;
+                u0 <= o.u1 + 1e-4f && o.u0 <= u1 + 1e-4f
+                && y0 <= o.y1 + 1e-3f && o.y0 <= y1 + 1e-3f;
         }
 
         /// <summary>
@@ -489,37 +496,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
+        /// Normal EXTERIOR de la arista p0→p1, deducida del sentido de giro del contorno.
+        ///
+        /// Todo contorno de este generador es ANTIHORARIO, así que el interior queda siempre a la
+        /// izquierda de cada arista y la normal exterior es su perpendicular derecha. Punto.
+        ///
+        /// Antes esto se comprobaba contra el CENTRO del polígono, y funcionaba solo por ser
+        /// convexo: en una planta en L el centro puede caer fuera, o en el lado equivocado de un
+        /// entrante, y esa pared se giraría del revés. Deducirlo del giro no tiene ese problema
+        /// y vale para cualquier forma.
+        /// </summary>
+        public static Vector2 OutwardNormal(Vector2 p0, Vector2 p1) =>
+            new Vector2(p1.y - p0.y, -(p1.x - p0.x)).normalized;
+
+        /// <summary>
         /// Contorno EXTERIOR: el interior desplazado <see cref="wallThickness"/> hacia afuera.
         ///
         /// Se desplaza en INGLETE (por la bisectriz, con la longitud corregida por
         /// 1/cos del semiángulo) y no simplemente alejando cada vértice del centro. La
         /// diferencia se ve justo donde más: en una planta rectangular, alejar del centro deja
         /// las esquinas achaflanadas y la pared más fina justo ahí, mientras que el inglete da
-        /// la esquina exacta (a+t, b+t). Vale para plantas convexas, que es lo único que este
-        /// generador produce.
+        /// la esquina exacta (a+t, b+t). El inglete también vale en un vértice entrante (una
+        /// esquina de planta en L), así que esto no exige que la planta sea convexa.
         /// </summary>
         public static Vector2[] OffsetOutward(Vector2[] inner, float thickness)
         {
             int n = inner.Length;
             var outer = new Vector2[n];
 
-            // Normal exterior de cada arista i (de inner[i] a inner[i+1]).
             var edgeN = new Vector2[n];
-            Vector2 centre = Vector2.zero;
-            for (int i = 0; i < n; i++) centre += inner[i];
-            centre /= n;
-
             for (int i = 0; i < n; i++)
-            {
-                Vector2 e = inner[(i + 1) % n] - inner[i];
-                var nrm = new Vector2(e.y, -e.x).normalized;
-                // El sentido de giro del contorno decide el signo; en vez de asumirlo, se
-                // comprueba contra el centro. Así un cambio futuro en InnerContour no invierte
-                // las paredes en silencio.
-                Vector2 mid = (inner[i] + inner[(i + 1) % n]) * 0.5f;
-                if (Vector2.Dot(nrm, mid - centre) < 0f) nrm = -nrm;
-                edgeN[i] = nrm;
-            }
+                edgeN[i] = OutwardNormal(inner[i], inner[(i + 1) % n]);
 
             for (int i = 0; i < n; i++)
             {

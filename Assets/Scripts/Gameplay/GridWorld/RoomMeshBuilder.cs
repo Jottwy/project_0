@@ -255,50 +255,81 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if ((_capRing[i] - prev).sqrMagnitude < 1e-8f) _capRing.RemoveAt(i);
             }
 
-            if (pits == null || pits.Count == 0)
-            {
-                // Sin pozos, abanico desde el centroide: más barato y sin depender del
-                // triangulador. El borde es el mismo `_capRing`, así que las dos rutas cosen
-                // igual con las paredes.
-                Vector2 c = Vector2.zero;
-                for (int i = 0; i < _capRing.Count; i++) c += _capRing[i];
-                c /= Mathf.Max(1, _capRing.Count);
-
-                int centre = _verts.Count;
-                AddVertex(new Vector3(c.x, y, c.y), normal, PlanarUV(c));
-                for (int i = 0; i < _capRing.Count; i++)
-                {
-                    Vector2 a = _capRing[i], b = _capRing[(i + 1) % _capRing.Count];
-                    int ia = _verts.Count;
-                    AddVertex(new Vector3(a.x, y, a.y), normal, PlanarUV(a));
-                    AddVertex(new Vector3(b.x, y, b.y), normal, PlanarUV(b));
-                    Tri(submesh, centre, ia, ia + 1, normal);
-                }
-                return;
-            }
-
             _capHoles.Clear();
-            foreach (var pit in pits) _capHoles.Add(pit);
+            if (pits != null)
+                foreach (var pit in pits) _capHoles.Add(pit);
 
+            // SIEMPRE por el triangulador, tenga pozos o no. Antes había un atajo de abanico
+            // desde el centroide para el caso sin pozos: es más barato, pero solo vale en plantas
+            // CONVEXAS — en una planta en L el abanico cruza por fuera de la sala. Un solo camino
+            // también quita la posibilidad de que las dos rutas cosan distinto con las paredes.
             if (!PolygonTriangulator.Triangulate(_capRing, _capHoles, _triVerts, _triIdx))
             {
                 // RUIDOSO a propósito. Este respaldo dibuja la tapa entera sin recortar, y los
                 // colliders SÍ abren el pozo: el jugador vería suelo sólido y se caería por él.
                 // Estuvo fallando en silencio y por eso pasó desapercibido. Si esto vuelve a
                 // saltar, la incoherencia es el bug, no el respaldo.
-                Debug.LogError("[RoomMeshBuilder] La triangulación del suelo con pozos FALLÓ: la " +
-                               "tapa se dibuja sin recortar, pero la colisión sí abre el hueco. " +
-                               "Malla y colisión NO coinciden — no uses esta sala.");
+                Debug.LogError("[RoomMeshBuilder] La triangulación de la tapa FALLÓ. Si la sala " +
+                               "tiene pozos, la malla los dibuja tapados mientras la colisión los " +
+                               "abre — malla y colisión NO coinciden, no uses esta sala.");
                 TriangulationFailed = true;
-                AddCap(poly, y, normal, submesh, sideCuts);
+                FanCap(y, normal, submesh);
                 return;
             }
 
             int baseIdx = _verts.Count;
             for (int i = 0; i < _triVerts.Count; i++)
                 AddVertex(new Vector3(_triVerts[i].x, y, _triVerts[i].y), normal, PlanarUV(_triVerts[i]));
+
+            // El sentido se decide UNA VEZ para toda la tapa, no triángulo a triángulo.
+            //
+            // El triangulador devuelve todo con el mismo giro, así que la tapa entera va junta.
+            // Y hace falta: los triángulos PLANOS tienen producto vectorial ~0, o sea que la
+            // prueba por triángulo es una moneda al aire con ellos. En una tapa que mira hacia
+            // abajo eso volteaba los triángulos reales y dejaba los planos como estaban — 12
+            // aristas sin pareja, porque justamente los planos son los que sostienen el borde
+            // contra la pared.
+            bool flip = false;
             for (int i = 0; i + 2 < _triIdx.Count; i += 3)
-                Tri(submesh, baseIdx + _triIdx[i], baseIdx + _triIdx[i + 1], baseIdx + _triIdx[i + 2], normal);
+            {
+                Vector3 a = _verts[baseIdx + _triIdx[i]];
+                Vector3 b = _verts[baseIdx + _triIdx[i + 1]];
+                Vector3 c = _verts[baseIdx + _triIdx[i + 2]];
+                Vector3 geo = Vector3.Cross(b - a, c - a);
+                if (geo.sqrMagnitude < 1e-12f) continue;   // plano: no dice nada del sentido
+                flip = Vector3.Dot(geo, normal) < 0f;
+                break;
+            }
+
+            var tris = _tris[submesh];
+            for (int i = 0; i + 2 < _triIdx.Count; i += 3)
+            {
+                int ia = baseIdx + _triIdx[i], ib = baseIdx + _triIdx[i + 1], ic = baseIdx + _triIdx[i + 2];
+                tris.Add(ia);
+                tris.Add(flip ? ic : ib);
+                tris.Add(flip ? ib : ic);
+            }
+        }
+
+        /// <summary>Respaldo: abanico desde el centroide del borde ya construido. Solo correcto en
+        /// plantas convexas, y por eso NO es el camino normal — existe para que un fallo del
+        /// triangulador deje algo dibujado y diagnosticable en vez de un agujero al vacío.</summary>
+        private static void FanCap(float y, Vector3 normal, int submesh)
+        {
+            Vector2 c = Vector2.zero;
+            for (int i = 0; i < _capRing.Count; i++) c += _capRing[i];
+            c /= Mathf.Max(1, _capRing.Count);
+
+            int centre = _verts.Count;
+            AddVertex(new Vector3(c.x, y, c.y), normal, PlanarUV(c));
+            for (int i = 0; i < _capRing.Count; i++)
+            {
+                Vector2 a = _capRing[i], b = _capRing[(i + 1) % _capRing.Count];
+                int ia = _verts.Count;
+                AddVertex(new Vector3(a.x, y, a.y), normal, PlanarUV(a));
+                AddVertex(new Vector3(b.x, y, b.y), normal, PlanarUV(b));
+                Tri(submesh, centre, ia, ia + 1, normal);
+            }
         }
 
         /// <summary>Rectángulos de los pozos, ya girados y engordados <paramref name="grow"/> por
@@ -421,10 +452,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             for (int i = 0; i < raw.Count; i++)
                 if (raw[i] > lo && raw[i] < hi) cuts.Add(raw[i]);
             cuts.Sort();
+            // Tolerancia FISICA (1 mm), no epsilon numerico. Con varios boquetes, dos niveles de
+            // corte pueden caer a decimas de milimetro y generan una franja de pared invisible de
+            // ese grosor: vertices que nadie ve y geometria degenerada. Una sala con 7 huecos
+            // producia una franja de 0,4 mm.
             for (int i = cuts.Count - 1; i > 0; i--)
-                if (cuts[i] - cuts[i - 1] < 1e-5f) cuts.RemoveAt(i);
+                if (cuts[i] - cuts[i - 1] < CutTolerance) cuts.RemoveAt(i);
             return cuts;
         }
+
+        /// <summary>Dos cortes mas juntos que esto son el mismo corte: 1 mm, que es lo mas fino
+        /// que puede llegar a significar algo en una sala de metros.</summary>
+        private const float CutTolerance = 0.001f;
 
         /// <summary>Sublista de <paramref name="cuts"/> recortada a [lo, hi], con los extremos
         /// incluidos — lo que hace que un trozo de jamba corte por los mismos sitios que la
@@ -449,8 +488,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (holes[i].u1 > 0f && holes[i].u1 < 1f) cuts.Add(holes[i].u1);
             }
             cuts.Sort();
+            // En fraccion de pared: la misma idea que CutTolerance, pero u va de 0 a 1 sobre un
+            // lado que suele medir unos metros, asi que 1e-4 ronda el milimetro.
             for (int i = cuts.Count - 1; i > 0; i--)
-                if (cuts[i] - cuts[i - 1] < 1e-5f) cuts.RemoveAt(i);
+                if (cuts[i] - cuts[i - 1] < 1e-4f) cuts.RemoveAt(i);
             return cuts;
         }
 
@@ -502,13 +543,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static void AddPanel(Vector2 p0, Vector2 p1, List<float> uCuts, List<float> vCuts,
             bool inward, List<HoleRect> holes)
         {
-            // Perpendicular al lado. El sentido de giro del contorno decide el signo, así que se
-            // comprueba contra el centro en vez de asumirlo: un cambio futuro en InnerContour no
-            // puede invertir las paredes en silencio.
-            Vector3 e = new Vector3(p1.x - p0.x, 0f, p1.y - p0.y);
-            var nrm = new Vector3(e.z, 0f, -e.x).normalized;
-            Vector2 mid = (p0 + p1) * 0.5f;
-            if (Vector3.Dot(nrm, new Vector3(mid.x, 0f, mid.y)) < 0f) nrm = -nrm;
+            // Del sentido de giro del contorno, no de su centro: en una planta en L el centro
+            // puede caer fuera y esa pared se giraría del revés.
+            Vector2 n2 = RoomDefinition.OutwardNormal(p0, p1);
+            var nrm = new Vector3(n2.x, 0f, n2.y);
             if (inward) nrm = -nrm;
 
             float len = Vector2.Distance(p0, p1);
