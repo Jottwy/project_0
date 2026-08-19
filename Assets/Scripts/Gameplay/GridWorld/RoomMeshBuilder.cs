@@ -738,7 +738,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 {
                     float va = vCuts[vi], vb = vCuts[vi + 1];
                     if (vb - va < 1e-5f) continue;
-                    if (InsideAnyHole(holes, (ua + ub) * 0.5f, (va + vb) * 0.5f)) continue;
+                    if (HoleRect.InsideAny(holes, (ua + ub) * 0.5f, (va + vb) * 0.5f)) continue;
 
                     // Solo la fila de arriba sigue al techo; las de abajo son horizontales.
                     float vbA = vb, vbB = vb;
@@ -1219,14 +1219,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static Vector2 WallUV(float alongMetres, float y) =>
             new Vector2(alongMetres, y) / GridVisualConstants.TileSize;
-
-        private static bool InsideAnyHole(List<HoleRect> holes, float u, float y)
-        {
-            for (int i = 0; i < holes.Count; i++)
-                if (u > holes[i].u0 && u < holes[i].u1 && y > holes[i].y0 && y < holes[i].y1)
-                    return true;
-            return false;
-        }
 
 
         /// <summary>

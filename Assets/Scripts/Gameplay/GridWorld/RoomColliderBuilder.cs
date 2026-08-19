@@ -164,7 +164,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int runStart = -1;
                 for (int ui = 0; ui < uCuts.Count - 1; ui++)
                 {
-                    bool solid = !InsideAnyHole(holes,
+                    bool solid = !HoleRect.InsideAny(holes,
                         (uCuts[ui] + uCuts[ui + 1]) * 0.5f, (ya + yb) * 0.5f);
 
                     if (solid && runStart < 0) runStart = ui;
@@ -238,7 +238,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int runStart = -1;
                 for (int ui = 0; ui < uCuts.Count - 1; ui++)
                 {
-                    bool solid = !InsideAnyHole(holes,
+                    bool solid = !HoleRect.InsideAny(holes,
                         (uCuts[ui] + uCuts[ui + 1]) * 0.5f, (ya + yb) * 0.5f);
                     if (solid && runStart < 0) runStart = ui;
                     bool runEnds = !solid || ui == uCuts.Count - 2;
@@ -275,14 +275,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             for (int i = cuts.Count - 1; i > 0; i--)
                 if (cuts[i] - cuts[i - 1] < eps) cuts.RemoveAt(i);
             return cuts;
-        }
-
-        private static bool InsideAnyHole(List<HoleRect> holes, float u, float y)
-        {
-            for (int i = 0; i < holes.Count; i++)
-                if (u > holes[i].u0 && u < holes[i].u1 && y > holes[i].y0 && y < holes[i].y1)
-                    return true;
-            return false;
         }
 
         private static Bounds XZBounds(Vector2[] poly)

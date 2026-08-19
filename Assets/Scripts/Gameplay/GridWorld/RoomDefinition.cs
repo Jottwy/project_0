@@ -650,6 +650,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public bool Overlaps(HoleRect o) =>
                 u0 <= o.u1 + 1e-4f && o.u0 <= u1 + 1e-4f
                 && y0 <= o.y1 + 1e-3f && o.y0 <= y1 + 1e-3f;
+
+            /// <summary>
+            /// ¿Cae (u, y) en el vacío de alguno de estos boquetes? Vive aquí por el mismo motivo
+            /// que el tipo: la malla decide con esto qué celda de la rejilla se salta y los
+            /// colliders qué tramo NO emiten. Con una copia en cada uno, un cambio de criterio en
+            /// el borde solo en uno de los dos vuelve a abrir el "veo una puerta y me choco".
+            ///
+            /// ESTRICTO en los cuatro bordes: un punto justo en el canto pertenece a la pared, no
+            /// al hueco. Los dos llamadores preguntan por el CENTRO de una celda, y con los cortes
+            /// puestos en los bordes del boquete un centro nunca cae encima de uno.
+            /// </summary>
+            public static bool InsideAny(List<HoleRect> holes, float u, float y)
+            {
+                for (int i = 0; i < holes.Count; i++)
+                    if (u > holes[i].u0 && u < holes[i].u1 && y > holes[i].y0 && y < holes[i].y1)
+                        return true;
+                return false;
+            }
         }
 
         /// <summary>
