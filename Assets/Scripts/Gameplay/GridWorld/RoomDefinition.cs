@@ -165,6 +165,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// <summary>Barrotes que cruzan el hueco. 0 = hueco limpio. Convierte una ventana en
             /// rejilla sin ser un tipo de feature aparte: la abertura ya está, solo se llena.</summary>
             [Range(0, 20)] public int grateBars;
+
+            /// <summary>
+            /// Deja que la abertura DOBLE LA ESQUINA. Con esto puesto, <see cref="width"/> deja de
+            /// medirse sobre la pared y pasa a medirse sobre el CONTORNO: el hueco avanza por el
+            /// perímetro y se lleva por delante los vértices que le queden dentro, así que una
+            /// puerta puede empezar en una pared y salir por la de al lado.
+            ///
+            /// Apagado (lo de siempre) la abertura se recorta contra su propia pared. No es
+            /// timidez: un hueco que se come la esquina deja la pared vecina entera justo ahí, las
+            /// dos aristas dejan de casar y salen 22 aristas abiertas. Encenderlo no levanta esa
+            /// restricción — reparte el hueco en un trozo por pared y quita la jamba solo en las
+            /// esquinas por las que de verdad sigue.
+            ///
+            /// El otro sitio donde hace falta, y no se ve venir: en planta redonda cada faceta
+            /// mide poco más de un metro, así que sin esto NO se puede pedir una puerta de 4 m en
+            /// una rotonda — el recorte contra la faceta se la come.
+            /// </summary>
+            public bool spanCorners;
         }
 
         /// <summary>Una columna dentro de la sala, del suelo al techo.</summary>
@@ -300,6 +318,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public int bars;
 
             /// <summary>
+            /// El borde en <c>u0</c> / <c>u1</c> NO es el final de la abertura: es una esquina por
+            /// la que sigue en la pared vecina. Ese borde no lleva jamba — poner una sería un
+            /// tabique cruzado en mitad del hueco. La jamba de ese lado la pone el trozo de la
+            /// otra pared, y las dos se encuentran exactamente en la arista del inglete.
+            /// </summary>
+            public bool openStart, openEnd;
+
+            /// <summary>
             /// Solape O CONTACTO. La tolerancia no es paranoia numérica: dos aberturas que se
             /// tocan justo en el borde dejarían entre ellas un machón de grosor cero, y ahí las
             /// dos jambas caen una encima de otra. Un pilar de 0 mm no es geometría — si las has
@@ -337,6 +363,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         {
                             u0 = Mathf.Min(rects[i].u0, rects[j].u0),
                             u1 = Mathf.Max(rects[i].u1, rects[j].u1),
+                            // El borde del fundido hereda de QUIEN lo aporta, no del primero: si
+                            // el que llega más a la izquierda venía doblando una esquina, el
+                            // fundido sigue doblándola. Copiarlo de rects[i] a secas pondría una
+                            // jamba dentro del hueco de la pared vecina.
+                            openStart = (rects[i].u0 <= rects[j].u0 ? rects[i] : rects[j]).openStart,
+                            openEnd = (rects[i].u1 >= rects[j].u1 ? rects[i] : rects[j]).openEnd,
                             y0 = Mathf.Min(rects[i].y0, rects[j].y0),
                             y1 = Mathf.Max(rects[i].y1, rects[j].y1),
                             // Los barrotes del fundido: si alguno los tenía, el hueco resultante
@@ -347,6 +379,126 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         rects.RemoveAt(j);
                         merged = true;
                     }
+            }
+        }
+
+        /// <summary>
+        /// Todos los boquetes resueltos contra la planta y repartidos por pared: de "una puerta de
+        /// 1,6 m centrada en la pared 0" a la fracción 0..1 y los metros de altura que usan la
+        /// malla y los colliders.
+        ///
+        /// Vive aquí y no en cada generador porque lo piden LOS DOS, y cuando eran dos copias del
+        /// mismo bucle cualquier arreglo tenía que aplicarse dos veces o el juego dibujaba una
+        /// puerta contra la que te chocas.
+        /// </summary>
+        /// <param name="yCeilCap">Techo efectivo para recortar la altura. La malla pasa el techo
+        /// MÁS BAJO menos un dintel mínimo, no la altura nominal: la fila superior de la pared es
+        /// la que se estira con la pendiente y un hueco dentro de ella se estiraría con ella.</param>
+        public void ResolveHoles(Vector2[] inner, float yFloor, float yCeilCap, List<HoleRect>[] perSide)
+        {
+            int n = inner.Length;
+            for (int i = 0; i < n; i++) perSide[i].Clear();
+            if (holes == null) return;
+
+            var len = new float[n];
+            var startAt = new float[n];
+            float perim = 0f;
+            for (int i = 0; i < n; i++)
+            {
+                startAt[i] = perim;
+                len[i] = Vector2.Distance(inner[i], inner[(i + 1) % n]);
+                perim += len[i];
+            }
+            if (perim < 1e-4f) return;
+
+            float t = Mathf.Max(0.001f, wallThickness);
+
+            foreach (var hole in holes)
+            {
+                if (hole == null) continue;
+                if (hole.width <= 0.001f || hole.height <= 0.001f) continue;
+                // El índice de lado se envuelve, así que bajar `sides` reubica los huecos en vez
+                // de perderlos.
+                int side = ((hole.side % n) + n) % n;
+                if (len[side] < 1e-4f) continue;
+
+                float y0 = Mathf.Clamp(hole.baseY, yFloor, yCeilCap);
+                float y1 = Mathf.Clamp(hole.baseY + hole.height, yFloor, yCeilCap);
+                if (y1 - y0 < 1e-4f) continue;
+
+                if (!hole.spanCorners)
+                {
+                    // Recortado contra los bordes de SU pared: un hueco más ancho que ella se
+                    // queda en la pared entera en vez de desbordarse a la vecina.
+                    float m = Mathf.Clamp(t / len[side], 0.001f, 0.45f);
+                    float half = hole.width * 0.5f / len[side];
+                    float a = Mathf.Clamp(hole.along - half, m, 1f - m);
+                    float b = Mathf.Clamp(hole.along + half, m, 1f - m);
+                    if (b - a < 1e-4f) continue;
+                    perSide[side].Add(new HoleRect
+                    {
+                        u0 = a, u1 = b, y0 = y0, y1 = y1, bars = hole.grateBars,
+                    });
+                    continue;
+                }
+
+                float centre = startAt[side] + Mathf.Clamp01(hole.along) * len[side];
+                // Un arco no puede dar la vuelta entera: queda siempre macizo el grosor de un muro
+                // a cada lado. Sin este tope, una anchura absurda deja una sala sin ninguna pared
+                // y ya no hay dónde apoyar las jambas.
+                float halfArc = Mathf.Min(hole.width * 0.5f, (perim - 2f * t) * 0.5f);
+                if (halfArc <= 1e-4f) continue;
+
+                AddArc(len, startAt, perim, t, centre - halfArc, centre + halfArc,
+                    y0, y1, hole.grateBars, perSide);
+            }
+
+            for (int i = 0; i < n; i++) MergeOverlapping(perSide[i]);
+        }
+
+        /// <summary>
+        /// Reparte un arco del contorno en un trozo por pared. Los bordes interiores del reparto
+        /// —los que caen justo en una esquina— se marcan como abiertos: por ahí la abertura sigue,
+        /// y quien pusiera una jamba estaría cerrando el hueco por la mitad.
+        ///
+        /// Los bordes LIBRES sí se recortan contra su pared, igual que un boquete normal: si el
+        /// arco termina a un milímetro de la esquina, sin recorte quedaría un machón de un
+        /// milímetro, que no es un pilar sino una astilla.
+        /// </summary>
+        private static void AddArc(float[] len, float[] startAt, float perim, float t,
+            float s0, float s1, float y0, float y1, int bars, List<HoleRect>[] perSide)
+        {
+            int n = len.Length;
+            float span = s1 - s0;
+            s0 -= Mathf.Floor(s0 / perim) * perim;      // a [0, perim)
+            s1 = s0 + span;
+
+            // Dos vueltas al contorno: el arco puede cruzar el punto donde el contorno cierra, y
+            // ahí el segundo trozo tiene arclength mayor que el perímetro.
+            for (int k = 0; k < n * 2; k++)
+            {
+                int i = k % n;
+                if (len[i] < 1e-4f) continue;
+                float a0 = startAt[i] + (k >= n ? perim : 0f);
+                float a1 = a0 + len[i];
+
+                float lo = Mathf.Max(s0, a0), hi = Mathf.Min(s1, a1);
+                if (hi - lo < 1e-5f) continue;
+
+                bool openA = s0 < a0 - 1e-5f;   // el arco venía de la pared anterior
+                bool openB = s1 > a1 + 1e-5f;   // y sigue en la siguiente
+
+                float ua = (lo - a0) / len[i], ub = (hi - a0) / len[i];
+                float m = Mathf.Clamp(t / len[i], 0.001f, 0.45f);
+                if (!openA) ua = Mathf.Clamp(ua, m, 1f - m);
+                if (!openB) ub = Mathf.Clamp(ub, m, 1f - m);
+                if (ub - ua < 1e-4f) continue;
+
+                perSide[i].Add(new HoleRect
+                {
+                    u0 = ua, u1 = ub, y0 = y0, y1 = y1, bars = bars,
+                    openStart = openA, openEnd = openB,
+                });
             }
         }
 

@@ -79,6 +79,120 @@ namespace BackroomsSurvival.Tests
             AssertRoom("oversized hole clamps", d);
         }
 
+        // ── boquetes que doblan la esquina ───────────────────────────────────
+
+        /// <summary>
+        /// Con <c>spanCorners</c>, una abertura centrada en una esquina se lleva por delante el
+        /// vértice y sale por las dos paredes. Se comprueba contra la COLISIÓN y no contra el
+        /// número de trozos: lo que importa es que se pueda pasar por los dos lados del rincón,
+        /// no cómo esté repartido por dentro.
+        /// </summary>
+        [Test]
+        public void Corner_door_opens_both_walls()
+        {
+            var d = Box(4, 4);
+            d.holes = new[] { Door(0, 1f) };          // centrada justo en la esquina 0-1
+            d.holes[0].width = 4f;
+            d.holes[0].spanCorners = true;
+            AssertRoom("corner door", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 a = WallMid(d, 0, 0.95f), b = WallMid(d, 1, 0.05f);
+            Assert.IsFalse(Inside(cb, new Vector3(a.x, 1.2f, a.y)), "the first wall stayed solid");
+            Assert.IsFalse(Inside(cb, new Vector3(b.x, 1.2f, b.y)), "the second wall stayed solid");
+        }
+
+        /// <summary>Sin el mando, esos mismos dos puntos siguen siendo muro: encenderlo es lo que
+        /// cambia el resultado, no la anchura.</summary>
+        [Test]
+        public void Without_spanCorners_the_same_door_stays_on_its_wall()
+        {
+            var d = Box(4, 4);
+            d.holes = new[] { Door(0, 1f) };
+            d.holes[0].width = 4f;
+            AssertRoom("wide door, one wall", d);
+
+            // La pared VECINA es la que separa los dos comportamientos. La propia no sirve de
+            // prueba: la puerta está en ella de las dos maneras.
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 b = WallMid(d, 1, 0.05f);
+            Assert.IsTrue(Inside(cb, new Vector3(b.x, 1.2f, b.y)), "it spilled onto the next wall");
+        }
+
+        /// <summary>
+        /// El caso que motivó todo esto y no se ve venir: en una rotonda cada faceta mide poco
+        /// más de un metro, así que una puerta de 4 m recortada contra su faceta desaparecería.
+        /// </summary>
+        [Test]
+        public void Wide_door_on_a_rotunda()
+        {
+            // 10 m de diámetro entre 16 facetas: cada una mide menos de 2 m, así que una puerta
+            // de 4 m NO cabe en ninguna. En una rotonda de 25 m la faceta ya mide casi 5 m y el
+            // caso deja de probar nada — la primera versión de este test se equivocó justo ahí.
+            var d = new RoomDefinition { tilesX = 2, tilesZ = 2, sides = 16, squareness = 0f, heightMeters = 4f };
+            d.holes = new[] { Door(0, 0.5f) };
+            d.holes[0].width = 4f;
+            d.holes[0].spanCorners = true;
+            AssertRoom("wide door on a rotunda", d);
+
+            // Tres facetas seguidas abiertas: la del centro y sus dos vecinas.
+            var cb = RoomColliderBuilder.Build(d);
+            foreach (int side in new[] { 15, 0, 1 })
+            {
+                Vector2 p = WallMid(d, side, 0.5f);
+                Assert.IsFalse(Inside(cb, new Vector3(p.x, 1.2f, p.y)), $"facet {side} stayed solid");
+            }
+        }
+
+        /// <summary>Una abertura más ancha que el perímetro dejaría la sala sin ninguna pared —
+        /// y sin pared no hay dónde apoyar las jambas.</summary>
+        [Test]
+        public void Arc_wider_than_the_room_clamps()
+        {
+            var d = Box(2, 2);
+            d.holes = new[] { Door(0, 0.5f) };
+            d.holes[0].width = 999f;
+            d.holes[0].spanCorners = true;
+            AssertRoom("arc wider than the room", d);
+        }
+
+        /// <summary>Una esquina ENTRANTE dobla al revés: el inglete del muro se pliega hacia
+        /// dentro y las dos jambas se encuentran por el otro lado.</summary>
+        [Test]
+        public void Corner_door_on_a_concave_corner()
+        {
+            var d = Blocks(6, 5, new RoomDefinition.Notch { tileX = 3, tileZ = 3, tilesX = 3, tilesZ = 2 });
+            var inner = d.InnerContour();
+            // El rincón entrante de una L es el único vértice con giro de signo contrario.
+            int reflex = -1;
+            for (int i = 0; i < inner.Length && reflex < 0; i++)
+            {
+                Vector2 u = inner[(i + 1) % inner.Length] - inner[i];
+                Vector2 v = inner[(i + 2) % inner.Length] - inner[(i + 1) % inner.Length];
+                if (u.x * v.y - u.y * v.x < 0f) reflex = (i + 1) % inner.Length;
+            }
+            Assert.GreaterOrEqual(reflex, 0, "the L has no re-entrant corner");
+
+            d.holes = new[] { Door(reflex - 1, 1f) };
+            d.holes[0].width = 4f;
+            d.holes[0].spanCorners = true;
+            AssertRoom("corner door on a concave corner", d);
+        }
+
+        /// <summary>Doblando la esquina y con el techo en pendiente a la vez: el recorte de altura
+        /// se aplica trozo a trozo, y cada trozo cae bajo una parte distinta del techo.</summary>
+        [Test]
+        public void Corner_door_under_a_tilted_ceiling()
+        {
+            var d = Box(6, 5);
+            d.ceilingTilt = 22f;
+            d.holes = new[] { Door(0, 1f) };
+            d.holes[0].width = 5f;
+            d.holes[0].height = 3.5f;
+            d.holes[0].spanCorners = true;
+            AssertRoom("corner door under a tilted ceiling", d);
+        }
+
         [Test]
         public void Grate_fills_the_opening()
         {

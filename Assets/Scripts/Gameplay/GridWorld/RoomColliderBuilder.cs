@@ -47,7 +47,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddCeilingSlab(boxes, def, bb, t);
 
             int n = inner.Length;
-            var holes = new List<HoleRect>();
+            // La MISMA resolución que usa la malla, no una copia: cuando eran dos bucles gemelos,
+            // cualquier arreglo había que aplicarlo dos veces, y olvidarse de uno es exactamente
+            // el fallo de "veo una puerta y me choco contra ella".
+            var sideHoles = new List<HoleRect>[n];
+            for (int i = 0; i < n; i++) sideHoles[i] = new List<HoleRect>();
+            def.ResolveHoles(inner, yFloor, yCeil, sideHoles);
+
             for (int i = 0; i < n; i++)
             {
                 Vector2 p0 = inner[i], p1 = inner[(i + 1) % n];
@@ -58,8 +64,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 Vector2 nrm = RoomDefinition.OutwardNormal(p0, p1);
                 float yaw = Mathf.Atan2(-dir.y, dir.x) * Mathf.Rad2Deg;
 
-                CollectHoles(def, i, n, len, yFloor, yCeil, holes);
-                AddWallBoxes(boxes, p0, p1, dir, nrm, yaw, len, t, yFloor, yCeil, holes);
+                AddWallBoxes(boxes, p0, p1, dir, nrm, yaw, len, t, yFloor, yCeil, sideHoles[i]);
             }
 
             if (def.pillars != null)
@@ -162,37 +167,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             Vector2 mid = Vector2.Lerp(p0, p1, (ua + ub) * 0.5f) + nrm * (t * 0.5f);
             into.Add(Box(new Vector3(mid.x, (ya + yb) * 0.5f, mid.y),
                 new Vector3((ub - ua) * len, yb - ya, t), yaw));
-        }
-
-        private static void CollectHoles(RoomDefinition def, int side, int sides, float len,
-            float yFloor, float yCeil, List<HoleRect> into)
-        {
-            into.Clear();
-            if (def.holes == null) return;
-
-            foreach (var hole in def.holes)
-            {
-                if (hole == null) continue;
-                if (((hole.side % sides) + sides) % sides != side) continue;
-                if (hole.width <= 0.001f || hole.height <= 0.001f) continue;
-
-                // El hueco NO puede llegar al final de la pared: si se come la esquina, la
-                // pared vecina sigue entera justo ahi y las dos aristas dejan de casar -- 22
-                // aristas abiertas en una sala aleatoria que pidio una ventana mas ancha que su
-                // muro. Se reserva una jamba de al menos el grosor del muro en cada extremo,
-                // que ademas es lo que tiene sentido constructivo.
-                float margin = Mathf.Clamp(def.wallThickness / len, 0.001f, 0.45f);
-                float half = hole.width * 0.5f / len;
-                float u0 = Mathf.Clamp(hole.along - half, margin, 1f - margin);
-                float u1 = Mathf.Clamp(hole.along + half, margin, 1f - margin);
-                float v0 = Mathf.Clamp(hole.baseY, yFloor, yCeil);
-                float v1 = Mathf.Clamp(hole.baseY + hole.height, yFloor, yCeil);
-                if (u1 - u0 < 1e-4f || v1 - v0 < 1e-4f) continue;
-
-                into.Add(new HoleRect { u0 = u0, u1 = u1, y0 = v0, y1 = v1, bars = hole.grateBars });
-            }
-
-            RoomDefinition.MergeOverlapping(into);
         }
 
         private static List<float> Cuts(float lo, float hi, List<HoleRect> holes, bool horizontal)

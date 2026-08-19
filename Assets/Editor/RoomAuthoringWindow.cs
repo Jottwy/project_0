@@ -620,8 +620,8 @@ namespace BackroomsSurvival.EditorTools
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
                     string kind = hole.grateBars > 0 ? "grate" : hole.baseY <= 0.01f ? "door" : "window";
-                    if (!ItemHeader(ref _def.holes, i, "h",
-                            $"#{i}  {kind} on wall {hole.side}")) continue;
+                    string where = hole.spanCorners ? $"from wall {hole.side}" : $"on wall {hole.side}";
+                    if (!ItemHeader(ref _def.holes, i, "h", $"#{i}  {kind} {where}")) continue;
 
                     hole.side = EditorGUILayout.IntSlider(
                         new GUIContent("Wall"), hole.side, 0, Mathf.Max(0, _def.sides - 1));
@@ -633,6 +633,13 @@ namespace BackroomsSurvival.EditorTools
                         hole.baseY);
                     hole.width = EditorGUILayout.FloatField(new GUIContent("Width (m)"), hole.width);
                     hole.height = EditorGUILayout.FloatField(new GUIContent("Height (m)"), hole.height);
+                    hole.spanCorners = EditorGUILayout.Toggle(
+                        new GUIContent("Turn corners",
+                            "Deja que la abertura doble la esquina y salga por la pared de al "
+                            + "lado. Con esto el ancho se mide sobre el contorno, no sobre una "
+                            + "pared: es la unica forma de pedir una puerta ancha en una planta "
+                            + "redonda, donde cada faceta mide poco mas de un metro."),
+                        hole.spanCorners);
                     hole.grateBars = EditorGUILayout.IntSlider(
                         new GUIContent("Grate bars", "0 = open hole. Above that it fills with bars."),
                         hole.grateBars, 0, 20);

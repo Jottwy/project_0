@@ -87,20 +87,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             float minCeil = def.MinCeilingOver(inner);
             var sideHoles = new List<HoleRect>[n];
             var sideCuts = new List<float>[n];
-            for (int i = 0; i < n; i++)
-            {
-                sideHoles[i] = new List<HoleRect>();
-                // Contra el techo MAS BAJO menos un dintel minimo, no contra la altura nominal.
-                //
-                // Dos razones. Con el techo inclinado una ventana alta en el lado bajo asomaria
-                // por encima del techo. Y sobre todo: la fila SUPERIOR de la pared es la que se
-                // estira para seguir la pendiente, asi que un hueco que la alcanzase se estiraria
-                // con ella y una ventana se convertiria en una ranura abierta hasta el techo --
-                // 6 aristas abiertas, y en pantalla una sala sin dintel.
-                CollectHoles(def, i, Vector2.Distance(inner[i], inner[(i + 1) % n]),
-                    yFloor, minCeil - MinLintel, sideHoles[i]);
-                sideCuts[i] = UCuts(sideHoles[i]);
-            }
+            for (int i = 0; i < n; i++) sideHoles[i] = new List<HoleRect>();
+
+            // Contra el techo MAS BAJO menos un dintel minimo, no contra la altura nominal.
+            //
+            // Dos razones. Con el techo inclinado una ventana alta en el lado bajo asomaria por
+            // encima del techo. Y sobre todo: la fila SUPERIOR de la pared es la que se estira
+            // para seguir la pendiente, asi que un hueco que la alcanzase se estiraria con ella y
+            // una ventana se convertiria en una ranura abierta hasta el techo -- 6 aristas
+            // abiertas, y en pantalla una sala sin dintel.
+            def.ResolveHoles(inner, yFloor, minCeil - MinLintel, sideHoles);
+
+            for (int i = 0; i < n; i++) sideCuts[i] = UCuts(sideHoles[i]);
 
             // Los mismos cortes, expresados sobre la cara EXTERIOR. Hace falta porque esa cara es
             // más larga que la interior: reusar la misma fracción ensancharía el hueco por fuera
@@ -472,10 +470,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 for (int k = 0; k < holes.Count; k++)
                     _holesOut.Add(new HoleRect
                     {
-                        u0 = MapU(holes[k].u0, i0, i1, o0, o1),
-                        u1 = MapU(holes[k].u1, i0, i1, o0, o1),
+                        u0 = MapUEnds(holes[k].u0, i0, i1, o0, o1),
+                        u1 = MapUEnds(holes[k].u1, i0, i1, o0, o1),
                         y0 = holes[k].y0,
                         y1 = holes[k].y1,
+                        openStart = holes[k].openStart,
+                        openEnd = holes[k].openEnd,
                     });
 
                 AddPanel(i0, i1, uCuts, innerYCuts, inward: true, holes, ceilAt);
@@ -544,43 +544,6 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return cuts;
         }
 
-        /// <summary>
-        /// Boquetes de un lado, ya convertidos de "metros de ancho centrados en `along`" a la
-        /// fracción 0..1 que usa la malla, y RECORTADOS contra los bordes de la pared: un hueco
-        /// más ancho que su pared se queda en la pared entera en vez de desbordarse a la vecina.
-        /// El índice de lado se envuelve, así que bajar `sides` reubica los huecos en vez de
-        /// perderlos.
-        /// </summary>
-        private static void CollectHoles(RoomDefinition def, int side, float length,
-            float yFloor, float yCeil, List<HoleRect> into)
-        {
-            if (def.holes == null || length < 1e-4f) return;
-            int n = Mathf.Clamp(def.sides, RoomDefinition.MinSides, RoomDefinition.MaxSides);
-
-            foreach (var hole in def.holes)
-            {
-                if (hole == null) continue;
-                if (((hole.side % n) + n) % n != side) continue;
-                if (hole.width <= 0.001f || hole.height <= 0.001f) continue;
-
-                // El hueco NO puede llegar al final de la pared: si se come la esquina, la
-                // pared vecina sigue entera justo ahi y las dos aristas dejan de casar -- 22
-                // aristas abiertas en una sala aleatoria que pidio una ventana mas ancha que su
-                // muro. Se reserva una jamba de al menos el grosor del muro en cada extremo,
-                // que ademas es lo que tiene sentido constructivo.
-                float margin = Mathf.Clamp(def.wallThickness / length, 0.001f, 0.45f);
-                float half = hole.width * 0.5f / length;
-                float u0 = Mathf.Clamp(hole.along - half, margin, 1f - margin);
-                float u1 = Mathf.Clamp(hole.along + half, margin, 1f - margin);
-                float v0 = Mathf.Clamp(hole.baseY, yFloor, yCeil);
-                float v1 = Mathf.Clamp(hole.baseY + hole.height, yFloor, yCeil);
-                if (u1 - u0 < 1e-4f || v1 - v0 < 1e-4f) continue;
-
-                into.Add(new HoleRect { u0 = u0, u1 = u1, y0 = v0, y1 = v1, bars = hole.grateBars });
-            }
-
-            RoomDefinition.MergeOverlapping(into);
-        }
 
         /// <summary>
         /// Una cara de pared con sus huecos. En vez de partir el rectángulo en los 4 trozos que
@@ -652,8 +615,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 float ua = _jambCuts[k], ub = _jambCuts[k + 1];
                 if (ub - ua < 1e-5f) continue;
                 Vector2 ia = Vector2.Lerp(i0, i1, ua), ib = Vector2.Lerp(i0, i1, ub);
-                Vector2 oa = Vector2.Lerp(o0, o1, MapU(ua, i0, i1, o0, o1));
-                Vector2 ob = Vector2.Lerp(o0, o1, MapU(ub, i0, i1, o0, o1));
+                Vector2 oa = Vector2.Lerp(o0, o1, MapUEnds(ua, i0, i1, o0, o1));
+                Vector2 ob = Vector2.Lerp(o0, o1, MapUEnds(ub, i0, i1, o0, o1));
 
                 Quad(SubmeshWall, V(ia, hr.y0), V(ib, hr.y0), V(ob, hr.y0), V(oa, hr.y0), Vector3.up);
                 Quad(SubmeshWall, V(ia, hr.y1), V(ib, hr.y1), V(ob, hr.y1), V(oa, hr.y1), Vector3.down);
@@ -662,15 +625,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Los dos costados, partidos por los cortes de altura por el mismo motivo.
             SubCuts(yCuts, hr.y0, hr.y1, _jambCuts);
             Vector2 sa = Vector2.Lerp(i0, i1, hr.u0), sb = Vector2.Lerp(i0, i1, hr.u1);
-            Vector2 ta = Vector2.Lerp(o0, o1, MapU(hr.u0, i0, i1, o0, o1));
-            Vector2 tb = Vector2.Lerp(o0, o1, MapU(hr.u1, i0, i1, o0, o1));
+            Vector2 ta = Vector2.Lerp(o0, o1, MapUEnds(hr.u0, i0, i1, o0, o1));
+            Vector2 tb = Vector2.Lerp(o0, o1, MapUEnds(hr.u1, i0, i1, o0, o1));
             for (int k = 0; k < _jambCuts.Count - 1; k++)
             {
                 float va = _jambCuts[k], vb = _jambCuts[k + 1];
                 if (vb - va < 1e-5f) continue;
 
-                Quad(SubmeshWall, V(sa, va), V(sa, vb), V(ta, vb), V(ta, va), along);
-                Quad(SubmeshWall, V(sb, va), V(sb, vb), V(tb, vb), V(tb, va), -along);
+                // Un costado que cae en una esquina por la que la abertura SIGUE no se emite:
+                // ahí no hay canto que forrar, hay hueco. El que lo emitiera estaría cerrando la
+                // puerta por la mitad con un tabique del grosor del muro. Los dos alféizares se
+                // encuentran solos en la arista del inglete, que es la misma para las dos paredes.
+                if (!hr.openStart) Quad(SubmeshWall, V(sa, va), V(sa, vb), V(ta, vb), V(ta, va), along);
+                if (!hr.openEnd) Quad(SubmeshWall, V(sb, va), V(sb, vb), V(tb, vb), V(tb, va), -along);
             }
         }
 
@@ -803,6 +770,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             float len2 = dir.sqrMagnitude;
             if (len2 < 1e-8f) return u;
             return Mathf.Clamp01(Vector2.Dot(Vector2.Lerp(i0, i1, u) - o0, dir) / len2);
+        }
+
+        /// <summary>
+        /// Como <see cref="MapU"/>, pero los EXTREMOS se quedan en 0 y en 1 en vez de proyectarse.
+        ///
+        /// Por el inglete, la cara exterior sobresale de la interior en las esquinas, así que
+        /// proyectar el extremo de la pared cae ANTES del vértice exterior. Mientras ningún hueco
+        /// llegaba a la esquina daba igual; en cuanto una abertura la dobla, su alféizar terminaba
+        /// unos centímetros antes que el de la pared vecina y quedaba una ranura justo en el
+        /// rincón — 12 aristas abiertas por esquina doblada. Los paneles ya lo hacían así; esto
+        /// pone a la jamba en el mismo convenio.
+        /// </summary>
+        private static float MapUEnds(float u, Vector2 i0, Vector2 i1, Vector2 o0, Vector2 o1)
+        {
+            if (u <= 1e-6f) return 0f;
+            if (u >= 1f - 1e-6f) return 1f;
+            return MapU(u, i0, i1, o0, o1);
         }
 
         private static readonly List<float> _jambCuts = new List<float>();
