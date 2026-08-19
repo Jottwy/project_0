@@ -28,6 +28,68 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float heightMeters = 4f;
 
         /// <summary>
+        /// Cuánto se inclina el techo, en grados. 0 = plano, y entonces todo se comporta como
+        /// antes. Es lo que separa una nave de un desván o un semisótano.
+        /// </summary>
+        [Range(0f, 40f)] public float ceilingTilt;
+
+        /// <summary>Hacia dónde BAJA el techo.</summary>
+        public float ceilingTiltYaw;
+
+        /// <summary>Nunca menos que esto, por muy inclinado que esté: un techo que corta el suelo
+        /// deja la sala partida por dentro y sin forma de saber por qué.</summary>
+        public const float MinCeilingHeight = 1.2f;
+
+        /// <summary>
+        /// Altura del techo sobre el punto <paramref name="p"/> (XZ, relativo al centro de la
+        /// sala). Con <see cref="ceilingTilt"/> a 0 devuelve <see cref="heightMeters"/> y punto.
+        ///
+        /// La inclinación PIVOTA sobre el centro, así que subir el mando no sube ni baja la sala:
+        /// un lado gana lo que el otro pierde y <see cref="heightMeters"/> sigue siendo la altura
+        /// media. Inclinar desde una esquina obligaría a recolocar la altura cada vez.
+        /// </summary>
+        public float CeilingYAt(Vector2 p)
+        {
+            if (ceilingTilt <= 0.001f) return heightMeters;
+            float r = ceilingTiltYaw * Mathf.Deg2Rad;
+            var down = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+            return heightMeters - EffectiveTilt() * Vector2.Dot(p, down);
+        }
+
+        /// <summary>
+        /// La pendiente REAL, limitada para que el punto mas bajo del techo no baje de
+        /// <see cref="MinCeilingHeight"/>.
+        ///
+        /// Se limita la PENDIENTE y no la altura punto a punto, y la diferencia importa: recortar
+        /// cada punto por separado aplana un lado y el techo deja de ser un plano, asi que el
+        /// estirado de textura de la pendiente ya no corresponde y la trama se rompe justo en la
+        /// zona aplanada. Limitando la pendiente el techo sigue siendo un plano entero.
+        /// </summary>
+        private float EffectiveTilt()
+        {
+            float want = Mathf.Tan(ceilingTilt * Mathf.Deg2Rad);
+            float r = ceilingTiltYaw * Mathf.Deg2Rad;
+            var down = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+            // Lo mas lejos que se puede llegar del centro en la direccion de la caida, contando
+            // el grosor: la cara exterior sobresale del footprint.
+            float reach = Mathf.Abs(down.x) * (WidthMeters * 0.5f + wallThickness)
+                        + Mathf.Abs(down.y) * (DepthMeters * 0.5f + wallThickness);
+            if (reach < 0.01f) return want;
+            float allowed = Mathf.Max(0f, heightMeters - MinCeilingHeight) / reach;
+            return Mathf.Min(want, allowed);
+        }
+
+        /// <summary>El punto más bajo del techo sobre el contorno. Los boquetes se recortan contra
+        /// esto: una ventana que asome por encima del techo en la parte baja seria un agujero al
+        /// vacio.</summary>
+        public float MinCeilingOver(Vector2[] contour)
+        {
+            float lo = float.MaxValue;
+            for (int i = 0; i < contour.Length; i++) lo = Mathf.Min(lo, CeilingYAt(contour[i]));
+            return lo == float.MaxValue ? heightMeters : lo;
+        }
+
+        /// <summary>
         /// Lados del polígono de la planta. 4 = caja; subirlo redondea. Junto a
         /// <see cref="squareness"/> es el mando "más cuadrado ↔ más circular".
         /// </summary>

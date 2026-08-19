@@ -84,13 +84,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // coinciden y quedan T-junctions — 30 aristas sin opuesta en el test, y grietas
             // finas en pantalla. Las dos superficies tienen que cortar por los MISMOS sitios.
             int n = inner.Length;
+            float minCeil = def.MinCeilingOver(inner);
             var sideHoles = new List<HoleRect>[n];
             var sideCuts = new List<float>[n];
             for (int i = 0; i < n; i++)
             {
                 sideHoles[i] = new List<HoleRect>();
+                // Contra el techo MAS BAJO menos un dintel minimo, no contra la altura nominal.
+                //
+                // Dos razones. Con el techo inclinado una ventana alta en el lado bajo asomaria
+                // por encima del techo. Y sobre todo: la fila SUPERIOR de la pared es la que se
+                // estira para seguir la pendiente, asi que un hueco que la alcanzase se estiraria
+                // con ella y una ventana se convertiria en una ranura abierta hasta el techo --
+                // 6 aristas abiertas, y en pantalla una sala sin dintel.
                 CollectHoles(def, i, Vector2.Distance(inner[i], inner[(i + 1) % n]),
-                    yFloor, yCeil, sideHoles[i]);
+                    yFloor, minCeil - MinLintel, sideHoles[i]);
                 sideCuts[i] = UCuts(sideHoles[i]);
             }
 
@@ -124,7 +132,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     yCuts.Add(sideHoles[i][k].y0);
                     yCuts.Add(sideHoles[i][k].y1);
                 }
-            var innerYCuts = LevelCuts(yCuts, yFloor, yCeil);
+            var innerYCuts = LevelCuts(yCuts, yFloor, minCeil);
             var outerYCuts = LevelCuts(yCuts, yBottom, yTop);
 
             // Tapas: los boquetes van en pared, así que suelo y techo no se parten en altura —
@@ -139,17 +147,42 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var pitsIn = PitRects(def, 0f);
             var pitsOut = PitRects(def, t);
 
+            // Techo inclinado: la altura pasa a ser funcion del punto. Con tilt 0 estas dos
+            // funciones devuelven la constante de siempre y no cambia nada.
+            System.Func<Vector2, float> ceilAt = q => def.CeilingYAt(q);
+            System.Func<Vector2, float> topAt = q => def.CeilingYAt(q) + t;
+
+            // UV de una tapa en pendiente: la componente a lo largo de la caida se estira por
+            // 1/cos, que es lo que la superficie real mide de mas respecto a su sombra en planta.
+            // La pendiente REAL de la malla, medida sobre ella misma: pedir 40 grados en una sala
+            // baja da menos, y usar la pedida estiraria la textura de mas.
+            float yawRad0 = def.ceilingTiltYaw * Mathf.Deg2Rad;
+            var down0 = new Vector2(Mathf.Sin(yawRad0), Mathf.Cos(yawRad0));
+            float realTan = def.ceilingTilt <= 0.001f ? 0f
+                : (def.CeilingYAt(-down0) - def.CeilingYAt(down0)) * 0.5f;
+            float slopeStretch = Mathf.Sqrt(1f + realTan * realTan);
+            float yawRad = yawRad0;
+            var slopeDir = new Vector2(Mathf.Sin(yawRad), Mathf.Cos(yawRad));
+            System.Func<Vector2, Vector2> ceilUV = def.ceilingTilt <= 0.001f ? (System.Func<Vector2, Vector2>)null
+                : q =>
+                {
+                    float alongSlope = Vector2.Dot(q, slopeDir) * slopeStretch;
+                    float across = q.x * slopeDir.y - q.y * slopeDir.x;
+                    return new Vector2(across, alongSlope) / GridVisualConstants.TileSize;
+                };
+
             AddCap(outer, yBottom, Vector3.down, SubmeshWall, sideCutsOut, pitsOut);
-            AddCap(outer, yTop, Vector3.up, SubmeshWall, sideCutsOut);
+            AddCap(outer, yTop, Vector3.up, SubmeshWall, sideCutsOut, null, topAt, ceilUV);
             AddCap(inner, yFloor, Vector3.up, SubmeshFloor, sideCuts, pitsIn);
-            AddCap(inner, yCeil, Vector3.down, SubmeshCeiling, sideCuts);
+            AddCap(inner, yCeil, Vector3.down, SubmeshCeiling, sideCuts, null, ceilAt, ceilUV);
             AddPits(def, yFloor, yBottom, t, pitsIn, pitsOut);
 
             // Paredes: cara interior, cara exterior y las jambas que las cosen a través del
             // grosor en cada boquete. Van juntas y no en dos pasadas independientes porque un
             // hueco deja de ser "dos cascarones anidados" y pasa a ser una sola superficie con
             // un túnel — separarlas dejaría el túnel sin cerrar.
-            AddWalls(inner, outer, sideHoles, sideCuts, sideCutsOut, innerYCuts, outerYCuts, t);
+            AddWalls(inner, outer, sideHoles, sideCuts, sideCutsOut, innerYCuts, outerYCuts, t,
+                ceilAt, topAt);
 
             // Columnas: cada una es su propio prisma cerrado dentro de la cavidad, así que no
             // interfieren con la estanqueidad del resto.
@@ -225,9 +258,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <paramref name="sideCuts"/> subdivide cada lado por los mismos sitios que la pared
         /// correspondiente; null (columnas) deja cada lado de una pieza.
         /// </summary>
+        /// <param name="yAt">Altura por punto. Null = plana a <paramref name="y"/>. Es lo que
+        /// deja que el techo se incline sin que la tapa deje de ser la misma triangulacion: la
+        /// planta en XZ no cambia, solo la altura de cada vertice.</param>
         private static void AddCap(Vector2[] poly, float y, Vector3 normal, int submesh,
-            List<float>[] sideCuts = null, List<Vector2[]> pits = null)
+            List<float>[] sideCuts = null, List<Vector2[]> pits = null,
+            System.Func<Vector2, float> yAt = null, System.Func<Vector2, Vector2> uvAt = null)
         {
+            float Y(Vector2 q) => yAt != null ? yAt(q) : y;
+            // Una tapa PLANA se mide en XZ y ya. Una INCLINADA no: recorrerla cuesta mas que su
+            // sombra en planta, asi que medir en XZ comprime la textura cuesta arriba -- un 10 %
+            // a 25 grados. `uvAt` estira la coordenada a lo largo de la pendiente para que la
+            // textura siga midiendo lo mismo sobre la superficie real.
+            Vector2 UV(Vector2 q) => uvAt != null ? uvAt(q) : PlanarUV(q);
             // Borde de la tapa, subdividido igual que la pared que tiene debajo. Se construye
             // siempre, con o sin pozos, para que el borde sea EL MISMO en los dos caminos.
             _capRing.Clear();
@@ -273,13 +316,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                                "tiene pozos, la malla los dibuja tapados mientras la colisión los " +
                                "abre — malla y colisión NO coinciden, no uses esta sala.");
                 TriangulationFailed = true;
-                FanCap(y, normal, submesh);
+                FanCap(Y, UV, normal, submesh);
                 return;
             }
 
             int baseIdx = _verts.Count;
             for (int i = 0; i < _triVerts.Count; i++)
-                AddVertex(new Vector3(_triVerts[i].x, y, _triVerts[i].y), normal, PlanarUV(_triVerts[i]));
+                AddVertex(new Vector3(_triVerts[i].x, Y(_triVerts[i]), _triVerts[i].y), normal, UV(_triVerts[i]));
 
             // El sentido se decide UNA VEZ para toda la tapa, no triángulo a triángulo.
             //
@@ -314,20 +357,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Respaldo: abanico desde el centroide del borde ya construido. Solo correcto en
         /// plantas convexas, y por eso NO es el camino normal — existe para que un fallo del
         /// triangulador deje algo dibujado y diagnosticable en vez de un agujero al vacío.</summary>
-        private static void FanCap(float y, Vector3 normal, int submesh)
+        private static void FanCap(System.Func<Vector2, float> Y, System.Func<Vector2, Vector2> UV,
+            Vector3 normal, int submesh)
         {
             Vector2 c = Vector2.zero;
             for (int i = 0; i < _capRing.Count; i++) c += _capRing[i];
             c /= Mathf.Max(1, _capRing.Count);
 
             int centre = _verts.Count;
-            AddVertex(new Vector3(c.x, y, c.y), normal, PlanarUV(c));
+            AddVertex(new Vector3(c.x, Y(c), c.y), normal, UV(c));
             for (int i = 0; i < _capRing.Count; i++)
             {
                 Vector2 a = _capRing[i], b = _capRing[(i + 1) % _capRing.Count];
                 int ia = _verts.Count;
-                AddVertex(new Vector3(a.x, y, a.y), normal, PlanarUV(a));
-                AddVertex(new Vector3(b.x, y, b.y), normal, PlanarUV(b));
+                AddVertex(new Vector3(a.x, Y(a), a.y), normal, UV(a));
+                AddVertex(new Vector3(b.x, Y(b), b.y), normal, UV(b));
                 Tri(submesh, centre, ia, ia + 1, normal);
             }
         }
@@ -411,7 +455,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// </summary>
         private static void AddWalls(Vector2[] inner, Vector2[] outer, List<HoleRect>[] sideHoles,
             List<float>[] sideCuts, List<float>[] sideCutsOut,
-            List<float> innerYCuts, List<float> outerYCuts, float thickness)
+            List<float> innerYCuts, List<float> outerYCuts, float thickness,
+            System.Func<Vector2, float> ceilAt, System.Func<Vector2, float> topAt)
         {
             int n = inner.Length;
             for (int i = 0; i < n; i++)
@@ -433,8 +478,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         y1 = holes[k].y1,
                     });
 
-                AddPanel(i0, i1, uCuts, innerYCuts, inward: true, holes);
-                AddPanel(o0, o1, uCutsOut, outerYCuts, inward: false, _holesOut);
+                AddPanel(i0, i1, uCuts, innerYCuts, inward: true, holes, ceilAt);
+                AddPanel(o0, o1, uCutsOut, outerYCuts, inward: false, _holesOut, topAt);
 
                 for (int k = 0; k < holes.Count; k++)
                 {
@@ -460,6 +505,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (cuts[i] - cuts[i - 1] < CutTolerance) cuts.RemoveAt(i);
             return cuts;
         }
+
+        /// <summary>Dintel minimo: ningun boquete puede llegar al techo. La fila de arriba de la
+        /// pared es la que sigue a la pendiente, y un hueco dentro de ella se estiraria con ella.</summary>
+        private const float MinLintel = 0.05f;
 
         /// <summary>Dos cortes mas juntos que esto son el mismo corte: 1 mm, que es lo mas fino
         /// que puede llegar a significar algo en una sala de metros.</summary>
@@ -540,8 +589,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// caen dentro de alguno. Así N huecos por pared salen bien, y dos que se solapen
         /// tampoco rompen nada: la celda está dentro de alguno y no se emite, y punto.
         /// </summary>
+        /// <param name="topAt">Altura del REMATE de la pared por punto. Null = plano al último
+        /// corte. Con techo inclinado la fila de arriba deja de ser un rectángulo y pasa a ser un
+        /// trapecio: sus dos esquinas superiores están a alturas distintas. Si el remate no
+        /// siguiera exactamente la misma función que la tapa del techo, quedaría una rendija
+        /// entre pared y techo por toda la sala.</param>
         private static void AddPanel(Vector2 p0, Vector2 p1, List<float> uCuts, List<float> vCuts,
-            bool inward, List<HoleRect> holes)
+            bool inward, List<HoleRect> holes, System.Func<Vector2, float> topAt = null)
         {
             // Del sentido de giro del contorno, no de su centro: en una planta en L el centro
             // puede caer fuera y esa pared se giraría del revés.
@@ -550,24 +604,32 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (inward) nrm = -nrm;
 
             float len = Vector2.Distance(p0, p1);
+            int topRow = vCuts.Count - 2;
             for (int ui = 0; ui < uCuts.Count - 1; ui++)
             {
                 float ua = uCuts[ui], ub = uCuts[ui + 1];
                 if (ub - ua < 1e-5f) continue;
+
+                Vector2 a = Vector2.Lerp(p0, p1, ua);
+                Vector2 b = Vector2.Lerp(p0, p1, ub);
+
                 for (int vi = 0; vi < vCuts.Count - 1; vi++)
                 {
                     float va = vCuts[vi], vb = vCuts[vi + 1];
                     if (vb - va < 1e-5f) continue;
                     if (InsideAnyHole(holes, (ua + ub) * 0.5f, (va + vb) * 0.5f)) continue;
 
-                    Vector2 a = Vector2.Lerp(p0, p1, ua);
-                    Vector2 b = Vector2.Lerp(p0, p1, ub);
+                    // Solo la fila de arriba sigue al techo; las de abajo son horizontales.
+                    float vbA = vb, vbB = vb;
+                    if (topAt != null && vi == topRow) { vbA = topAt(a); vbB = topAt(b); }
+                    if (vbA - va < 1e-5f && vbB - va < 1e-5f) continue;
+
                     Quad(SubmeshWall,
                         new Vector3(a.x, va, a.y), new Vector3(b.x, va, b.y),
-                        new Vector3(b.x, vb, b.y), new Vector3(a.x, vb, a.y),
+                        new Vector3(b.x, vbB, b.y), new Vector3(a.x, vbA, a.y),
                         nrm,
                         WallUV(ua * len, va), WallUV(ub * len, va),
-                        WallUV(ub * len, vb), WallUV(ua * len, vb));
+                        WallUV(ub * len, vbB), WallUV(ua * len, vbA));
                 }
             }
         }

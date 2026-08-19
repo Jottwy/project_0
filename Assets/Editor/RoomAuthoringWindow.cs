@@ -130,6 +130,14 @@ namespace BackroomsSurvival.EditorTools
             _def.wallThickness = EditorGUILayout.FloatField(
                 new GUIContent("Wall Thickness (m)"), _def.wallThickness);
 
+            _def.ceilingTilt = EditorGUILayout.Slider(
+                new GUIContent("Ceiling tilt", "0 = flat. The tilt pivots on the centre, so Height stays the AVERAGE."),
+                _def.ceilingTilt, 0f, 40f);
+            using (new EditorGUI.DisabledScope(_def.ceilingTilt <= 0.001f))
+                _def.ceilingTiltYaw = EditorGUILayout.Slider(
+                    new GUIContent("Tilt facing", "Which way the ceiling drops."),
+                    _def.ceilingTiltYaw, -180f, 180f);
+
             EditorGUILayout.Space();
             _def.planMode = (RoomDefinition.PlanMode)EditorGUILayout.EnumPopup(
                 new GUIContent("Plan", "Polygon = round/boxy convex plans. Blocks = bite tiles out for L / T / U."),

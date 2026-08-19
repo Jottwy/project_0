@@ -44,8 +44,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // tapado por colisión: se vería el pozo y no se podría bajar, que es el peor fallo
             // posible aquí porque el jugador ve una cosa y el juego hace otra.
             AddFloorSlab(boxes, def, bb, t, yBottom, yFloor);
-            boxes.Add(Box(new Vector3(bb.center.x, (yCeil + yTop) * 0.5f, bb.center.z),
-                new Vector3(bb.size.x, t, bb.size.z), 0f));
+            AddCeilingSlab(boxes, def, bb, t);
 
             int n = inner.Length;
             var holes = new List<HoleRect>();
@@ -285,6 +284,54 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     boxes.Add(Box(new Vector3(cx, y, cz),
                         new Vector3(xs[i + 1] - xs[i], t, zs[k + 1] - zs[k]), 0f));
                 }
+        }
+
+        /// <summary>
+        /// La losa del techo. Plana es UNA caja; inclinada se aproxima con una escalera de tiras
+        /// a lo largo de la pendiente.
+        ///
+        /// Escalonada y no una caja girada porque <see cref="RoomPool.CollisionBox"/> solo lleva
+        /// yaw: representar una pendiente pediria pitch, y con el pitch la caja deja de ser
+        /// AABB-en-mundo cuando la sala gira 90 grados, que es justo la propiedad por la que se
+        /// eligieron cajas. Cada tira se coloca a la altura MAS BAJA de su tramo: se choca un
+        /// poco antes de tocar el techo pintado, nunca se atraviesa.
+        /// </summary>
+        private static void AddCeilingSlab(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
+            Bounds bb, float t)
+        {
+            if (def.ceilingTilt <= 0.001f)
+            {
+                float y = def.heightMeters + t * 0.5f;
+                boxes.Add(Box(new Vector3(bb.center.x, y, bb.center.z),
+                    new Vector3(bb.size.x, t, bb.size.z), 0f));
+                return;
+            }
+
+            float r = def.ceilingTiltYaw * Mathf.Deg2Rad;
+            var down = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+            bool alongX = Mathf.Abs(down.x) >= Mathf.Abs(down.y);
+
+            float span = alongX ? bb.size.x : bb.size.z;
+            int steps = Mathf.Clamp(Mathf.CeilToInt(span / 2f), 1, 32);   // una tira cada ~2 m
+            float step = span / steps;
+            float lo = alongX ? bb.min.x : bb.min.z;
+
+            for (int i = 0; i < steps; i++)
+            {
+                float a = lo + i * step, b = a + step;
+                // Lo mas bajo del tramo, muestreando sus dos extremos sobre el eje de la pendiente.
+                Vector2 pa = alongX ? new Vector2(a, bb.center.z) : new Vector2(bb.center.x, a);
+                Vector2 pb = alongX ? new Vector2(b, bb.center.z) : new Vector2(bb.center.x, b);
+                float y = Mathf.Min(def.CeilingYAt(pa), def.CeilingYAt(pb)) + t * 0.5f;
+
+                Vector3 c = alongX
+                    ? new Vector3((a + b) * 0.5f, y, bb.center.z)
+                    : new Vector3(bb.center.x, y, (a + b) * 0.5f);
+                Vector3 size = alongX
+                    ? new Vector3(step, t, bb.size.z)
+                    : new Vector3(bb.size.x, t, step);
+                boxes.Add(Box(c, size, 0f));
+            }
         }
 
         private static void Tidy(List<float> v, float lo, float hi)
