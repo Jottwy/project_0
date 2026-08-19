@@ -3,6 +3,7 @@
 // GridChunkBuilder.cs (raíz), .Placement.cs, .WallVariants.cs y .Tinting.cs.
 // TODOS los campos estáticos (incl. los PropSalt* y _propScratch) viven en el
 // raíz: el orden de inicialización de estáticos entre partials es indefinido.
+using System.Collections.Generic;
 using BackroomsSurvival.Net;
 using UnityEngine;
 
@@ -30,7 +31,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// </summary>
         private static void PlaceProps(Transform parent, byte[,] walls, LayerVisualConfig cfg,
             LayerVisualMaterials mats, int chunkX, int chunkZ, int zoneKind, RoomZoneMsg[] roomZones,
-            OfficeStairs.Plan stairPlan)
+            OfficeStairs.Plan stairPlan, List<RoomPlan> authoredRooms)
         {
             // Catálogo, densidad y tope por zona (OFFICE), con caída a los de la capa. Se
             // resuelve UNA vez por chunk, no por tile: `zone_kind` es constante en todo el
@@ -75,6 +76,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // mismo motivo por el que se excluye un tile con columna, unas líneas
                     // más abajo.
                     if (stairPlan.valid && tx == stairPlan.tx && tz == stairPlan.tz) continue;
+                    // Fase 2: el interior de una sala autorada lo amuebla la propia pieza. Un
+                    // prop procedural ahí se metería dentro de su geometría, exactamente el
+                    // mismo caso que la escalera de arriba. Los hashes de este tile son puros
+                    // (no hay secuencia que desplazar), así que saltar aquí no mueve ni un
+                    // prop de los tiles restantes.
+                    if (authoredRooms != null && IsAuthoredRoomTile(authoredRooms, tx, tz)) continue;
                     if ((walls[tx, tz] & 0x0F) == 0x0F) continue;    // fully enclosed / solid
                     // ADR-033/Pillar: a tile with ANY pillar sub-cell is excluded
                     // outright, not just the sub-cell itself — props spawn at

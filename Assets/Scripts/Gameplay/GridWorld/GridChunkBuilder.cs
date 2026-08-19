@@ -463,6 +463,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // da lo mismo, pero pasarlo evita que un cambio futuro en uno de los dos criterios
             // deje un archivador dentro de la escalera.
             var stairPlan = OfficeStairs.PlanFor(zoneKindQuery, roomZones, walls, chunkX, chunkZ);
+
+            // Fase 2 — salas autoradas. Se PLANIFICAN aquí, antes de los props, por el mismo
+            // motivo que la escalera: los props tienen que ver el espacio ya reservado o
+            // spawnearían dentro de la geometría autorada. Se instancian después del plan
+            // para no meter nada entre el plan y su consumidor.
+            PlanAuthoredRooms(walls, roomZones, chunkX, chunkZ, _roomPlanScratch);
+            if (_roomPlanScratch.Count > 0)
+                PlaceAuthoredRooms(root.transform, _roomPlanScratch);
             if (styled && stairPlan.valid)
             {
                 // Tinte SIN pasar por JitterValue, misma disciplina que PlaceLintels: el
@@ -481,7 +489,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // tiene props". `PlaceProps` resuelve dentro cuál usar de verdad.
             if (styled && cfg.props != null && cfg.props.Length > 0)
                 PlaceProps(root.transform, walls, cfg, mats, chunkX, chunkZ, zoneKindQuery,
-                    roomZones, stairPlan);
+                    roomZones, stairPlan, _roomPlanScratch);
 
             // Enmienda a ADR-081 — el cartel que anuncia que en esta sala se puede construir. Va
             // fuera del gate de `cfg.props` a propósito: los props son decorado y pueden faltar en
@@ -686,6 +694,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private const uint  PropSaltVarA   = 0x56415241U; // "VARA" — type variation (cable len)
         private const uint  PropSaltVarB   = 0x56415242U; // "VARB" — chair tip
         private const uint  PropSaltSide   = 0x53494445U; // "SIDE" — Pieza E, wall to hug
+
+        // ── Fase 2 — salas autoradas (RoomPool) ────────────────────────────────
+        //
+        // Estáticos AQUÍ y no en GridChunkBuilder.AuthoredRooms.cs por la regla del
+        // encabezado de esta clase: el orden de inicialización de estáticos entre ficheros
+        // de un partial es indefinido.
+
+        private const uint RoomSaltPick = 0x524F4F4DU; // "ROOM" — qué sala del pool y con qué giro
+
+        // El pool es un asset OPCIONAL: sin `Resources/Rooms/RoomPool.asset` (o vacío) la
+        // función entera queda inerte y el chunk se construye exactamente como antes de
+        // Fase 2. Se carga una vez por sesión — Resources.Load recorre el índice y esto
+        // corre por chunk. `_roomPoolLoaded` distingue "aún no lo he buscado" de "lo busqué
+        // y no hay", que es el caso normal hasta que se hornee la primera sala.
+        private static RoomPool _roomPool;
+        private static bool _roomPoolLoaded;
+
+        // Scratch de PlanAuthoredRooms/PlaceAuthoredRooms, reutilizado: se construye una
+        // lista por chunk y los chunks se construyen de uno en uno (mismo patrón y misma
+        // no-reentrancia que _propScratch).
+        private static readonly List<RoomPlan> _roomPlanScratch = new List<RoomPlan>();
+        private static readonly List<(int entry, float yaw)> _roomFitScratch
+            = new List<(int, float)>();
 
         // Pieza E — how far from the tile centre a wall-aligned prop backs off, in
         // metres. The wall panel sits at ±Ts/2 (2.5 m), so 1.9 leaves ~0.6 m for the
