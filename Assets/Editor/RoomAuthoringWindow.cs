@@ -93,6 +93,7 @@ namespace BackroomsSurvival.EditorTools
                 }
 
                 DrawLoadButton();
+                DrawEditSelectedButton();
 
                 GUILayout.FlexibleSpace();
                 if (_previewMesh != null)
@@ -138,6 +139,58 @@ namespace BackroomsSurvival.EditorTools
                 }
             }
             menu.ShowAsContext();
+        }
+
+        /// <summary>
+        /// Reanuda la edición de la sala seleccionada (su instancia en escena, o su asset de
+        /// prefab en el Project) sin tener que buscarla a mano en <see cref="DrawLoadButton"/>.
+        /// Clic en la sala, clic aquí -- reusa <see cref="LoadRoom"/> tal cual, así que hereda
+        /// su misma limitación con las salas horneadas a mano.
+        /// </summary>
+        private void DrawEditSelectedButton()
+        {
+            if (!GUILayout.Button("Edit Selected", EditorStyles.toolbarButton, GUILayout.Width(90)))
+                return;
+
+            var source = ResolvePrefabSource(Selection.activeGameObject);
+            var pool = AssetDatabase.LoadAssetAtPath<RoomPool>(PoolPath);
+            var entry = pool != null && pool.rooms != null
+                ? System.Array.Find(pool.rooms, e => e != null && e.prefab == source)
+                : null;
+
+            if (entry == null)
+            {
+                EditorUtility.DisplayDialog("Room Authoring Tool",
+                    "La selección no es una sala de este pool (ni su instancia en escena ni su prefab).",
+                    "OK");
+                return;
+            }
+            if (entry.definition == null)
+            {
+                EditorUtility.DisplayDialog("Room Authoring Tool",
+                    $"'{entry.id}' se horneó a mano (Bake, no Save Room To Pool) -- no tiene " +
+                    "parámetros que traer de vuelta.",
+                    "OK");
+                return;
+            }
+            LoadRoom(entry);
+        }
+
+        /// <summary>
+        /// De cualquier cosa seleccionada (un hijo dentro de la sala, la raíz de la instancia, o
+        /// el propio asset de prefab en el Project) llega al asset de prefab ORIGEN -- el mismo
+        /// objeto que <see cref="RoomPool.RoomEntry.prefab"/> referencia, para poder compararlos
+        /// por igualdad de referencia.
+        /// </summary>
+        private static GameObject ResolvePrefabSource(GameObject go)
+        {
+            if (go == null) return null;
+            if (PrefabUtility.IsPartOfPrefabAsset(go))
+                return go.transform.root.gameObject;
+
+            var outermost = PrefabUtility.GetOutermostPrefabInstanceRoot(go);
+            if (outermost == null) return null; // ni instancia ni asset de prefab
+            return PrefabUtility.GetCorrespondingObjectFromOriginalSource(outermost);
         }
 
         /// <summary>
