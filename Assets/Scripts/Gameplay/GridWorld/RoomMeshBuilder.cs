@@ -636,12 +636,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Sublista de <paramref name="cuts"/> recortada a [lo, hi], con los extremos
         /// incluidos — lo que hace que un trozo de jamba corte por los mismos sitios que la
         /// celda de pared con la que comparte arista.</summary>
-        private static void SubCuts(List<float> cuts, float lo, float hi, List<float> into)
+        /// <param name="eps">Cuanto tiene que separarse un corte de <paramref name="lo"/>/<paramref name="hi"/>
+        /// para contar como propio. Con dos huecos en la sala, <paramref name="lo"/>/<paramref name="hi"/>
+        /// llegan con la precision NATIVA del hueco, pero <paramref name="cuts"/> ya viene fusionado
+        /// por <see cref="LevelCuts"/> a <see cref="CutTolerance"/> -- un vecino a decimas de milimetro
+        /// deja un resto de ese mismo tamano que un epsilon mas fino que esa fusion no filtra, y sale
+        /// una loncha de jamba de espesor invisible (mismo bug que <see cref="LevelCuts"/> ya resuelve
+        /// para la lista compartida, pero sin heredarlo aqui).</param>
+        private static void SubCuts(List<float> cuts, float lo, float hi, List<float> into, float eps = 1e-5f)
         {
             into.Clear();
             into.Add(lo);
             for (int i = 0; i < cuts.Count; i++)
-                if (cuts[i] > lo + 1e-5f && cuts[i] < hi - 1e-5f) into.Add(cuts[i]);
+                if (cuts[i] > lo + eps && cuts[i] < hi - eps) into.Add(cuts[i]);
             into.Add(hi);
         }
 
@@ -742,7 +749,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
 
             // Los dos costados, partidos por los cortes de altura por el mismo motivo.
-            SubCuts(yCuts, hr.y0, hr.y1, _jambCuts);
+            SubCuts(yCuts, hr.y0, hr.y1, _jambCuts, CutTolerance);
             Vector2 sa = Vector2.Lerp(i0, i1, hr.u0), sb = Vector2.Lerp(i0, i1, hr.u1);
             Vector2 ta = Vector2.Lerp(o0, o1, MapUEnds(hr.u0, i0, i1, o0, o1));
             Vector2 tb = Vector2.Lerp(o0, o1, MapUEnds(hr.u1, i0, i1, o0, o1));

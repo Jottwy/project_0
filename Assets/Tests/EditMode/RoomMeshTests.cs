@@ -1022,11 +1022,14 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// Bug conocido, aislado aquí para que no se pierda: 4 aristas duplicadas en el borde de
-        /// un hueco. 1 de 40 semillas. Sin localizar.
+        /// Regresión del bug de las 4 aristas duplicadas: dos huecos SIN relación entre sí (huecos
+        /// 5 y 6, en lados distintos) con niveles Y a menos de 0,1 mm uno del otro. La lista
+        /// compartida de cortes los fusiona a 1 mm (<see cref="RoomMeshBuilder.LevelCuts"/>), pero
+        /// la jamba de cada hueco recortaba contra su PROPIO y0/y1 en precisión nativa con un
+        /// epsilon de 0,01 mm — más fino que esa fusión — y el resto de menos de 0,1 mm sobrevivía
+        /// como una loncha de jamba de grosor invisible.
         /// </summary>
         [Test]
-        [Ignore("Bug conocido sin arreglar: 4 aristas duplicadas en el borde de un hueco.")]
         public void Random_room_shell_is_closed_seed_19()
         {
             var d = new RoomDefinition();
