@@ -68,9 +68,10 @@ namespace BackroomsSurvival.Tests
         }
 
         /// <summary>
-        /// Las aristas que un pozo <c>bottomless</c> deja SIN pareja a propósito: el borde de su
-        /// propio remate abierto. Es la única abertura que el generador admite a sabiendas —
-        /// cualquier otra arista sin pareja sigue siendo un bug.
+        /// Las aristas que un boquete de bloque que llega al suelo del bloque deja SIN pareja a
+        /// propósito. Es la única abertura que el generador admite a sabiendas — cualquier otra
+        /// arista sin pareja sigue siendo un bug. (Un pozo <c>bottomless</c> también estuvo aquí;
+        /// ya no hace falta: cierra solo por el canto del muro.)
         /// </summary>
         private static HashSet<(int, int, int, int, int, int)> ExpectedOpenEdges(RoomDefinition def)
         {
@@ -89,7 +90,6 @@ namespace BackroomsSurvival.Tests
                     set.Add((bx, by, bz, ax, ay, az));
                 }
             }
-            foreach (var (rect, y) in RoomMeshBuilder.BottomlessPitOpenings(def)) AddRect(rect, y);
             foreach (var (rect, y) in RoomMeshBuilder.BlockDoorFloorOpenings(def)) AddRect(rect, y);
             return set;
         }
@@ -105,8 +105,8 @@ namespace BackroomsSurvival.Tests
         /// EXACTA: con un hash XOR las colisiones acusaban en falso a las plantas redondas.
         ///
         /// <paramref name="allowedOpen"/> son las únicas aristas a las que SÍ se les permite
-        /// quedar sin pareja: el remate de un pozo sin fondo, que el diseño deja abierto a
-        /// propósito. Cualquier otra arista sin pareja sigue siendo un fallo.
+        /// quedar sin pareja (ver <see cref="ExpectedOpenEdges"/>). Cualquier otra arista sin
+        /// pareja sigue siendo un fallo.
         /// </summary>
         internal static bool ClosedManifold(Mesh m,
             HashSet<(int, int, int, int, int, int)> allowedOpen, out string why)
@@ -158,7 +158,7 @@ namespace BackroomsSurvival.Tests
                 }
             }
             why = open == 0 && dup == 0 ? "" : $"{open} open, {dup} dup | {string.Join(" ; ", samples)}";
-            if (why.Length == 0 && expected > 0) why = $"({expected} open edges allowed: bottomless pit rim)";
+            if (why.Length == 0 && expected > 0) why = $"({expected} open edges allowed: block door onto the floor)";
             return open == 0 && dup == 0;
         }
 
@@ -225,6 +225,35 @@ namespace BackroomsSurvival.Tests
                 Vector3 l = Quaternion.Euler(0f, -b.yawDegrees, 0f) * (p - b.center);
                 if (Mathf.Abs(l.x) <= b.size.x * 0.5f && Mathf.Abs(l.y) <= b.size.y * 0.5f
                     && Mathf.Abs(l.z) <= b.size.z * 0.5f) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// ¿Cruza algún triángulo la vertical por <paramref name="xz"/> entre esas dos alturas?
+        /// Sonda directa de "el agujero está de verdad abierto": por la boca de un pozo sin fondo
+        /// no puede pasar NADA, ni siquiera una cara que no se vea por estar de espaldas.
+        /// </summary>
+        internal static bool CrossesVertical(Mesh m, Vector2 xz, float yLo, float yHi)
+        {
+            var v = m.vertices;
+            for (int s = 0; s < m.subMeshCount; s++)
+            {
+                var t = m.GetTriangles(s);
+                for (int i = 0; i < t.Length; i += 3)
+                {
+                    Vector3 a = v[t[i]], b = v[t[i + 1]], c = v[t[i + 2]];
+                    // Baricéntricas en PLANTA: el triángulo visto desde arriba. Uno vertical
+                    // (área nula en planta) no puede cruzar una vertical, y se descarta solo.
+                    float d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
+                    if (Mathf.Abs(d) < 1e-9f) continue;
+                    float w0 = ((b.z - c.z) * (xz.x - c.x) + (c.x - b.x) * (xz.y - c.z)) / d;
+                    float w1 = ((c.z - a.z) * (xz.x - c.x) + (a.x - c.x) * (xz.y - c.z)) / d;
+                    float w2 = 1f - w0 - w1;
+                    if (w0 < 0f || w1 < 0f || w2 < 0f) continue;
+                    float y = w0 * a.y + w1 * b.y + w2 * c.y;
+                    if (y >= yLo && y <= yHi) return true;
+                }
             }
             return false;
         }

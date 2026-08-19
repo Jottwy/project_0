@@ -430,6 +430,39 @@ namespace BackroomsSurvival.Tests
             Assert.IsTrue(Inside(cb, new Vector3(1f - 1.5f + 0.02f, -1f, 1f)), "no wall on the side of the shaft");
         }
 
+        /// <summary>
+        /// El bug que se veía en pantalla: la losa EXTERIOR del suelo (a -wallThickness) no se
+        /// recortaba para un pozo sin fondo, así que quedaba una chapa cruzando el pozo un palmo
+        /// por debajo del borde — el agujero se veía abierto arriba y tapado justo después. Se
+        /// sondea la vertical entera del hueco, no solo la submalla de suelo: la chapa era de
+        /// pared y mirando hacia abajo, así que ni salía en la sonda de suelo ni se veía desde
+        /// arriba, pero estaba.
+        /// </summary>
+        [Test]
+        public void Bottomless_pit_has_nothing_across_its_mouth()
+        {
+            var d = Box(4, 4);
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            d.floorHoles[0].bottomless = true;
+            var m = AssertRoom("bottomless pit, open all the way down", d);
+
+            Assert.IsFalse(CrossesVertical(m, new Vector2(1f, 1f), -50f, -0.001f),
+                "something crosses the shaft below the floor");
+        }
+
+        /// <summary>El contraste: un pozo CON fondo sí tiene que tener algo cruzando — su suelo.
+        /// Sin esto, la sonda de arriba pasaría igual con un generador que no dibujara pozos.</summary>
+        [Test]
+        public void Normal_pit_does_have_a_bottom_across_its_mouth()
+        {
+            var d = Box(4, 4);
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            var m = AssertRoom("normal pit", d);
+
+            Assert.IsTrue(CrossesVertical(m, new Vector2(1f, 1f), -50f, -0.001f),
+                "a pit with a bottom drew no bottom");
+        }
+
         [Test]
         public void Bottomless_pit_on_a_round_room()
         {

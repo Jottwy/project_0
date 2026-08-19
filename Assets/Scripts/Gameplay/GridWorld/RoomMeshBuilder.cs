@@ -143,12 +143,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // aire y también se ve por fuera. Por eso lleva su rectángulo interior y otro
             // exterior, igual que la sala.
             var pitsIn = PitRects(def, f => true, f => 0f);
-            // La tapa EXTERIOR de la sala (la que se ve desde fuera del edificio) solo se corta
-            // para un pozo CON fondo: uno cuelga por debajo como una caja propia, y esa caja
-            // tiene que atravesar esa tapa para asomar. Uno sin fondo remata DENTRO de sí mismo
-            // (ver AddPits) y nunca llega a tocar la tapa exterior, así que no le hace falta
-            // abrirle un hueco.
-            var pitsOut = PitRects(def, f => !f.bottomless, f => t);
+            // La tapa EXTERIOR (la que se ve desde debajo del edificio) se corta para TODOS los
+            // pozos, con fondo o sin él. La versión anterior se la saltaba para los bottomless
+            // razonando que "rematan dentro de sí mismos y nunca llegan a tocarla": es falso, y
+            // por eso el pozo salía tapado. El tubo va de `yShaft = -max(Depth, t)` hasta el
+            // suelo de la sala, y esta losa está a `-t` — como `max(Depth, t) >= t`, el tubo la
+            // atraviesa SIEMPRE. Sin recortarla quedaba una chapa cruzando el pozo justo debajo
+            // del borde: el agujero se veía abierto arriba y tapado un palmo más abajo.
+            var pitsOut = PitRects(def, f => true, f => t);
 
             // Techo inclinado: la altura pasa a ser funcion del punto. Con tilt 0 estas dos
             // funciones devuelven la constante de siempre y no cambia nada.
@@ -430,28 +432,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// El primer intento era UN tubo de una cara partido a la altura de la losa. Los dos
         /// trozos se emparejaban entre sí y dejaban el borde de la tapa exterior sin pareja:
         /// 4 aristas abiertas por pozo. Un tubo sin grosor no es un sólido.
-        /// </summary>
-        /// <summary>
-        /// El rectángulo y la altura del remate de cada pozo <see cref="RoomDefinition.FloorHole.bottomless"/>:
-        /// el sitio donde esta malla deja el borde SIN cerrar a propósito, porque ahí el diseño
-        /// pide que no haya nada — ni suelo ni pared, para poder seguir cayendo.
         ///
-        /// Es la única excepción admitida a "la malla es siempre un cascarón cerrado", y por eso
-        /// vive expuesta y con nombre propio: los tests la usan para no confundir esta abertura
-        /// pedida con una fuga de verdad en cualquier otro sitio.
+        /// Uno SIN FONDO es la misma caja hueca, solo que en vez del fondo lleva el canto del
+        /// muro (<see cref="AddPitRim"/>): sigue cerrando, pero por la boca no hay nada. Durante
+        /// un tiempo se resolvió dejándole aristas sin pareja a propósito y una lista de
+        /// excepciones que los tests tenían que conocer; ya no hace falta ninguna — la malla
+        /// vuelve a ser un cascarón cerrado SIEMPRE, y cualquier arista suelta es un bug otra vez.
         /// </summary>
-        public static IEnumerable<(Vector2[] rect, float y)> BottomlessPitOpenings(RoomDefinition def)
-        {
-            if (def.floorHoles == null) yield break;
-            float t = Mathf.Max(0.001f, def.wallThickness);
-            foreach (var f in def.floorHoles)
-            {
-                if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f || !f.bottomless) continue;
-                float yShaft = -Mathf.Max(f.depth, t);   // yFloor de la sala es siempre 0
-                yield return (BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees), yShaft);
-            }
-        }
-
         private static void AddPits(RoomDefinition def, float yFloor, float yBottom, float t,
             List<Vector2[]> pitsIn, List<Vector2[]> pitsOut)
         {
@@ -462,20 +449,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (!IsValidPit(f)) continue;
                 var rin = pitsIn[pIn++];
 
+                var rout = pitsOut[pOut++];
+
                 if (f.bottomless)
                 {
                     // Tiene paredes hasta Depth metros, igual que un pozo con fondo — Depth
-                    // SIGUE mandando. Y al final de esas paredes, literalmente NADA: sin tapa.
-                    // Es la única abertura que esta malla deja sin cerrar A PROPÓSITO — ver
-                    // <see cref="BottomlessPitOpenings"/>, que es donde los tests saben que este
-                    // hueco concreto no es una fuga sino el diseño pedido: "en el último metro
-                    // se abre el fondo", no "se tapa con otra cosa que no es suelo".
+                    // SIGUE mandando. Y al final de esas paredes, literalmente NADA que cruce la
+                    // boca: por ahí se sigue cayendo.
+                    //
+                    // Mismo principio que una puerta: un boquete es un agujero A TRAVÉS de un
+                    // muro, y lo que lo hace sólido es que el canto va forrado por dentro (la
+                    // jamba). Aquí igual — el pozo es un agujero a través de la losa y un tubo
+                    // colgando debajo, con sus DOS caras (la de dentro, que se ve al asomarse, y
+                    // la de fuera, que se ve desde debajo del edificio) y el canto de abajo
+                    // rematado. Antes solo se emitía la cara de dentro: un tubo de una sola cara
+                    // no es un sólido, y encima la losa exterior se quedaba sin recortar y
+                    // cruzaba el pozo por delante.
                     float yShaft = yFloor - Mathf.Max(f.depth, t);
                     AddPitTube(rin, yShaft, yFloor, inward: true);
+                    AddPitTube(rout, yShaft, yBottom, inward: false);
+                    AddPitRim(rin, rout, yShaft);
                     continue;
                 }
 
-                var rout = pitsOut[pOut++];
                 float yPit = yFloor - f.depth;   // cara pisable del fondo
                 float yUnder = yPit - t;         // cara inferior del fondo
 
@@ -485,6 +481,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 AddPitTube(rin, yPit, yFloor, inward: true);
                 AddPitTube(rout, yUnder, yBottom, inward: false);
             }
+        }
+
+        /// <summary>
+        /// El canto de ABAJO de la pared de un pozo sin fondo: el anillo entre el tubo interior y
+        /// el exterior, donde el muro se acaba.
+        ///
+        /// NO es una tapa: no cruza la boca del pozo, solo remata el grosor del muro — el mismo
+        /// borde que tiene por abajo cualquier pared. La boca (el rectángulo interior) sigue
+        /// enteramente abierta, que es lo que se pidió: "en el último metro se abre el fondo".
+        /// Sin este anillo los dos tubos terminarían en dos bordes sueltos.
+        /// </summary>
+        private static void AddPitRim(Vector2[] rin, Vector2[] rout, float y)
+        {
+            for (int i = 0; i < 4; i++)
+                Quad(SubmeshWall, V(rin[i], y), V(rin[(i + 1) % 4], y),
+                    V(rout[(i + 1) % 4], y), V(rout[i], y), Vector3.down);
         }
 
         private static void AddPitTube(Vector2[] rect, float y0, float y1, bool inward)
@@ -948,12 +960,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>
         /// El rectángulo y la altura de cada boquete de bloque que llega al propio suelo del
-        /// bloque: la única abertura que un BLOQUE deja sin cerrar a propósito, por el mismo
-        /// motivo que un pozo <see cref="RoomDefinition.FloorHole.bottomless"/> — ahí no hace
-        /// falta nada porque el suelo de la sala ya está justo debajo. Ver
-        /// <see cref="BottomlessPitOpenings"/>; esta es su misma idea, aplicada a un bloque en
-        /// vez de a un pozo. Los tests la usan para no confundir esta abertura pedida con una
-        /// fuga de verdad en cualquier otro sitio.
+        /// bloque: la ÚNICA abertura que esta malla deja sin cerrar a propósito. Ahí no hace
+        /// falta nada porque el suelo de la sala ya está justo debajo, tocándola.
+        ///
+        /// Los tests la usan para no confundir esta abertura pedida con una fuga de verdad en
+        /// cualquier otro sitio. Un pozo sin fondo tuvo su propia excepción durante un tiempo y
+        /// ya no: se cierra solo con el canto del muro (<see cref="AddPitRim"/>), que es lo que
+        /// debería haber hecho desde el principio.
         /// </summary>
         public static IEnumerable<(Vector2[] rect, float y)> BlockDoorFloorOpenings(RoomDefinition def)
         {
