@@ -142,12 +142,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // con 2,5 m de profundidad sobre una losa de 0,2 m, la mayor parte del pozo está al
             // aire y también se ve por fuera. Por eso lleva su rectángulo interior y otro
             // exterior, igual que la sala.
-            var pitsIn = PitRects(def, f => 0f);
-            // Un pozo con fondo cuelga MAS ANCHO por fuera, como una pared: el mismo motivo por
-            // el que la cara exterior de la sala crece `t` respecto a la interior. Uno sin fondo
-            // no tiene ese "por fuera" — es un tubo recto de un solo ancho de lado a lado, así
-            // que su corte inferior usa el mismo rectángulo que el superior.
-            var pitsOut = PitRects(def, f => f.bottomless ? 0f : t);
+            var pitsIn = PitRects(def, f => true, f => 0f);
+            // La tapa EXTERIOR de la sala (la que se ve desde fuera del edificio) solo se corta
+            // para un pozo CON fondo: uno cuelga por debajo como una caja propia, y esa caja
+            // tiene que atravesar esa tapa para asomar. Uno sin fondo remata DENTRO de sí mismo
+            // (ver AddPits) y nunca llega a tocar la tapa exterior, así que no le hace falta
+            // abrirle un hueco.
+            var pitsOut = PitRects(def, f => !f.bottomless, f => t);
 
             // Techo inclinado: la altura pasa a ser funcion del punto. Con tilt 0 estas dos
             // funciones devuelven la constante de siempre y no cambia nada.
@@ -380,12 +381,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>Rectángulos de los pozos, ya girados y engordados <paramref name="grow"/> por
         /// cada lado. Vacío si la sala no tiene ninguno.</summary>
-        private static List<Vector2[]> PitRects(RoomDefinition def, System.Func<RoomDefinition.FloorHole, float> growFor)
+        private static List<Vector2[]> PitRects(RoomDefinition def,
+            System.Func<RoomDefinition.FloorHole, bool> include,
+            System.Func<RoomDefinition.FloorHole, float> growFor)
         {
             var list = new List<Vector2[]>();
             if (def.floorHoles == null) return list;
             foreach (var f in def.floorHoles)
-                if (IsValidPit(f))
+                if (IsValidPit(f) && include(f))
                 {
                     float grow = growFor(f);
                     list.Add(BoxCorners(f.position, f.sizeX + grow * 2f, f.sizeZ + grow * 2f, f.yawDegrees));
@@ -418,26 +421,31 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             List<Vector2[]> pitsIn, List<Vector2[]> pitsOut)
         {
             if (pitsIn.Count == 0) return;
-            int p = 0;
+            int pIn = 0, pOut = 0;
             foreach (var f in def.floorHoles)
             {
                 if (!IsValidPit(f)) continue;
-                var rin = pitsIn[p];
-                var rout = pitsOut[p];
-                p++;
+                var rin = pitsIn[pIn++];
 
                 if (f.bottomless)
                 {
-                    // Agujero limpio: atraviesa el suelo de lado a lado sin fondo propio. `rin` y
-                    // `rout` son el MISMO rectángulo (PitRects no engorda el corte exterior para
-                    // un pozo sin fondo), así que un solo tubo recto basta para cerrar el hueco
-                    // que la tapa de suelo deja arriba con el que deja la tapa exterior abajo —
-                    // no hace falta el inglete que sí lleva un pozo con fondo, porque no hay nada
-                    // por debajo contra lo que encajarlo.
-                    AddPitTube(rin, yBottom, yFloor, inward: true);
+                    // Tiene paredes hasta Depth metros, igual que un pozo con fondo — Depth SIGUE
+                    // mandando, no se ignora por estar sin fondo. Lo único que cambia es que en
+                    // vez de una losa pisable, remata en una tapa que no lo es (SubmeshWall, no
+                    // SubmeshFloor): ahí se acaba lo modelado, no un sitio en el que aterrizar.
+                    //
+                    // Remata DENTRO de sí mismo y nunca toca la tapa exterior de la sala (a
+                    // diferencia de un pozo con fondo, que sí cuelga de ella): por eso esta rama
+                    // no usa `pitsOut` en absoluto. Es la misma construcción exacta que el
+                    // fondo+tapa de un pozo normal (mismo tubo `inward: true`, misma tapa
+                    // `Vector3.up`, solo con otro submesh) — no hace falta reinventar el cierre.
+                    float yShaft = yFloor - Mathf.Max(f.depth, t);
+                    AddPitTube(rin, yShaft, yFloor, inward: true);
+                    AddCap(rin, yShaft, Vector3.up, SubmeshWall);
                     continue;
                 }
 
+                var rout = pitsOut[pOut++];
                 float yPit = yFloor - f.depth;   // cara pisable del fondo
                 float yUnder = yPit - t;         // cara inferior del fondo
 

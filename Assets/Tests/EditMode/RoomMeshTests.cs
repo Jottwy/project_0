@@ -264,21 +264,25 @@ namespace BackroomsSurvival.Tests
 
         // ── pozos sin fondo ───────────────────────────────────────────────────
 
-        /// <summary>Un pozo <c>bottomless</c> es un agujero limpio: la malla sigue siendo un
-        /// cascarón cerrado (el tubo conecta la tapa de arriba con la de abajo directamente,
-        /// sin fondo propio), pero no hay ningún vértice en su profundidad — ahí no hay nada.</summary>
+        /// <summary>Un pozo <c>bottomless</c> SIGUE teniendo paredes hasta Depth metros, igual
+        /// que uno con fondo — la malla llega hasta ahí — pero remata en algo que NO es un suelo
+        /// pisable: nada en la submalla de suelo a esa profundidad.</summary>
         [Test]
-        public void Bottomless_pit_is_a_clean_hole_with_no_floor_vertex()
+        public void Bottomless_pit_walls_reach_depth_but_draw_no_floor_there()
         {
             var d = Box(4, 4);
             d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
             d.floorHoles[0].bottomless = true;
             var m = AssertRoom("bottomless pit", d);
-            Assert.IsFalse(HasVertexY(m, -2.5f), "bottomless still drew a floor at `depth`");
+            Assert.IsTrue(HasVertexY(m, -2.5f), "the shaft does not reach Depth");
+            Assert.IsFalse(HasTriangleNearY(m, RoomMeshBuilder.SubmeshFloor, -2.5f),
+                "it drew a walkable floor at the bottom of an open shaft");
         }
 
+        /// <summary>El centro del hueco nunca tiene fondo, ni a la profundidad pedida ni más
+        /// abajo: por ahí se sigue cayendo pase lo que pase.</summary>
         [Test]
-        public void Bottomless_pit_has_no_collision_to_land_on()
+        public void Bottomless_pit_has_no_floor_to_land_on()
         {
             var d = Box(4, 4);
             d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
@@ -286,6 +290,25 @@ namespace BackroomsSurvival.Tests
             var cb = RoomColliderBuilder.Build(d);
             Assert.IsFalse(Inside(cb, new Vector3(1f, -2.5f, 1f)), "something caught the fall");
             Assert.IsFalse(Inside(cb, new Vector3(1f, -20f, 1f)), "something caught the fall, further down");
+        }
+
+        /// <summary>El contraste que motiva Depth en un pozo sin fondo: las paredes SÍ bloquean
+        /// de lado mientras se cae dentro de Depth, y dejan de hacerlo justo debajo — ahí no hay
+        /// nada, ni suelo ni pared.</summary>
+        [Test]
+        public void Bottomless_pit_walls_collide_within_depth_then_open()
+        {
+            var d = Box(4, 4);
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            d.floorHoles[0].bottomless = true;
+            var cb = RoomColliderBuilder.Build(d);
+
+            // Justo dentro del borde del pozo en XZ (el hueco va de x=-0.5 a x=2.5).
+            var nearEdge = new Vector3(-0.5f + 0.02f, -1f, 1f);
+            Assert.IsTrue(Inside(cb, nearEdge), "no wall collision within Depth");
+
+            var belowDepth = new Vector3(-0.5f + 0.02f, -3f, 1f);
+            Assert.IsFalse(Inside(cb, belowDepth), "something still blocks past Depth");
         }
 
         /// <summary>El contraste que motiva la opción: un pozo NORMAL sí tiene un fondo en el que

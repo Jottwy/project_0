@@ -228,6 +228,19 @@ namespace BackroomsSurvival.Tests
             return false;
         }
 
+        /// <summary>Hay algún triángulo de esa submalla concreta con algún vértice a esa altura.
+        /// Distingue "la geometría llega hasta aquí" (cualquier submalla) de "hay un SUELO
+        /// pisable aquí" (justo la submalla de suelo) — un pozo sin fondo tiene lo primero y no
+        /// lo segundo en su remate.</summary>
+        internal static bool HasTriangleNearY(Mesh m, int submesh, float y)
+        {
+            var v = m.vertices;
+            var t = m.GetTriangles(submesh);
+            for (int i = 0; i < t.Length; i++)
+                if (Mathf.Abs(v[t[i]].y - y) < 0.01f) return true;
+            return false;
+        }
+
         internal static Vector2 WallMid(RoomDefinition d, int side, float along)
         {
             var inner = d.InnerContour();

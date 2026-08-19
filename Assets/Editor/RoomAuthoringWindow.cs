@@ -261,14 +261,17 @@ namespace BackroomsSurvival.EditorTools
                     f.position = EditorGUILayout.Vector2Field("Position (XZ)", f.position);
                     f.sizeX = EditorGUILayout.FloatField("Size X (m)", f.sizeX);
                     f.sizeZ = EditorGUILayout.FloatField("Size Z (m)", f.sizeZ);
+                    f.depth = EditorGUILayout.FloatField(
+                        new GUIContent("Depth (m)",
+                            "How far down it goes from the room floor. Con Bottomless activo "
+                            + "sigue mandando: es hasta donde llegan paredes de verdad, con "
+                            + "colision. Mas alla no hay nada, ni suelo ni pared."),
+                        f.depth);
                     f.bottomless = EditorGUILayout.Toggle(
                         new GUIContent("Bottomless",
-                            "Sin fondo: atraviesa el suelo de lado a lado, ni pintado ni "
-                            + "colision. Se sigue cayendo -- a otra sala, a otro nivel, o a nada."),
+                            "Sin fondo: mas alla de Depth no hay losa ni colision con la que "
+                            + "aterrizar. Se sigue cayendo -- a otra sala, a otro nivel, o a nada."),
                         f.bottomless);
-                    using (new EditorGUI.DisabledScope(f.bottomless))
-                        f.depth = EditorGUILayout.FloatField(
-                            new GUIContent("Depth (m)", "How far down it goes from the room floor."), f.depth);
                     f.yawDegrees = EditorGUILayout.Slider("Yaw", f.yawDegrees, -180f, 180f);
                 }
             }
