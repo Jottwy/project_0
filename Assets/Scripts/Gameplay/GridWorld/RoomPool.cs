@@ -4,11 +4,13 @@ using UnityEngine;
 namespace BackroomsSurvival.Gameplay.GridWorld
 {
     /// <summary>
-    /// Pool of hand-authored rooms (Room Authoring Tool, <c>Backrooms/Bake Room</c>) that can
-    /// later be anchored into a chunk's existing Open zone in place of the procedural tile
-    /// geometry. Phase 1 only produces and catalogues entries here — nothing reads this pool at
-    /// runtime yet (that is the deferred anchoring/fit step, a separate change to
-    /// GridChunkBuilder/ChunkStreamer).
+    /// Pool of hand-authored rooms (Room Authoring Tool, <c>Backrooms/Bake Room</c>), anchored
+    /// into a chunk's sealed zones in place of the procedural tile geometry.
+    ///
+    /// El consumidor en runtime es <c>GridChunkBuilder.AuthoredRooms.cs</c>: carga el pool una
+    /// vez por sesión y, por cada zona sellada del chunk, elige entrada y giro cuya puerta case
+    /// con una apertura real. AMUEBLA el interior; suelo, techo y las paredes del perímetro las
+    /// sigue poniendo el generador desde el bitmask del backend, que es la autoridad de colisión.
     ///
     /// Lives at Resources/Rooms/RoomPool.asset so the future runtime consumer can
     /// Resources.Load it without scene wiring, same pattern as GridPrefabSet.

@@ -891,6 +891,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Cortes en U compartidos entre cada cara y la tapa: si la cara de un lado tiene
             // jamba+hueco+jamba y la tapa solo lleva su esquina de siempre, el borde compartido
             // entre las dos deja de casar (T-junction otra vez, esta vez cara↔tapa).
+            //
+            // ORDEN A, C, B, D — NO es una errata pese a que las AddBlockFace de arriba van en
+            // A, B, C, D. AddCap indexa por ARISTA del polígono (`sideCuts[i]` es el borde
+            // corners[i]→corners[i+1]), mientras que las cuatro listas de boquetes están
+            // nombradas por PAR de caras enfrentadas: A/B son las dos del eje Z y C/D las del
+            // eje X. Recorriendo el contorno, las aristas salen A (0→1), C (1→2), B (2→3),
+            // D (3→0). "Arreglarlo" a A, B, C, D le da a la tapa los cortes de la cara de
+            // enfrente y el borde vuelve a no casar.
             _blockSideCuts[0] = UCuts(_blockHolesA);
             _blockSideCuts[1] = UCuts(_blockHolesC);
             _blockSideCuts[2] = UCuts(_blockHolesB);
