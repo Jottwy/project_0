@@ -153,8 +153,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             Vector2 p0, Vector2 p1, Vector2 dir, Vector2 nrm, float yaw,
             float len, float t, float yFloor, float yCeil, List<HoleRect> holes)
         {
+            ForEachSolidRun(holes, yFloor, yCeil,
+                (ua, ub, ya, yb) => Emit(into, p0, p1, nrm, yaw, len, t, ua, ub, ya, yb));
+        }
+
+        /// <summary>
+        /// El recorrido de tramos MACIZOS de una superficie agujereada: por cada franja de
+        /// altura, los tramos a lo largo de u de izquierda a derecha, fundiendo los contiguos.
+        ///
+        /// Lo comparten las paredes y los bloques con túnel porque el recorrido es idéntico —
+        /// lo único que cambia es cómo se convierte el tramo (ua, ub, ya, yb) en una caja, y eso
+        /// lo pone cada llamador en <paramref name="emit"/>. Cuando eran dos bucles gemelos, un
+        /// arreglo de la fusión había que aplicarlo dos veces, y olvidarse de uno deja al bloque
+        /// con una caja por celda de la rejilla donde la pared tiene una por tramo.
+        ///
+        /// El <c>u</c> es siempre FRACCIÓN de la superficie (0..1) y la altura va en metros: es
+        /// la misma convención con la que <see cref="RoomDefinition.HoleRect"/> guarda el
+        /// boquete, así que ninguno de los dos llamadores tiene que reescalar nada aquí dentro.
+        /// </summary>
+        private static void ForEachSolidRun(List<HoleRect> holes, float yLo, float yHi,
+            System.Action<float, float, float, float> emit)
+        {
             var uCuts = Cuts(0f, 1f, holes, horizontal: true);
-            var yCuts = Cuts(yFloor, yCeil, holes, horizontal: false);
+            var yCuts = Cuts(yLo, yHi, holes, horizontal: false);
 
             for (int vi = 0; vi < yCuts.Count - 1; vi++)
             {
@@ -172,8 +193,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (runStart < 0 || !runEnds) continue;
 
                     int last = solid ? ui : ui - 1;
-                    Emit(into, p0, p1, nrm, yaw, len, t,
-                        uCuts[runStart], uCuts[last + 1], ya, yb);
+                    emit(uCuts[runStart], uCuts[last + 1], ya, yb);
                     runStart = -1;
                 }
             }
@@ -227,34 +247,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static void AddBlockAxisBoxes(List<RoomPool.CollisionBox> boxes, Vector2 centre,
             Vector2 uDir, float sizeU, float sizeV, float yaw, float y0, float y1, List<HoleRect> holes)
         {
-            var uCuts = Cuts(0f, 1f, holes, horizontal: true);
-            var yCuts = Cuts(y0, y1, holes, horizontal: false);
-
-            for (int vi = 0; vi < yCuts.Count - 1; vi++)
+            ForEachSolidRun(holes, y0, y1, (ua, ub, ya, yb) =>
             {
-                float ya = yCuts[vi], yb = yCuts[vi + 1];
-                if (yb - ya < 1e-4f) continue;
-
-                int runStart = -1;
-                for (int ui = 0; ui < uCuts.Count - 1; ui++)
-                {
-                    bool solid = !HoleRect.InsideAny(holes,
-                        (uCuts[ui] + uCuts[ui + 1]) * 0.5f, (ya + yb) * 0.5f);
-                    if (solid && runStart < 0) runStart = ui;
-                    bool runEnds = !solid || ui == uCuts.Count - 2;
-                    if (runStart < 0 || !runEnds) continue;
-
-                    int last = solid ? ui : ui - 1;
-                    float ua = uCuts[runStart], ub = uCuts[last + 1];
-                    if (ub - ua >= 1e-5f)
-                    {
-                        Vector2 mid = centre + uDir * ((ua + ub) * 0.5f * sizeU - sizeU * 0.5f);
-                        boxes.Add(Box(new Vector3(mid.x, (ya + yb) * 0.5f, mid.y),
-                            new Vector3((ub - ua) * sizeU, yb - ya, sizeV), yaw));
-                    }
-                    runStart = -1;
-                }
-            }
+                if (ub - ua < 1e-5f) return;
+                Vector2 mid = centre + uDir * ((ua + ub) * 0.5f * sizeU - sizeU * 0.5f);
+                boxes.Add(Box(new Vector3(mid.x, (ya + yb) * 0.5f, mid.y),
+                    new Vector3((ub - ua) * sizeU, yb - ya, sizeV), yaw));
+            });
         }
 
         private static List<float> Cuts(float lo, float hi, List<HoleRect> holes, bool horizontal)
