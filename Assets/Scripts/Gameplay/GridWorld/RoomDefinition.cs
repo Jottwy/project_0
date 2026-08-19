@@ -119,9 +119,26 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// operación es quitar celdas de una lista, y el contorno sale de recorrer el borde: no
         /// hay caso raro que resolver.
         /// </summary>
-        public enum PlanMode { Polygon, Blocks }
+        /// <summary>
+        /// <c>Manual</c> es la planta dibujada a mano, punto por punto, con tiradores en la
+        /// vista de escena — para cuando ni el polígono ni las muescas dan la forma que hace
+        /// falta.
+        /// </summary>
+        public enum PlanMode { Polygon, Blocks, Manual }
 
         public PlanMode planMode = PlanMode.Polygon;
+
+        /// <summary>
+        /// La planta dibujada a mano. Solo se usa en <see cref="PlanMode.Manual"/>, y con menos
+        /// de 3 puntos degrada al <see cref="PolygonContour"/> de siempre — un contorno a medio
+        /// dibujar no es una sala, y sacar geometría de él sería adivinar.
+        ///
+        /// NO pasa por <see cref="ApplyIrregularity"/>: quien está tocando cada vértice a mano
+        /// ya está pidiendo el control exacto que la irregularidad existe para NO tener que
+        /// pedir — perturbarle los puntos que acaba de colocar sería quitarle con una mano lo
+        /// que la otra le da.
+        /// </summary>
+        public Vector2[] manualContour = Array.Empty<Vector2>();
 
         /// <summary>
         /// Un mordisco al footprint, en TILES. Solo en <see cref="PlanMode.Blocks"/>.
@@ -885,8 +902,42 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>Semilla de la irregularidad. Misma semilla, misma planta torcida.</summary>
         public int irregularitySeed = 1;
 
-        public Vector2[] InnerContour() => ApplyIrregularity(
-            planMode == PlanMode.Blocks ? BlockContour() : PolygonContour());
+        public Vector2[] InnerContour()
+        {
+            if (planMode == PlanMode.Manual && manualContour != null && manualContour.Length >= 3)
+                return EnsureContourCCW(manualContour);
+            return ApplyIrregularity(planMode == PlanMode.Blocks ? BlockContour() : PolygonContour());
+        }
+
+        /// <summary>La planta que daría el modo Polygon o Blocks ahora mismo — el punto de
+        /// partida de "Start from current shape" al pasar a <see cref="PlanMode.Manual"/>, para
+        /// no tener que dibujar los primeros puntos desde cero. Se llama ANTES de cambiar
+        /// <see cref="planMode"/> a <c>Manual</c>: llamado después ya no sabría si el punto de
+        /// partida "correcto" era el polígono o las muescas.</summary>
+        public Vector2[] ProceduralContour() =>
+            ApplyIrregularity(planMode == PlanMode.Blocks ? BlockContour() : PolygonContour());
+
+        /// <summary>
+        /// Todo contorno de este generador se espera ANTIHORARIO — es la base de
+        /// <see cref="OutwardNormal"/> y de todo lo que sale de ella. Un contorno dibujado a mano
+        /// en la vista de escena no viene con esa garantía: depende del orden en que se hayan
+        /// puesto los puntos, y pedirle al usuario que dibuje "en sentido antihorario" es pedirle
+        /// algo que la herramienta debería resolver sola. Se detecta por el área con signo y se
+        /// invierte si hace falta.
+        /// </summary>
+        private static Vector2[] EnsureContourCCW(Vector2[] pts)
+        {
+            float area = 0f;
+            for (int i = 0; i < pts.Length; i++)
+            {
+                Vector2 c = pts[i], n = pts[(i + 1) % pts.Length];
+                area += c.x * n.y - n.x * c.y;
+            }
+            if (area >= 0f) return pts;
+            var rev = (Vector2[])pts.Clone();
+            Array.Reverse(rev);
+            return rev;
+        }
 
         /// <summary>
         /// Desplaza cada vértice a lo largo de su propia normal (la bisectriz de sus dos aristas).

@@ -452,6 +452,94 @@ namespace BackroomsSurvival.Tests
             AssertRoom("bottomless pit next to a normal pit", d);
         }
 
+        // ── planta dibujada a mano ───────────────────────────────────────────
+
+        [Test]
+        public void Manual_contour_with_fewer_than_3_points_falls_back_to_polygon()
+        {
+            var d = Box(4, 3);
+            d.planMode = RoomDefinition.PlanMode.Manual;
+            d.manualContour = new[] { new Vector2(1f, 1f), new Vector2(-1f, 1f) }; // solo 2
+            Assert.AreEqual(d.ProceduralContour().Length, d.InnerContour().Length,
+                "2 points is not a plan; it should degrade to the polygon of always");
+        }
+
+        [Test]
+        public void Manual_triangle_is_a_valid_room()
+        {
+            var d = new RoomDefinition { heightMeters = 3f };
+            d.planMode = RoomDefinition.PlanMode.Manual;
+            d.manualContour = new[] { new Vector2(-5f, -4f), new Vector2(5f, -4f), new Vector2(0f, 5f) };
+            AssertRoom("manual triangle", d);
+            Assert.AreEqual(3, d.InnerContour().Length);
+        }
+
+        /// <summary>Un contorno dibujado en sentido horario (fácil si se han puesto los puntos
+        /// al revés) tiene que salir bien igual: la herramienta lo corrige sola, no le pide al
+        /// usuario que sepa qué es "antihorario".</summary>
+        [Test]
+        public void Manual_contour_drawn_clockwise_still_builds_correctly()
+        {
+            var d = new RoomDefinition { heightMeters = 3f };
+            d.planMode = RoomDefinition.PlanMode.Manual;
+            // Mismo triángulo que el test de arriba, pero con los puntos en el orden opuesto.
+            d.manualContour = new[] { new Vector2(0f, 5f), new Vector2(5f, -4f), new Vector2(-5f, -4f) };
+            AssertRoom("clockwise manual triangle", d);
+        }
+
+        /// <summary>La irregularidad NO toca una planta manual: quien mueve los puntos a mano ya
+        /// está pidiendo el control exacto que la irregularidad existe para no tener que
+        /// pedir.</summary>
+        [Test]
+        public void Manual_contour_ignores_irregularity()
+        {
+            var d = new RoomDefinition { heightMeters = 3f };
+            d.planMode = RoomDefinition.PlanMode.Manual;
+            d.manualContour = new[] { new Vector2(-5f, -4f), new Vector2(5f, -4f), new Vector2(0f, 5f) };
+            d.irregularity = 1f; d.irregularitySeed = 7;
+            var withIrregularity = d.InnerContour();
+
+            var straight = new RoomDefinition { heightMeters = 3f };
+            straight.planMode = RoomDefinition.PlanMode.Manual;
+            straight.manualContour = d.manualContour;
+            var without = straight.InnerContour();
+
+            Assert.Less(ContourDiff(withIrregularity, without), 1e-5f,
+                "irregularity moved a hand-drawn plan");
+        }
+
+        /// <summary>Una forma en L dibujada a mano, no mordida de una rejilla: la manual no
+        /// depende de que la sala sea convexa, igual que Blocks. Parte del contorno YA probado
+        /// de <c>L_shape</c> para aislar la única variable real: que llegue por
+        /// <c>manualContour</c> en vez de por <c>BlockContour</c>.</summary>
+        [Test]
+        public void Manual_L_shape_is_non_convex_and_builds()
+        {
+            var reference = Blocks(6, 5, new RoomDefinition.Notch { tileX = 3, tileZ = 3, tilesX = 3, tilesZ = 2 });
+            var d = new RoomDefinition { heightMeters = 3f };
+            d.planMode = RoomDefinition.PlanMode.Manual;
+            d.manualContour = reference.InnerContour();
+            AssertRoom("manual L shape", d);
+            Assert.IsFalse(IsConvex(d.InnerContour()));
+        }
+
+        /// <summary>El contorno manual, con un boquete y un pozo encima, tiene que comportarse
+        /// EXACTAMENTE igual que la misma planta generada por polígono: la manual solo cambia de
+        /// dónde sale el contorno, no cómo se resuelve lo que cuelga de él. Se parte del propio
+        /// contorno de <c>Pit_next_to_a_door</c> (ya probado) para que la única variable sea el
+        /// modo manual, no una geometría nueva sin probar.</summary>
+        [Test]
+        public void Manual_contour_with_a_door_and_a_pit()
+        {
+            var reference = Box(4, 4);
+            var d = new RoomDefinition { heightMeters = 4f };
+            d.planMode = RoomDefinition.PlanMode.Manual;
+            d.manualContour = reference.InnerContour();
+            d.holes = new[] { Door(0, 0.5f) };
+            d.floorHoles = new[] { Pit(new Vector2(0f, 6f), 3f, 2f, 2f, 0f) };
+            AssertRoom("manual contour with door and pit", d);
+        }
+
         // ── entreplantas ──────────────────────────────────────────────────────
 
         [Test]

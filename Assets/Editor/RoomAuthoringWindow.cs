@@ -44,6 +44,9 @@ namespace BackroomsSurvival.EditorTools
         private int _tab;
         private Vector2 _scroll;
 
+        private void OnEnable() => SceneView.duringSceneGui += OnSceneGUI;
+        private void OnDisable() => SceneView.duringSceneGui -= OnSceneGUI;
+
         private void OnGUI()
         {
             // La barra de acción va ARRIBA y fuera de las pestañas: crear, encuadrar y ver el
@@ -215,21 +218,65 @@ namespace BackroomsSurvival.EditorTools
 
             EditorGUILayout.Space();
             _def.planMode = (RoomDefinition.PlanMode)EditorGUILayout.EnumPopup(
-                new GUIContent("Plan", "Polygon = round/boxy convex plans. Blocks = bite tiles out for L / T / U."),
+                new GUIContent("Plan",
+                    "Polygon = round/boxy convex plans. Blocks = bite tiles out for L / T / U. " +
+                    "Manual = dibujada a mano con tiradores en la vista de escena."),
                 _def.planMode);
 
-            if (_def.planMode == RoomDefinition.PlanMode.Polygon)
+            switch (_def.planMode)
             {
-                _def.sides = EditorGUILayout.IntSlider(
-                    new GUIContent("Sides", "4 = boxy. Raise it to round the plan off."),
-                    _def.sides, RoomDefinition.MinSides, RoomDefinition.MaxSides);
-                _def.squareness = EditorGUILayout.Slider(
-                    new GUIContent("Squareness", "0 = round, 1 = the footprint rectangle."),
-                    _def.squareness, 0f, 1f);
+                case RoomDefinition.PlanMode.Polygon:
+                    _def.sides = EditorGUILayout.IntSlider(
+                        new GUIContent("Sides", "4 = boxy. Raise it to round the plan off."),
+                        _def.sides, RoomDefinition.MinSides, RoomDefinition.MaxSides);
+                    _def.squareness = EditorGUILayout.Slider(
+                        new GUIContent("Squareness", "0 = round, 1 = the footprint rectangle."),
+                        _def.squareness, 0f, 1f);
+                    break;
+                case RoomDefinition.PlanMode.Blocks:
+                    DrawNotches();
+                    break;
+                default:
+                    DrawManualContour();
+                    break;
             }
-            else
+        }
+
+        /// <summary>
+        /// Planta dibujada a mano: un tirador esférico por vértice en la vista de escena
+        /// (arrastrable), un cubito rojo encima para borrarlo, y puntos amarillos a media
+        /// arista para insertar uno nuevo — todo dibujado en <see cref="OnSceneGUI"/>. Aquí solo
+        /// vive lo que no cabe en la vista de escena: el arranque y el conteo.
+        /// </summary>
+        private void DrawManualContour()
+        {
+            EditorGUILayout.HelpBox(
+                "Arrastra los puntos en la vista de escena. Cubito rojo encima de un punto = "
+                + "borrarlo. Punto amarillo a media arista = insertar uno ahí.", MessageType.None);
+
+            EditorGUILayout.LabelField("Points", _def.manualContour.Length.ToString());
+
+            using (new EditorGUILayout.HorizontalScope())
             {
-                DrawNotches();
+                if (GUILayout.Button("Start from Polygon shape"))
+                {
+                    _def.planMode = RoomDefinition.PlanMode.Polygon;
+                    _def.manualContour = (Vector2[])_def.ProceduralContour().Clone();
+                    _def.planMode = RoomDefinition.PlanMode.Manual;
+                    RebuildIfLive();
+                }
+                if (GUILayout.Button("Start from Blocks shape"))
+                {
+                    _def.planMode = RoomDefinition.PlanMode.Blocks;
+                    _def.manualContour = (Vector2[])_def.ProceduralContour().Clone();
+                    _def.planMode = RoomDefinition.PlanMode.Manual;
+                    RebuildIfLive();
+                }
+            }
+            if (_def.manualContour.Length > 0 && GUILayout.Button("Clear points"))
+            {
+                _def.manualContour = System.Array.Empty<Vector2>();
+                RebuildIfLive();
             }
         }
 
@@ -921,6 +968,87 @@ namespace BackroomsSurvival.EditorTools
         private void RebuildIfLive()
         {
             if (_preview != null) Rebuild();
+        }
+
+        /// <summary>
+        /// Tiradores de la planta manual, dibujados en la vista de escena. Necesitan una
+        /// PREVIEW viva porque los puntos del modelo son locales (XZ, relativos al centro de la
+        /// sala) y el tirador se mueve en mundo — sin el transform de la preview no hay a qué
+        /// convertir.
+        ///
+        /// Un cubito ROJO encima de cada punto lo borra al pulsarlo; un punto AMARILLO a media
+        /// arista inserta uno nuevo ahí — el mismo par de gestos que "añadir con un botón,
+        /// quitar con ×" que ya usa el resto de la ventana, solo que en 3D.
+        /// </summary>
+        private void OnSceneGUI(SceneView view)
+        {
+            if (_def.planMode != RoomDefinition.PlanMode.Manual || _preview == null) return;
+            var pts = _def.manualContour;
+            if (pts == null || pts.Length == 0) return;
+
+            var tf = _preview.transform;
+            bool changed = false;
+            int deleteAt = -1, insertAfter = -1;
+
+            for (int i = 0; i < pts.Length; i++)
+            {
+                Vector3 world = tf.TransformPoint(new Vector3(pts[i].x, 0f, pts[i].y));
+                float size = HandleUtility.GetHandleSize(world);
+
+                Handles.color = Color.yellow;
+                EditorGUI.BeginChangeCheck();
+                Vector3 moved = Handles.FreeMoveHandle(world, size * 0.08f, Vector3.zero, Handles.SphereHandleCap);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    Vector3 local = tf.InverseTransformPoint(moved);
+                    pts[i] = new Vector2(local.x, local.z);
+                    changed = true;
+                }
+                Handles.Label(world + Vector3.up * (size * 0.3f), i.ToString());
+
+                // Cubito rojo para borrar, con un mínimo de 3 puntos: menos de eso ya no es una
+                // planta, y ProceduralContour degradaría en silencio a un resultado que nadie pidió.
+                if (pts.Length > 3)
+                {
+                    Handles.color = Color.red;
+                    Vector3 delPos = world + Vector3.up * (size * 0.55f);
+                    if (Handles.Button(delPos, Quaternion.identity, size * 0.1f, size * 0.15f, Handles.CubeHandleCap))
+                        deleteAt = i;
+                }
+            }
+
+            // Puntos amarillos a media arista: insertar. Se dibujan en una segunda pasada para
+            // no mezclar sus índices con los de borrado de la primera.
+            Handles.color = new Color(1f, 0.85f, 0.2f, 0.85f);
+            for (int i = 0; i < pts.Length; i++)
+            {
+                Vector2 mid = (pts[i] + pts[(i + 1) % pts.Length]) * 0.5f;
+                Vector3 world = tf.TransformPoint(new Vector3(mid.x, 0f, mid.y));
+                float size = HandleUtility.GetHandleSize(world);
+                if (Handles.Button(world, Quaternion.identity, size * 0.05f, size * 0.1f, Handles.DotHandleCap))
+                    insertAfter = i;
+            }
+
+            if (deleteAt >= 0)
+            {
+                var list = new List<Vector2>(pts);
+                list.RemoveAt(deleteAt);
+                _def.manualContour = list.ToArray();
+                changed = true;
+            }
+            else if (insertAfter >= 0)
+            {
+                var list = new List<Vector2>(pts);
+                list.Insert(insertAfter + 1, (pts[insertAfter] + pts[(insertAfter + 1) % pts.Length]) * 0.5f);
+                _def.manualContour = list.ToArray();
+                changed = true;
+            }
+
+            if (changed)
+            {
+                RebuildIfLive();
+                Repaint();
+            }
         }
 
         /// <summary>Crea el objeto de previsualización si no existe y (re)genera su malla.</summary>
