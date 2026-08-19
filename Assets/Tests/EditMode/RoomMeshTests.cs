@@ -650,6 +650,36 @@ namespace BackroomsSurvival.Tests
             AssertRoom("manual contour with door and pit", d);
         }
 
+        /// <summary>
+        /// Un lazo/mariposa dibujado a mano (dos aristas no adyacentes que se cruzan) tiene que
+        /// detectarse: el recorte de orejas puede triangularlo "bien" de todas formas, así que
+        /// esta comprobación es la ÚNICA red antes de guardar una sala con pared cruzada.
+        /// </summary>
+        [Test]
+        public void Bowtie_manual_contour_is_detected_as_self_intersecting()
+        {
+            // Cuadrado con dos vértices intercambiados: (1,1)-(1,-1) y luego (-1,1)-(-1,-1) en vez
+            // de recorrer el perímetro, así que las dos "diagonales" opuestas se cruzan en el medio.
+            var bowtie = new[]
+            {
+                new Vector2(-1f, -1f), new Vector2(1f, 1f), new Vector2(1f, -1f), new Vector2(-1f, 1f),
+            };
+            Assert.IsTrue(RoomDefinition.ContourSelfIntersects(bowtie));
+        }
+
+        [Test]
+        public void Simple_manual_contour_is_not_flagged_as_self_intersecting()
+        {
+            var simple = new RoomDefinition { heightMeters = 3f };
+            simple.planMode = RoomDefinition.PlanMode.Manual;
+            simple.manualContour = new[] { new Vector2(-5f, -4f), new Vector2(5f, -4f), new Vector2(0f, 5f) };
+            Assert.IsFalse(RoomDefinition.ContourSelfIntersects(simple.InnerContour()));
+
+            var L = Blocks(6, 5, new RoomDefinition.Notch { tileX = 3, tileZ = 3, tilesX = 3, tilesZ = 2 });
+            Assert.IsFalse(RoomDefinition.ContourSelfIntersects(L.InnerContour()),
+                "a non-convex but simple L-shape is not a self-intersection");
+        }
+
         // ── entreplantas ──────────────────────────────────────────────────────
 
         [Test]
@@ -798,6 +828,60 @@ namespace BackroomsSurvival.Tests
             Vector2 mid = WallMid(doored, 0, 0.5f);
             Assert.IsFalse(Inside(cd, new Vector3(mid.x, 1.2f, mid.y)), "the doorway is blocked");
             Assert.IsTrue(Inside(cd, new Vector3(mid.x, 3.2f, mid.y)), "the lintel is not solid");
+        }
+
+        /// <summary>Una reja bloquea el paso aunque la malla dibuje un hueco real cruzado por
+        /// barrotes: para la colisión NO es una abertura. Sin esto el jugador atraviesa los
+        /// barrotes que ve dibujados.</summary>
+        [Test]
+        public void Collision_blocks_a_grated_window()
+        {
+            var d = Box(4, 4);
+            d.holes = new[] { Window(0, 0.5f) };
+            d.holes[0].grateBars = 4;
+            AssertRoom("grated window", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 mid = WallMid(d, 0, 0.5f);
+            // Window: baseY 1.2, height 1.2 -> mitad de la abertura a Y=1.8.
+            Assert.IsTrue(Inside(cb, new Vector3(mid.x, 1.8f, mid.y)),
+                "a grated window has no collider -- walks straight through the bars");
+        }
+
+        /// <summary>Un pozo SIN FONDO con profundidad casi nula sigue siendo un pozo abierto (la
+        /// profundidad "no tiene efecto" con bottomless, según su propio tooltip): la losa del
+        /// suelo tiene que abrirse igual que si tuviera 2,5 m.</summary>
+        [Test]
+        public void Collision_matches_a_bottomless_pit_at_near_zero_depth()
+        {
+            var pit = Box(4, 4);
+            pit.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 0f, 0f) };
+            pit.floorHoles[0].bottomless = true;
+            var cb = RoomColliderBuilder.Build(pit);
+            Assert.IsFalse(Inside(cb, new Vector3(1f, -0.1f, 1f)),
+                "the floor slab is still solid over a bottomless pit with near-zero depth");
+        }
+
+        /// <summary>
+        /// Un hueco alto bajo techo inclinado se recorta al MISMO tope en la malla y en la
+        /// colisión (minCeil - dintel mínimo), no contra la altura nominal: si el collider usara
+        /// un tope distinto, quedaría hueco de colisión justo donde la malla ya pinta pared
+        /// sólida — pared que se atraviesa aunque se vea entera.
+        /// </summary>
+        [Test]
+        public void Collision_clips_a_tall_hole_to_the_tilted_ceiling_like_the_mesh_does()
+        {
+            var d = Box(6, 5);
+            d.ceilingTilt = 30f;
+            d.holes = new[] { new RoomDefinition.WallHole
+                { side = 0, along = 0.5f, baseY = 0f, width = 1.6f, height = 10f } };
+            AssertRoom("tall hole under a tilted ceiling", d);
+
+            float minCeil = d.MinCeilingOver(d.InnerContour());
+            Vector2 mid = WallMid(d, 0, 0.5f);
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(mid.x, minCeil - 0.02f, mid.y)),
+                "the collider left the hole open above the mesh's clipped top");
         }
 
         // ── plantas NO convexas ───────────────────────────────────────────────
