@@ -293,10 +293,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public float sizeX = 3f;
             public float sizeZ = 3f;
 
-            /// <summary>Cuánto se baja desde el suelo de la sala, en metros.</summary>
+            /// <summary>Cuánto se baja desde el suelo de la sala, en metros. Sin efecto si
+            /// <see cref="bottomless"/> está activo.</summary>
             public float depth = 2.5f;
 
             public float yawDegrees;
+
+            /// <summary>
+            /// Sin fondo: el agujero atraviesa el grosor del suelo de lado a lado y no hay nada
+            /// que lo cierre por abajo, ni pintado ni de colisión. Se sigue cayendo — a otra sala,
+            /// a otro nivel, o a nada si no hay nada debajo. <see cref="depth"/> deja de importar.
+            ///
+            /// Apagado (lo de siempre) el pozo tiene fondo propio a <see cref="depth"/> metros:
+            /// una losa en la que se aterriza y unas paredes que no se pueden atravesar de lado.
+            /// </summary>
+            public bool bottomless;
         }
 
         public WallHole[] holes = Array.Empty<WallHole>();

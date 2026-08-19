@@ -255,13 +255,20 @@ namespace BackroomsSurvival.EditorTools
                 var f = _def.floorHoles[i];
                 using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
+                    string kind = f.bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
                     if (!ItemHeader(ref _def.floorHoles, i, "f",
-                            $"#{i}  {f.sizeX:0.#} × {f.sizeZ:0.#} m, {f.depth:0.#} m deep")) continue;
+                            $"#{i}  {f.sizeX:0.#} × {f.sizeZ:0.#} m, {kind}")) continue;
                     f.position = EditorGUILayout.Vector2Field("Position (XZ)", f.position);
                     f.sizeX = EditorGUILayout.FloatField("Size X (m)", f.sizeX);
                     f.sizeZ = EditorGUILayout.FloatField("Size Z (m)", f.sizeZ);
-                    f.depth = EditorGUILayout.FloatField(
-                        new GUIContent("Depth (m)", "How far down it goes from the room floor."), f.depth);
+                    f.bottomless = EditorGUILayout.Toggle(
+                        new GUIContent("Bottomless",
+                            "Sin fondo: atraviesa el suelo de lado a lado, ni pintado ni "
+                            + "colision. Se sigue cayendo -- a otra sala, a otro nivel, o a nada."),
+                        f.bottomless);
+                    using (new EditorGUI.DisabledScope(f.bottomless))
+                        f.depth = EditorGUILayout.FloatField(
+                            new GUIContent("Depth (m)", "How far down it goes from the room floor."), f.depth);
                     f.yawDegrees = EditorGUILayout.Slider("Yaw", f.yawDegrees, -180f, 180f);
                 }
             }

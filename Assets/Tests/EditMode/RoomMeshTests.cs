@@ -262,6 +262,70 @@ namespace BackroomsSurvival.Tests
             AssertRoom("pit next to a door", d);
         }
 
+        // ── pozos sin fondo ───────────────────────────────────────────────────
+
+        /// <summary>Un pozo <c>bottomless</c> es un agujero limpio: la malla sigue siendo un
+        /// cascarón cerrado (el tubo conecta la tapa de arriba con la de abajo directamente,
+        /// sin fondo propio), pero no hay ningún vértice en su profundidad — ahí no hay nada.</summary>
+        [Test]
+        public void Bottomless_pit_is_a_clean_hole_with_no_floor_vertex()
+        {
+            var d = Box(4, 4);
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            d.floorHoles[0].bottomless = true;
+            var m = AssertRoom("bottomless pit", d);
+            Assert.IsFalse(HasVertexY(m, -2.5f), "bottomless still drew a floor at `depth`");
+        }
+
+        [Test]
+        public void Bottomless_pit_has_no_collision_to_land_on()
+        {
+            var d = Box(4, 4);
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            d.floorHoles[0].bottomless = true;
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsFalse(Inside(cb, new Vector3(1f, -2.5f, 1f)), "something caught the fall");
+            Assert.IsFalse(Inside(cb, new Vector3(1f, -20f, 1f)), "something caught the fall, further down");
+        }
+
+        /// <summary>El contraste que motiva la opción: un pozo NORMAL sí tiene un fondo en el que
+        /// aterrizar y paredes que no se pueden atravesar de lado. Antes de esto ninguno de los
+        /// dos existía en colisión — visualmente había un suelo al fondo del pozo que no
+        /// detenía a nadie.</summary>
+        [Test]
+        public void Normal_pit_has_a_floor_and_walls_to_land_on()
+        {
+            var d = Box(4, 4);
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(1f, -2.5f - 0.05f, 1f)), "no floor at the bottom of the pit");
+            // Justo dentro del hueco en XZ pero a la altura del suelo de la sala: si no hay pared
+            // de pozo, se atravesaria de lado sin tocar el fondo.
+            Assert.IsTrue(Inside(cb, new Vector3(1f - 1.5f + 0.02f, -1f, 1f)), "no wall on the side of the shaft");
+        }
+
+        [Test]
+        public void Bottomless_pit_on_a_round_room()
+        {
+            var d = new RoomDefinition { tilesX = 5, tilesZ = 5, sides = 16, squareness = 0f, heightMeters = 4f };
+            d.floorHoles = new[] { Pit(Vector2.zero, 4f, 4f, 3f, 0f) };
+            d.floorHoles[0].bottomless = true;
+            AssertRoom("bottomless pit in round room", d);
+        }
+
+        [Test]
+        public void Bottomless_pit_next_to_a_normal_pit()
+        {
+            var d = Box(6, 5);
+            d.floorHoles = new[]
+            {
+                Pit(new Vector2(-6f, 0f), 3f, 3f, 2f, 0f),
+                Pit(new Vector2(6f, 0f), 2f, 4f, 3.5f, 25f),
+            };
+            d.floorHoles[1].bottomless = true;
+            AssertRoom("bottomless pit next to a normal pit", d);
+        }
+
         // ── colisión coherente con lo que se ve ───────────────────────────────
 
         /// <summary>El modo de fallo peligroso del sistema: la malla dibuja suelo sólido donde el

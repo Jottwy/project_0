@@ -45,6 +45,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // posible aquí porque el jugador ve una cosa y el juego hace otra.
             AddFloorSlab(boxes, def, bb, t, yBottom, yFloor);
             AddCeilingSlab(boxes, def, bb, t);
+            AddPitBoxes(boxes, def, yFloor, t);
 
             int n = inner.Length;
             // La MISMA resolución que usa la malla, no una copia: cuando eran dos bucles gemelos,
@@ -270,6 +271,42 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// eligieron cajas. Cada tira se coloca a la altura MAS BAJA de su tramo: se choca un
         /// poco antes de tocar el techo pintado, nunca se atraviesa.
         /// </summary>
+        /// <summary>
+        /// Lo que hay DENTRO de un pozo: el fondo en el que se aterriza y las cuatro paredes del
+        /// hueco, para no salirse de lado mientras se está dentro. <see cref="AddFloorSlab"/> ya
+        /// abre el agujero en la losa de arriba — esto es lo que hace que abajo haya algo que no
+        /// sea caer para siempre.
+        ///
+        /// Un pozo <see cref="RoomDefinition.FloorHole.bottomless"/> no añade nada aquí a
+        /// propósito: es un agujero limpio, se sigue cayendo.
+        /// </summary>
+        private static void AddPitBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition def, float yFloor, float t)
+        {
+            if (def.floorHoles == null) return;
+            foreach (var f in def.floorHoles)
+            {
+                if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f) continue;
+                if (f.bottomless || f.depth <= 0.01f) continue;
+
+                float yPit = yFloor - f.depth;
+                boxes.Add(Box(new Vector3(f.position.x, yPit - t * 0.5f, f.position.y),
+                    new Vector3(f.sizeX, t, f.sizeZ), f.yawDegrees));
+
+                var corners = RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees);
+                for (int i = 0; i < 4; i++)
+                {
+                    Vector2 a = corners[i], b = corners[(i + 1) % 4];
+                    float len = Vector2.Distance(a, b);
+                    if (len < 1e-4f) continue;
+                    Vector2 dir = (b - a) / len;
+                    float yaw = Mathf.Atan2(-dir.y, dir.x) * Mathf.Rad2Deg;
+                    Vector2 mid = (a + b) * 0.5f;
+                    boxes.Add(Box(new Vector3(mid.x, (yPit + yFloor) * 0.5f, mid.y),
+                        new Vector3(len, yFloor - yPit, t), yaw));
+                }
+            }
+        }
+
         private static void AddCeilingSlab(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
             Bounds bb, float t)
         {
