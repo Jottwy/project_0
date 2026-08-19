@@ -185,7 +185,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // hueco deja de ser "dos cascarones anidados" y pasa a ser una sola superficie con
             // un túnel — separarlas dejaría el túnel sin cerrar.
             AddWalls(inner, outer, sideHoles, sideCuts, sideCutsOut, innerYCuts, outerYCuts, t,
-                ceilAt, topAt);
+                ceilAt, topAt, def.trimEnabled);
 
             // Columnas: cada una es su propio prisma cerrado dentro de la cavidad, así que no
             // interfieren con la estanqueidad del resto.
@@ -566,7 +566,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private static void AddWalls(Vector2[] inner, Vector2[] outer, List<HoleRect>[] sideHoles,
             List<float>[] sideCuts, List<float>[] sideCutsOut,
             List<float> innerYCuts, List<float> outerYCuts, float thickness,
-            System.Func<Vector2, float> ceilAt, System.Func<Vector2, float> topAt)
+            System.Func<Vector2, float> ceilAt, System.Func<Vector2, float> topAt, bool trim)
         {
             int n = inner.Length;
             for (int i = 0; i < n; i++)
@@ -597,6 +597,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 {
                     AddJamb(i0, i1, o0, o1, holes[k], uCuts, innerYCuts);
                     AddGrate(i0, i1, o0, o1, holes[k], holes[k].bars, thickness);
+                }
+
+                if (trim)
+                {
+                    AddBaseboard(i0, i1, holes);
+                    for (int k = 0; k < holes.Count; k++)
+                        AddHoleCasing(i0, i1, holes[k]);
                 }
             }
         }
@@ -1034,6 +1041,125 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 float yaw = Mathf.Atan2(-dir.y, dir.x) * Mathf.Rad2Deg;
                 AddClosedPrism(BoxCorners(centre, BarWidth, thickness, yaw), hr.y0, hr.y1);
             }
+        }
+
+        /// <summary>Alto del rodapié. Público porque los tests lo necesitan para sondear una
+        /// altura exacta sin duplicar el número a mano.</summary>
+        public const float TrimHeight = 0.12f;
+        private const float TrimDepth = 0.02f;
+        private const float TrimWidth = 0.05f;
+
+        /// <summary>
+        /// Separación mínima para que una tira de moldura no coincida arista por arista con
+        /// algo que YA está ahí — el remate suelo-pared de la sala, o el forro de una jamba de
+        /// pared (<see cref="AddJamb"/>). Los dos son cierres de verdad, no huecos: una tapa de
+        /// más justo encima duplica esa arista en vez de cerrar nada. 5 mm es invisible.
+        /// </summary>
+        private const float TrimSeamGap = 0.005f;
+
+        /// <summary>Cuánto para el rodapié antes de la esquina de su propia pared — ver el
+        /// porqué en <see cref="AddBaseboard"/>.</summary>
+        private const float TrimCornerGap = 0.03f;
+
+        private static readonly List<float> _baseboardCuts = new List<float>();
+
+        /// <summary>
+        /// Rodapié: una tira maciza al pie de la pared, hacia dentro de la sala. Los boquetes
+        /// que llegan al suelo (puertas) lo interrumpen; los que no (ventanas) lo dejan pasar
+        /// por debajo sin cortarlo — un rodapié no se para para una ventana.
+        ///
+        /// Reusa <see cref="AddClosedPrism"/> para el volumen: es EL MISMO problema que un
+        /// bloque (una caja cerrada, sola, sin compartir aristas con nadie), así que no hace
+        /// falta reinventar el cierre.
+        /// </summary>
+        private static void AddBaseboard(Vector2 p0, Vector2 p1, List<HoleRect> holes)
+        {
+            float len = Vector2.Distance(p0, p1);
+            if (len < 1e-4f) return;
+
+            // Cada pared para su rodapié un poco ANTES de su propia esquina: la pieza de esta
+            // pared y la de la vecina, sin este margen, comparten el mismo vértice de esquina
+            // en su tapa del extremo -- dos cajas independientes con una arista IDÉNTICA ahí,
+            // que es duplicarla, no cerrarla (visto primero como 8 aristas duplicadas en una
+            // caja lisa de 4 esquinas, ninguna abierta). Con el margen cada pieza es su propia
+            // caja cerrada de verdad, sin vértice que le pueda coincidir a nadie más.
+            float cornerMargin = Mathf.Clamp(TrimCornerGap / len, 0.001f, 0.45f);
+
+            _baseboardCuts.Clear();
+            _baseboardCuts.Add(cornerMargin);
+            _baseboardCuts.Add(1f - cornerMargin);
+            foreach (var h in holes)
+                if (h.y0 <= 1e-4f)
+                {
+                    _baseboardCuts.Add(Mathf.Clamp(h.u0, cornerMargin, 1f - cornerMargin));
+                    _baseboardCuts.Add(Mathf.Clamp(h.u1, cornerMargin, 1f - cornerMargin));
+                }
+            _baseboardCuts.Sort();
+            for (int i = _baseboardCuts.Count - 1; i > 0; i--)
+                if (_baseboardCuts[i] - _baseboardCuts[i - 1] < 1e-4f) _baseboardCuts.RemoveAt(i);
+
+            for (int k = 0; k < _baseboardCuts.Count - 1; k++)
+            {
+                float ua = _baseboardCuts[k], ub = _baseboardCuts[k + 1];
+                if (ub - ua < 1e-4f) continue;
+
+                float mid = (ua + ub) * 0.5f;
+                bool blocked = false;
+                foreach (var h in holes)
+                    if (h.y0 <= 1e-4f && mid > h.u0 && mid < h.u1) { blocked = true; break; }
+                if (blocked) continue;
+
+                Vector2 a = Vector2.Lerp(p0, p1, ua), b = Vector2.Lerp(p0, p1, ub);
+                // Empieza un pelo por encima del suelo, no exactamente en él: a Y=0 el borde
+                // exterior de esta caja (de `a` a `b`) cae en las MISMAS dos esquinas que ya usa
+                // el remate suelo-pared de la sala -- mismo segmento, mismos extremos -- y una
+                // segunda tapa ahí duplica esa arista en vez de cerrar nada (30 aristas
+                // duplicadas en una caja lisa, ninguna abierta: el triángulo de más, no de
+                // menos). Con el hueco no se ve: es más fino que el rodapié se separa del propio
+                // rodapié real.
+                AddClosedPrism(TrimRect(a, b, TrimDepth), TrimSeamGap, TrimHeight);
+            }
+        }
+
+        /// <summary>
+        /// Moldura alrededor de un boquete: dos jambas y un dintel, más un umbral si no llega al
+        /// suelo (una puerta no lleva umbral — es donde se anda). Cuatro cajas sueltas, no una
+        /// pieza en L: es como se ve una moldura de verdad, a tope o a inglete pero nunca de una
+        /// sola pieza continua.
+        /// </summary>
+        private static void AddHoleCasing(Vector2 p0, Vector2 p1, HoleRect hr)
+        {
+            Vector2 along = (p1 - p0).normalized;
+            // Un pelo separada del propio borde del hueco: justo ahí ya hay una jamba (el forro
+            // del grosor del muro, AddJamb) con una arista exactamente en ese punto — pegar la
+            // moldura al ras la duplicaría en vez de apoyarse en ella.
+            Vector2 ia = Vector2.Lerp(p0, p1, hr.u0) - along * TrimSeamGap;
+            Vector2 ib = Vector2.Lerp(p0, p1, hr.u1) + along * TrimSeamGap;
+
+            AddClosedPrism(TrimRect(ia - along * TrimWidth, ia, TrimDepth), hr.y0, hr.y1);
+            AddClosedPrism(TrimRect(ib, ib + along * TrimWidth, TrimDepth), hr.y0, hr.y1);
+
+            // El dintel y el umbral, separados de las jambas por el mismo hueco: sin él, la
+            // esquina donde jamba y dintel se tocan comparte una arista EXACTA entre las dos
+            // cajas (misma Y, mismas dos esquinas en planta) — duplicarla, no cerrarla. Una
+            // moldura de verdad tampoco es una sola pieza en L por cada esquina; se ve bien con
+            // el hueco.
+            AddClosedPrism(TrimRect(ia - along * TrimWidth, ib + along * TrimWidth, TrimDepth),
+                hr.y1 + TrimSeamGap, hr.y1 + TrimWidth);
+            if (hr.y0 > 0.01f)
+                AddClosedPrism(TrimRect(ia - along * TrimWidth, ib + along * TrimWidth, TrimDepth),
+                    hr.y0 - TrimWidth, hr.y0 - TrimSeamGap);
+        }
+
+        /// <summary>El footprint de una tira de moldura: de <paramref name="a"/> a
+        /// <paramref name="b"/> por la cara de la pared, y otro tanto hacia DENTRO de la sala.
+        /// El sentido de giro no importa — <see cref="AddClosedPrism"/> decide la normal de
+        /// cada cara por su propio centroide, no por cómo vengan estas cuatro esquinas.</summary>
+        private static Vector2[] TrimRect(Vector2 a, Vector2 b, float depth)
+        {
+            Vector2 outward = RoomDefinition.OutwardNormal(a, b);
+            Vector2 aIn = a - outward * depth, bIn = b - outward * depth;
+            return new[] { a, b, bIn, aIn };
         }
 
         private static Vector3 V(Vector2 p, float y) => new Vector3(p.x, y, p.y);

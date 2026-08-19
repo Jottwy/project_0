@@ -105,6 +105,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float wallThickness = GridVisualConstants.WallThickness;
 
         /// <summary>
+        /// Rodapié al pie de cada pared y molduras alrededor de cada boquete. Apagado (lo de
+        /// siempre) no cambia nada — ni una sala ya horneada, ni el resto de esta clase.
+        /// Encendido es geometría de más, no un parámetro que otra cosa lea: es lo que separa
+        /// "caja con agujeros" de "edificio".
+        /// </summary>
+        public bool trimEnabled;
+
+        /// <summary>
         /// Cómo se decide la planta.
         ///
         /// <c>Polygon</c> es lo de siempre: un polígono de N lados mezclado con el rectángulo del

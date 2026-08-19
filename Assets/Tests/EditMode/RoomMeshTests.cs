@@ -452,6 +452,93 @@ namespace BackroomsSurvival.Tests
             AssertRoom("bottomless pit next to a normal pit", d);
         }
 
+        // ── rodapié y molduras ───────────────────────────────────────────────
+
+        /// <summary>Apagado (el valor por defecto) no cambia nada: una sala ya horneada no
+        /// cambia de forma el día que este parámetro se añade.</summary>
+        [Test]
+        public void Trim_disabled_leaves_the_mesh_untouched()
+        {
+            var d = Box(4, 3);
+            d.trimEnabled = false;
+            var mOff = RoomMeshBuilder.Build(d);
+            var mBaseline = RoomMeshBuilder.Build(Box(4, 3));
+            Assert.AreEqual(mBaseline.vertexCount, mOff.vertexCount);
+        }
+
+        [Test]
+        public void Trim_adds_baseboard_geometry()
+        {
+            var plain = Box(4, 3);
+            var trimmed = Box(4, 3); trimmed.trimEnabled = true;
+            var mPlain = AssertRoom("plain box", plain);
+            var mTrimmed = AssertRoom("box with trim", trimmed);
+            Assert.Greater(mTrimmed.vertexCount, mPlain.vertexCount, "trim added no geometry at all");
+        }
+
+        [Test]
+        public void Trim_with_a_door_and_a_window()
+        {
+            var d = Box(5, 4);
+            d.trimEnabled = true;
+            d.holes = new[] { Door(0, 0.5f), Window(1, 0.5f) };
+            AssertRoom("trim with door and window", d);
+        }
+
+        /// <summary>Una ventana no para el rodapié: sigue de largo por debajo, sin ningún
+        /// vértice en el borde del hueco. Una puerta sí lo corta ahí. Las coordenadas del borde
+        /// salen de <c>ResolveHoles</c> — el mismo cálculo que usa la malla — para no
+        /// aritmetizar a mano un número que la más mínima constante cambiada dejaría desfasado.</summary>
+        [Test]
+        public void Baseboard_continues_under_a_window_but_not_a_door()
+        {
+            var withDoor = Box(6, 5); withDoor.trimEnabled = true;
+            withDoor.holes = new[] { Door(0, 0.5f) };
+            var withWindow = Box(6, 5); withWindow.trimEnabled = true;
+            withWindow.holes = new[] { Window(0, 0.5f) };
+
+            var mDoor = AssertRoom("trim with door", withDoor);
+            var mWindow = AssertRoom("trim with window", withWindow);
+
+            Vector2[] inner = withDoor.InnerContour(); // misma planta en los dos, mismo Box(6,5)
+            var perSide = new List<RoomDefinition.HoleRect>[inner.Length];
+            for (int i = 0; i < perSide.Length; i++) perSide[i] = new List<RoomDefinition.HoleRect>();
+
+            // A la altura del rodapié (RoomMeshBuilder.TrimHeight) y no al ras del suelo: ahí
+            // TODA pared tiene un vértice de la propia rejilla (innerYCuts siempre incluye
+            // Y=0), puerta o ventana o ninguna de las dos — sondear ahí daría un falso positivo
+            // que no viene del rodapié.
+            withDoor.ResolveHoles(inner, 0f, withDoor.heightMeters, perSide);
+            float doorU0 = perSide[0][0].u0;
+            Vector2 doorEdge = Vector2.Lerp(inner[0], inner[1], doorU0);
+            Assert.IsTrue(HasVertex(mDoor, doorEdge.x, RoomMeshBuilder.TrimHeight, doorEdge.y),
+                "the door should leave a baseboard piece boundary right at its own edge");
+
+            withWindow.ResolveHoles(inner, 0f, withWindow.heightMeters, perSide);
+            float windowU0 = perSide[0][0].u0;
+            Vector2 windowEdge = Vector2.Lerp(inner[0], inner[1], windowU0);
+            Assert.IsFalse(HasVertex(mWindow, windowEdge.x, RoomMeshBuilder.TrimHeight, windowEdge.y),
+                "a window should not cut the baseboard at all");
+        }
+
+        [Test]
+        public void Trim_on_an_L_shaped_room_with_holes_and_a_pit()
+        {
+            var d = Blocks(6, 5, new RoomDefinition.Notch { tileX = 3, tileZ = 3, tilesX = 3, tilesZ = 2 });
+            d.trimEnabled = true;
+            d.holes = new[] { Door(0, 0.5f), Window(2, 0.4f) };
+            d.floorHoles = new[] { Pit(new Vector2(-8f, -5f), 3f, 3f, 2f, 0f) };
+            AssertRoom("trimmed L-shape with holes and a pit", d);
+        }
+
+        [Test]
+        public void Trim_on_a_round_room()
+        {
+            var d = new RoomDefinition { tilesX = 5, tilesZ = 5, sides = 16, squareness = 0f, heightMeters = 4f };
+            d.trimEnabled = true;
+            AssertRoom("trimmed round room", d);
+        }
+
         // ── marcadores ────────────────────────────────────────────────────────
 
         /// <summary>Los marcadores no son geometría: la malla tiene que salir IDÉNTICA con o sin
