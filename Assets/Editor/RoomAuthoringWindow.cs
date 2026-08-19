@@ -854,6 +854,16 @@ namespace BackroomsSurvival.EditorTools
                 message = "Room parameters are not valid (size and height must be positive).";
                 return false;
             }
+            if (def.planMode == RoomDefinition.PlanMode.Manual
+                && RoomDefinition.ContourSelfIntersects(def.InnerContour()))
+            {
+                // El recorte de orejas no detecta un contorno cruzado por si solo (puede
+                // triangular "bien" de todas formas) -- sin este gate, un lazo dibujado a mano se
+                // colaria como sala valida con geometria de pared cruzada/basura.
+                message = "Manual contour is self-intersecting (two edges cross). Fix the shape " +
+                          "in the Scene view and try again.";
+                return false;
+            }
 
             BackroomsEditorFolders.EnsureFolder("Assets/Resources");
             BackroomsEditorFolders.EnsureFolder(RoomFolder);
@@ -881,7 +891,26 @@ namespace BackroomsSurvival.EditorTools
             // la mitad del sitio. Se genera UNA vez, al guardar — no en cada reconstrucción en
             // vivo del preview, que sería carísimo y para nada: el preview no se hornea.
             Unwrapping.GenerateSecondaryUVSet(mesh);
-            AssetDatabase.CreateAsset(mesh, meshPath);
+            // CreateAsset a secas rompe si NextFreeIndex reutiliza un indice cuyo .prefab se borro
+            // a mano pero cuyo _mesh.asset quedo huerfano (el Project no lo borra en cascada): el
+            // patron ya establecido en este repo (BackroomsWatchMeshApplier/BackroomsSprayModelSwapper)
+            // es cargar el existente y CopySerialized -- borrar+crear cambiaria el GUID y dejaria
+            // cualquier referencia externa rota.
+            var existingMesh = AssetDatabase.LoadAssetAtPath<Mesh>(meshPath);
+            if (existingMesh == null)
+            {
+                AssetDatabase.CreateAsset(mesh, meshPath);
+            }
+            else
+            {
+                EditorUtility.CopySerialized(mesh, existingMesh);
+                Object.DestroyImmediate(mesh);
+                mesh = existingMesh;
+                EditorUtility.SetDirty(mesh);
+                AssetDatabase.SaveAssets();
+                AssetDatabase.ImportAsset(meshPath, ImportAssetOptions.ForceUpdate);
+                mesh = AssetDatabase.LoadAssetAtPath<Mesh>(meshPath);
+            }
 
             var root = new GameObject(id);
             try
@@ -935,7 +964,12 @@ namespace BackroomsSurvival.EditorTools
                     doorLocalPosition = doorPos,
                     doorLocalForward = doorFwd,
                     collisionBoxes = boxes.ToArray(),
-                    definition = def,
+                    // CLON, no la referencia directa: `def` puede ser el `_def` VIVO de la
+                    // ventana, que se sigue mutando en las siguientes bakes de la misma sesion.
+                    // Guardar la referencia dejaria esta entrada (y cualquier otra que tambien
+                    // apunte a `_def`) apuntando silenciosamente a los parametros de la SIGUIENTE
+                    // sala horneada en vez de a los suyos propios.
+                    definition = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(def)),
                 });
                 EditorUtility.SetDirty(pool);
                 AssetDatabase.SaveAssets();
