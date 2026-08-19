@@ -43,6 +43,40 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public float wallThickness = GridVisualConstants.WallThickness;
 
         /// <summary>
+        /// Cómo se decide la planta.
+        ///
+        /// <c>Polygon</c> es lo de siempre: un polígono de N lados mezclado con el rectángulo del
+        /// footprint. Siempre CONVEXO, y es lo que da las plantas redondas.
+        ///
+        /// <c>Blocks</c> parte el footprint en celdas de tile y deja quitar bloques enteros
+        /// (<see cref="Notch"/>). Ahí salen las plantas en L, T, U o cruz — no convexas.
+        ///
+        /// Son dos modos y no un solo camino unificado a propósito: restar un rectángulo a un
+        /// polígono redondo pide booleanas de polígonos, que son frágiles justo en los casos
+        /// raros (el corte tangente, la esquina exacta). Sobre una rejilla de celdas la misma
+        /// operación es quitar celdas de una lista, y el contorno sale de recorrer el borde: no
+        /// hay caso raro que resolver.
+        /// </summary>
+        public enum PlanMode { Polygon, Blocks }
+
+        public PlanMode planMode = PlanMode.Polygon;
+
+        /// <summary>
+        /// Un mordisco al footprint, en TILES. Solo en <see cref="PlanMode.Blocks"/>.
+        /// Quitar una esquina da una L; dos opuestas, una U o una T.
+        /// </summary>
+        [Serializable]
+        public sealed class Notch
+        {
+            public int tileX;
+            public int tileZ;
+            [Min(1)] public int tilesX = 1;
+            [Min(1)] public int tilesZ = 1;
+        }
+
+        public Notch[] notches = Array.Empty<Notch>();
+
+        /// <summary>
         /// Un boquete en una pared: puerta, ventana, paso roto.
         ///
         /// NO se coloca con x/y/z sueltos, y es deliberado: con coordenadas libres se puede
@@ -469,7 +503,125 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             stairs = newStairs.ToArray();
         }
 
-        public Vector2[] InnerContour()
+        public Vector2[] InnerContour() =>
+            planMode == PlanMode.Blocks ? BlockContour() : PolygonContour();
+
+        /// <summary>
+        /// Contorno del modo BLOQUES: el footprint en celdas de tile menos las muescas, recorrido
+        /// por su borde.
+        ///
+        /// Se recogen las aristas de celda donde cambia dentro/fuera y se encadenan por sus
+        /// extremos hasta cerrar el bucle. Sin booleanas y sin casos raros: una arista de borde lo
+        /// es o no lo es. Los tramos rectos consecutivos se funden en uno solo — si no, una pared
+        /// de 6 tiles serían seis "lados" y cada boquete solo podría vivir dentro de uno.
+        ///
+        /// Degrada al polígono si las muescas dejan la sala vacía o partida en dos: media sala
+        /// suelta sería una sala que no se puede recorrer, y es mejor ignorar la muesca que
+        /// entregar geometría imposible.
+        /// </summary>
+        private Vector2[] BlockContour()
+        {
+            int nx = Mathf.Max(1, tilesX), nz = Mathf.Max(1, tilesZ);
+            var solid = new bool[nx, nz];
+            for (int x = 0; x < nx; x++)
+                for (int z = 0; z < nz; z++) solid[x, z] = true;
+
+            if (notches != null)
+                foreach (var t in notches)
+                {
+                    if (t == null) continue;
+                    for (int x = t.tileX; x < t.tileX + Mathf.Max(1, t.tilesX); x++)
+                        for (int z = t.tileZ; z < t.tileZ + Mathf.Max(1, t.tilesZ); z++)
+                            if (x >= 0 && x < nx && z >= 0 && z < nz) solid[x, z] = false;
+                }
+
+            if (!SingleConnectedRegion(solid, nx, nz)) return PolygonContour();
+
+            const float T = GridVisualConstants.TileSize;
+            float ox = -nx * T * 0.5f, oz = -nz * T * 0.5f;
+            Vector2 P(int gx, int gz) => new Vector2(ox + gx * T, oz + gz * T);
+
+            // Aristas de borde, orientadas de modo que el interior quede a la IZQUIERDA: así el
+            // bucle sale antihorario, que es lo que asume el resto del generador.
+            var next = new Dictionary<Vector2, Vector2>();
+            void Edge(Vector2 a, Vector2 b) { if (!next.ContainsKey(a)) next[a] = b; }
+
+            for (int x = 0; x < nx; x++)
+                for (int z = 0; z < nz; z++)
+                {
+                    if (!solid[x, z]) continue;
+                    bool left  = x > 0 && solid[x - 1, z];
+                    bool right = x < nx - 1 && solid[x + 1, z];
+                    bool down  = z > 0 && solid[x, z - 1];
+                    bool up    = z < nz - 1 && solid[x, z + 1];
+
+                    if (!down)  Edge(P(x, z),         P(x + 1, z));
+                    if (!right) Edge(P(x + 1, z),     P(x + 1, z + 1));
+                    if (!up)    Edge(P(x + 1, z + 1), P(x, z + 1));
+                    if (!left)  Edge(P(x, z + 1),     P(x, z));
+                }
+
+            if (next.Count < 4) return PolygonContour();
+
+            var loop = new List<Vector2>();
+            Vector2 start = default;
+            foreach (var kv in next) { start = kv.Key; break; }
+            Vector2 cur = start;
+            for (int guard = 0; guard <= next.Count; guard++)
+            {
+                loop.Add(cur);
+                if (!next.TryGetValue(cur, out Vector2 nxt)) return PolygonContour();
+                cur = nxt;
+                if (cur == start) break;
+            }
+            if (loop.Count < 4) return PolygonContour();
+
+            // Funde tramos rectos: sin esto cada tile sería un "lado" y un boquete no podría
+            // cruzar de uno al siguiente.
+            var merged = new List<Vector2>();
+            for (int i = 0; i < loop.Count; i++)
+            {
+                Vector2 prev = loop[(i - 1 + loop.Count) % loop.Count];
+                Vector2 here = loop[i];
+                Vector2 after = loop[(i + 1) % loop.Count];
+                Vector2 a = (here - prev).normalized, b = (after - here).normalized;
+                if (Mathf.Abs(a.x * b.y - a.y * b.x) > 1e-4f) merged.Add(here); // esquina real
+            }
+            return merged.Count >= 3 ? merged.ToArray() : PolygonContour();
+        }
+
+        /// <summary>¿Las celdas macizas forman UNA sola pieza pegada? Una muesca que parte la sala
+        /// en dos dejaría un trozo inalcanzable.</summary>
+        private static bool SingleConnectedRegion(bool[,] solid, int nx, int nz)
+        {
+            int total = 0, sx = -1, sz = -1;
+            for (int x = 0; x < nx; x++)
+                for (int z = 0; z < nz; z++)
+                    if (solid[x, z]) { total++; if (sx < 0) { sx = x; sz = z; } }
+            if (total < 1) return false;
+
+            var seen = new bool[nx, nz];
+            var stack = new Stack<(int, int)>();
+            stack.Push((sx, sz));
+            seen[sx, sz] = true;
+            int found = 0;
+            while (stack.Count > 0)
+            {
+                var (x, z) = stack.Pop();
+                found++;
+                void Try(int a, int b)
+                {
+                    if (a < 0 || a >= nx || b < 0 || b >= nz) return;
+                    if (!solid[a, b] || seen[a, b]) return;
+                    seen[a, b] = true;
+                    stack.Push((a, b));
+                }
+                Try(x - 1, z); Try(x + 1, z); Try(x, z - 1); Try(x, z + 1);
+            }
+            return found == total;
+        }
+
+        private Vector2[] PolygonContour()
         {
             int n = Mathf.Clamp(sides, MinSides, MaxSides);
             float a = WidthMeters * 0.5f;

@@ -167,58 +167,76 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             int guard = n * n + 16;
             while (idx.Count > 3 && guard-- > 0)
             {
-                bool clipped = false;
-                for (int i = 0; i < idx.Count; i++)
-                {
-                    int ia = idx[(i - 1 + idx.Count) % idx.Count];
-                    int ib = idx[i];
-                    int ic = idx[(i + 1) % idx.Count];
-
-                    Vector2 a = poly[ia], b = poly[ib], c = poly[ic];
-                    float cross = Cross(b - a, c - a);
-                    if (cross < -Eps) continue; // reflejo: no es oreja
-
-                    // cross ~ 0 SÍ vale como oreja, y el triángulo plano se emite igualmente.
-                    // Dos motivos, y los dos importan:
-                    //  · el puente que cose cada agujero duplica dos posiciones a propósito, así
-                    //    que ahí el área es cero por construcción;
-                    //  · un lado recto subdividido por los cortes de sus boquetes tiene TODOS
-                    //    sus vértices intermedios colineales.
-                    // Descartar el vértice sin emitir el triángulo sería lo cómodo, y rompería la
-                    // costura: ese punto desaparecería del borde del suelo mientras la pared
-                    // sigue partida ahí, o sea una T-junction. Un triángulo de área cero no
-                    // dibuja nada y mantiene el borde intacto.
-
-                    bool blocked = false;
-                    if (cross > Eps)
-                        for (int k = 0; k < idx.Count && !blocked; k++)
-                        {
-                            int ip = idx[k];
-                            if (ip == ia || ip == ib || ip == ic) continue;
-                            Vector2 p = poly[ip];
-                            // Un vértice que COINCIDE con una esquina de la oreja no la invalida.
-                            // El puente duplica posiciones, y contarlas como "dentro" invalidaba
-                            // TODAS las orejas: el recorte no encontraba ninguna, se rendía, y el
-                            // suelo salía sin recortar mientras el collider sí abría el hueco —
-                            // suelo sólido a la vista por el que se caía uno.
-                            if ((p - a).sqrMagnitude < SameSq) continue;
-                            if ((p - b).sqrMagnitude < SameSq) continue;
-                            if ((p - c).sqrMagnitude < SameSq) continue;
-                            if (StrictlyInside(p, a, b, c)) blocked = true;
-                        }
-                    if (blocked) continue;
-
-                    triangles.Add(ia); triangles.Add(ib); triangles.Add(ic);
-                    idx.RemoveAt(i);
-                    clipped = true;
-                    break;
-                }
+                // DOS pasadas. En la primera solo valen orejas con área; solo si no queda
+                // ninguna se admite una plana.
+                //
+                // Importa en las plantas con entrantes. En una T hay cuatro vértices alineados
+                // (los dos brazos y las dos esquinas del pie), y en cuanto el recorte junta dos
+                // de ellos aparece una oreja plana que PUENTEA por debajo del vástago. Aceptarla
+                // pronto se lleva el vástago por delante sin triangularlo y deja un triángulo de
+                // 50 m² sobre la muesca: suelo donde no hay sala. Dejándola para el final, el
+                // vástago ya está resuelto y quitar ese vértice es inofensivo.
+                bool clipped = ClipOnce(poly, triangles, idx, allowFlat: false)
+                            || ClipOnce(poly, triangles, idx, allowFlat: true);
                 if (!clipped) return false; // sin orejas: entrada no simple
             }
 
             if (idx.Count == 3)
             {
                 triangles.Add(idx[0]); triangles.Add(idx[1]); triangles.Add(idx[2]);
+                return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Recorta UNA oreja si encuentra alguna valida. <paramref name="allowFlat"/> decide si se
+        /// admiten las de area cero.
+        /// </summary>
+        private static bool ClipOnce(List<Vector2> poly, List<int> triangles, List<int> idx,
+            bool allowFlat)
+        {
+            for (int i = 0; i < idx.Count; i++)
+            {
+                int ia = idx[(i - 1 + idx.Count) % idx.Count];
+                int ib = idx[i];
+                int ic = idx[(i + 1) % idx.Count];
+
+                Vector2 a = poly[ia], b = poly[ib], c = poly[ic];
+                float cross = Cross(b - a, c - a);
+                if (cross < -Eps) continue;   // reflejo: no es oreja
+
+                bool flat = cross <= Eps;
+                if (flat != allowFlat) continue;
+
+                // Una oreja PLANA se emite igualmente, no se descarta el vertice. El puente que
+                // cose cada agujero duplica posiciones a proposito, y un lado recto subdividido
+                // por sus boquetes tiene todos los vertices intermedios colineales: quitar el
+                // punto sin emitir el triangulo lo borraria del borde del suelo mientras la pared
+                // sigue partida ahi -- una T-junction. Un triangulo de area cero no dibuja nada y
+                // deja el borde intacto.
+                if (!flat)
+                {
+                    bool blocked = false;
+                    for (int k = 0; k < idx.Count && !blocked; k++)
+                    {
+                        int ip = idx[k];
+                        if (ip == ia || ip == ib || ip == ic) continue;
+                        Vector2 p = poly[ip];
+                        // Un vertice que COINCIDE con una esquina de la oreja no la invalida: el
+                        // puente duplica posiciones, y contarlas como "dentro" invalidaba TODAS
+                        // las orejas -- el recorte se rendia y el suelo salia sin recortar
+                        // mientras el collider si abria el hueco.
+                        if ((p - a).sqrMagnitude < SameSq) continue;
+                        if ((p - b).sqrMagnitude < SameSq) continue;
+                        if ((p - c).sqrMagnitude < SameSq) continue;
+                        if (StrictlyInside(p, a, b, c)) blocked = true;
+                    }
+                    if (blocked) continue;
+                }
+
+                triangles.Add(ia); triangles.Add(ib); triangles.Add(ic);
+                idx.RemoveAt(i);
                 return true;
             }
             return false;

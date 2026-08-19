@@ -127,14 +127,72 @@ namespace BackroomsSurvival.EditorTools
             EditorGUILayout.Space();
             _def.heightMeters = EditorGUILayout.FloatField(
                 new GUIContent("Height (m)"), _def.heightMeters);
-            _def.sides = EditorGUILayout.IntSlider(
-                new GUIContent("Sides", "4 = boxy. Raise it to round the plan off."),
-                _def.sides, RoomDefinition.MinSides, RoomDefinition.MaxSides);
-            _def.squareness = EditorGUILayout.Slider(
-                new GUIContent("Squareness", "0 = round, 1 = the footprint rectangle."),
-                _def.squareness, 0f, 1f);
             _def.wallThickness = EditorGUILayout.FloatField(
                 new GUIContent("Wall Thickness (m)"), _def.wallThickness);
+
+            EditorGUILayout.Space();
+            _def.planMode = (RoomDefinition.PlanMode)EditorGUILayout.EnumPopup(
+                new GUIContent("Plan", "Polygon = round/boxy convex plans. Blocks = bite tiles out for L / T / U."),
+                _def.planMode);
+
+            if (_def.planMode == RoomDefinition.PlanMode.Polygon)
+            {
+                _def.sides = EditorGUILayout.IntSlider(
+                    new GUIContent("Sides", "4 = boxy. Raise it to round the plan off."),
+                    _def.sides, RoomDefinition.MinSides, RoomDefinition.MaxSides);
+                _def.squareness = EditorGUILayout.Slider(
+                    new GUIContent("Squareness", "0 = round, 1 = the footprint rectangle."),
+                    _def.squareness, 0f, 1f);
+            }
+            else
+            {
+                DrawNotches();
+            }
+        }
+
+        /// <summary>
+        /// Muescas: bloques de tiles que se le quitan al footprint. Se miden en TILES y no en
+        /// metros porque el modo bloques trabaja sobre la rejilla — pedir 3,7 m de mordisco no
+        /// significaría nada.
+        /// </summary>
+        private void DrawNotches()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUILayout.LabelField($"Notches ({_def.notches.Length})", EditorStyles.boldLabel);
+                if (GUILayout.Button("+ Corner", GUILayout.Width(80)))
+                {
+                    // Nace mordiendo una esquina: es la muesca que da una L, la forma que
+                    // seguramente quieres la primera vez.
+                    ArrayUtility.Add(ref _def.notches, new RoomDefinition.Notch
+                    {
+                        tileX = Mathf.Max(0, _def.tilesX - Mathf.Max(1, _def.tilesX / 2)),
+                        tileZ = Mathf.Max(0, _def.tilesZ - Mathf.Max(1, _def.tilesZ / 2)),
+                        tilesX = Mathf.Max(1, _def.tilesX / 2),
+                        tilesZ = Mathf.Max(1, _def.tilesZ / 2),
+                    });
+                    RebuildIfLive();
+                }
+            }
+
+            EditorGUILayout.HelpBox(
+                "A notch that would empty the room or split it in two is ignored: the plan falls " +
+                "back to the polygon one rather than hand you an unreachable half.",
+                MessageType.None);
+
+            for (int i = 0; i < _def.notches.Length; i++)
+            {
+                var t = _def.notches[i];
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                {
+                    if (!ItemHeader(ref _def.notches, i, "n",
+                            $"#{i}  {t.tilesX}×{t.tilesZ} tiles at ({t.tileX}, {t.tileZ})")) continue;
+                    t.tileX = EditorGUILayout.IntSlider("Tile X", t.tileX, 0, Mathf.Max(0, _def.tilesX - 1));
+                    t.tileZ = EditorGUILayout.IntSlider("Tile Z", t.tileZ, 0, Mathf.Max(0, _def.tilesZ - 1));
+                    t.tilesX = EditorGUILayout.IntSlider("Width (tiles)", t.tilesX, 1, _def.tilesX);
+                    t.tilesZ = EditorGUILayout.IntSlider("Depth (tiles)", t.tilesZ, 1, _def.tilesZ);
+                }
+            }
         }
 
         private void GenerateRandom()
