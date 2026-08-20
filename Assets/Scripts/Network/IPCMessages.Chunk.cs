@@ -375,21 +375,31 @@ namespace BackroomsSurvival.Net
         public const int BuildRoomTiles = 3;
 
         /// <summary>
-        /// ADR-083 enmienda 1 — la SALA AUTORADA de este chunk, o `false` si no tiene.
-        /// `authoredRoomTileX`/`Z` son el tile (5 m) de la esquina de menor x/z de su FOOTPRINT (no
-        /// de la reserva), `authoredRoomEntry` el índice en `RoomPool.rooms` que dice qué prefab
-        /// instanciar, y `authoredRoomQuarter` el giro en cuartos de vuelta (0..3).
+        /// ADR-083 enmienda 1 — una SALA AUTORADA: `tileX`/`tileZ` son el tile (5 m) de la esquina
+        /// de menor x/z de su FOOTPRINT (no de la reserva), `entry` el índice en `RoomPool.rooms`
+        /// que dice qué prefab instanciar, y `quarter` el giro en cuartos de vuelta (0..3).
+        /// </summary>
+        public struct AuthoredRoom
+        {
+            public int tileX;
+            public int tileZ;
+            public int entry;
+            public int quarter;
+        }
+
+        /// <summary>
+        /// ADR-083 enmienda 3 — las salas autoradas de este chunk. Vacío o null si no tiene.
+        ///
+        /// PLURAL desde wire 39, que es la forma que el punto 2 de ADR-083 pedía desde el principio;
+        /// la enmienda 1 la estrechó a una sola porque su slice colocaba una sola. El ORDEN es
+        /// contrato: se instancia por índice de esta lista.
         ///
         /// Mismo criterio que `build_room` y por el mismo motivo. Hasta wire 37 el cliente elegía la
         /// sala por su cuenta, emparejando footprints contra las zonas selladas del backend; ese
         /// camino se retiró aquí. El servidor ya vació y cerró el hueco antes de mandar esto, así
         /// que el prefab cae exactamente donde hay sitio para él.
         /// </summary>
-        public bool hasAuthoredRoom;
-        public int authoredRoomTileX;
-        public int authoredRoomTileZ;
-        public int authoredRoomEntry;
-        public int authoredRoomQuarter;
+        public AuthoredRoom[] authoredRooms;
 
         /// <summary>
         /// Root-tagged message (ServerMessage::ChunkData, "type":"chunk_data") — reads the
@@ -462,21 +472,31 @@ namespace BackroomsSurvival.Net
                     }
                     m.hasBuildRoom = n >= 2;
                 }
-                else if (MsgPackReader.Is(k, "authored_room"))
+                else if (MsgPackReader.Is(k, "authored_rooms"))
                 {
-                    // [tile_x, tile_z, entry, quarter]. Misma disciplina que `build_room`: clave
-                    // aditiva, ausente en la inmensa mayoría de los chunks, y se consume TODO lo que
-                    // venga aunque sean más de cuatro para no descolocar el cursor.
-                    int n = r.ReadArrayHeader();
-                    for (int ai = 0; ai < n; ai++)
+                    // Lista de [tile_x, tile_z, entry, quarter]. Misma disciplina que `build_room`:
+                    // clave aditiva, ausente en la inmensa mayoría de los chunks, y se consume TODO
+                    // lo que venga —también los campos de más dentro de cada sala— para no
+                    // descolocar el cursor de lo que venga detrás.
+                    int rc = r.ReadArrayHeader();
+                    var rooms = new List<AuthoredRoom>(rc);
+                    for (int ri = 0; ri < rc; ri++)
                     {
-                        int v = (int)r.ReadInt();
-                        if (ai == 0) m.authoredRoomTileX = v;
-                        else if (ai == 1) m.authoredRoomTileZ = v;
-                        else if (ai == 2) m.authoredRoomEntry = v;
-                        else if (ai == 3) m.authoredRoomQuarter = v;
+                        int n = r.ReadArrayHeader();
+                        var room = default(AuthoredRoom);
+                        for (int ai = 0; ai < n; ai++)
+                        {
+                            int v = (int)r.ReadInt();
+                            if (ai == 0) room.tileX = v;
+                            else if (ai == 1) room.tileZ = v;
+                            else if (ai == 2) room.entry = v;
+                            else if (ai == 3) room.quarter = v;
+                        }
+                        // Una sala con menos de cuatro campos no se puede colocar; se descarta ella
+                        // sola, sin llevarse por delante a las demás del chunk.
+                        if (n >= 4) rooms.Add(room);
                     }
-                    m.hasAuthoredRoom = n >= 4;
+                    if (rooms.Count > 0) m.authoredRooms = rooms.ToArray();
                 }
                 else r.Skip();
             }

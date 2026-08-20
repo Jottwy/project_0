@@ -158,15 +158,16 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // rejilla fina. Va después de la construible y le cede el sitio si se solapan, igual que allí —
     // `plan_authored_room` recibe el plan de la construible justo para eso.
     if let Some(manifest) = crate::world::grid_gen::active_manifest() {
-        if let Some(plan) = crate::world::grid_gen::plan_authored_room(
+        let rooms = crate::world::grid_gen::plan_authored_rooms(
             manifest,
             world_seed,
             pos.0,
             pos.1,
             layer as u8,
             build_plan.as_ref(),
-        ) {
-            crate::world::authored_room_layout::carve_authored_into_layout(&mut layout, &plan);
+        );
+        for plan in rooms.iter() {
+            crate::world::authored_room_layout::carve_authored_into_layout(&mut layout, plan);
         }
     }
 

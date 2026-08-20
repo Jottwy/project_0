@@ -30,7 +30,7 @@ use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 
-use super::build_rooms::{carve_tunnel_fixed, carve_tunnel_outward, RoomPlan};
+use super::build_rooms::{carve_tunnel_fixed, RoomPlan};
 use super::generator::mix;
 use super::room_manifest::{ManifestRoom, RoomManifest, MAX_DOORWAYS};
 use super::{Cell, CellType, LayerGrid, CHUNK_CELLS};
@@ -127,9 +127,77 @@ impl AuthoredRoomPlan {
     }
 
     /// Tile de 5 m de la esquina del footprint. El footprint siempre cae en frontera de tile porque
-    /// el origen se sortea en celdas pares — ver `plan_authored_room`.
+    /// el origen se sortea en celdas pares — ver `plan_authored_rooms`.
     pub fn tile_origin(&self) -> (u8, u8) {
         ((self.cell_x / 2) as u8, (self.cell_z / 2) as u8)
+    }
+}
+
+/// Cuántas salas autoradas admite un chunk como mucho (ADR-083 enmienda 3 punto 4).
+///
+/// Es tope de BARRIDO, no de diseño: impide que el planificador siga probando candidatas en un
+/// chunk donde ya no cabe nada, y pone techo al coste de una ruta que se re-deriva en cada
+/// generación de chunk. Por encima de 3 la aritmética de la reserva ya no da con ningún tamaño de
+/// sala que valga la pena autorar — ver `AuthoredRoomSet`.
+pub const MAX_AUTHORED_PER_CHUNK: usize = 3;
+
+/// Separación MÍNIMA entre dos reservas de sala autorada, en celdas de 2,5 m. Un tile exacto.
+///
+/// **No basta con que las reservas no se solapen, y esto costó tres iteraciones de medición.** Dos
+/// reservas PEGADAS dejan sus dos anillos `SealedWall` espalda contra espalda, y ese bloque de cuatro
+/// celdas macizas es infranqueable para el BFS de `repair_connectivity`, que carva `Wall` interior
+/// pero nunca `SealedWall`. Consecuencia real: una sala cuya puerta da a ese bloque no llega jamás al
+/// laberinto y nace siendo una caja sellada en mitad del mundo. Medido con la sonda
+/// `probe_unreachable_rooms`: **2 de 14 salas incomunicadas** con reservas pegadas.
+///
+/// Con un tile de `Wall` genérico entre los dos anillos, `repair_connectivity` tiene por dónde
+/// carvar y el fallo desaparece: **0 de 17** con el mismo barrido.
+///
+/// El precio está medido y es real: la regla de qué cabe pasa de `T₁ + T₂ ≤ 4` tiles a
+/// **`T₁ + T₂ ≤ 3`**. Dos salas de 2 × 2 tiles ya NO conviven; 2 + 1 y 1 + 1 sí. Es el coste de que
+/// una sala colocada sea siempre una sala alcanzable.
+const SEPARATION_CELLS: usize = 2;
+
+/// Las salas autoradas de un chunk.
+///
+/// Array fijo y `Copy`, NO `Vec`, por la misma razón que `AuthoredRoomPlan::doors`: esto se
+/// re-deriva en cada generación de chunk y esa ruta la recorren la colisión del jugador, la caché
+/// del robapieles y el render. ADR-083 enmienda 3 lo prohíbe explícitamente.
+///
+/// **Cuántas caben de verdad.** Con el borde de un tile (enmienda 2) y el origen sorteado en celda
+/// par, la ventana útil por eje es de 16 celdas y una sala de `T` tiles reserva `2T + 4`. Dos
+/// reservas caben disjuntas en un eje solo si `T₁ + T₂ ≤ 4` tiles: 2+2, 3+1, 2+1, 1+1. Cuatro salas
+/// solo si son de 2 × 2 tiles en rejilla — y por eso el tope de 3 no recorta nada útil.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AuthoredRoomSet {
+    plans: [Option<AuthoredRoomPlan>; MAX_AUTHORED_PER_CHUNK],
+    len: u8,
+}
+
+impl AuthoredRoomSet {
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn is_full(&self) -> bool {
+        self.len as usize >= MAX_AUTHORED_PER_CHUNK
+    }
+
+    fn push(&mut self, plan: AuthoredRoomPlan) {
+        self.plans[self.len as usize] = Some(plan);
+        self.len += 1;
+    }
+
+    /// Las salas colocadas, en el orden en que se colocaron. Ese orden ES CONTRATO: el cliente
+    /// instancia por índice de esta lista y reordenarla movería los prefabs de sitio.
+    pub fn iter(&self) -> impl Iterator<Item = &AuthoredRoomPlan> + '_ {
+        self.plans[..self.len as usize]
+            .iter()
+            .filter_map(|p| p.as_ref())
     }
 }
 
@@ -142,7 +210,7 @@ fn fits(room: &ManifestRoom, quarter: u8) -> Option<(usize, usize)> {
     Some((w, h))
 }
 
-/// Elige sala, giro y sitio para este chunk, o `None`.
+/// Elige sala, giro y sitio para este chunk — hasta `MAX_AUTHORED_PER_CHUNK`, o ninguna.
 ///
 /// **PURA Y MEMOIZABLE**, igual que `room_in_chunk`: mismo input → mismo output en todo peer y en
 /// cualquier momento, sin mirar el grid. Eso es lo que permite que las DOS representaciones del
@@ -157,17 +225,23 @@ fn fits(room: &ManifestRoom, quarter: u8) -> Option<(usize, usize)> {
 ///
 /// `build_room` es la habitación construible de ADR-081 en este mismo chunk, si la hay. **Manda
 /// ella**: es una regla de juego validada, y la sala autorada es decorado. Si las reservas se
-/// solapan, aquí no se coloca nada.
-pub fn plan_authored_room(
+/// solapan, la autorada cede el sitio.
+///
+/// ADR-083 enmienda 3: se coloca EN BUCLE, y cada candidata se rechaza si su reserva pisa la de una
+/// sala ya colocada. El barrido de candidatas y el sorteo del origen no cambian, así que **la
+/// primera sala cae exactamente donde caía en wire 38**: lo único que hace esta versión es seguir
+/// probando en vez de devolver a la primera. Las demás salas se añaden detrás.
+pub fn plan_authored_rooms(
     manifest: &RoomManifest,
     world_seed: u64,
     cx: i32,
     cz: i32,
     layer: u8,
     build_room: Option<&RoomPlan>,
-) -> Option<AuthoredRoomPlan> {
+) -> AuthoredRoomSet {
+    let mut placed = AuthoredRoomSet::default();
     if layer != AUTHORED_LAYER || manifest.rooms.is_empty() {
-        return None;
+        return placed;
     }
 
     let mut s = world_seed ^ AUTHORED_SALT;
@@ -176,7 +250,7 @@ pub fn plan_authored_room(
     let mut rng = StdRng::seed_from_u64(s);
 
     if !rng.gen_bool(AUTHORED_CHANCE) {
-        return None;
+        return placed;
     }
 
     // Candidatas: (sala, giro) que quepan. El orden —sala por fuera, giro por dentro— es CONTRATO,
@@ -191,11 +265,14 @@ pub fn plan_authored_room(
         }
     }
     if candidates.is_empty() {
-        return None;
+        return placed;
     }
     candidates.shuffle(&mut rng);
 
     for (idx, quarter, w, h) in candidates {
+        if placed.is_full() {
+            break;
+        }
         let room = &manifest.rooms[idx];
 
         // Origen de la RESERVA, y desde él el del footprint. Se sortea PAR para que el footprint
@@ -234,10 +311,25 @@ pub fn plan_authored_room(
                 continue;
             }
         }
-        return Some(plan);
+        // Y contra las salas autoradas que ya ganaron sitio en este chunk. Dos reservas que se
+        // pisen romperían la garantía que sostiene el sistema entero: el margen macizo de una
+        // acabaría siendo el interior hueco de la otra.
+        if placed.iter().any(|other| {
+            let (x0, z0, x1, z1) = other.reserve_rect();
+            let grown = (
+                x0.saturating_sub(SEPARATION_CELLS),
+                z0.saturating_sub(SEPARATION_CELLS),
+                x1 + SEPARATION_CELLS,
+                z1 + SEPARATION_CELLS,
+            );
+            rects_overlap(grown, plan.reserve_rect())
+        }) {
+            continue;
+        }
+        placed.push(plan);
     }
 
-    None
+    placed
 }
 
 /// Sortea el origen del FOOTPRINT en un eje, en celda PAR, o `None` si no cabe.
@@ -265,17 +357,27 @@ fn draw_origin(rng: &mut StdRng, size: usize) -> Option<usize> {
     Some(first_even + 2 * rng.gen_range(0..slots))
 }
 
+/// ¿Se pisan dos rects `(x0, z0, x1, z1)` con x1/z1 EXCLUSIVOS?
+///
+/// Separado de `overlaps_build_room` por ADR-083 enmienda 3: la misma prueba la necesitan ahora
+/// reserva↔construible y reserva↔reserva, y tener dos copias de la aritmética de solape es
+/// exactamente como se cuelan los fallos de borde de un off-by-one.
+fn rects_overlap(a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)) -> bool {
+    a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
 /// ¿Se pisan la reserva de la sala autorada y la de la habitación construible (su anillo incluido)?
 fn overlaps_build_room(plan: &AuthoredRoomPlan, build: &RoomPlan) -> bool {
-    let (ax0, az0, ax1, az1) = plan.reserve_rect();
     let (bx, bz) = build.cell_origin();
     // El anillo de la construible es la corona de 1 celda alrededor de su footprint.
-    let bx0 = bx.saturating_sub(1);
-    let bz0 = bz.saturating_sub(1);
-    let bx1 = bx + super::build_rooms::ROOM_CELLS + 1;
-    let bz1 = bz + super::build_rooms::ROOM_CELLS + 1;
+    let build_reserve = (
+        bx.saturating_sub(1),
+        bz.saturating_sub(1),
+        bx + super::build_rooms::ROOM_CELLS + 1,
+        bz + super::build_rooms::ROOM_CELLS + 1,
+    );
 
-    ax0 < bx1 && bx0 < ax1 && az0 < bz1 && bz0 < az1
+    rects_overlap(plan.reserve_rect(), build_reserve)
 }
 
 /// Las DOS celdas de partida del túnel (la pareja que forma un tile completo, la primera fuera del
@@ -305,16 +407,166 @@ fn door_starts(plan: &AuthoredRoomPlan, door: (u8, u8)) -> ([(i32, i32); 2], (i3
     }
 }
 
-/// Talla la sala en la `LayerGrid` y devuelve las celdas TRANSITABLES creadas, para pasárselas a
-/// `repair_connectivity` como `protected`.
+/// Talla TODAS las salas autoradas de un chunk y devuelve las celdas TRANSITABLES creadas, para
+/// pasárselas a `repair_connectivity` como `protected`.
 ///
-/// Orden deliberado —margen, luego anillo, luego interior, luego puerta— para que cada paso pise al
-/// anterior donde se toquen y la sala no pueda nacer sellada por su propio tallado.
+/// **DOS FASES, y el orden es lo único que hace correcto el caso de varias salas.** Primero la
+/// carcasa de todas —reserva, anillo, interior—, y solo después las puertas de todas.
+///
+/// Tallar sala por sala entera es un fallo REAL, no teórico, y así se encontró: en el chunk (9,6)
+/// de la seed 42 la sala 0 excavó su túnel y enganchó con una celda de laberinto que estaba abierta
+/// en ese momento; después la reserva de la sala 1 tapió el trozo de laberinto que sostenía esa
+/// conexión, y el túnel de la sala 0 quedó de muñón ciego. `repair_connectivity` tampoco pudo
+/// rehacerlo —su BFS solo carva `Wall` interior, nunca `Void`, `Pillar` ni `SealedWall`— y la sala 0
+/// nació incomunicada.
+///
+/// Con las carcasas puestas antes que ningún túnel, cada puerta excava contra el macizo DEFINITIVO
+/// del chunk: la celda abierta con la que engancha ya no se la puede llevar por delante nadie.
+pub fn carve_authored_set_into_grid(
+    grid: &mut LayerGrid,
+    rooms: &AuthoredRoomSet,
+    ceiling: u8,
+    ceiling_corridor: u8,
+) -> Vec<(usize, usize)> {
+    let mut carved = Vec::new();
+    for plan in rooms.iter() {
+        carve_authored_shell(grid, plan, ceiling, &mut carved);
+    }
+
+    // REUNIR EL LABERINTO ANTES DE EXCAVAR NINGUNA PUERTA, y solo con varias salas.
+    //
+    // Dos reservas de 8 × 8 celdas macizan 128 de las 400 de un chunk, y eso PARTE el laberinto en
+    // trozos que ya no se hablan. Sin este paso la componente mayor puede quedar al norte de las
+    // salas mientras una puerta mira al sur: `tunnel_len_to_maze` no la alcanza nunca, cae al
+    // fallback de borde y la sala nace incomunicada. Medido en el chunk (9,6) de la seed 42.
+    //
+    // No puede perforar las salas: para entrar al margen —que es `Wall` y sí se carva— habría que
+    // cruzar el anillo, y el anillo es `SealedWall`, el único tipo que el BFS de `repair_connectivity`
+    // no atraviesa ni carva. Es la misma propiedad en la que ya se apoya la enmienda 1 punto 4.
+    //
+    // Con UNA sala se omite a propósito: el chunk no se fragmenta —0 de 11 incomunicadas en la sonda
+    // `probe_unreachable_rooms`— y saltárselo deja los chunks de una sala tallados EXACTAMENTE igual
+    // que en wire 38, que es lo que exige el punto 5 de la enmienda 3.
+    //
+    // `carved` va como protegido y NO es opcional: en este punto solo contiene los interiores de las
+    // salas, que todavía no tienen puerta y por tanto son componentes aisladas. Con la lista vacía,
+    // `repair_connectivity` las trata como bolsillos irreparables y las SELLA — pasó de verdad, y
+    // las salas incomunicadas subieron de 3 a 6 en la sonda.
+    if rooms.len() > 1 {
+        super::generator::repair_connectivity(grid, ceiling_corridor, &carved);
+    }
+
+    let maze = main_component(grid);
+    for plan in rooms.iter() {
+        carve_authored_doors(grid, plan, ceiling, &maze, &mut carved);
+    }
+    carved
+}
+
+/// Máscara de la componente transitable MÁS GRANDE del chunk: el laberinto.
+///
+/// Se calcula con las carcasas ya puestas y antes de ningún túnel, que es el único momento en que
+/// dice la verdad: los interiores de las salas ya están huecos —y son componentes propias, mucho más
+/// pequeñas— y el macizo de todas las reservas ya está en su sitio.
+///
+/// Existe porque **una celda abierta no es lo mismo que una celda comunicada**. La reserva de una
+/// sala tapia trozos de laberinto, y lo que queda al otro lado puede ser un muñón ciego de una o dos
+/// celdas. Un túnel que pare ahí deja la sala incomunicada. Ver `carve_authored_doors`.
+fn main_component(grid: &LayerGrid) -> Vec<bool> {
+    let n = CHUNK_CELLS * CHUNK_CELLS;
+    let mut comp = vec![usize::MAX; n];
+    let mut sizes: Vec<usize> = Vec::new();
+
+    for z in 0..CHUNK_CELLS {
+        for x in 0..CHUNK_CELLS {
+            if !grid.get(x, z).is_walkable() || comp[z * CHUNK_CELLS + x] != usize::MAX {
+                continue;
+            }
+            let id = sizes.len();
+            sizes.push(0);
+            comp[z * CHUNK_CELLS + x] = id;
+            let mut stack = vec![(x, z)];
+            while let Some((px, pz)) = stack.pop() {
+                sizes[id] += 1;
+                for (nx, nz) in [
+                    (px.wrapping_sub(1), pz),
+                    (px + 1, pz),
+                    (px, pz.wrapping_sub(1)),
+                    (px, pz + 1),
+                ] {
+                    if nx < CHUNK_CELLS
+                        && nz < CHUNK_CELLS
+                        && comp[nz * CHUNK_CELLS + nx] == usize::MAX
+                        && grid.get(nx, nz).is_walkable()
+                    {
+                        comp[nz * CHUNK_CELLS + nx] = id;
+                        stack.push((nx, nz));
+                    }
+                }
+            }
+        }
+    }
+
+    match (0..sizes.len()).max_by_key(|&i| sizes[i]) {
+        Some(main) => comp.iter().map(|&c| c == main).collect(),
+        None => vec![false; n],
+    }
+}
+
+/// Cuántas celdas hay que excavar desde `start` en la dirección `dir` para llegar al laberinto, o
+/// `None` si no se llega dentro de `limit` o se topa con la costura del chunk.
+///
+/// Mide contra `maze` —la componente grande— y no contra "la primera celda transitable", que es
+/// exactamente el fallo que esto arregla.
+fn tunnel_len_to_maze(
+    start: (i32, i32),
+    dir: (i32, i32),
+    limit: usize,
+    maze: &[bool],
+) -> Option<usize> {
+    let (mut x, mut z) = start;
+    for step in 0..limit {
+        if !LayerGrid::in_bounds(x, z) {
+            return None;
+        }
+        let (ux, uz) = (x as usize, z as usize);
+        // Nunca la fila/columna de costura, misma regla que `carve_tunnel_outward`: es de
+        // `stitching`, y abrirla aquí descoordinaría los dos chunks que comparten ese borde.
+        if ux == 0 || uz == 0 || ux == CHUNK_CELLS - 1 || uz == CHUNK_CELLS - 1 {
+            return None;
+        }
+        if maze[uz * CHUNK_CELLS + ux] {
+            return Some(step + 1);
+        }
+        x += dir.0;
+        z += dir.1;
+    }
+    None
+}
+
+/// La misma talla para UNA sala. Atajo para los tests y para quien solo tenga un plan.
 pub fn carve_authored_into_grid(
     grid: &mut LayerGrid,
     plan: &AuthoredRoomPlan,
     ceiling: u8,
 ) -> Vec<(usize, usize)> {
+    let mut carved = Vec::new();
+    carve_authored_shell(grid, plan, ceiling, &mut carved);
+    let maze = main_component(grid);
+    carve_authored_doors(grid, plan, ceiling, &maze, &mut carved);
+    carved
+}
+
+/// Carcasa de una sala: margen macizo, anillo blindado e interior hueco. Sin puertas.
+///
+/// Orden deliberado —margen, luego anillo, luego interior— para que cada paso pise al anterior
+/// donde se toquen.
+fn carve_authored_shell(
+    grid: &mut LayerGrid,
+    plan: &AuthoredRoomPlan,
+    ceiling: u8,
+    carved: &mut Vec<(usize, usize)>,
+) {
     let (rx0, rz0, rx1, rz1) = plan.reserve_rect();
     let (fx0, fz0) = (plan.cell_x, plan.cell_z);
     let (fx1, fz1) = (fx0 + plan.cells_x, fz0 + plan.cells_z);
@@ -342,30 +594,51 @@ pub fn carve_authored_into_grid(
 
     // 3. Interior hueco. `Open` y no `Corridor`: es una sala, y el render de sala es el que no mete
     //    la geometría estrecha de pasillo dentro.
-    let mut carved = Vec::with_capacity(plan.cells_x * plan.cells_z + TUNNEL_LIMIT);
+    carved.reserve(plan.cells_x * plan.cells_z + TUNNEL_LIMIT);
     for x in fx0..fx1 {
         for z in fz0..fz1 {
             grid.set(x, z, Cell::new(CellType::Open, ceiling, 0));
             carved.push((x, z));
         }
     }
+}
 
-    // 4. Las puertas — TODAS, una por abertura del prefab. Con una sola, las demás dan contra el
-    //    margen macizo: se ve el vano y detrás un bloque cerrado.
-    //
-    //    Cada vano mide un tile de ancho: se excava la primera línea hasta que engancha y la segunda
-    //    copia su longitud, para que no salga dentado.
-    //
-    //    Si una línea NO engancha (topó con la costura), su túnel se queda a medias y esa parte
-    //    entra en el chunk como componente aparte. No es un fallo: `repair_connectivity` corre justo
-    //    después con estas celdas protegidas y le tiende un pasillo desde el componente grande. Es
-    //    el mismo mecanismo por el que la habitación construible nunca queda aislada.
-    //
-    //    Dos boquetes del prefab que caigan en el MISMO `(lado, tile)` describen el mismo hueco:
-    //    `door_starts` les da idénticas celdas de partida y excavarlos dos veces repetiría el
-    //    tallado y duplicaría esas celdas en `carved`. Con `MAX_DOORWAYS = 8`, un barrido cuadrado
-    //    sobre un array en pila sale más barato que montar un set en una ruta que se recorre en
-    //    cada generación de chunk.
+/// Las puertas de una sala ya con carcasa: TODAS, una por abertura del prefab. Con una sola, las
+/// demás dan contra el margen macizo — se ve el vano y detrás un bloque cerrado.
+///
+/// Cada vano mide un tile de ancho: se excava la primera línea hasta que engancha y la segunda copia
+/// su longitud, para que no salga dentado.
+///
+/// **El túnel se excava hasta el LABERINTO, no hasta la primera celda transitable.** La diferencia
+/// no es sutil y costó un test en rojo: la reserva de una sala tapia trozos de laberinto, y lo que
+/// queda al otro lado puede ser un muñón ciego de una o dos celdas que sigue estando "abierto". Un
+/// túnel que pare ahí deja la sala incomunicada. Medido con la sonda `probe_unreachable_rooms`: con
+/// una sala por chunk salían 0 de 11 incomunicadas —de ahí que el fallo no se viera hasta ahora— y
+/// con varias, 3 de 14.
+///
+/// `repair_connectivity` tampoco lo salva, aunque las celdas vayan protegidas: su BFS solo carva
+/// `Wall` interior, nunca `Void`, `Pillar` ni `SealedWall`, y con dos o tres anillos blindados en el
+/// mismo chunk se queda sin ruta y sella en vez de reconectar.
+///
+/// Si NO se llega al laberinto (se topó con la costura, o queda fuera de `TUNNEL_LIMIT`), se excava
+/// el borde propio y ya: el muñón entra en el chunk como componente aparte y `repair_connectivity`
+/// corre después con estas celdas protegidas para tenderle un pasillo. Es el mismo mecanismo por el
+/// que la habitación construible nunca queda aislada.
+///
+/// Va SEPARADA de la carcasa porque con varias salas hay que poner todas las carcasas antes que
+/// ningún túnel — ver `carve_authored_set_into_grid`.
+fn carve_authored_doors(
+    grid: &mut LayerGrid,
+    plan: &AuthoredRoomPlan,
+    ceiling: u8,
+    maze: &[bool],
+    carved: &mut Vec<(usize, usize)>,
+) {
+    // Dos boquetes del prefab que caigan en el MISMO `(lado, tile)` describen el mismo hueco:
+    // `door_starts` les da idénticas celdas de partida y excavarlos dos veces repetiría el tallado y
+    // duplicaría esas celdas en `carved`. Con `MAX_DOORWAYS = 8`, un barrido cuadrado sobre un array
+    // en pila sale más barato que montar un set en una ruta que se recorre en cada generación de
+    // chunk.
     let mut dug_doors = [(0u8, 0u8); MAX_DOORWAYS];
     let mut dug_count = 0usize;
     for door in plan.doorways() {
@@ -376,12 +649,13 @@ pub fn carve_authored_into_grid(
         dug_count += 1;
 
         let (starts, dir) = door_starts(plan, door);
-        let dug = carve_tunnel_outward(grid, ceiling, starts[0], dir, TUNNEL_LIMIT, &mut carved)
-            .unwrap_or(BORDER_CELLS);
-        carve_tunnel_fixed(grid, ceiling, starts[1], dir, dug, &mut carved);
+        // Las dos líneas del vano se excavan a la MISMA longitud, medida una vez: así el vano no
+        // sale dentado, que es lo que pasaba al medir cada línea por su cuenta.
+        let dug = tunnel_len_to_maze(starts[0], dir, TUNNEL_LIMIT, maze).unwrap_or(BORDER_CELLS);
+        for start in starts {
+            carve_tunnel_fixed(grid, ceiling, start, dir, dug, carved);
+        }
     }
-
-    carved
 }
 
 #[cfg(test)]
@@ -423,12 +697,32 @@ mod tests {
         }
     }
 
+    /// La PRIMERA sala del chunk, que es la unica que existia antes de ADR-083 enmienda 3.
+    ///
+    /// Casi todos los tests de este modulo comprueban propiedades de UNA sala (margen macizo,
+    /// anillo sellado, vano de un tile...) y valen igual con varias. Mantenerlos escritos contra la
+    /// primera tiene ademas un valor propio: si el paso a plural hubiera movido la primera sala de
+    /// sitio, estos tests lo habrian cazado.
+    fn first_plan(
+        manifest: &RoomManifest,
+        world_seed: u64,
+        cx: i32,
+        cz: i32,
+        layer: u8,
+        build_room: Option<&RoomPlan>,
+    ) -> Option<AuthoredRoomPlan> {
+        plan_authored_rooms(manifest, world_seed, cx, cz, layer, build_room)
+            .iter()
+            .next()
+            .copied()
+    }
+
     /// Barre chunks hasta encontrar uno con sala, para no depender de que un chunk concreto gane un
     /// sorteo del 1 %.
     fn find_plan(m: &RoomManifest, seed: u64) -> Option<(i32, i32, AuthoredRoomPlan)> {
         for cx in -12..12 {
             for cz in -12..12 {
-                if let Some(p) = plan_authored_room(m, seed, cx, cz, 0, None) {
+                if let Some(p) = first_plan(m, seed, cx, cz, 0, None) {
                     return Some((cx, cz, p));
                 }
             }
@@ -443,8 +737,8 @@ mod tests {
         for seed in SEEDS {
             for (cx, cz) in [(0, 0), (3, -7), (11, 11), (-9, 4)] {
                 assert_eq!(
-                    plan_authored_room(&m, seed, cx, cz, 0, None),
-                    plan_authored_room(&m, seed, cx, cz, 0, None)
+                    first_plan(&m, seed, cx, cz, 0, None),
+                    first_plan(&m, seed, cx, cz, 0, None)
                 );
             }
         }
@@ -458,7 +752,7 @@ mod tests {
             for cx in -12..12 {
                 for cz in -12..12 {
                     for layer in 1..4u8 {
-                        assert!(plan_authored_room(&m, seed, cx, cz, layer, None).is_none());
+                        assert!(first_plan(&m, seed, cx, cz, layer, None).is_none());
                     }
                 }
             }
@@ -474,7 +768,7 @@ mod tests {
         for seed in SEEDS {
             for cx in -12..12 {
                 for cz in -12..12 {
-                    let Some(p) = plan_authored_room(&m, seed, cx, cz, 0, None) else {
+                    let Some(p) = first_plan(&m, seed, cx, cz, 0, None) else {
                         continue;
                     };
                     found += 1;
@@ -499,7 +793,7 @@ mod tests {
         for seed in SEEDS {
             for cx in -12..12 {
                 for cz in -12..12 {
-                    if let Some(p) = plan_authored_room(&m, seed, cx, cz, 0, None) {
+                    if let Some(p) = first_plan(&m, seed, cx, cz, 0, None) {
                         assert_eq!(p.entry, 0, "colocada una sala por encima del cap");
                     }
                 }
@@ -515,7 +809,7 @@ mod tests {
         for seed in SEEDS {
             for cx in -12..12 {
                 for cz in -12..12 {
-                    assert!(plan_authored_room(&m, seed, cx, cz, 0, None).is_none());
+                    assert!(first_plan(&m, seed, cx, cz, 0, None).is_none());
                 }
             }
         }
@@ -535,7 +829,7 @@ mod tests {
             door_side: 0,
         };
         assert!(
-            plan_authored_room(&m, 42, cx, cz, 0, Some(&build)).is_none(),
+            first_plan(&m, 42, cx, cz, 0, Some(&build)).is_none(),
             "la autorada se colo encima de la construible"
         );
     }
@@ -736,6 +1030,219 @@ mod tests {
         }
     }
 
+    /// Manifiesto de salas PEQUEÑAS: una de 2 x 2 tiles y una de 1 x 1.
+    ///
+    /// La aritmetica de ADR-083 enmienda 3: una sala de `T` tiles reserva `2T + 4` celdas, entre dos
+    /// reservas van `SEPARATION_CELLS` mas, y la ventana util por eje es de 16. De ahi
+    /// `T1 + T2 <= 3`: 2 + 1 entra, 2 + 2 NO. Por eso este manifiesto necesita las dos medidas —
+    /// con solo salas de 2 x 2 no habria nunca mas de una por chunk y los tests de multi-sala no
+    /// tendrian caso que probar.
+    fn small_manifest() -> RoomManifest {
+        RoomManifest {
+            digest: "test".into(),
+            rooms: vec![
+                ManifestRoom {
+                    index: 0,
+                    id: "pequena".into(),
+                    tiles_x: 2,
+                    tiles_z: 2,
+                    doorways: vec![ManifestDoorway {
+                        side_by_quarter: [0, 2, 1, 3],
+                        tile_by_quarter: [1, 1, 0, 0],
+                    }],
+                },
+                ManifestRoom {
+                    index: 1,
+                    id: "diminuta".into(),
+                    tiles_x: 1,
+                    tiles_z: 1,
+                    doorways: vec![ManifestDoorway {
+                        side_by_quarter: [1, 3, 0, 2],
+                        tile_by_quarter: [0, 0, 0, 0],
+                    }],
+                },
+            ],
+        }
+    }
+
+    /// Barre chunks hasta encontrar uno con MAS DE UNA sala.
+    fn find_multi(m: &RoomManifest, seed: u64) -> Option<(i32, i32, AuthoredRoomSet)> {
+        for cx in -20..20 {
+            for cz in -20..20 {
+                let set = plan_authored_rooms(m, seed, cx, cz, 0, None);
+                if set.len() > 1 {
+                    return Some((cx, cz, set));
+                }
+            }
+        }
+        None
+    }
+
+    /// ADR-083 enmienda 3, verificacion (a) primera mitad: con salas pequenas un chunk aloja VARIAS,
+    /// y entre dos reservas queda SIEMPRE al menos un tile.
+    ///
+    /// No basta con que no se solapen. Dos reservas pegadas dejan sus anillos `SealedWall` espalda
+    /// contra espalda, y ese bloque es infranqueable para `repair_connectivity` — una sala cuya
+    /// puerta de contra el nace sellada. Ver `SEPARATION_CELLS`.
+    #[test]
+    fn several_small_rooms_keep_a_tile_between_their_reserves() {
+        let m = small_manifest();
+        let mut checked = 0;
+
+        for seed in SEEDS {
+            for cx in -20..20 {
+                for cz in -20..20 {
+                    let set = plan_authored_rooms(&m, seed, cx, cz, 0, None);
+                    if set.len() < 2 {
+                        continue;
+                    }
+                    checked += 1;
+
+                    let rects: Vec<_> = set.iter().map(|p| p.reserve_rect()).collect();
+                    for i in 0..rects.len() {
+                        for j in (i + 1)..rects.len() {
+                            let (x0, z0, x1, z1) = rects[i];
+                            let grown = (
+                                x0.saturating_sub(SEPARATION_CELLS),
+                                z0.saturating_sub(SEPARATION_CELLS),
+                                x1 + SEPARATION_CELLS,
+                                z1 + SEPARATION_CELLS,
+                            );
+                            assert!(
+                                !rects_overlap(grown, rects[j]),
+                                "seed {seed} ({cx},{cz}): reservas {:?} y {:?} sin el tile de separacion",
+                                rects[i],
+                                rects[j]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        assert!(
+            checked > 0,
+            "el barrido no encontro ningun chunk multi-sala"
+        );
+    }
+
+    /// ADR-083 enmienda 3, verificacion (c): nunca mas de `MAX_AUTHORED_PER_CHUNK`.
+    #[test]
+    fn the_room_count_per_chunk_is_capped() {
+        let m = small_manifest();
+        for seed in SEEDS {
+            for cx in -20..20 {
+                for cz in -20..20 {
+                    let set = plan_authored_rooms(&m, seed, cx, cz, 0, None);
+                    assert!(
+                        set.len() <= MAX_AUTHORED_PER_CHUNK,
+                        "seed {seed} chunk ({cx},{cz}): {} salas, el tope es {MAX_AUTHORED_PER_CHUNK}",
+                        set.len()
+                    );
+                    assert_eq!(
+                        set.len(),
+                        set.iter().count(),
+                        "len() y iter() discrepan — el array fijo se ha desincronizado"
+                    );
+                }
+            }
+        }
+    }
+
+    /// ADR-083 enmienda 3, verificacion (d): mismo seed, mismo conjunto. Es lo que permite que las
+    /// dos representaciones del mundo tallen LAS MISMAS salas sin hablarse.
+    #[test]
+    fn the_whole_set_is_deterministic() {
+        let m = small_manifest();
+        for seed in SEEDS {
+            for cx in -6..6 {
+                for cz in -6..6 {
+                    assert_eq!(
+                        plan_authored_rooms(&m, seed, cx, cz, 0, None),
+                        plan_authored_rooms(&m, seed, cx, cz, 0, None)
+                    );
+                }
+            }
+        }
+    }
+
+    /// ADR-083 enmienda 3, verificacion (a) segunda mitad: con VARIAS salas talladas en el mismo
+    /// chunk, TODAS siguen alcanzandose a pie tras `repair_connectivity`.
+    ///
+    /// Es la propiedad que mas facil se rompe al pasar a plural: la segunda sala se talla sobre un
+    /// grid que la primera ya ha llenado de macizo, y su tunel puede morir contra el anillo de la
+    /// primera en vez de contra el laberinto.
+    #[test]
+    fn every_room_of_a_multi_room_chunk_is_reachable() {
+        let rules = &LAYER_PROFILES[0];
+        let m = small_manifest();
+        let (cx, cz, set) = find_multi(&m, 42).expect("algun chunk con mas de una sala");
+
+        let mut out = generate_chunk_layer(rules, 42, (cx, cz), 0, &[]);
+        let carved = carve_authored_set_into_grid(
+            &mut out.grid,
+            &set,
+            rules.ceiling_open,
+            rules.ceiling_corridor,
+        );
+        repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
+
+        // Inundacion desde el interior de la PRIMERA sala. Si el chunk esta bien cosido, alcanza el
+        // interior de todas las demas.
+        let first = set.iter().next().expect("al menos una");
+        let mut seen: HashSet<(usize, usize)> = HashSet::new();
+        let mut queue = VecDeque::new();
+        let start = (first.cell_x, first.cell_z);
+        seen.insert(start);
+        queue.push_back(start);
+        while let Some((x, z)) = queue.pop_front() {
+            for (nx, nz) in [
+                (x.wrapping_sub(1), z),
+                (x + 1, z),
+                (x, z.wrapping_sub(1)),
+                (x, z + 1),
+            ] {
+                if nx >= CHUNK_CELLS || nz >= CHUNK_CELLS || seen.contains(&(nx, nz)) {
+                    continue;
+                }
+                if out.grid.get(nx, nz).is_walkable() {
+                    seen.insert((nx, nz));
+                    queue.push_back((nx, nz));
+                }
+            }
+        }
+
+        for (i, plan) in set.iter().enumerate().skip(1) {
+            assert!(
+                seen.contains(&(plan.cell_x, plan.cell_z)),
+                "la sala {i} de ({cx},{cz}) no se alcanza a pie desde la primera"
+            );
+        }
+    }
+
+    /// REGRESION de la consecuencia medida de ADR-083 enmienda 3, verificacion (e): con el
+    /// manifiesto REAL del repo se coloca UNA sala por chunk y nunca dos, porque `room_0` mide
+    /// 5 x 5 tiles y `T1 + T2 <= 4` no lo admite con ninguna companera.
+    ///
+    /// Si algun dia falla es una BUENA noticia: significa que hay salas pequenas en el pool y que
+    /// esta enmienda por fin sirve de algo. Actualizar el test entonces, no antes.
+    #[test]
+    fn the_real_pool_still_places_one_room_per_chunk() {
+        let m = manifest(); // 4 x 4 y 10 x 10: la de 4 x 4 reserva 12 celdas, tampoco admite pareja
+        for seed in SEEDS {
+            for cx in -12..12 {
+                for cz in -12..12 {
+                    let set = plan_authored_rooms(&m, seed, cx, cz, 0, None);
+                    assert!(
+                        set.len() <= 1,
+                        "seed {seed} chunk ({cx},{cz}): {} salas con un pool que no admite parejas",
+                        set.len()
+                    );
+                }
+            }
+        }
+    }
+
     /// Dos boquetes que caigan en el MISMO (lado, tile) son el mismo hueco, y se excava UNA vez.
     ///
     /// Sin el dedup el segundo repetia el tallado y volvia a empujar las mismas celdas a `carved`,
@@ -829,7 +1336,7 @@ mod tests {
         let mut by_entry: std::collections::BTreeMap<u16, usize> = Default::default();
         for cx in -SPAN / 2..SPAN / 2 {
             for cz in -SPAN / 2..SPAN / 2 {
-                if let Some(p) = plan_authored_room(&m, seed, cx, cz, 0, None) {
+                if let Some(p) = first_plan(&m, seed, cx, cz, 0, None) {
                     placed += 1;
                     *by_entry.entry(p.entry).or_default() += 1;
                 }
@@ -851,7 +1358,7 @@ mod tests {
         let mut near: Vec<(f32, i32, i32, AuthoredRoomPlan)> = Vec::new();
         for cx in -SPAN / 2..SPAN / 2 {
             for cz in -SPAN / 2..SPAN / 2 {
-                if let Some(p) = plan_authored_room(&m, seed, cx, cz, 0, None) {
+                if let Some(p) = first_plan(&m, seed, cx, cz, 0, None) {
                     let wx = cx as f32 * 50.0 + (p.cell_x as f32 + p.cells_x as f32 / 2.0) * 2.5;
                     let wz = cz as f32 * 50.0 + (p.cell_z as f32 + p.cells_z as f32 / 2.0) * 2.5;
                     near.push(((wx * wx + wz * wz).sqrt(), cx, cz, p));
@@ -896,7 +1403,7 @@ mod tests {
             // Solo los 9 chunks alrededor del origen: el spawn cae ahi.
             for cx in -1..=1 {
                 for cz in -1..=1 {
-                    let Some(p) = plan_authored_room(&m, seed, cx, cz, 0, None) else {
+                    let Some(p) = first_plan(&m, seed, cx, cz, 0, None) else {
                         continue;
                     };
                     let wx = cx as f32 * 50.0 + (p.cell_x as f32 + p.cells_x as f32 / 2.0) * 2.5;
@@ -920,6 +1427,84 @@ mod tests {
             }
         }
         assert!(hits > 0, "ninguna seed pone una sala junto al spawn");
+    }
+
+    /// SONDA TEMPORAL: cuantas salas quedan incomunicadas, con UNA sala por chunk (camino de wire
+    /// 38) y con varias. Sirve para saber si el fallo de alcanzabilidad es de esta enmienda o venia
+    /// de antes.
+    #[test]
+    #[ignore]
+    fn probe_unreachable_rooms() {
+        let rules = &LAYER_PROFILES[0];
+        for (label, m) in [
+            ("real (4x4 y 10x10)", manifest()),
+            ("2x2 + 1x1", small_manifest()),
+        ] {
+            let (mut chunks, mut rooms, mut bad) = (0, 0, 0);
+            for seed in SEEDS {
+                for cx in -10..10 {
+                    for cz in -10..10 {
+                        let set = plan_authored_rooms(&m, seed, cx, cz, 0, None);
+                        if set.is_empty() {
+                            continue;
+                        }
+                        chunks += 1;
+                        rooms += set.len();
+
+                        let mut out = generate_chunk_layer(rules, seed, (cx, cz), 0, &[]);
+                        let carved = carve_authored_set_into_grid(
+                            &mut out.grid,
+                            &set,
+                            rules.ceiling_open,
+                            rules.ceiling_corridor,
+                        );
+                        repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
+
+                        // Componente MAS GRANDE del chunk = el laberinto.
+                        let mut comp = vec![usize::MAX; CHUNK_CELLS * CHUNK_CELLS];
+                        let mut sizes: Vec<usize> = Vec::new();
+                        for z in 0..CHUNK_CELLS {
+                            for x in 0..CHUNK_CELLS {
+                                if !out.grid.get(x, z).is_walkable()
+                                    || comp[z * CHUNK_CELLS + x] != usize::MAX
+                                {
+                                    continue;
+                                }
+                                let id = sizes.len();
+                                sizes.push(0);
+                                let mut stack = vec![(x, z)];
+                                comp[z * CHUNK_CELLS + x] = id;
+                                while let Some((px, pz)) = stack.pop() {
+                                    sizes[id] += 1;
+                                    for (nx, nz) in [
+                                        (px.wrapping_sub(1), pz),
+                                        (px + 1, pz),
+                                        (px, pz.wrapping_sub(1)),
+                                        (px, pz + 1),
+                                    ] {
+                                        if nx < CHUNK_CELLS
+                                            && nz < CHUNK_CELLS
+                                            && comp[nz * CHUNK_CELLS + nx] == usize::MAX
+                                            && out.grid.get(nx, nz).is_walkable()
+                                        {
+                                            comp[nz * CHUNK_CELLS + nx] = id;
+                                            stack.push((nx, nz));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let main = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap();
+                        for p in set.iter() {
+                            if comp[p.cell_z * CHUNK_CELLS + p.cell_x] != main {
+                                bad += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            println!("{label}: {chunks} chunks, {rooms} salas, {bad} INCOMUNICADAS");
+        }
     }
 
     /// Dibuja en ASCII el chunk que pidas, por el camino REAL (`generate_chunk_layer` leyendo el
@@ -977,7 +1562,7 @@ mod tests {
         // con el hueco dibujado arriba.
         let m = crate::world::grid_gen::active_manifest().expect("manifiesto");
         let build_plan = crate::world::grid_gen::room_in_chunk(seed, cx, cz, 0);
-        match plan_authored_room(m, seed, cx, cz, 0, build_plan.as_ref()) {
+        match first_plan(m, seed, cx, cz, 0, build_plan.as_ref()) {
             Some(p) => {
                 let (tx, tz) = p.tile_origin();
                 println!(

@@ -18,29 +18,17 @@ namespace BackroomsSurvival.Gameplay
     /// </summary>
     public static class AuthoredRoomRegistry
     {
-        private readonly struct Room
-        {
-            public readonly int TileX;
-            public readonly int TileZ;
-            public readonly int Entry;
-            public readonly int Quarter;
-
-            public Room(int tileX, int tileZ, int entry, int quarter)
-            {
-                TileX = tileX;
-                TileZ = tileZ;
-                Entry = entry;
-                Quarter = quarter;
-            }
-        }
-
-        private static readonly Dictionary<(int cx, int cz), Room> _rooms =
-            new Dictionary<(int, int), Room>();
+        /// <summary>
+        /// Las salas de UN chunk, en el orden en que las mandó el backend. Ese orden es contrato
+        /// (ADR-083 enmienda 3): el constructor instancia por índice.
+        /// </summary>
+        private static readonly Dictionary<(int cx, int cz), GridChunkDataMsg.AuthoredRoom[]> _rooms =
+            new Dictionary<(int, int), GridChunkDataMsg.AuthoredRoom[]>();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics() => _rooms.Clear();
 
-        /// <summary>Diagnóstico: cuántas salas autoradas se han visto en esta sesión.</summary>
+        /// <summary>Diagnóstico: cuántos CHUNKS con sala autorada se han visto en esta sesión.</summary>
         public static int KnownRoomCount => _rooms.Count;
 
         /// <summary>
@@ -58,40 +46,30 @@ namespace BackroomsSurvival.Gameplay
         public static void ResetForNewConnection() => _rooms.Clear();
 
         /// <summary>
-        /// Registra (o no) la sala de un chunk recién llegado. Solo capa 0: es la única en la que el
-        /// backend las talla, y llamar con otra capa no debe borrar lo que ya se sabe de la columna.
+        /// Registra (o no) las salas de un chunk recién llegado. Solo capa 0: es la única en la que
+        /// el backend las talla, y llamar con otra capa no debe borrar lo que ya se sabe de la
+        /// columna.
         /// </summary>
         public static void Observe(GridChunkDataMsg chunk)
         {
-            if (chunk == null || chunk.layer != 0 || !chunk.hasAuthoredRoom)
+            if (chunk == null || chunk.layer != 0
+                || chunk.authoredRooms == null || chunk.authoredRooms.Length == 0)
                 return;
 
-            _rooms[(chunk.cx, chunk.cz)] = new Room(
-                chunk.authoredRoomTileX,
-                chunk.authoredRoomTileZ,
-                chunk.authoredRoomEntry,
-                chunk.authoredRoomQuarter);
+            _rooms[(chunk.cx, chunk.cz)] = chunk.authoredRooms;
         }
 
         /// <summary>
-        /// La sala de (cx, cz): tile de origen del footprint, entrada del pool y giro. False si ese
-        /// chunk no tiene sala o si aún no ha llegado.
+        /// Las salas de (cx, cz), o null si ese chunk no tiene ninguna o aún no ha llegado.
+        ///
+        /// Devuelve el array del registro SIN copiar: es la ruta de reconstrucción de chunk y una
+        /// copia por llamada sería basura por chunk construido. Quien lo reciba solo lo lee.
         /// </summary>
-        public static bool TryGetRoom(int cx, int cz, int layer,
-            out int tileX, out int tileZ, out int entry, out int quarter)
+        public static GridChunkDataMsg.AuthoredRoom[] GetRooms(int cx, int cz, int layer)
         {
-            tileX = -1;
-            tileZ = -1;
-            entry = -1;
-            quarter = 0;
-            if (layer != 0 || !_rooms.TryGetValue((cx, cz), out var room))
-                return false;
-
-            tileX = room.TileX;
-            tileZ = room.TileZ;
-            entry = room.Entry;
-            quarter = room.Quarter;
-            return true;
+            if (layer != 0 || !_rooms.TryGetValue((cx, cz), out var rooms))
+                return null;
+            return rooms;
         }
     }
 }

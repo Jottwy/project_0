@@ -799,22 +799,30 @@ pub async fn run(
                     // en las dos representaciones del mundo. Re-derivarla aquí en vez de arrastrarla
                     // desde la generación es lo que garantiza que lo que el cliente instancia caiga
                     // exactamente en el hueco que el servidor vació.
-                    let authored_room = crate::world::grid_gen::active_manifest().and_then(|m| {
-                        let build_plan =
-                            crate::world::grid_gen::room_in_chunk(net.world_seed, cx, cz, layer);
-                        crate::world::grid_gen::plan_authored_room(
-                            m,
-                            net.world_seed,
-                            cx,
-                            cz,
-                            layer,
-                            build_plan.as_ref(),
-                        )
-                        .map(|p| {
-                            let (tx, tz) = p.tile_origin();
-                            [tx as u16, tz as u16, p.entry, p.quarter as u16]
+                    let authored_rooms = crate::world::grid_gen::active_manifest()
+                        .map(|m| {
+                            let build_plan = crate::world::grid_gen::room_in_chunk(
+                                net.world_seed,
+                                cx,
+                                cz,
+                                layer,
+                            );
+                            crate::world::grid_gen::plan_authored_rooms(
+                                m,
+                                net.world_seed,
+                                cx,
+                                cz,
+                                layer,
+                                build_plan.as_ref(),
+                            )
+                            .iter()
+                            .map(|p| {
+                                let (tx, tz) = p.tile_origin();
+                                [tx as u16, tz as u16, p.entry, p.quarter as u16]
+                            })
+                            .collect()
                         })
-                    });
+                        .unwrap_or_default();
                     let _ = to_clients.send(ServerMessage::ChunkData(GridChunkData {
                         cx,
                         cz,
@@ -823,7 +831,7 @@ pub async fn run(
                         room_zones,
                         sprays,
                         build_room,
-                        authored_room,
+                        authored_rooms,
                     }));
                 }
                 ClientMessage::SprayPlace(req) => {

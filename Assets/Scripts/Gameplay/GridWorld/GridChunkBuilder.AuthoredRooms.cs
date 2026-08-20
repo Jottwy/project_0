@@ -3,6 +3,7 @@
 // TODOS los campos estáticos (incl. _roomPool y los scratch) viven en el raíz: el orden de
 // inicialización de estáticos entre partials es indefinido.
 using System.Collections.Generic;
+using BackroomsSurvival.Net;
 using UnityEngine;
 
 namespace BackroomsSurvival.Gameplay.GridWorld
@@ -54,13 +55,25 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             List<RoomPlan> into)
         {
             into.Clear();
-            if (!AuthoredRoomRegistry.TryGetRoom(chunkX, chunkZ, layerIndex,
-                    out int tx0, out int tz0, out int entry, out int quarter))
+            var placed = AuthoredRoomRegistry.GetRooms(chunkX, chunkZ, layerIndex);
+            if (placed == null)
                 return;
 
             var pool = AuthoredRoomPool();
             if (pool == null || pool.rooms == null)
                 return;
+
+            // ADR-083 enmienda 3: varias salas por chunk, y el ORDEN del backend es contrato.
+            for (int i = 0; i < placed.Length; i++)
+                AddRoomPlan(pool, placed[i], into);
+        }
+
+        /// <summary>Resuelve UNA sala del wire contra el pool y la añade a la lista de planes.</summary>
+        private static void AddRoomPlan(RoomPool pool, GridChunkDataMsg.AuthoredRoom placed,
+            List<RoomPlan> into)
+        {
+            int tx0 = placed.tileX, tz0 = placed.tileZ;
+            int entry = placed.entry, quarter = placed.quarter;
 
             // Un índice fuera de rango significa que el pool del cliente y el manifiesto que leyó el
             // backend NO son el mismo. Es exactamente el fallo que el digest del handshake existe

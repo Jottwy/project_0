@@ -328,10 +328,15 @@ pub struct GridChunkData {
     /// `sprays`: un chunk sin habitación cuesta exactamente lo que costaba antes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_room: Option<[u8; 3]>,
-    /// ADR-083 enmienda 1 — la SALA AUTORADA de este chunk, si la tiene:
+    /// ADR-083 enmienda 1 — las SALAS AUTORADAS de este chunk, cada una
     /// `[tile_x, tile_z, entry, quarter]`. `tile_x`/`tile_z` en TILES de 5 m dentro
     /// del chunk; `entry` es el índice en `RoomPool.rooms` (y en el manifiesto) que
     /// dice qué prefab instanciar; `quarter` el giro en cuartos de vuelta.
+    ///
+    /// PLURAL desde ADR-083 enmienda 3 (wire 38 → 39), que es la forma que el punto 2
+    /// del ADR base pedía desde el principio: la enmienda 1 lo estrechó a una sola
+    /// porque su slice colocaba una sola. El ORDEN es contrato — el cliente instancia
+    /// por índice de esta lista.
     ///
     /// Viaja por el wire en vez de re-derivarse en el cliente, por el mismo motivo
     /// que `build_room`: el sorteo usa `StdRng` —ChaCha— y replicarlo en C# sería
@@ -340,11 +345,11 @@ pub struct GridChunkData {
     /// se retira aquí, y con él la posibilidad de que cliente y servidor discrepen
     /// sobre qué sala hay en un sitio.
     ///
-    /// Campo ADITIVO y omitido cuando el chunk no tiene sala, mismo patrón que
+    /// Campo ADITIVO y omitido cuando el chunk no tiene salas, mismo patrón que
     /// `room_zones`, `sprays` y `build_room`: un chunk sin sala cuesta exactamente lo
-    /// que costaba en wire 37.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub authored_room: Option<[u16; 4]>,
+    /// que costaba en wire 37, y sigue costándolo tras el paso a plural.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authored_rooms: Vec<[u16; 4]>,
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the
@@ -612,13 +617,14 @@ mod tests {
             room_zones: vec![],
             sprays: vec![],
             build_room: None,
-            authored_room: None,
+            authored_rooms: vec![],
         }
     }
 
-    /// ADR-083 enmienda 1, verificación (f): un chunk SIN sala autorada tiene que costar
-    /// exactamente lo que costaba en wire 37. Si la clave apareciera aunque fuese como `nil`, cada
-    /// chunk del mundo pagaría el campo — y son la inmensa mayoría.
+    /// ADR-083 enmienda 1, verificación (f), y enmienda 3 verificación (b): un chunk SIN sala
+    /// autorada tiene que costar exactamente lo que costaba en wire 37. Si la clave apareciera
+    /// aunque fuese como lista vacía, cada chunk del mundo pagaría el campo — y son la inmensa
+    /// mayoría. El paso a plural no puede cambiar eso.
     #[test]
     fn a_chunk_without_an_authored_room_omits_the_key_entirely() {
         let body = rmp_serde::to_vec_named(&bare_chunk()).unwrap();
@@ -633,23 +639,35 @@ mod tests {
     #[test]
     fn an_authored_room_round_trips() {
         let mut chunk = bare_chunk();
-        chunk.authored_room = Some([4, 6, 2, 3]);
+        chunk.authored_rooms = vec![[4, 6, 2, 3]];
         let body = rmp_serde::to_vec_named(&chunk).unwrap();
         let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
-        assert_eq!(decoded.authored_room, Some([4, 6, 2, 3]));
+        assert_eq!(decoded.authored_rooms, vec![[4, 6, 2, 3]]);
+    }
+
+    /// ADR-083 enmienda 3 — VARIAS salas en un chunk viajan enteras y EN ORDEN. El orden es
+    /// contrato: el cliente instancia por índice de esta lista.
+    #[test]
+    fn several_authored_rooms_round_trip_in_order() {
+        let mut chunk = bare_chunk();
+        chunk.authored_rooms = vec![[4, 6, 2, 3], [1, 1, 0, 0], [9, 2, 5, 1]];
+        let body = rmp_serde::to_vec_named(&chunk).unwrap();
+        let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
+        assert_eq!(
+            decoded.authored_rooms,
+            vec![[4, 6, 2, 3], [1, 1, 0, 0], [9, 2, 5, 1]]
+        );
     }
 
     /// Un backend nuevo tiene que poder leer un chunk viejo sin el campo: es lo que hace que
     /// `#[serde(default)]` no sea decorativo.
     #[test]
     fn a_wire_37_chunk_still_decodes() {
-        let mut chunk = bare_chunk();
-        chunk.authored_room = Some([1, 1, 0, 0]);
         // Serializa SIN el campo, que es como lo escribía wire 37.
         let old = bare_chunk();
         let body = rmp_serde::to_vec_named(&old).unwrap();
         let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
-        assert_eq!(decoded.authored_room, None);
+        assert!(decoded.authored_rooms.is_empty());
     }
 
     /// ADR-046 Fase 1 — the byte contract with `MsgPackWriter.WriteBin`, pinned against a

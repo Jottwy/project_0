@@ -83,18 +83,24 @@ pub fn generate_chunk_layer(
         // las suyas: sellar un bolsillo irreparable no puede llevarse por delante el interior o el
         // túnel de la habitación construible, que ya estaba tallada y protegida en su propia pasada.
         if let Some(manifest) = super::room_manifest::active_manifest() {
-            if let Some(plan) = super::authored_rooms::plan_authored_room(
+            let rooms = super::authored_rooms::plan_authored_rooms(
                 manifest,
                 world_seed,
                 chunk_coord.0,
                 chunk_coord.1,
                 layer_index as u8,
                 build_plan.as_ref(),
-            ) {
-                carved.extend(super::authored_rooms::carve_authored_into_grid(
+            );
+            if !rooms.is_empty() {
+                // ADR-083 enmienda 3: se tallan TODAS de una (en dos fases: carcasas y luego
+                // puertas — el porqué, en `carve_authored_set_into_grid`) y se repara UNA vez al
+                // final. Reparar entre sala y sala sería tender pasillos hacia un trozo de chunk
+                // que la siguiente todavía va a rellenar de macizo, y pagar el BFS por cada sala.
+                carved.extend(super::authored_rooms::carve_authored_set_into_grid(
                     &mut out.grid,
-                    &plan,
+                    &rooms,
                     rules.ceiling_open,
+                    rules.ceiling_corridor,
                 ));
                 repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
             }
