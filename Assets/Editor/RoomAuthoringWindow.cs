@@ -241,77 +241,84 @@ namespace BackroomsSurvival.EditorTools
 
         private int _seed = 1;
 
+        /// <summary>
+        /// La pestaña de la FORMA, en secciones y ordenada por lo que decide cada cosa: primero
+        /// el tamaño, luego la planta —que es lo que decide qué mandos existen debajo—, y al final
+        /// los acabados. Antes era una lista plana de doce controles con "Plan" el ÚLTIMO, cuando
+        /// es el que manda sobre Sides y Squareness.
+        ///
+        /// El generador aleatorio baja del todo y nace plegado: reemplaza la sala ENTERA, así que
+        /// tenerlo de primero era poner el botón más destructivo donde cae la vista al entrar.
+        /// </summary>
         private void DrawShapeTab()
         {
-            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            if (Section("secSize", "Size"))
+                using (new EditorGUI.IndentLevelScope())
+                    DrawSizeSection();
+            EditorGUILayout.Space();
+
+            if (Section("secPlan", $"Plan — {_def.planMode}"))
+                using (new EditorGUI.IndentLevelScope())
+                    DrawPlanSection();
+            EditorGUILayout.Space();
+
+            if (Section("secFinish", "Ceiling & irregularity"))
+                using (new EditorGUI.IndentLevelScope())
+                    DrawFinishSection();
+            EditorGUILayout.Space();
+
+            if (Section("secRandom", "Random room", openByDefault: false))
+                using (new EditorGUI.IndentLevelScope())
+                    DrawRandomSection();
+        }
+
+        private void DrawSizeSection()
+        {
+            // Ancho y fondo en la MISMA fila, con los metros al lado. Eran dos filas más una
+            // tercera que solo decía "25 m × 25 m": tres renglones para un dato que cabe en uno.
+            using (new EditorGUILayout.HorizontalScope())
             {
-                EditorGUILayout.LabelField("Random room", EditorStyles.boldLabel);
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    _seed = EditorGUILayout.IntField(new GUIContent("Seed"), _seed);
-                    if (GUILayout.Button("Roll", GUILayout.Width(50)))
-                    {
-                        // Semilla nueva, no aleatoriedad suelta: apuntando el número puedes
-                        // volver a la sala que te gustó. Sin ella, "una buena" se pierde.
-                        _seed = UnityEngine.Random.Range(1, 999999);
-                        GenerateRandom();
-                    }
-                    if (GUILayout.Button("Generate", GUILayout.Width(75)))
-                        GenerateRandom();
-                }
-                EditorGUILayout.LabelField(" ",
-                    "Same seed always gives the same room.", EditorStyles.miniLabel);
+                EditorGUILayout.PrefixLabel(new GUIContent("Footprint",
+                    "En TILES de 5 m, la unidad en la que piensa el mundo — no en metros sueltos."));
+                _def.tilesX = Mathf.Max(1, EditorGUILayout.IntField(_def.tilesX, GUILayout.Width(38)));
+                EditorGUILayout.LabelField("×", GUILayout.Width(12));
+                _def.tilesZ = Mathf.Max(1, EditorGUILayout.IntField(_def.tilesZ, GUILayout.Width(38)));
+                EditorGUILayout.LabelField(
+                    $"tiles   ·   {_def.WidthMeters:0.#} × {_def.DepthMeters:0.#} m",
+                    EditorStyles.miniLabel);
             }
-            EditorGUILayout.Space();
 
-            _def.tilesX = Mathf.Max(1, EditorGUILayout.IntField(
-                new GUIContent("Tiles X", "Footprint width in 5 m tiles."), _def.tilesX));
-            _def.tilesZ = Mathf.Max(1, EditorGUILayout.IntField(
-                new GUIContent("Tiles Z", "Footprint depth in 5 m tiles."), _def.tilesZ));
-            EditorGUILayout.LabelField(" ", $"{_def.WidthMeters:0.#} m × {_def.DepthMeters:0.#} m");
+            // Deslizador CON campo, y el tope se estira hasta el valor que ya haya: un slider con
+            // tope fijo recortaría en silencio una sala más alta que el rango la primera vez que
+            // se repinta, y eso es perder un valor que alguien puso a propósito.
+            _def.heightMeters = EditorGUILayout.Slider(
+                new GUIContent("Height (m)", "Del suelo al techo. Con el techo inclinado es la MEDIA."),
+                _def.heightMeters, 2f, Mathf.Max(12f, _def.heightMeters));
+            _def.wallThickness = EditorGUILayout.Slider(
+                new GUIContent("Wall thickness (m)",
+                    "Grosor del muro. Es lo que se ve en el corte de una puerta."),
+                _def.wallThickness, 0.05f, Mathf.Max(0.6f, _def.wallThickness));
+        }
 
-            EditorGUILayout.Space();
-            _def.heightMeters = EditorGUILayout.FloatField(
-                new GUIContent("Height (m)"), _def.heightMeters);
-            _def.wallThickness = EditorGUILayout.FloatField(
-                new GUIContent("Wall Thickness (m)"), _def.wallThickness);
-
-            _def.ceilingTilt = EditorGUILayout.Slider(
-                new GUIContent("Ceiling tilt", "0 = flat. The tilt pivots on the centre, so Height stays the AVERAGE."),
-                _def.ceilingTilt, 0f, 40f);
-            using (new EditorGUI.DisabledScope(_def.ceilingTilt <= 0.001f))
-                _def.ceilingTiltYaw = EditorGUILayout.Slider(
-                    new GUIContent("Tilt facing", "Which way the ceiling drops."),
-                    _def.ceilingTiltYaw, -180f, 180f);
-
-            EditorGUILayout.Space();
-            _def.irregularity = EditorGUILayout.Slider(
-                new GUIContent("Irregularity", "0 = perfect geometry. Raise it and the walls go slightly out of square."),
-                _def.irregularity, 0f, 1f);
-            using (new EditorGUI.DisabledScope(_def.irregularity <= 0.001f))
-                using (new EditorGUILayout.HorizontalScope())
-                {
-                    _def.irregularitySeed = EditorGUILayout.IntField(
-                        new GUIContent("  Seed"), _def.irregularitySeed);
-                    if (GUILayout.Button("Roll", GUILayout.Width(50)))
-                        _def.irregularitySeed = UnityEngine.Random.Range(1, 999999);
-                }
-
-            EditorGUILayout.Space();
+        private void DrawPlanSection()
+        {
             _def.planMode = (RoomDefinition.PlanMode)EditorGUILayout.EnumPopup(
                 new GUIContent("Plan",
-                    "Polygon = round/boxy convex plans. Blocks = bite tiles out for L / T / U. " +
-                    "Manual = dibujada a mano con tiradores en la vista de escena."),
+                    "Polygon = plantas convexas, de redondas a rectangulares. "
+                    + "Blocks = muerde tiles para hacer una L / T / U. "
+                    + "Manual = dibujada a mano con tiradores en la vista de escena."),
                 _def.planMode);
 
             switch (_def.planMode)
             {
                 case RoomDefinition.PlanMode.Polygon:
                     _def.sides = EditorGUILayout.IntSlider(
-                        new GUIContent("Sides", "4 = boxy. Raise it to round the plan off."),
+                        new GUIContent("Sides",
+                            "4 = rectángulo exacto. Subiéndolo la planta se redondea, y cada lado "
+                            + "es una pared más donde poder abrir una puerta."),
                         _def.sides, RoomDefinition.MinSides, RoomDefinition.MaxSides);
                     _def.squareness = EditorGUILayout.Slider(
-                        new GUIContent("Squareness", "0 = round, 1 = the footprint rectangle."),
+                        new GUIContent("Squareness", "0 = redonda, 1 = el rectángulo del footprint."),
                         _def.squareness, 0f, 1f);
                     break;
                 case RoomDefinition.PlanMode.Blocks:
@@ -321,6 +328,86 @@ namespace BackroomsSurvival.EditorTools
                     DrawManualContour();
                     break;
             }
+
+            // Cuántas paredes ha salido de verdad: es el número que conecta esta pestaña con la
+            // otra, porque el campo "Wall" de una abertura se mueve entre 0 y este menos uno.
+            int walls = _def.InnerContour()?.Length ?? 0;
+            EditorGUILayout.LabelField(" ",
+                $"{walls} wall(s) — es el rango del campo Wall de una abertura",
+                EditorStyles.miniLabel);
+        }
+
+        private void DrawFinishSection()
+        {
+            _def.ceilingTilt = EditorGUILayout.Slider(
+                new GUIContent("Ceiling tilt",
+                    "0 = plano. La inclinación pivota en el centro, así que Height sigue siendo la MEDIA."),
+                _def.ceilingTilt, 0f, 40f);
+            // Sangrado y apagado, no escondido: si desapareciera, la fila de debajo subiría justo
+            // al bajar el tilt a 0 y lo que estabas mirando saltaría de sitio.
+            using (new EditorGUI.IndentLevelScope())
+            using (new EditorGUI.DisabledScope(_def.ceilingTilt <= 0.001f))
+                _def.ceilingTiltYaw = EditorGUILayout.Slider(
+                    new GUIContent("Facing", "Hacia dónde cae el techo."),
+                    _def.ceilingTiltYaw, -180f, 180f);
+
+            EditorGUILayout.Space();
+
+            _def.irregularity = EditorGUILayout.Slider(
+                new GUIContent("Irregularity",
+                    "0 = geometría perfecta. Subiéndolo las paredes se salen un poco de escuadra."),
+                _def.irregularity, 0f, 1f);
+            using (new EditorGUI.IndentLevelScope())
+            using (new EditorGUI.DisabledScope(_def.irregularity <= 0.001f))
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                _def.irregularitySeed = EditorGUILayout.IntField(
+                    new GUIContent("Seed", "Misma semilla, mismo desajuste."), _def.irregularitySeed);
+                if (GUILayout.Button("Roll", GUILayout.Width(50)))
+                    _def.irregularitySeed = UnityEngine.Random.Range(1, 999999);
+            }
+        }
+
+        private void DrawRandomSection()
+        {
+            EditorGUILayout.HelpBox(
+                "Generar REEMPLAZA la sala entera: planta, aberturas, pisos y todo lo demás. "
+                + "Es para empezar, no para retocar.", MessageType.Warning);
+
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                _seed = EditorGUILayout.IntField(new GUIContent("Seed",
+                    "La misma semilla da siempre la misma sala. Apunta el número de una que te "
+                    + "guste y podrás volver a ella."), _seed);
+                if (GUILayout.Button("Roll", GUILayout.Width(50)))
+                {
+                    // Semilla nueva, no aleatoriedad suelta: apuntando el número puedes volver a
+                    // la sala que te gustó. Sin ella, "una buena" se pierde.
+                    _seed = UnityEngine.Random.Range(1, 999999);
+                    if (ConfirmReplaceRoom()) GenerateRandom();
+                }
+                if (GUILayout.Button("Generate", GUILayout.Width(75)) && ConfirmReplaceRoom())
+                    GenerateRandom();
+            }
+        }
+
+        /// <summary>
+        /// Pregunta antes de tirar una sala en la que ya hay trabajo. Solo pregunta si de verdad
+        /// hay algo que perder — con una sala recién creada el diálogo sería un clic de peaje por
+        /// nada, y un aviso que salta siempre se acaba pulsando sin leer.
+        /// </summary>
+        private bool ConfirmReplaceRoom()
+        {
+            int features = _def.holes.Length + _def.floorHoles.Length + _def.pillars.Length
+                + _def.pillarGrids.Length + _def.blocks.Length + _def.stairs.Length
+                + _def.markers.Length + _def.levels.Length + _def.notches.Length
+                + _def.manualContour.Length;
+            if (features == 0) return true;
+
+            return EditorUtility.DisplayDialog(
+                "Replace the room?",
+                $"Esta sala tiene {features} cosa(s) puestas a mano. Generar las borra todas.",
+                "Generate", "Cancel");
         }
 
         /// <summary>
@@ -413,11 +500,6 @@ namespace BackroomsSurvival.EditorTools
             CreateOrRebuild();
         }
 
-        /// <summary>
-        /// La pestaña, en cuatro secciones plegables en vez de ocho listas seguidas: con todo
-        /// abierto el scroll era más largo que la ventana y encontrar "la lista de bloques"
-        /// costaba más que editarla. El plegado es pegajoso (mismo diccionario que los ítems).
-        /// </summary>
         /// <summary>
         /// La pestaña entera, colgando de los PISOS. La planta baja siempre está y no se borra;
         /// cada entreplanta trae debajo los mismos siete grupos, con lo que de verdad vive en
@@ -1130,9 +1212,9 @@ namespace BackroomsSurvival.EditorTools
         /// <summary>Cabecera de sección: como <see cref="Foldout"/> pero ABIERTA por defecto —
         /// una sección que nace cerrada esconde las listas a quien abre la ventana por primera
         /// vez, que es justo cuando más hace falta verlas.</summary>
-        private bool Section(string key, string label)
+        private bool Section(string key, string label, bool openByDefault = true)
         {
-            if (!_foldouts.TryGetValue(key, out bool open)) open = true;
+            if (!_foldouts.TryGetValue(key, out bool open)) open = openByDefault;
             bool now = EditorGUILayout.Foldout(open, label, true, EditorStyles.foldoutHeader);
             _foldouts[key] = now;
             return now;
