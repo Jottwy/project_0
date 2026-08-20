@@ -92,7 +92,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 prefab = room.prefab,
                 // El pivote de la sala es el CENTRO de su footprint (contrato de la herramienta de
                 // autoría): con el centro, girar 90° no descoloca la pieza.
-                localCenter = new Vector3((tx0 + tw * 0.5f) * Ts, 0f, (tz0 + th * 0.5f) * Ts),
+                //
+                // Y sube `PropFloorY`. La sala se autora con su cara pisable en y = 0
+                // (`RoomMeshBuilder`: `yFloor = 0f`) y la losa del pasillo tiene la suya a 0,04 — la
+                // mitad de sus 8 cm de canto. Colocada a 0 la sala queda 4 cm HUNDIDA y cada puerta
+                // es un escalón hacia abajo con el labio de la losa a la vista.
+                //
+                // ADR-083 enmienda 1 anotó este riesgo como "suelo doble", pero doble ya no hay: el
+                // punto 7 de esa misma enmienda hace que el bucle de tiles se salte los de la sala,
+                // así que ahí el chunk no suela nada. Lo que quedaba era solo el desnivel.
+                //
+                // Se corrige AQUÍ y no en el horneado —que es lo que la enmienda proponía— porque
+                // subir la sala entera deja igual de alineados suelo, paredes y proxy de colisión,
+                // sin rehornear ni un prefab (y el horneado tiene DOS rutas, `SaveGeneratedRoom` y
+                // `BakeRoom`, que habría que tocar las dos). El wire no se toca, como pedía.
+                localCenter = new Vector3((tx0 + tw * 0.5f) * Ts, PropFloorY, (tz0 + th * 0.5f) * Ts),
                 yaw = quarter * 90f,
                 tx0 = tx0,
                 tz0 = tz0,
@@ -101,11 +115,64 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             });
         }
 
-        /// <summary>Instancia las salas ya planificadas bajo el root del chunk.</summary>
-        private static void PlaceAuthoredRooms(Transform parent, List<RoomPlan> plans)
+        /// <summary>Instancia las salas ya planificadas bajo el root del chunk, con el tinte de su
+        /// zona ya aplicado.</summary>
+        private static void PlaceAuthoredRooms(Transform parent, List<RoomPlan> plans, Color zoneTint)
         {
             for (int i = 0; i < plans.Count; i++)
-                Instantiate(plans[i].prefab, parent, plans[i].localCenter, plans[i].yaw);
+            {
+                var go = Instantiate(plans[i].prefab, parent, plans[i].localCenter, plans[i].yaw);
+                TintAuthoredRoom(go, zoneTint);
+            }
+        }
+
+        /// <summary>
+        /// Aplica el tinte de zona a una sala autorada recién instanciada.
+        ///
+        /// Sin esto la sala es la ÚNICA superficie del chunk que no recibe `zoneTint`: el laberinto
+        /// que la rodea sí (suelo, techo, paneles y pilares lo multiplican en el bucle de tiles), así
+        /// que en una zona con tinte fuerte —BLACKOUT, PIT, RED— la sala cantaba como una pieza
+        /// pegada de otro sitio.
+        ///
+        /// Se MULTIPLICA el `_BaseColor` que el material autorado ya traía, no se sustituye:
+        /// sustituirlo aplanaría a un solo color toda la paleta de la sala, que es justo lo que se
+        /// autoró a mano. Es la misma cuenta que hace el laberinto (`wallBase * zoneTint`).
+        ///
+        /// Y NO consume ninguna tirada del `rng` de la clase: ese `rng` es por tile y su secuencia
+        /// decide el jitter HSV del chunk entero. Misma disciplina que `PlaceLintels` y que la
+        /// escalera de OFFICE.
+        /// </summary>
+        private static void TintAuthoredRoom(GameObject go, Color zoneTint)
+        {
+            // ZONE_NORMAL, zona desconocida y capa sin estilo dan blanco. Multiplicar por blanco no
+            // cambia nada, así que ni se tocan los renderers del prefab.
+            if (zoneTint == Color.white)
+                return;
+
+            go.GetComponentsInChildren(_rendererScratch);
+            for (int i = 0; i < _rendererScratch.Count; i++)
+            {
+                var r = _rendererScratch[i];
+
+                // Por SUBMALLA y no por renderer: una pieza autorada con dos materiales tiene dos
+                // `_BaseColor` distintos, y un único bloque de renderer le pondría a la segunda
+                // submalla el color base de la primera.
+                r.GetSharedMaterials(_materialScratch);
+                for (int m = 0; m < _materialScratch.Count; m++)
+                {
+                    var mat = _materialScratch[m];
+                    // Un material sin `_BaseColor` (Built-in sin convertir, unlit propio) se deja en
+                    // paz: escribirle la propiedad no haría nada y `GetColor` devolvería negro, que
+                    // multiplicado apagaría la pieza entera.
+                    if (mat == null || !mat.HasProperty(LayerVisualMaterials.BaseColorId))
+                        continue;
+
+                    _mpb.Clear();
+                    _mpb.SetColor(LayerVisualMaterials.BaseColorId,
+                        mat.GetColor(LayerVisualMaterials.BaseColorId) * zoneTint);
+                    r.SetPropertyBlock(_mpb, m);
+                }
+            }
         }
 
         /// <summary>True si (tx, tz) cae dentro de alguna sala autorada de este chunk.</summary>

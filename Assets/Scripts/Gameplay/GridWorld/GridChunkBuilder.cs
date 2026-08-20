@@ -499,7 +499,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // para no meter nada entre el plan y su consumidor.
             // Ya planificadas antes del bucle de tiles (ver ahí el porqué); aquí solo se instancian.
             if (_roomPlanScratch.Count > 0)
-                PlaceAuthoredRooms(root.transform, _roomPlanScratch);
+                PlaceAuthoredRooms(root.transform, _roomPlanScratch, zoneTint);
             // La escalera se planifica contra `roomZones`, que el tallado de la sala autorada NO
             // toca — los rects de Fase 4 siguen siendo los mismos aunque el backend haya vaciado ese
             // sitio. Sin esta guarda, escalera y sala se instancian las dos en el mismo tile y se
@@ -586,6 +586,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// array-returning overload twice per instantiated piece, so this was the single largest
         /// source of per-chunk garbage in the builder.
         private static readonly List<MeshRenderer> _rendererScratch = new List<MeshRenderer>();
+
+        /// Buffer del overload no-alocante de <c>Renderer.GetSharedMaterials</c>, usado solo por
+        /// <c>TintAuthoredRoom</c>. Propio y no compartido con <see cref="_rendererScratch"/>
+        /// porque ahí SÍ anidan: se recorre una submalla dentro del bucle de renderers.
+        private static readonly List<Material> _materialScratch = new List<Material>();
 
         // ── Medias paredes — knee walls ─────────────────────────────────────────
 
