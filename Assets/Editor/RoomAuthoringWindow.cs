@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
+using UnityEditorInternal;
 using UnityEngine;
 using BackroomsSurvival.Gameplay.GridWorld;
 
@@ -390,39 +391,657 @@ namespace BackroomsSurvival.EditorTools
         /// abierto el scroll era más largo que la ventana y encontrar "la lista de bloques"
         /// costaba más que editarla. El plegado es pegajoso (mismo diccionario que los ítems).
         /// </summary>
+        /// <summary>
+        /// La pestaña entera, colgando de los PISOS. La planta baja siempre está y no se borra;
+        /// cada entreplanta trae debajo los mismos siete grupos, con lo que de verdad vive en
+        /// ella. Subir la altura de un piso se lleva todo lo suyo con él — eso ya lo hacía el
+        /// modelo (<see cref="RoomDefinition.StoreyBaseY"/>), lo que faltaba era VERLO.
+        /// </summary>
         private void DrawFeaturesTab()
         {
-            if (Section("secOpenings",
-                    $"Openings — doors, windows, pits ({_def.holes.Length + _def.floorHoles.Length})"))
+            DrawSearchField();
+
+            int storeys = _def.levels?.Length ?? 0;
+            for (int s = 0; s <= storeys; s++)
             {
-                DrawHoles();
+                DrawStorey(s);
                 EditorGUILayout.Space();
-                DrawFloorHoles();
+            }
+
+            DrawAddLevel();
+        }
+
+        /// <summary>Los siete grupos, en el orden en que se leen: primero por dónde se entra y
+        /// por dónde se cae, luego lo que hay puesto, y al final lo que no es geometría.</summary>
+        private FeatureGroupBase[] AllGroups() => new FeatureGroupBase[]
+        {
+            HolesGroup(), PitsGroup(), PillarsGroup(), PillarGridsGroup(),
+            BlocksGroup(), StairsGroup(), MarkersGroup(),
+        };
+
+        private void DrawStorey(int storey)
+        {
+            var groups = AllGroups();
+
+            int shown = 0;
+            foreach (var g in groups) shown += g.MatchingOn(this, storey);
+
+            // Buscando, un piso sin ninguna coincidencia se va entero: dejar su cabecera puesta
+            // con todo vacío debajo obliga a leer siete "(0)" para descubrir que ahí no hay nada.
+            // Sin buscar NO se esconde, ni siquiera vacío — la planta baja tiene que estar
+            // siempre, aunque solo sea para tener dónde añadir el primer feature.
+            if (Searching && shown == 0) return;
+
+            int onIt = FeaturesOnStorey(storey);
+            string count = Searching ? $"{shown} of {onIt} match" : $"{onIt} feature(s)";
+            string title = storey == 0
+                ? $"Base floor — {count}"
+                : $"Floor {storey} — slab {SlabTopOf(storey):0.#} m up, {count}";
+
+            if (!Section($"storey{storey}", title)) return;
+
+            using (new EditorGUI.IndentLevelScope())
+            {
+                if (storey > 0) DrawStoreySlab(storey);
+                foreach (var g in groups) g.Draw(this, storey);
+            }
+        }
+
+        // El texto del buscador. Fuera del modelo por lo mismo que _foldouts: es cómo está
+        // mirando Joel la sala, no parte de la sala.
+        private string _search = "";
+
+        private bool Searching => !string.IsNullOrWhiteSpace(_search);
+
+        /// <summary>
+        /// Buscador sobre lo que YA se ve: casa contra el nombre del grupo y contra la línea de la
+        /// tira, que es donde están el índice, el tipo y las medidas ("pillar", "#2", "door",
+        /// "grate", "bottomless", "4 sides"). Sin campo `name` en el modelo — buscar por un nombre
+        /// que hay que escribir antes no sirve de nada en una sala recién generada, y las salas ya
+        /// horneadas lo tendrían vacío.
+        ///
+        /// Todos los términos tienen que aparecer, en cualquier orden: "door 2" encuentra la
+        /// puerta de la pared 2 sin depender de cómo esté redactada la línea.
+        /// </summary>
+        private bool MatchesSearch(string groupTitle, string row)
+        {
+            if (!Searching) return true;
+            string hay = ($"{groupTitle} {row}").ToLowerInvariant();
+            foreach (string term in _search.ToLowerInvariant().Split(' '))
+            {
+                if (term.Length == 0) continue;
+                if (!hay.Contains(term)) return false;
+            }
+            return true;
+        }
+
+        private void DrawSearchField()
+        {
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                EditorGUI.BeginChangeCheck();
+                _search = EditorGUILayout.TextField(new GUIContent("Search",
+                    "Filtra por tipo, número o medida: \"door\", \"#2\", \"grate\", \"bottomless\".\n"
+                    + "Varios términos: tienen que aparecer todos."), _search);
+                // Al cambiar el filtro, las vistas se recortan y el elemento seleccionado de cada
+                // tira puede quedar apuntando fuera. Se sueltan todas.
+                if (EditorGUI.EndChangeCheck()) _strips.Clear();
+
+                using (new EditorGUI.DisabledScope(!Searching))
+                    if (GUILayout.Button(new GUIContent("×", "Clear"),
+                            EditorStyles.miniButton, GUILayout.Width(26)))
+                    {
+                        _search = "";
+                        _strips.Clear();
+                        GUIUtility.keyboardControl = 0; // si no, el campo se queda con el texto viejo
+                    }
             }
             EditorGUILayout.Space();
+        }
 
-            if (Section("secFloors",
-                    $"Floors & stairs ({_def.levels.Length + _def.stairs.Length})"))
+        /// <summary>El canto superior de la losa que hace de suelo de este piso.</summary>
+        private float SlabTopOf(int storey) =>
+            _def.StoreyBaseY(storey, _def.MinCeilingOver(_def.InnerContour()));
+
+        /// <summary>
+        /// La losa del piso: su altura, editable AQUÍ y no en una lista aparte. Es el cambio que
+        /// hace legible la jerarquía — se toca el número en la cabecera del piso y se ve moverse
+        /// todo lo que cuelga de él.
+        /// </summary>
+        private void DrawStoreySlab(int storey)
+        {
+            int idx = LevelIndexOfStorey(storey);
+            if (idx < 0) return;
+            var lvl = _def.levels[idx];
+
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
             {
-                DrawLevels();
-                EditorGUILayout.Space();
-                DrawStairs();
-            }
-            EditorGUILayout.Space();
+                EditorGUI.BeginChangeCheck();
+                float h = EditorGUILayout.FloatField(
+                    new GUIContent("Slab height (m)",
+                        "Altura del canto superior sobre el suelo de la sala. Se recorta sola "
+                        + "para dejar hueco de sobra por debajo y por encima.\n\n"
+                        + "Todo lo que vive en este piso se mueve CON ella."),
+                    lvl.height);
+                if (EditorGUI.EndChangeCheck())
+                {
+                    lvl.height = h;
+                    // El orden de los pisos es por ALTURA: cruzar otra losa renumera los pisos y
+                    // las tiras cacheadas apuntarían a la selección de otro piso.
+                    _strips.Clear();
+                    RebuildIfLive();
+                }
 
-            if (Section("secSolids",
-                    $"Solids — pillars, blocks ({_def.pillarGrids.Length + _def.pillars.Length + _def.blocks.Length})"))
+                if (GUILayout.Button(new GUIContent("×", "Remove this level"),
+                        EditorStyles.miniButton, GUILayout.Width(26)))
+                {
+                    var next = _def.levels;
+                    ArrayUtility.RemoveAt(ref next, idx);
+                    _def.levels = next;
+                    _strips.Clear();
+                    _foldouts.Clear();
+                    RebuildIfLive();
+                    GUIUtility.ExitGUI();
+                }
+            }
+        }
+
+        /// <summary>Qué losa del array es la que hace de suelo del piso <paramref name="storey"/>
+        /// — el array no está ordenado por altura y el piso sí, así que hay que buscarla.</summary>
+        private int LevelIndexOfStorey(int storey)
+        {
+            if (_def.levels == null) return -1;
+            for (int i = 0; i < _def.levels.Length; i++)
+                if (_def.levels[i] != null && StoreyRankOf(i) == storey) return i;
+            return -1;
+        }
+
+        private void DrawAddLevel()
+        {
+            using (new EditorGUILayout.HorizontalScope())
             {
-                DrawPillarGrids();
-                EditorGUILayout.Space();
-                DrawPillars();
-                EditorGUILayout.Space();
-                DrawBlocks();
-            }
-            EditorGUILayout.Space();
+                if (GUILayout.Button(new GUIContent("+ Level",
+                        "Una entreplanta del ancho de TODA la sala. Cualquier tramo de escalera "
+                        + "que llegue a su altura le abre hueco solo."), GUILayout.Width(80)))
+                {
+                    var next = _def.levels;
+                    ArrayUtility.Add(ref next, new RoomDefinition.Level());
+                    _def.levels = next;
+                    _strips.Clear();
+                    RebuildIfLive();
+                    GUIUtility.ExitGUI();
+                }
 
-            if (Section("secMarkers", $"Markers ({_def.markers.Length})"))
-                DrawMarkers();
+                // Repartir: N losas a alturas iguales entre suelo y techo. Es LA colocación que
+                // se acaba haciendo a mano casi siempre, así que un botón.
+                using (new EditorGUI.DisabledScope((_def.levels?.Length ?? 0) < 2))
+                    if (GUILayout.Button(new GUIContent("Distribute",
+                            "Reparte las losas a alturas iguales entre suelo y techo."),
+                            GUILayout.Width(80)))
+                    {
+                        int n = _def.levels.Length;
+                        for (int k = 0; k < n; k++)
+                            if (_def.levels[k] != null)
+                                _def.levels[k].height = _def.heightMeters * (k + 1) / (n + 1);
+                        _strips.Clear();
+                        RebuildIfLive();
+                    }
+            }
+        }
+
+        // ── Árbol de features por piso ────────────────────────────────────────
+        //
+        // La pestaña entera cuelga de los PISOS: un desplegable por piso y, dentro, los grupos
+        // que viven en él. Antes eran cuatro secciones por TIPO, y para saber qué había en la
+        // entreplanta había que abrir las cuatro y leer el campo Floor de cada elemento.
+        //
+        // Cada grupo es una tira reordenable de Unity (asa de arrastre, +/− nativos) con UNA
+        // línea por elemento, y los ajustes del seleccionado debajo. Los foldouts por elemento
+        // no caben dentro de un ReorderableList sin dibujar a mano con rects y calcular alturas
+        // en los siete tipos, que es donde se rompe en cuanto uno crece un campo.
+
+        /// <summary>
+        /// Todo lo que la tira reordenable necesita saber de un tipo de feature para dibujarlo
+        /// sin saber qué es un pilar. El array se pasa por get/set y no por `ref` a propósito:
+        /// los callbacks del ReorderableList son lambdas, y una lambda no puede capturar un `ref`
+        /// — pero sí un par de delegados que apuntan al campo de verdad.
+        /// </summary>
+        /// <summary>
+        /// La cara NO genérica de un grupo. Existe para poder tener los siete en un array y
+        /// preguntarles "¿cuántos tuyos hay en este piso?" antes de dibujar la cabecera del piso
+        /// — sin esto, con el buscador activo habría que dibujar el piso para descubrir que está
+        /// vacío, y en IMGUI eso ya no se puede deshacer.
+        /// </summary>
+        private abstract class FeatureGroupBase
+        {
+            public abstract int MatchingOn(RoomAuthoringWindow w, int storey);
+            public abstract void Draw(RoomAuthoringWindow w, int storey);
+        }
+
+        private sealed class FeatureGroup<T> : FeatureGroupBase where T : class
+        {
+            public override int MatchingOn(RoomAuthoringWindow w, int storey)
+            {
+                var arr = get();
+                if (arr == null) return 0;
+                int c = 0;
+                for (int i = 0; i < arr.Length; i++)
+                    if (arr[i] != null && w.StoreyOf(level(arr[i])) == storey
+                        && w.MatchesSearch(title, row(arr[i], i))) c++;
+                return c;
+            }
+
+            public override void Draw(RoomAuthoringWindow w, int storey) =>
+                w.DrawFeatureGroup(this, storey);
+
+            public string key, title;
+            public System.Func<T[]> get;
+            public System.Action<T[]> set;
+            public System.Func<T, int> level;
+            public System.Action<T, int> setLevel;
+            /// <summary>La línea de la tira: (elemento, índice REAL en el array).</summary>
+            public System.Func<T, int, string> row;
+            public System.Func<T> make;
+            /// <summary>Los campos del elegido, con EditorGUILayout: (elemento, índice real).</summary>
+            public System.Action<T, int> detail;
+            public GroupField<T>[] fields;
+
+            /// <summary>
+            /// Reparte estos elementos por la planta actual, tamaño incluido. Es lo que convierte
+            /// "quiero 8 pilares" en 8 pilares puestos y no en 8 pilares apilados en el origen,
+            /// que es lo que salía pulsando + ocho veces.
+            ///
+            /// Null = este grupo no tiene recuento. Las rejillas ya traen el suyo (countX×countZ)
+            /// y una escalera colocada sola no significa nada: hacia dónde sube es la decisión.
+            /// </summary>
+            public System.Action<T[]> arrange;
+        }
+
+        // Una tira por (piso, grupo). Se cachean porque el ReorderableList guarda AHÍ el elemento
+        // seleccionado y el estado del arrastre: recrearlo cada frame lo deselecciona al soltar.
+        private readonly Dictionary<string, ReorderableList> _strips
+            = new Dictionary<string, ReorderableList>();
+
+        /// <summary>El piso REAL de un `level`, con el mismo recorte que aplica el modelo: más
+        /// allá de la última losa, todo cae en la última. Sin esto un elemento con el piso de una
+        /// losa ya borrada desaparecería del árbol mientras se sigue construyendo.</summary>
+        private int StoreyOf(int level) => Mathf.Clamp(level, 0, _def.levels?.Length ?? 0);
+
+        private void DrawFeatureGroup<T>(FeatureGroup<T> g, int storey) where T : class
+        {
+            var arr = g.get();
+            if (arr == null) return;
+
+            // La VISTA: índices reales de los elementos de este piso que pasan el buscador. Es lo
+            // que la tira ordena y dibuja, así que arrastrar dentro de un piso no puede tocar a
+            // los de otro — ver ReorderViewInPlace.
+            var view = new List<int>();
+            for (int i = 0; i < arr.Length; i++)
+                if (arr[i] != null && StoreyOf(g.level(arr[i])) == storey
+                    && MatchesSearch(g.title, g.row(arr[i], i)))
+                    view.Add(i);
+
+            // Un grupo vacío se anuncia con su cabecera y nada más: la tira entera con su marco y
+            // su "List is Empty" son cuatro líneas para decir que no hay nada, y con siete grupos
+            // por piso eso es la mitad de la pantalla en blanco.
+            if (view.Count == 0)
+            {
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField($"{g.title} (0)", EditorStyles.miniLabel);
+                    GUILayout.FlexibleSpace();
+                    DrawGroupCount(g, storey, view);
+                    if (GUILayout.Button(new GUIContent("+", $"Add a {g.title.ToLowerInvariant()}"),
+                            EditorStyles.miniButton, GUILayout.Width(24)))
+                        AddToStorey(g, storey);
+                }
+                return;
+            }
+
+
+            string stripKey = $"{storey}:{g.key}";
+            if (!_strips.TryGetValue(stripKey, out var rl))
+            {
+                rl = new ReorderableList(view, typeof(T), true, true, true, true);
+                _strips[stripKey] = rl;
+            }
+            rl.list = view; // la vista se rehace cada frame; la tira tiene que mirar a la nueva
+
+            // Los callbacks se reasignan CADA frame y no una vez al crear la tira: capturan `arr`
+            // y `view`, que cambian de instancia en cuanto se añade o se borra algo. Una lambda
+            // del frame anterior escribiría en el array de entonces y el cambio se perdería sin
+            // dar error.
+            // Cabecera: el nombre a la izquierda y el recuento a la DERECHA, dentro de la misma
+            // barra. En una fila aparte quedaba flotando encima del grupo y se leía como si fuera
+            // del piso entero, no del grupo que tiene debajo.
+            rl.drawHeaderCallback = r =>
+            {
+                const float btnW = 62f, fldW = 40f, lblW = 54f, gap = 4f;
+                bool counted = g.arrange != null;
+                float reserved = counted ? btnW + fldW + lblW + gap * 2f : 0f;
+
+                EditorGUI.LabelField(new Rect(r.x, r.y, r.width - reserved, r.height),
+                    $"{g.title} ({view.Count})", EditorStyles.boldLabel);
+                if (!counted) return;
+
+                float x = r.xMax - btnW;
+                if (GUI.Button(new Rect(x, r.y + 1f, btnW, r.height - 2f),
+                        new GUIContent("Arrange",
+                            "Vuelve a repartir los que ya hay, sin cambiar cuántos son. Útil "
+                            + "después de tocar la planta."), EditorStyles.miniButton))
+                    ArrangeGroup(g, storey);
+
+                x -= gap + fldW;
+                EditorGUI.BeginChangeCheck();
+                int want = EditorGUI.IntField(new Rect(x, r.y + 1f, fldW, r.height - 2f), view.Count);
+                if (EditorGUI.EndChangeCheck() && want != view.Count)
+                    SetGroupCount(g, storey, view, want);
+
+                x -= gap + lblW;
+                EditorGUI.LabelField(new Rect(x, r.y, lblW, r.height),
+                    new GUIContent("Count",
+                        $"Cuántos {g.title.ToLowerInvariant()} quieres en este piso. Al cambiarlo "
+                        + "se reparten por la planta actual con el tamaño que les cabe."));
+            };
+            rl.elementHeightCallback = _ => EditorGUIUtility.singleLineHeight + 4f;
+            rl.drawElementCallback = (r, k, active, focus) =>
+            {
+                if (k < 0 || k >= view.Count) return;
+                r.y += 2f;
+                r.height = EditorGUIUtility.singleLineHeight;
+                EditorGUI.LabelField(r, g.row(arr[view[k]], view[k]));
+            };
+            rl.onAddCallback = _ => AddToStorey(g, storey);
+            rl.onRemoveCallback = list =>
+            {
+                if (list.index < 0 || list.index >= view.Count) return;
+                var next = arr;
+                ArrayUtility.RemoveAt(ref next, view[list.index]);
+                g.set(next);
+                list.index = -1;
+                _foldouts.Clear(); // los índices se han corrido: el plegado ya no corresponde
+                RebuildIfLive();
+                // SIN ExitGUI, a diferencia del resto: esto corre DENTRO de DoLayoutList, y
+                // abortar la pasada desde ahí deja a la tira con su estado de arrastre a medias.
+                // El frame en curso termina de dibujarse con la lista vieja y el siguiente ya sale
+                // bien — un repintado de más, ningún estado roto.
+            };
+            rl.onReorderCallbackWithDetails = (list, from, to) =>
+                ReorderViewInPlace(g, (List<int>)list.list);
+
+            rl.DoLayoutList();
+
+            if (rl.index < 0 || rl.index >= view.Count)
+            {
+                DrawAllOfGroup(g, storey, arr, view);
+                return;
+            }
+            int real = view[rl.index];
+            using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+            {
+                var item = arr[real];
+                using (new EditorGUILayout.HorizontalScope())
+                {
+                    EditorGUILayout.LabelField(g.row(item, real), EditorStyles.boldLabel);
+                    GUILayout.FlexibleSpace();
+                    // Clon por JSON — el mismo viaje que LoadRoom — para no compartir arrays
+                    // anidados (los boquetes de un bloque) entre el original y la copia.
+                    //
+                    // La palabra y no el glifo "⧉": la fuente del editor no lo trae y salía un
+                    // cuadrado vacío, que es un botón que nadie se atreve a pulsar.
+                    if (GUILayout.Button(new GUIContent("Duplicate", "Otro igual, justo debajo"),
+                            EditorStyles.miniButton, GUILayout.Width(70)))
+                    {
+                        var copy = JsonUtility.FromJson<T>(JsonUtility.ToJson(item));
+                        var next = arr;
+                        ArrayUtility.Insert(ref next, real + 1, copy);
+                        g.set(next);
+                        _foldouts.Clear();
+                        RebuildIfLive();
+                        GUIUtility.ExitGUI();
+                    }
+                }
+
+                // Mover de piso sigue siendo un campo y no un arrastre entre desplegables: el
+                // arrastre de la tira ya significa "ordenar dentro de este piso", y que el mismo
+                // gesto hiciera dos cosas según dónde sueltes es justo lo que no se adivina.
+                int lvl = FloorField(g.level(item));
+                if (lvl != g.level(item))
+                {
+                    g.setLevel(item, lvl);
+                    rl.index = -1; // se va a otro piso: la selección de esta tira ya no aplica
+                    RebuildIfLive();
+                    GUIUtility.ExitGUI();
+                }
+
+                g.detail(item, real);
+            }
+
+            // El panel Δ/= va DESPUÉS del detalle: lo que se acaba de pulsar en la tira tiene que
+            // aparecer justo debajo de ella. Con el panel en medio, hacía falta saltárselo con la
+            // vista cada vez para llegar a lo que habías seleccionado.
+            DrawAllOfGroup(g, storey, arr, view);
+        }
+
+        /// <summary>El panel Δ/= sobre los elementos de ESTE piso, no sobre el array entero:
+        /// "todas las ventanas a 1,2 m" es una frase sobre el piso que se está mirando.</summary>
+        private void DrawAllOfGroup<T>(FeatureGroup<T> g, int storey, T[] arr, List<int> view)
+            where T : class
+        {
+            var shown = new T[view.Count];
+            for (int k = 0; k < view.Count; k++) shown[k] = arr[view[k]];
+            DrawGroupPanel(shown, $"{storey}:{g.key}", g.title.ToLowerInvariant(), g.fields);
+        }
+
+        /// <summary>
+        /// "Cuántos quiero" en vez de "pulsa + ocho veces": se escribe el número y el grupo se
+        /// ajusta y se REPARTE por la planta, con el tamaño que le cabe. Poner ocho pilares a mano
+        /// era pulsar ocho veces y arrastrar ocho posiciones, todas desde el origen.
+        ///
+        /// Bajar el número quita por el final, que es lo reversible: quitar por el principio
+        /// renumera todo lo que quedaba y deja de parecerse a lo que había.
+        /// </summary>
+        private void DrawGroupCount<T>(FeatureGroup<T> g, int storey, List<int> view) where T : class
+        {
+            if (g.arrange == null) return;
+
+            EditorGUILayout.LabelField(new GUIContent("Count",
+                $"Cuántos {g.title.ToLowerInvariant()} quieres en este piso. Al cambiarlo se "
+                + "reparten por la planta actual con el tamaño que les cabe."),
+                GUILayout.Width(54));
+
+            EditorGUI.BeginChangeCheck();
+            int want = EditorGUILayout.IntField(view.Count, GUILayout.Width(40));
+            if (EditorGUI.EndChangeCheck() && want != view.Count)
+                SetGroupCount(g, storey, view, want);
+        }
+
+        /// <summary>Tope de cordura: por encima de esto no se está amueblando, se está llenando
+        /// la sala de basura, y cada elemento cuesta geometría al reconstruir en vivo.</summary>
+        private const int MaxPerGroup = 200;
+
+        private void SetGroupCount<T>(FeatureGroup<T> g, int storey, List<int> view, int want)
+            where T : class
+        {
+            want = Mathf.Clamp(want, 0, MaxPerGroup);
+            var arr = g.get();
+
+            // De atrás hacia delante: `view` va en orden ascendente, así que quitando primero el
+            // índice más alto los que quedan por quitar siguen siendo válidos.
+            for (int k = view.Count - 1; k >= want; k--)
+                ArrayUtility.RemoveAt(ref arr, view[k]);
+
+            for (int k = view.Count; k < want; k++)
+            {
+                var item = g.make();
+                g.setLevel(item, storey);
+                ArrayUtility.Add(ref arr, item);
+            }
+
+            g.set(arr);
+            _foldouts.Clear();
+            _strips.Clear(); // el recuento ha cambiado: la selección de la tira ya no apunta ahí
+            ArrangeGroup(g, storey);
+        }
+
+        /// <summary>
+        /// Reparte los de este piso. Sobre TODOS los del piso y no solo sobre los que pasan el
+        /// buscador: repartir media docena dejando fuera a los que el filtro esconde los pondría
+        /// encima de los escondidos, y el resultado dependería de lo que hubiera escrito en la
+        /// caja de búsqueda, que es justo lo que no debe influir en la geometría.
+        /// </summary>
+        private void ArrangeGroup<T>(FeatureGroup<T> g, int storey) where T : class
+        {
+            var arr = g.get();
+            if (arr == null) return;
+            var items = new List<T>();
+            for (int i = 0; i < arr.Length; i++)
+                if (arr[i] != null && StoreyOf(g.level(arr[i])) == storey) items.Add(arr[i]);
+            if (items.Count == 0) return;
+
+            g.arrange(items.ToArray());
+            RebuildIfLive();
+        }
+
+        /// <summary>
+        /// <paramref name="n"/> posiciones repartidas por la planta interior, con
+        /// <paramref name="clearance"/> metros libres hasta cualquier pared, más el espaciado que
+        /// ha salido — que es lo que deja elegir un TAMAÑO que no se toque con el vecino.
+        ///
+        /// Rejilla y no un reparto por relajación: una sala es rectangular casi siempre, y en una
+        /// rejilla se ve a la primera que los pilares están alineados. Las casillas que caen fuera
+        /// de la planta (una L, una rotonda) se descartan y se prueba con una rejilla más fina,
+        /// porque descartar sin más deja menos elementos de los que se pidieron.
+        /// </summary>
+        private (List<Vector2> points, float spacing) SpreadInside(int n, float clearance)
+        {
+            var inner = _def.InnerContour();
+            var best = new List<Vector2>();
+            float bestSpacing = 1f;
+            if (inner == null || inner.Length < 3 || n <= 0) return (best, bestSpacing);
+
+            Vector2 min = inner[0], max = inner[0];
+            foreach (var p in inner) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
+            float w = Mathf.Max(0.01f, max.x - min.x), h = Mathf.Max(0.01f, max.y - min.y);
+
+            for (int pass = 0; pass < 8; pass++)
+            {
+                int cols = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt(n * w / h)) + pass);
+                int rows = Mathf.Max(1, Mathf.CeilToInt((float)n / cols) + pass);
+                float sx = w / cols, sz = h / rows;
+
+                var got = new List<Vector2>();
+                for (int r = 0; r < rows && got.Count < n; r++)
+                    for (int c = 0; c < cols && got.Count < n; c++)
+                    {
+                        var p = new Vector2(min.x + (c + 0.5f) * sx, min.y + (r + 0.5f) * sz);
+                        if (InsideWithClearance(inner, p, clearance)) got.Add(p);
+                    }
+
+                if (got.Count > best.Count) { best = got; bestSpacing = Mathf.Min(sx, sz); }
+                if (best.Count >= n) break;
+            }
+
+            // Si ni así caben (una planta diminuta con mucho margen), el centroide: mejor todos
+            // amontonados en un sitio válido que repartidos por dentro de la pared.
+            if (best.Count == 0)
+            {
+                Vector2 c = Vector2.zero;
+                foreach (var p in inner) c += p;
+                best.Add(c / inner.Length);
+            }
+            return (best, bestSpacing);
+        }
+
+        private static bool InsideWithClearance(Vector2[] poly, Vector2 p, float clearance)
+        {
+            bool inside = false;
+            for (int i = 0, j = poly.Length - 1; i < poly.Length; j = i++)
+                if (poly[i].y > p.y != poly[j].y > p.y
+                    && p.x < (poly[j].x - poly[i].x) * (p.y - poly[i].y)
+                        / (poly[j].y - poly[i].y) + poly[i].x)
+                    inside = !inside;
+            if (!inside) return false;
+
+            for (int i = 0; i < poly.Length; i++)
+                if (DistToSegment(p, poly[i], poly[(i + 1) % poly.Length]) < clearance) return false;
+            return true;
+        }
+
+        private static float DistToSegment(Vector2 p, Vector2 a, Vector2 b)
+        {
+            Vector2 ab = b - a;
+            float len2 = ab.sqrMagnitude;
+            if (len2 < 1e-8f) return Vector2.Distance(p, a);
+            float t = Mathf.Clamp01(Vector2.Dot(p - a, ab) / len2);
+            return Vector2.Distance(p, a + ab * t);
+        }
+
+        /// <summary><paramref name="n"/> repartos por el PERÍMETRO interior: (lado, fracción).
+        /// Para lo que vive en la pared — puertas y ventanas —, donde una rejilla no sirve.
+        /// Se reparte sobre la longitud real y no una por lado, para que en una rotonda de 24
+        /// facetas no salgan 24 puertas seguidas.</summary>
+        private List<(int side, float along)> SpreadOnWalls(int n)
+        {
+            var result = new List<(int, float)>();
+            var inner = _def.InnerContour();
+            if (inner == null || inner.Length < 3 || n <= 0) return result;
+
+            int sides = inner.Length;
+            var len = new float[sides];
+            float perim = 0f;
+            for (int i = 0; i < sides; i++)
+            {
+                len[i] = Vector2.Distance(inner[i], inner[(i + 1) % sides]);
+                perim += len[i];
+            }
+            if (perim < 1e-4f) return result;
+
+            for (int k = 0; k < n; k++)
+            {
+                float target = perim * (k + 0.5f) / n;
+                float run = 0f;
+                for (int i = 0; i < sides; i++)
+                {
+                    if (target > run + len[i] && i < sides - 1) { run += len[i]; continue; }
+                    result.Add((i, len[i] > 1e-4f ? Mathf.Clamp01((target - run) / len[i]) : 0.5f));
+                    break;
+                }
+            }
+            return result;
+        }
+
+        /// <summary>Añade al piso que se está mirando: el elemento nuevo nace CON su piso puesto,
+        /// que es lo que hace que aparezca donde se pulsó y no siempre en la planta baja.</summary>
+        private void AddToStorey<T>(FeatureGroup<T> g, int storey) where T : class
+        {
+            var item = g.make();
+            g.setLevel(item, storey);
+            var next = g.get();
+            ArrayUtility.Add(ref next, item);
+            g.set(next);
+            RebuildIfLive();
+            // Sin ExitGUI por el mismo motivo que en onRemoveCallback: el camino de la tira pasa
+            // por dentro de DoLayoutList.
+        }
+
+        /// <summary>
+        /// Lleva al array real el orden en que la tira ha dejado la VISTA. La tira ya ha permutado
+        /// `view` cuando esto corre, así que basta con escribir los elementos en ese orden dentro
+        /// de las MISMAS ranuras que ocupaban (las de la vista, ordenadas): así reordenar dentro
+        /// de un piso no mueve ni un elemento de otro piso, que es lo que pasaría reordenando el
+        /// array entero.
+        /// </summary>
+        private void ReorderViewInPlace<T>(FeatureGroup<T> g, List<int> view) where T : class
+        {
+            var arr = g.get();
+            var slots = new List<int>(view);
+            slots.Sort();
+            var items = new T[view.Count];
+            for (int k = 0; k < view.Count; k++) items[k] = arr[view[k]];
+            for (int k = 0; k < slots.Count; k++) arr[slots[k]] = items[k];
+            _foldouts.Clear();
+            RebuildIfLive();
         }
 
         /// <summary>Cabecera de sección: como <see cref="Foldout"/> pero ABIERTA por defecto —
@@ -447,43 +1066,137 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         private int FloorField(int level)
         {
-            if (_def.levels == null || _def.levels.Length == 0) return level;
-            return EditorGUILayout.IntSlider(
+            int n = _def.levels?.Length ?? 0;
+            if (n == 0) return level;
+
+            // Desplegable con el NOMBRE del piso, no un slider de números. Es el control que MUEVE
+            // un elemento de piso, y "Base floor" dice lo que hace un 0 sólo si ya sabes que los
+            // pisos empiezan en 0 — que es justo lo que no se adivina abriendo la herramienta.
+            var names = new string[n + 1];
+            names[0] = "Base floor";
+            for (int k = 1; k <= n; k++) names[k] = $"Floor {k}  ({SlabTopOf(k):0.#} m up)";
+
+            return EditorGUILayout.Popup(
                 new GUIContent("Floor",
-                    "0 = planta baja; k = sobre la k-esima losa contando desde abajo EN ALTURA. "
-                    + "Las posiciones verticales del elemento pasan a medirse desde ese suelo."),
-                level, 0, _def.levels.Length);
+                    "En qué piso vive. Sus alturas pasan a medirse desde el suelo de ese piso, "
+                    + "así que mover la losa lo mueve con ella."),
+                Mathf.Clamp(level, 0, n), names);
         }
 
-        private void DrawFloorHoles()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Floor pits ({_def.floorHoles.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Pit", GUILayout.Width(70)))
-                {
-                    ArrayUtility.Add(ref _def.floorHoles, new RoomDefinition.FloorHole());
-                    RebuildIfLive();
-                }
-            }
+        // ── Los siete grupos ──────────────────────────────────────────────────
+        //
+        // Un descriptor por tipo de feature. Lo que antes era un DrawX() con su cabecera, su
+        // botón de añadir y su bucle vive ahora partido en dos: la LÍNEA que se ve en la tira y
+        // los CAMPOS del elegido. La tira, el reordenar, el añadir/borrar, el duplicar y el panel
+        // Δ/= son los MISMOS para los siete — antes eran siete copias del mismo andamio.
 
-            DrawGroupPanel(_def.floorHoles, "floor pits",
-                new GroupField<RoomDefinition.FloorHole>("Position X", f => f.position.x, (f, v) => f.position.x = v),
-                new GroupField<RoomDefinition.FloorHole>("Position Z", f => f.position.y, (f, v) => f.position.y = v),
-                new GroupField<RoomDefinition.FloorHole>("Size X (m)", f => f.sizeX, (f, v) => f.sizeX = v),
-                new GroupField<RoomDefinition.FloorHole>("Size Z (m)", f => f.sizeZ, (f, v) => f.sizeZ = v),
-                new GroupField<RoomDefinition.FloorHole>("Depth (m)", f => f.depth, (f, v) => f.depth = v),
-                new GroupField<RoomDefinition.FloorHole>("Yaw", f => f.yawDegrees, (f, v) => f.yawDegrees = v));
-
-            for (int i = 0; i < _def.floorHoles.Length; i++)
+        private FeatureGroup<RoomDefinition.WallHole> HolesGroup() =>
+            new FeatureGroup<RoomDefinition.WallHole>
             {
-                var f = _def.floorHoles[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                key = "holes",
+                title = "Openings",
+                get = () => _def.holes,
+                set = a => _def.holes = a,
+                level = h => h.level,
+                setLevel = (h, v) => h.level = v,
+                // Nace en la pared 0 y en el centro: aparece donde se ve, no escondido en una
+                // esquina, que es lo que hace pensar que el botón no ha hecho nada. Nace PUERTA
+                // porque es lo más pedido; subirle "Height off floor" la convierte en ventana.
+                make = () => new RoomDefinition.WallHole
+                    { side = 0, along = 0.5f, baseY = 0f, width = 1.6f, height = 2.2f },
+                row = (h, i) =>
                 {
-                    string kind = f.bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
-                    if (!ItemHeader(ref _def.floorHoles, i, "f",
-                            $"#{i}  {f.sizeX:0.#} × {f.sizeZ:0.#} m, {kind}")) continue;
-                    f.level = FloorField(f.level);
+                    string kind = h.grateBars > 0 ? "grate" : h.baseY <= 0.01f ? "door" : "window";
+                    string where = h.spanCorners ? $"from wall {h.side}" : $"on wall {h.side}";
+                    return $"#{i}   {kind} {where}   ·   {h.width:0.#} × {h.height:0.#} m";
+                },
+                fields = new[]
+                {
+                    new GroupField<RoomDefinition.WallHole>("Wall", h => h.side,
+                        (h, v) => h.side = Mathf.RoundToInt(v),
+                        "Desplaza a que pared apunta cada uno, todos a la vez."),
+                    new GroupField<RoomDefinition.WallHole>("Along wall", h => h.along, (h, v) => h.along = v),
+                    new GroupField<RoomDefinition.WallHole>("Height off floor (m)", h => h.baseY, (h, v) => h.baseY = v),
+                    new GroupField<RoomDefinition.WallHole>("Width (m)", h => h.width, (h, v) => h.width = v),
+                    new GroupField<RoomDefinition.WallHole>("Height (m)", h => h.height, (h, v) => h.height = v),
+                    new GroupField<RoomDefinition.WallHole>("Grate bars", h => h.grateBars,
+                        (h, v) => h.grateBars = Mathf.Max(0, Mathf.RoundToInt(v))),
+                },
+                arrange = items =>
+                {
+                    var spots = SpreadOnWalls(items.Length);
+                    for (int k = 0; k < items.Length && k < spots.Count; k++)
+                    {
+                        items[k].side = spots[k].side;
+                        items[k].along = spots[k].along;
+                    }
+                },
+                detail = (h, i) =>
+                {
+                    h.side = EditorGUILayout.IntSlider(
+                        new GUIContent("Wall"), h.side, 0, Mathf.Max(0, _def.sides - 1));
+                    h.along = EditorGUILayout.Slider(
+                        new GUIContent("Along wall", "0 y 1 son las dos esquinas de esa pared."),
+                        h.along, 0f, 1f);
+                    h.baseY = EditorGUILayout.FloatField(
+                        new GUIContent("Height off floor (m)",
+                            "0 = puerta. Súbelo y es ventana. Cuenta desde el suelo de SU piso."),
+                        h.baseY);
+                    h.width = EditorGUILayout.FloatField(new GUIContent("Width (m)"), h.width);
+                    h.height = EditorGUILayout.FloatField(new GUIContent("Height (m)"), h.height);
+                    h.spanCorners = EditorGUILayout.Toggle(
+                        new GUIContent("Turn corners",
+                            "Deja que la abertura doble la esquina y salga por la pared de al "
+                            + "lado. Con esto el ancho se mide sobre el contorno, no sobre una "
+                            + "pared: es la unica forma de pedir una puerta ancha en una planta "
+                            + "redonda, donde cada faceta mide poco mas de un metro."),
+                        h.spanCorners);
+                    h.grateBars = EditorGUILayout.IntSlider(
+                        new GUIContent("Grate bars", "0 = open hole. Above that it fills with bars."),
+                        h.grateBars, 0, 20);
+                },
+            };
+
+        private FeatureGroup<RoomDefinition.FloorHole> PitsGroup() =>
+            new FeatureGroup<RoomDefinition.FloorHole>
+            {
+                key = "pits",
+                title = "Floor pits",
+                get = () => _def.floorHoles,
+                set = a => _def.floorHoles = a,
+                level = f => f.level,
+                setLevel = (f, v) => f.level = v,
+                make = () => new RoomDefinition.FloorHole(),
+                row = (f, i) =>
+                {
+                    string kind = f.level > 0 ? "through the slab"
+                        : f.bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
+                    return $"#{i}   {f.sizeX:0.#} × {f.sizeZ:0.#} m   ·   {kind}";
+                },
+                fields = new[]
+                {
+                    new GroupField<RoomDefinition.FloorHole>("Position X", f => f.position.x, (f, v) => f.position.x = v),
+                    new GroupField<RoomDefinition.FloorHole>("Position Z", f => f.position.y, (f, v) => f.position.y = v),
+                    new GroupField<RoomDefinition.FloorHole>("Size X (m)", f => f.sizeX, (f, v) => f.sizeX = v),
+                    new GroupField<RoomDefinition.FloorHole>("Size Z (m)", f => f.sizeZ, (f, v) => f.sizeZ = v),
+                    new GroupField<RoomDefinition.FloorHole>("Depth (m)", f => f.depth, (f, v) => f.depth = v),
+                    new GroupField<RoomDefinition.FloorHole>("Yaw", f => f.yawDegrees, (f, v) => f.yawDegrees = v),
+                },
+                arrange = items =>
+                {
+                    // Margen generoso: un pozo pegado a la pared deja un labio de suelo por el
+                    // que no se pasa y que no se ve venir.
+                    var (pts, spacing) = SpreadInside(items.Length, 2f);
+                    float side = Mathf.Clamp(spacing * 0.5f, 1.5f, 4f);
+                    for (int k = 0; k < items.Length && k < pts.Count; k++)
+                    {
+                        items[k].position = pts[k];
+                        items[k].sizeX = side;
+                        items[k].sizeZ = side;
+                    }
+                },
+                detail = (f, i) =>
+                {
                     f.position = EditorGUILayout.Vector2Field("Position (XZ)", f.position);
                     f.sizeX = EditorGUILayout.FloatField("Size X (m)", f.sizeX);
                     f.sizeZ = EditorGUILayout.FloatField("Size Z (m)", f.sizeZ);
@@ -510,35 +1223,77 @@ namespace BackroomsSurvival.EditorTools
                             f.bottomless);
                     }
                     f.yawDegrees = EditorGUILayout.Slider("Yaw", f.yawDegrees, -180f, 180f);
-                }
-            }
-        }
+                },
+            };
 
-        private void DrawPillarGrids()
-        {
-            using (new EditorGUILayout.HorizontalScope())
+        private FeatureGroup<RoomDefinition.Pillar> PillarsGroup() =>
+            new FeatureGroup<RoomDefinition.Pillar>
             {
-                EditorGUILayout.LabelField($"Pillar grids ({_def.pillarGrids.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Grid", GUILayout.Width(70)))
+                key = "pillars",
+                title = "Pillars",
+                get = () => _def.pillars,
+                set = a => _def.pillars = a,
+                level = p => p.level,
+                setLevel = (p, v) => p.level = v,
+                make = () => new RoomDefinition.Pillar(),
+                row = (p, i) => $"#{i}   {p.size:0.##} m   ·   {p.sides} sides",
+                fields = new[]
                 {
-                    ArrayUtility.Add(ref _def.pillarGrids, new RoomDefinition.PillarGrid());
-                    RebuildIfLive();
-                }
-            }
+                    new GroupField<RoomDefinition.Pillar>("Position X", p => p.position.x, (p, v) => p.position.x = v),
+                    new GroupField<RoomDefinition.Pillar>("Position Z", p => p.position.y, (p, v) => p.position.y = v),
+                    new GroupField<RoomDefinition.Pillar>("Size (m)", p => p.size, (p, v) => p.size = v),
+                    new GroupField<RoomDefinition.Pillar>("Sides", p => p.sides,
+                        (p, v) => p.sides = Mathf.Clamp(Mathf.RoundToInt(v), 3, 32)),
+                    new GroupField<RoomDefinition.Pillar>("Yaw", p => p.yawDegrees, (p, v) => p.yawDegrees = v),
+                },
+                arrange = items =>
+                {
+                    var (pts, spacing) = SpreadInside(items.Length, 1f);
+                    // El tamaño sale del hueco que ha quedado entre ellos: un cuarto del paso deja
+                    // tres cuartos de aire, que es lo que hace que se lea como columnata y no como
+                    // tabique. Con topes, porque un pilar de 3 m es una habitacion maciza.
+                    float size = Mathf.Clamp(spacing * 0.25f, 0.3f, 1.2f);
+                    for (int k = 0; k < items.Length && k < pts.Count; k++)
+                    {
+                        items[k].position = pts[k];
+                        items[k].size = size;
+                    }
+                },
+                detail = (p, i) =>
+                {
+                    p.position = EditorGUILayout.Vector2Field("Position (XZ)", p.position);
+                    p.size = EditorGUILayout.FloatField(
+                        new GUIContent("Size (m)", "Width across the flats."), p.size);
+                    p.sides = EditorGUILayout.IntSlider(
+                        new GUIContent("Sides", "4 = square. Raise it to round it off."), p.sides, 3, 32);
+                    p.yawDegrees = EditorGUILayout.Slider("Yaw", p.yawDegrees, -180f, 180f);
+                },
+            };
 
-            for (int i = 0; i < _def.pillarGrids.Length; i++)
+        private FeatureGroup<RoomDefinition.PillarGrid> PillarGridsGroup() =>
+            new FeatureGroup<RoomDefinition.PillarGrid>
             {
-                var g = _def.pillarGrids[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
+                key = "grids",
+                title = "Pillar grids",
+                get = () => _def.pillarGrids,
+                set = a => _def.pillarGrids = a,
+                level = g => g.level,
+                setLevel = (g, v) => g.level = v,
+                make = () => new RoomDefinition.PillarGrid(),
+                row = (g, i) => $"#{i}   {g.countX}×{g.countZ} = {g.countX * g.countZ} pillars",
+                fields = new[]
                 {
-                    if (!ItemHeader(ref _def.pillarGrids, i, "g",
-                            $"#{i}  {g.countX}×{g.countZ} = {g.countX * g.countZ} pillars")) continue;
-
+                    new GroupField<RoomDefinition.PillarGrid>("Centre X", g => g.center.x, (g, v) => g.center.x = v),
+                    new GroupField<RoomDefinition.PillarGrid>("Centre Z", g => g.center.y, (g, v) => g.center.y = v),
+                    new GroupField<RoomDefinition.PillarGrid>("Size (m)", g => g.size, (g, v) => g.size = v),
+                    new GroupField<RoomDefinition.PillarGrid>("Yaw", g => g.yawDegrees, (g, v) => g.yawDegrees = v),
+                },
+                detail = (g, i) =>
+                {
                     EditorGUILayout.HelpBox(
                         "Move the centre and all of them move. Change the spacing and they " +
                         "space themselves. Yaw turns the whole grid, not each pillar.",
                         MessageType.None);
-                    g.level = FloorField(g.level);
                     g.center = EditorGUILayout.Vector2Field("Centre (XZ)", g.center);
                     g.countX = EditorGUILayout.IntSlider("Count X", g.countX, 1, 12);
                     g.countZ = EditorGUILayout.IntSlider("Count Z", g.countZ, 1, 12);
@@ -548,9 +1303,154 @@ namespace BackroomsSurvival.EditorTools
                         new GUIContent("Size (m)", "Width across the flats."), g.size);
                     g.sides = EditorGUILayout.IntSlider("Sides", g.sides, 3, 32);
                     g.yawDegrees = EditorGUILayout.Slider("Yaw", g.yawDegrees, -180f, 180f);
-                }
-            }
-        }
+                },
+            };
+
+        private FeatureGroup<RoomDefinition.Block> BlocksGroup() =>
+            new FeatureGroup<RoomDefinition.Block>
+            {
+                key = "blocks",
+                title = "Blocks",
+                get = () => _def.blocks,
+                set = a => _def.blocks = a,
+                level = b => b.level,
+                setLevel = (b, v) => b.level = v,
+                make = () => new RoomDefinition.Block(),
+                row = (b, i) => b.holes != null && b.holes.Length > 0
+                    ? $"#{i}   {b.sizeX:0.#} × {b.sizeZ:0.#} × {b.height:0.#} m   ·   {b.holes.Length} opening(s)"
+                    : $"#{i}   {b.sizeX:0.#} × {b.sizeZ:0.#} × {b.height:0.#} m",
+                fields = new[]
+                {
+                    new GroupField<RoomDefinition.Block>("Position X", b => b.position.x, (b, v) => b.position.x = v),
+                    new GroupField<RoomDefinition.Block>("Position Z", b => b.position.y, (b, v) => b.position.y = v),
+                    new GroupField<RoomDefinition.Block>("Size X (m)", b => b.sizeX, (b, v) => b.sizeX = v),
+                    new GroupField<RoomDefinition.Block>("Size Z (m)", b => b.sizeZ, (b, v) => b.sizeZ = v),
+                    new GroupField<RoomDefinition.Block>("Base Y (m)", b => b.baseY, (b, v) => b.baseY = v),
+                    new GroupField<RoomDefinition.Block>("Height (m)", b => b.height, (b, v) => b.height = v),
+                    new GroupField<RoomDefinition.Block>("Yaw", b => b.yawDegrees, (b, v) => b.yawDegrees = v),
+                },
+                arrange = items =>
+                {
+                    var (pts, spacing) = SpreadInside(items.Length, 1.5f);
+                    float side = Mathf.Clamp(spacing * 0.45f, 0.8f, 4f);
+                    for (int k = 0; k < items.Length && k < pts.Count; k++)
+                    {
+                        items[k].position = pts[k];
+                        items[k].sizeX = side;
+                        items[k].sizeZ = side;
+                    }
+                },
+                detail = (b, i) =>
+                {
+                    b.position = EditorGUILayout.Vector2Field("Position (XZ)", b.position);
+                    b.sizeX = EditorGUILayout.FloatField("Size X (m)", b.sizeX);
+                    b.sizeZ = EditorGUILayout.FloatField("Size Z (m)", b.sizeZ);
+                    b.baseY = EditorGUILayout.FloatField(
+                        new GUIContent("Base Y (m)", "Sobre el suelo de SU piso."), b.baseY);
+                    b.height = EditorGUILayout.FloatField("Height (m)", b.height);
+                    b.yawDegrees = EditorGUILayout.Slider("Yaw", b.yawDegrees, -180f, 180f);
+                    DrawBlockHoles(b, i);
+                },
+            };
+
+        private FeatureGroup<RoomDefinition.Stairs> StairsGroup() =>
+            new FeatureGroup<RoomDefinition.Stairs>
+            {
+                key = "stairs",
+                title = "Stairs",
+                get = () => _def.stairs,
+                set = a => _def.stairs = a,
+                level = s => s.level,
+                setLevel = (s, v) => s.level = v,
+                make = () => new RoomDefinition.Stairs(),
+                row = (s, i) => $"#{i}   {s.steps} steps   ·   rises {s.steps * s.rise:0.#} m",
+                fields = new[]
+                {
+                    new GroupField<RoomDefinition.Stairs>("Position X", s => s.position.x, (s, v) => s.position.x = v),
+                    new GroupField<RoomDefinition.Stairs>("Position Z", s => s.position.y, (s, v) => s.position.y = v),
+                    new GroupField<RoomDefinition.Stairs>("Facing", s => s.yawDegrees, (s, v) => s.yawDegrees = v),
+                    new GroupField<RoomDefinition.Stairs>("Width (m)", s => s.width, (s, v) => s.width = v),
+                    new GroupField<RoomDefinition.Stairs>("Steps", s => s.steps,
+                        (s, v) => s.steps = Mathf.Clamp(Mathf.RoundToInt(v), 1, 40)),
+                    new GroupField<RoomDefinition.Stairs>("Rise per step (m)", s => s.rise, (s, v) => s.rise = v),
+                    new GroupField<RoomDefinition.Stairs>("Run per step (m)", s => s.run, (s, v) => s.run = v),
+                },
+                detail = (s, i) =>
+                {
+                    s.position = EditorGUILayout.Vector2Field("Bottom step (XZ)", s.position);
+                    s.yawDegrees = EditorGUILayout.Slider(
+                        new GUIContent("Facing", "Direction it climbs towards."),
+                        s.yawDegrees, -180f, 180f);
+                    s.width = EditorGUILayout.FloatField("Width (m)", s.width);
+                    s.steps = EditorGUILayout.IntSlider("Steps", s.steps, 1, 40);
+                    s.rise = EditorGUILayout.FloatField(
+                        new GUIContent("Rise per step (m)", "0.18 is comfortable to climb."), s.rise);
+                    s.run = EditorGUILayout.FloatField("Run per step (m)", s.run);
+                    EditorGUILayout.LabelField(" ",
+                        $"Total: {s.steps * s.rise:0.##} m up, {s.steps * s.run:0.##} m long",
+                        EditorStyles.miniLabel);
+                    DrawStairsReachButtons(s);
+                },
+            };
+
+        private FeatureGroup<RoomDefinition.Marker> MarkersGroup() =>
+            new FeatureGroup<RoomDefinition.Marker>
+            {
+                key = "markers",
+                title = "Markers",
+                get = () => _def.markers,
+                set = a => _def.markers = a,
+                level = m => m.level,
+                setLevel = (m, v) => m.level = v,
+                // Nace PROP y el tipo se cambia arriba del detalle: la tira tiene UN botón de
+                // añadir, y tres botones distintos por tipo eran tres formas de hacer lo mismo.
+                make = () => new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Prop },
+                row = (m, i) => m.kind == RoomDefinition.MarkerKind.Light
+                    ? $"#{i}   Light   ·   range {m.lightRange:0.#} m"
+                    : $"#{i}   {m.kind}   ·   \"{m.tag}\"",
+                fields = new[]
+                {
+                    new GroupField<RoomDefinition.Marker>("Position X", m => m.position.x, (m, v) => m.position.x = v),
+                    new GroupField<RoomDefinition.Marker>("Position Z", m => m.position.y, (m, v) => m.position.y = v),
+                    new GroupField<RoomDefinition.Marker>("Height off floor (m)", m => m.y, (m, v) => m.y = v),
+                    new GroupField<RoomDefinition.Marker>("Yaw", m => m.yawDegrees, (m, v) => m.yawDegrees = v),
+                },
+                arrange = items =>
+                {
+                    // Sin margen de pared: una luz o un punto de aparicion pegado a la esquina es
+                    // legitimo, a diferencia de un pilar, que ahi solo estorba.
+                    var (pts, _) = SpreadInside(items.Length, 0.4f);
+                    for (int k = 0; k < items.Length && k < pts.Count; k++)
+                        items[k].position = pts[k];
+                },
+                detail = (m, i) =>
+                {
+                    EditorGUILayout.HelpBox(
+                        "No cambian la geometría: son sitios que otro sistema resuelve después "
+                        + "(luces, props, puntos de aparición). Arrástralos en la vista de escena.",
+                        MessageType.None);
+                    m.kind = (RoomDefinition.MarkerKind)EditorGUILayout.EnumPopup("Kind", m.kind);
+                    m.position = EditorGUILayout.Vector2Field("Position (XZ)", m.position);
+                    m.y = EditorGUILayout.FloatField(
+                        new GUIContent("Height off floor (m)", "Sobre el suelo de SU piso."), m.y);
+                    m.yawDegrees = EditorGUILayout.Slider("Yaw", m.yawDegrees, -180f, 180f);
+
+                    if (m.kind == RoomDefinition.MarkerKind.Light)
+                    {
+                        m.lightColor = EditorGUILayout.ColorField("Color", m.lightColor);
+                        m.lightIntensity = EditorGUILayout.FloatField("Intensity", m.lightIntensity);
+                        m.lightRange = EditorGUILayout.FloatField("Range (m)", m.lightRange);
+                    }
+                    else
+                    {
+                        m.tag = EditorGUILayout.TextField(
+                            new GUIContent("Tag",
+                                "Texto libre que resuelve un catálogo externo -- \"crate\", "
+                                + "\"player\", \"loot_common\"..."),
+                            m.tag);
+                    }
+                },
+            };
 
         // Estado de plegado por (tipo, índice). Fuera del modelo a propósito: es cómo está mirando
         // Joel la lista, no parte de la sala, y no debe acabar guardado en el prefab.
@@ -639,16 +1539,16 @@ namespace BackroomsSurvival.EditorTools
         ///
         /// Con 0 o 1 elemento no hay grupo que editar y no se dibuja nada.
         /// </summary>
-        private void DrawGroupPanel<T>(T[] items, string title, params GroupField<T>[] fields)
+        private void DrawGroupPanel<T>(T[] items, string key, string label, GroupField<T>[] fields)
         {
-            if (items == null || items.Length < 2) return;
+            if (items == null || items.Length < 2 || fields == null || fields.Length == 0) return;
 
-            _groupSetMode.TryGetValue(title, out bool setMode);
+            _groupSetMode.TryGetValue(key, out bool setMode);
             using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
-                    EditorGUILayout.LabelField($"All {items.Length} {title}", EditorStyles.boldLabel);
+                    EditorGUILayout.LabelField($"All {items.Length} {label}", EditorStyles.boldLabel);
                     GUILayout.FlexibleSpace();
                     if (GUILayout.Button(new GUIContent(setMode ? "= set" : "Δ offset",
                             "Δ: desplaza todos lo mismo, manteniendo sus diferencias.\n"
@@ -656,7 +1556,7 @@ namespace BackroomsSurvival.EditorTools
                             EditorStyles.miniButton, GUILayout.Width(64)))
                     {
                         setMode = !setMode;
-                        _groupSetMode[title] = setMode;
+                        _groupSetMode[key] = setMode;
                     }
                 }
 
@@ -684,47 +1584,6 @@ namespace BackroomsSurvival.EditorTools
         // Modo del panel de grupo por lista ("pillars", "blocks"...). Fuera del modelo por lo
         // mismo que _foldouts: es cómo se está editando, no parte de la sala.
         private readonly Dictionary<string, bool> _groupSetMode = new Dictionary<string, bool>();
-
-        private void DrawBlocks()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Blocks ({_def.blocks.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Block", GUILayout.Width(70)))
-                {
-                    ArrayUtility.Add(ref _def.blocks, new RoomDefinition.Block());
-                    RebuildIfLive();
-                }
-            }
-
-            DrawGroupPanel(_def.blocks, "blocks",
-                new GroupField<RoomDefinition.Block>("Position X", b => b.position.x, (b, v) => b.position.x = v),
-                new GroupField<RoomDefinition.Block>("Position Z", b => b.position.y, (b, v) => b.position.y = v),
-                new GroupField<RoomDefinition.Block>("Size X (m)", b => b.sizeX, (b, v) => b.sizeX = v),
-                new GroupField<RoomDefinition.Block>("Size Z (m)", b => b.sizeZ, (b, v) => b.sizeZ = v),
-                new GroupField<RoomDefinition.Block>("Base Y (m)", b => b.baseY, (b, v) => b.baseY = v),
-                new GroupField<RoomDefinition.Block>("Height (m)", b => b.height, (b, v) => b.height = v),
-                new GroupField<RoomDefinition.Block>("Yaw", b => b.yawDegrees, (b, v) => b.yawDegrees = v));
-
-            for (int i = 0; i < _def.blocks.Length; i++)
-            {
-                var b = _def.blocks[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-                {
-                    if (!ItemHeader(ref _def.blocks, i, "b",
-                            $"#{i}  {b.sizeX:0.#} × {b.sizeZ:0.#} × {b.height:0.#} m")) continue;
-                    b.level = FloorField(b.level);
-                    b.position = EditorGUILayout.Vector2Field("Position (XZ)", b.position);
-                    b.sizeX = EditorGUILayout.FloatField("Size X (m)", b.sizeX);
-                    b.sizeZ = EditorGUILayout.FloatField("Size Z (m)", b.sizeZ);
-                    b.baseY = EditorGUILayout.FloatField(
-                        new GUIContent("Base Y (m)", "Sobre el suelo de SU piso (Floor)."), b.baseY);
-                    b.height = EditorGUILayout.FloatField("Height (m)", b.height);
-                    b.yawDegrees = EditorGUILayout.Slider("Yaw", b.yawDegrees, -180f, 180f);
-                    DrawBlockHoles(b, i);
-                }
-            }
-        }
 
         /// <summary>
         /// Boquetes del bloque, anidados dentro de su propio ítem — un tabique con puerta es un
@@ -756,52 +1615,6 @@ namespace BackroomsSurvival.EditorTools
                         new GUIContent("Height off block base (m)", "0 = puerta."), h.baseY);
                     h.width = EditorGUILayout.FloatField("Width (m)", h.width);
                     h.height = EditorGUILayout.FloatField("Height (m)", h.height);
-                }
-            }
-        }
-
-        private void DrawStairs()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Stairs ({_def.stairs.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Stairs", GUILayout.Width(70)))
-                {
-                    ArrayUtility.Add(ref _def.stairs, new RoomDefinition.Stairs());
-                    RebuildIfLive();
-                }
-            }
-
-            DrawGroupPanel(_def.stairs, "stairs",
-                new GroupField<RoomDefinition.Stairs>("Position X", s => s.position.x, (s, v) => s.position.x = v),
-                new GroupField<RoomDefinition.Stairs>("Position Z", s => s.position.y, (s, v) => s.position.y = v),
-                new GroupField<RoomDefinition.Stairs>("Facing", s => s.yawDegrees, (s, v) => s.yawDegrees = v),
-                new GroupField<RoomDefinition.Stairs>("Width (m)", s => s.width, (s, v) => s.width = v),
-                new GroupField<RoomDefinition.Stairs>("Steps", s => s.steps, (s, v) => s.steps = Mathf.Clamp(Mathf.RoundToInt(v), 1, 40)),
-                new GroupField<RoomDefinition.Stairs>("Rise per step (m)", s => s.rise, (s, v) => s.rise = v),
-                new GroupField<RoomDefinition.Stairs>("Run per step (m)", s => s.run, (s, v) => s.run = v));
-
-            for (int i = 0; i < _def.stairs.Length; i++)
-            {
-                var s = _def.stairs[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-                {
-                    if (!ItemHeader(ref _def.stairs, i, "s",
-                            $"#{i}  {s.steps} steps, rises {s.steps * s.rise:0.#} m")) continue;
-                    s.level = FloorField(s.level);
-                    s.position = EditorGUILayout.Vector2Field("Bottom step (XZ)", s.position);
-                    s.yawDegrees = EditorGUILayout.Slider(
-                        new GUIContent("Facing", "Direction it climbs towards."),
-                        s.yawDegrees, -180f, 180f);
-                    s.width = EditorGUILayout.FloatField("Width (m)", s.width);
-                    s.steps = EditorGUILayout.IntSlider("Steps", s.steps, 1, 40);
-                    s.rise = EditorGUILayout.FloatField(
-                        new GUIContent("Rise per step (m)", "0.18 is comfortable to climb."), s.rise);
-                    s.run = EditorGUILayout.FloatField("Run per step (m)", s.run);
-                    EditorGUILayout.LabelField(" ",
-                        $"Total: {s.steps * s.rise:0.##} m up, {s.steps * s.run:0.##} m long",
-                        EditorStyles.miniLabel);
-                    DrawStairsReachButtons(s);
                 }
             }
         }
@@ -842,60 +1655,6 @@ namespace BackroomsSurvival.EditorTools
 
         private static readonly List<float> _levelTopsScratch = new List<float>();
 
-        private void DrawLevels()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Levels ({_def.levels.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Level", GUILayout.Width(70)))
-                {
-                    ArrayUtility.Add(ref _def.levels, new RoomDefinition.Level());
-                    RebuildIfLive();
-                }
-                // Repartir: N losas a alturas iguales entre suelo y techo. Es LA colocación que
-                // se acaba haciendo a mano casi siempre, así que un botón.
-                if (_def.levels.Length >= 2 && GUILayout.Button(
-                        new GUIContent("Distribute", "Reparte las losas a alturas iguales entre "
-                                                     + "suelo y techo."), GUILayout.Width(75)))
-                {
-                    int n = _def.levels.Length;
-                    for (int k = 0; k < n; k++)
-                        if (_def.levels[k] != null)
-                            _def.levels[k].height = _def.heightMeters * (k + 1) / (n + 1);
-                    RebuildIfLive();
-                }
-            }
-            EditorGUILayout.HelpBox(
-                "Una entreplanta a media altura, del ancho de TODA la sala. Cualquier tramo de "
-                + "escalera que llegue a su altura le abre hueco solo -- no hace falta abrirlo "
-                + "a mano.", MessageType.None);
-
-            DrawGroupPanel(_def.levels, "levels",
-                new GroupField<RoomDefinition.Level>("Height (m)", l => l.height, (l, v) => l.height = v));
-
-            for (int i = 0; i < _def.levels.Length; i++)
-            {
-                var lvl = _def.levels[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-                {
-                    // La cabecera dice QUÉ PISO es (por altura, no por posición en la lista) y
-                    // cuántas features viven encima: es el resumen de "cada detalle en su piso"
-                    // sin tener que recorrer las otras listas contándolas a mano.
-                    int storey = StoreyRankOf(i);
-                    int onIt = FeaturesOnStorey(storey);
-                    string label = onIt > 0
-                        ? $"#{i}  floor {storey}: {lvl.height:0.#} m up · {onIt} feature(s) on it"
-                        : $"#{i}  floor {storey}: {lvl.height:0.#} m up";
-                    if (!ItemHeader(ref _def.levels, i, "lvl", label)) continue;
-                    lvl.height = EditorGUILayout.FloatField(
-                        new GUIContent("Height (m)",
-                            "Altura del canto superior sobre el suelo de la sala. Se recorta "
-                            + "solo para dejar hueco de sobra por debajo y por encima."),
-                        lvl.height);
-                }
-            }
-        }
-
         /// <summary>Puesto EN ALTURA de la losa <paramref name="levelIndex"/> entre todas
         /// (1 = la más baja): el mismo criterio de orden que <see cref="RoomDefinition.SortedLevelTops"/>,
         /// que es el que da sentido al campo Floor de cada feature.</summary>
@@ -928,70 +1687,6 @@ namespace BackroomsSurvival.EditorTools
             foreach (var s in _def.stairs) if (s != null && Clamp(s.level) == storey) c++;
             foreach (var m in _def.markers) if (m != null && Clamp(m.level) == storey) c++;
             return c;
-        }
-
-        /// <summary>
-        /// Sitios que no son geometría: dónde va una luz, un prop o un punto de aparición. Al
-        /// guardar se convierten en hijos de verdad del prefab — una luz en un
-        /// <see cref="Light"/> real, prop y spawn en <see cref="RoomMarker"/> — ver
-        /// <see cref="CreateMarkers"/>. La posición se arrastra en la vista de escena
-        /// (<see cref="OnSceneGUI"/>), igual que el contorno manual.
-        /// </summary>
-        private void DrawMarkers()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Markers ({_def.markers.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Light", GUILayout.Width(60)))
-                    AddMarker(RoomDefinition.MarkerKind.Light);
-                if (GUILayout.Button("+ Prop", GUILayout.Width(60)))
-                    AddMarker(RoomDefinition.MarkerKind.Prop);
-                if (GUILayout.Button("+ Spawn", GUILayout.Width(65)))
-                    AddMarker(RoomDefinition.MarkerKind.Spawn);
-            }
-            EditorGUILayout.HelpBox(
-                "No cambian la geometría: son sitios que otro sistema resuelve después (luces, "
-                + "props, puntos de aparición). Arrástralos en la vista de escena.",
-                MessageType.None);
-
-            for (int i = 0; i < _def.markers.Length; i++)
-            {
-                var m = _def.markers[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-                {
-                    string label = m.kind == RoomDefinition.MarkerKind.Light
-                        ? $"#{i}  Light" : $"#{i}  {m.kind} \"{m.tag}\"";
-                    if (!ItemHeader(ref _def.markers, i, "mk", label)) continue;
-
-                    m.kind = (RoomDefinition.MarkerKind)EditorGUILayout.EnumPopup("Kind", m.kind);
-                    m.level = FloorField(m.level);
-                    m.position = EditorGUILayout.Vector2Field("Position (XZ)", m.position);
-                    m.y = EditorGUILayout.FloatField(
-                        new GUIContent("Height off floor (m)", "Sobre el suelo de SU piso (Floor)."), m.y);
-                    m.yawDegrees = EditorGUILayout.Slider("Yaw", m.yawDegrees, -180f, 180f);
-
-                    if (m.kind == RoomDefinition.MarkerKind.Light)
-                    {
-                        m.lightColor = EditorGUILayout.ColorField("Color", m.lightColor);
-                        m.lightIntensity = EditorGUILayout.FloatField("Intensity", m.lightIntensity);
-                        m.lightRange = EditorGUILayout.FloatField("Range (m)", m.lightRange);
-                    }
-                    else
-                    {
-                        m.tag = EditorGUILayout.TextField(
-                            new GUIContent("Tag",
-                                "Texto libre que resuelve un catálogo externo -- \"crate\", "
-                                + "\"player\", \"loot_common\"..."),
-                            m.tag);
-                    }
-                }
-            }
-        }
-
-        private void AddMarker(RoomDefinition.MarkerKind kind)
-        {
-            ArrayUtility.Add(ref _def.markers, new RoomDefinition.Marker { kind = kind });
-            RebuildIfLive();
         }
 
         private void DrawSaveTab()
@@ -1257,114 +1952,6 @@ namespace BackroomsSurvival.EditorTools
                     marker.label = m.tag;
                 }
             }
-        }
-
-        /// <summary>
-        /// Lista de boquetes. Cada uno se describe como se piensa —"en la pared 2, a media
-        /// altura, 1,6 × 2,2 m"— y no con x/y/z sueltos, que es lo que deja poner un hueco
-        /// flotando fuera del muro sin entender por qué está mal.
-        /// </summary>
-        private void DrawHoles()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Holes ({_def.holes.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Door", GUILayout.Width(70)))
-                    AddHole(baseY: 0f, w: 1.6f, h: 2.2f);
-                if (GUILayout.Button("+ Window", GUILayout.Width(80)))
-                    AddHole(baseY: 1.1f, w: 2.0f, h: 1.2f);
-            }
-
-            DrawGroupPanel(_def.holes, "holes",
-                new GroupField<RoomDefinition.WallHole>("Wall", h => h.side, (h, v) => h.side = Mathf.RoundToInt(v),
-                    "Desplaza a que pared apunta cada uno, todos a la vez."),
-                new GroupField<RoomDefinition.WallHole>("Along wall", h => h.along, (h, v) => h.along = v),
-                new GroupField<RoomDefinition.WallHole>("Height off floor (m)", h => h.baseY, (h, v) => h.baseY = v),
-                new GroupField<RoomDefinition.WallHole>("Width (m)", h => h.width, (h, v) => h.width = v),
-                new GroupField<RoomDefinition.WallHole>("Height (m)", h => h.height, (h, v) => h.height = v),
-                new GroupField<RoomDefinition.WallHole>("Grate bars", h => h.grateBars, (h, v) => h.grateBars = Mathf.Max(0, Mathf.RoundToInt(v))));
-
-            for (int i = 0; i < _def.holes.Length; i++)
-            {
-                var hole = _def.holes[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-                {
-                    string kind = hole.grateBars > 0 ? "grate" : hole.baseY <= 0.01f ? "door" : "window";
-                    string where = hole.spanCorners ? $"from wall {hole.side}" : $"on wall {hole.side}";
-                    if (!ItemHeader(ref _def.holes, i, "h", $"#{i}  {kind} {where}")) continue;
-
-                    hole.level = FloorField(hole.level);
-                    hole.side = EditorGUILayout.IntSlider(
-                        new GUIContent("Wall"), hole.side, 0, Mathf.Max(0, _def.sides - 1));
-                    hole.along = EditorGUILayout.Slider(
-                        new GUIContent("Along wall", "0 y 1 son las dos esquinas de esa pared."),
-                        hole.along, 0f, 1f);
-                    hole.baseY = EditorGUILayout.FloatField(
-                        new GUIContent("Height off floor (m)", "0 = puerta. Súbelo y es ventana."),
-                        hole.baseY);
-                    hole.width = EditorGUILayout.FloatField(new GUIContent("Width (m)"), hole.width);
-                    hole.height = EditorGUILayout.FloatField(new GUIContent("Height (m)"), hole.height);
-                    hole.spanCorners = EditorGUILayout.Toggle(
-                        new GUIContent("Turn corners",
-                            "Deja que la abertura doble la esquina y salga por la pared de al "
-                            + "lado. Con esto el ancho se mide sobre el contorno, no sobre una "
-                            + "pared: es la unica forma de pedir una puerta ancha en una planta "
-                            + "redonda, donde cada faceta mide poco mas de un metro."),
-                        hole.spanCorners);
-                    hole.grateBars = EditorGUILayout.IntSlider(
-                        new GUIContent("Grate bars", "0 = open hole. Above that it fills with bars."),
-                        hole.grateBars, 0, 20);
-                }
-            }
-        }
-
-        private void DrawPillars()
-        {
-            using (new EditorGUILayout.HorizontalScope())
-            {
-                EditorGUILayout.LabelField($"Pillars ({_def.pillars.Length})", EditorStyles.boldLabel);
-                if (GUILayout.Button("+ Pillar", GUILayout.Width(70)))
-                {
-                    ArrayUtility.Add(ref _def.pillars, new RoomDefinition.Pillar());
-                    RebuildIfLive();
-                }
-            }
-
-            DrawGroupPanel(_def.pillars, "pillars",
-                new GroupField<RoomDefinition.Pillar>("Position X", p => p.position.x, (p, v) => p.position.x = v),
-                new GroupField<RoomDefinition.Pillar>("Position Z", p => p.position.y, (p, v) => p.position.y = v),
-                new GroupField<RoomDefinition.Pillar>("Size (m)", p => p.size, (p, v) => p.size = v),
-                new GroupField<RoomDefinition.Pillar>("Sides", p => p.sides, (p, v) => p.sides = Mathf.Clamp(Mathf.RoundToInt(v), 3, 32)),
-                new GroupField<RoomDefinition.Pillar>("Yaw", p => p.yawDegrees, (p, v) => p.yawDegrees = v));
-
-            for (int i = 0; i < _def.pillars.Length; i++)
-            {
-                var p = _def.pillars[i];
-                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
-                {
-                    if (!ItemHeader(ref _def.pillars, i, "p",
-                            $"#{i}  {p.size:0.##} m, {p.sides} sides")) continue;
-
-                    p.level = FloorField(p.level);
-                    p.position = EditorGUILayout.Vector2Field("Position (XZ)", p.position);
-                    p.size = EditorGUILayout.FloatField(
-                        new GUIContent("Size (m)", "Width across the flats."), p.size);
-                    p.sides = EditorGUILayout.IntSlider(
-                        new GUIContent("Sides", "4 = square. Raise it to round it off."), p.sides, 3, 32);
-                    p.yawDegrees = EditorGUILayout.Slider("Yaw", p.yawDegrees, -180f, 180f);
-                }
-            }
-        }
-
-        /// <summary>Nace en la pared 0 y en el centro: aparece donde se ve, no escondido en una
-        /// esquina, que es lo que hace pensar que el botón no ha hecho nada.</summary>
-        private void AddHole(float baseY, float w, float h)
-        {
-            ArrayUtility.Add(ref _def.holes, new RoomDefinition.WallHole
-            {
-                side = 0, along = 0.5f, baseY = baseY, width = w, height = h,
-            });
-            RebuildIfLive();
         }
 
         private void RebuildIfLive()
