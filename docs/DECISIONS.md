@@ -4837,3 +4837,100 @@ Es decir: este arreglo **no introduce el comportamiento, lo hace real**. A parti
 de 0,29 m de `OfficeStairs` es el margen efectivo, y cualquier retoque a la altura del rellano o a la
 fuerza de salto puede cruzar el umbral de reclasificación de capa. Si en algún momento la escalera
 deja de ser decorativa, se recalibra contra `LAYER_HEIGHT_M`, no contra un número escrito a mano.
+
+---
+
+### ADR-085 enmienda 2 — La fórmula de capas invadidas era errónea; y quién avisa a la capa invadida (VALIDADA, 2026-08-21)
+
+Estado: **VALIDADA**. Con esta enmienda, **ADR-085 entero pasa de PROPUESTA a VALIDADA** y queda
+autorizado a implementarse. Sale de una auditoría del ADR contra el código hecha antes de validarlo.
+
+#### 1. Corrección del punto 2: la fórmula dejaba sin techo la sala por defecto
+
+El punto 2 dice que una sala ocupa las capas `0..=floor(h / LAYER_HEIGHT)`. **Es incorrecto y queda
+derogado.**
+
+`RoomDefinition.heightMeters` tiene **default 4 m**, exactamente `LAYER_HEIGHT_M`. Con la fórmula
+original, `floor(4/4) = 1` → la sala invadiría la capa 1 → **se le suprimiría la losa que era su
+propio techo**. Y una sala de 8 m invadiría la capa 2, una de más, con el mismo resultado. La
+fórmula rompía el caso más común, no un caso raro.
+
+El criterio correcto no es "qué capas atraviesa la sala" sino **qué losas caen DENTRO de ella**. La
+losa de la capa `L` está en `y = L · LH`, y estorba solo si `0 < L · LH < h` (estrictamente: una losa
+justo en `y = h` no corta la sala, **es** su techo). De ahí:
+
+> **capas invadidas = `1 ..= ceil(h / LH) − 1`** — y la capa 0, la del anclaje, nunca se "invade":
+> ya se salta esos tiles por ADR-083 enmienda 1 punto 7.
+
+| `heightMeters` | capas invadidas | qué hace de techo |
+|---|---|---|
+| 4 (default) | ninguna | la losa de la capa 1 — **comportamiento de hoy, sin cambio** |
+| 6 | 1 | el techo propio de la sala |
+| 8 | 1 | la losa de la capa 2 |
+| 12 (cap) | 1 y 2 | el techo propio de la sala |
+
+El **cap de 12 m del punto 5 sigue siendo correcto** con esta fórmula: la capa más alta invadida es
+la 2 y la 3 conserva el techo del mundo. Y la verificación (e) —"una sala de una sola capa se talla
+EXACTAMENTE igual que antes"— se vuelve cierta **por construcción**: con `h ≤ LH` el conjunto de
+capas invadidas es vacío y no se ejecuta nada nuevo.
+
+No es un caso teórico: los arquetipos de `RoomDefinition.Randomize` sortean `heightMeters` entre
+**3 y 8 m**, así que en cuanto haya salas variadas en el pool la mayoría pasará de una capa.
+
+#### 2. Decisión que ADR-085 no tomaba: quién avisa a la capa invadida
+
+`AuthoredRoomRegistry.GetRooms(cx, cz, layer)` devuelve `null` si `layer != 0`. Faltaba decidir cómo
+se entera la capa 1 de que hay una sala anclada debajo.
+
+**DECISIÓN: lo manda el backend.** El payload de CADA capa invadida incluye su `authored_rooms`, con
+la altura. El cliente no deriva nada: recibe el chunk de la capa 1 y ya trae la sala dentro.
+
+**Se rechaza que lo derive el cliente** (consultar en la capa 1 lo guardado para la capa 0 del mismo
+`(cx, cz)` y filtrar por altura). Sería gratis en bytes, pero `BuildDesiredSet` construye todas las
+capas de todos los chunks en vista **sin orden garantizado**: si la capa 1 se construye antes de que
+llegue el chunk de la capa 0, pinta su laberinto encima de la sala y no se recalcula sola. El coste
+de la opción elegida es de unos pocos bytes en los pocos chunks que tengan sala alta, y solo ahí
+(`skip_serializing_if` ya está puesto desde ADR-083 enmienda 3).
+
+Implicación en el backend: el gate `if layer != AUTHORED_LAYER` de
+`grid_gen::authored_rooms::plan_authored_rooms` deja de ser un corte seco. La capa `L > 0` sortea con
+la semilla de la capa de anclaje (0) y **devuelve solo las salas cuya altura la invade** según la
+fórmula de arriba. La semilla NO incluye la capa — ya no la incluía —, así que la capa 0 sigue
+sorteando bit a bit lo mismo que hoy.
+
+#### 3. Lo que la auditoría confirmó, y que abarata la implementación
+
+- **El tallado de colisión ya se llama por capa.** `world/generator.rs` ya invoca
+  `plan_authored_rooms(..., layer as u8, ...)` y `carve_authored_into_layout` para **todas** las
+  capas; lo único que devuelve vacío es el gate del punto anterior. El punto 3 de ADR-085 no añade
+  una ruta, abre una que ya está construida.
+- **El hueco coincide con la sala, no con la reserva.** `RoomPlan.ContainsTile` cubre el
+  **footprint** (`tx0..tx1`), no el anillo ni el margen, así que el perímetro del hueco es
+  exactamente el perímetro de la sala y sus propias paredes lo cierran. El punto 4 se sostiene.
+- **La capa más alta es la que pone el techo del mundo**: `roofSlab = isTopLayer && !(styled &&
+  cfg.showCeiling)`. El punto 5 se sostiene.
+- **El cliente cambia mucho menos de lo que el ADR sugiere.** La supresión por sala ya cubre
+  geometría (`GridChunkBuilder.cs:340`), props (`GridChunkBuilder.Props.cs:84`), bordes de tiles
+  vecinos (`:428-429`) y escaleras (`:509`), todo colgando de `_roomPlanScratch`. Si
+  `PlanAuthoredRooms` devuelve planes en la capa invadida, **todo eso se suprime solo**. El único
+  sitio que hay que gatear a la capa de anclaje es `PlaceAuthoredRooms` (`:501-502`) — sin ese gate
+  el prefab se instancia una vez por capa, que es justo lo que el punto 2 prohíbe.
+- **`ManifestRoom` no lleva la altura** (solo `index`, `id`, `tiles_x`, `tiles_z`, `doorways`), así
+  que el punto 1 es necesario tal cual está escrito.
+
+#### 4. Wire: dos bumps, no uno
+
+ADR-084 y ADR-085 se implementan seguidos, pero **cada uno bumpea el suyo**: 39 → 40 (multi-chunk) y
+40 → 41 (altura). Fusionarlos en un solo bump ahorraría un número y costaría la trazabilidad: cada
+commit debe dejar el juego arrancable por sí mismo, y el espejo C# se mueve con él en el MISMO commit
+(ADR-061). Regla dura 5.
+
+#### Qué prohíbe
+
+**PROHÍBE** derivar las capas invadidas con `floor(h / LH)`, o cualquier fórmula que invada una capa
+cuando `h` es múltiplo exacto de `LH` — ahí la losa es el techo de la sala, no un estorbo.
+**PROHÍBE** que el cliente deduzca por su cuenta, desde una capa invadida, que hay una sala en la
+capa 0: la información llega en el payload de su propia capa o no llega.
+**PROHÍBE** instanciar el prefab en una capa que no sea la de anclaje.
+**PROHÍBE** meter la capa en la semilla del sorteo de emplazamiento: la capa 0 debe seguir colocando
+exactamente las mismas salas en los mismos sitios que hoy, y hay test de regresión que lo fija.
