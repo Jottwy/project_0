@@ -144,6 +144,19 @@ impl AuthoredRoomPlan {
     pub fn tile_origin(&self) -> (i32, i32) {
         (self.cell_x.div_euclid(2), self.cell_z.div_euclid(2))
     }
+
+    /// El MISMO plan visto desde un chunk que está `(dx, dz)` chunks más allá del ancla.
+    ///
+    /// Solo se mueve el origen: la sala no cambia de sitio en el mundo, cambia el chunk desde el que
+    /// se la mira. Es la operación que permite que dos chunks tallen la misma sala sin hablarse
+    /// (ADR-084) — el mismo truco que `aperture_pos` usa para la costura.
+    fn shifted_by_chunks(self, dx: i32, dz: i32) -> Self {
+        Self {
+            cell_x: self.cell_x + dx * CHUNK_CELLS as i32,
+            cell_z: self.cell_z + dz * CHUNK_CELLS as i32,
+            ..self
+        }
+    }
 }
 
 /// Cuántas salas autoradas admite un chunk como mucho (ADR-083 enmienda 3 punto 4).
@@ -244,6 +257,9 @@ fn fits(room: &ManifestRoom, quarter: u8) -> Option<(usize, usize)> {
 /// sala ya colocada. El barrido de candidatas y el sorteo del origen no cambian, así que **la
 /// primera sala cae exactamente donde caía en wire 38**: lo único que hace esta versión es seguir
 /// probando en vez de devolver a la primera. Las demás salas se añaden detrás.
+///
+/// ADR-084: además de las que ANCLA este chunk, devuelve las ancladas en un vecino que asoman por
+/// aquí, ya trasladadas a coordenadas de este chunk. Ver `plan_anchored_at` y `NEIGHBOUR_SPAN`.
 pub fn plan_authored_rooms(
     manifest: &RoomManifest,
     world_seed: u64,
@@ -257,6 +273,122 @@ pub fn plan_authored_rooms(
         return placed;
     }
 
+    // El chunk PROPIO primero, y los vecinos después en orden canónico. El orden es función de
+    // `(cx, cz)` y de nada más, que es lo que exige el determinismo; ponerlo delante conserva además
+    // el significado histórico de "la primera sala del chunk" = la que este chunk ancla.
+    collect_from_anchor(
+        manifest,
+        world_seed,
+        cx,
+        cz,
+        layer,
+        0,
+        0,
+        build_room,
+        &mut placed,
+    );
+    for dz in -NEIGHBOUR_SPAN..=NEIGHBOUR_SPAN {
+        for dx in -NEIGHBOUR_SPAN..=NEIGHBOUR_SPAN {
+            if dx == 0 && dz == 0 {
+                continue;
+            }
+            collect_from_anchor(
+                manifest,
+                world_seed,
+                cx,
+                cz,
+                layer,
+                dx,
+                dz,
+                None,
+                &mut placed,
+            );
+        }
+    }
+    placed
+}
+
+/// Hasta dónde se mira buscando un ancla que invada este chunk.
+///
+/// Para SABER QUÉ ME INVADE bastaría ±1 con el cap de 2 × 2 chunks. Es ±2 porque la resolución de
+/// conflictos entre anclas necesita ese alcance para ser consistente (ADR-084 punto 3): si A cede
+/// ante B y B ante C, un chunk que solo mirase ±1 desde A no vería a C y decidiría distinto.
+const NEIGHBOUR_SPAN: i32 = 2;
+
+/// Evalúa el planificador del ancla `(cx + dx, cz + dz)` y añade a `placed` las salas suyas que
+/// asomen por `(cx, cz)`, trasladadas a coordenadas de este chunk.
+///
+/// `own_build_room` solo se usa cuando el ancla ES este chunk. Para los vecinos, la construible se
+/// RE-DERIVA con `room_in_chunk`: pasarles la nuestra haría que el resultado de un ancla dependiera
+/// de quién la consulta, y dos chunks tallarían sitios distintos para la misma sala.
+///
+/// (Y por la misma razón, el `own_build_room` que llegue aquí debe ser
+/// `room_in_chunk(world_seed, cx, cz, layer)`. Los dos llamadores de producción lo cumplen; los
+/// tests lo fuerzan a propósito para comprobar que la construible gana el solape.)
+#[allow(clippy::too_many_arguments)]
+fn collect_from_anchor(
+    manifest: &RoomManifest,
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    layer: u8,
+    dx: i32,
+    dz: i32,
+    own_build_room: Option<&RoomPlan>,
+    placed: &mut AuthoredRoomSet,
+) {
+    let (ax, az) = (cx + dx, cz + dz);
+    let build = if dx == 0 && dz == 0 {
+        BuildRoomSource::Given(own_build_room)
+    } else {
+        BuildRoomSource::Derive { layer }
+    };
+
+    for plan in plan_anchored_at(manifest, world_seed, ax, az, build).iter() {
+        if placed.is_full() {
+            return;
+        }
+        // Del ancla a ESTE chunk: un chunk de distancia son `CHUNK_CELLS` celdas.
+        let shifted = plan.shifted_by_chunks(dx, dz);
+        if reaches_this_chunk(&shifted) {
+            placed.push(shifted);
+        }
+    }
+}
+
+/// ¿La RESERVA de este plan asoma por el chunk `0..CHUNK_CELLS`? Se mide contra la reserva y no
+/// contra el footprint: el margen y el anillo también hay que tallarlos aquí, y una sala cuyo
+/// footprint quede justo al otro lado de la frontera sigue teniendo que macizar celdas de este lado.
+fn reaches_this_chunk(plan: &AuthoredRoomPlan) -> bool {
+    let n = CHUNK_CELLS as i32;
+    rects_overlap(plan.reserve_rect(), (0, 0, n, n))
+}
+
+/// De dónde sale la habitación construible del ancla que se está evaluando.
+///
+/// Existe para no pagarla cuando no hace falta. `room_in_chunk` monta su propio `StdRng` (ChaCha, y
+/// sembrarlo no es gratis), y el 99 % de los vecinos ni siquiera tienen sala autorada — derivarla
+/// antes de saberlo multiplicaba por veinticinco un coste que casi siempre se tira.
+enum BuildRoomSource<'a> {
+    /// Ya la tiene el llamador. Solo para el chunk propio.
+    Given(Option<&'a RoomPlan>),
+    /// Derivarla con `room_in_chunk`, y solo si la sala autorada llega a existir.
+    Derive { layer: u8 },
+}
+
+/// Las salas que ANCLA `(cx, cz)`, en coordenadas de ese chunk. El sorteo puro de siempre.
+fn plan_anchored_at(
+    manifest: &RoomManifest,
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    build_source: BuildRoomSource<'_>,
+) -> AuthoredRoomSet {
+    let mut placed = AuthoredRoomSet::default();
+    if manifest.rooms.is_empty() {
+        return placed;
+    }
+
     let mut s = world_seed ^ AUTHORED_SALT;
     s = mix(s, cx as i64 as u64);
     s = mix(s, cz as i64 as u64);
@@ -265,6 +397,16 @@ pub fn plan_authored_rooms(
     if !rng.gen_bool(AUTHORED_CHANCE) {
         return placed;
     }
+
+    // Pasado el gate —y solo aquí— se paga la construible del ancla. Ver `BuildRoomSource`.
+    let derived;
+    let build_room = match build_source {
+        BuildRoomSource::Given(plan) => plan,
+        BuildRoomSource::Derive { layer } => {
+            derived = super::build_rooms::room_in_chunk(world_seed, cx, cz, layer);
+            derived.as_ref()
+        }
+    };
 
     // Candidatas: (sala, giro) que quepan. El orden —sala por fuera, giro por dentro— es CONTRATO,
     // igual que en el cliente: la elección es un sorteo sobre esta lista, así que reordenarla
@@ -1489,6 +1631,85 @@ mod tests {
             }
         }
         assert!(hits > 0, "ninguna seed pone una sala junto al spawn");
+    }
+
+    /// La aritmetica que sostiene ADR-084: mirar la misma sala desde otro chunk. Se prueba sola
+    /// porque hoy NINGUNA sala del pool pasa de un chunk, asi que el barrido de vecindario no puede
+    /// ejercitarla de punta a punta todavia -- y cuando el cap suba, esto ya estara anclado.
+    #[test]
+    fn a_room_seen_from_the_next_chunk_keeps_its_place_in_the_world() {
+        let m = manifest();
+        let (cx, cz, plan) = find_plan(&m, 42).expect("alguna sala");
+
+        // La misma sala vista desde el chunk de la derecha: se corre un chunk entero hacia las x
+        // negativas, porque lo que se mueve es el observador, no la sala.
+        let from_east = plan.shifted_by_chunks(-1, 0);
+        assert_eq!(from_east.cell_x, plan.cell_x - CHUNK_CELLS as i32);
+        assert_eq!(from_east.cell_z, plan.cell_z);
+        assert_eq!(from_east.entry, plan.entry, "el traslado cambio la sala");
+        assert_eq!(
+            from_east.quarter, plan.quarter,
+            "el traslado cambio el giro"
+        );
+
+        // Ida y vuelta: volver al chunk de origen devuelve el plan intacto.
+        assert_eq!(from_east.shifted_by_chunks(1, 0), plan);
+
+        // Y con el cap de hoy no asoma por ningun vecino, que es justo por lo que este commit no
+        // mueve el mundo: la reserva entera cabe en `[1, 18]`.
+        assert!(reaches_this_chunk(&plan), "no asoma por su propio chunk");
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (0, 1), (1, 1)] {
+            assert!(
+                !reaches_this_chunk(&plan.shifted_by_chunks(dx, dz)),
+                "la sala de ({cx},{cz}) invade el vecino ({dx},{dz}) con el cap de un chunk"
+            );
+        }
+    }
+
+    /// SONDA: cuanto cuesta el barrido de vecindario de ADR-084 punto 3, que es la verificacion (f)
+    /// que el ADR exige. Mide las DOS cosas que importan y en este orden:
+    ///
+    ///   1. `plan_authored_rooms` sola, que es lo que el barrido multiplica por 25;
+    ///   2. `generate_chunk_layer` entera, que es lo que de verdad corre en la ruta caliente (la
+    ///      colision del jugador via `SimLayoutCache::ensure`, la cache del robapieles y el render).
+    ///
+    /// La segunda es la que decide: si el barrido es ruido al lado de las 7 fases del maze, no hay
+    /// nada que optimizar por mucho que la primera se multiplique.
+    ///
+    ///     cargo test --manifest-path backend/Cargo.toml probe_neighbour_sweep_cost -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_neighbour_sweep_cost() {
+        let m = manifest();
+        let rules = &LAYER_PROFILES[0];
+        const N: i32 = 40; // 1600 chunks
+
+        let t0 = std::time::Instant::now();
+        let mut found = 0usize;
+        for cx in 0..N {
+            for cz in 0..N {
+                found += plan_authored_rooms(&m, 42, cx, cz, 0, None).len();
+            }
+        }
+        let plan_ns = t0.elapsed().as_nanos() / (N * N) as u128;
+
+        let t1 = std::time::Instant::now();
+        for cx in 0..N {
+            for cz in 0..N {
+                let _ = generate_chunk_layer(rules, 42, (cx, cz), 0, &[]);
+            }
+        }
+        let gen_ns = t1.elapsed().as_nanos() / (N * N) as u128;
+
+        println!(
+            "plan_authored_rooms: {plan_ns} ns/chunk ({found} salas en {} chunks)",
+            N * N
+        );
+        println!("generate_chunk_layer: {gen_ns} ns/chunk");
+        println!(
+            "el emplazamiento es el {:.1} % de generar un chunk",
+            plan_ns as f64 * 100.0 / gen_ns as f64
+        );
     }
 
     /// SONDA TEMPORAL: cuantas salas quedan incomunicadas, con UNA sala por chunk (camino de wire
