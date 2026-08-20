@@ -163,6 +163,18 @@ Sea cual sea, hace falta una **guarda de versión del pool**: si el cliente pint
 
 ---
 
+> **DESACTUALIZADO desde 2026-08-20 en tres puntos.** ADR-083 enmiendas 1 y 2 (VALIDADAS e
+> IMPLEMENTADAS) cambiaron esto, y manda el ADR:
+>
+> 1. **El emplazamiento lo decide el BACKEND**, no el cliente, y ya no cuelga de las zonas
+>    `SealedRoom` — la reserva la dicta la sala. Todo el §5 describe el camino retirado.
+> 2. **El perímetro y el suelo son de la SALA**, no del generador. La invariante 4 de abajo
+>    ("la sala solo amuebla") queda derogada.
+> 3. El §7.1 ya no está pendiente: está hecho a resolución de celda, con el interior de la sala
+>    fuera del alcance del servidor. El §7.2 (props y loot) sigue intacto y sin ADR.
+>
+> Plan de trabajo vigente: [`../ROOMS-ROADMAP.md`](../ROOMS-ROADMAP.md).
+
 ## 8. Invariantes que no se pueden romper
 
 1. **Malla y colliders salen del mismo modelo.** Nunca derivar uno del otro.

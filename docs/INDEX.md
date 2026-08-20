@@ -22,6 +22,11 @@
   estamos medido, fixes de E0 con archivo:línea, gates por etapa, calendario contra hitos y qué
   da Steam de verdad. Empieza aquí antes de cualquier trabajo de red orientado a capacidad.
 
+## Salas autoradas
+- [ROOMS-ROADMAP.md](ROOMS-ROADMAP.md) — plan de trabajo del sistema de salas (2026-08-20), escrito
+  para ejecutarse tal cual: qué está hecho y verificado, qué se puede tocar sin ADR y qué no, el
+  techo del sistema, y las trampas que ya costaron tiempo. Empieza aquí antes de tocar salas.
+
 ## Deuda técnica
 - [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — auditoría de solo-lectura (2026-08-18, 68 ítems: 27 código
   muerto + 41 bugs) puntuada 1-10 con plan de arreglo por ítem, ordenada de menos a más grave. El
