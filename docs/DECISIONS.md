@@ -4173,3 +4173,77 @@ ni formato de chunk, así que la regla 7 no aplica.
 Dependencias: ADR-040 (A* y regla diagonal), ADR-075 (atajo con cuerpo, banda de acecho), ADR-018
 (el fantasma colisiona contra `grid_gen`), ADR-026 partes 1–2 (BLOQUEADAS — la divergencia que este
 ADR sortea sin resolver), ADR-033 (esa divergencia, ya declarada).
+
+### ADR-083 — Las salas autoradas bloquean en el servidor; wire 37 → 38 (PROPUESTA, 2026-08-20)
+
+**ESTADO: PROPUESTA. NO validada por Joel, NO implementada.** Se registra para que la discusión no se
+pierda; nada de aquí autoriza a tocar código (regla dura 7). Los puntos 3 y 5 son los que Joel tiene
+que decidir antes de nada.
+
+Contexto. Hoy la sala autorada bloquea SOLO en el cliente: la herramienta mete un `BoxCollider` por
+cada caja del proxy dentro del prefab y PhysX hace el resto. El backend no sabe que la sala existe,
+así que el robapieles la atraviesa entera (`resolve_move_grid_gen`, celdas de 2,5 m), y la migración
+a movimiento server-authoritative (ADR-026 partes 1–2, BLOQUEADAS) heredaría el problema al revés.
+`RoomPool.RoomEntry.collisionBoxes` se escribe al hornear y **no lo lee nadie**. Recorrido completo
+del sistema en [`systems/authored-rooms.md`](systems/authored-rooms.md).
+
+Dos precedentes mandan sobre la forma de la solución: (a) `blocked_cells` + `sync_built_cells`
+(`game_loop/phantom.rs`) ya es un canal para meter obstáculos ajenos al generador en colisión Y
+navegación a la vez, aproximando cada pieza a su celda de 2,5 m — y su propio comentario dice que
+algo exacto "needs a new wire field and an ADR"; (b) `build_room: Option<[u8;3]>` (ADR-081 enmienda
+5) eligió MANDAR BYTES antes que mantener dos generadores de números aleatorios en fase.
+
+Decisiones propuestas:
+
+1. **La autoridad del emplazamiento pasa al backend.** Calcula aperturas (ya produce `walls`) y elige
+   entrada+giro con el mismo hash, y lo manda. El cliente deja de sortear. Mismo criterio que
+   ADR-081 enmienda 5: una sola implementación de la regla, no dos.
+2. **Campo aditivo en `GridChunkDataMsg`**: `authored_rooms: Vec<AuthoredRoom>` con
+   `{ tx, tz, entry: u16, yaw_q: u8 }`, omitido cuando está vacío (`skip_serializing_if`), igual que
+   `room_zones`/`sprays`/`build_room`. **Wire 37 → 38**, con bump simultáneo del espejo C#
+   `WireSchema.Expected` — sin él el juego no arranca, no avisa.
+3. **La geometría del pool llega como DATO, no por el wire.** El horneado exporta un manifiesto
+   compacto (footprint en tiles, lado de puerta por giro, `CollisionBox` con su `yawDegrees`) que el
+   backend carga al arrancar. El pool viaja en el build: no cambia por partida y mandarlo por
+   conexión sería pagarlo por cliente. **DECISIÓN ABIERTA:** manifiesto en disco frente a un
+   `ClientMessage` nuevo al conectar.
+4. **Digest del pool en el handshake.** Discrepancia = rechazo ruidoso, no warning. Sin esto, un pool
+   desincronizado hace que el cliente pinte la sala 3 mientras el servidor bloquea las celdas de la
+   7 — invisible hasta que alguien se choca con nada.
+5. **El formato registrado son las cajas EXACTAS; el primer consumidor las consume a 2,5 m.** El
+   backend deriva la máscara de celdas y la mete por `set_blocked_cells`, que ya alimenta colisión y
+   navegación. El test de caja orientada llega cuando migre la colisión del jugador (ADR-026), sin
+   segundo bump ni segundo ADR. **DECISIÓN ABIERTA:** esto o implementar las cajas exactas ya,
+   pagando el coste en `is_walkable_grid_gen`.
+
+Alternativas rechazadas. **(A) El cliente host sube las cajas resueltas por chunk** — hace al cliente
+autoridad de la geometría de colisión del servidor; un cliente modificado borra paredes, y un joiner
+no puede hacerlo. **(B) El backend replica el hash del cliente y no se manda nada (sin bump)** — dos
+implementaciones de la misma regla en dos lenguajes, la clase de fallo ya anotada como deuda en
+ADR-081 (la puerta con pared invisible por dos generadores independientes). **(C) Máscara de celdas
+como formato registrado, sin cajas** — al migrar el movimiento al servidor, cliente (PhysX, cajas
+exactas) y servidor (celdas) discreparían, que es rubber-banding: justo lo que el proxy de cajas se
+diseñó para impedir. **(D) Test de caja orientada ya en `is_walkable_grid_gen`** — mete una primitiva
+nueva en el muestreo por celda de todo el motor y hoy no la consume nadie.
+
+Consecuencias / qué prohíbe. **PROHÍBE** que el cliente vuelva a sortear la sala por su cuenta si se
+adopta el punto 1 (duplicarlo reabre la divergencia). **PROHÍBE** degradar en silencio ante un digest
+de pool que no case. **PROHÍBE** que el manifiesto se escriba a mano: sale del horneado o no sale.
+
+Verificación exigida antes de VALIDADA: (a) el fantasma no atraviesa una sala autorada y la rodea al
+planificar; (b) entra por la puerta —la comprobación de que la máscara no tapa el vano—; (c) misma
+seed ⇒ cliente y backend eligen la MISMA entrada y giro; (d) digest desparejado = rechazo; (e) chunk
+sin sala autorada = bytes idénticos a wire 37; (f) `cargo clippy --all-targets -D warnings` y
+`fmt --check` limpios.
+
+Dependencias: ADR-034 (`room_zones`), ADR-081 enmienda 5 (precedente de autoridad y de campo
+aditivo), ADR-018/ADR-040 (el fantasma colisiona contra `grid_gen`), ADR-009/ADR-026 partes 1–2
+(BLOQUEADAS — son el consumidor futuro de las cajas exactas), ADR-061 (espejo C# del wire).
+
+**PENDIENTE ADEMÁS, sin número asignado: la autoridad de PROPS y LOOT de una sala autorada.** Un
+marcador `Prop` es hoy un punto que no lee nadie; en cuanto tenga contenido deja de ser decoración y
+pasa a ser estado del mundo — qué hay dentro lo tira el servidor o el loot es editable, si ya se
+saqueó es estado persistente por chunk, y dos jugadores abriendo a la vez piden la guarda de "una
+petición en vuelo" que ya hizo falta para los cadáveres. El cliente puede aportar DÓNDE hay un sitio
+de loot; nunca qué hay en él ni si sigue ahí. Se cruza con el ADR pendiente de props del mundo
+desmontables y regenerables. Ver §7.2 de `systems/authored-rooms.md`.
