@@ -141,8 +141,12 @@ fn chunk_is_v30a(chunk: &Chunk) -> bool {
             != 0
 }
 
+/// Same pitch as `collision::layer_from_player_y` (grid_gen's 4 m, not the volumetric 7 m) — the
+/// chunks this keys into are grid_gen chunks. See that function for why.
 fn player_layer_from_y(y: f32) -> ChunkLayer {
-    ((y - 1.8) / chunk::LAYER_HEIGHT).round().clamp(-8.0, 8.0) as ChunkLayer
+    ((y - 1.8) / grid_gen::LAYER_HEIGHT_M)
+        .round()
+        .clamp(-8.0, 8.0) as ChunkLayer
 }
 
 fn chunk_key_for_player_pos(pos: Vec3) -> LayeredChunkPos {

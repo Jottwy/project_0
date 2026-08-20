@@ -10,6 +10,9 @@ pub const CHUNK_CELLS: usize = 20;
 /// room height (ADR-007). Decoupled from ceiling_height: Unity ignores
 /// ceiling_height and renders a uniform room height (ADR-001), so layers stack
 /// flush at this pitch. Mirrored by GridConstants.LayerHeight in C#.
+///
+/// This is the pitch of the world the player walks. Do not confuse it with the volumetric
+/// subsystem's `chunk::LAYER_HEIGHT` (7 m); see the note there.
 pub const LAYER_HEIGHT_M: f32 = 4.0;
 
 /// Hard ceiling on ceiling_height field (6 units × 2.5 m = 15 m). Part of the

@@ -4732,3 +4732,108 @@ punto 7 (el `continue` que ya suprime la geometría, y que aquí solo se extiend
 (plural y separación); ADR-084 (multi-chunk, el otro eje); ADR-061 (espejo C# del wire);
 ADR-026 parte 3 DESBLOQUEADA (la Y del cliente es autoritativa — es lo que hace esto viable);
 ADR-026 partes 1–2 (BLOQUEADAS, y este ADR no las necesita).
+
+---
+
+### ADR-085 enmienda 1 — El prerrequisito estaba mal enunciado; el defecto real era otro (VALIDADA, 2026-08-21)
+
+Estado: **VALIDADA E IMPLEMENTADA** (opción A, elegida por Joel). El cuerpo de ADR-085 sigue en
+PROPUESTA: esta enmienda solo desbloquea su prerrequisito, no valida sus seis decisiones.
+
+#### Qué corrige de la redacción original
+
+El cuerpo de ADR-085 afirma que `LAYER_HEIGHT` "vale dos cosas" y que el backend **incumple**
+ADR-007. **Las dos afirmaciones son falsas y quedan derogadas.** No hay una constante partida: hay
+**dos constantes de dos subsistemas distintos**, cada una coherente consigo misma y con su espejo en
+C#:
+
+| Constante | Valor | Subsistema | Espejo en C# |
+|---|---|---|---|
+| `world::chunk::LAYER_HEIGHT` (`chunk/coords.rs:11`) | 7,0 | volumétrico / `ChunkLayoutV1` | `ChunkRenderer.LayerHeight = 7f`, y el campo de wire `layer_height` que emite `volumetric_grid` (`IPCMessages.Volumetric.cs:206`) |
+| `grid_gen::LAYER_HEIGHT_M` (`grid_gen/cell.rs:13`) | 4,0 | grid_gen — el mundo que se pisa | `GridConstants.LayerHeight = 4f`, con test a ambos lados |
+
+La resolución de ADR-007 (2026-06-12) nombra **literalmente** `LAYER_HEIGHT_M` y
+`GridConstants.LayerHeight`. No gobierna el 7,0. `docs/DECISIONS.md` no contiene ninguna decisión que
+fije 7 m; ese valor viene de la Fase 3.0A volumétrica, que la Fase 5 de la migración retirará.
+
+#### El defecto real (sí existía, y era peor)
+
+`Level0Collision::resolve_move` corre **cada tick y para cada jugador** (`game_loop.rs:3028`).
+Clasificaba la capa con el pitch **volumétrico** (7 m) y con esa capa pedía el layout a
+`SimLayoutCache::ensure`, que lo produce con `generate_chunk_layer` — **grid_gen, pitch 4 m**.
+Clasificar con 7 lo que se lee con 4.
+
+Un jugador de pie en la capa `L` está en `y = L·4 + 1,8`. `round((y − 1,8) / 7)` daba:
+
+| Capa | Y | Capa que resolvía | |
+|---|---|---|---|
+| 0 | 1,8 | 0 | correcto |
+| 1 | 5,8 | 1 | correcto **por suerte** (`round(0,571)`) |
+| 2 | 9,8 | **1** | **mal** |
+| 3 | 13,8 | **2** | **mal** |
+
+Con `layerCount = 4`, las capas 2 y 3 colisionaban contra el laberinto de otra capa —
+`LAYER_PROFILES` da geometría distinta por capa — es decir, paredes invisibles y paredes
+atravesables a la vez. Y como `sample_cell_blocks` devuelve `true` (bloquea) cuando no encuentra
+layout, el modo de fallo por defecto era quedarse clavado. Mismo defecto en
+`world::mod::player_layer_from_y`, que keyea el chunk del jugador para `stat_context_for`.
+
+Nunca se vio porque las capas 1–3 no son alcanzables jugando (`inter_layer_up/down` inertes, ver la
+nota de ADR-043) y porque la capa 1 acertaba por redondeo.
+
+#### Decisión
+
+**Opción A: quien lee grid_gen, clasifica con el pitch de grid_gen.** `layer_from_player_y` y
+`player_layer_from_y` pasan a dividir por `LAYER_HEIGHT_M`. Las dos constantes se quedan como están,
+con un comentario cruzado en cada una que dice que no son la misma cosa.
+
+**Se rechaza cambiar el 7,0 a 4,0.** Ese valor lo consume el subsistema volumétrico y **sale por el
+wire** (`volumetric_grid.rs:959`); tocarlo rompería el volumétrico consigo mismo y cambiaría lo que
+lee `ChunkRenderer`. No es una constante duplicada que unificar, es la constante de otro sistema.
+
+**Se rechaza (por ahora) la opción B**, que además habría alineado `floor_y_at`: esa función sigue
+construyendo la Y del suelo con `layer_y(layer)` = pitch 7. **Queda una asimetría consciente y
+anotada**: la capa se clasifica a 4 m y el suelo se calcula a 7 m. Cerrarla exige desenredar
+`floor_level` / `floor_profile` / `FLOOR_CONNECTOR_*` del volumétrico, que está condenado igualmente
+por la Fase 5. El test `floor_player_y_accounts_for_true_layers` documenta la asimetría en vez de
+taparla.
+
+#### Efecto sobre ADR-085
+
+El **PRERREQUISITO BLOQUEANTE** del cuerpo queda **satisfecho, con otro enunciado**: no era
+"unificar `LAYER_HEIGHT`", era "que la clasificación de capa use el pitch del mundo que se pisa". El
+punto 2 de ADR-085 (`0..=floor(h / LAYER_HEIGHT)`) debe leerse con **`LAYER_HEIGHT_M` (4 m)**, que es
+lo que el cliente renderiza. La verificación (a) exigida antes de VALIDADA se sustituye por: *las
+rutas que clasifican una Y de jugador en una capa de grid_gen dividen por `LAYER_HEIGHT_M`, y hay
+test que lo fija*.
+
+#### Qué prohíbe
+
+**PROHÍBE** dividir una Y de jugador por `chunk::LAYER_HEIGHT` para elegir una capa de geometría
+grid_gen. **PROHÍBE** "unificar" las dos constantes a un mismo valor mientras el volumétrico siga
+emitiendo `layer_height` por el wire. **PROHÍBE** cerrar la asimetría de `floor_y_at` sin un cambio
+propio que trate el desenredo del volumétrico como el eje que es.
+
+#### Verificación
+
+`player_y_classifies_into_the_layer_the_client_rendered` recorre las capas −2..3 y comprueba que una
+celda abierta no se lee como bloqueada. **Se verificó en rojo con la constante vieja** antes de darlo
+por bueno (falla en la capa −2), porque un test de regresión que nunca se ha visto fallar no prueba
+nada — misma lección que dejaron las salas selladas de ADR-083 enmienda 3. Suite: 847 verdes (9 rojos
+preexistentes de items v1, de otra sesión), `clippy --all-targets -D warnings` y `fmt --check`
+limpios. Sin cambio de wire: las dos funciones son privadas, no hay schema ni formato que bumpear.
+
+#### Confirmación independiente, y un efecto que hay que vigilar
+
+`docs/STATE.md` (punto 3 del bloque de la escalera de oficina) **ya daba por hecho el pitch de 4 m**
+al calibrar `OfficeStairs`: *"`layer_from_player_y` = `round((y − PLAYER_BASE_Y)/LAYER_HEIGHT)` …
+⇒ `round(pies/4)`: el backend reclasifica al jugador de capa con los pies a 2 m"*. Esa sesión diseñó
+la escalera contra esa aritmética — 3 escalones de 0,22, rellano a **0,66**, ápice de salto **1,71**,
+margen declarado **0,29** — y derivó `LayerFlipFeetY` de `GridConstants.LayerHeight` en vez de
+copiarlo. Con el pitch de 7 que el código tenía de verdad, el umbral estaba en pies = 3,5: **la
+escalera era aún más decorativa de lo que su propia nota decía, y el margen de 0,29 no existía**.
+
+Es decir: este arreglo **no introduce el comportamiento, lo hace real**. A partir de aquí el margen
+de 0,29 m de `OfficeStairs` es el margen efectivo, y cualquier retoque a la altura del rellano o a la
+fuerza de salto puede cruzar el umbral de reclasificación de capa. Si en algún momento la escalera
+deja de ser decorativa, se recalibra contra `LAYER_HEIGHT_M`, no contra un número escrito a mano.

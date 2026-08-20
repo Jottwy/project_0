@@ -502,30 +502,43 @@ fn floor_player_y_vertical_is_deterministic_and_pit_is_safe() {
     assert!(yp >= PLAYER_BASE_Y - 0.001, "pit lowered the player: {yp}");
 }
 
+/// Where a grounded player's transform sits on `layer`, as the CLIENT places it: grid_gen's 4 m
+/// pitch (`GridConstants.LayerHeight`, ADR-007). This is the input side of every layer test here —
+/// what a real `player_input` carries.
+fn player_y_on_layer(layer: i8) -> f32 {
+    PLAYER_BASE_Y + layer as f32 * crate::world::grid_gen::LAYER_HEIGHT_M
+}
+
+#[test]
+fn player_y_classifies_into_the_layer_the_client_rendered() {
+    // Regression: `layer_from_player_y` used to divide by the volumetric 7 m pitch while the
+    // layouts it keys into come from grid_gen at 4 m. It agreed on layers 0 and 1 only
+    // (`round(4/7) == 1` by luck) and put a player standing on layer 2 into layer 1's maze.
+    for layer in -2i8..=3 {
+        let world = clean_world_layer((20 + layer as i32, 20), layer);
+        let c = chunk_center((20 + layer as i32, 20));
+        let pos = Vec3::new(c.x, player_y_on_layer(layer), c.z);
+        assert!(
+            !is_blocked_at(&world, pos, PLAYER_RADIUS),
+            "layer {layer}: an open cell read as blocked, so the Y resolved to another layer"
+        );
+    }
+}
+
 #[test]
 fn floor_player_y_accounts_for_true_layers() {
+    // ASYMMETRY ON PURPOSE (see `layer_from_player_y`): the layer is classified from the client's
+    // 4 m pitch, but `floor_y_at` still builds the floor Y from `layer_y` — the volumetric 7 m
+    // pitch. Closing that gap means untangling `floor_level`/`floor_profile` from the volumetric
+    // subsystem, which is a separate change.
     let upper = clean_world_layer((2, 2), 1);
     let cu = chunk_center((2, 2));
-    let yu = floor_player_y(
-        &upper,
-        Vec3::new(
-            cu.x,
-            PLAYER_BASE_Y + crate::world::chunk::LAYER_HEIGHT,
-            cu.z,
-        ),
-    );
+    let yu = floor_player_y(&upper, Vec3::new(cu.x, player_y_on_layer(1), cu.z));
     assert!((yu - (PLAYER_BASE_Y + crate::world::chunk::LAYER_HEIGHT)).abs() < 0.001);
 
     let lower = clean_world_layer((3, 3), -1);
     let cl = chunk_center((3, 3));
-    let yl = floor_player_y(
-        &lower,
-        Vec3::new(
-            cl.x,
-            PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT,
-            cl.z,
-        ),
-    );
+    let yl = floor_player_y(&lower, Vec3::new(cl.x, player_y_on_layer(-1), cl.z));
     assert!((yl - (PLAYER_BASE_Y - crate::world::chunk::LAYER_HEIGHT)).abs() < 0.001);
 }
 
@@ -561,7 +574,7 @@ fn walls_and_doors_work_on_upper_layer() {
         .set_edge_v(6, 5, EDGE_KIND_DOOR);
 
     let base = 5f32 * CHUNK_SIZE;
-    let y = PLAYER_BASE_Y + crate::world::chunk::LAYER_HEIGHT;
+    let y = player_y_on_layer(1);
     assert!(is_blocked_at(
         &world,
         Vec3::new(base + 30.0, y, base + 12.5),

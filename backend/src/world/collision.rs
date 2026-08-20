@@ -391,8 +391,15 @@ fn log_spawn_resolved(res: &SpawnResolution) {
     );
 }
 
+/// World Y → the macro layer whose cells the player collides against.
+///
+/// Divides by `grid_gen::LAYER_HEIGHT_M` (4 m), NOT by `chunk::LAYER_HEIGHT` (7 m), because the
+/// layout this classification feeds is produced by `generate_chunk_layer` — grid_gen — and Unity
+/// anchors that same layer at `layer * GridConstants.LayerHeight` (4 m, ADR-007). Dividing by 7
+/// agreed with the client only on layers 0 and 1 (`round(4/7) == 1` by luck); a player standing on
+/// layer 2 (y = 9.8) classified as layer 1 and collided against a different maze.
 fn layer_from_player_y(y: f32) -> ChunkLayer {
-    ((y - PLAYER_BASE_Y) / crate::world::chunk::LAYER_HEIGHT)
+    ((y - PLAYER_BASE_Y) / crate::world::grid_gen::LAYER_HEIGHT_M)
         .round()
         .clamp(-8.0, 8.0) as ChunkLayer
 }
