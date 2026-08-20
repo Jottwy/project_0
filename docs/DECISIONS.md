@@ -4247,3 +4247,129 @@ saqueó es estado persistente por chunk, y dos jugadores abriendo a la vez piden
 petición en vuelo" que ya hizo falta para los cadáveres. El cliente puede aportar DÓNDE hay un sitio
 de loot; nunca qué hay en él ni si sigue ahí. Se cruza con el ADR pendiente de props del mundo
 desmontables y regenerables. Ver §7.2 de `systems/authored-rooms.md`.
+
+### ADR-083 enmienda 1 — La reserva la dicta la SALA: vaciar, cerrar con anillo, tunelar hasta el laberinto (VALIDADA, 2026-08-20)
+
+**Con esta enmienda ADR-083 pasa de PROPUESTA a VALIDADA.** Los puntos 1, 3 y 5 del ADR base quedan
+resueltos aquí; los puntos 2 y 4 se mantienen tal cual estaban escritos.
+
+Contexto medido, que es lo que forzó el cambio de forma. El emparejamiento actual exige que el
+footprint de la sala sea **exactamente igual** al rect de la zona `SealedRoom`
+(`GridChunkBuilder.AuthoredRooms.cs`, `variant.fw != tw → continue`). Las zonas `SealedRoom` de la
+capa 0 miden `open_zone_size_x/z = 6` celdas = **3 × 3 tiles**, y el pool horneado tiene 4 × 4,
+10 × 10 y 10 × 10 tiles. Las capas 1–3 llevan `room_type_weights: (1.0, 0.0, 0.0)` y no producen
+`SealedRoom` en absoluto. **Consecuencia verificada: hoy no se coloca NI UNA sala autorada en todo
+el mundo.** El sistema entero está escrito y no se ejecuta nunca.
+
+El precedente que manda sobre la forma de la solución es `build_rooms::carve_into_grid`
+(ADR-081 enmienda 5), que ya hace los cuatro pasos que hacen falta: anillo `SealedWall` alrededor,
+interior vaciado a `Open`, `carve_door` excavando hacia fuera hasta enganchar con lo primero
+caminable, y `repair_connectivity` con lo tallado como `protected`. Está probado y en producción a
+escala 3 × 3. Esta enmienda lo generaliza en vez de inventar un mecanismo paralelo.
+
+Decisiones:
+
+1. **La reserva la dicta la SALA, no la zona.** El backend reserva un rect de
+   `footprint + anillo + margen` y talla ahí dentro. Deroga el punto 1 de ADR-083 en su forma
+   original: el emplazamiento **deja de colgar de `room_zones`/`SealedRoom`**. Un `SealedRoom` vuelve
+   a ser solo un accidente del laberinto.
+2. **Sorteo propio, patrón `room_in_chunk`.** Función pura de `(world_seed, cx, cz, layer)` con
+   constante de dominio propia, disjunta de `ROOM_SALT`, de `aperture_pos` y de `subregion_seed`.
+   Mismo contrato de determinismo que todo lo demás de `grid_gen`.
+3. **El margen es MACIZO (`CellType::Wall`), no transitable.** Es lo que garantiza por construcción
+   que no queden huecos por los que caer: no hay nada que sellar después porque el margen nunca se
+   abre. Un margen transitable sería un pasillo en donut alrededor de cada sala — decisión de diseño
+   de juego, no de esta pieza.
+4. **El anillo es `SealedWall`, nunca `Wall`.** Es el único tipo excluido a mano del BFS y del
+   carvado de `repair_connectivity`; con `Wall` genérico, el primer bolsillo de laberinto que el
+   propio anillo aísle acabaría agujereándolo.
+5. **Cap de tamaño: 6 × 6 tiles.** Aritmética, no gusto: las filas/columnas 0 y 19 son del cosido de
+   bordes, así que el interior utilizable es `[1, 18]` = 18 celdas. Con anillo de 1 celda y margen de
+   1 tile (2 celdas) por lado se van 6 celdas, y quedan **12 celdas = 6 tiles = 30 m** de footprint
+   máximo. Una reserva que no quepa **no se coloca** — nunca se recorta, que dejaría una sala partida.
+6. **Salas mayores que el cap quedan FUERA del mundo hasta un ADR aparte.** `room_1` y `room_2`
+   (10 × 10 tiles = 50 m) no caben en un chunk ni sin margen. Una sala multi-chunk obliga a que un
+   chunk mire a sus vecinos —cosa que hoy no hace ninguno— y a sacar el prefab del root del chunk,
+   porque descargar el chunk ancla con el jugador dentro borraría media sala. Es un ADR propio.
+7. **El perímetro y el suelo pasan a ser de la SALA.** Deroga la invariante "la sala solo amuebla"
+   de `systems/authored-rooms.md` §8.4. El backend talla el interior como `Open`, así que
+   `tile_walls_from_grid` no emite paredes ahí y el prefab pone las suyas.
+8. **El manifiesto del pool viaja en disco, generado por el horneado.** Resuelve el punto 3 de
+   ADR-083. Contenido mínimo de este slice: `{ id, index, tiles_x, tiles_z, door_side_by_quarter }`.
+   El backend lo carga al arrancar. Digest en el handshake, discrepancia = rechazo ruidoso (punto 4
+   del ADR base, intacto).
+9. **Interior vacío en servidor.** Resuelve el punto 5 de ADR-083 aplazando las cajas: el anillo
+   bloquea y el interior es `Open`. `RoomPool.collisionBoxes` sigue **sin consumirse**. Límite
+   conocido y aceptado: el robapieles no atraviesa la sala ni entra por la pared, pero sí atraviesa
+   un pilar o un bloque de dentro. Las cajas exactas llegan con ADR-026, sin segundo bump.
+10. **El cliente deja de sortear.** `PlanAuthoredRooms` pasa a consumir el campo `authored_rooms`
+    del punto 2 de ADR-083 (wire 37 → 38, con bump simultáneo del espejo C# `WireSchema.Expected` en
+    el MISMO commit). `ApertureSides` y el emparejamiento por igualdad de footprint desaparecen.
+
+Riesgo anotado, no resuelto en este slice: `BuildFromWalls` suela **todos** los tiles y el wire no
+sabe expresar "sin suelo", así que la losa del chunk convive con el suelo del prefab. La superficie
+de la losa está a `y = 0,04` y el suelo de la sala a `y = 0`, o sea que el jugador pisaría la losa
+del chunk y el suelo autorado quedaría 4 cm por debajo. Se verifica en playtest antes de cerrar; si
+molesta, se arregla subiendo el suelo de la sala en el horneado, no tocando el wire.
+
+Alternativas rechazadas. **(A) Adaptar el footprint de las salas al rect de la zona** — obliga a
+rehacer el pool cada vez que se recalibre `open_zone_size`, y ata la autoría a un número del
+generador. **(B) Recortar la sala cuando la reserva no cabe** — una sala partida por la mitad es
+peor que ninguna sala. **(C) Margen transitable** — cambia el juego, no solo la generación.
+**(D) Reimplementar el sorteo en C# para no bumpear el wire** — dos generadores en fase, la clase de
+fallo ya anotada como deuda en ADR-081.
+
+Consecuencias / qué prohíbe. **PROHÍBE** que el cliente vuelva a sortear sala o giro. **PROHÍBE**
+recortar una reserva que no cabe. **PROHÍBE** carvar el margen o el anillo desde cualquier pase que
+no sea el propio estampador de la sala. **PROHÍBE** escribir el manifiesto a mano: sale del horneado
+o no sale. **PROHÍBE** colocar salas por encima del cap de 6 × 6 tiles hasta que exista el ADR
+multi-chunk.
+
+Verificación exigida antes de dar la tarea por cerrada: (a) una sala del pool aparece de verdad en
+el mundo —hoy no aparece ninguna—; (b) el túnel de la puerta engancha con el laberinto y la sala es
+alcanzable a pie; (c) el margen es macizo: no hay ninguna celda transitable entre el anillo y la
+pared de la sala; (d) `repair_connectivity` no ha perforado el anillo en ninguna seed del barrido de
+tests; (e) misma seed ⇒ mismo emplazamiento y mismo giro en dos peers; (f) un chunk sin sala autorada
+serializa bytes idénticos a wire 37; (g) digest de manifiesto desparejado = rechazo, no warning;
+(h) `cargo clippy --all-targets -D warnings` y `fmt --check` limpios, y la suite EditMode sin
+regresiones nuevas.
+
+Dependencias: ADR-083 base (puntos 2 y 4 vigentes), ADR-081 enmienda 5 (`carve_into_grid`,
+`carve_door`, `SealedWall`, precedente de campo aditivo), ADR-034 (`room_zones`, que deja de ser el
+anclaje), ADR-018/ADR-040 (el fantasma colisiona contra `grid_gen`), ADR-061 (espejo C# del wire),
+ADR-026 partes 1–2 (BLOQUEADAS — consumidor futuro de las cajas exactas).
+
+### ADR-083 enmienda 2 — El borde de la reserva se alinea a tile: 2 celdas, cap 7 × 7 (VALIDADA, 2026-08-20)
+
+Corrige dos números de la enmienda 1. El resto de esa enmienda queda intacto.
+
+Contexto. La enmienda 1 fijó el borde de la reserva en **anillo 1 celda + margen 2 = 3 celdas
+(7,5 m)**, y de ahí un cap de 6 × 6 tiles. Al implementar la mitad de colisión salió el fallo: el
+`ChunkLayoutV1` tiene celdas de **5 m**, o sea que 3 celdas de `grid_gen` son **tile y medio**. La
+frontera de la reserva caía partiendo un tile por la mitad, y ese medio tile no se puede representar
+allí — marcarlo bloqueado inventa 2,5 m de pared invisible, dejarlo libre mete al jugador andando
+dentro del anillo que el render dibuja macizo. Es exactamente el fallo contra el que avisa la
+cabecera de `build_room_layout`: *paredes que se ven y se atraviesan*.
+
+Solo hay dos grosores que caen en frontera de tile: 2 celdas (5 m) o 4 (10 m). Y 2 celdas es además
+lo que se pidió de origen — "un 50 × 50 reservado en 60 × 60" son 5 m por lado, no 7,5.
+
+Decisiones:
+
+1. **Borde = 2 celdas por lado: anillo 1 (2,5 m) + margen 1 (2,5 m).** Un tile exacto.
+2. **El cap sube a 7 × 7 tiles (35 m)**, porque se gasta menos borde: 18 celdas útiles − 4 = 14
+   celdas de footprint. Sube solo; no es una decisión aparte.
+3. **El vano de la puerta mide UN TILE (2 celdas), no una celda.** Con un margen de un tile, un
+   túnel de media anchura de tile dejaría al jugador cruzando 2,5 m de lo que el render pinta
+   macizo — el mismo fallo por la puerta de atrás. La primera línea se excava hasta que engancha y
+   la segunda copia su longitud, para que el vano no salga dentado.
+4. **En el layout de colisión, margen y anillo son UNA sola celda maciza.** No es una aproximación:
+   es la misma geometría a la mitad de resolución, y sale exacta porque el borde es un tile entero.
+
+Consecuencias. **PROHÍBE** cualquier grosor de borde que no sea múltiplo de un tile: la alineación
+es lo que sostiene que las dos representaciones no discrepen. `room_0` (4 × 4 tiles) sigue entrando;
+`room_1` y `room_2` (10 × 10) siguen fuera hasta el ADR multi-chunk.
+
+Verificación: cubierto por `authored_rooms::tests` (16 tests, entre ellos margen macizo sin huecos,
+anillo `SealedWall` intacto, vano de un tile y **sala alcanzable a pie tras `repair_connectivity`**)
+y `authored_room_layout::tests` (vano cruzable por los cuatro lados).
