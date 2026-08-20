@@ -185,6 +185,17 @@ namespace BackroomsSurvival.EditorTools
                     return true;
                 }
 
+            // Y por último, un prefab etiquetado del proyecto, POR SU NOMBRE. Por el nombre y no
+            // por el tag porque el tag es el filtro —"cuáles se ofrecen"—, no la identidad: veinte
+            // prefabs con el tag "RoomProp" son veinte props distintos, y escribir "RoomProp" no
+            // dice cuál de ellos quieres.
+            foreach (var t in TaggedPrefabs())
+                if (t.name.ToLowerInvariant() == want)
+                {
+                    entry = new PropEntry { prefab = t.prefab };
+                    return true;
+                }
+
             return false;
         }
 
@@ -202,6 +213,69 @@ namespace BackroomsSurvival.EditorTools
                 if (set.props == null) continue;
                 foreach (var e in set.props) yield return e;
             }
+        }
+
+        /// <summary>
+        /// Un prefab del proyecto que lleva un TAG de Unity en su raíz. La segunda fuente de
+        /// props, además del catálogo del mundo: etiquetas un prefab con, digamos, "RoomProp" y
+        /// aparece para elegir sin tener que darlo de alta en ningún sitio.
+        /// </summary>
+        private readonly struct TaggedPrefab
+        {
+            public readonly string tag, name;
+            public readonly GameObject prefab;
+
+            public TaggedPrefab(string tag, string name, GameObject prefab)
+            {
+                this.tag = tag; this.name = name; this.prefab = prefab;
+            }
+        }
+
+        private List<TaggedPrefab> _taggedPrefabs;
+
+        /// <summary>
+        /// Los prefabs del proyecto con tag propio, cacheados. El barrido abre CADA prefab para
+        /// leerle el tag a la raíz, así que no puede correr por frame — y este sí corre por frame
+        /// a través de la resolución de cada marcador. Se hace una vez y se rehace a mano con
+        /// "Rescan", que además es la única forma honesta: un prefab recién etiquetado no avisa.
+        ///
+        /// Solo la RAÍZ. Un hijo etiquetado no es un prop que se pueda colocar por su cuenta —
+        /// colocarlo arrancaría un trozo suelto de otro objeto.
+        /// </summary>
+        private List<TaggedPrefab> TaggedPrefabs()
+        {
+            if (_taggedPrefabs != null) return _taggedPrefabs;
+            _taggedPrefabs = new List<TaggedPrefab>();
+
+            foreach (string guid in AssetDatabase.FindAssets("t:Prefab"))
+            {
+                string path = AssetDatabase.GUIDToAssetPath(guid);
+                var go = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                if (go == null) continue;
+
+                // CompareTag lanza si el tag ya no existe en el proyecto (pasa con prefabs de
+                // vendor que traen tags de otro proyecto), así que se lee la cadena a pelo.
+                string tag = go.tag;
+                if (string.IsNullOrEmpty(tag) || tag == "Untagged") continue;
+
+                _taggedPrefabs.Add(new TaggedPrefab(tag, go.name, go));
+            }
+
+            _taggedPrefabs.Sort((a, b) =>
+            {
+                int byTag = string.Compare(a.tag, b.tag, System.StringComparison.OrdinalIgnoreCase);
+                return byTag != 0
+                    ? byTag
+                    : string.Compare(a.name, b.name, System.StringComparison.OrdinalIgnoreCase);
+            });
+            return _taggedPrefabs;
+        }
+
+        private void RescanTaggedPrefabs()
+        {
+            _taggedPrefabs = null;
+            _propsSignature = null; // puede resolver lo que antes no resolvía
+            RebuildPropPreviews();
         }
 
         /// <summary>Las etiquetas que el catálogo sabe resolver, sin repetir y en orden. Es lo que
@@ -260,17 +334,47 @@ namespace BackroomsSurvival.EditorTools
                         EditorStyles.miniButton))
                     return;
 
-                var tags = KnownPropTags();
                 var menu = new GenericMenu();
+                var marker = m; // la lambda del menú corre DESPUÉS: la fila ya no está en pie
+
+                void Pick(string value)
+                {
+                    marker.tag = value;
+                    RebuildIfLive();
+                }
+
+                // Fuente 1: el catálogo del mundo, lo que de verdad amuebla esa capa.
+                var tags = KnownPropTags();
                 if (tags.Count == 0)
-                    menu.AddDisabledItem(new GUIContent("(catálogo vacío o sin asignar)"));
+                    menu.AddDisabledItem(new GUIContent("Catalogue/(vacío o sin asignar)"));
                 foreach (string t in tags)
                 {
                     string captured = t; // sin esto, todas las entradas escribirían la última
-                    menu.AddItem(new GUIContent(t), string.Equals(m.tag, t,
-                        System.StringComparison.OrdinalIgnoreCase),
-                        () => { m.tag = captured; RebuildIfLive(); });
+                    menu.AddItem(new GUIContent($"Catalogue/{t}"),
+                        string.Equals(m.tag, t, System.StringComparison.OrdinalIgnoreCase),
+                        () => Pick(captured));
                 }
+
+                // Fuente 2: prefabs del proyecto con tag de Unity, agrupados POR TAG — que es lo
+                // que hace navegable una lista de prefabs sueltos.
+                menu.AddSeparator("");
+                var tagged = TaggedPrefabs();
+                if (tagged.Count == 0)
+                {
+                    menu.AddDisabledItem(new GUIContent("Tagged prefabs/(ningún prefab con tag propio)"));
+                    menu.AddDisabledItem(new GUIContent(
+                        "Tagged prefabs/Crea un tag y ponlo en la RAÍZ del prefab"));
+                }
+                foreach (var t in tagged)
+                {
+                    var captured = t;
+                    menu.AddItem(new GUIContent($"Tagged prefabs/{t.tag}/{t.name}"),
+                        string.Equals(m.tag, t.name, System.StringComparison.OrdinalIgnoreCase),
+                        () => Pick(captured.name));
+                }
+
+                menu.AddSeparator("");
+                menu.AddItem(new GUIContent("Rescan project prefabs"), false, RescanTaggedPrefabs);
                 menu.ShowAsContext();
             });
 
