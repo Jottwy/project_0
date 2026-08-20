@@ -65,6 +65,9 @@
 - [STABILITY_AUDIT_CURRENT.md](STABILITY_AUDIT_CURRENT.md)
 - [ARCHITECTURE_RISK_REVIEW.md](ARCHITECTURE_RISK_REVIEW.md)
 
+## Documentos publicados (Artifacts)
+- [web/README.md](web/README.md) — mapa de los seis documentos publicados en claude.ai: URL, fichero fuente y estado. Contiene la regla de sincronización del Compendio (`web/compendio.html`), que comprime a los otros cuatro y hay que republicar en su URL cuando cualquiera cambie.
+
 ## Archivo
 - [archive/](archive/) — documentos retirados, con cabecera que dice por qué. No son fuente de verdad.
 - [legacy/CLAUDE_CODE_INSTRUCTIONS.md](legacy/CLAUDE_CODE_INSTRUCTIONS.md) — guía inicial de implementación, deprecada y conservada solo como histórico.
