@@ -360,7 +360,21 @@ pub fn carve_authored_into_grid(
     //    entra en el chunk como componente aparte. No es un fallo: `repair_connectivity` corre justo
     //    después con estas celdas protegidas y le tiende un pasillo desde el componente grande. Es
     //    el mismo mecanismo por el que la habitación construible nunca queda aislada.
+    //
+    //    Dos boquetes del prefab que caigan en el MISMO `(lado, tile)` describen el mismo hueco:
+    //    `door_starts` les da idénticas celdas de partida y excavarlos dos veces repetiría el
+    //    tallado y duplicaría esas celdas en `carved`. Con `MAX_DOORWAYS = 8`, un barrido cuadrado
+    //    sobre un array en pila sale más barato que montar un set en una ruta que se recorre en
+    //    cada generación de chunk.
+    let mut dug_doors = [(0u8, 0u8); MAX_DOORWAYS];
+    let mut dug_count = 0usize;
     for door in plan.doorways() {
+        if dug_doors[..dug_count].contains(&door) {
+            continue;
+        }
+        dug_doors[dug_count] = door;
+        dug_count += 1;
+
         let (starts, dir) = door_starts(plan, door);
         let dug = carve_tunnel_outward(grid, ceiling, starts[0], dir, TUNNEL_LIMIT, &mut carved)
             .unwrap_or(BORDER_CELLS);
@@ -718,6 +732,64 @@ mod tests {
                         door.1
                     );
                 }
+            }
+        }
+    }
+
+    /// Dos boquetes que caigan en el MISMO (lado, tile) son el mismo hueco, y se excava UNA vez.
+    ///
+    /// Sin el dedup el segundo repetia el tallado y volvia a empujar las mismas celdas a `carved`,
+    /// que es lo que se le pasa a `repair_connectivity` como protegidas. Inofensivo con un par de
+    /// vanos; feo en una pared llena de ellos.
+    #[test]
+    fn two_doorways_on_the_same_tile_are_dug_once() {
+        let rules = &LAYER_PROFILES[0];
+
+        // La MISMA abertura declarada dos veces: es lo que produce un prefab con dos boquetes
+        // pegados que caen en el mismo tile de 5 m.
+        let door = ManifestDoorway {
+            side_by_quarter: [0, 0, 0, 0],
+            tile_by_quarter: [1, 1, 1, 1],
+        };
+        let m = RoomManifest {
+            digest: "test".into(),
+            rooms: vec![ManifestRoom {
+                index: 0,
+                id: "vano_duplicado".into(),
+                tiles_x: 4,
+                tiles_z: 4,
+                doorways: vec![door.clone(), door],
+            }],
+        };
+
+        let (cx, cz, plan) = find_plan(&m, 42).expect("alguna sala");
+        assert_eq!(plan.door_count, 2, "las dos entradas llegan al plan");
+        assert_eq!(
+            plan.doors[0], plan.doors[1],
+            "y describen el mismo (lado, tile)"
+        );
+
+        let mut out = generate_chunk_layer(rules, 42, (cx, cz), 0, &[]);
+        let carved = carve_authored_into_grid(&mut out.grid, &plan, rules.ceiling_open);
+
+        let unique: HashSet<(usize, usize)> = carved.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            carved.len(),
+            "el vano duplicado se excavo dos veces: {} celdas talladas, {} distintas",
+            carved.len(),
+            unique.len()
+        );
+
+        // Y el vano sigue abierto: deduplicar no puede saltarse el unico tunel que habia.
+        let (starts, dir) = door_starts(&plan, plan.doors[0]);
+        for start in starts {
+            for step in 0..BORDER_CELLS as i32 {
+                let (x, z) = (start.0 + dir.0 * step, start.1 + dir.1 * step);
+                assert!(
+                    out.grid.get(x as usize, z as usize).is_walkable(),
+                    "vano cerrado en ({x},{z}) tras deduplicar"
+                );
             }
         }
     }
