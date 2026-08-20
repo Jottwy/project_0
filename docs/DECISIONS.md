@@ -4596,3 +4596,139 @@ ADR-083 base y enmiendas 1, 2 y 3 (esto levanta la prohibición del punto 6 de l
 ADR-081 enmienda 5 (la construible gana el solape); ADR-061 (espejo C# del wire); ADR-043 (contador
 de generación de la caché, que es cómo se mide el punto (f)); ADR-026 partes 1–2 (BLOQUEADAS —
 consumidor futuro de las cajas exactas, fuera de scope aquí); ADR-034 (`room_zones`).
+
+### ADR-084 enmienda 1 — Decisiones cerradas: costura suprimida, ancla por coordenadas, y la altura entra (VALIDADA, 2026-08-21)
+
+**Con esta enmienda ADR-084 pasa de PROPUESTA a VALIDADA.** Resuelve las tres decisiones abiertas
+—puntos 4, 6 y 9— tal como las decidió Joel. El resto del ADR queda intacto.
+
+1. **Punto 4 — la apertura de costura se SUPRIME, no se reubica.** En los bordes que cubre una sala
+   multi-chunk no se abre apertura: la sala ES la conexión, y su interior cruza la costura por
+   construcción. No aísla nada, porque un chunk tiene otras tres fronteras. Rechazada la reubicación
+   por lo que costaba: código extra para un pasillo que además nacería pegado a la pared de la sala.
+2. **Punto 6 — el wire manda las COORDENADAS DEL CHUNK ANCLA, no un desplazamiento con signo.** El
+   motivo no es el tamaño: el cliente **necesita** saber de quién es la sala de todas formas, o los
+   dos chunks instancian el prefab y salen dos salas superpuestas. Con las coordenadas del ancla,
+   ese dato **es** el identificador de deduplicación — un solo campo hace las dos cosas, y el
+   desplazamiento con signo habría necesitado además un id aparte.
+3. **Punto 9 — la ALTURA entra, en su propio ADR-085.** ADR-084 sigue siendo solo el footprint; la
+   altura es un eje distinto y toca otro sitio del cliente. Se hacen los dos, ADR-085 después.
+
+Lo que motivó cambiar el punto 9 respecto a la propuesta —donde la altura quedaba fuera— es una
+corrección de hecho: `ROOMS-ROADMAP.md` §2 B3 decía que la altura *"toca el contrato de capas, que
+ADR-026 tiene bloqueado"*, **y eso está mal**. Lo que ADR-026 tiene bloqueado son las partes 1–2
+(autoridad del movimiento horizontal). La **parte 3 está DESBLOQUEADA desde el 2026-07-06 y dice que
+la Y del cliente se acepta como autoritativa**: la vertical ya es PhysX en el cliente. La altura no
+necesita desbloquear nada. Ese error de lectura mantuvo B3 aparcado sin motivo.
+
+### ADR-085 — Salas autoradas MÁS ALTAS QUE UNA CAPA (PROPUESTA, 2026-08-21)
+
+**ESTADO: PROPUESTA. NO validada, NO implementada.** Nada de aquí autoriza a tocar código (regla
+dura 7). **Tiene un PRERREQUISITO bloqueante — ver el final.**
+
+#### Contexto medido
+
+Hoy una sala autorada mide como mucho una capa de alto. Lo que la limita **no es la capa 0**: el
+punto 7 de ADR-083 enmienda 1 hace que el bucle de tiles se salte los de la sala, así que la capa 0
+no le pinta techo y la sala ya manda sobre su altura hasta el tope de capa. Lo que la limita es **la
+capa 1**, que es otro objeto de chunk y no sabe que la sala existe:
+
+1. **La losa.** `GridChunkBuilder.cs` instancia la losa de suelo **por tile y sin condición**, con
+   collider, y su comentario lo dice: *"Floor of this layer == ceiling of the layer below (one
+   slab)"*. La capa 1 se ancla en `y = layer · LayerHeight` (`ProceduralWorldGenerator`). Hay una
+   tapa maciza y colisionable justo encima de la sala.
+2. **Las paredes.** La rejilla de la capa 1 se genera aparte, así que su laberinto está de pie
+   encima de la sala. Suprimir solo la losa dejaría paredes flotando.
+3. **La colisión horizontal del backend va indexada por la Y**: `layer_from_player_y` =
+   `round((y − PLAYER_BASE_Y) / LAYER_HEIGHT)`. Dentro de una sala alta el jugador resolvería contra
+   el `ChunkLayoutV1` de la capa 1, que tiene el laberinto — vería el interior abierto y chocaría
+   con paredes invisibles. Es el fallo exacto contra el que avisa la cabecera de `build_room_layout`.
+
+Y lo que hace esto barato: **la altura ya se autora y ya se hornea.** `RoomDefinition.heightMeters`
+existe (con `ceilingTilt` y `MinCeilingHeight = 1,2 m`), y `RoomPool.RoomEntry.heightMeters` **se
+escribe al hornear y no lo lee nadie** — misma clase de dato muerto que `collisionBoxes`. Lo único
+que falta es que viaje y que alguien lo consuma.
+
+#### Decisiones propuestas
+
+1. **La altura viaja en el manifiesto y en el wire.** El exportador vuelca `heightMeters` (que ya
+   tiene) a `ManifestRoom`; el backend deriva de ahí cuántas capas invade. **Wire 40 → 41**, con
+   bump simultáneo del espejo C# (ADR-061).
+2. **Una sala está ANCLADA en la capa 0 y OCUPA las capas `0..=floor(h / LAYER_HEIGHT)`.** El
+   prefab se instancia UNA vez, en la capa 0. Las capas invadidas solo **suprimen** su geometría en
+   esos tiles — el mismo `continue` que ya existe, extendido: `AuthoredRoomRegistry` deja de
+   responder solo para la capa 0.
+3. **El backend talla la sala en el layout de colisión de TODAS las capas invadidas**, con
+   `carve_authored_into_layout`, que ya hace exactamente eso. Sin esto, el punto 3 del contexto.
+4. **No hay agujero en el suelo de la capa invadida, y no hace falta inventar nada para evitarlo.**
+   Las PROPIAS PAREDES de la sala cruzan el plano de esa capa y la cierran por su perímetro: quien
+   camine por la capa 1 junto a la sala choca contra su muro, no se cae dentro. Y si el autor abre
+   un vano a esa altura, entonces es **una entrada autorada**, no un fallo. Esto resuelve sin coste
+   la pregunta que `ROOMS-ROADMAP.md` §2 B3 dejaba abierta (*"si el agujero resultante en la capa 1
+   es un fallo o una entrada"*): no hay agujero que decidir.
+5. **La capa más alta nunca se invade.** Cap de altura = `(LAYER_COUNT − 1) · LAYER_HEIGHT`, para
+   que el mundo conserve siempre su techo. Con 4 capas y el valor de ADR-007 son **12 m**.
+6. **La altura que cuenta es `heightMeters`, no la del techo inclinado.** `ceilingTilt` redistribuye
+   —un lado gana lo que el otro pierde— y `heightMeters` sigue siendo la altura de referencia; usar
+   la local por punto haría que la capa invadida dependiera de dónde mires.
+
+#### PRERREQUISITO BLOQUEANTE: `LAYER_HEIGHT` vale dos cosas distintas
+
+Encontrado al escribir este ADR, y **hay que resolverlo antes de implementar nada de aquí**, porque
+todo el punto 2 es una división por `LAYER_HEIGHT`:
+
+| Dónde | Valor |
+|---|---|
+| `backend/src/world/chunk/coords.rs::LAYER_HEIGHT` | **7,0** |
+| `Assets/.../GridCell.cs::GridConstants.LayerHeight` | **4,0** |
+| Comentario de ADR-026 en `backend/src/world/collision.rs` | dice *"LAYER_HEIGHT (4 m)"* |
+| **ADR-007, resolución 2026-06-12** | **`LAYER_HEIGHT_M` y `GridConstants.LayerHeight` = 4 m** |
+
+Los dos constantes describen lo MISMO (`chunk_root_y = layer · LAYER_HEIGHT`) y no coinciden. **El
+7,0 del backend contradice una resolución de ADR ya validada**, y `layer_from_player_y` clasifica la
+capa del jugador con él mientras el cliente renderiza con 4. Las capas 0 y 1 coinciden por
+casualidad aritmética; de la 2 en adelante divergen. Nadie lo ha notado porque las capas superiores
+son verticalidad decorativa.
+
+Es la misma clase de fallo que ADR-061 (espejo C# del wire) y que la deuda que ADR-081 dejó anotada:
+**una regla implementada dos veces en dos lenguajes**. Se arregla y se verifica ANTES, en su propio
+commit; no dentro de este ADR.
+
+#### Alternativas rechazadas
+
+**(A) Que la sala alta se quede sin techo propio y use la losa de la capa de arriba** — ata la altura
+autorable a un múltiplo exacto de `LAYER_HEIGHT` y tira por tierra `ceilingTilt`.
+**(B) Dejar de construir las capas superiores donde haya sala** — el chunk de la capa invadida
+también trae laberinto FUERA del footprint de la sala; suprimirlo entero abriría un socavón enorme.
+**(C) Subir `LAYER_HEIGHT` para que quepan salas altas** — cambia el mundo entero para servir a una
+minoría de salas, y toca ADR-007.
+**(D) Consumir `RoomPool.collisionBoxes` de paso, ya que se toca la colisión** — es B4 y espera a
+ADR-026; meterlo aquí mezcla dos ejes y dos ADR.
+
+#### Qué prohíbe si se adopta
+
+**PROHÍBE** instanciar el prefab más de una vez, sea cual sea el número de capas invadidas.
+**PROHÍBE** que una capa invadida pinte geometría en los tiles de la sala. **PROHÍBE** tallar la sala
+en la rejilla de render de una capa sin tallarla también en su layout de colisión, y al revés.
+**PROHÍBE** invadir la capa más alta. **PROHÍBE** derivar la capa invadida de la altura local del
+techo inclinado en vez de `heightMeters`. **PROHÍBE** implementar nada de este ADR mientras
+`LAYER_HEIGHT` valga dos cosas.
+
+#### Verificación exigida antes de VALIDADA
+
+(a) `LAYER_HEIGHT` vale lo mismo en los dos lados y hay test que lo fija;
+(b) una sala de más de una capa se ve entera, sin losa cortándola;
+(c) se recorre a pie por dentro a la altura de la capa invadida sin paredes invisibles — el layout de
+colisión de esa capa coincide con lo que se ve;
+(d) caminar por la capa invadida junto a la sala choca contra su muro y NO se cae dentro (punto 4);
+(e) una sala de una sola capa se talla EXACTAMENTE igual que antes: bytes idénticos;
+(f) `probe_unreachable_rooms` a cero;
+(g) `cargo clippy --all-targets -D warnings`, `fmt --check` y `CompileCheckClient` limpios.
+
+#### Dependencias
+
+ADR-007 (fija `LAYER_HEIGHT` = 4 m — es la resolución que el backend incumple); ADR-083 enmienda 1
+punto 7 (el `continue` que ya suprime la geometría, y que aquí solo se extiende); ADR-083 enmienda 3
+(plural y separación); ADR-084 (multi-chunk, el otro eje); ADR-061 (espejo C# del wire);
+ADR-026 parte 3 DESBLOQUEADA (la Y del cliente es autoritativa — es lo que hace esto viable);
+ADR-026 partes 1–2 (BLOQUEADAS, y este ADR no las necesita).
