@@ -4474,3 +4474,125 @@ emplazamiento o al tallado se mide con ella antes de darse por bueno.
 
 Dependencias: ADR-083 base punto 2 (es lo que esta enmienda implementa), ADR-083 enmiendas 1 y 2
 (intactas), ADR-081 enmienda 5 (la construible gana el solape), ADR-061 (espejo C# del wire).
+
+### ADR-084 — Salas autoradas MULTI-CHUNK: ancla canónica, costura suprimida, prefab fuera del chunk (PROPUESTA, 2026-08-20)
+
+**ESTADO: PROPUESTA. NO validada por Joel, NO implementada.** Nada de aquí autoriza a tocar código
+(regla dura 7). Los puntos 4, 6 y 9 son los que Joel tiene que decidir antes de nada.
+
+Levanta la prohibición del punto 6 de ADR-083 enmienda 1 — *"salas mayores que el cap quedan FUERA
+del mundo hasta un ADR aparte"* — que es este ADR.
+
+#### Contexto medido
+
+El cap de hoy es **7 × 7 tiles (35 m)** y es aritmética del chunk, no gusto:
+
+```text
+18 celdas útiles − 4 de borde (anillo + margen) = 14 celdas = 7 tiles
+```
+
+No se puede subir dentro de un chunk. El borde ya es el mínimo legal —la enmienda 2 PROHÍBE
+cualquier grosor que no sea múltiplo de tile— y las filas/columnas 0 y 19 son de la costura. **35 m
+es el techo físico de la arquitectura actual.** `room_1` y `room_2` (10 × 10 tiles = 50 m) llevan
+fuera del mundo desde que se hornearon.
+
+#### El precedente que hace esto viable, y que cambia el marco
+
+La objeción de siempre es *"un chunk se genera solo, sin mirar a sus vecinos"*. **Eso ya no es
+cierto, y no lo es desde hace mucho:** `stitch_edges` (`grid_gen/stitching.rs`) abre la apertura del
+borde este de `(cx, cz)` y la del borde oeste de `(cx+1, cz)` **en el mismo sitio**, y lo consigue
+sin que los dos chunks se hablen — los dos evalúan `aperture_pos(seed, cx, cz, Vertical, layer)`,
+con **clave canónica en el chunk de menor coordenada**.
+
+La invariante real no es "un chunk no mira a sus vecinos". Es **"todo se deriva puramente del seed;
+nadie guarda estado compartido"**. Una sala multi-chunk cabe dentro de esa invariante exactamente
+igual que la costura, y con el mismo patrón ya probado en producción.
+
+#### Decisiones propuestas
+
+1. **Ancla canónica.** Una sala multi-chunk pertenece al chunk de **menor `(cx, cz)`** de los que
+   cubre, misma convención que la clave de `aperture_pos`. Solo el ancla la sortea; los chunks
+   cubiertos la descubren evaluando el planificador del ancla.
+2. **Cap de 2 × 2 chunks (100 m).** Acota el vecindario que hay que barrer y por tanto el coste. Un
+   chunk consulta el planificador de su vecindario para saber si le invade algo.
+3. **Resolución de conflictos por orden canónico, no por sorteo.** Dos anclas vecinas pueden querer
+   el mismo sitio. Gana la de menor `(cx, cz)`; la otra se retira. Para que sea consistente hay que
+   barrer **±2 chunks**, no ±1: si A cede ante B y B ante C, un chunk que solo mire ±1 desde A no ve
+   a C y decide distinto. Es puro y acotado, pero **es el punto donde esto se vuelve caro** y hay
+   que medirlo antes de darlo por bueno.
+4. **La costura se SUPRIME en los bordes que la sala cubre; la sala ES la conexión.** Hoy
+   `stitch_edges` corre ANTES del tallado autorado, así que el anillo de la sala pisaría la apertura
+   y dejaría un boquete determinista en la pared de la sala — `carve_aperture` incluso perfora
+   `SealedWall` una vez a propósito. La propuesta es que ambos chunks omitan esa apertura y que la
+   conexión entre ellos sea el interior de la sala, que cruza la costura por construcción.
+   **DECISIÓN ABIERTA:** suprimir la apertura frente a reubicarla fuera del tramo de la sala. Suprimir
+   es más simple; reubicar conserva una segunda vía si el jugador no puede o no quiere cruzar la sala.
+5. **El prefab sale del ciclo de vida del chunk.** Hoy se instancia bajo el root del chunk y
+   `ProceduralWorldGenerator` hace `Destroy(go)` sobre ese root al descargar, además de
+   `RebuildChunk` cuando llega la zona. Con una sala repartida, descargar el chunk ancla con el
+   jugador dentro **borraría media sala**. Pasa a un root de mundo, con **refcount por chunks
+   cubiertos cargados**: se instancia con el primero y se destruye con el último.
+6. **El wire manda la sala en TODOS los chunks que cubre, con desplazamiento con signo y un id de
+   ancla.** Hoy `authored_rooms` lleva tiles `u16` dentro del chunk; un chunk invadido necesita
+   expresar un origen negativo o mayor que 9. El id de ancla es lo que permite que el cliente
+   instancie **una sola vez** y que los demás chunks solo supriman su propia geometría.
+   **Wire 39 → 40**, con bump simultáneo del espejo C# `WireSchema.Expected` (ADR-061).
+   **DECISIÓN ABIERTA:** desplazamiento con signo frente a mandar las coordenadas del chunk ancla y
+   que el cliente reste.
+7. **Las reglas de zona son las del ANCLA para toda la sala.** `rules_for(seed, cx, cz, layer)`
+   devuelve alturas de techo y perfiles distintos por chunk, así que una sala repartida caería entre
+   dos. Se talla entera con las del ancla. Consecuencia aceptada: el tinte de zona de la sala puede
+   no casar con el del laberinto en el chunk invadido.
+8. **La separación de un tile entre reservas y el túnel contra la componente grande siguen
+   valiendo** (enmienda 3, puntos 3 y 3-bis), y ahora son más difíciles: la componente grande hay
+   que calcularla por chunk, y una sala repartida tiene puertas que dan a chunks distintos.
+   `main_component` es hoy local al chunk. **Es el riesgo técnico principal de este ADR.**
+9. **Fuera de scope, explícitamente:** la ALTURA por encima de una capa (`LayerHeight = 4 m`, el
+   B3 del ROADMAP) y el consumo de `RoomPool.collisionBoxes` (B4, que espera a ADR-026). Una sala de
+   100 m de lado sigue teniendo 4 m de alto. **DECISIÓN ABIERTA:** si eso hace que el esfuerzo no
+   valga la pena, este ADR debería fusionarse con B3 en vez de ir solo.
+
+#### Alternativas rechazadas
+
+**(A) Que el chunk invadido pregunte al ancla por un canal de estado compartido** — rompe la
+invariante real (derivación pura) y mete orden de generación donde hoy no lo hay: dos peers
+generarían mundos distintos según quién pidió qué chunk antes.
+**(B) Dejar el prefab bajo el root del ancla y no descargar nunca el chunk ancla** — ata la
+retención de chunks al contenido y filtra memoria en un mundo persistente; además `RebuildChunk`
+seguiría destruyéndolo al llegar la zona.
+**(C) Trocear la sala en piezas por chunk y que cada chunk instancie la suya** — obliga a autorar
+contra la rejilla de chunks, que es justo lo que ADR-083 enmienda 1 quitó de en medio al hacer que
+la reserva la dicte la sala.
+**(D) Subir `CHUNK_CELLS` para que quepan salas mayores** — toca el formato de chunk, la colisión,
+la caché del robapieles y el streaming del cliente. Mucho más caro que esto y afecta a todo el
+mundo, no solo a las salas.
+**(E) Autorar el TRAZADO en vez del mobiliario** (`architecture/layout_grammars.rs`, patrones
+`starter_cluster`/`hallway_chain`) — es la otra palanca y NO compite con esta: una amuebla y la otra
+traza. Si lo que se quiere es una planta de oficinas entera, ese es el camino y este ADR sobra.
+
+#### Qué prohíbe si se adopta
+
+**PROHÍBE** que un chunk consulte estado de otro que no sea derivable del seed. **PROHÍBE** instanciar
+el prefab de una sala multi-chunk bajo el root de un chunk. **PROHÍBE** que la costura se abra dentro
+del tramo cubierto por una sala. **PROHÍBE** salas de más de 2 × 2 chunks. **PROHÍBE** tallar una sala
+repartida con reglas de zona distintas en cada chunk.
+
+#### Verificación exigida antes de VALIDADA
+
+(a) Una sala de 10 × 10 tiles aparece entera y sin costura visible a caballo de dos chunks;
+(b) atravesarla a pie de un chunk al otro, y que el layout de colisión coincida con lo que se ve;
+(c) descargar el chunk ancla con el jugador dentro NO borra la sala;
+(d) misma seed ⇒ mismas salas en dos peers, incluida la resolución de conflictos entre anclas;
+(e) `probe_unreachable_rooms` a **cero** con un pool que mezcle salas de uno y de varios chunks —
+es la sonda que ya cazó las salas selladas de la enmienda 3, y aquí el riesgo es mayor;
+(f) coste medido del barrido de vecindario en `GridGenChunkCache` (`generated`, ADR-043) y en la
+generación de chunk, ANTES y DESPUÉS;
+(g) un chunk sin salas serializa bytes idénticos a wire 39;
+(h) `cargo clippy --all-targets -D warnings`, `fmt --check` y `CompileCheckClient` limpios.
+
+#### Dependencias
+
+ADR-083 base y enmiendas 1, 2 y 3 (esto levanta la prohibición del punto 6 de la enmienda 1);
+ADR-081 enmienda 5 (la construible gana el solape); ADR-061 (espejo C# del wire); ADR-043 (contador
+de generación de la caché, que es cómo se mide el punto (f)); ADR-026 partes 1–2 (BLOQUEADAS —
+consumidor futuro de las cajas exactas, fuera de scope aquí); ADR-034 (`room_zones`).
