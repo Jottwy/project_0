@@ -4373,3 +4373,104 @@ es lo que sostiene que las dos representaciones no discrepen. `room_0` (4 × 4 t
 Verificación: cubierto por `authored_rooms::tests` (16 tests, entre ellos margen macizo sin huecos,
 anillo `SealedWall` intacto, vano de un tile y **sala alcanzable a pie tras `repair_connectivity`**)
 y `authored_room_layout::tests` (vano cruzable por los cuatro lados).
+
+### ADR-083 enmienda 3 — `authored_rooms` en plural: varias salas por chunk; wire 38 → 39 (VALIDADA, 2026-08-20)
+
+Contexto. El **punto 2 de ADR-083, vigente y nunca derogado** —la enmienda 1 dice literalmente que
+los puntos 2 y 4 «se mantienen tal cual estaban escritos»— fija el campo como
+`authored_rooms: Vec<AuthoredRoom>`. La enmienda 1 lo implementó estrechado a
+`Option<[u16; 4]>` porque su slice colocaba **una** sala. Esta enmienda **converge al punto 2**: no
+decide nada nuevo sobre la forma del campo, solo deja de estrecharlo y registra el número de wire y
+la regla de solape, que sí son decisiones.
+
+Decisiones:
+
+1. **`authored_room: Option<[u16; 4]>` → `authored_rooms: Vec<[u16; 4]>`**, con
+   `skip_serializing_if = "Vec::is_empty"`. Un chunk sin salas serializa **bytes idénticos a wire
+   38**: mismo patrón aditivo que `room_zones`, `sprays` y `build_room`.
+2. **Wire 38 → 39**, con bump simultáneo del espejo C# `WireSchema.Expected` **en el MISMO commit**
+   (ADR-061). Sin él el juego no arranca, y no avisa.
+3. **Entre dos reservas va SIEMPRE un tile de separación — no basta con que no se solapen.** Dos
+   reservas pegadas dejan sus dos anillos `SealedWall` espalda contra espalda, y ese bloque de
+   cuatro celdas macizas es infranqueable para el BFS de `repair_connectivity`, que carva `Wall`
+   interior pero nunca `SealedWall`. Una sala cuya puerta dé contra ese bloque **nace siendo una
+   caja sellada en mitad del mundo**. Medido con la sonda `probe_unreachable_rooms`: **2 de 14 salas
+   incomunicadas** con reservas pegadas, **0 de 17** con el tile de separación. La construible de
+   ADR-081 sigue ganando cuando el solape es con ella. Generaliza `overlaps_build_room`, no lo
+   sustituye.
+3-bis. **El túnel de la puerta se excava hasta el LABERINTO, no hasta la primera celda transitable,
+   y las carcasas de todas las salas se ponen ANTES que ningún túnel.** Una celda abierta no es una
+   celda comunicada: la reserva de una sala tapia trozos de laberinto y deja al otro lado muñones
+   ciegos de una o dos celdas. Un túnel que pare ahí no comunica nada. Con varias salas por chunk el
+   laberinto además se fragmenta —dos reservas de 8 × 8 macizan 128 de las 400 celdas—, así que se
+   le pasa un `repair_connectivity` **con los interiores protegidos** después de las carcasas y
+   antes de las puertas; sin proteger, esa pasada sella los interiores y empeora la cuenta (subió de
+   3 a 6). Con UNA sola sala nada de esto se ejecuta: el chunk no se fragmenta (0 de 11 en la sonda)
+   y así los chunks de una sala se tallan EXACTAMENTE igual que en wire 38.
+4. **Cap de 3 salas por chunk.** No es gusto: es tope de barrido para que el planificador no recorra
+   candidatas sin fin en un chunk donde ya no cabe nada, y techo de coste de una ruta que se
+   re-deriva en cada generación de chunk. El plan sigue siendo `Copy`, sobre array fijo: nada de
+   `Vec` en la ruta caliente que recorren colisión, caché del robapieles y render.
+5. **La PRIMERA sala no se mueve, y eso es requisito.** El barrido de candidatas y el sorteo del
+   origen no cambian: lo único que hace la versión plural es seguir probando en vez de devolver a
+   la primera aceptada, así que la secuencia de tiradas del `rng` hasta esa primera aceptación es
+   idéntica a la de wire 38. Las demás salas se añaden detrás. **Medido, no supuesto:** la sonda
+   `real_manifest_cadence` da *33 salas en 9,0 km², una cada 522 m* con las dos versiones del
+   planificador, comparadas A/B sobre el manifiesto real del repo.
+   (Nota al margen: `STATE.md` registraba *31 salas / ~539 m*. Esa cifra es de cuando `room_0` medía
+   4 × 4 tiles; hoy el manifiesto la trae de 5 × 5 y por eso el número es otro. No lo mueve nada de
+   esta enmienda.)
+
+**Consecuencia medida, registrada para que nadie espere de esto lo que no da.** Con el borde de un
+tile de la enmienda 2 y el origen sorteado en celda par, la ventana útil de reservas por eje es de
+**16 celdas**, y una sala de `T` tiles reserva `2T + 4`. Dos reservas caben disjuntas en un eje solo
+si
+
+```text
+(2·T₁ + 4) + (2·T₂ + 4) + 2 ≤ 16    ⇔    T₁ + T₂ ≤ 3 tiles
+```
+
+O sea: **2+1 y 1+1. Dos salas de 2 × 2 tiles ya NO conviven** — el tile de separación del punto 3 se
+come justo ese caso, y es el precio de que una sala colocada sea siempre una sala alcanzable. Tres
+salas exigen `T₁ + T₂ + T₃ ≤ 2`, o sea 1+1 en un eje y la tercera desplazada en el otro.
+
+**El pool de hoy tiene una sola sala, `room_0`, de 5 × 5 tiles**, así que con este contenido se
+coloca **una sala y solo una, siempre**. Esta enmienda es TUBERÍA: sin salas de **1 × 1 y 2 × 2
+tiles** horneadas no cambia absolutamente nada de lo que se ve en el mundo. El cuello sigue siendo
+el contenido, y la regla para quien autore es `T₁ + T₂ ≤ 3`.
+
+Medición de referencia con un pool sintético de 2 × 2 + 1 × 1, sonda `probe_unreachable_rooms`
+sobre 4 seeds × 400 chunks: **17 salas en 11 chunks con sala, 0 incomunicadas** (1,55 salas por
+chunk frente a 1,00).
+
+Alternativas rechazadas. **(A) Dejar `Option` y mandar varias salas en chunks distintos** — no es lo
+mismo: la densidad percibida sale de ver dos salas juntas, y además contradice el punto 2 vigente.
+**(B) Que dos reservas compartan anillo o margen para que quepan más** — el margen macizo es lo que
+garantiza por construcción que no queden huecos por los que caerse (enmienda 1 punto 3), y dos
+salas pared con pared son un distrito autorado, que es otro sistema (ver `ROOMS-ROADMAP.md` §3).
+**(C) Subir el cap de salas por chunk por encima de 3** — no lo permite la aritmética de arriba con
+ningún tamaño de sala que valga la pena autorar.
+
+Consecuencias / qué prohíbe. **PROHÍBE** que dos reservas de sala autorada queden pegadas, compartan
+anillo o compartan margen: entre ellas va un tile de `Wall` genérico o no se coloca la segunda.
+**PROHÍBE** que un túnel de puerta se dé por bueno al tocar cualquier celda transitable — el destino
+es la componente grande. **PROHÍBE** bumpear el wire sin el espejo C# en el mismo commit.
+**PROHÍBE** meter un `Vec` en `AuthoredRoomPlan` o en la ruta de re-derivación por chunk. Todo lo
+demás de las enmiendas 1 y 2 queda intacto, incluido el cap de footprint de 7 × 7 tiles y la
+prohibición de salas multi-chunk.
+
+Verificación exigida: (a) dos salas en un chunk con un tile entre reservas y las dos alcanzables a
+pie tras `repair_connectivity`; (b) un chunk sin salas serializa la clave ausente, igual que en wire
+38; (c) el cap de 3 se respeta; (d) mismo seed ⇒ mismo conjunto de salas en dos peers; (e) con el
+manifiesto REAL del repo se coloca exactamente una sala por chunk, como test de regresión de la
+consecuencia medida; (f) `cargo clippy --all-targets -D warnings` y `fmt --check` limpios, y
+`CompileCheckClient` en verde.
+
+Nota de método, porque el camino importa: las tres primeras versiones de esta enmienda **colocaban
+salas selladas** y los tests de una sola sala no lo veían. Lo cazó una sonda que cuenta salas
+incomunicadas sobre un barrido de seeds (`probe_unreachable_rooms`, `--ignored`), no un test de
+propiedad sobre el primer chunk que apareciera. Queda en el repo: cualquier cambio futuro al
+emplazamiento o al tallado se mide con ella antes de darse por bueno.
+
+Dependencias: ADR-083 base punto 2 (es lo que esta enmienda implementa), ADR-083 enmiendas 1 y 2
+(intactas), ADR-081 enmienda 5 (la construible gana el solape), ADR-061 (espejo C# del wire).
