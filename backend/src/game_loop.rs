@@ -818,6 +818,14 @@ pub async fn run(
                             .iter()
                             .map(|p| {
                                 let (tx, tz) = p.tile_origin();
+                                // Wire 39 manda el tile SIN SIGNO y relativo al chunk. Se sostiene
+                                // porque el cap de footprint aún obliga a que la sala quepa entera
+                                // aquí; en cuanto una sala pase de un chunk (ADR-084 punto 6) esto
+                                // deja de valer y el campo pasa a llevar el chunk ancla.
+                                debug_assert!(
+                                    tx >= 0 && tz >= 0,
+                                    "sala con origen fuera del chunk en wire 39: ({tx},{tz})"
+                                );
                                 [tx as u16, tz as u16, p.entry, p.quarter as u16]
                             })
                             .collect()

@@ -93,10 +93,15 @@ pub struct AuthoredRoomPlan {
     pub entry: u16,
     /// Giro en cuartos de vuelta: 0 = 0°, 1 = 90°, 2 = 180°, 3 = 270°.
     pub quarter: u8,
-    /// Celda de la esquina de menor x del footprint.
-    pub cell_x: usize,
-    /// Celda de la esquina de menor z del footprint.
-    pub cell_z: usize,
+    /// Celda de la esquina de menor x del footprint, **relativa al chunk que consulta el plan**.
+    ///
+    /// CON SIGNO, y puede caer fuera de `0..CHUNK_CELLS` (ADR-084): una sala anclada en el chunk
+    /// vecino asoma por aquí con origen negativo, y una anclada aquí puede desbordar por el otro
+    /// lado. Todo el tallado recorta a las celdas que existen en este chunk; ver `clip_to_chunk`.
+    /// Hoy ninguna sala del pool pasa de un chunk, así que en la práctica sigue estando en `1..=18`.
+    pub cell_x: i32,
+    /// Celda de la esquina de menor z del footprint, relativa al chunk que consulta. Ver `cell_x`.
+    pub cell_z: i32,
     /// Footprint ya girado, en celdas.
     pub cells_x: usize,
     pub cells_z: usize,
@@ -117,19 +122,27 @@ impl AuthoredRoomPlan {
     }
 
     /// Rect de la RESERVA completa (anillo incluido), `(x0, z0, x1, z1)` con x1/z1 EXCLUSIVOS.
-    pub fn reserve_rect(&self) -> (usize, usize, usize, usize) {
+    ///
+    /// Sin recortar: es la forma COMPLETA de la reserva, que puede salirse del chunk. Quien vaya a
+    /// escribir en la rejilla la recorta con `clip_to_chunk`; quien compare solapes la quiere entera,
+    /// porque dos salas se pisan lo mismo aunque el solape caiga en el chunk de al lado.
+    pub fn reserve_rect(&self) -> (i32, i32, i32, i32) {
         (
-            self.cell_x - BORDER_CELLS,
-            self.cell_z - BORDER_CELLS,
-            self.cell_x + self.cells_x + BORDER_CELLS,
-            self.cell_z + self.cells_z + BORDER_CELLS,
+            self.cell_x - BORDER_CELLS as i32,
+            self.cell_z - BORDER_CELLS as i32,
+            self.cell_x + self.cells_x as i32 + BORDER_CELLS as i32,
+            self.cell_z + self.cells_z as i32 + BORDER_CELLS as i32,
         )
     }
 
     /// Tile de 5 m de la esquina del footprint. El footprint siempre cae en frontera de tile porque
     /// el origen se sortea en celdas pares — ver `plan_authored_rooms`.
-    pub fn tile_origin(&self) -> (u8, u8) {
-        ((self.cell_x / 2) as u8, (self.cell_z / 2) as u8)
+    ///
+    /// `div_euclid` y no `/`: con origen negativo la división de Rust trunca hacia cero y `-1 / 2`
+    /// daría tile 0, el mismo que `1 / 2`. La división euclídea redondea hacia abajo, que es lo que
+    /// significa "el tile en el que cae esta celda".
+    pub fn tile_origin(&self) -> (i32, i32) {
+        (self.cell_x.div_euclid(2), self.cell_z.div_euclid(2))
     }
 }
 
@@ -316,12 +329,8 @@ pub fn plan_authored_rooms(
         // acabaría siendo el interior hueco de la otra.
         if placed.iter().any(|other| {
             let (x0, z0, x1, z1) = other.reserve_rect();
-            let grown = (
-                x0.saturating_sub(SEPARATION_CELLS),
-                z0.saturating_sub(SEPARATION_CELLS),
-                x1 + SEPARATION_CELLS,
-                z1 + SEPARATION_CELLS,
-            );
+            let sep = SEPARATION_CELLS as i32;
+            let grown = (x0 - sep, z0 - sep, x1 + sep, z1 + sep);
             rects_overlap(grown, plan.reserve_rect())
         }) {
             continue;
@@ -337,7 +346,7 @@ pub fn plan_authored_rooms(
 /// La reserva ocupa `size + 2 · BORDER_CELLS` y tiene que caber entera en `[USABLE_LO, USABLE_HI]`.
 /// El origen del footprint queda `BORDER_CELLS` más adentro. Se sortea en unidades de tile y se
 /// multiplica por 2, que es la forma barata de garantizar paridad sin descartar tiradas.
-fn draw_origin(rng: &mut StdRng, size: usize) -> Option<usize> {
+fn draw_origin(rng: &mut StdRng, size: usize) -> Option<i32> {
     let reserve = size + 2 * BORDER_CELLS;
     if reserve > USABLE_HI - USABLE_LO + 1 {
         return None;
@@ -354,7 +363,7 @@ fn draw_origin(rng: &mut StdRng, size: usize) -> Option<usize> {
         return None;
     }
     let slots = (hi - first_even) / 2 + 1;
-    Some(first_even + 2 * rng.gen_range(0..slots))
+    Some((first_even + 2 * rng.gen_range(0..slots)) as i32)
 }
 
 /// ¿Se pisan dos rects `(x0, z0, x1, z1)` con x1/z1 EXCLUSIVOS?
@@ -362,19 +371,37 @@ fn draw_origin(rng: &mut StdRng, size: usize) -> Option<usize> {
 /// Separado de `overlaps_build_room` por ADR-083 enmienda 3: la misma prueba la necesitan ahora
 /// reserva↔construible y reserva↔reserva, y tener dos copias de la aritmética de solape es
 /// exactamente como se cuelan los fallos de borde de un off-by-one.
-fn rects_overlap(a: (usize, usize, usize, usize), b: (usize, usize, usize, usize)) -> bool {
+fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
     a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3
+}
+
+/// El trozo de un rect `(x0, z0, x1, z1)` que cae DENTRO de este chunk, como índices de la rejilla,
+/// o `None` si no asoma nada.
+///
+/// Es el único sitio por el que una coordenada con signo se convierte en índice. Recorta los
+/// ÍNDICES, no la forma: quien decida "esto es anillo" o "esto es interior" debe seguir comparando
+/// contra el rect completo, o un trozo de sala que asome desde el chunk vecino se leería como si su
+/// borde estuviera en la frontera del chunk.
+fn clip_to_chunk(rect: (i32, i32, i32, i32)) -> Option<(usize, usize, usize, usize)> {
+    let n = CHUNK_CELLS as i32;
+    let (x0, z0) = (rect.0.max(0), rect.1.max(0));
+    let (x1, z1) = (rect.2.min(n), rect.3.min(n));
+    if x0 >= x1 || z0 >= z1 {
+        return None;
+    }
+    Some((x0 as usize, z0 as usize, x1 as usize, z1 as usize))
 }
 
 /// ¿Se pisan la reserva de la sala autorada y la de la habitación construible (su anillo incluido)?
 fn overlaps_build_room(plan: &AuthoredRoomPlan, build: &RoomPlan) -> bool {
     let (bx, bz) = build.cell_origin();
+    let (bx, bz) = (bx as i32, bz as i32);
     // El anillo de la construible es la corona de 1 celda alrededor de su footprint.
     let build_reserve = (
-        bx.saturating_sub(1),
-        bz.saturating_sub(1),
-        bx + super::build_rooms::ROOM_CELLS + 1,
-        bz + super::build_rooms::ROOM_CELLS + 1,
+        bx - 1,
+        bz - 1,
+        bx + super::build_rooms::ROOM_CELLS as i32 + 1,
+        bz + super::build_rooms::ROOM_CELLS as i32 + 1,
     );
 
     rects_overlap(plan.reserve_rect(), build_reserve)
@@ -392,7 +419,7 @@ fn overlaps_build_room(plan: &AuthoredRoomPlan, build: &RoomPlan) -> bool {
 /// tiles y volvería el problema por la puerta de atrás.
 fn door_starts(plan: &AuthoredRoomPlan, door: (u8, u8)) -> ([(i32, i32); 2], (i32, i32)) {
     let (side, tile) = door;
-    let (x0, z0) = (plan.cell_x as i32, plan.cell_z as i32);
+    let (x0, z0) = (plan.cell_x, plan.cell_z);
     let (x1, z1) = (x0 + plan.cells_x as i32, z0 + plan.cells_z as i32);
     // El tile del vano, en celdas. Sale del manifiesto —la posición real del boquete del prefab, ya
     // rotada— y no de una cuenta local: derivarlo aquí solo acertaría con giro 0.
@@ -567,27 +594,35 @@ fn carve_authored_shell(
     ceiling: u8,
     carved: &mut Vec<(usize, usize)>,
 ) {
-    let (rx0, rz0, rx1, rz1) = plan.reserve_rect();
+    let reserve = plan.reserve_rect();
+    let (rx0, rz0, rx1, rz1) = reserve;
     let (fx0, fz0) = (plan.cell_x, plan.cell_z);
-    let (fx1, fz1) = (fx0 + plan.cells_x, fz0 + plan.cells_z);
+    let (fx1, fz1) = (fx0 + plan.cells_x as i32, fz0 + plan.cells_z as i32);
 
-    // 1. La reserva entera a macizo genérico: eso deja el MARGEN hecho de una vez.
-    for x in rx0..rx1 {
-        for z in rz0..rz1 {
-            grid.set(x, z, Cell::new(CellType::Wall, 0, 0));
+    // Los tres pasos escriben solo donde la forma ASOMA por este chunk (ADR-084: una sala anclada
+    // en el vecino se talla aquí a trozos). El reparto anillo/margen/interior sigue decidiéndose
+    // contra la forma COMPLETA, así que el trozo que cae aquí es idéntico al que sería si el chunk
+    // fuera más grande — no una sala achicada con su propio borde en la frontera.
+    if let Some((cx0, cz0, cx1, cz1)) = clip_to_chunk(reserve) {
+        // 1. La reserva entera a macizo genérico: eso deja el MARGEN hecho de una vez.
+        for x in cx0..cx1 {
+            for z in cz0..cz1 {
+                grid.set(x, z, Cell::new(CellType::Wall, 0, 0));
+            }
         }
-    }
 
-    // 2. El anillo, el borde exterior de la reserva, a `SealedWall`. Es lo que impide que
-    //    `repair_connectivity` entre a reconectar bolsillos por aquí y agujeree la sala.
-    for x in rx0..rx1 {
-        for z in rz0..rz1 {
-            let on_ring = x < rx0 + RING_CELLS
-                || x >= rx1 - RING_CELLS
-                || z < rz0 + RING_CELLS
-                || z >= rz1 - RING_CELLS;
-            if on_ring {
-                grid.set(x, z, Cell::new(CellType::SealedWall, 0, 0));
+        // 2. El anillo, el borde exterior de la reserva, a `SealedWall`. Es lo que impide que
+        //    `repair_connectivity` entre a reconectar bolsillos por aquí y agujeree la sala.
+        for x in cx0..cx1 {
+            for z in cz0..cz1 {
+                let (ix, iz) = (x as i32, z as i32);
+                let on_ring = ix < rx0 + RING_CELLS as i32
+                    || ix >= rx1 - RING_CELLS as i32
+                    || iz < rz0 + RING_CELLS as i32
+                    || iz >= rz1 - RING_CELLS as i32;
+                if on_ring {
+                    grid.set(x, z, Cell::new(CellType::SealedWall, 0, 0));
+                }
             }
         }
     }
@@ -595,10 +630,12 @@ fn carve_authored_shell(
     // 3. Interior hueco. `Open` y no `Corridor`: es una sala, y el render de sala es el que no mete
     //    la geometría estrecha de pasillo dentro.
     carved.reserve(plan.cells_x * plan.cells_z + TUNNEL_LIMIT);
-    for x in fx0..fx1 {
-        for z in fz0..fz1 {
-            grid.set(x, z, Cell::new(CellType::Open, ceiling, 0));
-            carved.push((x, z));
+    if let Some((cx0, cz0, cx1, cz1)) = clip_to_chunk((fx0, fz0, fx1, fz1)) {
+        for x in cx0..cx1 {
+            for z in cz0..cz1 {
+                grid.set(x, z, Cell::new(CellType::Open, ceiling, 0));
+                carved.push((x, z));
+            }
         }
     }
 }
@@ -717,6 +754,20 @@ mod tests {
             .copied()
     }
 
+    /// Un rect del plan como ÍNDICES de la rejilla, sin recortar.
+    ///
+    /// Vale porque toda sala de estos tests cae entera dentro de su chunk. Una sala multi-chunk
+    /// (ADR-084) tendría coordenadas negativas y esto entraría en pánico al convertir — que es
+    /// justamente el aviso que se quiere si alguien reusa el helper donde no toca.
+    fn as_indices(rect: (i32, i32, i32, i32)) -> (usize, usize, usize, usize) {
+        (
+            usize::try_from(rect.0).expect("rect fuera del chunk"),
+            usize::try_from(rect.1).expect("rect fuera del chunk"),
+            usize::try_from(rect.2).expect("rect fuera del chunk"),
+            usize::try_from(rect.3).expect("rect fuera del chunk"),
+        )
+    }
+
     /// Barre chunks hasta encontrar uno con sala, para no depender de que un chunk concreto gane un
     /// sorteo del 1 %.
     fn find_plan(m: &RoomManifest, seed: u64) -> Option<(i32, i32, AuthoredRoomPlan)> {
@@ -773,10 +824,22 @@ mod tests {
                     };
                     found += 1;
                     let (x0, z0, x1, z1) = p.reserve_rect();
-                    assert!(x0 >= USABLE_LO, "reserva pisa la costura oeste: {x0}");
-                    assert!(z0 >= USABLE_LO, "reserva pisa la costura norte: {z0}");
-                    assert!(x1 <= USABLE_HI + 1, "reserva pisa la costura este: {x1}");
-                    assert!(z1 <= USABLE_HI + 1, "reserva pisa la costura sur: {z1}");
+                    assert!(
+                        x0 >= USABLE_LO as i32,
+                        "reserva pisa la costura oeste: {x0}"
+                    );
+                    assert!(
+                        z0 >= USABLE_LO as i32,
+                        "reserva pisa la costura norte: {z0}"
+                    );
+                    assert!(
+                        x1 <= USABLE_HI as i32 + 1,
+                        "reserva pisa la costura este: {x1}"
+                    );
+                    assert!(
+                        z1 <= USABLE_HI as i32 + 1,
+                        "reserva pisa la costura sur: {z1}"
+                    );
                     assert_eq!(p.cell_x % 2, 0, "footprint a medio tile en x");
                     assert_eq!(p.cell_z % 2, 0, "footprint a medio tile en z");
                 }
@@ -824,8 +887,8 @@ mod tests {
 
         // Una construible plantada justo encima de la esquina de la reserva.
         let build = RoomPlan {
-            tile_x: rx0 / 2,
-            tile_z: rz0 / 2,
+            tile_x: (rx0 / 2) as usize,
+            tile_z: (rz0 / 2) as usize,
             door_side: 0,
         };
         assert!(
@@ -845,8 +908,10 @@ mod tests {
         let carved = carve_authored_into_grid(&mut out.grid, &plan, rules.ceiling_open);
         let door: HashSet<_> = carved.iter().copied().collect();
 
-        let (rx0, rz0, rx1, rz1) = plan.reserve_rect();
-        let (fx0, fz0) = (plan.cell_x, plan.cell_z);
+        // Los planes de estos tests caen enteros dentro del chunk, así que el rect pasa a índice sin
+        // recortar. Uno multi-chunk (ADR-084) no lo haría — ver `clip_to_chunk`.
+        let (rx0, rz0, rx1, rz1) = as_indices(plan.reserve_rect());
+        let (fx0, fz0) = (plan.cell_x as usize, plan.cell_z as usize);
         let (fx1, fz1) = (fx0 + plan.cells_x, fz0 + plan.cells_z);
 
         for x in rx0..rx1 {
@@ -876,7 +941,7 @@ mod tests {
         let carved = carve_authored_into_grid(&mut out.grid, &plan, rules.ceiling_open);
         let door: HashSet<_> = carved.iter().copied().collect();
 
-        let (rx0, rz0, rx1, rz1) = plan.reserve_rect();
+        let (rx0, rz0, rx1, rz1) = as_indices(plan.reserve_rect());
         for x in rx0..rx1 {
             for z in rz0..rz1 {
                 let on_ring = x < rx0 + RING_CELLS
@@ -935,7 +1000,7 @@ mod tests {
             repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
 
             // Arranca desde una celda transitable de FUERA de la reserva.
-            let (rx0, rz0, rx1, rz1) = plan.reserve_rect();
+            let (rx0, rz0, rx1, rz1) = as_indices(plan.reserve_rect());
             let outside = (0..CHUNK_CELLS)
                 .flat_map(|x| (0..CHUNK_CELLS).map(move |z| (x, z)))
                 .find(|&(x, z)| {
@@ -962,8 +1027,9 @@ mod tests {
                 }
             }
 
-            for x in plan.cell_x..plan.cell_x + plan.cells_x {
-                for z in plan.cell_z..plan.cell_z + plan.cells_z {
+            let (fx0, fz0) = (plan.cell_x as usize, plan.cell_z as usize);
+            for x in fx0..fx0 + plan.cells_x {
+                for z in fz0..fz0 + plan.cells_z {
                     assert!(
                         seen[z * CHUNK_CELLS + x],
                         "seed {seed}: la sala de ({cx},{cz}) es inalcanzable en ({x},{z})"
@@ -1102,12 +1168,8 @@ mod tests {
                     for i in 0..rects.len() {
                         for j in (i + 1)..rects.len() {
                             let (x0, z0, x1, z1) = rects[i];
-                            let grown = (
-                                x0.saturating_sub(SEPARATION_CELLS),
-                                z0.saturating_sub(SEPARATION_CELLS),
-                                x1 + SEPARATION_CELLS,
-                                z1 + SEPARATION_CELLS,
-                            );
+                            let sep = SEPARATION_CELLS as i32;
+                            let grown = (x0 - sep, z0 - sep, x1 + sep, z1 + sep);
                             assert!(
                                 !rects_overlap(grown, rects[j]),
                                 "seed {seed} ({cx},{cz}): reservas {:?} y {:?} sin el tile de separacion",
@@ -1192,7 +1254,7 @@ mod tests {
         let first = set.iter().next().expect("al menos una");
         let mut seen: HashSet<(usize, usize)> = HashSet::new();
         let mut queue = VecDeque::new();
-        let start = (first.cell_x, first.cell_z);
+        let start = (first.cell_x as usize, first.cell_z as usize);
         seen.insert(start);
         queue.push_back(start);
         while let Some((x, z)) = queue.pop_front() {
@@ -1214,7 +1276,7 @@ mod tests {
 
         for (i, plan) in set.iter().enumerate().skip(1) {
             assert!(
-                seen.contains(&(plan.cell_x, plan.cell_z)),
+                seen.contains(&(plan.cell_x as usize, plan.cell_z as usize)),
                 "la sala {i} de ({cx},{cz}) no se alcanza a pie desde la primera"
             );
         }
@@ -1496,7 +1558,8 @@ mod tests {
                         }
                         let main = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap();
                         for p in set.iter() {
-                            if comp[p.cell_z * CHUNK_CELLS + p.cell_x] != main {
+                            let (fx, fz) = (p.cell_x as usize, p.cell_z as usize);
+                            if comp[fz * CHUNK_CELLS + fx] != main {
                                 bad += 1;
                             }
                         }

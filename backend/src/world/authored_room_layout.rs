@@ -29,24 +29,31 @@ pub fn carve_authored_into_layout(layout: &mut ChunkLayoutV1, plan: &AuthoredRoo
     let grid = layout.grid_size as usize;
 
     // Todo en TILES de 5 m, que aquí son celdas. El footprint sale de celdas de 2,5 m pares, así que
-    // la división entre 2 es exacta.
-    let (tx0, tz0) = (plan.cell_x / 2, plan.cell_z / 2);
-    let (tw, th) = (plan.cells_x / 2, plan.cells_z / 2);
+    // la división entre 2 es exacta. `div_euclid` porque con una sala anclada en el chunk vecino
+    // (ADR-084) el origen es negativo, y `/` truncaría hacia cero: −1 y 1 caerían en el mismo tile.
+    let (tx0, tz0) = (plan.cell_x.div_euclid(2), plan.cell_z.div_euclid(2));
+    let (tw, th) = ((plan.cells_x / 2) as i32, (plan.cells_z / 2) as i32);
     let (tx1, tz1) = (tx0 + tw, tz0 + th);
 
     // El borde de la reserva: una celda de esta rejilla por lado.
-    let (rx0, rz0) = (tx0.saturating_sub(1), tz0.saturating_sub(1));
+    let (rx0, rz0) = (tx0 - 1, tz0 - 1);
     let (rx1, rz1) = (tx1 + 1, tz1 + 1);
 
-    if tx1 > grid || tz1 > grid || rx1 > grid || rz1 > grid {
-        return; // fuera del layout; no se talla a medias
-    }
+    // Lo que asoma por ESTE layout. Antes se descartaba la sala entera si no cabía; ahora se talla
+    // el trozo, porque una sala multi-chunk no cabe entera en ninguno de los suyos por definición.
+    // Los rects sin recortar se conservan: son los que deciden qué es borde y qué es interior, y
+    // decidirlo contra el recorte le pondría a la sala una pared falsa en la frontera del chunk.
+    let clip = |a: i32, b: i32| {
+        let (lo, hi) = (a.max(0), b.clamp(0, grid as i32));
+        (lo.min(hi) as usize)..(hi as usize)
+    };
 
     // 1. El borde macizo. Va ANTES del interior para que, si alguna vez se tocaran, gane el interior
     //    y la sala no nazca sellada por su propio tallado — mismo orden que en la rejilla fina.
-    for x in rx0..rx1 {
-        for z in rz0..rz1 {
-            let inside = x >= tx0 && x < tx1 && z >= tz0 && z < tz1;
+    for x in clip(rx0, rx1) {
+        for z in clip(rz0, rz1) {
+            let (ix, iz) = (x as i32, z as i32);
+            let inside = ix >= tx0 && ix < tx1 && iz >= tz0 && iz < tz1;
             if inside {
                 continue;
             }
@@ -62,8 +69,8 @@ pub fn carve_authored_into_layout(layout: &mut ChunkLayoutV1, plan: &AuthoredRoo
     //    además de marcarse caminable: `is_cell_walkable` exige las dos cosas, y una columna
     //    heredada de la plantilla dejaría un obstáculo INVISIBLE en mitad de la sala — invisible
     //    porque el render sale de la otra representación, donde el tallado ya la borró.
-    for x in tx0..tx1 {
-        for z in tz0..tz1 {
+    for x in clip(tx0, tx1) {
+        for z in clip(tz0, tz1) {
             if let Some(idx) = layout.cell_index(x, z) {
                 let cell = &mut layout.cells[idx];
                 *cell &= !(CELL_WALL | CELL_PILLAR | CELL_BLOCKED | CELL_PIT);
@@ -81,23 +88,23 @@ pub fn carve_authored_into_layout(layout: &mut ChunkLayoutV1, plan: &AuthoredRoo
     //    representación — punto 9 del ADR, aceptado y anotado.
     for z in tz0..tz1 {
         for bx in (tx0 + 1)..tx1 {
-            layout.set_edge_v(bx, z, EDGE_KIND_OPEN);
+            set_edge_v_at(layout, bx, z, EDGE_KIND_OPEN);
         }
     }
     for x in tx0..tx1 {
         for bz in (tz0 + 1)..tz1 {
-            layout.set_edge_h(x, bz, EDGE_KIND_OPEN);
+            set_edge_h_at(layout, x, bz, EDGE_KIND_OPEN);
         }
     }
 
     // 4. Perímetro del FOOTPRINT a pared: es la pared que trae el prefab.
     for x in tx0..tx1 {
-        layout.set_edge_h(x, tz0, EDGE_KIND_WALL);
-        layout.set_edge_h(x, tz1, EDGE_KIND_WALL);
+        set_edge_h_at(layout, x, tz0, EDGE_KIND_WALL);
+        set_edge_h_at(layout, x, tz1, EDGE_KIND_WALL);
     }
     for z in tz0..tz1 {
-        layout.set_edge_v(tx0, z, EDGE_KIND_WALL);
-        layout.set_edge_v(tx1, z, EDGE_KIND_WALL);
+        set_edge_v_at(layout, tx0, z, EDGE_KIND_WALL);
+        set_edge_v_at(layout, tx1, z, EDGE_KIND_WALL);
     }
 
     // 5. El vano. Tres cosas tienen que pasar a la vez o la sala queda incomunicada para el jugador
@@ -109,7 +116,7 @@ pub fn carve_authored_into_layout(layout: &mut ChunkLayoutV1, plan: &AuthoredRoo
     //    celdas allí. Recalcularlo con otro criterio aquí es exactamente cómo se acaba con una
     //    puerta que se ve en un sitio y se cruza en otro.
     for (side, tile) in plan.doorways() {
-        let off = tile as usize;
+        let off = tile as i32;
         match side {
             0 => open_door(layout, (tx0 + off, tz0 - 1), (tx0 + off, tz0), true), // sur (−z)
             1 => open_door(layout, (tx0 + off, tz1), (tx0 + off, tz1 + 1), true), // norte (+z)
@@ -119,21 +126,39 @@ pub fn carve_authored_into_layout(layout: &mut ChunkLayoutV1, plan: &AuthoredRoo
     }
 }
 
+/// Las dos únicas puertas por las que una coordenada con signo llega a `set_edge_*`. Fuera del
+/// layout no escriben: el trozo de sala que caiga en el chunk vecino es problema de ESE chunk, que
+/// evalúa el mismo plan y talla su parte.
+///
+/// El índice de una arista va de 0 a `grid_size` INCLUSIVE —hay una arista más que celdas por eje—,
+/// mientras que el de la celda que la acompaña va de 0 a `grid_size` exclusive.
+fn set_edge_v_at(layout: &mut ChunkLayoutV1, bx: i32, z: i32, kind: u8) {
+    let g = layout.grid_size as i32;
+    if (0..=g).contains(&bx) && (0..g).contains(&z) {
+        layout.set_edge_v(bx as usize, z as usize, kind);
+    }
+}
+
+fn set_edge_h_at(layout: &mut ChunkLayoutV1, x: i32, bz: i32, kind: u8) {
+    let g = layout.grid_size as i32;
+    if (0..g).contains(&x) && (0..=g).contains(&bz) {
+        layout.set_edge_h(x as usize, bz as usize, kind);
+    }
+}
+
 /// Abre el vano: la celda del túnel a caminable, y las dos aristas que la flanquean.
 ///
 /// `tunnel` es la celda de borde que se atraviesa; `outer` la de más allá, cuya arista compartida
 /// hay que abrir para salir al laberinto. `horizontal` distingue si el vano cruza una arista
 /// horizontal (lados sur/norte) o vertical (oeste/este).
-fn open_door(
-    layout: &mut ChunkLayoutV1,
-    tunnel: (usize, usize),
-    outer: (usize, usize),
-    horizontal: bool,
-) {
-    if let Some(idx) = layout.cell_index(tunnel.0, tunnel.1) {
-        let cell = &mut layout.cells[idx];
-        *cell &= !(CELL_WALL | CELL_PILLAR | CELL_BLOCKED | CELL_PIT);
-        *cell |= CELL_WALKABLE;
+fn open_door(layout: &mut ChunkLayoutV1, tunnel: (i32, i32), outer: (i32, i32), horizontal: bool) {
+    let g = layout.grid_size as i32;
+    if (0..g).contains(&tunnel.0) && (0..g).contains(&tunnel.1) {
+        if let Some(idx) = layout.cell_index(tunnel.0 as usize, tunnel.1 as usize) {
+            let cell = &mut layout.cells[idx];
+            *cell &= !(CELL_WALL | CELL_PILLAR | CELL_BLOCKED | CELL_PIT);
+            *cell |= CELL_WALKABLE;
+        }
     }
 
     // Las dos aristas del túnel, en orden de recorrido: la del perímetro de la sala y la de salida.
@@ -145,11 +170,11 @@ fn open_door(
         (tunnel.0.min(outer.0), tunnel.0.max(outer.0))
     };
     if horizontal {
-        layout.set_edge_h(tunnel.0, a, EDGE_KIND_DOOR);
-        layout.set_edge_h(tunnel.0, b, EDGE_KIND_DOOR);
+        set_edge_h_at(layout, tunnel.0, a, EDGE_KIND_DOOR);
+        set_edge_h_at(layout, tunnel.0, b, EDGE_KIND_DOOR);
     } else {
-        layout.set_edge_v(a, tunnel.1, EDGE_KIND_DOOR);
-        layout.set_edge_v(b, tunnel.1, EDGE_KIND_DOOR);
+        set_edge_v_at(layout, a, tunnel.1, EDGE_KIND_DOOR);
+        set_edge_v_at(layout, b, tunnel.1, EDGE_KIND_DOOR);
     }
 }
 
@@ -233,7 +258,9 @@ mod tests {
             carve_authored_into_layout(&mut layout, &p);
 
             let off = p.doors[0].1 as usize;
-            let (tx0, tz0) = (p.cell_x / 2, p.cell_z / 2);
+            // Los planes de estos tests caen enteros dentro del chunk, así que el paso a índice es
+            // directo. Un plan multi-chunk (ADR-084) no lo sería — ver `clip`.
+            let (tx0, tz0) = ((p.cell_x / 2) as usize, (p.cell_z / 2) as usize);
             let (tx1, tz1) = (tx0 + p.cells_x / 2, tz0 + p.cells_z / 2);
             let doorway = match door_side {
                 0 => (tx0 + off, tz0 - 1),
@@ -267,7 +294,9 @@ mod tests {
             carve_authored_into_layout(&mut layout, &p);
 
             let off = p.doors[0].1 as usize;
-            let (tx0, tz0) = (p.cell_x / 2, p.cell_z / 2);
+            // Los planes de estos tests caen enteros dentro del chunk, así que el paso a índice es
+            // directo. Un plan multi-chunk (ADR-084) no lo sería — ver `clip`.
+            let (tx0, tz0) = ((p.cell_x / 2) as usize, (p.cell_z / 2) as usize);
             let (tx1, tz1) = (tx0 + p.cells_x / 2, tz0 + p.cells_z / 2);
 
             // (celda del tunel, arista del perimetro, arista de salida) por lado.
@@ -315,7 +344,7 @@ mod tests {
         let p = plan(1);
         carve_authored_into_layout(&mut layout, &p);
 
-        let (tx0, tz0) = (p.cell_x / 2, p.cell_z / 2);
+        let (tx0, tz0) = ((p.cell_x / 2) as usize, (p.cell_z / 2) as usize);
         let (tx1, tz1) = (tx0 + p.cells_x / 2, tz0 + p.cells_z / 2);
         for z in tz0..tz1 {
             for bx in (tx0 + 1)..tx1 {
@@ -338,7 +367,7 @@ mod tests {
         carve_authored_into_layout(&mut layout, &p);
 
         let off = p.doors[0].1 as usize;
-        let (tx0, tz0) = (p.cell_x / 2, p.cell_z / 2);
+        let (tx0, tz0) = ((p.cell_x / 2) as usize, (p.cell_z / 2) as usize);
         let (tx1, tz1) = (tx0 + p.cells_x / 2, tz0 + p.cells_z / 2);
 
         for x in tx0..tx1 {
