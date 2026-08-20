@@ -19,7 +19,7 @@ namespace BackroomsSurvival.EditorTools
     /// El tamaño va en TILES de 5 m (<see cref="GridVisualConstants.TileSize"/>), la misma
     /// unidad en la que piensa el mundo — no en metros sueltos ni en celdas de 2.5 m.
     /// </summary>
-    public sealed class RoomAuthoringWindow : EditorWindow
+    public sealed partial class RoomAuthoringWindow : EditorWindow
     {
         private const string RoomFolder = "Assets/Resources/Rooms";
         private const string PoolPath = RoomFolder + "/RoomPool.asset";
@@ -46,7 +46,13 @@ namespace BackroomsSurvival.EditorTools
         private Vector2 _scroll;
 
         private void OnEnable() => SceneView.duringSceneGui += OnSceneGUI;
-        private void OnDisable() => SceneView.duringSceneGui -= OnSceneGUI;
+        private void OnDisable()
+        {
+            SceneView.duringSceneGui -= OnSceneGUI;
+            // Los props de la vista previa mueren con la ventana: son HideFlags.DontSave, así que
+            // no los recogería nadie y quedarían en la escena sin dueño hasta recargar.
+            ClearPropPreviews();
+        }
 
         private void OnGUI()
         {
@@ -122,6 +128,7 @@ namespace BackroomsSurvival.EditorTools
 
                 DrawLoadButton();
                 DrawEditSelectedButton();
+                DrawPropsToolbar();
 
                 GUILayout.FlexibleSpace();
                 if (_previewMesh != null)
@@ -1574,9 +1581,18 @@ namespace BackroomsSurvival.EditorTools
                 // Nace PROP y el tipo se cambia en la primera fila: la tira tiene UN botón de
                 // añadir, y tres botones distintos por tipo eran tres formas de hacer lo mismo.
                 make = () => new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Prop },
-                row = (m, i) => m.kind == RoomDefinition.MarkerKind.Light
-                    ? $"#{i}   Light   ·   range {m.lightRange:0.#} m"
-                    : $"#{i}   {m.kind}   ·   \"{m.tag}\"",
+                row = (m, i) =>
+                {
+                    if (m.kind == RoomDefinition.MarkerKind.Light)
+                        return $"#{i}   Light   ·   range {m.lightRange:0.#} m";
+                    // Un Prop cuya etiqueta no está en el catálogo se dice AQUÍ, en la línea que
+                    // se ve plegada: si no, la única pista es que no aparece nada en la escena, y
+                    // eso se confunde con "todavía no lo he colocado".
+                    string miss = m.kind == RoomDefinition.MarkerKind.Prop
+                        && !string.IsNullOrWhiteSpace(m.tag) && !PropTagResolves(m.tag)
+                        ? "   ·   sin prop en el catálogo" : "";
+                    return $"#{i}   {m.kind}   ·   \"{m.tag}\"{miss}";
+                },
                 arrange = (items, pitch) =>
                 {
                     // Sin margen de pared: una luz o un punto de aparicion pegado a la esquina es
@@ -1617,9 +1633,7 @@ namespace BackroomsSurvival.EditorTools
                     Disabled<RoomDefinition.Marker>(m => m.kind != RoomDefinition.MarkerKind.Light,
                         RowFloat<RoomDefinition.Marker>("Range (m)", m => m.lightRange, (m, v) => m.lightRange = v)),
                     Disabled<RoomDefinition.Marker>(m => m.kind == RoomDefinition.MarkerKind.Light,
-                        RowText<RoomDefinition.Marker>("Tag", m => m.tag, (m, v) => m.tag = v,
-                            "Texto libre que resuelve un catálogo externo -- \"crate\", "
-                            + "\"player\", \"loot_common\"...")),
+                        PropTagRow()),
                 },
             };
 
@@ -2419,6 +2433,9 @@ namespace BackroomsSurvival.EditorTools
             // slider, y crear uno nuevo cada vez fuga memoria hasta el próximo GC.
             _previewMesh = RoomMeshBuilder.Build(_def, _previewMesh);
             _preview.GetComponent<MeshFilter>().sharedMesh = _previewMesh;
+            // En el mismo latido que la malla: es lo que hace que un prop siga a su marcador
+            // mientras se arrastra, sin pulsar nada.
+            RebuildPropPreviews();
             SceneView.RepaintAll();
         }
 
