@@ -37,19 +37,20 @@ Números medidos: **31 salas en 9 km², una cada ~539 m**. 27 tests propios en v
 Ordenado por retorno. Los tres primeros suben la nota del mundo de ~2,7 a ~6-7 sin tocar
 arquitectura; ver §3 para el porqué.
 
-### A1. Varias salas por chunk *(el que más sube la densidad percibida)*
+### A1. Varias salas por chunk — ✅ HECHO (2026-08-20, ADR-083 enmienda 3, wire 39)
 
-Hoy `plan_authored_room` devuelve como mucho UNA. Con salas pequeñas caben varias sin solaparse.
+`plan_authored_rooms` devuelve un `AuthoredRoomSet` (array fijo, `Copy`, tope 3). El wire pasa a
+`authored_rooms: Vec<[u16;4]>` y `WireSchema.Expected` a 39 en el mismo commit.
 
-- **Tocar:** `backend/src/world/grid_gen/authored_rooms.rs` — que devuelva `Vec`/array fijo de
-  planes, con anti-solape entre reservas (ya existe `overlaps_build_room`, generalizarlo a
-  reserva↔reserva). `stitching.rs` y `world/generator.rs` iteran. El wire pasa de
-  `Option<[u16;4]>` a `Vec` ⇒ **bump de wire 38 → 39 y del espejo `WireSchema.Expected` en el
-  MISMO commit**.
-- **Cuidado:** `AuthoredRoomRegistry` guarda una sala por `(cx,cz)`; pasa a lista.
-  `IsAuthoredRoomTile` ya recorre una lista, no cambia.
-- **Verificar:** dos salas en un chunk sin reservas solapadas; ambas alcanzables; chunk sin salas
-  sigue serializando igual que en wire 38.
+**Lo que costó más de lo previsto, y hay que saberlo antes de tocar esto otra vez:** no basta con
+que las reservas no se solapen. **Entre dos reservas va un tile de separación obligatorio**, porque
+dos anillos `SealedWall` espalda contra espalda son infranqueables para `repair_connectivity` y la
+sala nace sellada. Medido: 2 de 14 salas incomunicadas sin separación, 0 de 17 con ella.
+
+**Consecuencia que manda sobre el contenido:** la regla de qué cabe es **`T₁ + T₂ ≤ 3` tiles**.
+Dos salas de 2 × 2 NO conviven. 2+1 y 1+1 sí. Con el pool de hoy (una sala de 5 × 5) sigue saliendo
+una y solo una: **esto es tubería y no cambia nada de lo que se ve hasta que haya salas de 1 × 1 y
+2 × 2 horneadas.**
 
 ### A2. Selección por tipo de zona
 
@@ -69,22 +70,22 @@ vecinos = un "complejo" sin necesidad de multi-chunk.
 - **Tocar:** solo `authored_rooms.rs`. Es una constante y un hash extra.
 - **Verificar:** la sonda `real_manifest_cadence` (ya existe, `--ignored`) da la cadencia real.
 
-### A4. Tinte de zona en la sala
+### A4. Tinte de zona en la sala — ✅ HECHO (2026-08-20)
 
-La sala no recibe el tinte de su capa/zona, así que canta contra el laberinto.
-
-- **Tocar:** `GridChunkBuilder.AuthoredRooms.cs` al instanciar; aplicar `zoneTint` a los renderers
-  del prefab como ya hace `Paint(...)` para el resto.
-- **Cuidado:** no consumir draws del `rng` por tile — ese `rng` decide el jitter del chunk.
+`TintAuthoredRoom` **multiplica** el `_BaseColor` autorado por `zoneTint`, por SUBMALLA (una pieza
+con dos materiales tiene dos colores base). Sustituirlo aplanaría a un color plano toda la paleta
+hecha a mano. No consume tiradas del `rng` por tile.
 
 ### A5. Limpieza de deuda que dejó esta sesión
 
-- **Suelo doble en altura:** la losa del chunk tiene su cara a `y = 0,04` y el suelo del prefab a
-  `y = 0`, así que el jugador pisa la del chunk y el suelo autorado queda 4 cm por debajo. Anotado
-  en ADR-083 enmienda 1, **sin verificar en playtest**. Si molesta: subir el suelo en el horneado,
-  NO tocar el wire.
-- **Dedup de puertas:** dos boquetes que caigan en el mismo tile excavan el mismo túnel dos veces.
-  Inofensivo hoy, feo si alguien autora una pared llena de vanos.
+- ~~**Suelo doble en altura**~~ ✅ **HECHO (2026-08-20) — y no era suelo doble.** El punto 7 de la
+  enmienda 1 ya hace que el bucle de tiles se salte los de la sala, así que el chunk no suela ahí.
+  Lo que quedaba era un **escalón de 4 cm hacia abajo en cada puerta** (`RoomMeshBuilder` autora la
+  cara pisable en `y = 0`, la losa del pasillo la tiene a `0,04`). Corregido subiendo la sala
+  `PropFloorY` al INSTANCIARLA, no en el horneado: sube alineados suelo, paredes y proxy de
+  colisión, sin rehornear un solo prefab. La nota de riesgo del ADR queda desfasada.
+- ~~**Dedup de puertas**~~ ✅ **HECHO (2026-08-20).** Barrido cuadrado sobre array en pila. Test
+  verificado desactivando el dedup: 72 celdas talladas contra 70 distintas.
 - **Salas selladas viejas en el pool:** el exportador las descarta, así que no aparecen, pero
   ocupan sitio y confunden. Borrarlas a mano cuando el contenido nuevo esté validado.
 - **Puerta automática en plantas curvas:** `EnsureDoorway` aproxima. Funciona (busca la faceta más
@@ -162,7 +163,16 @@ amuebla, el otro traza.
    `MaxDoorStepHeight = 0.5`.
 7. **El `rng` de `GridChunkBuilder` es POR TILE**, no por chunk: saltarse un tile entero es seguro,
    saltarse una draw dentro de un tile no.
-8. **Verificar sin arrancar el juego** sale casi gratis: `dump_chunk` (dibuja el chunk en ASCII y
+8. **Una celda abierta NO es una celda comunicada.** La reserva de una sala tapia trozos de
+   laberinto y deja al otro lado muñones ciegos de una o dos celdas que siguen estando "abiertos".
+   Un túnel de puerta que pare ahí deja la sala sellada. Por eso el túnel mide contra
+   `main_component`, y por eso entre dos reservas va un tile. Con UNA sala no se notaba (0 de 11);
+   con varias, 2 de 14.
+9. **Un test de propiedad sobre el primer chunk que aparezca no vale para esto.** Los tests de sala
+   única pasaban en verde mientras el sistema colocaba salas selladas. Lo cazó
+   `probe_unreachable_rooms` (`--ignored`), que CUENTA incomunicadas sobre un barrido de seeds.
+   Cualquier cambio al emplazamiento o al tallado se mide con ella antes de darse por bueno.
+10. **Verificar sin arrancar el juego** sale casi gratis: `dump_chunk` (dibuja el chunk en ASCII y
    el valor que viaja por el wire), `real_manifest_cadence` (cadencia y las 5 salas más cercanas al
    spawn) y `hunt_seed_with_room_near_spawn` (busca una seed con sala pegada al spawn). Los tres
    `--ignored`, en `authored_rooms.rs`.
@@ -171,5 +181,14 @@ amuebla, el otro traza.
 
 ## 5. Qué hacer primero si hay poco tiempo
 
-**Nada de código: hornear 6-8 salas de ≤7×7 tiles y ≤4 m.** El cuello no es la tubería, es que hay
-**una sola sala** en el pool y sale siempre la misma. Es el 80 % del valor y cuesta cero líneas.
+**Nada de código: hornear salas.** El cuello no es la tubería, es que hay **una sola sala** en el
+pool y sale siempre la misma. Es el 80 % del valor y cuesta cero líneas.
+
+Dos medidas, y las dos hacen falta:
+
+| Tamaño | Para qué |
+|---|---|
+| **1 × 1 y 2 × 2 tiles** (5 m y 10 m) | Las únicas de las que caben VARIAS en un chunk. Regla: dos salas conviven si `T₁ + T₂ ≤ 3`. Sin estas, A1 no se ve. |
+| **hasta 7 × 7 tiles** (35 m) | Variedad. 35 m es el techo físico del chunk; por encima es multi-chunk (B2, con ADR). |
+
+Cap de altura en las dos: **≤ 4 m** (`LayerHeight`).
