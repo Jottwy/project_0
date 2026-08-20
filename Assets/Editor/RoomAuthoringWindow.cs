@@ -483,20 +483,32 @@ namespace BackroomsSurvival.EditorTools
                     string kind = f.bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
                     if (!ItemHeader(ref _def.floorHoles, i, "f",
                             $"#{i}  {f.sizeX:0.#} × {f.sizeZ:0.#} m, {kind}")) continue;
+                    f.level = FloorField(f.level);
                     f.position = EditorGUILayout.Vector2Field("Position (XZ)", f.position);
                     f.sizeX = EditorGUILayout.FloatField("Size X (m)", f.sizeX);
                     f.sizeZ = EditorGUILayout.FloatField("Size Z (m)", f.sizeZ);
-                    f.depth = EditorGUILayout.FloatField(
-                        new GUIContent("Depth (m)",
-                            "How far down it goes from the room floor. Con Bottomless activo "
-                            + "sigue mandando: es hasta donde llegan paredes de verdad, con "
-                            + "colision. Mas alla no hay nada, ni suelo ni pared."),
-                        f.depth);
-                    f.bottomless = EditorGUILayout.Toggle(
-                        new GUIContent("Bottomless",
-                            "Sin fondo: mas alla de Depth no hay losa ni colision con la que "
-                            + "aterrizar. Se sigue cayendo -- a otra sala, a otro nivel, o a nada."),
-                        f.bottomless);
+
+                    // En una entreplanta el pozo es un hueco recto que atraviesa la losa, así que
+                    // ni hay profundidad que elegir ni fondo que quitar. Se dibujan apagados y no
+                    // se esconden: desaparecer un campo al cambiar de piso hace pensar que se ha
+                    // perdido el valor, y sigue ahí para cuando vuelva a planta baja.
+                    using (new EditorGUI.DisabledScope(f.level > 0))
+                    {
+                        f.depth = EditorGUILayout.FloatField(
+                            new GUIContent("Depth (m)",
+                                "How far down it goes from the room floor. Con Bottomless activo "
+                                + "sigue mandando: es hasta donde llegan paredes de verdad, con "
+                                + "colision. Mas alla no hay nada, ni suelo ni pared.\n\n"
+                                + "Sin efecto en un pozo de entreplanta: ahí el hueco atraviesa "
+                                + "la losa entera."),
+                            f.depth);
+                        f.bottomless = EditorGUILayout.Toggle(
+                            new GUIContent("Bottomless",
+                                "Sin fondo: mas alla de Depth no hay losa ni colision con la que "
+                                + "aterrizar. Se sigue cayendo -- a otra sala, a otro nivel, o a nada.\n\n"
+                                + "Sin efecto en un pozo de entreplanta."),
+                            f.bottomless);
+                    }
                     f.yawDegrees = EditorGUILayout.Slider("Yaw", f.yawDegrees, -180f, 180f);
                 }
             }
@@ -908,6 +920,8 @@ namespace BackroomsSurvival.EditorTools
         {
             int Clamp(int level) => Mathf.Clamp(level, 0, _def.levels.Length);
             int c = 0;
+            foreach (var h in _def.holes) if (h != null && Clamp(h.level) == storey) c++;
+            foreach (var f in _def.floorHoles) if (f != null && Clamp(f.level) == storey) c++;
             foreach (var p in _def.pillars) if (p != null && Clamp(p.level) == storey) c++;
             foreach (var g in _def.pillarGrids) if (g != null && Clamp(g.level) == storey) c += g.countX * g.countZ;
             foreach (var b in _def.blocks) if (b != null && Clamp(b.level) == storey) c++;
@@ -1190,7 +1204,10 @@ namespace BackroomsSurvival.EditorTools
             if (def.holes != null)
                 foreach (var hole in def.holes)
                 {
-                    if (hole == null || hole.baseY > 0.01f) continue;
+                    // Solo cuenta una puerta de PLANTA BAJA: la ancla es por donde se entra a la
+                    // sala desde el pasillo, y una puerta de piso 1 con baseY 0 está a la altura
+                    // de su entreplanta — anclar ahí pondría la sala pegada a un vano en el aire.
+                    if (hole == null || hole.level > 0 || hole.baseY > 0.01f) continue;
                     side = ((hole.side % n) + n) % n;
                     along = hole.along;
                     break;
@@ -1276,6 +1293,7 @@ namespace BackroomsSurvival.EditorTools
                     string where = hole.spanCorners ? $"from wall {hole.side}" : $"on wall {hole.side}";
                     if (!ItemHeader(ref _def.holes, i, "h", $"#{i}  {kind} {where}")) continue;
 
+                    hole.level = FloorField(hole.level);
                     hole.side = EditorGUILayout.IntSlider(
                         new GUIContent("Wall"), hole.side, 0, Mathf.Max(0, _def.sides - 1));
                     hole.along = EditorGUILayout.Slider(

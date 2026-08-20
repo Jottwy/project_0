@@ -301,7 +301,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (def.floorHoles != null)
                 foreach (var f in def.floorHoles)
                 {
-                    if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f
+                    // `level > 0` no perfora este suelo: perfora la losa de su piso, y de eso se
+                    // encarga AddLevelBoxes. Mismo reparto que en la malla.
+                    if (f == null || f.level > 0 || f.sizeX <= 0.01f || f.sizeZ <= 0.01f
                         || (!f.bottomless && f.depth <= 0.01f)) continue;
                     pits.Add(XZBounds(RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees)));
                 }
@@ -327,6 +329,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 foreach (var s in def.StairsReaching(top, minCeil))
                     holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
                         s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees)));
+                // Los pozos abiertos EN esta losa, exactamente los mismos que abre la malla.
+                foreach (var f in def.PitsThroughSlab(top, minCeil))
+                    holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
+                        f.position, f.sizeX, f.sizeZ, f.yawDegrees)));
 
                 AddSlabWithHoles(boxes, bb, top - t * 0.5f, t, holes);
             }
@@ -396,7 +402,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (def.floorHoles == null) return;
             foreach (var f in def.floorHoles)
             {
-                if (f == null || f.sizeX <= 0.01f || f.sizeZ <= 0.01f) continue;
+                // Solo los de planta baja cuelgan del suelo de la sala con paredes y fondo; el de
+                // una entreplanta es un hueco recto en su losa y no tiene ni lo uno ni lo otro.
+                if (f == null || f.level > 0 || f.sizeX <= 0.01f || f.sizeZ <= 0.01f) continue;
                 if (!f.bottomless && f.depth <= 0.01f) continue;
 
                 // El fondo de la pared: el propio suelo del pozo si lo tiene, o hasta donde

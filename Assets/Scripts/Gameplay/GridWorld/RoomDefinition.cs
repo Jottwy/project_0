@@ -180,8 +180,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// <summary>Centro a lo largo de la pared: 0 = una esquina, 1 = la otra.</summary>
             [Range(0f, 1f)] public float along = 0.5f;
 
-            /// <summary>Altura del borde INFERIOR sobre el suelo, en metros. 0 = puerta.</summary>
+            /// <summary>Altura del borde INFERIOR sobre el suelo, en metros. 0 = puerta.
+            /// Se mide desde el suelo de SU piso (<see cref="level"/>), no desde el de la sala.</summary>
             public float baseY;
+
+            /// <summary>
+            /// Piso al que pertenece la abertura: 0 = planta baja, k = sobre la k-ésima losa
+            /// contando desde abajo EN ALTURA. Solo mueve el ORIGEN de <see cref="baseY"/>; el
+            /// recorte por arriba lo sigue poniendo el techo de la sala, porque la pared es una
+            /// superficie continua y no se parte por pisos — una ventana del piso 1 se sigue
+            /// abriendo en la misma pared que la puerta de abajo.
+            ///
+            /// Existe para que subir una entreplanta se lleve sus ventanas con ella. Antes había
+            /// que rehacer a mano el `baseY` de cada una, y olvidarse de una dejaba una ventana a
+            /// la altura de las rodillas del piso de arriba.
+            /// </summary>
+            [Min(0)] public int level;
 
             /// <summary>En METROS, no en fracción: se piensa en "una puerta de 1,2 m".</summary>
             public float width = 1.6f;
@@ -455,6 +469,19 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// una losa en la que se aterriza y unas paredes que no se pueden atravesar de lado.
             /// </summary>
             public bool bottomless;
+
+            /// <summary>
+            /// En qué SUELO se abre: 0 = el de la sala (lo de siempre), k = la losa de la
+            /// entreplanta k-ésima contando desde abajo en altura.
+            ///
+            /// OJO, no es solo un desplazamiento vertical como en <see cref="WallHole.level"/>:
+            /// con k ≥ 1 el pozo deja de ser una caja que cuelga y pasa a ser un hueco que
+            /// atraviesa la losa de lado a lado, igual que el que abre una escalera al llegar.
+            /// Una losa tiene UN grosor y nada debajo que forrar, así que <see cref="depth"/> y
+            /// <see cref="bottomless"/> dejan de tener sentido y se ignoran — la herramienta los
+            /// apaga en cuanto eliges piso.
+            /// </summary>
+            [Min(0)] public int level;
         }
 
         /// <summary>
@@ -623,6 +650,30 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
+        /// Los pozos que perforan la losa cuyo canto SUPERIOR está a <paramref name="slabTop"/>.
+        /// El gemelo de <see cref="StairsReaching"/> y por el mismo motivo: malla y colliders
+        /// tienen que abrir el mismo hueco o se ve un pozo por el que no se cae.
+        ///
+        /// Se casa por ALTURA y no por índice de array porque el piso de un pozo se cuenta en
+        /// altura (<see cref="FloorHole.level"/>), igual que todo lo demás; el orden en que estén
+        /// las losas en la lista no significa nada.
+        ///
+        /// Los de piso 0 NO salen por aquí: esos son los de siempre, cajas colgando del suelo de
+        /// la sala, y los resuelve el camino del suelo.
+        /// </summary>
+        public IEnumerable<FloorHole> PitsThroughSlab(float slabTop, float minCeiling)
+        {
+            if (floorHoles == null) yield break;
+            foreach (var f in floorHoles)
+            {
+                if (f == null || f.level <= 0) continue;
+                if (f.sizeX <= 0.01f || f.sizeZ <= 0.01f) continue;
+                if (Mathf.Abs(StoreyBaseY(f.level, minCeiling) - slabTop) > 1e-3f) continue;
+                yield return f;
+            }
+        }
+
+        /// <summary>
         /// Un boquete ya resuelto sobre una pared concreta: fracción a lo largo (u) y metros de
         /// altura (y). Vive aquí y no dentro de un generador porque lo usan LOS DOS —la malla y
         /// los colliders— y si cada uno tuviera el suyo podrían divergir, que es exactamente el
@@ -746,6 +797,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             if (perim < 1e-4f) return;
 
             float t = Mathf.Max(0.001f, wallThickness);
+            // El suelo de cada piso, para el origen de `baseY`. Se saca del MISMO contorno que ya
+            // recibe la función en vez de pedirlo por parámetro: los dos llamadores calculan su
+            // `minCeil` así, y derivarlo aquí quita la posibilidad de que uno pase otro número.
+            float minCeil = MinCeilingOver(inner);
 
             foreach (var hole in holes)
             {
@@ -756,8 +811,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 int side = ((hole.side % n) + n) % n;
                 if (len[side] < 1e-4f) continue;
 
-                float y0 = Mathf.Clamp(hole.baseY, yFloor, yCeilCap);
-                float y1 = Mathf.Clamp(hole.baseY + hole.height, yFloor, yCeilCap);
+                // `baseY` cuenta desde el suelo de SU piso. El recorte por arriba sigue siendo el
+                // techo de la sala: la pared no se parte por pisos, así que una ventana alta del
+                // piso de arriba se recorta contra el mismo dintel que todo lo demás.
+                float storeyBase = StoreyBaseY(hole.level, minCeil);
+                float y0 = Mathf.Clamp(storeyBase + hole.baseY, yFloor, yCeilCap);
+                float y1 = Mathf.Clamp(storeyBase + hole.baseY + hole.height, yFloor, yCeilCap);
                 if (y1 - y0 < 1e-4f) continue;
 
                 if (!hole.spanCorners)

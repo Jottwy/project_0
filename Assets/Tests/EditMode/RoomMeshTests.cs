@@ -999,6 +999,71 @@ namespace BackroomsSurvival.Tests
                 "a grated window has no collider -- walks straight through the bars");
         }
 
+        /// <summary>
+        /// Una abertura con piso mide su altura desde el suelo de ESE piso. Lo que compra: subir
+        /// la entreplanta se lleva sus ventanas con ella en vez de dejarlas a la altura de las
+        /// rodillas del piso de arriba.
+        ///
+        /// Se comprueba contra el COLLIDER y no contra el modelo porque lo que importa es que el
+        /// hueco esté donde se puede pasar: en la pared de arriba abierto, y la de abajo maciza
+        /// justo donde antes estaba la puerta.
+        /// </summary>
+        [Test]
+        public void A_door_on_a_level_cuts_the_wall_over_its_slab()
+        {
+            var d = Box(4, 4);
+            d.heightMeters = 8f; // sitio de sobra para dos pisos y el dintel de los dos
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.holes = new[] { Door(0, 0.5f) };
+            d.holes[0].level = 1;
+
+            // Sin AssertRoom, y el motivo importa porque parece un fallo y no lo es. Una puerta de
+            // piso con baseY 0 arranca EXACTAMENTE en el canto de su losa, y los cortes de altura
+            // de las paredes son globales a las cuatro: las tres paredes sin hueco acaban con una
+            // arista horizontal justo donde ya se encuentran el canto y la tapa de la losa. Son
+            // CUATRO caras colineales — dos costuras correctas, una del muro y otra de la losa —,
+            // no una arista suelta. La malla sigue siendo estanca (0 aristas abiertas); lo que no
+            // aguanta es el "ninguna arista repetida" de AssertRoom, que es más estricto que
+            // estanco. Mismo apaño y mismo motivo que en Definition_survives_a_json_round_trip.
+            var mesh = RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "door on level 1: triangulation fell back");
+            Assert.IsTrue(WindingOk(mesh, out int bw), $"door on level 1: {bw} triangles face the wrong way");
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 mid = WallMid(d, 0, 0.5f);
+            float slab = d.StoreyBaseY(1, d.MinCeilingOver(d.InnerContour()));
+
+            Assert.IsFalse(Inside(cb, new Vector3(mid.x, slab + 1.1f, mid.y)),
+                "the doorway on level 1 is blocked -- baseY did not move to its storey");
+            Assert.IsTrue(Inside(cb, new Vector3(mid.x, 1.1f, mid.y)),
+                "a door on level 1 still cuts the GROUND floor wall");
+        }
+
+        /// <summary>
+        /// Un pozo con piso perfora la losa de su entreplanta, no el suelo de la sala. Es el hueco
+        /// recto de siempre —el mismo que abre una escalera al llegar— y por eso el suelo de abajo
+        /// tiene que quedar entero: si se abrieran los dos, se caería hasta el sótano por un
+        /// agujero que se dibujó en el primer piso.
+        /// </summary>
+        [Test]
+        public void A_pit_on_a_level_opens_its_slab_and_not_the_room_floor()
+        {
+            var d = Box(4, 4);
+            d.heightMeters = 8f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
+            d.floorHoles[0].level = 1;
+            AssertRoom("pit on level 1", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            float slab = d.StoreyBaseY(1, d.MinCeilingOver(d.InnerContour()));
+
+            Assert.IsFalse(Inside(cb, new Vector3(1f, slab - 0.1f, 1f)),
+                "the level slab is solid over the pit");
+            Assert.IsTrue(Inside(cb, new Vector3(1f, -0.1f, 1f)),
+                "a pit on level 1 punched the room floor too");
+        }
+
         /// <summary>Un pozo SIN FONDO con profundidad casi nula sigue siendo un pozo abierto (la
         /// profundidad "no tiene efecto" con bottomless, según su propio tooltip): la losa del
         /// suelo tiene que abrirse igual que si tuviera 2,5 m.</summary>
@@ -1341,8 +1406,10 @@ namespace BackroomsSurvival.Tests
             d.irregularity = 0.4f; d.irregularitySeed = 5;
             d.holes = new[] { Door(0, 0.5f) };
             d.holes[0].spanCorners = true;
+            d.holes[0].level = 1;
             d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 2.5f, 0f) };
             d.floorHoles[0].bottomless = true;
+            d.floorHoles[0].level = 1;
             d.pillars = new[] { new RoomDefinition.Pillar { position = new Vector2(3f, 1f), size = 0.9f, sides = 8 } };
             d.stairs = new[] { new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f } };
             d.levels = new[] { new RoomDefinition.Level { height = 3f } };
@@ -1363,7 +1430,9 @@ namespace BackroomsSurvival.Tests
             Assert.AreEqual(d.irregularitySeed, clone.irregularitySeed);
             Assert.AreEqual(d.holes.Length, clone.holes.Length);
             Assert.AreEqual(d.holes[0].spanCorners, clone.holes[0].spanCorners);
+            Assert.AreEqual(d.holes[0].level, clone.holes[0].level);
             Assert.AreEqual(d.floorHoles[0].bottomless, clone.floorHoles[0].bottomless);
+            Assert.AreEqual(d.floorHoles[0].level, clone.floorHoles[0].level);
             Assert.AreEqual(d.pillars[0].sides, clone.pillars[0].sides);
             Assert.AreEqual(d.stairs[0].steps, clone.stairs[0].steps);
             Assert.AreEqual(d.levels.Length, clone.levels.Length);

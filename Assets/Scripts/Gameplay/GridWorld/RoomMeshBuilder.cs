@@ -412,7 +412,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var list = new List<Vector2[]>();
             if (def.floorHoles == null) return list;
             foreach (var f in def.floorHoles)
-                if (IsValidPit(f) && include(f))
+                if (IsRoomFloorPit(f) && include(f))
                 {
                     float grow = growFor(f);
                     list.Add(BoxCorners(f.position, f.sizeX + grow * 2f, f.sizeZ + grow * 2f, f.yawDegrees));
@@ -420,12 +420,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             return list;
         }
 
-        /// <summary>La MISMA condición en los dos sitios que recorren <c>floorHoles</c>: aquí y en
-        /// <see cref="AddPits"/>. Si se separaran, un pozo podría colarse en una lista y no en la
-        /// otra, y los índices de <c>pitsIn</c>/<c>pitsOut</c> dejarían de corresponder al pozo
-        /// que tocan.</summary>
-        private static bool IsValidPit(RoomDefinition.FloorHole f) =>
-            f != null && f.sizeX > 0.01f && f.sizeZ > 0.01f && (f.bottomless || f.depth > 0.01f);
+        /// <summary>La MISMA condición en los dos sitios que recorren <c>floorHoles</c> para el
+        /// SUELO DE LA SALA: aquí y en <see cref="AddPits"/>. Si se separaran, un pozo podría
+        /// colarse en una lista y no en la otra, y los índices de <c>pitsIn</c>/<c>pitsOut</c>
+        /// dejarían de corresponder al pozo que tocan.
+        ///
+        /// El filtro por piso va DENTRO por ese mismo motivo: un pozo de entreplanta no cuelga del
+        /// suelo de la sala, atraviesa su losa y lo resuelve <see cref="AddLevelSlab"/>. Dejarlo
+        /// fuera de una de las dos listas y dentro de la otra es exactamente el desfase que este
+        /// predicado existe para impedir.</summary>
+        private static bool IsRoomFloorPit(RoomDefinition.FloorHole f) =>
+            f != null && f.level <= 0 && f.sizeX > 0.01f && f.sizeZ > 0.01f
+            && (f.bottomless || f.depth > 0.01f);
 
         /// <summary>
         /// El pozo: una caja hueca colgando bajo la losa.
@@ -454,7 +460,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             int pIn = 0, pOut = 0;
             foreach (var f in def.floorHoles)
             {
-                if (!IsValidPit(f)) continue;
+                if (!IsRoomFloorPit(f)) continue;
                 var rin = pitsIn[pIn++];
 
                 var rout = pitsOut[pOut++];
@@ -541,6 +547,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             _levelHoles.Clear();
             foreach (var s in def.StairsReaching(top, minCeil))
                 _levelHoles.Add(BoxCorners(s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees));
+            // Un pozo abierto EN esta losa: el mismo hueco recto que abre una escalera, porque la
+            // losa tiene un grosor y nada debajo que forrar. Por eso `depth`/`bottomless` no
+            // pintan nada aquí — ver RoomDefinition.FloorHole.level.
+            foreach (var f in def.PitsThroughSlab(top, minCeil))
+                _levelHoles.Add(BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees));
 
             AddCap(contour, bottom, Vector3.down, SubmeshCeiling, null, _levelHoles);
             AddCap(contour, top, Vector3.up, SubmeshFloor, null, _levelHoles);
