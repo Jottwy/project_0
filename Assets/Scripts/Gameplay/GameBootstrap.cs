@@ -14,7 +14,7 @@ namespace BackroomsSurvival.Gameplay
         {
             //EnsureComponent<ChunkRenderer>();
             //EnsureComponent<EntityRenderer>();
-            EnsureComponent<ItemRenderer>();
+            //EnsureComponent<ItemRenderer>(); // items v1 desactivados: cubo placeholder sin arte propio.
             EnsureComponent<WorldInteractor>();
             //EnsureComponent<SanityEffects>();
             EnsureComponent<TeleportationVFX>();

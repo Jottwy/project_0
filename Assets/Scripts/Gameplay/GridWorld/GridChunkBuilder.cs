@@ -319,10 +319,27 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // redundant (coplanar with the ceiling) → suppress it to avoid z-fighting.
             bool roofSlab = isTopLayer && !(styled && cfg.showCeiling);
 
+            // ADR-083 enmienda 1 punto 7 — las salas autoradas se planifican ANTES de recorrer los
+            // tiles: dentro de una, la sala manda sobre suelo, techo y paredes, y el bucle tiene que
+            // saberlo para no pintar encima. Es puro y no toca el `rng`.
+            PlanAuthoredRooms(chunkX, chunkZ, layerIndex, _roomPlanScratch);
+            bool anyAuthoredRoom = _roomPlanScratch.Count > 0;
+
             for (int tz = 0; tz < Tiles; tz++)
             {
                 for (int tx = 0; tx < Tiles; tx++)
                 {
+                    // Dentro de una sala autorada el generador NO pinta NADA: ni losa, ni techo, ni
+                    // panel, ni columna. Todo eso lo trae el prefab, y pintarlo también aquí es lo
+                    // que dejaba dos suelos, dos techos y las ventanas del laberinto atravesando las
+                    // paredes de la sala.
+                    //
+                    // Salir por aquí es seguro porque el `rng` es POR TILE (`TileSeed`), no una
+                    // secuencia de chunk: saltarse un tile entero no corre el tinte de ninguno de
+                    // los demás.
+                    if (anyAuthoredRoom && IsAuthoredRoomTile(_roomPlanScratch, tx, tz))
+                        continue;
+
                     // One deterministic RNG per tile drives the ±8% HSV-Value jitter so
                     // surface tints vary tile-to-tile WITHOUT a material per tile.
                     System.Random rng = styled ? new System.Random(TileSeed(chunkX, chunkZ, tx, tz)) : null;
@@ -400,6 +417,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     byte edges = 0;
                     if ((b & BackendBitS) != 0) edges |= EdgeNorth; // backend S (+Z) → +z panel
                     if ((b & BackendBitE) != 0) edges |= EdgeEast;  // backend E (+X) → +x panel
+
+                    // Un panel vive en la frontera ENTRE dos tiles, y cada tile emite solo los
+                    // suyos (+Z y +X). Los muros sur y oeste de una sala autorada, por tanto, los
+                    // emitiría el tile de FUERA — que no es tile de sala y no lo ha filtrado el
+                    // `continue` de arriba. Sin esto, la sala sale con pared doble por dos de sus
+                    // cuatro lados: la del prefab y la del generador, en el mismo plano.
+                    if (anyAuthoredRoom)
+                    {
+                        if (IsAuthoredRoomTile(_roomPlanScratch, tx, tz + 1)) edges &= unchecked((byte)~EdgeNorth);
+                        if (IsAuthoredRoomTile(_roomPlanScratch, tx + 1, tz)) edges &= unchecked((byte)~EdgeEast);
+                    }
+
                     if (edges != 0)
                     {
                         // ADR-035: `roomZones` baja entero, no un RoomType ya resuelto —
@@ -468,10 +497,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // motivo que la escalera: los props tienen que ver el espacio ya reservado o
             // spawnearían dentro de la geometría autorada. Se instancian después del plan
             // para no meter nada entre el plan y su consumidor.
-            PlanAuthoredRooms(walls, roomZones, chunkX, chunkZ, stairPlan, _roomPlanScratch);
+            // Ya planificadas antes del bucle de tiles (ver ahí el porqué); aquí solo se instancian.
             if (_roomPlanScratch.Count > 0)
                 PlaceAuthoredRooms(root.transform, _roomPlanScratch);
-            if (styled && stairPlan.valid)
+            // La escalera se planifica contra `roomZones`, que el tallado de la sala autorada NO
+            // toca — los rects de Fase 4 siguen siendo los mismos aunque el backend haya vaciado ese
+            // sitio. Sin esta guarda, escalera y sala se instancian las dos en el mismo tile y se
+            // atraviesan. Antes lo cubría el propio planificador de salas, cuando era él quien
+            // elegía el sitio; ahora lo elige el backend, que no sabe de escaleras de oficina.
+            if (styled && stairPlan.valid
+                && !IsAuthoredRoomTile(_roomPlanScratch, stairPlan.tx, stairPlan.tz))
             {
                 // Tinte SIN pasar por JitterValue, misma disciplina que PlaceLintels: el
                 // `rng` de esta clase es por tile y su secuencia decide el jitter HSV de
@@ -701,31 +736,21 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         // encabezado de esta clase: el orden de inicialización de estáticos entre ficheros
         // de un partial es indefinido.
 
-        private const uint RoomSaltPick = 0x524F4F4DU; // "ROOM" — qué sala del pool y con qué giro
-
         // El pool es un asset OPCIONAL: sin `Resources/Rooms/RoomPool.asset` (o vacío) la
-        // función entera queda inerte y el chunk se construye exactamente como antes de
-        // Fase 2. Se carga una vez por sesión — Resources.Load recorre el índice y esto
-        // corre por chunk. `_roomPoolLoaded` distingue "aún no lo he buscado" de "lo busqué
-        // y no hay", que es el caso normal hasta que se hornee la primera sala.
+        // función entera queda inerte y el chunk se construye sin salas autoradas. Se carga
+        // una vez por sesión — Resources.Load recorre el índice y esto corre por chunk.
+        // `_roomPoolLoaded` distingue "aún no lo he buscado" de "lo busqué y no hay".
         private static RoomPool _roomPool;
         private static bool _roomPoolLoaded;
 
-        // Tabla (entrada del pool, giro) → (footprint ya girado, lado al que mira la puerta).
-        // Depende SOLO del pool: ni del chunk ni de la zona. Antes se rehacía entera —
-        // `pool.rooms.Length` × 4 `Quaternion.Euler` — por cada zona sellada de cada chunk.
-        // `_roomVariantsSource` es la salvaguarda de editor: hornear una sala reemplaza el
-        // array `rooms` del asset (ArrayUtility.Add), así que comparar la REFERENCIA detecta
-        // cualquier reescritura del pool sin esperar a una recarga de dominio.
-        private static readonly List<RoomVariant> _roomVariants = new List<RoomVariant>();
-        private static RoomPool.RoomEntry[] _roomVariantsSource;
+        // Una sola vez por sesión: un pool desparejado del manifiesto del backend afecta a
+        // TODOS los chunks con sala, y sin este latch la consola se ahoga.
+        private static bool _loggedAuthoredRoomMismatch;
 
         // Scratch de PlanAuthoredRooms/PlaceAuthoredRooms, reutilizado: se construye una
         // lista por chunk y los chunks se construyen de uno en uno (mismo patrón y misma
         // no-reentrancia que _propScratch).
         private static readonly List<RoomPlan> _roomPlanScratch = new List<RoomPlan>();
-        private static readonly List<(int entry, float yaw)> _roomFitScratch
-            = new List<(int, float)>();
 
         // Pieza E — how far from the tile centre a wall-aligned prop backs off, in
         // metres. The wall panel sits at ±Ts/2 (2.5 m), so 1.9 leaves ~0.6 m for the

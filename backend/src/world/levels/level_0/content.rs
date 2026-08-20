@@ -318,4 +318,8 @@ pub(crate) fn apply_structure_content(
             ];
         }
     }
+
+    // Items v1 desactivados a petición (mismo motivo que spawn_resources en
+    // generator.rs): se renderizaban como cubos placeholder. Entities intactas.
+    chunk.items.clear();
 }

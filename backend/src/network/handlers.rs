@@ -99,6 +99,7 @@ impl NetworkManager {
             PacketPayload::Handshake {
                 player_name,
                 version,
+                room_manifest_digest,
             } => {
                 info!(
                     "Received handshake from addr={} sender_id={} name={}",
@@ -112,7 +113,7 @@ impl NetworkManager {
                     self.peers.len(),
                     self.peer_ids()
                 );
-                self.handle_handshake(pkt.addr, sender_id, player_name, version)
+                self.handle_handshake(pkt.addr, sender_id, player_name, version, room_manifest_digest)
                     .await
             }
 
@@ -727,9 +728,19 @@ impl NetworkManager {
         sender_id: PeerId,
         player_name: String,
         version: String,
+        room_manifest_digest: String,
     ) -> Option<NetworkEvent> {
         if !self.is_host {
             // Only the host accepts handshakes.
+            //
+            // NETPROBE (diagnóstico temporal): este `return None` era mudo. Un backend arrancado
+            // con CONNECT_TO puesto (fuga de entorno heredado de Unity, ver el comentario de
+            // `LaunchBackendProcess`) queda con is_host=false, escucha en 7778 y descarta TODOS
+            // los handshakes sin dejar rastro — indistinguible desde fuera de "no llegó nada".
+            warn!(
+                "NETPROBE event=handshake_dropped reason=not_host self_id={} sender_id={} from={} name={} version={}",
+                self.local_id, sender_id, from_addr, player_name, version
+            );
             return None;
         }
 
@@ -746,6 +757,44 @@ impl NetworkManager {
             );
             let mismatch = PacketPayload::Disconnect {
                 reason: format!("wire schema mismatch: host={expected_version} joiner={version}"),
+            };
+            self.send_raw_to(from_addr, &mismatch).await;
+            return None;
+        }
+
+        // ADR-083 enmienda 1, punto 4 — el pool de salas autoradas tiene que ser el MISMO en los dos
+        // builds. No viaja por la red: sale de un fichero que va dentro del build, y cada peer
+        // genera el mundo por su cuenta desde el seed. Con pools distintos, uno pinta una sala donde
+        // el otro pinta otra y nadie se entera hasta que alguien se choca con nada.
+        //
+        // Rechazo RUIDOSO, nunca degradación en silencio: lo prohíbe el ADR. Mismo mecanismo y mismo
+        // sitio que el de versión de wire, y por delante del registro del peer.
+        let expected_digest = crate::world::grid_gen::active_manifest()
+            .map(|m| m.digest.clone())
+            .unwrap_or_default();
+        if room_manifest_digest != expected_digest {
+            warn!(
+                "MPTRACE step=B2 event=host_reject_handshake_room_manifest_mismatch self_id={} sender_id={} endpoint={} host_digest={} joiner_digest={}",
+                self.local_id,
+                sender_id,
+                from_addr,
+                if expected_digest.is_empty() { "<sin manifiesto>" } else { &expected_digest },
+                if room_manifest_digest.is_empty() { "<sin manifiesto>" } else { &room_manifest_digest }
+            );
+            let mismatch = PacketPayload::Disconnect {
+                reason: format!(
+                    "room manifest mismatch: host={} joiner={}",
+                    if expected_digest.is_empty() {
+                        "<none>"
+                    } else {
+                        &expected_digest
+                    },
+                    if room_manifest_digest.is_empty() {
+                        "<none>"
+                    } else {
+                        &room_manifest_digest
+                    }
+                ),
             };
             self.send_raw_to(from_addr, &mismatch).await;
             return None;

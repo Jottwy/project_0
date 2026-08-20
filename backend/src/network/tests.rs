@@ -1158,6 +1158,7 @@ async fn handshake_is_rejected_when_the_session_is_full() {
         0,
         "TooMany".into(),
         crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+        String::new(),
     )
     .await;
 
@@ -1183,6 +1184,7 @@ async fn handshake_is_accepted_when_there_is_room() {
         0,
         "Joiner".into(),
         crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+        String::new(),
     )
     .await;
 
@@ -1198,8 +1200,14 @@ async fn handshake_is_rejected_on_wire_schema_mismatch() {
     let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let newcomer: SocketAddr = "127.0.0.1:9502".parse().unwrap();
 
-    host.handle_handshake(newcomer, 0, "OldBuild".into(), "0.1.0".into())
-        .await;
+    host.handle_handshake(
+        newcomer,
+        0,
+        "OldBuild".into(),
+        "0.1.0".into(),
+        String::new(),
+    )
+    .await;
 
     assert_eq!(
         host.real_peer_count(),
@@ -2253,5 +2261,37 @@ async fn a_silent_relay_only_entry_is_reaped_by_the_heartbeat_timeout() {
     assert!(
         joiner.peers.is_empty(),
         "la entrada silenciosa desaparece del mapa del joiner"
+    );
+}
+
+/// ADR-083 enmienda 1, punto 4 y verificacion (g): un joiner cuyo pool de salas autoradas no case
+/// con el del host se RECHAZA, no se degrada en silencio.
+///
+/// Sin esto, los dos peers generan el mundo desde el mismo seed pero con catalogos distintos: uno
+/// pinta una sala donde el otro pinta otra, y el fallo no se ve hasta que alguien se choca con nada.
+#[tokio::test]
+async fn handshake_is_rejected_on_room_manifest_mismatch() {
+    let mut host = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let newcomer: SocketAddr = "127.0.0.1:9503".parse().unwrap();
+
+    // El host de este test no tiene manifiesto (sin variable de entorno), asi que su digest es
+    // vacio; el joiner dice traer uno. Es justo el caso de dos builds desparejados.
+    host.handle_handshake(
+        newcomer,
+        0,
+        "OtroPool".into(),
+        crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+        "digest-de-otro-build".into(),
+    )
+    .await;
+
+    assert_eq!(
+        host.real_peer_count(),
+        0,
+        "un pool desparejado no puede quedar registrado"
+    );
+    assert!(
+        !host.peers.values().any(|p| p.addr == newcomer),
+        "el rechazado no puede quedar registrado"
     );
 }

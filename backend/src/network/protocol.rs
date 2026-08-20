@@ -424,6 +424,21 @@ pub enum PacketPayload {
     Handshake {
         player_name: String,
         version: String,
+        /// ADR-083 enmienda 1, punto 4 — digest del manifiesto de salas autoradas del joiner.
+        ///
+        /// Cada peer genera el mundo por su cuenta a partir del seed, y las salas autoradas salen
+        /// de un fichero que viaja en el BUILD, no por la red. Dos builds con pools distintos
+        /// derivarían salas distintas en el mismo sitio: uno pinta la sala 3 donde el otro pinta la
+        /// 7, y el fallo es invisible hasta que alguien se choca con nada. Mismo motivo por el que
+        /// `phantom_density_scale` viaja en el `HandshakeAck`.
+        ///
+        /// Cadena vacía = ese peer no tiene manifiesto (mundo sin salas autoradas), que es un
+        /// estado válido mientras AMBOS lo estén.
+        ///
+        /// Añadido al final con `serde(default)`: un peer anterior a esto lo omite y decodifica a
+        /// vacío, igual que el precedente de `phantom_density_scale`.
+        #[serde(default)]
+        room_manifest_digest: String,
     },
     HandshakeAck {
         assigned_id: u16,
@@ -1098,6 +1113,7 @@ mod tests {
         let payload = PacketPayload::Handshake {
             player_name: "TestPlayer".into(),
             version: "0.1.0".into(),
+            room_manifest_digest: "deadbeef".into(),
         };
         let header = PacketHeader::new(payload.type_code(), 1, 1, 100);
         let data = encode_packet(&header, &payload);
@@ -1108,9 +1124,11 @@ mod tests {
             PacketPayload::Handshake {
                 player_name,
                 version,
+                room_manifest_digest,
             } => {
                 assert_eq!(player_name, "TestPlayer");
                 assert_eq!(version, "0.1.0");
+                assert_eq!(room_manifest_digest, "deadbeef");
             }
             _ => panic!("wrong variant"),
         }
@@ -1441,6 +1459,7 @@ mod tests {
         let p = PacketPayload::Handshake {
             player_name: "x".into(),
             version: "0.1.0".into(),
+            room_manifest_digest: String::new(),
         };
         assert_eq!(p.type_code(), PacketType::Handshake as u16);
 

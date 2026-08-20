@@ -215,6 +215,9 @@ namespace BackroomsSurvival.Net
             // punto es lo que garantiza que la puerta de construcción conozca cualquier sala que el
             // jugador tenga cargada — sin depender de que un consumidor concreto esté suscrito.
             BackroomsSurvival.Gameplay.BuildRoomRegistry.Observe(data);
+            // ADR-083 enmienda 1: y la sala autorada, por el mismo motivo — el constructor del chunk
+            // la pide en cada reconstrucción, mucho después de que este mensaje haya pasado.
+            BackroomsSurvival.Gameplay.AuthoredRoomRegistry.Observe(data);
 
             ChunkDataHandler[] snapshot;
             lock (_chunkDataListeners) snapshot = _chunkDataListeners.ToArray();

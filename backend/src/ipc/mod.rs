@@ -328,6 +328,23 @@ pub struct GridChunkData {
     /// `sprays`: un chunk sin habitación cuesta exactamente lo que costaba antes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_room: Option<[u8; 3]>,
+    /// ADR-083 enmienda 1 — la SALA AUTORADA de este chunk, si la tiene:
+    /// `[tile_x, tile_z, entry, quarter]`. `tile_x`/`tile_z` en TILES de 5 m dentro
+    /// del chunk; `entry` es el índice en `RoomPool.rooms` (y en el manifiesto) que
+    /// dice qué prefab instanciar; `quarter` el giro en cuartos de vuelta.
+    ///
+    /// Viaja por el wire en vez de re-derivarse en el cliente, por el mismo motivo
+    /// que `build_room`: el sorteo usa `StdRng` —ChaCha— y replicarlo en C# sería
+    /// mantener dos generadores en fase. Antes de esto el cliente SÍ sorteaba, con
+    /// su propio hash y emparejando footprints contra las zonas selladas; ese camino
+    /// se retira aquí, y con él la posibilidad de que cliente y servidor discrepen
+    /// sobre qué sala hay en un sitio.
+    ///
+    /// Campo ADITIVO y omitido cuando el chunk no tiene sala, mismo patrón que
+    /// `room_zones`, `sprays` y `build_room`: un chunk sin sala cuesta exactamente lo
+    /// que costaba en wire 37.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authored_room: Option<[u16; 4]>,
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the
@@ -585,6 +602,55 @@ pub fn decode<T: for<'de> Deserialize<'de>>(body: &[u8]) -> Result<T, rmp_serde:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn bare_chunk() -> GridChunkData {
+        GridChunkData {
+            cx: 0,
+            cz: 0,
+            layer: 0,
+            walls: [[0u8; 10]; 10],
+            room_zones: vec![],
+            sprays: vec![],
+            build_room: None,
+            authored_room: None,
+        }
+    }
+
+    /// ADR-083 enmienda 1, verificación (f): un chunk SIN sala autorada tiene que costar
+    /// exactamente lo que costaba en wire 37. Si la clave apareciera aunque fuese como `nil`, cada
+    /// chunk del mundo pagaría el campo — y son la inmensa mayoría.
+    #[test]
+    fn a_chunk_without_an_authored_room_omits_the_key_entirely() {
+        let body = rmp_serde::to_vec_named(&bare_chunk()).unwrap();
+        let haystack = String::from_utf8_lossy(&body);
+        assert!(
+            !haystack.contains("authored_room"),
+            "la clave viaja en un chunk que no tiene sala"
+        );
+    }
+
+    /// Y cuando SÍ la hay, sobrevive el viaje con sus cuatro campos en orden.
+    #[test]
+    fn an_authored_room_round_trips() {
+        let mut chunk = bare_chunk();
+        chunk.authored_room = Some([4, 6, 2, 3]);
+        let body = rmp_serde::to_vec_named(&chunk).unwrap();
+        let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
+        assert_eq!(decoded.authored_room, Some([4, 6, 2, 3]));
+    }
+
+    /// Un backend nuevo tiene que poder leer un chunk viejo sin el campo: es lo que hace que
+    /// `#[serde(default)]` no sea decorativo.
+    #[test]
+    fn a_wire_37_chunk_still_decodes() {
+        let mut chunk = bare_chunk();
+        chunk.authored_room = Some([1, 1, 0, 0]);
+        // Serializa SIN el campo, que es como lo escribía wire 37.
+        let old = bare_chunk();
+        let body = rmp_serde::to_vec_named(&old).unwrap();
+        let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
+        assert_eq!(decoded.authored_room, None);
+    }
 
     /// ADR-046 Fase 1 — the byte contract with `MsgPackWriter.WriteBin`, pinned against a
     /// HAND-BUILT frame rather than a round-trip through this same serializer. A round-trip

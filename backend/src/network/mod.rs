@@ -410,6 +410,13 @@ impl NetworkManager {
         let socket = Arc::new(UdpSocket::bind(addr).await?);
         let local_addr = socket.local_addr()?;
         info!("UDP bound on {local_addr}");
+        // NETPROBE (diagnóstico temporal): el puerto REAL, junto al rol. `NET_PORT` puede no ser
+        // el que se pidió — `NetworkInitializer.SelectLaunchConfig` salta al siguiente puerto libre
+        // si el tecleado está ocupado, y el joiner remoto seguiría apuntando al que ya no escucha.
+        info!(
+            "NETPROBE event=socket_bound requested_port={port} actual_local_addr={local_addr} role={} self_id={local_id}",
+            if is_host { "host" } else { "joiner" }
+        );
         info!(
             "MPTRACE step=P event=network_state_init reason=bind self_id_before=<none> self_id_after={} peer_count_before=0 peer_count_after=0 endpoint={} role={}",
             local_id,
@@ -529,6 +536,11 @@ impl NetworkManager {
             // Reuses the IPC wire schema counter — see the doc-comment on
             // `crate::ipc::server::WIRE_SCHEMA_VERSION` for why this is one counter, not two.
             version: crate::ipc::server::WIRE_SCHEMA_VERSION.to_string(),
+            // ADR-083 enmienda 1 punto 4: el pool de salas viaja en el build, no por la red, así
+            // que esto es lo único que delata dos builds con pools distintos.
+            room_manifest_digest: crate::world::grid_gen::active_manifest()
+                .map(|m| m.digest.clone())
+                .unwrap_or_default(),
         };
         let header = PacketHeader::new(payload.type_code(), self.local_id, 0, self.timestamp());
         let data = encode_packet(&header, &payload);
@@ -784,13 +796,53 @@ impl NetworkManager {
     }
 }
 
+/// DIAGNÓSTICO TEMPORAL (NETPROBE) — traza de recepción cruda para el test host/join por WAN.
+/// Grep `NETPROBE` para quitarlo entero. Existe para separar dos fallos que hoy se ven igual
+/// desde fuera: "no llegó ni un datagrama" (router/CGNAT/firewall) frente a "llegó y lo tiró el
+/// código" (decode, versión de wire, rol equivocado). No filtra nada: se emite ANTES de decodificar.
+///
+/// Volumen: primer datagrama de CADA origen a `info!` siempre; el resto de ese mismo origen, como
+/// mucho uno cada 5 s. Con un peer real conectado son ~60 paquetes/s y sin la limitación esto
+/// ahogaría el log. Las CAÍDAS (tamaño corto, decode fallido) se emiten siempre — son raras y son
+/// justo la señal que interesa.
+const NETPROBE_THROTTLE: Duration = Duration::from_secs(5);
+
 /// Background task: read UDP datagrams, parse, and forward to the NetworkManager.
 async fn receive_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<IncomingPacket>) {
     let mut buf = vec![0u8; protocol::MAX_PACKET_SIZE];
+    let local = socket
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| "<unknown>".to_string());
+    // NETPROBE: origen → último instante logueado. Sin capacidad reservada a propósito: en una
+    // sesión sana son 1-3 entradas (host + joiners); si crece, ese crecimiento ES el hallazgo.
+    let mut netprobe_seen: HashMap<SocketAddr, Instant> = HashMap::new();
+    let mut netprobe_total: u64 = 0;
     loop {
         match socket.recv_from(&mut buf).await {
             Ok((len, addr)) => {
+                // NETPROBE — punto de recepción crudo. Nada por encima de esta línea puede
+                // rechazar un paquete: si el datagrama tocó la NIC y el firewall lo dejó pasar,
+                // aparece aquí sí o sí.
+                netprobe_total += 1;
+                let first_from_addr = !netprobe_seen.contains_key(&addr);
+                let should_log = first_from_addr
+                    || netprobe_seen
+                        .get(&addr)
+                        .map(|last| last.elapsed() >= NETPROBE_THROTTLE)
+                        .unwrap_or(true);
+                if should_log {
+                    netprobe_seen.insert(addr, Instant::now());
+                    info!(
+                        "NETPROBE event=datagram_received local={local} from={addr} bytes={len} first_from_this_addr={first_from_addr} total_datagrams={netprobe_total}"
+                    );
+                }
+
                 if len < HEADER_SIZE {
+                    // NETPROBE: antes se descartaba en silencio absoluto.
+                    warn!(
+                        "NETPROBE event=datagram_dropped reason=shorter_than_header local={local} from={addr} bytes={len} header_size={HEADER_SIZE}"
+                    );
                     continue;
                 }
                 match decode_packet(&buf[..len]) {
@@ -805,6 +857,13 @@ async fn receive_loop(socket: Arc<UdpSocket>, tx: mpsc::Sender<IncomingPacket>) 
                         }
                     }
                     Err(e) => {
+                        // NETPROBE: subido de `debug!` a `warn!`. En `info` (el filtro por defecto
+                        // que NetworkInitializer inyecta con RUST_LOG=info) esta línea era invisible,
+                        // así que un paquete que SÍ llegaba y no decodificaba se veía exactamente
+                        // igual que un paquete que nunca llegó.
+                        warn!(
+                            "NETPROBE event=datagram_dropped reason=decode_failed local={local} from={addr} bytes={len} error={e}"
+                        );
                         debug!("Failed to decode packet from {addr}: {e}");
                     }
                 }

@@ -2041,6 +2041,131 @@ namespace BackroomsSurvival.EditorTools
         /// malla generada en memoria no sobrevive a la recarga de dominio, y el prefab se quedaría
         /// apuntando a nada — el objeto invisible de siempre.
         /// </summary>
+        /// <summary>
+        /// Altura del vano que se añade solo. Menos que la sala, para que quede dintel — un hueco
+        /// que llega al techo no se lee como puerta, se lee como pared que falta.
+        /// </summary>
+        private const float AutoDoorwayHeight = 2.6f;
+
+        /// <summary>
+        /// Ancho del vano que se añade solo, en metros. El túnel que excava el backend mide un TILE
+        /// (5 m), así que 4 deja media jamba a cada lado y el vano se lee como puerta en vez de como
+        /// boquete del ancho del pasillo.
+        /// </summary>
+        private const float AutoDoorwayWidth = 4f;
+
+        /// <summary>
+        /// Garantiza que la sala tenga por dónde entrarse. No hace nada si ya hay una abertura a ras
+        /// de suelo; si no la hay, añade una al modelo.
+        ///
+        /// **Va centrada en un TILE de 5 m, no en la pared.** Es lo que la ata al túnel que excava el
+        /// backend, que trabaja en tiles: una puerta centrada en la pared de una sala de 4 tiles cae
+        /// justo en la frontera entre dos tiles, y el pasillo llega medio contra el muro. `room_0`
+        /// era exactamente ese caso.
+        ///
+        /// El tile elegido es `tiles / 2`, la MISMA cuenta que hace el backend, y el lado es el 0
+        /// (+z) — el mismo al que apunta por defecto el ancla de puerta.
+        ///
+        /// Solo se sabe alinear con planta poligonal de 4 lados y esquinada, que es la rectangular.
+        /// En cualquier otra forma la pared no es paralela a la retícula y no hay tile con el que
+        /// alinear: se pone en mitad de la pared y se avisa.
+        /// </summary>
+        private static void EnsureDoorway(RoomDefinition def)
+        {
+            def.holes ??= System.Array.Empty<RoomDefinition.WallHole>();
+            var existing = def.InnerContour();
+            foreach (var h in def.holes)
+            {
+                // Una reja no es una puerta, y una ventana tampoco: tienen que dejar pasar a ras de
+                // suelo. Mismo criterio con el que el exportador decidirá por dónde entra el pasillo.
+                if (h == null || h.baseY > 0.05f || h.grateBars != 0 || h.width < 1f)
+                    continue;
+
+                // Hay puerta declarada, pero eso no significa que EXISTA. Un vano más ancho que su
+                // propia pared se recorta contra ella y puede desaparecer entero: es lo que pasa en
+                // una planta redonda, donde cada faceta mide poco más de un metro. `spanCorners` lo
+                // arregla haciendo que el hueco avance por el contorno en vez de morir en su arista.
+                if (!h.spanCorners && existing != null && existing.Length >= 3)
+                {
+                    int s = ((h.side % existing.Length) + existing.Length) % existing.Length;
+                    float edgeLen = (existing[(s + 1) % existing.Length] - existing[s]).magnitude;
+                    if (edgeLen < h.width)
+                    {
+                        h.spanCorners = true;
+                        Debug.LogWarning($"[RoomAuthoringWindow] La puerta del lado {s} medía " +
+                                         $"{h.width:0.#} m sobre una pared de {edgeLen:0.#} m: se " +
+                                         "recortaba hasta desaparecer. Se le ha activado " +
+                                         "`spanCorners` para que doble la esquina y sea un vano real.");
+                    }
+                }
+                return;
+            }
+
+            var contour = def.InnerContour();
+            if (contour == null || contour.Length < 3)
+                return; // planta degenerada; el horneado ya la rechaza por otro lado
+
+            // El sitio DONDE tiene que caer la puerta, decidido por la retícula del mundo y no por
+            // la forma de la sala: el borde +z del footprint, a la altura del centro del tile
+            // `tilesX / 2`. Es la MISMA cuenta con la que el backend excava el túnel, así que es lo
+            // que hace que pasillo y vano se encuentren.
+            float halfX = def.tilesX * 5f * 0.5f;
+            float halfZ = def.tilesZ * 5f * 0.5f;
+            var target = new Vector2(-halfX + (Mathf.Max(1, def.tilesX) / 2 + 0.5f) * 5f, halfZ);
+
+            // La arista del contorno cuyo punto medio cae más cerca de ese sitio. En una planta
+            // rectangular es el muro +z entero; en una redonda de 64 lados es la facetita que le
+            // toca. Buscarla en vez de fijar "el lado 0" es lo que evita que la puerta salga por
+            // donde el pasillo no va.
+            int best = 0;
+            float bestDist = float.MaxValue;
+            for (int i = 0; i < contour.Length; i++)
+            {
+                Vector2 mid = Vector2.Lerp(contour[i], contour[(i + 1) % contour.Length], 0.5f);
+                float d = (mid - target).sqrMagnitude;
+                if (d < bestDist)
+                {
+                    bestDist = d;
+                    best = i;
+                }
+            }
+
+            // `along` ajusta DENTRO de la arista elegida, que en una planta rectangular es larga y
+            // en una redonda es corta. Se proyecta el objetivo sobre ella y se recorta.
+            Vector2 p0 = contour[best], p1 = contour[(best + 1) % contour.Length];
+            Vector2 edge = p1 - p0;
+            float along = edge.sqrMagnitude > 1e-6f
+                ? Mathf.Clamp01(Vector2.Dot(target - p0, edge) / edge.sqrMagnitude)
+                : 0.5f;
+
+            // Una arista corta (planta redonda o poligonal fina) NO puede alojar una puerta de 4 m:
+            // el hueco se recorta contra su propia pared y desaparece entero — que es justo lo que
+            // pasó con la primera sala de 64 lados. `spanCorners` hace que el vano avance por el
+            // CONTORNO y se coma los vértices que le queden dentro, que es la única forma de abrir
+            // un hueco de tamaño humano en una pared curva.
+            float width = Mathf.Min(AutoDoorwayWidth, def.tilesX * 5f);
+            bool needsSpan = edge.magnitude < width;
+
+            var doorway = new RoomDefinition.WallHole
+            {
+                side = best,
+                along = along,
+                baseY = 0f,
+                level = 0,
+                width = width,
+                height = Mathf.Min(AutoDoorwayHeight, Mathf.Max(1f, def.heightMeters - 0.4f)),
+                grateBars = 0,
+                spanCorners = needsSpan,
+            };
+            ArrayUtility.Add(ref def.holes, doorway);
+
+            Debug.LogWarning($"[RoomAuthoringWindow] La sala no tenía ninguna abertura a ras de " +
+                             $"suelo: se le ha añadido una puerta de {width:0.#} m en el lado {best} " +
+                             $"de {contour.Length}, alineada con el tile por el que entra el pasillo" +
+                             (needsSpan ? " y doblando esquina (pared corta)." : ".") +
+                             " Sin ella el mundo la coloca como una caja sellada.");
+        }
+
         internal static bool SaveGeneratedRoom(RoomDefinition def, out string message)
         {
             if (def == null || def.tilesX < 1 || def.tilesZ < 1 || def.heightMeters <= 0f)
@@ -2058,6 +2183,12 @@ namespace BackroomsSurvival.EditorTools
                           "in the Scene view and try again.";
                 return false;
             }
+
+            // ADR-083 enmienda 1: una sala SIN abertura a ras de suelo es una caja sellada, y el
+            // mundo no puede abrirla — el backend excava el pasillo hasta la pared, pero la pared es
+            // geometría del prefab y él no la toca. Se le pone una puerta aquí, antes de construir
+            // la malla, para que malla y colisión salgan ya con el hueco.
+            EnsureDoorway(def);
 
             BackroomsEditorFolders.EnsureFolder("Assets/Resources");
             BackroomsEditorFolders.EnsureFolder(RoomFolder);
@@ -2168,6 +2299,13 @@ namespace BackroomsSurvival.EditorTools
                 EditorUtility.SetDirty(pool);
                 AssetDatabase.SaveAssets();
                 AssetDatabase.Refresh();
+
+                // ADR-083 enmienda 1: el manifiesto que lee el backend sale del horneado, siempre.
+                // ESTA es la ruta que usa la herramienta; sin la reexportación aquí, el pool queda
+                // más nuevo que el manifiesto y el backend pide una sala que el cliente ya no tiene
+                // — el fallo exacto que `GridChunkBuilder` caza con "pool y manifiesto desparejados".
+                if (!RoomManifestExporter.Export(out string manifestMessage))
+                    Debug.LogWarning($"[RoomAuthoringWindow] Manifiesto NO exportado — {manifestMessage}");
 
                 message = $"Saved {id} ({def.tilesX}×{def.tilesZ} tiles, {def.sides} sides) → " +
                           $"{prefabPath}. {mesh.vertexCount} verts, {boxes.Count} collider box(es), " +
@@ -2504,6 +2642,14 @@ namespace BackroomsSurvival.EditorTools
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
+
+            // ADR-083 enmienda 1: el manifiesto que lee el backend sale del horneado, nunca a mano.
+            // Va aquí y no en un paso aparte porque un pool y un manifiesto desparejados son
+            // exactamente el fallo que el digest del handshake existe para cazar — y cazarlo en el
+            // handshake es tarde. Si falla, se avisa y el horneado sigue siendo válido: la sala está
+            // guardada, lo único que falta es reexportar (Backrooms ▸ Export Room Manifest).
+            if (!RoomManifestExporter.Export(out string manifestMessage))
+                Debug.LogWarning($"[RoomAuthoringWindow] Manifiesto NO exportado — {manifestMessage}");
 
             if (boxes.Length == 0)
                 Debug.LogWarning($"[RoomAuthoringWindow] {id} has NO collision boxes — it will be " +

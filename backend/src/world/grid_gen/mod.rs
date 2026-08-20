@@ -11,23 +11,27 @@
 //! 4. Generación 100 % determinista — misma seed → mismo mundo.
 //! 5. `ceiling_height` nunca supera `MAX_CEILING_UNITS`; capas limpias sin desbordamiento.
 
+mod authored_rooms;
 mod build_rooms;
 mod cell;
 mod collision;
 mod generator;
 mod layer_rules;
 mod nav;
+mod room_manifest;
 mod stitching;
 mod tile_walls;
 
 #[cfg(test)]
 mod tests;
 
+pub use authored_rooms::*;
 pub use build_rooms::*;
 pub use cell::*;
 pub use collision::*;
 pub use generator::*;
 pub use layer_rules::*;
 pub use nav::*;
+pub use room_manifest::*;
 pub use stitching::*;
 pub use tile_walls::*;

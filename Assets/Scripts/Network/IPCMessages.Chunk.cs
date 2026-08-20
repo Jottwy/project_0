@@ -375,6 +375,23 @@ namespace BackroomsSurvival.Net
         public const int BuildRoomTiles = 3;
 
         /// <summary>
+        /// ADR-083 enmienda 1 — la SALA AUTORADA de este chunk, o `false` si no tiene.
+        /// `authoredRoomTileX`/`Z` son el tile (5 m) de la esquina de menor x/z de su FOOTPRINT (no
+        /// de la reserva), `authoredRoomEntry` el índice en `RoomPool.rooms` que dice qué prefab
+        /// instanciar, y `authoredRoomQuarter` el giro en cuartos de vuelta (0..3).
+        ///
+        /// Mismo criterio que `build_room` y por el mismo motivo. Hasta wire 37 el cliente elegía la
+        /// sala por su cuenta, emparejando footprints contra las zonas selladas del backend; ese
+        /// camino se retiró aquí. El servidor ya vació y cerró el hueco antes de mandar esto, así
+        /// que el prefab cae exactamente donde hay sitio para él.
+        /// </summary>
+        public bool hasAuthoredRoom;
+        public int authoredRoomTileX;
+        public int authoredRoomTileZ;
+        public int authoredRoomEntry;
+        public int authoredRoomQuarter;
+
+        /// <summary>
         /// Root-tagged message (ServerMessage::ChunkData, "type":"chunk_data") — reads the
         /// REMAINING <paramref name="remainingPairs"/> pairs after IPCClient.Dispatch already
         /// consumed the map header and the "type" pair.
@@ -444,6 +461,22 @@ namespace BackroomsSurvival.Net
                         else if (bi == 2) m.buildRoomDoorSide = v;
                     }
                     m.hasBuildRoom = n >= 2;
+                }
+                else if (MsgPackReader.Is(k, "authored_room"))
+                {
+                    // [tile_x, tile_z, entry, quarter]. Misma disciplina que `build_room`: clave
+                    // aditiva, ausente en la inmensa mayoría de los chunks, y se consume TODO lo que
+                    // venga aunque sean más de cuatro para no descolocar el cursor.
+                    int n = r.ReadArrayHeader();
+                    for (int ai = 0; ai < n; ai++)
+                    {
+                        int v = (int)r.ReadInt();
+                        if (ai == 0) m.authoredRoomTileX = v;
+                        else if (ai == 1) m.authoredRoomTileZ = v;
+                        else if (ai == 2) m.authoredRoomEntry = v;
+                        else if (ai == 3) m.authoredRoomQuarter = v;
+                    }
+                    m.hasAuthoredRoom = n >= 4;
                 }
                 else r.Skip();
             }

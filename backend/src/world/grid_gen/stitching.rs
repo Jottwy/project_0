@@ -49,20 +49,55 @@ pub fn generate_chunk_layer(
     // (`GridGenChunkCache`) salen los dos de esta funcion, asi que tallarla una vez es lo unico que
     // garantiza que vean la MISMA habitacion. Va detras del cosido a proposito — ver `carve_into_grid`.
     if layer_index >= 0 && layer_index <= u8::MAX as i32 {
-        if let Some(plan) = super::build_rooms::room_in_chunk(
+        let build_plan = super::build_rooms::room_in_chunk(
             world_seed,
             chunk_coord.0,
             chunk_coord.1,
             layer_index as u8,
-        ) {
-            let carved =
-                super::build_rooms::carve_into_grid(&mut out.grid, &plan, rules.ceiling_open);
+        );
+
+        let mut carved: Vec<(usize, usize)> = Vec::new();
+
+        if let Some(plan) = build_plan {
+            carved.extend(super::build_rooms::carve_into_grid(
+                &mut out.grid,
+                &plan,
+                rules.ceiling_open,
+            ));
             // Segunda pasada de reparacion, obligatoria: el anillo de la habitacion puede haber
             // dejado un trozo del laberinto incomunicado, y sin esto el chunk sale con zonas
             // inalcanzables (es lo que rompio cinco tests de conectividad al primer intento). El
             // anillo es SealedWall, asi que esta pasada no puede perforarlo; `carved` protege el
             // interior y el tunel de la puerta de acabar sellados si el bolsillo fuera irreparable.
             repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
+        }
+
+        // ADR-083 enmienda 1 — la sala autorada. Va DESPUÉS de la construible y le cede el sitio si
+        // se solapan: la construible es una regla de juego validada y la autorada es decorado.
+        //
+        // Aquí, y no en `generate_layer`, por la misma razón que la construible: el cosido de bordes
+        // ya ha terminado, así que el laberinto contra el que la puerta tiene que engancharse está
+        // en su forma definitiva.
+        //
+        // La reparación de abajo protege las celdas de LAS DOS salas acumuladas en `carved`, no solo
+        // las suyas: sellar un bolsillo irreparable no puede llevarse por delante el interior o el
+        // túnel de la habitación construible, que ya estaba tallada y protegida en su propia pasada.
+        if let Some(manifest) = super::room_manifest::active_manifest() {
+            if let Some(plan) = super::authored_rooms::plan_authored_room(
+                manifest,
+                world_seed,
+                chunk_coord.0,
+                chunk_coord.1,
+                layer_index as u8,
+                build_plan.as_ref(),
+            ) {
+                carved.extend(super::authored_rooms::carve_authored_into_grid(
+                    &mut out.grid,
+                    &plan,
+                    rules.ceiling_open,
+                ));
+                repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
+            }
         }
     }
 

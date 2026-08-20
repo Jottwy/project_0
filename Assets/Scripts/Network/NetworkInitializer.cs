@@ -76,7 +76,17 @@ namespace BackroomsSurvival.Net
                 gameObject.AddComponent<SessionEndHandler>();
         }
 
-        public void StartAsHost(string playerName, int worldSeed = 42)
+        /// <summary>
+        /// Seed por defecto del mundo. 42 es el valor de producción.
+        ///
+        /// Para ir a ver una sala autorada sin cruzar medio kilómetro de laberinto, cámbialo por una
+        /// seed que ponga una junto al spawn: las encuentra el test
+        /// `hunt_seed_with_room_near_spawn` (con la 157 hay una a 28 m). Volver a 42 antes de
+        /// commitear — una seed de playtest colada en un commit cambia el mundo de todos.
+        /// </summary>
+        private const int DefaultWorldSeed = 42;
+
+        public void StartAsHost(string playerName, int worldSeed = DefaultWorldSeed)
         {
             StartAsHost(playerName, worldSeed, false);
         }
@@ -89,12 +99,12 @@ namespace BackroomsSurvival.Net
         /// to <c>world_{port}.json</c>, making a changed port look like a lost world.
         /// A distinct name makes that mistake impossible to re-introduce.
         /// </summary>
-        public void StartAsHostOnPort(string playerName, int hostListenPort, int worldSeed = 42)
+        public void StartAsHostOnPort(string playerName, int hostListenPort, int worldSeed = DefaultWorldSeed)
         {
             StartAsHost(playerName, worldSeed, false, hostListenPort);
         }
 
-        public void StartAsAutoSolo(string playerName, int worldSeed = 42)
+        public void StartAsAutoSolo(string playerName, int worldSeed = DefaultWorldSeed)
         {
             StartAsHost(playerName, worldSeed, true, null);
         }
@@ -137,6 +147,7 @@ namespace BackroomsSurvival.Net
                 ["RUST_LOG"] = "info",
             };
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
+            AddRoomManifestEnv(env);
 
             // Fase 6B (Slice 1): debug-spawn the robapieles on the host. The backend reads
             // DEBUG_SPAWN_PHANTOM from its env (inherited from Unity via UseShellExecute=false);
@@ -189,6 +200,7 @@ namespace BackroomsSurvival.Net
                 ["RUST_LOG"] = "info",
             };
             AddIpcAddressEnv(env, config.IpcAddress, config.IpcPort);
+            AddRoomManifestEnv(env);
 
             LogLaunchConfig(
                 sessionMode,
@@ -632,6 +644,30 @@ namespace BackroomsSurvival.Net
             env["IPC_ADDR"] = $"{address}:{port}";
         }
 
+        /// <summary>
+        /// ADR-083 enmienda 1 — le dice al backend dónde está el manifiesto de salas autoradas
+        /// (<c>room_manifest.json</c>, escrito por el horneado en StreamingAssets).
+        ///
+        /// Va por variable de entorno y no por una ruta que el backend deduzca solo: en el editor el
+        /// ejecutable vive en <c>backend/target/release/</c> y el manifiesto en
+        /// <c>Assets/StreamingAssets/</c>, dos sitios sin ninguna relación de ruta estable, y en un
+        /// build la cosa cambia otra vez. Config explícita por lanzamiento, nunca heredada — mismo
+        /// criterio que <c>WORLD_SEED</c> o <c>IPC_PORT</c>.
+        ///
+        /// Si el fichero no está, NO se declara la variable y el backend arranca sin salas
+        /// autoradas. Es un estado válido a propósito: un proyecto sin pool horneado tiene que poder
+        /// jugarse igual.
+        /// </summary>
+        private static void AddRoomManifestEnv(Dictionary<string, string> env)
+        {
+            string path = System.IO.Path.Combine(Application.streamingAssetsPath, "room_manifest.json");
+            if (System.IO.File.Exists(path))
+                env["BACKROOMS_ROOM_MANIFEST"] = path;
+            else
+                Debug.LogWarning($"[NetworkInitializer] Sin manifiesto de salas en {path} — el mundo " +
+                                 "saldrá sin salas autoradas. Ejecuta Backrooms ▸ Export Room Manifest.");
+        }
+
         // ADR-056: a new session is starting, so clear SessionEndHandler's once-per-session latch.
         // The latch is set on the first session_ended and cleared only on the paths where the
         // teardown FAILED — on the successful path it stays set, which is what stops the duplicate
@@ -655,6 +691,7 @@ namespace BackroomsSurvival.Net
         private static void ResetSessionScopedRegistries()
         {
             BackroomsSurvival.Gameplay.BuildRoomRegistry.ResetForNewConnection();
+            BackroomsSurvival.Gameplay.AuthoredRoomRegistry.ResetForNewConnection();
             BackroomsSurvival.Gameplay.ZoneRegistry.ResetForNewSession();
         }
 

@@ -134,11 +134,10 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     } else {
         Vec::new()
     };
-    let items = if layer == 0 {
-        spawn_resources(world_seed, pos, &mut rng)
-    } else {
-        Vec::new()
-    };
+    // Items v1 (Metal/Circuit/Battery/...) desactivados a petición: se
+    // renderizaban como cubos placeholder sin arte propio. Ver content.rs para
+    // el mismo apagado en el loot fijo de estructuras.
+    let items = Vec::new();
     let mut layout = build_chunk_layout(template_id, rotation);
     // Expansion chunks (unlike generate_initial_structure_chunks_inner's fixed
     // structures) have no StructureV0 to derive a zone from — mirror the same
@@ -150,9 +149,25 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // ADR-081 enmienda 5: la habitacion construible tambien se talla en el layout de COLISION, con
     // el mismo `RoomPlan` que ya talló la rejilla fina de `grid_gen`. Tallar solo aquella daría
     // paredes que se ven y se atraviesan; tallar solo esta, paredes invisibles que frenan.
-    if let Some(plan) = crate::world::grid_gen::room_in_chunk(world_seed, pos.0, pos.1, layer as u8)
-    {
+    let build_plan = crate::world::grid_gen::room_in_chunk(world_seed, pos.0, pos.1, layer as u8);
+    if let Some(plan) = build_plan {
         crate::world::build_room_layout::carve_into_layout(&mut layout, &plan);
+    }
+
+    // ADR-083 enmienda 1: y lo mismo con la sala autorada, con el MISMO plan puro que talló la
+    // rejilla fina. Va después de la construible y le cede el sitio si se solapan, igual que allí —
+    // `plan_authored_room` recibe el plan de la construible justo para eso.
+    if let Some(manifest) = crate::world::grid_gen::active_manifest() {
+        if let Some(plan) = crate::world::grid_gen::plan_authored_room(
+            manifest,
+            world_seed,
+            pos.0,
+            pos.1,
+            layer as u8,
+            build_plan.as_ref(),
+        ) {
+            crate::world::authored_room_layout::carve_authored_into_layout(&mut layout, &plan);
+        }
     }
 
     let mut chunk = Chunk {
@@ -277,9 +292,7 @@ pub(crate) fn generate_structure_chunk(
 
 // MIG-5e: content-spawn helpers and match block moved to
 // levels/level_0/content.rs.
-use crate::world::levels::level_0::content::{
-    apply_structure_content, spawn_entities, spawn_resources,
-};
+use crate::world::levels::level_0::content::{apply_structure_content, spawn_entities};
 
 // MIG-5f: V30A showcase layout + inter-layer volume builders moved to
 // levels/level_0/v30a_showcase.rs.

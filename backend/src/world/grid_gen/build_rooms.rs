@@ -202,7 +202,7 @@ fn carve_door(
     let mid = ROOM_CELLS / 2;
 
     // Celda del muro por la que se sale, y la dirección hacia fuera.
-    let (mut x, mut z, dx, dz) = match side {
+    let (x, z, dx, dz) = match side {
         0 => (x0 as i32 + mid as i32, z0 as i32 - 1, 0i32, -1i32), // sur (−z)
         1 => (x0 as i32 + mid as i32, (z0 + ROOM_CELLS) as i32, 0, 1), // norte (+z)
         2 => (x0 as i32 - 1, z0 as i32 + mid as i32, -1, 0),       // oeste (−x)
@@ -212,30 +212,84 @@ fn carve_door(
     // Tope de excavación: lo bastante para cruzar cualquier macizo razonable sin llegar al borde
     // reservado del chunk. Si se agota, la habitación queda sellada — preferible a comerse la fila
     // de costura y cortar el mundo por ese lado.
-    for _ in 0..(CHUNK_CELLS / 2) {
+    carve_tunnel_outward(grid, ceiling, (x, z), (dx, dz), CHUNK_CELLS / 2, carved).is_some()
+}
+
+/// Excava en línea recta desde `start` en dirección `dir` hasta engancharse con algo ya transitable,
+/// apuntando cada celda abierta en `carved`. Devuelve cuántas celdas excavó, o `None` si no enganchó.
+///
+/// Compartida por la habitación construible (ADR-081 enmienda 5) y por la sala autorada (ADR-083
+/// enmienda 1). Es UNA sola implementación a propósito: las dos tienen exactamente el mismo problema
+/// —salir de un recinto cerrado sin comerse la costura del chunk— y tener dos excavadores que
+/// divergieran en el tratamiento del borde es la clase de fallo que no se ve hasta que un chunk
+/// concreto parte el mundo por un lado.
+pub(super) fn carve_tunnel_outward(
+    grid: &mut LayerGrid,
+    ceiling: u8,
+    start: (i32, i32),
+    dir: (i32, i32),
+    limit: usize,
+    carved: &mut Vec<(usize, usize)>,
+) -> Option<usize> {
+    let (mut x, mut z) = start;
+    let (dx, dz) = dir;
+
+    for step in 0..limit {
         if !LayerGrid::in_bounds(x, z) {
-            return false;
+            return None;
         }
         let (ux, uz) = (x as usize, z as usize);
 
         // Nunca la fila/columna de costura: es de `stitching`, y abrirla aquí descoordinaría los dos
         // chunks que comparten ese borde, que derivan su apertura de la misma seed canónica.
         if ux == 0 || uz == 0 || ux == CHUNK_CELLS - 1 || uz == CHUNK_CELLS - 1 {
-            return false;
+            return None;
         }
 
         let already_open = grid.get(ux, uz).is_walkable();
         grid.set(ux, uz, Cell::new(CellType::Corridor, ceiling, 0));
         carved.push((ux, uz));
         if already_open {
-            return true; // enganchado con el laberinto: el túnel termina aquí
+            return Some(step + 1); // enganchado con el laberinto: el túnel termina aquí
         }
 
         x += dx;
         z += dz;
     }
 
-    false
+    None
+}
+
+/// Excava EXACTAMENTE `count` celdas desde `start`, sin condición de parada.
+///
+/// Es la segunda mitad de un túnel de un TILE de ancho: la primera línea se excava con
+/// `carve_tunnel_outward` —que para cuando engancha— y esta replica su longitud en la línea de al
+/// lado. Copiar la longitud en vez de dejar que la segunda línea busque su propio enganche es lo que
+/// impide que el vano salga dentado, con un lado más largo que el otro.
+pub(super) fn carve_tunnel_fixed(
+    grid: &mut LayerGrid,
+    ceiling: u8,
+    start: (i32, i32),
+    dir: (i32, i32),
+    count: usize,
+    carved: &mut Vec<(usize, usize)>,
+) {
+    let (mut x, mut z) = start;
+    let (dx, dz) = dir;
+
+    for _ in 0..count {
+        if !LayerGrid::in_bounds(x, z) {
+            return;
+        }
+        let (ux, uz) = (x as usize, z as usize);
+        if ux == 0 || uz == 0 || ux == CHUNK_CELLS - 1 || uz == CHUNK_CELLS - 1 {
+            return; // misma regla de costura que arriba, y por el mismo motivo
+        }
+        grid.set(ux, uz, Cell::new(CellType::Corridor, ceiling, 0));
+        carved.push((ux, uz));
+        x += dx;
+        z += dz;
+    }
 }
 
 #[cfg(test)]
