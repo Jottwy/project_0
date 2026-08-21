@@ -32,12 +32,17 @@ namespace BackroomsSurvival.EditorTools
         private const string ManifestPath = StreamingFolder + "/room_manifest.json";
 
         /// <summary>
-        /// Cap de footprint de ADR-083 enmienda 1, punto 5, en TILES. NO es una regla que este
-        /// exportador aplique — la aplica el backend, que es quien conoce `CHUNK_CELLS` y el ancho
-        /// de anillo y margen. Aquí solo sirve para AVISAR: una sala más grande se exporta igual y
-        /// el backend la descarta en silencio, y sin este aviso parecería que el horneado falló.
+        /// Cap de footprint del backend, en TILES. NO es una regla que este exportador aplique — la
+        /// aplica el backend, que es quien conoce `CHUNK_CELLS` y el ancho de anillo y margen. Aquí
+        /// solo sirve para AVISAR: una sala más grande se exporta igual y el backend la descarta en
+        /// silencio, y sin este aviso parecería que el horneado falló.
+        ///
+        /// **17, no 7, desde ADR-084 T3**: el cap dejó de ser el del chunk (7 × 7 tiles = 35 m) y
+        /// pasó a ser el de 2 × 2 chunks (17 × 17 = 85 m). Espejo de
+        /// `MAX_FOOTPRINT_CELLS_MULTI_CHUNK` (34 celdas de 2,5 m) en
+        /// `backend/src/world/grid_gen/authored_rooms.rs`.
         /// </summary>
-        private const int BackendFootprintCapTiles = 7;
+        private const int BackendFootprintCapTiles = 17;
 
         /// <summary>
         /// Una sala vista por el backend. Nombres en snake_case a propósito: son claves de JSON que
@@ -262,8 +267,8 @@ namespace BackroomsSurvival.EditorTools
             if (oversized.Count > 0)
                 Debug.LogWarning($"[RoomManifestExporter] Por encima del cap de " +
                                  $"{BackendFootprintCapTiles}×{BackendFootprintCapTiles} tiles " +
-                                 $"(ADR-083 enmienda 1): {string.Join(", ", oversized)}. Se exportan, " +
-                                 "pero el backend NO las colocará hasta que exista el ADR multi-chunk.");
+                                 $"(ADR-084, 2×2 chunks): {string.Join(", ", oversized)}. Se exportan, " +
+                                 "pero el backend NO las colocará: no hay sitio para ellas en el mundo.");
 
             message = $"{array.Length} sala(s) → {ManifestPath}" +
                       (skipped.Count > 0 ? $", {skipped.Count} descartada(s) — ver avisos." : ".");

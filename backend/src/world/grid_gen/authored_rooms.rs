@@ -59,12 +59,35 @@ const BORDER_CELLS: usize = RING_CELLS + MARGIN_CELLS;
 const USABLE_LO: usize = 1;
 const USABLE_HI: usize = CHUNK_CELLS - 2; // 18
 
-/// Footprint máximo en CELDAS que admite un chunk, de donde sale el cap de **7 × 7 tiles** (35 m).
-/// Es aritmética, no gusto: 18 celdas útiles menos las 4 del borde.
+/// Footprint máximo en CELDAS que cabe DENTRO de un chunk, de donde sale el cap de **7 × 7 tiles**
+/// (35 m). Es aritmética, no gusto: 18 celdas útiles menos las 4 del borde.
 ///
 /// ADR-083 enmienda 1 lo fijó en 6 × 6 partiendo de un borde de 3 celdas; al alinear el borde a
 /// tile (2 celdas) el cap sube solo. Ver `BORDER_CELLS`.
+///
+/// Desde ADR-084 esto ya NO es el techo del sistema, es la frontera entre las salas que caben en su
+/// chunk y las que no: por debajo de él una sala se sortea en la ventana de siempre y el mundo sale
+/// idéntico; por encima, en la ventana extendida. Ver `draw_origin`.
 pub const MAX_FOOTPRINT_CELLS: usize = (USABLE_HI - USABLE_LO + 1) - 2 * BORDER_CELLS; // 14
+
+/// Cuántos chunks puede abarcar una sala contando el suyo (ADR-084 punto 2): **2 × 2 = 100 m**.
+///
+/// Acota el vecindario que hay que barrer, y con él el coste: una sala anclada en `(cx, cz)` no
+/// puede asomar más allá de `(cx + 1, cz + 1)`, así que un chunk solo tiene que preguntar a cuatro
+/// anclas —él y sus vecinos de menor coordenada— para saber qué le invade.
+pub const MAX_SPAN_CHUNKS: usize = 2;
+
+/// Última celda que la reserva de una sala multi-chunk puede ocupar, en coordenadas del ANCLA.
+///
+/// Es `USABLE_HI` del chunk más lejano que la sala alcanza. Las filas de costura intermedias SÍ
+/// entran —la sala las tapa y ahí no se abre apertura, que es lo que hace ADR-084 punto 4— pero las
+/// dos exteriores (la 0 del ancla y la 19 del último) siguen siendo intocables.
+const USABLE_HI_SPAN: usize = USABLE_HI + (MAX_SPAN_CHUNKS - 1) * CHUNK_CELLS; // 38
+
+/// Footprint máximo absoluto, en celdas: **17 × 17 tiles (85 m)**. Reservado son 95 m de los 100
+/// que dan 2 × 2 chunks; los 5 que faltan son las dos filas de costura exteriores.
+pub const MAX_FOOTPRINT_CELLS_MULTI_CHUNK: usize =
+    (USABLE_HI_SPAN - USABLE_LO + 1) - 2 * BORDER_CELLS; // 34
 
 /// Probabilidad de que un chunk aloje una sala autorada.
 ///
@@ -196,13 +219,23 @@ impl AuthoredRoomPlan {
     }
 }
 
-/// Cuántas salas autoradas admite un chunk como mucho (ADR-083 enmienda 3 punto 4).
+/// Cuántas salas autoradas ANCLA un chunk como mucho (ADR-083 enmienda 3 punto 4).
 ///
 /// Es tope de BARRIDO, no de diseño: impide que el planificador siga probando candidatas en un
 /// chunk donde ya no cabe nada, y pone techo al coste de una ruta que se re-deriva en cada
 /// generación de chunk. Por encima de 3 la aritmética de la reserva ya no da con ningún tamaño de
 /// sala que valga la pena autorar — ver `AuthoredRoomSet`.
 pub const MAX_AUTHORED_PER_CHUNK: usize = 3;
+
+/// Cuántas salas puede VER un chunk: las que ancla él más las que le invaden desde un vecino.
+///
+/// Son dos topes distintos desde ADR-084 y confundirlos es un fallo de determinismo, no de memoria.
+/// Un chunk lo alcanzan como mucho cuatro anclas —él y sus vecinos de menor coordenada, por el cap
+/// de 2 × 2 chunks—, cada una con `MAX_AUTHORED_PER_CHUNK` salas. Con capacidad para menos, un chunk
+/// tendría que DESCARTAR una sala que otro sí ve, y los dos tallarían mundos distintos: el descarte
+/// depende del orden de barrido, y el orden de barrido depende de quién pregunta. Con capacidad para
+/// el peor caso completo, ese descarte no puede ocurrir.
+pub const MAX_AUTHORED_VISIBLE: usize = MAX_AUTHORED_PER_CHUNK * MAX_SPAN_CHUNKS * MAX_SPAN_CHUNKS;
 
 /// Separación MÍNIMA entre dos reservas de sala autorada, en celdas de 2,5 m. Un tile exacto.
 ///
@@ -233,7 +266,7 @@ const SEPARATION_CELLS: usize = 2;
 /// solo si son de 2 × 2 tiles en rejilla — y por eso el tope de 3 no recorta nada útil.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AuthoredRoomSet {
-    plans: [Option<AuthoredRoomPlan>; MAX_AUTHORED_PER_CHUNK],
+    plans: [Option<AuthoredRoomPlan>; MAX_AUTHORED_VISIBLE],
     len: u8,
 }
 
@@ -247,7 +280,7 @@ impl AuthoredRoomSet {
     }
 
     fn is_full(&self) -> bool {
-        self.len as usize >= MAX_AUTHORED_PER_CHUNK
+        self.len as usize >= MAX_AUTHORED_VISIBLE
     }
 
     fn push(&mut self, plan: AuthoredRoomPlan) {
@@ -264,10 +297,17 @@ impl AuthoredRoomSet {
     }
 }
 
-/// ¿Cabe esta sala con este giro en un chunk?
+/// ¿Cabe esta sala con este giro en el mundo?
+///
+/// Desde ADR-084 el tope es el de 2 × 2 chunks, no el del chunk: una sala mayor que
+/// `MAX_FOOTPRINT_CELLS` sigue siendo colocable, solo que su reserva asoma por el vecino.
 fn fits(room: &ManifestRoom, quarter: u8) -> Option<(usize, usize)> {
     let (w, h) = room.footprint_cells(quarter);
-    if w == 0 || h == 0 || w > MAX_FOOTPRINT_CELLS || h > MAX_FOOTPRINT_CELLS {
+    if w == 0
+        || h == 0
+        || w > MAX_FOOTPRINT_CELLS_MULTI_CHUNK
+        || h > MAX_FOOTPRINT_CELLS_MULTI_CHUNK
+    {
         return None;
     }
     Some((w, h))
@@ -324,8 +364,8 @@ pub fn plan_authored_rooms(
         build_room,
         &mut placed,
     );
-    for dz in -NEIGHBOUR_SPAN..=NEIGHBOUR_SPAN {
-        for dx in -NEIGHBOUR_SPAN..=NEIGHBOUR_SPAN {
+    for dz in -ANCHOR_REACH..=0 {
+        for dx in -ANCHOR_REACH..=0 {
             if dx == 0 && dz == 0 {
                 continue;
             }
@@ -345,12 +385,19 @@ pub fn plan_authored_rooms(
     placed
 }
 
-/// Hasta dónde se mira buscando un ancla que invada este chunk.
+/// Cuántos chunks hacia +x/+z puede ASOMAR una sala desde su ancla, que es lo mismo que decir hasta
+/// dónde hacia −x/−z hay que mirar buscando quién nos invade.
 ///
-/// Para SABER QUÉ ME INVADE bastaría ±1 con el cap de 2 × 2 chunks. Es ±2 porque la resolución de
-/// conflictos entre anclas necesita ese alcance para ser consistente (ADR-084 punto 3): si A cede
-/// ante B y B ante C, un chunk que solo mirase ±1 desde A no vería a C y decidiría distinto.
-const NEIGHBOUR_SPAN: i32 = 2;
+/// Sale del cap de 2 × 2 chunks y de que el ancla es siempre la de menor `(cx, cz)` (ADR-084 punto
+/// 1): una sala nunca asoma hacia atrás, así que el barrido es de cuatro anclas y no de nueve.
+///
+/// **Aquí ya no hay ±2, y el ADR lo pedía.** El punto 3 razonaba que la retirada entre anclas
+/// necesitaba ese alcance porque la daba por TRANSITIVA. No lo es: `retired_by_lower_anchor` decide
+/// con profundidad 1 —una sala retirada sigue ocupando su sitio—, y eso convierte la supervivencia
+/// en función solo del ancla y de sus ocho vecinas. El ±2 sigue existiendo, pero DENTRO de esa
+/// función y solo para las anclas que de verdad tienen sala, no como barrido de 25 chunks por chunk
+/// generado.
+const ANCHOR_REACH: i32 = MAX_SPAN_CHUNKS as i32 - 1;
 
 /// Evalúa el planificador del ancla `(cx + dx, cz + dz)` y añade a `placed` las salas suyas que
 /// asomen por `(cx, cz)`, trasladadas a coordenadas de este chunk.
@@ -399,10 +446,64 @@ fn collect_from_anchor(
         }
         // Del ancla a ESTE chunk: un chunk de distancia son `CHUNK_CELLS` celdas.
         let shifted = plan.shifted_by_chunks(dx, dz);
-        if reaches_this_chunk(&shifted) {
-            placed.push(shifted);
+        if !reaches_this_chunk(&shifted) {
+            continue;
+        }
+        // La retirada se decide en coordenadas del ANCLA, no en las de quien pregunta: es lo que
+        // hace que los cuatro chunks que ven esta sala lleguen todos al mismo veredicto.
+        if retired_by_lower_anchor(manifest, world_seed, ax, az, plan) {
+            continue;
+        }
+        placed.push(shifted);
+    }
+}
+
+/// ¿Se retira esta sala del ancla `(ax, az)` ante otra de un ancla de menor `(cx, cz)`?
+///
+/// ADR-084 punto 3: dos anclas vecinas pueden querer el mismo sitio y gana la de menor coordenada.
+/// El orden es lexicográfico por `(cx, cz)`, la misma convención que la clave canónica de
+/// `aperture_pos`, y no el sorteo: un desempate aleatorio dependería de a quién se le pregunte.
+///
+/// **PROFUNDIDAD 1, y esa es la decisión que hace correcto todo lo demás.** Una sala retirada SIGUE
+/// bloqueando el sitio que reclamó. La alternativa —que al retirarse libere su hueco y la siguiente
+/// pueda ocuparlo— hace la supervivencia recursiva y de profundidad ilimitada: para saber si C vive
+/// habría que saber si B vive, y para eso si vive A, sin un punto donde parar que no sea arbitrario.
+/// Con profundidad 1 la supervivencia depende solo del ancla y de sus ocho vecinas, que es una
+/// función pura, acotada y —lo único que importa de verdad— la MISMA se pregunte desde el chunk que
+/// se pregunte. El precio es un hueco desaprovechado cuando una retirada encadena con otra: cuesta
+/// una sala que no sale, no una sala partida por la mitad.
+///
+/// Solo hace falta mirar a ±1: una reserva vive dentro de 2 × 2 chunks desde su ancla, así que dos
+/// reservas que se toquen tienen las anclas a un chunk o menos.
+fn retired_by_lower_anchor(
+    manifest: &RoomManifest,
+    world_seed: u64,
+    ax: i32,
+    az: i32,
+    plan: &AuthoredRoomPlan,
+) -> bool {
+    for bz in az - 1..=az + 1 {
+        for bx in ax - 1..=ax + 1 {
+            if (bx, bz) >= (ax, az) {
+                continue;
+            }
+            let rival = plan_anchored_at(
+                manifest,
+                world_seed,
+                bx,
+                bz,
+                BuildRoomSource::Derive {
+                    layer: AUTHORED_LAYER,
+                },
+            );
+            for other in rival.iter() {
+                if reserves_conflict(&other.shifted_by_chunks(bx - ax, bz - az), plan) {
+                    return true;
+                }
+            }
         }
     }
+    false
 }
 
 /// ¿La RESERVA de este plan asoma por el chunk `0..CHUNK_CELLS`? Se mide contra la reserva y no
@@ -474,7 +575,9 @@ fn plan_anchored_at(
     candidates.shuffle(&mut rng);
 
     for (idx, quarter, w, h) in candidates {
-        if placed.is_full() {
+        // El tope de COLOCACIÓN, que es el del ancla y no el del chunk que mira. Ver
+        // `MAX_AUTHORED_VISIBLE`.
+        if placed.len() >= MAX_AUTHORED_PER_CHUNK {
             break;
         }
         let room = &manifest.rooms[idx];
@@ -511,20 +614,16 @@ fn plan_anchored_at(
             door_count: room.doorways.len().min(MAX_DOORWAYS) as u8,
         };
 
-        if let Some(build) = build_room {
-            if overlaps_build_room(&plan, build) {
-                continue;
-            }
+        // La construible de CADA chunk que la sala cubre, no solo la del ancla (ADR-084 punto 2 +
+        // ADR-081 enmienda 5). Una sala multi-chunk que solo mirase la de su ancla se comería la del
+        // vecino, que es una regla de juego validada y gana siempre.
+        if overlaps_any_build_room(world_seed, cx, cz, &plan, build_room) {
+            continue;
         }
         // Y contra las salas autoradas que ya ganaron sitio en este chunk. Dos reservas que se
         // pisen romperían la garantía que sostiene el sistema entero: el margen macizo de una
         // acabaría siendo el interior hueco de la otra.
-        if placed.iter().any(|other| {
-            let (x0, z0, x1, z1) = other.reserve_rect();
-            let sep = SEPARATION_CELLS as i32;
-            let grown = (x0 - sep, z0 - sep, x1 + sep, z1 + sep);
-            rects_overlap(grown, plan.reserve_rect())
-        }) {
+        if placed.iter().any(|other| reserves_conflict(other, &plan)) {
             continue;
         }
         placed.push(plan);
@@ -535,17 +634,28 @@ fn plan_anchored_at(
 
 /// Sortea el origen del FOOTPRINT en un eje, en celda PAR, o `None` si no cabe.
 ///
-/// La reserva ocupa `size + 2 · BORDER_CELLS` y tiene que caber entera en `[USABLE_LO, USABLE_HI]`.
-/// El origen del footprint queda `BORDER_CELLS` más adentro. Se sortea en unidades de tile y se
+/// La reserva ocupa `size + 2 · BORDER_CELLS` y tiene que caber entera en `[USABLE_LO, hi]`. El
+/// origen del footprint queda `BORDER_CELLS` más adentro. Se sortea en unidades de tile y se
 /// multiplica por 2, que es la forma barata de garantizar paridad sin descartar tiradas.
+///
+/// **La ventana se extiende SOLO para las salas que no caben en su chunk**, y eso no es una
+/// optimización: es lo que deja el mundo de hoy byte a byte donde estaba. Sortear todas las salas en
+/// la ventana de 2 × 2 chunks cambiaría el rango del `gen_range` de cada tirada y movería de sitio
+/// hasta la última sala pequeña ya colocada. Con el corte por tamaño, una sala de `≤
+/// MAX_FOOTPRINT_CELLS` hace exactamente la misma tirada que en wire 39.
 fn draw_origin(rng: &mut StdRng, size: usize) -> Option<i32> {
+    let hi_limit = if size <= MAX_FOOTPRINT_CELLS {
+        USABLE_HI
+    } else {
+        USABLE_HI_SPAN
+    };
     let reserve = size + 2 * BORDER_CELLS;
-    if reserve > USABLE_HI - USABLE_LO + 1 {
+    if reserve > hi_limit - USABLE_LO + 1 {
         return None;
     }
     // Primer y último origen de FOOTPRINT admisibles.
     let lo = USABLE_LO + BORDER_CELLS;
-    let hi = USABLE_HI + 1 - BORDER_CELLS - size;
+    let hi = hi_limit + 1 - BORDER_CELLS - size;
     if hi < lo {
         return None;
     }
@@ -585,9 +695,15 @@ fn clip_to_chunk(rect: (i32, i32, i32, i32)) -> Option<(usize, usize, usize, usi
 }
 
 /// ¿Se pisan la reserva de la sala autorada y la de la habitación construible (su anillo incluido)?
-fn overlaps_build_room(plan: &AuthoredRoomPlan, build: &RoomPlan) -> bool {
+///
+/// `(ddx, ddz)` es a cuántos chunks del ancla vive la construible, para poder comparar la de un
+/// chunk invadido en las coordenadas del ancla.
+fn overlaps_build_room(plan: &AuthoredRoomPlan, build: &RoomPlan, ddx: i32, ddz: i32) -> bool {
     let (bx, bz) = build.cell_origin();
-    let (bx, bz) = (bx as i32, bz as i32);
+    let (bx, bz) = (
+        bx as i32 + ddx * CHUNK_CELLS as i32,
+        bz as i32 + ddz * CHUNK_CELLS as i32,
+    );
     // El anillo de la construible es la corona de 1 celda alrededor de su footprint.
     let build_reserve = (
         bx - 1,
@@ -597,6 +713,64 @@ fn overlaps_build_room(plan: &AuthoredRoomPlan, build: &RoomPlan) -> bool {
     );
 
     rects_overlap(plan.reserve_rect(), build_reserve)
+}
+
+/// Los chunks que la reserva de esta sala toca, como desplazamiento `(ddx, ddz)` desde el ancla.
+///
+/// Siempre incluye `(0, 0)`, y como mucho llega a `(1, 1)` por el cap de 2 × 2 chunks. Para una sala
+/// que cabe en su chunk devuelve un solo elemento, que es lo que deja el mundo de hoy sin pagar ni
+/// una derivación de más.
+fn covered_chunks(plan: &AuthoredRoomPlan) -> impl Iterator<Item = (i32, i32)> {
+    let n = CHUNK_CELLS as i32;
+    let (x0, z0, x1, z1) = plan.reserve_rect();
+    let (dx0, dx1) = (x0.div_euclid(n), (x1 - 1).div_euclid(n));
+    let (dz0, dz1) = (z0.div_euclid(n), (z1 - 1).div_euclid(n));
+    (dz0..=dz1).flat_map(move |dz| (dx0..=dx1).map(move |dx| (dx, dz)))
+}
+
+/// ¿Choca la sala con la habitación construible de ALGUNO de los chunks que cubre?
+///
+/// La del ancla llega ya derivada por el llamador (`anchor_build`), que es quien sabe si tocaba
+/// pagarla o le venía dada. Las de los chunks invadidos se derivan aquí, y solo se derivan cuando de
+/// verdad hay un chunk invadido: `covered_chunks` devuelve un único elemento para una sala normal.
+fn overlaps_any_build_room(
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    plan: &AuthoredRoomPlan,
+    anchor_build: Option<&RoomPlan>,
+) -> bool {
+    for (ddx, ddz) in covered_chunks(plan) {
+        if ddx == 0 && ddz == 0 {
+            if anchor_build.is_some_and(|b| overlaps_build_room(plan, b, 0, 0)) {
+                return true;
+            }
+            continue;
+        }
+        // La construible se sortea SIEMPRE en la capa de anclaje, igual que la sala: es la única
+        // capa en la que existe, y preguntarla en otra devolvería `None` y dejaría pasar el solape.
+        let other =
+            super::build_rooms::room_in_chunk(world_seed, cx + ddx, cz + ddz, AUTHORED_LAYER);
+        if other.is_some_and(|b| overlaps_build_room(plan, &b, ddx, ddz)) {
+            return true;
+        }
+    }
+    false
+}
+
+/// ¿Se pisan las reservas de dos salas autoradas, contando la separación obligatoria?
+///
+/// Una sola copia de la aritmética para los dos usos que tiene: dos salas de la MISMA ancla y dos
+/// de anclas distintas (ADR-084 punto 3). La regla es la misma y por el mismo motivo — dos anillos
+/// `SealedWall` espalda contra espalda no los atraviesa `repair_connectivity`, y da igual quién
+/// sorteó cada uno. Ver `SEPARATION_CELLS`.
+///
+/// Se crece UNA de las dos reservas y no las dos: crecer ambas exigiría `SEPARATION_CELLS` celdas de
+/// cada lado, o sea el doble de separación de la que el fallo pide.
+fn reserves_conflict(a: &AuthoredRoomPlan, b: &AuthoredRoomPlan) -> bool {
+    let (x0, z0, x1, z1) = a.reserve_rect();
+    let sep = SEPARATION_CELLS as i32;
+    rects_overlap((x0 - sep, z0 - sep, x1 + sep, z1 + sep), b.reserve_rect())
 }
 
 /// Las DOS celdas de partida del túnel (la pareja que forma un tile completo, la primera fuera del
@@ -897,7 +1071,12 @@ mod tests {
     const SEEDS: [u64; 4] = [42, 7778, 1, 9_999_999];
 
     /// Manifiesto de prueba: una sala de 4 x 4 tiles (la que de verdad hay horneada hoy) y una de
-    /// 10 x 10 (las otras dos del pool), que NO cabe y no debe salir jamas.
+    /// 20 x 20, que pasa del cap absoluto de 2 x 2 chunks y no debe salir jamas.
+    ///
+    /// Era de 10 x 10 hasta ADR-084 T3, cuando esa medida paso a ser colocable (multi-chunk) y dejo
+    /// de servir como "la que no cabe". Subirla a 20 x 20 no movio ni una sala del mundo de estos
+    /// tests: `fits` la rechaza igual que rechazaba la de 10, asi que no entra en `candidates` y el
+    /// barajado sale identico. La de 10 x 10 vive ahora en `multi_chunk_manifest`.
     fn manifest() -> RoomManifest {
         RoomManifest {
             digest: "test".into(),
@@ -916,8 +1095,8 @@ mod tests {
                 ManifestRoom {
                     index: 1,
                     id: "room_1".into(),
-                    tiles_x: 10,
-                    tiles_z: 10,
+                    tiles_x: 20,
+                    tiles_z: 20,
                     height_meters: 0.0,
                     doorways: vec![ManifestDoorway {
                         side_by_quarter: [0, 2, 1, 3],
@@ -960,6 +1139,20 @@ mod tests {
             usize::try_from(rect.2).expect("rect fuera del chunk"),
             usize::try_from(rect.3).expect("rect fuera del chunk"),
         )
+    }
+
+    /// Las salas de un chunk **como las ve produccion**: con la habitacion construible de ese chunk
+    /// ya derivada.
+    ///
+    /// Pasar `None` no significa "no me importa", significa "en este chunk NO hay construible", y es
+    /// mentira en el 5 % de los chunks (`ROOM_CHANCE` de ADR-081). Una sonda que mienta ahi planta
+    /// salas autoradas encima de la construible, el anillo `SealedWall` de esta las sella, y el
+    /// resultado se lee como un fallo del emplazamiento que no existe: asi salia **1 de 11
+    /// incomunicadas** que en el mundo real no lo estaba. Los tres llamadores de produccion
+    /// (`stitching`, `generator` y el productor del wire) pasan siempre la construible.
+    fn rooms_of(m: &RoomManifest, seed: u64, cx: i32, cz: i32) -> AuthoredRoomSet {
+        let build = super::super::build_rooms::room_in_chunk(seed, cx, cz, AUTHORED_LAYER);
+        plan_authored_rooms(m, seed, cx, cz, AUTHORED_LAYER, build.as_ref())
     }
 
     /// Barre chunks hasta encontrar uno con sala, para no depender de que un chunk concreto gane un
@@ -1042,8 +1235,8 @@ mod tests {
         assert!(found > 0, "el barrido no encontro ni una sala: sorteo roto");
     }
 
-    /// La de 10 x 10 no cabe en un chunk de 20 celdas ni sin margen. Que no salga NUNCA es el cap
-    /// de ADR-083 enmienda 1 funcionando.
+    /// La de 20 x 20 tiles (40 celdas) pasa del cap absoluto de 2 x 2 chunks (34). Que no salga
+    /// NUNCA es el cap de ADR-084 funcionando, igual que antes era el de ADR-083 enmienda 1.
     #[test]
     fn oversized_rooms_are_never_placed() {
         let m = manifest();
@@ -1062,7 +1255,7 @@ mod tests {
     #[test]
     fn a_manifest_of_only_oversized_rooms_places_nothing() {
         let mut m = manifest();
-        m.rooms.retain(|r| r.tiles_x == 10);
+        m.rooms.retain(|r| r.tiles_x == 20);
         for seed in SEEDS {
             for cx in -12..12 {
                 for cz in -12..12 {
@@ -1807,6 +2000,254 @@ mod tests {
         }
     }
 
+    /// Manifiesto de ADR-084: una sala de 10 x 10 tiles (20 celdas) que NO cabe en un chunk -- la
+    /// reserva pide 24 y solo hay 18 utiles -- y si cabe en 2 x 2. Es la medida de `room_1` y
+    /// `room_2`, las dos que llevan fuera del mundo desde que se hornearon.
+    fn multi_chunk_manifest() -> RoomManifest {
+        RoomManifest {
+            digest: "multi".into(),
+            rooms: vec![ManifestRoom {
+                index: 0,
+                id: "big".into(),
+                tiles_x: 10,
+                tiles_z: 10,
+                height_meters: 0.0,
+                doorways: vec![ManifestDoorway {
+                    side_by_quarter: [0, 2, 1, 3],
+                    tile_by_quarter: [5, 4, 4, 5],
+                }],
+            }],
+        }
+    }
+
+    /// La celda de origen de un plan en coordenadas de MUNDO, para poder comparar lo que ven dos
+    /// chunks distintos de la misma sala.
+    fn world_origin(cx: i32, cz: i32, p: &AuthoredRoomPlan) -> (i32, i32) {
+        (
+            p.cell_x + cx * CHUNK_CELLS as i32,
+            p.cell_z + cz * CHUNK_CELLS as i32,
+        )
+    }
+
+    /// Los chunks que la reserva de un plan toca, en coordenadas de mundo.
+    fn covered_world_chunks(cx: i32, cz: i32, p: &AuthoredRoomPlan) -> Vec<(i32, i32)> {
+        covered_chunks(p)
+            .map(|(ddx, ddz)| (cx + ddx, cz + ddz))
+            .collect()
+    }
+
+    /// El primer chunk con una sala multi-chunk que de verdad cruce una frontera.
+    fn find_multi_chunk_room(m: &RoomManifest) -> Option<(u64, i32, i32, AuthoredRoomPlan)> {
+        for seed in SEEDS {
+            for cx in -12..12 {
+                for cz in -12..12 {
+                    for p in plan_authored_rooms(m, seed, cx, cz, 0, None).iter() {
+                        if covered_chunks(p).count() > 1 {
+                            return Some((seed, cx, cz, *p));
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// ADR-084 punto 2: el cap sube a 2 x 2 chunks, y una sala de 10 x 10 tiles -- que llevaba fuera
+    /// del mundo desde que se horneo -- se coloca y cruza una frontera de chunk.
+    #[test]
+    fn a_room_bigger_than_a_chunk_is_placed_and_crosses_a_border() {
+        let m = multi_chunk_manifest();
+        let (_seed, _cx, _cz, plan) =
+            find_multi_chunk_room(&m).expect("ninguna sala de 10x10 cruzo un chunk");
+        let (x0, z0, x1, z1) = plan.reserve_rect();
+        assert!(
+            x1 > CHUNK_CELLS as i32 || z1 > CHUNK_CELLS as i32,
+            "la reserva ({x0},{z0})..({x1},{z1}) no sale del chunk ancla"
+        );
+    }
+
+    /// **La propiedad que sostiene ADR-084 entero.** Los cuatro chunks que una sala puede cubrir
+    /// tienen que verla en el MISMO sitio del mundo, cada uno en sus coordenadas. Si uno solo
+    /// discrepa, ese chunk talla su trozo en otro lado y la sala sale partida.
+    #[test]
+    fn every_chunk_a_room_covers_sees_it_in_the_same_place() {
+        let m = multi_chunk_manifest();
+        let mut checked = 0;
+        for seed in SEEDS {
+            for cx in -8..8 {
+                for cz in -8..8 {
+                    for p in plan_authored_rooms(&m, seed, cx, cz, 0, None).iter() {
+                        let want = world_origin(cx, cz, p);
+                        for (ocx, ocz) in covered_world_chunks(cx, cz, p) {
+                            let seen = plan_authored_rooms(&m, seed, ocx, ocz, 0, None);
+                            let found = seen
+                                .iter()
+                                .any(|q| world_origin(ocx, ocz, q) == want && q.entry == p.entry);
+                            assert!(
+                                found,
+                                "el chunk ({ocx},{ocz}) no ve la sala que ({cx},{cz}) situa en \
+                                 {want:?} (seed {seed})"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "el barrido no encontro ni una sala");
+    }
+
+    /// Las salas SUPERVIVIENTES de dos anclas vecinas nunca se tocan.
+    ///
+    /// Es la consecuencia observable de ADR-084 punto 3, y se sostiene precisamente por la
+    /// profundidad 1: si dos supervivientes chocaran, la de mayor `(cx, cz)` se habria retirado ante
+    /// la otra -- viva o no la otra, que es lo que hace la regla local. Dos reservas de sala
+    /// autorada que se pisen ponen el margen macizo de una dentro del interior hueco de la otra.
+    #[test]
+    fn surviving_rooms_of_neighbouring_anchors_never_touch() {
+        let m = multi_chunk_manifest();
+        let survivors = |seed: u64, ax: i32, az: i32| -> Vec<AuthoredRoomPlan> {
+            plan_anchored_at(
+                &m,
+                seed,
+                ax,
+                az,
+                BuildRoomSource::Derive {
+                    layer: AUTHORED_LAYER,
+                },
+            )
+            .iter()
+            .filter(|p| !retired_by_lower_anchor(&m, seed, ax, az, p))
+            .copied()
+            .collect()
+        };
+
+        let mut pairs = 0;
+        for seed in SEEDS {
+            for ax in -30..30 {
+                for az in -30..30 {
+                    let mine = survivors(seed, ax, az);
+                    if mine.is_empty() {
+                        continue;
+                    }
+                    for bz in az - 1..=az + 1 {
+                        for bx in ax - 1..=ax + 1 {
+                            if (bx, bz) == (ax, az) {
+                                continue;
+                            }
+                            for other in survivors(seed, bx, bz) {
+                                let shifted = other.shifted_by_chunks(bx - ax, bz - az);
+                                for a in &mine {
+                                    assert!(
+                                        !reserves_conflict(&shifted, a),
+                                        "las salas de ({ax},{az}) y ({bx},{bz}) se tocan con la \
+                                         seed {seed}: {:?} y {:?}",
+                                        a.reserve_rect(),
+                                        shifted.reserve_rect()
+                                    );
+                                    pairs += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(pairs > 0, "ninguna pareja de anclas vecinas tuvo salas");
+    }
+
+    /// Que la retirada de ADR-084 punto 3 SE DISPARE de verdad en el mundo, y no sea una rama que
+    /// nadie recorre. Un test que solo comprobara la invariante pasaria igual si la regla no
+    /// existiera y las salas nunca chocaran.
+    #[test]
+    fn rooms_that_want_the_same_spot_do_retire() {
+        let m = multi_chunk_manifest();
+        let (mut retired, mut kept) = (0, 0);
+        for seed in SEEDS {
+            for ax in -30..30 {
+                for az in -30..30 {
+                    let set = plan_anchored_at(
+                        &m,
+                        seed,
+                        ax,
+                        az,
+                        BuildRoomSource::Derive {
+                            layer: AUTHORED_LAYER,
+                        },
+                    );
+                    for p in set.iter() {
+                        if retired_by_lower_anchor(&m, seed, ax, az, p) {
+                            retired += 1;
+                        } else {
+                            kept += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(kept > 0, "no sobrevivio ni una sala");
+        assert!(
+            retired > 0,
+            "ninguna de las {} salas del barrido se retiro: la regla no se probo",
+            kept + retired
+        );
+    }
+
+    /// ADR-081 enmienda 5 con el cap subido: la construible gana el solape TAMBIEN cuando es la del
+    /// chunk invadido, no solo la del ancla. Sin esto una sala multi-chunk se comeria una
+    /// habitacion construible del vecino, que es una regla de juego validada.
+    #[test]
+    fn the_build_room_of_an_invaded_chunk_also_wins() {
+        let m = multi_chunk_manifest();
+        let mut checked = 0;
+        for seed in SEEDS {
+            for cx in -8..8 {
+                for cz in -8..8 {
+                    for p in plan_authored_rooms(&m, seed, cx, cz, 0, None).iter() {
+                        for (ocx, ocz) in covered_world_chunks(cx, cz, p) {
+                            let Some(build) = super::super::build_rooms::room_in_chunk(
+                                seed,
+                                ocx,
+                                ocz,
+                                AUTHORED_LAYER,
+                            ) else {
+                                continue;
+                            };
+                            assert!(
+                                !overlaps_build_room(p, &build, ocx - cx, ocz - cz),
+                                "la sala de ({cx},{cz}) piso la construible de ({ocx},{ocz})"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "ninguna sala cubrio un chunk con construible");
+    }
+
+    /// Las dos filas de costura EXTERIORES siguen siendo intocables aunque la sala cruce chunks: las
+    /// intermedias las tapa la sala (ADR-084 punto 4), pero por las de fuera se entra al mundo.
+    #[test]
+    fn a_multi_chunk_reserve_never_touches_the_outer_seam() {
+        let m = multi_chunk_manifest();
+        for seed in SEEDS {
+            for cx in -8..8 {
+                for cz in -8..8 {
+                    for p in plan_authored_rooms(&m, seed, cx, cz, 0, None).iter() {
+                        // Contra el ancla, que es donde el sorteo decidio la reserva.
+                        let anchor = covered_world_chunks(cx, cz, p)[0];
+                        let a = p.shifted_by_chunks(cx - anchor.0, cz - anchor.1);
+                        let (x0, z0, x1, z1) = a.reserve_rect();
+                        assert!(x0 >= USABLE_LO as i32 && z0 >= USABLE_LO as i32);
+                        assert!(x1 <= USABLE_HI_SPAN as i32 + 1);
+                        assert!(z1 <= USABLE_HI_SPAN as i32 + 1);
+                    }
+                }
+            }
+        }
+    }
+
     /// SONDA: cuanto cuesta el barrido de vecindario de ADR-084 punto 3, que es la verificacion (f)
     /// que el ADR exige. Mide las DOS cosas que importan y en este orden:
     ///
@@ -1853,51 +2294,87 @@ mod tests {
         );
     }
 
-    /// SONDA TEMPORAL: cuantas salas quedan incomunicadas, con UNA sala por chunk (camino de wire
-    /// 38) y con varias. Sirve para saber si el fallo de alcanzabilidad es de esta enmienda o venia
-    /// de antes.
+    /// SONDA: cuantas salas quedan incomunicadas. Es la verificacion (e) de ADR-084 y la que ya cazo
+    /// las salas selladas de ADR-083 enmienda 3.
+    ///
+    /// **Mide sobre un bloque de 3 x 3 chunks, no sobre uno solo, y desde ADR-084 no vale de otra
+    /// forma.** Una sala multi-chunk tiene el interior repartido y las puertas pueden caer todas en
+    /// el chunk de al lado: en la rejilla de un chunk suelto su trozo es una componente aislada
+    /// aunque en el mundo se cruce andando. Medirlo por chunk daria incomunicadas que no lo son.
+    /// Los chunks pegan sin costura porque la celda 19 de uno y la 0 del siguiente son vecinas en el
+    /// mundo y `stitch_edges` las abre en la misma fila por clave canonica.
+    ///
+    ///     cargo test --manifest-path backend/Cargo.toml probe_unreachable_rooms -- --ignored --nocapture
     #[test]
     #[ignore]
     fn probe_unreachable_rooms() {
+        const B: usize = 3; // chunks por lado del bloque
+        const W: usize = B * CHUNK_CELLS;
         let rules = &LAYER_PROFILES[0];
+
         for (label, m) in [
-            ("real (4x4 y 10x10)", manifest()),
+            ("real (4x4)", manifest()),
             ("2x2 + 1x1", small_manifest()),
+            ("multi-chunk (10x10)", multi_chunk_manifest()),
         ] {
             let (mut chunks, mut rooms, mut bad) = (0, 0, 0);
             for seed in SEEDS {
                 for cx in -10..10 {
                     for cz in -10..10 {
-                        let set = plan_authored_rooms(&m, seed, cx, cz, 0, None);
-                        if set.is_empty() {
+                        // Solo las salas ANCLADAS aqui: las que invaden desde un vecino ya se
+                        // cuentan cuando le toque el turno a su propio ancla.
+                        let own: Vec<_> = rooms_of(&m, seed, cx, cz)
+                            .iter()
+                            .filter(|p| covered_chunks(p).next() == Some((0, 0)))
+                            .copied()
+                            .collect();
+                        if own.is_empty() {
                             continue;
                         }
                         chunks += 1;
-                        rooms += set.len();
+                        rooms += own.len();
 
-                        let mut out = generate_chunk_layer(rules, seed, (cx, cz), 0, &[]);
-                        let carved = carve_authored_set_into_grid(
-                            &mut out.grid,
-                            &set,
-                            rules.ceiling_open,
-                            rules.ceiling_corridor,
-                        );
-                        repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
+                        // El bloque, con el chunk ancla en el centro.
+                        let mut walk = vec![false; W * W];
+                        for bz in 0..B {
+                            for bx in 0..B {
+                                let (gx, gz) = (cx + bx as i32 - 1, cz + bz as i32 - 1);
+                                let set = rooms_of(&m, seed, gx, gz);
+                                let mut out = generate_chunk_layer(rules, seed, (gx, gz), 0, &[]);
+                                if !set.is_empty() {
+                                    let carved = carve_authored_set_into_grid(
+                                        &mut out.grid,
+                                        &set,
+                                        rules.ceiling_open,
+                                        rules.ceiling_corridor,
+                                    );
+                                    repair_connectivity(
+                                        &mut out.grid,
+                                        rules.ceiling_corridor,
+                                        &carved,
+                                    );
+                                }
+                                for z in 0..CHUNK_CELLS {
+                                    for x in 0..CHUNK_CELLS {
+                                        walk[(bz * CHUNK_CELLS + z) * W + bx * CHUNK_CELLS + x] =
+                                            out.grid.get(x, z).is_walkable();
+                                    }
+                                }
+                            }
+                        }
 
-                        // Componente MAS GRANDE del chunk = el laberinto.
-                        let mut comp = vec![usize::MAX; CHUNK_CELLS * CHUNK_CELLS];
+                        // Componente MAS GRANDE del bloque = el laberinto.
+                        let mut comp = vec![usize::MAX; W * W];
                         let mut sizes: Vec<usize> = Vec::new();
-                        for z in 0..CHUNK_CELLS {
-                            for x in 0..CHUNK_CELLS {
-                                if !out.grid.get(x, z).is_walkable()
-                                    || comp[z * CHUNK_CELLS + x] != usize::MAX
-                                {
+                        for z in 0..W {
+                            for x in 0..W {
+                                if !walk[z * W + x] || comp[z * W + x] != usize::MAX {
                                     continue;
                                 }
                                 let id = sizes.len();
                                 sizes.push(0);
                                 let mut stack = vec![(x, z)];
-                                comp[z * CHUNK_CELLS + x] = id;
+                                comp[z * W + x] = id;
                                 while let Some((px, pz)) = stack.pop() {
                                     sizes[id] += 1;
                                     for (nx, nz) in [
@@ -1906,12 +2383,12 @@ mod tests {
                                         (px, pz.wrapping_sub(1)),
                                         (px, pz + 1),
                                     ] {
-                                        if nx < CHUNK_CELLS
-                                            && nz < CHUNK_CELLS
-                                            && comp[nz * CHUNK_CELLS + nx] == usize::MAX
-                                            && out.grid.get(nx, nz).is_walkable()
+                                        if nx < W
+                                            && nz < W
+                                            && comp[nz * W + nx] == usize::MAX
+                                            && walk[nz * W + nx]
                                         {
-                                            comp[nz * CHUNK_CELLS + nx] = id;
+                                            comp[nz * W + nx] = id;
                                             stack.push((nx, nz));
                                         }
                                     }
@@ -1919,10 +2396,18 @@ mod tests {
                             }
                         }
                         let main = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap();
-                        for p in set.iter() {
-                            let (fx, fz) = (p.cell_x as usize, p.cell_z as usize);
-                            if comp[fz * CHUNK_CELLS + fx] != main {
+                        for p in &own {
+                            let (fx, fz) = (
+                                (CHUNK_CELLS as i32 + p.cell_x) as usize,
+                                (CHUNK_CELLS as i32 + p.cell_z) as usize,
+                            );
+                            if comp[fz * W + fx] != main {
                                 bad += 1;
+                                println!(
+                                    "  INCOMUNICADA: seed {seed} chunk ({cx},{cz}) entrada \
+                                     {} giro {} en celda ({},{})",
+                                    p.entry, p.quarter, p.cell_x, p.cell_z
+                                );
                             }
                         }
                     }
