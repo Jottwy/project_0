@@ -74,6 +74,11 @@ check_one() {
   {
     case "$ASM" in
       BackroomsSurvival) find "$PROJ/Assets/Scripts" -name '*.cs' ;;
+      # Mismo motivo, y con la misma factura pagada: el 2026-08-21 este script dio `errors: 0`
+      # sobre un AuthoredRoomRegistryTests.cs recién creado que Unity rechazaba con un CS0266,
+      # porque el csproj era una foto anterior al fichero. Un test que no compila no falla: no
+      # existe, y eso es peor. La carpeta del asmdef es una sola, así que el glob es exacto.
+      EditModeTests) find "$PROJ/Assets/Tests/EditMode" -name '*.cs' ;;
       *) grep -oP '(?<=<Compile Include=")[^"]+' "$CSPROJ" | sed 's#\\#/#g' \
            | while read -r s; do case "$s" in /*|?:*) echo "$s";; *) echo "$PROJ/$s";; esac; done ;;
     esac

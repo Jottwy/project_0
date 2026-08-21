@@ -22,7 +22,7 @@ namespace BackroomsSurvival.Tests
         [SetUp]
         public void ResetRegistry() => AuthoredRoomRegistry.Clear_EditorTestsOnly();
 
-        private static GridChunkDataMsg ChunkWithRoom(int cx, int cz, int layer, int entry)
+        private static GridChunkDataMsg ChunkWithRoom(int cx, int cz, byte layer, int entry)
         {
             return new GridChunkDataMsg
             {
@@ -71,9 +71,8 @@ namespace BackroomsSurvival.Tests
         [Test]
         public void Layers_of_the_same_column_do_not_overwrite_each_other()
         {
-            AuthoredRoomRegistry.Observe(ChunkWithRoom(7, 7, 0, 0));
-            AuthoredRoomRegistry.Observe(ChunkWithRoom(7, 7, 1, 0));
-            AuthoredRoomRegistry.Observe(ChunkWithRoom(7, 7, 2, 0));
+            for (byte layer = 0; layer <= 2; layer++)
+                AuthoredRoomRegistry.Observe(ChunkWithRoom(7, 7, layer, 0));
 
             for (int layer = 0; layer <= 2; layer++)
                 Assert.IsNotNull(AuthoredRoomRegistry.GetRooms(7, 7, layer), $"capa {layer} perdida");
