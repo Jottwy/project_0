@@ -505,10 +505,16 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 // ADR-059: −1 cuando la zona no se conocía al construir — un set de luz
                 // específico de zona no casa con eso (solo uno comodín), y la
                 // reconstrucción vía OnZoneArrived vuelve a pasar por aquí con la zona.
+                //
+                // Salas autoradas: sus tiles quedan fuera del auto-lighting del pasillo, que no
+                // sabe nada de su techo real (altura, inclinación, entreplantas) — ver
+                // GridChunkBuilder.GetAuthoredRoomTileRects. Vacía para el caso común (chunk sin
+                // sala), así que no cambia nada para el resto del mundo.
+                var authoredRoomRects = GridChunkBuilder.GetAuthoredRoomTileRects(ccx, ccz, layer);
                 lighting.PlaceFluorescentLights(go.transform, tiles, tiles,
                     GridVisualConstants.TileSize, GridVisualConstants.CellHeight * 2f,
                     cfg, mats.lamp, ccx, ccz, layer, walls,
-                    zoneKnownAtBuild ? zoneKindByte : -1, roomTileX, roomTileZ);
+                    zoneKnownAtBuild ? zoneKindByte : -1, roomTileX, roomTileZ, authoredRoomRects);
             }
         }
 

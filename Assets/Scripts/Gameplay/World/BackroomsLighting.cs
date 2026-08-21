@@ -82,7 +82,8 @@ namespace BackroomsSurvival.Gameplay.World
         public void PlaceFluorescentLights(Transform chunkRoot, int tilesX, int tilesZ,
             float tileSize, float ceilingHeight, LayerVisualConfig cfg, Material lampMat,
             int chunkX, int chunkZ, int worldLayer, byte[,] walls, int zoneKind = -1,
-            int buildRoomTileX = -1, int buildRoomTileZ = -1)
+            int buildRoomTileX = -1, int buildRoomTileZ = -1,
+            List<(int tx0, int tz0, int tx1, int tz1)> excludedRoomRects = null)
         {
             if (cfg == null) return;
 
@@ -177,6 +178,21 @@ namespace BackroomsSurvival.Gameplay.World
                     if (buildRoomTileX >= 0
                         && tx >= buildRoomTileX && tx < buildRoomTileX + 3
                         && tz >= buildRoomTileZ && tz < buildRoomTileZ + 3) continue;
+                    // Sala AUTORADA: mismo motivo y mismo sitio que el `continue` de arriba — su
+                    // techo real puede estar a cualquier altura (inclinado, con entreplantas, a
+                    // 12 m), y una luz de techo del pasillo ahí queda flotando en mitad del aire.
+                    // La sala trae las suyas propias (RoomDefinition.lights, ver
+                    // RoomAuthoringWindow.Lights.cs), autoradas contra su techo de verdad.
+                    if (excludedRoomRects != null)
+                    {
+                        bool inAuthoredRoom = false;
+                        for (int r = 0; r < excludedRoomRects.Count; r++)
+                        {
+                            var (rx0, rz0, rx1, rz1) = excludedRoomRects[r];
+                            if (tx >= rx0 && tx < rx1 && tz >= rz0 && tz < rz1) { inAuthoredRoom = true; break; }
+                        }
+                        if (inAuthoredRoom) continue;
+                    }
                     if (rng.NextDouble() >= density) continue; // no luminaire here
 
                     var localPos = new Vector3(

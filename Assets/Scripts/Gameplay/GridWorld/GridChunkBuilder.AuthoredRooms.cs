@@ -233,5 +233,31 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 if (plans[i].ContainsTile(tx, tz)) return true;
             return false;
         }
+
+        /// <summary>
+        /// Los rects [tx0,tz0)–(tx1,tz1) de las salas autoradas de este chunk, en tiles LOCALES —
+        /// mismo convenio que <see cref="RoomPlan.ContainsTile"/> (pueden salir negativos o mayores
+        /// que <see cref="TilesPerChunk"/> para una sala multi-chunk vista desde un chunk que no es
+        /// su ancla). Existe para que <c>BackroomsLighting.PlaceFluorescentLights</c> —que corre en
+        /// <c>ProceduralWorldGenerator</c>, DESPUÉS de <see cref="BuildFromWalls"/>, no dentro— deje
+        /// de meter luces de techo del pasillo dentro de una sala cuyo techo real puede estar a
+        /// cualquier altura.
+        ///
+        /// Lista NUEVA en cada llamada, NO la scratch interna de <see cref="BuildFromWalls"/>
+        /// (<c>_roomPlanScratch</c>): un consumidor de fuera del builder que corre después no puede
+        /// fiarse de qué quedó ahí — hoy sobrevive por orden de llamada, no por contrato, y ese es
+        /// exactamente el acoplamiento que rompería en silencio en cuanto alguien reordenara el
+        /// pipeline. Recalcular <see cref="PlanAuthoredRooms"/> es barato: un lookup en
+        /// <see cref="AuthoredRoomRegistry"/> y recorrer un array pequeño, sin tocar el <c>rng</c>.
+        /// </summary>
+        public static List<(int tx0, int tz0, int tx1, int tz1)> GetAuthoredRoomTileRects(
+            int chunkX, int chunkZ, int layerIndex)
+        {
+            var plans = new List<RoomPlan>();
+            PlanAuthoredRooms(chunkX, chunkZ, layerIndex, plans);
+            var rects = new List<(int, int, int, int)>(plans.Count);
+            foreach (var p in plans) rects.Add((p.tx0, p.tz0, p.tx1, p.tz1));
+            return rects;
+        }
     }
 }
