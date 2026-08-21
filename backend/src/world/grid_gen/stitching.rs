@@ -42,20 +42,49 @@ pub fn generate_chunk_layer(
     forced_walkable: &[(u8, u8)],
 ) -> LayerOutput {
     let mut out = generate_layer(rules, world_seed, chunk_coord, layer_index, forced_walkable);
-    stitch_edges(&mut out.grid, rules, world_seed, chunk_coord, layer_index);
+
+    // ADR-084 T4: las salas se PLANIFICAN antes de coser, aunque se tallen despues. El cosido tiene
+    // que saber si una sala tapa el borde por el que iba a abrir su apertura, porque corre primero:
+    // sin esto la apertura queda hecha y el anillo de la sala la pisa, dejando un boquete
+    // determinista en su pared (`carve_aperture` perfora `SealedWall` una vez a proposito).
+    //
+    // Planificar es puro y no mira la rejilla, asi que adelantarlo no cambia nada mas. Y de paso se
+    // deja de derivar la construible dos veces por chunk.
+    let layer_u8 = (0..=u8::MAX as i32)
+        .contains(&layer_index)
+        .then_some(layer_index as u8);
+    let build_plan = layer_u8.and_then(|l| {
+        super::build_rooms::room_in_chunk(world_seed, chunk_coord.0, chunk_coord.1, l)
+    });
+    let authored = layer_u8
+        .and_then(|l| {
+            super::room_manifest::active_manifest().map(|m| {
+                super::authored_rooms::plan_authored_rooms(
+                    m,
+                    world_seed,
+                    chunk_coord.0,
+                    chunk_coord.1,
+                    l,
+                    build_plan.as_ref(),
+                )
+            })
+        })
+        .unwrap_or_default();
+
+    stitch_edges(
+        &mut out.grid,
+        rules,
+        world_seed,
+        chunk_coord,
+        layer_index,
+        &authored,
+    );
 
     // ADR-081 enmienda 5: la habitacion construible se talla AQUI, en el generador compartido, y no
     // en cada consumidor. Render (`chunk_tile_walls`) y colision del robapieles
     // (`GridGenChunkCache`) salen los dos de esta funcion, asi que tallarla una vez es lo unico que
     // garantiza que vean la MISMA habitacion. Va detras del cosido a proposito — ver `carve_into_grid`.
-    if layer_index >= 0 && layer_index <= u8::MAX as i32 {
-        let build_plan = super::build_rooms::room_in_chunk(
-            world_seed,
-            chunk_coord.0,
-            chunk_coord.1,
-            layer_index as u8,
-        );
-
+    if layer_u8.is_some() {
         let mut carved: Vec<(usize, usize)> = Vec::new();
 
         if let Some(plan) = build_plan {
@@ -82,28 +111,18 @@ pub fn generate_chunk_layer(
         // La reparación de abajo protege las celdas de LAS DOS salas acumuladas en `carved`, no solo
         // las suyas: sellar un bolsillo irreparable no puede llevarse por delante el interior o el
         // túnel de la habitación construible, que ya estaba tallada y protegida en su propia pasada.
-        if let Some(manifest) = super::room_manifest::active_manifest() {
-            let rooms = super::authored_rooms::plan_authored_rooms(
-                manifest,
-                world_seed,
-                chunk_coord.0,
-                chunk_coord.1,
-                layer_index as u8,
-                build_plan.as_ref(),
-            );
-            if !rooms.is_empty() {
-                // ADR-083 enmienda 3: se tallan TODAS de una (en dos fases: carcasas y luego
-                // puertas — el porqué, en `carve_authored_set_into_grid`) y se repara UNA vez al
-                // final. Reparar entre sala y sala sería tender pasillos hacia un trozo de chunk
-                // que la siguiente todavía va a rellenar de macizo, y pagar el BFS por cada sala.
-                carved.extend(super::authored_rooms::carve_authored_set_into_grid(
-                    &mut out.grid,
-                    &rooms,
-                    rules.ceiling_open,
-                    rules.ceiling_corridor,
-                ));
-                repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
-            }
+        if !authored.is_empty() {
+            // ADR-083 enmienda 3: se tallan TODAS de una (en dos fases: carcasas y luego
+            // puertas — el porqué, en `carve_authored_set_into_grid`) y se repara UNA vez al
+            // final. Reparar entre sala y sala sería tender pasillos hacia un trozo de chunk
+            // que la siguiente todavía va a rellenar de macizo, y pagar el BFS por cada sala.
+            carved.extend(super::authored_rooms::carve_authored_set_into_grid(
+                &mut out.grid,
+                &authored,
+                rules.ceiling_open,
+                rules.ceiling_corridor,
+            ));
+            repair_connectivity(&mut out.grid, rules.ceiling_corridor, &carved);
         }
     }
 
@@ -111,14 +130,21 @@ pub fn generate_chunk_layer(
 }
 
 /// Open one aperture on each of the four chunk borders and reconnect.
+///
+/// ADR-084 punto 4: el borde que cubre una sala autorada NO se abre. La sala es la conexión y su
+/// interior cruza la costura por construcción; abrir además la apertura le haría un boquete
+/// determinista a su pared. `seam_is_covered` mira las dos celdas del borde, la de acá y la de
+/// allá, para que los dos chunks que la comparten decidan lo mismo.
 fn stitch_edges(
     grid: &mut LayerGrid,
     rules: &LayerRules,
     world_seed: u64,
     (cx, cz): (i32, i32),
     layer_index: i32,
+    authored: &super::authored_rooms::AuthoredRoomSet,
 ) {
     let last = CHUNK_CELLS - 1;
+    let n = CHUNK_CELLS as i32;
 
     // Cada apertura devuelve las celdas que carvó (borde + túnel interior).
     // Se acumulan y se pasan a `repair_connectivity` como `protected`: el
@@ -128,19 +154,31 @@ fn stitch_edges(
 
     // East border: shared with (cx+1, cz). Canonical key = this chunk.
     let p = aperture_pos(world_seed, cx, cz, EdgeAxis::Vertical, layer_index);
-    carved.extend(carve_aperture(grid, rules, (last, p), (-1i32, 0i32)));
+    let pi = p as i32;
+    if !super::authored_rooms::seam_is_covered(authored, (n - 1, pi), (n, pi)) {
+        carved.extend(carve_aperture(grid, rules, (last, p), (-1i32, 0i32)));
+    }
 
     // West border: shared with (cx-1, cz). Canonical key = the western chunk.
     let p = aperture_pos(world_seed, cx - 1, cz, EdgeAxis::Vertical, layer_index);
-    carved.extend(carve_aperture(grid, rules, (0, p), (1, 0)));
+    let pi = p as i32;
+    if !super::authored_rooms::seam_is_covered(authored, (0, pi), (-1, pi)) {
+        carved.extend(carve_aperture(grid, rules, (0, p), (1, 0)));
+    }
 
     // North border (z+1): shared with (cx, cz+1). Canonical key = this chunk.
     let p = aperture_pos(world_seed, cx, cz, EdgeAxis::Horizontal, layer_index);
-    carved.extend(carve_aperture(grid, rules, (p, last), (0, -1)));
+    let pi = p as i32;
+    if !super::authored_rooms::seam_is_covered(authored, (pi, n - 1), (pi, n)) {
+        carved.extend(carve_aperture(grid, rules, (p, last), (0, -1)));
+    }
 
     // South border (z-1): shared with (cx, cz-1). Canonical key = the southern chunk.
     let p = aperture_pos(world_seed, cx, cz - 1, EdgeAxis::Horizontal, layer_index);
-    carved.extend(carve_aperture(grid, rules, (p, 0), (0, 1)));
+    let pi = p as i32;
+    if !super::authored_rooms::seam_is_covered(authored, (pi, 0), (pi, -1)) {
+        carved.extend(carve_aperture(grid, rules, (p, 0), (0, 1)));
+    }
 
     // Reconnection rule (§5) applied to the seams: the freshly carved aperture
     // corridors may still be separate components (e.g. the inward carve stopped

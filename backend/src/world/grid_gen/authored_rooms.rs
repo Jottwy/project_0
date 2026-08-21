@@ -509,9 +509,39 @@ fn retired_by_lower_anchor(
 /// ¿La RESERVA de este plan asoma por el chunk `0..CHUNK_CELLS`? Se mide contra la reserva y no
 /// contra el footprint: el margen y el anillo también hay que tallarlos aquí, y una sala cuyo
 /// footprint quede justo al otro lado de la frontera sigue teniendo que macizar celdas de este lado.
+///
+/// **Y de aquí sale, gratis, la simetría que necesita la supresión de costura de ADR-084 punto 4.**
+/// Preocupa el caso de una reserva que acabe EXACTAMENTE en la frontera: taparía la celda 19 de este
+/// chunk y ninguna del vecino, el vecino no la vería, no suprimiría su apertura, y la costura
+/// saldría abierta por un lado y tapiada por el otro. No puede pasar, y lo garantiza `draw_origin`:
+/// el origen va de `USABLE_LO + BORDER_CELLS = 3` para arriba y la reserva acaba en `hi_limit + 1`
+/// como mucho, así que `x1 ≤ 19` para una sala que cabe en su chunk y `x1 ≥ 22` para una que no
+/// —tamaño 16 celdas y origen 4 es el mínimo—. `x1 == 20` no lo produce ningún tamaño. Una reserva
+/// que tape una costura la desborda siempre por los dos lados.
 fn reaches_this_chunk(plan: &AuthoredRoomPlan) -> bool {
     let n = CHUNK_CELLS as i32;
     rects_overlap(plan.reserve_rect(), (0, 0, n, n))
+}
+
+/// ¿Tapa alguna sala la costura que pasa por estas dos celdas, la de acá y la de allá del borde?
+///
+/// ADR-084 punto 4 (y enmienda 1 punto 1): en un borde que una sala cubre NO se abre apertura — la
+/// sala ES la conexión, y su interior cruza la costura por construcción. Sin esto, `stitch_edges`
+/// corre ANTES del tallado autorado y `carve_aperture` perfora `SealedWall` una vez a propósito: la
+/// apertura quedaría como un boquete determinista en la pared de la sala.
+///
+/// Se miran las DOS celdas del borde y no solo la propia, porque los dos chunks que comparten la
+/// costura tienen que llegar al mismo veredicto y cada uno la nombra con sus coordenadas. Que los
+/// dos vean la sala lo garantiza la holgura de `reaches_this_chunk`.
+///
+/// No aísla el chunk: una reserva empieza en `USABLE_LO` en coordenadas de su ancla, así que jamás
+/// puede tapar a la vez las cuatro costuras de un mismo chunk.
+pub(super) fn seam_is_covered(rooms: &AuthoredRoomSet, near: (i32, i32), far: (i32, i32)) -> bool {
+    let inside =
+        |r: (i32, i32, i32, i32), c: (i32, i32)| c.0 >= r.0 && c.0 < r.2 && c.1 >= r.1 && c.1 < r.3;
+    rooms
+        .iter()
+        .any(|p| inside(p.reserve_rect(), near) || inside(p.reserve_rect(), far))
 }
 
 /// De dónde sale la habitación construible del ancla que se está evaluando.
@@ -1153,6 +1183,26 @@ mod tests {
     fn rooms_of(m: &RoomManifest, seed: u64, cx: i32, cz: i32) -> AuthoredRoomSet {
         let build = super::super::build_rooms::room_in_chunk(seed, cx, cz, AUTHORED_LAYER);
         plan_authored_rooms(m, seed, cx, cz, AUTHORED_LAYER, build.as_ref())
+    }
+
+    /// Las sondas que llaman a `generate_chunk_layer` con un manifiesto DE PRUEBA no pueden convivir
+    /// con las que cargan el real.
+    ///
+    /// `active_manifest()` es un `OnceLock` del PROCESO, y los tests corren en hilos del mismo
+    /// proceso: en cuanto `real_manifest_cadence` o `dump_chunk` ponen `ROOM_MANIFEST_ENV`,
+    /// `generate_chunk_layer` empieza a tallar `room_0` dentro del bloque que la sonda estaba
+    /// midiendo, encima de sus propias salas. No revienta nada — devuelve otro numero. Medido: las
+    /// incomunicadas pasaban de 1 de 11 a 5 de 11 segun que sonda hubiera corrido antes.
+    ///
+    /// Se cae a proposito en vez de avisar: un numero que cambia segun el orden de los tests es peor
+    /// que un test rojo, porque se lee como un hallazgo.
+    fn require_no_global_manifest(probe: &str) {
+        assert!(
+            super::super::room_manifest::active_manifest().is_none(),
+            "{probe}: otra sonda ya cargo el manifiesto real en el OnceLock del proceso y los \
+             numeros saldrian falseados. Lanzala sola:\n    cargo test --manifest-path \
+             backend/Cargo.toml --release {probe} -- --ignored --nocapture"
+        );
     }
 
     /// Barre chunks hasta encontrar uno con sala, para no depender de que un chunk concreto gane un
@@ -2242,10 +2292,78 @@ mod tests {
                         assert!(x0 >= USABLE_LO as i32 && z0 >= USABLE_LO as i32);
                         assert!(x1 <= USABLE_HI_SPAN as i32 + 1);
                         assert!(z1 <= USABLE_HI_SPAN as i32 + 1);
+                        // Y NUNCA acaba justo en la frontera. De esto depende que los dos chunks de
+                        // una costura vean la misma sala y la supriman los dos — ver
+                        // `reaches_this_chunk`.
+                        assert_ne!(x1, CHUNK_CELLS as i32, "la reserva muere en la frontera x");
+                        assert_ne!(z1, CHUNK_CELLS as i32, "la reserva muere en la frontera z");
                     }
                 }
             }
         }
+    }
+
+    /// Cuantas costuras de un chunk tapa alguna sala, barriendo TODAS las filas de borde y no solo
+    /// la que el sorteo elige. Devuelve `(tapadas, desacuerdos)`.
+    ///
+    /// El desacuerdo es lo que de verdad se persigue: los dos chunks que comparten una costura la
+    /// nombran con coordenadas distintas y tienen que llegar al mismo veredicto. Si uno suprime y el
+    /// otro no, sale un pasillo abierto por un lado y tapiado por el otro.
+    fn seam_verdicts(m: &RoomManifest) -> (usize, usize) {
+        let n = CHUNK_CELLS as i32;
+        let (mut covered, mut disagreements) = (0, 0);
+        for seed in SEEDS {
+            for cx in -8..8 {
+                for cz in -8..8 {
+                    let here = rooms_of(m, seed, cx, cz);
+                    let east = rooms_of(m, seed, cx + 1, cz);
+                    let north = rooms_of(m, seed, cx, cz + 1);
+                    for p in 1..n - 1 {
+                        for (a, b) in [
+                            (
+                                seam_is_covered(&here, (n - 1, p), (n, p)),
+                                seam_is_covered(&east, (0, p), (-1, p)),
+                            ),
+                            (
+                                seam_is_covered(&here, (p, n - 1), (p, n)),
+                                seam_is_covered(&north, (p, 0), (p, -1)),
+                            ),
+                        ] {
+                            if a != b {
+                                disagreements += 1;
+                            }
+                            if a {
+                                covered += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        (covered, disagreements)
+    }
+
+    /// ADR-084 punto 4: los dos chunks que comparten una costura deciden lo MISMO sobre si una sala
+    /// la tapa. Es lo que sostiene la holgura de una celda de `reaches_this_chunk`: una reserva puede
+    /// acabar justo en la frontera y entonces solo uno de los dos la veria.
+    #[test]
+    fn both_sides_of_a_seam_agree_on_whether_a_room_covers_it() {
+        let (covered, disagreements) = seam_verdicts(&multi_chunk_manifest());
+        assert_eq!(disagreements, 0, "costuras con veredicto distinto por lado");
+        assert!(
+            covered > 0,
+            "ninguna sala tapo una costura: la supresion no se probo"
+        );
+    }
+
+    /// Y con el contenido de hoy NINGUNA costura se suprime, que es por lo que este trozo no mueve
+    /// el mundo: una sala que cabe en su chunk reserva dentro de `[1, 18]` y las filas de costura
+    /// son la 0 y la 19.
+    #[test]
+    fn a_room_that_fits_in_its_chunk_never_covers_a_seam() {
+        let (covered, disagreements) = seam_verdicts(&manifest());
+        assert_eq!(disagreements, 0);
+        assert_eq!(covered, 0, "una sala de un solo chunk tapo una costura");
     }
 
     /// SONDA: cuanto cuesta el barrido de vecindario de ADR-084 punto 3, que es la verificacion (f)
@@ -2262,6 +2380,7 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_neighbour_sweep_cost() {
+        require_no_global_manifest("probe_neighbour_sweep_cost");
         let m = manifest();
         let rules = &LAYER_PROFILES[0];
         const N: i32 = 40; // 1600 chunks
@@ -2308,6 +2427,7 @@ mod tests {
     #[test]
     #[ignore]
     fn probe_unreachable_rooms() {
+        require_no_global_manifest("probe_unreachable_rooms");
         const B: usize = 3; // chunks por lado del bloque
         const W: usize = B * CHUNK_CELLS;
         let rules = &LAYER_PROFILES[0];
