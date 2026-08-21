@@ -142,15 +142,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // con 2,5 m de profundidad sobre una losa de 0,2 m, la mayor parte del pozo está al
             // aire y también se ve por fuera. Por eso lleva su rectángulo interior y otro
             // exterior, igual que la sala.
-            var pitsIn = PitRects(def, f => true, f => 0f);
+            // Solo los de planta baja: uno de entreplanta no cuelga del suelo de la sala, atraviesa
+            // su propia losa — lo resuelve AddLevelSlab.
+            System.Func<RoomDefinition.FloorHole, bool> atFloor = f => f.level <= 0;
+            var pitsIn = PitRects(def, atFloor, f => 0f);
             // La tapa EXTERIOR (la que se ve desde debajo del edificio) se corta para TODOS los
-            // pozos, con fondo o sin él. La versión anterior se la saltaba para los bottomless
+            // pozos que cuelguen (Well/Bottomless), con fondo o sin él — Through no cuelga, así
+            // que no engorda nada por fuera. La versión anterior se la saltaba para los bottomless
             // razonando que "rematan dentro de sí mismos y nunca llegan a tocarla": es falso, y
             // por eso el pozo salía tapado. El tubo va de `yShaft = -max(Depth, t)` hasta el
             // suelo de la sala, y esta losa está a `-t` — como `max(Depth, t) >= t`, el tubo la
             // atraviesa SIEMPRE. Sin recortarla quedaba una chapa cruzando el pozo justo debajo
             // del borde: el agujero se veía abierto arriba y tapado un palmo más abajo.
-            var pitsOut = PitRects(def, f => true, f => t);
+            var pitsOut = PitRects(def, atFloor,
+                f => f.EffectiveMode() == RoomDefinition.PitMode.Through ? 0f : t);
 
             // Techo inclinado: la altura pasa a ser funcion del punto. Con tilt 0 estas dos
             // funciones devuelven la constante de siempre y no cambia nada.
@@ -180,7 +185,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddCap(outer, yTop, Vector3.up, SubmeshWall, sideCutsOut, null, topAt, ceilUV);
             AddCap(inner, yFloor, Vector3.up, SubmeshFloor, sideCuts, pitsIn);
             AddCap(inner, yCeil, Vector3.down, SubmeshCeiling, sideCuts, null, ceilAt, ceilUV);
-            AddPits(def, yFloor, yBottom, t, pitsIn, pitsOut);
+            AddPits(def, atFloor, yFloor, yBottom, t, pitsIn, pitsOut);
 
             // Paredes: cara interior, cara exterior y las jambas que las cosen a través del
             // grosor en cada boquete. Van juntas y no en dos pasadas independientes porque un
@@ -403,8 +408,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
-        /// <summary>Rectángulos de los pozos, ya girados y engordados <paramref name="grow"/> por
-        /// cada lado. Vacío si la sala no tiene ninguno.</summary>
+        /// <summary>Esquinas de los pozos que pasen <paramref name="include"/>, ya giradas y
+        /// engordadas <paramref name="grow"/> por cada lado (con <see cref="PitCorners"/>, así que
+        /// N-agonales si <see cref="RoomDefinition.FloorHole.sides"/> lo pide). Vacío si no hay
+        /// ninguno.</summary>
         private static List<Vector2[]> PitRects(RoomDefinition def,
             System.Func<RoomDefinition.FloorHole, bool> include,
             System.Func<RoomDefinition.FloorHole, float> growFor)
@@ -412,60 +419,56 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             var list = new List<Vector2[]>();
             if (def.floorHoles == null) return list;
             foreach (var f in def.floorHoles)
-                if (IsRoomFloorPit(f) && include(f))
-                {
-                    float grow = growFor(f);
-                    list.Add(BoxCorners(f.position, f.sizeX + grow * 2f, f.sizeZ + grow * 2f, f.yawDegrees));
-                }
+                if (f != null && f.IsValid() && include(f))
+                    list.Add(PitCorners(f, growFor(f)));
             return list;
         }
 
-        /// <summary>La MISMA condición en los dos sitios que recorren <c>floorHoles</c> para el
-        /// SUELO DE LA SALA: aquí y en <see cref="AddPits"/>. Si se separaran, un pozo podría
-        /// colarse en una lista y no en la otra, y los índices de <c>pitsIn</c>/<c>pitsOut</c>
-        /// dejarían de corresponder al pozo que tocan.
-        ///
-        /// El filtro por piso va DENTRO por ese mismo motivo: un pozo de entreplanta no cuelga del
-        /// suelo de la sala, atraviesa su losa y lo resuelve <see cref="AddLevelSlab"/>. Dejarlo
-        /// fuera de una de las dos listas y dentro de la otra es exactamente el desfase que este
-        /// predicado existe para impedir.</summary>
-        private static bool IsRoomFloorPit(RoomDefinition.FloorHole f) =>
-            f != null && f.level <= 0 && f.sizeX > 0.01f && f.sizeZ > 0.01f
-            && (f.bottomless || f.depth > 0.01f);
-
         /// <summary>
-        /// El pozo: una caja hueca colgando bajo la losa.
+        /// Los pozos de <paramref name="include"/> anclados a la losa [<paramref name="bottom"/>,
+        /// <paramref name="top"/>] (con <paramref name="bottom"/> = <paramref name="top"/> − t):
+        /// recorta el hueco que las tapas de esa losa ya llevan cortado en
+        /// <paramref name="pitsIn"/>/<paramref name="pitsOut"/> y, según
+        /// <see cref="RoomDefinition.FloorHole.EffectiveMode"/>, añade lo que le falte —
+        /// <c>Through</c> no añade nada más (el hueco recto YA lo dejó la tapa); <c>Well</c>/
+        /// <c>Bottomless</c> cuelgan por debajo de <paramref name="bottom"/> con paredes propias,
+        /// el MISMO pozo de siempre solo que anclado a la losa de su piso en vez de siempre al
+        /// suelo de la sala.
         ///
-        /// Cuatro superficies, y las cuatro hacen falta para que cierre:
-        ///  · el tubo INTERIOR (del fondo al suelo de la sala) — lo que se ve al asomarse;
-        ///  · el tubo EXTERIOR (de bajo el fondo a la cara inferior de la losa) — el pozo visto
+        /// Cuatro superficies por pozo colgante, y las cuatro hacen falta para que cierre:
+        ///  · el tubo INTERIOR (del fondo a <paramref name="top"/>) — lo que se ve al asomarse;
+        ///  · el tubo EXTERIOR (de bajo el fondo a <paramref name="bottom"/>) — el pozo visto
         ///    desde fuera, que existe porque cuelga al aire;
-        ///  · el fondo por arriba, donde se cae de pie;
-        ///  · el fondo por abajo, que se ve desde debajo de la sala.
+        ///  · el fondo por arriba, donde se cae de pie (solo <c>Well</c>);
+        ///  · el fondo por abajo, que se ve desde debajo de la losa (solo <c>Well</c>).
         ///
-        /// El primer intento era UN tubo de una cara partido a la altura de la losa. Los dos
-        /// trozos se emparejaban entre sí y dejaban el borde de la tapa exterior sin pareja:
-        /// 4 aristas abiertas por pozo. Un tubo sin grosor no es un sólido.
-        ///
-        /// Uno SIN FONDO es la misma caja hueca, solo que en vez del fondo lleva el canto del
-        /// muro (<see cref="AddPitRim"/>): sigue cerrando, pero por la boca no hay nada. Durante
-        /// un tiempo se resolvió dejándole aristas sin pareja a propósito y una lista de
-        /// excepciones que los tests tenían que conocer; ya no hace falta ninguna — la malla
-        /// vuelve a ser un cascarón cerrado SIEMPRE, y cualquier arista suelta es un bug otra vez.
+        /// FRÁGIL A PROPÓSITO: <c>pitsIn[k]</c>/<c>pitsOut[k]</c> tienen que corresponder al MISMO
+        /// pozo — los tres salen del mismo <paramref name="include"/> sobre <c>def.floorHoles</c>,
+        /// en el mismo orden. Si un llamador construye estas tres listas con predicados que no
+        /// casan letra por letra, un pozo se cuela en una lista y no en la otra.
         /// </summary>
-        private static void AddPits(RoomDefinition def, float yFloor, float yBottom, float t,
-            List<Vector2[]> pitsIn, List<Vector2[]> pitsOut)
+        private static void AddPits(RoomDefinition def, System.Func<RoomDefinition.FloorHole, bool> include,
+            float top, float bottom, float t, List<Vector2[]> pitsIn, List<Vector2[]> pitsOut)
         {
             if (pitsIn.Count == 0) return;
-            int pIn = 0, pOut = 0;
+            int k = 0;
             foreach (var f in def.floorHoles)
             {
-                if (!IsRoomFloorPit(f)) continue;
-                var rin = pitsIn[pIn++];
+                if (f == null || !f.IsValid() || !include(f)) continue;
+                var rin = pitsIn[k];
+                var rout = pitsOut[k];
+                k++;
+                var mode = f.EffectiveMode();
 
-                var rout = pitsOut[pOut++];
+                if (mode == RoomDefinition.PitMode.Through)
+                {
+                    // Agujero recto de lado a lado de la losa — el mismo tubo corto que abre una
+                    // escalera, sin pared propia ni fondo: el grosor de la losa YA hace de pared.
+                    AddPitTube(rin, bottom, top, inward: true);
+                    continue;
+                }
 
-                if (f.bottomless)
+                if (mode == RoomDefinition.PitMode.Bottomless)
                 {
                     // Tiene paredes hasta Depth metros, igual que un pozo con fondo — Depth
                     // SIGUE mandando. Y al final de esas paredes, literalmente NADA que cruce la
@@ -479,21 +482,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // rematado. Antes solo se emitía la cara de dentro: un tubo de una sola cara
                     // no es un sólido, y encima la losa exterior se quedaba sin recortar y
                     // cruzaba el pozo por delante.
-                    float yShaft = yFloor - Mathf.Max(f.depth, t);
-                    AddPitTube(rin, yShaft, yFloor, inward: true);
-                    AddPitTube(rout, yShaft, yBottom, inward: false);
+                    float yShaft = top - Mathf.Max(f.depth, t);
+                    AddPitTube(rin, yShaft, top, inward: true);
+                    AddPitTube(rout, yShaft, bottom, inward: false);
                     AddPitRim(rin, rout, yShaft);
                     continue;
                 }
 
-                float yPit = yFloor - f.depth;   // cara pisable del fondo
+                // Well.
+                float yPit = top - f.depth;      // cara pisable del fondo
                 float yUnder = yPit - t;         // cara inferior del fondo
 
                 AddCap(rin, yPit, Vector3.up, SubmeshFloor);
                 AddCap(rout, yUnder, Vector3.down, SubmeshWall);
 
-                AddPitTube(rin, yPit, yFloor, inward: true);
-                AddPitTube(rout, yUnder, yBottom, inward: false);
+                AddPitTube(rin, yPit, top, inward: true);
+                AddPitTube(rout, yUnder, bottom, inward: false);
             }
         }
 
@@ -508,19 +512,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// </summary>
         private static void AddPitRim(Vector2[] rin, Vector2[] rout, float y)
         {
-            for (int i = 0; i < 4; i++)
-                Quad(SubmeshWall, V(rin[i], y), V(rin[(i + 1) % 4], y),
-                    V(rout[(i + 1) % 4], y), V(rout[i], y), Vector3.down);
+            int n = rin.Length;
+            for (int i = 0; i < n; i++)
+                Quad(SubmeshWall, V(rin[i], y), V(rin[(i + 1) % n], y),
+                    V(rout[(i + 1) % n], y), V(rout[i], y), Vector3.down);
         }
 
         private static void AddPitTube(Vector2[] rect, float y0, float y1, bool inward)
         {
             if (y1 - y0 < 1e-4f) return;
-            Vector2 c = (rect[0] + rect[1] + rect[2] + rect[3]) * 0.25f;
+            int n = rect.Length;
+            Vector2 c = Vector2.zero;
+            for (int i = 0; i < n; i++) c += rect[i];
+            c /= n;
 
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < n; i++)
             {
-                Vector2 a = rect[i], b = rect[(i + 1) % 4];
+                Vector2 a = rect[i], b = rect[(i + 1) % n];
                 Vector3 e = new Vector3(b.x - a.x, 0f, b.y - a.y);
                 var nrm = new Vector3(e.z, 0f, -e.x).normalized;
                 Vector2 mid = (a + b) * 0.5f;
@@ -544,23 +552,36 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             float top = def.ClampLevelHeight(lvl.height, minCeil);
             float bottom = top - t;
 
+            // Los pozos anclados a ESTA losa, cualquiera que sea su EffectiveMode() — Through,
+            // Well o Bottomless. Mismo predicado en las dos listas: ver el porqué en AddPits.
+            System.Func<RoomDefinition.FloorHole, bool> atThisSlab = f =>
+                f.level > 0 && Mathf.Abs(def.StoreyBaseY(f.level, minCeil) - top) < 1e-3f;
+            var pitsIn = PitRects(def, atThisSlab, f => 0f);
+            // Solo los que cuelgan (Well/Bottomless) engordan el hueco de la tapa exterior — un
+            // Through no tiene pared propia que alojar, así que su hueco mide igual arriba y abajo.
+            var pitsOut = PitRects(def, atThisSlab,
+                f => f.EffectiveMode() == RoomDefinition.PitMode.Through ? 0f : t);
+
             _levelHoles.Clear();
             foreach (var s in def.StairsReaching(top, minCeil))
                 _levelHoles.Add(BoxCorners(s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees));
-            // Un pozo abierto EN esta losa: el mismo hueco recto que abre una escalera, porque la
-            // losa tiene un grosor y nada debajo que forrar. Por eso `depth`/`bottomless` no
-            // pintan nada aquí — ver RoomDefinition.FloorHole.level.
-            foreach (var f in def.PitsThroughSlab(top, minCeil))
-                _levelHoles.Add(BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees));
+            int stairHoleCount = _levelHoles.Count;
+            _levelHoles.AddRange(pitsIn);
 
-            AddCap(contour, bottom, Vector3.down, SubmeshCeiling, null, _levelHoles);
+            _levelHolesOut.Clear();
+            for (int i = 0; i < stairHoleCount; i++) _levelHolesOut.Add(_levelHoles[i]); // sin engordar
+            _levelHolesOut.AddRange(pitsOut);
+
+            AddCap(contour, bottom, Vector3.down, SubmeshCeiling, null, _levelHolesOut);
             AddCap(contour, top, Vector3.up, SubmeshFloor, null, _levelHoles);
 
-            // El agujero de cada escalera: el mismo tubo recto que un pozo sin inglete, porque
-            // aquí tampoco hay nada por debajo contra lo que encajarlo — las dos tapas de la
-            // losa usan EL MISMO rectángulo.
-            foreach (var hole in _levelHoles)
-                AddPitTube(hole, bottom, top, inward: true);
+            // El agujero de cada escalera: el mismo tubo recto que un pozo Through, porque aquí
+            // tampoco hay nada por debajo contra lo que encajarlo. Los pozos los cose AddPits —
+            // Through con el mismo tubo corto, Well/Bottomless colgando de `bottom`.
+            for (int i = 0; i < stairHoleCount; i++)
+                AddPitTube(_levelHoles[i], bottom, top, inward: true);
+
+            AddPits(def, atThisSlab, top, bottom, t, pitsIn, pitsOut);
 
             AddSlabRim(contour, bottom, top);
         }
@@ -584,6 +605,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         private static readonly List<Vector2[]> _levelHoles = new List<Vector2[]>();
+        private static readonly List<Vector2[]> _levelHolesOut = new List<Vector2[]>();
 
         private static readonly List<Vector2> _capRing = new List<Vector2>();
         private static readonly List<IList<Vector2>> _capHoles = new List<IList<Vector2>>();
@@ -1065,6 +1087,48 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 centre + ax * hx + az * hz,
                 centre - ax * hx + az * hz,
             };
+        }
+
+        /// <summary>
+        /// Esquinas del hueco de un pozo. <c>sides &lt; 3</c> da el rectángulo exacto de siempre
+        /// (mismo camino que <see cref="BoxCorners"/> — compat visual EXACTA de cualquier pozo
+        /// horneado antes de que <see cref="RoomDefinition.FloorHole.sides"/> existiera, que
+        /// deserializa a 0). <c>sides &gt;= 3</c> da un N-ágono con el MISMO blend círculo/rectángulo
+        /// que <see cref="RoomDefinition.PolygonContour"/> usa para la planta y el mismo generador
+        /// angular que <see cref="AddPrism"/> usa para una columna — mismo offset <c>π/N</c> para
+        /// que el vértice caiga en la esquina cuando <c>squareness = 1</c>.
+        ///
+        /// Reusa el convenio de giro de <see cref="BoxCorners"/> (ax/az) y no el literal de
+        /// <see cref="AddPrism"/>: son la MISMA rotación aplicada a coordenadas locales, pero así
+        /// compone directamente con lo que ya espera <c>PitRects</c>.
+        ///
+        /// <paramref name="grow"/> engorda el semieje por igual en las dos direcciones — el mismo
+        /// margen que separan hoy <c>pitsIn</c>/<c>pitsOut</c> (el grosor de la pared del pozo).
+        /// </summary>
+        internal static Vector2[] PitCorners(RoomDefinition.FloorHole f, float grow)
+        {
+            if (f.sides < 3)
+                return BoxCorners(f.position, f.sizeX + grow * 2f, f.sizeZ + grow * 2f, f.yawDegrees);
+
+            int n = f.sides;
+            float a = f.sizeX * 0.5f + grow, b = f.sizeZ * 0.5f + grow;
+            float sq = Mathf.Clamp01(f.squareness);
+            float r = f.yawDegrees * Mathf.Deg2Rad;
+            var ax = new Vector2(Mathf.Cos(r), -Mathf.Sin(r));
+            var az = new Vector2(Mathf.Sin(r), Mathf.Cos(r));
+
+            var poly = new Vector2[n];
+            for (int i = 0; i < n; i++)
+            {
+                float th = Mathf.PI / n + i * 2f * Mathf.PI / n;
+                float cos = Mathf.Cos(th), sin = Mathf.Sin(th);
+                float m = Mathf.Max(Mathf.Abs(cos), Mathf.Abs(sin));
+                if (m < 1e-6f) m = 1e-6f;
+                float lx = Mathf.Lerp(cos, cos / m, sq) * a;
+                float lz = Mathf.Lerp(sin, sin / m, sq) * b;
+                poly[i] = f.position + ax * lx + az * lz;
+            }
+            return poly;
         }
 
         /// <summary>

@@ -45,7 +45,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // posible aquí porque el jugador ve una cosa y el juego hace otra.
             AddFloorSlab(boxes, def, bb, t, yBottom, yFloor);
             AddCeilingSlab(boxes, def, bb, t);
-            AddPitBoxes(boxes, def, yFloor, t);
+            AddPitBoxes(boxes, def, def.MinCeilingOver(inner), t);
             AddLevelBoxes(boxes, def, bb, t, def.MinCeilingOver(inner));
 
             int n = inner.Length;
@@ -303,9 +303,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 {
                     // `level > 0` no perfora este suelo: perfora la losa de su piso, y de eso se
                     // encarga AddLevelBoxes. Mismo reparto que en la malla.
-                    if (f == null || f.level > 0 || f.sizeX <= 0.01f || f.sizeZ <= 0.01f
-                        || (!f.bottomless && f.depth <= 0.01f)) continue;
-                    pits.Add(XZBounds(RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees)));
+                    if (f == null || f.level > 0 || !f.IsValid()) continue;
+                    pits.Add(XZBounds(RoomMeshBuilder.PitCorners(f, 0f)));
                 }
             AddSlabWithHoles(boxes, bb, (yBottom + yFloor) * 0.5f, t, pits);
         }
@@ -329,10 +328,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 foreach (var s in def.StairsReaching(top, minCeil))
                     holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
                         s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees)));
-                // Los pozos abiertos EN esta losa, exactamente los mismos que abre la malla.
-                foreach (var f in def.PitsThroughSlab(top, minCeil))
-                    holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
-                        f.position, f.sizeX, f.sizeZ, f.yawDegrees)));
+                // Los pozos anclados EN esta losa (cualquier modo), exactamente los mismos que
+                // abre la malla.
+                foreach (var f in def.PitsAtSlab(top, minCeil))
+                    holes.Add(XZBounds(RoomMeshBuilder.PitCorners(f, 0f)));
 
                 AddSlabWithHoles(boxes, bb, top - t * 0.5f, t, holes);
             }
@@ -388,44 +387,63 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// poco antes de tocar el techo pintado, nunca se atraviesa.
         /// </summary>
         /// <summary>
-        /// Lo que hay DENTRO de un pozo: las cuatro paredes del hueco, para no salirse de lado
-        /// mientras se está dentro, y — solo si tiene fondo — la losa en la que se aterriza.
-        /// <see cref="AddFloorSlab"/> ya abre el agujero en la losa de arriba; esto es lo que hay
-        /// dentro de ese agujero.
+        /// Lo que hay DENTRO de un pozo que CUELGA (Well/Bottomless, en cualquier piso): las
+        /// paredes del hueco, para no salirse de lado mientras se está dentro, y — solo si tiene
+        /// fondo — la losa en la que se aterriza. <see cref="AddFloorSlab"/>/<see cref="AddLevelBoxes"/>
+        /// ya abren el agujero en la losa de arriba; esto es lo que hay dentro de ese agujero.
         ///
-        /// Un pozo <see cref="RoomDefinition.FloorHole.bottomless"/> SÍ tiene paredes — hasta
-        /// `Depth` metros, igual que uno con fondo — pero nunca losa: a partir de ahí no hay
-        /// nada, ni suelo ni pared, y se sigue cayendo.
+        /// Un pozo <see cref="RoomDefinition.PitMode.Through"/> no pasa por aquí: el grosor de la
+        /// losa YA hace de pared, y el hueco recto que abre el suelo/techo de esa losa es toda su
+        /// colisión — nada que añadir. Un <see cref="RoomDefinition.PitMode.Bottomless"/> SÍ tiene
+        /// paredes — hasta <c>Depth</c> metros, igual que uno con fondo — pero nunca losa: a partir
+        /// de ahí no hay nada, ni suelo ni pared, y se sigue cayendo.
         /// </summary>
-        private static void AddPitBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition def, float yFloor, float t)
+        private static void AddPitBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition def, float minCeil, float t)
         {
             if (def.floorHoles == null) return;
             foreach (var f in def.floorHoles)
             {
-                // Solo los de planta baja cuelgan del suelo de la sala con paredes y fondo; el de
-                // una entreplanta es un hueco recto en su losa y no tiene ni lo uno ni lo otro.
-                if (f == null || f.level > 0 || f.sizeX <= 0.01f || f.sizeZ <= 0.01f) continue;
-                if (!f.bottomless && f.depth <= 0.01f) continue;
+                if (f == null || !f.IsValid()) continue;
+                var mode = f.EffectiveMode();
+                if (mode == RoomDefinition.PitMode.Through) continue;
 
+                // Ancla a la losa de SU piso — StoreyBaseY(0, ...) da 0f, el yFloor de siempre.
+                float top = def.StoreyBaseY(f.level, minCeil);
                 // El fondo de la pared: el propio suelo del pozo si lo tiene, o hasta donde
                 // llegue `Depth` (con un mínimo de `t`, igual que en la malla) si no.
-                float yBase = f.bottomless ? yFloor - Mathf.Max(f.depth, t) : yFloor - f.depth;
+                float yBase = mode == RoomDefinition.PitMode.Bottomless
+                    ? top - Mathf.Max(f.depth, t) : top - f.depth;
 
-                if (!f.bottomless)
-                    boxes.Add(Box(new Vector3(f.position.x, yBase - t * 0.5f, f.position.y),
-                        new Vector3(f.sizeX, t, f.sizeZ), f.yawDegrees));
-
-                var corners = RoomMeshBuilder.BoxCorners(f.position, f.sizeX, f.sizeZ, f.yawDegrees);
-                for (int i = 0; i < 4; i++)
+                if (mode == RoomDefinition.PitMode.Well)
                 {
-                    Vector2 a = corners[i], b = corners[(i + 1) % 4];
+                    if (f.sides < 3)
+                        boxes.Add(Box(new Vector3(f.position.x, yBase - t * 0.5f, f.position.y),
+                            new Vector3(f.sizeX, t, f.sizeZ), f.yawDegrees));
+                    else
+                    {
+                        // Un fondo N-agonal no cabe en una sola caja orientada — el mismo AABB
+                        // "sobra hueco, nunca falta" que ya usa AddFloorSlab para un pozo torcido.
+                        var fbb = XZBounds(RoomMeshBuilder.PitCorners(f, 0f));
+                        boxes.Add(Box(new Vector3(fbb.center.x, yBase - t * 0.5f, fbb.center.z),
+                            new Vector3(fbb.size.x, t, fbb.size.z), 0f));
+                    }
+                }
+
+                // Las paredes SÍ son exactas por faceta, cualquiera que sea `sides`: una caja
+                // orientada por lado, igual que las de la propia sala (AddWallBoxes) — más barato
+                // que trapezoides y sin aproximar nada.
+                var corners = RoomMeshBuilder.PitCorners(f, 0f);
+                int n = corners.Length;
+                for (int i = 0; i < n; i++)
+                {
+                    Vector2 a = corners[i], b = corners[(i + 1) % n];
                     float len = Vector2.Distance(a, b);
                     if (len < 1e-4f) continue;
                     Vector2 dir = (b - a) / len;
                     float yaw = Mathf.Atan2(-dir.y, dir.x) * Mathf.Rad2Deg;
                     Vector2 mid = (a + b) * 0.5f;
-                    boxes.Add(Box(new Vector3(mid.x, (yBase + yFloor) * 0.5f, mid.y),
-                        new Vector3(len, yFloor - yBase, t), yaw));
+                    boxes.Add(Box(new Vector3(mid.x, (yBase + top) * 0.5f, mid.y),
+                        new Vector3(len, top - yBase, t), yaw));
                 }
             }
         }

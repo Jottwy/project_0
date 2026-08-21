@@ -485,6 +485,89 @@ namespace BackroomsSurvival.Tests
             AssertRoom("bottomless pit next to a normal pit", d);
         }
 
+        // ── pozos poligonales ────────────────────────────────────────────────
+
+        /// <summary>Un pozo redondo (sides ≥ 3) usa el MISMO generador angular que la planta
+        /// (RoomDefinition.PolygonContour) para las N esquinas del hueco, y las mismas
+        /// AddPitTube/AddPitRim generalizadas de 4 a N caras. Si algo se rompe en esa
+        /// generalización, aquí sale como cascarón abierto o cara invertida.</summary>
+        [Test]
+        public void Polygonal_well_pit_shell_is_closed()
+        {
+            var d = Box(6, 6);
+            d.floorHoles = new[] { Pit(new Vector2(0f, 0f), 3f, 3f, 2f, 0f) };
+            d.floorHoles[0].sides = 8;
+            d.floorHoles[0].squareness = 0f;
+            AssertRoom("octagonal well pit", d);
+        }
+
+        /// <summary>El contraste sin fondo, mismo N-ágono: el hueco sigue enteramente abierto por
+        /// abajo, ni un triángulo cruzando la boca — mismo criterio que la versión rectangular.</summary>
+        [Test]
+        public void Polygonal_bottomless_pit_has_nothing_across_its_mouth()
+        {
+            var d = Box(6, 6);
+            d.floorHoles = new[] { Pit(new Vector2(0f, 0f), 3f, 3f, 2f, 0f) };
+            d.floorHoles[0].sides = 8;
+            d.floorHoles[0].squareness = 0f;
+            d.floorHoles[0].bottomless = true;
+            var m = AssertRoom("octagonal bottomless pit", d);
+            Assert.IsFalse(CrossesVertical(m, Vector2.zero, -50f, -0.001f),
+                "something crosses the octagonal shaft below the floor");
+        }
+
+        // ── modos de pozo en un piso alto ────────────────────────────────────
+
+        /// <summary>
+        /// La capacidad nueva: un pozo de entreplanta con Mode = Well cuelga por debajo de SU
+        /// losa (no del suelo de la sala) con paredes y fondo — antes de esto un pozo de piso alto
+        /// era SIEMPRE pasante puro, sin profundidad que elegir. Contraste directo con
+        /// <see cref="A_pit_on_a_level_opens_its_slab_and_not_the_room_floor"/>, que es el mismo
+        /// pozo en modo Through (el default, sin tocar `mode`).
+        /// </summary>
+        [Test]
+        public void Level_pit_with_well_mode_hangs_below_its_own_slab_with_a_floor()
+        {
+            var d = Box(4, 4);
+            d.heightMeters = 8f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 1.5f, 0f) };
+            d.floorHoles[0].level = 1;
+            d.floorHoles[0].mode = RoomDefinition.PitMode.Well;
+            AssertRoom("well pit on level 1", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            float minCeil = d.MinCeilingOver(d.InnerContour());
+            float slab = d.StoreyBaseY(1, minCeil);
+
+            // Un suelo en el que aterrizar, colgando bajo la losa del piso 1 — NO al fondo del
+            // pozo de planta baja, que aquí no existe.
+            Assert.IsTrue(Inside(cb, new Vector3(1f, slab - 1.5f - 0.05f, 1f)),
+                "no floor at the bottom of a Well pit on level 1");
+            // El suelo de la SALA (planta baja) no lo toca este pozo: sigue macizo en (1,1).
+            Assert.IsTrue(Inside(cb, new Vector3(1f, -0.1f, 1f)),
+                "a level-1 Well pit punched through the room's own ground floor");
+        }
+
+        /// <summary>El mismo pozo de piso alto, en Bottomless: cuelga con paredes pero sin fondo,
+        /// se sigue cayendo más allá de Depth — mismo contraste que la versión de planta baja.</summary>
+        [Test]
+        public void Level_pit_with_bottomless_mode_has_no_floor_to_land_on()
+        {
+            var d = Box(4, 4);
+            d.heightMeters = 8f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.floorHoles = new[] { Pit(new Vector2(1f, 1f), 3f, 2f, 1.5f, 0f) };
+            d.floorHoles[0].level = 1;
+            d.floorHoles[0].mode = RoomDefinition.PitMode.Bottomless;
+            AssertRoom("bottomless pit on level 1", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            float minCeil = d.MinCeilingOver(d.InnerContour());
+            float slab = d.StoreyBaseY(1, minCeil);
+            Assert.IsFalse(Inside(cb, new Vector3(1f, slab - 4f, 1f)), "something caught the fall");
+        }
+
         // ── rodapié y molduras ───────────────────────────────────────────────
 
         /// <summary>Apagado (el valor por defecto) no cambia nada: una sala ya horneada no

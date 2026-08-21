@@ -454,35 +454,81 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public float sizeX = 3f;
             public float sizeZ = 3f;
 
-            /// <summary>Cuánto se baja desde el suelo de la sala, en metros. Sin efecto si
-            /// <see cref="bottomless"/> está activo.</summary>
+            /// <summary>Lados del pozo. 0 (o menos de 3) = el rectángulo exacto de siempre
+            /// (<c>sizeX</c> × <c>sizeZ</c>). 3+ = un N-ágono, mismo blend círculo/rectángulo que
+            /// <see cref="squareness"/> y el mismo generador angular que <see cref="Pillar.sides"/>
+            /// usa para una columna. Un pozo guardado ANTES de este campo deserializa esto a 0 —
+            /// el default de C# — así que sigue siendo el rectángulo de siempre sin tocarlo.</summary>
+            [Range(0, 32)] public int sides;
+
+            /// <summary>0 = polígono inscrito puro (redondo), 1 = el rectángulo
+            /// <c>sizeX</c> × <c>sizeZ</c> exacto. Sin efecto si <see cref="sides"/> &lt; 3.</summary>
+            [Range(0f, 1f)] public float squareness = 1f;
+
+            /// <summary>Cuánto cuelga por debajo de la losa de <see cref="level"/>, en metros. Solo
+            /// se lee con <see cref="PitMode.Well"/>/<see cref="PitMode.Bottomless"/> — sin efecto
+            /// en <see cref="PitMode.Through"/>.</summary>
             public float depth = 2.5f;
 
             public float yawDegrees;
 
-            /// <summary>
-            /// Sin fondo: el agujero atraviesa el grosor del suelo de lado a lado y no hay nada
-            /// que lo cierre por abajo, ni pintado ni de colisión. Se sigue cayendo — a otra sala,
-            /// a otro nivel, o a nada si no hay nada debajo. <see cref="depth"/> deja de importar.
-            ///
-            /// Apagado (lo de siempre) el pozo tiene fondo propio a <see cref="depth"/> metros:
-            /// una losa en la que se aterriza y unas paredes que no se pueden atravesar de lado.
-            /// </summary>
+            /// <summary>LEGADO — solo de migración. Un pozo de planta baja (<see cref="level"/> 0)
+            /// guardado ANTES de que <see cref="mode"/> existiera trae aquí si colgaba sin fondo;
+            /// <see cref="EffectiveMode"/> lo lee UNA VEZ para derivar el modo real. No leer esto
+            /// directamente en ningún otro sitio.</summary>
             public bool bottomless;
 
             /// <summary>
-            /// En qué SUELO se abre: 0 = el de la sala (lo de siempre), k = la losa de la
-            /// entreplanta k-ésima contando desde abajo en altura.
-            ///
-            /// OJO, no es solo un desplazamiento vertical como en <see cref="WallHole.level"/>:
-            /// con k ≥ 1 el pozo deja de ser una caja que cuelga y pasa a ser un hueco que
-            /// atraviesa la losa de lado a lado, igual que el que abre una escalera al llegar.
-            /// Una losa tiene UN grosor y nada debajo que forrar, así que <see cref="depth"/> y
-            /// <see cref="bottomless"/> dejan de tener sentido y se ignoran — la herramienta los
-            /// apaga en cuanto eliges piso.
+            /// En qué SUELO se abre: 0 = el de la sala, k = la losa de la entreplanta k-ésima
+            /// contando desde abajo en altura. Solo decide el ANCLA vertical — qué losa perfora y,
+            /// si <see cref="EffectiveMode"/> cuelga, desde qué losa cuelga. Ortogonal al modo: antes
+            /// un piso alto forzaba SIEMPRE el agujero pasante; ahora el modo se elige aparte.
             /// </summary>
             [Min(0)] public int level;
+
+            /// <summary>El modo elegido. NO LEER DIRECTAMENTE fuera de <see cref="EffectiveMode"/> —
+            /// un pozo guardado antes de que este campo existiera tiene esto a
+            /// <see cref="PitMode.Legacy"/>.</summary>
+            public PitMode mode;
+
+            /// <summary>
+            /// El modo real de este pozo. Un <see cref="PitMode.Legacy"/> (el valor por defecto de
+            /// C#, así que también el de cualquier pozo guardado antes de este campo) se resuelve a
+            /// partir de <see cref="level"/> y <see cref="bottomless"/> — EXACTAMENTE el
+            /// comportamiento de antes de que el modo fuera elegible piso a piso: piso alto era
+            /// siempre pasante, planta baja colgaba con o sin fondo según <see cref="bottomless"/>.
+            /// Barato y determinista — no hace falta persistir el resultado, se deriva cada vez.
+            /// </summary>
+            public PitMode EffectiveMode() => mode != PitMode.Legacy ? mode
+                : level > 0 ? PitMode.Through
+                : bottomless ? PitMode.Bottomless
+                : PitMode.Well;
+
+            /// <summary>Tamaño real y, si cuelga con fondo, con algo de profundidad — un Well de
+            /// 0 m no es un pozo, es ruido. Through/Bottomless no necesitan <see cref="depth"/>
+            /// positiva (Bottomless la sustituye por el grosor de la losa como mínimo).</summary>
+            public bool IsValid() => sizeX > 0.01f && sizeZ > 0.01f
+                && (EffectiveMode() != PitMode.Well || depth > 0.01f);
         }
+
+        /// <summary>
+        /// Cómo se abre un pozo respecto a la losa de SU piso (<see cref="FloorHole.level"/>).
+        ///
+        /// <c>Legacy</c> es un SENTINEL, no un modo real: solo lo lleva un pozo guardado ANTES de
+        /// que este campo existiera (deserializa a 0, el primer valor del enum, cuando el nodo no
+        /// estaba en el JSON/YAML). Nunca lo elige la herramienta a propósito — el pit nuevo nace
+        /// en <see cref="Well"/>. Ver <see cref="FloorHole.EffectiveMode"/>.
+        ///
+        /// <c>Through</c>: agujero recto de lado a lado de la losa, sin fondo propio ni paredes
+        /// propias — el grosor de la losa YA hace de pared. Es lo que tenía SIEMPRE un pozo con
+        /// <c>level&gt;0</c>, y ahora también se puede pedir en planta baja.
+        ///
+        /// <c>Well</c>/<c>Bottomless</c>: cuelga <see cref="FloorHole.depth"/> metros por DEBAJO de
+        /// la losa de su piso, con paredes propias de grosor <c>wallThickness</c>. Es lo que tenía
+        /// SIEMPRE un pozo de planta baja (con/sin fondo), y ahora también se puede pedir en
+        /// cualquier entreplanta — cuelga bajo ESA losa, no bajo el suelo de la sala.
+        /// </summary>
+        public enum PitMode { Legacy, Through, Well, Bottomless }
 
         /// <summary>
         /// Una entreplanta: una losa horizontal a media altura, del ancho de toda la sala, con
@@ -500,7 +546,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>Qué es un <see cref="Marker"/>: no cambia geometría, solo dónde va algo que
-        /// otro sistema resuelve después.</summary>
+        /// otro sistema resuelve después. <see cref="Light"/> es LEGADO — las luces tienen grupo
+        /// propio ahora (<see cref="RoomDefinition.Light"/>/<see cref="lights"/>); el valor se
+        /// queda en el enum solo para no correr el riesgo de que un <c>kind</c> guardado como
+        /// entero se lea como otra cosa (`JsonUtility` serializa enums por índice), pero la
+        /// ventana no lo ofrece — ver <see cref="MigrateLegacyLightMarkers"/>.</summary>
         public enum MarkerKind { Prop, Light, Spawn }
 
         /// <summary>
@@ -534,25 +584,145 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             [Min(0)] public int level;
 
             /// <summary>Para Prop: qué prop, resuelto luego por un catálogo. Para Spawn: una
-            /// etiqueta libre ("player", "loot_common"...). Sin efecto en Light.</summary>
+            /// etiqueta libre ("player", "loot_common"...).</summary>
             public string tag = "";
 
-            // Solo relevantes con kind == Light: al guardar se convierten en un componente
-            // Light de verdad (ver RoomAuthoringWindow.SaveGeneratedRoom), así que una luz no
-            // necesita esperar a que nadie la resuelva — ya está lista al instanciar la sala.
+            // LEGADO — solo de migración. Un marcador kind==Light guardado antes de que las
+            // luces tuvieran grupo propio trae aquí sus valores; MigrateLegacyLightMarkers los
+            // traslada a una entrada de `lights` y ya no se leen desde ningún otro sitio.
             public Color lightColor = Color.white;
             [Min(0f)] public float lightIntensity = 1f;
             [Min(0f)] public float lightRange = 5f;
         }
 
+        /// <summary>Cómo se comporta una <see cref="Light"/> autorada. <c>Steady</c> es la de
+        /// siempre. <c>Flicker</c>/<c>Dead</c> reusan <c>BackroomsLighting.LampFlicker</c>, el
+        /// mismo comportamiento visual que ya tienen las lámparas proceduales del laberinto —
+        /// sin engancharse a su audio de zumbido, que es un sistema por-chunk aparte.</summary>
+        public enum LightBehavior { Steady, Flicker, Dead }
+
+        /// <summary>
+        /// Una luz autorada, con grupo propio (a diferencia de antes, cuando era un
+        /// <see cref="Marker"/> más mezclado con Prop/Spawn). Mismos campos posicionales que
+        /// <see cref="Marker"/> porque resuelve el mismo problema — dónde va algo, en qué piso —
+        /// pero una luz SÍ tiene comportamiento propio que editar, y mezclarla con props/spawns
+        /// era lo que impedía dársela sin liar las otras dos listas.
+        /// </summary>
+        [Serializable]
+        public sealed class Light
+        {
+            /// <summary>En metros, relativo al centro de la sala.</summary>
+            public Vector2 position;
+
+            /// <summary>Altura sobre el suelo de SU piso (<see cref="level"/>), en metros.</summary>
+            public float y;
+
+            public float yawDegrees;
+
+            /// <summary>Piso al que pertenece — ver <see cref="StoreyBaseY"/>.</summary>
+            [Min(0)] public int level;
+
+            public Color lightColor = Color.white;
+            [Min(0f)] public float lightIntensity = 1f;
+            [Min(0f)] public float lightRange = 5f;
+
+            public LightBehavior behavior = LightBehavior.Steady;
+
+            /// <summary>Frecuencia del parpadeo en Hz. Solo se lee con
+            /// <see cref="LightBehavior.Flicker"/>.</summary>
+            [Min(0.05f)] public float flickerHz = 2f;
+        }
+
         public WallHole[] holes = Array.Empty<WallHole>();
         public Pillar[] pillars = Array.Empty<Pillar>();
+
+        /// <summary>LEGADO — solo de migración. La ventana ya no crea ni edita retículas: al
+        /// cargar una sala, <see cref="MigrateLegacyPillarGrids"/> expande cualquier entrada de
+        /// aquí a pilares sueltos en <see cref="pillars"/> y vacía este array. Se queda declarado
+        /// (no se borra el campo) para que una sala horneada ANTES de esa migración (confirmado:
+        /// hay una en el pool con 18 pilares repartidos en dos retículas) siga deserializando su
+        /// contenido en vez de perderlo en silencio.</summary>
         public PillarGrid[] pillarGrids = Array.Empty<PillarGrid>();
+
         public Block[] blocks = Array.Empty<Block>();
         public Stairs[] stairs = Array.Empty<Stairs>();
         public FloorHole[] floorHoles = Array.Empty<FloorHole>();
         public Level[] levels = Array.Empty<Level>();
         public Marker[] markers = Array.Empty<Marker>();
+        public Light[] lights = Array.Empty<Light>();
+
+        /// <summary>
+        /// Traslada cualquier <see cref="Marker"/> de <see cref="MarkerKind.Light"/> a una entrada
+        /// de <see cref="lights"/> y lo quita de <see cref="markers"/>. Idempotente. Mismo patrón y
+        /// mismo punto de llamada que <see cref="MigrateLegacyPillarGrids"/> —
+        /// <c>RoomAuthoringWindow.LoadRoom</c>, la única puerta de entrada de una sala ya guardada
+        /// al editor.
+        /// </summary>
+        public void MigrateLegacyLightMarkers()
+        {
+            if (markers == null || markers.Length == 0) return;
+            var kept = new List<Marker>();
+            var moved = new List<Light>(lights ?? Array.Empty<Light>());
+            bool any = false;
+            foreach (var m in markers)
+            {
+                if (m != null && m.kind == MarkerKind.Light)
+                {
+                    any = true;
+                    moved.Add(new Light
+                    {
+                        position = m.position,
+                        y = m.y,
+                        yawDegrees = m.yawDegrees,
+                        level = m.level,
+                        lightColor = m.lightColor,
+                        lightIntensity = m.lightIntensity,
+                        lightRange = m.lightRange,
+                    });
+                }
+                else
+                {
+                    kept.Add(m);
+                }
+            }
+            if (!any) return;
+            markers = kept.ToArray();
+            lights = moved.ToArray();
+        }
+
+        /// <summary>
+        /// Expande cada <see cref="PillarGrid"/> a sus pilares individuales y vacía
+        /// <see cref="pillarGrids"/>. Idempotente — no-op si ya está vacío, así que llamarla dos
+        /// veces (o sobre una sala que nunca tuvo retículas) no duplica nada.
+        ///
+        /// Se llama UNA vez, al cargar la sala en la ventana (<c>RoomAuthoringWindow.LoadRoom</c>):
+        /// es el único punto de entrada de una <see cref="RoomDefinition"/> ya guardada al editor.
+        /// Deliberadamente NO se toca <c>RoomMeshBuilder</c>/<c>RoomColliderBuilder</c> — siguen
+        /// sabiendo dibujar <see cref="pillarGrids"/> si algún día llega uno sin migrar, así que
+        /// esto es una migración de AUTORÍA (qué se puede editar), no del generador.
+        /// </summary>
+        public void MigrateLegacyPillarGrids()
+        {
+            if (pillarGrids == null || pillarGrids.Length == 0) return;
+
+            var expanded = new List<Pillar>(pillars ?? Array.Empty<Pillar>());
+            foreach (var grid in pillarGrids)
+            {
+                if (grid == null) continue;
+                for (int ix = 0; ix < grid.countX; ix++)
+                    for (int iz = 0; iz < grid.countZ; iz++)
+                        expanded.Add(new Pillar
+                        {
+                            position = grid.PositionOf(ix, iz),
+                            size = grid.size,
+                            sides = grid.sides,
+                            yawDegrees = grid.yawDegrees,
+                            level = grid.level,
+                        });
+            }
+            pillars = expanded.ToArray();
+            pillarGrids = Array.Empty<PillarGrid>();
+        }
 
         /// <summary>
         /// Altura de nivel ya recortada: al menos <see cref="MinCeilingHeight"/> de hueco por
@@ -650,24 +820,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         }
 
         /// <summary>
-        /// Los pozos que perforan la losa cuyo canto SUPERIOR está a <paramref name="slabTop"/>.
-        /// El gemelo de <see cref="StairsReaching"/> y por el mismo motivo: malla y colliders
-        /// tienen que abrir el mismo hueco o se ve un pozo por el que no se cae.
+        /// Los pozos anclados a la losa cuyo canto SUPERIOR está a <paramref name="slabTop"/>,
+        /// cualquiera que sea su <see cref="FloorHole.EffectiveMode"/> — Through, Well o
+        /// Bottomless. El gemelo de <see cref="StairsReaching"/> y por el mismo motivo: malla y
+        /// colliders tienen que abrir el mismo hueco o se ve un pozo por el que no se cae.
         ///
         /// Se casa por ALTURA y no por índice de array porque el piso de un pozo se cuenta en
         /// altura (<see cref="FloorHole.level"/>), igual que todo lo demás; el orden en que estén
         /// las losas en la lista no significa nada.
         ///
-        /// Los de piso 0 NO salen por aquí: esos son los de siempre, cajas colgando del suelo de
-        /// la sala, y los resuelve el camino del suelo.
+        /// Los de planta baja (<see cref="FloorHole.level"/> 0) NO salen por aquí: esos cuelgan del
+        /// suelo de la sala, no de la losa de una entreplanta, y los resuelve el camino del suelo.
         /// </summary>
-        public IEnumerable<FloorHole> PitsThroughSlab(float slabTop, float minCeiling)
+        public IEnumerable<FloorHole> PitsAtSlab(float slabTop, float minCeiling)
         {
             if (floorHoles == null) yield break;
             foreach (var f in floorHoles)
             {
-                if (f == null || f.level <= 0) continue;
-                if (f.sizeX <= 0.01f || f.sizeZ <= 0.01f) continue;
+                if (f == null || f.level <= 0 || !f.IsValid()) continue;
                 if (Mathf.Abs(StoreyBaseY(f.level, minCeiling) - slabTop) > 1e-3f) continue;
                 yield return f;
             }
