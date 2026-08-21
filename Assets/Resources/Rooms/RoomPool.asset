@@ -672,3 +672,491 @@ MonoBehaviour:
       markers: []
       irregularity: 0
       irregularitySeed: 1
+  - id: room_1
+    prefab: {fileID: 4217950122844387238, guid: bb46e9ff9f3ddeb47b3d7b01f7dd7061, type: 3}
+    tilesX: 32
+    tilesZ: 32
+    heightMeters: 12
+    doorLocalPosition: {x: -81.09095, y: 0, z: -5.7207913}
+    doorLocalForward: {x: -0.998107, y: 0, z: -0.061500568}
+    collisionBoxes:
+    - center: {x: 0.12446976, y: -0.1, z: 0.052265167}
+      size: {x: 162.98407, y: 0.2, z: 163.2463}
+      yawDegrees: 0
+    - center: {x: 0.12446976, y: 12.1, z: 0.052265167}
+      size: {x: 162.98407, y: 0.2, z: 163.2463}
+      yawDegrees: 0
+    - center: {x: 0.12446976, y: 7.9, z: 0.052265167}
+      size: {x: 162.98407, y: 0.2, z: 163.2463}
+      yawDegrees: 0
+    - center: {x: 79.467514, y: 6, z: 9.030307}
+      size: {x: 9.169686, y: 12, z: 0.2}
+      yawDegrees: -82.92389
+    - center: {x: 80.45851, y: 6, z: 18.311102}
+      size: {x: 9.493336, y: 12, z: 0.2}
+      yawDegrees: -84.852806
+    - center: {x: 80.45064, y: 6, z: 28.100912}
+      size: {x: 10.126715, y: 12, z: 0.2}
+      yawDegrees: -94.914375
+    - center: {x: 80.0833, y: 6, z: 38.674572}
+      size: {x: 11.078138, y: 12, z: 0.2}
+      yawDegrees: -89.316635
+    - center: {x: 79.91612, y: 6, z: 50.49245}
+      size: {x: 12.557255, y: 12, z: 0.2}
+      yawDegrees: -92.128395
+    - center: {x: 79.87089, y: 6, z: 64.116615}
+      size: {x: 14.717088, y: 12, z: 0.2}
+      yawDegrees: -88.536705
+    - center: {x: 75.8605, y: 6, z: 75.95659}
+      size: {x: 12.143816, y: 12, z: 0.2}
+      yawDegrees: -133.38791
+    - center: {x: 64.184875, y: 6, z: 80.02474}
+      size: {x: 14.872788, y: 12, z: 0.2}
+      yawDegrees: 177.10489
+    - center: {x: 50.491432, y: 6, z: 79.81894}
+      size: {x: 12.553181, y: 12, z: 0.2}
+      yawDegrees: -178.45067
+    - center: {x: 38.68991, y: 6, z: 80.77941}
+      size: {x: 11.189949, y: 12, z: 0.2}
+      yawDegrees: -171.86494
+    - center: {x: 28.069775, y: 6, z: 80.40095}
+      size: {x: 10.356657, y: 12, z: 0.2}
+      yawDegrees: 166.95749
+    - center: {x: 18.326666, y: 6, z: 79.54728}
+      size: {x: 9.475705, y: 12, z: 0.2}
+      yawDegrees: -176.21725
+    - center: {x: 9.038172, y: 6, z: 79.65736}
+      size: {x: 9.108854, y: 12, z: 0.2}
+      yawDegrees: 177.45032
+    - center: {x: 0.0052273544, y: 6, z: 79.69004}
+      size: {x: 8.997729, y: 12, z: 0.2}
+      yawDegrees: -177.00153
+    - center: {x: -9.032122, y: 6, z: 80.405624}
+      size: {x: 9.150474, y: 12, z: 0.2}
+      yawDegrees: -173.96956
+    - center: {x: -18.337599, y: 6, z: 80.04383}
+      size: {x: 9.603663, y: 12, z: 0.2}
+      yawDegrees: 169.90761
+    - center: {x: -28.083069, y: 6, z: 79.67375}
+      size: {x: 10.133225, y: 12, z: 0.2}
+      yawDegrees: -174.67448
+    - center: {x: -38.684875, y: 6, z: 79.63748}
+      size: {x: 11.123583, y: 12, z: 0.2}
+      yawDegrees: 174.77457
+    - center: {x: -50.492943, y: 6, z: 78.86775}
+      size: {x: 12.559662, y: 12, z: 0.2}
+      yawDegrees: 177.595
+    - center: {x: -64.03571, y: 6, z: 79.147766}
+      size: {x: 14.600779, y: 12, z: 0.2}
+      yawDegrees: -175.72871
+    - center: {x: -75.281296, y: 6, z: 75.421555}
+      size: {x: 11.497231, y: 12, z: 0.2}
+      yawDegrees: 132.50812
+    - center: {x: -79.15844, y: 6, z: 63.93915}
+      size: {x: 14.353358, y: 12, z: 0.2}
+      yawDegrees: 89.73297
+    - center: {x: -79.74535, y: 6, z: 50.498566}
+      size: {x: 12.609877, y: 12, z: 0.2}
+      yawDegrees: 95.65113
+    - center: {x: -79.90492, y: 6, z: 38.667446}
+      size: {x: 11.115731, y: 12, z: 0.2}
+      yawDegrees: 85.23759
+    - center: {x: -80.26546, y: 6, z: 28.108437}
+      size: {x: 10.222828, y: 12, z: 0.2}
+      yawDegrees: 99.26489
+    - center: {x: -80.08165, y: 6, z: 18.299263}
+      size: {x: 9.6667, y: 12, z: 0.2}
+      yawDegrees: 77.98859
+    - center: {x: -79.482544, y: 6, z: 9.051487}
+      size: {x: 9.135815, y: 12, z: 0.2}
+      yawDegrees: 95.08595
+    - center: {x: -80.56093, y: 2, z: 0.11400284}
+      size: {x: 8.8905735, y: 4, z: 0.2}
+      yawDegrees: 98.72353
+    - center: {x: -80.576096, y: 8, z: 0.015159768}
+      size: {x: 9.090573, y: 8, z: 0.2}
+      yawDegrees: 98.72353
+    - center: {x: -80.91026, y: 2, z: -10.279149}
+      size: {x: 6.6517115, y: 4, z: 0.2}
+      yawDegrees: 86.47405
+    - center: {x: -80.98607, y: 8, z: -9.048786}
+      size: {x: 9.117105, y: 8, z: 0.2}
+      yawDegrees: 86.47405
+    - center: {x: -80.125626, y: 6, z: -18.332256}
+      size: {x: 9.525844, y: 12, z: 0.2}
+      yawDegrees: 83.01099
+    - center: {x: -80.04017, y: 6, z: -28.082611}
+      size: {x: 10.137689, y: 12, z: 0.2}
+      yawDegrees: 95.59082
+    - center: {x: -79.99073, y: 6, z: -38.685528}
+      size: {x: 11.130517, y: 12, z: 0.2}
+      yawDegrees: 84.398056
+    - center: {x: -80.04839, y: 6, z: -50.479206}
+      size: {x: 12.606015, y: 12, z: 0.2}
+      yawDegrees: 95.47072
+    - center: {x: -80.83245, y: 6, z: -64.31484}
+      size: {x: 15.112871, y: 12, z: 0.2}
+      yawDegrees: 91.38565
+    - center: {x: -76.271065, y: 6, z: -76.01602}
+      size: {x: 12.4475355, y: 12, z: 0.2}
+      yawDegrees: 40.825798
+    - center: {x: -64.13126, y: 6, z: -80.233406}
+      size: {x: 14.735249, y: 12, z: 0.2}
+      yawDegrees: 0.9660514
+    - center: {x: -50.49753, y: 6, z: -80.91348}
+      size: {x: 12.597809, y: 12, z: 0.2}
+      yawDegrees: 5.066103
+    - center: {x: -38.66678, y: 6, z: -80.972084}
+      size: {x: 11.121972, y: 12, z: 0.2}
+      yawDegrees: -5.133887
+    - center: {x: -28.09146, y: 6, z: -80.430885}
+      size: {x: 10.089823, y: 12, z: 0.2}
+      yawDegrees: -0.4994028
+    - center: {x: -18.315186, y: 6, z: -80.15518}
+      size: {x: 9.466401, y: 12, z: 0.2}
+      yawDegrees: -2.8048162
+    - center: {x: -9.040493, y: 6, z: -79.826515}
+      size: {x: 9.10192, y: 12, z: 0.2}
+      yawDegrees: -1.2232282
+    - center: {x: -0.018574208, y: 6, z: -80.57696}
+      size: {x: 9.144556, y: 12, z: 0.2}
+      yawDegrees: 10.704957
+    - center: {x: 9.056506, y: 6, z: -80.78946}
+      size: {x: 9.188756, y: 12, z: 0.2}
+      yawDegrees: -7.9768696
+    - center: {x: 18.324276, y: 6, z: -79.95433}
+      size: {x: 9.463384, y: 12, z: 0.2}
+      yawDegrees: -2.4035637
+    - center: {x: 28.081009, y: 6, z: -80.33146}
+      size: {x: 10.155072, y: 12, z: 0.2}
+      yawDegrees: 6.515179
+    - center: {x: 38.695858, y: 6, z: -79.77101}
+      size: {x: 11.30763, y: 12, z: 0.2}
+      yawDegrees: -11.582742
+    - center: {x: 50.47608, y: 6, z: -79.43908}
+      size: {x: 12.650711, y: 12, z: 0.2}
+      yawDegrees: 7.2845445
+    - center: {x: 63.967674, y: 6, z: -79.768486}
+      size: {x: 14.427182, y: 12, z: 0.2}
+      yawDegrees: -3.761469
+    - center: {x: 76.25118, y: 6, z: -75.67935}
+      size: {x: 12.374442, y: 12, z: 0.2}
+      yawDegrees: -35.55161
+    - center: {x: 79.96896, y: 6, z: -64.36425}
+      size: {x: 15.477086, y: 12, z: 0.2}
+      yawDegrees: -100.09486
+    - center: {x: 79.607735, y: 6, z: -50.5044}
+      size: {x: 12.705361, y: 12, z: 0.2}
+      yawDegrees: -80.99014
+    - center: {x: 80.901474, y: 6, z: -38.68113}
+      size: {x: 11.093353, y: 12, z: 0.2}
+      yawDegrees: -86.922455
+    - center: {x: 81.340614, y: 6, z: -28.09514}
+      size: {x: 10.093441, y: 12, z: 0.2}
+      yawDegrees: -88.396164
+    - center: {x: 81.49915, y: 6, z: -18.320433}
+      size: {x: 9.455123, y: 12, z: 0.2}
+      yawDegrees: -89.790985
+    - center: {x: 80.233215, y: 6, z: -9.015545}
+      size: {x: 9.452784, y: 12, z: 0.2}
+      yawDegrees: -105.70607
+    - center: {x: 78.93049, y: 6, z: 0.0006071891}
+      size: {x: 8.985558, y: 12, z: 0.2}
+      yawDegrees: -90.34448
+    definition:
+      tilesX: 32
+      tilesZ: 32
+      heightMeters: 12
+      ceilingTilt: 0
+      ceilingTiltYaw: 0
+      sides: 56
+      squareness: 1
+      wallThickness: 0.2
+      trimEnabled: 0
+      planMode: 0
+      manualContour: []
+      notches: []
+      holes:
+      - side: 28
+        along: 0.13495597
+        baseY: 0
+        level: 0
+        width: 2.47
+        height: 4
+        grateBars: 0
+        spanCorners: 1
+      pillars: []
+      pillarGrids: []
+      blocks: []
+      stairs: []
+      floorHoles: []
+      levels:
+      - height: 8
+      markers: []
+      irregularity: 1
+      irregularitySeed: 228905
+  - id: room_2
+    prefab: {fileID: 6552879169785262594, guid: c52b370c06f3b8e4b8b5b1edfccdd8f1, type: 3}
+    tilesX: 12
+    tilesZ: 12
+    heightMeters: 12
+    doorLocalPosition: {x: 24.09468, y: 0, z: 29.936224}
+    doorLocalForward: {x: -0.10261225, y: 0, z: 0.9947214}
+    collisionBoxes:
+    - center: {x: 0.13856888, y: -0.1, z: -0.006986618}
+      size: {x: 62.062508, y: 0.2, z: 62.288555}
+      yawDegrees: 0
+    - center: {x: 0.13856888, y: 12.1, z: -0.006986618}
+      size: {x: 62.062508, y: 0.2, z: 62.288555}
+      yawDegrees: 0
+    - center: {x: 0.13856888, y: 7.9, z: -0.006986618}
+      size: {x: 62.062508, y: 0.2, z: 62.288555}
+      yawDegrees: 0
+    - center: {x: 29.74331, y: 6, z: 3.3727212}
+      size: {x: 3.4708166, y: 12, z: 0.2}
+      yawDegrees: -79.47683
+    - center: {x: 30.311857, y: 6, z: 6.8560147}
+      size: {x: 3.580981, y: 12, z: 0.2}
+      yawDegrees: -81.94439
+    - center: {x: 30.304867, y: 6, z: 10.5481415}
+      size: {x: 3.818572, y: 12, z: 0.2}
+      yawDegrees: -97.76511
+    - center: {x: 30.090977, y: 6, z: 14.501331}
+      size: {x: 4.154904, y: 12, z: 0.2}
+      yawDegrees: -88.80895
+    - center: {x: 29.953276, y: 6, z: 18.94093}
+      size: {x: 4.719567, y: 12, z: 0.2}
+      yawDegrees: -94.389565
+    - center: {x: 29.920855, y: 6, z: 24.03611}
+      size: {x: 5.5186257, y: 12, z: 0.2}
+      yawDegrees: -86.924515
+    - center: {x: 28.510683, y: 6, z: 28.57803}
+      size: {x: 4.5997996, y: 12, z: 0.2}
+      yawDegrees: -131.79831
+    - center: {x: 26.102934, y: 2, z: 30.24392}
+      size: {x: 1.5884476, y: 4, z: 0.2}
+      yawDegrees: 174.11038
+    - center: {x: 22.065907, y: 2, z: 29.827473}
+      size: {x: 1.588451, y: 4, z: 0.2}
+      yawDegrees: 174.11038
+    - center: {x: 24.08442, y: 8, z: 30.035696}
+      size: {x: 5.6468997, y: 8, z: 0.2}
+      yawDegrees: 174.11038
+    - center: {x: 18.939138, y: 6, z: 29.884546}
+      size: {x: 4.7138352, y: 12, z: 0.2}
+      yawDegrees: -176.63812
+    - center: {x: 14.526933, y: 6, z: 30.522823}
+      size: {x: 4.2739406, y: 12, z: 0.2}
+      yawDegrees: -166.3944
+    - center: {x: 10.499067, y: 6, z: 30.302021}
+      size: {x: 4.048156, y: 12, z: 0.2}
+      yawDegrees: 159.16962
+    - center: {x: 6.880537, y: 6, z: 29.775608}
+      size: {x: 3.5653965, y: 12, z: 0.2}
+      yawDegrees: -173.96667
+    - center: {x: 3.3843787, y: 6, z: 29.850395}
+      size: {x: 3.4199045, y: 12, z: 0.2}
+      yawDegrees: 176.21352
+    - center: {x: 0.007818979, y: 6, z: 29.869545}
+      size: {x: 3.3798804, y: 12, z: 0.2}
+      yawDegrees: -175.5147
+    - center: {x: -3.3752, y: 6, z: 30.273504}
+      size: {x: 3.455764, y: 12, z: 0.2}
+      yawDegrees: -170.91782
+    - center: {x: -6.896594, y: 6, z: 30.055395}
+      size: {x: 3.6778004, y: 12, z: 0.2}
+      yawDegrees: 164.59401
+    - center: {x: -10.520053, y: 6, z: 29.848177}
+      size: {x: 3.8244162, y: 12, z: 0.2}
+      yawDegrees: -171.61723
+    - center: {x: -14.5199995, y: 6, z: 29.777311}
+      size: {x: 4.212349, y: 12, z: 0.2}
+      yawDegrees: 170.45305
+    - center: {x: -18.943897, y: 6, z: 29.1776}
+      size: {x: 4.7324696, y: 12, z: 0.2}
+      yawDegrees: 173.90576
+    - center: {x: -23.968464, y: 6, z: 29.358723}
+      size: {x: 5.465393, y: 12, z: 0.2}
+      yawDegrees: -170.88234
+    - center: {x: -28.07667, y: 6, z: 28.17386}
+      size: {x: 4.119028, y: 12, z: 0.2}
+      yawDegrees: 129.76402
+    - center: {x: -29.406294, y: 2, z: 25.832481}
+      size: {x: 1.385643, y: 4, z: 0.2}
+      yawDegrees: 89.105675
+    - center: {x: -29.346115, y: 2, z: 21.977308}
+      size: {x: 1.3856425, y: 4, z: 0.2}
+      yawDegrees: 89.105675
+    - center: {x: -29.376205, y: 8, z: 23.904896}
+      size: {x: 5.2412868, y: 8, z: 0.2}
+      yawDegrees: 89.105675
+    - center: {x: -29.808004, y: 6, z: 18.953045}
+      size: {x: 4.800525, y: 12, z: 0.2}
+      yawDegrees: 101.40578
+    - center: {x: -29.984413, y: 6, z: 14.489147}
+      size: {x: 4.196892, y: 12, z: 0.2}
+      yawDegrees: 81.802414
+    - center: {x: -30.182226, y: 6, z: 10.560146}
+      size: {x: 3.913119, y: 12, z: 0.2}
+      yawDegrees: 104.785416
+    - center: {x: -30.09679, y: 6, z: 6.8387856}
+      size: {x: 3.7324822, y: 12, z: 0.2}
+      yawDegrees: 71.79479
+    - center: {x: -29.748907, y: 6, z: 3.4044032}
+      size: {x: 3.4435925, y: 12, z: 0.2}
+      yawDegrees: 97.71242
+    - center: {x: -30.365479, y: 6, z: 0.022392714}
+      size: {x: 3.4573464, y: 12, z: 0.2}
+      yawDegrees: 102.94134
+    - center: {x: -30.599472, y: 6, z: -3.4000516}
+      size: {x: 3.4265444, y: 12, z: 0.2}
+      yawDegrees: 84.80003
+    - center: {x: -30.107107, y: 6, z: -6.8886414}
+      size: {x: 3.608676, y: 12, z: 0.2}
+      yawDegrees: 79.27582
+    - center: {x: -30.072296, y: 6, z: -10.518948}
+      size: {x: 3.8309643, y: 12, z: 0.2}
+      yawDegrees: 99.02383
+    - center: {x: -30.009771, y: 6, z: -14.520614}
+      size: {x: 4.216872, y: 12, z: 0.2}
+      yawDegrees: 80.09436
+    - center: {x: -30.088146, y: 6, z: -18.914843}
+      size: {x: 4.7877812, y: 12, z: 0.2}
+      yawDegrees: 100.623055
+    - center: {x: -30.659595, y: 6, z: -24.186008}
+      size: {x: 5.8142614, y: 12, z: 0.2}
+      yawDegrees: 92.53388
+    - center: {x: -28.81043, y: 6, z: -28.630766}
+      size: {x: 4.8479013, y: 12, z: 0.2}
+      yawDegrees: 36.92112
+    - center: {x: -26.05155, y: 2, z: -30.133856}
+      size: {x: 1.5299072, y: 4, z: 0.2}
+      yawDegrees: 2.0223413
+    - center: {x: -22.054132, y: 2, z: -30.27501}
+      size: {x: 1.5299087, y: 4, z: 0.2}
+      yawDegrees: 2.0223413
+    - center: {x: -24.052841, y: 8, z: -30.204433}
+      size: {x: 5.529817, y: 8, z: 0.2}
+      yawDegrees: 2.0223413
+    - center: {x: -18.94893, y: 6, z: -30.674078}
+      size: {x: 4.7645655, y: 12, z: 0.2}
+      yawDegrees: 9.0140505
+    - center: {x: -14.486501, y: 6, z: -30.691036}
+      size: {x: 4.214615, y: 12, z: 0.2}
+      yawDegrees: -9.728405
+    - center: {x: -10.532858, y: 6, z: -30.302954}
+      size: {x: 3.78413, y: 12, z: 0.2}
+      yawDegrees: -1.0120121
+    - center: {x: -6.8624425, y: 6, z: -30.13435}
+      size: {x: 3.5559, y: 12, z: 0.2}
+      yawDegrees: -4.3518395
+    - center: {x: -3.3878264, y: 6, z: -29.94575}
+      size: {x: 3.4141462, y: 12, z: 0.2}
+      yawDegrees: -1.810308
+    - center: {x: -0.027239302, y: 6, z: -30.365047}
+      size: {x: 3.5019548, y: 12, z: 0.2}
+      yawDegrees: 15.806891
+    - center: {x: 3.4115138, y: 6, z: -30.485794}
+      size: {x: 3.486694, y: 12, z: 0.2}
+      yawDegrees: -11.845591
+    - center: {x: 6.876599, y: 6, z: -30.013165}
+      size: {x: 3.553318, y: 12, z: 0.2}
+      yawDegrees: -3.765517
+    - center: {x: 10.516116, y: 6, z: -30.251453}
+      size: {x: 3.850148, y: 12, z: 0.2}
+      yawDegrees: 10.671574
+    - center: {x: 14.53782, y: 6, z: -29.842583}
+      size: {x: 4.424042, y: 12, z: 0.2}
+      yawDegrees: -20.122015
+    - center: {x: 18.91006, y: 6, z: -29.646776}
+      size: {x: 4.838012, y: 12, z: 0.2}
+      yawDegrees: 13.429346
+    - center: {x: 23.936064, y: 6, z: -29.852253}
+      size: {x: 5.3213425, y: 12, z: 0.2}
+      yawDegrees: -7.736057
+    - center: {x: 28.785906, y: 6, z: -28.382658}
+      size: {x: 4.8882327, y: 12, z: 0.2}
+      yawDegrees: -26.790037
+    - center: {x: 30.700731, y: 2, z: -26.264215}
+      size: {x: 1.8969423, y: 4, z: 0.2}
+      yawDegrees: -109.47131
+    - center: {x: 29.245077, y: 2, z: -22.147028}
+      size: {x: 1.8969333, y: 4, z: 0.2}
+      yawDegrees: -109.47131
+    - center: {x: 29.972904, y: 8, z: -24.205624}
+      size: {x: 6.2638764, y: 8, z: 0.2}
+      yawDegrees: -109.47131
+    - center: {x: 29.686924, y: 6, z: -18.963907}
+      size: {x: 4.9433374, y: 12, z: 0.2}
+      yawDegrees: -72.163185
+    - center: {x: 30.620703, y: 6, z: -14.511674}
+      size: {x: 4.168265, y: 12, z: 0.2}
+      yawDegrees: -85.259834
+    - center: {x: 30.854895, y: 6, z: -10.537887}
+      size: {x: 3.785567, y: 12, z: 0.2}
+      yawDegrees: -88.13275
+    - center: {x: 30.911093, y: 6, z: -6.869714}
+      size: {x: 3.5456643, y: 12, z: 0.2}
+      yawDegrees: -90.1787
+    - center: {x: 30.17404, y: 6, z: -3.3519375}
+      size: {x: 3.7066262, y: 12, z: 0.2}
+      yawDegrees: -112.98119
+    - center: {x: 29.443216, y: 6, z: 0.00090271805}
+      size: {x: 3.3696597, y: 12, z: 0.2}
+      yawDegrees: -90.51589
+    definition:
+      tilesX: 12
+      tilesZ: 12
+      heightMeters: 12
+      ceilingTilt: 0
+      ceilingTiltYaw: 0
+      sides: 56
+      squareness: 1
+      wallThickness: 0.2
+      trimEnabled: 0
+      planMode: 0
+      manualContour: []
+      notches: []
+      holes:
+      - side: 7
+        along: 0.5
+        baseY: 0
+        level: 0
+        width: 2.47
+        height: 4
+        grateBars: 0
+        spanCorners: 1
+      - side: 21
+        along: 0.5
+        baseY: 0
+        level: 0
+        width: 2.47
+        height: 4
+        grateBars: 0
+        spanCorners: 1
+      - side: 35
+        along: 0.5
+        baseY: 0
+        level: 0
+        width: 2.47
+        height: 4
+        grateBars: 0
+        spanCorners: 1
+      - side: 49
+        along: 0.5
+        baseY: 0
+        level: 0
+        width: 2.47
+        height: 4
+        grateBars: 0
+        spanCorners: 1
+      pillars: []
+      pillarGrids: []
+      blocks: []
+      stairs: []
+      floorHoles: []
+      levels:
+      - height: 8
+      markers: []
+      irregularity: 1
+      irregularitySeed: 228905

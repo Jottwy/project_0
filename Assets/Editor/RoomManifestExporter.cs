@@ -49,6 +49,19 @@ namespace BackroomsSurvival.EditorTools
         private const int BackendFootprintCapTiles = 16;
 
         /// <summary>
+        /// A partir de este lado (en tiles) una sala se considera GRANDE y se le pide más de un vano.
+        ///
+        /// Es el cap de lo que cabe DENTRO de un chunk (`MAX_FOOTPRINT_CELLS`, 12 celdas): por encima
+        /// de él la sala cruza fronteras, se come costuras y sus paredes son largas. Por debajo el
+        /// problema no se da — `room_0` mide 5 × 5 con un solo vano y la sonda le cuenta 0
+        /// incomunicadas; avisar de ella sería ruido que enseña a ignorar el aviso.
+        /// </summary>
+        private const int BackendInChunkCapTiles = 6;
+
+        /// <summary>Vanos mínimos que se le piden a una sala grande. Ver el aviso.</summary>
+        private const int MinDoorwaysForBigRooms = 2;
+
+        /// <summary>
         /// Una sala vista por el backend. Nombres en snake_case a propósito: son claves de JSON que
         /// `serde` lee al otro lado, mismo criterio que los espejos de <c>IPCMessages</c>, no
         /// identificadores de C#.
@@ -222,6 +235,7 @@ namespace BackroomsSurvival.EditorTools
             var rooms = new List<ManifestRoom>();
             var skipped = new List<string>();
             var oversized = new List<string>();
+            var underDoored = new List<string>();
 
             for (int i = 0; i < pool.rooms.Length; i++)
             {
@@ -246,6 +260,19 @@ namespace BackroomsSurvival.EditorTools
                 if (entry.tilesX > BackendFootprintCapTiles || entry.tilesZ > BackendFootprintCapTiles)
                     oversized.Add($"{entry.id} ({entry.tilesX}×{entry.tilesZ})");
 
+                // Una sala grande con un solo vano nace SELLADA a menudo, y no avisa nadie: el
+                // backend excava un pasillo por abertura hasta el laberinto, y si esa única
+                // abertura da a un sitio del que no se sale, la sala queda incomunicada. Medido con
+                // `probe_unreachable_rooms`: una sala de 10×10 tiles con un vano sale incomunicada
+                // 6 de 55 veces; la misma medida con cuatro vanos, 0 de 58.
+                //
+                // Se agrava con ADR-084: una sala multi-chunk SUPRIME la apertura de costura de cada
+                // borde de chunk que tapa, hasta cuatro. Devolver una sola puerta a cambio empobrece
+                // la zona aunque la sala sí se alcance.
+                if ((entry.tilesX > BackendInChunkCapTiles || entry.tilesZ > BackendInChunkCapTiles)
+                    && doorways.Count < MinDoorwaysForBigRooms)
+                    underDoored.Add($"{entry.id} ({entry.tilesX}×{entry.tilesZ}, {doorways.Count} vano/s)");
+
                 rooms.Add(new ManifestRoom
                 {
                     index = i,
@@ -268,6 +295,12 @@ namespace BackroomsSurvival.EditorTools
 
             foreach (string s in skipped)
                 Debug.LogWarning($"[RoomManifestExporter] Fuera del manifiesto — {s}");
+            if (underDoored.Count > 0)
+                Debug.LogWarning("[RoomManifestExporter] Salas grandes con pocos vanos: " +
+                                 $"{string.Join(", ", underDoored)}. Se exportan, pero una sala " +
+                                 "grande de un solo vano nace INCOMUNICADA a menudo (medido: 6 de " +
+                                 "55) y, si cruza chunks, encima se come las costuras que tapa. " +
+                                 $"Ponle al menos {MinDoorwaysForBigRooms} boquetes, mejor uno por lado.");
             if (oversized.Count > 0)
                 Debug.LogWarning($"[RoomManifestExporter] Por encima del cap de " +
                                  $"{BackendFootprintCapTiles}×{BackendFootprintCapTiles} tiles " +
