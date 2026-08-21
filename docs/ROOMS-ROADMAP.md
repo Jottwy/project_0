@@ -106,20 +106,55 @@ decorado y pasa a ser estado del mundo: qué hay dentro lo tira el servidor, si 
 estado persistente por chunk, y dos jugadores abriendo a la vez piden la guarda de "una petición en
 vuelo" que ya hizo falta para los cadáveres. Ver §7.2 de `systems/authored-rooms.md`.
 
-### B2. Salas multi-chunk
+### B2. Salas multi-chunk — 🟡 A MEDIAS (ADR-084 VALIDADA; 2 de 5 trozos, 2026-08-21)
 
 Una sala de 50 m no cabe en un chunk (interior utilizable 18 celdas = 45 m). Rompe la invariante
-que sostiene el worldgen entero: **un chunk se genera solo, sin mirar a los vecinos**. Además obliga
-a sacar el prefab del ciclo de vida del chunk, o descargar el chunk ancla con el jugador dentro
-borra media sala.
+que sostiene el worldgen entero: **un chunk se genera solo, sin mirar a los vecinos** — aunque eso
+ya no era cierto: `stitch_edges` coordina la costura de dos chunks por clave canónica desde hace
+mucho, y ADR-084 se apoya en ese precedente. Además obliga a sacar el prefab del ciclo de vida del
+chunk, o descargar el chunk ancla con el jugador dentro borra media sala.
 
-### B3. Altura por encima de una capa
+Hecho y commiteado, los dos **inertes a propósito** (el mundo no se mueve ni un byte):
 
-`LayerHeight = 4 m` y el cliente construye SIEMPRE las 4 capas (`BuildDesiredSet`). Una sala más
-alta se come el suelo de la capa 1. Para permitirlo: la altura viaja en manifiesto y wire, el
-backend reserva el footprint en las capas invadidas, y el cliente suprime su geometría ahí. Toca el
-contrato de capas, que ADR-026 tiene bloqueado. Y arrastra decidir si el agujero resultante en la
-capa 1 es un fallo o una entrada.
+| | | |
+|---|---|---|
+| **T1** `df251e15` | Coordenadas de sala con signo; el tallado recorta al chunk en vez de descartar | ✅ |
+| **T2** `cfa4be1a` | Un chunk barre ±2 vecinos buscando salas ancladas fuera que asomen aquí | ✅ |
+| T3 | Subir el cap a 2 × 2 chunks + resolución de conflictos por orden canónico | ⬜ |
+| T4 | Costura suprimida en los bordes que cubre la sala | ⬜ |
+| T5 | Wire 40 → 41, prefab fuera del root del chunk con refcount | ⬜ |
+
+**Parado a propósito en T2, y el motivo importa: no hay contenido que lo use.** El pool tiene UNA
+sala, `room_0`, de 5 × 5 tiles = 25 m, que cabe de sobra en un chunk. `room_1` y `room_2` (las de
+10 × 10 que ADR-084 citaba) ya no están en el pool. T3 en adelante mueven el mundo pero no se verían.
+Retomar cuando haya una sala horneada de más de 7 × 7 tiles.
+
+Coste medido del barrido de T2 (verificación (f) de ADR-084, en release):
+`generate_chunk_layer` 26,2 µs → 29,6 µs por chunk, **+13 %**. El emplazamiento pasa del 0,4 % al
+8,7 % del coste de generar un chunk. Repetible con `probe_neighbour_sweep_cost`.
+
+### B3. Altura por encima de una capa — ✅ HECHO (2026-08-21, ADR-085 + enmiendas 1 y 2, wire 40)
+
+La altura viaja en el manifiesto (`height_meters`, que ya se autoraba y ya se horneaba en
+`RoomPool.RoomEntry` sin que la leyera nadie), el backend talla la sala en las capas invadidas y el
+cliente suprime ahí su geometría. `room_0` mide **12 m** y hasta ahora se veía cortada a 4.
+
+Tres cosas que la redacción original de este punto daba por buenas y NO lo eran:
+
+- *"Toca el contrato de capas, que ADR-026 tiene bloqueado"* — **falso**. Lo bloqueado son las partes
+  1–2; la parte 3 lleva desbloqueada desde 2026-07-06 y dice que la Y del cliente es autoritativa.
+  Esa frase mantuvo este punto aparcado sin motivo.
+- *"Decidir si el agujero resultante en la capa 1 es un fallo o una entrada"* — **no hay agujero que
+  decidir**. Las propias paredes de la sala cruzan el plano de esa capa y la cierran por su
+  perímetro; quien camine por arriba choca contra el muro. Y si el autor abre un vano a esa altura,
+  entonces es una entrada autorada.
+- El prerrequisito de `LAYER_HEIGHT` que ADR-085 declaró bloqueante estaba **mal enunciado**: no eran
+  dos valores de la misma constante, sino dos constantes de dos subsistemas. Ver ADR-085 enmienda 1.
+
+Las capas invadidas son `1 ..= ceil(h / LH) − 1`, no `floor(h / LH)`: una losa justo a la altura del
+techo no invade, **es** el techo. Con `floor` la sala de 4 m —el default de `heightMeters`— se habría
+quedado sin techo. Cap: **12 m**, para que la capa más alta (la única que dibuja techo) nunca se
+invada.
 
 ### B4. Colisión del interior
 
@@ -191,4 +226,10 @@ Dos medidas, y las dos hacen falta:
 | **1 × 1 y 2 × 2 tiles** (5 m y 10 m) | Las únicas de las que caben VARIAS en un chunk. Regla: dos salas conviven si `T₁ + T₂ ≤ 3`. Sin estas, A1 no se ve. |
 | **hasta 7 × 7 tiles** (35 m) | Variedad. 35 m es el techo físico del chunk; por encima es multi-chunk (B2, con ADR). |
 
-Cap de altura en las dos: **≤ 4 m** (`LayerHeight`).
+Cap de altura: **≤ 12 m** desde ADR-085 (2026-08-21) — ya no son 4. Una sala más alta que una capa
+hace que las capas que invade dejen de pintarle encima, y eso ya funciona de punta a punta. Por
+encima de 12 m el mundo se quedaría sin techo, así que ahí sí hay tope duro.
+
+Y una tercera, que no cuesta nada y desbloquea B2: **una sala de más de 7 × 7 tiles**. Los trozos T1
+y T2 de ADR-084 están en el árbol y son inertes precisamente porque ninguna sala del pool los
+ejercita. Con una sola sala grande horneada, terminar T3–T5 pasa a tener efecto visible.
