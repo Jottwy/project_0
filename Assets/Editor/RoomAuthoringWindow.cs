@@ -141,6 +141,7 @@ namespace BackroomsSurvival.EditorTools
 
                 DrawLoadButton();
                 DrawEditSelectedButton();
+                DrawResetButton();
                 DrawPropsToolbar();
                 DrawLightsToolbar();
 
@@ -223,6 +224,39 @@ namespace BackroomsSurvival.EditorTools
                 return;
             }
             LoadRoom(entry);
+        }
+
+        /// <summary>
+        /// Vuelve a una sala vacía SIN cerrar y reabrir la ventana. Antes, para empezar de cero
+        /// tras cargar una sala había que reabrir: quedaba puesto <see cref="_loadedRoomId"/> y
+        /// Save actualizaba la sala anterior en vez de crear una nueva.
+        /// </summary>
+        private void DrawResetButton()
+        {
+            if (!GUILayout.Button("Reset", EditorStyles.toolbarButton, GUILayout.Width(55)))
+                return;
+            if (!ConfirmReplaceRoom("Reset")) return;
+            Defer(ResetAll);
+        }
+
+        private void ResetAll()
+        {
+            _def = new RoomDefinition();
+            _loadedRoomId = null;
+            _seed = 1;
+            _lightGenSeed = 1;
+            _search = "";
+            _validateIssues = null;
+            _handBuiltFoldout = false;
+            _doorAnchor = null;
+            _foldouts.Clear();
+            _groupSpacing.Clear();
+            _groupSetMode.Clear();
+            // Las previews son hijas del modelo viejo: sin limpiarlas quedan props y luces de la
+            // sala anterior flotando sobre una sala que ya no los tiene.
+            ClearPropPreviews();
+            ClearLightPreviews();
+            RebuildIfLive();
         }
 
         /// <summary>
@@ -420,18 +454,18 @@ namespace BackroomsSurvival.EditorTools
         /// hay algo que perder — con una sala recién creada el diálogo sería un clic de peaje por
         /// nada, y un aviso que salta siempre se acaba pulsando sin leer.
         /// </summary>
-        private bool ConfirmReplaceRoom()
+        private bool ConfirmReplaceRoom(string verb = "Generate")
         {
             int features = _def.holes.Length + _def.floorHoles.Length + _def.pillars.Length
                 + _def.blocks.Length + _def.stairs.Length
                 + _def.markers.Length + _def.lights.Length + _def.levels.Length + _def.notches.Length
-                + _def.manualContour.Length;
+                + _def.subRooms.Length + _def.manualContour.Length;
             if (features == 0) return true;
 
             return EditorUtility.DisplayDialog(
                 "Replace the room?",
-                $"Esta sala tiene {features} cosa(s) puestas a mano. Generar las borra todas.",
-                "Generate", "Cancel");
+                $"Esta sala tiene {features} cosa(s) puestas a mano. {verb} las borra todas.",
+                verb, "Cancel");
         }
 
         /// <summary>
@@ -535,7 +569,7 @@ namespace BackroomsSurvival.EditorTools
             DrawSearchField();
             DrawGenerateLightsSection();
 
-            int storeys = _def.levels?.Length ?? 0;
+            int storeys = _def.StoreyCount;
             for (int s = 0; s <= storeys; s++)
             {
                 DrawStorey(s);
@@ -549,7 +583,7 @@ namespace BackroomsSurvival.EditorTools
         /// por dónde se cae, luego lo que hay puesto, y al final lo que no es geometría.</summary>
         private FeatureGroupBase[] AllGroups() => new FeatureGroupBase[]
         {
-            HolesGroup(), PitsGroup(), PillarsGroup(),
+            HolesGroup(), PitsGroup(), PillarsGroup(), SubRoomsGroup(),
             BlocksGroup(), StairsGroup(), LightsGroup(), MarkersGroup(),
         };
 
@@ -584,6 +618,9 @@ namespace BackroomsSurvival.EditorTools
             using (new EditorGUI.IndentLevelScope())
             {
                 if (storey > 0) DrawStoreySlab(storey);
+                DrawStoreyLightsRow(storey);
+                DrawStoreySubRoomsRow(storey);
+                DrawStoreyMazeRow(storey);
                 foreach (var g in groups) g.Draw(this, storey);
             }
             EditorGUILayout.EndVertical();
@@ -817,7 +854,7 @@ namespace BackroomsSurvival.EditorTools
         /// <summary>El piso REAL de un `level`, con el mismo recorte que aplica el modelo: más
         /// allá de la última losa, todo cae en la última. Sin esto un elemento con el piso de una
         /// losa ya borrada desaparecería del árbol mientras se sigue construyendo.</summary>
-        private int StoreyOf(int level) => Mathf.Clamp(level, 0, _def.levels?.Length ?? 0);
+        private int StoreyOf(int level) => Mathf.Clamp(level, 0, _def.StoreyCount);
 
         private void DrawFeatureGroup<T>(FeatureGroup<T> g, int storey) where T : class
         {
@@ -1323,7 +1360,7 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         private int FloorField(Rect r, int level)
         {
-            int n = _def.levels?.Length ?? 0;
+            int n = _def.StoreyCount;
             if (n == 0)
             {
                 EditorGUI.LabelField(r, "Floor", "Base floor (la sala no tiene entreplantas)",
@@ -1892,10 +1929,10 @@ namespace BackroomsSurvival.EditorTools
         /// </summary>
         private Row<RoomDefinition.Stairs> StairsReachRow() =>
             new Row<RoomDefinition.Stairs>(
-                _ => (_def.levels?.Length ?? 0) == 0 ? 0f : LineStep,
+                _ => _def.StoreyCount == 0 ? 0f : LineStep,
                 (r, s) =>
                 {
-                    if ((_def.levels?.Length ?? 0) == 0 || s.rise <= 0.001f) return;
+                    if (_def.StoreyCount == 0 || s.rise <= 0.001f) return;
 
                     float minCeil = _def.MinCeilingOver(_def.InnerContour());
                     float baseY = _def.StoreyBaseY(s.level, minCeil);
@@ -2157,7 +2194,7 @@ namespace BackroomsSurvival.EditorTools
         /// el recuento diga lo que de verdad se va a construir.</summary>
         private int FeaturesOnStorey(int storey)
         {
-            int Clamp(int level) => Mathf.Clamp(level, 0, _def.levels.Length);
+            int Clamp(int level) => Mathf.Clamp(level, 0, _def.StoreyCount);
             int c = 0;
             foreach (var h in _def.holes) if (h != null && Clamp(h.level) == storey) c++;
             foreach (var f in _def.floorHoles) if (f != null && Clamp(f.level) == storey) c++;
@@ -2166,6 +2203,7 @@ namespace BackroomsSurvival.EditorTools
             foreach (var s in _def.stairs) if (s != null && Clamp(s.level) == storey) c++;
             foreach (var m in _def.markers) if (m != null && Clamp(m.level) == storey) c++;
             foreach (var l in _def.lights) if (l != null && Clamp(l.level) == storey) c++;
+            foreach (var s in _def.subRooms) if (s != null && Clamp(s.level) == storey) c++;
             return c;
         }
 

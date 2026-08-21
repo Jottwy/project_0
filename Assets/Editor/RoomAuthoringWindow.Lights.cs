@@ -319,6 +319,66 @@ namespace BackroomsSurvival.EditorTools
             }
         }
 
+        /// <summary>
+        /// Generar luces DE ESTE PISO, dentro de su propio bloque del árbol de features. La sección
+        /// global de arriba rehace la sala entera y por tanto no sirve para afinar: cambiar la
+        /// densidad de la planta baja se llevaba por delante lo ya ajustado en las entreplantas.
+        ///
+        /// La etiqueta dice contra QUÉ techo se va a generar, que es la pregunta que se hace uno
+        /// mirando una luz que parece mal puesta: losa plana del piso de arriba, o el techo de la
+        /// sala — que si está inclinado da un rango de alturas y no una.
+        /// </summary>
+        private void DrawStoreyLightsRow(int storey)
+        {
+            var cfg = PropCatalog();
+            using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+            {
+                EditorGUILayout.LabelField(new GUIContent(
+                        $"Ceiling: {StoreyCeilingLabel(storey)}",
+                        "El techo contra el que se cuelgan las luces de este piso, "
+                        + $"{GeneratedLightDropBelowCeiling:0.#} m por debajo."),
+                    EditorStyles.miniLabel);
+
+                GUILayout.FlexibleSpace();
+                using (new EditorGUI.DisabledScope(cfg == null))
+                {
+                    _lightGenSeed = EditorGUILayout.IntField(_lightGenSeed, GUILayout.Width(60));
+                    if (GUILayout.Button(new GUIContent("Roll", "Semilla nueva"),
+                            EditorStyles.miniButton, GUILayout.Width(38)))
+                        _lightGenSeed = UnityEngine.Random.Range(1, 999999);
+                    if (GUILayout.Button(new GUIContent("Gen lights",
+                            "Rehace las luces DE ESTE PISO con la semilla de al lado. Los demás "
+                            + "pisos no se tocan."), EditorStyles.miniButton, GUILayout.Width(78)))
+                        Defer(() => GenerateLightsFromLayer(cfg, _lightGenSeed, storey));
+                }
+            }
+        }
+
+        /// <summary>El techo de un piso en una línea. El de arriba es el techo REAL de la sala, así
+        /// que con inclinación no es un número sino un rango — y es justo el caso en el que una luz
+        /// puesta a la altura media queda flotando en un lado y empotrada en el otro.</summary>
+        private string StoreyCeilingLabel(int storey)
+        {
+            var inner = _def.InnerContour();
+            if (inner == null || inner.Length < 3) return "—";
+            float minCeil = _def.MinCeilingOver(inner);
+
+            if (storey != _def.StoreyCount)
+                return $"slab at {_def.StoreyCeilingY(storey, minCeil):0.##} m (flat)";
+
+            if (_def.ceilingTilt <= 0.001f)
+                return $"room ceiling at {_def.heightMeters:0.##} m (flat)";
+
+            float lo = float.MaxValue, hi = float.MinValue;
+            foreach (var p in inner)
+            {
+                float y = _def.CeilingYAt(p);
+                lo = Mathf.Min(lo, y);
+                hi = Mathf.Max(hi, y);
+            }
+            return $"room ceiling {lo:0.##}–{hi:0.##} m (tilted {_def.ceilingTilt:0.#}°)";
+        }
+
         /// <summary>Mismo criterio por-tile de <c>BackroomsLighting.PlaceFluorescentLights</c>:
         /// una tirada de <c>lightDensity</c> por tile de 5 m, y de las que salen, una fracción
         /// <c>brokenLampChance</c> apagada (Dead) y, de las que quedan, un 30 % parpadeando —
@@ -333,10 +393,13 @@ namespace BackroomsSurvival.EditorTools
         private const double GeneratedFlickerChance = 0.30;
         private const float GeneratedLightDropBelowCeiling = 0.3f;
 
-        private void GenerateLightsFromLayer(LayerVisualConfig cfg, int seed)
+        /// <param name="onlyStorey">-1 = la sala entera, reemplazando todas las luces. Un piso
+        /// concreto = solo ese piso, y las luces de los DEMÁS pisos se quedan como están: es lo que
+        /// permite tirar la densidad varias veces en la planta baja sin perder lo ya ajustado
+        /// arriba, en vez de rehacer la sala entera a cada prueba.</param>
+        private void GenerateLightsFromLayer(LayerVisualConfig cfg, int seed, int onlyStorey = -1)
         {
             if (cfg == null) return;
-            var rng = new System.Random(seed);
             var inner = _def.InnerContour();
             if (inner == null || inner.Length < 3) return;
 
@@ -344,11 +407,27 @@ namespace BackroomsSurvival.EditorTools
             foreach (var p in inner) { min = Vector2.Min(min, p); max = Vector2.Max(max, p); }
 
             float minCeil = _def.MinCeilingOver(inner);
-            int storeys = _def.levels?.Length ?? 0;
+            int storeys = _def.StoreyCount;
             var newLights = new List<RoomDefinition.Light>();
 
-            for (int storey = 0; storey <= storeys && newLights.Count < MaxPerGroup; storey++)
+            // Las de los pisos que no se regeneran van primero y sin tocar. Su `level` se recorta
+            // igual que en el árbol de features (StoreyOf): una luz guardada con el piso de una
+            // losa ya borrada tiene que contarse en el piso al que de verdad cae, o sobreviviría a
+            // la regeneración de ESE piso y saldría duplicada.
+            if (onlyStorey >= 0)
+                foreach (var l in _def.lights)
+                    if (l != null && StoreyOf(l.level) != onlyStorey) newLights.Add(l);
+
+            int from = onlyStorey >= 0 ? onlyStorey : 0;
+            int to = onlyStorey >= 0 ? onlyStorey : storeys;
+
+            for (int storey = from; storey <= to && newLights.Count < MaxPerGroup; storey++)
             {
+                // Una tirada por piso y no una sola para toda la sala: así regenerar SOLO un piso
+                // da exactamente el mismo patrón que le habría tocado generando la sala entera con
+                // esa semilla. Con un único flujo compartido, el patrón de un piso dependía de
+                // cuántas luces hubieran salido en los de abajo.
+                var rng = new System.Random(seed + storey * 7919);
                 float floorY = _def.StoreyBaseY(storey, minCeil);
                 bool topStorey = storey == storeys;
 
@@ -391,8 +470,10 @@ namespace BackroomsSurvival.EditorTools
 
             _def.lights = newLights.ToArray();
             RebuildIfLive();
-            Debug.Log($"[RoomAuthoringWindow] Generated {newLights.Count} light(s) from " +
-                      $"'{cfg.name}' (seed {seed}).");
+            string where = onlyStorey < 0 ? "whole room"
+                : onlyStorey == 0 ? "base floor" : $"floor {onlyStorey}";
+            Debug.Log($"[RoomAuthoringWindow] Generated lights on {where} from " +
+                      $"'{cfg.name}' (seed {seed}); {newLights.Count} light(s) total.");
         }
     }
 }

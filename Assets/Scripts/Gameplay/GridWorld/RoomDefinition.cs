@@ -652,6 +652,41 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public Light[] lights = Array.Empty<Light>();
 
         /// <summary>
+        /// Estancias dentro de la sala. Es AUTORADO puro: nada de esto viaja por el wire ni sale en
+        /// el manifiesto — se declara la partición y se pulsa Build, y salen tabiques
+        /// (<see cref="Block"/>) como los que se pondrían a mano, con su vano donde dos estancias
+        /// se tocan. La sala sigue siendo UNA sala para el mundo.
+        ///
+        /// Es la vía que hay hoy para un complejo de varias estancias conectadas: el emplazamiento
+        /// prohíbe que dos salas compartan pared (hace falta un tile macizo entre reservas), pero
+        /// una sola sala llega a 16 × 16 tiles y sus pisos ya dan la verticalidad.
+        /// </summary>
+        public SubRoom[] subRooms = Array.Empty<SubRoom>();
+
+        /// <summary>Una estancia: un rectángulo de TILES dentro de la sala, en un piso. En tiles y
+        /// no en metros porque dos estancias solo se comunican si comparten borde exactamente, y
+        /// eso con metros sueltos no cuadra nunca.</summary>
+        [Serializable]
+        public sealed class SubRoom
+        {
+            public string label = "room";
+            [Min(0)] public int tileX;
+            [Min(0)] public int tileZ;
+            [Min(1)] public int tilesX = 2;
+            [Min(1)] public int tilesZ = 2;
+
+            /// <summary>Piso al que pertenece — ver <see cref="StoreyBaseY"/>.</summary>
+            [Min(0)] public int level;
+
+            /// <summary>Alto del tabique sobre el suelo de su piso. 0 = hasta el techo.</summary>
+            [Min(0f)] public float wallHeight;
+
+            /// <summary>Ancho del vano donde esta estancia toca a otra. 0 = tabique macizo, sin
+            /// paso — dos estancias pegadas y selladas la una de la otra.</summary>
+            [Min(0f)] public float doorWidth = 1.6f;
+        }
+
+        /// <summary>
         /// Traslada cualquier <see cref="Marker"/> de <see cref="MarkerKind.Light"/> a una entrada
         /// de <see cref="lights"/> y lo quita de <see cref="markers"/>. Idempotente. Mismo patrón y
         /// mismo punto de llamada que <see cref="MigrateLegacyPillarGrids"/> —
@@ -751,6 +786,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             foreach (var l in levels)
                 if (l != null) into.Add(ClampLevelHeight(l.height, minCeiling));
             into.Sort();
+        }
+
+        /// <summary>
+        /// Cuántos pisos hay POR ENCIMA de la planta baja — las losas que de verdad cuentan, que
+        /// no es lo mismo que <c>levels.Length</c>: <see cref="SortedLevelTops"/> descarta las
+        /// entradas nulas, así que un hueco en el array inflaba el recuento y desplazaba en uno la
+        /// frontera "¿es este el piso de arriba?". El piso de arriba dejaba de reconocerse como
+        /// tal y se le colgaban las cosas de un techo PLANO en vez del techo inclinado real.
+        /// </summary>
+        public int StoreyCount
+        {
+            get
+            {
+                if (levels == null) return 0;
+                int n = 0;
+                foreach (var l in levels) if (l != null) n++;
+                return n;
+            }
         }
 
         /// <summary>
