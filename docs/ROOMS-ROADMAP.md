@@ -212,6 +212,43 @@ la palanca es otra: `backend/src/world/architecture/layout_grammars.rs` y los pa
 (`starter_cluster`, `hallway_chain`, `intersection`). Son dos sistemas distintos y no compiten: uno
 amuebla, el otro traza.
 
+### 3.1 Encargo abierto: CONECTAR dos salas autoradas (2026-08-21)
+
+Lo que Joel pide, con sus palabras: *"si tengo dos rooms generadas, que el sistema las sepa
+conectar"* — dos salas autoradas por separado que el mundo coloque contiguas y comunicadas, para
+componer un complejo y jugar con la verticalidad.
+
+**Hoy es imposible, y no por falta de UI.** El punto 2 de arriba es una invariante con dientes: entre
+dos reservas va un tile macizo (`SEPARATION_CELLS`, `reserves_conflict` en
+`grid_gen/authored_rooms.rs`), y está ahí porque dos reservas pegadas dejan sus dos anillos
+`SealedWall` espalda contra espalda y las salas nacen selladas — la trampa 8 de §4. Conectarlas de
+verdad significa relajar esa invariante SOLO para pares declarados, y eso toca emplazamiento y
+reservas: **ADR nuevo antes de código** (regla dura 7 de CLAUDE.md).
+
+Y ojo con confundirlo con ADR-084: una sala multi-chunk **no** es un complejo. Es UNA sala cuya
+huella se extiende bajo un ancla única, con la costura suprimida por dentro. Sigue siendo una
+`RoomDefinition`, un plan y una entrada de wire; no hay concepto de adyacencia por ningún lado.
+
+**Vía muerta ya recorrida — no repetirla.** Se implementó y se retiró el mismo día un sistema de
+`subRooms`: particionar UNA sala en estancias con tabiques y vanos entre ellas, aprovechando que una
+sala llega a 16 × 16 tiles y que los pisos ya dan verticalidad. Técnicamente funcionaba (partición en
+tiles, tabique compartido emitido una sola vez, vano y alto resueltos por la pareja de estancias) y
+no tocaba wire ni manifiesto. **No es lo pedido**: sigue siendo una sala que por dentro parece
+varias, no varias salas que el sistema sepa juntar. Se retiró para no dejar en la herramienta un
+mando que promete otra cosa. Está en el historial (`a25a2383`) si alguna vez se quiere de vuelta.
+
+Cuando se aborde, las dos formas posibles y en qué se diferencian:
+
+| | Grafo de salas | Sala compuesta |
+|---|---|---|
+| Qué es | N `RoomDefinition` con adyacencias declaradas | Una `RoomDefinition` con regiones |
+| Emplazamiento | Hay que reservar el complejo como unidad atómica | Ya funciona (es una sala normal) |
+| Invariante "nunca comparten pared" | Se rompe para los pares linkeados | Intacta |
+| Wire | Cambia: `authored_rooms` no sabe de complejos | Sin cambios |
+| Reusar una sala en varios complejos | Sí, es lo que la hace valer | No |
+
+La primera es la que responde al encargo; la segunda es la vía muerta de arriba con otro nombre.
+
 ---
 
 ## 4. Trampas que ya costaron tiempo — no repetirlas

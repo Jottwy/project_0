@@ -349,9 +349,20 @@ namespace BackroomsSurvival.EditorTools
             // Deslizador CON campo, y el tope se estira hasta el valor que ya haya: un slider con
             // tope fijo recortaría en silencio una sala más alta que el rango la primera vez que
             // se repinta, y eso es perder un valor que alguien puso a propósito.
+            //
+            // El rango de AUTORADO va muy por encima del cap del mundo (12 m) y baja hasta la altura
+            // mínima que el modelo respeta de todos modos: probar una nave de 30 m o un tramo de
+            // gatera no puede exigir editar el asset a mano. Lo que el cap prohíbe se dice en
+            // Validate y al exportar, no recortando el mando — un mando que no llega es
+            // indistinguible de un mando roto.
             _def.heightMeters = EditorGUILayout.Slider(
-                new GUIContent("Height (m)", "Del suelo al techo. Con el techo inclinado es la MEDIA."),
-                _def.heightMeters, 2f, Mathf.Max(12f, _def.heightMeters));
+                new GUIContent("Height (m)",
+                    "Del suelo al techo. Con el techo inclinado es la MEDIA.\n\n"
+                    + $"Por encima de {RoomManifestExporter.BackendHeightCapMeters:0.#} m la sala se "
+                    + "sigue autorando y viendo aquí, pero en el mundo la losa de la primera capa "
+                    + "que no puede invadir la atraviesa. Válida antes de hornear."),
+                _def.heightMeters, RoomDefinition.MinCeilingHeight,
+                Mathf.Max(40f, _def.heightMeters));
             _def.wallThickness = EditorGUILayout.Slider(
                 new GUIContent("Wall thickness (m)",
                     "Grosor del muro. Es lo que se ve en el corte de una puerta."),
@@ -459,7 +470,7 @@ namespace BackroomsSurvival.EditorTools
             int features = _def.holes.Length + _def.floorHoles.Length + _def.pillars.Length
                 + _def.blocks.Length + _def.stairs.Length
                 + _def.markers.Length + _def.lights.Length + _def.levels.Length + _def.notches.Length
-                + _def.subRooms.Length + _def.manualContour.Length;
+                + _def.manualContour.Length;
             if (features == 0) return true;
 
             return EditorUtility.DisplayDialog(
@@ -583,7 +594,7 @@ namespace BackroomsSurvival.EditorTools
         /// por dónde se cae, luego lo que hay puesto, y al final lo que no es geometría.</summary>
         private FeatureGroupBase[] AllGroups() => new FeatureGroupBase[]
         {
-            HolesGroup(), PitsGroup(), PillarsGroup(), SubRoomsGroup(),
+            HolesGroup(), PitsGroup(), PillarsGroup(),
             BlocksGroup(), StairsGroup(), LightsGroup(), MarkersGroup(),
         };
 
@@ -619,7 +630,6 @@ namespace BackroomsSurvival.EditorTools
             {
                 if (storey > 0) DrawStoreySlab(storey);
                 DrawStoreyLightsRow(storey);
-                DrawStoreySubRoomsRow(storey);
                 DrawStoreyMazeRow(storey);
                 foreach (var g in groups) g.Draw(this, storey);
             }
@@ -2203,7 +2213,6 @@ namespace BackroomsSurvival.EditorTools
             foreach (var s in _def.stairs) if (s != null && Clamp(s.level) == storey) c++;
             foreach (var m in _def.markers) if (m != null && Clamp(m.level) == storey) c++;
             foreach (var l in _def.lights) if (l != null && Clamp(l.level) == storey) c++;
-            foreach (var s in _def.subRooms) if (s != null && Clamp(s.level) == storey) c++;
             return c;
         }
 
@@ -2309,6 +2318,15 @@ namespace BackroomsSurvival.EditorTools
                 _validateIssues.Add($"Por encima del cap de " +
                     $"{RoomManifestExporter.BackendFootprintCapTiles}×{RoomManifestExporter.BackendFootprintCapTiles} " +
                     "tiles (ADR-084, 2×2 chunks): se exportaría, pero el backend NO la colocará.");
+
+            // El cap de altura NO rechaza la sala: el backend recorta las capas invadidas, así que
+            // la losa de la primera capa que no puede invadir le entra por dentro. Sin este aviso
+            // eso se descubre jugando, con un techo cortado a media sala y sin nada que lo explique.
+            if (_def.heightMeters > RoomManifestExporter.BackendHeightCapMeters)
+                _validateIssues.Add($"{_def.heightMeters:0.#} m supera el cap de altura de " +
+                    $"{RoomManifestExporter.BackendHeightCapMeters:0.#} m (ADR-085): se exporta, pero " +
+                    "en el mundo la losa de la primera capa no invadida la atraviesa. Para probar " +
+                    "en el editor da igual; para hornearla, no.");
 
             if ((_def.tilesX > RoomManifestExporter.BackendInChunkCapTiles
                     || _def.tilesZ > RoomManifestExporter.BackendInChunkCapTiles)

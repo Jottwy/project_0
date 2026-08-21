@@ -63,6 +63,18 @@ namespace BackroomsSurvival.EditorTools
         internal const int MinDoorwaysForBigRooms = 2;
 
         /// <summary>
+        /// Hasta dónde puede subir una sala sin que el mundo se quede sin tapa: 12 m
+        /// (ADR-085 punto 5, `MAX_INVADED_LAYER` en `authored_rooms.rs`). Una sala invade las capas
+        /// cuya losa de suelo le caiga dentro, pero la última capa NO puede perder la suya.
+        ///
+        /// El backend no RECHAZA una sala más alta, la RECORTA: `top_layer_for_height` limita las
+        /// capas invadidas, así que la losa de la primera capa no invadida atraviesa la sala por
+        /// dentro. Por eso el aviso vive aquí y en Validate — sin él, pasar de 12 m se exporta en
+        /// silencio y el techo cortado solo se descubre jugando.
+        /// </summary>
+        internal const float BackendHeightCapMeters = 12f;
+
+        /// <summary>
         /// Una sala vista por el backend. Nombres en snake_case a propósito: son claves de JSON que
         /// `serde` lee al otro lado, mismo criterio que los espejos de <c>IPCMessages</c>, no
         /// identificadores de C#.
@@ -321,6 +333,7 @@ namespace BackroomsSurvival.EditorTools
             var skipped = new List<string>();
             var oversized = new List<string>();
             var underDoored = new List<string>();
+            var tooTall = new List<string>();
 
             for (int i = 0; i < pool.rooms.Length; i++)
             {
@@ -344,6 +357,12 @@ namespace BackroomsSurvival.EditorTools
 
                 if (entry.tilesX > BackendFootprintCapTiles || entry.tilesZ > BackendFootprintCapTiles)
                     oversized.Add($"{entry.id} ({entry.tilesX}×{entry.tilesZ})");
+
+                // La altura, a diferencia del footprint, no descarta la sala: el backend recorta las
+                // capas que invade y la losa de la primera que no puede invadir le entra por dentro.
+                // Un techo cortado a media sala sin nada que lo explique es peor que uno que avisa.
+                if (entry.heightMeters > BackendHeightCapMeters)
+                    tooTall.Add($"{entry.id} ({entry.heightMeters:0.#} m)");
 
                 // Una sala grande con un solo vano nace SELLADA a menudo, y no avisa nadie: el
                 // backend excava un pasillo por abertura hasta el laberinto, y si esa única
@@ -386,6 +405,11 @@ namespace BackroomsSurvival.EditorTools
                                  "grande de un solo vano nace INCOMUNICADA a menudo (medido: 6 de " +
                                  "55) y, si cruza chunks, encima se come las costuras que tapa. " +
                                  $"Ponle al menos {MinDoorwaysForBigRooms} boquetes, mejor uno por lado.");
+            if (tooTall.Count > 0)
+                Debug.LogWarning($"[RoomManifestExporter] Por encima del cap de altura de " +
+                                 $"{BackendHeightCapMeters:0.#} m (ADR-085): {string.Join(", ", tooTall)}. " +
+                                 "Se exportan y se colocan, pero la losa de la primera capa que no " +
+                                 "pueden invadir las atraviesa por dentro.");
             if (oversized.Count > 0)
                 Debug.LogWarning($"[RoomManifestExporter] Por encima del cap de " +
                                  $"{BackendFootprintCapTiles}×{BackendFootprintCapTiles} tiles " +
