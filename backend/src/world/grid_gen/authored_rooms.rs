@@ -1885,7 +1885,10 @@ mod tests {
         let mut by_entry: std::collections::BTreeMap<u16, usize> = Default::default();
         for cx in -SPAN / 2..SPAN / 2 {
             for cz in -SPAN / 2..SPAN / 2 {
-                if let Some(p) = first_plan(&m, seed, cx, cz, 0, None) {
+                // Solo las ANCLADAS aqui. Una sala multi-chunk la ven hasta cuatro chunks y
+                // contarla en cada uno multiplica por cuatro la densidad: la cadencia salia de 522 m
+                // a 394 m el dia que entro `room_2` sin que hubiera mas salas en el mundo.
+                for p in anchored_here(&m, seed, cx, cz) {
                     placed += 1;
                     *by_entry.entry(p.entry).or_default() += 1;
                 }
@@ -1917,9 +1920,8 @@ mod tests {
         let mut near: Vec<(f32, i32, i32, AuthoredRoomPlan)> = Vec::new();
         for cx in -SPAN / 2..SPAN / 2 {
             for cz in -SPAN / 2..SPAN / 2 {
-                if let Some(p) = first_plan(&m, seed, cx, cz, 0, None) {
-                    let wx = cx as f32 * 50.0 + (p.cell_x as f32 + p.cells_x as f32 / 2.0) * 2.5;
-                    let wz = cz as f32 * 50.0 + (p.cell_z as f32 + p.cells_z as f32 / 2.0) * 2.5;
+                for p in anchored_here(&m, seed, cx, cz) {
+                    let (wx, wz) = world_center(cx, cz, &p);
                     near.push(((wx * wx + wz * wz).sqrt(), cx, cz, p));
                 }
             }
@@ -1927,16 +1929,13 @@ mod tests {
         near.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
         println!("\nmas cercanas al origen (centro de la sala, coordenadas de mundo):");
         for (dist, cx, cz, p) in near.iter().take(5) {
-            let wx = *cx as f32 * 50.0 + (p.cell_x as f32 + p.cells_x as f32 / 2.0) * 2.5;
-            let wz = *cz as f32 * 50.0 + (p.cell_z as f32 + p.cells_z as f32 / 2.0) * 2.5;
-            let sides: Vec<&str> = p
-                .doorways()
-                .map(|(s, _)| ["sur(-z)", "norte(+z)", "oeste(-x)", "este(+x)"][s as usize])
-                .collect();
-            let side = sides.join("+");
+            let (wx, wz) = world_center(*cx, *cz, p);
             println!(
-                "  x={wx:.1} z={wz:.1}  ({dist:.0} m)  chunk({cx},{cz})  entrada {} giro {}  puerta {side}",
-                p.entry, p.quarter
+                "  x={wx:.1} z={wz:.1}  ({dist:.0} m)  chunk({cx},{cz})  entrada {} giro {}                   {} chunk(s)  puerta {}",
+                p.entry,
+                p.quarter,
+                covered_chunks(p).count(),
+                doors_of(p)
             );
         }
 
@@ -2504,6 +2503,29 @@ mod tests {
         }
     }
 
+    /// Las salas que este chunk ANCLA, sin las que le invaden desde un vecino.
+    ///
+    /// **Contar salas sin este filtro multiplica por cuatro.** Desde ADR-084 una sala aparece en el
+    /// conjunto de todos los chunks que cubre, así que un barrido que sume `plan_authored_rooms`
+    /// chunk a chunk cuenta cada sala multi-chunk hasta cuatro veces. La cadencia real del mundo
+    /// pasó de 522 m a 394 m el día que entró `room_2`, sin que hubiera ni una sala más.
+    ///
+    /// El ancla es el chunk de menor `(cx, cz)` de los que cubre, y como la reserva empieza siempre
+    /// en coordenadas positivas dentro de él, es el primero que devuelve `covered_chunks`.
+    fn anchored_here(
+        m: &RoomManifest,
+        seed: u64,
+        cx: i32,
+        cz: i32,
+    ) -> impl Iterator<Item = AuthoredRoomPlan> {
+        rooms_of(m, seed, cx, cz)
+            .iter()
+            .filter(|p| covered_chunks(p).next() == Some((0, 0)))
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+    }
+
     /// El CENTRO de una sala en coordenadas de mundo, que es a donde hay que ir para verla.
     fn world_center(cx: i32, cz: i32, p: &AuthoredRoomPlan) -> (f32, f32) {
         let side = CHUNK_CELLS as f32 * super::super::CELL_SIZE_M;
@@ -2564,16 +2586,11 @@ mod tests {
         let mut found: Vec<(f32, i32, i32, AuthoredRoomPlan)> = Vec::new();
         for cx in -span..=span {
             for cz in -span..=span {
-                for p in rooms_of(&m, seed, cx, cz).iter() {
-                    // Solo las ANCLADAS aqui: una sala multi-chunk la ven varios chunks y saldria
-                    // repetida en la lista.
-                    if covered_chunks(p).next() != Some((0, 0)) {
-                        continue;
-                    }
-                    let (wx, wz) = world_center(cx, cz, p);
+                for p in anchored_here(&m, seed, cx, cz) {
+                    let (wx, wz) = world_center(cx, cz, &p);
                     let d = (wx * wx + wz * wz).sqrt();
                     if d <= radius {
-                        found.push((d, cx, cz, *p));
+                        found.push((d, cx, cz, p));
                     }
                 }
             }
@@ -2610,15 +2627,42 @@ mod tests {
                 let room = &m.rooms[p.entry as usize];
                 println!(
                     "   x={wx:>9.1}  z={wz:>9.1}   ({d:>6.0} m)  chunk({cx},{cz})  \
-                     {} {}x{} tiles  giro {}  puerta {}",
+                     {} {}x{}t  {} chunk(s)  giro {}  puerta {}",
                     room.id,
                     room.tiles_x,
                     room.tiles_z,
+                    covered_chunks(p).count(),
                     p.quarter,
                     doors_of(p)
                 );
             }
             println!();
+        }
+
+        // Cuantas de cada entrada, y cuantas CRUZAN de chunk. Es lo que dice de un vistazo si el
+        // multi-chunk esta encendido de verdad o el pool solo tiene salas que caben en su chunk; y
+        // una entrada con CERO salas es una que se horneo, se exporto y no aparece en el mundo, que
+        // es el fallo silencioso contra el que avisa el punto 6 de ADR-083 enmienda 1.
+        let mut by_entry: std::collections::BTreeMap<u16, (usize, usize)> = Default::default();
+        for (_, _, _, p) in &found {
+            let e = by_entry.entry(p.entry).or_default();
+            e.0 += 1;
+            if covered_chunks(p).count() > 1 {
+                e.1 += 1;
+            }
+        }
+        println!("── por entrada ──");
+        for (i, room) in m.rooms.iter().enumerate() {
+            match by_entry.get(&(i as u16)) {
+                Some((n, multi)) => println!(
+                    "   {i} {} ({}x{}t): {n} salas, {multi} cruzan de chunk",
+                    room.id, room.tiles_x, room.tiles_z
+                ),
+                None => println!(
+                    "   {i} {} ({}x{}t): NINGUNA — no cabe en 2x2 chunks",
+                    room.id, room.tiles_x, room.tiles_z
+                ),
+            }
         }
 
         assert!(
@@ -2689,26 +2733,35 @@ mod tests {
     #[ignore]
     fn probe_unreachable_rooms() {
         require_no_global_manifest("probe_unreachable_rooms");
-        const B: usize = 3; // chunks por lado del bloque
+        // 5 y no 3: una sala de 2 x 2 chunks con la puerta en su lado lejano excava el tunel hacia
+        // fuera, y con un bloque justo se saldria del mapa y se leeria como incomunicada. Dos chunks
+        // de margen por lado cubren el tunel mas largo (`TUNNEL_LIMIT` = medio chunk).
+        const B: usize = 5; // chunks por lado del bloque
         const W: usize = B * CHUNK_CELLS;
+        const CENTRE: i32 = (B / 2) as i32;
         let rules = &LAYER_PROFILES[0];
 
+        // El manifiesto REAL del repo va el primero: es el unico contenido que llega al juego, y es
+        // el que puede tener una sala grande con las puertas repartidas entre chunks.
+        let real = crate::world::grid_gen::load_manifest(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../Assets/StreamingAssets/room_manifest.json"
+        )))
+        .expect("manifiesto del repo");
+
         for (label, m) in [
+            ("REAL (el del repo)", real),
             ("real (4x4)", manifest()),
             ("2x2 + 1x1", small_manifest()),
             ("multi-chunk (10x10)", multi_chunk_manifest()),
         ] {
             let (mut chunks, mut rooms, mut bad) = (0, 0, 0);
             for seed in SEEDS {
-                for cx in -10..10 {
-                    for cz in -10..10 {
+                for cx in -20..20 {
+                    for cz in -20..20 {
                         // Solo las salas ANCLADAS aqui: las que invaden desde un vecino ya se
                         // cuentan cuando le toque el turno a su propio ancla.
-                        let own: Vec<_> = rooms_of(&m, seed, cx, cz)
-                            .iter()
-                            .filter(|p| covered_chunks(p).next() == Some((0, 0)))
-                            .copied()
-                            .collect();
+                        let own: Vec<_> = anchored_here(&m, seed, cx, cz).collect();
                         if own.is_empty() {
                             continue;
                         }
@@ -2719,7 +2772,7 @@ mod tests {
                         let mut walk = vec![false; W * W];
                         for bz in 0..B {
                             for bx in 0..B {
-                                let (gx, gz) = (cx + bx as i32 - 1, cz + bz as i32 - 1);
+                                let (gx, gz) = (cx + bx as i32 - CENTRE, cz + bz as i32 - CENTRE);
                                 let set = rooms_of(&m, seed, gx, gz);
                                 let mut out = generate_chunk_layer(rules, seed, (gx, gz), 0, &[]);
                                 if !set.is_empty() {
@@ -2779,8 +2832,8 @@ mod tests {
                         let main = (0..sizes.len()).max_by_key(|&i| sizes[i]).unwrap();
                         for p in &own {
                             let (fx, fz) = (
-                                (CHUNK_CELLS as i32 + p.cell_x) as usize,
-                                (CHUNK_CELLS as i32 + p.cell_z) as usize,
+                                (CENTRE * CHUNK_CELLS as i32 + p.cell_x) as usize,
+                                (CENTRE * CHUNK_CELLS as i32 + p.cell_z) as usize,
                             );
                             if comp[fz * W + fx] != main {
                                 bad += 1;
