@@ -504,7 +504,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // el bucle de tiles— pero el prefab se instancia UNA vez, entero, desde su capa 0. Sin
             // esta guarda saldrían tres salas de 12 m encajadas una dentro de otra.
             if (layerIndex == AuthoredRoomAnchorLayer && _roomPlanScratch.Count > 0)
-                PlaceAuthoredRooms(root.transform, _roomPlanScratch, zoneTint);
+                PlaceAuthoredRooms((chunkX, chunkZ, layerIndex), origin, _roomPlanScratch, zoneTint);
             // La escalera se planifica contra `roomZones`, que el tallado de la sala autorada NO
             // toca — los rects de Fase 4 siguen siendo los mismos aunque el backend haya vaciado ese
             // sitio. Sin esta guarda, escalera y sala se instancian las dos en el mismo tile y se

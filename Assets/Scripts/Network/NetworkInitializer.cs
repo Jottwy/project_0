@@ -692,6 +692,10 @@ namespace BackroomsSurvival.Net
         {
             BackroomsSurvival.Gameplay.BuildRoomRegistry.ResetForNewConnection();
             BackroomsSurvival.Gameplay.AuthoredRoomRegistry.ResetForNewConnection();
+            // ADR-084 punto 5: los PREFABS ya instanciados, además de los planes. Cuelgan de un root
+            // de mundo que no es hijo de nada del generador, así que reconectar a otra seed dejaría
+            // las salas del mundo anterior flotando en el sitio donde estaban.
+            BackroomsSurvival.Gameplay.GridWorld.AuthoredRoomInstances.ClearAll();
             BackroomsSurvival.Gameplay.ZoneRegistry.ResetForNewSession();
         }
 

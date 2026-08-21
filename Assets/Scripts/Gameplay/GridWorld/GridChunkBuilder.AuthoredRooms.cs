@@ -20,6 +20,14 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public Vector3 localCenter;
             public float yaw;
             public int tx0, tz0, tx1, tz1;
+            /// <summary>
+            /// Identidad de la sala, la misma en los hasta cuatro chunks que la ven (ADR-084). Es lo
+            /// que <see cref="AuthoredRoomInstances"/> usa para instanciarla UNA vez.
+            /// </summary>
+            public AuthoredRoomInstances.Key key;
+            /// <summary>True si el chunk que construye es el ANCLA de esta sala. Decide de quién
+            /// sale el tinte de zona — ADR-084 punto 7.</summary>
+            public bool isAnchor;
 
             public bool ContainsTile(int tx, int tz) =>
                 tx >= tx0 && tx < tx1 && tz >= tz0 && tz < tz1;
@@ -141,17 +149,31 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 tz0 = tz0,
                 tx1 = tx0 + tw,
                 tz1 = tz0 + th,
+                // La identidad va con los números DEL WIRE, sin convertir: el tile de ancla es el
+                // mismo en los cuatro chunks, el local no.
+                key = new AuthoredRoomInstances.Key(
+                    placed.anchorCx, placed.anchorCz, placed.tileX, placed.tileZ),
+                isAnchor = placed.anchorCx == chunkX && placed.anchorCz == chunkZ,
             });
         }
 
-        /// <summary>Instancia las salas ya planificadas bajo el root del chunk, con el tinte de su
-        /// zona ya aplicado.</summary>
-        private static void PlaceAuthoredRooms(Transform parent, List<RoomPlan> plans, Color zoneTint)
+        /// <summary>
+        /// Pide las salas ya planificadas a <see cref="AuthoredRoomInstances"/>, que las instancia
+        /// una sola vez y las cuelga de un root de MUNDO.
+        ///
+        /// Desde ADR-084 punto 5 no van bajo el root del chunk: una sala repartida entre chunks se
+        /// quedaría a medias en cuanto se descargara el que la tuviera colgada, con el jugador
+        /// dentro. Por eso la posición se pasa en coordenadas de mundo (`chunkOrigin + localCenter`)
+        /// y no locales — este es el único punto donde el builder conoce las dos.
+        /// </summary>
+        private static void PlaceAuthoredRooms((int cx, int cz, int layer) chunk, Vector3 chunkOrigin,
+            List<RoomPlan> plans, Color zoneTint)
         {
             for (int i = 0; i < plans.Count; i++)
             {
-                var go = Instantiate(plans[i].prefab, parent, plans[i].localCenter, plans[i].yaw);
-                TintAuthoredRoom(go, zoneTint);
+                var p = plans[i];
+                AuthoredRoomInstances.Acquire(chunk, p.key, p.prefab,
+                    chunkOrigin + p.localCenter, p.yaw, zoneTint, p.isAnchor);
             }
         }
 
@@ -171,7 +193,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// decide el jitter HSV del chunk entero. Misma disciplina que `PlaceLintels` y que la
         /// escalera de OFFICE.
         /// </summary>
-        private static void TintAuthoredRoom(GameObject go, Color zoneTint)
+        internal static void TintAuthoredRoom(GameObject go, Color zoneTint)
         {
             // ZONE_NORMAL, zona desconocida y capa sin estilo dan blanco. Multiplicar por blanco no
             // cambia nada, así que ni se tocan los renderers del prefab.

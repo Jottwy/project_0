@@ -201,6 +201,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // Fase 5A: free the shared per-layer materials we instanced.
             foreach (var m in _matCache.Values) m.Destroy();
             _matCache.Clear();
+            // ADR-084 punto 5: las salas autoradas cuelgan de un root de MUNDO que no es hijo de
+            // este transform — a propósito, para sobrevivir a la descarga de los chunks. La
+            // contrapartida es que tampoco se van solas cuando se va el generador.
+            AuthoredRoomInstances.ClearAll();
         }
 
         private void Update()
@@ -302,6 +306,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (!_unloadQueue.Remove(key)) continue;
                     if (_desired.Contains(key)) continue;                  // rescued — back in range
                     if (!_loaded.TryGetValue(key, out var go)) continue;
+                    // ADR-084 punto 5: las salas autoradas NO cuelgan de este root, así que este
+                    // Destroy no se las lleva — hay que soltar la referencia a mano. La sala se
+                    // destruye cuando la suelta el último chunk que la cubría, no el primero: con el
+                    // jugador dentro de una sala repartida, el chunk ancla puede descargarse antes
+                    // que aquel en el que está de pie.
+                    AuthoredRoomInstances.ReleaseChunk(key);
                     Destroy(go);
                     _loaded.Remove(key);
                     _wallsCache.Remove(key);
@@ -533,6 +543,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                          // degrade instead of assuming — the next real load will re-evaluate zoneKnownAtBuild anyway)
 
             BuildChunkFromBitmask(key, walls); // overwrites _loaded[key] with the NEW root first
+            // Y NO se sueltan aquí las salas autoradas: el root nuevo ya las volvió a pedir, y
+            // `Acquire` ignora una segunda petición del mismo chunk justo por esto (ver su guarda).
+            // Soltarlas dejaría el refcount por debajo de los chunks que de verdad las referencian.
             Destroy(oldGo);
         }
 
