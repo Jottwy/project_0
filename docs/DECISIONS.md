@@ -5020,3 +5020,62 @@ como una consecuencia del multi-chunk.
 Y la sonda se reescribió sobre un bloque de **3 × 3 chunks**: por chunk suelto ya no vale, porque una
 sala multi-chunk tiene el interior repartido y sus puertas pueden caer todas en el chunk de al lado,
 así que su trozo se leería como componente aislada aunque en el mundo se cruce andando.
+
+### ADR-084 enmienda 3 — El cap era 16 × 16, no 17 × 17; y una sala grande necesita más de una puerta (VALIDADA, 2026-08-21)
+
+Dos correcciones sobre la enmienda 2, las dos encontradas al hornear por fin una sala multi-chunk.
+**Con esto ADR-084 pasa de implementado a EJERCITADO**: `room_2` (12 × 12 tiles) está en el pool y
+504 de las 1165 salas de un radio de 10 km cruzan de chunk.
+
+#### 1. El cap que se anunciaba no se podía colocar — en NINGUNA de sus dos versiones
+
+El punto 2 de la enmienda 2 fijó el cap multi-chunk en 34 celdas (17 × 17 tiles) con una cuenta de
+área. **Le falta la paridad.** El origen del footprint se sortea en tiles y se multiplica por dos, así
+que un origen impar no existe; a 34 celdas la reserva ocupa la ventana entera y su único origen
+posible es el 3, que es impar. `fits` aceptaba la sala como candidata, entraba en el barajado y
+`draw_origin` la descartaba en silencio.
+
+Y no era un error nuevo: **el cap de 7 × 7 tiles de ADR-083 enmienda 2 tenía exactamente el mismo
+fallo** y llevaba así desde entonces. Los caps reales, ahora derivados de `FIRST_EVEN_ORIGIN` en vez
+de a mano y fijados por `the_advertised_cap_is_actually_placeable`:
+
+| | anunciado | real |
+|---|---|---|
+| dentro de un chunk | 7 × 7 tiles | **6 × 6** (30 m) |
+| multi-chunk, 2 × 2 chunks | 17 × 17 tiles | **16 × 16** (80 m) |
+
+**PROHÍBE** anunciar un cap de footprint que `draw_origin` no pueda satisfacer. Un tamaño que se
+acepta y luego se descarta sin decirlo es el modo de fallo del punto 6 de ADR-083 enmienda 1: una
+sala que se hornea, se exporta y no aparece nunca.
+
+#### 2. Una sala grande con UN SOLO vano nace incomunicada, y hay que avisar
+
+Medido con `probe_unreachable_rooms` sobre 55 emplazamientos de una sala de 10 × 10 tiles con una
+sola abertura: **6 incomunicadas**. La misma medida con cuatro aberturas: **0 de 58**. El backend
+excava un pasillo por abertura hasta el laberinto; si la única da a un sitio del que no se sale, la
+sala queda sellada y nada lo rescata.
+
+Se agrava con el punto 4 de este mismo ADR: una sala multi-chunk **suprime** la apertura de costura
+de cada borde que tapa, hasta cuatro. Devolver una sola puerta a cambio empobrece la región aunque la
+sala sí se alcance.
+
+Es una regla de AUTORADO, no de código: no se fuerza, se avisa en `RoomManifestExporter` para toda
+sala que no quepa en un chunk y traiga menos de dos vanos. El umbral va ahí y no más abajo a
+propósito — `room_0` mide 5 × 5 con un vano y la sonda le cuenta cero incomunicadas; avisar de ella
+sería ruido que enseña a ignorar el aviso.
+
+#### 3. Contar salas sin filtrar por ancla multiplica por cuatro
+
+Una sala aparece en el conjunto de todos los chunks que cubre, así que un barrido que sume
+`plan_authored_rooms` chunk a chunk cuenta cada sala repartida hasta cuatro veces. La cadencia
+declarada saltó de 522 m a 394 m el día que entró `room_2`, sin una sola sala más en el mundo. Toda
+sonda que cuente salas filtra por "anclada aquí" (`anchored_here`); la cadencia real sigue siendo una
+cada ~520 m.
+
+#### Verificación (a) y (b), que la enmienda 2 dejaba pendientes de contenido
+
+(a) queda **verificada en el emplazamiento**: los cuatro chunks que cubre una sala la sitúan en la
+misma coordenada de mundo, y el manifiesto real da 58 salas con **0 incomunicadas**. Lo que sigue sin
+comprobar es lo que solo se ve jugando: que no haya costura visible en el suelo o el techo a caballo
+de los dos chunks. (b) —atravesarla a pie y que la colisión coincida con lo que se ve— sigue
+**pendiente de playtest**.

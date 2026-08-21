@@ -5,7 +5,8 @@
 > verificarlo y si necesita ADR antes.
 >
 > Recorrido del sistema: [`systems/authored-rooms.md`](systems/authored-rooms.md).
-> Las decisiones vinculantes: ADR-083 y sus enmiendas 1 y 2 en [`DECISIONS.md`](DECISIONS.md).
+> Las decisiones vinculantes: ADR-083, ADR-084 y ADR-085 con sus enmiendas, en
+> [`DECISIONS.md`](DECISIONS.md).
 
 ---
 
@@ -13,7 +14,7 @@
 
 Funciona de punta a punta: horneas una sala → el horneado reexporta `room_manifest.json` → el
 backend lo carga al arrancar → reserva sitio, vacía, cierra con anillo y excava un pasillo por cada
-abertura → manda `authored_room` por wire 38 → el cliente instancia el prefab y no pinta nada
+abertura → manda `authored_rooms` por wire 41 → el cliente instancia el prefab y no pinta nada
 encima.
 
 Números medidos: **31 salas en 9 km², una cada ~539 m**. 27 tests propios en verde.
@@ -106,7 +107,7 @@ decorado y pasa a ser estado del mundo: qué hay dentro lo tira el servidor, si 
 estado persistente por chunk, y dos jugadores abriendo a la vez piden la guarda de "una petición en
 vuelo" que ya hizo falta para los cadáveres. Ver §7.2 de `systems/authored-rooms.md`.
 
-### B2. Salas multi-chunk — ✅ HECHO (ADR-084 + enmiendas 1 y 2, wire 41, 2026-08-21)
+### B2. Salas multi-chunk — ✅ HECHO Y EJERCITADO (ADR-084 + enmiendas 1-3, wire 41, 2026-08-21)
 
 Una sala de 50 m no cabe en un chunk (interior utilizable 18 celdas = 45 m). Rompe la invariante
 que sostiene el worldgen entero: **un chunk se genera solo, sin mirar a los vecinos** — aunque eso
@@ -114,20 +115,28 @@ ya no era cierto: `stitch_edges` coordina la costura de dos chunks por clave can
 mucho, y ADR-084 se apoya en ese precedente. Además obliga a sacar el prefab del ciclo de vida del
 chunk, o descargar el chunk ancla con el jugador dentro borra media sala.
 
-Los cinco trozos, todos commiteados y todos **inertes con el contenido de hoy** (el mundo no se mueve
-ni un byte):
+Los cinco trozos, todos commiteados y todos **inertes al entrar** -- cada uno se pudo verificar sin
+mover el mundo ni un byte, y el mundo solo cambio al llegar el contenido:
 
 | | | |
 |---|---|---|
 | **T1** `df251e15` | Coordenadas de sala con signo; el tallado recorta al chunk en vez de descartar | ✅ |
 | **T2** `cfa4be1a` | Un chunk barre vecinos buscando salas ancladas fuera que asomen aquí | ✅ |
-| **T3** `009eb733` | Cap a 2 × 2 chunks (17 × 17 tiles) + retirada por orden canónico | ✅ |
+| **T3** `009eb733` | Cap a 2 × 2 chunks + retirada por orden canónico | ✅ |
 | **T4** `8820b3a8` | Costura suprimida en los bordes que cubre la sala | ✅ |
 | **T5** `85a11a77` + `ee471982` | Wire 40 → 41 con el chunk ancla; prefab fuera del root con refcount | ✅ |
 
-**El código está entero; lo que falta es contenido.** El pool tiene UNA sala, `room_0`, de 5 × 5
-tiles = 25 m, que cabe de sobra en un chunk, así que hoy nada de esto se ve. En cuanto se hornee una
-sala de más de 7 × 7 tiles empieza a colocarse sola, sin tocar código.
+**Y ya se ve en el mundo.** `room_2` (12 × 12 tiles = 60 m, 12 m de alto, cuatro vanos) está en el
+pool desde el 2026-08-21: **504 de las 1165 salas de un radio de 10 km cruzan de chunk**, y cada una
+ocupa las cuatro esquinas de un bloque de 2 × 2. Los cuatro chunks la sitúan en la misma coordenada
+de mundo, y la densidad no se mueve — una cada ~520 m antes y después.
+
+Se hornea con **Backrooms ▸ Create Multi-Chunk Room**, que copia la forma de `room_1` y solo cambia
+la medida. Después hay que exportar el manifiesto SIEMPRE, y **reiniciar la sesión**: el backend lo
+lee una vez, en un `OnceLock`.
+
+`room_1` (32 × 32 tiles = 160 m) sigue sin colocarse y seguirá: pasa del cap de 2 × 2 chunks, que es
+80 m. El exportador lo dice en cada exportación.
 
 Coste medido (verificación (f) de ADR-084, en release, sonda `probe_neighbour_sweep_cost` — **lánzala
 SOLA**, ver abajo): el barrido de T2 costaba `generate_chunk_layer` 26,2 → 29,6 µs, **+13 %**. T3 lo
@@ -146,9 +155,16 @@ tallar `room_0` dentro de lo que la sonda está midiendo y los números salen fa
 incomunicadas pasaban de 1 de 11 a 5 de 11). Las sondas ahora se caen con el comando correcto en el
 mensaje.
 
-**Deuda abierta que NO es de este ADR:** `probe_unreachable_rooms` marca **1 de 11** salas
-incomunicadas, y viene de antes. El único vano de esa sala apunta a una `SealedRoom` estampada de
-Fase 4, el túnel muere contra su perímetro y `repair_connectivity` no perfora `SealedWall`.
+**Regla de autorado que salió de medir esto:** una sala grande con UN SOLO vano nace incomunicada
+**6 de 55 veces**; con cuatro, **0 de 58**. El backend excava un pasillo por abertura hasta el
+laberinto, y si la única da a un sitio del que no se sale, la sala queda sellada. Se agrava con la
+costura suprimida: una sala multi-chunk se come hasta cuatro aperturas y devuelve las puertas que
+tenga. El exportador avisa por debajo de dos vanos si la sala no cabe en un chunk.
+
+**Deuda abierta que NO es de este ADR:** con el manifiesto REAL la sonda da **0 incomunicadas de
+58**, pero el manifiesto de prueba de 4 × 4 marca 2 de 59, y viene de antes. El único vano de esas
+salas apunta a una `SealedRoom` estampada de Fase 4, el túnel muere contra su perímetro y
+`repair_connectivity` no perfora `SealedWall`.
 
 ### B3. Altura por encima de una capa — ✅ HECHO (2026-08-21, ADR-085 + enmiendas 1 y 2, wire 40)
 
@@ -241,19 +257,21 @@ Dos medidas, y las dos hacen falta:
 | Tamaño | Para qué |
 |---|---|
 | **1 × 1 y 2 × 2 tiles** (5 m y 10 m) | Las únicas de las que caben VARIAS en un chunk. Regla: dos salas conviven si `T₁ + T₂ ≤ 3`. Sin estas, A1 no se ve. |
-| **hasta 7 × 7 tiles** (35 m) | Variedad. 35 m es lo que cabe dentro de un chunk. |
-| **de 8 × 8 a 17 × 17 tiles** (40–85 m) | Multi-chunk. Ya no hace falta nada más: B2 está entero desde el 2026-08-21. |
+| **hasta 6 × 6 tiles** (30 m) | Variedad. 30 m es lo que de verdad cabe dentro de un chunk — ver el cap abajo. |
+| **de 7 × 7 a 16 × 16 tiles** (35–80 m) | Multi-chunk, ya funcionando. `room_2` es la primera; hacen falta más para que no salga siempre la misma. |
+
+**Los caps reales son 6 × 6 y 16 × 16, no 7 × 7 y 17 × 17.** El origen del footprint se sortea en
+tiles, así que un origen impar no existe, y a los tamaños de la cuenta ingenua el único sitio donde
+cabría la reserva empieza en celda impar. Una sala de ese tamaño se hornea, se exporta, y el
+emplazamiento la descarta sin decir nada (ADR-084 enmienda 3). Y **cualquier sala que no quepa en un
+chunk necesita al menos dos vanos**, mejor uno por lado.
 
 Cap de altura: **≤ 12 m** desde ADR-085 (2026-08-21) — ya no son 4. Una sala más alta que una capa
 hace que las capas que invade dejen de pintarle encima, y eso ya funciona de punta a punta. Por
 encima de 12 m el mundo se quedaría sin techo, así que ahí sí hay tope duro.
 
-La tercera medida es la que más rinde ahora mismo: **una sala de más de 7 × 7 tiles**. ADR-084 está
-implementado entero y sin una sola línea pendiente, pero es INVISIBLE hasta que exista una sala que lo
-ejercite — el mundo se comporta exactamente igual que antes. Hornear una sola sala grande enciende
-todo el multi-chunk de golpe: cap de 2 × 2 chunks, retirada entre anclas, costura suprimida y prefab
-con refcount, sin tocar código.
-
-Y es también la única forma de cerrar las verificaciones (a) y (b) de ADR-084, que no se pueden
-comprobar sin una sala repartida de verdad: que se vea entera y sin costura a caballo de dos chunks, y
-que atravesarla a pie coincida con lo que dice la colisión.
+La tercera medida ya está hecha: `room_2` encendió el multi-chunk el 2026-08-21 y con ella el cap de
+2 × 2 chunks, la retirada entre anclas, la costura suprimida y el prefab con refcount dejaron de ser
+código dormido. Lo que queda de ella es **verla jugando**: que no haya costura visible en el suelo o
+el techo a caballo de dos chunks, y que atravesarla a pie coincida con lo que dice la colisión — las
+verificaciones (a) y (b) de ADR-084, las únicas que no se pueden medir sin arrancar el juego.
