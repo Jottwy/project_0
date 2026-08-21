@@ -190,6 +190,8 @@ mod tests {
             quarter: 0,
             cell_x: 8,
             cell_z: 8,
+            anchor_cx: 0,
+            anchor_cz: 0,
             cells_x: 8,
             cells_z: 8,
             top_layer: 0,

@@ -329,9 +329,18 @@ pub struct GridChunkData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_room: Option<[u8; 3]>,
     /// ADR-083 enmienda 1 — las SALAS AUTORADAS de este chunk, cada una
-    /// `[tile_x, tile_z, entry, quarter]`. `tile_x`/`tile_z` en TILES de 5 m dentro
-    /// del chunk; `entry` es el índice en `RoomPool.rooms` (y en el manifiesto) que
-    /// dice qué prefab instanciar; `quarter` el giro en cuartos de vuelta.
+    /// `[tile_x, tile_z, entry, quarter, anchor_cx, anchor_cz]`. `entry` es el índice
+    /// en `RoomPool.rooms` (y en el manifiesto) que dice qué prefab instanciar;
+    /// `quarter` el giro en cuartos de vuelta.
+    ///
+    /// **`tile_x`/`tile_z` van en tiles de 5 m relativos al CHUNK ANCLA, no a este**
+    /// (wire 40 → 41, ADR-084 enmienda 1 punto 2). Una sala que cruza chunks llega en
+    /// los cuatro que cubre y en todos con la MISMA pareja de números; el chunk local
+    /// se saca restando. El ancla no está aquí por el tamaño: el cliente **necesita**
+    /// saber de quién es la sala o los cuatro chunks instancian el prefab y salen
+    /// cuatro salas superpuestas. Con las coordenadas del ancla, ese dato ES el
+    /// identificador de deduplicación — un solo campo hace las dos cosas, y un
+    /// desplazamiento con signo habría necesitado además un id aparte.
     ///
     /// PLURAL desde ADR-083 enmienda 3 (wire 38 → 39), que es la forma que el punto 2
     /// del ADR base pedía desde el principio: la enmienda 1 lo estrechó a una sola
@@ -349,7 +358,7 @@ pub struct GridChunkData {
     /// `room_zones`, `sprays` y `build_room`: un chunk sin sala cuesta exactamente lo
     /// que costaba en wire 37, y sigue costándolo tras el paso a plural.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub authored_rooms: Vec<[u16; 4]>,
+    pub authored_rooms: Vec<[i32; 6]>,
 }
 
 /// ADR-009 §2 DeltaUpdate payload: the 20 Hz authoritative movement state the
@@ -635,14 +644,16 @@ mod tests {
         );
     }
 
-    /// Y cuando SÍ la hay, sobrevive el viaje con sus cuatro campos en orden.
+    /// Y cuando SÍ la hay, sobrevive el viaje con sus SEIS campos en orden. Los dos últimos son las
+    /// coordenadas del chunk ancla (wire 41) y van CON SIGNO: un ancla en `(-3, -7)` es tan normal
+    /// como una en `(3, 7)`, y con el `u16` de wire 40 habría dado la vuelta en silencio.
     #[test]
     fn an_authored_room_round_trips() {
         let mut chunk = bare_chunk();
-        chunk.authored_rooms = vec![[4, 6, 2, 3]];
+        chunk.authored_rooms = vec![[4, 6, 2, 3, -3, -7]];
         let body = rmp_serde::to_vec_named(&chunk).unwrap();
         let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
-        assert_eq!(decoded.authored_rooms, vec![[4, 6, 2, 3]]);
+        assert_eq!(decoded.authored_rooms, vec![[4, 6, 2, 3, -3, -7]]);
     }
 
     /// ADR-083 enmienda 3 — VARIAS salas en un chunk viajan enteras y EN ORDEN. El orden es
@@ -650,12 +661,12 @@ mod tests {
     #[test]
     fn several_authored_rooms_round_trip_in_order() {
         let mut chunk = bare_chunk();
-        chunk.authored_rooms = vec![[4, 6, 2, 3], [1, 1, 0, 0], [9, 2, 5, 1]];
+        chunk.authored_rooms = vec![[4, 6, 2, 3, 0, 0], [1, 1, 0, 0, -1, 0], [9, 2, 5, 1, 0, -1]];
         let body = rmp_serde::to_vec_named(&chunk).unwrap();
         let decoded: GridChunkData = rmp_serde::from_slice(&body).unwrap();
         assert_eq!(
             decoded.authored_rooms,
-            vec![[4, 6, 2, 3], [1, 1, 0, 0], [9, 2, 5, 1]]
+            vec![[4, 6, 2, 3, 0, 0], [1, 1, 0, 0, -1, 0], [9, 2, 5, 1, 0, -1]]
         );
     }
 

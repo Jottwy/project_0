@@ -156,6 +156,14 @@ pub struct AuthoredRoomPlan {
     pub cell_x: i32,
     /// Celda de la esquina de menor z del footprint, relativa al chunk que consulta. Ver `cell_x`.
     pub cell_z: i32,
+    /// El chunk que ANCLA la sala: el de menor `(cx, cz)` de los que cubre (ADR-084 punto 1).
+    ///
+    /// INVARIANTE bajo `shifted_by_chunks`: lo que cambia al mirar la sala desde otro chunk es
+    /// `cell_x`/`cell_z`, nunca esto. Por eso sirve de IDENTIDAD de la sala, y es lo que el wire 41
+    /// manda para que el cliente instancie el prefab una sola vez aunque le llegue en cuatro chunks
+    /// (ADR-084 enmienda 1 punto 2).
+    pub anchor_cx: i32,
+    pub anchor_cz: i32,
     /// Footprint ya girado, en celdas.
     pub cells_x: usize,
     pub cells_z: usize,
@@ -205,7 +213,26 @@ impl AuthoredRoomPlan {
         (self.cell_x.div_euclid(2), self.cell_z.div_euclid(2))
     }
 
-    /// El MISMO plan visto desde un chunk que está `(dx, dz)` chunks más allá del ancla.
+    /// El mismo tile de origen pero en coordenadas del CHUNK ANCLA, que es lo que viaja por el wire
+    /// 41. `(cx, cz)` es el chunk desde el que se está mirando el plan.
+    ///
+    /// Sale siempre en `0..=17` —la ventana de sorteo de `draw_origin` en tiles—, sea cual sea el
+    /// chunk que pregunte. Es lo que permite que los cuatro chunks que cubre una sala manden por el
+    /// wire EXACTAMENTE la misma pareja de números, y que el cliente los deduplique por
+    /// `(ancla, tile)` sin tener que reconstruir nada.
+    pub fn anchor_tile_origin(&self, cx: i32, cz: i32) -> (i32, i32) {
+        let n = CHUNK_CELLS as i32;
+        (
+            (self.cell_x - (self.anchor_cx - cx) * n).div_euclid(2),
+            (self.cell_z - (self.anchor_cz - cz) * n).div_euclid(2),
+        )
+    }
+
+    /// El MISMO plan visto desde el chunk que tiene el ancla `(dx, dz)` chunks más allá.
+    ///
+    /// El signo importa y engaña: `(dx, dz)` va DEL QUE MIRA AL ANCLA, así que el observador queda
+    /// en `ancla − (dx, dz)`. Es la convención de `collect_from_anchor`, que es quien lo usa: allí
+    /// `(ax, az) = (cx + dx, cz + dz)`.
     ///
     /// Solo se mueve el origen: la sala no cambia de sitio en el mundo, cambia el chunk desde el que
     /// se la mira. Es la operación que permite que dos chunks tallen la misma sala sin hablarse
@@ -637,6 +664,8 @@ fn plan_anchored_at(
             quarter,
             cell_x,
             cell_z,
+            anchor_cx: cx,
+            anchor_cz: cz,
             cells_x: w,
             cells_z: h,
             top_layer: top_layer_for_height(room.height_meters),
@@ -2300,6 +2329,67 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Wire 41: los chunks que cubre una sala mandan TODOS la misma tupla `(tile, ancla)`.
+    ///
+    /// Es lo que permite que el cliente deduplique por `(ancla, tile)` e instancie el prefab una
+    /// sola vez. Si dos chunks mandaran tiles distintos, el cliente veria dos salas y las pondria
+    /// las dos, superpuestas y descuadradas.
+    #[test]
+    fn every_chunk_sends_the_same_anchor_relative_tile() {
+        let m = multi_chunk_manifest();
+        let mut checked = 0;
+        for seed in SEEDS {
+            for cx in -8..8 {
+                for cz in -8..8 {
+                    for p in rooms_of(&m, seed, cx, cz).iter() {
+                        let want = (p.anchor_tile_origin(cx, cz), p.anchor_cx, p.anchor_cz);
+                        // Y en la ventana de sorteo: el cliente lo suma a un desplazamiento de
+                        // chunk, asi que un tile fuera de rango saldria como una sala desplazada.
+                        assert!((0..=17).contains(&want.0 .0) && (0..=17).contains(&want.0 .1));
+
+                        for (ocx, ocz) in covered_world_chunks(cx, cz, p) {
+                            let seen = rooms_of(&m, seed, ocx, ocz);
+                            let same = seen.iter().any(|q| {
+                                (q.anchor_tile_origin(ocx, ocz), q.anchor_cx, q.anchor_cz) == want
+                                    && q.entry == p.entry
+                                    && q.quarter == p.quarter
+                            });
+                            assert!(
+                                same,
+                                "el chunk ({ocx},{ocz}) manda otra tupla que ({cx},{cz}) para la \
+                                 sala anclada en ({},{})",
+                                p.anchor_cx, p.anchor_cz
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(checked > 0, "el barrido no encontro ni una sala");
+    }
+
+    /// El ancla es INVARIANTE al mirar la sala desde otro chunk: es lo que la hace servir de
+    /// identidad. Lo que se mueve es `cell_x`/`cell_z`.
+    #[test]
+    fn the_anchor_survives_being_looked_at_from_another_chunk() {
+        let m = manifest();
+        let (cx, cz, plan) = find_plan(&m, 42).expect("alguna sala");
+        assert_eq!((plan.anchor_cx, plan.anchor_cz), (cx, cz));
+        // `shifted_by_chunks(dx, dz)` lo que mueve es el OBSERVADOR, y en sentido contrario: el
+        // chunk que mira queda en `ancla - (dx, dz)`. Es la misma convencion de
+        // `collect_from_anchor`, donde `(dx, dz)` va del que consulta AL ancla.
+        for (dx, dz) in [(-1, 0), (1, 0), (0, -1), (2, 2)] {
+            let moved = plan.shifted_by_chunks(dx, dz);
+            assert_eq!((moved.anchor_cx, moved.anchor_cz), (cx, cz));
+            assert_eq!(
+                moved.anchor_tile_origin(cx - dx, cz - dz),
+                plan.anchor_tile_origin(cx, cz),
+                "el tile de ancla cambio al mirar la sala desde ({dx},{dz})"
+            );
         }
     }
 

@@ -378,6 +378,12 @@ namespace BackroomsSurvival.Net
         /// ADR-083 enmienda 1 — una SALA AUTORADA: `tileX`/`tileZ` son el tile (5 m) de la esquina
         /// de menor x/z de su FOOTPRINT (no de la reserva), `entry` el índice en `RoomPool.rooms`
         /// que dice qué prefab instanciar, y `quarter` el giro en cuartos de vuelta (0..3).
+        ///
+        /// Desde wire 41 (ADR-084) `tileX`/`tileZ` van relativos al CHUNK ANCLA, no a este, y el
+        /// ancla viaja con ellos. Una sala puede cruzar hasta 2 × 2 chunks y llega en los cuatro con
+        /// la MISMA pareja de números; el tile local se saca restando el desplazamiento de chunk.
+        /// El ancla es además la IDENTIDAD de la sala: sin él, los cuatro chunks instanciarían el
+        /// prefab y saldrían cuatro salas superpuestas.
         /// </summary>
         public struct AuthoredRoom
         {
@@ -385,6 +391,8 @@ namespace BackroomsSurvival.Net
             public int tileZ;
             public int entry;
             public int quarter;
+            public int anchorCx;
+            public int anchorCz;
         }
 
         /// <summary>
@@ -474,10 +482,10 @@ namespace BackroomsSurvival.Net
                 }
                 else if (MsgPackReader.Is(k, "authored_rooms"))
                 {
-                    // Lista de [tile_x, tile_z, entry, quarter]. Misma disciplina que `build_room`:
-                    // clave aditiva, ausente en la inmensa mayoría de los chunks, y se consume TODO
-                    // lo que venga —también los campos de más dentro de cada sala— para no
-                    // descolocar el cursor de lo que venga detrás.
+                    // Lista de [tile_x, tile_z, entry, quarter, anchor_cx, anchor_cz]. Misma
+                    // disciplina que `build_room`: clave aditiva, ausente en la inmensa mayoría de
+                    // los chunks, y se consume TODO lo que venga —también los campos de más dentro
+                    // de cada sala— para no descolocar el cursor de lo que venga detrás.
                     int rc = r.ReadArrayHeader();
                     var rooms = new List<AuthoredRoom>(rc);
                     for (int ri = 0; ri < rc; ri++)
@@ -491,10 +499,15 @@ namespace BackroomsSurvival.Net
                             else if (ai == 1) room.tileZ = v;
                             else if (ai == 2) room.entry = v;
                             else if (ai == 3) room.quarter = v;
+                            else if (ai == 4) room.anchorCx = v;
+                            else if (ai == 5) room.anchorCz = v;
                         }
-                        // Una sala con menos de cuatro campos no se puede colocar; se descarta ella
-                        // sola, sin llevarse por delante a las demás del chunk.
-                        if (n >= 4) rooms.Add(room);
+                        // Una sala con menos de SEIS campos no se puede colocar: sin el ancla, el
+                        // tile no se puede pasar a coordenadas de este chunk. Se descarta ella sola,
+                        // sin llevarse por delante a las demás. No es defensa contra un backend
+                        // viejo —`WireSchema` ya lo rechaza en el handshake— sino contra un frame
+                        // truncado.
+                        if (n >= 6) rooms.Add(room);
                     }
                     if (rooms.Count > 0) m.authoredRooms = rooms.ToArray();
                 }

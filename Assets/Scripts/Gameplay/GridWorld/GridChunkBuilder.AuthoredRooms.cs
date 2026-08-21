@@ -72,14 +72,23 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             // ADR-083 enmienda 3: varias salas por chunk, y el ORDEN del backend es contrato.
             for (int i = 0; i < placed.Length; i++)
-                AddRoomPlan(pool, placed[i], into);
+                AddRoomPlan(pool, placed[i], chunkX, chunkZ, into);
         }
 
-        /// <summary>Resuelve UNA sala del wire contra el pool y la añade a la lista de planes.</summary>
+        /// <summary>
+        /// Resuelve UNA sala del wire contra el pool y la añade a la lista de planes.
+        ///
+        /// El tile llega relativo al CHUNK ANCLA (wire 41) y aquí se pasa al de este chunk. Para una
+        /// sala que cabe en su chunk el ancla ES este chunk y la resta vale cero; para una
+        /// multi-chunk el resultado es negativo o mayor que <see cref="TilesPerChunk"/>, y así tiene
+        /// que ser: el rect en tiles es lo que hace que <c>IsAuthoredRoomTile</c> suprima el suelo y
+        /// el techo del laberinto también en el chunk invadido.
+        /// </summary>
         private static void AddRoomPlan(RoomPool pool, GridChunkDataMsg.AuthoredRoom placed,
-            List<RoomPlan> into)
+            int chunkX, int chunkZ, List<RoomPlan> into)
         {
-            int tx0 = placed.tileX, tz0 = placed.tileZ;
+            int tx0 = placed.tileX + (placed.anchorCx - chunkX) * TilesPerChunk;
+            int tz0 = placed.tileZ + (placed.anchorCz - chunkZ) * TilesPerChunk;
             int entry = placed.entry, quarter = placed.quarter;
 
             // Un índice fuera de rango significa que el pool del cliente y el manifiesto que leyó el
