@@ -4934,3 +4934,89 @@ capa 0: la información llega en el payload de su propia capa o no llega.
 **PROHÍBE** instanciar el prefab en una capa que no sea la de anclaje.
 **PROHÍBE** meter la capa en la semilla del sorteo de emplazamiento: la capa 0 debe seguir colocando
 exactamente las mismas salas en los mismos sitios que hoy, y hay test de regresión que lo fija.
+
+### ADR-084 enmienda 2 — Lo que la implementación tuvo que decidir (VALIDADA, 2026-08-21)
+
+ADR-084 queda **IMPLEMENTADO** con los trozos T3, T4 y T5 (commits `009eb733`, `8820b3a8`,
+`85a11a77`, `ee471982`), sobre los T1/T2 de `df251e15` y `cfa4be1a`. Esta enmienda fija seis cosas
+que el ADR dejaba sin cerrar y que la implementación no podía esquivar. Nada de aquí contradice el
+ADR base; lo que hace es elegir donde el texto admitía dos lecturas.
+
+#### 1. La retirada entre anclas es de PROFUNDIDAD 1, y el ±2 se muda dentro
+
+El punto 3 daba la retirada por TRANSITIVA —*"si A cede ante B y B ante C"*— y de ahí sacaba que
+había que barrer ±2 chunks por chunk generado. **La retirada no es transitiva, y no puede serlo:** si
+una sala retirada liberase su hueco, saber si C vive exigiría saber si vive B, y para eso si vive A,
+sin un punto donde parar que no sea arbitrario. La supervivencia sería recursiva de profundidad
+ilimitada.
+
+Se decide que **una sala retirada SIGUE ocupando el sitio que reclamó**. Con eso la supervivencia
+depende solo del ancla y de sus ocho vecinas: es pura, acotada, y —lo único que de verdad importa— la
+MISMA se pregunte desde el chunk que se pregunte. El precio es un hueco desaprovechado cuando dos
+retiradas encadenan: cuesta una sala que no sale, no una sala partida por la mitad.
+
+El ±2 no desaparece, cambia de sitio: un chunk barre solo las **cuatro** anclas que pueden
+alcanzarlo, y el ±1 alrededor de cada una lo paga la propia función de retirada, que solo corre para
+el 1 % de anclas con sala. Medido: `plan_authored_rooms` **2549 → 423 ns/chunk** y
+`generate_chunk_layer` **29,6 → 27,4 µs**, o sea que T3 sale MÁS BARATO que el T2 que lo precedía.
+
+#### 2. El cap de "2 × 2 chunks" es 17 × 17 tiles, no 100 m
+
+100 m es la caja; lo reservable es menos, y la diferencia son las dos filas de costura EXTERIORES,
+que siguen siendo intocables. Sale `MAX_FOOTPRINT_CELLS_MULTI_CHUNK = 34` celdas = **17 × 17 tiles =
+85 m**, con 95 m de reserva. Las costuras INTERMEDIAS sí las tapa la sala, que es el punto 4.
+
+#### 3. La ventana extendida es SOLO para las salas que no caben en su chunk
+
+No es una optimización, es lo que deja el mundo existente byte a byte donde estaba: sortear todas las
+salas en la ventana de 2 × 2 chunks cambiaría el rango de cada tirada y movería de sitio hasta la
+última sala pequeña ya colocada. Con el corte por tamaño, una sala de `≤ MAX_FOOTPRINT_CELLS` hace
+exactamente la misma tirada que en wire 39.
+
+#### 4. Dos topes distintos, y confundirlos es un fallo de determinismo
+
+`MAX_AUTHORED_PER_CHUNK` (3) es cuántas salas ANCLA un chunk; `MAX_AUTHORED_VISIBLE` (12) cuántas
+puede VER. Con capacidad para menos de las 12 del peor caso —cuatro anclas alcanzables × 3—, un chunk
+tendría que descartar una sala que otro sí ve; el descarte depende del orden de barrido y el orden de
+barrido depende de quién pregunta. **PROHÍBE** dimensionar el conjunto visible por el tope de
+colocación.
+
+#### 5. Wire 41, no 40
+
+La enmienda 1 de ADR-085 repartía 39 → 40 para multi-chunk y 40 → 41 para altura. Se implementó
+ADR-085 primero, así que los números van al revés: la altura se llevó el 40 y el multi-chunk toma el
+**41**. Sin más consecuencia — los dos lados se bumpean en el mismo commit (ADR-061).
+
+#### 6. La identidad de la sala en el cliente es `(ancla, tile de ancla)`
+
+El punto 6 pedía "un id de ancla"; el id son las coordenadas del ancla más el tile, porque un chunk
+puede anclar hasta tres salas. Dos salas del mismo ancla no pueden compartir tile de origen —sus
+reservas se pisarían—, así que la pareja identifica sin ambigüedad y no hace falta un campo más.
+
+Y un caso que el punto 5 no anticipaba: **`RebuildChunk` construye el root nuevo ANTES de destruir el
+viejo**, a propósito, para no dejar al jugador sin suelo. El mismo chunk pide la sala dos veces
+seguidas, y un refcount ingenuo sube a 3 y baja a 2: la sala no se destruiría jamás. `Acquire` ignora
+la segunda petición del mismo chunk, y `RebuildChunk` no suelta nada.
+
+#### Estado de la verificación exigida
+
+| | |
+|---|---|
+| (a) sala de 10 × 10 entera y sin costura a caballo de dos chunks | ⬜ **pendiente de contenido** — el pool no tiene ninguna sala mayor de 5 × 5 tiles |
+| (b) atravesarla a pie y que la colisión coincida | ⬜ pendiente de contenido |
+| (c) descargar el chunk ancla con el jugador dentro no borra la sala | ✅ `AuthoredRoomInstancesTests`, comprobado en rojo |
+| (d) misma seed ⇒ mismas salas en dos peers, retirada incluida | ✅ `every_chunk_a_room_covers_sees_it_in_the_same_place`, `surviving_rooms_of_neighbouring_anchors_never_touch` |
+| (e) `probe_unreachable_rooms` a cero con pool mixto | ⚠️ **1 de 11**, y es ANTERIOR a este ADR — ver abajo |
+| (f) coste medido antes y después | ✅ ver punto 1 |
+| (g) un chunk sin salas serializa bytes idénticos | ✅ la clave sigue siendo aditiva y omitida |
+| (h) clippy, fmt y CompileCheckClient limpios | ✅ |
+
+Sobre (e): la sala que queda incomunicada **no es de este ADR**. Su único vano apunta a una
+`SealedRoom` estampada de Fase 4; el túnel muere contra el perímetro de esa sala y
+`repair_connectivity` no perfora `SealedWall`. Es un modo de fallo distinto y anterior, y su arreglo
+mueve el mundo, así que va en su propia tarea. Queda anotado aquí para que nadie lea la sonda en rojo
+como una consecuencia del multi-chunk.
+
+Y la sonda se reescribió sobre un bloque de **3 × 3 chunks**: por chunk suelto ya no vale, porque una
+sala multi-chunk tiene el interior repartido y sus puertas pueden caer todas en el chunk de al lado,
+así que su trozo se leería como componente aislada aunque en el mundo se cruce andando.

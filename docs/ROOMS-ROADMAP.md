@@ -106,7 +106,7 @@ decorado y pasa a ser estado del mundo: qué hay dentro lo tira el servidor, si 
 estado persistente por chunk, y dos jugadores abriendo a la vez piden la guarda de "una petición en
 vuelo" que ya hizo falta para los cadáveres. Ver §7.2 de `systems/authored-rooms.md`.
 
-### B2. Salas multi-chunk — 🟡 A MEDIAS (ADR-084 VALIDADA; 2 de 5 trozos, 2026-08-21)
+### B2. Salas multi-chunk — ✅ HECHO (ADR-084 + enmiendas 1 y 2, wire 41, 2026-08-21)
 
 Una sala de 50 m no cabe en un chunk (interior utilizable 18 celdas = 45 m). Rompe la invariante
 que sostiene el worldgen entero: **un chunk se genera solo, sin mirar a los vecinos** — aunque eso
@@ -114,24 +114,41 @@ ya no era cierto: `stitch_edges` coordina la costura de dos chunks por clave can
 mucho, y ADR-084 se apoya en ese precedente. Además obliga a sacar el prefab del ciclo de vida del
 chunk, o descargar el chunk ancla con el jugador dentro borra media sala.
 
-Hecho y commiteado, los dos **inertes a propósito** (el mundo no se mueve ni un byte):
+Los cinco trozos, todos commiteados y todos **inertes con el contenido de hoy** (el mundo no se mueve
+ni un byte):
 
 | | | |
 |---|---|---|
 | **T1** `df251e15` | Coordenadas de sala con signo; el tallado recorta al chunk en vez de descartar | ✅ |
-| **T2** `cfa4be1a` | Un chunk barre ±2 vecinos buscando salas ancladas fuera que asomen aquí | ✅ |
-| T3 | Subir el cap a 2 × 2 chunks + resolución de conflictos por orden canónico | ⬜ |
-| T4 | Costura suprimida en los bordes que cubre la sala | ⬜ |
-| T5 | Wire 40 → 41, prefab fuera del root del chunk con refcount | ⬜ |
+| **T2** `cfa4be1a` | Un chunk barre vecinos buscando salas ancladas fuera que asomen aquí | ✅ |
+| **T3** `009eb733` | Cap a 2 × 2 chunks (17 × 17 tiles) + retirada por orden canónico | ✅ |
+| **T4** `8820b3a8` | Costura suprimida en los bordes que cubre la sala | ✅ |
+| **T5** `85a11a77` + `ee471982` | Wire 40 → 41 con el chunk ancla; prefab fuera del root con refcount | ✅ |
 
-**Parado a propósito en T2, y el motivo importa: no hay contenido que lo use.** El pool tiene UNA
-sala, `room_0`, de 5 × 5 tiles = 25 m, que cabe de sobra en un chunk. `room_1` y `room_2` (las de
-10 × 10 que ADR-084 citaba) ya no están en el pool. T3 en adelante mueven el mundo pero no se verían.
-Retomar cuando haya una sala horneada de más de 7 × 7 tiles.
+**El código está entero; lo que falta es contenido.** El pool tiene UNA sala, `room_0`, de 5 × 5
+tiles = 25 m, que cabe de sobra en un chunk, así que hoy nada de esto se ve. En cuanto se hornee una
+sala de más de 7 × 7 tiles empieza a colocarse sola, sin tocar código.
 
-Coste medido del barrido de T2 (verificación (f) de ADR-084, en release):
-`generate_chunk_layer` 26,2 µs → 29,6 µs por chunk, **+13 %**. El emplazamiento pasa del 0,4 % al
-8,7 % del coste de generar un chunk. Repetible con `probe_neighbour_sweep_cost`.
+Coste medido (verificación (f) de ADR-084, en release, sonda `probe_neighbour_sweep_cost` — **lánzala
+SOLA**, ver abajo): el barrido de T2 costaba `generate_chunk_layer` 26,2 → 29,6 µs, **+13 %**. T3 lo
+deshace: un chunk pregunta solo a las cuatro anclas que pueden alcanzarlo y el ±2 se paga dentro de la
+retirada, que solo corre para el 1 % de anclas con sala. Queda en **423 ns/chunk** de emplazamiento y
+**27,4 µs** de generación — el 1,5 % del coste de un chunk.
+
+Dos cosas que la implementación cerró y viven en **ADR-084 enmienda 2**: la retirada entre anclas es
+de **profundidad 1** (una sala retirada sigue ocupando su sitio, porque lo contrario hace la
+supervivencia recursiva sin fondo), y la ventana de sorteo extendida la usan **solo** las salas que no
+caben en su chunk, que es lo que deja el mundo existente donde estaba.
+
+**Trampa de las sondas:** `active_manifest()` es un `OnceLock` del PROCESO. Si `real_manifest_cadence`
+o `dump_chunk` corren antes en la misma invocación de `cargo test`, `generate_chunk_layer` empieza a
+tallar `room_0` dentro de lo que la sonda está midiendo y los números salen falseados (las
+incomunicadas pasaban de 1 de 11 a 5 de 11). Las sondas ahora se caen con el comando correcto en el
+mensaje.
+
+**Deuda abierta que NO es de este ADR:** `probe_unreachable_rooms` marca **1 de 11** salas
+incomunicadas, y viene de antes. El único vano de esa sala apunta a una `SealedRoom` estampada de
+Fase 4, el túnel muere contra su perímetro y `repair_connectivity` no perfora `SealedWall`.
 
 ### B3. Altura por encima de una capa — ✅ HECHO (2026-08-21, ADR-085 + enmiendas 1 y 2, wire 40)
 
@@ -224,12 +241,19 @@ Dos medidas, y las dos hacen falta:
 | Tamaño | Para qué |
 |---|---|
 | **1 × 1 y 2 × 2 tiles** (5 m y 10 m) | Las únicas de las que caben VARIAS en un chunk. Regla: dos salas conviven si `T₁ + T₂ ≤ 3`. Sin estas, A1 no se ve. |
-| **hasta 7 × 7 tiles** (35 m) | Variedad. 35 m es el techo físico del chunk; por encima es multi-chunk (B2, con ADR). |
+| **hasta 7 × 7 tiles** (35 m) | Variedad. 35 m es lo que cabe dentro de un chunk. |
+| **de 8 × 8 a 17 × 17 tiles** (40–85 m) | Multi-chunk. Ya no hace falta nada más: B2 está entero desde el 2026-08-21. |
 
 Cap de altura: **≤ 12 m** desde ADR-085 (2026-08-21) — ya no son 4. Una sala más alta que una capa
 hace que las capas que invade dejen de pintarle encima, y eso ya funciona de punta a punta. Por
 encima de 12 m el mundo se quedaría sin techo, así que ahí sí hay tope duro.
 
-Y una tercera, que no cuesta nada y desbloquea B2: **una sala de más de 7 × 7 tiles**. Los trozos T1
-y T2 de ADR-084 están en el árbol y son inertes precisamente porque ninguna sala del pool los
-ejercita. Con una sola sala grande horneada, terminar T3–T5 pasa a tener efecto visible.
+La tercera medida es la que más rinde ahora mismo: **una sala de más de 7 × 7 tiles**. ADR-084 está
+implementado entero y sin una sola línea pendiente, pero es INVISIBLE hasta que exista una sala que lo
+ejercite — el mundo se comporta exactamente igual que antes. Hornear una sola sala grande enciende
+todo el multi-chunk de golpe: cap de 2 × 2 chunks, retirada entre anclas, costura suprimida y prefab
+con refcount, sin tocar código.
+
+Y es también la única forma de cerrar las verificaciones (a) y (b) de ADR-084, que no se pueden
+comprobar sin una sala repartida de verdad: que se vea entera y sin costura a caballo de dos chunks, y
+que atravesarla a pie coincida con lo que dice la colisión.
