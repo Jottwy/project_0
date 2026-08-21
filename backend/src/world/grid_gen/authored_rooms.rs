@@ -59,16 +59,27 @@ const BORDER_CELLS: usize = RING_CELLS + MARGIN_CELLS;
 const USABLE_LO: usize = 1;
 const USABLE_HI: usize = CHUNK_CELLS - 2; // 18
 
-/// Footprint máximo en CELDAS que cabe DENTRO de un chunk, de donde sale el cap de **7 × 7 tiles**
-/// (35 m). Es aritmética, no gusto: 18 celdas útiles menos las 4 del borde.
+/// El primer origen de footprint admisible que además es PAR.
 ///
-/// ADR-083 enmienda 1 lo fijó en 6 × 6 partiendo de un borde de 3 celdas; al alinear el borde a
-/// tile (2 celdas) el cap sube solo. Ver `BORDER_CELLS`.
+/// La paridad no es un detalle: el footprint tiene que caer en frontera de tile de 5 m o la sala
+/// queda a caballo entre dos, y `draw_origin` la garantiza sorteando en tiles. Un origen impar no
+/// existe, así que el primero utilizable no es `USABLE_LO + BORDER_CELLS` (3) sino el par siguiente.
+const FIRST_EVEN_ORIGIN: usize = (USABLE_LO + BORDER_CELLS).div_ceil(2) * 2; // 4
+
+/// Footprint máximo en CELDAS que cabe DENTRO de un chunk: **6 × 6 tiles** (30 m).
+///
+/// **NO son 7 × 7, y llevaba desde ADR-083 enmienda 2 anunciándose mal.** La cuenta que daba 14
+/// celdas —18 útiles menos las 4 del borde— se olvida de la paridad: una sala de 14 celdas reserva
+/// las 18 de la ventana entera, así que su único origen posible es el 3, y el 3 es impar. `fits` la
+/// aceptaba como candidata, entraba en el barajado y `draw_origin` la descartaba en silencio. Es el
+/// modo de fallo exacto contra el que avisa el punto 6 de ADR-083 enmienda 1: una sala que se
+/// hornea, se exporta y no aparece nunca sin que nadie diga por qué. Lo fija
+/// `the_advertised_cap_is_actually_placeable`.
 ///
 /// Desde ADR-084 esto ya NO es el techo del sistema, es la frontera entre las salas que caben en su
 /// chunk y las que no: por debajo de él una sala se sortea en la ventana de siempre y el mundo sale
 /// idéntico; por encima, en la ventana extendida. Ver `draw_origin`.
-pub const MAX_FOOTPRINT_CELLS: usize = (USABLE_HI - USABLE_LO + 1) - 2 * BORDER_CELLS; // 14
+pub const MAX_FOOTPRINT_CELLS: usize = ((USABLE_HI + 1 - BORDER_CELLS - FIRST_EVEN_ORIGIN) / 2) * 2; // 12
 
 /// Cuántos chunks puede abarcar una sala contando el suyo (ADR-084 punto 2): **2 × 2 = 100 m**.
 ///
@@ -84,10 +95,13 @@ pub const MAX_SPAN_CHUNKS: usize = 2;
 /// dos exteriores (la 0 del ancla y la 19 del último) siguen siendo intocables.
 const USABLE_HI_SPAN: usize = USABLE_HI + (MAX_SPAN_CHUNKS - 1) * CHUNK_CELLS; // 38
 
-/// Footprint máximo absoluto, en celdas: **17 × 17 tiles (85 m)**. Reservado son 95 m de los 100
-/// que dan 2 × 2 chunks; los 5 que faltan son las dos filas de costura exteriores.
+/// Footprint máximo absoluto, en celdas: **16 × 16 tiles (80 m)**.
+///
+/// Sale de la misma cuenta que `MAX_FOOTPRINT_CELLS` y con la misma trampa: la aritmética cruda daría
+/// 34 celdas (17 × 17), pero a ese tamaño el único origen posible vuelve a ser impar. El redondeo a
+/// par de abajo no es cosmético — es lo que hace que el cap que se anuncia sea el cap que se coloca.
 pub const MAX_FOOTPRINT_CELLS_MULTI_CHUNK: usize =
-    (USABLE_HI_SPAN - USABLE_LO + 1) - 2 * BORDER_CELLS; // 34
+    ((USABLE_HI_SPAN + 1 - BORDER_CELLS - FIRST_EVEN_ORIGIN) / 2) * 2; // 32
 
 /// Probabilidad de que un chunk aloje una sala autorada.
 ///
@@ -718,8 +732,11 @@ fn draw_origin(rng: &mut StdRng, size: usize) -> Option<i32> {
     if hi < lo {
         return None;
     }
-    // Solo orígenes pares dentro de [lo, hi].
-    let first_even = lo.div_ceil(2) * 2;
+    // Solo orígenes pares dentro de [lo, hi]. `FIRST_EVEN_ORIGIN` es esta misma cuenta hecha una
+    // vez, y de ahí salen los dos caps: si el cap no la respetara, se anunciaría un tamaño que este
+    // `return None` descarta en silencio.
+    let first_even = FIRST_EVEN_ORIGIN;
+    debug_assert_eq!(first_even, lo.div_ceil(2) * 2);
     if first_even > hi {
         return None;
     }
@@ -2454,6 +2471,160 @@ mod tests {
         let (covered, disagreements) = seam_verdicts(&manifest());
         assert_eq!(disagreements, 0);
         assert_eq!(covered, 0, "una sala de un solo chunk tapo una costura");
+    }
+
+    /// EL CAP QUE SE ANUNCIA TIENE QUE SER COLOCABLE.
+    ///
+    /// `fits` acepta hasta `MAX_FOOTPRINT_CELLS_MULTI_CHUNK`, pero quien decide de verdad es
+    /// `draw_origin`, y ahi hay dos condiciones mas: el origen empieza en `USABLE_LO + BORDER_CELLS`
+    /// y tiene que ser PAR. Una sala del tamano del cap que no tenga ni un origen legal se acepta
+    /// como candidata, entra en el barajado, y despues se descarta en silencio — que es exactamente
+    /// el modo de fallo contra el que avisa el punto 6 de ADR-083 enmienda 1: una sala que se hornea,
+    /// se exporta, y no aparece nunca sin que nadie diga por que.
+    #[test]
+    fn the_advertised_cap_is_actually_placeable() {
+        let mut rng = StdRng::seed_from_u64(1);
+        assert!(
+            draw_origin(&mut rng, MAX_FOOTPRINT_CELLS_MULTI_CHUNK).is_some(),
+            "el cap multi-chunk de {} celdas no tiene ni un origen legal",
+            MAX_FOOTPRINT_CELLS_MULTI_CHUNK
+        );
+        assert!(
+            draw_origin(&mut rng, MAX_FOOTPRINT_CELLS).is_some(),
+            "el cap de un chunk de {MAX_FOOTPRINT_CELLS} celdas no tiene ni un origen legal"
+        );
+        // Y todo tamano PAR por debajo del cap tambien: los footprints salen de tiles, asi que
+        // siempre son pares, y un hueco en medio del rango seria igual de silencioso.
+        for size in (2..=MAX_FOOTPRINT_CELLS_MULTI_CHUNK).step_by(2) {
+            assert!(
+                draw_origin(&mut rng, size).is_some(),
+                "una sala de {size} celdas ({} tiles) no tiene origen legal",
+                size / 2
+            );
+        }
+    }
+
+    /// El CENTRO de una sala en coordenadas de mundo, que es a donde hay que ir para verla.
+    fn world_center(cx: i32, cz: i32, p: &AuthoredRoomPlan) -> (f32, f32) {
+        let side = CHUNK_CELLS as f32 * super::super::CELL_SIZE_M;
+        (
+            cx as f32 * side
+                + (p.cell_x as f32 + p.cells_x as f32 / 2.0) * super::super::CELL_SIZE_M,
+            cz as f32 * side
+                + (p.cell_z as f32 + p.cells_z as f32 / 2.0) * super::super::CELL_SIZE_M,
+        )
+    }
+
+    /// Por donde se entra a una sala, en texto.
+    fn doors_of(p: &AuthoredRoomPlan) -> String {
+        let sides: Vec<&str> = p
+            .doorways()
+            .map(|(s, _)| ["sur(-z)", "norte(+z)", "oeste(-x)", "este(+x)"][s as usize])
+            .collect();
+        sides.join("+")
+    }
+
+    /// SONDA: **el mapa de salas** — donde esta cada una, en coordenadas de mundo, hasta el radio que
+    /// se le pida. Es la sonda para ir a ver salas a un playtest sin buscarlas a ciegas.
+    ///
+    /// Reparte por bandas de distancia en vez de listar las N mas cercanas, que es lo que hace
+    /// `real_manifest_cadence`: para comprobar que el emplazamiento se comporta igual lejos que
+    /// cerca hacen falta sitios repartidos, no un racimo alrededor del spawn.
+    ///
+    /// La seed por defecto es 42 porque es la del backend (`WORLD_SEED` en `main.rs`); si la partida
+    /// arrancó con otra, hay que pasarla o las coordenadas no valen para nada.
+    ///
+    ///     PROBE_SEED=42 PROBE_RADIUS_M=10000 PROBE_PER_BAND=4 cargo test --manifest-path backend/Cargo.toml --release probe_room_map -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_room_map() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../Assets/StreamingAssets/room_manifest.json"
+        );
+        let m = crate::world::grid_gen::load_manifest(std::path::Path::new(path))
+            .expect("manifiesto del repo");
+
+        let num = |k: &str, d: f32| -> f32 {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let seed: u64 = std::env::var("PROBE_SEED")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(42);
+        let radius = num("PROBE_RADIUS_M", 10_000.0);
+        let per_band = num("PROBE_PER_BAND", 4.0) as usize;
+
+        let side = CHUNK_CELLS as f32 * super::super::CELL_SIZE_M;
+        let span = (radius / side).ceil() as i32;
+
+        let mut found: Vec<(f32, i32, i32, AuthoredRoomPlan)> = Vec::new();
+        for cx in -span..=span {
+            for cz in -span..=span {
+                for p in rooms_of(&m, seed, cx, cz).iter() {
+                    // Solo las ANCLADAS aqui: una sala multi-chunk la ven varios chunks y saldria
+                    // repetida en la lista.
+                    if covered_chunks(p).next() != Some((0, 0)) {
+                        continue;
+                    }
+                    let (wx, wz) = world_center(cx, cz, p);
+                    let d = (wx * wx + wz * wz).sqrt();
+                    if d <= radius {
+                        found.push((d, cx, cz, *p));
+                    }
+                }
+            }
+        }
+        found.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+
+        let chunks = ((2 * span + 1) as f64).powi(2);
+        println!(
+            "seed {seed} — {} salas en {radius:.0} m de radio ({chunks:.0} chunks barridos, \
+             {:.1} km2)",
+            found.len(),
+            chunks * (side * side) as f64 / 1_000_000.0
+        );
+        println!(
+            "  y = {:.1} en la capa 0 (PLAYER_BASE_Y); la sala se ancla ahi aunque sea mas alta\n",
+            crate::world::collision::PLAYER_BASE_Y
+        );
+
+        const BANDS: [f32; 9] = [
+            0.0, 250.0, 500.0, 1000.0, 2000.0, 3000.0, 5000.0, 7500.0, 10_000.0,
+        ];
+        for w in BANDS.windows(2) {
+            let (lo, hi) = (w[0], w[1]);
+            if lo >= radius {
+                break;
+            }
+            let band: Vec<_> = found.iter().filter(|(d, ..)| *d >= lo && *d < hi).collect();
+            println!("── {lo:.0}–{hi:.0} m ── {} salas", band.len());
+            // Repartidas DENTRO de la banda y no las primeras: las primeras de cada banda salen
+            // todas pegadas a su borde interior y no enseñan nada que no enseñara la banda anterior.
+            let step = (band.len() / per_band.max(1)).max(1);
+            for (d, cx, cz, p) in band.iter().step_by(step).take(per_band) {
+                let (wx, wz) = world_center(*cx, *cz, p);
+                let room = &m.rooms[p.entry as usize];
+                println!(
+                    "   x={wx:>9.1}  z={wz:>9.1}   ({d:>6.0} m)  chunk({cx},{cz})  \
+                     {} {}x{} tiles  giro {}  puerta {}",
+                    room.id,
+                    room.tiles_x,
+                    room.tiles_z,
+                    p.quarter,
+                    doors_of(p)
+                );
+            }
+            println!();
+        }
+
+        assert!(
+            !found.is_empty(),
+            "el manifiesto real no coloca ni una sala"
+        );
     }
 
     /// SONDA: cuanto cuesta el barrido de vecindario de ADR-084 punto 3, que es la verificacion (f)

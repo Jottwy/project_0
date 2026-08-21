@@ -37,12 +37,16 @@ namespace BackroomsSurvival.EditorTools
         /// solo sirve para AVISAR: una sala más grande se exporta igual y el backend la descarta en
         /// silencio, y sin este aviso parecería que el horneado falló.
         ///
-        /// **17, no 7, desde ADR-084 T3**: el cap dejó de ser el del chunk (7 × 7 tiles = 35 m) y
-        /// pasó a ser el de 2 × 2 chunks (17 × 17 = 85 m). Espejo de
-        /// `MAX_FOOTPRINT_CELLS_MULTI_CHUNK` (34 celdas de 2,5 m) en
-        /// `backend/src/world/grid_gen/authored_rooms.rs`.
+        /// **16, no 7, desde ADR-084 T3**: el cap dejó de ser el del chunk y pasó a ser el de 2 × 2
+        /// chunks (16 × 16 tiles = 80 m). Espejo de `MAX_FOOTPRINT_CELLS_MULTI_CHUNK` (32 celdas de
+        /// 2,5 m) en `backend/src/world/grid_gen/authored_rooms.rs`.
+        ///
+        /// Son 16 y no 17 por la PARIDAD: el origen del footprint se sortea en tiles, así que a 17
+        /// tiles el único sitio donde cabría la reserva empieza en celda impar y no existe. El cap
+        /// que se anuncia tiene que ser el que se coloca — lo contrario es una sala que se hornea,
+        /// se exporta y no aparece nunca.
         /// </summary>
-        private const int BackendFootprintCapTiles = 17;
+        private const int BackendFootprintCapTiles = 16;
 
         /// <summary>
         /// Una sala vista por el backend. Nombres en snake_case a propósito: son claves de JSON que
