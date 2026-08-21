@@ -1610,7 +1610,17 @@ mod tests {
             chunks * 0.0025
         );
         for (entry, n) in &by_entry {
-            println!("  entrada {entry}: {n}");
+            let room = &m.rooms[*entry as usize];
+            let top = top_layer_for_height(room.height_meters);
+            let capas = if top == AUTHORED_LAYER {
+                "solo la suya".to_string()
+            } else {
+                format!("invade hasta la {top}")
+            };
+            println!(
+                "  entrada {entry} ({}): {n} salas, {} m de alto, {capas}",
+                room.id, room.height_meters
+            );
         }
 
         // Las mas cercanas al origen, en coordenadas de MUNDO. Es lo que hace falta para ir a ver

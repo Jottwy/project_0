@@ -1,11 +1,12 @@
 {
-    "digest": "e1b4d08a5351e0b9ad47fdfe8fca61e8392c36e03ef01ffc65200a7210aa4b59",
+    "digest": "5b409e1de1edea5420e51b89f09d483bce4260e9cda8a2d6a83bee68518275ba",
     "rooms": [
         {
             "index": 0,
             "id": "room_0",
             "tiles_x": 5,
             "tiles_z": 5,
+            "height_meters": 12.0,
             "doorways": [
                 {
                     "side_by_quarter": [
