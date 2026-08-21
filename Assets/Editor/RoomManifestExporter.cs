@@ -46,7 +46,7 @@ namespace BackroomsSurvival.EditorTools
         /// que se anuncia tiene que ser el que se coloca — lo contrario es una sala que se hornea,
         /// se exporta y no aparece nunca.
         /// </summary>
-        private const int BackendFootprintCapTiles = 16;
+        internal const int BackendFootprintCapTiles = 16;
 
         /// <summary>
         /// A partir de este lado (en tiles) una sala se considera GRANDE y se le pide más de un vano.
@@ -56,10 +56,10 @@ namespace BackroomsSurvival.EditorTools
         /// problema no se da — `room_0` mide 5 × 5 con un solo vano y la sonda le cuenta 0
         /// incomunicadas; avisar de ella sería ruido que enseña a ignorar el aviso.
         /// </summary>
-        private const int BackendInChunkCapTiles = 6;
+        internal const int BackendInChunkCapTiles = 6;
 
         /// <summary>Vanos mínimos que se le piden a una sala grande. Ver el aviso.</summary>
-        private const int MinDoorwaysForBigRooms = 2;
+        internal const int MinDoorwaysForBigRooms = 2;
 
         /// <summary>
         /// Una sala vista por el backend. Nombres en snake_case a propósito: son claves de JSON que
@@ -103,7 +103,7 @@ namespace BackroomsSurvival.EditorTools
 
         /// <summary>Una abertura de la sala, vista desde los cuatro giros posibles.</summary>
         [Serializable]
-        private sealed class ManifestDoorway
+        internal sealed class ManifestDoorway
         {
             /// <summary>Lado al que da con giro <c>q · 90°</c>, en convención del backend.</summary>
             public int[] side_by_quarter;
@@ -186,7 +186,7 @@ namespace BackroomsSurvival.EditorTools
                 // CLON del modelo: `EnsureDoorway` lo muta, y el que vive en el pool es el registro
                 // de cómo se horneó la entrada VIEJA.
                 var clone = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(entry.definition));
-                if (RoomAuthoringWindow.SaveGeneratedRoom(clone, out string message))
+                if (RoomAuthoringWindow.SaveGeneratedRoom(clone, null, out string message, out _))
                 {
                     rebaked++;
                     Debug.Log($"[RoomManifestExporter] {entry.id} rehorneada con puerta → {message}");
@@ -333,7 +333,7 @@ namespace BackroomsSurvival.EditorTools
         /// qué tile del footprint ya girado cae. Lo segundo es lo que no se puede recalcular en el
         /// backend: al rotar, la puerta cambia de tile, y "el tile de en medio" solo acierta a 0°.
         /// </summary>
-        private static bool DoorwayByQuarter(RoomPool.RoomEntry entry,
+        internal static bool DoorwayByQuarter(RoomPool.RoomEntry entry,
             out List<ManifestDoorway> doorways, out string why)
         {
             doorways = null;

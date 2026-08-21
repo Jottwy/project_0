@@ -5,6 +5,7 @@ using UnityEditor;
 using UnityEditorInternal;
 using UnityEngine;
 using BackroomsSurvival.Gameplay.GridWorld;
+using BackroomsSurvival.Gameplay.World;
 
 namespace BackroomsSurvival.EditorTools
 {
@@ -35,6 +36,12 @@ namespace BackroomsSurvival.EditorTools
         private GameObject _preview;
         private Mesh _previewMesh;
 
+        /// <summary>De qué sala salió <see cref="_def"/> vía <see cref="LoadRoom"/>. Null = sala sin
+        /// guardar todavía. Guardar con esto puesto ACTUALIZA esa entrada del pool en vez de crear
+        /// una nueva — sin esto, cargar una sala, tocar una puerta y pulsar Save dejaba la vieja
+        /// intacta y creaba una copia.</summary>
+        private string _loadedRoomId;
+
         private GameObject _sceneRoot;
         private Transform _doorAnchor;
 
@@ -45,13 +52,19 @@ namespace BackroomsSurvival.EditorTools
         private int _tab;
         private Vector2 _scroll;
 
-        private void OnEnable() => SceneView.duringSceneGui += OnSceneGUI;
+        private void OnEnable()
+        {
+            SceneView.duringSceneGui += OnSceneGUI;
+            EditorApplication.update += TickFlickerPreviews;
+        }
         private void OnDisable()
         {
             SceneView.duringSceneGui -= OnSceneGUI;
-            // Los props de la vista previa mueren con la ventana: son HideFlags.DontSave, así que
-            // no los recogería nadie y quedarían en la escena sin dueño hasta recargar.
+            EditorApplication.update -= TickFlickerPreviews;
+            // Los props/luces de la vista previa mueren con la ventana: son HideFlags.DontSave,
+            // así que no los recogería nadie y quedarían en la escena sin dueño hasta recargar.
             ClearPropPreviews();
+            ClearLightPreviews();
         }
 
         private void OnGUI()
@@ -129,6 +142,7 @@ namespace BackroomsSurvival.EditorTools
                 DrawLoadButton();
                 DrawEditSelectedButton();
                 DrawPropsToolbar();
+                DrawLightsToolbar();
 
                 GUILayout.FlexibleSpace();
                 if (_previewMesh != null)
@@ -242,6 +256,9 @@ namespace BackroomsSurvival.EditorTools
         private void LoadRoom(RoomPool.RoomEntry entry)
         {
             _def = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(entry.definition));
+            _def.MigrateLegacyPillarGrids();
+            _def.MigrateLegacyLightMarkers();
+            _loadedRoomId = entry.id;
             CreateOrRebuild();
             Debug.Log($"[RoomAuthoringWindow] Loaded '{entry.id}' for editing.");
         }
@@ -406,8 +423,8 @@ namespace BackroomsSurvival.EditorTools
         private bool ConfirmReplaceRoom()
         {
             int features = _def.holes.Length + _def.floorHoles.Length + _def.pillars.Length
-                + _def.pillarGrids.Length + _def.blocks.Length + _def.stairs.Length
-                + _def.markers.Length + _def.levels.Length + _def.notches.Length
+                + _def.blocks.Length + _def.stairs.Length
+                + _def.markers.Length + _def.lights.Length + _def.levels.Length + _def.notches.Length
                 + _def.manualContour.Length;
             if (features == 0) return true;
 
@@ -516,6 +533,7 @@ namespace BackroomsSurvival.EditorTools
         private void DrawFeaturesTab()
         {
             DrawSearchField();
+            DrawGenerateLightsSection();
 
             int storeys = _def.levels?.Length ?? 0;
             for (int s = 0; s <= storeys; s++)
@@ -531,8 +549,8 @@ namespace BackroomsSurvival.EditorTools
         /// por dónde se cae, luego lo que hay puesto, y al final lo que no es geometría.</summary>
         private FeatureGroupBase[] AllGroups() => new FeatureGroupBase[]
         {
-            HolesGroup(), PitsGroup(), PillarsGroup(), PillarGridsGroup(),
-            BlocksGroup(), StairsGroup(), MarkersGroup(),
+            HolesGroup(), PitsGroup(), PillarsGroup(),
+            BlocksGroup(), StairsGroup(), LightsGroup(), MarkersGroup(),
         };
 
         private void DrawStorey(int storey)
@@ -556,11 +574,22 @@ namespace BackroomsSurvival.EditorTools
 
             if (!Section($"storey{storey}", title)) return;
 
+            // Mismo truco que en DrawFeatureGroup para el raíl: capturar el bloque DESPUÉS de
+            // dibujarlo entero y pintar el borde con su Rect real, porque en IMGUI no se sabe la
+            // altura de antemano. Un poco más ancho (5 px) que el de cada grupo (3 px) — es el
+            // contenedor de fuera, y así los dos se ven a la vez sin confundirse: el del piso a
+            // ras del margen, el de cada grupo un pelín más adentro por la indentación.
+            Color storeyAccent = StoreyAccentColor(storey);
+            EditorGUILayout.BeginVertical();
             using (new EditorGUI.IndentLevelScope())
             {
                 if (storey > 0) DrawStoreySlab(storey);
                 foreach (var g in groups) g.Draw(this, storey);
             }
+            EditorGUILayout.EndVertical();
+            var storeyRect = GUILayoutUtility.GetLastRect();
+            if (storeyRect.height > 0f)
+                EditorGUI.DrawRect(new Rect(storeyRect.x, storeyRect.y, 5f, storeyRect.height), storeyAccent);
         }
 
         // El texto del buscador. Fuera del modelo por lo mismo que _foldouts: es cómo está
@@ -751,6 +780,10 @@ namespace BackroomsSurvival.EditorTools
                 w.DrawFeatureGroup(this, storey);
 
             public string key, title;
+            /// <summary>Color de la muesca junto al título — mismo tipo, mismo color, en la tira
+            /// Y en la cabecera vacía. Solo organización visual: escanear "dónde están las Lights"
+            /// entre siete grupos por piso sin leer cada palabra.</summary>
+            public Color accentColor = Color.gray;
             public System.Func<T[]> get;
             public System.Action<T[]> set;
             public System.Func<T, int> level;
@@ -802,6 +835,18 @@ namespace BackroomsSurvival.EditorTools
 
             string stripKey = $"{storey}:{g.key}";
 
+            // Bloque entero capturado en un Rect (sin estilo propio, para no anidar caja dentro
+            // de caja con la de la ReorderableList) SOLO para poder pintar el raíl de color a la
+            // izquierda de TODO el grupo al final, no solo de la cabecera — y para separar un
+            // grupo del siguiente con un hueco de verdad, que antes no había ninguno: siete
+            // grupos seguidos sin espacio se leían como un bloque único.
+            //
+            // Antes esto TAMBIÉN teñía el fondo entero (GUI.backgroundColor) y el título
+            // (GUI.contentColor) además de la cebra por fila — demasiado a la vez, se leía como
+            // "todo de colores" en vez de organizado. Se queda solo con la muesca junto al título
+            // y el raíl: el mínimo que separa un tipo de otro sin saturar.
+            EditorGUILayout.BeginVertical();
+
             // Un grupo vacío se anuncia con su cabecera y nada más: la tira entera con su marco y
             // su "List is Empty" son cuatro líneas para decir que no hay nada, y con siete grupos
             // por piso eso es la mitad de la pantalla en blanco.
@@ -809,6 +854,7 @@ namespace BackroomsSurvival.EditorTools
             {
                 using (new EditorGUILayout.HorizontalScope())
                 {
+                    DrawAccentSwatch(g.accentColor);
                     EditorGUILayout.LabelField($"{g.title} (0)", EditorStyles.miniLabel);
                     GUILayout.FlexibleSpace();
                     if (g.arrange != null)
@@ -822,119 +868,132 @@ namespace BackroomsSurvival.EditorTools
                             EditorStyles.miniButton, GUILayout.Width(24)))
                         AddToStorey(g, storey);
                 }
-                return;
             }
-
-            // El panel de grupo va ANTES de la lista: con los elementos desplegables la lista
-            // crece mucho, y debajo el panel quedaba a un scroll de distancia de la cabecera a la
-            // que pertenece.
-            DrawGroupGlobals(g, storey, arr, view);
-
-            if (!_strips.TryGetValue(stripKey, out var rl))
+            else
             {
-                rl = new ReorderableList(view, typeof(T), true, true, true, true);
-                _strips[stripKey] = rl;
-            }
-            rl.list = view; // la vista se rehace cada frame; la tira tiene que mirar a la nueva
+                // El panel de grupo va ANTES de la lista: con los elementos desplegables la lista
+                // crece mucho, y debajo el panel quedaba a un scroll de distancia de la cabecera a
+                // la que pertenece.
+                DrawGroupGlobals(g, storey, arr, view);
 
-            // Los callbacks se reasignan CADA frame y no una vez al crear la tira: capturan `arr`
-            // y `view`, que cambian de instancia en cuanto se añade o se borra algo. Una lambda
-            // del frame anterior escribiría en el array de entonces y el cambio se perdería sin
-            // dar error.
-            rl.drawHeaderCallback = r =>
-                EditorGUI.LabelField(r, $"{g.title} ({view.Count})", EditorStyles.boldLabel);
-
-            // La altura de cada elemento, SUMADA de sus filas. Ver Row<T>: es lo que permite que
-            // los ajustes vivan dentro del desplegable en vez de en un panel aparte.
-            rl.elementHeightCallback = k =>
-            {
-                if (k < 0 || k >= view.Count) return LineStep;
-                float h = LineStep + 2f; // la fila-cabecera con el plegable
-                if (!IsItemOpen(stripKey, view[k])) return h;
-
-                var it = arr[view[k]];
-                h += LineStep; // el selector de piso, común a todos los tipos
-                foreach (var row in g.rows) h += row.height(it);
-                return h + 4f;
-            };
-
-            rl.drawElementCallback = (r, k, active, focus) =>
-            {
-                if (k < 0 || k >= view.Count) return;
-                int real = view[k];
-                var item = arr[real];
-
-                // El sangrado de la sección del piso ya viene aplicado en el rect que llega;
-                // dejarlo puesto lo aplicaría OTRA VEZ a cada control de dentro.
-                int indent = EditorGUI.indentLevel;
-                EditorGUI.indentLevel = 0;
-
-                const float dupW = 72f;
-                var head = new Rect(r.x, r.y + 1f, r.width, LineH);
-                bool open = IsItemOpen(stripKey, real);
-                bool now = EditorGUI.Foldout(
-                    new Rect(head.x, head.y, head.width - dupW - 4f, head.height),
-                    open, g.row(item, real), true);
-                if (now != open) _foldouts[ItemKey(stripKey, real)] = now;
-
-                // Clon por JSON — el mismo viaje que LoadRoom — para no compartir arrays anidados
-                // (los boquetes de un bloque) entre el original y la copia.
-                if (GUI.Button(new Rect(head.xMax - dupW, head.y, dupW, head.height),
-                        new GUIContent("Duplicate", "Otro igual, justo debajo"),
-                        EditorStyles.miniButton))
-                    Defer(() =>
-                    {
-                        var copy = JsonUtility.FromJson<T>(JsonUtility.ToJson(item));
-                        var next = g.get();
-                        ArrayUtility.Insert(ref next, real + 1, copy);
-                        g.set(next);
-                    });
-
-                if (now)
+                if (!_strips.TryGetValue(stripKey, out var rl))
                 {
-                    float y = head.yMax + EditorGUIUtility.standardVerticalSpacing;
-                    float x = r.x + 12f, w = r.width - 12f;
+                    rl = new ReorderableList(view, typeof(T), true, true, true, true);
+                    _strips[stripKey] = rl;
+                }
+                rl.list = view; // la vista se rehace cada frame; la tira tiene que mirar a la nueva
 
-                    // Mover de piso es un campo y no un arrastre entre desplegables: el arrastre
-                    // de la tira ya significa "ordenar dentro de este piso", y que el mismo gesto
-                    // hiciera dos cosas según dónde sueltes es justo lo que no se adivina.
-                    int lvl = FloorField(new Rect(x, y, w, LineH), g.level(item));
-                    if (lvl != g.level(item))
+                // Los callbacks se reasignan CADA frame y no una vez al crear la tira: capturan
+                // `arr` y `view`, que cambian de instancia en cuanto se añade o se borra algo. Una
+                // lambda del frame anterior escribiría en el array de entonces y el cambio se
+                // perdería sin dar error.
+                rl.drawHeaderCallback = r =>
+                {
+                    var swatch = new Rect(r.x, r.y + 2f, 10f, r.height - 4f);
+                    EditorGUI.DrawRect(swatch, g.accentColor);
+                    var label = new Rect(r.x + 14f, r.y, r.width - 14f, r.height);
+                    EditorGUI.LabelField(label, $"{g.title} ({view.Count})", EditorStyles.boldLabel);
+                };
+
+                // La altura de cada elemento, SUMADA de sus filas. Ver Row<T>: es lo que permite
+                // que los ajustes vivan dentro del desplegable en vez de en un panel aparte.
+                rl.elementHeightCallback = k =>
+                {
+                    if (k < 0 || k >= view.Count) return LineStep;
+                    float h = LineStep + 2f; // la fila-cabecera con el plegable
+                    if (!IsItemOpen(stripKey, view[k])) return h;
+
+                    var it = arr[view[k]];
+                    h += LineStep; // el selector de piso, común a todos los tipos
+                    foreach (var row in g.rows) h += row.height(it);
+                    return h + 4f;
+                };
+
+                rl.drawElementCallback = (r, k, active, focus) =>
+                {
+                    if (k < 0 || k >= view.Count) return;
+                    int real = view[k];
+                    var item = arr[real];
+
+                    // El sangrado de la sección del piso ya viene aplicado en el rect que llega;
+                    // dejarlo puesto lo aplicaría OTRA VEZ a cada control de dentro.
+                    int indent = EditorGUI.indentLevel;
+                    EditorGUI.indentLevel = 0;
+
+                    const float dupW = 72f;
+                    var head = new Rect(r.x, r.y + 1f, r.width, LineH);
+                    bool open = IsItemOpen(stripKey, real);
+                    bool now = EditorGUI.Foldout(
+                        new Rect(head.x, head.y, head.width - dupW - 4f, head.height),
+                        open, g.row(item, real), true);
+                    if (now != open) _foldouts[ItemKey(stripKey, real)] = now;
+
+                    // Clon por JSON — el mismo viaje que LoadRoom — para no compartir arrays
+                    // anidados (los boquetes de un bloque) entre el original y la copia.
+                    if (GUI.Button(new Rect(head.xMax - dupW, head.y, dupW, head.height),
+                            new GUIContent("Duplicate", "Otro igual, justo debajo"),
+                            EditorStyles.miniButton))
                         Defer(() =>
                         {
-                            g.setLevel(item, lvl);
-                            _strips.Clear(); // se va a otro piso: esta tira ya no lo tiene
+                            var copy = JsonUtility.FromJson<T>(JsonUtility.ToJson(item));
+                            var next = g.get();
+                            ArrayUtility.Insert(ref next, real + 1, copy);
+                            g.set(next);
                         });
-                    y += LineStep;
 
-                    foreach (var row in g.rows)
+                    if (now)
                     {
-                        float hh = row.height(item);
-                        row.draw(new Rect(x, y, w, hh), item);
-                        y += hh;
+                        float y = head.yMax + EditorGUIUtility.standardVerticalSpacing;
+                        float x = r.x + 12f, w = r.width - 12f;
+
+                        // Mover de piso es un campo y no un arrastre entre desplegables: el
+                        // arrastre de la tira ya significa "ordenar dentro de este piso", y que el
+                        // mismo gesto hiciera dos cosas según dónde sueltes es justo lo que no se
+                        // adivina.
+                        int lvl = FloorField(new Rect(x, y, w, LineH), g.level(item));
+                        if (lvl != g.level(item))
+                            Defer(() =>
+                            {
+                                g.setLevel(item, lvl);
+                                _strips.Clear(); // se va a otro piso: esta tira ya no lo tiene
+                            });
+                        y += LineStep;
+
+                        foreach (var row in g.rows)
+                        {
+                            float hh = row.height(item);
+                            row.draw(new Rect(x, y, w, hh), item);
+                            y += hh;
+                        }
                     }
-                }
 
-                EditorGUI.indentLevel = indent;
-            };
+                    EditorGUI.indentLevel = indent;
+                };
 
-            rl.onAddCallback = _ => AddToStorey(g, storey);
-            rl.onRemoveCallback = list =>
-            {
-                if (list.index < 0 || list.index >= view.Count) return;
-                int victim = view[list.index];
-                list.index = -1;
-                Defer(() =>
+                rl.onAddCallback = _ => AddToStorey(g, storey);
+                rl.onRemoveCallback = list =>
                 {
-                    var next = g.get();
-                    if (victim < next.Length) ArrayUtility.RemoveAt(ref next, victim);
-                    g.set(next);
-                });
-            };
-            rl.onReorderCallbackWithDetails = (list, from, to) =>
-                ReorderViewInPlace(g, (List<int>)list.list);
+                    if (list.index < 0 || list.index >= view.Count) return;
+                    int victim = view[list.index];
+                    list.index = -1;
+                    Defer(() =>
+                    {
+                        var next = g.get();
+                        if (victim < next.Length) ArrayUtility.RemoveAt(ref next, victim);
+                        g.set(next);
+                    });
+                };
+                rl.onReorderCallbackWithDetails = (list, from, to) =>
+                    ReorderViewInPlace(g, (List<int>)list.list);
 
-            rl.DoLayoutList();
+                rl.DoLayoutList();
+            }
+
+            EditorGUILayout.EndVertical();
+            var blockRect = GUILayoutUtility.GetLastRect();
+            if (blockRect.height > 0f)
+                EditorGUI.DrawRect(new Rect(blockRect.x, blockRect.y, 3f, blockRect.height), g.accentColor);
+            EditorGUILayout.Space(4f);
         }
 
         /// <summary>Clave de plegado de UN elemento. Por índice real y no por posición en la
@@ -968,32 +1027,39 @@ namespace BackroomsSurvival.EditorTools
                 string spacingKey = $"{storey}:{g.key}";
                 _groupSpacing.TryGetValue(spacingKey, out float pitch);
 
-                using (new EditorGUILayout.HorizontalScope(EditorStyles.helpBox))
+                using (new EditorGUILayout.VerticalScope(EditorStyles.helpBox))
                 {
-                    EditorGUILayout.LabelField(CountLabel(g), GUILayout.Width(54));
+                    // Slider y no un número suelto: tantear "cuántos quiero" arrastrando es más
+                    // directo, y el campo a la derecha del propio slider (el mismo control lo
+                    // dibuja) sigue dejando escribir uno exacto. Fila propia porque un slider
+                    // decente necesita más ancho del que cabía compartido con Spacing/Arrange.
                     EditorGUI.BeginChangeCheck();
-                    int want = EditorGUILayout.IntField(view.Count, GUILayout.Width(40));
+                    int want = EditorGUILayout.IntSlider(CountLabel(g), view.Count, 0, MaxPerGroup);
                     if (EditorGUI.EndChangeCheck() && want != view.Count)
                         SetGroupCount(g, storey, view, want);
 
-                    // El paso a mano: "los pilares cada 4 m" no se podía decir, había que subir y
-                    // bajar el recuento a ver qué separación salía. 0 = lo elige el reparto.
-                    EditorGUILayout.LabelField(new GUIContent("Spacing",
-                        "Metros entre uno y el siguiente al repartir. 0 = que lo decida el "
-                        + "reparto por el sitio que haya."), GUILayout.Width(56));
-                    EditorGUI.BeginChangeCheck();
-                    float next = EditorGUILayout.FloatField(pitch, GUILayout.Width(44));
-                    if (EditorGUI.EndChangeCheck())
+                    using (new EditorGUILayout.HorizontalScope())
                     {
-                        _groupSpacing[spacingKey] = Mathf.Max(0f, next);
-                        ArrangeGroup(g, storey);
-                    }
+                        // El paso a mano: "los pilares cada 4 m" no se podía decir, había que
+                        // subir y bajar el recuento a ver qué separación salía. 0 = lo elige el
+                        // reparto.
+                        EditorGUILayout.LabelField(new GUIContent("Spacing",
+                            "Metros entre uno y el siguiente al repartir. 0 = que lo decida el "
+                            + "reparto por el sitio que haya."), GUILayout.Width(56));
+                        EditorGUI.BeginChangeCheck();
+                        float next = EditorGUILayout.FloatField(pitch, GUILayout.Width(44));
+                        if (EditorGUI.EndChangeCheck())
+                        {
+                            _groupSpacing[spacingKey] = Mathf.Max(0f, next);
+                            ArrangeGroup(g, storey);
+                        }
 
-                    if (GUILayout.Button(new GUIContent("Arrange",
-                            "Reparte los que ya hay, sin cambiar cuántos son. Útil después de "
-                            + "tocar la planta o el paso."),
-                            EditorStyles.miniButton, GUILayout.Width(62)))
-                        ArrangeGroup(g, storey);
+                        if (GUILayout.Button(new GUIContent("Arrange",
+                                "Reparte los que ya hay, sin cambiar cuántos son. Útil después de "
+                                + "tocar la planta o el paso."),
+                                EditorStyles.miniButton, GUILayout.Width(62)))
+                            ArrangeGroup(g, storey);
+                    }
                 }
             }
 
@@ -1227,6 +1293,25 @@ namespace BackroomsSurvival.EditorTools
             return now;
         }
 
+        /// <summary>
+        /// Color determinista por piso — planta baja, piso 1, piso 2... — para que "todo lo que
+        /// cuelga de este piso" se lea de un vistazo, el mismo lenguaje visual que ya tienen los
+        /// siete tipos de feature (ver <c>FeatureGroup.accentColor</c>), pero en el otro eje: ESE
+        /// es "qué tipo de cosa", este es "en qué piso vive".
+        ///
+        /// HSV con el matiz rotado por índice, no una paleta fija: una sala con 6 entreplantas no
+        /// es descabellada (ver <see cref="RoomDefinition.levels"/>, sin tope propio salvo el que
+        /// impone la altura), y una paleta de N colores a mano se quedaría corta o repetiría dos
+        /// pisos seguidos con el mismo color justo donde más confunde. La rotación áurea
+        /// (0,618...) separa los matices consecutivos lo más posible en vez de repartirlos en
+        /// pasos iguales, que con pocos pisos (2-3, el caso común) daría colores casi vecinos.
+        /// </summary>
+        private static Color StoreyAccentColor(int storey)
+        {
+            float hue = (storey * 0.618034f) % 1f;
+            return Color.HSVToRGB(hue, 0.45f, 0.95f);
+        }
+
         /// <summary>El suelo del piso <paramref name="level"/> con el contorno actual — el mismo
         /// número que usarán la malla y los colliders al reconstruir.</summary>
         private float StoreyBase(int level) =>
@@ -1267,6 +1352,15 @@ namespace BackroomsSurvival.EditorTools
             return c;
         }
 
+        /// <summary>La muesca de color de un grupo, dibujada con GUILayout (para la cabecera vacía,
+        /// fuera de un ReorderableList — la de dentro se dibuja directo con un Rect, ver
+        /// <c>drawHeaderCallback</c>).</summary>
+        private static void DrawAccentSwatch(Color color)
+        {
+            var r = GUILayoutUtility.GetRect(10f, EditorGUIUtility.singleLineHeight, GUILayout.Width(10f));
+            EditorGUI.DrawRect(new Rect(r.x, r.y + 2f, 10f, r.height - 4f), color);
+        }
+
         // ── Los siete grupos ──────────────────────────────────────────────────
         //
         // Un descriptor por tipo de feature. Lo que antes era un DrawX() con su cabecera, su
@@ -1280,6 +1374,7 @@ namespace BackroomsSurvival.EditorTools
             {
                 key = "holes",
                 title = "Openings",
+                accentColor = new Color(0.4f, 0.75f, 1f),
                 get = () => _def.holes,
                 set = a => _def.holes = a,
                 level = h => h.level,
@@ -1344,6 +1439,7 @@ namespace BackroomsSurvival.EditorTools
             {
                 key = "pits",
                 title = "Floor pits",
+                accentColor = new Color(0.9f, 0.5f, 0.2f),
                 get = () => _def.floorHoles,
                 set = a => _def.floorHoles = a,
                 level = f => f.level,
@@ -1351,9 +1447,19 @@ namespace BackroomsSurvival.EditorTools
                 make = () => new RoomDefinition.FloorHole(),
                 row = (f, i) =>
                 {
-                    string kind = f.level > 0 ? "through the slab"
-                        : f.bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
-                    return $"#{i}   {f.sizeX:0.#} × {f.sizeZ:0.#} m   ·   {kind}";
+                    string shape = f.sides >= 3 ? $"{f.sides}-gon" : "rect";
+                    string kind;
+                    if (f.level > 0)
+                    {
+                        var m = f.EffectiveMode();
+                        kind = m == RoomDefinition.PitMode.Through ? "through the slab"
+                            : m == RoomDefinition.PitMode.Bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
+                    }
+                    else
+                    {
+                        kind = f.bottomless ? "bottomless" : $"{f.depth:0.#} m deep";
+                    }
+                    return $"#{i}   {shape}   {f.sizeX:0.#} × {f.sizeZ:0.#} m   ·   {kind}";
                 },
                 arrange = (items, pitch) =>
                 {
@@ -1374,6 +1480,8 @@ namespace BackroomsSurvival.EditorTools
                     new GroupField<RoomDefinition.FloorHole>("Position Z", f => f.position.y, (f, v) => f.position.y = v),
                     new GroupField<RoomDefinition.FloorHole>("Size X (m)", f => f.sizeX, (f, v) => f.sizeX = v),
                     new GroupField<RoomDefinition.FloorHole>("Size Z (m)", f => f.sizeZ, (f, v) => f.sizeZ = v),
+                    new GroupField<RoomDefinition.FloorHole>("Sides", f => f.sides,
+                        (f, v) => f.sides = Mathf.Clamp(Mathf.RoundToInt(v), 0, 32)),
                     new GroupField<RoomDefinition.FloorHole>("Depth (m)", f => f.depth, (f, v) => f.depth = v),
                     new GroupField<RoomDefinition.FloorHole>("Yaw", f => f.yawDegrees, (f, v) => f.yawDegrees = v),
                 },
@@ -1383,28 +1491,65 @@ namespace BackroomsSurvival.EditorTools
                     RowFloat<RoomDefinition.FloorHole>("Position Z", f => f.position.y, (f, v) => f.position.y = v),
                     RowFloat<RoomDefinition.FloorHole>("Size X (m)", f => f.sizeX, (f, v) => f.sizeX = v),
                     RowFloat<RoomDefinition.FloorHole>("Size Z (m)", f => f.sizeZ, (f, v) => f.sizeZ = v),
-                    // En una entreplanta el pozo atraviesa la losa de lado a lado: ni hay
-                    // profundidad que elegir ni fondo que quitar.
-                    Disabled<RoomDefinition.FloorHole>(f => f.level > 0,
+                    RowIntSlider<RoomDefinition.FloorHole>("Sides", f => f.sides, (f, v) => f.sides = v, 0, 32,
+                        "0 = rectángulo (de siempre, Size X × Size Z). 3+ = un N-ágono, como una "
+                        + "columna redondeada pero hueca."),
+                    Disabled<RoomDefinition.FloorHole>(f => f.sides < 3,
+                        RowSlider<RoomDefinition.FloorHole>("Squareness", f => f.squareness,
+                            (f, v) => f.squareness = v, 0f, 1f,
+                            "0 = redondo, 1 = el rectángulo Size X × Size Z exacto.")),
+                    // Planta baja sigue con el toggle Bottomless de siempre (comportamiento SIN
+                    // TOCAR). Un piso alto elige entre los tres modos con el popup de abajo — antes
+                    // era SIEMPRE pasante y sin profundidad que elegir. UNA sola fila Depth para
+                    // los dos casos: se apaga solo cuando de verdad no pinta nada (Through).
+                    Disabled<RoomDefinition.FloorHole>(
+                        f => f.level > 0 && f.EffectiveMode() == RoomDefinition.PitMode.Through,
                         RowFloat<RoomDefinition.FloorHole>("Depth (m)", f => f.depth, (f, v) => f.depth = v,
-                            "Cuánto baja desde el suelo de la sala. Con Bottomless activo sigue "
+                            "Cuánto cuelga por debajo de la losa de SU piso. Con Bottomless sigue "
                             + "mandando: es hasta donde llegan paredes de verdad, con colisión.\n\n"
-                            + "Sin efecto en un pozo de entreplanta.")),
+                            + "Sin efecto en Through.")),
                     Disabled<RoomDefinition.FloorHole>(f => f.level > 0,
                         RowToggle<RoomDefinition.FloorHole>("Bottomless", f => f.bottomless,
                             (f, v) => f.bottomless = v,
                             "Sin fondo: más allá de Depth no hay losa ni colisión con la que "
-                            + "aterrizar. Se sigue cayendo.\n\nSin efecto en un pozo de entreplanta.")),
+                            + "aterrizar. Se sigue cayendo.\n\nSolo en planta baja — un piso alto "
+                            + "elige con el campo Mode de abajo.")),
+                    Disabled<RoomDefinition.FloorHole>(f => f.level <= 0, PitModeRow()),
                     RowSlider<RoomDefinition.FloorHole>("Yaw", f => f.yawDegrees, (f, v) => f.yawDegrees = v,
                         -180f, 180f),
                 },
             };
+
+        private static readonly RoomDefinition.PitMode[] PitModeValues =
+        {
+            RoomDefinition.PitMode.Through, RoomDefinition.PitMode.Well, RoomDefinition.PitMode.Bottomless,
+        };
+        private static readonly GUIContent[] PitModeLabels =
+            NamesToContents(new[] { "Through", "Well", "Bottomless" });
+
+        /// <summary>Modo de un pozo en un piso alto — ver <see cref="RoomDefinition.PitMode"/>.
+        /// Solo tiene sentido con <c>level &gt; 0</c>: en planta baja sigue mandando el toggle
+        /// Bottomless de siempre, sin tocar.</summary>
+        private Row<RoomDefinition.FloorHole> PitModeRow() =>
+            OneLine<RoomDefinition.FloorHole>((r, f) =>
+            {
+                int idx = System.Array.IndexOf(PitModeValues, f.EffectiveMode());
+                idx = EditorGUI.Popup(r, new GUIContent("Mode",
+                    "Through: agujero recto, atraviesa la losa de este piso de lado a lado — sin "
+                    + "fondo propio, sin paredes propias.\n\n"
+                    + "Well: cuelga por debajo de la losa de este piso con paredes hasta Depth y "
+                    + "un fondo en el que aterrizar — \"hay suelo, con un agujero\".\n\n"
+                    + "Bottomless: igual que Well pero sin fondo — se sigue cayendo."),
+                    Mathf.Max(0, idx), PitModeLabels);
+                f.mode = PitModeValues[idx];
+            });
 
         private FeatureGroup<RoomDefinition.Pillar> PillarsGroup() =>
             new FeatureGroup<RoomDefinition.Pillar>
             {
                 key = "pillars",
                 title = "Pillars",
+                accentColor = new Color(0.65f, 0.65f, 0.7f),
                 get = () => _def.pillars,
                 set = a => _def.pillars = a,
                 level = p => p.level,
@@ -1446,46 +1591,12 @@ namespace BackroomsSurvival.EditorTools
                 },
             };
 
-        private FeatureGroup<RoomDefinition.PillarGrid> PillarGridsGroup() =>
-            new FeatureGroup<RoomDefinition.PillarGrid>
-            {
-                key = "grids",
-                title = "Pillar grids",
-                get = () => _def.pillarGrids,
-                set = a => _def.pillarGrids = a,
-                level = g => g.level,
-                setLevel = (g, v) => g.level = v,
-                make = () => new RoomDefinition.PillarGrid(),
-                row = (g, i) => $"#{i}   {g.countX}×{g.countZ} = {g.countX * g.countZ} pillars",
-                fields = new[]
-                {
-                    new GroupField<RoomDefinition.PillarGrid>("Centre X", g => g.center.x, (g, v) => g.center.x = v),
-                    new GroupField<RoomDefinition.PillarGrid>("Centre Z", g => g.center.y, (g, v) => g.center.y = v),
-                    new GroupField<RoomDefinition.PillarGrid>("Size (m)", g => g.size, (g, v) => g.size = v),
-                    new GroupField<RoomDefinition.PillarGrid>("Yaw", g => g.yawDegrees, (g, v) => g.yawDegrees = v),
-                },
-                rows = new[]
-                {
-                    RowFloat<RoomDefinition.PillarGrid>("Centre X", g => g.center.x, (g, v) => g.center.x = v,
-                        "Mueve el centro y se mueven todos."),
-                    RowFloat<RoomDefinition.PillarGrid>("Centre Z", g => g.center.y, (g, v) => g.center.y = v),
-                    RowIntSlider<RoomDefinition.PillarGrid>("Count X", g => g.countX, (g, v) => g.countX = v, 1, 12),
-                    RowIntSlider<RoomDefinition.PillarGrid>("Count Z", g => g.countZ, (g, v) => g.countZ = v, 1, 12),
-                    RowFloat<RoomDefinition.PillarGrid>("Spacing X (m)", g => g.spacingX, (g, v) => g.spacingX = v),
-                    RowFloat<RoomDefinition.PillarGrid>("Spacing Z (m)", g => g.spacingZ, (g, v) => g.spacingZ = v),
-                    RowFloat<RoomDefinition.PillarGrid>("Size (m)", g => g.size, (g, v) => g.size = v,
-                        "Ancho entre caras."),
-                    RowIntSlider<RoomDefinition.PillarGrid>("Sides", g => g.sides, (g, v) => g.sides = v, 3, 32),
-                    RowSlider<RoomDefinition.PillarGrid>("Yaw", g => g.yawDegrees, (g, v) => g.yawDegrees = v,
-                        -180f, 180f, "Gira la rejilla entera, no cada pilar."),
-                },
-            };
-
         private FeatureGroup<RoomDefinition.Block> BlocksGroup() =>
             new FeatureGroup<RoomDefinition.Block>
             {
                 key = "blocks",
                 title = "Blocks",
+                accentColor = new Color(0.75f, 0.55f, 0.35f),
                 get = () => _def.blocks,
                 set = a => _def.blocks = a,
                 level = b => b.level,
@@ -1535,6 +1646,7 @@ namespace BackroomsSurvival.EditorTools
             {
                 key = "stairs",
                 title = "Stairs",
+                accentColor = new Color(0.85f, 0.75f, 0.25f),
                 get = () => _def.stairs,
                 set = a => _def.stairs = a,
                 level = s => s.level,
@@ -1574,6 +1686,7 @@ namespace BackroomsSurvival.EditorTools
             {
                 key = "markers",
                 title = "Markers",
+                accentColor = new Color(0.4f, 0.85f, 0.5f),
                 get = () => _def.markers,
                 set = a => _def.markers = a,
                 level = m => m.level,
@@ -1583,8 +1696,6 @@ namespace BackroomsSurvival.EditorTools
                 make = () => new RoomDefinition.Marker { kind = RoomDefinition.MarkerKind.Prop },
                 row = (m, i) =>
                 {
-                    if (m.kind == RoomDefinition.MarkerKind.Light)
-                        return $"#{i}   Light   ·   range {m.lightRange:0.#} m";
                     // Un Prop cuya etiqueta no está en el catálogo se dice AQUÍ, en la línea que
                     // se ve plegada: si no, la única pista es que no aparece nada en la escena, y
                     // eso se confunde con "todavía no lo he colocado".
@@ -1610,30 +1721,102 @@ namespace BackroomsSurvival.EditorTools
                 },
                 rows = new[]
                 {
-                    OneLine<RoomDefinition.Marker>((r, m) => m.kind =
-                        (RoomDefinition.MarkerKind)EditorGUI.EnumPopup(r,
-                            new GUIContent("Kind",
-                                "No cambian la geometría: son sitios que otro sistema resuelve "
-                                + "después. Arrástralos en la vista de escena."),
-                            m.kind)),
+                    // Solo Prop/Spawn son elegibles: Light tiene grupo propio ahora (LightsGroup).
+                    // Un Popup cerrado a estos dos valores, no un EnumPopup libre, es lo que
+                    // impide volver a crear un marcador Light desde aquí — MarkerKind.Light se
+                    // queda en el enum solo por compatibilidad de deserialización.
+                    OneLine<RoomDefinition.Marker>((r, m) =>
+                    {
+                        int idx = m.kind == RoomDefinition.MarkerKind.Spawn ? 1 : 0;
+                        idx = EditorGUI.Popup(r, new GUIContent("Kind",
+                            "No cambian la geometría: son sitios que otro sistema resuelve "
+                            + "después. Arrástralos en la vista de escena."),
+                            idx, MarkerKindLabels);
+                        m.kind = idx == 1 ? RoomDefinition.MarkerKind.Spawn : RoomDefinition.MarkerKind.Prop;
+                    }),
                     RowFloat<RoomDefinition.Marker>("Position X", m => m.position.x, (m, v) => m.position.x = v),
                     RowFloat<RoomDefinition.Marker>("Position Z", m => m.position.y, (m, v) => m.position.y = v),
                     RowFloat<RoomDefinition.Marker>("Height off floor (m)", m => m.y, (m, v) => m.y = v,
                         "Sobre el suelo de SU piso."),
                     RowSlider<RoomDefinition.Marker>("Yaw", m => m.yawDegrees, (m, v) => m.yawDegrees = v,
                         -180f, 180f),
-                    // Las filas de luz y las de prop se APAGAN según el tipo en vez de aparecer y
-                    // desaparecer: una lista que cambia de alto al tocar un desplegable hace saltar
-                    // todo lo que tiene debajo, y se pierde de vista lo que estabas mirando.
-                    Disabled<RoomDefinition.Marker>(m => m.kind != RoomDefinition.MarkerKind.Light,
-                        RowColor<RoomDefinition.Marker>("Color", m => m.lightColor, (m, v) => m.lightColor = v)),
-                    Disabled<RoomDefinition.Marker>(m => m.kind != RoomDefinition.MarkerKind.Light,
-                        RowFloat<RoomDefinition.Marker>("Intensity", m => m.lightIntensity,
-                            (m, v) => m.lightIntensity = v)),
-                    Disabled<RoomDefinition.Marker>(m => m.kind != RoomDefinition.MarkerKind.Light,
-                        RowFloat<RoomDefinition.Marker>("Range (m)", m => m.lightRange, (m, v) => m.lightRange = v)),
-                    Disabled<RoomDefinition.Marker>(m => m.kind == RoomDefinition.MarkerKind.Light,
-                        PropTagRow()),
+                    PropTagRow(),
+                },
+            };
+
+        private static readonly GUIContent[] MarkerKindLabels =
+            NamesToContents(new[] { "Prop", "Spawn" });
+
+        private static readonly RoomDefinition.LightBehavior[] LightBehaviorValues =
+        {
+            RoomDefinition.LightBehavior.Steady,
+            RoomDefinition.LightBehavior.Flicker,
+            RoomDefinition.LightBehavior.Dead,
+        };
+        private static readonly GUIContent[] LightBehaviorLabels =
+            NamesToContents(new[] { "Steady", "Flicker", "Dead" });
+
+        private FeatureGroup<RoomDefinition.Light> LightsGroup() =>
+            new FeatureGroup<RoomDefinition.Light>
+            {
+                key = "lights",
+                title = "Lights",
+                accentColor = LightMarkerColor, // mismo color que el tirador en la vista de escena.
+                get = () => _def.lights,
+                set = a => _def.lights = a,
+                level = l => l.level,
+                setLevel = (l, v) => l.level = v,
+                make = () => new RoomDefinition.Light(),
+                row = (l, i) => l.behavior == RoomDefinition.LightBehavior.Steady
+                    ? $"#{i}   range {l.lightRange:0.#} m"
+                    : $"#{i}   range {l.lightRange:0.#} m   ·   {l.behavior}",
+                arrange = (items, pitch) =>
+                {
+                    // Sin margen de pared: una luz pegada a la esquina es legítima, a diferencia
+                    // de un pilar, que ahí solo estorba.
+                    var (pts, _) = SpreadInside(items.Length, 0.4f, pitch);
+                    for (int k = 0; k < items.Length && k < pts.Count; k++)
+                        items[k].position = pts[k];
+                },
+                fields = new[]
+                {
+                    new GroupField<RoomDefinition.Light>("Position X", l => l.position.x, (l, v) => l.position.x = v),
+                    new GroupField<RoomDefinition.Light>("Position Z", l => l.position.y, (l, v) => l.position.y = v),
+                    new GroupField<RoomDefinition.Light>("Height off floor (m)", l => l.y, (l, v) => l.y = v),
+                    new GroupField<RoomDefinition.Light>("Intensity", l => l.lightIntensity, (l, v) => l.lightIntensity = v),
+                    new GroupField<RoomDefinition.Light>("Range (m)", l => l.lightRange, (l, v) => l.lightRange = v),
+                },
+                rows = new[]
+                {
+                    RowFloat<RoomDefinition.Light>("Position X", l => l.position.x, (l, v) => l.position.x = v),
+                    RowFloat<RoomDefinition.Light>("Position Z", l => l.position.y, (l, v) => l.position.y = v),
+                    RowFloat<RoomDefinition.Light>("Height off floor (m)", l => l.y, (l, v) => l.y = v,
+                        "Sobre el suelo de SU piso."),
+                    RowSlider<RoomDefinition.Light>("Yaw", l => l.yawDegrees, (l, v) => l.yawDegrees = v,
+                        -180f, 180f),
+                    RowColor<RoomDefinition.Light>("Color", l => l.lightColor, (l, v) => l.lightColor = v),
+                    // Deslizador con campo, no solo número suelto — más intuitivo para tantear un
+                    // valor, y el número al lado sigue dejando escribir uno exacto. Topes con
+                    // margen de sobra sobre lo que autora una capa de verdad (lampIntensity ronda
+                    // 1-3, lampRange llega a 9-12 según zona), así que no recorta nada real.
+                    RowSlider<RoomDefinition.Light>("Intensity", l => l.lightIntensity, (l, v) => l.lightIntensity = v,
+                        0f, 10f, "Mismo campo que autora la capa (LayerVisualConfig.lampIntensity), típico 1-3."),
+                    RowSlider<RoomDefinition.Light>("Range (m)", l => l.lightRange, (l, v) => l.lightRange = v,
+                        0.5f, 20f, "Alcance de la luz. El pasillo autora hasta 6-9 m según la zona."),
+                    OneLine<RoomDefinition.Light>((r, l) =>
+                    {
+                        int idx = System.Array.IndexOf(LightBehaviorValues, l.behavior);
+                        idx = EditorGUI.Popup(r, new GUIContent("Behavior",
+                            "Steady: fija, como siempre.\n\n"
+                            + "Flicker: parpadea en vivo (en el editor y en juego) — mismo "
+                            + "comportamiento visual que las lámparas del laberinto.\n\n"
+                            + "Dead: se hornea apagada, como una lámpara fundida."),
+                            Mathf.Max(0, idx), LightBehaviorLabels);
+                        l.behavior = LightBehaviorValues[idx];
+                    }),
+                    Disabled<RoomDefinition.Light>(l => l.behavior != RoomDefinition.LightBehavior.Flicker,
+                        RowSlider<RoomDefinition.Light>("Flicker Hz", l => l.flickerHz, (l, v) => l.flickerHz = v,
+                            0.1f, 10f, "Las lámparas del pasillo parpadean entre 0,5 y 4 Hz.")),
                 },
             };
 
@@ -1979,18 +2162,31 @@ namespace BackroomsSurvival.EditorTools
             foreach (var h in _def.holes) if (h != null && Clamp(h.level) == storey) c++;
             foreach (var f in _def.floorHoles) if (f != null && Clamp(f.level) == storey) c++;
             foreach (var p in _def.pillars) if (p != null && Clamp(p.level) == storey) c++;
-            foreach (var g in _def.pillarGrids) if (g != null && Clamp(g.level) == storey) c += g.countX * g.countZ;
             foreach (var b in _def.blocks) if (b != null && Clamp(b.level) == storey) c++;
             foreach (var s in _def.stairs) if (s != null && Clamp(s.level) == storey) c++;
             foreach (var m in _def.markers) if (m != null && Clamp(m.level) == storey) c++;
+            foreach (var l in _def.lights) if (l != null && Clamp(l.level) == storey) c++;
             return c;
         }
 
         private void DrawSaveTab()
         {
+            DrawValidatePanel();
+            EditorGUILayout.Space();
+
             using (new EditorGUI.DisabledScope(_preview == null))
-                if (GUILayout.Button("Save Room To Pool", GUILayout.Height(28)))
-                    SaveGenerated();
+            using (new EditorGUILayout.HorizontalScope())
+            {
+                string label = _loadedRoomId != null ? $"Update {_loadedRoomId}" : "Save Room To Pool";
+                if (GUILayout.Button(label, GUILayout.Height(28)))
+                    SaveGenerated(_loadedRoomId);
+
+                // Solo tiene sentido si hay una sala cargada: sin eso "Save As New" y el botón de
+                // arriba harían exactamente lo mismo.
+                if (_loadedRoomId != null
+                    && GUILayout.Button("Save As New Room", GUILayout.Height(28), GUILayout.Width(130)))
+                    SaveGenerated(null);
+            }
 
             if (_preview == null)
                 EditorGUILayout.HelpBox("Create a room first (toolbar, top-left).", MessageType.Warning);
@@ -2025,10 +2221,72 @@ namespace BackroomsSurvival.EditorTools
 
         private bool _handBuiltFoldout;
 
-        private void SaveGenerated()
+        // Resultado de la última pasada de Validate. Null = todavía no se ha pulsado esta sesión
+        // de edición; lista vacía = sin problemas. Cacheado y no recalculado a cada frame porque
+        // el chequeo de vanos no es gratis (recorre el contorno por cada boquete y cada giro) y no
+        // hace falta correrlo 60 veces por segundo mientras se arrastra un slider.
+        private List<string> _validateIssues;
+
+        /// <summary>
+        /// Los mismos checks que <c>RoomManifestExporter.Export()</c> aplica al exportar — cap de
+        /// footprint, vanos mínimos en salas grandes, existencia de puerta practicable — pero EN
+        /// VIVO, sin necesidad de guardar. Botón manual y no automático: pide la MISMA lógica que
+        /// el exportador real (<see cref="RoomManifestExporter.DoorwayByQuarter"/>), así que un
+        /// "sin problemas" aquí significa de verdad que el exportador no la va a descartar.
+        /// </summary>
+        private void DrawValidatePanel()
         {
-            if (SaveGeneratedRoom(_def, out string message))
+            if (GUILayout.Button("Validate", GUILayout.Height(22)))
+                RunValidation();
+
+            if (_validateIssues == null) return;
+
+            if (_validateIssues.Count == 0)
+            {
+                EditorGUILayout.HelpBox("Sin problemas — cumple los caps y tiene puerta practicable.",
+                    MessageType.Info);
+                return;
+            }
+            foreach (string issue in _validateIssues)
+                EditorGUILayout.HelpBox(issue, MessageType.Warning);
+        }
+
+        private void RunValidation()
+        {
+            _validateIssues = new List<string>();
+
+            // El mismo camino que usa el exportador real: una RoomEntry de usar-y-tirar con
+            // SOLO los campos que DoorwayByQuarter mira (definition, tilesX, tilesZ), para no
+            // duplicar su lógica de localizar el vano real sobre el contorno girado.
+            var throwaway = new RoomPool.RoomEntry
+                { definition = _def, tilesX = _def.tilesX, tilesZ = _def.tilesZ };
+            if (!RoomManifestExporter.DoorwayByQuarter(throwaway, out var doorways, out string why))
+            {
+                _validateIssues.Add($"Sin puerta practicable: {why}.");
+                return; // los caps de abajo no importan si ni siquiera se puede exportar.
+            }
+
+            if (_def.tilesX > RoomManifestExporter.BackendFootprintCapTiles
+                || _def.tilesZ > RoomManifestExporter.BackendFootprintCapTiles)
+                _validateIssues.Add($"Por encima del cap de " +
+                    $"{RoomManifestExporter.BackendFootprintCapTiles}×{RoomManifestExporter.BackendFootprintCapTiles} " +
+                    "tiles (ADR-084, 2×2 chunks): se exportaría, pero el backend NO la colocará.");
+
+            if ((_def.tilesX > RoomManifestExporter.BackendInChunkCapTiles
+                    || _def.tilesZ > RoomManifestExporter.BackendInChunkCapTiles)
+                && doorways.Count < RoomManifestExporter.MinDoorwaysForBigRooms)
+                _validateIssues.Add($"Sala grande ({_def.tilesX}×{_def.tilesZ}) con solo " +
+                    $"{doorways.Count} vano(s): nace incomunicada a menudo (medido: 6 de 55). Ponle " +
+                    $"al menos {RoomManifestExporter.MinDoorwaysForBigRooms}, mejor uno por lado.");
+        }
+
+        private void SaveGenerated(string overwriteId)
+        {
+            if (SaveGeneratedRoom(_def, overwriteId, out string message, out string savedId))
+            {
                 Debug.Log($"[RoomAuthoringWindow] {message}");
+                _loadedRoomId = savedId;
+            }
             else
                 Debug.LogError($"[RoomAuthoringWindow] {message}");
         }
@@ -2166,8 +2424,17 @@ namespace BackroomsSurvival.EditorTools
                              " Sin ella el mundo la coloca como una caja sellada.");
         }
 
-        internal static bool SaveGeneratedRoom(RoomDefinition def, out string message)
+        /// <summary>
+        /// Hornea o REEMPLAZA una sala generada. <paramref name="overwriteId"/> null = crea una
+        /// entrada nueva (`room_N`, el próximo índice libre) como siempre; con un id ya existente
+        /// en el pool, actualiza esa entrada EN EL SITIO — mismo prefab (mismo GUID, vía
+        /// <see cref="PrefabUtility.SaveAsPrefabAsset"/> sobre la misma ruta) y mismo asset de
+        /// malla, así que editar y volver a guardar ya no deja una copia nueva por cada guardado.
+        /// </summary>
+        internal static bool SaveGeneratedRoom(RoomDefinition def, string overwriteId,
+            out string message, out string savedId)
         {
+            savedId = null;
             if (def == null || def.tilesX < 1 || def.tilesZ < 1 || def.heightMeters <= 0f)
             {
                 message = "Room parameters are not valid (size and height must be positive).";
@@ -2193,8 +2460,7 @@ namespace BackroomsSurvival.EditorTools
             BackroomsEditorFolders.EnsureFolder("Assets/Resources");
             BackroomsEditorFolders.EnsureFolder(RoomFolder);
 
-            int index = NextFreeIndex();
-            string id = $"room_{index}";
+            string id = overwriteId ?? $"room_{NextFreeIndex()}";
             string prefabPath = $"{RoomFolder}/{id}.prefab";
             string meshPath = $"{RoomFolder}/{id}_mesh.asset";
 
@@ -2270,6 +2536,7 @@ namespace BackroomsSurvival.EditorTools
                 anchor.transform.localRotation = Quaternion.LookRotation(doorFwd);
 
                 CreateMarkers(root.transform, def);
+                CreateLights(root.transform, def);
 
                 var prefab = PrefabUtility.SaveAsPrefabAsset(root, prefabPath);
                 if (prefab == null)
@@ -2279,23 +2546,34 @@ namespace BackroomsSurvival.EditorTools
                 }
 
                 var pool = LoadOrCreatePool();
-                ArrayUtility.Add(ref pool.rooms, new RoomPool.RoomEntry
+                // CLON, no la referencia directa: `def` puede ser el `_def` VIVO de la ventana, que
+                // se sigue mutando en las siguientes bakes de la misma sesion. Guardar la referencia
+                // dejaria esta entrada (y cualquier otra que tambien apunte a `_def`) apuntando
+                // silenciosamente a los parametros de la SIGUIENTE sala horneada en vez de a los
+                // suyos propios.
+                var clonedDef = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(def));
+                var existingEntry = overwriteId != null
+                    ? System.Array.Find(pool.rooms, e => e != null && e.id == overwriteId)
+                    : null;
+                bool updated = existingEntry != null;
+
+                var entry = existingEntry ?? new RoomPool.RoomEntry { id = id };
+                entry.prefab = prefab;
+                entry.tilesX = def.tilesX;
+                entry.tilesZ = def.tilesZ;
+                entry.heightMeters = def.heightMeters;
+                entry.doorLocalPosition = doorPos;
+                entry.doorLocalForward = doorFwd;
+                entry.collisionBoxes = boxes.ToArray();
+                entry.definition = clonedDef;
+
+                if (!updated)
                 {
-                    id = id,
-                    prefab = prefab,
-                    tilesX = def.tilesX,
-                    tilesZ = def.tilesZ,
-                    heightMeters = def.heightMeters,
-                    doorLocalPosition = doorPos,
-                    doorLocalForward = doorFwd,
-                    collisionBoxes = boxes.ToArray(),
-                    // CLON, no la referencia directa: `def` puede ser el `_def` VIVO de la
-                    // ventana, que se sigue mutando en las siguientes bakes de la misma sesion.
-                    // Guardar la referencia dejaria esta entrada (y cualquier otra que tambien
-                    // apunte a `_def`) apuntando silenciosamente a los parametros de la SIGUIENTE
-                    // sala horneada en vez de a los suyos propios.
-                    definition = JsonUtility.FromJson<RoomDefinition>(JsonUtility.ToJson(def)),
-                });
+                    if (overwriteId != null)
+                        Debug.LogWarning($"[RoomAuthoringWindow] '{overwriteId}' ya no está en el " +
+                                         "pool (¿se borró a mano?) — guardada como sala nueva en su lugar.");
+                    ArrayUtility.Add(ref pool.rooms, entry);
+                }
                 EditorUtility.SetDirty(pool);
                 AssetDatabase.SaveAssets();
                 AssetDatabase.Refresh();
@@ -2307,9 +2585,10 @@ namespace BackroomsSurvival.EditorTools
                 if (!RoomManifestExporter.Export(out string manifestMessage))
                     Debug.LogWarning($"[RoomAuthoringWindow] Manifiesto NO exportado — {manifestMessage}");
 
-                message = $"Saved {id} ({def.tilesX}×{def.tilesZ} tiles, {def.sides} sides) → " +
-                          $"{prefabPath}. {mesh.vertexCount} verts, {boxes.Count} collider box(es), " +
-                          $"{pool.rooms.Length} room(s) in the pool.";
+                message = $"{(updated ? "Updated" : "Saved")} {id} ({def.tilesX}×{def.tilesZ} tiles, " +
+                          $"{def.sides} sides) → {prefabPath}. {mesh.vertexCount} verts, " +
+                          $"{boxes.Count} collider box(es), {pool.rooms.Length} room(s) in the pool.";
+                savedId = id;
                 return true;
             }
             finally
@@ -2352,10 +2631,9 @@ namespace BackroomsSurvival.EditorTools
         }
 
         /// <summary>
-        /// Los marcadores de la sala, convertidos a hijos de verdad del prefab. Una luz se
-        /// convierte en un <see cref="Light"/> real — ya está lista al instanciar la sala, sin
-        /// esperar a que nadie la resuelva. Prop y Spawn no tienen un componente de motor
-        /// equivalente, así que llevan <see cref="RoomMarker"/> con su etiqueta.
+        /// Los marcadores de la sala (Prop/Spawn — Light tiene su propio <see cref="CreateLights"/>
+        /// ahora), convertidos a hijos de verdad del prefab con <see cref="RoomMarker"/> y su
+        /// etiqueta.
         /// </summary>
         private static void CreateMarkers(Transform parent, RoomDefinition def)
         {
@@ -2372,19 +2650,73 @@ namespace BackroomsSurvival.EditorTools
                     m.position.x, def.StoreyBaseY(m.level, minCeil) + m.y, m.position.y);
                 go.transform.localRotation = Quaternion.Euler(0f, m.yawDegrees, 0f);
 
-                if (m.kind == RoomDefinition.MarkerKind.Light)
+                var marker = go.AddComponent<RoomMarker>();
+                marker.kind = m.kind;
+                marker.label = m.tag;
+            }
+        }
+
+        /// <summary>
+        /// Las luces de la sala, convertidas en <see cref="Light"/> reales — mismo patrón que
+        /// <see cref="CreateMarkers"/>, en un método aparte porque ya no es un <c>Marker</c>.
+        /// <see cref="RoomDefinition.LightBehavior.Flicker"/> reusa
+        /// <see cref="BackroomsLighting"/>.<see cref="LampFlicker"/>, el MISMO comportamiento
+        /// visual que ya tienen las lámparas proceduales del laberinto — sin enganchar su audio de
+        /// zumbido (<c>FluorescentHumDirector</c>), que es un sistema por-chunk pensado para
+        /// cientos de lámparas y no para una luz autorada suelta. <c>Dead</c> se hornea apagada,
+        /// como una lámpara fundida.
+        /// </summary>
+        private static void CreateLights(Transform parent, RoomDefinition def)
+        {
+            if (def.lights == null) return;
+            float minCeil = def.MinCeilingOver(def.InnerContour());
+            var cfg = DefaultLayerVisualConfig();
+            var lampMat = cfg != null ? LayerVisualMaterials.Build(cfg).lamp : null;
+
+            foreach (var l in def.lights)
+            {
+                if (l == null) continue;
+                var go = new GameObject("Light");
+                go.transform.SetParent(parent, false);
+                var pos = new Vector3(
+                    l.position.x, def.StoreyBaseY(l.level, minCeil) + l.y, l.position.y);
+                go.transform.localPosition = pos;
+                go.transform.localRotation = Quaternion.Euler(0f, l.yawDegrees, 0f);
+
+                var light = go.AddComponent<Light>();
+                light.type = LightType.Point;
+                light.color = l.lightColor;
+                light.intensity = l.lightIntensity;
+                light.range = l.lightRange;
+
+                bool dead = l.behavior == RoomDefinition.LightBehavior.Dead;
+                // El difusor: mismo panel emisivo que pone BackroomsLighting.MakeLuminaire en el
+                // pasillo — sin esto una luz autorada era una bombilla invisible, la única del
+                // mundo sin cuerpo. HERMANO de la Light y no hijo (escala no uniforme, ver
+                // CreateLuminaireMesh). Apagado a la misma cifra que un lámpara rota procedural.
+                var luminaire = CreateLuminaireMesh(parent, lampMat);
+                luminaire.transform.localPosition = pos; // mismo `parent` que el Light: local vale igual.
+                SetLuminaireEmission(luminaire, l.lightColor.linear * (dead ? 0.04f : LuminaireEmissionScale));
+
+                switch (l.behavior)
                 {
-                    var light = go.AddComponent<Light>();
-                    light.type = LightType.Point;
-                    light.color = m.lightColor;
-                    light.intensity = m.lightIntensity;
-                    light.range = m.lightRange;
-                }
-                else
-                {
-                    var marker = go.AddComponent<RoomMarker>();
-                    marker.kind = m.kind;
-                    marker.label = m.tag;
+                    case RoomDefinition.LightBehavior.Flicker:
+                        var flicker = go.AddComponent<LampFlicker>();
+                        flicker.target = light;
+                        flicker.baseIntensity = l.lightIntensity;
+                        flicker.frequency = l.flickerHz;
+                        // Desfase fijo por índice, no aleatorio: el contenido es autorado, no
+                        // procedural, y no hace falta que dos sesiones vean el mismo parpadeo por
+                        // separado — solo que varias luces de la misma sala no se muevan en
+                        // lockstep. `mesh`/`litEmission` se dejan sin asignar a propósito: esos
+                        // solo los usa el fundido de LampFlicker.StartDying, y una luz autorada
+                        // nunca lo dispara (eso es puramente procedural, del pasillo) — cablearlos
+                        // sería código muerto.
+                        flicker.phase = System.Array.IndexOf(def.lights, l) * 0.37f;
+                        break;
+                    case RoomDefinition.LightBehavior.Dead:
+                        light.enabled = false;
+                        break;
                 }
             }
         }
@@ -2409,6 +2741,7 @@ namespace BackroomsSurvival.EditorTools
             if (_preview == null) return;
             if (_def.planMode == RoomDefinition.PlanMode.Manual) DrawManualContourHandles();
             DrawMarkerHandles();
+            DrawLightHandles();
         }
 
         private void DrawManualContourHandles()
@@ -2574,6 +2907,7 @@ namespace BackroomsSurvival.EditorTools
             // En el mismo latido que la malla: es lo que hace que un prop siga a su marcador
             // mientras se arrastra, sin pulsar nada.
             RebuildPropPreviews();
+            RebuildLightPreviews();
             SceneView.RepaintAll();
         }
 

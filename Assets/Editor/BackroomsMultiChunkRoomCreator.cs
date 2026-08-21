@@ -78,7 +78,7 @@ namespace BackroomsSurvival.EditorTools
             }
             def.holes = holes;
 
-            if (!RoomAuthoringWindow.SaveGeneratedRoom(def, out string message))
+            if (!RoomAuthoringWindow.SaveGeneratedRoom(def, null, out string message, out _))
             {
                 Debug.LogError($"[MultiChunkRoom] no se horneó: {message}");
                 return;
