@@ -28,6 +28,7 @@ namespace BackroomsSurvival.EditorTools
     internal static class RoomManifestExporter
     {
         private const string PoolPath = "Assets/Resources/Rooms/RoomPool.asset";
+        private const string RoomFolder = "Assets/Resources/Rooms";
         private const string StreamingFolder = "Assets/StreamingAssets";
         private const string ManifestPath = StreamingFolder + "/room_manifest.json";
 
@@ -217,6 +218,90 @@ namespace BackroomsSurvival.EditorTools
                 Debug.Log($"[RoomManifestExporter] {message}");
             else
                 Debug.LogError($"[RoomManifestExporter] {message}");
+        }
+
+        [MenuItem("Backrooms/Clean Missing Rooms")]
+        private static void CleanMissingRoomsMenu()
+        {
+            if (RemoveMissingPrefabEntries(out string message))
+                Debug.Log($"[RoomManifestExporter] {message}");
+            else
+                Debug.LogWarning($"[RoomManifestExporter] {message}");
+        }
+
+        /// <summary>
+        /// Quita del pool las entradas cuyo prefab ya no existe (borrado a mano desde el Project
+        /// window, por ejemplo). Unity no lo limpia solo: el YAML del pool se queda con el GUID
+        /// muerto hasta que algo lo reescribe. Reexporta el manifiesto si algo cambió, para que
+        /// nunca quede desparejado del pool (ver cabecera del fichero).
+        /// </summary>
+        internal static bool RemoveMissingPrefabEntries(out string message)
+        {
+            var pool = AssetDatabase.LoadAssetAtPath<RoomPool>(PoolPath);
+            if (pool == null)
+            {
+                message = $"No hay pool en {PoolPath}.";
+                return false;
+            }
+
+            var kept = new List<RoomPool.RoomEntry>(pool.rooms.Length);
+            var removed = new List<string>();
+            foreach (var entry in pool.rooms)
+            {
+                if (entry == null || entry.prefab == null)
+                {
+                    removed.Add(entry == null ? "(entrada vacía)" : entry.id);
+                    continue;
+                }
+                kept.Add(entry);
+            }
+
+            if (removed.Count == 0)
+            {
+                message = "Ninguna entrada colgante -- el pool ya está limpio.";
+                return true;
+            }
+
+            pool.rooms = kept.ToArray();
+            EditorUtility.SetDirty(pool);
+            AssetDatabase.SaveAssets();
+            Export(out string exportMessage);
+
+            message = $"Quitadas {removed.Count} entrada(s) sin prefab: {string.Join(", ", removed)}. {exportMessage}";
+            return true;
+        }
+
+        /// <summary>
+        /// Al borrar un <c>room_N.prefab</c> desde el Project window, quita su entrada del pool en
+        /// el mismo momento -- sin esto el pool se queda con un GUID muerto hasta que alguien se
+        /// acuerde de correr "Clean Missing Rooms" a mano, que es justo como se generaron room_0/
+        /// room_1/room_2 colgantes. Solo mira dentro de la carpeta de salas: cualquier otro prefab
+        /// borrado en el proyecto no interesa aquí.
+        /// </summary>
+        private sealed class RoomPoolCleaner : AssetModificationProcessor
+        {
+            private static AssetDeleteResult OnWillDeleteAsset(string assetPath, RemoveAssetOptions options)
+            {
+                if (!assetPath.StartsWith(RoomFolder, StringComparison.Ordinal)
+                    || !assetPath.EndsWith(".prefab", StringComparison.Ordinal))
+                    return AssetDeleteResult.DidNotDelete;
+
+                string id = Path.GetFileNameWithoutExtension(assetPath);
+                var pool = AssetDatabase.LoadAssetAtPath<RoomPool>(PoolPath);
+                if (pool != null && pool.rooms != null)
+                {
+                    var kept = Array.FindAll(pool.rooms, e => e == null || e.id != id);
+                    if (kept.Length != pool.rooms.Length)
+                    {
+                        pool.rooms = kept;
+                        EditorUtility.SetDirty(pool);
+                        AssetDatabase.SaveAssets();
+                        Export(out string exportMessage);
+                        Debug.Log($"[RoomManifestExporter] '{id}' borrado -- entrada quitada del pool. {exportMessage}");
+                    }
+                }
+                return AssetDeleteResult.DidNotDelete;
+            }
         }
 
         /// <summary>
