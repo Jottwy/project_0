@@ -51,6 +51,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// El plan sale de <see cref="AuthoredRoomRegistry"/> y no del mensaje: una reconstrucción
         /// (chunk revisitado, o el reintento tras el gate de zona) tiene que ver la misma sala.
         /// </summary>
+        /// <summary>
+        /// La capa en la que una sala autorada se ANCLA y se instancia, sea cual sea su altura
+        /// (ADR-085 punto 2). Espejo de <c>AUTHORED_LAYER</c> en el backend; las capas que la sala
+        /// invade la reciben igual, pero solo para NO pintarle encima.
+        /// </summary>
+        internal const int AuthoredRoomAnchorLayer = 0;
+
         private static void PlanAuthoredRooms(int chunkX, int chunkZ, int layerIndex,
             List<RoomPlan> into)
         {

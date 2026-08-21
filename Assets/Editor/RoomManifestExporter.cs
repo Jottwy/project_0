@@ -57,6 +57,19 @@ namespace BackroomsSurvival.EditorTools
             public int tiles_z;
 
             /// <summary>
+            /// Altura autorada, en metros (ADR-085). De ella deduce el backend cuántas capas invade
+            /// la sala y a cuáles hay que decirles que no le pinten el suelo encima.
+            ///
+            /// Es <c>RoomDefinition.heightMeters</c>, la altura de REFERENCIA, no la local bajo un
+            /// techo inclinado: <c>ceilingTilt</c> redistribuye —un lado gana lo que el otro pierde—
+            /// y usar la local haría que la capa invadida dependiera de dónde mires.
+            ///
+            /// Llevaba horneándose en <see cref="RoomPool.RoomEntry.heightMeters"/> desde el
+            /// principio sin que nadie la leyera. Esto es lo que faltaba para que sirviera.
+            /// </summary>
+            public float height_meters;
+
+            /// <summary>
             /// TODAS las aberturas por las que se puede entrar, no solo una.
             ///
             /// Una sala con dos puertas y un solo túnel deja la segunda dando contra el margen
@@ -230,6 +243,7 @@ namespace BackroomsSurvival.EditorTools
                     id = entry.id,
                     tiles_x = entry.tilesX,
                     tiles_z = entry.tilesZ,
+                    height_meters = entry.heightMeters,
                     doorways = doorways.ToArray(),
                 });
             }

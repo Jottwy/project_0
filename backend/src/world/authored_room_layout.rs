@@ -192,6 +192,7 @@ mod tests {
             cell_z: 8,
             cells_x: 8,
             cells_z: 8,
+            top_layer: 0,
             doors: {
                 let mut d = [(0u8, 0u8); crate::world::grid_gen::MAX_DOORWAYS];
                 d[0] = (door_side, 2);

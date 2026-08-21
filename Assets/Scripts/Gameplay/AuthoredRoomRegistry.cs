@@ -22,13 +22,16 @@ namespace BackroomsSurvival.Gameplay
         /// Las salas de UN chunk, en el orden en que las mandó el backend. Ese orden es contrato
         /// (ADR-083 enmienda 3): el constructor instancia por índice.
         /// </summary>
-        private static readonly Dictionary<(int cx, int cz), GridChunkDataMsg.AuthoredRoom[]> _rooms =
-            new Dictionary<(int, int), GridChunkDataMsg.AuthoredRoom[]>();
+        private static readonly Dictionary<(int cx, int cz, int layer), GridChunkDataMsg.AuthoredRoom[]> _rooms =
+            new Dictionary<(int, int, int), GridChunkDataMsg.AuthoredRoom[]>();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
         private static void ResetStatics() => _rooms.Clear();
 
-        /// <summary>Diagnóstico: cuántos CHUNKS con sala autorada se han visto en esta sesión.</summary>
+        /// <summary>
+        /// Diagnóstico: cuántos pares (chunk, capa) con sala autorada se han visto en esta sesión.
+        /// Una sala de 12 m cuenta tres veces — una por capa que ocupa.
+        /// </summary>
         public static int KnownRoomCount => _rooms.Count;
 
         /// <summary>
@@ -46,28 +49,33 @@ namespace BackroomsSurvival.Gameplay
         public static void ResetForNewConnection() => _rooms.Clear();
 
         /// <summary>
-        /// Registra (o no) las salas de un chunk recién llegado. Solo capa 0: es la única en la que
-        /// el backend las talla, y llamar con otra capa no debe borrar lo que ya se sabe de la
-        /// columna.
+        /// Registra (o no) las salas de un chunk recién llegado, POR CAPA.
+        ///
+        /// Desde ADR-085 una sala más alta que una capa llega también en el payload de las capas que
+        /// invade, y esas capas la necesitan para no pintarle geometría encima. Quién manda la sala
+        /// en qué capa lo decide el backend (ADR-085 enmienda 2, punto 2): aquí no se deduce nada, y
+        /// por eso el registro es por (cx, cz, capa) y no por columna. La alternativa —que la capa 1
+        /// mirase lo guardado para la capa 0— se rechazó porque <c>BuildDesiredSet</c> construye las
+        /// capas sin orden garantizado, y la capa 1 podía llegar antes que la 0.
         /// </summary>
         public static void Observe(GridChunkDataMsg chunk)
         {
-            if (chunk == null || chunk.layer != 0
-                || chunk.authoredRooms == null || chunk.authoredRooms.Length == 0)
+            if (chunk == null || chunk.authoredRooms == null || chunk.authoredRooms.Length == 0)
                 return;
 
-            _rooms[(chunk.cx, chunk.cz)] = chunk.authoredRooms;
+            _rooms[(chunk.cx, chunk.cz, chunk.layer)] = chunk.authoredRooms;
         }
 
         /// <summary>
-        /// Las salas de (cx, cz), o null si ese chunk no tiene ninguna o aún no ha llegado.
+        /// Las salas que ocupan (cx, cz) en esta capa, o null si no hay ninguna o el chunk aún no ha
+        /// llegado.
         ///
         /// Devuelve el array del registro SIN copiar: es la ruta de reconstrucción de chunk y una
         /// copia por llamada sería basura por chunk construido. Quien lo reciba solo lo lee.
         /// </summary>
         public static GridChunkDataMsg.AuthoredRoom[] GetRooms(int cx, int cz, int layer)
         {
-            if (layer != 0 || !_rooms.TryGetValue((cx, cz), out var rooms))
+            if (!_rooms.TryGetValue((cx, cz, layer), out var rooms))
                 return null;
             return rooms;
         }

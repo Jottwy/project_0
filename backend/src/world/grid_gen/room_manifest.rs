@@ -40,7 +40,9 @@ pub const MAX_DOORWAYS: usize = 8;
 /// Lleva LO MÍNIMO para reservar y tallar: cuánto ocupa y por dónde se sale. Ni malla, ni cajas de
 /// colisión, ni marcadores — el interior de la sala no es autoritativo en servidor en este slice
 /// (ADR-083 enmienda 1, punto 9).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Sin `Eq`: `height_meters` es un float. `PartialEq` basta para lo único que se hace con esto,
+// que es compararlo en tests.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ManifestRoom {
     /// Índice en `RoomPool.rooms`. ES lo que viaja por el wire para decirle al cliente qué prefab
     /// instanciar, así que reordenar el pool sin reexportar cambia qué sala sale en cada sitio.
@@ -54,6 +56,18 @@ pub struct ManifestRoom {
     pub tiles_x: u8,
     /// Footprint en TILES de 5 m, sin girar.
     pub tiles_z: u8,
+
+    /// Altura autorada de la sala, en metros (ADR-085). De ella sale cuántas capas invade.
+    ///
+    /// Es `RoomDefinition.heightMeters`, la altura de REFERENCIA, no la local bajo un techo
+    /// inclinado: `ceilingTilt` redistribuye —un lado gana lo que el otro pierde— y usar la local
+    /// haría que la capa invadida dependiera de dónde mires (ADR-085 punto 6).
+    ///
+    /// `default` a 0 y no a 4: un manifiesto exportado antes de ADR-085 no lleva el campo, y 0 cae
+    /// en la rama "cabe en su propia capa" de `top_layer_for_height`, que es exactamente el
+    /// comportamiento que ese manifiesto tenía. Así un manifiesto viejo sigue dando el mundo viejo.
+    #[serde(default)]
+    pub height_meters: f32,
 
     /// TODAS las aberturas practicables de la sala, no solo una.
     ///
@@ -97,7 +111,8 @@ impl ManifestRoom {
 }
 
 /// El pool entero tal y como lo exportó el horneado.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+// Sin `Eq` por la misma razón que `ManifestRoom`: lleva la altura, que es un float.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoomManifest {
     /// SHA-256 en hex del JSON de `rooms`, calculado por el exportador. Aquí es una CADENA OPACA:
     /// se compara con la del peer en el handshake y nada más.
@@ -344,6 +359,7 @@ mod tests {
             id: "r".into(),
             tiles_x: 4,
             tiles_z: 2,
+            height_meters: 0.0,
             doorways: vec![ManifestDoorway {
                 side_by_quarter: [0, 1, 2, 3],
                 tile_by_quarter: [0, 0, 0, 0],

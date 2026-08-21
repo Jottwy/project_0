@@ -498,7 +498,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // spawnearían dentro de la geometría autorada. Se instancian después del plan
             // para no meter nada entre el plan y su consumidor.
             // Ya planificadas antes del bucle de tiles (ver ahí el porqué); aquí solo se instancian.
-            if (_roomPlanScratch.Count > 0)
+            //
+            // ADR-085: SOLO en la capa de anclaje. Una sala más alta que una capa llega también en el
+            // payload de las capas que invade —lo necesitan para no pintarle encima, y eso ya pasó en
+            // el bucle de tiles— pero el prefab se instancia UNA vez, entero, desde su capa 0. Sin
+            // esta guarda saldrían tres salas de 12 m encajadas una dentro de otra.
+            if (layerIndex == AuthoredRoomAnchorLayer && _roomPlanScratch.Count > 0)
                 PlaceAuthoredRooms(root.transform, _roomPlanScratch, zoneTint);
             // La escalera se planifica contra `roomZones`, que el tallado de la sala autorada NO
             // toca — los rects de Fase 4 siguen siendo los mismos aunque el backend haya vaciado ese

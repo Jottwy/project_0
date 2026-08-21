@@ -32,7 +32,9 @@ use rand::{Rng, SeedableRng};
 
 use super::build_rooms::{carve_tunnel_fixed, RoomPlan};
 use super::generator::mix;
+use super::layer_rules::LAYER_PROFILES;
 use super::room_manifest::{ManifestRoom, RoomManifest, MAX_DOORWAYS};
+use super::LAYER_HEIGHT_M;
 use super::{Cell, CellType, LayerGrid, CHUNK_CELLS};
 
 /// Grosor del anillo blindado, en celdas de 2,5 m.
@@ -80,6 +82,35 @@ const AUTHORED_SALT: u64 = 0xA57_0AD3_0007_0083;
 /// sitio al que no se llega de forma fiable.
 const AUTHORED_LAYER: u8 = 0;
 
+/// La capa más alta que una sala puede llegar a invadir.
+///
+/// La ÚLTIMA capa nunca se invade: es la única que dibuja techo (`roofSlab = isTopLayer`), así que
+/// abrirle un hueco dejaría el mundo sin tapa por ahí. ADR-085 punto 5. Con 4 capas y 4 m de paso,
+/// el cap de altura autorable es `(4 − 1) · 4 = 12 m`.
+const MAX_INVADED_LAYER: u8 = (LAYER_PROFILES.len() - 2) as u8;
+
+/// La capa más alta que ocupa una sala de `height_meters`, contada desde `AUTHORED_LAYER`.
+///
+/// Se invaden las capas cuya LOSA DE SUELO cae DENTRO de la sala. La de la capa `L` está en
+/// `y = L · LAYER_HEIGHT_M` y estorba solo si `0 < L · LAYER_HEIGHT_M < h`; una losa justo en `y = h`
+/// no corta la sala, **ES su techo**. De ahí `ceil(h / LH) − 1`.
+///
+/// NO es `floor(h / LH)`, que era lo que ADR-085 proponía y su enmienda 2 corrigió: con `h = 4` —el
+/// default de `RoomDefinition.heightMeters`— habría invadido la capa 1 y le habría quitado a la sala
+/// por defecto la losa que era su propio techo.
+///
+/// Alturas de 0, negativas o NaN caen en la rama de "cabe en su capa", que es el comportamiento
+/// anterior a ADR-085: un manifiesto viejo, sin el campo, sigue dando el mundo de siempre.
+pub fn top_layer_for_height(height_meters: f32) -> u8 {
+    // El NaN va explícito y no colado en un `!(a > b)`: un manifiesto con la altura corrupta tiene
+    // que caer en el comportamiento de siempre, no en una capa cualquiera.
+    if height_meters.is_nan() || height_meters <= LAYER_HEIGHT_M {
+        return AUTHORED_LAYER;
+    }
+    let top = (height_meters / LAYER_HEIGHT_M).ceil() as i32 - 1;
+    top.clamp(AUTHORED_LAYER as i32, MAX_INVADED_LAYER as i32) as u8
+}
+
 /// Hasta dónde se excava buscando el laberinto antes de rendirse.
 const TUNNEL_LIMIT: usize = CHUNK_CELLS / 2;
 
@@ -105,6 +136,12 @@ pub struct AuthoredRoomPlan {
     /// Footprint ya girado, en celdas.
     pub cells_x: usize,
     pub cells_z: usize,
+    /// La capa MÁS ALTA que ocupa la sala, contada desde `AUTHORED_LAYER`, que es donde se ancla.
+    /// `0` = cabe en su propia capa, que es lo que pasaba con todas antes de ADR-085.
+    ///
+    /// Se guarda ya discretizada y no en metros por dos razones: el plan es `Copy` y `Eq` —un `f32`
+    /// rompería lo segundo—, y esta cuenta la tiene que hacer alguien UNA vez, no cada consumidor.
+    pub top_layer: u8,
     /// Las aberturas de la sala, `(lado, tile)`. Solo las `door_count` primeras son válidas.
     ///
     /// Array fijo y no `Vec` a propósito: esto se re-deriva en cada generación de chunk, y esa ruta
@@ -269,7 +306,7 @@ pub fn plan_authored_rooms(
     build_room: Option<&RoomPlan>,
 ) -> AuthoredRoomSet {
     let mut placed = AuthoredRoomSet::default();
-    if layer != AUTHORED_LAYER || manifest.rooms.is_empty() {
+    if layer > MAX_INVADED_LAYER || manifest.rooms.is_empty() {
         return placed;
     }
 
@@ -338,15 +375,27 @@ fn collect_from_anchor(
     placed: &mut AuthoredRoomSet,
 ) {
     let (ax, az) = (cx + dx, cz + dz);
-    let build = if dx == 0 && dz == 0 {
+    // El sorteo SIEMPRE ocurre en `AUTHORED_LAYER`, se pregunte desde la capa que se pregunte: una
+    // sala alta no es una sala distinta en la capa 1, es la MISMA sala vista desde arriba. Por eso
+    // la construible que entra en el sorteo es también la de la capa de anclaje — y por eso el
+    // `own_build_room` que trae el llamador solo vale cuando pregunta desde ella. Si a la capa 1 se
+    // le pasara su propia construible (que es `None`, porque la construible solo existe en la 0), la
+    // capa 1 sortearía la sala en otro sitio que la capa 0 y la sala saldría partida en dos.
+    let build = if dx == 0 && dz == 0 && layer == AUTHORED_LAYER {
         BuildRoomSource::Given(own_build_room)
     } else {
-        BuildRoomSource::Derive { layer }
+        BuildRoomSource::Derive {
+            layer: AUTHORED_LAYER,
+        }
     };
 
     for plan in plan_anchored_at(manifest, world_seed, ax, az, build).iter() {
         if placed.is_full() {
             return;
+        }
+        // Una sala solo existe para las capas que ocupa. La 0 las ve todas.
+        if layer > plan.top_layer {
+            continue;
         }
         // Del ancla a ESTE chunk: un chunk de distancia son `CHUNK_CELLS` celdas.
         let shifted = plan.shifted_by_chunks(dx, dz);
@@ -457,6 +506,7 @@ fn plan_anchored_at(
             cell_z,
             cells_x: w,
             cells_z: h,
+            top_layer: top_layer_for_height(room.height_meters),
             doors,
             door_count: room.doorways.len().min(MAX_DOORWAYS) as u8,
         };
@@ -857,6 +907,7 @@ mod tests {
                     id: "room_0".into(),
                     tiles_x: 4,
                     tiles_z: 4,
+                    height_meters: 0.0,
                     doorways: vec![ManifestDoorway {
                         side_by_quarter: [1, 3, 0, 2],
                         tile_by_quarter: [2, 1, 1, 2],
@@ -867,6 +918,7 @@ mod tests {
                     id: "room_1".into(),
                     tiles_x: 10,
                     tiles_z: 10,
+                    height_meters: 0.0,
                     doorways: vec![ManifestDoorway {
                         side_by_quarter: [0, 2, 1, 3],
                         tile_by_quarter: [5, 4, 4, 5],
@@ -1198,6 +1250,7 @@ mod tests {
                 id: "dos_puertas".into(),
                 tiles_x: 4,
                 tiles_z: 4,
+                height_meters: 0.0,
                 doorways: vec![
                     ManifestDoorway {
                         side_by_quarter: [0, 0, 0, 0],
@@ -1254,6 +1307,7 @@ mod tests {
                     id: "pequena".into(),
                     tiles_x: 2,
                     tiles_z: 2,
+                    height_meters: 0.0,
                     doorways: vec![ManifestDoorway {
                         side_by_quarter: [0, 2, 1, 3],
                         tile_by_quarter: [1, 1, 0, 0],
@@ -1264,6 +1318,7 @@ mod tests {
                     id: "diminuta".into(),
                     tiles_x: 1,
                     tiles_z: 1,
+                    height_meters: 0.0,
                     doorways: vec![ManifestDoorway {
                         side_by_quarter: [1, 3, 0, 2],
                         tile_by_quarter: [0, 0, 0, 0],
@@ -1469,6 +1524,7 @@ mod tests {
                 id: "vano_duplicado".into(),
                 tiles_x: 4,
                 tiles_z: 4,
+                height_meters: 0.0,
                 doorways: vec![door.clone(), door],
             }],
         };
@@ -1631,6 +1687,81 @@ mod tests {
             }
         }
         assert!(hits > 0, "ninguna seed pone una sala junto al spawn");
+    }
+
+    /// LA CUENTA QUE ADR-085 SE EQUIVOCO AL ESCRIBIR, y que su enmienda 2 corrigio. Se invaden las
+    /// capas cuya LOSA cae DENTRO de la sala; una losa justo a la altura del techo NO se invade,
+    /// porque ES el techo.
+    #[test]
+    fn a_room_only_invades_the_layers_whose_slab_falls_inside_it() {
+        // El caso que la formula original rompia: 4 m es el default de RoomDefinition.heightMeters,
+        // y floor(4/4) = 1 le habria quitado a la sala por defecto su propio techo.
+        assert_eq!(
+            top_layer_for_height(4.0),
+            0,
+            "la sala de una capa no invade"
+        );
+        assert_eq!(top_layer_for_height(3.0), 0);
+        assert_eq!(top_layer_for_height(6.0), 1);
+        // Multiplo exacto: la losa de la capa 2 esta en y=8, que es el techo de esta sala.
+        assert_eq!(
+            top_layer_for_height(8.0),
+            1,
+            "8 m no debe invadir la capa 2"
+        );
+        assert_eq!(top_layer_for_height(10.0), 2);
+        assert_eq!(top_layer_for_height(12.0), 2, "el cap, y room_0 mide esto");
+
+        // La capa mas alta NUNCA se invade: es la unica que dibuja techo (ADR-085 punto 5).
+        assert_eq!(top_layer_for_height(16.0), MAX_INVADED_LAYER);
+        assert_eq!(top_layer_for_height(1000.0), MAX_INVADED_LAYER);
+        assert!(
+            (MAX_INVADED_LAYER as usize) < LAYER_PROFILES.len() - 1,
+            "el cap deja al mundo sin techo"
+        );
+
+        // Un manifiesto anterior a ADR-085 no trae el campo: 0 cae en "cabe en su capa", que es
+        // exactamente lo que ese manifiesto significaba.
+        assert_eq!(top_layer_for_height(0.0), 0);
+        assert_eq!(top_layer_for_height(-5.0), 0);
+        assert_eq!(top_layer_for_height(f32::NAN), 0);
+    }
+
+    /// Una sala alta es la MISMA sala vista desde arriba, no otra. Si la capa 1 la sorteara por su
+    /// cuenta caeria en otro sitio y la sala saldria partida en dos.
+    #[test]
+    fn a_tall_room_lands_on_the_same_spot_in_every_layer_it_occupies() {
+        let mut m = manifest();
+        m.rooms[0].height_meters = 12.0; // invade las capas 1 y 2
+
+        let (cx, cz, ground) = find_plan(&m, 42).expect("alguna sala");
+        assert_eq!(ground.top_layer, 2);
+
+        for layer in 1..=2u8 {
+            let up = first_plan(&m, 42, cx, cz, layer, None).expect("la sala sigue ahi arriba");
+            assert_eq!(
+                (up.cell_x, up.cell_z, up.entry, up.quarter),
+                (ground.cell_x, ground.cell_z, ground.entry, ground.quarter),
+                "capa {layer}: la sala se movio respecto a la capa 0"
+            );
+        }
+        // Y en la capa 3 no esta: es la del techo del mundo.
+        assert!(first_plan(&m, 42, cx, cz, 3, None).is_none());
+    }
+
+    /// Una sala que cabe en su capa no debe aparecer en ninguna otra. Es la regresion que mantiene
+    /// intacto el mundo de antes de ADR-085.
+    #[test]
+    fn a_one_layer_room_stays_out_of_the_layers_above() {
+        let m = manifest(); // sin altura: todas de una capa
+        let (cx, cz, plan) = find_plan(&m, 42).expect("alguna sala");
+        assert_eq!(plan.top_layer, 0);
+        for layer in 1..4u8 {
+            assert!(
+                first_plan(&m, 42, cx, cz, layer, None).is_none(),
+                "la sala de una capa asoma en la capa {layer}"
+            );
+        }
     }
 
     /// La aritmetica que sostiene ADR-084: mirar la misma sala desde otro chunk. Se prueba sola
