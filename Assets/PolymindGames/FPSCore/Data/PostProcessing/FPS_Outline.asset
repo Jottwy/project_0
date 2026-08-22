@@ -15,7 +15,7 @@ MonoBehaviour:
   _enableShadows: 1
   _addMode: 0
   _materialHandlingType: 0
-  ReplacementMaterial: {fileID: 2100000, guid: 4161cbabef53c8b49abaacfba7ae9f9b, type: 2}
+  ReplacementMaterial: {fileID: 2100000, guid: b7c3d91a4e2f5064a8d1c6e309f4b275, type: 2}
   _shaderParameters:
     ColorParameters: []
     FloatParameters: []

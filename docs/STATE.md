@@ -1722,3 +1722,22 @@ PENDIENTE QUE ESTE REFACTOR NO ARREGLA, dicho como tal: el ruido de `self.movers
 - **Malla y colliders salen del MISMO modelo**, nunca uno del otro. Las siete invariantes están en §8 del doc.
 - **La previsualización de props no se hornea.** Raíz aparte, no hija del root de la sala.
 - Ningún valor por defecto de la sala se tocó en la reorganización: es cambio de disposición, no de datos. Los sliders nuevos de `Height`/`Wall thickness` estiran su tope hasta el valor que ya haya, justo para no recortar en silencio nada puesto a mano.
+
+## Estado actual — Retirado el resaltado de hover de interactuables (2026-08-23)
+
+Petición de Joel: apuntar un objeto interactuable lo teñía entero de beige amarillento y rompía el realismo; quiere que solo quede el prompt de tecla ("F — Hold to open"). Cambio de datos puro: cero código, cero prefabs, cero backend, cero wire.
+
+**El efecto no era un outline.** `Interactable.OnHoverStart` llama a `MaterialEffect.EnableEffect()`, que apila `FPS_Outline.mat` como material EXTRA sobre el renderer (`AddToExistingMaterials`). Ese material usa `Outline.shadergraph`, que declara `m_RenderFace: 2` (cull back) y `m_SurfaceType: 0` (opaco): dibuja las caras frontales encima y **tapa el objeto entero**. Nunca fue un borde.
+
+**Por qué ajustar el `.mat` no podía funcionar.** Arrastra decenas de floats heredados de HDRP/ASE (`_ASEOutlineWidth`, `_LineSize`, `_LineAlpha`…) que el shadergraph **ignora**: solo declara dos propiedades reales, `_Float` (extrusión) y `_Color`. Y `_Float: 0` empeora — el shell queda coincidente con la malla y, al dibujarse después, la sigue tapando. Un primer intento por esa vía se revirtió entero (`FPS_Outline.mat` queda idéntico al original).
+
+**Arreglo, en el punto único.** `FPS_Outline.asset` es el `MaterialEffectConfig` que comparten los ~60 prefabs interactuables (pickups, carryables, building pieces, botones). Su `ReplacementMaterial` pasa a apuntar al nuevo `Assets/Resources/BackroomsRuntimeMaterials/BR_InteractHighlight_None.mat`: URP Lit transparente con alpha 0, `_ZWrite: 0` y `DepthOnly`/`SHADOWCASTER`/`MOTIONVECTORS` desactivados. Se sigue apilando un material al apuntar, pero no dibuja nada visible ni escribe profundidad.
+
+**`_enableShadows` 0 → 1.** A 0, `ApplyStackWithBaseMaterials` ponía `shadowCastingMode = Off` durante el hover y `DisableEffect` siempre restaura `On` al salir: el objeto perdía y recuperaba su sombra al pasar el cursor. A 1, apuntar no cambia absolutamente nada en pantalla.
+
+**Verificación:** confirmado en juego por Joel ("ya funciona") tras reiniciar Play — los cambios de asset no entran en caliente.
+
+### NO tocar (validado esta sesión)
+- **`STP_PlacementAllowed.asset` y `STP_PlacementDenied.asset` son configs SEPARADOS**, con materiales propios y `_addMode: 1` (Override). El preview verde/rojo de construcción no depende de `FPS_Outline.asset` y no se vio afectado.
+- **El prompt de interacción es UI aparte** (`GenericInteractionPromptUI` / `InteractablePromptsControllerUI`), no tiene relación con `MaterialEffect`.
+- `FPS_Outline.mat` y `Outline.shadergraph` quedan intactos: si alguna vez se quiere recuperar un resaltado, basta con devolver `ReplacementMaterial` a su material original y ajustar `_Color`/`_Float` (las ÚNICAS dos props que el shader lee).
