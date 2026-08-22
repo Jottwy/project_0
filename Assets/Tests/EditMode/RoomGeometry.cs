@@ -73,7 +73,7 @@ namespace BackroomsSurvival.Tests
         /// arista sin pareja sigue siendo un bug. (Un pozo <c>bottomless</c> también estuvo aquí;
         /// ya no hace falta: cierra solo por el canto del muro.)
         /// </summary>
-        private static HashSet<(int, int, int, int, int, int)> ExpectedOpenEdges(RoomDefinition def)
+        internal static HashSet<(int, int, int, int, int, int)> ExpectedOpenEdges(RoomDefinition def)
         {
             var set = new HashSet<(int, int, int, int, int, int)>();
             (int, int, int) K(Vector2 p, float y) => (Mathf.RoundToInt(p.x * 1000f),
