@@ -1254,6 +1254,33 @@ namespace BackroomsSurvival.EditorTools
                     }
                 }
 
+                // One-time migration (2026-08-22, E3f): Joel hand-raised each tier's anchors
+                // (0.06→0.1, 0.53565→0.78, 1.0113→1.352) to compensate for a bug that's real but was
+                // in the wrong place to fix by moving anchors — every pickup's PIVOT sits at its own
+                // centre, not its base, so the item was sinking half its height into the shelf
+                // regardless of where the anchor sat. That's now fixed at the source
+                // (ItemPickupOrientation.PivotHalfHeightFor, applied in StorageRackDisplay itself),
+                // so his three empirical Y values would now DOUBLE the correction and float the items
+                // too high. Reset only anchors still at exactly one of those three known values back
+                // to the formula baseline for their tier — never touches X/Z, rotation, or anything
+                // else Joel placed (the WoodenTable dressing stays exactly where he put it).
+                int yReset = 0;
+                for (int i = 0; i < previousSize; i++)
+                {
+                    var anchorProp = anchors.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
+                    if (anchorProp == null)
+                        continue;
+                    float y = anchorProp.localPosition.y;
+                    bool isKnownOverride = Mathf.Approximately(y, 0.1f) || Mathf.Approximately(y, 0.78f)
+                                            || Mathf.Approximately(y, 1.352f);
+                    if (!isKnownOverride)
+                        continue;
+                    var p = anchorProp.localPosition;
+                    p.y = StorageRackAnchorLocalPosition(i).y;
+                    anchorProp.localPosition = p;
+                    yReset++;
+                }
+
                 serialized.ApplyModifiedPropertiesWithoutUndo();
 
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
@@ -1265,6 +1292,9 @@ namespace BackroomsSurvival.EditorTools
                               : " — every slot already has an anchor.") +
                           (migrated > 0
                               ? $" Migrated {migrated} anchor(s) off the old blanket rotation back to identity."
+                              : "") +
+                          (yReset > 0
+                              ? $" Reset {yReset} anchor(s) off Joel's pre-pivot-fix Y bump back to the formula baseline."
                               : "") +
                           " Drag ShelfAnchor_NN children in the Inspector to nudge position/rotation.");
             }

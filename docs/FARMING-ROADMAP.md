@@ -279,6 +279,36 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   no un fallo de compilación; una vez recargado, todo verificó limpio).
 - Commit: `fix(net,building): el item soltado al mundo tambien queda de pie; balda pasa a 4x2x3 (24 slots)`.
 
+### E3f. El pivote del mesh está en el centro, no en la base (2026-08-22) — ✅ HECHO
+- **Joel, mirando el rack de verdad**: "spawnean los objetos... como al punto del medio, entonces
+  no es en la base y quedan mal placeados." Causa raíz real, no una `ShelfClearance` insuficiente:
+  el `centre=(0,0,0)` que ya había medido `Measure Item Pickup` para Almond Water (y es lo mismo
+  para Spray Can) significa que el PIVOTE del mesh está en su centro geométrico, no en su base.
+  Colocar el `transform.position` en la Y del anchor planta el CENTRO del item ahí — la mitad se
+  hunde en la balda.
+- Fix en la fuente: `ItemPickupOrientation.PivotHalfHeightFor(itemName)` — mitad de la altura de
+  pie de cada item (Almond Water 0,230 m → 0,115; Spray Can 0,190 m → 0,095), sumada a la posición
+  Y **después** de la corrección de rotación, en los DOS sitios que instancian un pickup:
+  `StorageRackDisplay.RefreshSlot` y `StpItemReplicator.SpawnItem`. En el replicator la corrección
+  vive en `Tracked.pivotHalfHeight` (resuelto una vez al spawnear) y se aplica en los TRES sitios
+  donde `it.position` toca el transform (spawn inicial, cada muestra de interpolación mientras
+  asienta, y el "pin" final al dejar de asentar) — aplicarlo solo al spawn habría hecho que el
+  item subiera bien el primer frame y se hundiera de golpe en cuanto llegara la siguiente
+  actualización de red.
+- **Hallazgo de paso al revisar el prefab**: Joel había compensado el mismo bug a mano, subiendo
+  cada balda un monto distinto (balda 1 +4 cm, balda 2 +24,4 cm, balda 3 +34 cm — no un delta fijo,
+  ajustado a ojo con el gizmo). Con el fix de raíz esos empujones habrían duplicado la corrección y
+  flotado los items. **Migración de un solo uso** en `EnsureStorageRackDisplay`: cualquier anchor
+  cuya Y coincidiera EXACTAMENTE con uno de esos tres valores conocidos vuelve a la Y de fórmula
+  (`0,06 / 0,53565 / 1,0113`) — no toca X/Z, rotación, ni nada más.
+- **También encontrado en el mismo diff, y confirmado intencional (no se toca)**: Joel añadió 3
+  prefabs `WoodenTable` como hijos del rack, uno por balda usada, escalados a plancha fina para
+  cubrir el hueco — "para que no floten, se sientan como almacén". Estética suya, se preserva tal
+  cual; el fix de arriba coloca los items ENCIMA de esa madera, no de la barra metálica.
+- Verificado: `Verify Storage Rack Display` en PASS con Y=0,175 (0,06 + 0,115, exacto); captura con
+  botella y spray asentados sobre la madera, ni hundidos ni flotando, enviada a Joel.
+- Commit: `fix(building): el pivote del mesh esta al centro, no la base — items ya no se hunden en la balda`.
+
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a
   `DoorFrameMetalCost` (5 en el script, o el valor que se decida en A3 — ver abajo) con un

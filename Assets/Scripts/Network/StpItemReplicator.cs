@@ -47,8 +47,17 @@ namespace BackroomsSurvival.Net
             public bool hasSample;
             public Vector3 rollAxis;
 
+            // ItemPickupOrientation.PivotHalfHeightFor, resolved once at spawn (the item id never
+            // changes definition). Every use of the host's it.position adds this — the host reports
+            // where the item's BASE settled, but the pickup's pivot is at its own centre (see that
+            // method's doc), so the raw position alone sinks it halfway into the ground.
+            public float pivotHalfHeight;
+
+            public Vector3 Adjust(Vector3 raw) => raw + Vector3.up * pivotHalfHeight;
+
             public void Push(Vector3 value, float now)
             {
+                value = Adjust(value);
                 if (!hasSample) { p0 = value; t0 = now; }
                 else { p0 = p1; t0 = t1; }
                 p1 = value;
@@ -89,7 +98,14 @@ namespace BackroomsSurvival.Net
                     if (spawned == null)
                         continue;
 
-                    tracked = new Tracked { go = spawned, settling = it.settling, rollAxis = RandomRollAxis() };
+                    var itemDef = ItemDefinition.GetWithId(it.defId);
+                    tracked = new Tracked
+                    {
+                        go = spawned,
+                        settling = it.settling,
+                        rollAxis = RandomRollAxis(),
+                        pivotHalfHeight = itemDef != null ? ItemPickupOrientation.PivotHalfHeightFor(itemDef.Name) : 0f,
+                    };
                     tracked.Push(it.position, now);
                     _spawned[it.id] = tracked;
                     continue;
@@ -107,7 +123,7 @@ namespace BackroomsSurvival.Net
                 else if (tracked.settling)
                 {
                     tracked.settling = false;
-                    tracked.go.transform.position = it.position;
+                    tracked.go.transform.position = tracked.Adjust(it.position);
                 }
             }
 
@@ -192,7 +208,12 @@ namespace BackroomsSurvival.Net
             // applies first, in the pickup's own frame; yaw spins that result around world Y) so the
             // item stands regardless of which way it's facing.
             var rotation = Quaternion.Euler(0f, it.rotation, 0f) * ItemPickupOrientation.UprightCorrectionFor(def.Name);
-            var pickup = Instantiate(prefab, it.position, rotation);
+
+            // Host reports where the item's BASE settled; the pickup's own pivot is at its centre
+            // (see PivotHalfHeightFor) — lift the spawn point or it plants half-sunk into the ground
+            // on the very first frame, before LateUpdate's Tracked.Adjust ever runs for it.
+            var spawnPosition = it.position + Vector3.up * ItemPickupOrientation.PivotHalfHeightFor(def.Name);
+            var pickup = Instantiate(prefab, spawnPosition, rotation);
             var go = pickup.gameObject;
 
             // Phase 2: neutralize the vendor local pickup so interaction routes through the host.

@@ -124,6 +124,11 @@ namespace BackroomsSurvival.Gameplay.Building
                 ? anchor.localRotation
                 : ItemPickupOrientation.UprightCorrectionFor(stack.Item.Definition.Name);
 
+            // The anchor/fallback Y is where the SLOT's floor is — the item's pivot sits at its own
+            // centre (see ItemPickupOrientation.PivotHalfHeightFor), so lift it by half its standing
+            // height or its base sinks into the shelf board instead of resting on it.
+            position += Vector3.up * ItemPickupOrientation.PivotHalfHeightFor(stack.Item.Definition.Name);
+
             visual.transform.SetLocalPositionAndRotation(position, rotation);
             NeutralizeToVisualOnly(visual.gameObject);
             _visuals[index] = visual.gameObject;

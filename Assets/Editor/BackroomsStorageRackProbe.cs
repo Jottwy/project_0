@@ -205,13 +205,14 @@ namespace BackroomsSurvival.EditorTools
                 var container = station.GetContainers()[0];
                 report.AppendLine($"Container resolved: SlotsCount={container.SlotsCount}");
 
-                // "Model" (mesh) and the 16 ShelfAnchor_NN markers are permanent children now — only
-                // count what RefreshSlot itself would have instantiated (item pickup clones).
+                // "Model" (mesh), the 24 ShelfAnchor_NN markers, and Joel's WoodenTable dressing
+                // (2026-08-22, E3f) are permanent children now — only count what RefreshSlot itself
+                // would have instantiated (item pickup clones).
                 int VisualChildCount()
                 {
                     int count = 0;
                     foreach (Transform child in instance.transform)
-                        if (!child.name.Contains("Model") && !child.name.StartsWith("ShelfAnchor_"))
+                        if (!IsRackDressing(child.name))
                             count++;
                     return count;
                 }
@@ -228,7 +229,7 @@ namespace BackroomsSurvival.EditorTools
                 int found = 0;
                 foreach (Transform child in instance.transform)
                 {
-                    if (child.name.Contains("Model") || child.name.StartsWith("ShelfAnchor_")) continue;
+                    if (IsRackDressing(child.name)) continue;
                     if (found < positions.Length) positions[found] = child.localPosition;
                     found++;
                     report.AppendLine($"  visual '{child.name}' localPos={child.localPosition:F3}");
@@ -267,7 +268,7 @@ namespace BackroomsSurvival.EditorTools
                 // enumerator would mutate the collection mid-iteration.
                 var staleChildren = new System.Collections.Generic.List<GameObject>();
                 foreach (Transform child in instance.transform)
-                    if (!child.name.Contains("Model") && !child.name.StartsWith("ShelfAnchor_"))
+                    if (!IsRackDressing(child.name))
                         staleChildren.Add(child.gameObject);
                 foreach (var stale in staleChildren)
                     Object.DestroyImmediate(stale);
@@ -444,6 +445,12 @@ namespace BackroomsSurvival.EditorTools
         // private to the creator, and this is a throwaway diagnostic, not shipped code) so this
         // check fails LOUDLY if the two drift.
         private const int StorageRackSlotsExpected = 24;
+
+        // Permanent rack children that are NOT a slot's item visual: the mesh, the 24 shelf anchors,
+        // and Joel's WoodenTable dressing (2026-08-22, E3f) added directly in the prefab so the rack
+        // doesn't feel like items float over bare metal bars.
+        private static bool IsRackDressing(string name) =>
+            name.Contains("Model") || name.StartsWith("ShelfAnchor_") || name.StartsWith("WoodenTable");
 
         /// <summary>
         /// Renders the BAKED prefab (post-BackroomsBuildingPieceCreator), not the raw FBX — sanity
