@@ -4,9 +4,9 @@ using NUnit.Framework;
 namespace BackroomsSurvival.Tests
 {
     /// <summary>
-    /// Tile classification for the 5 m tile render system (ADR-001). Kept in
-    /// WallGreedyMesherTests.cs for git-history continuity; the old greedy-mesher
-    /// tests were removed when the mesher was deprecated.
+    /// Tile classification for the 5 m tile render system (ADR-001). Lived in
+    /// WallGreedyMesherTests.cs until 2026-08-22 (git follows the rename); the old
+    /// greedy-mesher tests were removed when the mesher was deprecated.
     /// </summary>
     [TestFixture]
     public class GridTileClassificationTests
