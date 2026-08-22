@@ -42,13 +42,19 @@ namespace BackroomsSurvival.Gameplay.Building
         // per-item measurement (see class doc). Only used as the FALLBACK, when no anchor is set.
         private const float ShelfClearance = 0.06f;
 
-        // Almond Water's own pickup mesh rests with its long axis on Z (measured: 0.072 x 0.072 x
-        // 0.230 m, Backrooms/Diagnostics/Measure Item Pickup) — correct for lying on the ground, not
-        // for standing on a shelf. -90° on X maps that long axis onto world-up Y. This is tuned for
-        // THAT item, not item-agnostic — a differently-shaped pickup (or this one re-exported) could
-        // want a different correction, which is exactly what per-slot anchor rotation (dragged by
-        // hand in the Inspector) is for; this is only the fallback default.
-        private static readonly Quaternion FallbackUprightRotation = Quaternion.Euler(-90f, 0f, 0f);
+        // Per-item, NOT a blanket constant — measured with Backrooms/Diagnostics/Measure Item
+        // Pickup: Almond Water rests long-axis-on-Z (0.072x0.072x0.230 m, correct for lying on the
+        // ground, wrong for a shelf) and needs -90° on X to stand up, but Spray Can ALREADY rests
+        // long-axis-on-Y (0.066x0.190x0.066 m) — applying the bottle's correction to it tips it
+        // OVER instead of fixing it. Found live: Joel's shelf showed one item standing and one lying
+        // down after a first version of this used one rotation for both. Add an entry here only for
+        // an item whose pickup shows up lying down; anything absent is assumed to already rest
+        // upright, which is the common case, not the exception.
+        private static Quaternion UprightCorrectionFor(string itemName) => itemName switch
+        {
+            "Almond Water" => Quaternion.Euler(-90f, 0f, 0f),
+            _ => Quaternion.identity,
+        };
 
         private IItemContainer _container;
         private GameObject[] _visuals;
@@ -116,10 +122,17 @@ namespace BackroomsSurvival.Gameplay.Building
 
             var visual = Instantiate(pickup, transform);
             var anchor = _shelfAnchors != null && index < _shelfAnchors.Length ? _shelfAnchors[index] : null;
-            if (anchor != null)
-                visual.transform.SetLocalPositionAndRotation(anchor.localPosition, anchor.localRotation);
-            else
-                visual.transform.SetLocalPositionAndRotation(AnchorLocalPosition(index), FallbackUprightRotation);
+            var position = anchor != null ? anchor.localPosition : AnchorLocalPosition(index);
+
+            // Anchor rotation wins ONLY if Joel actually set one (identity = untouched, since that
+            // is the seeded default) — a slot isn't dedicated to one item type (no restrictions on
+            // this container), so a single fixed rotation per slot can't be right for every item
+            // that might land there. The per-item correction is what actually varies by item.
+            var rotation = anchor != null && anchor.localRotation != Quaternion.identity
+                ? anchor.localRotation
+                : UprightCorrectionFor(stack.Item.Definition.Name);
+
+            visual.transform.SetLocalPositionAndRotation(position, rotation);
             NeutralizeToVisualOnly(visual.gameObject);
             _visuals[index] = visual.gameObject;
         }

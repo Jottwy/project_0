@@ -210,19 +210,43 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
 - **Las botellas salían tumbadas** (captura de Joel lo mostró directamente): medido con
   `Backrooms/Diagnostics/Measure Item Pickup` — el pickup de Almond Water mide 0,072×0,072×0,230 m,
   eje largo en Z (reposa de lado, correcto para tirado en el suelo, no para una balda). Corrección
-  `Quaternion.Euler(-90,0,0)` puesta como rotación por defecto tanto en el fallback de
-  `StorageRackDisplay` como en el sembrado de anchors — reconciliados los 16 anchors ya existentes
-  del prefab (solo los que seguían en `identity`, nunca tocados a mano; el mismo patrón de
-  reconciliación que `EnsureDoorFrameOpeningMarker`).
+  `Quaternion.Euler(-90,0,0)` puesta INICIALMENTE como rotación por defecto — **superado en E3c más
+  abajo, ver antes de fiarte de este párrafo**: esa corrección era solo correcta para la botella.
 - **Pregunta de Joel — sí, los anchors son editables a mano**: cada slot tiene su propio
   `ShelfAnchor_NN` (Transform hijo real del prefab, no un valor calculado invisible). Para ajustar
   uno: abrir `BR_BuildingPiece_StorageRack.prefab` en modo edición de prefab (doble clic, o
   seleccionar y "Open Prefab"), desplegar la jerarquía, seleccionar `ShelfAnchor_00`..`ShelfAnchor_15`
   (00-03 = balda inferior, 12-15 = balda superior) y mover/rotar con las herramientas normales de
   Scene view — el `StorageRackDisplay` del componente ya apunta a ellos, no hace falta re-cablear
-  nada. Un anchor movido a mano nunca se toca de nuevo por `Backrooms/Create Building Pieces` (el
-  reconcile solo corrige los que sigan en `identity`).
+  nada. Un anchor movido a mano (a cualquier rotación distinta de `identity`) nunca se toca de nuevo
+  por `Backrooms/Create Building Pieces`.
 - Commit: `fix(building): la estantería no revienta al construirse y las botellas quedan de pie`.
+
+### E3c. La rotación en bloque tumbaba el spray (2026-08-22, misma sesión) — ✅ HECHO
+- Joel: "¿los sprays también se ven bien?" — medido con `Measure Item Pickup` (ahora mide TODOS los
+  pickups conocidos, no solo uno): Spray Can es 0,066×0,190×0,066 m, eje largo YA en Y — **al
+  contrario que la botella, ya está de pie sin corregir nada**. La corrección -90° en X de E3b,
+  pensada solo para la botella, TUMBABA el spray en cuanto ocupaba un slot — confirmado con la
+  captura de Joel (uno de pie, otro tumbado) y reproducido con ambos pickups en la misma sonda.
+- **Diseño corregido: rotación por ITEM, no por slot.** Un slot no tiene tipo fijo (el contenedor no
+  tiene restricciones), así que una rotación fija por anchor nunca puede ser correcta para todo lo
+  que pueda caer ahí. `StorageRackDisplay.UprightCorrectionFor(itemName)` — switch pequeño,
+  "Almond Water" → -90° en X, cualquier otro → `identity` (asume que ya está de pie, el caso común).
+  El anchor sigue mandando en POSICIÓN siempre; en ROTACIÓN solo si Joel lo puso a mano a algo
+  distinto de `identity` — si sigue en `identity` ("sin tocar"), decide el lookup por item.
+- Sembrado de anchors revertido a `identity` (ya no es "de pie por defecto", es "sin decidir
+  todavía"); migración de un solo uso sobre los 16 anchors que habían quedado en la rotación -90°
+  de E3b (revertidos a `identity` solo si seguían EXACTAMENTE en ese valor — nunca toca algo que
+  Joel haya puesto a mano).
+- Verificado con ambos items reales en la estantería de verdad (no el pickup aislado): captura final
+  confirma botella Y spray de pie a la vez.
+- Trampa de la propia sonda, dos veces en esta pasada: (1) `using System;` para `Enum.Parse`
+  colisiona con `UnityEngine.Object` (`Object` ambiguo entre `System.Object` y `UnityEngine.Object`)
+  — cualificar `System.Enum.Parse(...)` en vez de añadir el using. (2) el gate nuevo de E3b
+  (`IsConstructed`) bloqueaba también a la propia sonda, que instancia el prefab "en frío" (no
+  `Constructed` por defecto) — hay que forzar `_state` a `Constructed` por reflexión antes de invocar
+  `Update()`, igual que ya hacía con `Workstation.Start()`.
+- Commit: `fix(building): la rotación de pie es por item, no una constante — el spray ya no se tumba`.
 
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a

@@ -1159,10 +1159,21 @@ namespace BackroomsSurvival.EditorTools
         // meshes are not authored with their pivot at their own base).
         private const float StorageRackShelfClearance = 0.06f;
 
-        // Mirrors StorageRackDisplay.FallbackUprightRotation (measured: Almond Water's pickup mesh
-        // rests long-axis-on-Z, -90° on X stands it up) — the SEED value for freshly-authored
-        // anchors, so a from-scratch prefab reads the same as the runtime fallback would.
-        private static readonly Quaternion StorageRackAnchorSeedRotation = Quaternion.Euler(-90f, 0f, 0f);
+        // Seeded at IDENTITY on purpose: rotation is now per-ITEM, not per-slot (see
+        // StorageRackDisplay.UprightCorrectionFor's doc — a slot has no fixed item type, so a fixed
+        // per-slot rotation can't be right for everything that might land in it). Identity on an
+        // anchor means "Joel hasn't overridden this slot" and lets the runtime per-item logic decide;
+        // any OTHER rotation means he deliberately set one for that specific slot, and StorageRackDisplay
+        // trusts it as-is.
+        private static readonly Quaternion StorageRackAnchorSeedRotation = Quaternion.identity;
+
+        // One-time migration (2026-08-22): the FIRST version of this seeded every anchor at this
+        // blanket rotation, tuned for the bottle — which stood the bottle up correctly but tipped the
+        // already-upright spray can onto its side the moment either one occupied a slot. Caught in
+        // Joel's own playtest screenshot. Revert any anchor still exactly at that value back to
+        // identity so the per-item logic in StorageRackDisplay takes back over. Never touches a
+        // rotation Joel set to anything else on purpose.
+        private static readonly Quaternion StorageRackAnchorMigrateFromRotation = Quaternion.Euler(-90f, 0f, 0f);
 
         /// <summary>
         /// Idempotent patch, tarea E3 (revisada tras el playtest de Joel): adds
@@ -1203,21 +1214,14 @@ namespace BackroomsSurvival.EditorTools
                     }
                 }
 
-                // Reconciliation pass over the PRE-EXISTING anchors (same idea as
-                // EnsureDoorFrameOpeningMarker's hinge/leaf resync): an anchor still sitting at
-                // Quaternion.identity has never been dragged by hand — StorageRackAnchorSeedRotation
-                // used to BE identity, before Joel's 2026-08-22 playtest showed the bottles lying
-                // down. Correcting it here means the rack he already built doesn't need the whole
-                // pair deleted and re-seeded. An anchor at any OTHER rotation was deliberately set
-                // and is left alone.
-                int reconciled = 0;
+                int migrated = 0;
                 for (int i = 0; i < previousSize; i++)
                 {
                     var anchorProp = anchors.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
-                    if (anchorProp != null && anchorProp.localRotation == Quaternion.identity)
+                    if (anchorProp != null && anchorProp.localRotation == StorageRackAnchorMigrateFromRotation)
                     {
-                        anchorProp.localRotation = StorageRackAnchorSeedRotation;
-                        reconciled++;
+                        anchorProp.localRotation = Quaternion.identity;
+                        migrated++;
                     }
                 }
 
@@ -1229,8 +1233,8 @@ namespace BackroomsSurvival.EditorTools
                           (needsSeed
                               ? $" — seeded {StorageRackSlots - previousSize} anchor(s), {previousSize} pre-existing."
                               : " — every slot already has an anchor.") +
-                          (reconciled > 0
-                              ? $" Reconciled {reconciled} anchor(s) still at identity rotation to stand upright."
+                          (migrated > 0
+                              ? $" Migrated {migrated} anchor(s) off the old blanket rotation back to identity."
                               : "") +
                           " Drag ShelfAnchor_NN children in the Inspector to nudge position/rotation.");
             }

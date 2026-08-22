@@ -3,6 +3,7 @@ using System.IO;
 using System.Reflection;
 using System.Text;
 using BackroomsSurvival.Gameplay.Building;
+using PolymindGames.BuildingSystem;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using UnityEditor;
@@ -43,46 +44,34 @@ namespace BackroomsSurvival.EditorTools
         private const string PickupMeasurePath = "Temp/claude_pickup_measure.txt";
         private const string PickupShotPath = "Temp/claude_pickup_shot.png";
 
+        // Tier height the rack actually uses (StorageRackDisplay.RackHeight / TierCount) — the
+        // proportion question Joel asked ("is a bottle this size right?") only means something next
+        // to this number, not in isolation.
+        private const float RackTierHeight = 1.9026f / 4f;
+
         /// <summary>
-        /// Reads the Almond Water pickup's OWN authored bounds/rotation — needed to pick a rotation
-        /// correction that makes it stand upright on a shelf instead of lying however it rests when
-        /// dropped on the ground (its normal, correct orientation for THAT use). Read-only.
+        /// Reads EVERY known pickup's own authored bounds/rotation and reports its size as a
+        /// fraction of one rack tier's height — needed both to pick a rotation correction (stand it
+        /// upright instead of however it rests when dropped on the ground) and to answer "does this
+        /// read as the right real-world size on the shelf", which a screenshot alone answers by eye
+        /// but a measurement answers for certain. Read-only.
         /// </summary>
         [MenuItem("Backrooms/Diagnostics/Measure Item Pickup")]
         public static void MeasurePickup()
         {
             var report = new StringBuilder("[BackroomsStorageRackProbe] MeasurePickup\n");
-            var asset = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/Items/BR_Pickup_AlmondWater.prefab");
-            if (asset == null)
+            report.AppendLine($"Rack tier height for reference: {RackTierHeight:F4} m\n");
+
+            var pickupPaths = new[]
             {
-                Debug.LogError("[BackroomsStorageRackProbe] missing BR_Pickup_AlmondWater.prefab");
-                return;
-            }
+                "Assets/Prefabs/Items/BR_Pickup_AlmondWater.prefab",
+                "Assets/Prefabs/Items/BR_Pickup_SprayCan.prefab",
+            };
 
             var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
             try
             {
-                var instance = (GameObject)PrefabUtility.InstantiatePrefab(asset, scene);
-                var bounds = new Bounds();
-                bool started = false;
-                foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
-                {
-                    if (started) bounds.Encapsulate(r.bounds);
-                    else { bounds = r.bounds; started = true; }
-                }
-                report.AppendLine($"World bounds AS AUTHORED (root rot identity): size=" +
-                                  $"({bounds.size.x:F4},{bounds.size.y:F4},{bounds.size.z:F4}) " +
-                                  $"centre=({bounds.center.x:F4},{bounds.center.y:F4},{bounds.center.z:F4})");
-
-                float min = Mathf.Min(bounds.size.x, Mathf.Min(bounds.size.y, bounds.size.z));
-                float max = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
-                string longAxis = Mathf.Approximately(max, bounds.size.x) ? "X"
-                    : Mathf.Approximately(max, bounds.size.y) ? "Y" : "Z";
-                string shortAxis = Mathf.Approximately(min, bounds.size.x) ? "X"
-                    : Mathf.Approximately(min, bounds.size.y) ? "Y" : "Z";
-                report.AppendLine($"long axis (bottle's length) = {longAxis}, short axis = {shortAxis}. " +
-                                  "Y already the long axis means it's already standing upright.");
-
+                float xOffset = 0f;
                 var lightGo = new GameObject("ProbeLight");
                 var light = lightGo.AddComponent<Light>();
                 light.type = LightType.Directional;
@@ -90,14 +79,59 @@ namespace BackroomsSurvival.EditorTools
                 lightGo.transform.rotation = Quaternion.Euler(35f, -25f, 0f);
                 SceneManager.MoveGameObjectToScene(lightGo, scene);
 
+                var combined = new Bounds();
+                bool combinedStarted = false;
+
+                foreach (var path in pickupPaths)
+                {
+                    var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    if (asset == null)
+                    {
+                        report.AppendLine($"MISSING: '{path}'");
+                        continue;
+                    }
+
+                    var instance = (GameObject)PrefabUtility.InstantiatePrefab(asset, scene);
+                    instance.transform.position = new Vector3(xOffset, 0f, 0f);
+
+                    var bounds = new Bounds();
+                    bool started = false;
+                    foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
+                    {
+                        if (started) bounds.Encapsulate(r.bounds);
+                        else { bounds = r.bounds; started = true; }
+                    }
+
+                    report.AppendLine($"{asset.name}: size=({bounds.size.x:F4},{bounds.size.y:F4}," +
+                                      $"{bounds.size.z:F4}) m");
+
+                    if (started)
+                    {
+                        float min = Mathf.Min(bounds.size.x, Mathf.Min(bounds.size.y, bounds.size.z));
+                        float max = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+                        string longAxis = Mathf.Approximately(max, bounds.size.x) ? "X"
+                            : Mathf.Approximately(max, bounds.size.y) ? "Y" : "Z";
+                        string shortAxis = Mathf.Approximately(min, bounds.size.x) ? "X"
+                            : Mathf.Approximately(min, bounds.size.y) ? "Y" : "Z";
+                        report.AppendLine($"  long axis = {longAxis} ({max:F4} m), short axis = {shortAxis} " +
+                                          $"({min:F4} m). Standing height if upright: {max:F4} m = " +
+                                          $"{max / RackTierHeight * 100f:F0}% of one tier's height.");
+
+                        if (combinedStarted) combined.Encapsulate(bounds);
+                        else { combined = bounds; combinedStarted = true; }
+                    }
+
+                    xOffset += 0.4f;
+                }
+
                 var camGo = new GameObject("ProbeCamera");
                 var cam = camGo.AddComponent<Camera>();
                 cam.clearFlags = CameraClearFlags.SolidColor;
                 cam.backgroundColor = new Color(0.85f, 0.85f, 0.9f, 1f);
                 SceneManager.MoveGameObjectToScene(camGo, scene);
-                float radius = started ? Mathf.Max(bounds.extents.magnitude, 0.05f) : 0.5f;
-                camGo.transform.position = bounds.center + new Vector3(0f, 0f, radius * 3f + 0.2f);
-                camGo.transform.LookAt(bounds.center, Vector3.up);
+                float radius = combinedStarted ? Mathf.Max(combined.extents.magnitude, 0.1f) : 0.5f;
+                camGo.transform.position = combined.center + new Vector3(0f, 0f, radius * 2.6f + 0.2f);
+                camGo.transform.LookAt(combined.center, Vector3.up);
                 cam.fieldOfView = 40f;
                 cam.nearClipPlane = 0.01f;
                 cam.farClipPlane = radius * 10f + 2f;
@@ -153,13 +187,34 @@ namespace BackroomsSurvival.EditorTools
 
                 typeof(Workstation).GetMethod("Start", BindingFlags.NonPublic | BindingFlags.Instance)
                     .Invoke(station, null);
+
+                // A freshly-instantiated prefab is NOT BuildingPieceState.Constructed by default
+                // (real gameplay only reaches that after the player finishes building it) — and
+                // since StorageRackDisplay.Update() now gates on IsConstructed (the fix for the
+                // playtest NRE, see FARMING-ROADMAP.md E3b), this probe has to force that state the
+                // same way a completed build would, or Update() correctly no-ops forever.
+                var buildingPiece = instance.GetComponent<BuildingPiece>();
+                var stateEnumType = typeof(BuildingPiece).GetNestedType("BuildingPieceState", BindingFlags.NonPublic);
+                var constructedValue = System.Enum.Parse(stateEnumType, "Constructed");
+                typeof(BuildingPiece).GetField("_state", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .SetValue(buildingPiece, constructedValue);
+
                 typeof(StorageRackDisplay).GetMethod("Update", BindingFlags.NonPublic | BindingFlags.Instance)
                     .Invoke(display, null);
 
                 var container = station.GetContainers()[0];
                 report.AppendLine($"Container resolved: SlotsCount={container.SlotsCount}");
 
-                int VisualChildCount() => instance.transform.childCount - 1; // -1 for the "Model" mesh child
+                // "Model" (mesh) and the 16 ShelfAnchor_NN markers are permanent children now — only
+                // count what RefreshSlot itself would have instantiated (item pickup clones).
+                int VisualChildCount()
+                {
+                    int count = 0;
+                    foreach (Transform child in instance.transform)
+                        if (!child.name.Contains("Model") && !child.name.StartsWith("ShelfAnchor_"))
+                            count++;
+                    return count;
+                }
 
                 report.AppendLine($"Visual children before add: {VisualChildCount()} (expect 0)");
 
@@ -173,7 +228,7 @@ namespace BackroomsSurvival.EditorTools
                 int found = 0;
                 foreach (Transform child in instance.transform)
                 {
-                    if (child.name.Contains("Model")) continue;
+                    if (child.name.Contains("Model") || child.name.StartsWith("ShelfAnchor_")) continue;
                     if (found < positions.Length) positions[found] = child.localPosition;
                     found++;
                     report.AppendLine($"  visual '{child.name}' localPos={child.localPosition:F3}");
@@ -212,14 +267,20 @@ namespace BackroomsSurvival.EditorTools
                 // enumerator would mutate the collection mid-iteration.
                 var staleChildren = new System.Collections.Generic.List<GameObject>();
                 foreach (Transform child in instance.transform)
-                    if (!child.name.Contains("Model"))
+                    if (!child.name.Contains("Model") && !child.name.StartsWith("ShelfAnchor_"))
                         staleChildren.Add(child.gameObject);
                 foreach (var stale in staleChildren)
                     Object.DestroyImmediate(stale);
 
-                // Re-add for a visual screenshot (leave the scene populated for the shot).
-                for (int i = 0; i < 3; i++)
-                    container.AddItemsById(almondWater.Id, 1);
+                // Re-add for a visual screenshot: BOTH item types this time (not 3x the same one)
+                // — this is the actual regression check for the per-item rotation fix, since a
+                // blanket rotation looked fine with only Almond Water in frame.
+                var sprayCan = AssetDatabase.LoadAssetAtPath<ItemDefinition>("Assets/Resources/Definitions/Item/BR_Spray Can.asset");
+                container.AddItemsById(almondWater.Id, 1);
+                if (sprayCan != null)
+                    container.AddItemsById(sprayCan.Id, 1);
+                else
+                    Debug.LogWarning("[BackroomsStorageRackProbe] BR_Spray Can.asset not found for the mixed-item shot.");
 
                 // Frame by REAL combined bounds of the rack's own renderers, not a fixed offset —
                 // if an item's visual came out oddly scaled/placed this is what would catch it,
