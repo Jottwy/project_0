@@ -197,6 +197,33 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   unity-remote-playtest).
 - Commit: `feat(building): los items guardados se ven colocados en la estantería en tiempo real`.
 
+### E3b. Dos correcciones tras el playtest real de Joel (2026-08-22, misma sesión)
+- **Bug real encontrado por Joel jugando** (no por las sondas): al construir la estantería, `Update()`
+  intentaba leer el contenedor ANTES de que la pieza estuviera realmente construida (fase
+  ghost/`Placed`, no `Constructed` — `BuildingPiece.IsConstructed`), y `Workstation.Name` (que lee
+  `_interactable`, asignado en `Workstation.Start()`) reventaba con `NullReferenceException` cada
+  frame mientras tanto — **149 282 excepciones acumuladas** en el log antes del fix. No rompía nada
+  visible (la pieza igual terminaba funcionando una vez construida) pero inundaba el log. Arreglo:
+  `StorageRackDisplay.Update()` ahora espera a `GetComponent<BuildingPiece>().IsConstructed` antes de
+  tocar `GetContainers()` — además de arreglar el bug, es la condición correcta: una pieza sin
+  construir no debería trackear contenido.
+- **Las botellas salían tumbadas** (captura de Joel lo mostró directamente): medido con
+  `Backrooms/Diagnostics/Measure Item Pickup` — el pickup de Almond Water mide 0,072×0,072×0,230 m,
+  eje largo en Z (reposa de lado, correcto para tirado en el suelo, no para una balda). Corrección
+  `Quaternion.Euler(-90,0,0)` puesta como rotación por defecto tanto en el fallback de
+  `StorageRackDisplay` como en el sembrado de anchors — reconciliados los 16 anchors ya existentes
+  del prefab (solo los que seguían en `identity`, nunca tocados a mano; el mismo patrón de
+  reconciliación que `EnsureDoorFrameOpeningMarker`).
+- **Pregunta de Joel — sí, los anchors son editables a mano**: cada slot tiene su propio
+  `ShelfAnchor_NN` (Transform hijo real del prefab, no un valor calculado invisible). Para ajustar
+  uno: abrir `BR_BuildingPiece_StorageRack.prefab` en modo edición de prefab (doble clic, o
+  seleccionar y "Open Prefab"), desplegar la jerarquía, seleccionar `ShelfAnchor_00`..`ShelfAnchor_15`
+  (00-03 = balda inferior, 12-15 = balda superior) y mover/rotar con las herramientas normales de
+  Scene view — el `StorageRackDisplay` del componente ya apunta a ellos, no hace falta re-cablear
+  nada. Un anchor movido a mano nunca se toca de nuevo por `Backrooms/Create Building Pieces` (el
+  reconcile solo corrige los que sigan en `identity`).
+- Commit: `fix(building): la estantería no revienta al construirse y las botellas quedan de pie`.
+
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a
   `DoorFrameMetalCost` (5 en el script, o el valor que se decida en A3 — ver abajo) con un

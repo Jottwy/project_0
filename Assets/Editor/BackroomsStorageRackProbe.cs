@@ -40,6 +40,77 @@ namespace BackroomsSurvival.EditorTools
         private const string AlmondWaterDefinitionPath = "Assets/Resources/Definitions/Item/BR_Almond Water.asset";
         private const string DisplayReportPath = "Temp/claude_rack_display.txt";
         private const string DisplayShotPath = "Temp/claude_rack_display_shot.png";
+        private const string PickupMeasurePath = "Temp/claude_pickup_measure.txt";
+        private const string PickupShotPath = "Temp/claude_pickup_shot.png";
+
+        /// <summary>
+        /// Reads the Almond Water pickup's OWN authored bounds/rotation — needed to pick a rotation
+        /// correction that makes it stand upright on a shelf instead of lying however it rests when
+        /// dropped on the ground (its normal, correct orientation for THAT use). Read-only.
+        /// </summary>
+        [MenuItem("Backrooms/Diagnostics/Measure Item Pickup")]
+        public static void MeasurePickup()
+        {
+            var report = new StringBuilder("[BackroomsStorageRackProbe] MeasurePickup\n");
+            var asset = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/Prefabs/Items/BR_Pickup_AlmondWater.prefab");
+            if (asset == null)
+            {
+                Debug.LogError("[BackroomsStorageRackProbe] missing BR_Pickup_AlmondWater.prefab");
+                return;
+            }
+
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            try
+            {
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(asset, scene);
+                var bounds = new Bounds();
+                bool started = false;
+                foreach (var r in instance.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (started) bounds.Encapsulate(r.bounds);
+                    else { bounds = r.bounds; started = true; }
+                }
+                report.AppendLine($"World bounds AS AUTHORED (root rot identity): size=" +
+                                  $"({bounds.size.x:F4},{bounds.size.y:F4},{bounds.size.z:F4}) " +
+                                  $"centre=({bounds.center.x:F4},{bounds.center.y:F4},{bounds.center.z:F4})");
+
+                float min = Mathf.Min(bounds.size.x, Mathf.Min(bounds.size.y, bounds.size.z));
+                float max = Mathf.Max(bounds.size.x, Mathf.Max(bounds.size.y, bounds.size.z));
+                string longAxis = Mathf.Approximately(max, bounds.size.x) ? "X"
+                    : Mathf.Approximately(max, bounds.size.y) ? "Y" : "Z";
+                string shortAxis = Mathf.Approximately(min, bounds.size.x) ? "X"
+                    : Mathf.Approximately(min, bounds.size.y) ? "Y" : "Z";
+                report.AppendLine($"long axis (bottle's length) = {longAxis}, short axis = {shortAxis}. " +
+                                  "Y already the long axis means it's already standing upright.");
+
+                var lightGo = new GameObject("ProbeLight");
+                var light = lightGo.AddComponent<Light>();
+                light.type = LightType.Directional;
+                light.intensity = 1.3f;
+                lightGo.transform.rotation = Quaternion.Euler(35f, -25f, 0f);
+                SceneManager.MoveGameObjectToScene(lightGo, scene);
+
+                var camGo = new GameObject("ProbeCamera");
+                var cam = camGo.AddComponent<Camera>();
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.85f, 0.85f, 0.9f, 1f);
+                SceneManager.MoveGameObjectToScene(camGo, scene);
+                float radius = started ? Mathf.Max(bounds.extents.magnitude, 0.05f) : 0.5f;
+                camGo.transform.position = bounds.center + new Vector3(0f, 0f, radius * 3f + 0.2f);
+                camGo.transform.LookAt(bounds.center, Vector3.up);
+                cam.fieldOfView = 40f;
+                cam.nearClipPlane = 0.01f;
+                cam.farClipPlane = radius * 10f + 2f;
+                RenderShot(cam, PickupShotPath);
+
+                Debug.Log(report.ToString());
+                File.WriteAllText(PickupMeasurePath, report.ToString());
+            }
+            finally
+            {
+                EditorSceneManager.CloseScene(scene, true);
+            }
+        }
 
         /// <summary>
         /// Exercises StorageRackDisplay's REAL runtime code (not a reflection stand-in for it, like

@@ -1,4 +1,5 @@
 using PolymindGames;
+using PolymindGames.BuildingSystem;
 using PolymindGames.InventorySystem;
 using UnityEngine;
 
@@ -10,19 +11,27 @@ namespace BackroomsSurvival.Gameplay.Building
     /// position, in real time, and removed the moment the slot empties — Joel's original idea for
     /// this piece ("que se vea placeado en tiempo real").
     ///
-    /// Slot positions are COMPUTED, not authored `Transform[]` children: the rack has 4 equal open
-    /// tiers of 4 columns each (measured in E1, see <see cref="TierCount"/>/<see cref="RackWidth"/>/
-    /// <see cref="RackHeight"/> — same numbers as <c>BackroomsBuildingPieceCreator</c>'s
-    /// `StorageRack*` constants, an editor-only class in a different assembly this one cannot
-    /// reference, hence the duplication). A formula survives a re-measure or slot-count change
-    /// without another editor round-trip through this project's Unity-reimport pipeline (see memory
-    /// unity-inedit-trigger-automation), at the cost of the exact resting spot being an estimate
-    /// (<see cref="ShelfClearance"/>) rather than read off the model's own geometry. Good enough for
-    /// v1; if it reads wrong in play, nudge the constants, no prefab surgery needed.
+    /// Slot positions/rotations come from <see cref="_shelfAnchors"/> when authored — one child
+    /// Transform per slot, seeded by <c>BackroomsBuildingPieceCreator.EnsureStorageRackDisplay</c>
+    /// and freely draggable afterward in the Inspector/Scene view (position AND rotation — e.g. to
+    /// stand a bottle upright instead of however its pickup prefab happens to rest by default).
+    /// Editing an anchor is a normal prefab edit, no code round-trip.
+    ///
+    /// If a slot's anchor is missing or the array is short (a prefab authored before this existed,
+    /// or a slot count that outgrew it), <see cref="AnchorLocalPosition"/> computes a fallback from
+    /// 4 constants (the rack has 4 equal open tiers of 4 columns each, measured in E1 — same numbers
+    /// as <c>BackroomsBuildingPieceCreator</c>'s `StorageRack*` constants, an editor-only class in a
+    /// different assembly this one cannot reference, hence the duplication) so the piece never goes
+    /// visually broken just because an anchor is unset.
     /// </summary>
     [RequireComponent(typeof(StorageStation))]
     public sealed class StorageRackDisplay : MonoBehaviour
     {
+        [Tooltip("One Transform per container slot. Drag to reposition/reorient where that slot's " +
+                 "item appears — empty or short entries fall back to a computed shelf position.")]
+        [SerializeField]
+        private Transform[] _shelfAnchors;
+
         private const int TierCount = 4;
         private const int SlotsPerTier = 4;
         private const float RackWidth = 1.4527f;
@@ -30,8 +39,16 @@ namespace BackroomsSurvival.Gameplay.Building
 
         // How far above a tier's floor/shelf board a placed item's pivot sits — most pickup meshes
         // are NOT authored with their pivot at their own base, so this is a flat estimate, not a
-        // per-item measurement (see class doc).
+        // per-item measurement (see class doc). Only used as the FALLBACK, when no anchor is set.
         private const float ShelfClearance = 0.06f;
+
+        // Almond Water's own pickup mesh rests with its long axis on Z (measured: 0.072 x 0.072 x
+        // 0.230 m, Backrooms/Diagnostics/Measure Item Pickup) — correct for lying on the ground, not
+        // for standing on a shelf. -90° on X maps that long axis onto world-up Y. This is tuned for
+        // THAT item, not item-agnostic — a differently-shaped pickup (or this one re-exported) could
+        // want a different correction, which is exactly what per-slot anchor rotation (dragged by
+        // hand in the Inspector) is for; this is only the fallback default.
+        private static readonly Quaternion FallbackUprightRotation = Quaternion.Euler(-90f, 0f, 0f);
 
         private IItemContainer _container;
         private GameObject[] _visuals;
@@ -43,9 +60,21 @@ namespace BackroomsSurvival.Gameplay.Building
         // Start() in the scene has already run by the time ANY Update() runs (Unity's per-frame
         // Awake→Start→Update ordering), so this is race-free without needing
         // [DefaultExecutionOrder]. Same pattern as InventoryReporter.ResolveAndSubscribe.
+        //
+        // NOT enough by itself, though — found live in Joel's playtest: while the piece is still a
+        // GHOST/placed-not-built preview, this component is already enabled and ticking (nothing
+        // about BuildingPiece's placement lifecycle disables it), so it kept calling
+        // GetContainers() every frame before StorageStation had ever gone through a real Start(),
+        // spamming NullReferenceException from Workstation.Name. Gating on
+        // BuildingPiece.IsConstructed fixes it at the source AND is the semantically correct
+        // condition anyway — an unbuilt rack has no business tracking contents.
         private void Update()
         {
             if (_container != null)
+                return;
+
+            var piece = GetComponent<BuildingPiece>();
+            if (piece == null || !piece.IsConstructed)
                 return;
 
             var containers = GetComponent<StorageStation>().GetContainers();
@@ -86,11 +115,18 @@ namespace BackroomsSurvival.Gameplay.Building
             }
 
             var visual = Instantiate(pickup, transform);
-            visual.transform.SetLocalPositionAndRotation(AnchorLocalPosition(index), Quaternion.identity);
+            var anchor = _shelfAnchors != null && index < _shelfAnchors.Length ? _shelfAnchors[index] : null;
+            if (anchor != null)
+                visual.transform.SetLocalPositionAndRotation(anchor.localPosition, anchor.localRotation);
+            else
+                visual.transform.SetLocalPositionAndRotation(AnchorLocalPosition(index), FallbackUprightRotation);
             NeutralizeToVisualOnly(visual.gameObject);
             _visuals[index] = visual.gameObject;
         }
 
+        // Fallback only — see class doc. Kept in sync with the anchors
+        // BackroomsBuildingPieceCreator.EnsureStorageRackDisplay seeds, so an unset/short anchor
+        // array reads the same as freshly-seeded ones would.
         private static Vector3 AnchorLocalPosition(int index)
         {
             int tier = index / SlotsPerTier;

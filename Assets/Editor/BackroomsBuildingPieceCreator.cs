@@ -1155,23 +1155,101 @@ namespace BackroomsSurvival.EditorTools
         /// there. Separate from <see cref="EnsureStorageRackContainer"/> because this one has
         /// nothing to re-sync on a second run; a plain existence check is enough.
         /// </summary>
+        // Mirrors StorageRackDisplay.ShelfClearance — same estimate, same reason (most pickup
+        // meshes are not authored with their pivot at their own base).
+        private const float StorageRackShelfClearance = 0.06f;
+
+        // Mirrors StorageRackDisplay.FallbackUprightRotation (measured: Almond Water's pickup mesh
+        // rests long-axis-on-Z, -90° on X stands it up) — the SEED value for freshly-authored
+        // anchors, so a from-scratch prefab reads the same as the runtime fallback would.
+        private static readonly Quaternion StorageRackAnchorSeedRotation = Quaternion.Euler(-90f, 0f, 0f);
+
+        /// <summary>
+        /// Idempotent patch, tarea E3 (revisada tras el playtest de Joel): adds
+        /// <see cref="StorageRackDisplay"/> if missing, and seeds ONE anchor child Transform per
+        /// slot the FIRST time — <c>ShelfAnchor_00</c>.. at the same position the component's own
+        /// formula fallback would compute, so seeding changes nothing visually. Never re-seeds an
+        /// anchor that already exists: <c>_shelfAnchors.arraySize &gt;= StorageRackSlots</c> means
+        /// every slot already has one, and a second run of this menu must not clobber whatever Joel
+        /// dragged those to by hand — same "never regenerate what a human already touched" contract
+        /// as the door frame's hinge/leaf reconciliation, just for a Transform instead of a float.
+        /// </summary>
         private static void EnsureStorageRackDisplay(GameObject prefabAsset)
         {
             string path = AssetDatabase.GetAssetPath(prefabAsset);
             var contents = PrefabUtility.LoadPrefabContents(path);
             try
             {
-                if (contents.GetComponent<StorageRackDisplay>() != null)
-                    return;
+                var display = contents.GetComponent<StorageRackDisplay>();
+                bool displayWasMissing = display == null;
+                if (displayWasMissing)
+                    display = contents.AddComponent<StorageRackDisplay>();
 
-                contents.AddComponent<StorageRackDisplay>();
+                var serialized = new SerializedObject(display);
+                var anchors = serialized.FindProperty("_shelfAnchors");
+
+                int previousSize = anchors.arraySize;
+                bool needsSeed = previousSize < StorageRackSlots;
+                if (needsSeed)
+                {
+                    anchors.arraySize = StorageRackSlots;
+                    for (int i = previousSize; i < StorageRackSlots; i++)
+                    {
+                        var anchorGo = new GameObject($"ShelfAnchor_{i:00}") { layer = LayerConstants.Building };
+                        anchorGo.transform.SetParent(contents.transform, false);
+                        anchorGo.transform.localPosition = StorageRackAnchorLocalPosition(i);
+                        anchorGo.transform.localRotation = StorageRackAnchorSeedRotation;
+                        anchors.GetArrayElementAtIndex(i).objectReferenceValue = anchorGo.transform;
+                    }
+                }
+
+                // Reconciliation pass over the PRE-EXISTING anchors (same idea as
+                // EnsureDoorFrameOpeningMarker's hinge/leaf resync): an anchor still sitting at
+                // Quaternion.identity has never been dragged by hand — StorageRackAnchorSeedRotation
+                // used to BE identity, before Joel's 2026-08-22 playtest showed the bottles lying
+                // down. Correcting it here means the rack he already built doesn't need the whole
+                // pair deleted and re-seeded. An anchor at any OTHER rotation was deliberately set
+                // and is left alone.
+                int reconciled = 0;
+                for (int i = 0; i < previousSize; i++)
+                {
+                    var anchorProp = anchors.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
+                    if (anchorProp != null && anchorProp.localRotation == Quaternion.identity)
+                    {
+                        anchorProp.localRotation = StorageRackAnchorSeedRotation;
+                        reconciled++;
+                    }
+                }
+
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
-                Debug.Log($"[BackroomsBuildingPieceCreator] Added StorageRackDisplay on '{path}'.");
+                Debug.Log($"[BackroomsBuildingPieceCreator] " +
+                          $"{(displayWasMissing ? "Added" : "Synced")} StorageRackDisplay on '{path}'" +
+                          (needsSeed
+                              ? $" — seeded {StorageRackSlots - previousSize} anchor(s), {previousSize} pre-existing."
+                              : " — every slot already has an anchor.") +
+                          (reconciled > 0
+                              ? $" Reconciled {reconciled} anchor(s) still at identity rotation to stand upright."
+                              : "") +
+                          " Drag ShelfAnchor_NN children in the Inspector to nudge position/rotation.");
             }
             finally
             {
                 PrefabUtility.UnloadPrefabContents(contents);
             }
+        }
+
+        // Same formula as StorageRackDisplay.AnchorLocalPosition — this is the SEED value, that one
+        // is the runtime FALLBACK for an anchor this menu hasn't gotten to yet. Kept in sync by
+        // comment, not by a shared reference: different assemblies (see that class' own doc).
+        private static Vector3 StorageRackAnchorLocalPosition(int index)
+        {
+            int tier = index / StorageRackSlotsPerTier;
+            int column = index % StorageRackSlotsPerTier;
+            float y = tier * (StorageRackHeight / StorageRackTierCount) + StorageRackShelfClearance;
+            float x = StorageRackWidth * ((column + 0.5f) / StorageRackSlotsPerTier - 0.5f);
+            return new Vector3(x, y, 0f);
         }
 
         private static void ConfigureStorageRackModelImport()
