@@ -70,6 +70,15 @@ queda en `backend/`, los hooks del repo se resuelven con ruta relativa y fallan.
 `cargo test` **sí** relinka `target/release/backrooms_server.exe`. Despliegue:
 `.\tools\dev\CopyReleaseBackendToBuild.ps1`.
 
+## Barrido de pulido (sin lógica)
+
+`bash tools/dev/PolishSweep.sh` junta en una pasada todo lo que se puede arreglar en bucle sin
+tocar gameplay/worldgen/red: `cargo fmt --check`, clippy, `cargo test`, `CompileCheckClient.sh`,
+warnings csc (salvo CS0649/CS0169, que Unity silencia), `.meta` huérfanos, enlaces rotos en
+`docs/`, ficheros sin entrada en `INDEX.md`, espacios colgantes y `#[ignore]` sin motivo. Sale
+con el número de secciones con hallazgos; `--quick` salta cargo y csc. Ciclo: correr, arreglar
+UNA cosa, commit, volver a correr hasta `0`. Solo lista: nunca toca nada.
+
 ## Trampas de test que no dan error
 
 **`CompileCheckClient.sh` da FALSO VERDE cuando el `.csproj` está viejo.** Todo su conjunto de
