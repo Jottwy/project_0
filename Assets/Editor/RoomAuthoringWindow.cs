@@ -337,14 +337,25 @@ namespace BackroomsSurvival.EditorTools
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUILayout.PrefixLabel(new GUIContent("Footprint",
-                    "En TILES de 5 m, la unidad en la que piensa el mundo — no en metros sueltos."));
-                _def.tilesX = Mathf.Max(1, EditorGUILayout.IntField(_def.tilesX, GUILayout.Width(38)));
-                EditorGUILayout.LabelField("×", GUILayout.Width(12));
-                _def.tilesZ = Mathf.Max(1, EditorGUILayout.IntField(_def.tilesZ, GUILayout.Width(38)));
+                    "En TILES de 5 m, la unidad en la que piensa el mundo — no en metros sueltos."
+                    + (manual ? "\n\nEn planta Manual se ajusta solo a los puntos dibujados "
+                                + "(simétrico respecto al centro, que es el pivote)." : "")));
+                using (new EditorGUI.DisabledScope(manual))
+                {
+                    _def.tilesX = Mathf.Max(1, EditorGUILayout.IntField(_def.tilesX, GUILayout.Width(38)));
+                    EditorGUILayout.LabelField("×", GUILayout.Width(12));
+                    _def.tilesZ = Mathf.Max(1, EditorGUILayout.IntField(_def.tilesZ, GUILayout.Width(38)));
+                }
                 EditorGUILayout.LabelField(
-                    $"tiles   ·   {_def.WidthMeters:0.#} × {_def.DepthMeters:0.#} m",
+                    $"tiles   ·   {_def.WidthMeters:0.#} × {_def.DepthMeters:0.#} m"
+                    + (manual ? "   ·   ajustado a la planta" : ""),
                     EditorStyles.miniLabel);
             }
+            // En planta MANUAL el footprint no se teclea: sigue a la planta. Tecleado, se quedaba
+            // en lo que pusiera el campo (10 × 10 con una planta de 20 × 24 m) y el backend
+            // reservaba —y el cliente vaciaba— un boquete de 50 × 50 alrededor de la sala.
+            bool manual = _def.planMode == RoomDefinition.PlanMode.Manual;
+            if (manual) FitFootprintToPlan(_def);
 
             // Deslizador CON campo, y el tope se estira hasta el valor que ya haya: un slider con
             // tope fijo recortaría en silencio una sala más alta que el rango la primera vez que
@@ -2409,6 +2420,11 @@ namespace BackroomsSurvival.EditorTools
                         Debug.LogWarning($"[RoomAuthoringWindow] La puerta del lado {s} medía " +
                                          $"{h.width:0.#} m sobre una pared de {edgeLen:0.#} m: se " +
                                          "recortaba hasta desaparecer. Se le ha activado " +
+            // Planta frente a footprint, en cualquier modo: lo que el footprint reserva y la
+            // planta no llena es boquete en el mundo (ADR-083/084 vacían el footprint entero).
+            string footprintIssue = FootprintIssue(_def);
+            if (footprintIssue != null) _validateIssues.Add(footprintIssue);
+
                                          "`spanCorners` para que doble la esquina y sea un vano real.");
                     }
                 }
@@ -2613,6 +2629,12 @@ namespace BackroomsSurvival.EditorTools
                     : null;
                 bool updated = existingEntry != null;
 
+            // Planta manual: el footprint que viaja al pool y al manifiesto es el que cubre los
+            // puntos, no el que tuviera tecleado el modelo. También cubre el rehorneado desde el
+            // pool, que no pasa por la ventana.
+            if (FitFootprintToPlan(def))
+                Debug.Log($"[RoomAuthoringWindow] Footprint ajustado a la planta manual: " +
+                          $"{def.tilesX} × {def.tilesZ} tiles.");
                 var entry = existingEntry ?? new RoomPool.RoomEntry { id = id };
                 entry.prefab = prefab;
                 entry.tilesX = def.tilesX;
