@@ -60,10 +60,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Planar speed below this is standing still: no steps, and the accumulator bleeds off.")]
         [SerializeField, Min(0f)] private float _deadzoneSpeed = 0.1f;
 
-        [Tooltip("Planar speed at or below which the gait is a walk (WalkFootstep clips).")]
-        [SerializeField, Min(0f)] private float _walkSpeed = 1.5f;
-
-        [Tooltip("Planar speed at or above which the gait is a run (RunFootstep clips).")]
+        [Tooltip("Planar speed at or above which the gait is a run (RunFootstep clips); anything slower but above the deadzone is a walk.")]
         [SerializeField, Min(0f)] private float _runSpeed = 4.5f;
 
         [Header("Volume (mirrors FootstepsController)")]

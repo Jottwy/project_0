@@ -13,7 +13,6 @@ namespace BackroomsSurvival.Gameplay
         private Image _distortionImage;
         private float _baseFov;
         private Camera _cam;
-        private float _shakeTimer;
         private float _pulsePhase;
 
         private void Start()

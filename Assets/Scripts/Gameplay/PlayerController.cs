@@ -36,7 +36,6 @@ namespace BackroomsSurvival.Gameplay
         private float _pitch;
         private bool _hasSpawned;
         private bool _cursorLocked = true;
-        private float _nextTransformSentLogTime;
         private readonly List<string> _queuedActions = new List<string>(4);
 
         private void Awake()
