@@ -27,7 +27,7 @@ MonoBehaviour:
   _pickup: {fileID: 7186072980853802903, guid: d805438239ba5b24f841fa3ac32bcd82, type: 3}
   _stackPickup: {fileID: 5039848590447293739, guid: 60f7bf66f2292d34d86470c5b3928e92, type: 3}
   _weight: 0.5
-  _stackSize: 5
+  _stackSize: 1
   _tag:
     _value: 0
   _rarity: {fileID: 11400000, guid: 5518a16c9a5a70d4585369c90f14f295, type: 2}
