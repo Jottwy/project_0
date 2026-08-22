@@ -330,6 +330,22 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   ajustó a mano, no asumir que el ajuste manual era (solo) un parche del mismo bug — preguntar
   antes de tocarlo, aunque el cálculo cuadre. Esto entra en [[no-tocar-valores-ya-validados]].
 
+### E3h. Ajuste fino de Joel sobre sus valores restaurados (2026-08-23) — ✅ HECHO
+- Instrucción directa: balda 1 (tier 0) 0,1→0,128; balda 3 (tier 2) 1,352→1,36. Balda 2 (0,78) sin
+  tocar, no la mencionó. Aplicado tal cual, sin reinterpretar — migración de un solo uso en
+  `EnsureStorageRackDisplay`, verificado por `git diff` (8 anchors a 0,128, 8 a 1,36) antes de
+  comitear, sin capturas ni verificación adicional en el editor — Joel pidió comprobarlo él mismo.
+- **De paso, un bug real de carrera que las capturas SÍ habían estado ocultando**: `IsConstructed`
+  (E3e) puede leer `true` en el mismo frame en que `StorageStation` pasa de deshabilitado (ghost)
+  a habilitado (construido) — `Start()` de Unity solo garantiza correr antes del primer `Update()`
+  **tras habilitarse**, no "antes de cualquier Update", así que ese frame concreto seguía
+  reventando `Workstation.Name` con `NullReferenceException` en juego real (no en las sondas del
+  editor, que simulan el orden a mano). Arreglo: `try/catch (NullReferenceException)` alrededor de
+  `GetContainers()`, `_container` se queda `null` y el siguiente `Update()` reintenta solo —
+  mismo patrón de resolución perezosa que ya usaba el método, extendido para sobrevivir ese hueco
+  de un frame. Sin log (reintento esperado, no un error a vigilar).
+- Commit: `fix(building): ajuste de Joel en dos baldas + retry silencioso contra la carrera de Start()`.
+
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a
   `DoorFrameMetalCost` (5 en el script, o el valor que se decida en A3 — ver abajo) con un

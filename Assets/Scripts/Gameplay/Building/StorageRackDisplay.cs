@@ -1,3 +1,5 @@
+using System;
+using System.Collections.Generic;
 using BackroomsSurvival.Gameplay;
 using PolymindGames;
 using PolymindGames.BuildingSystem;
@@ -66,6 +68,16 @@ namespace BackroomsSurvival.Gameplay.Building
         // spamming NullReferenceException from Workstation.Name. Gating on
         // BuildingPiece.IsConstructed fixes it at the source AND is the semantically correct
         // condition anyway — an unbuilt rack has no business tracking contents.
+        //
+        // STILL not enough — found live again: IsConstructed can flip true in the SAME frame
+        // StorageStation itself transitions from disabled (ghost) to enabled (built), and
+        // MonoBehaviour.Start() only fires on the FIRST Update after a component is enabled, not
+        // "before any Update ever" — so there is a one-frame window where IsConstructed already
+        // reads true but Workstation.Start() has not run yet. GetContainers() is vendor code and
+        // reads Workstation.Name unconditionally, so that single frame still throws. Retrying
+        // silently (no log) is correct here, not a band-aid: _container stays null, so next
+        // Update() just tries again — exactly the lazy-resolve pattern this method already uses,
+        // extended to survive one specific vendor-timing gap instead of assuming it never happens.
         private void Update()
         {
             if (_container != null)
@@ -75,7 +87,16 @@ namespace BackroomsSurvival.Gameplay.Building
             if (piece == null || !piece.IsConstructed)
                 return;
 
-            var containers = GetComponent<StorageStation>().GetContainers();
+            IReadOnlyList<IItemContainer> containers;
+            try
+            {
+                containers = GetComponent<StorageStation>().GetContainers();
+            }
+            catch (NullReferenceException)
+            {
+                return; // Workstation.Start() hasn't run yet this frame — retry next Update.
+            }
+
             if (containers == null || containers.Count == 0)
                 return;
 

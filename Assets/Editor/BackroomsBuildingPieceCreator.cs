@@ -1284,6 +1284,20 @@ namespace BackroomsSurvival.EditorTools
                     yRestored++;
                 }
 
+                // One-time nudge (2026-08-22, E3h): Joel's own further tuning on top of his
+                // restored values — tier 0 anchors 0.1→0.128, tier 2 anchors 1.352→1.36 ("mejora
+                // bastante visualmente"). Tier 1 (0.78) untouched, he didn't mention it.
+                int yNudged = 0;
+                for (int i = 0; i < previousSize; i++)
+                {
+                    var anchorProp = anchors.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
+                    if (anchorProp == null)
+                        continue;
+                    var p = anchorProp.localPosition;
+                    if (Mathf.Approximately(p.y, 0.1f)) { p.y = 0.128f; anchorProp.localPosition = p; yNudged++; }
+                    else if (Mathf.Approximately(p.y, 1.352f)) { p.y = 1.36f; anchorProp.localPosition = p; yNudged++; }
+                }
+
                 serialized.ApplyModifiedPropertiesWithoutUndo();
 
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
@@ -1298,6 +1312,9 @@ namespace BackroomsSurvival.EditorTools
                               : "") +
                           (yRestored > 0
                               ? $" Restored {yRestored} anchor(s) to Joel's original Y (undoing the mistaken E3f reset)."
+                              : "") +
+                          (yNudged > 0
+                              ? $" Nudged {yNudged} anchor(s) per Joel's E3h follow-up (0.1→0.128, 1.352→1.36)."
                               : "") +
                           " Drag ShelfAnchor_NN children in the Inspector to nudge position/rotation.");
             }
