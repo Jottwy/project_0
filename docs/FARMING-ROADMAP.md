@@ -347,13 +347,23 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
 - Commit: `fix(building): ajuste de Joel en dos baldas + retry silencioso contra la carrera de Start()`.
 
 ### E4. Cierre del bloque (½ día)
-- Arreglar el coste del marco de puerta: poner `_requirements` del prefab a
-  `DoorFrameMetalCost` (5 en el script, o el valor que se decida en A3 — ver abajo) con un
-  `Ensure…` idempotente en el creator (como `EnsureDoorFrameOpeningMarker`), no a mano en YAML.
-- Playtest standalone completo: colocar estantería, construir con metal, guardar 12+ items, ver
-  la balda llena, reconectar como host. Anotar en STATE lo que se vio.
-- Test EditMode nuevo: `StorageRackDisplayTests` (crear contenedor en memoria, simular
-  `SlotChanged`, comprobar que hay exactamente N visuales para N items y 0 tras vaciar).
+- [x] **2026-08-23** Arreglar el coste del marco de puerta: `EnsureDoorFrameCost` (idempotente,
+  como `EnsureDoorFrameOpeningMarker`, solo escribe si `_requirements` está vacío) aplicó
+  `DoorFrameMetalCost` = 5 Metal (`-2823548`) al prefab existente, que llevaba `_requirements: []`
+  desde que se creó (la migración crear-si-falta nunca reaplicaba `ConfigureConstructable` a
+  piezas ya presentes). Commit `5a2be222`. Si A3 decide otro valor, se cambia la constante y el
+  mismo método la reaplica.
+- [x] **2026-08-23** Playtest en vivo (Joel, Play mode): estantería construida, balda llena de
+  items reales (bolsas + botes de pie, sin hundirse en la madera) — captura adjunta confirma
+  E3h (nudge 0.128/1.36) y la corrección de pivote sostienen en juego, no solo en el probe.
+  Falta aún: standalone build completo con reconexión como host (12+ items, guardado entre
+  sesiones) — el playtest de hoy fue en editor, no standalone.
+- [ ] Test EditMode nuevo `StorageRackDisplayTests` — **escrito** (`Assets/Tests/EditMode/
+  StorageRackDisplayTests.cs`, mismo patrón de reflexión que `BackroomsStorageRackProbe.
+  VerifyDisplay`), compila limpio. Disparo vía `ClaudeRoomCheck` (temporal, reapuntado a este
+  grupo) falló con `InvalidOperationException: This cannot be used during play mode` —
+  `TestRunnerApi` no puede correr con el editor en Play. Pendiente: relanzar en cuanto Joel
+  salga de Play.
 - Commit(s) por preocupación; `tools/dev/PolishSweep.sh` en verde.
 
 ---
