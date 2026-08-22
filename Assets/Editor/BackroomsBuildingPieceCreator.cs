@@ -406,6 +406,7 @@ namespace BackroomsSurvival.EditorTools
                           "already exist — left untouched (the definition id is on the wire; regenerating it would " +
                           "break replication).");
                 EnsureDoorFrameOpeningMarker(existingPrefab);
+                EnsureDoorFrameCost(existingPrefab);
                 return;
             }
 
@@ -816,6 +817,58 @@ namespace BackroomsSurvival.EditorTools
                           $"{(wasMissing ? "Added" : "Synced")} GridDoorFrameOpening on '{path}' — hinge=" +
                           $"({DoorOpeningLeftEdge}, 0, 0), leafSize=({DoorLeafWidth}, {DoorLeafHeight}, " +
                           $"{DoorLeafThickness}).");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        /// <summary>
+        /// Idempotent patch, FARMING-ROADMAP.md E4: the committed door frame prefab has
+        /// <c>_requirements: []</c> — free to place — a leftover from commit 78451db7 reconciling the
+        /// frame with a manual edit, which the CREATOR's own <see cref="DoorFrameMetalCost"/> constant
+        /// (5) never actually reaches once the frame already exists (crear-si-falta skips
+        /// <c>CreateDoorFramePrefab</c>, the only place that calls <c>ConfigureConstructable</c> for
+        /// it). Fixes it in place ONLY if <c>_requirements</c> is still empty — a nonzero requirement
+        /// count means someone (Joel) already set a cost on purpose, and this must not clobber it.
+        /// </summary>
+        private static void EnsureDoorFrameCost(GameObject prefabAsset)
+        {
+            var metal = ResolveBuildMaterial(MetalMaterialName);
+            if (metal == null)
+                return;
+
+            string path = AssetDatabase.GetAssetPath(prefabAsset);
+            var contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var constructable = contents.GetComponent<Constructable>();
+                if (constructable == null)
+                {
+                    Debug.LogError($"[BackroomsBuildingPieceCreator] '{path}' has no Constructable — cannot set cost.");
+                    return;
+                }
+
+                var serialized = new SerializedObject(constructable);
+                var requirements = serialized.FindProperty("_requirements");
+                if (requirements.arraySize != 0)
+                {
+                    Debug.Log($"[BackroomsBuildingPieceCreator] '{path}' already has " +
+                              $"{requirements.arraySize} requirement(s) — left untouched.");
+                    return;
+                }
+
+                requirements.arraySize = 1;
+                var req = requirements.GetArrayElementAtIndex(0);
+                req.FindPropertyRelative("BuildMaterialId").intValue = metal.Id;
+                req.FindPropertyRelative("CurrentAmount").intValue = 0;
+                req.FindPropertyRelative("RequiredAmount").intValue = DoorFrameMetalCost;
+                serialized.ApplyModifiedPropertiesWithoutUndo();
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[BackroomsBuildingPieceCreator] Fixed door frame cost on '{path}' — was FREE " +
+                          $"(_requirements empty), now {DoorFrameMetalCost}× {MetalMaterialName}.");
             }
             finally
             {

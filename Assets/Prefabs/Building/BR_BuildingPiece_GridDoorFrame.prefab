@@ -150,7 +150,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f34c6ca410a24a67b0fbb15181139752, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  _requirements: []
+  _requirements:
+  - BuildMaterialId: -2823548
+    CurrentAmount: 0
+    RequiredAmount: 5
 --- !u!114 &8273658205749383446
 MonoBehaviour:
   m_ObjectHideFlags: 0
