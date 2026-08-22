@@ -208,16 +208,23 @@ namespace BackroomsSurvival.EditorTools
         // FARMING-ROADMAP.md D4.
         private const int StorageRackMetalCost = 4;
 
-        // Read off the front-view probe screenshot (Temp/claude_rack_shot.png, 2026-08-22): an open
-        // tube frame, no back/side panels, four evenly spaced open tiers (not three — the top rail
-        // and three shelf boards below it bound four compartments). FARMING-ROADMAP.md D3: range is
-        // 12-16 with a floor of 12; picking the top of the range (4 per tier) because the rack reads
-        // as OPEN wire shelving and Joel wants the "items visibly placed" effect to read as full.
-        // Not yet wired to anything — StorageRackDisplay (bloque E, tarea E3) is what will actually
-        // use this to size its shelf-anchor array; kept here now so E1's measurement is not re-done.
+        // Geometry: four EQUAL compartments (top rail + three shelf boards below it), read off the
+        // front-view probe screenshot (Temp/claude_rack_shot.png, 2026-08-22) — StorageRackTierCount
+        // stays 4 for the Y-spacing formula, that part of the measurement holds.
+        //
+        // Slot LAYOUT is a separate call from Joel (2026-08-22, E3d), overriding D3's original
+        // "16, single row of 4 across": only the BOTTOM THREE of those four compartments read as
+        // real storage to him — the top one doesn't — and within each used compartment he wants an
+        // actual 2-D grid ("8 huevos, fila de 4 y columna 2") instead of 4 items spread thin across
+        // the width with nothing using the rack's depth. StorageRackUsedTiers therefore stops at 3,
+        // not StorageRackTierCount's 4 — tier index 3 (the top compartment) is measured but
+        // deliberately never populated.
         private const int StorageRackTierCount = 4;
-        private const int StorageRackSlotsPerTier = 4;
-        private const int StorageRackSlots = StorageRackTierCount * StorageRackSlotsPerTier;
+        private const int StorageRackUsedTiers = 3;
+        private const int StorageRackColumnsPerTier = 4;
+        private const int StorageRackDepthRowsPerTier = 2;
+        private const int StorageRackSlotsPerTier = StorageRackColumnsPerTier * StorageRackDepthRowsPerTier;
+        private const int StorageRackSlots = StorageRackUsedTiers * StorageRackSlotsPerTier;
 
         [MenuItem("Backrooms/Create Building Pieces")]
         public static void CreateIfMissing()
@@ -1180,10 +1187,19 @@ namespace BackroomsSurvival.EditorTools
         /// <see cref="StorageRackDisplay"/> if missing, and seeds ONE anchor child Transform per
         /// slot the FIRST time — <c>ShelfAnchor_00</c>.. at the same position the component's own
         /// formula fallback would compute, so seeding changes nothing visually. Never re-seeds an
-        /// anchor that already exists: <c>_shelfAnchors.arraySize &gt;= StorageRackSlots</c> means
+        /// anchor that already exists: <c>_shelfAnchors.arraySize == StorageRackSlots</c> means
         /// every slot already has one, and a second run of this menu must not clobber whatever Joel
         /// dragged those to by hand — same "never regenerate what a human already touched" contract
         /// as the door frame's hinge/leaf reconciliation, just for a Transform instead of a float.
+        ///
+        /// EXCEPTION, one-time (2026-08-22, E3d): a wrong ARRAY SIZE (not just a short one) means the
+        /// whole layout scheme changed — 16 single-row-of-4 slots to 24 in a 4x2-per-tier grid, Joel's
+        /// call after seeing the first version. Growing the array in place can't fix that: the
+        /// SURVIVING anchors were positioned by the OLD formula and would end up scattered wrong. No
+        /// anchor had been hand-edited yet at that point (confirmed against the conversation, not
+        /// assumed), so this specific transition wipes and reseeds everything instead of only filling
+        /// the gap. Once the array is at StorageRackSlots again, the normal preserve-by-default
+        /// contract above resumes — this branch never fires again unless the layout changes AGAIN.
         /// </summary>
         private static void EnsureStorageRackDisplay(GameObject prefabAsset)
         {
@@ -1200,6 +1216,19 @@ namespace BackroomsSurvival.EditorTools
                 var anchors = serialized.FindProperty("_shelfAnchors");
 
                 int previousSize = anchors.arraySize;
+                bool relayout = previousSize != 0 && previousSize != StorageRackSlots;
+                if (relayout)
+                {
+                    for (int i = 0; i < previousSize; i++)
+                    {
+                        var old = anchors.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
+                        if (old != null)
+                            Object.DestroyImmediate(old.gameObject);
+                    }
+                    anchors.arraySize = 0;
+                    previousSize = 0;
+                }
+
                 bool needsSeed = previousSize < StorageRackSlots;
                 if (needsSeed)
                 {
@@ -1230,6 +1259,7 @@ namespace BackroomsSurvival.EditorTools
                 PrefabUtility.SaveAsPrefabAsset(contents, path);
                 Debug.Log($"[BackroomsBuildingPieceCreator] " +
                           $"{(displayWasMissing ? "Added" : "Synced")} StorageRackDisplay on '{path}'" +
+                          (relayout ? " — RELAYOUT: wiped and reseeding from scratch (24-slot 4x2-per-tier grid)." : "") +
                           (needsSeed
                               ? $" — seeded {StorageRackSlots - previousSize} anchor(s), {previousSize} pre-existing."
                               : " — every slot already has an anchor.") +
@@ -1250,10 +1280,14 @@ namespace BackroomsSurvival.EditorTools
         private static Vector3 StorageRackAnchorLocalPosition(int index)
         {
             int tier = index / StorageRackSlotsPerTier;
-            int column = index % StorageRackSlotsPerTier;
+            int withinTier = index % StorageRackSlotsPerTier;
+            int column = withinTier % StorageRackColumnsPerTier;
+            int depthRow = withinTier / StorageRackColumnsPerTier;
+
             float y = tier * (StorageRackHeight / StorageRackTierCount) + StorageRackShelfClearance;
-            float x = StorageRackWidth * ((column + 0.5f) / StorageRackSlotsPerTier - 0.5f);
-            return new Vector3(x, y, 0f);
+            float x = StorageRackWidth * ((column + 0.5f) / StorageRackColumnsPerTier - 0.5f);
+            float z = StorageRackDepth * ((depthRow + 0.5f) / StorageRackDepthRowsPerTier - 0.5f);
+            return new Vector3(x, y, z);
         }
 
         private static void ConfigureStorageRackModelImport()

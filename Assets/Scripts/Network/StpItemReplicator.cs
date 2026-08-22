@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using BackroomsSurvival.Gameplay;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using UnityEngine;
@@ -185,7 +186,13 @@ namespace BackroomsSurvival.Net
                 return null;
             }
 
-            var pickup = Instantiate(prefab, it.position, Quaternion.Euler(0f, it.rotation, 0f));
+            // Stand up, then face wherever the host said (yaw only) — same per-item correction as
+            // the storage rack (ItemPickupOrientation), same root cause: this pickup's own resting
+            // rotation (identity) has it lying on its side. Composed as yaw * upright (upright
+            // applies first, in the pickup's own frame; yaw spins that result around world Y) so the
+            // item stands regardless of which way it's facing.
+            var rotation = Quaternion.Euler(0f, it.rotation, 0f) * ItemPickupOrientation.UprightCorrectionFor(def.Name);
+            var pickup = Instantiate(prefab, it.position, rotation);
             var go = pickup.gameObject;
 
             // Phase 2: neutralize the vendor local pickup so interaction routes through the host.

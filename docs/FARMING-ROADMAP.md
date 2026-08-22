@@ -248,6 +248,37 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   `Update()`, igual que ya hacía con `Workstation.Start()`.
 - Commit: `fix(building): la rotación de pie es por item, no una constante — el spray ya no se tumba`.
 
+### E3e. El mismo bug fuera de la estantería, y el layout final de balda (2026-08-22) — ✅ HECHO
+- **Joel: "cuando lo tiro al suelo se ve mal... tanto uno como el otro deben quedar igual de
+  grandes."** Mismo bug de E3c pero en un sitio distinto: `StpItemReplicator.SpawnItem`
+  (`Assets/Scripts/Network/StpItemReplicator.cs:188`, la ruta REAL que ve cualquier cliente —
+  ADR-070 neutraliza el drop físico nativo del vendor y lo reemplaza por esta réplica
+  host-autoritativa) instanciaba con `Quaternion.Euler(0, yaw, 0)`, sin corrección — la botella
+  quedaba tumbada al soltarla en el mundo, igual que en la balda antes del fix. Extraído
+  `ItemPickupOrientation.UprightCorrectionFor(itemName)` a `Assets/Scripts/Gameplay/
+  ItemPickupOrientation.cs` (mismo assembly, sin problema de asmdef esta vez), usado ahora por
+  `StorageRackDisplay` Y `StpItemReplicator` — un solo lookup, dos sitios. Rotación final
+  `Quaternion.Euler(0,yaw,0) * UprightCorrectionFor(...)`: primero de pie, luego encarado al yaw
+  del host. El "roll" cosmético de ADR-070 (mientras el item cae/asienta) queda intacto a
+  propósito — decisión de diseño ya documentada, no se sincroniza entre clientes, y no es lo que
+  Joel reportó.
+- **Layout de balda rediseñado, decisión de Joel**: no una fila de 4 en línea — un grid real
+  4 columnas × 2 filas de profundidad por balda ("8 huevos, fila de 4 y columna 2"), y **solo 3 de
+  las 4 alturas del mueble cuentan como almacenaje real** (la superior no) → **24 slots**, no 16.
+  `StorageRackTierCount` (4, geometría real, sin tocar) se separa de `StorageRackUsedTiers` (3,
+  decisión de diseño) — mismo cambio espejado en `StorageRackDisplay.AnchorLocalPosition` y
+  `BackroomsBuildingPieceCreator.StorageRackAnchorLocalPosition`.
+- **Migración de un solo uso**: cambiar la fórmula de sitio (no solo el total) invalida los 16
+  anchors ya sembrados con el esquema viejo — `EnsureStorageRackDisplay` detecta
+  `arraySize != StorageRackSlots`, destruye los anchors existentes y resiembra los 24 de cero.
+  Seguro porque ningún anchor se había tocado a mano todavía (confirmado contra la conversación).
+  De aquí en adelante el contrato normal (nunca tocar lo que Joel arrastre) vuelve a regir.
+- Verificado: `Verify Storage Rack Display` con `StorageRackSlotsExpected` actualizado a 24 →
+  PASS; captura enviada a Joel confirmando el rack recompilado sin errores tras un reinicio
+  completo del editor (el editor se reabrió solo — "Opening project..." — durante esta pasada,
+  no un fallo de compilación; una vez recargado, todo verificó limpio).
+- Commit: `fix(net,building): el item soltado al mundo tambien queda de pie; balda pasa a 4x2x3 (24 slots)`.
+
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a
   `DoorFrameMetalCost` (5 en el script, o el valor que se decida en A3 — ver abajo) con un

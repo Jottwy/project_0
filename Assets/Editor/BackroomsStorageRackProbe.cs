@@ -439,10 +439,11 @@ namespace BackroomsSurvival.EditorTools
             }
         }
 
-        // Mirrors BackroomsBuildingPieceCreator.StorageRackSlots (16) — duplicated as a literal
-        // rather than referenced across files (that constant is private to the creator, and this is
-        // a throwaway diagnostic, not shipped code) so this check fails LOUDLY if the two drift.
-        private const int StorageRackSlotsExpected = 16;
+        // Mirrors BackroomsBuildingPieceCreator.StorageRackSlots (24, since E3d's 3-tier 4x2 grid —
+        // was 16) — duplicated as a literal rather than referenced across files (that constant is
+        // private to the creator, and this is a throwaway diagnostic, not shipped code) so this
+        // check fails LOUDLY if the two drift.
+        private const int StorageRackSlotsExpected = 24;
 
         /// <summary>
         /// Renders the BAKED prefab (post-BackroomsBuildingPieceCreator), not the raw FBX — sanity

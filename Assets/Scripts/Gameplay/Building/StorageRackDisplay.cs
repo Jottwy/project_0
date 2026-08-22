@@ -1,3 +1,4 @@
+using BackroomsSurvival.Gameplay;
 using PolymindGames;
 using PolymindGames.BuildingSystem;
 using PolymindGames.InventorySystem;
@@ -19,10 +20,12 @@ namespace BackroomsSurvival.Gameplay.Building
     ///
     /// If a slot's anchor is missing or the array is short (a prefab authored before this existed,
     /// or a slot count that outgrew it), <see cref="AnchorLocalPosition"/> computes a fallback from
-    /// 4 constants (the rack has 4 equal open tiers of 4 columns each, measured in E1 — same numbers
-    /// as <c>BackroomsBuildingPieceCreator</c>'s `StorageRack*` constants, an editor-only class in a
-    /// different assembly this one cannot reference, hence the duplication) so the piece never goes
-    /// visually broken just because an anchor is unset.
+    /// a handful of constants (the rack has 4 equal open tiers, each an 4-column x 2-deep grid —
+    /// "8 huevos, fila de 4 y columna 2" per Joel, 2026-08-22, so a bottle doesn't look lost in a
+    /// bare 4-across row — measured in E1/E3d — same numbers as <c>BackroomsBuildingPieceCreator</c>'s
+    /// `StorageRack*` constants, an editor-only class in a different assembly this one cannot
+    /// reference, hence the duplication) so the piece never goes visually broken just because an
+    /// anchor is unset.
     /// </summary>
     [RequireComponent(typeof(StorageStation))]
     public sealed class StorageRackDisplay : MonoBehaviour
@@ -33,28 +36,17 @@ namespace BackroomsSurvival.Gameplay.Building
         private Transform[] _shelfAnchors;
 
         private const int TierCount = 4;
-        private const int SlotsPerTier = 4;
+        private const int ColumnsPerTier = 4;
+        private const int DepthRowsPerTier = 2;
+        private const int SlotsPerTier = ColumnsPerTier * DepthRowsPerTier;
         private const float RackWidth = 1.4527f;
         private const float RackHeight = 1.9026f;
+        private const float RackDepth = 0.6049f;
 
         // How far above a tier's floor/shelf board a placed item's pivot sits — most pickup meshes
         // are NOT authored with their pivot at their own base, so this is a flat estimate, not a
         // per-item measurement (see class doc). Only used as the FALLBACK, when no anchor is set.
         private const float ShelfClearance = 0.06f;
-
-        // Per-item, NOT a blanket constant — measured with Backrooms/Diagnostics/Measure Item
-        // Pickup: Almond Water rests long-axis-on-Z (0.072x0.072x0.230 m, correct for lying on the
-        // ground, wrong for a shelf) and needs -90° on X to stand up, but Spray Can ALREADY rests
-        // long-axis-on-Y (0.066x0.190x0.066 m) — applying the bottle's correction to it tips it
-        // OVER instead of fixing it. Found live: Joel's shelf showed one item standing and one lying
-        // down after a first version of this used one rotation for both. Add an entry here only for
-        // an item whose pickup shows up lying down; anything absent is assumed to already rest
-        // upright, which is the common case, not the exception.
-        private static Quaternion UprightCorrectionFor(string itemName) => itemName switch
-        {
-            "Almond Water" => Quaternion.Euler(-90f, 0f, 0f),
-            _ => Quaternion.identity,
-        };
 
         private IItemContainer _container;
         private GameObject[] _visuals;
@@ -130,7 +122,7 @@ namespace BackroomsSurvival.Gameplay.Building
             // that might land there. The per-item correction is what actually varies by item.
             var rotation = anchor != null && anchor.localRotation != Quaternion.identity
                 ? anchor.localRotation
-                : UprightCorrectionFor(stack.Item.Definition.Name);
+                : ItemPickupOrientation.UprightCorrectionFor(stack.Item.Definition.Name);
 
             visual.transform.SetLocalPositionAndRotation(position, rotation);
             NeutralizeToVisualOnly(visual.gameObject);
@@ -143,11 +135,14 @@ namespace BackroomsSurvival.Gameplay.Building
         private static Vector3 AnchorLocalPosition(int index)
         {
             int tier = index / SlotsPerTier;
-            int column = index % SlotsPerTier;
+            int withinTier = index % SlotsPerTier;
+            int column = withinTier % ColumnsPerTier;
+            int depthRow = withinTier / ColumnsPerTier;
 
             float y = tier * (RackHeight / TierCount) + ShelfClearance;
-            float x = RackWidth * ((column + 0.5f) / SlotsPerTier - 0.5f);
-            return new Vector3(x, y, 0f);
+            float x = RackWidth * ((column + 0.5f) / ColumnsPerTier - 0.5f);
+            float z = RackDepth * ((depthRow + 0.5f) / DepthRowsPerTier - 0.5f);
+            return new Vector3(x, y, z);
         }
 
         /// <summary>
