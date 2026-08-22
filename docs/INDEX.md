@@ -27,6 +27,12 @@
   para ejecutarse tal cual: qué está hecho y verificado, qué se puede tocar sin ADR y qué no, el
   techo del sistema, y las trampas que ya costaron tiempo. Empieza aquí antes de tocar salas.
 
+## Farmeo y almacenaje (Alpha 1)
+- [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — cierre mínimo del farmeo de metal y la estantería
+  metálica construible (2026-08-22): decisiones tomadas (sin stacks, slots fijos 12–16, 4 Metal,
+  sync de contenedores diferido con ADR), bloque E (estantería) y bloque A (pilas de chatarra),
+  con tareas ejecutables y lo que queda fuera a propósito.
+
 ## Deuda técnica
 - [DEBT-ROADMAP.md](DEBT-ROADMAP.md) — auditoría de solo-lectura (2026-08-18, 68 ítems: 27 código
   muerto + 41 bugs) puntuada 1-10 con plan de arreglo por ítem, ordenada de menos a más grave. El
