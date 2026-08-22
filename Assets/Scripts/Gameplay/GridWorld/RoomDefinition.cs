@@ -224,6 +224,57 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             public bool spanCorners;
         }
 
+        /// <summary>Un punto de una <see cref="Platform"/>: dónde está en planta y a qué altura
+        /// sube. Van juntos en un struct y no en dos arrays paralelos a propósito — dos arrays se
+        /// desincronizan en cuanto alguien inserta un punto y se olvida del otro.</summary>
+        [Serializable]
+        public struct PlatformPoint
+        {
+            public Vector2 position;
+            public float height;
+        }
+
+        /// <summary>
+        /// Una PLATAFORMA: un polígono marcado sobre el suelo, con una altura por punto, que se
+        /// levanta como sólido. Es la pieza para esculpir el espacio.
+        ///
+        /// Con tres puntos y uno alto sale una cuña que converge a un vértice; con la base plana
+        /// sale una tarima; con varios puntos altos, formas más complicadas. Un solo tipo cubre
+        /// todo eso porque todo eso ES lo mismo: un trozo de suelo levantado por sus esquinas.
+        ///
+        /// Se RECORTA contra la planta de la sala (ver <see cref="PolygonClipper"/>): lo que
+        /// asome por fuera de las paredes desaparece. Eso es lo que deja arrastrar un punto sin
+        /// cuidado y que la pieza se adapte sola en vez de salirse de la sala.
+        ///
+        /// Es un sólido propio, como un pilar o un bloque, no una deformación del suelo. La arista
+        /// que se ve donde se apoya la pone LA PLATAFORMA, así que el suelo no hay que partirlo ni
+        /// triangularlo de otra manera: sigue siendo el de siempre.
+        /// </summary>
+        [Serializable]
+        public sealed class Platform
+        {
+            /// <summary>Los puntos, en metros y relativos al centro de la sala. Se marcan y se
+            /// arrastran en la vista de escena.</summary>
+            public PlatformPoint[] points = DefaultPoints();
+
+            /// <summary>Piso al que pertenece — ver <see cref="StoreyBaseY"/>.</summary>
+            [Min(0)] public int level;
+
+            /// <summary>Con menos de tres puntos no hay polígono, solo una línea sin área.</summary>
+            public bool IsValid() => points != null && points.Length >= 3;
+
+            /// <summary>Un triángulo con un vértice alto: la forma de la imagen de referencia, y
+            /// la que explica de un vistazo para qué sirve la pieza.</summary>
+            private static PlatformPoint[] DefaultPoints() => new[]
+            {
+                new PlatformPoint { position = new Vector2(-3f, -3f), height = 0f },
+                new PlatformPoint { position = new Vector2(3f, -3f), height = 0f },
+                new PlatformPoint { position = new Vector2(0f, 3f), height = 3f },
+            };
+        }
+
+        public Platform[] platforms = Array.Empty<Platform>();
+
         /// <summary>Una columna dentro de la sala, del suelo al techo.</summary>
         [Serializable]
         public sealed class Pillar

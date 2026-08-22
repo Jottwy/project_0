@@ -69,6 +69,11 @@ namespace BackroomsSurvival.EditorTools
 
         private void OnGUI()
         {
+            // Antes de pintar nada: el atajo se atiende aquí, y la foto del historial se toma
+            // cuando empieza la interacción, no cuando ya ha cambiado algo.
+            HandleUndoShortcuts();
+            TrackUndoInteraction();
+
             // La barra de acción va ARRIBA y fuera de las pestañas: crear, encuadrar y ver el
             // recuento son cosas que quieres a mano estés en la pestaña que estés.
             DrawToolbar();
@@ -113,7 +118,13 @@ namespace BackroomsSurvival.EditorTools
         private void ApplyDeferred()
         {
             if (_deferred.Count == 0) return;
+
+            // Añadir o quitar un elemento es un paso de historial por sí solo: no viene de un
+            // arrastre, así que no hay MouseUp que lo cierre. La foto se toma aquí, JUSTO antes de
+            // aplicar, que es el último momento en que la sala aún está como estaba.
+            CaptureUndoBaseline();
             foreach (var change in _deferred) change();
+            CommitUndo();
             _deferred.Clear();
             _foldouts.Clear(); // los índices se han corrido: el plegado ya no corresponde
             RebuildIfLive();
@@ -334,6 +345,11 @@ namespace BackroomsSurvival.EditorTools
         {
             // Ancho y fondo en la MISMA fila, con los metros al lado. Eran dos filas más una
             // tercera que solo decía "25 m × 25 m": tres renglones para un dato que cabe en uno.
+            // En planta MANUAL el footprint no se teclea: sigue a la planta. Tecleado, se quedaba
+            // en lo que pusiera el campo (10 × 10 con una planta de 20 × 24 m) y el backend
+            // reservaba —y el cliente vaciaba— un boquete de 50 × 50 alrededor de la sala.
+            bool manual = _def.planMode == RoomDefinition.PlanMode.Manual;
+            if (manual) FitFootprintToPlan(_def);
             using (new EditorGUILayout.HorizontalScope())
             {
                 EditorGUILayout.PrefixLabel(new GUIContent("Footprint",
@@ -351,11 +367,6 @@ namespace BackroomsSurvival.EditorTools
                     + (manual ? "   ·   ajustado a la planta" : ""),
                     EditorStyles.miniLabel);
             }
-            // En planta MANUAL el footprint no se teclea: sigue a la planta. Tecleado, se quedaba
-            // en lo que pusiera el campo (10 × 10 con una planta de 20 × 24 m) y el backend
-            // reservaba —y el cliente vaciaba— un boquete de 50 × 50 alrededor de la sala.
-            bool manual = _def.planMode == RoomDefinition.PlanMode.Manual;
-            if (manual) FitFootprintToPlan(_def);
 
             // Deslizador CON campo, y el tope se estira hasta el valor que ya haya: un slider con
             // tope fijo recortaría en silencio una sala más alta que el rango la primera vez que
@@ -605,7 +616,7 @@ namespace BackroomsSurvival.EditorTools
         /// por dónde se cae, luego lo que hay puesto, y al final lo que no es geometría.</summary>
         private FeatureGroupBase[] AllGroups() => new FeatureGroupBase[]
         {
-            HolesGroup(), PitsGroup(), PillarsGroup(),
+            HolesGroup(), PitsGroup(), PillarsGroup(), PlatformsGroup(),
             BlocksGroup(), StairsGroup(), LightsGroup(), MarkersGroup(),
         };
 
@@ -1649,6 +1660,102 @@ namespace BackroomsSurvival.EditorTools
                 },
             };
 
+        /// <summary>
+        /// Las plataformas: polígonos marcados sobre el suelo con una altura por punto. Los puntos
+        /// se marcan ARRASTRÁNDOLOS en la vista de escena (ver <see cref="DrawPlatformHandles"/>),
+        /// que es donde se ve lo que se está haciendo; aquí solo va la altura de cada uno, que en
+        /// la escena habría que arrastrar en vertical y se pelearía con el arrastre en planta.
+        /// </summary>
+        private FeatureGroup<RoomDefinition.Platform> PlatformsGroup() =>
+            new FeatureGroup<RoomDefinition.Platform>
+            {
+                key = "platforms",
+                title = "Platforms",
+                accentColor = new Color(0.55f, 0.7f, 0.5f),
+                get = () => _def.platforms,
+                set = a => _def.platforms = a,
+                level = p => p.level,
+                setLevel = (p, v) => p.level = v,
+                make = () => new RoomDefinition.Platform(),
+                row = (p, i) =>
+                {
+                    float top = 0f;
+                    if (p.points != null) foreach (var pt in p.points) top = Mathf.Max(top, pt.height);
+                    return $"#{i}   {p.points?.Length ?? 0} points   ·   up to {top:0.#} m";
+                },
+                rows = new[]
+                {
+                    PlatformPointsRow(),
+                },
+            };
+
+        /// <summary>
+        /// La lista de puntos de una plataforma: altura por punto, y los botones de añadir y
+        /// quitar.
+        ///
+        /// La posición en planta NO se edita aquí a propósito. Se arrastra en la escena, que es
+        /// donde se ve contra qué pared queda; teclear dos números por punto para una pieza de
+        /// ocho es trabajo que la vista de escena ya hace mejor.
+        /// </summary>
+        private Row<RoomDefinition.Platform> PlatformPointsRow() =>
+            new Row<RoomDefinition.Platform>(
+                p => LineStep * ((p.points?.Length ?? 0) + 2),
+                (rect, plat) =>
+                {
+                    var pts = plat.points ?? System.Array.Empty<RoomDefinition.PlatformPoint>();
+                    float y = rect.y;
+
+                    EditorGUI.LabelField(new Rect(rect.x, y, rect.width, LineH),
+                        $"{pts.Length} point(s) — arrástralos en la vista de escena",
+                        EditorStyles.miniLabel);
+                    y += LineStep;
+
+                    for (int i = 0; i < pts.Length; i++)
+                    {
+                        var row = new Rect(rect.x, y, rect.width, LineH);
+                        float btn = 22f;
+                        var fieldRect = new Rect(row.x, row.y, row.width - btn - 4f, row.height);
+
+                        pts[i].height = Mathf.Max(0f, EditorGUI.FloatField(fieldRect,
+                            new GUIContent($"#{i} height (m)",
+                                $"({pts[i].position.x:0.#}, {pts[i].position.y:0.#}) en planta."),
+                            pts[i].height));
+
+                        // Tres puntos es el mínimo para que haya polígono: por debajo no hay pieza,
+                        // solo una línea.
+                        using (new EditorGUI.DisabledScope(pts.Length <= 3))
+                            if (GUI.Button(new Rect(row.xMax - btn, row.y, btn, row.height), "×"))
+                            {
+                                int at = i;
+                                Defer(() =>
+                                {
+                                    var list = new List<RoomDefinition.PlatformPoint>(plat.points);
+                                    list.RemoveAt(at);
+                                    plat.points = list.ToArray();
+                                });
+                            }
+                        y += LineStep;
+                    }
+
+                    if (GUI.Button(new Rect(rect.x, y, rect.width, LineH), "Add point"))
+                        Defer(() =>
+                        {
+                            var list = new List<RoomDefinition.PlatformPoint>(plat.points);
+                            // El nuevo nace a media arista entre el último y el primero, que es
+                            // donde cabe sin cruzar el polígono. Ponerlo en el centro lo cruzaría
+                            // casi siempre, y un polígono cruzado no se puede recortar.
+                            int n = list.Count;
+                            var a = list[n - 1];
+                            var b = list[0];
+                            list.Add(new RoomDefinition.PlatformPoint
+                            {
+                                position = (a.position + b.position) * 0.5f,
+                                height = (a.height + b.height) * 0.5f,
+                            });
+                            plat.points = list.ToArray();
+                        });
+                });
+
         private FeatureGroup<RoomDefinition.Block> BlocksGroup() =>
             new FeatureGroup<RoomDefinition.Block>
             {
@@ -2313,6 +2420,11 @@ namespace BackroomsSurvival.EditorTools
         {
             _validateIssues = new List<string>();
 
+            // Planta frente a footprint, en cualquier modo: lo que el footprint reserva y la
+            // planta no llena es boquete en el mundo (ADR-083/084 vacían el footprint entero).
+            string footprintIssue = FootprintIssue(_def);
+            if (footprintIssue != null) _validateIssues.Add(footprintIssue);
+
             // El mismo camino que usa el exportador real: una RoomEntry de usar-y-tirar con
             // SOLO los campos que DoorwayByQuarter mira (definition, tilesX, tilesZ), para no
             // duplicar su lógica de localizar el vano real sobre el contorno girado.
@@ -2420,11 +2532,6 @@ namespace BackroomsSurvival.EditorTools
                         Debug.LogWarning($"[RoomAuthoringWindow] La puerta del lado {s} medía " +
                                          $"{h.width:0.#} m sobre una pared de {edgeLen:0.#} m: se " +
                                          "recortaba hasta desaparecer. Se le ha activado " +
-            // Planta frente a footprint, en cualquier modo: lo que el footprint reserva y la
-            // planta no llena es boquete en el mundo (ADR-083/084 vacían el footprint entero).
-            string footprintIssue = FootprintIssue(_def);
-            if (footprintIssue != null) _validateIssues.Add(footprintIssue);
-
                                          "`spanCorners` para que doble la esquina y sea un vano real.");
                     }
                 }
@@ -2522,6 +2629,12 @@ namespace BackroomsSurvival.EditorTools
                           "in the Scene view and try again.";
                 return false;
             }
+            // Planta manual: el footprint que viaja al pool y al manifiesto es el que cubre los
+            // puntos, no el que tuviera tecleado el modelo. También cubre el rehorneado desde el
+            // pool, que no pasa por la ventana.
+            if (FitFootprintToPlan(def))
+                Debug.Log($"[RoomAuthoringWindow] Footprint ajustado a la planta manual: " +
+                          $"{def.tilesX} × {def.tilesZ} tiles.");
 
             // ADR-083 enmienda 1: una sala SIN abertura a ras de suelo es una caja sellada, y el
             // mundo no puede abrirla — el backend excava el pasillo hasta la pared, pero la pared es
@@ -2629,12 +2742,6 @@ namespace BackroomsSurvival.EditorTools
                     : null;
                 bool updated = existingEntry != null;
 
-            // Planta manual: el footprint que viaja al pool y al manifiesto es el que cubre los
-            // puntos, no el que tuviera tecleado el modelo. También cubre el rehorneado desde el
-            // pool, que no pasa por la ventana.
-            if (FitFootprintToPlan(def))
-                Debug.Log($"[RoomAuthoringWindow] Footprint ajustado a la planta manual: " +
-                          $"{def.tilesX} × {def.tilesZ} tiles.");
                 var entry = existingEntry ?? new RoomPool.RoomEntry { id = id };
                 entry.prefab = prefab;
                 entry.tilesX = def.tilesX;
@@ -2817,9 +2924,98 @@ namespace BackroomsSurvival.EditorTools
         private void OnSceneGUI(SceneView view)
         {
             if (_preview == null) return;
+
+            // Arrastrar un tirador es una edición como cualquier otra y tiene que poder deshacerse
+            // desde la ventana. La vista de escena tiene su propia cola de eventos, así que el
+            // arrastre se abre y se cierra aquí igual que en el panel.
+            TrackUndoInteraction();
+
             if (_def.planMode == RoomDefinition.PlanMode.Manual) DrawManualContourHandles();
+            DrawPlatformHandles();
             DrawMarkerHandles();
             DrawLightHandles();
+        }
+
+        /// <summary>
+        /// Los puntos de cada plataforma, arrastrables, con la silueta dibujada por arriba y por
+        /// abajo y una línea vertical uniendo cada punto con su altura.
+        ///
+        /// Se dibujan las dos siluetas y no solo los puntos porque una plataforma es lo que hay
+        /// ENTRE ellos: con bolas sueltas no se ve la forma que se está haciendo, que es justo lo
+        /// que se autora aquí.
+        ///
+        /// Los tiradores van a ras de suelo, no a su altura: arrastrar en planta y arrastrar en
+        /// vertical con el mismo gesto se pelean, y la planta es lo que hay que ver contra las
+        /// paredes. La altura se teclea en el panel.
+        /// </summary>
+        private void DrawPlatformHandles()
+        {
+            var plats = _def.platforms;
+            if (plats == null || plats.Length == 0) return;
+
+            var contour = _def.InnerContour();
+            if (contour == null || contour.Length < 3) return;
+
+            var tf = _preview.transform;
+            float minCeil = _def.MinCeilingOver(contour);
+            bool changed = false;
+
+            for (int p = 0; p < plats.Length; p++)
+            {
+                var plat = plats[p];
+                if (plat == null || plat.points == null || plat.points.Length < 3) continue;
+
+                float baseY = _def.StoreyBaseY(plat.level, minCeil);
+                int n = plat.points.Length;
+
+                var low = new Vector3[n + 1];
+                var high = new Vector3[n + 1];
+                for (int i = 0; i < n; i++)
+                {
+                    Vector2 q = plat.points[i].position;
+                    low[i] = tf.TransformPoint(new Vector3(q.x, baseY, q.y));
+                    high[i] = tf.TransformPoint(
+                        new Vector3(q.x, baseY + Mathf.Max(0f, plat.points[i].height), q.y));
+                }
+                low[n] = low[0];
+                high[n] = high[0];
+
+                Handles.color = new Color(0.55f, 0.9f, 0.55f);
+                Handles.DrawAAPolyLine(2f, high);
+                Handles.color = new Color(0.35f, 0.6f, 0.35f);
+                Handles.DrawAAPolyLine(1.5f, low);
+                for (int i = 0; i < n; i++) Handles.DrawAAPolyLine(1f, low[i], high[i]);
+
+                for (int i = 0; i < n; i++)
+                {
+                    Handles.color = new Color(0.55f, 0.9f, 0.55f);
+                    Vector2 q = plat.points[i].position;
+                    if (DragPoint(tf, ref q, low[i]))
+                    {
+                        plat.points[i].position = q;
+                        changed = true;
+                    }
+                }
+
+                Handles.Label(high[0], $"platform {p}");
+            }
+
+            if (changed) { RebuildIfLive(); Repaint(); }
+        }
+
+        /// <summary>Un punto XZ del modelo, arrastrable en mundo. El alto lo pone quien llama: se
+        /// arrastra sobre el plano del suelo, no en el aire.</summary>
+        private static bool DragPoint(Transform tf, ref Vector2 point, Vector3 world)
+        {
+            float size = HandleUtility.GetHandleSize(world);
+            EditorGUI.BeginChangeCheck();
+            Vector3 moved = Handles.FreeMoveHandle(world, size * 0.08f, Vector3.zero,
+                Handles.SphereHandleCap);
+            if (!EditorGUI.EndChangeCheck()) return false;
+
+            Vector3 local = tf.InverseTransformPoint(moved);
+            point = new Vector2(local.x, local.z);
+            return true;
         }
 
         private void DrawManualContourHandles()
@@ -2956,7 +3152,11 @@ namespace BackroomsSurvival.EditorTools
             if (_preview == null)
             {
                 _preview = new GameObject(PreviewName);
-                Undo.RegisterCreatedObjectUndo(_preview, "Create Room");
+                // SIN registrar en el deshacer de Unity, a propósito. Estaba, y era el bug: como
+                // los mandos de la ventana no registraban nada, la creación de este objeto era el
+                // ÚNICO paso de la pila, así que el primer Ctrl+Z borraba la sala entera en vez de
+                // deshacer lo último que habías tocado. El historial de la herramienta lo lleva
+                // ahora RoomAuthoringWindow.Undo.cs.
                 _preview.AddComponent<MeshFilter>();
                 var mr = _preview.AddComponent<MeshRenderer>();
 

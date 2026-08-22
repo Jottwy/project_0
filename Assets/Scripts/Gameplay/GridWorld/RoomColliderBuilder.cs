@@ -82,6 +82,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 AddWallBoxes(boxes, p0, p1, dir, nrm, yaw, len, t, yFloor, yCeil, sideHoles[i]);
             }
 
+            if (def.platforms != null)
+                foreach (var plat in def.platforms)
+                    if (plat != null && plat.IsValid())
+                        AddPlatformBoxes(boxes, plat, inner, def.StoreyBaseY(plat.level, minCeil));
+
             if (def.pillars != null)
                 foreach (var p in def.pillars)
                 {
@@ -308,6 +313,109 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 }
             AddSlabWithHoles(boxes, bb, (yBottom + yFloor) * 0.5f, t, pits);
         }
+
+        /// <summary>
+        /// La colisión de una plataforma: una rejilla de cajitas alineadas a los ejes, cada una
+        /// desde la losa hasta lo más alto que llegue la superficie sobre esa celda.
+        ///
+        /// Rejilla y no lonchas porque la superficie ya no es una rampa en una sola dirección: con
+        /// una altura por punto puede subir por dos ejes a la vez, y unas lonchas paralelas no
+        /// sabrían seguir eso.
+        ///
+        /// Cada celda se queda con la altura MÁS ALTA de sus esquinas: la colisión envuelve por
+        /// fuera a lo pintado. Es el lado correcto por el que equivocarse — sobrar deja al jugador
+        /// unos centímetros por encima, que no se nota; faltar lo mete dentro del sólido, que se
+        /// nota siempre.
+        ///
+        /// Y la altura se pregunta al MISMO sitio que la malla
+        /// (<see cref="PolygonClipper.HeightAt"/>). Reimplementarla aquí es exactamente de donde
+        /// salen las rampas que se ven y no se pisan.
+        /// </summary>
+        private static void AddPlatformBoxes(List<RoomPool.CollisionBox> boxes,
+            RoomDefinition.Platform plat, Vector2[] contour, float baseY)
+        {
+            var src = new List<Vector2>(plat.points.Length);
+            var hs = new List<float>(plat.points.Length);
+            float top = 0f;
+            foreach (var pt in plat.points)
+            {
+                src.Add(pt.position);
+                float h = Mathf.Max(0f, pt.height);
+                hs.Add(h);
+                top = Mathf.Max(top, h);
+            }
+            if (top < 0.01f) return;                       // a ras de suelo: nada que bloquear
+
+            Vector2 lo = src[0], hi = src[0];
+            for (int i = 1; i < src.Count; i++)
+            {
+                lo = Vector2.Min(lo, src[i]);
+                hi = Vector2.Max(hi, src[i]);
+            }
+
+            // El paso sale de que el escalón entre celdas vecinas no pase de lo que se nota al
+            // andar, y luego se afloja si con eso saldrían más cajas de las que un prefab debe
+            // llevar — cada caja acaba siendo un GameObject al hornear.
+            float span = Mathf.Max(hi.x - lo.x, hi.y - lo.y);
+            if (span < 0.05f) return;
+            float cell = Mathf.Max(FloorStepTolerance * span / Mathf.Max(top, 0.01f), MinPlatformCell);
+            int nx = Mathf.Clamp(Mathf.CeilToInt((hi.x - lo.x) / cell), 1, MaxPlatformCells);
+            int nz = Mathf.Clamp(Mathf.CeilToInt((hi.y - lo.y) / cell), 1, MaxPlatformCells);
+            float cx = (hi.x - lo.x) / nx, cz = (hi.y - lo.y) / nz;
+
+            for (int ix = 0; ix < nx; ix++)
+                for (int iz = 0; iz < nz; iz++)
+                {
+                    float x0 = lo.x + ix * cx, x1 = x0 + cx;
+                    float z0 = lo.y + iz * cz, z1 = z0 + cz;
+                    var mid = new Vector2((x0 + x1) * 0.5f, (z0 + z1) * 0.5f);
+
+                    // Fuera del polígono del autor o fuera de la sala, no hay pieza: el recorte de
+                    // la malla se respeta preguntando lo mismo, no copiándolo.
+                    if (!InsidePolygon(mid, src) || !InsidePolygon(mid, contour)) continue;
+
+                    float h = 0f;
+                    h = Mathf.Max(h, PolygonClipper.HeightAt(new Vector2(x0, z0), src, hs));
+                    h = Mathf.Max(h, PolygonClipper.HeightAt(new Vector2(x1, z0), src, hs));
+                    h = Mathf.Max(h, PolygonClipper.HeightAt(new Vector2(x0, z1), src, hs));
+                    h = Mathf.Max(h, PolygonClipper.HeightAt(new Vector2(x1, z1), src, hs));
+                    if (h < 0.01f) continue;
+
+                    boxes.Add(Box(new Vector3(mid.x, baseY + h * 0.5f, mid.y),
+                        new Vector3(cx, h, cz), 0f));
+                }
+        }
+
+        /// <summary>Celda mínima de la rejilla de colisión de una plataforma. Por debajo de esto
+        /// la cuenta de cajas se dispara sin que se note la diferencia al andar.</summary>
+        private const float MinPlatformCell = 0.25f;
+
+        /// <summary>Tope de celdas por eje. Cada celda es un GameObject con su BoxCollider al
+        /// hornear, así que una plataforma grande no puede salir con miles.</summary>
+        private const int MaxPlatformCells = 24;
+
+        /// <summary>Punto dentro de un polígono, por cruces de rayo. Vale para plantas cóncavas,
+        /// que es justo el caso que hay que aguantar aquí.</summary>
+        private static bool InsidePolygon(Vector2 p, IList<Vector2> poly)
+        {
+            bool inside = false;
+            for (int i = 0, j = poly.Count - 1; i < poly.Count; j = i++)
+            {
+                Vector2 a = poly[i], b = poly[j];
+                if (a.y > p.y != b.y > p.y
+                    && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x)
+                    inside = !inside;
+            }
+            return inside;
+        }
+
+        /// <summary>Escalón máximo entre dos tiras del suelo en pendiente. 4 cm: por debajo de lo
+        /// que se nota al andar, y muy por debajo del escalón que el motor sube solo.</summary>
+        private const float FloorStepTolerance = 0.04f;
+
+        /// <summary>Tope de tiras del suelo. Cada una acaba siendo un GameObject con su
+        /// BoxCollider al hornear, así que una rampa larga y suave no puede salir con cientos.</summary>
+        private const int MaxFloorStrips = 64;
 
         /// <summary>
         /// Las losas de las entreplantas: la misma losa completa que trae el suelo de la sala,

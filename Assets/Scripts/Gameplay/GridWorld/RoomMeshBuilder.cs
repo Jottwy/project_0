@@ -194,6 +194,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddWalls(inner, outer, sideHoles, sideCuts, sideCutsOut, innerYCuts, outerYCuts, t,
                 ceilAt, topAt, def.trimEnabled);
 
+            // Plataformas: mismo trato que las columnas — sólidos propios dentro de la cavidad,
+            // apoyados en el suelo de SU piso y recortados contra la planta.
+            if (def.platforms != null)
+                foreach (var plat in def.platforms)
+                    if (plat != null && plat.IsValid())
+                        AddPlatform(plat, inner, def.StoreyBaseY(plat.level, minCeil));
+
             // Columnas: cada una es su propio prisma cerrado dentro de la cavidad, así que no
             // interfieren con la estanqueidad del resto.
             if (def.pillars != null)
@@ -776,14 +783,30 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // Solo la fila de arriba sigue al techo; las de abajo son horizontales.
                     float vbA = vb, vbB = vb;
                     if (topAt != null && vi == topRow) { vbA = topAt(a); vbB = topAt(b); }
-                    if (vbA - va < 1e-5f && vbB - va < 1e-5f) continue;
+                    float vaA = va, vaB = va;
 
-                    Quad(SubmeshWall,
-                        new Vector3(a.x, va, a.y), new Vector3(b.x, va, b.y),
-                        new Vector3(b.x, vbB, b.y), new Vector3(a.x, vbA, a.y),
-                        nrm,
-                        WallUV(ua * len, va), WallUV(ub * len, va),
-                        WallUV(ub * len, vbB), WallUV(ua * len, vbA));
+                    // Una celda que se cierra en UN extremo es un TRIÁNGULO, y hay que emitirlo
+                    // como tal. Emitirla igual como cuadrado deja un triángulo de área cero cuyas
+                    // aristas cuentan igual: la arista buena pasa de usarse dos veces a cuatro y
+                    // la sala deja de ser estanca. Con el techo inclinado pasa en la fila de
+                    // arriba, justo donde el remate alcanza el corte de su propia fila.
+                    bool aFlat = vbA - vaA < 1e-5f;
+                    bool bFlat = vbB - vaB < 1e-5f;
+                    if (aFlat && bFlat) continue;
+
+                    // La V de la textura es la altura REAL de cada esquina, no la del corte: con
+                    // una esquina estirada, usar la constante deja la trama pisada justo en la
+                    // fila que se estira.
+                    var pA0 = new Vector3(a.x, vaA, a.y);
+                    var pB0 = new Vector3(b.x, vaB, b.y);
+                    var pB1 = new Vector3(b.x, vbB, b.y);
+                    var pA1 = new Vector3(a.x, vbA, a.y);
+                    Vector2 uA0 = WallUV(ua * len, vaA), uB0 = WallUV(ub * len, vaB);
+                    Vector2 uB1 = WallUV(ub * len, vbB), uA1 = WallUV(ua * len, vbA);
+
+                    if (aFlat) WallTri(pA0, pB0, pB1, nrm, uA0, uB0, uB1);
+                    else if (bFlat) WallTri(pA0, pB0, pA1, nrm, uA0, uB0, uA1);
+                    else Quad(SubmeshWall, pA0, pB0, pB1, pA1, nrm, uA0, uB0, uB1, uA1);
                 }
             }
         }
@@ -851,6 +874,278 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// bloques y peldaños salen todos de aquí, y por eso ninguno puede romper la estanqueidad
         /// del resto — cada uno es su propia superficie cerrada dentro de la cavidad.
         /// </summary>
+        private static readonly List<List<Vector2>> _platPieces = new List<List<Vector2>>();
+        private static readonly List<Vector2> _platSrc = new List<Vector2>();
+        private static readonly List<float> _platH = new List<float>();
+        private static readonly List<Vector2> _platVerts = new List<Vector2>();
+        private static readonly List<int> _platIdx = new List<int>();
+
+        /// <summary>
+        /// Una plataforma: el polígono del autor, recortado contra la planta, levantado por sus
+        /// alturas y cerrado por los lados y por abajo.
+        ///
+        /// Cada trozo del recorte se emite como su PROPIO sólido cerrado. Suena a desperdicio y no
+        /// lo es: los trozos son disjuntos, así que la suma de sólidos cerrados sigue siendo una
+        /// malla cerrada, y las caras que quedan entre trozo y trozo caen dentro del volumen, donde
+        /// no se ven. Coserlos en uno solo pediría un clipper de verdad y no compra nada visible.
+        /// </summary>
+        private static void AddPlatform(RoomDefinition.Platform plat, Vector2[] contour, float baseY)
+        {
+            _platSrc.Clear();
+            _platH.Clear();
+            foreach (var pt in plat.points)
+            {
+                _platSrc.Add(pt.position);
+                _platH.Add(Mathf.Max(0f, pt.height));
+            }
+
+            // Un polígono que se cruza a sí mismo no se puede recortar ni triangular. Se deja
+            // pasar sin emitir nada en vez de reventar: el autor está arrastrando puntos con el
+            // ratón y va a cruzarlos sin querer cada dos por tres.
+            if (Mathf.Abs(PolygonClipper.SignedArea(_platSrc)) < 0.01f) return;
+
+            if (!PolygonClipper.Clip(_platSrc, contour, _platPieces)) return;
+
+            // TODOS los trozos se juntan en UNA sopa de triángulos y se emiten como un solo
+            // sólido. Emitir cada trozo por su cuenta —que fue el primer intento— parece más
+            // simple y no lo es: los trozos comparten costuras, y hay que acertar en cuáles NO
+            // poner faja. En planta cóncava eso falla, y una arista acaba usada tres veces.
+            //
+            // Con la sopa entera delante, la pregunta se contesta sola y sin heurística: una arista
+            // que pertenece a UN triángulo es del borde y lleva faja; una que pertenece a DOS es
+            // interior, y sus dos triángulos ya la cierran entre ellos.
+            _platTris.Clear();
+            _platSeen.Clear();
+            foreach (var piece in _platPieces)
+            {
+                _platVerts.Clear();
+                _platIdx.Clear();
+                if (!PolygonTriangulator.Triangulate(piece, null, _platVerts, _platIdx)) continue;
+                for (int i = 0; i + 2 < _platIdx.Count; i += 3)
+                {
+                    // Redondeados a la MISMA rejilla con la que luego se cuentan las aristas.
+                    //
+                    // Es la pieza que faltaba, y sin ella la cuenta miente: dos triángulos vecinos
+                    // se reconocían como compartiendo una arista —porque la clave iba redondeada—
+                    // pero luego cada uno la dibujaba en un sitio ligeramente distinto, así que en
+                    // la malla eran dos aristas sueltas. Redondeando la geometría, la cuenta y lo
+                    // que se emite hablan por fin de lo mismo.
+                    Vector2 a = PolygonClipper.Snap(_platVerts[_platIdx[i]]);
+                    Vector2 b = PolygonClipper.Snap(_platVerts[_platIdx[i + 1]]);
+                    Vector2 c = PolygonClipper.Snap(_platVerts[_platIdx[i + 2]]);
+
+                    // Un triángulo que el redondeo ha dejado sin área no aporta superficie y sí
+                    // aristas: fuera.
+                    if (Mathf.Abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) < 1e-6f)
+                        continue;
+
+                    // Y fuera también el REPETIDO. La triangulación de una planta cóncava puede
+                    // devolver el mismo triángulo dos veces (su segunda pasada, la de las orejas
+                    // planas, es capaz de volver a sacar uno ya sacado). Emitirlo dos veces duplica
+                    // sus tres aristas EN EL MISMO SENTIDO, que es la firma inconfundible de
+                    // geometría repetida: dos caras encima de la otra, y la malla deja de cerrar.
+                    if (!_platSeen.Add(TriKey(a, b, c))) continue;
+
+                    // Y fuera el SOLAPADO, que el descarte por repetido exacto no ve. La
+                    // triangulación de una planta cóncava puede devolver triángulos que se pisan
+                    // entre ellos sin ser idénticos, y entonces el recorte da dos trozos encima del
+                    // otro: superficie duplicada, aristas por duplicado y malla abierta.
+                    //
+                    // Basta con mirar el centro: dos triángulos que solo comparten un lado nunca se
+                    // contienen el centro el uno al otro, así que esto no puede tirar geometría
+                    // buena.
+                    var centre = (a + b + c) / 3f;
+                    bool covered = false;
+                    foreach (var prev in _platTris)
+                        if (PointInTri(centre, prev.A, prev.B, prev.C)) { covered = true; break; }
+                    if (covered) continue;
+
+                    // TODOS con el mismo sentido de giro. Con eso, la dirección de FUERA de una
+                    // arista del borde deja de ser algo que adivinar —mirando hacia dónde cae el
+                    // centro del triángulo, que en una forma cóncava se equivoca— y pasa a leerse
+                    // del propio giro: recorriendo la arista, fuera queda siempre al mismo lado.
+                    if ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x) < 0f)
+                        (b, c) = (c, b);
+
+                    _platTris.Add(new Tri2(a, b, c));
+                }
+            }
+            if (_platTris.Count == 0) return;
+
+            AddPlatformSolid(baseY);
+        }
+
+        /// <summary>Un triángulo de la planta de una plataforma, ya recortado.</summary>
+        private struct Tri2
+        {
+            public readonly Vector2 A, B, C;
+            public Tri2(Vector2 a, Vector2 b, Vector2 c) { A = a; B = b; C = c; }
+            public Vector2 Centre => (A + B + C) / 3f;
+        }
+
+        private static readonly List<Tri2> _platTris = new List<Tri2>();
+        private static readonly Dictionary<long, int> _platEdgeUse = new Dictionary<long, int>();
+        private static readonly Dictionary<long, (Vector2, Vector2)> _platEdgeDir = new Dictionary<long, (Vector2, Vector2)>();
+
+        /// <summary>
+        /// La plataforma entera: las dos tapas sobre cada triángulo, y faja vertical solo en las
+        /// aristas del BORDE.
+        /// </summary>
+        private static void AddPlatformSolid(float baseY)
+        {
+            float Top(Vector2 q) => baseY + PolygonClipper.HeightAt(q, _platSrc, _platH);
+
+            // Sin volumen no hay sólido, solo una lámina con las dos tapas pegadas y cada arista
+            // contando el doble de lo debido.
+            float tallest = 0f;
+            foreach (var t in _platTris)
+                tallest = Mathf.Max(tallest,
+                    Mathf.Max(Top(t.A), Mathf.Max(Top(t.B), Top(t.C))) - baseY);
+            if (tallest < 1e-4f) return;
+
+            _platEdgeUse.Clear();
+            _platEdgeDir.Clear();
+            foreach (var t in _platTris)
+            {
+                CountEdge(t.A, t.B);
+                CountEdge(t.B, t.C);
+                CountEdge(t.C, t.A);
+            }
+
+            foreach (var t in _platTris)
+            {
+                // Arriba: la cara que se ve y se pisa. Cada triángulo con su propia inclinación,
+                // así que con su normal y sus UV (ver Face).
+                Face(SubmeshFloor, new Vector3(t.A.x, Top(t.A), t.A.y),
+                    new Vector3(t.B.x, Top(t.B), t.B.y), new Vector3(t.C.x, Top(t.C), t.C.y),
+                    Vector3.up);
+
+                // Abajo: contra la losa, plana. Cierra el sólido por debajo.
+                Face(SubmeshWall, V(t.A, baseY), V(t.B, baseY), V(t.C, baseY), Vector3.down);
+            }
+
+            foreach (var kv in _platEdgeUse)
+            {
+                if (kv.Value != 1) continue;                  // interior: ya la cierran sus tapas
+                if (!_platEdgeDir.TryGetValue(kv.Key, out var dir)) continue;
+
+                // En el sentido en que la recorre SU triángulo, que va girado como todos los demás.
+                Vector2 a = dir.Item1, b = dir.Item2;
+
+                float ta = Top(a), tb = Top(b);
+                bool aFlat = ta - baseY < 1e-4f, bFlat = tb - baseY < 1e-4f;
+                if (aFlat && bFlat) continue;
+
+                // Fuera queda a un lado fijo de ese recorrido. Sin sentido común que adivinar.
+                Vector3 e = new Vector3(b.x - a.x, 0f, b.y - a.y);
+                var nrm = new Vector3(e.z, 0f, -e.x).normalized;
+
+                Vector3 pa0 = V(a, baseY), pb0 = V(b, baseY);
+                Vector3 pa1 = V(a, ta), pb1 = V(b, tb);
+
+                if (aFlat)
+                    WallTri(pa0, pb0, pb1, nrm, EdgeUV(pa0, nrm), EdgeUV(pb0, nrm), EdgeUV(pb1, nrm));
+                else if (bFlat)
+                    WallTri(pa0, pb0, pa1, nrm, EdgeUV(pa0, nrm), EdgeUV(pb0, nrm), EdgeUV(pa1, nrm));
+                else Quad(SubmeshWall, pa0, pb0, pb1, pa1, nrm);
+            }
+        }
+
+        private static readonly HashSet<(long, long, long)> _platSeen = new HashSet<(long, long, long)>();
+
+        /// <summary>Punto ESTRICTAMENTE dentro de un triángulo. Estrictamente: un punto sobre un
+        /// lado pertenece igual a los dos triángulos que lo comparten, y ahí no hay solape.</summary>
+        private static bool PointInTri(Vector2 p, Vector2 a, Vector2 b, Vector2 c)
+        {
+            float d1 = Side(p, a, b), d2 = Side(p, b, c), d3 = Side(p, c, a);
+            bool neg = d1 < -1e-6f || d2 < -1e-6f || d3 < -1e-6f;
+            bool pos = d1 > 1e-6f || d2 > 1e-6f || d3 > 1e-6f;
+            return !(neg && pos);
+        }
+
+        private static float Side(Vector2 p, Vector2 a, Vector2 b) =>
+            (p.x - b.x) * (a.y - b.y) - (a.x - b.x) * (p.y - b.y);
+
+        /// <summary>Los tres vértices ORDENADOS, para que el mismo triángulo dé la misma clave
+        /// llegue como llegue.</summary>
+        private static (long, long, long) TriKey(Vector2 a, Vector2 b, Vector2 c)
+        {
+            long ka = PointKey(a), kb = PointKey(b), kc = PointKey(c);
+            if (ka > kb) (ka, kb) = (kb, ka);
+            if (kb > kc) (kb, kc) = (kc, kb);
+            if (ka > kb) (ka, kb) = (kb, ka);
+            return (ka, kb, kc);
+        }
+
+        private static void CountEdge(Vector2 a, Vector2 b)
+        {
+            long key = EdgeKey(a, b);
+            _platEdgeUse.TryGetValue(key, out int n);
+            _platEdgeUse[key] = n + 1;
+            // El sentido en que la recorre su triángulo. Solo importa en las del borde, que las
+            // recorre uno solo; en las de dentro, la última gana y da igual — no se usan.
+            _platEdgeDir[key] = (a, b);
+        }
+
+        /// <summary>
+        /// Clave de una arista, sin dirección y redondeada a décimas de milímetro.
+        ///
+        /// El redondeo es el que hace que la cuenta signifique algo: dos triángulos vecinos
+        /// calculan su arista común por caminos distintos y la coma flotante los deja casi iguales
+        /// pero no iguales. Casi no sirve — una arista interior que no se reconozca como tal se
+        /// lleva su faja y rompe la malla.
+        /// </summary>
+        private static long EdgeKey(Vector2 a, Vector2 b)
+        {
+            long ka = PointKey(a), kb = PointKey(b);
+            long lo = System.Math.Min(ka, kb), hi = System.Math.Max(ka, kb);
+            return lo * 1_000_003L + hi;
+        }
+
+        private static long PointKey(Vector2 p) =>
+            (long)Mathf.Round(p.x * 10000f) * 100_000_000L + (long)Mathf.Round(p.y * 10000f);
+
+
+        /// <summary>UV de una cara vertical, medidas a lo largo de ella y en altura — la misma
+        /// regla que usa <see cref="Quad(int,Vector3,Vector3,Vector3,Vector3,Vector3)"/>, sacada
+        /// aparte para poder dársela también a un triángulo.</summary>
+        private static Vector2 EdgeUV(Vector3 p, Vector3 normal)
+        {
+            var dir = new Vector2(-normal.z, normal.x).normalized;
+            return new Vector2(p.x * dir.x + p.z * dir.y, p.y) / GridVisualConstants.TileSize;
+        }
+
+        /// <summary>
+        /// Un triángulo con la normal SUYA —la de su plano— y las UV medidas sobre ese plano.
+        ///
+        /// Las dos cosas por el mismo motivo: la cara inclinada de una plataforma no es ni
+        /// vertical ni horizontal. Darle una normal fija la sombrearía como si fuese plana, y
+        /// proyectar las UV sobre los ejes del mundo le aprieta la textura, porque su sombra en
+        /// planta mide menos que ella. Con ejes propios, un metro de cara es un metro de textura
+        /// caiga como caiga.
+        /// </summary>
+        /// <param name="outward">Hacia dónde tiene que mirar, aproximadamente. Solo se usa para
+        /// elegir el signo — arriba para la tapa de encima, abajo para la de debajo.</param>
+        private static void Face(int submesh, Vector3 a, Vector3 b, Vector3 c, Vector3 outward)
+        {
+            Vector3 nrm = Vector3.Cross(b - a, c - a);
+            if (nrm.sqrMagnitude < 1e-12f) return;
+            nrm.Normalize();
+            if (Vector3.Dot(nrm, outward) < 0f) nrm = -nrm;
+
+            const float T = GridVisualConstants.TileSize;
+            Vector3 uAxis = (b - a).normalized;
+            Vector3 vAxis = Vector3.Cross(nrm, uAxis);
+            Vector2 UV(Vector3 q) =>
+                new Vector2(Vector3.Dot(q - a, uAxis), Vector3.Dot(q - a, vAxis)) / T;
+
+            int i0 = _verts.Count;
+            AddVertex(a, nrm, UV(a));
+            AddVertex(b, nrm, UV(b));
+            AddVertex(c, nrm, UV(c));
+            Tri(submesh, i0, i0 + 1, i0 + 2, nrm);
+        }
+
         private static void AddClosedPrism(Vector2[] poly, float y0, float y1)
         {
             int n = poly.Length;
@@ -1377,6 +1672,18 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddVertex(d, normal, ud);
             Tri(submesh, i0, i0 + 1, i0 + 2, normal);
             Tri(submesh, i0, i0 + 2, i0 + 3, normal);
+        }
+
+        /// <summary>Un triángulo de pared con sus UV ya calculadas. Es lo que emite una celda que
+        /// se cierra en un extremo — ver el porqué en <see cref="AddPanel"/>.</summary>
+        private static void WallTri(Vector3 a, Vector3 b, Vector3 c, Vector3 normal,
+            Vector2 ua, Vector2 ub, Vector2 uc)
+        {
+            int i0 = _verts.Count;
+            AddVertex(a, normal, ua);
+            AddVertex(b, normal, ub);
+            AddVertex(c, normal, uc);
+            Tri(SubmeshWall, i0, i0 + 1, i0 + 2, normal);
         }
 
         private static void AddVertex(Vector3 p, Vector3 n, Vector2 uv)
