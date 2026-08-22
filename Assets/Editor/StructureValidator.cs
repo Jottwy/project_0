@@ -26,13 +26,15 @@ namespace BackroomsSurvival.EditorTools
     {
         private const string ResourcePath = "Structures/default_structures";
 
-        // Characters accepted in a pattern cell. Mirrors the switch in
-        // ProceduralWorldGenerator.TryPlaceStructures (W C O P T). Any other
-        // character is dropped by the generator, so it is an authoring error.
+        // Characters accepted in a pattern cell (W C O P T), the vocabulary documented in
+        // docs/STRUCTURES.md. The runtime consumer (`ProceduralWorldGenerator.TryPlaceStructures`)
+        // was retired with the client-side generator; the JSON and `StructureDefinition` stay as
+        // documentation-as-code (DEBT-ROADMAP §1), so this lint only guards that authored contract.
         private static readonly HashSet<string> ValidCells =
             new HashSet<string> { "W", "C", "O", "P", "T" };
 
-        // Tile grid is 10×10 per chunk (ProceduralWorldGenerator: Cells/2).
+        // Tile grid of the authored patterns: 10×10 tiles of 5 m per 50 m chunk (the legacy
+        // grid the structures were written against, not the 2.5 m grid_gen tiles).
         private const int ChunkTiles = 10;
 
         // Layers are 0..3 → up to 4 stacked layers.
