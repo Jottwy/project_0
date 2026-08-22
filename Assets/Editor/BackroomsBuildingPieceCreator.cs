@@ -1254,31 +1254,34 @@ namespace BackroomsSurvival.EditorTools
                     }
                 }
 
-                // One-time migration (2026-08-22, E3f): Joel hand-raised each tier's anchors
-                // (0.06→0.1, 0.53565→0.78, 1.0113→1.352) to compensate for a bug that's real but was
-                // in the wrong place to fix by moving anchors — every pickup's PIVOT sits at its own
-                // centre, not its base, so the item was sinking half its height into the shelf
-                // regardless of where the anchor sat. That's now fixed at the source
-                // (ItemPickupOrientation.PivotHalfHeightFor, applied in StorageRackDisplay itself),
-                // so his three empirical Y values would now DOUBLE the correction and float the items
-                // too high. Reset only anchors still at exactly one of those three known values back
-                // to the formula baseline for their tier — never touches X/Z, rotation, or anything
-                // else Joel placed (the WoodenTable dressing stays exactly where he put it).
-                int yReset = 0;
+                // REVERTED 2026-08-22 (E3g): the E3f migration below this comment used to reset
+                // Joel's hand-tuned anchor Y (0.1/0.78/1.352 per tier) back to the formula baseline,
+                // reasoning that ItemPickupOrientation.PivotHalfHeightFor made them redundant. Wrong
+                // call — Joel: "debian conservar esos valores porque estaban bien posicionados". His
+                // values were already correct for what he was looking at; touching a value he'd
+                // already validated without asking first is exactly what [[no-tocar-valores-ya-validados]]
+                // (memory) says not to do. This migration now does the OPPOSITE, once: restore
+                // exactly those three Y values on anchors currently sitting at the plain formula
+                // baseline (i.e. still showing the effect of the mistaken reset), then never touch Y
+                // again — same "never regenerate what a human already touched" contract as everything
+                // else in this method.
+                int yRestored = 0;
+                float[] restoreY = { 0.1f, 0.78f, 1.352f };
                 for (int i = 0; i < previousSize; i++)
                 {
                     var anchorProp = anchors.GetArrayElementAtIndex(i).objectReferenceValue as Transform;
                     if (anchorProp == null)
                         continue;
-                    float y = anchorProp.localPosition.y;
-                    bool isKnownOverride = Mathf.Approximately(y, 0.1f) || Mathf.Approximately(y, 0.78f)
-                                            || Mathf.Approximately(y, 1.352f);
-                    if (!isKnownOverride)
+                    int tier = i / StorageRackSlotsPerTier;
+                    if (tier >= restoreY.Length)
                         continue;
+                    float baseline = StorageRackAnchorLocalPosition(i).y;
+                    if (!Mathf.Approximately(anchorProp.localPosition.y, baseline))
+                        continue; // already something other than the mistaken reset — leave it alone
                     var p = anchorProp.localPosition;
-                    p.y = StorageRackAnchorLocalPosition(i).y;
+                    p.y = restoreY[tier];
                     anchorProp.localPosition = p;
-                    yReset++;
+                    yRestored++;
                 }
 
                 serialized.ApplyModifiedPropertiesWithoutUndo();
@@ -1293,8 +1296,8 @@ namespace BackroomsSurvival.EditorTools
                           (migrated > 0
                               ? $" Migrated {migrated} anchor(s) off the old blanket rotation back to identity."
                               : "") +
-                          (yReset > 0
-                              ? $" Reset {yReset} anchor(s) off Joel's pre-pivot-fix Y bump back to the formula baseline."
+                          (yRestored > 0
+                              ? $" Restored {yRestored} anchor(s) to Joel's original Y (undoing the mistaken E3f reset)."
                               : "") +
                           " Drag ShelfAnchor_NN children in the Inspector to nudge position/rotation.");
             }

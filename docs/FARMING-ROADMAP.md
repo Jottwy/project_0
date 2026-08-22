@@ -309,6 +309,27 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   botella y spray asentados sobre la madera, ni hundidos ni flotando, enviada a Joel.
 - Commit: `fix(building): el pivote del mesh esta al centro, no la base — items ya no se hunden en la balda`.
 
+### E3g. REVERTIDO: no había que tocar los valores de Joel (2026-08-22) — ⚠️ lección
+- **Error de proceso, no de cálculo.** El razonamiento de E3f (sus tres Y compensaban un bug que
+  ya está arreglado en código, así que quedarían duplicadas) era correcto, pero **actuar sobre eso
+  sin preguntar antes no lo era**: "debian conservar esos valores porque estaban bien
+  posicionados... JODER". Viola directamente la memoria [[no-tocar-valores-ya-validados]] — un
+  valor que Joel ya dio por bueno no se toca sin avisar, aunque el motivo técnico para tocarlo
+  parezca sólido. La combinación de motivos NO justifica saltarse la regla.
+- Revertido en el momento: los 24 anchors vuelven a sus tres valores originales (0,1 / 0,78 /
+  1,352), migración simétrica a la de E3f (mismo mecanismo, sentido contrario), verificada con
+  `git diff` mostrando el 1:1 exacto antes de dar por bueno.
+- **Estado actual, sin resolver todavía**: con sus valores restaurados MÁS el fix de pivote de E3f
+  (que sigue activo, no se ha tocado — eso sí es un fix de código real, no un valor de posición
+  suyo), los items quedan en `0,1 + 0,115 = 0,215` en vez de `0,06 + 0,115 = 0,175` — unos 4 cm más
+  altos que si solo llevaran el fix de pivote sin su ajuste manual. Puede que sea exactamente lo
+  que él quería (su ajuste + el fix combinados) o puede que ahora floten un poco. **No se ha
+  tocado nada más a raíz de esto — pendiente de que Joel lo vea en el juego y diga si hace falta
+  algo.**
+- **Regla operativa reforzada**: cuando el fix de un bug interactúa con un valor que el usuario ya
+  ajustó a mano, no asumir que el ajuste manual era (solo) un parche del mismo bug — preguntar
+  antes de tocarlo, aunque el cálculo cuadre. Esto entra en [[no-tocar-valores-ya-validados]].
+
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a
   `DoorFrameMetalCost` (5 en el script, o el valor que se decida en A3 — ver abajo) con un
