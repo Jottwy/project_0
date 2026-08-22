@@ -18,7 +18,7 @@ namespace BackroomsSurvival.UI
         public bool enablePoiDebugHud = false;
 #endif
 
-       
+
 
         private const float FallbackChunkSize = 50f;
         private const long Seed7778 = 7778L;
