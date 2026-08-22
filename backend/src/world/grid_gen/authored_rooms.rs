@@ -1865,7 +1865,7 @@ mod tests {
     ///
     ///     cargo test --manifest-path backend/Cargo.toml real_manifest_cadence -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn real_manifest_cadence() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -1947,7 +1947,7 @@ mod tests {
     ///
     ///     cargo test --manifest-path backend/Cargo.toml hunt_seed_with_room_near_spawn -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn hunt_seed_with_room_near_spawn() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2558,7 +2558,7 @@ mod tests {
     ///
     ///     PROBE_SEED=42 PROBE_RADIUS_M=10000 PROBE_PER_BAND=4 cargo test --manifest-path backend/Cargo.toml --release probe_room_map -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn probe_room_map() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -2683,7 +2683,7 @@ mod tests {
     ///
     ///     cargo test --manifest-path backend/Cargo.toml probe_neighbour_sweep_cost -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn probe_neighbour_sweep_cost() {
         require_no_global_manifest("probe_neighbour_sweep_cost");
         let m = manifest();
@@ -2730,7 +2730,7 @@ mod tests {
     ///
     ///     cargo test --manifest-path backend/Cargo.toml probe_unreachable_rooms -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn probe_unreachable_rooms() {
         require_no_global_manifest("probe_unreachable_rooms");
         // 5 y no 3: una sala de 2 x 2 chunks con la puerta en su lado lejano excava el tunel hacia
@@ -2857,7 +2857,7 @@ mod tests {
     ///
     ///     PROBE_SEED=157 PROBE_CX=-1 PROBE_CZ=-1 cargo test --manifest-path backend/Cargo.toml dump_chunk -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn dump_chunk() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),

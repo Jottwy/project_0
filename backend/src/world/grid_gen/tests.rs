@@ -2181,7 +2181,7 @@ fn walkable_fraction(grid: &LayerGrid) -> f64 {
 /// `cargo test --release layer0_openness_report -- --ignored --nocapture`
 /// para leer los números al calibrar `wide_chance`/`erode_chance`.
 #[test]
-#[ignore]
+#[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
 fn layer0_openness_report() {
     const SEEDS: u64 = 64;
     const CHUNKS: i32 = 3;

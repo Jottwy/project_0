@@ -511,7 +511,7 @@ mod tests {
     /// `#[ignore]`: es una medición, no una aserción de comportamiento. Correr con
     /// `cargo test -- --ignored corpse_view_wire_cost --nocapture`.
     #[test]
-    #[ignore]
+    #[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
     fn corpse_view_wire_cost() {
         let mut world = World::new(42);
         let pos = Vec3::new(10.0, 1.8, 20.0);

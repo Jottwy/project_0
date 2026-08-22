@@ -6883,7 +6883,7 @@ fn an_unknown_requester_position_grants_instead_of_rejecting() {
 /// estimando a ojo). Correr con:
 /// `cargo test measure_longest_sight_line -- --ignored --nocapture`
 #[test]
-#[ignore]
+#[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
 fn measure_longest_sight_line() {
     let mut cache = crate::world::grid_gen::GridGenChunkCache::with_rules(
         42,

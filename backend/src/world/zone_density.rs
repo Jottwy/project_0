@@ -830,7 +830,7 @@ mod tests {
     ///
     /// `WORLD_SEED=<n> cargo test list_buildable_rooms -- --ignored --nocapture`
     #[test]
-    #[ignore]
+    #[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
     fn list_buildable_rooms() {
         use crate::world::grid_gen::{room_in_chunk, CELL_SIZE_M, CHUNK_CELLS, ROOM_SIZE_M};
 

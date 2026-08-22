@@ -693,13 +693,13 @@ fn ascii_export_is_deterministic_and_symbolic() {
 }
 
 #[test]
-#[ignore]
+#[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
 fn print_level0_ascii_seed_42() {
     println!("{}", export_level0_ascii(42));
 }
 
 #[test]
-#[ignore]
+#[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
 fn print_level0_ascii_seed_7778() {
     println!("{}", export_level0_ascii(7778));
 }

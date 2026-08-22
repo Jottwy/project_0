@@ -331,7 +331,7 @@ mod tests {
     ///
     ///     cargo test --manifest-path backend/Cargo.toml real_repo_manifest -- --ignored --nocapture
     #[test]
-    #[ignore]
+    #[ignore = "sonda contra el manifiesto real del repo: de una en una, con -- --ignored --nocapture"]
     fn real_repo_manifest_parses() {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
