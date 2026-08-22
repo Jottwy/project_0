@@ -171,6 +171,54 @@ namespace BackroomsSurvival.EditorTools
         private const string DoorOpenAudioPath = "Assets/PolymindGames/STP/Audio/SFX/Interactables/STP_Door_Open.wav";
         private const string DoorCloseAudioPath = "Assets/PolymindGames/STP/Audio/SFX/Interactables/STP_Door_Close.wav";
 
+        // Metal shelf, imported 2026-08-17. Free-standing storage piece — unlike the wall/door frame
+        // it does not conform to the 5 x 4 x 0.2 grid slot, so it is a FreeBuildingPiece (same base
+        // as the claim marker) rather than GridWallBuildingPiece. FARMING-ROADMAP.md bloque E.
+        private const string StorageRackPrefabPath = PrefabFolder + "/BR_BuildingPiece_StorageRack.prefab";
+        private const string StorageRackDefinitionPath = DefinitionFolder + "/BR_Storage Rack.asset";
+
+        private const string StorageRackSourceFbxPath =
+            "Assets/MeshyImports/metal-shelf-gamemesh_20260817_205927/" +
+            "Meshy_AI_metal_shelf_gamemesh_0817185423_texture.fbx";
+        private const string StorageRackSourceBaseColorPath =
+            "Assets/MeshyImports/metal-shelf-gamemesh_20260817_205927/meshy_basecolor.png";
+        private const string StorageRackSourceMetallicPath =
+            "Assets/MeshyImports/metal-shelf-gamemesh_20260817_205927/meshy_metallic_smoothness.png";
+
+        // Baked, versioned copy — Assets/MeshyImports/ is gitignored, see meshy-imports-gitignored-bake.
+        private const string StorageRackBakedFolder = "Assets/Art/Building/StorageRack";
+        private const string StorageRackBakedMeshPath = StorageRackBakedFolder + "/BR_StorageRack_Mesh.asset";
+        private const string StorageRackBakedBaseColorPath = StorageRackBakedFolder + "/BR_StorageRack_BaseColor.png";
+        private const string StorageRackBakedMetallicPath = StorageRackBakedFolder + "/BR_StorageRack_Metallic.png";
+        private const string StorageRackBakedMaterialPath = StorageRackBakedFolder + "/BR_StorageRack_Mat.mat";
+        private const int StorageRackBakedTextureSize = 1024;
+
+        // Measured once (Backrooms ▸ Diagnostics ▸ Measure Storage Rack, 2026-08-22) against this
+        // specific import: world size once the FBX's own node rotation (270° on X) and scale (x100,
+        // the same Meshy unit-conversion leftover as the door frame) are applied. Unlike the door
+        // frame, this piece does NOT get re-scaled to fit a fixed slot — a free-standing rack is not
+        // bound to the wall grid, and the native size already reads as a real shelving unit — so
+        // these doubles as both the "native" and the FINAL baked size (extra scale factor of 1).
+        // Re-export from Meshy and these need re-measuring.
+        private const float StorageRackWidth = 1.4527f;   // X
+        private const float StorageRackHeight = 1.9026f;  // Y
+        private const float StorageRackDepth = 0.6049f;   // Z (thin axis)
+
+        // TODO(balance): first pass, never played. Between the wall (4) and the claim marker (6) —
+        // FARMING-ROADMAP.md D4.
+        private const int StorageRackMetalCost = 4;
+
+        // Read off the front-view probe screenshot (Temp/claude_rack_shot.png, 2026-08-22): an open
+        // tube frame, no back/side panels, four evenly spaced open tiers (not three — the top rail
+        // and three shelf boards below it bound four compartments). FARMING-ROADMAP.md D3: range is
+        // 12-16 with a floor of 12; picking the top of the range (4 per tier) because the rack reads
+        // as OPEN wire shelving and Joel wants the "items visibly placed" effect to read as full.
+        // Not yet wired to anything — StorageRackDisplay (bloque E, tarea E3) is what will actually
+        // use this to size its shelf-anchor array; kept here now so E1's measurement is not re-done.
+        private const int StorageRackTierCount = 4;
+        private const int StorageRackSlotsPerTier = 4;
+        private const int StorageRackSlots = StorageRackTierCount * StorageRackSlotsPerTier;
+
         [MenuItem("Backrooms/Create Building Pieces")]
         public static void CreateIfMissing()
         {
@@ -179,6 +227,7 @@ namespace BackroomsSurvival.EditorTools
             CreateClaimMarkerIfMissing();
             CreateDoorFrameIfMissing();
             CreateDoorLeafIfMissing();
+            CreateStorageRackIfMissing();
         }
 
         /// <summary>
@@ -953,6 +1002,350 @@ namespace BackroomsSurvival.EditorTools
             var field = serialized.FindProperty(fieldName);
             field.FindPropertyRelative("Clip").objectReferenceValue = clip;
             field.FindPropertyRelative("Volume").floatValue = 1f;
+        }
+
+        /// <summary>
+        /// Authors the storage rack: same crear-si-falta contract and def_id-on-the-wire hazard as
+        /// every other piece here — COMMIT BOTH GENERATED ASSETS (the definition AND the baked
+        /// mesh/textures under <see cref="StorageRackBakedFolder"/>, which live outside
+        /// Assets/MeshyImports/ so a fresh clone actually renders them). FreeBuildingPiece, not
+        /// GridWallBuildingPiece — this piece stands on its own, it is not a wall-slot alternate.
+        /// StorageStation (the actual container) is FARMING-ROADMAP.md tarea E2, added on top of
+        /// this prefab later — this menu only gets the piece placeable and costed.
+        /// </summary>
+        private static void CreateStorageRackIfMissing()
+        {
+            var existingDefinition = AssetDatabase.LoadAssetAtPath<BuildingPieceDefinition>(StorageRackDefinitionPath);
+            var existingPrefab = AssetDatabase.LoadAssetAtPath<GameObject>(StorageRackPrefabPath);
+            if (existingDefinition != null && existingPrefab != null)
+            {
+                Debug.Log($"[BackroomsBuildingPieceCreator] '{StorageRackDefinitionPath}' and " +
+                          $"'{StorageRackPrefabPath}' already exist — left untouched (the definition id is on " +
+                          "the wire; regenerating it would break replication).");
+                return;
+            }
+
+            if (existingDefinition != null || existingPrefab != null)
+            {
+                Debug.LogError("[BackroomsBuildingPieceCreator] Half the storage-rack pair exists " +
+                               $"(definition={existingDefinition != null}, prefab={existingPrefab != null}). " +
+                               "Refusing to regenerate: recreating the definition would mint a new def_id, " +
+                               "recreating the prefab would orphan the existing one. Delete the survivor by hand " +
+                               "and re-run, or restore the missing file from git.");
+                return;
+            }
+
+            var metal = ResolveBuildMaterial(MetalMaterialName);
+            if (metal == null)
+                return;
+
+            if (!TryResolveShared(out var category, out var placeEffects, out var constructEffects))
+                return;
+
+            EnsureFolders();
+            BackroomsEditorFolders.EnsureFolder("Assets/Art");
+            BackroomsEditorFolders.EnsureFolder("Assets/Art/Building");
+            BackroomsEditorFolders.EnsureFolder(StorageRackBakedFolder);
+
+            var mesh = BakeStorageRackMesh();
+            if (mesh == null)
+                return;
+
+            var material = BakeStorageRackMaterial();
+            if (material == null)
+                return;
+
+            var definition = CreateDefinition(StorageRackDefinitionPath, category, placeEffects, constructEffects,
+                "A steel shelving unit, four open tiers. Free-standing — does not snap to the wall grid.");
+            var prefab = CreateStorageRackPrefab(definition, metal, mesh, material);
+            AssignPrefabToDefinition(definition, prefab);
+
+            BuildingPieceDefinition.ReloadDefinitions_EditorOnly();
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+            Debug.Log($"[BackroomsBuildingPieceCreator] Created '{StorageRackDefinitionPath}' " +
+                      $"(def_id={definition.Id}) and '{StorageRackPrefabPath}' — {StorageRackMetalCost}× " +
+                      $"{MetalMaterialName}, category '{category.Name}'. COMMIT BOTH plus everything under " +
+                      $"'{StorageRackBakedFolder}'. Not yet a container — StorageStation is a separate step " +
+                      "(FARMING-ROADMAP.md tarea E2).");
+        }
+
+        private static void ConfigureStorageRackModelImport()
+        {
+            var importer = AssetImporter.GetAtPath(StorageRackSourceFbxPath) as ModelImporter;
+            if (importer == null)
+            {
+                Debug.LogWarning($"[BackroomsBuildingPieceCreator] '{StorageRackSourceFbxPath}' has no ModelImporter.");
+                return;
+            }
+
+            bool dirty = false;
+            if (importer.materialImportMode != ModelImporterMaterialImportMode.None)
+            {
+                importer.materialImportMode = ModelImporterMaterialImportMode.None;
+                dirty = true;
+            }
+            if (importer.importAnimation) { importer.importAnimation = false; dirty = true; }
+            if (importer.importCameras) { importer.importCameras = false; dirty = true; }
+            if (importer.importLights) { importer.importLights = false; dirty = true; }
+            if (!importer.isReadable) { importer.isReadable = true; dirty = true; }
+            // Off, not the default: mesh compression quantizes positions RELATIVE TO THE IMPORT BOX,
+            // and this bake rewrites the vertices afterward — same trap as the door frame's bake.
+            if (importer.meshCompression != ModelImporterMeshCompression.Off)
+            {
+                importer.meshCompression = ModelImporterMeshCompression.Off;
+                dirty = true;
+            }
+            if (!importer.optimizeMeshPolygons) { importer.optimizeMeshPolygons = true; dirty = true; }
+            if (!importer.optimizeMeshVertices) { importer.optimizeMeshVertices = true; dirty = true; }
+
+            if (!dirty) return;
+            importer.SaveAndReimport();
+        }
+
+        /// <summary>
+        /// Bakes the rack FBX into a versioned <c>.asset</c> mesh at its FINAL world size. Unlike
+        /// <see cref="BakeDoorFrameMesh"/> the extra scale factor here is 1 on every axis — see the
+        /// comment on <see cref="StorageRackWidth"/>: this piece keeps the size Meshy exported once
+        /// the node's own rotation/scale correction is applied, it is not stretched onto a grid slot.
+        /// The mesh is baked CENTRED on its own origin (matching how the raw import measured); the
+        /// prefab builder below lifts it onto the floor with a child transform offset, same trick as
+        /// the door frame's "Model" child.
+        /// </summary>
+        private static Mesh BakeStorageRackMesh()
+        {
+            var sourceAsset = AssetDatabase.LoadAssetAtPath<GameObject>(StorageRackSourceFbxPath);
+            if (sourceAsset == null)
+            {
+                Debug.LogError($"[BackroomsBuildingPieceCreator] Storage rack FBX missing at " +
+                               $"'{StorageRackSourceFbxPath}'. Nothing created.");
+                return null;
+            }
+
+            ConfigureStorageRackModelImport();
+
+            var temp = (GameObject)Object.Instantiate(sourceAsset);
+            Mesh baked;
+            try
+            {
+                var filter = temp.GetComponentInChildren<MeshFilter>();
+                if (filter == null || filter.sharedMesh == null)
+                {
+                    Debug.LogError($"[BackroomsBuildingPieceCreator] '{StorageRackSourceFbxPath}' has no readable " +
+                                   "MeshFilter. Nothing created.");
+                    return null;
+                }
+
+                // The node's own authored rotation/scale (identity parent, so world == local here).
+                var rotation = filter.transform.rotation;
+                var unitScale = filter.transform.lossyScale;
+
+                baked = Object.Instantiate(filter.sharedMesh);
+                baked.name = "BR_StorageRack_Mesh";
+
+                var vertices = baked.vertices;
+                for (int i = 0; i < vertices.Length; i++)
+                    vertices[i] = rotation * Vector3.Scale(vertices[i], unitScale);
+                baked.vertices = vertices;
+
+                var normals = baked.normals;
+                if (normals != null && normals.Length == vertices.Length)
+                {
+                    for (int i = 0; i < normals.Length; i++)
+                        normals[i] = (rotation * normals[i]).normalized;
+                    baked.normals = normals;
+                }
+
+                var tangents = baked.tangents;
+                if (tangents != null && tangents.Length == vertices.Length)
+                {
+                    for (int i = 0; i < tangents.Length; i++)
+                    {
+                        var t = tangents[i];
+                        var xyz = (rotation * Vector3.Scale(new Vector3(t.x, t.y, t.z), unitScale)).normalized;
+                        tangents[i] = new Vector4(xyz.x, xyz.y, xyz.z, t.w);
+                    }
+                    baked.tangents = tangents;
+                }
+
+                baked.RecalculateBounds();
+            }
+            finally
+            {
+                Object.DestroyImmediate(temp);
+            }
+
+            var existing = AssetDatabase.LoadAssetAtPath<Mesh>(StorageRackBakedMeshPath);
+            if (existing == null)
+            {
+                AssetDatabase.CreateAsset(baked, StorageRackBakedMeshPath);
+                AssetDatabase.SaveAssets();
+                Debug.Log($"[BackroomsBuildingPieceCreator] Storage rack mesh baked to " +
+                          $"'{StorageRackBakedMeshPath}' (bounds size {baked.bounds.size}).");
+                return baked;
+            }
+
+            // Overwritten in place, not deleted and recreated: a fresh GUID would break every
+            // reference into this asset on the next run.
+            EditorUtility.CopySerialized(baked, existing);
+            Object.DestroyImmediate(baked);
+            EditorUtility.SetDirty(existing);
+            AssetDatabase.SaveAssets();
+            AssetDatabase.ImportAsset(StorageRackBakedMeshPath, ImportAssetOptions.ForceUpdate);
+            var reloaded = AssetDatabase.LoadAssetAtPath<Mesh>(StorageRackBakedMeshPath);
+            Debug.Log($"[BackroomsBuildingPieceCreator] Storage rack mesh re-baked at " +
+                      $"'{StorageRackBakedMeshPath}' (same GUID), bounds size {reloaded.bounds.size}.");
+            return reloaded;
+        }
+
+        /// <summary>
+        /// Bakes one source texture (read UNCOMPRESSED and linear) down to
+        /// <see cref="StorageRackBakedTextureSize"/> px, then restores the source import settings.
+        /// Mirrors <see cref="BakeDoorFrameTexture"/>.
+        /// </summary>
+        private static void BakeStorageRackTexture(string sourcePath, string bakedPath, bool sRgb)
+        {
+            var importer = AssetImporter.GetAtPath(sourcePath) as TextureImporter;
+            if (importer == null)
+            {
+                Debug.LogWarning($"[BackroomsBuildingPieceCreator] No texture at '{sourcePath}' — storage rack " +
+                                 "baked without it.");
+                return;
+            }
+
+            var prevType = importer.textureType;
+            var prevCompression = importer.textureCompression;
+            bool prevReadable = importer.isReadable;
+            bool prevSrgb = importer.sRGBTexture;
+            int prevMax = importer.maxTextureSize;
+
+            try
+            {
+                importer.textureType = TextureImporterType.Default;
+                importer.textureCompression = TextureImporterCompression.Uncompressed;
+                importer.isReadable = true;
+                importer.sRGBTexture = sRgb;
+                importer.maxTextureSize = StorageRackBakedTextureSize;
+                importer.SaveAndReimport();
+
+                var tex = AssetDatabase.LoadAssetAtPath<Texture2D>(sourcePath);
+                if (tex == null)
+                {
+                    Debug.LogWarning($"[BackroomsBuildingPieceCreator] '{sourcePath}' did not load as Texture2D.");
+                    return;
+                }
+
+                File.WriteAllBytes(bakedPath, tex.EncodeToPNG());
+                AssetDatabase.ImportAsset(bakedPath, ImportAssetOptions.ForceUpdate);
+            }
+            finally
+            {
+                importer.textureType = prevType;
+                importer.textureCompression = prevCompression;
+                importer.isReadable = prevReadable;
+                importer.sRGBTexture = prevSrgb;
+                importer.maxTextureSize = prevMax;
+                importer.SaveAndReimport();
+            }
+
+            var baked = AssetImporter.GetAtPath(bakedPath) as TextureImporter;
+            if (baked == null) return;
+
+            baked.textureType = TextureImporterType.Default;
+            baked.sRGBTexture = sRgb;
+            baked.maxTextureSize = StorageRackBakedTextureSize;
+            baked.textureCompression = TextureImporterCompression.Compressed;
+            baked.mipmapEnabled = true;
+            baked.SaveAndReimport();
+        }
+
+        /// <summary>
+        /// Bakes both source textures and builds the URP Lit material. No normal map this import,
+        /// same as the door frame — Meshy did not produce one.
+        /// </summary>
+        private static Material BakeStorageRackMaterial()
+        {
+            BackroomsEditorFolders.EnsureFolder(StorageRackBakedFolder);
+            BakeStorageRackTexture(StorageRackSourceBaseColorPath, StorageRackBakedBaseColorPath, sRgb: true);
+            BakeStorageRackTexture(StorageRackSourceMetallicPath, StorageRackBakedMetallicPath, sRgb: false);
+
+            var shader = Shader.Find("Universal Render Pipeline/Lit");
+            if (shader == null)
+            {
+                Debug.LogError("[BackroomsBuildingPieceCreator] No 'Universal Render Pipeline/Lit' shader. " +
+                               "Nothing created.");
+                return null;
+            }
+
+            var mat = AssetDatabase.LoadAssetAtPath<Material>(StorageRackBakedMaterialPath);
+            if (mat == null)
+            {
+                mat = new Material(shader);
+                AssetDatabase.CreateAsset(mat, StorageRackBakedMaterialPath);
+            }
+            mat.shader = shader;
+
+            var baseColor = AssetDatabase.LoadAssetAtPath<Texture2D>(StorageRackBakedBaseColorPath);
+            var metallic = AssetDatabase.LoadAssetAtPath<Texture2D>(StorageRackBakedMetallicPath);
+
+            if (baseColor != null) mat.SetTexture("_BaseMap", baseColor);
+            if (metallic != null)
+            {
+                mat.SetTexture("_MetallicGlossMap", metallic);
+                mat.EnableKeyword("_METALLICSPECGLOSSMAP");
+                mat.SetFloat("_Metallic", 1f);
+                mat.SetFloat("_Smoothness", 1f);
+                mat.SetFloat("_SmoothnessTextureChannel", 0f); // alpha of the metallic map
+            }
+
+            EditorUtility.SetDirty(mat);
+            AssetDatabase.SaveAssets();
+            return mat;
+        }
+
+        /// <summary>
+        /// FreeBuildingPiece, not GridWallBuildingPiece: this piece is not a wall-slot alternate, it
+        /// stands on its own footprint. Single bounding-box collider on the ROOT (same load-bearing
+        /// reason as every other piece in this file) rather than one collider per tube of the open
+        /// frame — the vendor detectors only need ONE collider to resolve the component from, and a
+        /// full-bounds box is what the claim marker and every primitive piece here already do.
+        /// </summary>
+        private static GameObject CreateStorageRackPrefab(BuildingPieceDefinition definition,
+            BuildMaterialDefinition metal, Mesh mesh, Material material)
+        {
+            var root = new GameObject("BR_BuildingPiece_StorageRack")
+            {
+                layer = LayerConstants.Building
+            };
+
+            // RENDER ONLY, bare MeshFilter/MeshRenderer — same split as every piece here. The mesh was
+            // baked centred on its own origin, so this child lifts it onto the floor.
+            var model = new GameObject("Model") { layer = LayerConstants.Building };
+            model.transform.SetParent(root.transform, false);
+            model.transform.localPosition = new Vector3(0f, StorageRackHeight * 0.5f, 0f);
+            var filter = model.AddComponent<MeshFilter>();
+            filter.sharedMesh = mesh;
+            var renderer = model.AddComponent<MeshRenderer>();
+            renderer.sharedMaterial = material;
+
+            var collider = root.AddComponent<BoxCollider>();
+            collider.center = new Vector3(0f, StorageRackHeight * 0.5f, 0f);
+            collider.size = new Vector3(StorageRackWidth, StorageRackHeight, StorageRackDepth);
+
+            // RequireComponent pulls in MaterialEffect (the ghost tint) with this call.
+            var piece = root.AddComponent<FreeBuildingPiece>();
+            var constructable = root.AddComponent<Constructable>();
+
+            ConfigurePiece(piece, definition,
+                new Bounds(new Vector3(0f, StorageRackHeight * 0.5f, 0f),
+                    new Vector3(StorageRackWidth, StorageRackHeight, StorageRackDepth)));
+            ConfigureConstructable(constructable, metal, StorageRackMetalCost);
+            ConfigureMaterialEffect(root.GetComponent<MaterialEffect>(), renderer);
+
+            var saved = PrefabUtility.SaveAsPrefabAsset(root, StorageRackPrefabPath);
+            Object.DestroyImmediate(root);
+            return saved;
         }
 
         /// <summary>

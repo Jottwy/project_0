@@ -41,7 +41,7 @@ no pisa valores ya ajustados a mano.
 
 | Menú | Fichero |
 |---|---|
-| `Backrooms/Create Building Pieces` | `Editor/BackroomsBuildingPieceCreator.cs` |
+| `Backrooms/Create Building Pieces` | `Editor/BackroomsBuildingPieceCreator.cs` | pared, panel, claim marker, marco/hoja de puerta y **estantería metálica** (FreeBuildingPiece, 4 Metal, sin container todavía — FARMING-ROADMAP.md E1) |
 | `Backrooms/Create Carryables` | `Editor/BackroomsCarryableCreator.cs` |
 | `Backrooms/Create Grid Prefabs` | `Editor/GridPrefabCreator.cs` |
 | `Backrooms/Create Layer Visuals` | `Editor/BackroomsLayerVisualsCreator.cs` |
@@ -71,6 +71,8 @@ Estas **sí** crean/modifican escenas. No son idempotentes en el mismo sentido.
 | `Backrooms/Chunk Editor` | `Editor/BackroomsChunkEditor.cs` | ventana propia |
 | `Backrooms/Validate Structures` | `Editor/StructureValidator.cs` | solo lectura |
 | `Backrooms/Diagnostics/Measure Building Meshes` | `Editor/BackroomsMeshProbe.cs` | solo lectura |
+| `Backrooms/Diagnostics/Measure Storage Rack` | `Editor/BackroomsStorageRackProbe.cs` | solo lectura; mide el FBX crudo de `Assets/MeshyImports/metal-shelf-gamemesh_.../`, escribe `Temp/claude_rack_measure.txt` y 3 capturas |
+| `Backrooms/Diagnostics/Measure Storage Rack Result` | `Editor/BackroomsStorageRackProbe.cs` | solo lectura; renderiza el prefab YA horneado (`BR_BuildingPiece_StorageRack.prefab`) |
 | `Backrooms/Generate Textures` | `Editor/TextureGenerator.cs` | escribe texturas |
 | `Tools/Backrooms/Fix Runtime Materials` | `Editor/BackroomsRuntimeMaterialInstaller.cs` | **fuera del menú `Backrooms/`**, único que cuelga de `Tools/` |
 | `Backrooms/Build/Compile and deploy backend now` | `Editor/BackendBuildPreprocessor.cs` | compila Rust y copia el exe a `Builds/Backend/` |

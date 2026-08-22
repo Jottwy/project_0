@@ -78,23 +78,29 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   es nuevo rojo: arreglar el test, no el asset.
 - Commit: `balance(items): agua de almendras deja de apilar (D1, sin stacks)`.
 
-### E1. Hornear modelo + prefab + definición + coste (½–1 día)
-- Ampliar `Assets/Editor/BackroomsBuildingPieceCreator.cs` con `CreateStorageRackIfMissing()`
-  clonando **exactamente** el patrón del marco de puerta (`CreateDoorFrameIfMissing`,
-  `BakeDoorFrameMesh`, `BakeDoorFrameTexture`, `ConfigureDoorFrameModelImport`): FBX Meshy →
-  malla `.asset` versionada + basecolor/metallic a **1024** + material URP en
-  `Assets/Art/Building/StorageRack/` (`BR_StorageRack_Mesh.asset`, `_BaseColor.png`,
-  `_Metallic.png`, `_Mat.mat`). Regla: **nada versionado puede apuntar a `MeshyImports/`**
-  (gitignored; en otra máquina el objeto sale invisible).
+### E1. Hornear modelo + prefab + definición + coste (½–1 día) — ✅ HECHO 2026-08-22
+- `CreateStorageRackIfMissing()` en `Assets/Editor/BackroomsBuildingPieceCreator.cs`, clonado del
+  patrón del marco de puerta (bake mesh + textura + material). Malla `.asset` versionada +
+  basecolor/metallic a 1024 + material URP en `Assets/Art/Building/StorageRack/`
+  (`BR_StorageRack_Mesh.asset`, `_BaseColor.png`, `_Metallic.png`, `_Mat.mat`). Verificado
+  `grep -c MeshyImports` = 0 en prefab y `.mat`.
 - Prefab `Assets/Prefabs/Building/BR_BuildingPiece_StorageRack.prefab`: `FreeBuildingPiece` +
-  `Constructable` (4× Metal vía `ConfigureConstructable`) + `MaterialEffect` + **collider en la
-  RAÍZ** (los detectores STP leen componentes del objeto del collider; hijos de malla solo
-  MeshFilter+MeshRenderer) + `Interactable`.
-- Definición `Assets/Resources/Definitions/BuildingPiece/BR_Storage Rack.asset` (misma categoría
-  que las demás; el `def_id` viaja por wire: **crear una vez y commitear, nunca regenerar**).
-- **Medir el modelo** y anotar en el script (const con comentario, como `DoorFrame…`): ancho ×
-  alto × fondo, nº de baldas, huecos por balda ⇒ `StorageRackSlots` (D3). Trampa conocida del
-  bake: `meshCompression` manda los datos a `m_CompressedMesh` y sin ForceUpdate la malla cargada
+  `Constructable` (4× Metal) + `MaterialEffect` + collider en la RAÍZ (bounding box completo,
+  no un collider por tubo). **Sin `Interactable` todavía a propósito**: lo trae `Workstation`
+  por `RequireComponent(IHoverableInteractable)` cuando E2 añada `StorageStation` — añadirlo
+  antes habría sido una pieza a medio cablear sin base que lo requiera.
+- Definición `Assets/Resources/Definitions/BuildingPiece/BR_Storage Rack.asset`, `def_id=516330017`.
+  Categoría `Building`. **COMMITEADA junto al prefab y el arte horneado — no regenerar.**
+- **Modelo medido** (`Backrooms/Diagnostics/Measure Storage Rack`, capturas en `Temp/`): rack
+  tubular abierto, sin fondo/laterales, **1,4527 × 1,9026 × 0,6049 m** (ancho×alto×fondo), malla
+  única sin submeshes por balda. 4 compartimentos abiertos iguales (no 3 — confirmado por
+  captura). D3 resuelto: **`StorageRackSlots = 16` (4 por compartimento × 4 compartimentos)**,
+  extremo alto del rango 12–16 — el rack lee como estantería de rejilla abierta, aprovecha para
+  el efecto visual de E3. Constantes en el creator, aún sin usar (E3 las consume).
+- Probe de diagnóstico `Assets/Editor/BackroomsStorageRackProbe.cs` (tracked, como
+  `BackroomsDoorFrameProbe.cs`): `Measure Storage Rack` (FBX crudo) y
+  `Measure Storage Rack Result` (prefab horneado).
+- Trampa conocida del bake: `meshCompression` manda los datos a `m_CompressedMesh` y sin ForceUpdate la malla cargada
   se dibuja con búferes viejos — seguir el código del marco, que ya lo esquiva.
 - Menú: `Backrooms/Create Building Pieces` sigue siendo el punto de entrada (crear-si-falta).
   Documentar la fila nueva en `docs/EDITOR-MENUS.md`.
