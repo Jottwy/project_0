@@ -99,6 +99,8 @@ GameObject:
   - component: {fileID: 3075462143433364450}
   - component: {fileID: 392942895033580712}
   - component: {fileID: 8136948229341183089}
+  - component: {fileID: 6935952688624863673}
+  - component: {fileID: 5603314230261379124}
   m_Layer: 16
   m_Name: BR_BuildingPiece_StorageRack
   m_TagString: Untagged
@@ -191,3 +193,58 @@ MonoBehaviour:
   - BuildMaterialId: -2823548
     CurrentAmount: 0
     RequiredAmount: 4
+--- !u!114 &6935952688624863673
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6275232922667570659}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 580f142dfead966488f481c46283a8be, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _interactTitle: Storage Rack
+  _interactDescription: A steel shelving unit. Hold to open.
+  _holdDuration: 0
+  _centerOffset: {x: 0, y: 0, z: 0}
+  _materialEffect: {fileID: 3075462143433364450}
+--- !u!114 &5603314230261379124
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6275232922667570659}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d64a70dbcecf71144b9787d676bc9126, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  _openStationSettings:
+    Audio:
+      Clip: {fileID: 0}
+      Volume: 0
+    Event:
+      m_PersistentCalls:
+        m_Calls: []
+  _closeStationSettings:
+    Audio:
+      Clip: {fileID: 0}
+      Volume: 0
+    Event:
+      m_PersistentCalls:
+        m_Calls: []
+  _inventory: {fileID: 0}
+  _defaultContainer:
+    Name: Storage Rack
+    AllowStacking: 0
+    MaxSlotCount: 16
+    MaxWeightLimit: 1000
+    Restrictions: []
+    PredefinedItems: []
+    LootTable: {fileID: 0}
+    RarityWeight: 1
+    MinLootCount: 0
+    MaxLootCount: 1

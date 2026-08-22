@@ -109,15 +109,47 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   el `.mat` da 0.
 - Commit: `feat(building): estantería metálica construible, 4 Metal, arte horneado`.
 
-### E2. Contenedor: abrir y guardar (½ día)
-- Añadir al prefab `StorageStation` con `ItemContainerGenerator` a `StorageRackSlots` slots, peso
-  máx generoso (el tope es el slot), sin restricciones en v1. Mirar cómo el crate vendor cablea
-  `StorageStation` ↔ `Interactable` (orden de componentes: `Interactable` se requiere por
-  `StorageStation`; el `Destroy` inverso ya mordió una vez — ver STATE 11c).
-- Comprobar que la UI dual (`StorageStationUI`) se abre con la tecla de interacción y que
-  meter/sacar agua y spray funciona; con D1 cada botella ocupa un slot.
-- Verificar: mete 3 items, cierra, guarda (`ISaveableComponent`), recarga sesión en host: siguen.
-- Commit: `feat(building): la estantería abre como cofre (StorageStation, N slots)`.
+### E2. Contenedor: abrir y guardar (½ día) — ✅ HECHO 2026-08-22 (con matiz)
+- `EnsureStorageRackContainer()` en `BackroomsBuildingPieceCreator.cs`, patch idempotente sobre el
+  prefab ya commiteado (mismo contrato que `EnsureDoorFrameOpeningMarker`, nunca toca el `def_id`).
+  Añade `Interactable` (Title="Storage Rack") + `StorageStation` (`_defaultContainer`: Name="Storage
+  Rack", `AllowStacking=false`, `MaxSlotCount=16`, sin restricciones, sin `PredefinedItems`/
+  `LootTable` — empieza vacía, es pieza construida por jugador, no cofre del mundo). Explícito por
+  código, no delegado a `Workstation.Reset()`/`Interactable.Reset()` (hooks de editor atados al
+  flujo "Add Component" del Inspector, no fiables desde un `MenuItem` en batch — se comprobó que el
+  layer del root NO cambiaba tras `AddComponent`, así que esos `Reset()` no dispararon en este
+  contexto; por eso el código re-asigna `LayerConstants.Building` a mano en vez de confiar en ello).
+- **Verificado ESTRUCTURALMENTE en modo Edit, sin Play** (`Backrooms/Diagnostics/Verify Storage Rack
+  Container`, en `BackroomsStorageRackProbe.cs`): reflexión sobre `_defaultContainer` +
+  `GenerateContainer(...)` — llamar a `StorageStation.GetContainers()` directamente revienta fuera
+  de Play (`Workstation.Name` lee `_interactable`, que solo se asigna en `Start()`). Resultado
+  **PASS**: `SlotsCount=16`, contenedor arranca vacío, 3 items iguales añadidos UNO A UNO ocupan 3
+  slots distintos (no se apilan) y `SlotChanged` dispara exactamente una vez por item — el gancho
+  que E3 necesita.
+- **HALLAZGO, fuera de esta pieza — NO se ha tocado**: `ItemStack`'s propio constructor
+  (`ItemStack.cs:35`) clampa `Count` a `item.StackSize` AL CONSTRUIR, así que
+  `AddItemsById(id, N)`/`AddItem(new ItemStack(item, N))` con `N>1` para un item `StackSize=1`
+  (todos, desde D1) trunca a 1 SIEMPRE, sin importar cuántos huecos libres tenga el contenedor —
+  confirmado en vivo (`GetAllowedCount(dummy,3)` devuelve `(1,"")`). Afecta un sistema YA EN
+  PRODUCCIÓN: `InventoryRestorer.cs:236` y `:364` (restauración de inventario al reconectar) y
+  posiblemente `StpPickupController.cs:149`. El código ya tiene red de seguridad (`SpillToWorld` del
+  sobrante, no hay pérdida de items), pero el jugador vería objetos no-apilables tirados a sus pies
+  al reconectar en vez de bien colocados. **Tarea aparte lanzada** (no bloquea esta pieza ni el resto
+  del roadmap): arreglar esos call sites con un bucle de altas de 1 en 1 (mismo patrón que
+  `VerifyContainer` usa), nunca tocar el vendor.
+- **CORRECCIÓN a lo escrito originalmente aquí — la afirmación "guarda... recarga... siguen" era
+  FALSA para el estado actual del pipeline**: `StorageStation` implementa `ISaveableComponent`, pero
+  `StpBuildingReplicator.cs` (quien de verdad sincroniza/persiste piezas construidas) **solo invoca
+  esa interfaz sobre `Constructable` y `BuildingPiece`, nunca sobre `StorageStation`** (verificado
+  leyendo el fichero). El contenido del contenedor vive SOLO en memoria mientras el `GameObject`
+  exista — sobrevive a abrir/cerrar la UI, NO sobrevive a recargar sesión/reconectar. Esto es
+  exactamente D5 (sync de contenedores diferido con ADR), confirmado con más precisión de la que
+  tenía el roadmap al escribirlo: no es "falta implementar algo más adelante", es "hoy no hay ningún
+  camino de código que lo intente siquiera".
+- UI interactiva completa (`StorageStationUI`, tecla de interacción con jugador real) **no
+  verificada** — exige Play con input real (sidecar IPC o standalone, ver memoria
+  unity-remote-playtest), que es trabajo de E4, no de esta tarea.
+- Commit: `feat(building): la estantería abre como cofre (StorageStation, 16 slots, sin stacking)`.
 
 ### E3. Visual en vivo por slot (1 día) — la idea de Joel
 - Componente propio `StorageRackDisplay` (en `Assets/Scripts/Gameplay/Building/`, junto a

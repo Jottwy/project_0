@@ -1,6 +1,9 @@
 #if UNITY_EDITOR
 using System.IO;
+using System.Reflection;
 using System.Text;
+using PolymindGames;
+using PolymindGames.InventorySystem;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
@@ -31,6 +34,123 @@ namespace BackroomsSurvival.EditorTools
 
         private const string FinalPrefabPath = "Assets/Prefabs/Building/BR_BuildingPiece_StorageRack.prefab";
         private const string FinalShotPath = "Temp/claude_rack_final_shot.png";
+
+        private const string ContainerReportPath = "Temp/claude_rack_container.txt";
+        private const string AlmondWaterDefinitionPath = "Assets/Resources/Definitions/Item/BR_Almond Water.asset";
+
+        /// <summary>
+        /// Structural check of the StorageStation wiring, WITHOUT entering Play mode: exercises the
+        /// exact code path <c>StorageStation.GetContainers()</c> uses internally
+        /// (<c>_defaultContainer.GenerateContainer(...)</c>) via reflection on the private field,
+        /// rather than calling <c>GetContainers()</c> itself — that method reads
+        /// <c>Workstation.Name</c>, which dereferences a private <c>_interactable</c> field that
+        /// <c>Workstation.Start()</c> only assigns in Play mode; calling it here would NRE. This is
+        /// exactly the "measure the real system, don't assume" style of the other probes in this
+        /// project — bugs in the reflection path would themselves be a signal something in
+        /// StorageStation changed shape.
+        ///
+        /// Confirms: slot count matches FARMING-ROADMAP.md D3 (16), items add one-per-slot (D1's
+        /// no-stacking decision holds inside the CONTAINER too, not just the item's own
+        /// `_stackSize`), and <c>SlotChanged</c> actually fires once per added item — the exact hook
+        /// point bloque E tarea E3 (<c>StorageRackDisplay</c>) will subscribe to for the live-visual
+        /// feature. A failure here means E3 has no signal to build on.
+        /// </summary>
+        [MenuItem("Backrooms/Diagnostics/Verify Storage Rack Container")]
+        public static void VerifyContainer()
+        {
+            var report = new StringBuilder("[BackroomsStorageRackProbe] VerifyContainer\n");
+
+            var prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(FinalPrefabPath);
+            if (prefabAsset == null)
+            {
+                Debug.LogError($"[BackroomsStorageRackProbe] MISSING prefab at '{FinalPrefabPath}'");
+                return;
+            }
+
+            var almondWater = AssetDatabase.LoadAssetAtPath<ItemDefinition>(AlmondWaterDefinitionPath);
+            if (almondWater == null)
+            {
+                Debug.LogError($"[BackroomsStorageRackProbe] MISSING item definition at '{AlmondWaterDefinitionPath}'");
+                return;
+            }
+
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            try
+            {
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefabAsset, scene);
+
+                var station = instance.GetComponent<StorageStation>();
+                if (station == null)
+                {
+                    report.AppendLine("FAIL: no StorageStation on the prefab.");
+                    Debug.LogError(report.ToString());
+                    File.WriteAllText(ContainerReportPath, report.ToString());
+                    return;
+                }
+
+                var field = typeof(StorageStation).GetField("_defaultContainer",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                var generator = (ItemContainerGenerator)field.GetValue(station);
+
+                int slotChangedCount = 0;
+                var container = generator.GenerateContainer(null, populateWithItems: true, customName: "Storage Rack (verify)");
+                container.SlotChanged += (in SlotReference args, SlotChangeType changeType) => slotChangedCount++;
+
+                report.AppendLine($"SlotsCount={container.SlotsCount} (expect {StorageRackSlotsExpected})");
+                report.AppendLine($"AllowStacking wired: MaxWeight={container.MaxWeight} Name='{container.Name}'");
+                report.AppendLine($"Starts empty: IsEmpty={container.IsEmpty()}");
+
+                // ONE call per item, matching how a player actually adds items (UI drag/pickup, one
+                // ItemStack at a time) — NOT AddItemsById(id, 3) in one shot. That bulk form has a
+                // real vendor gotcha, found while writing this probe: ItemStack's own constructor
+                // (ItemStack.cs:35) clamps Count to item.StackSize AT CONSTRUCTION, so
+                // AddItemsById's internal pre-check (which builds ONE dummy ItemStack(item, amount)
+                // to ask "how much am I allowed") silently caps the whole bulk request to StackSize
+                // — 1, now that FARMING-ROADMAP.md D1 set every item's _stackSize to 1 — regardless
+                // of how many empty slots the container has. Confirmed directly: with amount=3,
+                // GetAllowedCount(dummy, 3) itself returns 1, before any slot loop runs. This is a
+                // caller-side gotcha (never edit vendor code, [[stp-no-direct-edits]]), and it is NOT
+                // specific to this rack — InventoryRestorer.cs:236 calls the same
+                // Inventory.AddItemsById(itemId, quantity) on session restore, which could now
+                // silently short-change a restored stack of non-stacking items. Flagged separately;
+                // out of scope for this prefab's wiring.
+                int totalAdded = 0;
+                for (int i = 0; i < 3; i++)
+                {
+                    var (added, reject) = container.AddItemsById(almondWater.Id, 1);
+                    totalAdded += added;
+                    if (added != 1)
+                        report.AppendLine($"DIAG: single add #{i} -> added={added}, reject='{reject}'");
+                }
+                report.AppendLine($"Three single AddItemsById(AlmondWater, 1) calls -> totalAdded={totalAdded}, " +
+                                  $"slotChangedCount={slotChangedCount}");
+
+                int occupiedSlots = 0;
+                for (int i = 0; i < container.SlotsCount; i++)
+                    if (container.GetItemAtIndex(i).HasItem())
+                        occupiedSlots++;
+                report.AppendLine($"Occupied slots after add: {occupiedSlots} (expect 3, ONE PER ITEM — " +
+                                  "no-stacking holds even though all 3 are the same item)");
+
+                bool pass = container.SlotsCount == StorageRackSlotsExpected
+                            && totalAdded == 3
+                            && occupiedSlots == 3
+                            && slotChangedCount == 3;
+                report.AppendLine(pass ? "RESULT: PASS" : "RESULT: FAIL");
+
+                Debug.Log(report.ToString());
+                File.WriteAllText(ContainerReportPath, report.ToString());
+            }
+            finally
+            {
+                EditorSceneManager.CloseScene(scene, true);
+            }
+        }
+
+        // Mirrors BackroomsBuildingPieceCreator.StorageRackSlots (16) — duplicated as a literal
+        // rather than referenced across files (that constant is private to the creator, and this is
+        // a throwaway diagnostic, not shipped code) so this check fails LOUDLY if the two drift.
+        private const int StorageRackSlotsExpected = 16;
 
         /// <summary>
         /// Renders the BAKED prefab (post-BackroomsBuildingPieceCreator), not the raw FBX — sanity

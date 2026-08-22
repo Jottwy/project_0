@@ -1022,6 +1022,7 @@ namespace BackroomsSurvival.EditorTools
                 Debug.Log($"[BackroomsBuildingPieceCreator] '{StorageRackDefinitionPath}' and " +
                           $"'{StorageRackPrefabPath}' already exist — left untouched (the definition id is on " +
                           "the wire; regenerating it would break replication).");
+                EnsureStorageRackContainer(existingPrefab);
                 return;
             }
 
@@ -1059,6 +1060,7 @@ namespace BackroomsSurvival.EditorTools
                 "A steel shelving unit, four open tiers. Free-standing — does not snap to the wall grid.");
             var prefab = CreateStorageRackPrefab(definition, metal, mesh, material);
             AssignPrefabToDefinition(definition, prefab);
+            EnsureStorageRackContainer(prefab);
 
             BuildingPieceDefinition.ReloadDefinitions_EditorOnly();
 
@@ -1067,8 +1069,82 @@ namespace BackroomsSurvival.EditorTools
             Debug.Log($"[BackroomsBuildingPieceCreator] Created '{StorageRackDefinitionPath}' " +
                       $"(def_id={definition.Id}) and '{StorageRackPrefabPath}' — {StorageRackMetalCost}× " +
                       $"{MetalMaterialName}, category '{category.Name}'. COMMIT BOTH plus everything under " +
-                      $"'{StorageRackBakedFolder}'. Not yet a container — StorageStation is a separate step " +
-                      "(FARMING-ROADMAP.md tarea E2).");
+                      $"'{StorageRackBakedFolder}'.");
+        }
+
+        /// <summary>
+        /// Idempotent patch: adds <see cref="Interactable"/> and <see cref="StorageStation"/> to the
+        /// rack prefab if not already there, and re-syncs <c>_defaultContainer</c>'s slot count /
+        /// stacking / name on every run — same contract as
+        /// <see cref="EnsureDoorFrameOpeningMarker"/>. Never touches the definition's def_id.
+        ///
+        /// Explicit AddComponent for both, not relying on <c>Workstation.Reset()</c> /
+        /// <c>Interactable.Reset()</c> auto-wiring (both exist, both are editor-only convenience
+        /// hooks tied to the Inspector "Add Component" flow) — a batch MenuItem context is not that
+        /// flow, and the codebase's own pattern here is to verify by symptom, not assume an editor
+        /// callback fired. <c>Interactable</c> is added FIRST so <c>Workstation.Reset()</c>'s own
+        /// guard (<c>HasComponent&lt;IInteractable&gt;</c>) sees it already there and no-ops.
+        ///
+        /// No stacking (<c>AllowStacking = false</c>): reinforces FARMING-ROADMAP.md D1 (items
+        /// themselves are already `_stackSize = 1`) specifically for this container, so a future
+        /// stackable item never silently combines two rack slots into one. <c>MaxSlotCount</c> is
+        /// wired straight to <see cref="StorageRackSlots"/> — the number measured in E1 IS the
+        /// number of shelf anchors E3 will author, so the container can never hold more items than
+        /// there are shelf positions to show them in. Starts EMPTY (no PredefinedItems/LootTable):
+        /// this is a player-built piece, not a world-spawned chest.
+        ///
+        /// Root layer is re-asserted to <see cref="LayerConstants.Building"/> after both
+        /// AddComponent calls: <c>Interactable.Reset()</c> sets the GameObject to
+        /// <c>LayerConstants.Interactable</c> by default, but the vendor's own
+        /// STP_BuildingPIece_StorageCrate ships with its root on Building (verified by reading that
+        /// prefab directly) — safe because <c>LayerConstants.InteractableMask</c> already includes
+        /// Building, and Building is what the two vendor build-detectors' raycasts expect on every
+        /// other piece in this file.
+        /// </summary>
+        private static void EnsureStorageRackContainer(GameObject prefabAsset)
+        {
+            string path = AssetDatabase.GetAssetPath(prefabAsset);
+            var contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                var interactable = contents.GetComponent<Interactable>();
+                bool interactableWasMissing = interactable == null;
+                if (interactableWasMissing)
+                    interactable = contents.AddComponent<Interactable>();
+
+                var interactableSerialized = new SerializedObject(interactable);
+                interactableSerialized.FindProperty("_interactTitle").stringValue = "Storage Rack";
+                interactableSerialized.FindProperty("_interactDescription").stringValue =
+                    "A steel shelving unit. Hold to open.";
+                var materialEffectProp = interactableSerialized.FindProperty("_materialEffect");
+                if (materialEffectProp.objectReferenceValue == null)
+                    materialEffectProp.objectReferenceValue = contents.GetComponent<MaterialEffect>();
+                interactableSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                var station = contents.GetComponent<StorageStation>();
+                bool stationWasMissing = station == null;
+                if (stationWasMissing)
+                    station = contents.AddComponent<StorageStation>();
+
+                var stationSerialized = new SerializedObject(station);
+                var container = stationSerialized.FindProperty("_defaultContainer");
+                container.FindPropertyRelative("Name").stringValue = "Storage Rack";
+                container.FindPropertyRelative("AllowStacking").boolValue = false;
+                container.FindPropertyRelative("MaxSlotCount").intValue = StorageRackSlots;
+                stationSerialized.ApplyModifiedPropertiesWithoutUndo();
+
+                contents.layer = LayerConstants.Building;
+
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[BackroomsBuildingPieceCreator] " +
+                          $"{(interactableWasMissing ? "Added" : "Synced")} Interactable and " +
+                          $"{(stationWasMissing ? "added" : "synced")} StorageStation on '{path}' — " +
+                          $"{StorageRackSlots} slots, no stacking, starts empty.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
         }
 
         private static void ConfigureStorageRackModelImport()
