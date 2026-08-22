@@ -67,13 +67,25 @@ fn chunk_views_are_cached_until_world_changes() {
     assert_ne!(first_keys, third_keys);
 }
 
+// Los items v1 del generador estan apagados a peticion (`generator.rs`: `let items =
+// Vec::new()`), asi que las aserciones sobre items GENERADOS viven en tests `#[ignore]` con
+// ese motivo, listos para reactivarse cuando vuelva el loot de chunk. Los tests de
+// interaccion siembran su item con `spawn_dropped_item`, como el de ADR-063.
+
 #[test]
-fn chunks_have_entities_and_items() {
+fn chunks_have_entities() {
     let mut world = World::new(42);
     world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
     let total_entities: usize = world.chunks.values().map(|c| c.entities.len()).sum();
-    let total_items: usize = world.chunks.values().map(|c| c.items.len()).sum();
     assert!(total_entities > 0, "should have entities");
+}
+
+#[test]
+#[ignore = "items v1 del generador apagados a peticion (generator.rs); reactivar con el loot de chunk"]
+fn chunks_have_items() {
+    let mut world = World::new(42);
+    world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
+    let total_items: usize = world.chunks.values().map(|c| c.items.len()).sum();
     assert!(total_items > 0, "should have items");
 }
 
@@ -95,6 +107,13 @@ fn visible_views_include_entities() {
     assert!(!entities.is_empty());
     let chunks = world.visible_chunk_views();
     assert!(!chunks.is_empty());
+}
+
+#[test]
+#[ignore = "items v1 del generador apagados a peticion (generator.rs); reactivar con el loot de chunk"]
+fn visible_views_include_generated_items() {
+    let mut world = World::new(42);
+    world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
     let items = world.visible_item_views();
     assert!(!items.is_empty());
 }
@@ -244,6 +263,20 @@ fn world_sync_contains_generated_structure_chunks() {
     assert!(sync_chunks
         .iter()
         .any(|c| c.template_id == architecture::TEMPLATE_INTERSECTION));
+}
+
+#[test]
+#[ignore = "items v1 del generador apagados a peticion (generator.rs); reactivar con el loot de chunk"]
+fn world_sync_structure_chunks_carry_generated_items() {
+    let mut world = World::new(42);
+    world.generate_initial_structures(1);
+
+    let sync_chunks: Vec<crate::network::protocol::ChunkSyncData> = world
+        .chunks
+        .values()
+        .map(crate::network::sync::chunk_to_sync_data)
+        .collect();
+
     assert!(sync_chunks
         .iter()
         .filter(|c| c.layer == 0)
@@ -257,26 +290,31 @@ fn world_sync_contains_generated_structure_chunks() {
 }
 
 #[test]
-fn interaction_pickup_still_removes_generated_item() {
+fn interaction_pickup_still_removes_item_in_structured_world() {
     let mut world = World::new(42);
     world.generate_initial_structures(1);
-    let item = world
+    // Con los items v1 apagados el mundo estructurado nace sin items: se siembra uno en el
+    // centro del primer chunk de la capa 0, que es lo que el pickup tiene que retirar.
+    let chunk_pos = world
         .chunks
         .values()
-        .flat_map(|chunk| chunk.items.iter())
-        .next()
-        .cloned()
-        .expect("structured world should have an item");
+        .find(|chunk| chunk.layer == 0)
+        .map(|chunk| chunk.pos)
+        .expect("structured world should have a layer-0 chunk");
+    let item_pos = crate::utils::chunk_center(chunk_pos);
+    let item_id = world
+        .spawn_dropped_item(item_pos, crate::player::inventory::Item::Metal, 1, 1)
+        .expect("the chunk is loaded, the item must land in it");
     let revision_before = world.revision;
 
-    let result = world.interact_with_item(item.id, item.position, 5.0);
+    let result = world.interact_with_item(item_id, item_pos, 5.0);
 
     assert!(result.is_ok());
     assert_eq!(world.revision, revision_before + 1);
     assert!(!world
         .chunks
         .values()
-        .any(|chunk| chunk.items.iter().any(|candidate| candidate.id == item.id)));
+        .any(|chunk| chunk.items.iter().any(|candidate| candidate.id == item_id)));
 }
 
 #[test]
@@ -372,17 +410,27 @@ fn interact_with_item_falls_back_to_full_scan_across_a_chunk_boundary() {
     );
 }
 
+/// Siembra un item en el chunk (0,0) ya cargado y devuelve su copia (id + posicion). Los
+/// tests de interaccion lo usan porque el generador ya no produce items (ver arriba).
+fn seed_test_item(world: &mut World) -> chunk::DroppedItem {
+    let position = Vec3::new(25.0, 1.8, 25.0);
+    let id = world
+        .spawn_dropped_item(position, crate::player::inventory::Item::Metal, 1, 1)
+        .expect("chunk (0,0) is loaded by the ownership radius");
+    world
+        .chunks
+        .values()
+        .flat_map(|chunk| chunk.items.iter())
+        .find(|candidate| candidate.id == id)
+        .cloned()
+        .expect("the seeded item must be in a loaded chunk")
+}
+
 #[test]
 fn valid_item_interaction_removes_item_and_increments_revision_once() {
     let mut world = World::new(42);
     world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
-    let item = world
-        .chunks
-        .values()
-        .flat_map(|chunk| chunk.items.iter())
-        .next()
-        .cloned()
-        .expect("world should have at least one item");
+    let item = seed_test_item(&mut world);
     let revision_before = world.revision;
 
     let result = world.interact_with_item(item.id, item.position, 5.0);
@@ -405,13 +453,7 @@ fn valid_item_interaction_removes_item_and_increments_revision_once() {
 fn item_interaction_rejects_missing_and_too_far_targets() {
     let mut world = World::new(42);
     world.update_ownership(Vec3::new(25.0, 0.0, 25.0), 1);
-    let item = world
-        .chunks
-        .values()
-        .flat_map(|chunk| chunk.items.iter())
-        .next()
-        .cloned()
-        .expect("world should have at least one item");
+    let item = seed_test_item(&mut world);
     let revision_before = world.revision;
 
     let missing = world.interact_with_item(u32::MAX, item.position, 5.0);

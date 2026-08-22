@@ -74,6 +74,7 @@ fn chunk_has_entities() {
 }
 
 #[test]
+#[ignore = "items v1 del generador apagados a peticion (generator.rs); reactivar con el loot de chunk"]
 fn chunk_has_resources() {
     let c = generate_chunk(42, (0, 0));
     assert!(!c.items.is_empty());
@@ -1375,6 +1376,7 @@ fn level0_worldsync_contains_all_generated_chunks() {
 }
 
 #[test]
+#[ignore = "items v1 del generador apagados a peticion (generator.rs); reactivar con el loot de chunk"]
 fn level0_interaction_pickup_still_removes_item() {
     // This tests the pipeline: generate structure → find item → interact
     let chunks = generate_initial_structure_chunks(42);

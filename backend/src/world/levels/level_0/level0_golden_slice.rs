@@ -42,6 +42,16 @@ mod tests {
         assert_eq!(c.entities[3].entity_type, EntityType::Crawler);
         assert!((c.entities[3].position.x - 174.055_f32).abs() < 0.001);
         assert!((c.entities[3].position.z - 378.3161_f32).abs() < 0.001);
+    }
+
+    /// Pins item IDs, kinds and positions for seed=42, pos=(3,7). Los items v1 del
+    /// generador estan apagados a peticion (`generator.rs`: `let items = Vec::new()`), asi
+    /// que esta huella espera en `#[ignore]` con sus valores intactos para el dia en que
+    /// vuelva el loot de chunk: entonces debe pasar sin tocar un numero.
+    #[test]
+    #[ignore = "items v1 del generador apagados a peticion (generator.rs); reactivar con el loot de chunk"]
+    fn golden_chunk_seed42_pos_3_7_items() {
+        let c = generate_chunk(42, (3, 7));
 
         assert_eq!(c.items.len(), 8, "item count changed");
         assert_eq!(c.items[0].id, 724155099);
