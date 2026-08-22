@@ -151,22 +151,51 @@ El guardado del contenedor va por `ISaveableComponent` del vendor, como cualquie
   unity-remote-playtest), que es trabajo de E4, no de esta tarea.
 - Commit: `feat(building): la estantería abre como cofre (StorageStation, 16 slots, sin stacking)`.
 
-### E3. Visual en vivo por slot (1 día) — la idea de Joel
-- Componente propio `StorageRackDisplay` (en `Assets/Scripts/Gameplay/Building/`, junto a
-  `GridWallBuildingPiece`): `[SerializeField] Transform[] _shelfAnchors` (uno por slot, en orden
-  de slot, posicionados en E1 según las medidas del modelo); suscribirse a
-  `IItemContainer.SlotChanged` del contenedor de la `StorageStation`.
-- En cambio de slot: si hay item, instanciar `ItemDefinition.Pickup` bajo el anchor y
-  **neutralizar a solo-visual** (quitar `ItemPickup`, colliders, `Rigidbody`, `Interactable`;
-  patrón `ProxyRigUtil.NeutralizeToVisualOnly`, `Assets/_Migration/STPIntegration/RemoteAvatar/
-  ProxyRigUtil.cs:47`, respetando el orden de `RequireComponent` de fuera hacia dentro); escalar
-  al hueco si el pickup no cabe. Si el slot se vacía, destruir el visual. Al cargar/reconstruir
-  (E2 recarga), reconstruir todos los visuales desde el contenido.
-- Sin allocs por frame: todo por evento; cachear un `GameObject[]` paralelo a los anchors.
-- Verificar (standalone, a ojo): meter agua de almendras por UI ⇒ aparece la botella en su
-  balda en el acto; sacarla ⇒ desaparece; recargar ⇒ siguen. Items sin prefab de pickup:
-  warning una vez, slot sin visual, no excepción.
-- Commit: `feat(building): los items guardados se ven colocados en la estantería`.
+### E3. Visual en vivo por slot (1 día) — la idea de Joel — ✅ HECHO 2026-08-22
+- `StorageRackDisplay` en `Assets/Scripts/Gameplay/Building/StorageRackDisplay.cs`
+  (`[RequireComponent(typeof(StorageStation))]`). **Cambio de diseño frente a lo planeado**: las 16
+  posiciones de balda NO son un `Transform[] _shelfAnchors` autorado a mano — se **calculan** desde
+  4 constantes (`TierCount=4`, `SlotsPerTier=4`, `RackWidth`/`RackHeight` medidos en E1) con una
+  fórmula (`AnchorLocalPosition`). Motivo: nada que autorar en el prefab, nada que volver a tocar en
+  Unity si algún día se re-mide el modelo — solo ajustar constantes. Con el lag de reimport de hoy
+  (ver memoria unity-inedit-trigger-automation) cada ida y vuelta al editor cuesta caro; menos
+  round-trips por diseño, no por prisa.
+- Suscrito a `IItemContainer.SlotChanged` del contenedor de `StorageStation`, resuelto en `Update()`
+  (no `Start()`): `GetContainers()` lee `Workstation.Name` → `_interactable` (asignado en
+  `Workstation.Start()`), y el orden de `Start()` entre dos componentes del mismo GameObject NO está
+  garantizado — resolver en el primer `Update()` es seguro sin más (todo `Start()` de la escena ya
+  corrió para cuando corre cualquier `Update()`), mismo patrón que `InventoryReporter.
+  ResolveAndSubscribe`.
+- **`ProxyRigUtil.NeutralizeToVisualOnly` NO se pudo reusar** (hallazgo antes de escribir nada):
+  vive en `Assets/_Migration/STPIntegration/` sin `.asmdef` propio, así que cae en el
+  `Assembly-CSharp` implícito; `BackroomsSurvival.asmdef` (donde vive este componente) no lo
+  referencia y NO PUEDE (`Assembly-CSharp` compila el último, un asmdef nombrado no puede
+  depender de él). Reimplementado igual — mismo orden exacto (dependientes → `Interactable` →
+  `Rigidbody` → `Collider`, por el mismo motivo: `[RequireComponent]` rechaza el `Destroy` en
+  silencio si el orden es al revés) — como método privado en el propio fichero.
+- Al vaciar un slot: `Destroy` del visual + `_visuals[index] = null`. Al resolver: recorre TODOS los
+  slots y llama `RefreshSlot`, así que si el contenedor ya tenía contenido (recarga futura tras el
+  ADR de sync, D5) reconstruye los visuales sin código aparte.
+- **Verificado en Edit mode sin Play**, invocando por reflexión el orden real de lifecycle
+  (`Workstation.Start()` primero, luego `StorageRackDisplay.Update()` una vez — simula exactamente
+  el orden que Play garantiza) en `Backrooms/Diagnostics/Verify Storage Rack Display`
+  (`BackroomsStorageRackProbe.cs`): 3 altas de 1 en 1 → 3 visuales instanciados en las posiciones
+  EXACTAS que predice la fórmula (`x=-0.545/-0.182/0.182, y=0.060`, tier 0); las 3 bajas →
+  `_visuals[]` queda a `null` en los 3 (el `GameObject` en sí queda destroy-pendiente hasta el
+  siguiente frame real, por diseño de `Destroy()` — no hay frame boundary en un script de editor
+  síncrono, y no es un bug de este componente). Captura final confirma a ojo: 3 botellas de agua de
+  almendras sentadas sobre la balda inferior, en 3 de las 4 columnas.
+- Trampa de la propia sonda (dejar anotada): el primer intento de captura salió con bounds gigantes
+  (26×14×9 m) porque `Object.FindObjectsByType<Renderer>` busca en TODAS las escenas cargadas, no
+  solo la aditiva del probe — con otra sesión con `RoomTesting` abierta a la vez, se colaba su
+  geometría entera. Arreglo: `instance.GetComponentsInChildren<Renderer>(true)`, acotado al rack.
+- Items sin prefab de `Pickup`: `Debug.LogWarning` una vez, slot se queda visualmente vacío, sin
+  excepción (comprobado en el código, no en playtest — no hay ningún item propio sin `Pickup` hoy
+  para forzar el caso).
+- **No verificado**: standalone real con jugador metiendo/sacando items por la UI (`StorageStationUI`
+  con input real) — es trabajo de E4, exige Play con input real (sidecar IPC o build, ver memoria
+  unity-remote-playtest).
+- Commit: `feat(building): los items guardados se ven colocados en la estantería en tiempo real`.
 
 ### E4. Cierre del bloque (½ día)
 - Arreglar el coste del marco de puerta: poner `_requirements` del prefab a

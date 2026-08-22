@@ -2,6 +2,7 @@
 using System.IO;
 using System.Reflection;
 using System.Text;
+using BackroomsSurvival.Gameplay.Building;
 using PolymindGames;
 using PolymindGames.InventorySystem;
 using UnityEditor;
@@ -37,6 +38,165 @@ namespace BackroomsSurvival.EditorTools
 
         private const string ContainerReportPath = "Temp/claude_rack_container.txt";
         private const string AlmondWaterDefinitionPath = "Assets/Resources/Definitions/Item/BR_Almond Water.asset";
+        private const string DisplayReportPath = "Temp/claude_rack_display.txt";
+        private const string DisplayShotPath = "Temp/claude_rack_display_shot.png";
+
+        /// <summary>
+        /// Exercises StorageRackDisplay's REAL runtime code (not a reflection stand-in for it, like
+        /// VerifyContainer above) without entering Play mode. Its Update() lazily resolves the
+        /// container via StorageStation.GetContainers(), which reads Workstation.Name →
+        /// _interactable.Title — a field Workstation.Start() assigns. In actual Play this is
+        /// race-free (every Start() in the scene runs before any Update() does, each frame); in Edit
+        /// mode NEITHER Start() nor Update() ticks automatically, so this probe drives them by hand,
+        /// in the same order Unity would: Workstation.Start() first, then StorageRackDisplay.Update()
+        /// once (which resolves + subscribes), then real SlotChanged events from here on are exactly
+        /// what Play would produce — AddItemsById below is not a shortcut, it is the actual container
+        /// API a real interaction would call.
+        /// </summary>
+        [MenuItem("Backrooms/Diagnostics/Verify Storage Rack Display")]
+        public static void VerifyDisplay()
+        {
+            var report = new StringBuilder("[BackroomsStorageRackProbe] VerifyDisplay\n");
+
+            var prefabAsset = AssetDatabase.LoadAssetAtPath<GameObject>(FinalPrefabPath);
+            var almondWater = AssetDatabase.LoadAssetAtPath<ItemDefinition>(AlmondWaterDefinitionPath);
+            if (prefabAsset == null || almondWater == null)
+            {
+                Debug.LogError("[BackroomsStorageRackProbe] missing prefab or item definition.");
+                return;
+            }
+
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Additive);
+            try
+            {
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefabAsset, scene);
+                var station = instance.GetComponent<StorageStation>();
+                var display = instance.GetComponent<StorageRackDisplay>();
+                if (station == null || display == null)
+                {
+                    report.AppendLine($"FAIL: station={station != null}, display={display != null}");
+                    Debug.LogError(report.ToString());
+                    File.WriteAllText(DisplayReportPath, report.ToString());
+                    return;
+                }
+
+                typeof(Workstation).GetMethod("Start", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Invoke(station, null);
+                typeof(StorageRackDisplay).GetMethod("Update", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Invoke(display, null);
+
+                var container = station.GetContainers()[0];
+                report.AppendLine($"Container resolved: SlotsCount={container.SlotsCount}");
+
+                int VisualChildCount() => instance.transform.childCount - 1; // -1 for the "Model" mesh child
+
+                report.AppendLine($"Visual children before add: {VisualChildCount()} (expect 0)");
+
+                for (int i = 0; i < 3; i++)
+                    container.AddItemsById(almondWater.Id, 1);
+
+                int afterAdd = VisualChildCount();
+                report.AppendLine($"Visual children after 3 single adds: {afterAdd} (expect 3)");
+
+                Vector3[] positions = new Vector3[3];
+                int found = 0;
+                foreach (Transform child in instance.transform)
+                {
+                    if (child.name.Contains("Model")) continue;
+                    if (found < positions.Length) positions[found] = child.localPosition;
+                    found++;
+                    report.AppendLine($"  visual '{child.name}' localPos={child.localPosition:F3}");
+                }
+
+                container.RemoveItemsById(almondWater.Id, 3);
+
+                // NOT childCount here: Destroy() is deferred to end-of-frame (correct for real
+                // Play — nothing to fix in StorageRackDisplay itself), and no frame boundary passes
+                // between synchronous calls in this editor script, so the GameObjects are still
+                // physically in the hierarchy at this exact line even though they are marked for
+                // destruction. RefreshSlot nulls its own _visuals[index] the instant it calls
+                // Destroy(), in the SAME synchronous call — reading that private array is what
+                // actually reflects "does the component think this slot is now empty", which is the
+                // real thing under test (the GameObject's eventual physical removal is standard
+                // Destroy() behavior, not this component's logic).
+                var visualsField = typeof(StorageRackDisplay).GetField("_visuals",
+                    BindingFlags.NonPublic | BindingFlags.Instance);
+                var visuals = (GameObject[])visualsField.GetValue(display);
+                int stillTracked = 0;
+                foreach (var v in visuals)
+                    if (v != null) stillTracked++;
+                report.AppendLine($"Slots still tracking a visual after removing all 3: {stillTracked} " +
+                                  "(expect 0 — GameObjects themselves are destroy-PENDING, not yet gone, " +
+                                  "since no frame boundary passed in this synchronous probe)");
+
+                bool pass = container.SlotsCount == StorageRackSlotsExpected
+                            && afterAdd == 3
+                            && stillTracked == 0;
+                report.AppendLine(pass ? "RESULT: PASS" : "RESULT: FAIL");
+
+                // Force-clear the destroy-PENDING GameObjects from the remove step above before
+                // the shot below — purely screenshot hygiene for this probe (see comment above);
+                // real Play never needs this, the engine's own frame loop does it for free.
+                // Snapshot children first: DestroyImmediate while iterating transform's own
+                // enumerator would mutate the collection mid-iteration.
+                var staleChildren = new System.Collections.Generic.List<GameObject>();
+                foreach (Transform child in instance.transform)
+                    if (!child.name.Contains("Model"))
+                        staleChildren.Add(child.gameObject);
+                foreach (var stale in staleChildren)
+                    Object.DestroyImmediate(stale);
+
+                // Re-add for a visual screenshot (leave the scene populated for the shot).
+                for (int i = 0; i < 3; i++)
+                    container.AddItemsById(almondWater.Id, 1);
+
+                // Frame by REAL combined bounds of the rack's own renderers, not a fixed offset —
+                // if an item's visual came out oddly scaled/placed this is what would catch it,
+                // rather than a fixed-distance shot that could end up inside or a mile from whatever
+                // is actually there. Scoped to `instance` specifically, NOT
+                // Object.FindObjectsByType<Renderer> — that searches every LOADED scene, including
+                // whatever the user has open (RoomTesting mid-session, this time), not just this
+                // probe's additive one.
+                var rackRenderers = instance.GetComponentsInChildren<Renderer>(true);
+                var bounds = new Bounds();
+                bool started = false;
+                foreach (var r in rackRenderers)
+                {
+                    if (started) bounds.Encapsulate(r.bounds);
+                    else { bounds = r.bounds; started = true; }
+                }
+                report.AppendLine($"Rack renderer bounds: size=({bounds.size.x:F3},{bounds.size.y:F3}," +
+                                  $"{bounds.size.z:F3}) centre=({bounds.center.x:F3},{bounds.center.y:F3}," +
+                                  $"{bounds.center.z:F3}) rendererCount={rackRenderers.Length}");
+
+                var lightGo = new GameObject("ProbeLight");
+                var light = lightGo.AddComponent<Light>();
+                light.type = LightType.Directional;
+                light.intensity = 1.3f;
+                lightGo.transform.rotation = Quaternion.Euler(35f, -25f, 0f);
+                SceneManager.MoveGameObjectToScene(lightGo, scene);
+
+                var camGo = new GameObject("ProbeCamera");
+                var cam = camGo.AddComponent<Camera>();
+                cam.clearFlags = CameraClearFlags.SolidColor;
+                cam.backgroundColor = new Color(0.85f, 0.85f, 0.9f, 1f);
+                SceneManager.MoveGameObjectToScene(camGo, scene);
+                float radius = started ? bounds.extents.magnitude : 1f;
+                camGo.transform.position = bounds.center + new Vector3(0f, 0f, radius * 2.2f + 0.5f);
+                camGo.transform.LookAt(bounds.center, Vector3.up);
+                cam.fieldOfView = 45f;
+                cam.nearClipPlane = 0.02f;
+                cam.farClipPlane = radius * 10f + 5f;
+                RenderShot(cam, DisplayShotPath);
+
+                Debug.Log(report.ToString());
+                File.WriteAllText(DisplayReportPath, report.ToString());
+            }
+            finally
+            {
+                EditorSceneManager.CloseScene(scene, true);
+            }
+        }
 
         /// <summary>
         /// Structural check of the StorageStation wiring, WITHOUT entering Play mode: exercises the

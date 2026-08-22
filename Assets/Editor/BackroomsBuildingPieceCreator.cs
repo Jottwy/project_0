@@ -1023,6 +1023,7 @@ namespace BackroomsSurvival.EditorTools
                           $"'{StorageRackPrefabPath}' already exist — left untouched (the definition id is on " +
                           "the wire; regenerating it would break replication).");
                 EnsureStorageRackContainer(existingPrefab);
+                EnsureStorageRackDisplay(existingPrefab);
                 return;
             }
 
@@ -1061,6 +1062,7 @@ namespace BackroomsSurvival.EditorTools
             var prefab = CreateStorageRackPrefab(definition, metal, mesh, material);
             AssignPrefabToDefinition(definition, prefab);
             EnsureStorageRackContainer(prefab);
+            EnsureStorageRackDisplay(prefab);
 
             BuildingPieceDefinition.ReloadDefinitions_EditorOnly();
 
@@ -1140,6 +1142,31 @@ namespace BackroomsSurvival.EditorTools
                           $"{(interactableWasMissing ? "Added" : "Synced")} Interactable and " +
                           $"{(stationWasMissing ? "added" : "synced")} StorageStation on '{path}' — " +
                           $"{StorageRackSlots} slots, no stacking, starts empty.");
+            }
+            finally
+            {
+                PrefabUtility.UnloadPrefabContents(contents);
+            }
+        }
+
+        /// <summary>
+        /// Idempotent patch, tarea E3: adds <see cref="StorageRackDisplay"/> (needs no configuration
+        /// — its shelf positions are computed from constants, see that class' doc) if not already
+        /// there. Separate from <see cref="EnsureStorageRackContainer"/> because this one has
+        /// nothing to re-sync on a second run; a plain existence check is enough.
+        /// </summary>
+        private static void EnsureStorageRackDisplay(GameObject prefabAsset)
+        {
+            string path = AssetDatabase.GetAssetPath(prefabAsset);
+            var contents = PrefabUtility.LoadPrefabContents(path);
+            try
+            {
+                if (contents.GetComponent<StorageRackDisplay>() != null)
+                    return;
+
+                contents.AddComponent<StorageRackDisplay>();
+                PrefabUtility.SaveAsPrefabAsset(contents, path);
+                Debug.Log($"[BackroomsBuildingPieceCreator] Added StorageRackDisplay on '{path}'.");
             }
             finally
             {

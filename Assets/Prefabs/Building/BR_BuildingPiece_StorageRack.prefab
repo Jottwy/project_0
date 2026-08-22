@@ -101,6 +101,7 @@ GameObject:
   - component: {fileID: 8136948229341183089}
   - component: {fileID: 6935952688624863673}
   - component: {fileID: 5603314230261379124}
+  - component: {fileID: 4115163607278925657}
   m_Layer: 16
   m_Name: BR_BuildingPiece_StorageRack
   m_TagString: Untagged
@@ -248,3 +249,15 @@ MonoBehaviour:
     RarityWeight: 1
     MinLootCount: 0
     MaxLootCount: 1
+--- !u!114 &4115163607278925657
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 6275232922667570659}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: ceb91048052fd974490ea78a1d13fab4, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
