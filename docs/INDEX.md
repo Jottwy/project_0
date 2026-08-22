@@ -54,6 +54,9 @@
 - [AUDIT-2026-08-03.md](AUDIT-2026-08-03.md) — barrido de auditoría vigente: qué se limpió, qué
   queda por tier, y qué está bloqueado esperando decisión humana. Empieza aquí antes de "mejorar"
   nada por tu cuenta.
+- [AUDIT-2026-08-13.md](AUDIT-2026-08-13.md) — complemento del anterior: barre lo escrito después
+  (audio de sala, aislamiento, spray, menús de editor) y re-mide los tier C que aquel dejó
+  bloqueados. Misma regla: el comportamiento observable no cambia.
 
 ## Otros documentos de referencia
 - [STRUCTURES.md](STRUCTURES.md)
