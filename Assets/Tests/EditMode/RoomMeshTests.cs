@@ -1537,5 +1537,107 @@ namespace BackroomsSurvival.Tests
             Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "round-tripped clone: triangulation fell back");
             Assert.IsTrue(WindingOk(m, out int bw), $"round-tripped clone: {bw} triangles face the wrong way");
         }
+
+        // ── huecos imposibles ─────────────────────────────────────────────────
+        //
+        // Los cuatro casos que tumbaban la tapa ENTERA: el triangulador es todo o nada, así que
+        // un hueco que no se puede coser se llevaba por delante los demás y el respaldo dibujaba
+        // el suelo macizo mientras la colisión sí lo abría. El contrato ahora es otro: el hueco
+        // imposible se queda CERRADO —en la malla y en la colisión, que es lo que importa—, se
+        // avisa de él, y los huecos buenos que había al lado siguen abiertos.
+
+        /// <summary>Dos escaleras solapadas. Antes: la losa entera sin ningún hueco.</summary>
+        [Test]
+        public void Overlapping_stairs_keep_one_hole_and_warn()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+                // Medio metro al lado: su huella pisa la de la primera.
+                new RoomDefinition.Stairs { position = new Vector2(0.5f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+            };
+
+            RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "overlapping stairs still fell back to the uncut cap");
+            Assert.IsNotEmpty(RoomMeshBuilder.HoleWarnings, "the rejected stairwell was not reported");
+
+            var cb = RoomColliderBuilder.Build(d);
+            // La PRIMERA sigue abriendo: el fallo de la segunda no se lleva a la buena por delante.
+            Vector2 c0 = d.stairs[0].FootprintCentre();
+            Assert.IsFalse(Inside(cb, new Vector3(c0.x, 3f, c0.y)), "the first stairwell was sealed too");
+            Assert.IsTrue(Inside(cb, new Vector3(6f, 3f, 6f)), "the slab is missing away from the stairs");
+        }
+
+        /// <summary>Una escalera cuya huella se sale de la planta. Antes: la losa entera sin
+        /// ningún hueco, y el pozo bueno de al lado tapado con ella.</summary>
+        [Test]
+        public void Stairs_outside_the_plan_do_not_kill_the_other_holes()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.stairs = new[]
+            {
+                // Buena, en el centro.
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+                // Fuera: 6 tiles son 30 m de ancho, o sea ±15; a x = 40 no hay sala.
+                new RoomDefinition.Stairs { position = new Vector2(40f, -10f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+            };
+
+            RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "a stairwell outside the plan still tumbled the cap");
+            Assert.IsNotEmpty(RoomMeshBuilder.HoleWarnings, "the out-of-plan stairwell was not reported");
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 c0 = d.stairs[0].FootprintCentre();
+            Assert.IsFalse(Inside(cb, new Vector3(c0.x, 3f, c0.y)), "the good stairwell was sealed");
+        }
+
+        /// <summary>Un pozo de planta baja que se sale de la sala. La malla lo cierra, así que la
+        /// colisión NO puede abrirlo — ese desacuerdo es el suelo sólido por el que se cae.</summary>
+        [Test]
+        public void A_pit_outside_the_plan_stays_closed_in_both()
+        {
+            var d = Box(6, 5);
+            d.floorHoles = new[]
+            {
+                new RoomDefinition.FloorHole { position = new Vector2(40f, 0f), sizeX = 3f, sizeZ = 3f, depth = 2.5f },
+            };
+
+            RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "an out-of-plan pit still tumbled the cap");
+            Assert.IsNotEmpty(RoomMeshBuilder.HoleWarnings, "the out-of-plan pit was not reported");
+
+            var cb = RoomColliderBuilder.Build(d);
+            // Y el suelo de la sala sigue entero donde tiene que estarlo.
+            Assert.IsTrue(Inside(cb, new Vector3(0f, -0.1f, 0f)), "the floor slab lost its middle");
+        }
+
+        /// <summary>El caso sano no se toca: dos huecos separados siguen abriéndose los dos y sin
+        /// avisos. Es la mitad del contrato que un saneado demasiado celoso rompería.</summary>
+        [Test]
+        public void Two_separate_holes_both_open_without_warnings()
+        {
+            var d = Box(8, 6); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(-8f, -12f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+                new RoomDefinition.Stairs { position = new Vector2(8f, -12f), width = 2f, steps = 17, rise = 0.18f, run = 0.28f },
+            };
+
+            RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "two clean stairwells fell back");
+            Assert.IsEmpty(RoomMeshBuilder.HoleWarnings,
+                "a clean room reported rejected holes: " + string.Join(" | ", RoomMeshBuilder.HoleWarnings));
+
+            var cb = RoomColliderBuilder.Build(d);
+            foreach (var s in d.stairs)
+            {
+                Vector2 c = s.FootprintCentre();
+                Assert.IsFalse(Inside(cb, new Vector3(c.x, 3f, c.y)), "a clean stairwell was sealed");
+            }
+        }
     }
 }

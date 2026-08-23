@@ -43,9 +43,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // El suelo se parte en tiras alrededor de los pozos. Una sola losa dejaría el hueco
             // tapado por colisión: se vería el pozo y no se podría bajar, que es el peor fallo
             // posible aquí porque el jugador ve una cosa y el juego hace otra.
-            AddFloorSlab(boxes, def, bb, t, yBottom, yFloor);
+            AddFloorSlab(boxes, def, inner, outer, bb, t, yBottom, yFloor);
             AddCeilingSlab(boxes, def, bb, t);
-            AddPitBoxes(boxes, def, def.MinCeilingOver(inner), t);
+            AddPitBoxes(boxes, def, def.MinCeilingOver(inner), t,
+                AcceptedPits(def, inner, outer, t, def.MinCeilingOver(inner)));
             AddLevelBoxes(boxes, def, bb, t, def.MinCeilingOver(inner));
 
             int n = inner.Length;
@@ -299,18 +300,46 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// un poco de suelo de menos en las esquinas de un pozo torcido, y es el lado correcto
         /// por el que equivocarse — sobra hueco, nunca suelo invisible sobre el que caminar.
         /// </summary>
-        private static void AddFloorSlab(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
-            Bounds bb, float t, float yBottom, float yFloor)
+        /// <summary>
+        /// Los pozos que la MALLA llega a abrir, en cualquier losa. Un pozo que se queda cerrado
+        /// no dibuja tubo, así que tampoco puede tener paredes de colisión colgando en el vacío.
+        /// </summary>
+        private static HashSet<RoomDefinition.FloorHole> AcceptedPits(RoomDefinition def,
+            Vector2[] inner, Vector2[] outer, float t, float minCeil)
         {
-            var pits = new List<Bounds>();
-            if (def.floorHoles != null)
-                foreach (var f in def.floorHoles)
+            var set = new HashSet<RoomDefinition.FloorHole>();
+            var a = new List<Vector2[]>();
+            var b = new List<Vector2[]>();
+            var defs = new List<RoomDefinition.FloorHole>();
+
+            RoomMeshBuilder.FloorPits(def, inner, outer, t, a, b, defs);
+            foreach (var f in defs) set.Add(f);
+
+            if (def.levels != null)
+                foreach (var lvl in def.levels)
                 {
-                    // `level > 0` no perfora este suelo: perfora la losa de su piso, y de eso se
-                    // encarga AddLevelBoxes. Mismo reparto que en la malla.
-                    if (f == null || f.level > 0 || !f.IsValid()) continue;
-                    pits.Add(XZBounds(RoomMeshBuilder.PitCorners(f, 0f)));
+                    if (lvl == null) continue;
+                    RoomMeshBuilder.LevelHoles(def, inner, lvl, t, minCeil, a, b, defs, out _);
+                    foreach (var f in defs) set.Add(f);
                 }
+            return set;
+        }
+
+        private static void AddFloorSlab(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
+            Vector2[] inner, Vector2[] outer, Bounds bb, float t, float yBottom, float yFloor)
+        {
+            // Los pozos que la MALLA abre de verdad, no los que el autor pidió: un pozo que no se
+            // puede coser se queda cerrado en la malla, y abrirlo aquí es exactamente la
+            // incoherencia que dejaba caer al jugador por un suelo sólido. `level > 0` no perfora
+            // este suelo —perfora la losa de su piso, y de eso se encarga AddLevelBoxes— y ese
+            // reparto ya lo hace `FloorPits`.
+            var pitsIn = new List<Vector2[]>();
+            var pitsOut = new List<Vector2[]>();
+            var pitDefs = new List<RoomDefinition.FloorHole>();
+            RoomMeshBuilder.FloorPits(def, inner, outer, t, pitsIn, pitsOut, pitDefs);
+
+            var pits = new List<Bounds>();
+            foreach (var r in pitsIn) pits.Add(XZBounds(r));
             AddSlabWithHoles(boxes, bb, (yBottom + yFloor) * 0.5f, t, pits);
         }
 
@@ -427,19 +456,22 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             Bounds bb, float t, float minCeil)
         {
             if (def.levels == null) return;
+            var contour = def.InnerContour();
+            var holesIn = new List<Vector2[]>();
+            var holesOut = new List<Vector2[]>();
+            var pitDefs = new List<RoomDefinition.FloorHole>();
             foreach (var lvl in def.levels)
             {
                 if (lvl == null) continue;
                 float top = def.ClampLevelHeight(lvl.height, minCeil);
 
+                // Escaleras y pozos que la MALLA abre en esta losa — el mismo `LevelHoles`, para
+                // que un hueco rechazado se quede cerrado en los dos sitios a la vez.
+                RoomMeshBuilder.LevelHoles(def, contour, lvl, t, minCeil,
+                    holesIn, holesOut, pitDefs, out _);
+
                 var holes = new List<Bounds>();
-                foreach (var s in def.StairsReaching(top, minCeil))
-                    holes.Add(XZBounds(RoomMeshBuilder.BoxCorners(
-                        s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees)));
-                // Los pozos anclados EN esta losa (cualquier modo), exactamente los mismos que
-                // abre la malla.
-                foreach (var f in def.PitsAtSlab(top, minCeil))
-                    holes.Add(XZBounds(RoomMeshBuilder.PitCorners(f, 0f)));
+                foreach (var r in holesIn) holes.Add(XZBounds(r));
 
                 AddSlabWithHoles(boxes, bb, top - t * 0.5f, t, holes);
             }
@@ -506,12 +538,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// paredes — hasta <c>Depth</c> metros, igual que uno con fondo — pero nunca losa: a partir
         /// de ahí no hay nada, ni suelo ni pared, y se sigue cayendo.
         /// </summary>
-        private static void AddPitBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition def, float minCeil, float t)
+        private static void AddPitBoxes(List<RoomPool.CollisionBox> boxes, RoomDefinition def,
+            float minCeil, float t, HashSet<RoomDefinition.FloorHole> accepted)
         {
             if (def.floorHoles == null) return;
             foreach (var f in def.floorHoles)
             {
-                if (f == null || !f.IsValid()) continue;
+                if (f == null || !f.IsValid() || !accepted.Contains(f)) continue;
                 var mode = f.EffectiveMode();
                 if (mode == RoomDefinition.PitMode.Through) continue;
 

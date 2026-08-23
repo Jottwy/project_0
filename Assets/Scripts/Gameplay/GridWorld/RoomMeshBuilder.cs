@@ -64,6 +64,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         public static Mesh Build(RoomDefinition def, Mesh into = null)
         {
             TriangulationFailed = false;
+            HoleWarnings.Clear();
             float t = Mathf.Max(0.001f, def.wallThickness);
             float h = Mathf.Max(0.01f, def.heightMeters);
 
@@ -144,8 +145,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // exterior, igual que la sala.
             // Solo los de planta baja: uno de entreplanta no cuelga del suelo de la sala, atraviesa
             // su propia losa — lo resuelve AddLevelSlab.
-            System.Func<RoomDefinition.FloorHole, bool> atFloor = f => f.level <= 0;
-            var pitsIn = PitRects(def, atFloor, f => 0f);
+            var pitsIn = new List<Vector2[]>();
             // La tapa EXTERIOR (la que se ve desde debajo del edificio) se corta para TODOS los
             // pozos que cuelguen (Well/Bottomless), con fondo o sin él — Through no cuelga, así
             // que no engorda nada por fuera. La versión anterior se la saltaba para los bottomless
@@ -154,8 +154,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // suelo de la sala, y esta losa está a `-t` — como `max(Depth, t) >= t`, el tubo la
             // atraviesa SIEMPRE. Sin recortarla quedaba una chapa cruzando el pozo justo debajo
             // del borde: el agujero se veía abierto arriba y tapado un palmo más abajo.
-            var pitsOut = PitRects(def, atFloor,
-                f => f.EffectiveMode() == RoomDefinition.PitMode.Through ? 0f : t);
+            var pitsOut = new List<Vector2[]>();
+            // Un pozo solo se abre si se puede abrir en las DOS tapas: la interior contra `inner`
+            // y la exterior —engordada— contra `outer`. Aceptarlo en una sola dejaría el pozo
+            // abierto arriba y tapado por debajo. Ver `RoomHoleSet`.
+            var pitDefs = new List<RoomDefinition.FloorHole>();
+            FloorPits(def, inner, outer, t, pitsIn, pitsOut, pitDefs);
 
             // Techo inclinado: la altura pasa a ser funcion del punto. Con tilt 0 estas dos
             // funciones devuelven la constante de siempre y no cambia nada.
@@ -185,7 +189,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             AddCap(outer, yTop, Vector3.up, SubmeshWall, sideCutsOut, null, topAt, ceilUV);
             AddCap(inner, yFloor, Vector3.up, SubmeshFloor, sideCuts, pitsIn);
             AddCap(inner, yCeil, Vector3.down, SubmeshCeiling, sideCuts, null, ceilAt, ceilUV);
-            AddPits(def, atFloor, yFloor, yBottom, t, pitsIn, pitsOut);
+            AddPits(pitDefs, yFloor, yBottom, t, pitsIn, pitsOut);
 
             // Paredes: cara interior, cara exterior y las jambas que las cosen a través del
             // grosor en cada boquete. Van juntas y no en dos pasadas independientes porque un
@@ -421,13 +425,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// ninguno.</summary>
         private static List<Vector2[]> PitRects(RoomDefinition def,
             System.Func<RoomDefinition.FloorHole, bool> include,
-            System.Func<RoomDefinition.FloorHole, float> growFor)
+            System.Func<RoomDefinition.FloorHole, float> growFor,
+            List<RoomDefinition.FloorHole> defsInto = null)
         {
             var list = new List<Vector2[]>();
             if (def.floorHoles == null) return list;
             foreach (var f in def.floorHoles)
                 if (f != null && f.IsValid() && include(f))
+                {
                     list.Add(PitCorners(f, growFor(f)));
+                    defsInto?.Add(f);
+                }
             return list;
         }
 
@@ -449,22 +457,20 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         ///  · el fondo por arriba, donde se cae de pie (solo <c>Well</c>);
         ///  · el fondo por abajo, que se ve desde debajo de la losa (solo <c>Well</c>).
         ///
-        /// FRÁGIL A PROPÓSITO: <c>pitsIn[k]</c>/<c>pitsOut[k]</c> tienen que corresponder al MISMO
-        /// pozo — los tres salen del mismo <paramref name="include"/> sobre <c>def.floorHoles</c>,
-        /// en el mismo orden. Si un llamador construye estas tres listas con predicados que no
-        /// casan letra por letra, un pozo se cuela en una lista y no en la otra.
+        /// Las tres listas van EN PARALELO y las produce <see cref="FloorPits"/> o
+        /// <see cref="LevelHoles"/> de una pieza, ya saneadas. Antes se pasaba el predicado y esto
+        /// volvía a recorrer <c>def.floorHoles</c> por su cuenta confiando en caer en el mismo
+        /// orden; con el saneado de huecos eso se rompe en cuanto un pozo se queda cerrado, porque
+        /// deja de haber un pozo por índice.
         /// </summary>
-        private static void AddPits(RoomDefinition def, System.Func<RoomDefinition.FloorHole, bool> include,
+        private static void AddPits(List<RoomDefinition.FloorHole> pitDefs,
             float top, float bottom, float t, List<Vector2[]> pitsIn, List<Vector2[]> pitsOut)
         {
-            if (pitsIn.Count == 0) return;
-            int k = 0;
-            foreach (var f in def.floorHoles)
+            for (int k = 0; k < pitsIn.Count; k++)
             {
-                if (f == null || !f.IsValid() || !include(f)) continue;
+                var f = pitDefs[k];
                 var rin = pitsIn[k];
                 var rout = pitsOut[k];
-                k++;
                 var mode = f.EffectiveMode();
 
                 if (mode == RoomDefinition.PitMode.Through)
@@ -559,25 +565,12 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             float top = def.ClampLevelHeight(lvl.height, minCeil);
             float bottom = top - t;
 
-            // Los pozos anclados a ESTA losa, cualquiera que sea su EffectiveMode() — Through,
-            // Well o Bottomless. Mismo predicado en las dos listas: ver el porqué en AddPits.
-            System.Func<RoomDefinition.FloorHole, bool> atThisSlab = f =>
-                f.level > 0 && Mathf.Abs(def.StoreyBaseY(f.level, minCeil) - top) < 1e-3f;
-            var pitsIn = PitRects(def, atThisSlab, f => 0f);
-            // Solo los que cuelgan (Well/Bottomless) engordan el hueco de la tapa exterior — un
-            // Through no tiene pared propia que alojar, así que su hueco mide igual arriba y abajo.
-            var pitsOut = PitRects(def, atThisSlab,
-                f => f.EffectiveMode() == RoomDefinition.PitMode.Through ? 0f : t);
-
-            _levelHoles.Clear();
-            foreach (var s in def.StairsReaching(top, minCeil))
-                _levelHoles.Add(BoxCorners(s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees));
-            int stairHoleCount = _levelHoles.Count;
-            _levelHoles.AddRange(pitsIn);
-
-            _levelHolesOut.Clear();
-            for (int i = 0; i < stairHoleCount; i++) _levelHolesOut.Add(_levelHoles[i]); // sin engordar
-            _levelHolesOut.AddRange(pitsOut);
+            // Huecos de escalera y pozos de ESTA losa, ya saneados: los que no se pueden abrir se
+            // quedan cerrados aquí Y en la colisión, porque las dos consultan `LevelHoles`.
+            LevelHoles(def, contour, lvl, t, minCeil,
+                _levelHoles, _levelHolesOut, _levelPitDefs, out int stairHoleCount);
+            var pitsIn = _levelHoles.GetRange(stairHoleCount, _levelHoles.Count - stairHoleCount);
+            var pitsOut = _levelHolesOut.GetRange(stairHoleCount, _levelHolesOut.Count - stairHoleCount);
 
             AddCap(contour, bottom, Vector3.down, SubmeshCeiling, null, _levelHolesOut);
             AddCap(contour, top, Vector3.up, SubmeshFloor, null, _levelHoles);
@@ -588,7 +581,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             for (int i = 0; i < stairHoleCount; i++)
                 AddPitTube(_levelHoles[i], bottom, top, inward: true);
 
-            AddPits(def, atThisSlab, top, bottom, t, pitsIn, pitsOut);
+            AddPits(_levelPitDefs, top, bottom, t, pitsIn, pitsOut);
 
             AddSlabRim(contour, bottom, top);
         }
@@ -613,6 +606,133 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         private static readonly List<Vector2[]> _levelHoles = new List<Vector2[]>();
         private static readonly List<Vector2[]> _levelHolesOut = new List<Vector2[]>();
+        private static readonly List<RoomDefinition.FloorHole> _levelPitDefs =
+            new List<RoomDefinition.FloorHole>();
+
+        /// <summary>
+        /// Los huecos que se han quedado CERRADOS en el último <see cref="Build"/>, uno por línea
+        /// y diciendo dónde. La malla y la colisión coinciden igualmente —ese era el bug— así que
+        /// esto no impide guardar: es contenido que no cabe, y el sitio de decirlo es la
+        /// herramienta, no un error de motor.
+        /// </summary>
+        public static readonly List<string> HoleWarnings = new List<string>();
+
+        private static readonly List<int> _keepA = new List<int>();
+        private static readonly List<int> _keepB = new List<int>();
+        private static readonly List<int> _keep = new List<int>();
+        private static readonly List<int> _dropped = new List<int>();
+        private static readonly List<int> _keepPits = new List<int>();
+
+        private static void AddWarningOnce(string msg)
+        {
+            if (!HoleWarnings.Contains(msg)) HoleWarnings.Add(msg);
+        }
+
+        /// <summary>
+        /// Los pozos de PLANTA BAJA que de verdad se abren, ya saneados. Punto ÚNICO de decisión:
+        /// lo llaman la malla y <see cref="RoomColliderBuilder"/>, y por eso no pueden discrepar.
+        /// </summary>
+        public static void FloorPits(RoomDefinition def, Vector2[] inner, Vector2[] outer, float t,
+            List<Vector2[]> pitsIn, List<Vector2[]> pitsOut,
+            List<RoomDefinition.FloorHole> pitDefs)
+        {
+            System.Func<RoomDefinition.FloorHole, bool> atFloor = f => f.level <= 0;
+            pitDefs.Clear();
+            pitsIn.Clear();
+            pitsIn.AddRange(PitRects(def, atFloor, f => 0f, pitDefs));
+            pitsOut.Clear();
+            pitsOut.AddRange(PitRects(def, atFloor,
+                f => f.EffectiveMode() == RoomDefinition.PitMode.Through ? 0f : t));
+
+            int none = 0;
+            AcceptHoles(inner, pitsIn, outer, pitsOut, "planta baja", ref none, pitDefs);
+        }
+
+        /// <summary>
+        /// Los huecos de una ENTREPLANTA que de verdad se abren, ya saneados: primero los de
+        /// escalera (<paramref name="stairCount"/> de ellos) y después los pozos. Mismo papel de
+        /// punto único que <see cref="FloorPits"/>.
+        /// </summary>
+        public static void LevelHoles(RoomDefinition def, Vector2[] contour,
+            RoomDefinition.Level lvl, float t, float minCeil,
+            List<Vector2[]> holesIn, List<Vector2[]> holesOut,
+            List<RoomDefinition.FloorHole> pitDefs, out int stairCount)
+        {
+            float top = def.ClampLevelHeight(lvl.height, minCeil);
+            System.Func<RoomDefinition.FloorHole, bool> atThisSlab = f =>
+                f.level > 0 && Mathf.Abs(def.StoreyBaseY(f.level, minCeil) - top) < 1e-3f;
+
+            holesIn.Clear();
+            foreach (var s in def.StairsReaching(top, minCeil))
+                holesIn.Add(BoxCorners(s.FootprintCentre(), s.width, s.FootprintLength(), s.yawDegrees));
+            stairCount = holesIn.Count;
+
+            holesOut.Clear();
+            holesOut.AddRange(holesIn); // los de escalera no engordan por fuera
+
+            pitDefs.Clear();
+            holesIn.AddRange(PitRects(def, atThisSlab, f => 0f, pitDefs));
+            // Solo los que cuelgan (Well/Bottomless) engordan el hueco de la tapa exterior — un
+            // Through no tiene pared propia que alojar, así que su hueco mide igual arriba y abajo.
+            holesOut.AddRange(PitRects(def, atThisSlab,
+                f => f.EffectiveMode() == RoomDefinition.PitMode.Through ? 0f : t));
+
+            AcceptHoles(contour, holesIn, contour, holesOut,
+                $"entreplanta a {top:0.##} m", ref stairCount, pitDefs);
+        }
+
+        /// <summary>
+        /// Deja en las dos listas —que van en paralelo— solo los huecos que las DOS tapas pueden
+        /// abrir, y anota los demás en <see cref="HoleWarnings"/>.
+        ///
+        /// Que se decida sobre las dos a la vez es el punto: aceptar un hueco en la tapa de arriba
+        /// y no en la de abajo deja un pozo abierto por un lado y tapado por el otro, que es la
+        /// misma incoherencia de la que se venía huyendo. Ver <see cref="RoomHoleSet"/>.
+        /// </summary>
+        /// <param name="stairPrefix">Cuántos elementos del principio son huecos de escalera. Se
+        /// actualiza a cuántos SOBREVIVEN, porque el llamador recorre ese prefijo por índice para
+        /// coser el tubo de cada escalera.</param>
+        private static void AcceptHoles(Vector2[] cA, List<Vector2[]> a,
+            Vector2[] cB, List<Vector2[]> b, string where, ref int stairPrefix,
+            List<RoomDefinition.FloorHole> pitDefs = null)
+        {
+            if (a.Count == 0) return;
+
+            RoomHoleSet.Accept(cA, a, _keepA, _dropped);
+            RoomHoleSet.Accept(cB, b, _keepB, _dropped);
+            RoomHoleSet.Intersect(_keepA, _keepB, _keep);
+            if (_keep.Count == a.Count) return;
+
+            int survivingStairs = 0;
+            for (int k = 0; k < _keep.Count; k++) if (_keep[k] < stairPrefix) survivingStairs++;
+
+            int ki = 0;
+            for (int i = 0; i < a.Count; i++)
+            {
+                if (ki < _keep.Count && _keep[ki] == i) { ki++; continue; }
+                // Sin repetir: la colisión llama a los mismos `FloorPits`/`LevelHoles` que la
+                // malla, así que cada hueco rechazado pasa por aquí dos veces por horneado.
+                AddWarningOnce(i < stairPrefix
+                    ? $"Escalera #{i + 1}: no abre hueco en la {where} — sale de la planta, o pisa "
+                      + "otro hueco. Sepárala de la pared o del hueco vecino."
+                    : $"Pozo #{i - stairPrefix + 1}: no abre hueco en la {where} — sale de la "
+                      + "planta, o pisa otro hueco. Muévelo o hazlo más pequeño.");
+            }
+
+            // `pitDefs` va en paralelo con la COLA de `a`, la que sigue al prefijo de escaleras:
+            // hay que trasladarle los índices antes de recortar nada.
+            if (pitDefs != null)
+            {
+                _keepPits.Clear();
+                for (int k = 0; k < _keep.Count; k++)
+                    if (_keep[k] >= stairPrefix) _keepPits.Add(_keep[k] - stairPrefix);
+                RoomHoleSet.Filter(pitDefs, _keepPits);
+            }
+
+            RoomHoleSet.Filter(a, _keep);
+            RoomHoleSet.Filter(b, _keep);
+            stairPrefix = survivingStairs;
+        }
 
         private static readonly List<Vector2> _capRing = new List<Vector2>();
         private static readonly List<IList<Vector2>> _capHoles = new List<IList<Vector2>>();

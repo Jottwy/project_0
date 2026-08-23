@@ -2425,6 +2425,12 @@ namespace BackroomsSurvival.EditorTools
             string footprintIssue = FootprintIssue(_def);
             if (footprintIssue != null) _validateIssues.Add(footprintIssue);
 
+            // Huecos que se han quedado CERRADOS en la última reconstrucción. No impiden guardar
+            // —la malla y la colisión coinciden, que era el problema de verdad— pero sí hay que
+            // decirlos: es la diferencia entre "esa escalera no lleva a ninguna parte y sé por
+            // qué" y descubrirlo dándose de cabeza contra la losa en juego.
+            _validateIssues.AddRange(RoomMeshBuilder.HoleWarnings);
+
             // El mismo camino que usa el exportador real: una RoomEntry de usar-y-tirar con
             // SOLO los campos que DoorwayByQuarter mira (definition, tilesX, tilesZ), para no
             // duplicar su lógica de localizar el vano real sobre el contorno girado.
