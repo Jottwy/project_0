@@ -92,6 +92,20 @@ pub(super) const PHANTOM_FLANK_STEP_DEG: f32 = 22.0;
 /// not to hug its edge.
 pub(super) const PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG: f32 = 75.0;
 
+/// ADR-089 — how far from YOUR claim marker a creature that lost you will still go and check it
+/// (same layer only). Past this, the walk is longer than the hunt and the ordinary give-up is right.
+pub(super) const PHANTOM_HOME_RECALL_RADIUS: f32 = 120.0;
+/// ADR-089 — a wandering creature this close to ANY claim marker on its layer gravitates towards it.
+pub(super) const PHANTOM_HOME_PATROL_RADIUS: f32 = 80.0;
+/// ADR-089 — the ring it patrols around a marker (m): close enough to be at your door, far enough
+/// that it reads as prowling rather than as camping the spawn.
+pub(super) const PHANTOM_HOME_RING_MIN: f32 = 25.0;
+pub(super) const PHANTOM_HOME_RING_MAX: f32 = 40.0;
+/// ADR-089 — probability that a wandering creature's NEXT heading (after a pause) aims at the ring
+/// instead of being random. Half, not always: a base that reliably pulls every creature in range
+/// becomes a visible mechanic, and this is meant to read as something that happens to you.
+pub(super) const PHANTOM_HOME_PATROL_BIAS: f32 = 0.5;
+
 /// ADR-088 — the target has to be MOVING for interception to mean anything. Below this the velocity
 /// estimate (one tick of position delta) is mostly noise, and aiming ahead of a standing player just
 /// aims beside them.
@@ -1250,6 +1264,10 @@ pub(super) struct PhantomDriver {
     pub(super) world_seed: u64,
     pub(super) grid_cache: GridGenChunkCache,
     pub(super) movers: Vec<PhantomMover>,
+    /// ADR-089 — every claim marker standing in the world this step: `(owner, position, layer)`.
+    /// Derived from `net.stp_buildings` once per step (ADR-081: the claims ARE the markers, there is
+    /// no other table), so the FSM reads a slice instead of scanning the roster per mover.
+    pub(super) homes: Vec<(PeerId, Vec3, u8)>,
     /// Last-tick XZ position of each real target (host + peers), keyed by id. Used to derive each
     /// target's speed (sound detection, slice 3b-P1) — peers never send velocity/move_state, so a
     /// position delta is the only uniform "is it running?" signal. Rebuilt each tick from the
@@ -1421,6 +1439,10 @@ pub(super) struct PhantomMover {
     /// ADR-053 — places where a hunt of this creature's ended. Checked before giving up on the
     /// next one, which is what makes reusing a hiding place a bad idea.
     pub(super) hideouts: Vec<Vec3>,
+    /// ADR-089 — whether this hunt has already sent the creature to check the target's claim. One
+    /// visit per hunt, like the hideout checks: a creature that loops to your door forever is a
+    /// mechanic, not a habit.
+    pub(super) home_checked_this_hunt: bool,
     /// How many remembered spots the CURRENT hunt has already been to. Reset on entering SEARCH.
     pub(super) hideouts_checked: u8,
     /// ADR-075 point 2c — seconds the current target has been effectively still (below walking-
@@ -1825,6 +1847,7 @@ impl PhantomDriver {
             step_peak_us: 0,
             attacks: Vec::new(),
             voice_echoes: Vec::new(),
+            homes: Vec::new(),
             population_sync_in: 0.0, // reconcile on the very first entity tick
             next_victim_slot: 0,
             // ADR-043 — the load-test levers. Read ONCE at construction, not per tick: a value
@@ -2188,6 +2211,7 @@ impl PhantomDriver {
             peeked_this_search: false,
             ambush_cooldown: 0.0,
             ambushed_this_hunt: false,
+            home_checked_this_hunt: false,
             strike_recover: 0.0,
             statue_cooldown: 0.0,
             traits: PhantomTraits::derive(self.world_seed, anchor, id),
@@ -2780,6 +2804,7 @@ impl PhantomDriver {
         m.noise_expiry = None; // a lost hunt is not a noise errand, whatever ran before it
         m.target_still_for = 0.0;
         m.peeked_this_search = false; // ADR-075: a fresh hunt earns a fresh peek
+        m.home_checked_this_hunt = false; // ADR-089: and a fresh visit to your door
         m.state = PhantomState::Search;
         m.state_timer = 0.0;
 
@@ -2943,6 +2968,27 @@ impl PhantomDriver {
             }
         }
 
+        // ADR-089 — AND THEN, CHECK WHERE YOU LIVE. After the remembered hideouts (the fresh trail
+        // beats the habit, ADR-075's order) and only once per hunt: your claim marker, if it is on
+        // this layer and not a hike away. A hunt that ended near your base starts its next leg at
+        // your door.
+        if arrived
+            && self.movers[i].noise_expiry.is_none()
+            && !self.movers[i].home_checked_this_hunt
+        {
+            if let Some(home) = self.home_of_target(i, from, layer) {
+                self.movers[i].home_checked_this_hunt = true;
+                self.movers[i].last_known_player_pos = Some(home);
+                self.movers[i].nav_waypoints.clear();
+                self.movers[i].state_timer = 0.0;
+                info!(
+                    "MPTRACE step=PH_SEARCH event=phantom_checks_your_home phantom_id={} home=({:.1},{:.1})",
+                    id, home.x, home.z
+                );
+                return;
+            }
+        }
+
         // Swept the spot, out of patience, or the trail went cold → give up and forget.
         if noise_cold || self.movers[i].state_timer > self.movers[i].search_patience || arrived {
             // ADR-053: file where this hunt died. Next time it starts here instead of ending here.
@@ -2970,9 +3016,10 @@ impl PhantomDriver {
             self.movers[i].search_fallback = None;
             self.movers[i].peeked_this_search = false;
             self.movers[i].ambushed_this_hunt = false;
-            // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
-            // never fought the journey — but without this the phantom would finish a
-            // 500 m trip and immediately start walking all the way back to its spawn.
+            self.movers[i].home_checked_this_hunt = false; // ADR-089: next hunt may check again
+                                                           // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
+                                                           // never fought the journey — but without this the phantom would finish a
+                                                           // 500 m trip and immediately start walking all the way back to its spawn.
             self.movers[i].spawn_pos = from;
             return;
         }
@@ -3744,10 +3791,23 @@ impl PhantomDriver {
             self.movers[i].wander_pause_timer -= ctx.dt;
             if self.movers[i].wander_pause_timer <= 0.0 {
                 self.movers[i].is_paused = false;
-                let turn = PHANTOM_TURN_MIN
-                    + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
-                self.movers[i].heading =
-                    (self.movers[i].heading + turn).rem_euclid(std::f32::consts::TAU);
+                // ADR-089: near somebody's base, the next leg sometimes points at its doorstep
+                // instead of anywhere. Still Wander — same walk, same pauses, same leash — it just
+                // keeps drifting back to where you live.
+                let ring = match rand::random::<f32>() < PHANTOM_HOME_PATROL_BIAS {
+                    true => self.home_patrol_point(from, layer),
+                    false => None,
+                };
+                self.movers[i].heading = match ring {
+                    Some(goal) => (goal.x - from.x)
+                        .atan2(goal.z - from.z)
+                        .rem_euclid(std::f32::consts::TAU),
+                    None => {
+                        let turn = PHANTOM_TURN_MIN
+                            + rand::random::<f32>() * (PHANTOM_TURN_MAX - PHANTOM_TURN_MIN);
+                        (self.movers[i].heading + turn).rem_euclid(std::f32::consts::TAU)
+                    }
+                };
             } else {
                 let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
                 if let Some(peer) = ctx.net.peers.get_mut(&id) {
@@ -4308,6 +4368,16 @@ impl PhantomDriver {
         // Same discipline as `attacks`: cleared per step so a consumer that misses one tick cannot
         // leave the driver growing a list forever.
         self.voice_echoes.clear();
+        // ADR-089: the claims standing this step. `owner_id == 0` is "unknown" (pre-ADR-081 save)
+        // and never a home; the layer comes from the marker's own Y, like everything else here.
+        self.homes.clear();
+        for b in &net.stp_buildings {
+            if b.def_id == crate::game_loop::CLAIM_MARKER_DEF_ID && b.owner_id != 0 {
+                let pos = Vec3::from_array(b.position);
+                self.homes
+                    .push((b.owner_id, pos, world_pos_to_layer(pos.y)));
+            }
+        }
         for i in 0..self.movers.len() {
             // Built here and not above the loop: the seal pass and the step-cost trace below still
             // read `net` directly, so the reborrow has to end with the iteration.
@@ -4363,6 +4433,39 @@ impl PhantomDriver {
         self.report_step_cost(net, now);
 
         &self.attacks
+    }
+
+    /// ADR-089 — the claim marker of the player this creature is hunting, if it is worth a visit:
+    /// same layer, within `PHANTOM_HOME_RECALL_RADIUS` of where the creature stands. `None` when the
+    /// target owns nothing nearby — most hunts, most of the time.
+    pub(super) fn home_of_target(&self, i: usize, from: Vec3, layer: u8) -> Option<Vec3> {
+        let tid = self.movers[i].target_id?;
+        self.homes
+            .iter()
+            .filter(|(owner, _, l)| *owner == tid && *l == layer)
+            .map(|(_, pos, _)| *pos)
+            .filter(|pos| pos.distance_xz(from) <= PHANTOM_HOME_RECALL_RADIUS)
+            .min_by(|a, b| a.distance_xz(from).total_cmp(&b.distance_xz(from)))
+    }
+
+    /// ADR-089 — a point on the patrol ring of the nearest claim marker on this layer, if one is
+    /// within `PHANTOM_HOME_PATROL_RADIUS`. Whose base it is does not matter to a wanderer: it is
+    /// prowling a place where players live, not hunting anyone yet.
+    pub(super) fn home_patrol_point(&self, from: Vec3, layer: u8) -> Option<Vec3> {
+        let (_, home, _) = self
+            .homes
+            .iter()
+            .filter(|(_, _, l)| *l == layer)
+            .filter(|(_, pos, _)| pos.distance_xz(from) <= PHANTOM_HOME_PATROL_RADIUS)
+            .min_by(|a, b| a.1.distance_xz(from).total_cmp(&b.1.distance_xz(from)))?;
+        let bearing = rand::random::<f32>() * std::f32::consts::TAU;
+        let r = PHANTOM_HOME_RING_MIN
+            + rand::random::<f32>() * (PHANTOM_HOME_RING_MAX - PHANTOM_HOME_RING_MIN);
+        Some(Vec3::new(
+            home.x + bearing.sin() * r,
+            from.y,
+            home.z + bearing.cos() * r,
+        ))
     }
 
     /// ADR-080 point 4 — where to walk to in order to get out of your victim's field of view while

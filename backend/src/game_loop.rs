@@ -4958,7 +4958,7 @@ fn stp_pose_cell(position: [f32; 3], rotation: f32) -> (i32, i32, i32, i32) {
 /// superficie de configuración cuando exista. **Si alguien regenera esa definición, mintará un id
 /// nuevo y este número deja de casar**: el marcador se vuelve un poste decorativo y nadie puede
 /// reclamar nada. El propio menú lo avisa y se niega a regenerar el asset si ya existe.
-const CLAIM_MARKER_DEF_ID: i32 = -1977919096;
+pub(crate) const CLAIM_MARKER_DEF_ID: i32 = -1977919096; // pub(crate): ADR-089 lo lee el driver
 
 /// Identidad del claim que cubre `position`.
 ///

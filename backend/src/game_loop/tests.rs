@@ -7331,3 +7331,160 @@ fn intercept_refuses_a_point_behind_a_wall() {
         "el punto proyectado cae tras la pared: se cae al contacto"
     );
 }
+
+// ── ADR-089 — Sabe dónde vives ───────────────────────────────────────────────────────────────────
+
+fn plant_claim_marker(net: &mut NetworkManager, owner: u16, at: [f32; 3]) {
+    use crate::network::protocol::StpBuildingInfo;
+    net.stp_buildings.push(StpBuildingInfo {
+        id: STP_BUILDING_ID_BASE + 77,
+        def_id: crate::game_loop::CLAIM_MARKER_DEF_ID,
+        position: at,
+        rotation: 0.0,
+        group_id: 0,
+        owner_id: owner,
+        added: vec![],
+    });
+}
+
+/// Tras agotar una búsqueda cerca de tu base, la criatura va a comprobar tu PUERTA antes de
+/// rendirse — una vez por caza. Antes de ADR-089 el marcador era invisible para la IA.
+#[tokio::test]
+async fn a_lost_hunt_checks_your_claim_before_giving_up() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+
+    // La casa del HOST (id 1), a 40 m: dentro del radio de recuerdo, misma capa.
+    let home = [here.x + 40.0, here.y, here.z];
+    plant_claim_marker(&mut net, 1, home);
+
+    // Una caza real ya perdida: en Search, "llegada" al punto donde te vio por última vez
+    // (= donde está), sin escondites memorizados y sin ser un recado de ruido.
+    driver.movers[0].state = PhantomState::Search;
+    driver.movers[0].target_id = Some(net.local_id);
+    driver.movers[0].last_known_player_pos = Some(here);
+    driver.movers[0].noise_expiry = None;
+    driver.movers[0].search_patience = 60.0;
+
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0); // el jugador, lejos: nada que detectar
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+
+    assert!(
+        driver.movers[0].home_checked_this_hunt,
+        "la caza perdida manda a la criatura a comprobar tu casa"
+    );
+    let goal = driver.movers[0]
+        .last_known_player_pos
+        .expect("sigue buscando");
+    assert!(
+        goal.distance_xz(Vec3::from_array(home)) < 1e-3,
+        "y el nuevo objetivo de búsqueda ES el marcador, got ({:.1},{:.1})",
+        goal.x,
+        goal.z
+    );
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Search,
+        "sin rendirse todavía"
+    );
+}
+
+/// La casa se comprueba UNA vez por caza: en el tick siguiente, ya "llegada" al marcador, no vuelve
+/// a apuntarle — se rinde como siempre. Sin esto, una base cercana sería un bucle infinito.
+#[tokio::test]
+async fn the_home_is_checked_once_per_hunt_and_then_it_gives_up() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    plant_claim_marker(&mut net, 1, [here.x + 1.0, here.y, here.z]);
+
+    driver.movers[0].state = PhantomState::Search;
+    driver.movers[0].target_id = Some(net.local_id);
+    driver.movers[0].last_known_player_pos = Some(here);
+    driver.movers[0].home_checked_this_hunt = true; // ya fue
+    driver.movers[0].search_patience = 60.0;
+
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0);
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Wander,
+        "con la casa ya comprobada, llegar al sitio es rendirse, como siempre"
+    );
+    assert!(
+        !driver.movers[0].home_checked_this_hunt,
+        "y la rendición limpia el flag para la próxima caza"
+    );
+}
+
+/// Una casa en OTRA capa, o más allá del radio, no cuenta: ni la comprueba ni la ronda.
+#[tokio::test]
+async fn a_home_on_another_layer_or_too_far_is_ignored() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    // Misma XZ, una capa más arriba (LAYER_HEIGHT_M por encima).
+    plant_claim_marker(&mut net, 1, [here.x + 10.0, here.y + 4.0, here.z]);
+    // Y otra en la capa correcta pero a 300 m.
+    net.stp_buildings
+        .push(crate::network::protocol::StpBuildingInfo {
+            id: STP_BUILDING_ID_BASE + 78,
+            def_id: crate::game_loop::CLAIM_MARKER_DEF_ID,
+            position: [here.x + 300.0, here.y, here.z],
+            rotation: 0.0,
+            group_id: 0,
+            owner_id: net.local_id,
+            added: vec![],
+        });
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0);
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0); // deriva `homes`
+    driver.movers[0].target_id = Some(net.local_id);
+    assert_eq!(driver.homes.len(), 2, "las dos se derivan del roster");
+    assert_eq!(
+        driver.home_of_target(0, here, 0),
+        None,
+        "ninguna vale: una está en otra capa, la otra a 300 m"
+    );
+    assert_eq!(
+        driver.home_patrol_point(here, 0),
+        None,
+        "y tampoco hay nada que rondar"
+    );
+}
+
+/// La ronda: a 50 m de un marcador, el punto del anillo cae a 25–40 m de ÉL (no de la criatura).
+#[tokio::test]
+async fn the_patrol_ring_surrounds_the_marker() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let home = Vec3::new(here.x + 50.0, here.y, here.z);
+    plant_claim_marker(&mut net, 4001, home.to_array()); // de otro jugador: da igual de quién
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0);
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+    for _ in 0..20 {
+        let p = driver
+            .home_patrol_point(here, 0)
+            .expect("a 50 m hay una base que rondar");
+        let d = p.distance_xz(home);
+        assert!(
+            (crate::game_loop::phantom::PHANTOM_HOME_RING_MIN - 1e-3
+                ..=crate::game_loop::phantom::PHANTOM_HOME_RING_MAX + 1e-3)
+                .contains(&d),
+            "el anillo se mide desde el marcador, got {d:.1} m"
+        );
+    }
+}
