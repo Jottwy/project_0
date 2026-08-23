@@ -147,7 +147,7 @@ impl GridGenChunkCache {
     /// one. Test-only: production code must always come from `get_or_generate`, or nav and render
     /// could diverge (ADR-033).
     #[cfg(test)]
-    pub(super) fn insert_for_test(&mut self, key: (i32, i32, u8), grid: LayerGrid) {
+    pub(crate) fn insert_for_test(&mut self, key: (i32, i32, u8), grid: LayerGrid) {
         self.cache.insert(key, grid);
     }
 

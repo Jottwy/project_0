@@ -92,6 +92,15 @@ pub(super) const PHANTOM_FLANK_STEP_DEG: f32 = 22.0;
 /// not to hug its edge.
 pub(super) const PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG: f32 = 75.0;
 
+/// ADR-088 — the target has to be MOVING for interception to mean anything. Below this the velocity
+/// estimate (one tick of position delta) is mostly noise, and aiming ahead of a standing player just
+/// aims beside them.
+pub(super) const PHANTOM_INTERCEPT_MIN_SPEED: f32 = 1.5;
+/// ADR-088 — the most lead (s) the creature will ever take. Your velocity is measured over ONE tick;
+/// projecting it five seconds out is a guess, not an intercept. Two seconds reaches the next crossing
+/// of a corridor and no further.
+pub(super) const PHANTOM_INTERCEPT_MAX_LEAD: f32 = 2.0;
+
 /// ADR-080 point 4 — how close to the flank point counts as having arrived. Generous on purpose:
 /// the goal is "out of your view at roughly band distance", not a coordinate, and a tight radius
 /// against a 10 Hz step would have it shuffling to hit an exact spot.
@@ -1084,6 +1093,44 @@ pub(super) fn chorus_delay_fraction(key: u64) -> f32 {
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     z ^= z >> 31;
     (z >> 11) as f32 / (1u64 << 53) as f32
+}
+
+/// ADR-088 — WHERE TO RUN TO, to meet a moving target instead of following it. `None` when the
+/// target is not really moving, or when the projected point is somewhere the TARGET could not get to
+/// (a wall between them and it): then the caller keeps aiming at the contact stance, which is exactly
+/// what it did before this existed.
+///
+/// Solved by fixed-point iteration — three rounds of `t = |p(t) − from| / speed` with
+/// `p(t) = tpos + v·t` — which converges in a couple of steps for any closing speed above the
+/// target's, and is capped at `PHANTOM_INTERCEPT_MAX_LEAD` either way.
+///
+/// NAVIGATION ONLY. The strike, `has_line` and the attack distance all keep measuring against the
+/// player and the contact stance (ADR-082); feeding them this point would hand out reach for free.
+pub(super) fn intercept_point(
+    cache: &mut crate::world::grid_gen::GridGenChunkCache,
+    layer: u8,
+    from: Vec3,
+    tpos: Vec3,
+    vel: (f32, f32),
+    closing_speed: f32,
+) -> Option<Vec3> {
+    let speed = (vel.0 * vel.0 + vel.1 * vel.1).sqrt();
+    if speed < PHANTOM_INTERCEPT_MIN_SPEED || closing_speed <= speed {
+        return None; // standing still, or it cannot out-run them: nothing to cut off
+    }
+    let mut t = from.distance_xz(tpos) / closing_speed;
+    let mut p = tpos;
+    for _ in 0..3 {
+        t = t.min(PHANTOM_INTERCEPT_MAX_LEAD);
+        p = Vec3::new(tpos.x + vel.0 * t, tpos.y, tpos.z + vel.1 * t);
+        t = from.distance_xz(p) / closing_speed;
+    }
+    // Only a place the TARGET can actually reach counts: the thin line from them to the point. A
+    // runner heading into a wall is about to turn, and guessing which way is not interception.
+    if !crate::world::grid_gen::segment_is_clear(cache, layer, tpos, p) {
+        return None;
+    }
+    Some(p)
 }
 
 /// ADR-080 point 6 — the `buttons` bits a sated creature may copy: lean left/right (2-3, ADR-044)
@@ -3150,6 +3197,19 @@ impl PhantomDriver {
             crate::world::grid_gen::PHANTOM_BODY_RADIUS,
         )
         .unwrap_or(tpos);
+        // ADR-088: same interception as the lunge, at the press speed this state actually moves at.
+        let press_to = match ctx.target_vels.get(&tid).copied() {
+            Some(vel) => intercept_point(
+                &mut self.grid_cache,
+                layer,
+                from,
+                tpos,
+                vel,
+                PHANTOM_STALK_CLOSE_SPEED,
+            )
+            .unwrap_or(press_to),
+            None => press_to,
+        };
         let to_player = self.steer_heading(i, layer, from, press_to, ctx.dt);
         self.movers[i].heading_target = to_player;
         let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
@@ -3879,7 +3939,22 @@ impl PhantomDriver {
         // pathfinder calls solid made the A* return best-effort and stop a cell short — the "se
         // queda pillado a una distancia" of the play-test. The stance is a place the body can
         // actually be, so the route reaches it and the arm covers the rest.
-        let to_player = self.steer_heading(i, layer, from, line_to, ctx.dt);
+        //
+        // ADR-088: …unless they are RUNNING, in which case it cuts them off. The intercept point is
+        // where the route goes; the stance stays the fallback and the thing the strike measures to.
+        let nav_goal = match ctx.target_vels.get(&tid).copied() {
+            Some(vel) => intercept_point(
+                &mut self.grid_cache,
+                layer,
+                from,
+                tpos,
+                vel,
+                PHANTOM_SPRINT_SPEED,
+            )
+            .unwrap_or(line_to),
+            None => line_to,
+        };
+        let to_player = self.steer_heading(i, layer, from, nav_goal, ctx.dt);
         // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
         self.movers[i].heading_target = to_player;
         let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);

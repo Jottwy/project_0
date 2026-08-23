@@ -7243,3 +7243,91 @@ async fn an_answer_never_seeds_another_answer() {
         "una respuesta no genera coro — sin esto, un grito recorrería el nivel entero"
     );
 }
+
+// ── ADR-088 — Intercepción ───────────────────────────────────────────────────────────────────────
+
+/// Un corredor por suelo abierto: el punto está DELANTE de él sobre su velocidad, acotado al adelanto
+/// máximo. Y un objetivo quieto no se intercepta: `None`, que es el contacto de siempre.
+#[test]
+fn intercept_leads_a_runner_and_ignores_a_standing_target() {
+    use crate::game_loop::phantom::{intercept_point, PHANTOM_INTERCEPT_MAX_LEAD};
+    let mut cache = crate::world::grid_gen::GridGenChunkCache::with_rules(
+        42,
+        crate::world::zone_density::rules_for,
+    );
+    // Suelo abierto fabricado: chunk (0,0) entero caminable.
+    let mut g = crate::world::grid_gen::LayerGrid::new_solid();
+    for x in 0..20 {
+        for z in 0..20 {
+            g.set(
+                x,
+                z,
+                crate::world::grid_gen::Cell::new(crate::world::grid_gen::CellType::Open, 2, 0),
+            );
+        }
+    }
+    cache.insert_for_test((0, 0, 0), g);
+
+    let from = Vec3::new(10.0, 1.8, 10.0);
+    let tpos = Vec3::new(20.0, 1.8, 10.0);
+    // Corre hacia +Z a 5 m/s.
+    let p = intercept_point(&mut cache, 0, from, tpos, (0.0, 5.0), 7.29)
+        .expect("un corredor se intercepta");
+    assert!(
+        p.z > tpos.z + 1.0,
+        "el punto va por delante del corredor, got z={:.2}",
+        p.z
+    );
+    assert!(
+        p.z <= tpos.z + 5.0 * PHANTOM_INTERCEPT_MAX_LEAD + 1e-3,
+        "y nunca más allá del adelanto máximo"
+    );
+    assert!((p.x - tpos.x).abs() < 1e-3, "sobre su línea de carrera");
+
+    // Quieto (o casi): nada que cortar.
+    assert_eq!(
+        intercept_point(&mut cache, 0, from, tpos, (0.0, 0.4), 7.29),
+        None
+    );
+    // Y si la criatura no puede ganarle, tampoco: perseguir es lo único que queda.
+    assert_eq!(
+        intercept_point(&mut cache, 0, from, tpos, (0.0, 5.0), 4.0),
+        None
+    );
+}
+
+/// Un corredor que va a estrellarse contra una pared NO se intercepta detrás de ella: el punto tiene
+/// que ser alcanzable para el JUGADOR, o se está adivinando hacia dónde girará.
+#[test]
+fn intercept_refuses_a_point_behind_a_wall() {
+    use crate::game_loop::phantom::intercept_point;
+    let mut cache = crate::world::grid_gen::GridGenChunkCache::with_rules(
+        42,
+        crate::world::zone_density::rules_for,
+    );
+    // Pasillo en z=4 de x=2..10, y luego pared.
+    let mut g = crate::world::grid_gen::LayerGrid::new_solid();
+    for x in 2..10 {
+        g.set(
+            x,
+            4,
+            crate::world::grid_gen::Cell::new(crate::world::grid_gen::CellType::Corridor, 2, 0),
+        );
+    }
+    cache.insert_for_test((0, 0, 0), g);
+    let cell = |x: usize, z: usize| {
+        Vec3::new(
+            x as f32 * crate::world::grid_gen::CELL_SIZE_M + 1.25,
+            1.8,
+            z as f32 * crate::world::grid_gen::CELL_SIZE_M + 1.25,
+        )
+    };
+    let from = cell(3, 4);
+    let tpos = cell(8, 4); // a una celda del final del pasillo…
+                           // …corriendo hacia +X a 5 m/s: en 2 s estaría 10 m dentro de la pared.
+    assert_eq!(
+        intercept_point(&mut cache, 0, from, tpos, (5.0, 0.0), 7.29),
+        None,
+        "el punto proyectado cae tras la pared: se cae al contacto"
+    );
+}
