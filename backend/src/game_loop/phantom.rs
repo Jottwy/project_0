@@ -92,6 +92,20 @@ pub(super) const PHANTOM_FLANK_STEP_DEG: f32 = 22.0;
 /// not to hug its edge.
 pub(super) const PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG: f32 = 75.0;
 
+/// ADR-092 — how far from where it gave up the creature goes to lie in wait (m), and how long it
+/// waits there before coming back. The spot has to be OUT OF SIGHT of where it last saw you — the
+/// whole trick is that you looked, saw nothing, and relaxed.
+pub(super) const PHANTOM_LURK_MIN_DISTANCE: f32 = 12.0;
+pub(super) const PHANTOM_LURK_MAX_DISTANCE: f32 = 20.0;
+pub(super) const PHANTOM_LURK_MIN_SECONDS: f32 = 6.0;
+pub(super) const PHANTOM_LURK_MAX_SECONDS: f32 = 14.0;
+/// ADR-092 — how often a lost hunt ends in a feint instead of a shrug. A hunter usually does; the
+/// rest mostly do not. Never always: a rule is learnt exactly like "it's gone" was.
+pub(super) const PHANTOM_LURK_CHANCE_HUNTER: f32 = 0.6;
+pub(super) const PHANTOM_LURK_CHANCE: f32 = 0.25;
+/// ADR-092 — arrival radius at the lurk spot.
+pub(super) const PHANTOM_LURK_ARRIVE: f32 = 1.2;
+
 /// ADR-091 — `buttons` bit 0 is "aiming" (ADR-044, `RemoteButtons.Aiming`). Mirrored here rather
 /// than imported: the driver reads the pose, it does not own the bit layout.
 pub(super) const PHANTOM_AIM_BIT: u16 = 1 << 0;
@@ -1043,6 +1057,12 @@ pub(super) enum PhantomState {
     /// the hunger model the player ever gets: you fire, and either something comes, or something
     /// bolts.
     Flee,
+    /// ADR-092 — THE FEINT. A hunt it gave up on, but not really: it walks out of sight of where it
+    /// last saw you, goes still and silent for a while, and then comes back to look again. Clothed
+    /// the whole time (`phantom_reveals` → false), no head-tracking (there is nobody to track), and
+    /// distractible by noise like `Search`. Entered ONLY from `Search`'s give-up, at most once per
+    /// hunt.
+    Lurk,
     /// ADR-050 point 9 — it has hold of you and is killing you, but not instantly: for
     /// `PHANTOM_GRAB_SECONDS` you are held and ALIVE, and struggling free is the way out. This is
     /// the only state whose exit the victim controls directly.
@@ -1105,9 +1125,11 @@ pub(super) fn phantom_tracks_with_head(state: PhantomState) -> bool {
         | PhantomState::Grab => true,
         // No target to track, or deliberately not looking at you: patrolling, searching a place it
         // guessed, peeking round a corner at a GOAL rather than at a player, or running away.
-        PhantomState::Wander | PhantomState::Search | PhantomState::Peek | PhantomState::Flee => {
-            false
-        }
+        PhantomState::Wander
+        | PhantomState::Search
+        | PhantomState::Peek
+        | PhantomState::Flee
+        | PhantomState::Lurk => false,
     }
 }
 
@@ -1596,6 +1618,13 @@ pub(super) struct PhantomMover {
     pub(super) juke_side: f32,
     pub(super) juke_cooldown: f32,
     pub(super) juke_rolls: u32,
+    /// ADR-092 — where it is going to lie in wait, how long it still has to wait once there, and
+    /// whether this hunt has already spent its one feint.
+    pub(super) lurk_goal: Option<Vec3>,
+    pub(super) lurk_for: f32,
+    pub(super) lurked_this_hunt: bool,
+    /// ADR-092 — counts the feint rolls (seed of the deterministic decision).
+    pub(super) lurk_rolls: u32,
 }
 
 /// The creature's temperament, resolved to the number the FSM actually needs, RIGHT NOW.
@@ -2284,6 +2313,10 @@ impl PhantomDriver {
             juke_side: 1.0,
             juke_cooldown: 0.0,
             juke_rolls: 0,
+            lurk_goal: None,
+            lurk_for: 0.0,
+            lurked_this_hunt: false,
+            lurk_rolls: 0,
         });
     }
 
@@ -3030,6 +3063,43 @@ impl PhantomDriver {
             }
         }
 
+        // ADR-092 — OR PRETEND TO GIVE UP. A real hunt (not a noise errand), a creature that is not
+        // sated, one feint per hunt, and a temperament roll: instead of shrugging into Wander it
+        // walks out of sight of where it last saw you, waits, and comes back. Decided here, on the
+        // same condition the give-up fires on, so a feint can never keep a search alive by itself.
+        if (noise_cold || self.movers[i].state_timer > self.movers[i].search_patience || arrived)
+            && self.movers[i].noise_expiry.is_none()
+            && !self.movers[i].is_sated()
+            && !self.movers[i].lurked_this_hunt
+            && self.movers[i].last_known_player_pos.is_some()
+        {
+            let m = &mut self.movers[i];
+            m.lurk_rolls = m.lurk_rolls.wrapping_add(1);
+            let key = ((m.id as u64) << 40) ^ ((m.lurk_rolls as u64) << 8) ^ 0x5A;
+            let chance = match m.traits.is_hunter {
+                true => PHANTOM_LURK_CHANCE_HUNTER,
+                false => PHANTOM_LURK_CHANCE,
+            };
+            if chorus_delay_fraction(key) < chance {
+                if let Some(spot) = self.pick_lurk_spot(i, from, layer) {
+                    let m = &mut self.movers[i];
+                    m.lurked_this_hunt = true;
+                    m.lurk_goal = Some(spot);
+                    let t = chorus_delay_fraction(key ^ 0xA5A5);
+                    m.lurk_for = PHANTOM_LURK_MIN_SECONDS
+                        + t * (PHANTOM_LURK_MAX_SECONDS - PHANTOM_LURK_MIN_SECONDS);
+                    m.nav_waypoints.clear();
+                    m.state = PhantomState::Lurk;
+                    m.state_timer = 0.0;
+                    info!(
+                        "MPTRACE step=PH_LURK event=phantom_feints phantom_id={} spot=({:.1},{:.1}) wait={:.1}",
+                        id, spot.x, spot.z, m.lurk_for
+                    );
+                    return;
+                }
+            }
+        }
+
         // Swept the spot, out of patience, or the trail went cold → give up and forget.
         if noise_cold || self.movers[i].state_timer > self.movers[i].search_patience || arrived {
             // ADR-053: file where this hunt died. Next time it starts here instead of ending here.
@@ -3058,9 +3128,10 @@ impl PhantomDriver {
             self.movers[i].peeked_this_search = false;
             self.movers[i].ambushed_this_hunt = false;
             self.movers[i].home_checked_this_hunt = false; // ADR-089: next hunt may check again
-                                                           // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
-                                                           // never fought the journey — but without this the phantom would finish a
-                                                           // 500 m trip and immediately start walking all the way back to its spawn.
+            self.movers[i].lurked_this_hunt = false; // ADR-092: and may feint again
+                                                     // ADR-041: RE-ANCHOR the observation leash. It only acts in WANDER, so it
+                                                     // never fought the journey — but without this the phantom would finish a
+                                                     // 500 m trip and immediately start walking all the way back to its spawn.
             self.movers[i].spawn_pos = from;
             return;
         }
@@ -3691,23 +3762,20 @@ impl PhantomDriver {
         }
     }
 
-    /// WANDER — erratic patrol and the detection gate. Keeps the slice-4 fake-pickup imitation, the
-    /// metronomic stare tell, the organic "looking at a wall" pauses and the play-test observation
-    /// leash. Detection is sight (distance + forward cone, shrunk by crouch) OR sound (three speed
-    /// tiers, no cone, muted by crouch) — the sound channel is what makes sneaking up BEHIND one
-    /// work at all.
-    fn tick_wander(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
-        let MoverTick {
-            i,
-            id,
-            from,
-            layer,
-            target,
-        } = mt;
-        // Detection: normally distance + forward cone. A RUNNING target (speed from
-        // delta) is HEARD — detected from farther (DETECT + SOUND_BONUS) AND from any
-        // direction (no cone). Sound-only detection reacts faster (a shorter stare).
-        let (detected, by_sound) = match target {
+    /// The WANDER detection rule, as one method: sight (distance + forward cone, shrunk by crouch),
+    /// sound (three speed tiers, no cone, muted by crouch) and the lit torch (ADR-080). Returns
+    /// `(detected, by_sound)`. Pulled out of `tick_wander` verbatim for ADR-092, whose `Lurk` has to
+    /// notice a player exactly the way a patrolling creature does — it is hiding, not blind.
+    fn detect_from_cover(
+        &mut self,
+        i: usize,
+        id: PeerId,
+        from: Vec3,
+        layer: u8,
+        target: Option<(PeerId, Vec3, f32, f32)>,
+        ctx: &mut TickCtx<'_>,
+    ) -> (bool, bool) {
+        match target {
             Some((tid, tpos, dist, _)) => {
                 let crouched = target_is_crouched(ctx.net, tid, ctx.host_crouch);
                 // SIGHT: the cone is unchanged (behind it is behind it), but a
@@ -3760,7 +3828,26 @@ impl PhantomDriver {
                 (normal || sound || light, sound && !normal && !light)
             }
             None => (false, false),
-        };
+        }
+    }
+
+    /// WANDER — erratic patrol and the detection gate. Keeps the slice-4 fake-pickup imitation, the
+    /// metronomic stare tell, the organic "looking at a wall" pauses and the play-test observation
+    /// leash. Detection is sight (distance + forward cone, shrunk by crouch) OR sound (three speed
+    /// tiers, no cone, muted by crouch) — the sound channel is what makes sneaking up BEHIND one
+    /// work at all.
+    fn tick_wander(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+        // Detection: normally distance + forward cone. A RUNNING target (speed from
+        // delta) is HEARD — detected from farther (DETECT + SOUND_BONUS) AND from any
+        // direction (no cone). Sound-only detection reacts faster (a shorter stare).
+        let (detected, by_sound) = self.detect_from_cover(i, id, from, layer, target, ctx);
         if detected {
             self.movers[i].state = PhantomState::Spotted;
             self.movers[i].state_timer = 0.0;
@@ -4476,6 +4563,7 @@ impl PhantomDriver {
                 PhantomState::Search => self.tick_search(mt, &mut ctx),
                 PhantomState::Peek => self.tick_peek(mt, &mut ctx),
                 PhantomState::Flee => self.tick_flee(mt, &mut ctx),
+                PhantomState::Lurk => self.tick_lurk(mt, &mut ctx),
                 PhantomState::Grab => self.tick_grab(mt, &mut ctx),
                 PhantomState::Unmasking => self.tick_unmasking(mt, &mut ctx),
                 PhantomState::Hunting => self.tick_hunting(mt, &mut ctx),
@@ -4491,6 +4579,134 @@ impl PhantomDriver {
         self.report_step_cost(net, now);
 
         &self.attacks
+    }
+
+    /// ADR-092 — a place to lie in wait: 12–20 m from here, walkable for the body, and with NO thin
+    /// line of sight to where it last saw you. Eight deterministic bearings (offset by id so two
+    /// creatures giving up in the same room do not pick the same corner), three radii each. `None`
+    /// when the geometry offers nothing — then it gives up for real, as before.
+    pub(super) fn pick_lurk_spot(&mut self, i: usize, from: Vec3, layer: u8) -> Option<Vec3> {
+        use crate::world::grid_gen::{
+            is_walkable_grid_gen, segment_is_clear, segment_is_clear_for_body, PHANTOM_BODY_RADIUS,
+        };
+        let last_seen = self.movers[i].last_known_player_pos?;
+        let id = self.movers[i].id;
+        let base = (id as f32 * 0.618_034).fract() * std::f32::consts::TAU;
+        for k in 0..8 {
+            let bearing = base + k as f32 * std::f32::consts::FRAC_PI_4;
+            for r in [16.0, PHANTOM_LURK_MIN_DISTANCE, PHANTOM_LURK_MAX_DISTANCE] {
+                let p = Vec3::new(
+                    from.x + bearing.sin() * r,
+                    from.y,
+                    from.z + bearing.cos() * r,
+                );
+                if !is_walkable_grid_gen(&mut self.grid_cache, p, layer) {
+                    continue;
+                }
+                // Reachable for the body from here, and hidden from the last sighting.
+                if !segment_is_clear_for_body(
+                    &mut self.grid_cache,
+                    layer,
+                    from,
+                    p,
+                    PHANTOM_BODY_RADIUS,
+                ) {
+                    continue;
+                }
+                if segment_is_clear(&mut self.grid_cache, layer, p, last_seen) {
+                    continue; // you could see it from there: not a hiding place
+                }
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// LURK (ADR-092) — walk to the spot, go still and silent, then come back to look. See the
+    /// variant's doc for the rules; the one thing to hold onto is that it NEVER reveals and NEVER
+    /// makes a sound here: the feint only works while it still looks like one of you.
+    fn tick_lurk(&mut self, mt: MoverTick, ctx: &mut TickCtx<'_>) {
+        let MoverTick {
+            i,
+            id,
+            from,
+            layer,
+            target,
+        } = mt;
+
+        // Hiding, not blind: the Wander rule — a player who walks into its cone, runs past it, or
+        // lights a torch gets the stalk directly, because it was never really done with you.
+        let (detected, _) = self.detect_from_cover(i, id, from, layer, target, ctx);
+        if detected {
+            self.movers[i].lurk_goal = None;
+            self.movers[i].state = PhantomState::Stalk;
+            self.movers[i].state_timer = 0.0;
+            info!(
+                "MPTRACE step=PH_LURK event=phantom_feint_pays_off phantom_id={}",
+                id
+            );
+            return;
+        }
+
+        let Some(goal) = self.movers[i].lurk_goal else {
+            // No spot (should not happen: entry requires one). Back to the ordinary search.
+            self.enter_search_after_hunt(i, layer);
+            return;
+        };
+
+        if from.distance_xz(goal) > PHANTOM_LURK_ARRIVE {
+            // Walking there, at a walk: this is a creature that has "given up", and it walks like
+            // one. Same steering and resolver as everything else.
+            let heading = self.steer_heading(i, layer, from, goal, ctx.dt);
+            self.movers[i].heading_target = heading;
+            let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+            self.movers[i].heading = lerp_heading(self.movers[i].heading, heading, t);
+            let h = self.movers[i].heading;
+            let dir = Vec3::new(h.sin(), 0.0, h.cos());
+            let desired = Vec3::new(
+                from.x + dir.x * PHANTOM_WALK_SPEED * ctx.dt,
+                from.y,
+                from.z + dir.z * PHANTOM_WALK_SPEED * ctx.dt,
+            );
+            let resolved = resolve_move_grid_gen(&mut self.grid_cache, layer, from, desired);
+            let advance = (resolved.x - from.x) * dir.x + (resolved.z - from.z) * dir.z;
+            self.movers[i].note_step_progress(advance, PHANTOM_WALK_SPEED * ctx.dt);
+            let yaw = h.to_degrees().rem_euclid(360.0);
+            if let Some(peer) = ctx.net.peers.get_mut(&id) {
+                peer.update_player_state(resolved.to_array(), yaw, "idle".into());
+            }
+            // Wedged on the way: it is not worth a second mechanism. Give the feint up quietly.
+            if self.movers[i].blocked_ticks >= PHANTOM_STALK_GIVEUP_TICKS {
+                self.movers[i].blocked_ticks = 0;
+                self.movers[i].lurk_goal = None;
+                self.enter_search_after_hunt(i, layer);
+            }
+            return;
+        }
+
+        // There. Still, silent, facing where it last saw you — and counting.
+        if let Some(last) = self.movers[i].last_known_player_pos {
+            let face = (last.x - from.x)
+                .atan2(last.z - from.z)
+                .rem_euclid(std::f32::consts::TAU);
+            let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
+            self.movers[i].heading = lerp_heading(self.movers[i].heading, face, t);
+        }
+        let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+        if let Some(peer) = ctx.net.peers.get_mut(&id) {
+            peer.update_player_state(from.to_array(), yaw, "idle".into());
+        }
+        self.movers[i].lurk_for -= ctx.dt;
+        if self.movers[i].lurk_for <= 0.0 {
+            // Back for another look, with hunt patience and hunt speed. `lurked_this_hunt` stays
+            // set: one feint per hunt.
+            self.movers[i].lurk_goal = None;
+            self.enter_search_after_hunt(i, layer);
+            info!(
+                "MPTRACE step=PH_LURK event=phantom_comes_back phantom_id={}",
+                id
+            );
+        }
     }
 
     /// ADR-091 — THE SIDESTEP. Given the heading the route wants, returns the heading to travel on:

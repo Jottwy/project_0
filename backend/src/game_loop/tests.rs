@@ -501,6 +501,7 @@ fn phantom_reveals_only_in_sprint_and_statue() {
         PhantomState::Grab,
         PhantomState::Unmasking,
         PhantomState::Hunting,
+        PhantomState::Lurk,
     ] {
         // Exhaustive `match` with no wildcard: adding a variant stops compiling right here.
         let expected = match state {
@@ -513,7 +514,8 @@ fn phantom_reveals_only_in_sprint_and_statue() {
             | PhantomState::Search
             | PhantomState::Peek
             | PhantomState::Flee
-            | PhantomState::Unmasking => false,
+            | PhantomState::Unmasking
+            | PhantomState::Lurk => false, // ADR-092: the feint works because it is clothed
         };
         assert_eq!(
             phantom_reveals(state),
@@ -6961,6 +6963,7 @@ fn head_tracking_is_decided_for_every_state() {
         PhantomState::Search,
         PhantomState::Peek,
         PhantomState::Flee,
+        PhantomState::Lurk,
     ] {
         assert!(
             !tracks(state),
@@ -7581,4 +7584,146 @@ async fn the_sidestep_respects_its_cooldown() {
         "no vuelve a tirar hasta que el cooldown venza"
     );
     assert!(driver.movers[0].juke_cooldown > 0.0);
+}
+
+// ── ADR-092 — Finta (Lurk) ───────────────────────────────────────────────────────────────────────
+
+/// La entrada y el escondite. Con la caza real agotada, el roll decide: y sea cual sea su
+/// resultado para este id, el estado es COHERENTE con él (Lurk si pasa, Wander si no) — que es lo
+/// que se puede exigir a un roll determinista sin clavar el hash en el test. Si entra en Lurk, el
+/// escondite NO tiene línea de visión hacia donde te vio por última vez.
+#[tokio::test]
+async fn a_spent_hunt_feints_according_to_its_roll_and_hides_out_of_sight() {
+    use crate::game_loop::phantom::{chorus_delay_fraction, PHANTOM_LURK_CHANCE_HUNTER};
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+
+    driver.movers[0].traits.is_hunter = true;
+    driver.movers[0].hunger = 0.2; // hambrienta: no saciada
+    driver.movers[0].state = PhantomState::Search;
+    driver.movers[0].target_id = Some(net.local_id);
+    driver.movers[0].last_known_player_pos = Some(here); // "llegada": se rinde este tick
+    driver.movers[0].noise_expiry = None;
+    driver.movers[0].search_patience = 60.0;
+
+    // El roll que va a tirar: mismo hash, misma clave (id, primer roll).
+    let key = ((pid as u64) << 40) ^ (1u64 << 8) ^ 0x5A;
+    let expected_feint = chorus_delay_fraction(key) < PHANTOM_LURK_CHANCE_HUNTER;
+
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0);
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+
+    match (expected_feint, driver.movers[0].state) {
+        (true, PhantomState::Lurk) => {
+            let spot = driver.movers[0].lurk_goal.expect("un escondite elegido");
+            let d = spot.distance_xz(here);
+            assert!(
+                (11.0..=21.0).contains(&d),
+                "el escondite está a 12–20 m de donde se rindió, got {d:.1}"
+            );
+            assert!(
+                !crate::world::grid_gen::segment_is_clear(&mut driver.grid_cache, 0, spot, here),
+                "y SIN línea de visión hacia donde te vio por última vez"
+            );
+            assert!(driver.movers[0].lurked_this_hunt, "una finta por caza");
+            assert!(driver.movers[0].lurk_for >= 6.0 && driver.movers[0].lurk_for <= 14.0);
+        }
+        (true, PhantomState::Wander) => {
+            // El roll pasó pero la geometría no dio escondite: rendición de siempre, legítima.
+            assert!(driver.movers[0].lurk_goal.is_none());
+        }
+        (false, PhantomState::Wander) => {}
+        (f, other) => panic!("roll={f} pero el estado es {other:?}: decisión incoherente"),
+    }
+}
+
+/// Saciada NO finta, ruede lo que ruede: la finta es cosa del hambre (ADR-050 manda).
+#[tokio::test]
+async fn a_sated_creature_never_feints() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    driver.movers[0].traits.is_hunter = true;
+    driver.movers[0].hunger = 1.0; // saciada
+    driver.movers[0].state = PhantomState::Search;
+    driver.movers[0].last_known_player_pos = Some(here);
+    driver.movers[0].noise_expiry = None;
+    driver.movers[0].search_patience = 60.0;
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0);
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+    assert_eq!(driver.movers[0].state, PhantomState::Wander);
+    assert_eq!(driver.movers[0].lurk_rolls, 0, "ni siquiera tira");
+}
+
+/// La vuelta: vencida la espera en el escondite, regresa a Search hacia donde te vio, con la
+/// paciencia de caza — y sigue vestida todo el rato.
+#[tokio::test]
+async fn after_waiting_it_comes_back_to_look_clothed() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let last_seen = Vec3::new(here.x + 5.0, here.y, here.z);
+
+    // Ya escondida, en el sitio, con poca espera por delante.
+    driver.movers[0].state = PhantomState::Lurk;
+    driver.movers[0].lurk_goal = Some(here); // "ahí mismo": llegada
+    driver.movers[0].lurk_for = 0.25;
+    driver.movers[0].lurked_this_hunt = true;
+    driver.movers[0].last_known_player_pos = Some(last_seen);
+    driver.movers[0].hunger = 0.2;
+
+    let far = Vec3::new(100_000.0, 1.8, 100_000.0);
+    driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+    assert_eq!(driver.movers[0].state, PhantomState::Lurk, "aún esperando");
+    assert!(!net.peers[&pid].revealed, "vestida mientras espera");
+    assert_eq!(net.peers[&pid].vocal_seq, 0, "y muda");
+
+    for _ in 0..3 {
+        driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
+    }
+    assert_eq!(
+        driver.movers[0].state,
+        PhantomState::Search,
+        "vuelve a buscar"
+    );
+    assert_eq!(
+        driver.movers[0].last_known_player_pos,
+        Some(last_seen),
+        "hacia donde te vio por última vez"
+    );
+    assert!(
+        driver.movers[0].lurked_this_hunt,
+        "y no volverá a fintar esta caza"
+    );
+    assert!(!net.peers[&pid].revealed);
+}
+
+/// Escondida no es ciega: un jugador que se le planta delante la saca del escondite directamente
+/// a Stalk — ya estaba comprometida.
+#[tokio::test]
+async fn a_player_walking_into_the_lurk_is_stalked_at_once() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    let here = Vec3::from_array(net.peers[&pid].position);
+    driver.movers[0].state = PhantomState::Lurk;
+    driver.movers[0].lurk_goal = Some(here);
+    driver.movers[0].lurk_for = 10.0;
+    driver.movers[0].last_known_player_pos = Some(Vec3::new(here.x - 30.0, here.y, here.z));
+    // Delante (+X es su rumbo inicial), a 5 m, quieto.
+    let player = Vec3::new(here.x + 5.0, 1.8, here.z);
+    driver.step(&mut net, 0.1, player, 0.0, false, false, 0, false, 0);
+    assert_eq!(driver.movers[0].state, PhantomState::Stalk);
 }
