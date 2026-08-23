@@ -5483,6 +5483,75 @@ Contra la línea base de hoy (31,2 % interior, 39,4 % paso, 17,8 puntos de perí
   retira es que `ZONE_OFFICE` lo use.
 - **No se añaden props ni loot.** Sigue bloqueado por B1 de `ROOMS-ROADMAP.md`.
 
+---
+
+## ADR-087 — Enmienda 1: el paso 1 cumple; el paso 2 no puede cumplir, y la culpa es de su test
+
+**Fecha:** 2026-08-23
+**Estado:** Aceptada. El paso 1 queda EN PRODUCCIÓN. El paso 2 se implementa, se mide y se revierte,
+pero **no por lo que su verificación decía** — ver abajo.
+
+### Paso 1: cumple, y de paso cazó una incomunicación
+
+| | Antes | **Ahora** |
+|---|---|---|
+| Footprint | 49,0 % | 47,9 % |
+| Interior pisable | 31,2 % | **37,5 %** |
+| Paso real | 39,4 % | 32,0 % |
+| Tasa de perímetro | 17,8 pts | **10,4 pts** |
+
+Verificación (a) pedía ≥ 36 %: sale 37,5 %. Cero código de generación, solo `office_rules`.
+
+**Y el tamaño acabó en 13, no en 14, por algo que la cobertura no mide.** Para una `SealedRoom` los
+dos dan el mismo rect (`tile_aligned_size` redondea 13 a 14), así que la cobertura es idéntica. Lo
+que cambia es la zona `Open` del 20 %, que NO se alinea a tile: a 14 deja una tira de una celda
+contra el borde que el maze no alcanza. Medido sobre 784 chunks × 4 capas, **14 da 1 chunk
+incomunicado y 13 da 0**. Aislado poniendo los pesos al extremo: todo sellado da 0 a los dos tamaños,
+todo `Open` da 7 y 8 — el riesgo vive en la cuota `Open`, y lo vigila
+`office_chunks_stay_connected_and_non_degenerate`.
+
+Por eso el barrido de la sonda mide ahora tamaño **y** conectividad juntos. Sin eso, 18×18 —que
+ADR-086 enmienda 2 apuntaba como prometedor— habría entrado con sus **217 chunks incomunicados de
+784** y el número de cobertura sonriendo.
+
+### Paso 2: la verificación (b) estaba mal planteada y era INSATISFACIBLE
+
+Implementado igual que en ADR-086 (`RoomType::OfficeFloor`, `stamp_office_floor`, peso aparte),
+ahora sí en un interior de 12×12. Medido:
+
+| Paso de tabique | Interior pisable | Paso real |
+|---|---|---|
+| Paso 1, sin tabiques | **37,5 %** | 32,0 % |
+| 4 celdas (2 tabiques) | 33,3 % | 44,1 % |
+| 6, 8, 10 celdas (1 tabique) | 35,4 % | ~42 % |
+
+La verificación (b) pedía que el interior pisable **subiera** sobre el paso 1. **No puede subir
+nunca: un tabique solo quita superficie pisable, jamás añade.** El test pedía a una subdivisión que
+aumentara el área, que es imposible por construcción, y su fracaso no dice nada sobre si el paso 2 es
+buena idea. El error es de este ADR, no del código.
+
+El argumento del tabique compartido —que sí es correcto— solo paga cuando **sustituye perímetros**.
+Eso ya lo cobró el paso 1 al pasar de cuatro salas a una: 17,8 → 10,4 puntos. Dentro de una sala que
+ya es una, no queda perímetro que ahorrar, así que el tabique es coste puro. Es la misma lección de
+ADR-086 enmienda 2 vista desde el otro lado: no es que el cuadrante fuera pequeño, es que **el
+mecanismo paga por unificar, no por subdividir**.
+
+### El coste real, para que la decisión sea de diseño y no de métrica
+
+Con el paso más barato (1 tabique) el paso 2 cuesta **2,1 puntos** de interior pisable y sube el paso
+real de 32,0 % a ~42 % — dentro de la banda 25–45 % de la verificación (c), pero rozando el techo.
+
+A cambio da lo único que ningún número de esta sonda mide: que el sitio se lea como **despachos** en
+vez de como una sala de 32×32 m. Eso es la verificación (g), y solo la contesta un playtest.
+
+**Se revierte** porque el cuerpo del ADR se comprometió a revertir si (b) no subía, y ese compromiso
+se honra aunque el test estuviera mal puesto — renegociarlo a posteriori es exactamente lo que la
+regla existe para impedir. Pero queda dicho aquí que **la pregunta correcta no se ha respondido**: el
+paso 2 es un cambio de LECTURA que cuesta 2,1 puntos, y esa es una decisión humana con los dos
+números delante, no un test que se pueda pasar.
+
+Si se retoma, se retoma con `OFFICE_BAY_CELLS = 6` (un tabique, 2,1 puntos) y se juzga a ojo.
+
 ### ADR-088 — Intercepción: te corta el paso en vez de perseguir tu sombra (2026-08-21)
 
 Estado: **PROPUESTA (2026-08-21), aprobada por Joel en sesión** («te doy libertad, busca y plantea ADRs» → menú de cinco, elegido «Todo»). Sin wire.
