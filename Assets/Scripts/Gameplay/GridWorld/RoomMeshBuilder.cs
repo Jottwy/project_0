@@ -1594,6 +1594,8 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         {
             if (s == null || !s.IsValid()) return;
 
+            if (s.smooth) { AddRamp(s, baseY, contour); return; }
+
             var forward = s.Forward();
             for (int i = 0; i < s.steps; i++)
             {
@@ -1604,6 +1606,89 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 AddClippedPrism(BoxCorners(c, s.width, s.run, s.yawDegrees), contour,
                     baseY, baseY + s.rise * (i + 1));
             }
+        }
+
+        /// <summary>
+        /// Un triángulo suelto con su propia normal, para el costado de una cuña.
+        ///
+        /// La UV va EN EL PLANO del costado —avance horizontal y altura—, no proyectada en XZ:
+        /// un costado es vertical, y su sombra en planta es una línea. Proyectando, la textura se
+        /// estira hasta el infinito hacia arriba (8 aristas estiradas, medido).
+        /// </summary>
+        private static void SideTri(Vector3 a, Vector3 b, Vector3 c, Vector3 normal, Vector2 along)
+        {
+            Vector2 UV(Vector3 p) =>
+                WallUV(Vector2.Dot(new Vector2(p.x, p.z) - new Vector2(a.x, a.z), along), p.y);
+
+            int i0 = _verts.Count;
+            AddVertex(a, normal, UV(a));
+            AddVertex(b, normal, UV(b));
+            AddVertex(c, normal, UV(c));
+            Tri(SubmeshWall, i0, i0 + 1, i0 + 2, normal);
+        }
+
+        /// <summary>
+        /// La versión LISA de un tramo: una cuña maciza en vez de peldaños.
+        ///
+        /// Misma huella y misma cima que la escalonada —salen de rise × run igual que siempre—,
+        /// así que el hueco que abre en una losa y el sitio al que llega no cambian: lo único que
+        /// cambia es que se pisa una superficie continua. Con rise alto y run corto sale un plano
+        /// casi vertical, que es cómo se apoya algo contra una pared.
+        ///
+        /// Se cose a mano y no por <see cref="AddClosedPrism"/> porque un prisma tiene las dos
+        /// tapas planas y aquí la de arriba está inclinada. Cinco caras: base, plano, los dos
+        /// costados triangulares y el testero vertical de la cima. La arista del pie tiene altura
+        /// cero, así que ahí no hay cara que emitir — y por eso los costados son TRIÁNGULOS.
+        ///
+        /// El recorte contra la planta se hace por la huella completa y es de TODO o NADA, no por
+        /// trozos como en <see cref="AddClippedPrism"/>: partir una cuña en pedazos daría cuñas
+        /// con el pie a media altura, que no es lo que nadie ha dibujado. Una rampa que se sale
+        /// se avisa y se emite entera.
+        /// </summary>
+        private static void AddRamp(RoomDefinition.Stairs s, float baseY, Vector2[] contour)
+        {
+            var forward = s.Forward();
+            var right = new Vector2(forward.y, -forward.x);
+            float halfW = s.width * 0.5f;
+            float len = s.FootprintLength();
+            float top = baseY + s.TopHeight();
+
+            if (contour != null
+                && !RoomHoleSet.RingInside(BoxCorners(s.FootprintCentre(), s.width, len, s.yawDegrees), contour))
+                AddWarningOnce("Una rampa lisa se sale de la planta: se dibuja entera, "
+                    + "atravesando la pared. Las rampas no se recortan —un trozo de cuña tendría "
+                    + "el pie a media altura—, así que hay que meterla dentro o hacerla más corta.");
+
+            // Pie (a ras de suelo) y cima (a `top`), cada uno con su izquierda y su derecha.
+            Vector2 a0 = s.position - right * halfW, a1 = s.position + right * halfW;
+            Vector2 b0 = a0 + forward * len, b1 = a1 + forward * len;
+
+            // Base, mirando abajo. Horizontal, así que la UV en planta de siempre vale.
+            Quad(SubmeshWall, V(a0, baseY), V(b0, baseY), V(b1, baseY), V(a1, baseY), Vector3.down);
+
+            // El plano pisable. Su normal sale del producto de los dos lados de la cuña, y su UV
+            // se estira a lo largo de la PENDIENTE: la superficie real mide más que su sombra en
+            // planta, y medirla en planta comprimiría la textura cuesta arriba. Mismo criterio
+            // que el techo inclinado en `Build`.
+            Vector3 up = Vector3.Cross(
+                V(b0, top) - V(a0, baseY), V(a1, baseY) - V(a0, baseY)).normalized;
+            if (up.y < 0f) up = -up;
+            float slope = Mathf.Sqrt(len * len + s.TopHeight() * s.TopHeight());
+            Vector2 uvFoot0 = WallUV(0f, 0f), uvFoot1 = WallUV(s.width, 0f);
+            Quad(SubmeshWall, V(a0, baseY), V(a1, baseY), V(b1, top), V(b0, top), up,
+                uvFoot0, uvFoot1, WallUV(s.width, slope), WallUV(0f, slope));
+
+            // El testero de la cima, vertical.
+            Quad(SubmeshWall, V(b0, baseY), V(b0, top), V(b1, top), V(b1, baseY),
+                new Vector3(forward.x, 0f, forward.y),
+                WallUV(0f, baseY), WallUV(0f, top), WallUV(s.width, top), WallUV(s.width, baseY));
+
+            // Los dos costados, TRIÁNGULOS de verdad y no quads con un vértice repetido: un quad
+            // degenerado emite su diagonal tres veces y el recuento de aristas de la malla lo lee
+            // como geometría abierta.
+            var nRight = new Vector3(right.x, 0f, right.y);
+            SideTri(V(a1, baseY), V(b1, baseY), V(b1, top), nRight, forward);
+            SideTri(V(a0, baseY), V(b0, baseY), V(b0, top), -nRight, forward);
         }
 
         /// <summary>

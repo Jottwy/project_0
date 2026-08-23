@@ -153,7 +153,11 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     for (int i = 0; i < s.steps; i++)
                     {
                         Vector2 c = s.position + forward * (s.run * (i + 0.5f));
-                        float top = s.rise * (i + 1);
+                        // Escalonada: la caja llega al canto del peldaño, que es lo que se ve.
+                        // Lisa: no hay canto, así que llega a la altura de la rampa EN EL CENTRO
+                        // del tramo. El error pasa de "una caja entera por encima del plano" a
+                        // ±rise/2 repartido, que es lo mejor que da una caja sin inclinar.
+                        float top = s.smooth ? s.rise * (i + 0.5f) : s.rise * (i + 1);
                         AddClippedBox(boxes,
                             RoomMeshBuilder.BoxCorners(c, s.width, s.run, s.yawDegrees),
                             inner, c, new Vector2(s.width, s.run), s.yawDegrees,

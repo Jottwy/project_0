@@ -1840,8 +1840,14 @@ namespace BackroomsSurvival.EditorTools
                     RowFloat<RoomDefinition.Stairs>("Rise per step (m)", s => s.rise, (s, v) => s.rise = v,
                         "0,18 se sube cómodo."),
                     RowFloat<RoomDefinition.Stairs>("Run per step (m)", s => s.run, (s, v) => s.run = v),
+                    RowToggle<RoomDefinition.Stairs>("Smooth ramp", s => s.smooth, (s, v) => s.smooth = v,
+                        "Un plano inclinado en vez de peldaños. Misma huella, misma cima."),
                     RowInfo<RoomDefinition.Stairs>(" ",
-                        s => $"Total: {s.steps * s.rise:0.##} m up, {s.steps * s.run:0.##} m long"),
+                        s => $"Total: {s.steps * s.rise:0.##} m up, {s.steps * s.run:0.##} m long"
+                             + $"   ·   {s.PitchDegrees():0.#}° de pendiente"),
+                    // La pendiente sale de rise/run y no de un mando propio: dos controles para
+                    // el mismo ángulo es una forma de que digan cosas distintas. Para apoyar algo
+                    // contra una pared, run corto y rise alto — y el número de arriba lo dice.
                     StairsReachRow(),
                 },
             };

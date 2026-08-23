@@ -1716,5 +1716,75 @@ namespace BackroomsSurvival.Tests
             Assert.IsFalse(Inside(cb, new Vector3(19f, 1f, 0f)),
                 "the steps past the east wall still block outside the room");
         }
+
+        // ── rampas lisas ──────────────────────────────────────────────────────
+
+        /// <summary>La cuña de una rampa tiene que CERRAR: base, plano, testero y dos costados
+        /// triangulares. Es lo que un quad degenerado en el costado rompería.</summary>
+        [Test]
+        public void A_smooth_ramp_is_a_closed_wedge()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f,
+                    steps = 17, rise = 0.18f, run = 0.28f, smooth = true },
+            };
+
+            AssertRoom("smooth ramp", d);
+        }
+
+        /// <summary>La rampa llega EXACTAMENTE a donde llegaba la escalera: misma huella y misma
+        /// cima. Es lo que deja que abra el mismo hueco en una losa y que cambiar el mando no
+        /// mueva nada más.</summary>
+        [Test]
+        public void A_smooth_ramp_reaches_the_same_place_as_the_steps()
+        {
+            var stepped = new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f,
+                steps = 17, rise = 0.18f, run = 0.28f };
+            var ramp = new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f,
+                steps = 17, rise = 0.18f, run = 0.28f, smooth = true };
+
+            Assert.AreEqual(stepped.TopHeight(), ramp.TopHeight(), 1e-5f, "the ramp tops out elsewhere");
+            Assert.AreEqual(stepped.FootprintLength(), ramp.FootprintLength(), 1e-5f, "the ramp footprint moved");
+            Assert.AreEqual(stepped.FootprintCentre(), ramp.FootprintCentre(), "the ramp footprint moved");
+        }
+
+        /// <summary>Y sigue abriendo la losa de una entreplanta igual que la escalonada — el
+        /// motivo de que huella y cima no cambien.</summary>
+        [Test]
+        public void A_smooth_ramp_still_opens_the_level_it_reaches()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.levels = new[] { new RoomDefinition.Level { height = 3f } };
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 2f,
+                    steps = 17, rise = 0.18f, run = 0.28f, smooth = true },
+            };
+
+            RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "smooth ramp into a level: triangulation fell back");
+
+            var cb = RoomColliderBuilder.Build(d);
+            Vector2 c = d.stairs[0].FootprintCentre();
+            Assert.IsFalse(Inside(cb, new Vector3(c.x, 3f, c.y)), "the ramp's stairwell stayed sealed");
+        }
+
+        /// <summary>Run corto y rise alto = plano casi vertical, que es cómo se apoya algo contra
+        /// una pared sin un eje de giro nuevo. Tiene que cerrar igual.</summary>
+        [Test]
+        public void A_near_vertical_ramp_leans_and_still_closes()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(0f, -10f), width = 1f,
+                    steps = 20, rise = 0.2f, run = 0.03f, smooth = true },
+            };
+            Assert.Greater(d.stairs[0].PitchDegrees(), 75f, "this case needs a near-vertical pitch");
+
+            AssertRoom("leaning ramp", d);
+        }
     }
 }

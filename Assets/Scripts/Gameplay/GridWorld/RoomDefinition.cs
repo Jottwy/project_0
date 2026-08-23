@@ -424,6 +424,24 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             /// apoya en el suelo de ese piso, y <see cref="TopHeight"/> se mide desde ahí.</summary>
             [Min(0)] public int level;
 
+            /// <summary>
+            /// Rampa LISA en vez de peldaños: un plano inclinado del pie a la cima.
+            ///
+            /// No cambia ni la huella ni la pendiente — <see cref="FootprintLength"/> y
+            /// <see cref="TopHeight"/> siguen saliendo de <see cref="rise"/> × <see cref="run"/>,
+            /// así que el hueco que abre en la losa y el sitio al que llega son los mismos. Lo
+            /// único que cambia es que la superficie es continua.
+            ///
+            /// Con <see cref="rise"/> alto y <see cref="run"/> corto sale un plano casi vertical:
+            /// es la forma de apoyar algo contra una pared sin un eje de giro nuevo.
+            /// </summary>
+            public bool smooth;
+
+            /// <summary>Pendiente real del tramo, en grados sobre la horizontal. Solo informativa
+            /// —la geometría sigue saliendo de rise/run— pero es EL número que se quiere ver al
+            /// buscar una rampa suave o un plano casi vertical.</summary>
+            public float PitchDegrees() => Mathf.Atan2(rise, run) * Mathf.Rad2Deg;
+
             /// <summary>Hacia dónde sube, como vector unitario en XZ.</summary>
             public Vector2 Forward()
             {
