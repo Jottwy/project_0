@@ -5138,3 +5138,126 @@ obligar a eso devolvería el cap por la puerta de atrás, con la mitad de resolu
 - (b) `top_layer_for_height` de una altura por encima de 16 m sigue clampando y no desborda.
 - (c) **Pendiente de playtest:** que una sala de 16 m se vea entera y sin boquete de techo. Va con la
   verificación (a) de ADR-084, que también sigue pendiente.
+
+---
+
+## ADR-086 — `RoomType::OfficeFloor`: una planta de oficinas, no cuatro cajas en un laberinto
+
+**Fecha:** 2026-08-23
+**Estado:** Propuesta — requiere validación humana antes de tocar código.
+**Toca:** `grid_gen::generator` Fase 4, `RoomZone.kind` (contrato de wire), `zone_density::office_rules`.
+
+### El punto de partida NO es "no hay zona de oficinas"
+
+`ZONE_OFFICE` existe y funciona desde ADR-057: `office_rules` fuerza `subregion_grid`, los cuatro
+cuadrantes siempre presentes, `room_type_weights = (0.2, 0.8, 0.0)` —cuatro despachos sellados con
+una sala común— y cero columnas. No es una zona vacía esperando contenido.
+
+**El problema es lo que hay ENTRE los despachos: laberinto.** Los números ya están medidos y viven en
+los comentarios de `office_rules`:
+
+| | Medido |
+|---|---|
+| Footprint de sala sobre el chunk | ~49 % (con `subregion_fill_band`) |
+| Interior pisable que cae DENTRO de una sala | 21,9 % del chunk (`sz = 6` fijo) |
+| Parte de lo pisable que es PASILLO | **54 %** |
+| Paneles de pared de un chunk OFFICE que son pasillo | 62 % |
+
+Más de la mitad de lo que se camina en una oficina es corredor de laberinto generado por
+backtracking. Eso es exactamente el techo que describe §3 de `ROOMS-ROADMAP.md`: el sistema **amuebla**
+y no **traza**, así que por muchos despachos que se pongan el sitio se lee como cajas dejadas caer.
+
+Y la palanca ya estaba identificada. Literalmente, en `office_rules`:
+
+> Perímetro de sala más fino (quitar el anillo `SealedWall` y colisionar solo contra el borde de
+> tile) se DESCARTA para esta enmienda: cambia la semántica de colisión del robapieles y la identidad
+> entera de `SealedRoom`/`carve_sealed_room_entrances` — mayor ganancia potencial, pero es un
+> rediseño que merece su propio ADR si algún día se retoma.
+
+Este es ese ADR.
+
+### Las dos tasas que se pagan hoy
+
+1. **Un perímetro por sala.** El anillo `SealedWall` es de 1 celda cueste lo que cueste. Cuatro
+   despachos pagan cuatro perímetros completos, y ninguno comparte pared con su vecino. Ya está
+   medido a qué lleva: un rect de 6×6 deja 16 celdas útiles de 36 (44 %); uno de 4×4, 4 de 16 (25 %).
+   **Más despachos gastan MÁS presupuesto de chunk en pared**, que es por lo que la partición 3×3
+   empeoró la cobertura (44,5 % → 38,9 %) y se dejó inerte.
+2. **El pasillo no está diseñado.** Entre cuadrante y cuadrante queda maze de Fase 1. Un pasillo de
+   oficina es recto y conecta puertas; el backtracker hace lo contrario por definición.
+
+### Decisión
+
+Un cuarto `RoomType`, `OfficeFloor`, que estampa **una planta entera en su cuadrante** en vez de una
+caja:
+
+- **Un solo perímetro** `SealedWall` para todo el cuadrante, con sus entradas por
+  `carve_sealed_room_entrances` como cualquier `SealedRoom` — misma identidad, mismo código, misma
+  semántica de colisión para el robapieles. No se toca `SealedWall`.
+- **Dentro, una espina de pasillo** de 2 celdas de ancho (`CORRIDOR_SPINE_WIDTH`, la constante que ya
+  existe) recorriendo el eje largo del cuadrante.
+- **A los lados, despachos partidos por tabiques de 1 celda COMPARTIDOS** entre vecinos. Aquí está la
+  ganancia: N despachos pagan N+1 tabiques en vez de 4N celdas de perímetro.
+- **Un vano de 1 celda por despacho** hacia la espina, tallado EN EL ESTAMPADO.
+
+Es "sala compuesta" y no "grafo de salas" en el vocabulario de §3.1 de `ROOMS-ROADMAP.md` — y aquí sí
+es lo correcto, al revés que allí: no son prefabs autorados que haya que emparejar, es UN rect
+estampado que por dentro tiene estructura. El emplazamiento, el anti-solape y el stream de RNG por
+cuadrante ya funcionan y no se tocan.
+
+### Por qué esto sí necesita bump de wire
+
+`RoomZone.kind` ya es un `u8`, así que el valor 3 no cambia un solo byte del formato. El bump es por
+otra cosa: `RoomZoneKind` de C# (`IPCMessages.Chunk.cs`) tiene tres variantes, y un cliente que reciba
+un 3 cae en el `default` de `PropDensityMultiplier` y en el "sin match" de `ResolveWallPrefab` — no
+peta, **renderiza mal en silencio**, que es peor. `WireSchema.IsCompatible` exige igualdad exacta, así
+que subir a **42** en los dos lados convierte ese fallo silencioso en un arranque que no ocurre. Es el
+mismo razonamiento de [[wire-schema-csharp-mirror]]: el bump no describe el formato, fuerza el
+redespliegue conjunto.
+
+### Lo que se decide explícitamente
+
+- **`RoomType::wire_kind` = 3.** Discriminante estable, se añade al final. Los tres existentes no se
+  mueven.
+- **Solo `ZONE_OFFICE`.** `office_rules` pasa a `room_type_weights = (0.2, 0.0, 0.0, 0.8)` — la tupla
+  crece a cuatro. Ninguna otra zona lo sortea, así que el mundo fuera de las oficinas sale
+  byte-idéntico, misma disciplina que ya siguen `straight_bias` y `room_type_weights`.
+- **La partición interna se alinea a TILE.** Los tabiques van en límites de tile de 5 m o la
+  cuantización de `tile_walls_from_grid` se los come y deja la cuña triangular negra de ADR-057 —
+  origen Y tamaño pares, la lección de `tile_aligned_size`, aplicada ahora también a cada tabique.
+- **La conectividad se talla, no se repara.** `repair_connectivity` NO perfora `SealedWall`, y un
+  despacho cuyo vano no se talle en el estampado nace sellado y nada lo rescata. Es el mismo modo de
+  fallo que la deuda abierta de ADR-084 (2 de 59 salas incomunicadas contra una `SealedRoom` de Fase
+  4). Cada vano se talla en `stamp_office_floor`, y hay test de que todo despacho alcanza la espina y
+  la espina alcanza el maze.
+- **Las salas autoradas ganan.** Si una reserva de `plan_authored_rooms` se solapa con un cuadrante
+  `OfficeFloor`, el cuadrante cae a `Open` — la misma regla que ADR-083 fijó para la habitación
+  construible, y por el mismo motivo: lo autorado es contenido a mano y lo estampado es relleno.
+
+### Lo que este ADR NO hace
+
+- **No quita el anillo `SealedWall`.** La cita de `office_rules` proponía adelgazar el perímetro; se
+  descarta otra vez, y ahora con un motivo mejor que "es mucho trabajo": compartir tabiques DENTRO
+  del cuadrante ya recupera la mayor parte de esos metros sin tocar la semántica de colisión del
+  robapieles. Si tras medir no basta, ese sigue siendo un ADR aparte.
+- **No cruza de chunk.** Una planta ocupa su cuadrante. Encadenar plantas entre chunks vecinos es lo
+  que haría "un edificio" en vez de "una planta", y depende de la costura (`stitch_edges`) — otro
+  ADR, y solo si este mide bien.
+- **No añade props ni loot.** Sigue bloqueado por B1 del roadmap (`RoomMarker` no lo lee nadie).
+
+### Verificación
+
+Los tres primeros son la razón de ser del ADR y se miden con la sonda que ya existe
+(`office_room_coverage_report`), contra la línea base de arriba:
+
+- (a) El interior pisable dentro de sala sube de **21,9 %** del chunk. Si no sube, el ADR ha fallado y
+  se revierte — no se renegocia el número a posteriori.
+- (b) La parte de lo pisable que es pasillo baja de **54 %**, y el pasillo que quede es espina
+  diseñada, no maze.
+- (c) La cadencia y el emplazamiento de las salas autoradas no se mueven: el mundo fuera de
+  `ZONE_OFFICE` sale byte-idéntico. Sonda `real_manifest_cadence`, lanzada SOLA (`OnceLock` del
+  proceso, trampa 2 de `ROOMS-ROADMAP.md` §4).
+- (d) Todo despacho alcanza la espina y la espina alcanza el maze, barriendo seeds. Test propio.
+- (e) Ningún tabique cae a mitad de tile. Test sobre `tile_walls_from_grid`.
+- (f) **Pendiente de playtest:** que se lea como una planta de oficinas y no como una caja
+  subdividida. Es lo único que ningún número contesta.
