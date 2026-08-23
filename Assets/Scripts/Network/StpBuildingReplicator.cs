@@ -209,6 +209,8 @@ namespace BackroomsSurvival.Net
 
             tracked.demolishId = NextDemolishId();
             ipc.SendStpDemolish(tracked.demolishId, b.id);
+            // ADR-090: tearing a piece down is the loudest thing a builder does.
+            WorldNoise.Report(tracked.go != null ? tracked.go.transform.position : b.position, WorldNoise.DemolishLoudness);
             Debug.Log($"[StpBuildingReplicator] local cancel detected id={b.id} demolish_id={tracked.demolishId} → host.");
         }
 

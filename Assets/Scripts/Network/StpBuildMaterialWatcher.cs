@@ -93,6 +93,8 @@ namespace BackroomsSurvival.Net
             int units = Mathf.Max(1, amount);
             for (int i = 0; i < units; i++)
                 ipc.SendStpBuildAdd(NextAddId(), net.id, material.Id);
+            // ADR-090: one batch of blows, one noise — at the piece, which is where the hammer is.
+            WorldNoise.Report(net.transform.position, WorldNoise.HammerLoudness);
 
             Debug.Log($"[StpBuildMaterialWatcher] add material_id={material.Id} x{units} → building netId={net.id}.");
         }

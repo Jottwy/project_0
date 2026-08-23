@@ -167,6 +167,7 @@ namespace BackroomsSurvival.Net
             DestroyLocalPiece(placed);
 
             ipc.SendStpPlace(placeId, defId, pos, yaw, groupId, isGroup);
+            WorldNoise.Report(pos, WorldNoise.PlaceLoudness); // ADR-090: placing a piece is heard
             Debug.Log($"[StpBuildingPlacementWatcher] placed def_id={defId} place_id={placeId} group_id={groupId} is_group={isGroup} pos={pos:F2} → host.");
 
             // A grid wall and its infill panels are standalone, so the host does not pose-cell dedup

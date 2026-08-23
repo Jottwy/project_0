@@ -188,6 +188,7 @@ namespace BackroomsSurvival.Net
             Vector3 velocity = StpNativeDropWatcher.SynthesizeTossVelocity(recoger);
             long dropId = StpNativeDropWatcher.MintDropId();
             ipc.SendStpDrop(dropId, defId, count, at, t.eulerAngles.y, velocity);
+            WorldNoise.Report(at, WorldNoise.DropLoudness); // ADR-090: it hits the floor
             Debug.Log($"[StpPickupController] devueltos {count}×def_id={defId} al mundo drop_id={dropId} en {at:F2} vel={velocity:F2}.");
         }
 

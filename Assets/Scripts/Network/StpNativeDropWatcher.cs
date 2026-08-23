@@ -163,6 +163,7 @@ namespace BackroomsSurvival.Net
 
                 Destroy(p.gameObject); // immediate (this frame) — closes the double-detection window
                 ipc.SendStpDrop(dropId, defId, count, hand, yaw, velocity);
+                WorldNoise.Report(hand, WorldNoise.DropLoudness); // ADR-090: it hits the floor
                 Debug.Log($"[StpNativeDropWatcher] adopted native drop drop_id={dropId} def_id={defId} x{count} hand={hand:F2} vel={velocity:F2} → host.");
             }
         }

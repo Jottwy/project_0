@@ -142,7 +142,11 @@ namespace BackroomsSurvival.Gameplay.Building
                 // volver a preguntárselo.
                 _paid.Add(net.id);
                 if (sent > 0)
+                {
+                    // ADR-090: the free build still swings a hammer as far as the creature knows.
+                    WorldNoise.Report(net.transform.position, WorldNoise.HammerLoudness);
                     Debug.Log($"MPTRACE step=BP event=free_build_paid building={net.id} units={sent}");
+                }
             }
         }
 
