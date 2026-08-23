@@ -263,7 +263,19 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     rules.open_zone_size_z = Some(6); // de abajo lo ignora mientras esté activo.
 
     // IDENTIDAD 4 — cobertura de sala (enmienda 2026-08-09, sesión de
-    // `office_room_coverage_report`). MEDIDO con `sz=6` fijo: footprint 36% del
+    // `office_room_coverage_report`).
+    //
+    // ⚠️ LOS DOS NÚMEROS DE PISABLE DE ESTE PÁRRAFO SON DE ANTES DE
+    // `subregion_fill_band`, y llevan desde entonces junto a un footprint que sí
+    // se actualizó — leídos juntos parecen todos actuales y no lo son. Medido de
+    // nuevo el 2026-08-23 con `office_room_coverage_report`, que vuelve a existir
+    // y ahora imprime los dos caminos: **con `fill_band` (o sea, hoy) el interior
+    // pisable es 31,2 % y el pasillo 36,9 %**, no 21,9 % y 54 %. El camino viejo
+    // reproduce 21,4 % y 53,7 %, que confirma de dónde salían. Ver ADR-086
+    // enmienda 1; el guard determinista es
+    // `office_baseline_matches_the_numbers_adr_086_argues_from`.
+    //
+    // MEDIDO con `sz=6` fijo: footprint 36% del
     // chunk (4 cuadrantes × 36 celdas), interior pisable de sala real 21.9% de
     // media (17-36% según Open/Sealed) — el pasillo es MÁS de la mitad de lo
     // pisable (54%), coherente con el 62% de paneles-pasillo ya medido en
@@ -941,5 +953,171 @@ mod tests {
             footprint_with > footprint_without,
             "fill_band debe crecer el footprint sobre el camino de tamaño fijo"
         );
+    }
+
+    /// LÍNEA BASE de ADR-086, medida y no citada.
+    ///
+    /// `office_rules` documenta "21,9 % de interior de sala, 54 % de lo pisable es pasillo", pero
+    /// esos números salieron de `office_room_coverage_report`, instrumentación efímera que se
+    /// retiró — hoy solo viven en un comentario. Las verificaciones (a) y (b) de ADR-086 se miden
+    /// contra ellos, así que antes de tocar nada hacen falta VERIFICADOS.
+    ///
+    /// Mide dos cosas distintas y no las confunde:
+    /// - **footprint**: la parte del chunk que cubren los rects de `room_zones`, pared incluida.
+    ///   Es lo que ya guarda el test de arriba.
+    /// - **interior pisable**: celdas caminables que caen DENTRO de un rect. Es lo que se juega, y
+    ///   lo que ADR-086 tiene que subir. El perímetro `SealedWall` cuenta en el footprint y NO
+    ///   aquí, que es justo de dónde sale la tasa que el ADR ataca.
+    ///
+    /// `#[ignore]`: es un informe, no una guarda. La guarda determinista es
+    /// `office_baseline_matches_the_numbers_adr_086_argues_from`, debajo.
+    ///
+    /// ```text
+    /// cargo test --release -p backrooms_server office_room_coverage_report -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "informe de linea base de ADR-086; lanzar con --nocapture para leer los numeros"]
+    fn office_room_coverage_report() {
+        let with_fill = office_rules(&LAYER_PROFILES[0]);
+        let mut without_fill = with_fill.clone();
+        without_fill.subregion_fill_band = false;
+
+        let (old, _) = measure_office_coverage_with(&without_fill, 256);
+        println!("SIN subregion_fill_band (el camino sz=6 de antes de 2026-08-09):");
+        println!(
+            "  interior PISABLE dentro de sala        : {:.1} %",
+            old.in_room_pct
+        );
+        println!(
+            "  de lo pisable, cuanto es pasillo       : {:.1} %",
+            old.corridor_share_pct
+        );
+        println!();
+
+        let (m, chunks) = measure_office_coverage(256);
+        println!("LINEA BASE OFFICE — {chunks} chunks, seed 42, capa 0");
+        println!(
+            "  footprint de sala (rects, pared incl.) : {:.1} %",
+            m.footprint_pct
+        );
+        println!(
+            "  interior PISABLE dentro de sala        : {:.1} %  <- (a) de ADR-086",
+            m.in_room_pct
+        );
+        println!(
+            "  pisable total del chunk                : {:.1} %",
+            m.walkable_pct
+        );
+        println!(
+            "  de lo pisable, cuanto es pasillo       : {:.1} %  <- (b) de ADR-086",
+            m.corridor_share_pct
+        );
+    }
+
+    /// Lo mismo, como GUARDA. Fija la línea base con la que ADR-086 discute para que nadie la
+    /// mueva sin darse cuenta: si estos números cambian, el "sube del 21,9 %" del ADR deja de
+    /// significar lo que significaba y hay que remedirlo, no reinterpretarlo.
+    ///
+    /// Las horquillas son anchas a propósito — clavar el decimal convertiría cualquier retoque de
+    /// `LAYER_PROFILES` en un rojo sin información.
+    #[test]
+    fn office_baseline_matches_the_numbers_adr_086_argues_from() {
+        let (m, _) = measure_office_coverage(64);
+
+        assert!(
+            (44.0..54.0).contains(&m.footprint_pct),
+            "footprint fuera de la linea base de ~49 %: {:.1} %",
+            m.footprint_pct
+        );
+        // 31,2 % MEDIDO, no el 21,9 % que cita `office_rules`: aquel número es de ANTES de
+        // `subregion_fill_band` y se quedó en el comentario junto al footprint ya actualizado.
+        // Comprobado reproduciendo el camino viejo en el informe de arriba — da 21,4 % y 53,7 %,
+        // que es de donde salían las dos cifras. Ver ADR-086 enmienda 1.
+        assert!(
+            (27.0..36.0).contains(&m.in_room_pct),
+            "interior pisable de sala fuera de la linea base MEDIDA de ~31,2 %: {:.1} %",
+            m.in_room_pct
+        );
+        assert!(
+            (31.0..43.0).contains(&m.corridor_share_pct),
+            "pasillo fuera de la linea base MEDIDA de ~36,9 %: {:.1} %",
+            m.corridor_share_pct
+        );
+        // La tasa que ADR-086 ataca, hecha número: de los rects de sala, la parte que NO se pisa.
+        // Son ~18 puntos del chunk en perímetro y esquinas — es de ahí de donde sale el margen.
+        let perimeter_tax = m.footprint_pct - m.in_room_pct;
+        assert!(
+            (14.0..22.0).contains(&perimeter_tax),
+            "la tasa de perimetro se movio de sus ~17,8 puntos: {perimeter_tax:.1}"
+        );
+    }
+
+    struct OfficeCoverage {
+        footprint_pct: f32,
+        in_room_pct: f32,
+        walkable_pct: f32,
+        corridor_share_pct: f32,
+    }
+
+    /// Recorre `chunks` chunks de `office_rules` y saca los cuatro porcentajes. Determinista: la
+    /// muestra es una rejilla fija, no un sorteo.
+    fn measure_office_coverage(chunks: i32) -> (OfficeCoverage, i32) {
+        measure_office_coverage_with(&office_rules(&LAYER_PROFILES[0]), chunks)
+    }
+
+    fn measure_office_coverage_with(rules: &LayerRules, chunks: i32) -> (OfficeCoverage, i32) {
+        use crate::world::grid_gen::{generate_layer, CHUNK_CELLS};
+
+        let side = (chunks as f64).sqrt() as i32;
+        let cells_per_chunk = (CHUNK_CELLS * CHUNK_CELLS) as u64;
+
+        let (mut footprint, mut walkable, mut in_room, mut total) = (0u64, 0u64, 0u64, 0u64);
+        for cx in 0..side {
+            for cz in 0..side {
+                let out = generate_layer(&rules, 42, (cx, cz), 0, &[]);
+                total += cells_per_chunk;
+
+                for z in &out.room_zones {
+                    footprint += (z.x1 - z.x0) as u64 * (z.z1 - z.z0) as u64;
+                }
+
+                for x in 0..CHUNK_CELLS {
+                    for z in 0..CHUNK_CELLS {
+                        if !out.grid.get(x, z).is_walkable() {
+                            continue;
+                        }
+                        walkable += 1;
+                        let inside = out.room_zones.iter().any(|r| {
+                            (x as u8) >= r.x0
+                                && (x as u8) < r.x1
+                                && (z as u8) >= r.z0
+                                && (z as u8) < r.z1
+                        });
+                        if inside {
+                            in_room += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        let pct = |a: u64, b: u64| {
+            if b == 0 {
+                0.0
+            } else {
+                a as f32 * 100.0 / b as f32
+            }
+        };
+        (
+            OfficeCoverage {
+                footprint_pct: pct(footprint, total),
+                in_room_pct: pct(in_room, total),
+                walkable_pct: pct(walkable, total),
+                // "Pasillo" = lo pisable que NO cae en una sala. Incluye la espina del maze y
+                // cualquier hueco entre cuadrantes; es la definición con la que se midió el 54 %.
+                corridor_share_pct: pct(walkable - in_room, walkable),
+            },
+            side * side,
+        )
     }
 }

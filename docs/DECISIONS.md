@@ -5261,3 +5261,64 @@ Los tres primeros son la razón de ser del ADR y se miden con la sonda que ya ex
 - (e) Ningún tabique cae a mitad de tile. Test sobre `tile_walls_from_grid`.
 - (f) **Pendiente de playtest:** que se lea como una planta de oficinas y no como una caja
   subdividida. Es lo único que ningún número contesta.
+
+---
+
+## ADR-086 — Enmienda 1: la línea base citada era vieja; medida, la real es otra
+
+**Fecha:** 2026-08-23
+**Estado:** Aceptada. Corrige las verificaciones (a) y (b) del cuerpo de ADR-086.
+
+### Qué pasó
+
+El cuerpo de este ADR arranca de los números que `office_rules` documenta —21,9 % de interior pisable
+de sala, 54 % de lo pisable es pasillo— y los toma por actuales. **No lo son.** Salieron de
+`office_room_coverage_report`, instrumentación que se retiró, y quedaron en el comentario **junto a un
+footprint que sí se actualizó** cuando entró `subregion_fill_band`. Leídos del tirón parecen los tres
+de la misma medida; son de dos.
+
+Se ha vuelto a medir antes de tocar código, que era la condición. La sonda existe otra vez, imprime
+los DOS caminos y tiene guard determinista
+(`office_baseline_matches_the_numbers_adr_086_argues_from`). 256 chunks, seed 42, capa 0:
+
+| | Citado en el cuerpo | Camino viejo, reproducido | **Real hoy** |
+|---|---|---|---|
+| Footprint de sala | ~49 % | 36 % | **49,0 %** |
+| Interior PISABLE dentro de sala | 21,9 % | 21,4 % | **31,2 %** |
+| De lo pisable, cuánto es pasillo | 54 % | 53,7 % | **36,9 %** |
+
+El camino viejo (`subregion_fill_band = false`) reproduce 21,4 % y 53,7 %: confirmado de dónde venían
+las dos cifras y confirmado que el footprint del cuerpo era el único al día.
+
+### Lo que esto le hace al argumento
+
+**Una premisa del cuerpo es falsa y se retira:** "más de la mitad de lo que se camina en una oficina
+es corredor" NO es cierto hoy. Son 36,9 %. `subregion_fill_band` ya se comió la mayor parte de ese
+problema en agosto, y el ADR estaba pidiendo crédito por arreglarlo otra vez.
+
+**El argumento del perímetro sigue en pie, y ahora tiene número propio.** El footprint de sala cubre
+el 49,0 % del chunk pero solo el 31,2 % se pisa: **17,8 puntos del chunk son perímetro de sala**, más
+de un tercio de todo lo que las salas ocupan. Eso es exactamente la tasa que los tabiques compartidos
+atacan, y ninguna medida la ha tocado todavía. La sonda la vigila como cuarta aserción.
+
+### Verificaciones corregidas
+
+Sustituyen a las (a) y (b) del cuerpo, que apuntaban a los números viejos:
+
+- **(a')** El interior pisable dentro de sala sube de **31,2 %**, no de 21,9 %.
+- **(b')** La tasa de perímetro baja de **17,8 puntos**. Es la métrica que de verdad mide lo que el
+  ADR propone; la cuota de pasillo pasa a ser informativa.
+- **(b'')** La cuota de pasillo no SUBE de 36,9 %. Cambia de rango a red de seguridad: la planta
+  añade espina propia, y hay que comprobar que la cambia de sitio en vez de sumarla.
+
+El resto de verificaciones del cuerpo —(c) mundo fuera de OFFICE byte-idéntico, (d) conectividad,
+(e) alineación a tile, (f) playtest— siguen tal cual.
+
+### Lo que NO cambia
+
+La decisión. El diseño no dependía del 54 %: dependía de que los despachos no comparten pared y de
+que cada uno paga su anillo entero, y eso sigue medido y sigue siendo cierto. Lo que cambia es
+cuánto margen hay —menos del que el cuerpo sugería— y contra qué número se juzga.
+
+**Y la regla de "si no sube, se revierte" se mantiene**, ahora contra 31,2 % y 17,8 puntos. Que la
+línea base fuese mejor de lo que creíamos es justamente el motivo de medirla antes y no después.
