@@ -218,16 +218,37 @@ fn rules_for_zone(zone_kind: u8, layer: u8) -> LayerRules {
 fn office_rules(base: &LayerRules) -> LayerRules {
     let mut rules = base.clone();
 
-    // IDENTIDAD 1 — despachos, no nave. `subregion_grid` estampa un rect por
-    // cuadrante fijo (hasta 4 por chunk), con anti-solape por construcción; es
-    // literalmente la planta de oficinas que se quiere. Se fuerza a `true`
-    // aunque el perfil de capa base lo tenga apagado (layers 1-3 lo tienen).
-    rules.subregion_grid = true;
-    // Los 4 cuadrantes SIEMPRE presentes: la lectura de "planta" depende de que
-    // el chunk esté compartimentado entero, no de que le falten trozos. Layer 0
-    // en producción usa 0.75 (ADR-057, busca variedad de contenido); aquí la
-    // variedad la da el `RoomType` de cada cuadrante, no su ausencia.
-    rules.subregion_presence = 1.0;
+    // IDENTIDAD 1 — UNA sala de 14×14, no cuatro cuadrantes (ADR-087 paso 1).
+    //
+    // La redacción anterior decía que `subregion_grid` "es literalmente la planta
+    // de oficinas que se quiere". **Medido, no lo era.** A footprint IDÉNTICO
+    // (49,0 % del chunk en los dos casos), una sola sala de 13×13 deja 37,5 % de
+    // interior pisable contra el 31,2 % de los cuatro cuadrantes: cinco puntos y
+    // pico, sin una línea de código, porque cuatro salas pagan cuatro anillos
+    // `SealedWall` y una paga uno. Ese es el argumento del perímetro compartido
+    // de ADR-086, que era correcto — lo que estaba mal era dónde se aplicaba.
+    //
+    // **13 Y NO 14, Y NO ES COSMÉTICO.** Para una `SealedRoom` los dos dan el
+    // MISMO rect —`tile_aligned_size` redondea 13 a 14— así que la cobertura no
+    // se mueve. Lo que cambia es la zona `Open` del 20 %, que NO se alinea a tile
+    // (`has_sealed_perimeter` es falso): a 14 deja una tira de una celda contra
+    // el borde que el maze no alcanza. Medido sobre 784 chunks × 4 capas: **14 da
+    // 1 chunk incomunicado, 13 da 0.** Aislado el mecanismo poniendo los pesos al
+    // extremo — todo sellado da 0 a los dos tamaños, todo Open da 7 y 8. El
+    // riesgo residual vive en la cuota Open y lo vigila
+    // `office_chunks_stay_connected_and_non_degenerate`.
+    //
+    // 13 y no 18: con 18×18 el footprint sube al 81 % y el interior al 64,5 %,
+    // pero el paso real se hunde al **0,8 %** — el maze ha desaparecido y los
+    // chunks vecinos se conectan sala contra sala sin corredor. Eso no es una
+    // planta de oficinas, es un almacén del tamaño del chunk — y encima deja
+    // **217 chunks incomunicados de 784**. Un número que sube demasiado es tan
+    // malo como uno que baja; ver la verificación (c) de ADR-087.
+    //
+    // `subregion_grid` NO se retira del motor: sigue vivo para ADR-057 y para
+    // cualquier otra zona. Lo que se retira es que OFFICE lo use.
+    rules.subregion_grid = false;
+    rules.num_open_zones = 1;
     // IDENTIDAD 2 — mayoría de despachos con perímetro sellado y 1-3 puertas
     // (`carve_sealed_room_entrances`), con un 20% de cuadrante Open que hace de
     // sala común. Sin `CorridorSpine`: su ancho fijo de 2 celdas ya lo aporta el
@@ -242,7 +263,14 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     // perfil con `subregion_grid`, que es lo que hace comparables las huellas.
     rules.pillar_chance = 0.0;
 
-    // SE QUEDA EN LA PARTICIÓN 2×2 DE ADR-057, y es una decisión MEDIDA que
+    // HISTÓRICO — lo de abajo razona sobre la partición en cuadrantes, que
+    // ADR-087 paso 1 ya no usa. Se conserva porque su conclusión es la que
+    // sostiene la identidad 1 de arriba: el perímetro sellado cuesta 1 celda
+    // cueste lo que cueste, así que más salas pequeñas gastan MÁS pared. Lo que
+    // ADR-087 hace es llevar esa misma conclusión hasta el final —una sola sala—
+    // en vez de quedarse en cuatro.
+    //
+    // SE QUEDABA EN LA PARTICIÓN 2×2 DE ADR-057, y era una decisión MEDIDA que
     // contradice la hipótesis con la que se construyó `subregion_divisions`.
     //
     // La hipótesis era: como el 62% de los paneles de un chunk OFFICE son pasillo
@@ -259,11 +287,18 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     // futuro lo quiere por ESCALA (una sala de 5×5 m se lee más a oficina que una
     // de 10×10, aunque haya menos metros de sala) — pero eso es una decisión de
     // lectura, no de densidad, y no se toma a partir de este número.
-    rules.open_zone_size_x = Some(6); // fallback documental: `subregion_fill_band`
-    rules.open_zone_size_z = Some(6); // de abajo lo ignora mientras esté activo.
+    // ADR-087 paso 1: 14×14, el tamaño medido. Ya NO es un fallback documental —
+    // con `subregion_grid = false` este es el tamaño real de la única sala del
+    // chunk, y `subregion_fill_band` no lo pisa porque su camino no corre.
+    rules.open_zone_size = 13;
+    rules.open_zone_size_x = Some(13);
+    rules.open_zone_size_z = Some(13);
 
     // IDENTIDAD 4 — cobertura de sala (enmienda 2026-08-09, sesión de
     // `office_room_coverage_report`).
+    //
+    // ⚠️ TODO ESTE PÁRRAFO ES HISTÓRICO: describe la configuración de cuatro
+    // cuadrantes que ADR-087 paso 1 retiró. La cifra viva es la de la identidad 1.
     //
     // ⚠️ LOS DOS NÚMEROS DE PISABLE DE ESTE PÁRRAFO SON DE ANTES DE
     // `subregion_fill_band`, y llevan desde entonces junto a un footprint que sí
@@ -296,13 +331,17 @@ fn office_rules(base: &LayerRules) -> LayerRules {
     // identidad entera de `SealedRoom`/`carve_sealed_room_entrances` — mayor
     // ganancia potencial, pero es un rediseño que merece su propio ADR si
     // algún día se retoma, no una mejora de esta sesión.
+    // Inerte desde ADR-087 paso 1 (`subregion_grid = false` ⇒ su camino no corre).
+    // Se deja puesto y no se borra: si algún día OFFICE volviera a cuadrantes,
+    // quitarlo aquí sería perder en silencio los 13 puntos de footprint que esta
+    // línea compró en agosto.
     rules.subregion_fill_band = true;
 
     // `wide_chance`/`erode_chance` se dejan TAL CUAL los del perfil de capa: un
     // pasillo de oficina es estrecho, así que no hay motivo para abrirlos como
     // hace PILLAR_HALL, y cerrarlos por debajo del perfil convertiría una capa
-    // ya densa en intransitable. `num_open_zones` no se toca porque
-    // `subregion_grid` lo ignora (siempre 4 cuadrantes).
+    // ya densa en intransitable. `num_open_zones` SÍ se toca ahora (identidad 1):
+    // con `subregion_grid = false` es él quien manda, y vale 1.
     rules
 }
 
@@ -383,13 +422,19 @@ mod tests {
             for zone_kind in 0..=ZONE_OFFICE {
                 let rules = rules_for_zone(zone_kind, layer);
                 if zone_kind == ZONE_OFFICE {
+                    // ADR-087 paso 1: UNA sala de 13, no cuatro cuadrantes.
                     assert!(
-                        rules.subregion_grid,
-                        "capa {layer}: OFFICE debe forzar subregion_grid=true"
+                        !rules.subregion_grid,
+                        "capa {layer}: OFFICE dejó de usar subregion_grid (ADR-087)"
                     );
                     assert_eq!(
-                        rules.subregion_presence, 1.0,
-                        "capa {layer}: OFFICE debe estampar los 4 cuadrantes"
+                        (
+                            rules.num_open_zones,
+                            rules.open_zone_size_x,
+                            rules.open_zone_size_z
+                        ),
+                        (1, Some(13), Some(13)),
+                        "capa {layer}: OFFICE debe estampar UNA sala de 13×13"
                     );
                     assert_eq!(
                         rules.room_type_weights,
@@ -424,17 +469,17 @@ mod tests {
                     // con el literal documentado en vez de ensanchar la visibilidad
                     // de un interno del generador para un test.
                     //
-                    // El tamaño tiene que caber en la banda MÁS ESTRECHA de las
-                    // divisiones configuradas o la sub-región se salta EN SILENCIO
-                    // (guarda `count == 0`). Con 2 divisiones la banda estrecha es
-                    // `[12,18)` = 6 celdas; con 3 serían 4. Atado a las divisiones
-                    // para que cambiar una sin la otra falle aquí y no en juego.
-                    let band_cells = if rules.subregion_divisions >= 3 { 4 } else { 6 };
+                    // El techo del tamaño ya NO es la banda de un cuadrante
+                    // (ADR-087 paso 1 apagó `subregion_grid` para OFFICE): es el
+                    // ancho utilizable del chunk. Y el límite de verdad no es
+                    // geométrico sino de CONECTIVIDAD — medido, 18 deja 217 de 784
+                    // chunks incomunicados y 16 deja 2. Quien vigila eso es
+                    // `office_chunks_stay_connected_and_non_degenerate`; aquí solo
+                    // se comprueba que la sala cabe con maze alrededor.
                     assert!(
-                        rules.open_zone_size_x.unwrap() <= band_cells,
-                        "capa {layer}: sub-región de {:?} con {} divisiones (banda de {band_cells} celdas) — se saltaría sin avisar",
-                        rules.open_zone_size_x,
-                        rules.subregion_divisions
+                        rules.open_zone_size_x.unwrap() <= 14,
+                        "capa {layer}: sala de {:?} — por encima de 14 el maze que                          queda alrededor empieza a dejar bolsillos incomunicados",
+                        rules.open_zone_size_x
                     );
                     assert_eq!(rules.open_zone_size_x, rules.open_zone_size_z);
                     assert_eq!(
@@ -691,11 +736,14 @@ mod tests {
                     // Derivado de las divisiones, no un literal: 3×3 = 9. Con
                     // presencia 1.0 y un tamaño que cabe en la banda, la guarda
                     // `count == 0` no puede dispararse, así que salen TODAS.
-                    let expected = (rules.subregion_divisions as usize).pow(2);
+                    // ADR-087 paso 1: `num_open_zones = 1`, así que sale UNA y
+                    // solo una. Derivado del campo y no un literal, igual que
+                    // antes lo derivaba de `subregion_divisions`.
+                    let expected = rules.num_open_zones as usize;
                     assert_eq!(
                         out.room_zones.len(),
                         expected,
-                        "seed {seed} capa {layer} chunk ({cx},{cz}): OFFICE estampó {} sub-regiones, no {expected} — alguna se saltó en silencio",
+                        "seed {seed} capa {layer} chunk ({cx},{cz}): OFFICE estampó {} zonas, no {expected}",
                         out.room_zones.len()
                     );
                     zones_seen += out.room_zones.len();
@@ -822,7 +870,7 @@ mod tests {
                         // que en layer 0 el assert sería verde sin que
                         // `office_rules` hubiera intervenido.
                         assert_eq!(rules.room_type_weights, (0.2, 0.8, 0.0));
-                        assert_eq!(rules.subregion_presence, 1.0);
+                        assert_eq!(rules.open_zone_size_x, Some(13));
                     }
                 }
             }
@@ -910,9 +958,23 @@ mod tests {
     fn office_fill_band_grows_room_footprint_over_the_fixed_size_path() {
         use crate::world::grid_gen::generate_layer;
 
-        let base = &LAYER_PROFILES[0];
-        let with_fill = office_rules(base);
-        assert!(with_fill.subregion_fill_band, "office_rules debe activarlo");
+        // Ya NO se monta desde `office_rules`: ADR-087 paso 1 apagó `subregion_grid`
+        // para OFFICE, así que pasar por ahí probaría un camino que esa zona no
+        // recorre. El mecanismo SIGUE VIVO para ADR-057 y para cualquier otro
+        // perfil, y esta guarda sigue siendo suya — solo que ahora se construye la
+        // configuración de cuadrantes a mano, que es de quien era el guard desde
+        // el principio.
+        let mut with_fill = LAYER_PROFILES[0].clone();
+        with_fill.subregion_grid = true;
+        with_fill.subregion_presence = 1.0;
+        with_fill.subregion_divisions = 2;
+        with_fill.open_zone_size = 6;
+        with_fill.open_zone_size_x = Some(6);
+        with_fill.open_zone_size_z = Some(6);
+        // Sin `CorridorSpine`: su ancho fijo cambia el eff_sz del cuadrante y el
+        // footprint dejaría de ser 4 × sz². `LAYER_PROFILES[0]` trae (0.5,0.3,0.2).
+        with_fill.room_type_weights = (0.2, 0.8, 0.0);
+        with_fill.subregion_fill_band = true;
 
         let mut without_fill = with_fill.clone();
         without_fill.subregion_fill_band = false; // vuelve al sz=6 fijo de antes
@@ -925,7 +987,7 @@ mod tests {
                 .sum()
         };
 
-        // subregion_presence = 1.0 en OFFICE ⇒ los 4 cuadrantes SIEMPRE
+        // subregion_presence = 1.0 ⇒ los 4 cuadrantes SIEMPRE
         // presentes: footprint es una función pura de sz por banda, no del
         // sorteo de presencia — una sola muestra basta y es determinista.
         let footprint_with = footprint_of(&with_fill, 42, 0);
@@ -1048,40 +1110,43 @@ mod tests {
     fn office_baseline_matches_the_numbers_adr_086_argues_from() {
         let (m, _) = measure_office_coverage(64);
 
+        // POST-ADR-087 PASO 1 (una sala de 13×13). La historia, para que los números
+        // de los comentarios de arriba no se lean como actuales nunca más:
+        //
+        //   4 cuadrantes + fill_band (hasta 2026-08-23) : interior 31,2 % | paso 39,4 %
+        //   4 cuadrantes, sz=6 fijo (hasta 2026-08-09)  : interior 21,4 % | paso 53,7 %
+        //   UNA sala 13×13 (hoy)                        : interior 37,5 % | paso 32,0 %
+        //
+        // Horquillas anchas a propósito: clavar el decimal convertiría cualquier
+        // retoque de `LAYER_PROFILES` en un rojo sin información.
         assert!(
-            (44.0..54.0).contains(&m.footprint_pct),
-            "footprint fuera de la linea base de ~49 %: {:.1} %",
+            (43.0..53.0).contains(&m.footprint_pct),
+            "footprint fuera de la linea base de ~47,9 %: {:.1} %",
             m.footprint_pct
         );
-        // 31,2 % MEDIDO, no el 21,9 % que cita `office_rules`: aquel número es de ANTES de
-        // `subregion_fill_band` y se quedó en el comentario junto al footprint ya actualizado.
-        // Comprobado reproduciendo el camino viejo en el informe de arriba — da 21,4 % y 53,7 %,
-        // que es de donde salían las dos cifras. Ver ADR-086 enmienda 1.
         assert!(
-            (27.0..36.0).contains(&m.in_room_pct),
-            "interior pisable de sala fuera de la linea base MEDIDA de ~31,2 %: {:.1} %",
+            (33.0..42.0).contains(&m.in_room_pct),
+            "interior pisable fuera de la linea base de ~37,5 %: {:.1} %              (antes de ADR-087 eran 31,2 % — si ha bajado ahi, se ha revertido el paso 1)",
             m.in_room_pct
         );
+
+        // VERIFICACIÓN (c) DE ADR-087, y es de dos lados. Por debajo de 25 % el maze
+        // se esta muriendo —18×18 da 0,8 % y 217 chunks incomunicados de 784—; por
+        // encima de 45 % la oficina no es oficina. Un numero que SUBE de mas es tan
+        // malo como uno que baja, y eso es justo lo que a ADR-086 le falto vigilar.
         assert!(
-            (31.0..43.0).contains(&m.corridor_share_pct),
-            "pasillo fuera de la linea base MEDIDA de ~36,9 %: {:.1} %",
-            m.corridor_share_pct
-        );
-        // La métrica BUENA, la que no depende de los rects. Sale más alta que la de rect (36,9 %)
-        // porque cuenta también lo que el maze tiene tallado DENTRO del footprint de una zona:
-        // las entradas de `carve_sealed_room_entrances` y lo que `connect_zone_to_maze` abre.
-        assert!(
-            (35.0..48.0).contains(&m.passage_share_pct),
-            "paso por CellType fuera de la linea base MEDIDA: {:.1} %",
+            (25.0..45.0).contains(&m.passage_share_pct),
+            "paso real fuera de la banda 25-45 % de ADR-087: {:.1} %",
             m.passage_share_pct
         );
 
-        // La tasa que ADR-086 ataca, hecha número: de los rects de sala, la parte que NO se pisa.
-        // Son ~18 puntos del chunk en perímetro y esquinas — es de ahí de donde sale el margen.
+        // La tasa que ADR-086 ataca: de los rects de sala, la parte que NO se pisa.
+        // Baja de 17,8 a ~10,4 puntos por el perimetro compartido — una sala paga un
+        // anillo donde cuatro pagaban cuatro. Es la ganancia del paso 1, hecha numero.
         let perimeter_tax = m.footprint_pct - m.in_room_pct;
         assert!(
-            (14.0..22.0).contains(&perimeter_tax),
-            "la tasa de perimetro se movio de sus ~17,8 puntos: {perimeter_tax:.1}"
+            (7.0..14.0).contains(&perimeter_tax),
+            "la tasa de perimetro se movio de sus ~10,4 puntos: {perimeter_tax:.1}"
         );
     }
 
