@@ -7691,10 +7691,15 @@ async fn after_waiting_it_comes_back_to_look_clothed() {
     for _ in 0..3 {
         driver.step(&mut net, 0.1, far, 0.0, false, false, 0, false, 0);
     }
-    assert_eq!(
-        driver.movers[0].state,
-        PhantomState::Search,
-        "vuelve a buscar"
+    // Search, o ya su primer asomo de esquina (Peek, ADR-075): las dos son "vuelve a buscar". Lo
+    // que NO puede ser es Wander — eso sería haberse rendido de verdad.
+    assert!(
+        matches!(
+            driver.movers[0].state,
+            PhantomState::Search | PhantomState::Peek
+        ),
+        "vuelve a buscar, got {:?}",
+        driver.movers[0].state
     );
     assert_eq!(
         driver.movers[0].last_known_player_pos,
