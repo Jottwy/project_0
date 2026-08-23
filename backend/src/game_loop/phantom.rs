@@ -92,6 +92,27 @@ pub(super) const PHANTOM_FLANK_STEP_DEG: f32 = 22.0;
 /// not to hug its edge.
 pub(super) const PHANTOM_FLANK_TRIGGER_HALF_FOV_DEG: f32 = 75.0;
 
+/// ADR-091 — `buttons` bit 0 is "aiming" (ADR-044, `RemoteButtons.Aiming`). Mirrored here rather
+/// than imported: the driver reads the pose, it does not own the bit layout.
+pub(super) const PHANTOM_AIM_BIT: u16 = 1 << 0;
+/// ADR-091 — how close the target has to be looking at the creature for the aim to count. Much
+/// narrower than the STATUE cone: pointing a weapon at something means pointing AT it.
+pub(super) const PHANTOM_JUKE_LOOK_HALF_FOV: f32 = 12.0_f32 * std::f32::consts::PI / 180.0;
+/// ADR-091 — the band in which being aimed at earns a sidestep. Closer and the strike is what
+/// matters; further and a dodge at that range is theatre nobody can see.
+pub(super) const PHANTOM_JUKE_MIN: f32 = 4.0;
+pub(super) const PHANTOM_JUKE_MAX: f32 = 14.0;
+/// ADR-091 — how long (s) the sidestep holds, how far (rad) it deflects, and how long (s) before it
+/// may happen again. 0.4 s at 7 m/s is under three metres sideways — enough to spoil a shot, not
+/// enough to stop the charge. The cooldown is what keeps this from becoming un-hittable: ADR-041's
+/// "the weapon resolves the encounter" still has to be true, just not free.
+pub(super) const PHANTOM_JUKE_SECONDS: f32 = 0.4;
+pub(super) const PHANTOM_JUKE_DEFLECT: f32 = 70.0_f32 * std::f32::consts::PI / 180.0;
+pub(super) const PHANTOM_JUKE_COOLDOWN: f32 = 2.0;
+/// ADR-091 — a non-hunter only sometimes bothers; a hunter always does. Scaled by `impulse()` like
+/// every other temperament roll so the erratic ones dodge more.
+pub(super) const PHANTOM_JUKE_CHANCE: f32 = 0.5;
+
 /// ADR-089 — how far from YOUR claim marker a creature that lost you will still go and check it
 /// (same layer only). Past this, the walk is longer than the hunt and the ordinary give-up is right.
 pub(super) const PHANTOM_HOME_RECALL_RADIUS: f32 = 120.0;
@@ -707,6 +728,16 @@ pub(super) fn target_is_crouched(net: &NetworkManager, tid: PeerId, host_crouch:
         return host_crouch;
     }
     net.peers.get(&tid).is_some_and(|p| p.crouch)
+}
+
+/// ADR-091 — is this target AIMING a weapon? Same split as `target_is_crouched`: peers carry the
+/// bit in `PeerConnection.buttons` (ADR-044), the host's own player is handed in.
+pub(super) fn target_is_aiming(net: &NetworkManager, tid: PeerId, host_buttons: u16) -> bool {
+    let buttons = match tid == net.local_id {
+        true => host_buttons,
+        false => net.peers.get(&tid).map(|p| p.buttons).unwrap_or(0),
+    };
+    buttons & PHANTOM_AIM_BIT != 0
 }
 
 /// ADR-080 point 2 — is this target carrying a LIT wieldable? Exact twin of `target_is_crouched`,
@@ -1559,6 +1590,12 @@ pub(super) struct PhantomMover {
     /// ADR-080 point 5 — seconds until this creature answers a distant scream, if it is going to.
     /// `None` = nothing to answer. Audio only: it never moves the creature and never chains.
     pub(super) chorus_pending: Option<f32>,
+    /// ADR-091 — seconds of sidestep left, which way (±1), cooldown until the next one, and how
+    /// many it has rolled (the seed of the deterministic side pick).
+    pub(super) juke_for: f32,
+    pub(super) juke_side: f32,
+    pub(super) juke_cooldown: f32,
+    pub(super) juke_rolls: u32,
 }
 
 /// The creature's temperament, resolved to the number the FSM actually needs, RIGHT NOW.
@@ -2243,6 +2280,10 @@ impl PhantomDriver {
             look_pitch: 0,
             flank_offset: 0.0,
             chorus_pending: None,
+            juke_for: 0.0,
+            juke_side: 1.0,
+            juke_cooldown: 0.0,
+            juke_rolls: 0,
         });
     }
 
@@ -3201,7 +3242,7 @@ impl PhantomDriver {
             );
             return;
         }
-        let (tid, tpos, dist, _) = target.unwrap();
+        let (tid, tpos, dist, tyaw_h) = target.unwrap();
         self.movers[i].last_known_player_pos = Some(tpos);
         self.movers[i].last_seen_vel = ctx.target_vels.get(&tid).copied();
 
@@ -3258,6 +3299,9 @@ impl PhantomDriver {
             None => press_to,
         };
         let to_player = self.steer_heading(i, layer, from, press_to, ctx.dt);
+        // ADR-091: same sidestep as the lunge. Hunting never strikes itself (it re-lunges), so the
+        // dodge is always allowed here.
+        let to_player = self.juke_heading(i, ctx, from, tid, tpos, tyaw_h, dist, to_player, true);
         self.movers[i].heading_target = to_player;
         let t = (PHANTOM_TURN_SPEED_STALK * ctx.dt).min(1.0);
         self.movers[i].heading =
@@ -4015,6 +4059,20 @@ impl PhantomDriver {
             None => line_to,
         };
         let to_player = self.steer_heading(i, layer, from, nav_goal, ctx.dt);
+        // ADR-091: the sidestep, applied to the route heading. Not while a blow is possible (in
+        // reach with the strike ready): the claw wins over the dodge, always.
+        let strike_possible = dist < PHANTOM_ATTACK_REACH && self.movers[i].strike_recover <= 0.0;
+        let to_player = self.juke_heading(
+            i,
+            ctx,
+            from,
+            tid,
+            tpos,
+            tyaw,
+            dist,
+            to_player,
+            !strike_possible,
+        );
         // Aggressive turn smoothing (faster than STALK) — tracks hard but never snaps.
         self.movers[i].heading_target = to_player;
         let t = (PHANTOM_TURN_SPEED_SPRINT * ctx.dt).min(1.0);
@@ -4435,6 +4493,65 @@ impl PhantomDriver {
         &self.attacks
     }
 
+    /// ADR-091 — THE SIDESTEP. Given the heading the route wants, returns the heading to travel on:
+    /// unchanged almost always; deflected by `PHANTOM_JUKE_DEFLECT` to a remembered side while a
+    /// juke is live. Arms a new one when the target is aiming AT this creature inside the band, the
+    /// cooldown has run out, and the temperament roll passes.
+    ///
+    /// `allowed` is the caller's say on timing: the lunge passes `false` while it hesitates or while
+    /// a strike is possible (in reach with the blow ready) — the blow always wins over the dodge.
+    #[allow(clippy::too_many_arguments)] // same call as `step`: grouping these is worth doing once, not here
+    fn juke_heading(
+        &mut self,
+        i: usize,
+        ctx: &TickCtx<'_>,
+        from: Vec3,
+        tid: PeerId,
+        tpos: Vec3,
+        tyaw: f32,
+        dist: f32,
+        heading: f32,
+        allowed: bool,
+    ) -> f32 {
+        let m = &mut self.movers[i];
+        if m.juke_for <= 0.0
+            && allowed
+            && m.juke_cooldown <= 0.0
+            && (PHANTOM_JUKE_MIN..=PHANTOM_JUKE_MAX).contains(&dist)
+            && target_is_aiming(ctx.net, tid, ctx.host_buttons)
+            && player_is_looking_at_within(tpos, tyaw, from, PHANTOM_JUKE_LOOK_HALF_FOV)
+        {
+            m.juke_rolls = m.juke_rolls.wrapping_add(1);
+            let key = ((m.id as u64) << 32) ^ m.juke_rolls as u64;
+            let roll = chorus_delay_fraction(key);
+            let passes = m.traits.is_hunter || roll < PHANTOM_JUKE_CHANCE * m.impulse();
+            if passes {
+                m.juke_for = PHANTOM_JUKE_SECONDS;
+                m.juke_cooldown = PHANTOM_JUKE_COOLDOWN;
+                // The side comes from the same hash, decorrelated from the pass/fail bit.
+                m.juke_side = if (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 63) == 0 {
+                    1.0
+                } else {
+                    -1.0
+                };
+                info!(
+                    "MPTRACE step=PH_JUKE event=phantom_jukes phantom_id={} dist={:.1} side={}",
+                    m.id, dist, m.juke_side
+                );
+            } else {
+                // A failed roll still spends the cooldown: otherwise it re-rolls every tick and the
+                // chance stops meaning anything.
+                m.juke_cooldown = PHANTOM_JUKE_COOLDOWN;
+            }
+        }
+        match m.juke_for > 0.0 {
+            true => {
+                (heading + m.juke_side * PHANTOM_JUKE_DEFLECT).rem_euclid(std::f32::consts::TAU)
+            }
+            false => heading,
+        }
+    }
+
     /// ADR-089 — the claim marker of the player this creature is hunting, if it is worth a visit:
     /// same layer, within `PHANTOM_HOME_RECALL_RADIUS` of where the creature stands. `None` when the
     /// target owns nothing nearby — most hunts, most of the time.
@@ -4678,6 +4795,9 @@ impl PhantomDriver {
         // skips the whole FSM for a second after a strike, so a timer advanced down
         // there would stall exactly across the window it exists to cover.
         self.movers[i].strike_recover = (self.movers[i].strike_recover - ctx.dt).max(0.0);
+        // ADR-091: the sidestep and its cooldown age here, with every other per-tick timer.
+        self.movers[i].juke_for = (self.movers[i].juke_for - ctx.dt).max(0.0);
+        self.movers[i].juke_cooldown = (self.movers[i].juke_cooldown - ctx.dt).max(0.0);
         self.movers[i].statue_cooldown = (self.movers[i].statue_cooldown - ctx.dt).max(0.0);
         self.movers[i].vocal_cooldown = (self.movers[i].vocal_cooldown - ctx.dt).max(0.0);
         self.movers[i].enraged_for = (self.movers[i].enraged_for - ctx.dt).max(0.0);

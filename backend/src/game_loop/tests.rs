@@ -7488,3 +7488,97 @@ async fn the_patrol_ring_surrounds_the_marker() {
         );
     }
 }
+
+// ── ADR-091 — Juke ───────────────────────────────────────────────────────────────────────────────
+
+/// Le apuntas a la cara a 8 m y esquiva: el rumbo pedido se desvía hacia un lado durante la ventana.
+/// Cazadora para que el roll sea determinista (siempre pasa).
+#[tokio::test]
+async fn a_hunter_sidesteps_when_aimed_at() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].traits.is_hunter = true;
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.movers[0].hesitate_timer = 0.0;
+    driver.movers[0].hunger = 0.2;
+    let here = Vec3::from_array(net.peers[&pid].position);
+
+    // Jugador a 8 m en +X, mirando a -X (yaw 270 → dir (-1,0,0)), APUNTANDO (bit 0).
+    let player = Vec3::new(here.x + 8.0, 1.8, here.z);
+    driver.step(&mut net, 0.1, player, 270.0, false, false, 0, false, 1);
+
+    assert!(driver.movers[0].juke_for > 0.0, "se arma el quiebro");
+    let straight = (player.x - here.x)
+        .atan2(player.z - here.z)
+        .rem_euclid(std::f32::consts::TAU);
+    let want = driver.movers[0].heading_target;
+    let mut delta = (want - straight).abs();
+    if delta > std::f32::consts::PI {
+        delta = std::f32::consts::TAU - delta;
+    }
+    assert!(
+        delta > 40.0_f32.to_radians(),
+        "el rumbo pedido se desvía del recto > 40°, got {:.1}°",
+        delta.to_degrees()
+    );
+}
+
+/// Sin apuntar (o mirando a otro lado) no hay quiebro: el rumbo es el recto de siempre.
+#[tokio::test]
+async fn no_aim_no_sidestep() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].traits.is_hunter = true;
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.movers[0].hesitate_timer = 0.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    let player = Vec3::new(here.x + 8.0, 1.8, here.z);
+
+    // Mirándola, pero sin apuntar.
+    driver.step(&mut net, 0.1, player, 270.0, false, false, 0, false, 0);
+    assert_eq!(
+        driver.movers[0].juke_for, 0.0,
+        "sin apuntar no hay nada que esquivar"
+    );
+
+    // Apuntando, pero de espaldas (yaw 90 → mira a +X, lejos de la criatura).
+    driver.step(&mut net, 0.1, player, 90.0, false, false, 0, false, 1);
+    assert_eq!(
+        driver.movers[0].juke_for, 0.0,
+        "apuntar a otro sitio tampoco cuenta"
+    );
+}
+
+/// El cooldown manda: dos quiebros seguidos no caben en dos segundos, aunque sigas apuntando.
+#[tokio::test]
+async fn the_sidestep_respects_its_cooldown() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let start = [0.0, 1.8, 0.0];
+    let pid = net.spawn_phantom("Robapieles_Test", start);
+    let mut driver = PhantomDriver::new(42);
+    driver.add(pid, PHANTOM_INITIAL_HEADING, Vec3::from_array(start), true);
+    driver.movers[0].traits.is_hunter = true;
+    driver.movers[0].state = PhantomState::Sprint;
+    driver.movers[0].hesitate_timer = 0.0;
+    let here = Vec3::from_array(net.peers[&pid].position);
+    // Lejos dentro de la banda, para que en 1 s no entre en alcance y cambie de estado.
+    let player = Vec3::new(here.x + 13.0, 1.8, here.z);
+    driver.step(&mut net, 0.1, player, 270.0, false, false, 0, false, 1);
+    let rolls_after_first = driver.movers[0].juke_rolls;
+    assert_eq!(rolls_after_first, 1, "un roll, un quiebro");
+    // Medio segundo más apuntando: la ventana vence (0,4 s) y el cooldown (2 s) sigue vivo.
+    for _ in 0..5 {
+        driver.step(&mut net, 0.1, player, 270.0, false, false, 0, false, 1);
+    }
+    assert_eq!(
+        driver.movers[0].juke_rolls, rolls_after_first,
+        "no vuelve a tirar hasta que el cooldown venza"
+    );
+    assert!(driver.movers[0].juke_cooldown > 0.0);
+}
