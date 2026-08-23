@@ -5079,3 +5079,62 @@ misma coordenada de mundo, y el manifiesto real da 58 salas con **0 incomunicada
 comprobar es lo que solo se ve jugando: que no haya costura visible en el suelo o el techo a caballo
 de los dos chunks. (b) —atravesarla a pie y que la colisión coincida con lo que se ve— sigue
 **pendiente de playtest**.
+
+---
+
+## ADR-085 — Enmienda 3: el cap de 12 m cae; la capa más alta también se puede invadir
+
+**Fecha:** 2026-08-23
+**Estado:** Aceptada
+**Enmienda a:** ADR-085 punto 5.
+
+### Lo que decía el punto 5, y por qué ya no se sostiene
+
+> La ÚLTIMA capa nunca se invade: es la única que dibuja techo (`roofSlab = isTopLayer`), así que
+> abrirle un hueco dejaría el mundo sin tapa por ahí.
+
+De ahí salía `MAX_INVADED_LAYER = LAYER_PROFILES.len() - 2` y, con 4 capas de 4 m, el cap de **12 m**.
+
+El razonamiento asume que el cliente pinta la losa de techo en todo tile de la capa más alta. **No lo
+hace desde ADR-083 enmienda 1 punto 7:** dentro de una sala autorada el bucle de tiles sale por
+`continue` antes de pintar NADA —ni losa, ni techo, ni panel, ni columna— y la losa de techo se pinta
+después de ese punto (`GridChunkBuilder.cs`, guarda `IsAuthoredRoomTile`). O sea que la supresión del
+techo sobre una sala **ya estaba implementada** y llevaba dos ADRs esperando a que alguien dejara
+llegar una sala hasta ahí. El cap no protegía de nada; solo cortaba salas.
+
+Es el mismo modo de fallo que ADR-085 ya corrigió una vez: una premisa sobre el contrato de capas que
+era falsa cuando se escribió y mantuvo un punto aparcado sin motivo.
+
+### Decisión
+
+`MAX_INVADED_LAYER` pasa a `LAYER_PROFILES.len() - 1`. Con 4 capas de 4 m el techo de altura
+autorable pasa de **12 m a 16 m**, y deja de ser una constante de dominio para ser simplemente "todo
+el mundo vertical que hay". El espejo en C# (`RoomManifestExporter.BackendHeightCapMeters`) sube con
+él en el mismo commit — bumpear uno sin el otro es la clase de desparejado del que avisa
+[[wire-schema-csharp-mirror]] en su terreno.
+
+**Lo que NO cambia:** `top_layer_for_height` sigue siendo `1 ..= ceil(h / LH) − 1` (enmienda 2). Una
+losa justo a la altura del techo no invade, ES el techo. Sin eso, una sala de 16 m clavados invadiría
+una capa que no existe.
+
+**Sin wire ni manifiesto:** `height_meters` ya viaja desde ADR-085, `top_layer` ya se calcula por
+sala. Esto mueve un clamp.
+
+### Lo que se acepta a cambio
+
+Una sala cuya altura no llegue justo al techo del mundo deja, sobre su propio techo y bajo la cota de
+la losa suprimida, un espacio sin tapa. **No es alcanzable ni visible desde dentro**: las paredes de
+la sala cruzan el plano de esa capa y la cierran por su perímetro, igual que ya razonó la enmienda 2
+para las capas intermedias, y el techo de la sala tapa la vista desde abajo. Solo se vería desde
+fuera del mundo, sobrevolándolo, que no es una posición que el juego conceda.
+
+Se acepta explícitamente en vez de forzar que la altura cuadre con un múltiplo de `LAYER_HEIGHT_M`:
+obligar a eso devolvería el cap por la puerta de atrás, con la mitad de resolución.
+
+### Verificación
+
+- (a) Una sala de 16 m se talla en las cuatro capas y `top_layer_for_height(16.0)` devuelve la
+  última. Test en `authored_rooms.rs`.
+- (b) `top_layer_for_height` de una altura por encima de 16 m sigue clampando y no desborda.
+- (c) **Pendiente de playtest:** que una sala de 16 m se vea entera y sin boquete de techo. Va con la
+  verificación (a) de ADR-084, que también sigue pendiente.

@@ -119,12 +119,18 @@ const AUTHORED_SALT: u64 = 0xA57_0AD3_0007_0083;
 /// sitio al que no se llega de forma fiable.
 const AUTHORED_LAYER: u8 = 0;
 
-/// La capa más alta que una sala puede llegar a invadir.
+/// La capa más alta que una sala puede llegar a invadir: **todas**, la última incluida.
 ///
-/// La ÚLTIMA capa nunca se invade: es la única que dibuja techo (`roofSlab = isTopLayer`), así que
-/// abrirle un hueco dejaría el mundo sin tapa por ahí. ADR-085 punto 5. Con 4 capas y 4 m de paso,
-/// el cap de altura autorable es `(4 − 1) · 4 = 12 m`.
-const MAX_INVADED_LAYER: u8 = (LAYER_PROFILES.len() - 2) as u8;
+/// ADR-085 punto 5 la excluía porque "es la única que dibuja techo (`roofSlab = isTopLayer`), así
+/// que abrirle un hueco dejaría el mundo sin tapa por ahí". **La premisa era falsa ya entonces**:
+/// desde ADR-083 enmienda 1 punto 7 el cliente sale por `continue` en todo tile de sala ANTES de
+/// pintar nada, y la losa de techo se pinta después de esa guarda — la supresión llevaba dos ADRs
+/// implementada, esperando a que alguien dejara llegar una sala hasta ahí. El cap no protegía de
+/// nada; solo cortaba salas. Ver ADR-085 enmienda 3.
+///
+/// Con 4 capas y 4 m de paso, el techo de altura autorable pasa de 12 m a **16 m**, que ya no es
+/// una constante de dominio sino todo el mundo vertical que hay.
+const MAX_INVADED_LAYER: u8 = (LAYER_PROFILES.len() - 1) as u8;
 
 /// La capa más alta que ocupa una sala de `height_meters`, contada desde `AUTHORED_LAYER`.
 ///
@@ -2008,15 +2014,30 @@ mod tests {
             "8 m no debe invadir la capa 2"
         );
         assert_eq!(top_layer_for_height(10.0), 2);
-        assert_eq!(top_layer_for_height(12.0), 2, "el cap, y room_0 mide esto");
+        assert_eq!(
+            top_layer_for_height(12.0),
+            2,
+            "el viejo cap; room_0 mide esto"
+        );
 
-        // La capa mas alta NUNCA se invade: es la unica que dibuja techo (ADR-085 punto 5).
+        // La capa mas alta SI se invade desde ADR-085 enmienda 3: el cliente ya suprimia su losa
+        // de techo en todo tile de sala (ADR-083 enmienda 1 punto 7), asi que el cap de 12 m no
+        // protegia de nada y solo cortaba salas.
+        assert_eq!(
+            top_layer_for_height(14.0),
+            3,
+            "14 m tiene que llegar a la ultima capa"
+        );
+        assert_eq!(
+            MAX_INVADED_LAYER as usize,
+            LAYER_PROFILES.len() - 1,
+            "todas las capas son invadibles"
+        );
+
+        // 16 m clavados NO desbordan: la losa que estaria a y=16 es el techo de la sala, no algo
+        // que la corte. Es la formula de la enmienda 2 sosteniendo el nuevo techo.
         assert_eq!(top_layer_for_height(16.0), MAX_INVADED_LAYER);
         assert_eq!(top_layer_for_height(1000.0), MAX_INVADED_LAYER);
-        assert!(
-            (MAX_INVADED_LAYER as usize) < LAYER_PROFILES.len() - 1,
-            "el cap deja al mundo sin techo"
-        );
 
         // Un manifiesto anterior a ADR-085 no trae el campo: 0 cae en "cabe en su capa", que es
         // exactamente lo que ese manifiesto significaba.

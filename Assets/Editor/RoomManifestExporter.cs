@@ -63,16 +63,20 @@ namespace BackroomsSurvival.EditorTools
         internal const int MinDoorwaysForBigRooms = 2;
 
         /// <summary>
-        /// Hasta dónde puede subir una sala sin que el mundo se quede sin tapa: 12 m
-        /// (ADR-085 punto 5, `MAX_INVADED_LAYER` en `authored_rooms.rs`). Una sala invade las capas
-        /// cuya losa de suelo le caiga dentro, pero la última capa NO puede perder la suya.
+        /// Hasta dónde puede subir una sala: **16 m**, que es TODO el mundo vertical (4 capas de
+        /// 4 m). Espejo de `MAX_INVADED_LAYER` en `authored_rooms.rs`.
+        ///
+        /// **16 y no 12 desde ADR-085 enmienda 3.** El cap de 12 excluía la capa más alta porque
+        /// era la única que dibuja techo; la premisa era falsa ya entonces — el cliente sale por
+        /// `continue` en todo tile de sala antes de pintar la losa de techo, desde ADR-083
+        /// enmienda 1 punto 7.
         ///
         /// El backend no RECHAZA una sala más alta, la RECORTA: `top_layer_for_height` limita las
         /// capas invadidas, así que la losa de la primera capa no invadida atraviesa la sala por
-        /// dentro. Por eso el aviso vive aquí y en Validate — sin él, pasar de 12 m se exporta en
+        /// dentro. Por eso el aviso vive aquí y en Validate — sin él, pasarse se exporta en
         /// silencio y el techo cortado solo se descubre jugando.
         /// </summary>
-        internal const float BackendHeightCapMeters = 12f;
+        internal const float BackendHeightCapMeters = 16f;
 
         /// <summary>
         /// Una sala vista por el backend. Nombres en snake_case a propósito: son claves de JSON que

@@ -2459,9 +2459,10 @@ namespace BackroomsSurvival.EditorTools
             // eso se descubre jugando, con un techo cortado a media sala y sin nada que lo explique.
             if (_def.heightMeters > RoomManifestExporter.BackendHeightCapMeters)
                 _validateIssues.Add($"{_def.heightMeters:0.#} m supera el cap de altura de " +
-                    $"{RoomManifestExporter.BackendHeightCapMeters:0.#} m (ADR-085): se exporta, pero " +
-                    "en el mundo la losa de la primera capa no invadida la atraviesa. Para probar " +
-                    "en el editor da igual; para hornearla, no.");
+                    $"{RoomManifestExporter.BackendHeightCapMeters:0.#} m, que es TODO el mundo " +
+                    "vertical (ADR-085 enmienda 3): se exporta, pero en el mundo la losa de la " +
+                    "primera capa no invadida la atraviesa. Para probar en el editor da igual; " +
+                    "para hornearla, no.");
 
             if ((_def.tilesX > RoomManifestExporter.BackendInChunkCapTiles
                     || _def.tilesZ > RoomManifestExporter.BackendInChunkCapTiles)
