@@ -5670,3 +5670,16 @@ saciada → `Wander` como siempre. En juego: que «ya se ha ido» deje de ser se
 Por qué es ADR (regla 2): estado nuevo en la FSM de ADR-016/050/075. Dependencias: ADR-075 (Search y
 su rendición), ADR-053 (de qué memoria parte), ADR-050 (bandas de hambre que lo gatean), ADR-080 (la
 detección por luz que también aplica escondida).
+
+#### Fe de erratas de fechas (2026-08-23) — ADR-082 y ADR-088..092
+
+Este registro no se edita, así que queda aquí: **ADR-082 dice (2026-08-17) y se redactó el
+2026-08-18**; **ADR-088, 089, 090, 091 y 092 dicen (2026-08-21) y se redactaron el 2026-08-23.** El
+redactor copió la fecha de la última entrada de `STATE.md` en vez de la del día. ADR-079 y ADR-080 sí
+son del 2026-08-17. Los commits (`git log`) llevan la fecha real y mandan.
+
+Y el estado de implementación de los cinco, al cierre de esa sesión del 2026-08-23: **los cinco están
+IMPLEMENTADOS y en verde** — `cargo test` 883/0 (suite completa, sin rojos ajenos), clippy
+`--all-targets -D warnings` y fmt limpios, compile-check C# 0 errores en las cuatro asambleas, release
+compilado en `backend/target/release/` (que es la ruta que `NetworkInitializer` resuelve primero;
+`Builds/Backend/` ya no existe). Siguen siendo PROPUESTA: ninguno se ha visto en juego.
