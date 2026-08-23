@@ -5482,3 +5482,191 @@ Contra la línea base de hoy (31,2 % interior, 39,4 % paso, 17,8 puntos de perí
 - **No se retira `subregion_grid`.** Sigue vivo para cualquier otra zona y para ADR-057; lo que se
   retira es que `ZONE_OFFICE` lo use.
 - **No se añaden props ni loot.** Sigue bloqueado por B1 de `ROOMS-ROADMAP.md`.
+
+### ADR-088 — Intercepción: te corta el paso en vez de perseguir tu sombra (2026-08-21)
+
+Estado: **PROPUESTA (2026-08-21), aprobada por Joel en sesión** («te doy libertad, busca y plantea ADRs» → menú de cinco, elegido «Todo»). Sin wire.
+
+Contexto, verificado en código: el driver YA deriva la velocidad de cada objetivo por tick
+(`target_vels`, ADR-075) y la guarda al perderlo (`last_seen_vel`), pero solo la usa para ADIVINAR
+dónde buscar tras perderte (`enter_search_after_hunt`). Mientras te ve, `Sprint` y `Hunting` apuntan
+a donde ESTÁS (hoy al punto de contacto de ADR-082), nunca a donde vas a estar. Contra un jugador que
+corre por un pasillo eso es perseguir una sombra: siempre llega al sitio que acabas de dejar.
+
+Decisión:
+1. En `Sprint` y en la presión de `Hunting`, si el objetivo se mueve a ≥ `PHANTOM_INTERCEPT_MIN_SPEED`
+   (1,5 m/s), el destino de NAVEGACIÓN pasa a ser el punto de intercepción: `p = tpos + v·t`, con `t`
+   resuelto por tres iteraciones de `t = |p(t) − from| / v_criatura` y acotado a
+   `PHANTOM_INTERCEPT_MAX_LEAD` (2,0 s). Más adelanto que eso es adivinar, no interceptar.
+2. El punto solo vale si el JUGADOR puede llegar a él: `segment_is_clear(tpos, p)` con la línea fina.
+   Si no (va a chocar o a girar), se cae al contacto de ADR-082 — el comportamiento de hoy.
+3. La intercepción es SOLO destino de ruta. `has_line`, la prueba del golpe y la distancia de ataque
+   siguen midiéndose contra el jugador y el contacto (ADR-082). NO aplica en `Ambush`: la emboscada
+   corre «como un jugador que viene a ayudarte», en línea recta a ti, y un jugador no intercepta.
+4. `steer_heading` ya degrada al rumbo recto si el A* no alcanza `p`; nada nuevo que fallar.
+
+Alternativas rechazadas: **(A)** interceptar también en `Stalk` — el acecho mantiene banda y flanqueo
+(ADR-080), no persigue; **(B)** usar la intercepción para la prueba del golpe — regalaría alcance, es
+la misma prohibición de ADR-082; **(C)** adelanto sin tope — con tu velocidad medida en un tick, un
+adelanto de 5 s apunta a la nada.
+
+Prohíbe: adelanto > 2 s; intercepción a través de paredes; que el punto de intercepción decida daño o
+alcance. Verificación: (a) corredor por pasillo → destino delante de él sobre su velocidad; (b) quieto
+→ destino = contacto; (c) corredor hacia una pared → cae al contacto. Y en juego: que corriendo por un
+cruce aparezca DELANTE.
+
+Por qué es ADR (regla 2): cambia la conducta de aproximación que ADR-082 acaba de fijar (enmienda: el
+contacto pasa a ser el fallback, no el destino por defecto cuando corres). Dependencias: ADR-075
+(`target_vels`), ADR-082 (contacto como fallback), ADR-040 (ruta).
+
+### ADR-089 — Sabe dónde vives: el marcador de territorio entra en la memoria del cazador (2026-08-21)
+
+Estado: **PROPUESTA (2026-08-21), aprobada por Joel en sesión.** Sin wire.
+
+Contexto: ADR-081 dejó el territorio VISIBLE para el backend — los claims no son tabla aparte, son
+marcadores en `stp_buildings` con `def_id == CLAIM_MARKER_DEF_ID` y `owner_id` — y la IA no lo mira.
+Sabe quién vive dónde y no hace nada con ello. ADR-053 ya le dio memoria de escondites; tu casa es el
+escondite que no hace falta aprender.
+
+Decisión:
+1. `CLAIM_MARKER_DEF_ID` pasa a `pub(crate)`; el driver deriva `homes: Vec<(PeerId, Vec3, u8)>` de
+   `net.stp_buildings` (dueño, posición, capa por `world_pos_to_layer`) una vez por step. Solo host.
+2. **Al perderte, comprueba tu casa.** En `Search`, agotados los escondites recordados del mismo
+   modo que ADR-053 los gasta, si el marcador de TU `owner_id` (= `target_id` pegajoso) está a
+   ≤ `PHANTOM_HOME_RECALL_RADIUS` (120 m) y en la misma capa, lo visita UNA vez por caza
+   (`home_checked_this_hunt`). Después, lo de siempre: se rinde o ADR-092.
+3. **Ronda tu base.** Una criatura en `Wander` a ≤ `PHANTOM_HOME_PATROL_RADIUS` (80 m) de cualquier
+   marcador de su capa, al elegir rumbo nuevo tras una pausa, lo elige con probabilidad
+   `PHANTOM_HOME_PATROL_BIAS` (0,5) hacia un punto del anillo a 25–40 m del marcador (rumbo
+   aleatorio). Sigue siendo Wander: pausas, gestos, la correa — solo que gravita hacia tu puerta.
+4. **La zona segura NO es santuario.** `ZONE_SAFE` es donde se puede construir, no donde se es
+   inmune: la criatura entra, ronda y caza dentro igual que fuera. Si un playtest pide lo contrario,
+   es una enmienda de un párrafo, no un rediseño. (Decisión propuesta y aceptada sin objeción.)
+
+Alternativas rechazadas: **(A)** que la casa sea el PRIMER sitio donde busca — el rastro fresco vale
+más que el hábito, mismo orden que ADR-075 fija para el fallback; **(B)** rondar SIEMPRE que haya una
+base cerca — convertiría cada base en un punto de spawn de fantasmas visible, y la ronda debe leerse
+como algo que pasa, no como una mecánica; **(C)** leer los claims en el joiner — la IA solo corre en
+el host.
+
+Prohíbe: que la casa se compruebe más de una vez por caza; que la ronda rompa la correa de Wander ni
+cambie su velocidad; cualquier lectura de claims que no sea `stp_buildings` (no hay otra fuente de
+verdad). Verificación: (a) caza perdida con marcador a 60 m → el goal de Search es el marcador tras
+los escondites; (b) criatura en Wander a 50 m de un marcador → el rumbo tras pausa apunta al anillo con
+la frecuencia del sesgo; (c) marcador en otra capa → ignorado. Y en juego: que la vean merodear la base.
+
+Por qué es ADR (regla 2): amplía la memoria de ADR-053 y la patrulla de Wander, y fija una decisión de
+diseño (santuario: no) que alguien pedirá cambiar. Dependencias: ADR-081 (marcadores con dueño),
+ADR-053 (memoria y orden de comprobación), ADR-043 (activación por proximidad: una base sin jugadores
+cerca no tiene criaturas despiertas que la ronden, y eso está bien).
+
+### ADR-090 — El mundo suena: construir, martillear, demoler y soltar existen para la IA (2026-08-21)
+
+Estado: **PROPUESTA (2026-08-21), aprobada por Joel en sesión.** Cliente puro, cero wire, cero Rust.
+
+Contexto, verificado: los únicos emisores de `report_noise` hoy son el arma (`NoiseReporter`) y la
+voz (`VoiceCapture`, ADR-052). Colocar una pieza, martillear, demoler y soltar un objeto son MUDOS
+para la IA. El backend ya tiene todo: `report_noise` con «la sonoridad ES el radio» (ADR-041), el
+carril joiner→host `NoiseReport` (ADR-047, verificado en `handle_action`), y la inmunidad de los
+estados comprometidos. Construir una base debería ser el momento de mayor riesgo, y hoy es silencio.
+
+Decisión:
+1. `WorldNoise` nuevo (`Assets/Scripts/Network/WorldNoise.cs`), estático, una tabla de constantes y
+   un `Report(Vector3 at, float loudness)` que resuelve `IPCClient.TryGetInstance` + `IsConnected` y
+   llama a `SendReportNoise`. Una sola puerta: nada de llamadas sueltas a `SendReportNoise` desde
+   gameplay.
+2. Sonoridades (radio en m, criterio ADR-041: la tabla del arma va de 25 al arco a 500 al fusil):
+   **colocar pieza 30**, **martillazo 25**, **demoler 35**, **soltar objeto 12**. Todas por debajo
+   de un disparo y por encima de un paso: construir te expone, disparar te expone MÁS.
+3. Sitios, uno por acción y junto al `Send*` ya existente para que nunca haya ruido sin acción ni
+   acción sin ruido: `StpBuildingPlacementWatcher` (colocar), `StpBuildMaterialWatcher` y
+   `FreeBuildMode` (martillazo), `StpBuildingReplicator` (demoler), `StpPickupController` y
+   `StpNativeDropWatcher` (soltar). `InventoryRestorer` queda FUERA a propósito: su drop es una
+   restauración al cargar, no un gesto del jugador.
+4. Sin dedupe propio: cada `Send*` ya es un evento único por acción (ids de dedupe del backend), y el
+   ruido viaja pegado a él.
+
+Alternativas rechazadas: **(A)** generar el ruido en el backend al ACEPTAR la acción — el backend del
+joiner no simula, y el host tendría que reenviar un estímulo que el cliente ya puede emitir por el
+carril existente; **(B)** un solo radio para todo — pierde la gradación que hace legible el riesgo;
+**(C)** ruido al recoger — coger algo es silencioso y debe seguir siéndolo.
+
+Prohíbe: radios por encima del fusil (500) o por debajo del umbral de pasos; ruido en acciones que
+el host rechaza antes de enviarse (el watcher ya no manda lo que sabe que se denegará, ADR-081 p.4).
+Verificación: compile-check; y en juego, que martillear con una criatura a 20 m la traiga.
+
+Por qué es ADR (regla 2): amplía el modelo de estímulos de ADR-041 con cuatro fuentes nuevas y fija
+sus números. Dependencias: ADR-041, ADR-047 (carril joiner), ADR-081 (la construcción que ahora suena).
+
+### ADR-091 — Juke: esquiva cuando le apuntas (2026-08-21)
+
+Estado: **PROPUESTA (2026-08-21), aprobada por Joel en sesión.** Sin wire.
+
+Contexto: el bit `Aiming` de `buttons` (ADR-044, bit 0) viaja en la pose y ya llega al driver
+(`host_buttons`, `PeerConnection.buttons`). Le apuntas a la cara desde ocho metros y corre recto.
+
+Decisión:
+1. En `Sprint` (fuera de la hesitación y de la ventana de golpe) y en la presión de `Hunting`: si el
+   objetivo está APUNTANDO (`buttons & Aiming`), MIRÁNDOLA dentro de un cono estrecho
+   (`PHANTOM_JUKE_LOOK_HALF_FOV` 12°) y a distancia en `[PHANTOM_JUKE_MIN, PHANTOM_JUKE_MAX]` (4–14 m),
+   con `juke_cooldown ≤ 0` y pasando el roll (`is_hunter` siempre; si no, `0,5 × impulse()`), arma un
+   quiebro: `juke_for = 0,4 s`, lado determinista (hash de id + `vocal_seq`, nunca `rand` — repetible
+   en playtest), `juke_cooldown = 2,0 s`.
+2. Mientras `juke_for > 0`, el rumbo es el de la ruta ± 70° hacia el lado elegido, a la velocidad del
+   estado. El resolutor y los bigotes (ADR-082) siguen mandando: un quiebro contra una pared se
+   convierte en nada, y el cooldown lo impide repetir en bucle.
+3. Lectura del apuntado con el mismo reparto que `target_is_crouched`/`target_has_light_on`:
+   `target_is_aiming(net, tid, host_buttons)`.
+
+Alternativas rechazadas: **(A)** esquivar por probabilidad sin leer el apuntado — sería ruido, no
+inteligencia; **(B)** quiebro más largo o más frecuente — hace imposible acertarle y el arma pierde
+su papel de «resuelve el encuentro» (ADR-041); **(C)** esquivar también disfrazada (`Stalk`) — un
+jugador no esquiva cuando le apuntan, y romper eso delata.
+
+Prohíbe: juke durante `hesitate_timer > 0` o con `strike_recover > 0` y en alcance (el golpe manda);
+que el juke cambie alcance, daño o la prueba de línea; `rand` en el lado. Verificación: (a) objetivo
+apuntando a 8 m → rumbo desviado > 40° durante la ventana; (b) sin apuntar → recto; (c) cooldown
+respetado. En juego: que apuntarle deje de ser gratis.
+
+Por qué es ADR (regla 2): toca la aproximación de `Sprint`/`Hunting` y el balance del arma frente a
+la criatura. Dependencias: ADR-044 (bit Aiming), ADR-082 (resolutor y bigotes como autoridad).
+
+### ADR-092 — Finta: se va, calla y vuelve — estado `Lurk` (2026-08-21)
+
+Estado: **PROPUESTA (2026-08-21), aprobada por Joel en sesión.** Sin wire. Variante nueva de
+`PhantomState` (los `match` exhaustivos de `phantom_reveals` y `phantom_tracks_with_head` obligan a
+decidir, y eso es lo que se quiere).
+
+Contexto: al agotar una búsqueda, la criatura se rinde a `Wander` SIEMPRE. «Ya se ha ido» es siempre
+verdad, y el jugador lo aprende en dos encuentros. El miedo está en que a veces no sea verdad.
+
+Decisión:
+1. **Entrada.** En la rendición de `Search`, si la caza fue real (`noise_expiry.is_none()`), la
+   criatura no está saciada, no ha fintado ya esta caza (`lurked_this_hunt`) y pasa el roll
+   (`is_hunter` 0,6; si no 0,25, determinista por id + seq), entra en `Lurk` en vez de `Wander`.
+   `last_known_player_pos` se CONSERVA (la rendición normal lo borra).
+2. **Escondite.** Elige un punto a 12–20 m de donde está, probando ocho rumbos deterministas, con la
+   condición de que NO haya línea fina limpia entre ese punto y `last_known_player_pos` — fuera de tu
+   vista respecto a donde te vio por última vez. Si ninguno cumple, `Wander` como hoy. Navega con
+   `steer_heading`.
+3. **Espera.** Al llegar, quieta, pose idle, SIN respiración ni vocal alguna durante `lurk_for`
+   (6–14 s, determinista). Vestida (`phantom_reveals` → false); sin head-tracking (no hay objetivo).
+   Si detecta a un jugador con la regla de `Wander` (cono, oído, luz de ADR-080), pasa a `Stalk`
+   directamente — ya estaba comprometida.
+4. **Vuelta.** Vencido `lurk_for`, vuelve a `Search` hacia `last_known_player_pos` con la paciencia y
+   velocidad de caza de `enter_search_after_hunt`, y `lurked_this_hunt = true`: una finta por caza.
+   Distraíble por ruido como `Search` (no entra en la lista de inmunes de `hear_noises`).
+
+Alternativas rechazadas: **(A)** fintar siempre — sería una regla, y una regla se aprende igual que
+«se ha ido»; **(B)** volver con `Hunting` (revelada) — rompe la premisa: la finta funciona porque
+vuelve con la piel puesta; **(C)** esconderse detrás de TI (flanqueo) — es `Stalk`, no una finta.
+
+Prohíbe: más de una finta por caza; vocales durante `Lurk`; revelar durante `Lurk`; que `Lurk` mueva
+a la criatura fuera de 20 m de donde se rindió. Verificación: (a) cazadora hambrienta que se rinde →
+`Lurk`; (b) el escondite elegido no tiene línea a `last_known`; (c) al vencer → `Search` hacia
+`last_known`; (d) `phantom_reveals(Lurk) == false`, `phantom_tracks_with_head(Lurk) == false`; (e)
+saciada → `Wander` como siempre. En juego: que «ya se ha ido» deje de ser seguro.
+
+Por qué es ADR (regla 2): estado nuevo en la FSM de ADR-016/050/075. Dependencias: ADR-075 (Search y
+su rendición), ADR-053 (de qué memoria parte), ADR-050 (bandas de hambre que lo gatean), ADR-080 (la
+detección por luz que también aplica escondida).
