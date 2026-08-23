@@ -5391,3 +5391,94 @@ que pide su propio ADR y validación humana — no un ajuste de esta enmienda.
 - **La sonda SÍ se queda** (commit anterior): `office_room_coverage_report` y su guard
   `office_baseline_matches_the_numbers_adr_086_argues_from`. Es lo que ha hecho posible matar esto en
   una tarde en vez de en un playtest, y lo que medirá el siguiente intento.
+
+---
+
+## ADR-087 — Una sala por chunk en `ZONE_OFFICE`, y la planta dentro de ella
+
+**Fecha:** 2026-08-23
+**Estado:** Propuesta — requiere validación humana antes de tocar código.
+**Sucede a:** ADR-086, revertido en su enmienda 2. **Toca:** `office_rules` (identidad 1 de ADR-057).
+
+### La métrica, primero, porque la anterior mentía
+
+ADR-086 enmienda 2 midió la planta de chunk entero y sacó "0,0 % de pasillo". No era cierto: la
+métrica contaba como pasillo *lo pisable fuera de todo rect de `room_zones`*, y con una zona cubriendo
+el chunk no queda nada fuera. La cifra medía la geometría de los rects, no el sitio.
+
+Arreglada: **`passage_share_pct` mira el `CellType`.** El corte ya existía en el generador y es
+limpio — `Open` lo pinta el interior de una zona estampada, `Corridor` lo pintan el maze de Fase 1 y
+TODA ruta de tallado. Una espina de pasillo dentro de una sala cuenta ahora como paso, que es lo que
+es. La métrica vieja se conserva al lado, etiquetada, para no romper la comparación con lo ya medido.
+
+Relanzada la línea base con las dos: interior pisable **31,2 %**, paso por rect 36,9 %, **paso real
+39,4 %**. La diferencia son las entradas que `carve_sealed_room_entrances` talla dentro del footprint
+de cada sala, que la métrica vieja contaba como sala.
+
+### Lo que apareció al aislar la ESCALA
+
+Con la métrica buena, y con UNA sala por chunk en vez de cuatro cuadrantes — **sin una línea de
+código nueva, solo configuración, y sin nada dentro de la sala**:
+
+| Config | Footprint | Interior pisable | Paso real |
+|---|---|---|---|
+| Hoy: 4 cuadrantes | 49,0 % | 31,2 % | 39,4 % |
+| Una sala 10×10 | 25,0 % | 16,5 % | 63,3 % |
+| **Una sala 14×14** | **49,0 %** | **36,5 %** | **32,4 %** |
+| Una sala 18×18 | 81,0 % | 64,5 % | 0,8 % |
+
+**A footprint IDÉNTICO (49,0 %), una sala de 14×14 rinde 36,5 % contra los 31,2 % de cuatro
+cuadrantes.** Cinco puntos y pico, gratis, y es exactamente el argumento del perímetro compartido de
+ADR-086 — que era correcto: lo que estaba mal era dónde se aplicaba. Cuatro salas pagan cuatro
+anillos; una paga uno.
+
+**Y 18×18 queda descartado, que es lo que se venía a proponer.** 64,5 % suena mejor, pero el paso cae
+a **0,8 %**: el maze ha desaparecido. Eso no es una planta de oficinas, es un almacén del tamaño del
+chunk, y deja los chunks vecinos conectándose sala contra sala sin corredor entre medias. El número
+alto es la señal de que el sitio ha dejado de ser Backrooms, no de que haya mejorado.
+
+### Decisión
+
+Dos cosas, en este orden y medibles por separado:
+
+**1. `ZONE_OFFICE` pasa de cuatro cuadrantes a UNA sala de 14×14.** `subregion_grid = false`,
+`num_open_zones = 1`, `open_zone_size_x/z = 14`, `room_type_weights = (0.2, 0.8, 0.0)` sin tocar.
+Cero código: es configuración de `office_rules`. Retira la identidad 1 de ADR-057 —"`subregion_grid`
+es literalmente la planta de oficinas que se quiere"— porque está medido que no lo era.
+
+**2. Dentro de esa sala, la planta.** Ahora sí cabe: interior 12×12, espina de 2 y dos bandas de 5
+celdas a los lados. Es `stamp_office_floor` de ADR-086 tal cual —espina, tabiques compartidos, vano
+por bahía— aplicado donde tiene sitio. Esto sí es código, y sí necesita el `RoomType::OfficeFloor` y
+el bump de wire a 42 con el razonamiento que ya daba ADR-086 (el 3 no mueve un byte; el bump fuerza
+el redespliegue conjunto para que un cliente viejo no renderice mal en silencio).
+
+Que vayan en dos commits y no en uno es el punto: **el paso 1 se mide solo**, y si el paso 2 no suma
+nada sobre él, se revierte el 2 y el 1 se queda. ADR-086 no pudo hacer esa distinción y por eso su
+fracaso no dijo cuál de las dos ideas era la mala.
+
+### Verificaciones
+
+Contra la línea base de hoy (31,2 % interior, 39,4 % paso, 17,8 puntos de perímetro):
+
+- **(a)** Paso 1: interior pisable ≥ 36 %. Ya medido a 36,5 %; el test lo clava para que no se pierda.
+- **(b)** Paso 2: interior pisable sube SOBRE el paso 1, no sobre la línea base. Si no sube, el
+  tabique vuelve a ser tasa y se revierte solo el paso 2.
+- **(c)** El paso real se queda en la banda **25–45 %**. Es la verificación que ADR-086 no tenía y le
+  habría avisado: por debajo de 25 % el maze se está muriendo (18×18 da 0,8 %), por encima de 45 % la
+  oficina no es oficina. **Un número que sube por encima del rango es tan malo como uno que baja.**
+- **(d)** Conectividad: todo despacho alcanza la espina, la espina alcanza el maze. Tallado en el
+  estampado, nunca a `repair_connectivity`, que no perfora `SealedWall`.
+- **(e)** Tabiques en límite de tile. Sin eso, `tile_walls_from_grid` se los come — ADR-057.
+- **(f)** El mundo fuera de `ZONE_OFFICE` sale byte-idéntico, y la cadencia de salas autoradas no se
+  mueve (`real_manifest_cadence`, lanzada SOLA: `OnceLock` del proceso).
+- **(g)** **Pendiente de playtest**, y esta vez es lo que decide: 14×14 son 35×35 m de sala por chunk.
+  Ningún número dice si eso se lee como una planta o como una caja grande.
+
+### Lo que NO se hace
+
+- **No se cruza de chunk.** Una planta ocupa su chunk. Encadenarlas es "un edificio", depende de
+  `stitch_edges`, y solo tiene sentido si el paso 2 mide bien.
+- **No se toca `SealedWall`** ni la semántica de colisión del robapieles, igual que en ADR-086.
+- **No se retira `subregion_grid`.** Sigue vivo para cualquier otra zona y para ADR-057; lo que se
+  retira es que `ZONE_OFFICE` lo use.
+- **No se añaden props ni loot.** Sigue bloqueado por B1 de `ROOMS-ROADMAP.md`.

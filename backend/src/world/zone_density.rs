@@ -978,6 +978,26 @@ mod tests {
     #[test]
     #[ignore = "informe de linea base de ADR-086; lanzar con --nocapture para leer los numeros"]
     fn office_room_coverage_report() {
+        // El efecto de la ESCALA, aislado: UNA sala por chunk en vez de cuatro cuadrantes, sin
+        // nada dentro. Separa "una sala grande rinde mas que cuatro pequenas" (perimetro
+        // compartido, cero codigo) de "una planta trazada rinde mas que una sala" (ADR-086), que
+        // es lo que la enmienda 2 no distinguio y por eso se equivoco de escala.
+        for sz in [10u32, 14, 18] {
+            let mut whole = office_rules(&LAYER_PROFILES[0]);
+            whole.subregion_grid = false;
+            whole.num_open_zones = 1;
+            whole.open_zone_size = sz;
+            whole.open_zone_size_x = Some(sz);
+            whole.open_zone_size_z = Some(sz);
+            whole.room_type_weights = (0.0, 1.0, 0.0); // SealedRoom siempre
+            let (c, _) = measure_office_coverage_with(&whole, 256);
+            println!(
+                "ESCALA SOLA {sz}x{sz} SealedRoom: footprint {:.1} % | interior pisable {:.1} %                  | paso(CellType) {:.1} %",
+                c.footprint_pct, c.in_room_pct, c.passage_share_pct
+            );
+        }
+        println!("  (18x18 deja el paso en 0,8 %: eso no es una planta, es el maze desaparecido)");
+        println!();
         let with_fill = office_rules(&LAYER_PROFILES[0]);
         let mut without_fill = with_fill.clone();
         without_fill.subregion_fill_band = false;
@@ -989,8 +1009,8 @@ mod tests {
             old.in_room_pct
         );
         println!(
-            "  de lo pisable, cuanto es pasillo       : {:.1} %",
-            old.corridor_share_pct
+            "  de lo pisable, cuanto es pasillo       : {:.1} % (por rect) / {:.1} % (por CellType)",
+            old.corridor_share_pct, old.passage_share_pct
         );
         println!();
 
@@ -1009,8 +1029,12 @@ mod tests {
             m.walkable_pct
         );
         println!(
-            "  de lo pisable, cuanto es pasillo       : {:.1} %  <- (b) de ADR-086",
+            "  paso por RECT (metrica vieja, miente si la zona cubre el chunk) : {:.1} %",
             m.corridor_share_pct
+        );
+        println!(
+            "  paso por CELLTYPE (la buena)           : {:.1} %  <- (b) de ADR-086",
+            m.passage_share_pct
         );
     }
 
@@ -1043,6 +1067,15 @@ mod tests {
             "pasillo fuera de la linea base MEDIDA de ~36,9 %: {:.1} %",
             m.corridor_share_pct
         );
+        // La métrica BUENA, la que no depende de los rects. Sale más alta que la de rect (36,9 %)
+        // porque cuenta también lo que el maze tiene tallado DENTRO del footprint de una zona:
+        // las entradas de `carve_sealed_room_entrances` y lo que `connect_zone_to_maze` abre.
+        assert!(
+            (35.0..48.0).contains(&m.passage_share_pct),
+            "paso por CellType fuera de la linea base MEDIDA: {:.1} %",
+            m.passage_share_pct
+        );
+
         // La tasa que ADR-086 ataca, hecha número: de los rects de sala, la parte que NO se pisa.
         // Son ~18 puntos del chunk en perímetro y esquinas — es de ahí de donde sale el margen.
         let perimeter_tax = m.footprint_pct - m.in_room_pct;
@@ -1057,24 +1090,41 @@ mod tests {
         in_room_pct: f32,
         walkable_pct: f32,
         corridor_share_pct: f32,
+        /// Lo pisable que es `CellType::Corridor`, sobre lo pisable total. **Es la métrica
+        /// buena**, y la de arriba no lo es: ver `measure_office_coverage_with`.
+        passage_share_pct: f32,
     }
 
-    /// Recorre `chunks` chunks de `office_rules` y saca los cuatro porcentajes. Determinista: la
-    /// muestra es una rejilla fija, no un sorteo.
+    /// Recorre `chunks` chunks de `office_rules` y saca los porcentajes. Determinista: la muestra
+    /// es una rejilla fija, no un sorteo.
     fn measure_office_coverage(chunks: i32) -> (OfficeCoverage, i32) {
         measure_office_coverage_with(&office_rules(&LAYER_PROFILES[0]), chunks)
     }
 
+    /// **Dos definiciones de "pasillo", y la diferencia importa.**
+    ///
+    /// `corridor_share_pct` es la histórica: lo pisable que cae FUERA de todo rect de
+    /// `room_zones`. Sirve mientras las salas sean islas en un maze, y **miente en cuanto una zona
+    /// crece hasta cubrir el chunk** — entonces todo lo pisable cae dentro de algún rect y la cifra
+    /// se va a 0 % aunque el sitio esté lleno de pasillo. Pasó exactamente eso midiendo la planta
+    /// de chunk entero de ADR-086 enmienda 2, y el 0,0 % que salió no significaba nada.
+    ///
+    /// `passage_share_pct` es la buena y no depende de los rects: mira el `CellType`. El corte ya
+    /// existe en el generador y es limpio — `Open` lo pinta el interior de una zona estampada
+    /// (`stamp_open_zone`, `stamp_sealed_room`), `Corridor` lo pintan el maze de Fase 1 y TODA ruta
+    /// de tallado (`carve_aperture`, `connect_zone_to_maze`, `carve_explicit_entrance`). Así que
+    /// una espina de pasillo dentro de una sala cuenta como paso, que es lo que es.
     fn measure_office_coverage_with(rules: &LayerRules, chunks: i32) -> (OfficeCoverage, i32) {
-        use crate::world::grid_gen::{generate_layer, CHUNK_CELLS};
+        use crate::world::grid_gen::{generate_layer, CellType, CHUNK_CELLS};
 
         let side = (chunks as f64).sqrt() as i32;
         let cells_per_chunk = (CHUNK_CELLS * CHUNK_CELLS) as u64;
 
         let (mut footprint, mut walkable, mut in_room, mut total) = (0u64, 0u64, 0u64, 0u64);
+        let mut passage = 0u64;
         for cx in 0..side {
             for cz in 0..side {
-                let out = generate_layer(&rules, 42, (cx, cz), 0, &[]);
+                let out = generate_layer(rules, 42, (cx, cz), 0, &[]);
                 total += cells_per_chunk;
 
                 for z in &out.room_zones {
@@ -1083,10 +1133,14 @@ mod tests {
 
                 for x in 0..CHUNK_CELLS {
                     for z in 0..CHUNK_CELLS {
-                        if !out.grid.get(x, z).is_walkable() {
+                        let cell = out.grid.get(x, z);
+                        if !cell.is_walkable() {
                             continue;
                         }
                         walkable += 1;
+                        if cell.kind() == CellType::Corridor {
+                            passage += 1;
+                        }
                         let inside = out.room_zones.iter().any(|r| {
                             (x as u8) >= r.x0
                                 && (x as u8) < r.x1
@@ -1113,9 +1167,8 @@ mod tests {
                 footprint_pct: pct(footprint, total),
                 in_room_pct: pct(in_room, total),
                 walkable_pct: pct(walkable, total),
-                // "Pasillo" = lo pisable que NO cae en una sala. Incluye la espina del maze y
-                // cualquier hueco entre cuadrantes; es la definición con la que se midió el 54 %.
                 corridor_share_pct: pct(walkable - in_room, walkable),
+                passage_share_pct: pct(passage, walkable),
             },
             side * side,
         )
