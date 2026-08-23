@@ -222,7 +222,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         // suelo y el techo de la sala y todo queda como siempre.
                         AddPrism(p.position, radius, ps,
                             def.StoreyBaseY(p.level, minCeil), def.StoreyCeilingY(p.level, minCeil),
-                            p.yawDegrees);
+                            p.yawDegrees, inner);
                     }
 
             if (def.pillarGrids != null)
@@ -235,7 +235,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     float gy1 = def.StoreyCeilingY(g.level, minCeil);
                     for (int ix = 0; ix < g.countX; ix++)
                         for (int iz = 0; iz < g.countZ; iz++)
-                            AddPrism(g.PositionOf(ix, iz), radius, gs, gy0, gy1, g.yawDegrees);
+                            AddPrism(g.PositionOf(ix, iz), radius, gs, gy0, gy1, g.yawDegrees, inner);
                 }
 
             if (def.blocks != null)
@@ -243,16 +243,28 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     if (b != null && b.sizeX > 0.001f && b.sizeZ > 0.001f && b.height > 0.001f)
                     {
                         float off = def.StoreyBaseY(b.level, minCeil);
+                        var bpoly = BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees);
                         if (b.holes != null && b.holes.Length > 0)
+                        {
+                            // Un bloque CON túneles no se recorta: el recorte lo partiría en
+                            // trozos y los túneles están definidos sobre el bloque entero, así
+                            // que dejarían de casar. Se emite completo y se avisa; sacar un
+                            // bloque perforado fuera de la sala es un error de autorado, no una
+                            // forma de esculpir.
+                            if (!RoomHoleSet.RingInside(bpoly, inner))
+                                AddWarningOnce("Un bloque con túneles se sale de la planta: se "
+                                    + "dibuja entero, atravesando la pared. Métrelo dentro o "
+                                    + "quítale los túneles para que se pueda recortar.");
                             AddBlockWithHoles(b, off);
+                        }
                         else
-                            AddClosedPrism(BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees),
+                            AddClippedPrism(bpoly, inner,
                                 off + b.baseY, off + b.baseY + b.height);
                     }
 
             if (def.stairs != null)
                 foreach (var s in def.stairs)
-                    AddStairs(s, def.StoreyBaseY(s?.level ?? 0, minCeil));
+                    AddStairs(s, def.StoreyBaseY(s?.level ?? 0, minCeil), inner);
 
             // Entreplantas: una losa por nivel, del ancho de la sala entera y con hueco donde
             // una escalera llegue lo bastante alto para atravesarla. Van DESPUÉS de las
@@ -977,7 +989,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>Columna regular de N lados.</summary>
         private static void AddPrism(Vector2 centre, float radius, int sides, float y0, float y1,
-            float yawDegrees = 0f)
+            float yawDegrees = 0f, Vector2[] contour = null)
         {
             float off = yawDegrees * Mathf.Deg2Rad;
             var poly = new Vector2[sides];
@@ -986,7 +998,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 float th = Mathf.PI / sides + i * 2f * Mathf.PI / sides - off;
                 poly[i] = centre + new Vector2(Mathf.Cos(th), Mathf.Sin(th)) * radius;
             }
-            AddClosedPrism(poly, y0, y1);
+            AddClippedPrism(poly, contour, y0, y1);
         }
 
         /// <summary>
@@ -1288,6 +1300,33 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             }
         }
 
+        private static readonly List<List<Vector2>> _clipPieces = new List<List<Vector2>>();
+
+        /// <summary>
+        /// Un prisma cerrado RECORTADO contra la planta: lo que cae fuera de la sala no se emite.
+        ///
+        /// Camino rápido si cabe entero, que es el caso normal: se emite tal cual y la geometría
+        /// no se mueve un micrón respecto a antes de existir esta función. Solo lo que asoma pasa
+        /// por el recorte, y entonces cada trozo sale como su PROPIO sólido cerrado — la suma de
+        /// sólidos cerrados sigue siendo una malla cerrada, y las caras entre trozo y trozo caen
+        /// dentro del volumen, donde no se ven. Es el mismo trato que ya recibían las plataformas.
+        ///
+        /// Lo que NO hace: mover la colisión. De eso se encarga <see cref="RoomColliderBuilder"/>
+        /// con el mismo <see cref="RoomHoleSet.RingInside"/>, porque media columna dibujada contra
+        /// una columna entera que bloquea es la misma clase de incoherencia que los pozos.
+        /// </summary>
+        private static void AddClippedPrism(Vector2[] poly, Vector2[] contour, float y0, float y1)
+        {
+            if (contour == null || RoomHoleSet.RingInside(poly, contour))
+            {
+                AddClosedPrism(poly, y0, y1);
+                return;
+            }
+            if (!PolygonClipper.Clip(poly, contour, _clipPieces)) return;
+            foreach (var piece in _clipPieces)
+                if (piece.Count >= 3) AddClosedPrism(piece.ToArray(), y0, y1);
+        }
+
         private static readonly List<HoleRect> _blockHolesA = new List<HoleRect>();
         private static readonly List<HoleRect> _blockHolesB = new List<HoleRect>();
         private static readonly List<HoleRect> _blockHolesC = new List<HoleRect>();
@@ -1551,7 +1590,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// flotante. Así se sube andando sin lógica ninguna, y la colisión sale exactamente de la
         /// misma forma que se ve.
         /// </summary>
-        private static void AddStairs(RoomDefinition.Stairs s, float baseY)
+        private static void AddStairs(RoomDefinition.Stairs s, float baseY, Vector2[] contour)
         {
             if (s == null || !s.IsValid()) return;
 
@@ -1559,8 +1598,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             for (int i = 0; i < s.steps; i++)
             {
                 Vector2 c = s.position + forward * (s.run * (i + 0.5f));
-                // Cada peldaño macizo desde el suelo de SU piso, no siempre el de la sala.
-                AddClosedPrism(BoxCorners(c, s.width, s.run, s.yawDegrees),
+                // Cada peldaño macizo desde el suelo de SU piso, no siempre el de la sala. Y
+                // recortado: una escalera que sobresale pierde los peldaños de fuera en vez de
+                // atravesar la pared.
+                AddClippedPrism(BoxCorners(c, s.width, s.run, s.yawDegrees), contour,
                     baseY, baseY + s.rise * (i + 1));
             }
         }

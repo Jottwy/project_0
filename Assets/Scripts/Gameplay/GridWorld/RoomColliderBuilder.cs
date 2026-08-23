@@ -98,8 +98,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // Del suelo de SU piso al techo de SU piso, EXACTAMENTE igual que la malla.
                     float py0 = def.StoreyBaseY(p.level, minCeil);
                     float py1 = def.StoreyCeilingY(p.level, minCeil);
-                    boxes.Add(Box(new Vector3(p.position.x, (py0 + py1) * 0.5f, p.position.y),
-                        new Vector3(p.size, py1 - py0, p.size), p.yawDegrees));
+                    AddClippedBox(boxes,
+                        RoomMeshBuilder.BoxCorners(p.position, p.size, p.size, p.yawDegrees),
+                        inner, p.position, new Vector2(p.size, p.size), p.yawDegrees, py0, py1);
                 }
 
             if (def.pillarGrids != null)
@@ -112,8 +113,9 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                         for (int iz = 0; iz < g.countZ; iz++)
                         {
                             Vector2 pos = g.PositionOf(ix, iz);
-                            boxes.Add(Box(new Vector3(pos.x, (gy0 + gy1) * 0.5f, pos.y),
-                                new Vector3(g.size, gy1 - gy0, g.size), g.yawDegrees));
+                            AddClippedBox(boxes,
+                                RoomMeshBuilder.BoxCorners(pos, g.size, g.size, g.yawDegrees),
+                                inner, pos, new Vector2(g.size, g.size), g.yawDegrees, gy0, gy1);
                         }
                 }
 
@@ -121,7 +123,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 foreach (var b in def.blocks)
                 {
                     if (b == null || b.sizeX <= 0.001f || b.sizeZ <= 0.001f || b.height <= 0.001f) continue;
-                    AddBlockBoxes(boxes, b, def.StoreyBaseY(b.level, minCeil));
+                    float boff = def.StoreyBaseY(b.level, minCeil);
+                    // Los bloques CON túneles no se recortan, igual que en la malla: los túneles
+                    // están definidos sobre el bloque entero y partirlo los descoloca. Los demás,
+                    // recortados como todo lo demás.
+                    if (b.holes != null && b.holes.Length > 0)
+                        AddBlockBoxes(boxes, b, boff);
+                    else
+                        AddClippedBox(boxes,
+                            RoomMeshBuilder.BoxCorners(b.position, b.sizeX, b.sizeZ, b.yawDegrees),
+                            inner, b.position, new Vector2(b.sizeX, b.sizeZ), b.yawDegrees,
+                            boff + b.baseY, boff + b.baseY + b.height);
                 }
 
             // Escaleras: una caja por peldaño, calcada de la malla. Es escalonada y no una rampa
@@ -142,8 +154,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     {
                         Vector2 c = s.position + forward * (s.run * (i + 0.5f));
                         float top = s.rise * (i + 1);
-                        boxes.Add(Box(new Vector3(c.x, baseY + top * 0.5f, c.y),
-                            new Vector3(s.width, top, s.run), s.yawDegrees));
+                        AddClippedBox(boxes,
+                            RoomMeshBuilder.BoxCorners(c, s.width, s.run, s.yawDegrees),
+                            inner, c, new Vector2(s.width, s.run), s.yawDegrees,
+                            baseY, baseY + top);
                     }
                 }
 
@@ -300,6 +314,37 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// un poco de suelo de menos en las esquinas de un pozo torcido, y es el lado correcto
         /// por el que equivocarse — sobra hueco, nunca suelo invisible sobre el que caminar.
         /// </summary>
+        /// <summary>
+        /// Una caja RECORTADA contra la planta, con el mismo criterio que
+        /// <c>RoomMeshBuilder.AddClippedPrism</c>: lo que la malla no dibuja tampoco bloquea.
+        ///
+        /// Camino rápido si cabe entera —la caja de siempre, girada, sin mover un micrón—. Si
+        /// asoma, se recorta la huella y sale una caja por trozo, ya SIN giro: un trozo de recorte
+        /// no es un rectángulo girado, así que se toma su envolvente. Eso da algo de colisión de
+        /// más hacia fuera, que cae detrás de la pared, donde no se llega. Es el mismo lado por el
+        /// que este archivo lleva equivocándose a propósito desde siempre.
+        /// </summary>
+        private static void AddClippedBox(List<RoomPool.CollisionBox> boxes, Vector2[] footprint,
+            Vector2[] contour, Vector2 centre, Vector2 size, float yaw, float y0, float y1)
+        {
+            if (RoomHoleSet.RingInside(footprint, contour))
+            {
+                boxes.Add(Box(new Vector3(centre.x, (y0 + y1) * 0.5f, centre.y),
+                    new Vector3(size.x, y1 - y0, size.y), yaw));
+                return;
+            }
+
+            var pieces = new List<List<Vector2>>();
+            if (!PolygonClipper.Clip(footprint, contour, pieces)) return;
+            foreach (var piece in pieces)
+            {
+                if (piece.Count < 3) continue;
+                Bounds pb = XZBounds(piece.ToArray());
+                boxes.Add(Box(new Vector3(pb.center.x, (y0 + y1) * 0.5f, pb.center.z),
+                    new Vector3(pb.size.x, y1 - y0, pb.size.z), 0f));
+            }
+        }
+
         /// <summary>
         /// Los pozos que la MALLA llega a abrir, en cualquier losa. Un pozo que se queda cerrado
         /// no dibuja tubo, así que tampoco puede tener paredes de colisión colgando en el vacío.

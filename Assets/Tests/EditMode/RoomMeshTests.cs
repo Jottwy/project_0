@@ -1639,5 +1639,82 @@ namespace BackroomsSurvival.Tests
                 Assert.IsFalse(Inside(cb, new Vector3(c.x, 3f, c.y)), "a clean stairwell was sealed");
             }
         }
+
+        // ── recorte contra la planta ──────────────────────────────────────────
+        //
+        // Nada de lo que se autora puede salirse de la sala: lo que asoma no se dibuja Y no
+        // bloquea. Antes solo las plataformas se recortaban y todo lo demás atravesaba la pared
+        // tan feliz.
+
+        /// <summary>Una columna fuera de la sala no deja ni malla ni colisión ahí. Y sobre todo:
+        /// la malla sigue CERRADA, que es lo que un recorte mal hecho rompe.</summary>
+        [Test]
+        public void A_pillar_outside_the_plan_is_clipped_away()
+        {
+            var d = Box(6, 5);
+            // 6 tiles son 30 m: la sala llega a x = ±15. A 40 no hay nada.
+            d.pillars = new[] { new RoomDefinition.Pillar { position = new Vector2(40f, 0f), size = 1f, sides = 4 } };
+
+            AssertRoom("pillar outside", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsFalse(Inside(cb, new Vector3(40f, 1f, 0f)), "the out-of-plan pillar still blocks");
+        }
+
+        /// <summary>Una columna DENTRO no se toca: el camino rápido tiene que seguir emitiendo la
+        /// misma geometría de siempre, o el recorte estaría cambiando salas ya validadas.</summary>
+        [Test]
+        public void A_pillar_inside_the_plan_still_blocks()
+        {
+            var d = Box(6, 5);
+            d.pillars = new[] { new RoomDefinition.Pillar { position = new Vector2(2f, 2f), size = 1f, sides = 4 } };
+
+            AssertRoom("pillar inside", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(2f, 1f, 2f)), "the pillar inside the room stopped blocking");
+        }
+
+        /// <summary>Una columna a caballo de la pared: se queda con la mitad de dentro y pierde la
+        /// de fuera. El caso que de verdad ejercita el recorte, no solo el descarte.</summary>
+        [Test]
+        public void A_pillar_straddling_the_wall_keeps_only_the_inside_half()
+        {
+            var d = Box(6, 5);
+            // Pared este en x = 15; una columna de 4 m centrada ahí deja 2 m dentro y 2 fuera.
+            d.pillars = new[] { new RoomDefinition.Pillar { position = new Vector2(15f, 0f), size = 4f, sides = 4 } };
+
+            AssertRoom("pillar straddling", d);
+
+            var cb = RoomColliderBuilder.Build(d);
+            Assert.IsTrue(Inside(cb, new Vector3(14f, 1f, 0f)), "the inside half of the pillar vanished");
+        }
+
+        /// <summary>Una escalera que se sale pierde los peldaños de fuera. Sin AssertRoom por lo
+        /// de siempre: los peldaños se tocan entre sí por construcción.</summary>
+        [Test]
+        public void Stairs_running_out_of_the_room_lose_the_outside_steps()
+        {
+            var d = Box(6, 5); d.heightMeters = 6f;
+            // 6 tiles = 30 m, o sea pared este en x = 15. Con yaw 90 la escalera avanza en +x:
+            // arranca en x = 10 y 40 peldaños de 0,28 la llevan a 21,2 — se sale por seis metros.
+            d.stairs = new[]
+            {
+                new RoomDefinition.Stairs { position = new Vector2(10f, 0f), yawDegrees = 90f,
+                    width = 2f, steps = 40, rise = 0.1f, run = 0.28f },
+            };
+
+            var m = RoomMeshBuilder.Build(d);
+            Assert.IsFalse(RoomMeshBuilder.TriangulationFailed, "clipped stairs: triangulation fell back");
+            Assert.IsTrue(WindingOk(m, out int bw), $"clipped stairs: {bw} triangles face the wrong way");
+
+            var cb = RoomColliderBuilder.Build(d);
+            // El primer peldaño, bien dentro, sigue estando.
+            Assert.IsTrue(Inside(cb, new Vector3(10.14f, 0.05f, 0f)),
+                "the first step, well inside the room, was clipped away");
+            // Y lo que caía al otro lado del muro, no.
+            Assert.IsFalse(Inside(cb, new Vector3(19f, 1f, 0f)),
+                "the steps past the east wall still block outside the room");
+        }
     }
 }

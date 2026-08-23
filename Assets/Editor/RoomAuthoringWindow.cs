@@ -2826,15 +2826,40 @@ namespace BackroomsSurvival.EditorTools
         /// ahora), convertidos a hijos de verdad del prefab con <see cref="RoomMarker"/> y su
         /// etiqueta.
         /// </summary>
+        /// <summary>Cruce por el ruedo. Un punto justo sobre la pared da cara o cruz y da igual:
+        /// ahí el marcador está mal puesto de todas formas.</summary>
+        private static bool PointInContour(Vector2 p, Vector2[] poly)
+        {
+            bool inside = false;
+            for (int i = 0, j = poly.Length - 1; i < poly.Length; j = i++)
+            {
+                Vector2 a = poly[i], b = poly[j];
+                if ((a.y > p.y) != (b.y > p.y)
+                    && p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x)
+                    inside = !inside;
+            }
+            return inside;
+        }
+
         private static void CreateMarkers(Transform parent, RoomDefinition def)
         {
             if (def.markers == null) return;
             // El mismo suelo por piso que usan malla y colliders: un marcador del piso 1 nace
             // sobre su losa, no flotando a su Y "cruda" desde el suelo de la sala.
-            float minCeil = def.MinCeilingOver(def.InnerContour());
+            var contour = def.InnerContour();
+            float minCeil = def.MinCeilingOver(contour);
             foreach (var m in def.markers)
             {
                 if (m == null) continue;
+                // Un marcador es un PUNTO, no una malla: no hay nada que recortar, o está en la
+                // sala o no está. Fuera de la planta nacería detrás de la pared, y lo que cuelgue
+                // de él —un punto de aparición, una luz— quedaría inalcanzable o dentro del muro.
+                if (!PointInContour(m.position, contour))
+                {
+                    Debug.LogWarning($"[RoomAuthoringWindow] El marcador '{m.kind}_{m.tag}' cae "
+                        + "fuera de la planta: no se hornea. Muévelo dentro de la sala.");
+                    continue;
+                }
                 var go = new GameObject($"{m.kind}_{m.tag}");
                 go.transform.SetParent(parent, false);
                 go.transform.localPosition = new Vector3(

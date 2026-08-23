@@ -111,8 +111,13 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
         /// <summary>¿El anillo entero cae dentro del contorno? Vértices dentro Y ninguna arista
         /// cruzando: un rectángulo puede tener las cuatro esquinas dentro de una planta en L y
-        /// aun así atravesar la muesca por el medio.</summary>
-        private static bool RingInside(Vector2[] ring, Vector2[] contour)
+        /// aun así atravesar la muesca por el medio.
+        ///
+        /// Pública porque también es la pregunta que decide si una columna, un bloque o un
+        /// peldaño hay que RECORTARLOS contra la planta o se pueden emitir tal cual. Ese camino
+        /// rápido importa: recortar por sistema partiría en trozos hasta lo que cabe de sobra,
+        /// cambiando geometría que ya está validada.</summary>
+        public static bool RingInside(Vector2[] ring, Vector2[] contour)
         {
             for (int i = 0; i < ring.Length; i++)
                 if (!PointInside(ring[i], contour)) return false;
