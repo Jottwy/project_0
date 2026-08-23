@@ -5322,3 +5322,72 @@ cuánto margen hay —menos del que el cuerpo sugería— y contra qué número 
 
 **Y la regla de "si no sube, se revierte" se mantiene**, ahora contra 31,2 % y 17,8 puntos. Que la
 línea base fuese mejor de lo que creíamos es justamente el motivo de medirla antes y no después.
+
+---
+
+## ADR-086 — Enmienda 2: implementado, medido y REVERTIDO a escala de cuadrante
+
+**Fecha:** 2026-08-23
+**Estado:** Aceptada. La decisión del cuerpo queda **retirada en su alcance actual**. El mecanismo se
+salva y se replantea a otra escala; ver "Lo que sigue vivo".
+
+### Se implementó entero y no cumplió
+
+`RoomType::OfficeFloor` + `stamp_office_floor` + wire 42 + espejo en C#. Compiló, corrió y se midió
+con la misma sonda y la misma muestra que la línea base (256 chunks, seed 42, capa 0):
+
+| | Línea base | OfficeFloor por cuadrante |
+|---|---|---|
+| Interior PISABLE dentro de sala — verif. (a') | 31,2 % | **26,3 %** |
+| Tasa de perímetro — verif. (b') | 17,8 pts | **22,7 pts** |
+| Cuota de pasillo — verif. (b'') | 36,9 % | **41,6 %** |
+
+Las tres van en la dirección contraria. **Se revierte, como el cuerpo del ADR se comprometió a hacer
+en vez de renegociar el número.**
+
+### Por qué falla, que es lo que había que aprender
+
+No es un parámetro mal puesto: **no cabe**. Barrido del paso de tabique (`OFFICE_BAY_CELLS`) sobre la
+misma muestra:
+
+| Paso | Interior pisable |
+|---|---|
+| 2 celdas | 26,3 % |
+| 4 celdas | 28,8 % |
+| 6 celdas | 31,2 % — *igual que la base* |
+| 8 celdas | 31,2 % — *igual que la base* |
+
+A 6 y 8 el número es EXACTAMENTE el de la línea base porque no se coloca ni un tabique: el cuadrante
+más grande de ADR-057 mide 8×8, o sea 6×6 de interior, y la espina se lleva 2 de las 6 filas. Quedan
+dos tiras de 2 celdas. **No hay planta que trazar ahí**, y todo tabique que se meta es pared pura.
+
+Es la misma pared con la que ya chocó ADR-057 al medir la partición 3×3 y dejarla inerte —"más salas
+pequeñas gastan MÁS presupuesto de chunk en pared"—, redescubierta con otro mecanismo. Que dos
+aproximaciones distintas den contra lo mismo es la señal de que el límite es la ESCALA del cuadrante,
+no el diseño de lo que se estampa dentro.
+
+### Lo que sigue vivo: la misma planta, a escala de CHUNK
+
+Medido en la misma sesión, como experimento y sin commitear: una sola planta de 18×18 —el chunk
+entero, sin partición en cuadrantes— da **58,5 % de interior pisable** contra el 31,2 % de la base.
+Casi el doble. La tasa de perímetro sube a 22,5 puntos en absoluto pero cae del 36 % al 28 % del
+footprint: los tabiques compartidos SÍ hacen lo que el cuerpo del ADR argumentaba, en cuanto hay sitio
+donde compartirlos.
+
+**Ese número tiene un asterisco y se dice aquí y no en el resumen:** la cuota de pasillo sale 0,0 %,
+y no es que no haya pasillo — es que con una sola zona cubriendo el chunk, TODO lo pisable cae dentro
+del rect y la métrica deja de distinguir espina de despacho. La espina física sigue ahí. Antes de
+usar el 58,5 % para decidir nada hay que arreglar la métrica para que mida "dentro de una bahía" y no
+"dentro de un rect".
+
+No se toma esa decisión aquí. Cambiar de cuadrante a chunk entero apaga `subregion_grid` para
+`ZONE_OFFICE`, que es la identidad 1 de `office_rules` desde ADR-057, y eso es un cambio de alcance
+que pide su propio ADR y validación humana — no un ajuste de esta enmienda.
+
+### Qué queda en el árbol
+
+- **Nada de la implementación.** `RoomType` vuelve a tres variantes, wire vuelve a 41, `office_rules`
+  vuelve a `(0.2, 0.8, 0.0)`. El mundo queda byte-idéntico a antes de ADR-086.
+- **La sonda SÍ se queda** (commit anterior): `office_room_coverage_report` y su guard
+  `office_baseline_matches_the_numbers_adr_086_argues_from`. Es lo que ha hecho posible matar esto en
+  una tarde en vez de en un playtest, y lo que medirá el siguiente intento.
