@@ -255,6 +255,22 @@ impl World {
             .or_insert_with(|| generator::generate_chunk_layer(seed, pos, layer))
     }
 
+    /// ADR-093 (E4): purga los 9 chunks de la capa 0 de la reserva del Level 4 — las únicas con
+    /// contenido que depende de `grid_gen::level4::current_epoch()` — para que la próxima
+    /// `ensure_chunk_layer` los regenere con el epoch vigente. Precedente: `reset_for_remote_world`
+    /// purga TODO `self.chunks`; esto es la versión quirúrgica, solo la reserva, nunca Level 0.
+    /// Capas ≠ 0 de la reserva no se purgan a propósito: son macizas siempre, epoch o no
+    /// (`level4_layout::generate_region_chunk`), así que quedarse con la vieja no cambia nada.
+    pub fn purge_level4_region_cache(&mut self) {
+        use grid_gen::level4::{REGION_CHUNKS, REGION_ORIGIN_CHUNK};
+        for lx in 0..REGION_CHUNKS {
+            for lz in 0..REGION_CHUNKS {
+                let pos = (REGION_ORIGIN_CHUNK.0 + lx, REGION_ORIGIN_CHUNK.1 + lz);
+                self.chunks.remove(&layered_chunk_pos(pos, 0));
+            }
+        }
+    }
+
     pub fn reset_for_remote_world(&mut self, world_seed: u64, world_revision: u64) {
         self.seed = world_seed;
         self.revision = world_revision;

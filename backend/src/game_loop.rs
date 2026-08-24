@@ -1670,6 +1670,21 @@ pub async fn run(
                 sync::broadcast_stp_harvestables(&mut net).await;
                 // ADR-028 Fase E: full corpse roster (host-authoritative, self-healing).
                 sync::broadcast_corpses(&mut net, &world).await;
+                // ADR-093 (E4): si tocó avanzar epoch, hazlo ANTES del broadcast de abajo —
+                // así el epoch que sale en `Level4State` ya es el vigente, no el que quedó
+                // stale un tick. `current_epoch` es puro (no muta nada); lo único que muta
+                // aquí es el global de `grid_gen::level4` (que las funciones de generación
+                // leen) y la caché de chunks de la región — nunca Level 0.
+                let level4_epoch_now = net.level4.current_epoch(std::time::Instant::now());
+                if level4_epoch_now != net.level4.epoch {
+                    net.level4.epoch = level4_epoch_now;
+                    crate::world::grid_gen::level4::set_current_epoch(level4_epoch_now);
+                    world.purge_level4_region_cache();
+                    info!(
+                        "MPTRACE step=L4 event=level4_epoch_advanced epoch={}",
+                        level4_epoch_now
+                    );
+                }
                 // ADR-093 (E2): Level 4 region state — inerte hasta que E3 dé de alta la
                 // primera puerta, pero real y en verde desde ya.
                 sync::broadcast_level4_state(&mut net).await;

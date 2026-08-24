@@ -20,6 +20,8 @@
 //! Determinismo: `(seed_base, epoch)` ⇒ mismo layout, byte a byte. Sin reloj, sin
 //! entropía externa (mismo contrato que `Level0Builder`).
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -40,8 +42,37 @@ pub const REGION_CELLS: i32 = REGION_CHUNKS * CHUNK_CELLS as i32;
 /// tocar el perímetro, o el mapa cerrado dejaría de serlo.
 const REGION_BORDER_MARGIN: i32 = 2;
 
-/// Epoch vigente en E1: constante 0. Pasa a estado del host (wire) en E2/E4.
+/// Epoch inicial de una sesión — el layout con el que nace la región antes de que nadie la
+/// mute. Ver `current_epoch`/`set_current_epoch` para el valor VIGENTE.
 pub const EPOCH_V1: u32 = 0;
+
+/// ADR-093 (E4): el epoch vigente de ESTE proceso, mutable durante la sesión.
+///
+/// Global deliberado, mismo motivo que `room_manifest::active_manifest`: `generate_region_layer`
+/// (colisión del jugador, render, `ensure_chunk_layer`, una docena de tests) lo necesita, y esos
+/// caminos son funciones puras `(seed, pos, layer) → Chunk` sin hueco para un parámetro de sesión
+/// — añadirlo tocaría cada firma para transportar un solo entero. A diferencia del manifiesto
+/// (`OnceLock`, se fija UNA vez al arrancar), el epoch cambia DURANTE la partida, así que es un
+/// `AtomicU32` normal, escrito solo por `game_loop` cuando `Level4RegionState::current_epoch`
+/// avanza.
+///
+/// Es la ÚNICA excepción en todo `grid_gen` a "generación = función pura de (seed, pos, layer)"
+/// (invariante 4 del doc-comment de este módulo) — deliberada: la región del Level 4 EXISTE para
+/// mutar con el tiempo. Riesgo conocido y aceptado, mismo que el manifiesto: dos tests que fijen
+/// epochs distintos en el MISMO binario de test se pisan si corren en paralelo sobre la reserva;
+/// los tests de este módulo fijan el epoch explícitamente y lo devuelven a 0 al terminar.
+static CURRENT_EPOCH: AtomicU32 = AtomicU32::new(EPOCH_V1);
+
+/// Epoch vigente de este proceso.
+pub fn current_epoch() -> u32 {
+    CURRENT_EPOCH.load(Ordering::Relaxed)
+}
+
+/// Fija el epoch vigente. Host-only en producción (`game_loop`, cuando
+/// `Level4RegionState::current_epoch` avanza); los tests lo usan para fijar un valor conocido.
+pub fn set_current_epoch(epoch: u32) {
+    CURRENT_EPOCH.store(epoch, Ordering::Relaxed);
+}
 
 /// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
 const REGION_CEILING_UNITS: u8 = 2;

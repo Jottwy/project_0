@@ -189,6 +189,40 @@ enmienda al formato de E2 si excede, decidir al medir).
   en dos commits — (a) avance + re-sorteo total, (b) conservación de sala ocupada.
 - ~300 líneas en dos commits.
 
+### Nota de ejecución E4(a) (2026-08-24) — desviaciones reales
+
+- **Epoch NO es un contador que se incrementa a mano: es una función PURA del tiempo transcurrido**
+  desde `opened_at` — `Level4RegionState::current_epoch(now) = elapsed / EPOCH_DURATION` (10 min).
+  Cero estado de "última vez que avanzó"; el tick de game_loop simplemente COMPARA el resultado
+  contra `net.level4.epoch` y actúa si difiere. Más simple que un temporizador propio y comparte
+  ancla (`opened_at`) con la ventana de vuelta sin acoplar sus duraciones.
+- **La "clave de caché con epoch" que E1 dejaba como pregunta abierta SE DESCARTA** a favor de la
+  purga explícita — igual que el propio borrador ya apuntaba como alternativa. Motivo: los chunks
+  de región son solo 9 (3×3), purgarlos es O(9) y cero riesgo de que la clave de `World.chunks`
+  (`LayeredChunkPos`, sin hueco para un epoch) tuviera que cambiar de forma en TODO el codebase.
+- **El epoch vigente vive en un `AtomicU32` de proceso** (`grid_gen::level4::current_epoch/
+  set_current_epoch`), no como parámetro explícito de `generate_chunk_layer`/`chunk_tile_walls`.
+  Mismo motivo y mismo precedente que `room_manifest::active_manifest` (documentado en el propio
+  código): esas funciones las llaman una docena de sitios puros sin hueco para un parámetro de
+  sesión, y añadirlo tocaría cada firma para transportar un entero. Diferencia con el manifiesto:
+  este SÍ cambia durante la partida, así que es un `Atomic`, no un `OnceLock` — es la primera
+  excepción en todo `grid_gen` a "generación = función pura de (seed, pos, layer)", documentada
+  como tal en el propio `static`. Riesgo aceptado y ya probado en 5 corridas seguidas de
+  `cargo test`: contaminación entre tests que fijen epochs distintos en paralelo — mitigado con
+  un guard `Drop` que devuelve el global a 0 en el único test que lo toca.
+- **`World::purge_level4_region_cache()`** es la versión quirúrgica de `reset_for_remote_world`:
+  borra los 9 `(pos, layer=0)` de la reserva de `self.chunks`, nunca Level 0. Capas ≠ 0 de la
+  reserva no se purgan — son macizas siempre, epoch o no.
+- **Cliente C#: CERO cambios en esta mitad.** "Descarta y re-pide los chunks de región" (texto
+  original del borrador) es responsabilidad del streaming de chunks EXISTENTE — Unity ya vuelve a
+  pedir cualquier chunk que su vista necesite; no hace falta lógica nueva mientras nadie esté
+  físicamente parado en la reserva viéndola (que es el estado de todo el mundo hoy, sin puertas
+  descubiertas en juego). Si el playtest real (pendiente desde E3) revela que el chunk YA
+  cargado en Unity no se refresca solo al cambiar el epoch, esa es la enmienda concreta a hacer
+  entonces — no antes, sin evidencia.
+- **(b) — conservación de sala ocupada: NO hecha en este commit**, tal como preveía el propio
+  párrafo de arriba. Sigue pendiente como una etapa separada.
+
 ## E5 — Reglas de zona (backend + C#)
 
 - Construcción denegada: guarda por región en `process_stp_place` (`game_loop.rs:5021`) — servidor

@@ -29,7 +29,10 @@ pub fn generate_region_chunk(
     local: (i32, i32),
 ) -> Chunk {
     let grid = LAYOUT_GRID_SIZE as usize;
-    let layout_l4 = level4::generate(world_seed, level4::EPOCH_V1);
+    // ADR-093 E4: epoch VIGENTE, no la constante de sesión — el llamador (`World`, vía
+    // `purge_level4_region_cache`) ya se aseguró de que este chunk se pida de nuevo cuando el
+    // epoch cambia, así que aquí toca leer el mismo global que la rejilla fina.
+    let layout_l4 = level4::generate(world_seed, level4::current_epoch());
 
     // Tile de 5 m (tx,tz) del chunk local → celda fina (2tx, 2tz) en coordenadas de
     // REGIÓN. Con paridad par, esa celda representa el tile entero.
@@ -262,6 +265,13 @@ pub const WINDOW_DURATION: Duration = Duration::from_secs(5 * 60);
 /// Metros de deriva por minuto de overstay MÁS ALLÁ de `WINDOW_DURATION`. Ver ADR-093 punto 4.
 pub const DRIFT_RADIUS_PER_MINUTE_M: f32 = 100.0;
 
+/// ADR-093 (E4): duración de un epoch — cuánto tiempo pasa entre re-sorteos de la región. Reloj
+/// INDEPENDIENTE de `WINDOW_DURATION` (la de la puerta de vuelta), aunque los dos anclan al
+/// mismo instante de apertura (`opened_at`): la ventana de vuelta y la mutación del interior son
+/// dos preocupaciones distintas que solo comparten el "cuándo empezó todo esto". Valor de
+/// arranque para E6 (tuning); tocarlo no cambia forma de wire ni de protocolo.
+pub const EPOCH_DURATION: Duration = Duration::from_secs(10 * 60);
+
 /// Sal propia para el sorteo de rumbo — distinta de `LEVEL4_SALT` del generador de grafo para
 /// que un cambio en uno no arrastre al otro (son sorteos independientes: layout vs. deriva).
 const DRIFT_SALT: u64 = 0xBACB_0004_0FF1_D817;
@@ -384,6 +394,20 @@ impl Level4RegionState {
             requester_pos
         } else {
             self.process_return(requester_pos, now)
+        }
+    }
+
+    /// ADR-093 (E4): epoch vigente dado el tiempo transcurrido desde que se abrió la ventana.
+    /// Sin ventana abierta, epoch 0 — la región nunca ha mutado porque nadie ha entrado. Pura:
+    /// el llamador (`game_loop`) es quien decide qué hacer cuando el resultado cambia (fijar
+    /// `grid_gen::level4::set_current_epoch`, purgar la caché) — esta función solo responde
+    /// "qué epoch tocaría ahora mismo".
+    pub fn current_epoch(&self, now: Instant) -> u32 {
+        match self.opened_at {
+            Some(opened) => (now.duration_since(opened).as_secs() / EPOCH_DURATION.as_secs())
+                .try_into()
+                .unwrap_or(u32::MAX),
+            None => 0,
         }
     }
 }
@@ -519,5 +543,37 @@ mod region_state_tests {
         let mut state = Level4RegionState::default();
         state.refresh_return_dest(Instant::now());
         assert_eq!(state.return_dest, state.entry_point);
+    }
+
+    // ─── E4 ───
+
+    #[test]
+    fn epoch_is_zero_before_the_window_opens() {
+        let state = Level4RegionState::default();
+        assert_eq!(state.current_epoch(Instant::now()), 0);
+    }
+
+    #[test]
+    fn epoch_advances_once_per_epoch_duration_since_open() {
+        let now = Instant::now();
+        let mut state = Level4RegionState::default();
+        state.process_entry(42, [0.0; 3], now);
+
+        assert_eq!(state.current_epoch(now), 0);
+        assert_eq!(
+            state.current_epoch(now + EPOCH_DURATION - Duration::from_secs(1)),
+            0,
+            "un segundo antes de vencer el epoch, sigue en 0"
+        );
+        assert_eq!(
+            state.current_epoch(now + EPOCH_DURATION),
+            1,
+            "al vencer EXACTO, avanza a 1"
+        );
+        assert_eq!(
+            state.current_epoch(now + EPOCH_DURATION * 3 + Duration::from_secs(1)),
+            3,
+            "3 epochs y pico -> 3, no 4: el pico no cuenta hasta completar el siguiente"
+        );
     }
 }

@@ -48,9 +48,11 @@ pub fn generate_chunk_layer(
     // render (`chunk_tile_walls`), colisión del robapieles (`GridGenChunkCache`) y nav
     // salen todos de esta función, y es lo único que garantiza que vean LA MISMA región.
     if let Some(local) = super::level4::region_chunk_local(chunk_coord) {
+        // ADR-093 E4: `current_epoch()` — no `EPOCH_V1` — para que un chunk recién purgado (tras
+        // un avance de epoch) rasterice la mutación vigente y no la de sesión.
         return super::level4::generate_region_layer(
             world_seed,
-            super::level4::EPOCH_V1,
+            super::level4::current_epoch(),
             local,
             layer_index,
         );

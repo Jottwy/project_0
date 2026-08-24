@@ -824,3 +824,66 @@ fn world_graph_has_valid_level0_region_graph() {
     assert!(wg.level0().is_some());
     assert_eq!(wg.level0().unwrap().region_count(), 1);
 }
+
+/// ADR-093 (E4): `purge_level4_region_cache` es lo único que hace que un avance de epoch se
+/// note — sin ella, `ensure_chunk_layer` seguiría devolviendo el chunk cacheado del epoch
+/// viejo para siempre. `CURRENT_EPOCH` es un global de proceso (ver doc de
+/// `grid_gen::level4::current_epoch`): este test lo deja en 0 al salir, panic o no, para no
+/// contaminar tests que corran después en el mismo binario.
+#[test]
+fn purging_the_region_cache_makes_a_stale_chunk_regenerate_at_the_new_epoch() {
+    use grid_gen::level4::{region_chunk_local, set_current_epoch, REGION_ORIGIN_CHUNK};
+
+    struct ResetEpochOnDrop;
+    impl Drop for ResetEpochOnDrop {
+        fn drop(&mut self) {
+            set_current_epoch(grid_gen::level4::EPOCH_V1);
+        }
+    }
+    let _guard = ResetEpochOnDrop;
+
+    let seed = 42u64;
+    let mut world = World::new(seed);
+    let pos = REGION_ORIGIN_CHUNK;
+    let local = region_chunk_local(pos).expect("origen de la reserva debe mapear a local (0,0)");
+
+    set_current_epoch(0);
+    let cached_epoch0 = world.ensure_chunk_layer(pos, 0).layout.clone();
+    let expected_epoch0 = level4_layout::generate_region_chunk(seed, pos, 0, local).layout;
+    assert_eq!(
+        cached_epoch0, expected_epoch0,
+        "sanity: epoch 0 coincide antes de avanzar nada"
+    );
+
+    // Avanza el epoch SIN purgar: la caché debe seguir sirviendo el layout viejo — es la
+    // staleness que `purge_level4_region_cache` existe para cerrar.
+    set_current_epoch(1);
+    let still_cached = world.ensure_chunk_layer(pos, 0).layout.clone();
+    assert_eq!(
+        still_cached, expected_epoch0,
+        "sin purgar, la caché debe seguir devolviendo el layout del epoch anterior"
+    );
+
+    world.purge_level4_region_cache();
+    let after_purge = world.ensure_chunk_layer(pos, 0).layout.clone();
+    let expected_epoch1 = level4_layout::generate_region_chunk(seed, pos, 0, local).layout;
+    assert_eq!(
+        after_purge, expected_epoch1,
+        "tras purgar, el chunk regenerado debe reflejar el epoch VIGENTE (1)"
+    );
+}
+
+/// La purga es quirúrgica: un chunk de Level 0 en el mismo índice local (0,0) nunca se toca.
+#[test]
+fn purging_the_region_cache_never_touches_level_0() {
+    let mut world = World::new(42);
+    world.ensure_chunk_layer((0, 0), 0);
+    assert!(world.chunks.contains_key(&layered_chunk_pos((0, 0), 0)));
+
+    world.purge_level4_region_cache();
+
+    assert!(
+        world.chunks.contains_key(&layered_chunk_pos((0, 0), 0)),
+        "la purga de la reserva del Level 4 no debe tocar Level 0"
+    );
+}
