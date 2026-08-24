@@ -9,6 +9,7 @@ pub const LEVEL_0: LevelId = 0;
 pub const LEVEL_1: LevelId = 1;
 pub const LEVEL_2: LevelId = 2;
 pub const LEVEL_3: LevelId = 3;
+pub const LEVEL_4: LevelId = 4;
 pub const LEVEL_9: LevelId = 9;
 
 pub const GROUND_LAYER: ChunkLayer = 0;

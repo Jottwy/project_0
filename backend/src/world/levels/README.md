@@ -128,6 +128,18 @@ Metadata only. No behavior. Default: `"Level 0 - The Lobby"`, risk=1, verticalit
 
 ---
 
+## `level_4/` — Abandoned Offices (ADR-093, in progress)
+
+Bounded incursion region. Only stage E0 exists so far (`docs/LEVEL4-ROADMAP.md`):
+`graph.rs` generates the abstract layout — rooms + L-corridors, fully connected by
+construction, deterministic from `(seed_base, epoch)`, all coordinates/sizes EVEN in
+2.5 m cells (5 m collision-grid parity, ADR-083 amendment 3 failure mode). Nothing
+calls it from world generation yet; it ships inert. Room 0 always carries
+`is_return_room` (the E3 return door). Salt: `world_seed ^ 0xBACB_0004_0FF1_CE00` —
+same must-not-touch rule as `Level0Builder`'s salt.
+
+---
+
 ## Adding a New Level
 
 When a `level_1/` (or any new level) is added:
