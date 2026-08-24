@@ -1,3 +1,4 @@
+using BackroomsSurvival.Net; // LocalPlayerLocator
 using PolymindGames;
 using PolymindGames.MovementSystem;
 using UnityEngine;
