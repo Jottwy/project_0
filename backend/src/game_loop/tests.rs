@@ -8293,6 +8293,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
         }],
         giggle_timer: 999.0,
         giggle_round: 0,
+        screamer_cooldown: 0.0,
     });
 
     for _ in 0..200 {
@@ -8348,6 +8349,7 @@ async fn four_member_pack(
         members,
         giggle_timer: 999.0,
         giggle_round: 0,
+        screamer_cooldown: 0.0,
     }
 }
 
@@ -8761,13 +8763,13 @@ async fn the_press_role_knocks_down_a_surrounded_player() {
         .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
         .to_vec();
 
-    assert_eq!(attacks.len(), 1, "expected one knockdown, got {attacks:?}");
-    assert_eq!(attacks[0].victim, victim);
-    assert!(
-        matches!(attacks[0].kind, PhantomAttackKind::Knockdown(secs, _, _) if secs > 0.0),
-        "the Press blow must be a Knockdown, got {:?}",
-        attacks[0].kind
-    );
+    // The other members shove in the same tick (Enmienda 3), so look for the knockdown rather
+    // than demanding it be the only thing that happened.
+    let knockdown = attacks
+        .iter()
+        .find(|a| matches!(a.kind, PhantomAttackKind::Knockdown(secs, _, _) if secs > 0.0))
+        .unwrap_or_else(|| panic!("no knockdown among {attacks:?}"));
+    assert_eq!(knockdown.victim, victim);
     // "Grito ... al cargar": the pay-off moment is the whole pack, not the one that connected.
     // Read off the SEALED fields, not `pending_vocal` — `step` ends in `seal_vocals`, which takes
     // the staged kind and folds it into the counter the wire actually carries.
@@ -8791,7 +8793,15 @@ async fn a_non_press_member_in_reach_does_not_strike() {
         .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
         .to_vec();
 
-    assert!(attacks.is_empty(), "a non-Press member swung: {attacks:?}");
+    // Since Enmienda 3 a non-Press member DOES act at this range — it shoves. What it must never
+    // do is knock you down: that blow belongs to one role, and four children each taking control
+    // away from you would be the stun-lock the long recovery exists to prevent.
+    assert!(
+        !attacks
+            .iter()
+            .any(|a| matches!(a.kind, PhantomAttackKind::Knockdown(..))),
+        "a non-Press member knocked the player down: {attacks:?}"
+    );
 }
 
 /// A lone `Press` — nobody else near the target, and the player looking straight at it — does
@@ -8869,8 +8879,10 @@ async fn a_closed_cerco_breaks_the_freeze_but_an_open_one_does_not() {
         !closed.packs[0].frozen,
         "a CLOSED cerco must not leave the pack frozen"
     );
-    assert_eq!(attacks.len(), 1, "the closed cerco never cashed in");
-    assert_eq!(attacks[0].victim, victim);
+    assert!(
+        attacks.iter().any(|a| a.victim == victim),
+        "the closed cerco never cashed in: {attacks:?}"
+    );
 }
 
 /// The host's own yaw reaches the pack. E2b hard-coded 0.0 with a TODO, which meant the freeze —
@@ -8906,6 +8918,97 @@ async fn the_freeze_reads_the_hosts_real_yaw() {
     assert!(
         !driver.packs[0].frozen,
         "the pack stayed frozen after the host turned around"
+    );
+}
+
+/// Enmienda 3 — EL EMPUJÓN. A non-`Press` member in range shoves: an impulse, no damage, no
+/// knockdown. The harassment layer that makes a cerco feel like a cerco before it turns lethal.
+#[tokio::test]
+async fn a_non_press_child_shoves_instead_of_striking() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    // Yaw 90 = facing the child at +X, so the screamer (which needs your back turned) cannot be
+    // what fires here.
+    let (mut driver, victim, _target) = pack_pressing(&mut net, 90.0, 1.0).await;
+    driver.packs[0].members[0].role = Some(ChildRole::Flank);
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    // Every non-Press member in range shoves — being jostled from several sides at once IS the
+    // harassment layer. What each one must NOT be is an empty push: the first version normalised
+    // by a clamped distance, so the three members standing ON the target emitted Knockback(0,0),
+    // spending their cooldown to move nobody.
+    assert!(!attacks.is_empty(), "nobody shoved");
+    for a in &attacks {
+        assert_eq!(a.victim, victim);
+        match a.kind {
+            PhantomAttackKind::Knockback(dx, dz) => assert!(
+                dx.abs() > 0.001 || dz.abs() > 0.001,
+                "a shove landed with no impulse at all: {:?}",
+                a.kind
+            ),
+            other => panic!("a shove must be a Knockback, got {other:?}"),
+        }
+    }
+}
+
+/// Enmienda 3 — EL SCREAMER. Back turned + ring shut + point blank: a hard shove AND 10 damage,
+/// delivered as the two attack kinds the client has handled since ADR-047.
+#[tokio::test]
+async fn a_screamer_shoves_hard_and_hurts() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    // Yaw 270 = facing -X, i.e. away from the children standing at +X.
+    let (mut driver, victim, _target) = pack_pressing(&mut net, 270.0, 1.0).await;
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    let shove = attacks
+        .iter()
+        .find(|a| matches!(a.kind, PhantomAttackKind::Knockback(_, _)));
+    let hit = attacks
+        .iter()
+        .find(|a| matches!(a.kind, PhantomAttackKind::Hit(_)));
+    assert!(shove.is_some(), "the screamer did not shove: {attacks:?}");
+    assert!(hit.is_some(), "the screamer did no damage: {attacks:?}");
+    assert_eq!(shove.unwrap().victim, victim);
+    assert!(
+        matches!(hit.unwrap().kind, PhantomAttackKind::Hit(d) if (d - 10.0).abs() < 0.01),
+        "the screamer should hit for 10, got {:?}",
+        hit.unwrap().kind
+    );
+    assert!(
+        driver.packs[0].screamer_cooldown > 0.0,
+        "the pack-wide screamer cooldown was not armed"
+    );
+}
+
+/// A scare that repeats is not a scare: the cooldown is PACK-wide, so five children cannot take
+/// turns screaming at you.
+#[tokio::test]
+async fn only_one_screamer_lands_per_pack_cooldown() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, _victim, _target) = pack_pressing(&mut net, 270.0, 1.0).await;
+
+    let mut screamers = 0;
+    for _ in 0..60 {
+        // Clear every member's own cooldown each tick, so ONLY the pack-wide gate can stop them.
+        for m in driver.packs[0].members.iter_mut() {
+            m.strike_recover = 0.0;
+        }
+        let hits = driver
+            .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+            .iter()
+            .filter(|a| matches!(a.kind, PhantomAttackKind::Hit(_)))
+            .count();
+        screamers += hits;
+    }
+
+    assert_eq!(
+        screamers, 1,
+        "six seconds of point-blank contact produced {screamers} screamers; the pack cooldown is not holding"
     );
 }
 

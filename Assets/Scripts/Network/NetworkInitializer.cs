@@ -799,13 +799,33 @@ namespace BackroomsSurvival.Net
             // Todo lo demás es ruido de alta frecuencia. Las líneas SIN nivel reconocible
             // (arranque, panics sin formato) sí pasan: son pocas y son las que explican un
             // fallo de lanzamiento.
-            if (!VerboseBackendLog &&
+            if (!VerboseBackendLog && !IsRareEventTrace(line) &&
                 (ContainsLogLevel(line, "INFO") ||
                  ContainsLogLevel(line, "DEBUG") ||
                  ContainsLogLevel(line, "TRACE")))
                 return;
 
             Debug.Log($"[Backend] {line}");
+        }
+
+        /// <summary>
+        /// Trazas que pasan el filtro de INFO aunque `VerboseBackendLog` esté apagado, porque son
+        /// por EVENTO y no por tick.
+        ///
+        /// El motivo de apagar el espejo (8 GB de Editor.log el 2026-08-13) fue el MPTRACE del
+        /// robapieles, que emite por tick Y por mover — cientos de líneas por segundo. Los eventos
+        /// de faceling son de otra naturaleza: cerco abierto, pack congelado, golpe, robo, muerte.
+        /// En una sesión entera son decenas, no millones, y sin ellos el comportamiento de las dos
+        /// especies es INDIAGNOSTICABLE a posteriori: el `Builds/PlaytestLogs/` que este comentario
+        /// prometía no lo escribe nadie (comprobado 2026-08-24), así que la consola de Unity es de
+        /// hecho el único sitio donde queda rastro.
+        ///
+        /// Deliberadamente NO incluye `step=FL_POP`: el reconcile de población sí es periódico.
+        /// </summary>
+        private static bool IsRareEventTrace(string line)
+        {
+            return line.IndexOf("step=FL_", StringComparison.Ordinal) >= 0
+                && line.IndexOf("step=FL_POP", StringComparison.Ordinal) < 0;
         }
 
         private static bool ContainsLogLevel(string line, string level)

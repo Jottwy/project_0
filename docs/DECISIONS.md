@@ -6035,3 +6035,54 @@ La cadencia de pisada sí es definitiva aunque los clips no lo sean: zancada 0.4
 0.85/1.35 del prefab adulto, y alcance 15 m frente a 22. Los clips siguen siendo los de superficie de
 STP —ese camino ya funciona— y lo que convierte el sonido en el de un crío es la FRECUENCIA de los
 pasos, no su timbre.
+
+### Enmienda 3 a ADR-094 (2026-08-24) — el acoso: empujones, susurro y screamer
+
+El punto 4 le dio al pack UNA nota: el knockdown del `Press`. En juego eso deja un minuto entero en
+el que el cerco se cierra y no pasa nada. Tres capas nuevas, pedidas por Joel tras jugarlo, todas
+por debajo del knockdown en intensidad y todas antes que él en el orden de comprobación.
+
+**D6 — EL EMPUJÓN.** Cualquier miembro que NO sea el `Press`, a 2.2 m, empuja: impulso, cero daño,
+cero estado. Es la capa de "te molestan" — el pack se vuelve un estorbo físico mucho antes de ser
+letal, y que te zarandeen desde tres lados mientras intentas apuntar es lo que un cerco tiene que
+SENTIRSE. Fuerza 1.6 frente a los 3.0 de `PHANTOM_KNOCKBACK_FORCE`: en cuanto un empujón te lanza
+al otro lado de la sala deja de ser acoso y se convierte en el knockdown, que ya existe y es de
+otro rol. Recuperación 2.5 s por miembro: con cuatro o cinco los empujones se solapan en acoso
+continuo, que es el objetivo, mientras cada niño por separado sigue leyéndose como ocasional.
+
+Reutiliza `PhantomAttackKind::Knockback` (kind 2), que existe desde ADR-047 y el cliente ya aplica
+por `SetVelocity`: cero wire nuevo, cero cliente nuevo.
+
+**D7 — EL SCREAMER.** Uno solo, pegado a tu espalda, gritando a bocajarro: empujón fuerte (5.0) más
+10 de daño real. Con puertas duras a propósito, porque un susto que se repite deja de serlo — exige
+TODAS a la vez: de espaldas, cerco cerrado, a 2 m, y el pack fuera de enfriamiento. El enfriamiento
+es **del pack, no del miembro**: con cinco niños uno por miembro solo significaría que se turnan, y
+el sustcaso pasaría de momento a mecánica. 25 s.
+
+Se entrega como DOS ataques en el mismo tick (`Knockback` + `Hit`) y no como un kind nuevo:
+`PhantomAttackKind` no tiene ninguna variante que lleve daño E impulso, e inventarla obligaría a un
+kind de wire nuevo más su manejador cliente para una combinación que el cliente ya sabe expresar
+como dos eventos que trata desde ADR-047.
+
+**D8 — EL SUSURRO (`vocal_kind` 3).** La risita es lo que oyes mientras TODAVÍA VIENEN; en cuanto el
+anillo se cierra, el mismo latido cambia de banco y pasa a susurro. Mismo contador, mismo compás,
+mismo reparto de retardos — solo cambia el banco. Eso es lo que hace que la transición se lea como
+una sola cosa acercándose y no como dos sonidos distintos: el ritmo que llevas un minuto oyendo no
+se rompe, baja a un susurro al lado de tu oreja. El banco se elige cuando el latido DISPARA, no
+cuando se encoló, para que un anillo que se cierra durante el retardo convierta esa risita ya en
+cola en el susurro que debía ser.
+
+**Un bug que solo apareció al escribir el test.** Normalizar el impulso dividiendo por una distancia
+clampeada a 0.0001 no explota: hace algo peor y más callado. Devuelve (0,0), así que un niño
+plantado ENCIMA del jugador emitía un empujón sin impulso — gastaba su enfriamiento, dejaba su
+línea de log y no movía a nadie. El test lo destapó con tres a la vez. `push_direction` cae al
+`heading` del propio niño cuando los dos están en el mismo punto, que es justo cuando un empujón
+debería ser más fuerte. Los tres impulsos (empujón, screamer y knockdown) pasan ya por ahí.
+
+**Diagnóstico, aparte pero necesario.** El espejo de líneas INFO del backend en la consola de Unity
+está apagado desde el incidente del 2026-08-13 (Editor.log de 8 GB), y el `Builds/PlaytestLogs/` que
+ese comentario ofrecía como alternativa NO LO ESCRIBE NADIE (comprobado hoy). Resultado: el
+comportamiento de las dos especies era indiagnosticable a posteriori — cero trazas de una sesión
+entera. Las líneas `step=FL_*` pasan ahora el filtro por ser por EVENTO (cerco, congelación, golpe,
+robo, muerte: decenas por sesión) y no por tick como el MPTRACE del robapieles que causó aquello.
+`step=FL_POP` queda excluido: el reconcile de población sí es periódico.

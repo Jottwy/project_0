@@ -750,6 +750,10 @@ const FACELING_CHILD_VOCAL_SCREAM: u8 = 1;
 /// `ChildState::Flee`. Client bank ships wired but unauthored, same convention as `phantom.rs`'s
 /// own silent banks.
 const FACELING_CHILD_VOCAL_CALL: u8 = 2;
+/// Enmienda 3 — the close-quarters whisper/chant. Takes over from the giggle once the ring is
+/// shut: the giggles are what you hear while they are still coming, this is what you hear when
+/// they are already on you. Different sound, different distance, same counter.
+const FACELING_CHILD_VOCAL_WHISPER: u8 = 3;
 
 /// How often the pack schedules one giggle "beat" (`ChildDriver::update_giggles_for_pack`).
 const FACELING_CHILD_GIGGLE_INTERVAL_S: f32 = 5.0;
@@ -785,6 +789,32 @@ const FACELING_CHILD_STRIKE_RECOVERY: f32 = 6.0;
 /// knockdown so the client's existing handler reads them the same way.
 const FACELING_CHILD_KNOCKDOWN_SECONDS: f32 = 2.0;
 const FACELING_CHILD_KNOCKDOWN_FORCE: f32 = 6.0;
+
+/// Enmienda 3 — EL EMPUJÓN. Any child that is not the `Press` shoves you when it gets this close:
+/// no damage, no knockdown, just a push. It is the "te molestan" layer — the pack becomes a
+/// physical nuisance long before it becomes lethal, and being jostled from three sides while you
+/// try to aim is what the cerco should FEEL like.
+const FACELING_CHILD_SHOVE_REACH: f32 = 2.2;
+/// Per-member. Short on purpose: with four or five of them the shoves overlap into constant
+/// harassment, which is the point, while any ONE child still reads as occasional.
+const FACELING_CHILD_SHOVE_RECOVERY: f32 = 2.5;
+/// Deliberately mild. `PHANTOM_KNOCKBACK_FORCE` is 3.0 for a grown creature; this has to nudge
+/// and annoy, never launch — the moment a shove throws you across the room it stops being
+/// harassment and becomes the knockdown, which already exists and belongs to the `Press`.
+const FACELING_CHILD_SHOVE_FORCE: f32 = 1.6;
+
+/// Enmienda 3 — EL SCREAMER. The jump-scare: one child, right behind you, screaming point-blank
+/// with a hard shove and real damage.
+///
+/// Gated hard, because a scare that repeats is not a scare. It needs ALL of: your back turned, a
+/// closed cerco, point-blank range, and a pack-wide cooldown — not per member, or five children
+/// would take turns and it would become a mechanic instead of a moment.
+const FACELING_CHILD_SCREAMER_REACH: f32 = 2.0;
+const FACELING_CHILD_SCREAMER_DAMAGE: f32 = 10.0;
+const FACELING_CHILD_SCREAMER_FORCE: f32 = 5.0;
+/// Pack-wide, and long. This is the beat the whole encounter builds toward; twice in ten seconds
+/// would spend it.
+const FACELING_CHILD_SCREAMER_COOLDOWN_S: f32 = 25.0;
 
 /// How near the target a member has to be to count toward a CLOSED cerco. Tighter than
 /// `FACELING_CHILD_CERCO_BAND * 1.5` would be: this radius is what switches the freeze off (see
@@ -928,6 +958,10 @@ pub(super) struct ChildPack {
     /// Bumped every beat, folded into each member's `chorus_delay_fraction` key so two beats
     /// never reuse the same per-member offset (same reason `phantom.rs` keys on `vocal_seq`).
     pub(super) giggle_round: u32,
+    /// Enmienda 3 — seconds until this pack may land another screamer. PACK-level, not per
+    /// member: with five children a per-member cooldown would just mean they queue up and the
+    /// jump-scare becomes a rotation.
+    pub(super) screamer_cooldown: f32,
 }
 
 pub(super) struct ChildDriver {
@@ -988,6 +1022,26 @@ fn child_can_see(from: Vec3, heading: f32, target: Vec3) -> bool {
     let len = len_sq.sqrt();
     let dot = (heading.sin() * dx + heading.cos() * dz) / len;
     dot >= FACELING_CHILD_DETECT_HALF_FOV_DEG.to_radians().cos()
+}
+
+/// Unit push direction from `from` toward `tpos`, falling back to `heading` when the two are
+/// effectively on the same spot.
+///
+/// The fallback is the whole reason this exists. Normalising by a distance clamped to 0.0001 does
+/// not blow up, it does something worse and quieter: it returns (0,0), so a child standing ON the
+/// player emits a shove with NO impulse — it spends its cooldown, logs a shove, and moves nobody.
+/// Caught by the shove test, which produced three of those from the three members piled on the
+/// target. Point-blank is exactly when a push should be hardest, so it gets the direction the
+/// child is facing instead.
+fn push_direction(from: Vec3, tpos: Vec3, heading: f32) -> (f32, f32) {
+    let dx = tpos.x - from.x;
+    let dz = tpos.z - from.z;
+    let len_sq = dx * dx + dz * dz;
+    if len_sq < 1e-4 {
+        return (heading.sin(), heading.cos());
+    }
+    let len = len_sq.sqrt();
+    (dx / len, dz / len)
 }
 
 /// Which gear this child is in — the whole "corren cuando estás de espaldas" mechanic, in one
@@ -1233,6 +1287,7 @@ impl ChildDriver {
                         members,
                         giggle_timer: FACELING_CHILD_GIGGLE_INTERVAL_S,
                         giggle_round: 0,
+                        screamer_cooldown: 0.0,
                     });
                     if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
                         return;
@@ -1509,6 +1564,8 @@ impl ChildDriver {
         if self.packs[pi].state == ChildState::Flee {
             return;
         }
+        self.packs[pi].screamer_cooldown = (self.packs[pi].screamer_cooldown - dt).max(0.0);
+
         self.packs[pi].giggle_timer -= dt;
         if self.packs[pi].giggle_timer > 0.0 {
             return;
@@ -1547,6 +1604,42 @@ impl ChildDriver {
             let key =
                 ((cx as u64) << 40) ^ ((cz as u64) << 16) ^ ((mi as u64) << 8) ^ (round as u64);
             m.vocal_delay = Some(chorus_delay_fraction(key) * spread);
+        }
+    }
+
+    /// Enmienda 3 — which voice this beat is. The giggle is what you hear while they are STILL
+    /// COMING; once the ring is shut and they are on top of you it turns into the whisper.
+    ///
+    /// Same counter, same beat, same spread — only the bank changes. That is what makes the
+    /// transition land as one continuous thing getting closer rather than two separate sounds:
+    /// the rhythm you have been listening to for the last minute does not break, it just drops to
+    /// a whisper next to your ear.
+    fn pack_beat_vocal(
+        &self,
+        pi: usize,
+        net: &NetworkManager,
+        players: &[(PeerId, Vec3, f32)],
+    ) -> u8 {
+        if self.packs[pi].state != ChildState::PackStalk {
+            return FACELING_CHILD_VOCAL_GIGGLE;
+        }
+        let Some(target) = self.packs[pi].mind.target.and_then(|tid| {
+            players
+                .iter()
+                .find(|&&(pid, _, _)| pid == tid)
+                .map(|&(_, ppos, _)| ppos)
+        }) else {
+            return FACELING_CHILD_VOCAL_GIGGLE;
+        };
+        let member_positions: Vec<Vec3> = self.packs[pi]
+            .members
+            .iter()
+            .filter_map(|m| net.peers.get(&m.id))
+            .map(|p| Vec3::from_array(p.position))
+            .collect();
+        match cerco_is_closed(&member_positions, target) {
+            true => FACELING_CHILD_VOCAL_WHISPER,
+            false => FACELING_CHILD_VOCAL_GIGGLE,
         }
     }
 
@@ -1790,8 +1883,12 @@ impl ChildDriver {
         if let Some(left) = self.packs[pi].members[mi].vocal_delay {
             let left = left - dt;
             if left <= 0.0 {
+                // Enmienda 3: the bank is chosen HERE, when the beat actually fires, not when it
+                // was queued — so a ring that shuts during the delay turns that queued giggle into
+                // the whisper it should have been.
+                let kind = self.pack_beat_vocal(pi, net, players);
                 self.packs[pi].members[mi].vocal_delay = None;
-                self.packs[pi].members[mi].pending_vocal = Some(FACELING_CHILD_VOCAL_GIGGLE);
+                self.packs[pi].members[mi].pending_vocal = Some(kind);
             } else {
                 self.packs[pi].members[mi].vocal_delay = Some(left);
             }
@@ -1858,6 +1955,121 @@ impl ChildDriver {
                 };
                 let role = self.packs[pi].members[mi].role;
 
+                // Enmienda 3 — THE SCREAMER and THE SHOVE, both checked before the `Press` blow
+                // because both are cheaper events that should get their chance first: a pack that
+                // only ever knocks you down has one note, and these two are what fill the minute
+                // before it.
+                //
+                // Resolved against the target's LIVE pose, same rule as everything else that
+                // touches the player (never `last_known_pos`).
+                let live_target = self.packs[pi].mind.target.and_then(|tid| {
+                    players
+                        .iter()
+                        .find(|&&(pid, _, _)| pid == tid)
+                        .map(|&(pid, ppos, pyaw)| (pid, ppos, pyaw))
+                });
+                if let Some((victim, tpos, tyaw)) = live_target {
+                    let dist = tpos.distance_xz(from);
+                    let same_layer = world_pos_to_layer(tpos.y) == layer;
+                    let facing_away = !player_is_looking_at(tpos, tyaw, from);
+                    let clear =
+                        same_layer && segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+                    let dx = tpos.x - from.x;
+                    let dz = tpos.z - from.z;
+
+                    let member_positions: Vec<Vec3> = self.packs[pi]
+                        .members
+                        .iter()
+                        .filter_map(|m| net.peers.get(&m.id))
+                        .map(|p| Vec3::from_array(p.position))
+                        .collect();
+                    let ring_shut = cerco_is_closed(&member_positions, tpos);
+
+                    // ── THE SCREAMER ──
+                    // Everything has to line up at once: your back turned, the ring shut, point
+                    // blank, and the pack off cooldown. Rare by construction — a jump-scare you
+                    // can predict is just a mechanic.
+                    if clear
+                        && facing_away
+                        && ring_shut
+                        && dist <= FACELING_CHILD_SCREAMER_REACH
+                        && self.packs[pi].screamer_cooldown <= 0.0
+                        && self.packs[pi].members[mi].strike_recover <= 0.0
+                    {
+                        self.packs[pi].screamer_cooldown = FACELING_CHILD_SCREAMER_COOLDOWN_S;
+                        self.packs[pi].members[mi].strike_recover = FACELING_CHILD_STRIKE_RECOVERY;
+                        self.packs[pi].members[mi].heading = dx.atan2(dz);
+                        // TWO attacks, deliberately: `PhantomAttackKind` has no variant that
+                        // carries damage AND an impulse, and inventing one would mean a new wire
+                        // kind plus a client handler for a combination the client can already
+                        // express as two events it has handled since ADR-047.
+                        let (ux, uz) =
+                            push_direction(from, tpos, self.packs[pi].members[mi].heading);
+                        self.attacks.push(PhantomAttack {
+                            victim,
+                            kind: PhantomAttackKind::Knockback(
+                                ux * FACELING_CHILD_SCREAMER_FORCE,
+                                uz * FACELING_CHILD_SCREAMER_FORCE,
+                            ),
+                        });
+                        self.attacks.push(PhantomAttack {
+                            victim,
+                            kind: PhantomAttackKind::Hit(FACELING_CHILD_SCREAMER_DAMAGE),
+                        });
+                        // Only THIS child screams. The pack-wide scream belongs to the cerco
+                        // opening and to a death; here the whole point is that it comes from one
+                        // mouth, right behind your ear.
+                        self.packs[pi].members[mi].pending_vocal =
+                            Some(FACELING_CHILD_VOCAL_SCREAM);
+                        self.packs[pi].members[mi].vocal_delay = None;
+                        info!(
+                            "MPTRACE step=FL_ATK event=faceling_child_screamer faceling_id={} victim_id={} dist={:.2}",
+                            id, victim, dist
+                        );
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            let yaw = self.packs[pi].members[mi]
+                                .heading
+                                .to_degrees()
+                                .rem_euclid(360.0);
+                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                        }
+                        return;
+                    }
+
+                    // ── THE SHOVE ──
+                    // Everyone EXCEPT the `Press`, whose job is the knockdown. No damage, no
+                    // stagger state, just a push — the harassment layer.
+                    if clear
+                        && role != Some(ChildRole::Press)
+                        && dist <= FACELING_CHILD_SHOVE_REACH
+                        && self.packs[pi].members[mi].strike_recover <= 0.0
+                    {
+                        self.packs[pi].members[mi].strike_recover = FACELING_CHILD_SHOVE_RECOVERY;
+                        self.packs[pi].members[mi].heading = dx.atan2(dz);
+                        let (ux, uz) =
+                            push_direction(from, tpos, self.packs[pi].members[mi].heading);
+                        self.attacks.push(PhantomAttack {
+                            victim,
+                            kind: PhantomAttackKind::Knockback(
+                                ux * FACELING_CHILD_SHOVE_FORCE,
+                                uz * FACELING_CHILD_SHOVE_FORCE,
+                            ),
+                        });
+                        info!(
+                            "MPTRACE step=FL_ATK event=faceling_child_shove faceling_id={} victim_id={} dist={:.2}",
+                            id, victim, dist
+                        );
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            let yaw = self.packs[pi].members[mi]
+                                .heading
+                                .to_degrees()
+                                .rem_euclid(360.0);
+                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                        }
+                        return;
+                    }
+                }
+
                 // E2c — THE PRESS BLOW. ADR-094 point 4: "el golpe del rol PRESS conectando por
                 // la espalda o sobre un jugador cercado hace knockdown". Both halves of that "or"
                 // are checked below; the theft the same sentence asks for needs `0x55/0x56` and
@@ -1906,18 +2118,19 @@ impl ChildDriver {
                                 }
                                 let dx = tpos.x - from.x;
                                 let dz = tpos.z - from.z;
-                                let len = (dx * dx + dz * dz).sqrt().max(0.0001);
                                 // Face the victim — same reason as the adult's: this path returns
                                 // before the movement arm that normally maintains `heading`.
                                 self.packs[pi].members[mi].heading = dx.atan2(dz);
                                 self.packs[pi].members[mi].strike_recover =
                                     FACELING_CHILD_STRIKE_RECOVERY;
+                                let (ux, uz) =
+                                    push_direction(from, tpos, self.packs[pi].members[mi].heading);
                                 self.attacks.push(PhantomAttack {
                                     victim,
                                     kind: PhantomAttackKind::Knockdown(
                                         FACELING_CHILD_KNOCKDOWN_SECONDS,
-                                        dx / len * FACELING_CHILD_KNOCKDOWN_FORCE,
-                                        dz / len * FACELING_CHILD_KNOCKDOWN_FORCE,
+                                        ux * FACELING_CHILD_KNOCKDOWN_FORCE,
+                                        uz * FACELING_CHILD_KNOCKDOWN_FORCE,
                                     ),
                                 });
                                 // The whole pack, at once — this is the moment the cerco pays off.

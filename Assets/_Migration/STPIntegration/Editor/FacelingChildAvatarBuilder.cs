@@ -172,14 +172,18 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices == null)
                 return;
 
-            if (voices.arraySize < 3)
-                voices.arraySize = 3;
+            if (voices.arraySize < 4)
+                voices.arraySize = 4;
 
             var banks = new[]
             {
-                "FacelingChild_Giggle", // 0 — ambient telemetry giggle, PackRoam/PackStalk
-                "FacelingChild_Scream", // 1 — the whole pack, the instant the cerco opens
-                "FacelingChild_Call",   // 2 — reserved: E2c lone-survivor regroup, not triggered yet
+                "FacelingChild_Giggle",  // 0 — ambient telemetry giggle, PackRoam/PackStalk
+                "FacelingChild_Scream",  // 1 — cerco opening, a death, and the screamer
+                "FacelingChild_Call",    // 2 — the lone survivor's regroup cry
+                // Enmienda 3: takes over from the giggle once the ring is shut. Its own bank
+                // rather than a quieter giggle — the point is that the sound CHANGES when they
+                // reach you, not just that it gets nearer.
+                "FacelingChild_Whisper", // 3 — close-quarters whisper/chant
             };
 
             if (!Directory.Exists(AudioDir))
