@@ -10,6 +10,7 @@ pub mod entity;
 pub mod generator;
 pub mod graph;
 pub mod grid_gen;
+pub mod level4_layout;
 pub mod levels;
 /// ADR-043 — deterministic, lazy draw of where the world's robapieles live.
 pub mod phantom_spawn;

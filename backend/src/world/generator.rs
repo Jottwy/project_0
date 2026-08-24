@@ -79,6 +79,14 @@ pub fn generate_chunk(world_seed: u64, pos: ChunkPos) -> Chunk {
 }
 
 pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -> Chunk {
+    // ADR-093 E1: la reserva del Level 4 no es Level 0 — su layout de colisión sale de
+    // rasterizar el MISMO layout de región que la rejilla fina (el intercept espejo
+    // vive en `grid_gen::stitching`). Ninguna otra ruta llega a estos chunks: la
+    // reserva está a 2000 chunks del origen y las estructuras iniciales no la tocan.
+    if let Some(local) = crate::world::grid_gen::level4::region_chunk_local(pos) {
+        return crate::world::level4_layout::generate_region_chunk(world_seed, pos, layer, local);
+    }
+
     let seed = chunk_seed_layer(world_seed, pos, layer);
     let mut rng = StdRng::seed_from_u64(seed);
 

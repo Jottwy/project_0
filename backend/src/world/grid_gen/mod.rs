@@ -17,6 +17,9 @@ mod cell;
 mod collision;
 mod generator;
 mod layer_rules;
+// Sin glob re-export a propósito: `level4::generate` colisionaría con otros nombres
+// del módulo; se consume calificado (`grid_gen::level4::...`).
+pub mod level4;
 mod nav;
 mod room_manifest;
 mod stitching;

@@ -1,14 +1,21 @@
-//! Generador de grafo del Level 4 (ADR-093, etapa E0).
+//! Level 4 — generador de grafo y rasterización de la región (ADR-093, etapas E0+E1).
 //!
-//! Sortea salas rectangulares dentro del rect de región y las conecta con pasillos
+//! E0: sortea salas rectangulares dentro del rect de región y las conecta con pasillos
 //! ortogonales en L, garantizando conectividad total POR CONSTRUCCIÓN: cada sala nueva
 //! se conecta a la componente ya conectada (árbol), y después se añaden aristas extra
 //! para crear ciclos (rutas de escape).
 //!
+//! E1: rasteriza ese layout a la rejilla fina de 2,5 m (`LayerGrid`) para los chunks de
+//! la RESERVA de región — un rect de chunks lejano al que solo se llega por teleport
+//! (E3). La mitad de colisión de 5 m vive en `world::level4_layout`, mismo reparto que
+//! salas autoradas (`authored_rooms` ↔ `authored_room_layout`): este módulo no puede
+//! importar `world/`.
+//!
 //! Unidades: celdas de 2,5 m (las de `grid_gen`). Invariante de PARIDAD: todo origen y
 //! todo tamaño son PARES, para que el layout sea representable en la rejilla de colisión
 //! de 5 m sin el modo de fallo de ADR-083 enmienda 3 (origen impar = sala que nunca
-//! aparece).
+//! aparece). Consecuencia útil: cada tile de 5 m es uniforme (sus 4 celdas finas
+//! coinciden), así que la colisión no puede discrepar del render ni en media celda.
 //!
 //! Determinismo: `(seed_base, epoch)` ⇒ mismo layout, byte a byte. Sin reloj, sin
 //! entropía externa (mismo contrato que `Level0Builder`).
@@ -16,9 +23,28 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-/// Lado de la región en celdas de 2,5 m (48 celdas = 120 m). Valor v1 del roadmap;
-/// lo fija el playtest, no este módulo.
-pub const REGION_CELLS: i32 = 48;
+use super::{Cell, CellType, LayerGrid, LayerOutput, CHUNK_CELLS};
+
+/// Esquina de menor coordenada de la reserva de región, en chunks. Lejos de toda
+/// deriva jugable del Level 0 (≈100 km del origen): el único acceso práctico es el
+/// teleport de E3.
+pub const REGION_ORIGIN_CHUNK: (i32, i32) = (2000, 2000);
+
+/// Lado de la reserva, en chunks.
+pub const REGION_CHUNKS: i32 = 3;
+
+/// Lado de la región en celdas de 2,5 m (3 chunks × 20 celdas = 60 celdas = 150 m).
+pub const REGION_CELLS: i32 = REGION_CHUNKS * CHUNK_CELLS as i32;
+
+/// Margen sellado junto al borde de región, en celdas: ninguna celda transitable puede
+/// tocar el perímetro, o el mapa cerrado dejaría de serlo.
+const REGION_BORDER_MARGIN: i32 = 2;
+
+/// Epoch vigente en E1: constante 0. Pasa a estado del host (wire) en E2/E4.
+pub const EPOCH_V1: u32 = 0;
+
+/// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
+const REGION_CEILING_UNITS: u8 = 2;
 
 /// Cuántas salas intenta colocar el sorteo (el espacio puede admitir menos).
 pub const ROOM_TARGET: usize = 12;
@@ -101,8 +127,22 @@ pub struct Level4Layout {
     pub corridors: Vec<CellRect>,
 }
 
-/// SplitMix64 — misma difusión que `grid_gen::generator` (ADR-019), local para no abrir
-/// la visibilidad de aquel módulo.
+impl Level4Layout {
+    /// ¿La celda (coordenadas de REGIÓN, 2,5 m) es transitable? Sala gana a pasillo
+    /// solo nominalmente: ambos son "abierto"; lo que importa es abierto vs macizo.
+    pub fn cell_open(&self, cell: (i32, i32)) -> bool {
+        self.rooms.iter().any(|r| r.rect.contains(cell))
+            || self.corridors.iter().any(|c| c.contains(cell))
+    }
+
+    /// ¿La celda cae dentro de alguna SALA (no pasillo)?
+    pub fn cell_in_room(&self, cell: (i32, i32)) -> bool {
+        self.rooms.iter().any(|r| r.rect.contains(cell))
+    }
+}
+
+/// SplitMix64 — misma difusión que `grid_gen::generator` (ADR-019), local para no
+/// depender de la visibilidad `pub(super)` de aquel módulo.
 #[inline]
 fn splitmix64(mut z: u64) -> u64 {
     z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -140,14 +180,18 @@ fn place_rooms(rng: &mut StdRng) -> Vec<PlacedRoom> {
         }
         let w = ROOM_SIDES[rng.gen_range(0..ROOM_SIDES.len())];
         let h = ROOM_SIDES[rng.gen_range(0..ROOM_SIDES.len())];
-        // Origen par dentro de bounds: sorteo en la rejilla de paso 2.
-        let max_x = (REGION_CELLS - w) / 2;
-        let max_z = (REGION_CELLS - h) / 2;
-        if max_x < 0 || max_z < 0 {
+        // Origen par dentro del margen sellado: sorteo en la rejilla de paso 2.
+        let min_x = REGION_BORDER_MARGIN;
+        let max_x = (REGION_CELLS - REGION_BORDER_MARGIN - w) / 2;
+        let max_z = (REGION_CELLS - REGION_BORDER_MARGIN - h) / 2;
+        if max_x * 2 < min_x || max_z * 2 < min_x {
             continue;
         }
         let rect = CellRect {
-            min: (rng.gen_range(0..=max_x) * 2, rng.gen_range(0..=max_z) * 2),
+            min: (
+                rng.gen_range((min_x / 2)..=max_x) * 2,
+                rng.gen_range((min_x / 2)..=max_z) * 2,
+            ),
             size: (w, h),
         };
         let padded = rect.inflated(ROOM_SEPARATION);
@@ -221,6 +265,59 @@ fn push_axis_segment(out: &mut Vec<CellRect>, a: (i32, i32), b: (i32, i32)) {
     };
     if rect.size.0 > 0 && rect.size.1 > 0 {
         out.push(rect);
+    }
+}
+
+// ─── E1: reserva de región y rasterización de la rejilla fina ────────────────
+
+/// Si el chunk cae en la reserva de región, devuelve su índice LOCAL (0..REGION_CHUNKS).
+pub fn region_chunk_local(chunk: (i32, i32)) -> Option<(i32, i32)> {
+    let lx = chunk.0 - REGION_ORIGIN_CHUNK.0;
+    let lz = chunk.1 - REGION_ORIGIN_CHUNK.1;
+    ((0..REGION_CHUNKS).contains(&lx) && (0..REGION_CHUNKS).contains(&lz)).then_some((lx, lz))
+}
+
+/// Rasteriza un chunk de la reserva a la rejilla fina de 2,5 m.
+///
+/// Solo la capa 0 tiene interior; cualquier otra capa sale maciza (la región es un
+/// mapa cerrado de una planta). No se cose (`stitch_edges`) a propósito: los pasillos
+/// que cruzan de chunk salen coherentes POR CONSTRUCCIÓN, porque los dos chunks
+/// rasterizan el MISMO layout global de región — el mismo argumento de determinismo
+/// que sostiene las salas multi-chunk de ADR-084. Un chunk vecino FUERA de la reserva
+/// puede abrir su apertura de costura contra nuestro perímetro macizo y quedarse con
+/// un fondo de saco decorativo; a 2000 chunks del origen, nadie lo verá jamás.
+pub fn generate_region_layer(
+    world_seed: u64,
+    epoch: u32,
+    local_chunk: (i32, i32),
+    layer_index: i32,
+) -> LayerOutput {
+    let mut grid = LayerGrid::new_solid();
+    if layer_index == 0 {
+        let layout = generate(world_seed, epoch);
+        let base = (
+            local_chunk.0 * CHUNK_CELLS as i32,
+            local_chunk.1 * CHUNK_CELLS as i32,
+        );
+        for x in 0..CHUNK_CELLS {
+            for z in 0..CHUNK_CELLS {
+                let cell = (base.0 + x as i32, base.1 + z as i32);
+                if layout.cell_open(cell) {
+                    let ct = if layout.cell_in_room(cell) {
+                        CellType::Open
+                    } else {
+                        CellType::Corridor
+                    };
+                    grid.set(x, z, Cell::new(ct, REGION_CEILING_UNITS, 0));
+                }
+            }
+        }
+    }
+    LayerOutput {
+        grid,
+        require_walkable_above: Vec::new(),
+        require_walkable_below: Vec::new(),
+        room_zones: Vec::new(),
     }
 }
 
@@ -314,6 +411,24 @@ mod tests {
     }
 
     #[test]
+    fn nothing_walkable_touches_the_region_border() {
+        // Mapa cerrado: si una celda abierta toca el perímetro, la región deja de ser
+        // una reserva sellada y el margen macizo era mentira.
+        for draw in 0..100u32 {
+            let layout = generate(u64::from(draw).wrapping_mul(6151), draw % 3);
+            for cell in walkable(&layout) {
+                assert!(
+                    cell.0 >= REGION_BORDER_MARGIN
+                        && cell.1 >= REGION_BORDER_MARGIN
+                        && cell.0 < REGION_CELLS - REGION_BORDER_MARGIN
+                        && cell.1 < REGION_CELLS - REGION_BORDER_MARGIN,
+                    "sorteo {draw}: celda {cell:?} pegada al borde de región"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn rooms_keep_separation() {
         for draw in 0..100u32 {
             let layout = generate(u64::from(draw).wrapping_mul(104_729), 3);
@@ -354,6 +469,89 @@ mod tests {
                 assert!(c.min.0 >= 0 && c.min.1 >= 0, "sorteo {draw}");
                 assert!(mx <= REGION_CELLS && mz <= REGION_CELLS, "sorteo {draw}");
             }
+        }
+    }
+
+    // ─── E1 ───
+
+    #[test]
+    fn region_chunk_local_maps_the_reserve_and_nothing_else() {
+        assert_eq!(region_chunk_local(REGION_ORIGIN_CHUNK), Some((0, 0)));
+        assert_eq!(
+            region_chunk_local((
+                REGION_ORIGIN_CHUNK.0 + REGION_CHUNKS - 1,
+                REGION_ORIGIN_CHUNK.1 + REGION_CHUNKS - 1
+            )),
+            Some((REGION_CHUNKS - 1, REGION_CHUNKS - 1))
+        );
+        assert_eq!(
+            region_chunk_local((REGION_ORIGIN_CHUNK.0 - 1, REGION_ORIGIN_CHUNK.1)),
+            None
+        );
+        assert_eq!(
+            region_chunk_local((REGION_ORIGIN_CHUNK.0 + REGION_CHUNKS, REGION_ORIGIN_CHUNK.1)),
+            None
+        );
+        assert_eq!(region_chunk_local((0, 0)), None);
+        assert_eq!(region_chunk_local((5, 5)), None);
+    }
+
+    #[test]
+    fn raster_matches_the_abstract_layout_cell_by_cell() {
+        for seed in [42u64, 7778] {
+            let layout = generate(seed, EPOCH_V1);
+            for lx in 0..REGION_CHUNKS {
+                for lz in 0..REGION_CHUNKS {
+                    let out = generate_region_layer(seed, EPOCH_V1, (lx, lz), 0);
+                    for x in 0..CHUNK_CELLS {
+                        for z in 0..CHUNK_CELLS {
+                            let cell = (
+                                lx * CHUNK_CELLS as i32 + x as i32,
+                                lz * CHUNK_CELLS as i32 + z as i32,
+                            );
+                            assert_eq!(
+                                out.grid.get(x, z).is_walkable(),
+                                layout.cell_open(cell),
+                                "seed {seed} chunk ({lx},{lz}) celda ({x},{z})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn raster_is_deterministic_and_seams_are_coherent() {
+        // Dos rasterizaciones del mismo chunk: byte a byte iguales (verificación (a)
+        // de ADR-093 a nivel de rejilla fina). Y la costura entre chunks vecinos es
+        // coherente por construcción: la columna 19 de (0,0) y la columna 0 de (1,0)
+        // describen celdas ADYACENTES del mismo layout global, así que un pasillo que
+        // cruza no puede morir en el borde.
+        let a1 = generate_region_layer(42, EPOCH_V1, (0, 0), 0);
+        let a2 = generate_region_layer(42, EPOCH_V1, (0, 0), 0);
+        assert_eq!(a1.grid.cells(), a2.grid.cells());
+
+        let layout = generate(42, EPOCH_V1);
+        let right = generate_region_layer(42, EPOCH_V1, (1, 0), 0);
+        for z in 0..CHUNK_CELLS {
+            let global = (CHUNK_CELLS as i32, z as i32);
+            assert_eq!(
+                right.grid.get(0, z).is_walkable(),
+                layout.cell_open(global),
+                "celda 0 del chunk (1,0), fila {z}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_zero_layers_are_solid() {
+        for layer in [-1i32, 1, 2] {
+            let out = generate_region_layer(42, EPOCH_V1, (1, 1), layer);
+            assert!(
+                out.grid.cells().iter().all(|c| !c.is_walkable()),
+                "capa {layer} con celdas transitables en la región"
+            );
         }
     }
 }

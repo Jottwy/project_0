@@ -128,15 +128,15 @@ Metadata only. No behavior. Default: `"Level 0 - The Lobby"`, risk=1, verticalit
 
 ---
 
-## `level_4/` — Abandoned Offices (ADR-093, in progress)
+## Level 4 — Abandoned Offices (ADR-093, in progress)
 
-Bounded incursion region. Only stage E0 exists so far (`docs/LEVEL4-ROADMAP.md`):
-`graph.rs` generates the abstract layout — rooms + L-corridors, fully connected by
-construction, deterministic from `(seed_base, epoch)`, all coordinates/sizes EVEN in
-2.5 m cells (5 m collision-grid parity, ADR-083 amendment 3 failure mode). Nothing
-calls it from world generation yet; it ships inert. Room 0 always carries
-`is_return_room` (the E3 return door). Salt: `world_seed ^ 0xBACB_0004_0FF1_CE00` —
-same must-not-touch rule as `Level0Builder`'s salt.
+Bounded incursion region (`docs/LEVEL4-ROADMAP.md`). It does NOT live in this
+directory: the graph generator + 2.5 m rasterization live in `grid_gen/level4.rs` and
+the 5 m collision half in `world/level4_layout.rs` — the same split as authored rooms
+(`grid_gen` must not import `world/`). The chunk reserve starts at chunk (2000, 2000),
+3×3 chunks, teleport-only access (E3). Salt: `world_seed ^ 0xBACB_0004_0FF1_CE00` —
+same must-not-touch rule as `Level0Builder`'s salt. Room 0 always carries
+`is_return_room`.
 
 ---
 

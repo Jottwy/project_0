@@ -57,6 +57,22 @@ cual — mismo código que salas autoradas, cero rutas nuevas. Fuera de la regi�
 - Riesgo: las sondas del manifiesto son OnceLock de proceso (trampa conocida) — correr de una en
   una. ~300 líneas.
 
+### Nota de ejecución E0+E1 (2026-08-24) — desviaciones reales
+
+- El módulo NO quedó en `levels/level_4/`: el intercept de la rejilla fina tiene que
+  vivir en el generador compartido (`grid_gen::stitching`) y `grid_gen` no puede
+  importar `world/`, así que se siguió el reparto de salas autoradas: generador +
+  raster 2,5 m en `grid_gen/level4.rs`, colisión 5 m en `world/level4_layout.rs`.
+- Región real: **3×3 chunks (150×150 m)** — el chunk mide 50 m (20 celdas), no los
+  20 m que asumía el borrador del plan. Origen: chunk (2000, 2000).
+- El epoch en E1 es la constante `level4::EPOCH_V1 = 0` pasada por parámetro; la clave
+  de caché NO lo incluye aún. E4 debe decidir: clave con epoch o purga de la reserva al
+  avanzar (el patrón `reset_for_remote_world` ya existe como precedente de purga).
+- Chunks de la reserva nacen `stabilized + anchored` y con `teleport_timer = f32::MAX`:
+  fuera del sorteo de chunk displacement (ADR-067) por estado, no por comprobación.
+- Acceso solo-teleport confirmado por Joel; se descartó "región en altura" (Y=2000):
+  no hay representación vertical a esa escala y el ADR prohíbe inventarla.
+
 ## E2 — Estado de región + wire 41→42 (backend + C#, inerte)
 
 Un solo bump de wire para todo el ADR. Mensajes nuevos en `PacketPayload` (`protocol.rs:422`):

@@ -41,6 +41,21 @@ pub fn generate_chunk_layer(
     layer_index: i32,
     forced_walkable: &[(u8, u8)],
 ) -> LayerOutput {
+    // ADR-093 E1: los chunks de la reserva del Level 4 no son laberinto — se rasterizan
+    // del layout de región y salen ya terminados (sin cosido, sin salas construibles ni
+    // autoradas: la reserva es un mapa cerrado propio). El intercept vive AQUÍ, en el
+    // generador compartido, por la misma razón que el tallado de ADR-081 enmienda 5:
+    // render (`chunk_tile_walls`), colisión del robapieles (`GridGenChunkCache`) y nav
+    // salen todos de esta función, y es lo único que garantiza que vean LA MISMA región.
+    if let Some(local) = super::level4::region_chunk_local(chunk_coord) {
+        return super::level4::generate_region_layer(
+            world_seed,
+            super::level4::EPOCH_V1,
+            local,
+            layer_index,
+        );
+    }
+
     let mut out = generate_layer(rules, world_seed, chunk_coord, layer_index, forced_walkable);
 
     // ADR-084 T4: las salas se PLANIFICAN antes de coser, aunque se tallen despues. El cosido tiene
