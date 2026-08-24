@@ -8282,6 +8282,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             state_timer: 999.0,
             health: 15,
             role: None,
+            frozen: false,
             pending_vocal: None,
             vocal_seq: 0,
             vocal_kind: 0,
@@ -8329,6 +8330,7 @@ async fn four_member_pack(
             state_timer: 999.0,
             health: 15,
             role: None,
+            frozen: false,
             pending_vocal: None,
             vocal_seq: 0,
             vocal_kind: 0,
@@ -8411,46 +8413,87 @@ async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
     );
 }
 
-/// ADR-094 point 3: "si el jugador mira a CUALQUIER miembro, se congela el pack ENTERO". Player
-/// looks straight at member 0 only; all four must hold position this tick, not just member 0.
+/// Enmienda 4 — KEEP A GAP. Every role computes its point independently, so before the separation
+/// pass nothing stopped two of them standing on the same spot: the pack collapsed into a clump you
+/// could see and shoot all at once.
+#[test]
+fn packmates_push_apart_when_they_crowd_each_other() {
+    let me = Vec3::new(0.0, 1.8, 0.0);
+
+    // Nobody within the radius: no nudge at all, so converging is never perturbed for free.
+    let far = [Vec3::new(20.0, 1.8, 0.0), Vec3::new(0.0, 1.8, -20.0)];
+    let (ax, az) = separation_offset(me, 0, &far);
+    assert_eq!((ax, az), (0.0, 0.0), "a distant packmate should not push");
+
+    // One right on top of us, on +X: the push has to point the other way.
+    let close = [Vec3::new(0.6, 1.8, 0.0)];
+    let (ax, _) = separation_offset(me, 0, &close);
+    assert!(ax < 0.0, "the push should be away from the crowding mate");
+
+    // EXACTLY superimposed — the degenerate case. A zero-length repulsion would weld them
+    // together forever, so this must still produce a real direction...
+    let same = [Vec3::new(0.0, 1.8, 0.0)];
+    let (bx, bz) = separation_offset(me, 0, &same);
+    assert!(
+        bx.abs() > 0.001 || bz.abs() > 0.001,
+        "two children on the exact same point produced no push at all"
+    );
+    // ...and two members of that pair must not both pick the same way out.
+    let (cx, cz) = separation_offset(me, 1, &same);
+    assert!(
+        (bx - cx).abs() > 0.001 || (bz - cz).abs() > 0.001,
+        "both crowded members chose an identical escape direction"
+    );
+}
+
+/// Enmienda 4 — THE STARE BUYS YOU ONE CHILD, NOT THE PACK. ADR-094 point 3 froze all of them,
+/// which in play-test meant looking at any single member held the whole encounter still while you
+/// picked them apart. Now the one in your cone stops and the rest keep working the angles.
 #[tokio::test]
-async fn looking_at_any_single_member_freezes_the_whole_pack() {
+async fn looking_at_one_member_freezes_only_that_member() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
     let anchor = Vec3::new(0.0, stand_on(0), 0.0);
     let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
     pack.state = ChildState::PackStalk;
-    pack.mind.target = Some(1); // the host
-    pack.mind.last_known_pos = Some(Vec3::new(0.0, stand_on(0), -10.0));
+    pack.mind.target = Some(net.local_id);
     assign_roles(&mut pack.members);
-    // Scatter the members so a naive "everyone converges toward roughly the same spot" pass
-    // could not be mistaken for "frozen" by accident.
-    for (i, m) in pack.members.iter_mut().enumerate() {
-        let pos = Vec3::new(i as f32 * 5.0, stand_on(0), 0.0);
-        net.peers.get_mut(&m.id).unwrap().position = pos.to_array();
-    }
-    let before: Vec<[f32; 3]> = pack
-        .members
-        .iter()
-        .map(|m| net.peers[&m.id].position)
-        .collect();
 
+    // Member 0 stays on the cell `spawn_faceling` snapped it to; the host stands 12 m away on -Z
+    // looking straight up +Z at it. Twelve and not five, because inside
+    // `FACELING_CHILD_CERCO_CLOSED_RADIUS` the ring counts as shut and NOBODY freezes — that is
+    // the earlier amendment, and it would mask this one entirely.
+    let watched_pos = Vec3::from_array(net.peers[&pack.members[0].id].position);
+    let host_pos = Vec3::new(watched_pos.x, watched_pos.y, watched_pos.z - 12.0);
+    pack.mind.last_known_pos = Some(host_pos);
+
+    // The other three go far off to the side, well outside the host's cone.
+    for m in pack.members.iter().skip(1) {
+        net.peers.get_mut(&m.id).unwrap().position =
+            [watched_pos.x + 60.0, watched_pos.y, watched_pos.z + 60.0];
+    }
+
+    let before = net.peers[&pack.members[0].id].position;
     let mut driver = ChildDriver::new(42);
     driver.packs.push(pack);
-    // The host stands directly behind member 0 (at x=0), facing it (yaw 0 = +Z looks toward +Z;
-    // member 0 sits at z=0 same as the host here — placed so the host's forward cone hits ONLY
-    // member 0's position, not the others at x=5/10/15).
-    let host_pos = Vec3::new(0.0, stand_on(0), -5.0);
+
     for _ in 0..5 {
-        driver.step(&mut net, 0.1, host_pos, 0.0);
+        driver.step(&mut net, 0.1, host_pos, 0.0); // yaw 0 = facing +Z, at member 0
     }
 
-    assert!(driver.packs[0].frozen, "the pack never froze");
-    let after: Vec<[f32; 3]> = driver.packs[0]
-        .members
-        .iter()
-        .map(|m| net.peers[&m.id].position)
-        .collect();
-    assert_eq!(before, after, "a frozen pack must not move at all");
+    assert!(
+        driver.packs[0].members[0].frozen,
+        "the member being stared at never froze"
+    );
+    assert_eq!(
+        before, net.peers[&driver.packs[0].members[0].id].position,
+        "the member being stared at must not move at all"
+    );
+    // ...and the others must NOT be held by it. That is the whole point of the amendment: the
+    // stare buys you the child you are looking at and costs you the ones you are not.
+    assert!(
+        driver.packs[0].members.iter().skip(1).all(|m| !m.frozen),
+        "staring at one child froze the rest of the pack"
+    );
 }
 
 /// The cerco gives up (back to `PackRoam`, roles cleared) after `FACELING_CHILD_GIVE_UP_S` with
@@ -8681,6 +8724,7 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
         state_timer: 999.0,
         health: 15,
         role: None,
+        frozen: false,
         pending_vocal: None,
         vocal_seq: 0,
         vocal_kind: 0,
@@ -8859,8 +8903,8 @@ async fn a_closed_cerco_breaks_the_freeze_but_an_open_one_does_not() {
         .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
         .to_vec();
     assert!(
-        open.packs[0].frozen,
-        "an OPEN cerco must still freeze under a stare"
+        open.packs[0].members[0].frozen,
+        "an OPEN cerco must still freeze the member being stared at"
     );
     assert!(attacks.is_empty(), "a frozen pack must not swing");
 
@@ -8876,8 +8920,8 @@ async fn a_closed_cerco_breaks_the_freeze_but_an_open_one_does_not() {
         )
         .to_vec();
     assert!(
-        !closed.packs[0].frozen,
-        "a CLOSED cerco must not leave the pack frozen"
+        closed.packs[0].members.iter().all(|m| !m.frozen),
+        "a CLOSED cerco must not leave anybody frozen"
     );
     assert!(
         attacks.iter().any(|a| a.victim == victim),
@@ -8907,7 +8951,7 @@ async fn the_freeze_reads_the_hosts_real_yaw() {
     // Yaw 0 = facing +Z, straight at it.
     driver.step(&mut net, 0.1, host_pos, 0.0);
     assert!(
-        driver.packs[0].frozen,
+        driver.packs[0].members[0].frozen,
         "the host looking right at a child did not freeze it"
     );
 
@@ -8916,8 +8960,8 @@ async fn the_freeze_reads_the_hosts_real_yaw() {
         driver.step(&mut net, 0.1, host_pos, 180.0);
     }
     assert!(
-        !driver.packs[0].frozen,
-        "the pack stayed frozen after the host turned around"
+        !driver.packs[0].members[0].frozen,
+        "the child stayed frozen after the host turned around"
     );
 }
 
@@ -9077,6 +9121,7 @@ fn a_pack_of_five_gets_a_second_press() {
             state_timer: 0.0,
             health: 15,
             role: None,
+            frozen: false,
             pending_vocal: None,
             vocal_seq: 0,
             vocal_kind: 0,

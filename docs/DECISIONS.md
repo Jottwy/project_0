@@ -6086,3 +6086,37 @@ comportamiento de las dos especies era indiagnosticable a posteriori — cero tr
 entera. Las líneas `step=FL_*` pasan ahora el filtro por ser por EVENTO (cerco, congelación, golpe,
 robo, muerte: decenas por sesión) y no por tick como el MPTRACE del robapieles que causó aquello.
 `step=FL_POP` queda excluido: el reconcile de población sí es periódico.
+
+### Enmienda 4 a ADR-094 (2026-08-24) — el cerco, que se dejaba desmontar
+
+Tras jugarlo: "puedo verlos y neutralizarlos a todos". Tres causas, y la primera es la que importa.
+
+**D9 — LA MIRADA CONGELA A UNO, NO AL PACK.** El punto 3 lo especificó pack-entero, y el código
+llevaba un comentario defendiéndolo: un latch por miembro, decía, dejaría a un flanqueador de lado
+avanzando mientras el que miras se queda quieto — "no es cuatro quietos, es tres arrastrándose".
+
+Esa descripción era correcta y la conclusión era equivocada. **Tres arrastrándose es exactamente el
+encuentro que esto quiere.** Congelar el pack entero convertía la mirada en un interruptor de
+apagado: mirabas a uno, los cinco se quedaban clavados, y los desmontabas de uno en uno. Ahora cada
+niño late por su cuenta, con la misma histéresis de conos que ya usaba (cono estrecho para
+congelar, ancho para soltar). La mirada te compra el niño que estás mirando y te cuesta los que no.
+
+Se mantiene intacto lo de Enmienda 2/D-anterior: con el anillo CERRADO no se congela nadie, ni
+siquiera aquel al que miras.
+
+**D10 — LOS FLANCOS, FUERA DEL CONO DE VERDAD.** El punto 3 pide que los `Flank` tomen "los lados
+FUERA DEL CONO del objetivo". La implementación usaba 90° exactos (`FRAC_PI_2`), que no está fuera
+de nada: es el borde, así que un flanqueador ahí sentado se queda en el rabillo del ojo y puedes
+vigilar al pack entero de una pasada. 125° los pone detrás de tus hombros, que es lo que fuerza a
+elegir a quién no quitas la vista de encima. No es un cambio de diseño: es implementar lo que el
+punto 3 ya decía.
+
+**D11 — SEPARACIÓN ENTRE ELLOS.** Cada rol calcula su punto por su cuenta y nada impedía que dos
+aterrizaran en el mismo: el pack se apelmazaba en un grumo que se ve —y se dispara— de una vez. Un
+grumo además es peor haciendo su propio trabajo: un cerco solo es un cerco si hay ángulo entre
+ellos. Repulsión lineal dentro de 2.4 m con peso 0.75, por debajo de 1.0 a propósito para que
+converger siga ganando al final — se separan de camino, no orbitan negándose a cerrar.
+
+El caso degenerado tiene su propia salida: dos exactamente superpuestos dan una repulsión de
+longitud cero, que los soldaría para siempre. `separation_offset` cae a un rumbo derivado del
+índice del miembro por el ángulo áureo, para que los dos de la pareja no elijan la misma salida.

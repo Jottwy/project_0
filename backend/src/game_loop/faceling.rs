@@ -731,6 +731,13 @@ const FACELING_CHILD_CERCO_SPEED_UNSEEN: f32 = 3.4;
 /// What `intercept_point` assumes when projecting where to cut you off. The UNSEEN figure on
 /// purpose: a `Cut` that plans at walking pace aims at a point you have already passed.
 const FACELING_CHILD_CERCO_SPEED: f32 = FACELING_CHILD_CERCO_SPEED_UNSEEN;
+/// Enmienda 4 — how far off the target's facing a `Flank` aims. ADR-094 point 3 says the flankers
+/// take "los lados FUERA DEL CONO del objetivo", and 90° (the original `FRAC_PI_2`) is not outside
+/// anything — it is the boundary, so a flanker sat there stays in the corner of your eye and you
+/// can watch the whole pack at once. Past 90° puts them genuinely behind your shoulders, which is
+/// what forces you to choose who to keep an eye on.
+const FACELING_CHILD_FLANK_ANGLE_DEG: f32 = 125.0;
+
 /// How far `Flank`/`Cut` try to stand from the target while converging — the radius of the ring
 /// the cerco reads as, not a hard stop distance (ADR-094 point 4's strike range is a separate,
 /// tighter constant added in E2c).
@@ -864,6 +871,16 @@ pub(super) struct ChildMover {
     /// `None` in `PackRoam` — nothing to hold a side for. Assigned on entering `PackStalk`
     /// (`assign_roles`) and re-rolled whenever the roster changes (a member dies).
     pub(super) role: Option<ChildRole>,
+    /// Enmienda 4 — PER-MEMBER freeze. ADR-094 point 3 wrote this at PACK level ("se congela el
+    /// pack ENTERO") and the code carried a comment defending it: a per-member latch, it said,
+    /// would let a flanker off to the side keep creeping while the one you are staring at holds
+    /// still — "no es cuatro quietos, es tres arrastrándose".
+    ///
+    /// That description was right and the conclusion was wrong. Three creeping away is EXACTLY the
+    /// encounter this wants (play-test, Joel 2026-08-24): freezing the whole pack meant you could
+    /// hold five children still by looking at one of them, and then take them apart one at a time.
+    /// The stare now buys you the child you are looking AT, and costs you the ones you are not.
+    pub(super) frozen: bool,
     /// ADR-094 point 3 ("las risas son telemetría") + point 6's vocal banks. Same shape as
     /// `phantom.rs::PhantomMover`'s own `pending_vocal`/`vocal_seq`/`vocal_kind` (staged here,
     /// sealed into `peer.vocal_*` once per tick by `ChildDriver::seal_vocals` — see that fn for
@@ -944,11 +961,8 @@ pub(super) struct ChildPack {
     pub(super) anchor: Vec3,
     pub(super) state: ChildState,
     pub(super) mind: PackMind,
-    /// ADR-094 point 3: "si el jugador mira a CUALQUIER miembro, se congela el pack ENTERO" —
-    /// PACK-level, not per-member: entering needs only one member in ANYONE's tight look-cone,
-    /// releasing needs EVERY member out of EVERYONE's wide release-cone. A per-member latch would
-    /// let a flanker standing off to the side release on its own while the one being stared at is
-    /// still frozen, which is not "cuatro quietos" — it is three creeping away.
+    /// Whether the CERCO has been closed at least once this stalk — kept only for the log line
+    /// that reports it; the live gate is `cerco_is_closed` against the target's current position.
     pub(super) frozen: bool,
     pub(super) members: Vec<ChildMover>,
     /// Seconds to the next giggle "beat" (`ChildDriver::update_giggles_for_pack`). Pack-level,
@@ -1070,11 +1084,54 @@ fn child_gear_speed(from: Vec3, players: &[(PeerId, Vec3, f32)], layer: u8) -> f
 /// two flankers commit to opposite arcs regardless of the player's own facing.
 fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32) -> Vec3 {
     let view = target_yaw_deg.to_radians();
-    let angle = view + side * std::f32::consts::FRAC_PI_2;
+    let angle = view + side * FACELING_CHILD_FLANK_ANGLE_DEG.to_radians();
     Vec3::new(
         target.x + angle.sin() * band,
         target.y,
         target.z + angle.cos() * band,
+    )
+}
+
+/// Enmienda 4 — how far a child will steer off its goal to avoid standing on a packmate.
+///
+/// Without this every role computes its point independently and nothing stops two of them
+/// occupying it: the pack collapses into a clump you can see, and shoot, all at once. A clump is
+/// also strictly worse at its own job — a cerco is only a cerco if there is angle between them.
+const FACELING_CHILD_SEPARATION_RADIUS: f32 = 2.4;
+/// How hard the push-apart pulls versus the goal. Below 1.0 so converging always wins in the end:
+/// they spread out on the way in, they do not orbit forever refusing to close.
+const FACELING_CHILD_SEPARATION_WEIGHT: f32 = 0.75;
+
+/// The offset that keeps packmates off each other, as a world-space nudge to add to a goal.
+///
+/// Falls back to a deterministic sidestep when two are exactly superimposed — a zero-length
+/// repulsion would leave them welded together forever, and `mi` picks the direction so the two
+/// members of a pair push apart instead of both choosing the same way out.
+pub(super) fn separation_offset(from: Vec3, mi: usize, others: &[Vec3]) -> (f32, f32) {
+    let mut ax = 0.0;
+    let mut az = 0.0;
+    for other in others {
+        let dx = from.x - other.x;
+        let dz = from.z - other.z;
+        let d_sq = dx * dx + dz * dz;
+        if d_sq >= FACELING_CHILD_SEPARATION_RADIUS * FACELING_CHILD_SEPARATION_RADIUS {
+            continue;
+        }
+        if d_sq < 1e-4 {
+            let bearing = (mi as f32) * 2.399_963; // golden angle: neighbours never agree
+            ax += bearing.sin();
+            az += bearing.cos();
+            continue;
+        }
+        let d = d_sq.sqrt();
+        // Linear falloff: full strength when touching, nothing at the radius.
+        let push = (FACELING_CHILD_SEPARATION_RADIUS - d) / FACELING_CHILD_SEPARATION_RADIUS;
+        ax += dx / d * push;
+        az += dz / d * push;
+    }
+    (
+        ax * FACELING_CHILD_SEPARATION_RADIUS * FACELING_CHILD_SEPARATION_WEIGHT,
+        az * FACELING_CHILD_SEPARATION_RADIUS * FACELING_CHILD_SEPARATION_WEIGHT,
     )
 }
 
@@ -1263,6 +1320,7 @@ impl ChildDriver {
                                     * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S),
                             health: FACELING_CHILD_MAX_HEALTH,
                             role: None,
+                            frozen: false,
                             pending_vocal: None,
                             vocal_seq: 0,
                             vocal_kind: 0,
@@ -1777,12 +1835,14 @@ impl ChildDriver {
         }
     }
 
-    /// ADR-094 point 3: "si el jugador mira a CUALQUIER miembro, se congela el pack ENTERO ...
-    /// miras a otro lado: pasitos". PACK-level, not per-member — see `ChildPack::frozen`'s own
-    /// doc for why a per-member latch would be wrong. Entering needs only one member in ANY
-    /// player's tight cone; releasing needs EVERY member out of EVERY player's wide cone (the
-    /// same enter/release hysteresis pair ADR-094 names explicitly: "la histéresis de cono de
-    /// Statue se reutiliza tal cual").
+    /// Enmienda 4 — PER-MEMBER freeze. "Miras a uno: ese se queda quieto. Los otros siguen."
+    ///
+    /// ADR-094 point 3 specified this pack-wide, and in play-test that turned the stare into an
+    /// off switch for the whole encounter: look at any one child and all five hold still while you
+    /// pick them off. Now each child latches on its own, with the same enter/release hysteresis
+    /// pair the ADR names ("la histéresis de cono de Statue se reutiliza tal cual") — tight cone to
+    /// freeze, wide cone to release. You can always stop the one you are looking at, and never all
+    /// of them, which is what makes the pack keep working the angles behind you.
     fn update_freeze_for_pack(
         &mut self,
         pi: usize,
@@ -1820,45 +1880,45 @@ impl ChildDriver {
         });
         if let Some(target) = live_target {
             if cerco_is_closed(&member_positions, target) {
-                if self.packs[pi].frozen {
-                    self.packs[pi].frozen = false;
+                if !self.packs[pi].frozen {
+                    self.packs[pi].frozen = true;
                     info!(
                         "MPTRACE step=FL_PACK event=faceling_pack_cerco_closed chunk=({},{})",
                         self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1
                     );
                 }
+                // Ring shut: nobody freezes, not even the one being stared at.
+                for m in &mut self.packs[pi].members {
+                    m.frozen = false;
+                }
                 return;
             }
+            self.packs[pi].frozen = false;
         }
 
-        if !self.packs[pi].frozen {
-            let any_entered = member_positions.iter().any(|&mpos| {
-                players.iter().any(|&(_, ppos, pyaw)| {
+        for mi in 0..self.packs[pi].members.len() {
+            let Some(mpos) = member_positions.get(mi).copied() else {
+                continue;
+            };
+            let was = self.packs[pi].members[mi].frozen;
+            let now = match was {
+                // Tight cone to latch on...
+                false => players.iter().any(|&(_, ppos, pyaw)| {
                     world_pos_to_layer(ppos.y) == layer && player_is_looking_at(ppos, pyaw, mpos)
-                })
-            });
-            if any_entered {
-                self.packs[pi].frozen = true;
-                info!(
-                    "MPTRACE step=FL_PACK event=faceling_pack_frozen chunk=({},{})",
-                    self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1
-                );
-            }
-        } else {
-            let all_released = member_positions.iter().all(|&mpos| {
-                players.iter().all(|&(_, ppos, pyaw)| {
-                    world_pos_to_layer(ppos.y) != layer
-                        || !player_is_looking_at_within(
+                }),
+                // ...wide cone to let go, so a child at the edge of vision does not flicker
+                // between statue and stride every tick.
+                true => players.iter().any(|&(_, ppos, pyaw)| {
+                    world_pos_to_layer(ppos.y) == layer
+                        && player_is_looking_at_within(
                             ppos,
                             pyaw,
                             mpos,
                             PHANTOM_STATUE_RELEASE_HALF_FOV,
                         )
-                })
-            });
-            if all_released {
-                self.packs[pi].frozen = false;
-            }
+                }),
+            };
+            self.packs[pi].members[mi].frozen = now;
         }
     }
 
@@ -1894,7 +1954,9 @@ impl ChildDriver {
             }
         }
 
-        if self.packs[pi].frozen {
+        // Enmienda 4: THIS member's own latch, not the pack's. The one you are staring at holds
+        // still; the rest of the ring keeps working.
+        if self.packs[pi].members[mi].frozen {
             if let Some(peer) = net.peers.get_mut(&id) {
                 let yaw = self.packs[pi].members[mi]
                     .heading
@@ -2184,6 +2246,21 @@ impl ChildDriver {
                         .unwrap_or(target)
                     }
                 };
+                // Enmienda 4 — KEEP A GAP. Every role computes its point independently, so nothing
+                // stopped two of them landing on the same one: the pack collapsed into a clump you
+                // could see and shoot all at once, which is also strictly worse at its own job —
+                // a cerco is only a cerco if there is angle between them.
+                let others: Vec<Vec3> = self.packs[pi]
+                    .members
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, _)| *other != mi)
+                    .filter_map(|(_, m)| net.peers.get(&m.id))
+                    .map(|p| Vec3::from_array(p.position))
+                    .collect();
+                let (sx, sz) = separation_offset(from, mi, &others);
+                let goal = Vec3::new(goal.x + sx, goal.y, goal.z + sz);
+
                 let raw_heading = (goal.x - from.x).atan2(goal.z - from.z);
                 let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                 let step = child_gear_speed(from, players, layer) * dt;
