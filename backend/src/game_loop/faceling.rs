@@ -1101,6 +1101,42 @@ fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32)
     )
 }
 
+/// Enmienda 6 — THE BOLT. How fast a child runs once it has your property.
+///
+/// Below a sprinting player (~5 m/s) on purpose, and it is the most load-bearing number in the
+/// theft: catchable, but only if you commit to the chase RIGHT NOW and stop worrying about the
+/// four still around you. Any faster and the item is simply gone; any slower and the escape is not
+/// a chase, it is a formality.
+const FACELING_CHILD_BOLT_SPEED: f32 = 4.6;
+/// How hard a bolting thief bends its run away from whoever is chasing it. It is heading for the
+/// nest, and the nest may well be past you — without this it would sprint straight into your arms,
+/// which reads as stupid rather than frightened.
+const FACELING_CHILD_BOLT_EVADE_RADIUS: f32 = 9.0;
+
+/// Enmienda 6 — where the OTHER children stand while a packmate runs with your things: between
+/// you and it. Close enough to be in the way, far enough not to just be a wall you shoot through.
+pub(super) const FACELING_CHILD_BLOCK_BAND: f32 = 3.5;
+
+/// A point on the line from `player` to `thief`, `FACELING_CHILD_BLOCK_BAND` out from the player.
+///
+/// This is the whole "los otros te siguen molestando dificultando perseguir al otro": the rest of
+/// the pack stops trying to surround you and starts trying to be IN FRONT OF YOU, on the one line
+/// you need to run down. They are not faster than you; they only have to make you go round.
+pub(super) fn child_block_position(player: Vec3, thief: Vec3) -> Vec3 {
+    let dx = thief.x - player.x;
+    let dz = thief.z - player.z;
+    let len_sq = dx * dx + dz * dz;
+    if len_sq < 1e-4 {
+        return player;
+    }
+    let len = len_sq.sqrt();
+    Vec3::new(
+        player.x + dx / len * FACELING_CHILD_BLOCK_BAND,
+        player.y,
+        player.z + dz / len * FACELING_CHILD_BLOCK_BAND,
+    )
+}
+
 /// Enmienda 5 — how far out a `Ring` orbits. Beyond the strike and shove reaches on purpose: this
 /// role is not supposed to be able to touch you, it is supposed to be BEHIND you.
 pub(super) const FACELING_CHILD_RING_BAND: f32 = 10.0;
@@ -2032,6 +2068,83 @@ impl ChildDriver {
             }
         }
 
+        // ── Enmienda 6 — THE THIEF BOLTS ──────────────────────────────────────────────────────
+        //
+        // Checked BEFORE the freeze on purpose, and that is the point Joel asked for: a child
+        // holding your property DOES NOT STOP WHEN YOU LOOK AT IT. Everything else in the pack
+        // obeys the stare, so the one that ignores it is instantly, visually, the one to chase —
+        // the mechanic identifies the thief for you without a marker, an outline or a nametag.
+        //
+        // It also outranks the cerco arms below: a thief has no role any more, it has an errand.
+        if self.packs[pi].members[mi].loot.is_some() {
+            // Arrived: drop it and go back to being an ordinary child.
+            if from.distance_xz(anchor) <= FACELING_CHILD_ARRIVE_EPS {
+                self.stage_loot_drop(pi, mi, from);
+                if let Some(peer) = net.peers.get_mut(&id) {
+                    let yaw = self.packs[pi].members[mi]
+                        .heading
+                        .to_degrees()
+                        .rem_euclid(360.0);
+                    peer.update_player_state(from.to_array(), yaw, "idle".into());
+                }
+                return;
+            }
+
+            // Head for the nest, bending away from anyone close enough to grab it. The nest is
+            // often PAST the player, and a thief that sprints straight through the person chasing
+            // it reads as stupid rather than frightened.
+            let mut hx = anchor.x - from.x;
+            let mut hz = anchor.z - from.z;
+            let to_nest = (hx * hx + hz * hz).sqrt().max(0.0001);
+            hx /= to_nest;
+            hz /= to_nest;
+            for &(_, ppos, _) in players {
+                if world_pos_to_layer(ppos.y) != layer {
+                    continue;
+                }
+                let dx = from.x - ppos.x;
+                let dz = from.z - ppos.z;
+                let d = (dx * dx + dz * dz).sqrt();
+                if !(1e-4..FACELING_CHILD_BOLT_EVADE_RADIUS).contains(&d) {
+                    continue;
+                }
+                // Strongest when they are on top of it, gone at the radius.
+                let w = (FACELING_CHILD_BOLT_EVADE_RADIUS - d) / FACELING_CHILD_BOLT_EVADE_RADIUS;
+                hx += dx / d * w;
+                hz += dz / d * w;
+            }
+
+            let raw_heading = hx.atan2(hz);
+            let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
+            let step = FACELING_CHILD_BOLT_SPEED * dt;
+            let next = Vec3::new(
+                from.x + heading.sin() * step,
+                from.y,
+                from.z + heading.cos() * step,
+            );
+            // No patrol leash while bolting: it is running TO the anchor, so it can only end up
+            // further inside its own territory.
+            if is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                self.packs[pi].members[mi].heading = heading;
+                if let Some(peer) = net.peers.get_mut(&id) {
+                    let yaw = heading.to_degrees().rem_euclid(360.0);
+                    peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                }
+                return;
+            }
+            // Wedged mid-escape: the same watchdog everything else uses, so a thief cannot end up
+            // pinned against a corner holding your item forever.
+            if self.packs[pi].members[mi].progress.note(from, anchor, dt) {
+                self.stage_loot_drop(pi, mi, from);
+                info!("MPTRACE step=FL_STEAL event=steal_thief_wedged_dropped faceling_id={id}");
+            }
+            if let Some(peer) = net.peers.get_mut(&id) {
+                let yaw = heading.to_degrees().rem_euclid(360.0);
+                peer.update_player_state(from.to_array(), yaw, "walk_slow".into());
+            }
+            return;
+        }
+
         // Enmienda 4: THIS member's own latch, not the pack's. The one you are staring at holds
         // still; the rest of the ring keeps working.
         if self.packs[pi].members[mi].frozen {
@@ -2305,42 +2418,59 @@ impl ChildDriver {
                     .map(|&(_, _, yaw)| yaw)
                     .unwrap_or(0.0);
 
-                let goal = match role {
-                    Some(ChildRole::Press) | None => target,
-                    Some(ChildRole::Flank) => {
-                        // Timid ones hang a metre or so further out than pushy ones.
-                        let band = FACELING_CHILD_CERCO_BAND * (1.15 - nerve * 0.3);
-                        child_flank_position(
-                            target,
-                            target_yaw,
-                            self.packs[pi].members[mi].flank_offset,
-                            band,
-                        )
-                    }
-                    // Enmienda 5 — never closes, just keeps taking the shoulder you are not
-                    // watching. `flank_offset` is 0.0 for this role out of `assign_roles`, so the
-                    // side comes off the member index: adjacent Rings work opposite shoulders
-                    // instead of stacking on one.
-                    Some(ChildRole::Ring) => {
-                        let side = match mi.is_multiple_of(2) {
-                            true => 1.0,
-                            false => -1.0,
-                        };
-                        child_ring_position(target, target_yaw, side)
-                    }
-                    Some(ChildRole::Cut) => {
-                        let vel = self.packs[pi].mind.last_known_vel;
-                        let retreat_vel = (-vel.0, -vel.1);
-                        intercept_point(
-                            &mut self.grid_cache,
-                            layer,
-                            from,
-                            target,
-                            retreat_vel,
-                            FACELING_CHILD_CERCO_SPEED,
-                        )
-                        .unwrap_or(target)
-                    }
+                // Enmienda 6 — WHILE A PACKMATE RUNS WITH YOUR THINGS, THE REST GET IN THE WAY.
+                // Overrides every role: surrounding you stops being the plan the moment there is
+                // something to protect, and the pack's whole job becomes making you go round.
+                // They are not faster than you — they only have to cost you the seconds the thief
+                // needs.
+                let fleeing_mate = self.packs[pi]
+                    .members
+                    .iter()
+                    .enumerate()
+                    .filter(|(other, m)| *other != mi && m.loot.is_some())
+                    .filter_map(|(_, m)| net.peers.get(&m.id))
+                    .map(|p| Vec3::from_array(p.position))
+                    .next();
+
+                let goal = match (fleeing_mate, role) {
+                    (Some(thief_pos), _) => child_block_position(target, thief_pos),
+                    (None, role) => match role {
+                        Some(ChildRole::Press) | None => target,
+                        Some(ChildRole::Flank) => {
+                            // Timid ones hang a metre or so further out than pushy ones.
+                            let band = FACELING_CHILD_CERCO_BAND * (1.15 - nerve * 0.3);
+                            child_flank_position(
+                                target,
+                                target_yaw,
+                                self.packs[pi].members[mi].flank_offset,
+                                band,
+                            )
+                        }
+                        // Enmienda 5 — never closes, just keeps taking the shoulder you are not
+                        // watching. `flank_offset` is 0.0 for this role out of `assign_roles`, so the
+                        // side comes off the member index: adjacent Rings work opposite shoulders
+                        // instead of stacking on one.
+                        Some(ChildRole::Ring) => {
+                            let side = match mi.is_multiple_of(2) {
+                                true => 1.0,
+                                false => -1.0,
+                            };
+                            child_ring_position(target, target_yaw, side)
+                        }
+                        Some(ChildRole::Cut) => {
+                            let vel = self.packs[pi].mind.last_known_vel;
+                            let retreat_vel = (-vel.0, -vel.1);
+                            intercept_point(
+                                &mut self.grid_cache,
+                                layer,
+                                from,
+                                target,
+                                retreat_vel,
+                                FACELING_CHILD_CERCO_SPEED,
+                            )
+                            .unwrap_or(target)
+                        }
+                    },
                 };
                 // Enmienda 4 — KEEP A GAP. Every role computes its point independently, so nothing
                 // stopped two of them landing on the same one: the pack collapsed into a clump you
@@ -2380,20 +2510,9 @@ impl ChildDriver {
                 }
             }
             ChildState::PackRoam => {
-                // ADR-094 punto 4, segunda salida del invariante: "ladrón que escapa ⇒ lleva el
-                // botín a un punto-nido de su territorio y lo SUELTA allí". The nest is the pack's
-                // anchor, and "escaped" is precisely this: back in `PackRoam`, cerco over, still
-                // holding something. Robbing it back in their own den is level design for free.
-                if self.packs[pi].members[mi].loot.is_some() {
-                    if from.distance_xz(anchor) <= FACELING_CHILD_ARRIVE_EPS {
-                        self.stage_loot_drop(pi, mi, from);
-                    } else {
-                        // Overrides whatever it was wandering toward: carrying loot HOME is the
-                        // errand now. The wedge watchdog below still applies, so a nest it cannot
-                        // reach cannot trap it either.
-                        self.packs[pi].members[mi].roam_target = anchor;
-                    }
-                }
+                // (ADR-094 punto 4's "ladrón que escapa ⇒ lleva el botín al nido" now lives in the
+                // bolt arm at the top of this function — since Enmienda 6 a thief runs for the
+                // nest the instant it has the loot, without waiting for the cerco to end.)
                 let target = self.packs[pi].members[mi].roam_target;
                 if from.distance_xz(target) <= FACELING_CHILD_ARRIVE_EPS {
                     self.packs[pi].members[mi].state_timer -= dt;

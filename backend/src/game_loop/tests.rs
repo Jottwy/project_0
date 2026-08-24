@@ -8419,6 +8419,100 @@ async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
     );
 }
 
+/// Enmienda 6 — A THIEF IGNORES THE STARE. Everything else in the pack obeys it, so the one that
+/// keeps moving while you look right at it is, visibly, the one carrying your things. That is the
+/// marker: no outline, no nametag, just the only child that does not stop.
+#[tokio::test]
+async fn a_thief_does_not_freeze_when_you_look_at_it() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+
+    // Nest 40 m up +Z so the thief has somewhere to run; the host watches from 12 m down -Z,
+    // outside the closed-ring radius so the freeze is genuinely in play for everybody else.
+    let here = Vec3::from_array(net.peers[&pack.members[0].id].position);
+    pack.anchor = Vec3::new(here.x, here.y, here.z + 40.0);
+    let host_pos = Vec3::new(here.x, here.y, here.z - 12.0);
+    pack.mind.last_known_pos = Some(host_pos);
+    // Everyone else far away, so the ring cannot count as closed.
+    for m in pack.members.iter().skip(1) {
+        net.peers.get_mut(&m.id).unwrap().position = [here.x + 80.0, here.y, here.z + 80.0];
+    }
+
+    let thief = pack.members[0].id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.grant_loot(thief, 4242, 1);
+
+    let before = Vec3::from_array(net.peers[&thief].position);
+    for _ in 0..10 {
+        driver.step(&mut net, 0.1, host_pos, 0.0); // yaw 0 = staring straight at it
+    }
+    let after = Vec3::from_array(net.peers[&thief].position);
+
+    assert!(
+        after.distance_xz(before) > 0.5,
+        "the thief stopped when stared at — it must ignore the freeze while carrying"
+    );
+    // And it must be running AWAY from the watcher, not milling about.
+    assert!(
+        after.distance_xz(host_pos) > before.distance_xz(host_pos),
+        "the thief did not put distance between itself and the player"
+    );
+}
+
+/// A thief that reaches its nest leaves the loot there and goes back to being an ordinary child —
+/// ADR-094 punto 4's "lo SUELTA allí", now reachable straight from the cerco.
+#[tokio::test]
+async fn a_thief_that_reaches_the_nest_drops_the_loot_there() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+    // Nest is exactly where it already stands: the drop is the very next thing that happens.
+    let here = Vec3::from_array(net.peers[&pack.members[0].id].position);
+    pack.anchor = here;
+    let thief = pack.members[0].id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.grant_loot(thief, 909, 4);
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+
+    assert_eq!(driver.dropped_loot.len(), 1, "the nest drop never happened");
+    assert_eq!(
+        (driver.dropped_loot[0].0, driver.dropped_loot[0].1),
+        (909, 4)
+    );
+    assert_eq!(driver.packs[0].members[0].loot, None);
+}
+
+/// Enmienda 6 — while a packmate runs with your things, the REST get in the way. Surrounding you
+/// stops being the plan; the plan becomes making you go round.
+#[test]
+fn blockers_stand_between_the_player_and_the_thief() {
+    let player = Vec3::new(0.0, 1.8, 0.0);
+    let thief = Vec3::new(0.0, 1.8, 30.0); // fleeing straight up +Z
+
+    let spot = child_block_position(player, thief);
+
+    // On the line between them...
+    assert!(
+        spot.z > 0.0 && spot.z < thief.z,
+        "the blocker stood at {spot:?}, not between the two"
+    );
+    assert!(spot.x.abs() < 0.01, "the blocker drifted off the line");
+    // ...and close to the player, not parked next to the thief where it blocks nothing.
+    let d = spot.distance_xz(player);
+    assert!(
+        (d - FACELING_CHILD_BLOCK_BAND).abs() < 0.01,
+        "the blocker should sit at its own band from the player, sat at {d:.2} m"
+    );
+}
+
 /// Enmienda 5 — the sixth child and up go to the RING, not to the front. Everything else already
 /// converges, so another converger just joins the crowd you are already looking at.
 #[test]

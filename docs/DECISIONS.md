@@ -6155,3 +6155,30 @@ fuera, sino que la oficina siga siendo MUCHO más densa (se mide y se compara). 
 deja de ser exactamente lineal a través de la mezcla, porque fuera de oficina la cuenta esperada es
 fraccionaria y una fracción se gasta un sorteo decidiendo si redondea hacia arriba; dentro sigue
 siendo lineal exacto. El test lo dice en vez de asumirlo.
+
+### Enmienda 6 a ADR-094 (2026-08-24) — la fuga del ladrón, y el pack que la cubre
+
+El punto 4 dejaba al ladrón siguiendo con el cerco hasta que terminara, y solo entonces volviendo
+al nido. En juego eso hace que el robo no se note: sigues rodeado y nada te dice a quién perseguir.
+
+**D16 — EL LADRÓN IGNORA LA MIRADA, Y ESO ES EL MARCADOR.** Un niño con botín deja de obedecer la
+congelación. Como TODO lo demás del pack sí la obedece, el único que se sigue moviendo mientras lo
+miras es, a la vista, el que lleva tus cosas. Es identificación diegética: sin contorno, sin
+etiqueta, sin icono — el bicho que no se para es el que hay que cazar. Se comprueba antes que la
+congelación y antes que los brazos del cerco: un ladrón ya no tiene rol, tiene un recado.
+
+**D17 — LA FUGA.** 4.6 m/s, por debajo de un jugador esprintando (~5) y ese es el número que
+sostiene toda la mecánica: alcanzable, pero solo si te comprometes con la persecución AHORA y dejas
+de preocuparte por los otros cuatro. Más rápido y el objeto está perdido; más lento y la fuga no es
+una persecución, es un trámite.
+
+Corre hacia el nido DOBLANDO su rumbo lejos de quien lo persigue (radio 9 m, peso lineal). El nido
+suele estar pasado el jugador, y un ladrón que esprinta en línea recta contra quien lo persigue se
+lee como tonto, no como asustado. No es pathfinding — es lo que hace que PAREZCA que sabe lo que
+hace, que era el encargo. Y el watchdog anti-atasco también le aplica: un ladrón encajonado en una
+esquina suelta el botín en vez de quedarse ahí con tus cosas para siempre.
+
+**D18 — EL RESTO SE INTERPONE.** Mientras un compañero huye con algo, los demás dejan de rodearte y
+pasan a colocarse ENTRE tú y él, a 3.5 m de ti sobre esa línea. No son más rápidos que tú; solo
+tienen que costarte los segundos que el ladrón necesita. Anula todos los roles mientras dure: cercar
+deja de ser el plan en cuanto hay algo que proteger.
