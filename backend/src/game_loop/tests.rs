@@ -7854,6 +7854,7 @@ async fn adult_never_leaves_its_office_chunk_even_when_aimed_outside_it() {
         state_timer: 999.0,
         health: 30,
         enforce_target: None,
+        strike_recover: 0.0,
     });
 
     for _ in 0..200 {
@@ -7893,6 +7894,7 @@ async fn the_whole_office_regards_together_even_when_only_one_adult_is_in_range(
             state_timer: 999.0,
             health: 30,
             enforce_target: None,
+            strike_recover: 0.0,
         });
     }
 
@@ -7944,6 +7946,7 @@ async fn pvp_hit_on_a_faceling_applies_damage_locally_and_alerts_the_whole_offic
             state_timer: 999.0,
             health: 30,
             enforce_target: None,
+            strike_recover: 0.0,
         });
     }
     player.position = Vec3::new(x0 + 5.0, 1.8, z0 + 5.0);
@@ -7999,6 +8002,7 @@ async fn a_faceling_reduced_to_zero_health_is_despawned() {
         state_timer: 999.0,
         health: 10,
         enforce_target: None,
+        strike_recover: 0.0,
     });
 
     let died = adult_driver.apply_damage(&mut net, id, 1, 999.0);
@@ -8007,6 +8011,87 @@ async fn a_faceling_reduced_to_zero_health_is_despawned() {
     assert!(adult_driver.movers.is_empty());
     assert!(!net.peers.contains_key(&id), "the peer must be gone too");
     assert!(!net.is_faceling(id));
+}
+
+/// ADR-094 E1c: the adult that converges on you eventually SWINGS. Before this it walked into
+/// arm's reach and stood there forever — the whole `Enforce` state resolved to a staring contest.
+#[tokio::test]
+async fn an_enforcing_adult_in_reach_actually_strikes() {
+    let seed = 42;
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let host = net.local_id;
+    let mut adult_driver = AdultDriver::new(seed);
+    let spot = Vec3::new(2.0, stand_on(0), 2.0);
+    let id = net.spawn_faceling("Faceling_Test", spot.to_array(), 1);
+    adult_driver.movers.push(AdultMover {
+        id,
+        home_chunk: (0, 0),
+        layer: 0,
+        state: AdultState::Enforce,
+        heading: 0.0,
+        commute_target: spot,
+        state_timer: 999.0, // nowhere near the give-up; this test is about the blow, not the clock
+        health: 30,
+        enforce_target: Some(host),
+        strike_recover: 0.0,
+    });
+
+    // Host standing right on top of it, well inside FACELING_ADULT_ATTACK_REACH (2.4 m).
+    let host_pos = Vec3::new(3.0, stand_on(0), 2.0);
+    let attacks = adult_driver.step(&mut net, 0.1, host_pos).to_vec();
+
+    assert_eq!(
+        attacks.len(),
+        1,
+        "expected exactly one blow, got {attacks:?}"
+    );
+    assert_eq!(attacks[0].victim, host);
+    assert!(
+        matches!(attacks[0].kind, PhantomAttackKind::Hit(d) if d > 0.0),
+        "an adult's blow must be a plain Hit, got {:?}",
+        attacks[0].kind
+    );
+
+    // ...and NOT again on the very next tick: `strike_recover` has to gate it.
+    let again = adult_driver.step(&mut net, 0.1, host_pos).to_vec();
+    assert!(
+        again.is_empty(),
+        "the adult swung twice in 0.1 s — strike_recover is not gating"
+    );
+}
+
+/// The reach itself: an adult converging from across the room stages nothing. Guards against the
+/// blow being wired to `FACELING_REGARD_RADIUS` (12 m) — the range it CONVERGES from — which
+/// would let the office hit you from clear across the office.
+#[tokio::test]
+async fn an_enforcing_adult_out_of_reach_does_not_strike() {
+    let seed = 42;
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let host = net.local_id;
+    let mut adult_driver = AdultDriver::new(seed);
+    let spot = Vec3::new(2.0, stand_on(0), 2.0);
+    let id = net.spawn_faceling("Faceling_Test", spot.to_array(), 1);
+    adult_driver.movers.push(AdultMover {
+        id,
+        home_chunk: (0, 0),
+        layer: 0,
+        state: AdultState::Enforce,
+        heading: 0.0,
+        commute_target: spot,
+        state_timer: 999.0, // nowhere near the give-up; this test is about the blow, not the clock
+        health: 30,
+        enforce_target: Some(host),
+        strike_recover: 0.0,
+    });
+
+    // 8 m away: inside the regard/converge radius, far outside striking distance.
+    let host_pos = Vec3::new(10.0, stand_on(0), 2.0);
+    let attacks = adult_driver.step(&mut net, 0.1, host_pos).to_vec();
+
+    assert!(
+        attacks.is_empty(),
+        "an adult struck from 8 m away: {attacks:?}"
+    );
 }
 
 // ─── ADR-093 E4b: level4_room_among ───
@@ -8192,6 +8277,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_delay: None,
+            strike_recover: 0.0,
             flank_offset: 0.0,
         }],
         giggle_timer: 999.0,
@@ -8201,7 +8287,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
     for _ in 0..200 {
         // Far away host position: this pack must stay in PackRoam the whole test, not get
         // detected into PackStalk and chase toward the leash boundary instead of wandering it.
-        driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
+        driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
     }
 
     let here = Vec3::from_array(net.peers[&id].position);
@@ -8235,6 +8321,7 @@ async fn four_member_pack(
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_delay: None,
+            strike_recover: 0.0,
             flank_offset: 0.0,
         });
     }
@@ -8281,7 +8368,7 @@ async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
 
     let mut driver = ChildDriver::new(42);
     driver.packs.push(pack);
-    driver.step(&mut net, 0.1, host_far_away);
+    driver.step(&mut net, 0.1, host_far_away, 0.0);
 
     assert_eq!(driver.packs[0].state, ChildState::PackStalk);
     assert_eq!(driver.packs[0].mind.target, Some(2));
@@ -8339,7 +8426,7 @@ async fn looking_at_any_single_member_freezes_the_whole_pack() {
     // member 0's position, not the others at x=5/10/15).
     let host_pos = Vec3::new(0.0, stand_on(0), -5.0);
     for _ in 0..5 {
-        driver.step(&mut net, 0.1, host_pos);
+        driver.step(&mut net, 0.1, host_pos, 0.0);
     }
 
     assert!(driver.packs[0].frozen, "the pack never froze");
@@ -8369,7 +8456,7 @@ async fn the_pack_gives_up_the_cerco_after_losing_the_target_long_enough() {
     let host_far_away = Vec3::new(-9999.0, stand_on(0), -9999.0);
     // FACELING_CHILD_GIVE_UP_S at 0.1 s/tick: comfortably past it in 250 ticks (25 s).
     for _ in 0..250 {
-        driver.step(&mut net, 0.1, host_far_away);
+        driver.step(&mut net, 0.1, host_far_away, 0.0);
     }
 
     assert_eq!(driver.packs[0].state, ChildState::PackRoam);
@@ -8503,7 +8590,7 @@ async fn a_pack_down_to_one_flees_and_never_stalks_again() {
     let in_its_face = Vec3::new(survivor_pos.x, survivor_pos.y, survivor_pos.z + 2.0);
     driver.packs[0].members[0].heading = 0.0; // facing +Z, straight at it
     for _ in 0..20 {
-        driver.step(&mut net, 0.1, in_its_face);
+        driver.step(&mut net, 0.1, in_its_face, 0.0);
     }
     assert_eq!(
         driver.packs[0].state,
@@ -8539,7 +8626,7 @@ async fn a_lone_survivor_merges_into_a_nearby_pack() {
     neighbour.members.truncate(2);
     driver.packs.push(neighbour);
 
-    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
 
     assert_eq!(
         driver.packs.len(),
@@ -8572,9 +8659,241 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
     let full = four_member_pack(&mut net, (1, 0), 0, Vec3::new(6.0, stand_on(0), 0.0)).await;
     driver.packs.push(full);
 
-    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
 
     assert_eq!(driver.packs.len(), 2, "the straggler should still be alone");
     assert_eq!(driver.packs[0].members.len(), 1);
     assert_eq!(driver.packs[1].members.len(), 4);
+}
+
+/// Places a 4-member pack in `PackStalk` against a peer at `target_pos`, with the `Press` member
+/// standing `press_gap` metres away from it and the rest piled on the target (so the "surrounded"
+/// test passes unless a case deliberately moves them).
+async fn pack_pressing(
+    net: &mut NetworkManager,
+    target_pos: Vec3,
+    target_yaw: f32,
+    press_gap: f32,
+) -> (ChildDriver, PeerId) {
+    let peer_id: PeerId = 2;
+    net.peers.insert(
+        peer_id,
+        crate::network::peer::PeerConnection::new(
+            peer_id,
+            "Victim".into(),
+            "127.0.0.1:9001".parse().unwrap(),
+        ),
+    );
+    {
+        let p = net.peers.get_mut(&peer_id).unwrap();
+        p.position = target_pos.to_array();
+        p.rotation = target_yaw;
+    }
+
+    let anchor = Vec3::new(target_pos.x, target_pos.y, target_pos.z);
+    let mut pack = four_member_pack(net, (0, 0), 0, anchor).await;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(peer_id);
+    pack.mind.last_known_pos = Some(target_pos);
+    assign_roles(&mut pack.members);
+
+    // Press stands `press_gap` along +X; the others sit right on the target, which is what makes
+    // `surrounded` true.
+    let press_id = pack.members[0].id;
+    net.peers.get_mut(&press_id).unwrap().position =
+        [target_pos.x + press_gap, target_pos.y, target_pos.z];
+    for m in pack.members.iter().skip(1) {
+        net.peers.get_mut(&m.id).unwrap().position = target_pos.to_array();
+    }
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    (driver, peer_id)
+}
+
+/// ADR-094 point 4: the `Press` role's blow knocks a surrounded player DOWN (ADR-076's own piece,
+/// not a plain hit). Before this the cerco closed perfectly and then nothing happened.
+#[tokio::test]
+async fn the_press_role_knocks_down_a_surrounded_player() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let target = Vec3::new(0.0, stand_on(0), 0.0);
+    // Facing the Press head-on (+X), so this can only be passing via "surrounded", never "behind".
+    let (mut driver, victim) = pack_pressing(&mut net, target, 90.0, 1.0).await;
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    assert_eq!(attacks.len(), 1, "expected one knockdown, got {attacks:?}");
+    assert_eq!(attacks[0].victim, victim);
+    assert!(
+        matches!(attacks[0].kind, PhantomAttackKind::Knockdown(secs, _, _) if secs > 0.0),
+        "the Press blow must be a Knockdown, got {:?}",
+        attacks[0].kind
+    );
+    // "Grito ... al cargar": the pay-off moment is the whole pack, not the one that connected.
+    // Read off the SEALED fields, not `pending_vocal` — `step` ends in `seal_vocals`, which takes
+    // the staged kind and folds it into the counter the wire actually carries.
+    for m in &driver.packs[0].members {
+        assert_eq!(m.vocal_kind, 1, "survivor did not scream");
+        assert_ne!(m.vocal_seq, 0, "the scream never reached the wire counter");
+    }
+}
+
+/// Only the `Press` swings. A `Flank` or `Cut` standing just as close is still just standing
+/// there — ADR-094 gives the blow to one role, and four children each knocking you down would be
+/// the stun-lock the long recovery exists to prevent.
+#[tokio::test]
+async fn a_non_press_member_in_reach_does_not_strike() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let target = Vec3::new(0.0, stand_on(0), 0.0);
+    let (mut driver, _victim) = pack_pressing(&mut net, target, 1.0, 1.0).await;
+    // Demote the only Press: now nobody holds the role, though all four are still in reach.
+    driver.packs[0].members[0].role = Some(ChildRole::Flank);
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    assert!(attacks.is_empty(), "a non-Press member swung: {attacks:?}");
+}
+
+/// A lone `Press` — nobody else near the target, and the player looking straight at it — does
+/// NOT connect. This is ADR-094 point 3's core promise as a test: "el peligro es la geometría del
+/// cerco, nunca el niño suelto".
+#[tokio::test]
+async fn a_lone_press_facing_you_cannot_knock_you_down() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let target = Vec3::new(0.0, stand_on(0), 0.0);
+    // Yaw 90 = facing +X, straight at the Press: not from behind.
+    let (mut driver, _victim) = pack_pressing(&mut net, target, 90.0, 1.0).await;
+    // Send the other three far away, so `surrounded` fails too.
+    for m in driver.packs[0].members.iter().skip(1) {
+        net.peers.get_mut(&m.id).unwrap().position = [500.0, stand_on(0), 500.0];
+    }
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    assert!(
+        attacks.is_empty(),
+        "a lone child knocked down a player who was looking right at it: {attacks:?}"
+    );
+}
+
+/// The other half of point 4's "or": alone is fine IF it comes from behind.
+#[tokio::test]
+async fn a_lone_press_from_behind_still_connects() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let target = Vec3::new(0.0, stand_on(0), 0.0);
+    // Yaw 270 = facing -X, i.e. AWAY from the Press standing at +X.
+    let (mut driver, victim) = pack_pressing(&mut net, target, 270.0, 1.0).await;
+    for m in driver.packs[0].members.iter().skip(1) {
+        net.peers.get_mut(&m.id).unwrap().position = [500.0, stand_on(0), 500.0];
+    }
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    assert_eq!(attacks.len(), 1, "expected the back-attack to land");
+    assert_eq!(attacks[0].victim, victim);
+}
+
+/// The decision Joel took in play-test (2026-08-24), pinned: a CLOSED cerco cancels the stare's
+/// protection. Same scene twice — the only difference is whether the other three have arrived.
+#[tokio::test]
+async fn a_closed_cerco_breaks_the_freeze_but_an_open_one_does_not() {
+    let target = Vec3::new(0.0, stand_on(0), 0.0);
+
+    // OPEN: the others are still far away. Looking at the Press freezes the pack, as always.
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut open, _) = pack_pressing(&mut net, target, 90.0, 1.0).await;
+    for m in open.packs[0].members.iter().skip(1) {
+        net.peers.get_mut(&m.id).unwrap().position = [400.0, stand_on(0), 400.0];
+    }
+    let attacks = open
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+    assert!(
+        open.packs[0].frozen,
+        "an OPEN cerco must still freeze under a stare"
+    );
+    assert!(attacks.is_empty(), "a frozen pack must not swing");
+
+    // CLOSED: identical stare, but the ring is shut. The freeze must give way.
+    let mut net2 = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut closed, victim) = pack_pressing(&mut net2, target, 90.0, 1.0).await;
+    let attacks = closed
+        .step(
+            &mut net2,
+            0.1,
+            Vec3::new(-9999.0, stand_on(0), -9999.0),
+            0.0,
+        )
+        .to_vec();
+    assert!(
+        !closed.packs[0].frozen,
+        "a CLOSED cerco must not leave the pack frozen"
+    );
+    assert_eq!(attacks.len(), 1, "the closed cerco never cashed in");
+    assert_eq!(attacks[0].victim, victim);
+}
+
+/// The host's own yaw reaches the pack. E2b hard-coded 0.0 with a TODO, which meant the freeze —
+/// the pack's headline mechanic — silently did nothing in a solo session, where the host is the
+/// only player there is.
+#[tokio::test]
+async fn the_freeze_reads_the_hosts_real_yaw() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let host_pos = Vec3::new(0.0, stand_on(0), 0.0);
+    // One member, 5 m along +Z, and a pack too small to ever close a cerco — so the ONLY thing
+    // that can freeze it is the stare itself.
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, host_pos).await;
+    pack.members.truncate(1);
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+    pack.mind.last_known_pos = Some(host_pos);
+    let member = pack.members[0].id;
+    net.peers.get_mut(&member).unwrap().position = [0.0, stand_on(0), 5.0];
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    // Yaw 0 = facing +Z, straight at it.
+    driver.step(&mut net, 0.1, host_pos, 0.0);
+    assert!(
+        driver.packs[0].frozen,
+        "the host looking right at a child did not freeze it"
+    );
+
+    // Yaw 180 = facing away. It must come loose again.
+    for _ in 0..3 {
+        driver.step(&mut net, 0.1, host_pos, 180.0);
+    }
+    assert!(
+        !driver.packs[0].frozen,
+        "the pack stayed frozen after the host turned around"
+    );
+}
+
+/// The blow aims at the target's LIVE position, never at `mind.last_known_pos`. A pack that has
+/// lost you must not be able to knock you down through the wall it remembers you behind.
+#[tokio::test]
+async fn the_press_does_not_strike_a_remembered_position() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let target = Vec3::new(0.0, stand_on(0), 0.0);
+    let (mut driver, victim) = pack_pressing(&mut net, target, 90.0, 1.0).await;
+    // The player actually walked off; only the memory stays where the pack is standing.
+    net.peers.get_mut(&victim).unwrap().position = [300.0, stand_on(0), 300.0];
+    driver.packs[0].mind.last_known_pos = Some(target);
+
+    let attacks = driver
+        .step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0)
+        .to_vec();
+
+    assert!(
+        attacks.is_empty(),
+        "the pack struck a position the player had already left: {attacks:?}"
+    );
 }

@@ -1358,11 +1358,18 @@ pub async fn run(
                 // grid cache — walks/reconciles the office adults; `apply_damage` (PvP branch)
                 // is the only other entry point.
                 adult_driver.sync_population(&mut net, player.position, entity_dt);
-                adult_driver.step(&mut net, entity_dt, player.position);
-                // ADR-094 E2a: same shape, the child packs — `PackRoam` only for now, no
-                // detection/cerco/attacks yet (E2b/E2c).
+                // ADR-094 E1c: the adults' own blows, copied out for the same reason the
+                // robapieles' are — the driver has to be free again before the routing loop below.
+                let adult_attacks: Vec<_> = adult_driver
+                    .step(&mut net, entity_dt, player.position)
+                    .to_vec();
+                // ADR-094 E2a/E2b/E2c: same shape, the child packs — roam, cerco by roles, and
+                // the `Press` knockdown. The theft the same role owes (point 4) is not here: it
+                // needs `0x55/0x56` and its own wire bump.
                 child_driver.sync_population(&mut net, player.position, entity_dt);
-                child_driver.step(&mut net, entity_dt, player.position);
+                let child_attacks: Vec<_> = child_driver
+                    .step(&mut net, entity_dt, player.position, player.rotation)
+                    .to_vec();
                 // ADR-047 D5: a noise reported this tick may wake sleepers near its SOURCE, which
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
@@ -1391,7 +1398,7 @@ pub async fn run(
                 }
                 // Copied out rather than borrowed so the driver is free again immediately — the
                 // voice echoes below need it mutably, and an attack is two `Copy` words.
-                let attacks: Vec<_> = phantom_driver
+                let mut attacks: Vec<_> = phantom_driver
                     .step(
                         &mut net,
                         entity_dt,
@@ -1406,6 +1413,12 @@ pub async fn run(
                         player.buttons,
                     )
                     .to_vec();
+                // ADR-094 E1c: the office's blows ride the SAME routing loop. It never reads who
+                // struck (ADR-016 §1 keeps the creature's id off the wire), so the two species
+                // merge into one list with nothing to distinguish — and the victim-is-down skip
+                // below then covers both at once, which it would not if this were a second loop.
+                attacks.extend(adult_attacks);
+                attacks.extend(child_attacks);
 
                 // ADR-053 — IT SAYS YOUR OWN WORDS BACK AT YOU. The driver decides who and when;
                 // this is the half that owns the sockets. `send_unreliable_as` stamps the frame

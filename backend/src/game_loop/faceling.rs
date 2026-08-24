@@ -65,6 +65,17 @@ const FACELING_ENFORCE_SPEED: f32 = 1.8;
 /// is back in range, so a fight that keeps you close never times out mid-swing.
 const FACELING_ENFORCE_COOLOFF_S: f32 = 45.0;
 
+/// E1c — the blow itself. Same reach as `PHANTOM_ATTACK_REACH`: both are human-scale bodies at
+/// arm's length, and a different number here would be a number with no reason behind it.
+const FACELING_ADULT_ATTACK_REACH: f32 = 2.4;
+/// Deliberately far below the robapieles' 35. ADR-094 point 2 makes the adult "atrezzo primero,
+/// amenaza segundo" — at this rate a full-health player has some twenty seconds of being cornered
+/// before it matters, which is long enough to read as a warning rather than an execution. The
+/// office kills by NUMBERS and by not letting you leave, never by one adult connecting.
+const FACELING_ADULT_ATTACK_DAMAGE: f32 = 12.0;
+/// Same recovery as `PHANTOM_STRIKE_RECOVERY`, for the same reason as the reach.
+const FACELING_ADULT_STRIKE_RECOVERY: f32 = 2.5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AdultState {
     Working,
@@ -88,6 +99,10 @@ pub(super) struct AdultMover {
     /// Set on entering `Enforce`, cleared on leaving it. `None` in every other state — never
     /// stale, because nothing reads it outside the arm that owns it.
     pub(super) enforce_target: Option<PeerId>,
+    /// E1c — seconds left before this adult can swing again. Same field and same name as
+    /// `PhantomMover::strike_recover`; ticked down for EVERY adult in every state, not just in
+    /// `Enforce`, so a fight that drops out of range and comes back cannot bank a free hit.
+    pub(super) strike_recover: f32,
 }
 
 pub(super) struct AdultDriver {
@@ -95,6 +110,10 @@ pub(super) struct AdultDriver {
     pub(super) movers: Vec<AdultMover>,
     pub(super) density_scale: f32,
     population_sync_in: f32,
+    /// E1c — blows staged this tick, drained by `step`'s caller. Reuses `PhantomAttack` rather
+    /// than minting a parallel type: `game_loop.rs`'s routing loop never reads WHO struck (ADR-016
+    /// §1 keeps the creature's id off the wire entirely), so it already works for any attacker.
+    pub(super) attacks: Vec<PhantomAttack>,
 }
 
 /// World-space bounds of chunk `(cx, cz)`, in the XZ plane. The leash boundary — `Commute` never
@@ -143,6 +162,7 @@ impl AdultDriver {
             movers: Vec::new(),
             density_scale: 1.0,
             population_sync_in: 0.0, // reconcile on the very first entity tick
+            attacks: Vec::new(),
         }
     }
 
@@ -260,6 +280,7 @@ impl AdultDriver {
                                     * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S),
                             health: FACELING_ADULT_MAX_HEALTH,
                             enforce_target: None,
+                            strike_recover: 0.0,
                         });
                         info!(
                             "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
@@ -275,7 +296,15 @@ impl AdultDriver {
     /// point 2: "no perciben crouch, luz ni ruido") — the only two inputs are "is anyone within
     /// `FACELING_REGARD_RADIUS`" (this method) and "did anyone hit me" (`apply_damage`, called
     /// from the game loop's PvP handling, not from here).
-    pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32, host_player_pos: Vec3) {
+    /// E1c: returns the blows staged this tick, exactly like `PhantomDriver::step` — the caller's
+    /// existing routing loop takes it from there.
+    pub(super) fn step(
+        &mut self,
+        net: &mut NetworkManager,
+        dt: f32,
+        host_player_pos: Vec3,
+    ) -> &[PhantomAttack] {
+        self.attacks.clear();
         let players: Vec<Vec3> = std::iter::once(host_player_pos)
             .chain(
                 net.peers
@@ -307,8 +336,11 @@ impl AdultDriver {
         }
 
         for i in 0..self.movers.len() {
+            // Every adult, every state: see `AdultMover::strike_recover`.
+            self.movers[i].strike_recover = (self.movers[i].strike_recover - dt).max(0.0);
             self.tick_mover(i, net, dt, host_player_pos, &players, &regarded);
         }
+        &self.attacks
     }
 
     /// ADR-094 E1b: a hit landed on `victim_id`. Applies damage to that ONE adult's health, then
@@ -404,6 +436,37 @@ impl AdultDriver {
                 } else {
                     self.movers[i].state_timer -= dt;
                 }
+                // E1c — THE BLOW, checked before the convergence arm below so that arriving and
+                // swinging cannot cost a tick each. No cone test either way: unlike the
+                // robapieles (whose front/back split picks between a hit and a grab), an adult
+                // has exactly one thing it does, and ADR-094 point 2 gives it no perception to
+                // branch on ("no perciben crouch, luz ni ruido").
+                let can_strike = self.movers[i].strike_recover <= 0.0
+                    && target_pos.is_some_and(|target| {
+                        world_pos_to_layer(target.y) == layer
+                            && target.distance_xz(from) <= FACELING_ADULT_ATTACK_REACH
+                    });
+                if can_strike {
+                    if let Some(victim) = self.movers[i].enforce_target {
+                        self.movers[i].strike_recover = FACELING_ADULT_STRIKE_RECOVERY;
+                        self.attacks.push(PhantomAttack {
+                            victim,
+                            kind: PhantomAttackKind::Hit(FACELING_ADULT_ATTACK_DAMAGE),
+                        });
+                        info!(
+                            "MPTRACE step=FL_ATK event=faceling_adult_struck faceling_id={} victim_id={} damage={}",
+                            id, victim, FACELING_ADULT_ATTACK_DAMAGE
+                        );
+                        // Same "pickup" gesture the robapieles swings with — the proxy's only
+                        // wired one-shot arm animation (ADR-011's single transient channel).
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                        }
+                        return;
+                    }
+                }
+
                 if self.movers[i].state_timer <= 0.0 {
                     self.movers[i].state = AdultState::Working;
                     self.movers[i].enforce_target = None;
@@ -595,6 +658,42 @@ const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
 /// invariant intact rather than growing a 5-child pack `assign_roles` has no roster for.
 const FACELING_CHILD_PACK_MAX: usize = 4;
 
+/// E2c — the `Press` role's blow. Shorter than the adults' 2.4 m: a child's arms are shorter, and
+/// the tighter reach is also what forces the cerco to actually CLOSE before anything lands.
+const FACELING_CHILD_ATTACK_REACH: f32 = 1.8;
+/// Longer than the adults' 2.5 s. The knockdown is a much heavier event than a plain hit (ADR-076
+/// takes control away for `PHANTOM_KNOCKDOWN_SECONDS`), so it has to be rare enough that a cerco
+/// reads as one nasty moment and a scramble out, not as a stun-lock with no way back.
+const FACELING_CHILD_STRIKE_RECOVERY: f32 = 6.0;
+/// ADR-094 point 4: the connecting `Press` blow "hace knockdown (pieza de ADR-076)". Seconds and
+/// impulse handed to `PhantomAttackKind::Knockdown` — matched to the robapieles' own ambush
+/// knockdown so the client's existing handler reads them the same way.
+const FACELING_CHILD_KNOCKDOWN_SECONDS: f32 = 2.0;
+const FACELING_CHILD_KNOCKDOWN_FORCE: f32 = 6.0;
+
+/// How near the target a member has to be to count toward a CLOSED cerco. Tighter than
+/// `FACELING_CHILD_CERCO_BAND * 1.5` would be: this radius is what switches the freeze off (see
+/// `cerco_is_closed`), so it has to mean "they are on top of you", not "they arrived".
+const FACELING_CHILD_CERCO_CLOSED_RADIUS: f32 = 7.0;
+/// How many members inside that radius close the cerco. Three, so a pack thinned by a death gets
+/// measurably less lethal (a pair can never close one) — "el peligro es la geometría del cerco".
+const FACELING_CHILD_CERCO_CLOSED_MIN: usize = 3;
+
+/// ADR-094 points 3 and 4, the one predicate both halves of the pay-off share: is the ring
+/// actually shut around `target`?
+///
+/// Load-bearing in TWO places, deliberately the same test in both — `update_freeze_for_pack`
+/// (a closed cerco cancels the stare's protection) and the `Press` blow ("o sobre un jugador
+/// cercado"). Two separate thresholds would let the freeze break at a distance the blow could not
+/// yet reach, which reads to the player as "looking at them stopped working for no reason".
+fn cerco_is_closed(member_positions: &[Vec3], target: Vec3) -> bool {
+    member_positions
+        .iter()
+        .filter(|p| p.distance_xz(target) <= FACELING_CHILD_CERCO_CLOSED_RADIUS)
+        .count()
+        >= FACELING_CHILD_CERCO_CLOSED_MIN
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChildState {
     /// Ambient wander within `FACELING_CHILD_PATROL_RADIUS_M` of the pack's anchor.
@@ -630,6 +729,10 @@ pub(super) struct ChildMover {
     /// Countdown to this member's own queued giggle, in flight from
     /// `ChildDriver::update_giggles_for_pack`. `None` when nothing is queued.
     pub(super) vocal_delay: Option<f32>,
+    /// E2c — seconds before this child may swing again. Only `Press` ever swings, but the field
+    /// lives on every member because roles are re-dealt on every death: a `Flank` promoted to
+    /// `Press` mid-fight must inherit a cooldown, not a clean slate.
+    pub(super) strike_recover: f32,
     /// `ChildRole::Flank`'s persisted side, same shape and same reason as
     /// `phantom.rs::PhantomMover::flank_offset`: a member sitting dead-centre in the target's
     /// view must not shuffle between two equally good exits every tick.
@@ -708,6 +811,8 @@ pub(super) struct ChildDriver {
     pub(super) packs: Vec<ChildPack>,
     pub(super) density_scale: f32,
     population_sync_in: f32,
+    /// E2c — same channel and same reasoning as `AdultDriver::attacks`.
+    pub(super) attacks: Vec<PhantomAttack>,
 }
 
 /// Picks a walkable point within `radius` of `center` — the circular counterpart of
@@ -810,6 +915,7 @@ impl ChildDriver {
             packs: Vec::new(),
             density_scale: 1.0,
             population_sync_in: 0.0,
+            attacks: Vec::new(),
         }
     }
 
@@ -931,6 +1037,7 @@ impl ChildDriver {
                             vocal_seq: 0,
                             vocal_kind: 0,
                             vocal_delay: None,
+                            strike_recover: 0.0,
                             flank_offset: 0.0,
                         });
                     }
@@ -1150,11 +1257,23 @@ impl ChildDriver {
         }
     }
 
-    pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32, host_player_pos: Vec3) {
+    /// E2c: returns the `Press` blows staged this tick — same channel as `AdultDriver::step`'s.
+    pub(super) fn step(
+        &mut self,
+        net: &mut NetworkManager,
+        dt: f32,
+        host_player_pos: Vec3,
+        host_player_rot: f32,
+    ) -> &[PhantomAttack] {
+        self.attacks.clear();
         let players: Vec<(PeerId, Vec3, f32)> = std::iter::once((
             net.local_id,
             host_player_pos,
-            0.0, // the host's own yaw is not read here (E2b never freezes/flanks off it — TODO E2c)
+            // E2c: the host's REAL yaw. E2b hardcoded 0.0 here with a TODO, which quietly meant
+            // the freeze and the flank angles never worked against the host at all — and in a
+            // solo session the host is the only player there is, so the pack's headline mechanic
+            // was dead exactly where it gets played.
+            host_player_rot,
         ))
         .chain(net.peers.iter().filter_map(|(id, p)| {
             if net.is_phantom(*id) || net.is_faceling(*id) || p.relay_only {
@@ -1170,11 +1289,15 @@ impl ChildDriver {
             self.update_freeze_for_pack(pi, net, &players);
             self.update_giggles_for_pack(pi, net, dt);
             for mi in 0..self.packs[pi].members.len() {
+                // Every member, every state: see `ChildMover::strike_recover`.
+                self.packs[pi].members[mi].strike_recover =
+                    (self.packs[pi].members[mi].strike_recover - dt).max(0.0);
                 self.tick_member(pi, mi, net, dt, &players);
             }
         }
         self.regroup_lone_survivors(net);
         self.seal_vocals(net);
+        &self.attacks
     }
 
     /// ADR-094 point 3 — schedules one giggle "beat" per pack every
@@ -1344,6 +1467,25 @@ impl ChildDriver {
             .map(|p| Vec3::from_array(p.position))
             .collect();
 
+        // ADR-094 point 4, decided in play-test (Joel, 2026-08-24): ONCE THE RING IS SHUT,
+        // LOOKING AT THEM STOPS SAVING YOU. Without this the stare is an absolute defence, the
+        // pack can never cash in a cerco it has already won, and point 4's "o sobre un jugador
+        // cercado" is unreachable text — the freeze would have covered every case that clause
+        // exists for. This is the beat the converging giggles are the tell FOR: they arrive at a
+        // single voice exactly when the protection ends.
+        if let Some(target) = self.packs[pi].mind.last_known_pos {
+            if cerco_is_closed(&member_positions, target) {
+                if self.packs[pi].frozen {
+                    self.packs[pi].frozen = false;
+                    info!(
+                        "MPTRACE step=FL_PACK event=faceling_pack_cerco_closed chunk=({},{})",
+                        self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1
+                    );
+                }
+                return;
+            }
+        }
+
         if !self.packs[pi].frozen {
             let any_entered = member_positions.iter().any(|&mpos| {
                 players.iter().any(|&(_, ppos, pyaw)| {
@@ -1463,6 +1605,76 @@ impl ChildDriver {
                     return; // detect_for_pack already reset the state if this were stale
                 };
                 let role = self.packs[pi].members[mi].role;
+
+                // E2c — THE PRESS BLOW. ADR-094 point 4: "el golpe del rol PRESS conectando por
+                // la espalda o sobre un jugador cercado hace knockdown". Both halves of that "or"
+                // are checked below; the theft the same sentence asks for needs `0x55/0x56` and
+                // lands separately.
+                //
+                // Aimed at the target's LIVE position from `players`, never at
+                // `mind.last_known_pos`: a stale memory is the right thing to walk toward and the
+                // wrong thing to swing at — it would let a pack that lost you knock you down
+                // through a wall it remembers you behind.
+                if role == Some(ChildRole::Press)
+                    && self.packs[pi].members[mi].strike_recover <= 0.0
+                {
+                    let live = self.packs[pi].mind.target.and_then(|tid| {
+                        players
+                            .iter()
+                            .find(|&&(pid, _, _)| pid == tid)
+                            .map(|&(pid, ppos, pyaw)| (pid, ppos, pyaw))
+                    });
+                    if let Some((victim, tpos, tyaw)) = live {
+                        if world_pos_to_layer(tpos.y) == layer
+                            && tpos.distance_xz(from) <= FACELING_CHILD_ATTACK_REACH
+                        {
+                            // The SAME predicate that switches the freeze off — see
+                            // `cerco_is_closed`'s own doc for why the two must not drift apart.
+                            let member_positions: Vec<Vec3> = self.packs[pi]
+                                .members
+                                .iter()
+                                .filter_map(|m| net.peers.get(&m.id))
+                                .map(|p| Vec3::from_array(p.position))
+                                .collect();
+                            let surrounded = cerco_is_closed(&member_positions, tpos);
+                            let from_behind = !player_is_looking_at(tpos, tyaw, from);
+
+                            if surrounded || from_behind {
+                                let dx = tpos.x - from.x;
+                                let dz = tpos.z - from.z;
+                                let len = (dx * dx + dz * dz).sqrt().max(0.0001);
+                                self.packs[pi].members[mi].strike_recover =
+                                    FACELING_CHILD_STRIKE_RECOVERY;
+                                self.attacks.push(PhantomAttack {
+                                    victim,
+                                    kind: PhantomAttackKind::Knockdown(
+                                        FACELING_CHILD_KNOCKDOWN_SECONDS,
+                                        dx / len * FACELING_CHILD_KNOCKDOWN_FORCE,
+                                        dz / len * FACELING_CHILD_KNOCKDOWN_FORCE,
+                                    ),
+                                });
+                                // The whole pack, at once — this is the moment the cerco pays off.
+                                for m in &mut self.packs[pi].members {
+                                    m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
+                                    m.vocal_delay = None;
+                                }
+                                info!(
+                                    "MPTRACE step=FL_ATK event=faceling_child_knockdown faceling_id={} victim_id={} surrounded={} from_behind={}",
+                                    id, victim, surrounded, from_behind
+                                );
+                                if let Some(peer) = net.peers.get_mut(&id) {
+                                    let yaw = self.packs[pi].members[mi]
+                                        .heading
+                                        .to_degrees()
+                                        .rem_euclid(360.0);
+                                    peer.update_player_state(from.to_array(), yaw, "pickup".into());
+                                }
+                                return;
+                            }
+                        }
+                    }
+                }
+
                 let goal = match role {
                     Some(ChildRole::Press) | None => target,
                     Some(ChildRole::Flank) => {
