@@ -5752,3 +5752,86 @@ IMPLEMENTADOS y en verde** — `cargo test` 883/0 (suite completa, sin rojos aje
 `--all-targets -D warnings` y fmt limpios, compile-check C# 0 errores en las cuatro asambleas, release
 compilado en `backend/target/release/` (que es la ruta que `NetworkInitializer` resuelve primero;
 `Builds/Backend/` ya no existe). Siguen siendo PROPUESTA: ninguno se ha visto en juego.
+
+## ADR-093 — Level 4 v1: región de incursión acotada, generador de grafo rasterizado, puertas ancladas con enlace inestable y epochs de mutación (2026-08-24) — PROPUESTA
+
+**Contexto.** El loop actual carece de razón para salir de base y volver: falta la "señal de nivel" y
+la anomalía de expedición. Joel decide introducir el Level 4 (oficinas) como primer level adicional,
+con formato extraction-survival: entras por una puerta, saqueas bajo presión de tiempo, y el mundo te
+castiga por quedarte. Se evaluaron dos arquitecturas: (A) subservidor separado con handoff de
+conexión; (B) mismo proceso, región aparte. Se elige **B**: la experiencia del jugador es idéntica,
+el coste es una fracción, y la puerta-teleport de B es el punto de corte natural si algún día se
+migra a (A). Este ADR es v1 deliberadamente pequeño: un solo level, acotado, como plantilla para
+levels futuros parametrizados por datos.
+
+**Decisión, en seis piezas:**
+
+1. **Región acotada en el mismo mundo.** El Level 4 vive en el mismo proceso backend y la misma
+   representación de mundo (chunks), en una zona de coordenadas reservada lejos del alcance jugable
+   del Level 0 (offset fijo, fuera de toda deriva normal de exploración). Tamaño v1 orientativo:
+   ~6×6 chunks (~120×120 m), 10–15 salas. El número exacto lo fija el playtest, no este ADR.
+
+2. **Generador de grafo, rasterizado sobre lo existente.** Un generador nuevo decide el LAYOUT en
+   abstracto: sortea rects de sala (del pool autorado de oficinas, ADR-083..087), los conecta con
+   pasillos garantizando conectividad total, y RASTERIZA el resultado a las dos representaciones
+   existentes (`grid_gen` 2,5 m y `ChunkLayoutV1` 5 m) reutilizando el tallado de salas autoradas.
+   El cliente, la colisión, el streaming y el wire de chunks no se enteran de que existe un
+   generador nuevo: reciben chunks como siempre. PROHIBIDO introducir una representación de mundo
+   nueva o una ruta de render paralela.
+
+3. **Epochs de mutación.** El layout de la región se deriva de `(seed_base, epoch)`, con `epoch`
+   entero autoritativo del host que avanza cada N minutos desde el primer cruce de la ventana. Al
+   avanzar el epoch, la región entera se re-sortea determinista — todos los peers convergen sabiendo
+   solo el entero. Excepción: la sala autorada OCUPADA por al menos un jugador se conserva
+   (estabilizada) hasta quedar vacía. Escalado por epoch: densidad de entidades sube, luz baja,
+   layout más laberíntico. Parámetros, no código nuevo por nivel de terror.
+
+4. **Puertas ancladas, enlace inestable.** La puerta de ida (Level 0) y la de vuelta (Level 4) son
+   FIJAS: la geometría nunca se muda en caliente. Lo inestable es el DESTINO del viaje de vuelta:
+   dentro de la ventana de estabilización devuelve al punto de entrada; vencida la ventana, el
+   destino deriva a un punto a radio proporcional al overstay (p. ej. ~100 m por minuto de exceso,
+   tuneable), sorteado determinista. El host es autoritativo del destino vigente: todos los que
+   cruzan en la misma ventana salen al mismo punto. No hay softlock posible: la puerta de vuelta
+   siempre funciona; el castigo es aparecer perdido, no quedar atrapado.
+
+5. **Reglas de zona.** (a) Construcción PROHIBIDA en toda la región — el sistema de claims/colocación
+   deniega por zona. (b) Bloqueo de puertas v1 = soltar carryables STP delante (coger/soltar ya viaja
+   por wire); NO hay física de empuje replicada en v1. (c) Otros jugadores pueden demoler esos
+   bloqueos y repararse con el martillo STP existente. (d) Robapieles pueblan la región y su presión
+   escala con el epoch; los **Facelings** (cuando existan como entidad) son neutrales SIEMPRE,
+   independientes del epoch. (e) Cero HUD de tiempo: el jugador gestiona su ventana mirando el reloj
+   de muñeca (viewmodel existente). El mundo telegrafia el avance del epoch con señales diegéticas
+   (luz, sonido), nunca con contador.
+
+6. **Wire.** Lo mínimo: el estado de región (`epoch`, destino de vuelta vigente, apertura de
+   ventana) viaja del host a los peers como mensaje nuevo, y el cruce de puerta es una petición al
+   host. Bump de `WIRE_SCHEMA_VERSION` (y su espejo C# `WireSchema.Expected`, ADR-061) en el commit
+   que lo introduzca. El detalle de formato se cierra en el plan de implementación, no aquí.
+
+**Alternativas rechazadas:** (A) subservidor con handoff — semanas de coste, duplica la deuda de
+seguridad de red auditada el 2026-08-18, y no cambia nada perceptible para el jugador en v1; (B')
+mover físicamente la puerta del Level 0 al vencer la ventana — geometría en caliente replicada,
+reencontrar la ENTRADA se vuelve el problema, y pierde el enlace de ida; (C) teletransporte de la
+puerta de VUELTA dentro del Level 4 — softlock o rage-quit si no se reencuentra, descartado en
+diseño; (D) fast travel fiable entre puntos del mapa usando los levels como red de viaje — fuera del
+v1; la deriva del destino ya da viaje emergente pagando riesgo, y el fast travel gratuito erosiona
+la economía de distancia del Level 0. Se re-evalúa con playtest.
+
+**Prohíbe:** construir en la región; HUD o UI de temporizador; representación de mundo nueva;
+replicar geometría mutada por deltas (el epoch entero ES la replicación); física de empuje de props
+en v1; que el re-sorteo por epoch toque la sala ocupada mientras esté ocupada.
+
+**Verificación:** (a) misma `(seed_base, epoch)` ⇒ misma región en host y joiner, byte a byte en
+tiles; (b) conectividad total del grafo en 100 sorteos (cero salas incomunicadas); (c) cruce dentro
+de ventana ⇒ vuelta al punto de entrada; overstay ⇒ destino a radio esperado y COMPARTIDO entre
+peers de la misma ventana; (d) avance de epoch con sala ocupada ⇒ la sala persiste, el resto muta;
+(e) colocación de construcción denegada en toda la región; (f) demoler/reparar un bloqueo de
+carryable funciona entre peers. En juego: una incursión completa (entrar, saquear, salir tarde,
+aparecer lejos, volver a base) sin desync visible.
+
+**Por qué es ADR (reglas 2, 4 y 7):** toca worldgen núcleo (generador nuevo + región), red (mensajes
+de estado de región, bump de wire) y el loop de juego validado (dirección sandbox persistente).
+**Dependencias:** ADR-083..087 (salas autoradas y su tallado dual, que este generador reutiliza),
+ADR-067 (chunk displacement — la inestabilidad como identidad mecánica), ADR-061 (espejo de versión
+de wire), ADR-081 (claims, para denegar construcción por zona), ADR-088..092 (la IA que puebla la
+región; su playtest pendiente conviene ANTES de poblar esto).
