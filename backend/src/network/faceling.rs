@@ -38,6 +38,28 @@ impl NetworkManager {
     /// faceling has no `phantom_ids`-equivalent union to fall back on at those sites — see the
     /// module doc. Returns the assigned faceling id.
     pub fn spawn_faceling(&mut self, name: &str, position: [f32; 3], species: u8) -> PeerId {
+        // THE SNAP `faceling_spawn`'s own doc already promised this function did ("positions are
+        // raw cell centres and may land inside a wall: snapping is `spawn_faceling`'s job via
+        // `resolve_spawn_near`, exactly like `spawn_phantom`") and which was never actually here.
+        // Each side assumed the other did it, so facelings were spawning INSIDE WALLS — and a
+        // faceling in a wall has every step rejected by `is_walkable_grid_gen`, so it stands
+        // perfectly still forever, in every state. That is the "se quedan quietos" from the
+        // 2026-08-24 play-test.
+        //
+        // Same resolver (`zone_density::rules_for`) the drivers' own grid caches are built with,
+        // for ADR-033's reason: a snap against the flat profile would land it in a different world
+        // from the one it then walks.
+        let mut position = crate::world::grid_gen::resolve_spawn_near(
+            self.world_seed,
+            position,
+            crate::world::zone_density::rules_for,
+        );
+        // Ground it in the PLAYER-PIVOT convention, exactly as `spawn_phantom` documents: the
+        // client subtracts `PlayerBaseY` from every remote pose because the avatar pivot is at the
+        // feet, so anything else buries the body to the waist.
+        position[1] = crate::world::grid_gen::grid_floor_y(
+            crate::world::grid_gen::world_pos_to_layer(position[1]),
+        ) + crate::world::collision::PLAYER_BASE_Y;
         let id = self.allocate_faceling_id();
         let addr: SocketAddr = super::INERT_PEER_ADDR;
         let mut conn = PeerConnection::new(id, name.to_string(), addr);

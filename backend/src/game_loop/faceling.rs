@@ -22,7 +22,9 @@ use super::phantom::*;
 use std::collections::HashSet;
 
 use crate::world::faceling_spawn;
-use crate::world::grid_gen::{is_walkable_grid_gen, steer_around_walls, CELL_SIZE_M, CHUNK_CELLS};
+use crate::world::grid_gen::{
+    is_walkable_grid_gen, segment_is_clear, steer_around_walls, CELL_SIZE_M, CHUNK_CELLS,
+};
 
 /// Same cadence as `PHANTOM_POPULATION_SYNC_INTERVAL` — no reason to reconcile more often than
 /// once a second for a population this cheap to scan.
@@ -53,6 +55,76 @@ const FACELING_COMMUTE_MAX_S: f32 = 45.0;
 /// A chunk with no walkable cell found this attempt (rare — office floors are mostly open) tries
 /// again soon rather than camping `Working` forever on a fluke.
 const FACELING_PUESTO_RETRY_S: f32 = 5.0;
+
+/// THE ANTI-WEDGE WATCHDOG. Seconds of consecutively REFUSED steps after which a mover gives up on
+/// its current destination and picks a new one.
+///
+/// Both walking states had the same deadlock, and it is worth naming precisely because it is easy
+/// to reintroduce: the timer that says "pick somewhere else" only ever ran once the walk had
+/// already succeeded. `Commute` never decremented `state_timer` at all (only `Working` did, and
+/// you reach `Working` by ARRIVING), and `PackRoam` decremented it only inside its
+/// `distance <= ARRIVE_EPS` branch. So a mover whose every step was refused — target behind a
+/// wall, wedged in a corner, leash boundary in the way — stood there re-steering into the same
+/// blocked heading forever, animated as walking and never moving. That is the "se quedan pillados
+/// en paredes" from the 2026-08-24 play-test.
+///
+/// Long enough not to cut short a legitimate detour (`steer_around_walls` deflects within a tick
+/// or two, and a long way round still shortens the distance eventually), short enough that the
+/// stall never reads as a freeze.
+pub(super) const FACELING_WEDGED_GIVE_UP_S: f32 = 3.0;
+/// How much closer a mover has to get to count as progress. Above the per-tick step at the slowest
+/// speed (1.0 m/s × 0.1 s = 0.1 m) would call a legitimate crawl "stuck", so this sits under it.
+const FACELING_PROGRESS_EPS: f32 = 0.05;
+
+/// Watches whether a mover is actually getting closer to where it is going.
+///
+/// Measures PROGRESS, not refused steps, and the difference is the whole reason this exists: the
+/// first version of the watchdog counted steps the leash/walkability guard rejected, and it never
+/// fired, because `steer_around_walls` deflects sideways — the mover keeps taking perfectly valid
+/// steps along a wall it can never get round, so "was the step accepted" is `true` forever while
+/// the distance to the target does not move at all.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ProgressWatch {
+    /// The destination `best` is measured against. Comparing it each tick makes the watch reset
+    /// itself whenever the caller picks a new destination, so no assignment site has to remember
+    /// to — which is exactly the kind of bookkeeping that rots.
+    ref_target: Vec3,
+    best: f32,
+    stalled_for: f32,
+}
+
+impl ProgressWatch {
+    pub(super) fn new() -> Self {
+        Self {
+            ref_target: Vec3::ZERO,
+            best: f32::MAX,
+            stalled_for: 0.0,
+        }
+    }
+
+    /// Records this tick and returns whether the mover has stopped making headway long enough to
+    /// give up on `target`. Resets itself on a give-up, so the caller only has to re-plan.
+    fn note(&mut self, from: Vec3, target: Vec3, dt: f32) -> bool {
+        if self.ref_target.distance_xz(target) > FACELING_PROGRESS_EPS || self.best == f32::MAX {
+            self.ref_target = target;
+            self.best = from.distance_xz(target);
+            self.stalled_for = 0.0;
+            return false;
+        }
+        let d = from.distance_xz(target);
+        if d < self.best - FACELING_PROGRESS_EPS {
+            self.best = d;
+            self.stalled_for = 0.0;
+            return false;
+        }
+        self.stalled_for += dt;
+        if self.stalled_for >= FACELING_WEDGED_GIVE_UP_S {
+            *self = Self::new();
+            return true;
+        }
+        false
+    }
+}
 
 /// v1 PLACEHOLDER, unmeasured. An adult is atrezzo first, threat second — low on purpose so a
 /// couple of solid hits already ends the encounter one way or the other.
@@ -103,6 +175,8 @@ pub(super) struct AdultMover {
     /// `PhantomMover::strike_recover`; ticked down for EVERY adult in every state, not just in
     /// `Enforce`, so a fight that drops out of range and comes back cannot bank a free hit.
     pub(super) strike_recover: f32,
+    /// Anti-wedge watchdog for `Commute` — see `ProgressWatch`.
+    pub(super) progress: ProgressWatch,
 }
 
 pub(super) struct AdultDriver {
@@ -281,6 +355,7 @@ impl AdultDriver {
                             health: FACELING_ADULT_MAX_HEALTH,
                             enforce_target: None,
                             strike_recover: 0.0,
+                            progress: ProgressWatch::new(),
                         });
                         info!(
                             "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
@@ -441,30 +516,43 @@ impl AdultDriver {
                 // robapieles (whose front/back split picks between a hit and a grab), an adult
                 // has exactly one thing it does, and ADR-094 point 2 gives it no perception to
                 // branch on ("no perciben crouch, luz ni ruido").
-                let can_strike = self.movers[i].strike_recover <= 0.0
-                    && target_pos.is_some_and(|target| {
+                //
+                // `segment_is_clear` IS required though, exactly as `phantom.rs` requires it
+                // (ADR-082): reach alone would let an adult pinned against a partition wall bleed
+                // whoever walks down the corridor on the other side, 12 a swing, unseeable and
+                // unanswerable. Its leash makes that worse, not better — it cannot step around.
+                let strike_target = match self.movers[i].strike_recover <= 0.0 {
+                    false => None,
+                    true => target_pos.filter(|target| {
                         world_pos_to_layer(target.y) == layer
                             && target.distance_xz(from) <= FACELING_ADULT_ATTACK_REACH
+                            && segment_is_clear(&mut self.grid_cache, layer, from, *target)
+                    }),
+                };
+                if let (Some(target), Some(victim)) = (strike_target, self.movers[i].enforce_target)
+                {
+                    // Face what it hits. The convergence arm below is what normally keeps
+                    // `heading` pointed at the target, and this path returns before reaching it —
+                    // left alone the adult lands the blow side-on or with its back turned, which
+                    // reads as damage out of nowhere.
+                    let heading = (target.x - from.x).atan2(target.z - from.z);
+                    self.movers[i].heading = heading;
+                    self.movers[i].strike_recover = FACELING_ADULT_STRIKE_RECOVERY;
+                    self.attacks.push(PhantomAttack {
+                        victim,
+                        kind: PhantomAttackKind::Hit(FACELING_ADULT_ATTACK_DAMAGE),
                     });
-                if can_strike {
-                    if let Some(victim) = self.movers[i].enforce_target {
-                        self.movers[i].strike_recover = FACELING_ADULT_STRIKE_RECOVERY;
-                        self.attacks.push(PhantomAttack {
-                            victim,
-                            kind: PhantomAttackKind::Hit(FACELING_ADULT_ATTACK_DAMAGE),
-                        });
-                        info!(
-                            "MPTRACE step=FL_ATK event=faceling_adult_struck faceling_id={} victim_id={} damage={}",
-                            id, victim, FACELING_ADULT_ATTACK_DAMAGE
-                        );
-                        // Same "pickup" gesture the robapieles swings with — the proxy's only
-                        // wired one-shot arm animation (ADR-011's single transient channel).
-                        if let Some(peer) = net.peers.get_mut(&id) {
-                            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
-                            peer.update_player_state(from.to_array(), yaw, "pickup".into());
-                        }
-                        return;
+                    info!(
+                        "MPTRACE step=FL_ATK event=faceling_adult_struck faceling_id={} victim_id={} damage={}",
+                        id, victim, FACELING_ADULT_ATTACK_DAMAGE
+                    );
+                    // Same "pickup" gesture the robapieles swings with — the proxy's only
+                    // wired one-shot arm animation (ADR-011's single transient channel).
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        let yaw = heading.to_degrees().rem_euclid(360.0);
+                        peer.update_player_state(from.to_array(), yaw, "pickup".into());
                     }
+                    return;
                 }
 
                 if self.movers[i].state_timer <= 0.0 {
@@ -540,6 +628,19 @@ impl AdultDriver {
                     self.movers[i].state_timer = FACELING_COMMUTE_MIN_S
                         + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S);
                     "idle"
+                } else if self.movers[i].progress.note(from, target, dt) {
+                    // Not getting any closer for `FACELING_WEDGED_GIVE_UP_S` — give up on this
+                    // puesto. `Commute` had NO way out on its own: `state_timer` is only
+                    // decremented by `Working`, and the only route to `Working` was arriving.
+                    // Back with a short clock so a fresh destination is drawn almost immediately
+                    // instead of waiting out a full commute interval doing nothing.
+                    self.movers[i].state = AdultState::Working;
+                    self.movers[i].state_timer = FACELING_PUESTO_RETRY_S;
+                    info!(
+                        "MPTRACE step=FL_NAV event=faceling_adult_unwedged faceling_id={} chunk=({},{})",
+                        id, home.0, home.1
+                    );
+                    "idle"
                 } else {
                     let raw_heading = (target.x - from.x).atan2(target.z - from.z);
                     let heading =
@@ -554,7 +655,7 @@ impl AdultDriver {
                     // chunk, or land somewhere grid_gen calls solid, simply does not happen — the
                     // adult stands one tick and re-steers from its current heading next time,
                     // exactly like `steer_around_walls`' own whisker deflection already does for
-                    // the robapieles.
+                    // the robapieles. The watchdog above is what stops that from being forever.
                     if pos_in_chunk(next, home)
                         && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
                     {
@@ -733,6 +834,8 @@ pub(super) struct ChildMover {
     /// lives on every member because roles are re-dealt on every death: a `Flank` promoted to
     /// `Press` mid-fight must inherit a cooldown, not a clean slate.
     pub(super) strike_recover: f32,
+    /// Anti-wedge watchdog for `PackRoam` — see `ProgressWatch`.
+    pub(super) progress: ProgressWatch,
     /// `ChildRole::Flank`'s persisted side, same shape and same reason as
     /// `phantom.rs::PhantomMover::flank_offset`: a member sitting dead-centre in the target's
     /// view must not shuffle between two equally good exits every tick.
@@ -1038,6 +1141,7 @@ impl ChildDriver {
                             vocal_kind: 0,
                             vocal_delay: None,
                             strike_recover: 0.0,
+                            progress: ProgressWatch::new(),
                             flank_offset: 0.0,
                         });
                     }
@@ -1239,10 +1343,19 @@ impl ChildDriver {
             merged.insert(si);
             let mut pack = self.packs.remove(si);
             let hi = if hi > si { hi - 1 } else { hi };
-            let Some(member) = pack.members.pop() else {
+            let Some(mut member) = pack.members.pop() else {
                 continue;
             };
             let id = member.id;
+            // Re-home it onto the NEW anchor before it joins. Its `roam_target` was sampled around
+            // the pack it came from, and `PackRoam` only ever re-rolls a target after ARRIVING at
+            // the current one — so a stale target outside the new patrol circle is a permanent
+            // trap: every step gets refused by the leash guard, it never arrives, and it never
+            // re-rolls. Also clears the `Flee` call timer, which now means "seconds to next roam
+            // roll" in the state it is walking into.
+            member.roam_target = self.packs[hi].anchor;
+            member.state_timer = FACELING_CHILD_ROAM_MIN_S
+                + rand::random::<f32>() * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S);
             self.packs[hi].members.push(member);
             if self.packs[hi].state == ChildState::PackStalk {
                 assign_roles(&mut self.packs[hi].members);
@@ -1326,8 +1439,13 @@ impl ChildDriver {
                     .filter_map(|m| net.peers.get(&m.id))
                     .map(|p| Vec3::from_array(p.position).distance_xz(target))
                     .fold(f32::MAX, f32::min);
-                let t = ((nearest - FACELING_CHILD_CERCO_BAND)
-                    / (FACELING_CHILD_DETECT_RADIUS - FACELING_CHILD_CERCO_BAND))
+                // Normalised against `FACELING_CHILD_CERCO_CLOSED_RADIUS`, the radius that
+                // actually ends the stare's protection — NOT against `CERCO_BAND`, which is only
+                // where the flankers aim. The whole job of this sound is to hit one voice at the
+                // exact moment you stop being safe; measuring it from a different distance than
+                // `cerco_is_closed` uses would put the tell a metre off the thing it announces.
+                let t = ((nearest - FACELING_CHILD_CERCO_CLOSED_RADIUS)
+                    / (FACELING_CHILD_DETECT_RADIUS - FACELING_CHILD_CERCO_CLOSED_RADIUS))
                     .clamp(0.0, 1.0);
                 FACELING_CHILD_GIGGLE_SPREAD_MIN_S
                     + t * (FACELING_CHILD_GIGGLE_SPREAD_MAX_S - FACELING_CHILD_GIGGLE_SPREAD_MIN_S)
@@ -1473,7 +1591,19 @@ impl ChildDriver {
         // cercado" is unreachable text — the freeze would have covered every case that clause
         // exists for. This is the beat the converging giggles are the tell FOR: they arrive at a
         // single voice exactly when the protection ends.
-        if let Some(target) = self.packs[pi].mind.last_known_pos {
+        //
+        // Measured against the target's LIVE position, never `mind.last_known_pos`. With the
+        // memory the ring stays "shut" around wherever you WERE for the whole 20 s of
+        // `FACELING_CHILD_GIVE_UP_S` — so after every escape the pack would refuse to freeze,
+        // from any distance, for twenty seconds. The stare has to fail because they are actually
+        // on you, not because they once were.
+        let live_target = self.packs[pi].mind.target.and_then(|tid| {
+            players
+                .iter()
+                .find(|&&(pid, _, _)| pid == tid)
+                .map(|&(_, ppos, _)| ppos)
+        });
+        if let Some(target) = live_target {
             if cerco_is_closed(&member_positions, target) {
                 if self.packs[pi].frozen {
                     self.packs[pi].frozen = false;
@@ -1625,8 +1755,12 @@ impl ChildDriver {
                             .map(|&(pid, ppos, pyaw)| (pid, ppos, pyaw))
                     });
                     if let Some((victim, tpos, tyaw)) = live {
+                        // Reach AND a clear line, same as the adult's and for the same reason
+                        // (ADR-082): without the segment test the pack knocks you down through
+                        // the partition it is standing behind.
                         if world_pos_to_layer(tpos.y) == layer
                             && tpos.distance_xz(from) <= FACELING_CHILD_ATTACK_REACH
+                            && segment_is_clear(&mut self.grid_cache, layer, from, tpos)
                         {
                             // The SAME predicate that switches the freeze off — see
                             // `cerco_is_closed`'s own doc for why the two must not drift apart.
@@ -1643,6 +1777,9 @@ impl ChildDriver {
                                 let dx = tpos.x - from.x;
                                 let dz = tpos.z - from.z;
                                 let len = (dx * dx + dz * dz).sqrt().max(0.0001);
+                                // Face the victim — same reason as the adult's: this path returns
+                                // before the movement arm that normally maintains `heading`.
+                                self.packs[pi].members[mi].heading = dx.atan2(dz);
                                 self.packs[pi].members[mi].strike_recover =
                                     FACELING_CHILD_STRIKE_RECOVERY;
                                 self.attacks.push(PhantomAttack {
@@ -1756,6 +1893,38 @@ impl ChildDriver {
                     }
                     return;
                 }
+                // Not getting closer for `FACELING_WEDGED_GIVE_UP_S`? Draw somewhere else.
+                // `PackRoam`'s own re-roll lives behind the ARRIVE check above, so without this a
+                // child that can never arrive never re-rolls — and "never arrives" covers walking
+                // the length of a wall forever, not just standing against it.
+                if self.packs[pi].members[mi].progress.note(from, target, dt) {
+                    match pick_roam_point(
+                        &mut self.grid_cache,
+                        anchor,
+                        FACELING_CHILD_PATROL_RADIUS_M,
+                        layer,
+                    ) {
+                        Some(next_target) => {
+                            self.packs[pi].members[mi].roam_target = next_target;
+                            info!(
+                                "MPTRACE step=FL_NAV event=faceling_child_unwedged faceling_id={} chunk=({},{})",
+                                id, self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1
+                            );
+                        }
+                        // Nothing walkable sampled this attempt: aim at the anchor, which is by
+                        // construction a place the pack was able to stand.
+                        None => self.packs[pi].members[mi].roam_target = anchor,
+                    }
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        let yaw = self.packs[pi].members[mi]
+                            .heading
+                            .to_degrees()
+                            .rem_euclid(360.0);
+                        peer.update_player_state(from.to_array(), yaw, "idle".into());
+                    }
+                    return;
+                }
+
                 let raw_heading = (target.x - from.x).atan2(target.z - from.z);
                 let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                 let step = FACELING_CHILD_ROAM_SPEED * dt;
@@ -1777,12 +1946,14 @@ impl ChildDriver {
                     }
                     return;
                 }
+
+                let anim = "walk_slow";
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = self.packs[pi].members[mi]
                         .heading
                         .to_degrees()
                         .rem_euclid(360.0);
-                    peer.update_player_state(from.to_array(), yaw, "walk_slow".into());
+                    peer.update_player_state(from.to_array(), yaw, anim.into());
                 }
             }
         }
