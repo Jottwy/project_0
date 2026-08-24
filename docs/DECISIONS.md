@@ -5835,3 +5835,124 @@ de estado de región, bump de wire) y el loop de juego validado (dirección sand
 ADR-067 (chunk displacement — la inestabilidad como identidad mecánica), ADR-061 (espejo de versión
 de wire), ADR-081 (claims, para denegar construcción por zona), ADR-088..092 (la IA que puebla la
 región; su playtest pendiente conviene ANTES de poblar esto).
+
+## ADR-094 — Facelings v1: adultos que trabajan y niños que roban en colmena; `species` en la pose y carril de robo; wire 41 → 42 (2026-08-24) — PROPUESTA
+
+Estado: **PROPUESTA (2026-08-24), diseñada con Joel en sesión** (concepto suyo; menú de cuatro
+decisiones respondido: niños LADRONES, adultos HOSTILES al ser atacados, ambos tipos de golpe,
+territorio = oficinas y alrededores). Segunda y tercera especie del juego tras el robapieles.
+
+Contexto: las oficinas (`ZONE_OFFICE`, ADR-058/086/087) son geometría vacía, y toda la
+infraestructura de criatura construida para el robapieles es reutilizable tal cual: peer sintético
+(ADR-016) con visibilidad para joiners (ADR-079), navegación con contacto/bigotes/intercepción
+(ADR-082/088), percepción por cono+oído+luz (ADR-040/080), vocales (ADR-048), poblado determinista
+(ADR-043), retardo determinista de coro (ADR-080) y la tubería de modelo Meshy→prefab
+(`PhantomRealFormBuilder`). Lo único que el wire no sabe decir hoy es «este peer no es humano y es de
+tal especie» — el robapieles JAMÁS lo dice (su invariante es no decirlo); los facelings no se
+disfrazan, así que lo dicen siempre.
+
+Decisión, seis piezas:
+
+1. **`species: u8` como campo cosmético de la pose** (`#[serde(default)]` = 0). 0 = humano (y
+   robapieles disfrazado — su indistinguibilidad de ADR-016 queda intacta por construcción: su campo
+   vale 0 como el de cualquier jugador); 1 = faceling adulto; 2 = faceling niño. Sellado por los
+   drivers junto a `revealed` (nunca en `update_player_state`, regla de
+   `.claude/rules/pose-relay-wire-rust.md`); el cliente elige modelo, animador y bancos de audio por
+   especie. Los facelings no llevan nombre de disfraz (nametag vacío). **Bump 41 → 42** con espejo
+   `WireSchema.Expected` en el mismo commit.
+
+2. **ADULTOS — atrezzo turbio, hostiles solo si los tocas.** FSM mínima: `Working` (de pie ante un
+   puesto — escritorio, pared — con micro-gestos del teatro de pickup), `Commute` (camina a otro
+   puesto de la misma oficina), `Regard` (un jugador entra en radio ⇒ TODOS los adultos de la sala
+   paran A LA VEZ y giran cabeza y cuerpo hacia él —head-tracking de ADR-080— 2–4 s, y vuelven al
+   trabajo sin más), `Enforce` (SOLO al recibir daño cualquiera de la sala: todos los adultos de la
+   oficina convergen sobre el agresor a paso lento, golpes fuertes tipo `Hit`, **sin salir jamás de
+   su zona de oficina** — la correa es la zona, no un radio — y a los ~45 s sin verlo vuelven a
+   `Working`). Sin voz propia en v1. Neutrales con todo lo demás: no perciben crouch, luz ni ruido —
+   solo presencia en radio y daño recibido.
+
+3. **NIÑOS — LA COLMENA.** Packs de 3–4 con `PackMind` compartido en el driver (objetivo, última
+   posición vista, roles, botín). Las reglas que la hacen colmena:
+   - **Conocimiento instantáneo**: la percepción de CUALQUIER miembro escribe en el `PackMind` y
+     todos actúan sobre él en el mismo tick. No hay «avisar»; eso es exactamente lo inquietante.
+   - **Cerco por roles** (con piezas ya construidas): PRESS acosa de frente; dos FLANK toman los
+     lados fuera del cono del objetivo (flanqueo de ADR-080, lados opuestos forzados); CUT va al
+     punto de corte de la retirada — `intercept_point` de ADR-088 evaluado sobre la dirección DE
+     VUELTA del jugador. Roles reasignados al morir un miembro.
+   - **Congelación sincronizada**: si el jugador mira a CUALQUIER miembro (cono de Statue,
+     ADR-016/050), se congela el pack ENTERO. Te giras: cuatro quietos mirándote desde sitios
+     distintos. Miras a otro lado: pasitos. La histéresis de cono de Statue se reutiliza tal cual.
+   - **Las risas son telemetría**: en `PackRoam`/`PackStalk`, risitas con los retardos deterministas
+     del coro (ADR-080); al fijar objetivo, los retardos CONVERGEN a cero con la distancia — risa a
+     coro = el cerco está cerrado. El jugador aprende a leerlo por la piel. Grito: al cargar, y todos
+     A LA VEZ cuando un miembro muere.
+   - **Cobardía individual**: un pack reducido a 1 huye a territorio y grita para reagruparse con
+     otro pack. El peligro es la geometría del cerco, nunca el niño suelto.
+
+4. **EL ROBO (decisión de Joel: son ladrones).** El golpe del rol PRESS conectando por la espalda o
+   sobre un jugador cercado hace knockdown (pieza de ADR-076) **y roba UN item**. Autoridad
+   repartida como el daño de ADR-047, porque el inventario es del backend de la víctima (ADR-045):
+   - Host → backend de la víctima: **`0x55 StealCommand`** (fiable, familia petición/veredicto de
+     ADR-039). El backend de la víctima ELIGE qué item pierde (regla v1: un stack aleatorio del
+     inventario general, nunca lo equipado ni la ropa), lo retira, y responde **`0x56 StealReport
+     { def_id, count }`** (fiable). Para el jugador del host, aplicación directa sin wire.
+   - El niño CARGA el botín: `carry_def/carry_count` cosméticos (ADR-049) — se le VE llevándose lo
+     tuyo, que es la mitad de la rabia.
+   - **INVARIANTE: el item nunca se destruye.** Muerto el ladrón ⇒ el host acuña un item de mundo
+     (roster STP host-autoritativo, camino de drop existente) en el sitio. Ladrón que escapa ⇒ lleva
+     el botín a un punto-nido de su territorio de oficina y lo SUELTA allí (item de mundo normal):
+     robar de vuelta en su guarida es level design gratis. Desactivación por lejanía ⇒ suelta donde
+     estaba. Un `StealReport` que no llega (evicción ADR-062) ⇒ el robo no ocurrió: sin item
+     fantasma, la víctima conserva lo suyo.
+
+5. **POBLADO Y TERRITORIO.** Sorteo determinista por bloque (patrón ADR-043, salt propio) CONDICIONADO
+   a zona: adultos por chunk `ZONE_OFFICE` (densidad por medir con sonda, patrón `perf-baseline.md`);
+   packs de niños anclados a un chunk de oficina y rondando su perímetro (~2 chunks). Entrar en
+   oficinas ES la decisión de riesgo; el robapieles sigue siendo el dueño del laberinto. Activación
+   por proximidad como ADR-043.
+
+6. **CLIENTE.** Modelo por especie vía la tubería Meshy→prefab (**faltan los DOS modelos: encargo de
+   assets a Joel**); locomoción de niño con paso ligero/saltitos (animador propio, pendiente);
+   footsteps ligeros y rápidos (banco propio, sintetizable — es mecánico); bancos vocales
+   `FacelingChild_Giggle/Scream/Call` y `FacelingAdult_*` cableados por prefijo y **NACIENDO
+   VACÍOS** — un banco vacío es silencio y el silencio es honesto; risas de niño por DSP son el
+   cringe casi garantizado que ADR-080 alternativa (E) ya rechazó para el robapieles. La MECÁNICA de
+   sincronización de risas se implementa igual (es timing, no contenido).
+
+Alternativas rechazadas:
+- **(A) «Mente colmena» por mensajería entre criaturas** (avisos, llamadas con retardo). RECHAZADA:
+  más código para MENOS miedo — el retardo humaniza. La colmena es memoria compartida, no charla.
+- **(B) Niños letales como el robapieles.** RECHAZADA por Joel: roban. El robo da miedo + rabia +
+  una razón para perseguirlos, y no le disputa la corona al robapieles.
+- **(C) Robo resuelto en el host contra el inventario REPORTADO de la víctima.** RECHAZADA: el
+  inventario es autoridad del backend de la víctima (ADR-045); el host decide QUE se roba, la
+  víctima decide QUÉ — mismo reparto que el daño de ADR-047.
+- **(D) Adultos que persiguen fuera de la oficina.** RECHAZADA: la correa de zona es lo que los hace
+  legibles («ahí dentro mandan ellos») y lo que impide que un aggro accidental te siga medio nivel.
+- **(E) Reutilizar el rango de ids como señal de especie (cero wire).** RECHAZADA: acopla identidad
+  a numeración, y `species` cosmético es un byte con `serde(default)` — el precio es un bump que
+  este ADR ya paga.
+
+Consecuencias / qué prohíbe: PROHÍBE que `species` participe en gameplay del lado cliente (es
+presentación; la conducta vive entera en el host). PROHÍBE robar equipado o ropa, robar más de un
+stack por knockdown, y cualquier camino en que el item robado se destruya. PROHÍBE que los adultos
+salgan de su zona o ataquen sin daño previo. PROHÍBE que el pack persiga dentro del territorio de
+claim de un jugador… **NO** — se decide lo contrario: los claims NO frenan a los niños (coherente con
+ADR-089: la zona segura no es santuario), y se deja escrito para que nadie lo «arregle».
+
+Verificación exigida antes de VALIDADA: tests de (a) `species` sellado por driver y default 0 en
+humanos/robapieles; (b) percepción de un miembro visible en el `PackMind` de todos en el mismo tick;
+(c) congelación de pack por mirada a un solo miembro; (d) roles únicos y reasignación al morir;
+(e) robo: item elegido por la víctima, nunca equipado, carry visible, y recuperable al matar al
+ladrón (invariante de no-destrucción de punta a punta); (f) round-trip de `0x55/0x56`; (g) adultos:
+Regard sincronizado y correa de zona. En juego: el cerco se LEE, la risa a coro avisa, y recuperar lo
+robado en el nido compensa el viaje.
+
+Por qué es ADR (reglas duras 2 y 7): dos especies nuevas sobre la FSM núcleo, campo nuevo en la pose
+y DOS opcodes nuevos (`0x55/0x56`) con bump 41 → 42 — API pública por partida doble.
+
+Dependencias: ADR-016/079 (peer sintético visible en joiners), ADR-040/082/088 (navegación y
+cerco), ADR-043 (poblado determinista), ADR-045/047 (autoridad de inventario y reparto
+host↔víctima), ADR-048/049 (vocales y carry cosmético), ADR-050/076 (knockdown), ADR-058/086/087
+(las oficinas que esto puebla), ADR-080 (head-tracking, flanqueo, retardos de coro), ADR-089 (los
+claims no son santuario), ADR-039/062 (familia fiable y qué pasa si el veredicto no llega).
