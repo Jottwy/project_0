@@ -563,6 +563,38 @@ const FACELING_CHILD_CERCO_BAND: f32 = 6.0;
 /// scent should let go sooner than an office defending itself.
 const FACELING_CHILD_GIVE_UP_S: f32 = 20.0;
 
+/// ADR-094 point 3/6 — the child pack's OWN vocal kind space, read by the CHILD's own
+/// `ProxyVocalHook` instance/bank array (`FacelingChildAvatarBuilder`'s own wiring), independent
+/// of `phantom.rs`'s `VOCAL_*` constants even though both ride the same generic
+/// `peer.vocal_seq`/`vocal_kind` wire fields (ADR-094 pays for that bump once, for both species).
+const FACELING_CHILD_VOCAL_GIGGLE: u8 = 0;
+const FACELING_CHILD_VOCAL_SCREAM: u8 = 1;
+/// The lone survivor's regroup call ("grita para reagruparse con otro pack"), emitted from
+/// `ChildState::Flee`. Client bank ships wired but unauthored, same convention as `phantom.rs`'s
+/// own silent banks.
+const FACELING_CHILD_VOCAL_CALL: u8 = 2;
+
+/// How often the pack schedules one giggle "beat" (`ChildDriver::update_giggles_for_pack`).
+const FACELING_CHILD_GIGGLE_INTERVAL_S: f32 = 5.0;
+/// Widest per-member offset off the beat: `PackRoam`, or `PackStalk` at the edge of detection —
+/// spread out, reads as ambient, not a chorus.
+const FACELING_CHILD_GIGGLE_SPREAD_MAX_S: f32 = 2.2;
+/// Narrowest offset, reached once the nearest member has closed to `FACELING_CHILD_CERCO_BAND` —
+/// ADR-094 point 3: "risa a coro = el cerco está cerrado".
+const FACELING_CHILD_GIGGLE_SPREAD_MIN_S: f32 = 0.15;
+
+/// v1 PLACEHOLDER. Faster than the cerco: this is panic, not hunting.
+const FACELING_CHILD_FLEE_SPEED: f32 = 3.0;
+/// How often a lone survivor screams for another pack while fleeing.
+const FACELING_CHILD_CALL_INTERVAL_S: f32 = 4.0;
+/// How close a lone survivor has to get to another pack of its own layer to join it. Generous on
+/// purpose — a straggler that never finds anybody is a straggler that stays a permanent free kill,
+/// which is the opposite of what "reagruparse" is for.
+const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
+/// A pack at this size does not accept a straggler — keeps ADR-094 point 3's own "packs de 3-4"
+/// invariant intact rather than growing a 5-child pack `assign_roles` has no roster for.
+const FACELING_CHILD_PACK_MAX: usize = 4;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChildState {
     /// Ambient wander within `FACELING_CHILD_PATROL_RADIUS_M` of the pack's anchor.
@@ -571,6 +603,11 @@ pub(super) enum ChildState {
     /// instant ANY member detects a player; left when `PackMind.lost_for` exceeds
     /// `FACELING_CHILD_GIVE_UP_S`.
     PackStalk,
+    /// ADR-094 point 3, "cobardía individual": a pack thinned down to ONE runs for its own
+    /// territory and calls for another pack. A `Flee` pack never cercos again on its own — it is
+    /// a straggler until it merges (`ChildDriver::regroup_lone_survivors`), which is the whole
+    /// point: "el peligro es la geometría del cerco, nunca el niño suelto".
+    Flee,
 }
 
 pub(super) struct ChildMover {
@@ -583,6 +620,16 @@ pub(super) struct ChildMover {
     /// `None` in `PackRoam` — nothing to hold a side for. Assigned on entering `PackStalk`
     /// (`assign_roles`) and re-rolled whenever the roster changes (a member dies).
     pub(super) role: Option<ChildRole>,
+    /// ADR-094 point 3 ("las risas son telemetría") + point 6's vocal banks. Same shape as
+    /// `phantom.rs::PhantomMover`'s own `pending_vocal`/`vocal_seq`/`vocal_kind` (staged here,
+    /// sealed into `peer.vocal_*` once per tick by `ChildDriver::seal_vocals` — see that fn for
+    /// why staging beats writing at the decision site).
+    pub(super) pending_vocal: Option<u8>,
+    pub(super) vocal_seq: u8,
+    pub(super) vocal_kind: u8,
+    /// Countdown to this member's own queued giggle, in flight from
+    /// `ChildDriver::update_giggles_for_pack`. `None` when nothing is queued.
+    pub(super) vocal_delay: Option<f32>,
     /// `ChildRole::Flank`'s persisted side, same shape and same reason as
     /// `phantom.rs::PhantomMover::flank_offset`: a member sitting dead-centre in the target's
     /// view must not shuffle between two equally good exits every tick.
@@ -647,6 +694,13 @@ pub(super) struct ChildPack {
     /// still frozen, which is not "cuatro quietos" — it is three creeping away.
     pub(super) frozen: bool,
     pub(super) members: Vec<ChildMover>,
+    /// Seconds to the next giggle "beat" (`ChildDriver::update_giggles_for_pack`). Pack-level,
+    /// not per-member: the beat fires once and every member queues its own offset off it —
+    /// that offset, not this timer, is what spreads or converges the chorus.
+    pub(super) giggle_timer: f32,
+    /// Bumped every beat, folded into each member's `chorus_delay_fraction` key so two beats
+    /// never reuse the same per-member offset (same reason `phantom.rs` keys on `vocal_seq`).
+    pub(super) giggle_round: u32,
 }
 
 pub(super) struct ChildDriver {
@@ -873,6 +927,10 @@ impl ChildDriver {
                                     * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S),
                             health: FACELING_CHILD_MAX_HEALTH,
                             role: None,
+                            pending_vocal: None,
+                            vocal_seq: 0,
+                            vocal_kind: 0,
+                            vocal_delay: None,
                             flank_offset: 0.0,
                         });
                     }
@@ -888,6 +946,8 @@ impl ChildDriver {
                         mind: PackMind::empty(),
                         frozen: false,
                         members,
+                        giggle_timer: FACELING_CHILD_GIGGLE_INTERVAL_S,
+                        giggle_round: 0,
                     });
                     if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
                         return;
@@ -901,6 +961,195 @@ impl ChildDriver {
     /// pack's `PackMind` before any member moves, which is the actual mechanism behind ADR-094's
     /// "no hay «avisar»" — every member's movement this tick already sees whatever any member
     /// perceived THIS tick, never last tick's picture.
+    /// ADR-094 E2b+ — a hit landed on `victim_id`, one of the children. Twin of
+    /// `AdultDriver::apply_damage` and reached from the SAME branch of
+    /// `process_pvp_hit_candidate_host`, but the reactions are the pack's, not one mover's:
+    ///
+    /// * SURVIVES → the whole pack turns on `attacker_id` in the same tick, with no line of sight
+    ///   required by anybody. That IS the hive (point 3, "conocimiento instantáneo"): hurting one
+    ///   child tells four where you are.
+    /// * DIES → every survivor screams AT ONCE ("todos A LA VEZ cuando un miembro muere"), roles
+    ///   are re-dealt over the thinned roster ("roles reasignados al morir un miembro"), and a
+    ///   pack down to its last child drops to `Flee` instead of pressing a cerco it cannot form.
+    ///
+    /// Returns whether the child died.
+    /// `host_player_pos` is NOT redundant with `net.peers`: the host's own player is the one
+    /// participant that never has a `PeerConnection`, so resolving the attacker's position from
+    /// the roster alone would leave `last_known_pos` empty for exactly the attacker the host is
+    /// most likely to be — and a pack that cannot place you is a pack that never retaliates.
+    /// `AdultDriver` dodges this by storing only the id and resolving late; the pack mind stores
+    /// the POSITION, so it has to be resolved here.
+    pub(super) fn apply_damage(
+        &mut self,
+        net: &mut NetworkManager,
+        victim_id: PeerId,
+        attacker_id: PeerId,
+        damage: f32,
+        host_player_pos: Vec3,
+    ) -> bool {
+        let Some((pi, mi)) = self.packs.iter().enumerate().find_map(|(pi, pack)| {
+            pack.members
+                .iter()
+                .position(|m| m.id == victim_id)
+                .map(|mi| (pi, mi))
+        }) else {
+            return false;
+        };
+
+        let dealt = damage.max(0.0).round() as u8;
+        let member = &mut self.packs[pi].members[mi];
+        member.health = member.health.saturating_sub(dealt);
+        let health_left = member.health;
+        info!(
+            "MPTRACE step=FL_DMG event=faceling_child_damaged faceling_id={} attacker_id={} damage={} health={}",
+            victim_id, attacker_id, dealt, health_left
+        );
+
+        if health_left > 0 {
+            // The hive learns instantly, and being hurt is perception too — no cone check, no
+            // line of sight, and deliberately no `Flee`: a pack that still has numbers answers.
+            if self.packs[pi].state != ChildState::Flee {
+                let attacker_pos = match attacker_id == net.local_id {
+                    true => Some(host_player_pos),
+                    false => net
+                        .peers
+                        .get(&attacker_id)
+                        .map(|p| Vec3::from_array(p.position)),
+                };
+                let mind = &mut self.packs[pi].mind;
+                mind.target = Some(attacker_id);
+                if let Some(pos) = attacker_pos {
+                    mind.last_known_pos = Some(pos);
+                }
+                mind.lost_for = 0.0;
+                if self.packs[pi].state != ChildState::PackStalk
+                    && self.packs[pi].mind.last_known_pos.is_some()
+                {
+                    self.packs[pi].state = ChildState::PackStalk;
+                    assign_roles(&mut self.packs[pi].members);
+                    for m in &mut self.packs[pi].members {
+                        m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
+                    }
+                    info!(
+                        "MPTRACE step=FL_PACK event=faceling_pack_cerco_started chunk=({},{}) target={} cause=retaliation",
+                        self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1, attacker_id
+                    );
+                }
+            }
+            return false;
+        }
+
+        net.despawn_faceling(victim_id);
+        self.packs[pi].members.remove(mi);
+        let home = self.packs[pi].home_chunk;
+        info!(
+            "MPTRACE step=FL_DMG event=faceling_child_killed faceling_id={} chunk=({},{}) left={}",
+            victim_id,
+            home.0,
+            home.1,
+            self.packs[pi].members.len()
+        );
+
+        // "Grito ... todos A LA VEZ cuando un miembro muere" — no chorus spread here on purpose:
+        // the spread is what makes the giggles read as several children in several places, and
+        // this one has to read as one voice, which is what makes it land as a reaction.
+        for m in &mut self.packs[pi].members {
+            m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
+            m.vocal_delay = None;
+        }
+
+        match self.packs[pi].members.len() {
+            0 => {
+                self.packs.remove(pi);
+            }
+            1 => {
+                self.packs[pi].state = ChildState::Flee;
+                self.packs[pi].frozen = false;
+                self.packs[pi].mind = PackMind::empty();
+                let survivor = &mut self.packs[pi].members[0];
+                survivor.role = None;
+                survivor.flank_offset = 0.0;
+                survivor.state_timer = FACELING_CHILD_CALL_INTERVAL_S;
+                info!(
+                    "MPTRACE step=FL_PACK event=faceling_pack_lone_survivor chunk=({},{}) faceling_id={}",
+                    home.0, home.1, survivor.id
+                );
+            }
+            _ => assign_roles(&mut self.packs[pi].members),
+        }
+        true
+    }
+
+    /// ADR-094 point 3 — "un pack reducido a 1 huye a territorio y grita para reagruparse con otro
+    /// pack". The merge half of that sentence: a `Flee` straggler that has reached another pack of
+    /// its own layer joins it outright.
+    ///
+    /// Runs as its OWN pass after every pack has ticked, never inside the pack loop: moving a
+    /// member between two packs mid-iteration is exactly the kind of aliasing that turns into a
+    /// silently skipped pack.
+    fn regroup_lone_survivors(&mut self, net: &NetworkManager) {
+        let mut merges: Vec<(usize, usize)> = Vec::new(); // (straggler pack, host pack)
+        for (si, straggler) in self.packs.iter().enumerate() {
+            if straggler.state != ChildState::Flee || straggler.members.len() != 1 {
+                continue;
+            }
+            let Some(spos) = net
+                .peers
+                .get(&straggler.members[0].id)
+                .map(|p| Vec3::from_array(p.position))
+            else {
+                continue;
+            };
+            let found = self.packs.iter().enumerate().find(|(hi, host)| {
+                *hi != si
+                    && host.layer == straggler.layer
+                    && host.state != ChildState::Flee
+                    && host.members.len() < FACELING_CHILD_PACK_MAX
+                    && host
+                        .members
+                        .iter()
+                        .filter_map(|m| net.peers.get(&m.id))
+                        .any(|p| {
+                            Vec3::from_array(p.position).distance_xz(spos)
+                                <= FACELING_CHILD_REGROUP_RADIUS
+                        })
+            });
+            if let Some((hi, _)) = found {
+                merges.push((si, hi));
+            }
+        }
+
+        // Highest index first: removing a pack shifts everything after it, and a host index
+        // recorded before the removal would then point at the wrong pack.
+        merges.sort_unstable_by_key(|(si, _)| std::cmp::Reverse(*si));
+        let mut merged: HashSet<usize> = HashSet::new();
+        for (si, hi) in merges {
+            // One straggler can be claimed by one host only, and a host that was ITSELF removed
+            // as a straggler this pass is no longer a place to merge into.
+            if merged.contains(&si) || merged.contains(&hi) {
+                continue;
+            }
+            merged.insert(si);
+            let mut pack = self.packs.remove(si);
+            let hi = if hi > si { hi - 1 } else { hi };
+            let Some(member) = pack.members.pop() else {
+                continue;
+            };
+            let id = member.id;
+            self.packs[hi].members.push(member);
+            if self.packs[hi].state == ChildState::PackStalk {
+                assign_roles(&mut self.packs[hi].members);
+            }
+            info!(
+                "MPTRACE step=FL_PACK event=faceling_pack_regrouped faceling_id={} into_chunk=({},{}) size={}",
+                id,
+                self.packs[hi].home_chunk.0,
+                self.packs[hi].home_chunk.1,
+                self.packs[hi].members.len()
+            );
+        }
+    }
+
     pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32, host_player_pos: Vec3) {
         let players: Vec<(PeerId, Vec3, f32)> = std::iter::once((
             net.local_id,
@@ -919,8 +1168,83 @@ impl ChildDriver {
         for pi in 0..self.packs.len() {
             self.detect_for_pack(pi, net, dt, &players);
             self.update_freeze_for_pack(pi, net, &players);
+            self.update_giggles_for_pack(pi, net, dt);
             for mi in 0..self.packs[pi].members.len() {
                 self.tick_member(pi, mi, net, dt, &players);
+            }
+        }
+        self.regroup_lone_survivors(net);
+        self.seal_vocals(net);
+    }
+
+    /// ADR-094 point 3 — schedules one giggle "beat" per pack every
+    /// `FACELING_CHILD_GIGGLE_INTERVAL_S` and gives each member its own offset off that beat
+    /// (`chorus_delay_fraction`, same determinism reasoning as `phantom.rs`'s own chorus: a
+    /// play-test has to be repeatable). The offset's CEILING is what does the storytelling: wide
+    /// in `PackRoam` or at the edge of `PackStalk` detection, narrowing toward simultaneous as the
+    /// nearest member closes on the target — "risa a coro = el cerco está cerrado".
+    fn update_giggles_for_pack(&mut self, pi: usize, net: &NetworkManager, dt: f32) {
+        // A child running for its life is not giggling — `Flee` has its own voice
+        // (`FACELING_CHILD_VOCAL_CALL`, driven per-member from `tick_member`).
+        if self.packs[pi].state == ChildState::Flee {
+            return;
+        }
+        self.packs[pi].giggle_timer -= dt;
+        if self.packs[pi].giggle_timer > 0.0 {
+            return;
+        }
+        self.packs[pi].giggle_timer = FACELING_CHILD_GIGGLE_INTERVAL_S;
+
+        let spread = match (self.packs[pi].state, self.packs[pi].mind.last_known_pos) {
+            (ChildState::PackStalk, Some(target)) => {
+                let nearest = self.packs[pi]
+                    .members
+                    .iter()
+                    .filter_map(|m| net.peers.get(&m.id))
+                    .map(|p| Vec3::from_array(p.position).distance_xz(target))
+                    .fold(f32::MAX, f32::min);
+                let t = ((nearest - FACELING_CHILD_CERCO_BAND)
+                    / (FACELING_CHILD_DETECT_RADIUS - FACELING_CHILD_CERCO_BAND))
+                    .clamp(0.0, 1.0);
+                FACELING_CHILD_GIGGLE_SPREAD_MIN_S
+                    + t * (FACELING_CHILD_GIGGLE_SPREAD_MAX_S - FACELING_CHILD_GIGGLE_SPREAD_MIN_S)
+            }
+            _ => FACELING_CHILD_GIGGLE_SPREAD_MAX_S,
+        };
+
+        let round = self.packs[pi].giggle_round;
+        self.packs[pi].giggle_round = round.wrapping_add(1);
+        let (cx, cz) = self.packs[pi].home_chunk;
+        for (mi, m) in self.packs[pi].members.iter_mut().enumerate() {
+            if m.vocal_delay.is_some() {
+                continue; // this member already has a giggle in flight; do not stack
+            }
+            let key =
+                ((cx as u64) << 40) ^ ((cz as u64) << 16) ^ ((mi as u64) << 8) ^ (round as u64);
+            m.vocal_delay = Some(chorus_delay_fraction(key) * spread);
+        }
+    }
+
+    /// Applies every member's queued `pending_vocal`/`vocal_delay` into `peer.vocal_seq`/
+    /// `vocal_kind` — mirror of `phantom.rs::seal_cosmetics`'s own vocal half, run once per tick
+    /// after every state/movement arm has had its say, for the same reason: many early exits
+    /// inside `tick_member` would otherwise miss a write staged at the decision site.
+    fn seal_vocals(&mut self, net: &mut NetworkManager) {
+        for pack in &mut self.packs {
+            for m in &mut pack.members {
+                if let Some(kind) = m.pending_vocal.take() {
+                    // Wrapping, never landing back on 0 — the client's `ProxyVocalHook` treats 0
+                    // as "never vocalised" (`.claude/rules/pose-relay-proxy-hook-csharp.md`).
+                    m.vocal_seq = match m.vocal_seq.wrapping_add(1) {
+                        0 => 1,
+                        n => n,
+                    };
+                    m.vocal_kind = kind;
+                }
+                if let Some(peer) = net.peers.get_mut(&m.id) {
+                    peer.vocal_seq = m.vocal_seq;
+                    peer.vocal_kind = m.vocal_kind;
+                }
             }
         }
     }
@@ -935,6 +1259,13 @@ impl ChildDriver {
         dt: f32,
         players: &[(PeerId, Vec3, f32)],
     ) {
+        // A straggler does not hunt. ADR-094 point 3 makes the lone child harmless BY DESIGN
+        // ("el peligro es la geometría del cerco, nunca el niño suelto") — letting a `Flee` pack
+        // fall back into `PackStalk` on sight would quietly turn every survivor into a solo
+        // stalker, which is the exact fantasy the rule exists to prevent.
+        if self.packs[pi].state == ChildState::Flee {
+            return;
+        }
         let layer = self.packs[pi].layer;
         let mut spotted: Option<(PeerId, Vec3)> = None;
         'search: for m in &self.packs[pi].members {
@@ -965,6 +1296,12 @@ impl ChildDriver {
             if self.packs[pi].state != ChildState::PackStalk {
                 self.packs[pi].state = ChildState::PackStalk;
                 assign_roles(&mut self.packs[pi].members);
+                // ADR-094 point 3: "Grito: al cargar" — the whole pack, the instant the cerco
+                // opens. Overwrites whatever giggle a member might have had queued this same
+                // tick; a scream always wins (mirrors `phantom.rs`'s one-slot `pending_vocal`).
+                for m in &mut self.packs[pi].members {
+                    m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
+                }
                 info!(
                     "MPTRACE step=FL_PACK event=faceling_pack_cerco_started chunk=({},{}) target={}",
                     self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1, pid
@@ -1054,6 +1391,18 @@ impl ChildDriver {
         let layer = self.packs[pi].layer;
         let anchor = self.packs[pi].anchor;
 
+        // Ages this member's queued giggle regardless of movement/freeze state below — a frozen
+        // pack staring at you is exactly where the giggle should still land, not less creepy.
+        if let Some(left) = self.packs[pi].members[mi].vocal_delay {
+            let left = left - dt;
+            if left <= 0.0 {
+                self.packs[pi].members[mi].vocal_delay = None;
+                self.packs[pi].members[mi].pending_vocal = Some(FACELING_CHILD_VOCAL_GIGGLE);
+            } else {
+                self.packs[pi].members[mi].vocal_delay = Some(left);
+            }
+        }
+
         if self.packs[pi].frozen {
             if let Some(peer) = net.peers.get_mut(&id) {
                 let yaw = self.packs[pi].members[mi]
@@ -1066,6 +1415,49 @@ impl ChildDriver {
         }
 
         match self.packs[pi].state {
+            // ADR-094 point 3, "huye a territorio y grita para reagruparse con otro pack". Runs
+            // for the anchor and keeps calling once it is there — the call is what makes the
+            // merge happen, so it must not stop at the finish line.
+            ChildState::Flee => {
+                self.packs[pi].members[mi].state_timer -= dt;
+                if self.packs[pi].members[mi].state_timer <= 0.0 {
+                    self.packs[pi].members[mi].state_timer = FACELING_CHILD_CALL_INTERVAL_S;
+                    self.packs[pi].members[mi].pending_vocal = Some(FACELING_CHILD_VOCAL_CALL);
+                }
+
+                if from.distance_xz(anchor) <= FACELING_CHILD_ARRIVE_EPS {
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        let yaw = self.packs[pi].members[mi]
+                            .heading
+                            .to_degrees()
+                            .rem_euclid(360.0);
+                        peer.update_player_state(from.to_array(), yaw, "idle".into());
+                    }
+                    return;
+                }
+
+                let raw_heading = (anchor.x - from.x).atan2(anchor.z - from.z);
+                let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
+                let step = FACELING_CHILD_FLEE_SPEED * dt;
+                let next = Vec3::new(
+                    from.x + heading.sin() * step,
+                    from.y,
+                    from.z + heading.cos() * step,
+                );
+                // No patrol leash here, unlike `PackRoam`: this is a run TOWARD the anchor, so it
+                // can only ever end up further inside the territory, never out of it.
+                let (pos, anim) = match is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                    true => {
+                        self.packs[pi].members[mi].heading = heading;
+                        (next, "walk_slow")
+                    }
+                    false => (from, "idle"),
+                };
+                if let Some(peer) = net.peers.get_mut(&id) {
+                    let yaw = heading.to_degrees().rem_euclid(360.0);
+                    peer.update_player_state(pos.to_array(), yaw, anim.into());
+                }
+            }
             ChildState::PackStalk => {
                 let Some(target) = self.packs[pi].mind.last_known_pos else {
                     return; // detect_for_pack already reset the state if this were stale

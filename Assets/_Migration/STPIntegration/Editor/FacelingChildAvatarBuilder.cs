@@ -1,0 +1,232 @@
+#if UNITY_EDITOR
+using System.IO;
+using UnityEditor;
+using UnityEngine;
+
+namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
+{
+    /// <summary>
+    /// ADR-094 — same approach as <see cref="FacelingAdultAvatarBuilder"/> (see that class for the
+    /// full rationale): clones the baked <c>RemotePlayerAvatar</c> and swaps its default body for
+    /// the child faceling's own, instead of re-deriving the 20-hook vendor rig a third time.
+    /// Always-active body, reveal hook disabled — a faceling never disguises.
+    /// </summary>
+    public static class FacelingChildAvatarBuilder
+    {
+        private const string BasePrefabPath =
+            "Assets/_Migration/STPIntegration/Resources/RemotePlayerAvatar.prefab";
+        private const string OutputDir = "Assets/_Migration/STPIntegration/Resources/Facelings";
+        public const string OutputPath = OutputDir + "/FacelingChildAvatar.prefab";
+        private const string BodyChildName = "FacelingBody";
+
+        [MenuItem("Backrooms/Facelings/Build Child Avatar Prefab")]
+        public static void Build()
+        {
+            var basePrefab = AssetDatabase.LoadAssetAtPath<GameObject>(BasePrefabPath);
+            if (basePrefab == null)
+            {
+                Debug.LogError($"[FacelingChildAvatarBuilder] Base prefab not found: '{BasePrefabPath}'. " +
+                    "Run 'Backrooms ▸ Build Remote Avatar Prefab' first.");
+                return;
+            }
+
+            var bodyPrefab = FacelingChildRealFormBuilder.BuildOrGet();
+            if (bodyPrefab == null)
+            {
+                Debug.LogError("[FacelingChildAvatarBuilder] No faceling body built — " +
+                    "see FacelingChildRealFormBuilder's own errors above.");
+                return;
+            }
+
+            if (!Directory.Exists(OutputDir))
+            {
+                Directory.CreateDirectory(OutputDir);
+                AssetDatabase.Refresh();
+            }
+
+            var instance = (GameObject)PrefabUtility.InstantiatePrefab(basePrefab);
+            try
+            {
+                HideDefaultBody(instance);
+                NestFacelingBody(instance, bodyPrefab);
+                RetargetLocomotionFeeders(instance);
+                DisableRevealHook(instance);
+                WireVocalHook(instance);
+
+                PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
+                if (ok)
+                {
+                    AssetDatabase.SaveAssets();
+                    Debug.Log($"[FacelingChildAvatarBuilder] Saved '{OutputPath}'. " +
+                        "RemoteAvatarProvider will Resources.Load it at runtime for species==2 peers.");
+                }
+                else
+                {
+                    Debug.LogError("[FacelingChildAvatarBuilder] SaveAsPrefabAsset failed.");
+                }
+            }
+            finally
+            {
+                Object.DestroyImmediate(instance);
+            }
+        }
+
+        private static void HideDefaultBody(GameObject root)
+        {
+            foreach (var smr in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                smr.gameObject.SetActive(false);
+        }
+
+        private static void NestFacelingBody(GameObject root, GameObject bodyPrefab)
+        {
+            var existing = root.transform.Find(BodyChildName);
+            if (existing != null)
+                Object.DestroyImmediate(existing.gameObject);
+
+            var body = (GameObject)PrefabUtility.InstantiatePrefab(bodyPrefab, root.transform);
+            body.name = BodyChildName;
+            body.transform.localPosition = Vector3.zero;
+            body.transform.localRotation = Quaternion.identity;
+            body.SetActive(true);
+
+            var bodyAnimator = body.GetComponentInChildren<Animator>(true);
+            if (bodyAnimator != null)
+            {
+                var controller = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
+                    ProxyAnimatorControllerBuilder.OutputPath);
+                if (controller != null)
+                {
+                    bodyAnimator.runtimeAnimatorController = controller;
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(bodyAnimator);
+                }
+                else
+                {
+                    Debug.LogError("[FacelingChildAvatarBuilder] No proxy controller found — " +
+                        "the faceling WILL T-pose.");
+                }
+            }
+        }
+
+        private static void DisableRevealHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyRevealHook>();
+            if (hook != null)
+                hook.enabled = false;
+        }
+
+        // Same bug and same fix as FacelingAdultAvatarBuilder's own RetargetLocomotionFeeders —
+        // see that method's comment for the full "misdirected, not missing" explanation.
+        private static void RetargetLocomotionFeeders(GameObject root)
+        {
+            var bodyTransform = root.transform.Find(BodyChildName);
+            var bodyAnimator = bodyTransform != null ? bodyTransform.GetComponentInChildren<Animator>(true) : null;
+            if (bodyAnimator == null)
+            {
+                Debug.LogError("[FacelingChildAvatarBuilder] No Animator found on the nested body — " +
+                    "locomotion feeders left pointing at the old (disabled) body; the faceling WILL " +
+                    "look frozen.");
+                return;
+            }
+
+            var locomotion = root.GetComponent<ProxyLocomotionFeeder>();
+            if (locomotion != null)
+            {
+                var so = new SerializedObject(locomotion);
+                var prop = so.FindProperty("_animator");
+                if (prop != null)
+                    prop.objectReferenceValue = bodyAnimator;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            var jump = root.GetComponent<ProxyJumpFeeder>();
+            if (jump != null)
+            {
+                var so = new SerializedObject(jump);
+                var prop = so.FindProperty("_animator");
+                if (prop != null)
+                    prop.objectReferenceValue = bodyAnimator;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+        }
+
+        /// <summary>
+        /// ADR-094 point 3/6 — the child's OWN voice, own kind space (0=Giggle, 1=Scream, 2=Call;
+        /// matches `FACELING_CHILD_VOCAL_*` in the backend's faceling.rs), read off the SAME
+        /// generic `vocalSeq`/`vocalKind` wire fields as the robapieles by this proxy's OWN
+        /// `ProxyVocalHook` instance and bank array — no collision, since kind is only ever
+        /// interpreted against whichever hook instance the entity's own prefab carries.
+        /// Bank ships UNAUTHORED (empty `AudioClip[]`) until Joel drops files matching the
+        /// prefixes below into <see cref="AudioDir"/> — an empty bank is silent, not an error.
+        /// </summary>
+        private const string AudioDir = "Assets/_Migration/STPIntegration/Facelings/Audio";
+
+        private static void WireVocalHook(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyVocalHook>();
+            if (hook == null)
+                hook = root.AddComponent<ProxyVocalHook>();
+
+            var so = new SerializedObject(hook);
+            var voices = so.FindProperty("_voices");
+            if (voices == null)
+                return;
+
+            if (voices.arraySize < 3)
+                voices.arraySize = 3;
+
+            var banks = new[]
+            {
+                "FacelingChild_Giggle", // 0 — ambient telemetry giggle, PackRoam/PackStalk
+                "FacelingChild_Scream", // 1 — the whole pack, the instant the cerco opens
+                "FacelingChild_Call",   // 2 — reserved: E2c lone-survivor regroup, not triggered yet
+            };
+
+            if (!Directory.Exists(AudioDir))
+            {
+                Directory.CreateDirectory(AudioDir);
+                AssetDatabase.Refresh();
+            }
+
+            for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)
+            {
+                var found = LoadVoiceClips(banks[bank]);
+                var clips = voices.GetArrayElementAtIndex(bank).FindPropertyRelative("Clips");
+                if (clips == null)
+                    continue;
+
+                clips.arraySize = found.Length;
+                for (int i = 0; i < found.Length; i++)
+                    clips.GetArrayElementAtIndex(i).objectReferenceValue = found[i];
+
+                if (found.Length == 0)
+                    Debug.LogWarning($"[FacelingChildAvatarBuilder] Voice bank {bank} " +
+                        $"('{banks[bank]}*') has no clips in {AudioDir} — that voice is silent.");
+            }
+
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static AudioClip[] LoadVoiceClips(string prefix)
+        {
+            var guids = AssetDatabase.FindAssets("t:AudioClip", new[] { AudioDir });
+            var paths = new System.Collections.Generic.List<string>(guids.Length);
+            foreach (var guid in guids)
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (Path.GetFileName(path).StartsWith(prefix, System.StringComparison.Ordinal))
+                    paths.Add(path);
+            }
+            paths.Sort(System.StringComparer.Ordinal);
+
+            var clips = new System.Collections.Generic.List<AudioClip>(paths.Count);
+            foreach (var path in paths)
+            {
+                var clip = AssetDatabase.LoadAssetAtPath<AudioClip>(path);
+                if (clip != null)
+                    clips.Add(clip);
+            }
+            return clips.ToArray();
+        }
+    }
+}
+#endif

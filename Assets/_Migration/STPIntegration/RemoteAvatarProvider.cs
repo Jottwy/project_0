@@ -34,6 +34,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// under a literal "Resources" folder for Resources.Load to find it at all).</summary>
         public const string FacelingAdultResourcePath = "Facelings/FacelingAdultAvatar";
 
+        /// <summary>ADR-094: same as <see cref="FacelingAdultResourcePath"/>, for species==2.</summary>
+        public const string FacelingChildResourcePath = "Facelings/FacelingChildAvatar";
+
         // Distinct, bright colour; unlit so the dim Backrooms can never hide the fallback.
         private static readonly Color AvatarColor = new Color(0.20f, 0.85f, 1f, 1f);
 
@@ -41,6 +44,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private static GameObject _sharedTemplate;
         private static GameObject _sharedFacelingAdultTemplate;
         private static bool _facelingAdultLogged;
+        private static GameObject _sharedFacelingChildTemplate;
+        private static bool _facelingChildLogged;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -100,6 +105,27 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return _sharedFacelingAdultTemplate;
         }
 
+        /// <summary>ADR-094: same as <see cref="EnsureFacelingAdultTemplate"/>, for species==2.</summary>
+        public static GameObject EnsureFacelingChildTemplate()
+        {
+            if (_sharedFacelingChildTemplate != null)
+                return _sharedFacelingChildTemplate;
+
+            _sharedFacelingChildTemplate = Resources.Load<GameObject>(FacelingChildResourcePath);
+
+            if (!_facelingChildLogged)
+            {
+                _facelingChildLogged = true;
+                Debug.Log(_sharedFacelingChildTemplate != null
+                    ? $"[RemoteAvatarProvider] Using faceling child prefab Resources/{FacelingChildResourcePath}."
+                    : $"[RemoteAvatarProvider] Resources/{FacelingChildResourcePath} not found; species==2 " +
+                      "peers fall back to the default avatar. Run 'Backrooms ▸ Facelings ▸ Build Child Avatar " +
+                      "Prefab' to generate it.");
+            }
+
+            return _sharedFacelingChildTemplate;
+        }
+
         private void Update()
         {
             // Fallback assignment for a manager created outside the guarantor (e.g. GameBootstrap).
@@ -114,6 +140,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             var facelingTemplate = EnsureFacelingAdultTemplate();
             if (facelingTemplate != null && rpm.facelingAdultPrefab != facelingTemplate)
                 rpm.facelingAdultPrefab = facelingTemplate;
+
+            var facelingChildTemplate = EnsureFacelingChildTemplate();
+            if (facelingChildTemplate != null && rpm.facelingChildPrefab != facelingChildTemplate)
+                rpm.facelingChildPrefab = facelingChildTemplate;
         }
 
         // ─── Capsule fallback (used only when the STP prefab asset is absent) ───

@@ -17,6 +17,10 @@ namespace BackroomsSurvival.Net
                  "is built (Backrooms ▸ Facelings ▸ Build Adult Avatar Prefab).")]
         public GameObject facelingAdultPrefab;
 
+        [Tooltip("ADR-094: prefab for a species==2 (child faceling) peer. If null, falls back to " +
+                 "remotePlayerPrefab (Backrooms ▸ Facelings ▸ Build Child Avatar Prefab).")]
+        public GameObject facelingChildPrefab;
+
         [Header("Interpolation")]
         [Min(0f)] public float positionSmoothing = 22f;
 
@@ -400,13 +404,15 @@ namespace BackroomsSurvival.Net
         private RemotePlayerView CreateView(int species)
         {
             GameObject go;
-            // ADR-094: species==1 gets its own prefab if one has been built; falls back to the
+            // ADR-094: species==1/2 get their own prefab if one has been built; falls back to the
             // default player avatar otherwise (a faceling with no baked body just looks like a
-            // player until "Backrooms ▸ Facelings ▸ Build Adult Avatar Prefab" has been run —
-            // never a missing-reference error).
-            GameObject prefab = species == 1 && facelingAdultPrefab != null
-                ? facelingAdultPrefab
-                : remotePlayerPrefab;
+            // player until the matching "Backrooms ▸ Facelings ▸ Build * Avatar Prefab" has been
+            // run — never a missing-reference error).
+            GameObject prefab = remotePlayerPrefab;
+            if (species == 1 && facelingAdultPrefab != null)
+                prefab = facelingAdultPrefab;
+            else if (species == 2 && facelingChildPrefab != null)
+                prefab = facelingChildPrefab;
 
             if (prefab != null)
                 go = Instantiate(prefab);

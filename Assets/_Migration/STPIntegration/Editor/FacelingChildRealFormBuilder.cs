@@ -8,48 +8,34 @@ using UnityEngine.Rendering;
 namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
 {
     /// <summary>
-    /// ADR-094 — builds the ADULT faceling's body from the Meshy import, mirroring
-    /// <see cref="PhantomRealFormBuilder"/>'s pipeline (same reason it works: the proxy's clips are
-    /// already Humanoid muscle curves, so rigging this asset as Humanoid retargets the SAME
-    /// ProxyLocomotionController for free — no second controller, no duplicated clips).
+    /// ADR-094 — builds the CHILD faceling's body from the Meshy import, mirroring
+    /// <see cref="FacelingRealFormBuilder"/>'s pipeline (see that class for why: Humanoid rig +
+    /// T-pose source auto-maps and retargets the shared ProxyLocomotionController for free).
     ///
-    /// UNLIKE the robapieles, this body is never toggled by a "revealed" flag — a faceling never
-    /// disguises (ADR-094: "los facelings no se disfrazan, así que lo dicen siempre"), so
-    /// <see cref="FacelingAdultAvatarBuilder"/> nests it ALWAYS ACTIVE, not behind a reveal hook.
-    ///
-    /// SOURCE: the T-POSE export ("Character_output"), same reasoning as the robapieles' — a
-    /// Humanoid avatar auto-maps from the bind pose, and the sibling "Animation_Walking_withSkin"
-    /// export is frozen mid-stride, a bad pose to map from. That sibling's own walk clip is not
-    /// needed: the body animates from the player's own retargeted clip set, exactly like the
-    /// robapieles does.
+    /// SOURCE: the T-POSE export ("Character_output"), same reasoning as the adult's — the sibling
+    /// "Animation_Walking_withSkin" export is frozen mid-stride, a bad pose to rig from.
     /// </summary>
-    public static class FacelingRealFormBuilder
+    public static class FacelingChildRealFormBuilder
     {
         private const string OutputDir = "Assets/_Migration/STPIntegration/Facelings";
 
-        public const string PrefabPath = OutputDir + "/FacelingAdultRealForm.prefab";
-        private const string MaterialPath = OutputDir + "/FacelingAdultRealForm.mat";
+        public const string PrefabPath = OutputDir + "/FacelingChildRealForm.prefab";
+        private const string MaterialPath = OutputDir + "/FacelingChildRealForm.mat";
 
-        private const string SourceDir = "Assets/MeshyImports/faceling-multiview-rig_20260824_164303";
+        private const string SourceDir = "Assets/MeshyImports/Lifestealer Boy Rig_20260824_171633";
         private const string SourceFbxPath =
-            SourceDir + "/Meshy_AI_faceling_multiview_ri_biped_Character_output.fbx";
+            SourceDir + "/Meshy_AI_Lifestealer_Boy_Rig_biped_Character_output.fbx";
 
-        // UNLIKE PhantomRealFormBuilder's TargetHeight=0 (that asset's native scale was MEASURED and
-        // found already correct): this is a brand new Meshy export with no such measurement on
-        // record, and Meshy's own unit scale varies export to export. Normalising to a plausible
-        // adult height is the safer default until someone measures this specific asset and can
-        // justify trusting its native scale instead.
-        // 1.78m y luego 2.28m salieron visualmente pequenos en juego (Joel, 2026-08-24) — subido
-        // de nuevo. Si sigue leyendose pequeno tras esto, sospechar del pooling de
-        // RemotePlayerManager.Acquire (reusa el GameObject ya instanciado; un rebake en caliente,
-        // sin reiniciar Play, no llega a un faceling ya spawneado en la sesion — ver bitacora).
-        private static readonly float TargetHeight = 2.70f;
+        // No prior measurement on record for this export either (see FacelingRealFormBuilder).
+        // 1.30m and 1.35m read too small, 2.60m ("el doble") read too big (Joel, 2026-08-24, same
+        // session) — split the difference.
+        private static readonly float TargetHeight = 1.95f;
 
-        [MenuItem("Backrooms/Facelings/Build Adult Real Form")]
+        [MenuItem("Backrooms/Facelings/Build Child Real Form")]
         public static void BuildMenu() => BuildOrGet();
 
         /// <summary>
-        /// Returns the adult faceling's body prefab, rigging the source as Humanoid and building the
+        /// Returns the child faceling's body prefab, rigging the source as Humanoid and building the
         /// prefab and material if they are missing. Null with an error logged if the FBX is absent or
         /// its avatar cannot be mapped.
         /// </summary>
@@ -76,7 +62,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var importer = AssetImporter.GetAtPath(SourceFbxPath) as ModelImporter;
             if (importer == null)
             {
-                Debug.LogError($"[FacelingRealFormBuilder] Source FBX not found: '{SourceFbxPath}'.");
+                Debug.LogError($"[FacelingChildRealFormBuilder] Source FBX not found: '{SourceFbxPath}'.");
                 return null;
             }
 
@@ -87,7 +73,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 importer.avatarSetup = ModelImporterAvatarSetup.CreateFromThisModel;
                 importer.autoGenerateAvatarMappingIfUnspecified = true;
                 importer.SaveAndReimport();
-                Debug.Log("[FacelingRealFormBuilder] Re-imported the faceling FBX as Humanoid " +
+                Debug.Log("[FacelingChildRealFormBuilder] Re-imported the faceling FBX as Humanoid " +
                           "(auto-mapped avatar). This is the step that lets it play the player's clips.");
             }
 
@@ -97,7 +83,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
 
             if (avatar == null || !avatar.isValid || !avatar.isHuman)
             {
-                Debug.LogError("[FacelingRealFormBuilder] Humanoid auto-mapping FAILED for " +
+                Debug.LogError("[FacelingChildRealFormBuilder] Humanoid auto-mapping FAILED for " +
                     $"'{SourceFbxPath}' (avatar={(avatar != null ? avatar.name : "<none>")}, " +
                     $"valid={(avatar != null && avatar.isValid)}, human={(avatar != null && avatar.isHuman)}). " +
                     "Open the FBX's Rig tab ▸ Configure and map the missing bones by hand — without a " +
@@ -119,7 +105,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var fbx = AssetDatabase.LoadAssetAtPath<GameObject>(SourceFbxPath);
             if (fbx == null)
             {
-                Debug.LogError($"[FacelingRealFormBuilder] Source FBX not loadable: '{SourceFbxPath}'.");
+                Debug.LogError($"[FacelingChildRealFormBuilder] Source FBX not loadable: '{SourceFbxPath}'.");
                 return null;
             }
 
@@ -128,7 +114,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var instance = (GameObject)PrefabUtility.InstantiatePrefab(fbx);
             try
             {
-                instance.name = "FacelingAdultRealForm";
+                instance.name = "FacelingChildRealForm";
 
                 if (material != null)
                 {
@@ -146,11 +132,11 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 var saved = PrefabUtility.SaveAsPrefabAsset(instance, PrefabPath, out bool ok);
                 if (!ok)
                 {
-                    Debug.LogError($"[FacelingRealFormBuilder] SaveAsPrefabAsset failed for '{PrefabPath}'.");
+                    Debug.LogError($"[FacelingChildRealFormBuilder] SaveAsPrefabAsset failed for '{PrefabPath}'.");
                     return null;
                 }
 
-                Debug.Log($"[FacelingRealFormBuilder] Minted '{PrefabPath}' from the FBX. " +
+                Debug.Log($"[FacelingChildRealFormBuilder] Minted '{PrefabPath}' from the FBX. " +
                           "Material and scale on it are now YOURS — re-bakes never touch them again.");
                 return saved;
             }
@@ -170,16 +156,13 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (meshPath == SourceFbxPath)
                 return true;
 
-            Debug.LogError($"[FacelingRealFormBuilder] '{PrefabPath}' is skinned to " +
+            Debug.LogError($"[FacelingChildRealFormBuilder] '{PrefabPath}' is skinned to " +
                 $"'{meshPath ?? "<no skinned mesh>"}', not to '{SourceFbxPath}'. Only the latter is " +
                 "rigged as Humanoid, so this body would T-pose forever. Delete the prefab and re-run " +
                 "the bake to mint a correct one, or rebuild yours from that FBX.");
             return false;
         }
 
-        // Same reasoning as PhantomRealFormBuilder.ConfigureBody: the Animator wiring is the
-        // builder's job even on a hand-authored prefab, because ProxyAnimatorControllerBuilder mints
-        // a fresh asset GUID on every rebuild and the reference has to be re-stamped each bake.
         private static void ConfigureBody(GameObject prefab, Avatar avatar)
         {
             var animator = prefab.GetComponentInChildren<Animator>(true);
@@ -189,7 +172,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var controller = AssetDatabase.LoadAssetAtPath<RuntimeAnimatorController>(
                 ProxyAnimatorControllerBuilder.OutputPath);
             if (controller == null)
-                Debug.LogWarning("[FacelingRealFormBuilder] Proxy controller asset not found at " +
+                Debug.LogWarning("[FacelingChildRealFormBuilder] Proxy controller asset not found at " +
                     $"'{ProxyAnimatorControllerBuilder.OutputPath}'; the body will not animate. " +
                     "Run 'Backrooms ▸ Build Remote Avatar Prefab', which builds it first.");
 
@@ -204,7 +187,6 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 animator.avatar = avatar;
                 dirty = true;
             }
-            // The proxy's position comes from the network; root motion would fight it.
             if (animator.applyRootMotion)
             {
                 animator.applyRootMotion = false;
@@ -246,7 +228,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
 
             float factor = TargetHeight / bounds.size.y;
             instance.transform.localScale *= factor;
-            Debug.Log($"[FacelingRealFormBuilder] Measured {bounds.size.y:0.000} m, scaled ×{factor:0.000} " +
+            Debug.Log($"[FacelingChildRealFormBuilder] Measured {bounds.size.y:0.000} m, scaled ×{factor:0.000} " +
                       $"to the {TargetHeight:0.00} m target.");
         }
 
@@ -255,7 +237,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var shader = ResolveLitShader();
             if (shader == null)
             {
-                Debug.LogWarning("[FacelingRealFormBuilder] No lit shader found for the active pipeline; " +
+                Debug.LogWarning("[FacelingChildRealFormBuilder] No lit shader found for the active pipeline; " +
                     "leaving the FBX materials in place.");
                 return null;
             }
@@ -263,12 +245,12 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var mat = AssetDatabase.LoadAssetAtPath<Material>(MaterialPath);
             if (mat == null)
             {
-                mat = new Material(shader) { name = "FacelingAdultRealForm" };
+                mat = new Material(shader) { name = "FacelingChildRealForm" };
                 ApplyTextures(mat);
                 EnsureOutputDir();
                 AssetDatabase.CreateAsset(mat, MaterialPath);
                 AssetDatabase.SaveAssets();
-                Debug.Log($"[FacelingRealFormBuilder] Created '{MaterialPath}' on shader '{shader.name}'.");
+                Debug.Log($"[FacelingChildRealFormBuilder] Created '{MaterialPath}' on shader '{shader.name}'.");
                 return mat;
             }
 
@@ -279,7 +261,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 ApplyTextures(mat);
                 EditorUtility.SetDirty(mat);
                 AssetDatabase.SaveAssets();
-                Debug.Log($"[FacelingRealFormBuilder] Repaired '{MaterialPath}': shader '{was}' → " +
+                Debug.Log($"[FacelingChildRealFormBuilder] Repaired '{MaterialPath}': shader '{was}' → " +
                           $"'{shader.name}' (it belonged to a pipeline that is not active — that is " +
                           "what renders magenta).");
             }
@@ -287,9 +269,6 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             return mat;
         }
 
-        // This export shipped basecolor + metallic/smoothness, no normal map — AssignTexture already
-        // no-ops (with a warning) on a missing file, so this list is safe to keep matching
-        // PhantomRealFormBuilder's even though one entry will not resolve for this specific asset.
         private static void ApplyTextures(Material mat)
         {
             AssignTexture(mat, "_BaseMap", "meshy_basecolor.png");
@@ -335,7 +314,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             var tex = AssetDatabase.LoadAssetAtPath<Texture>($"{SourceDir}/{fileName}");
             if (tex == null)
             {
-                Debug.LogWarning($"[FacelingRealFormBuilder] Texture '{fileName}' not found next to the FBX.");
+                Debug.LogWarning($"[FacelingChildRealFormBuilder] Texture '{fileName}' not found next to the FBX.");
                 return false;
             }
 

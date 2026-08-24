@@ -804,12 +804,14 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         data: serde_json::json!({ "items": items }),
     };
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &mut processed,
         0,
@@ -832,12 +834,14 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
     };
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &mut processed,
         0,
@@ -871,12 +875,14 @@ async fn report_inventory_with_container_and_slot_also_populates_inventory_v2() 
         ] }),
     };
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &mut processed,
         0,
@@ -913,12 +919,14 @@ async fn report_inventory_legacy_only_leaves_inventory_v2_empty() {
         data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
     };
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &mut processed,
         0,
@@ -6143,12 +6151,14 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
         data: serde_json::json!({ "demolish_id": 903, "building_id": bed_id }),
     };
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &mut processed,
         0,
@@ -6184,12 +6194,14 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
         data: serde_json::json!({ "demolish_id": 904, "building_id": doomed_id }),
     };
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &mut processed,
         0,
@@ -6239,6 +6251,7 @@ async fn host_departure_saves_the_player_and_announces_session_ended() {
     let path = scratch_player_path("host_departure");
 
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: host_id,
@@ -6248,6 +6261,7 @@ async fn host_departure_saves_the_player_and_announces_session_ended() {
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &tx,
         &mut processed,
@@ -6292,6 +6306,7 @@ async fn a_non_host_peer_leaving_does_not_end_the_session() {
     let path = scratch_player_path("non_host_departure");
 
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: 5,
@@ -6301,6 +6316,7 @@ async fn a_non_host_peer_leaving_does_not_end_the_session() {
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &tx,
         &mut processed,
@@ -6338,6 +6354,7 @@ async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
     assert!(net.host_peer_id.is_none(), "precondition: this IS the host");
 
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: 2,
@@ -6347,6 +6364,7 @@ async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &tx,
         &mut processed,
@@ -6374,6 +6392,7 @@ async fn session_ended_carries_the_disconnect_reason() {
     net.host_peer_id = Some(1);
 
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    let mut child_driver = ChildDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: 1,
@@ -6383,6 +6402,7 @@ async fn session_ended_carries_the_disconnect_reason() {
         &mut world,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         &tx,
         &mut processed,
@@ -7907,6 +7927,7 @@ async fn pvp_hit_on_a_faceling_applies_damage_locally_and_alerts_the_whole_offic
     let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
     let mut player = Player::new(net.local_id, "Host");
     let mut adult_driver = AdultDriver::new(seed);
+    let mut child_driver = ChildDriver::new(seed);
     let (x0, _x1, z0, _z1) = chunk_bounds((ox, oz));
     let pos_a = Vec3::new(x0 + 5.0, stand_on(0), z0 + 5.0);
     let pos_b = Vec3::new(x0 + 5.0, stand_on(0), z0 + 40.0); // far from A, same office
@@ -7940,6 +7961,7 @@ async fn pvp_hit_on_a_faceling_applies_damage_locally_and_alerts_the_whole_offic
         &mut player,
         &mut net,
         &mut adult_driver,
+        &mut child_driver,
         &tx,
         0,
     )
@@ -8166,8 +8188,14 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             state_timer: 999.0,
             health: 15,
             role: None,
+            pending_vocal: None,
+            vocal_seq: 0,
+            vocal_kind: 0,
+            vocal_delay: None,
             flank_offset: 0.0,
         }],
+        giggle_timer: 999.0,
+        giggle_round: 0,
     });
 
     for _ in 0..200 {
@@ -8203,6 +8231,10 @@ async fn four_member_pack(
             state_timer: 999.0,
             health: 15,
             role: None,
+            pending_vocal: None,
+            vocal_seq: 0,
+            vocal_kind: 0,
+            vocal_delay: None,
             flank_offset: 0.0,
         });
     }
@@ -8214,6 +8246,8 @@ async fn four_member_pack(
         mind: PackMind::empty(),
         frozen: false,
         members,
+        giggle_timer: 999.0,
+        giggle_round: 0,
     }
 }
 
@@ -8343,4 +8377,204 @@ async fn the_pack_gives_up_the_cerco_after_losing_the_target_long_enough() {
     for m in &driver.packs[0].members {
         assert_eq!(m.role, None);
     }
+}
+
+/// THE REGRESSION THIS SLICE EXISTS FOR. Before `ChildDriver::apply_damage`, a hit on a child was
+/// accepted by `net.is_faceling` (which does not look at species), handed to the ADULTS' driver,
+/// missed its `position()` lookup and returned `false` — no damage, no despawn, not even a log
+/// line. Hitting a child did literally nothing, silently.
+#[tokio::test]
+async fn hitting_a_child_actually_takes_its_health() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let victim = pack.members[0].id;
+    let host = net.local_id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    let died = driver.apply_damage(&mut net, victim, host, 5.0, anchor);
+
+    assert!(!died, "5 damage should not kill a 15 HP child");
+    assert_eq!(driver.packs[0].members[0].health, 10);
+    assert_eq!(
+        driver.packs[0].members.len(),
+        4,
+        "a surviving child must not be removed from the roster"
+    );
+}
+
+/// ADR-094 point 3's "conocimiento instantáneo", through the damage door: hurting ONE child tells
+/// the whole pack where the attacker is, with nobody having to see anything. The attacker here is
+/// the HOST — the one participant with no `PeerConnection`, which is why `apply_damage` takes
+/// `host_player_pos` at all.
+#[tokio::test]
+async fn hurting_one_child_turns_the_whole_pack_on_the_attacker() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    // Everyone faces AWAY from the attacker: no member could have spotted it on its own.
+    for m in pack.members.iter_mut() {
+        m.heading = std::f32::consts::PI;
+    }
+    let victim = pack.members[2].id; // not member 0, to prove the roster index does not matter
+    let host = net.local_id;
+    let host_pos = Vec3::new(0.0, stand_on(0), 8.0);
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    driver.apply_damage(&mut net, victim, host, 3.0, host_pos);
+
+    assert_eq!(driver.packs[0].state, ChildState::PackStalk);
+    assert_eq!(driver.packs[0].mind.target, Some(host));
+    assert_eq!(driver.packs[0].mind.last_known_pos, Some(host_pos));
+    let roles: Vec<Option<ChildRole>> = driver.packs[0].members.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![
+            Some(ChildRole::Press),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Cut)
+        ]
+    );
+}
+
+/// ADR-094 point 3: "Grito ... todos A LA VEZ cuando un miembro muere". Every SURVIVOR gets the
+/// scream staged with NO chorus delay — the point of this one is that it lands as a single voice,
+/// unlike the giggles, whose whole job is to be spread out.
+#[tokio::test]
+async fn killing_a_member_makes_every_survivor_scream_at_once() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let victim = pack.members[0].id;
+    let host = net.local_id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    let died = driver.apply_damage(&mut net, victim, host, 99.0, anchor);
+
+    assert!(died);
+    assert_eq!(driver.packs[0].members.len(), 3);
+    assert!(
+        !net.peers.contains_key(&victim),
+        "a dead child must be despawned from the roster"
+    );
+    for m in &driver.packs[0].members {
+        assert_eq!(m.pending_vocal, Some(1), "survivor did not stage a scream");
+        assert_eq!(m.vocal_delay, None, "the death scream must not be delayed");
+    }
+    // "Roles reasignados al morir un miembro" — a 3-member roster drops the second Flank.
+    let roles: Vec<Option<ChildRole>> = driver.packs[0].members.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![
+            Some(ChildRole::Press),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Cut)
+        ]
+    );
+}
+
+/// ADR-094 point 3's "cobardía individual": the last child of a pack drops to `Flee` and — the
+/// load-bearing half — never cercos again on its own, even standing face to face with a player.
+/// "El peligro es la geometría del cerco, nunca el niño suelto."
+#[tokio::test]
+async fn a_pack_down_to_one_flees_and_never_stalks_again() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let ids: Vec<_> = pack.members.iter().map(|m| m.id).collect();
+    let host = net.local_id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    for id in ids.iter().take(3) {
+        driver.apply_damage(&mut net, *id, host, 99.0, anchor);
+    }
+
+    assert_eq!(driver.packs[0].members.len(), 1);
+    assert_eq!(driver.packs[0].state, ChildState::Flee);
+    assert_eq!(driver.packs[0].members[0].role, None);
+
+    // Now park a player right on top of the survivor, in its face, for two seconds of ticks.
+    let survivor_pos = Vec3::from_array(net.peers[&ids[3]].position);
+    let in_its_face = Vec3::new(survivor_pos.x, survivor_pos.y, survivor_pos.z + 2.0);
+    driver.packs[0].members[0].heading = 0.0; // facing +Z, straight at it
+    for _ in 0..20 {
+        driver.step(&mut net, 0.1, in_its_face);
+    }
+    assert_eq!(
+        driver.packs[0].state,
+        ChildState::Flee,
+        "a lone survivor must not fall back into a solo cerco"
+    );
+    assert_eq!(driver.packs[0].mind.target, None);
+}
+
+/// ADR-094 point 3: "un pack reducido a 1 huye a territorio y grita para reagruparse con OTRO
+/// pack" — the merge half. Also pins the size invariant: the straggler joins a pack of 2, not a
+/// full one.
+#[tokio::test]
+async fn a_lone_survivor_merges_into_a_nearby_pack() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+
+    // The straggler's pack: build four, kill three.
+    let doomed = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let doomed_ids: Vec<_> = doomed.members.iter().map(|m| m.id).collect();
+    let host = net.local_id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(doomed);
+    for id in doomed_ids.iter().take(3) {
+        driver.apply_damage(&mut net, *id, host, 99.0, anchor);
+    }
+    let survivor = doomed_ids[3];
+    assert_eq!(driver.packs[0].state, ChildState::Flee);
+
+    // A neighbour pack of TWO, well inside the regroup radius, same layer.
+    let neighbour_anchor = Vec3::new(6.0, stand_on(0), 0.0);
+    let mut neighbour = four_member_pack(&mut net, (1, 0), 0, neighbour_anchor).await;
+    neighbour.members.truncate(2);
+    driver.packs.push(neighbour);
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
+
+    assert_eq!(
+        driver.packs.len(),
+        1,
+        "the emptied straggler pack must be dropped, not left as a ghost"
+    );
+    assert_eq!(driver.packs[0].members.len(), 3);
+    assert!(
+        driver.packs[0].members.iter().any(|m| m.id == survivor),
+        "the survivor is not in the pack it merged into"
+    );
+}
+
+/// The size invariant on its own: a straggler does NOT join a pack that is already at four, which
+/// would hand `assign_roles` a roster it has no entry for (its fifth member would silently fall
+/// through to the `Press | None` arm).
+#[tokio::test]
+async fn a_lone_survivor_does_not_overfill_a_full_pack() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let doomed = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let doomed_ids: Vec<_> = doomed.members.iter().map(|m| m.id).collect();
+    let host = net.local_id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(doomed);
+    for id in doomed_ids.iter().take(3) {
+        driver.apply_damage(&mut net, *id, host, 99.0, anchor);
+    }
+
+    let full = four_member_pack(&mut net, (1, 0), 0, Vec3::new(6.0, stand_on(0), 0.0)).await;
+    driver.packs.push(full);
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
+
+    assert_eq!(driver.packs.len(), 2, "the straggler should still be alone");
+    assert_eq!(driver.packs[0].members.len(), 1);
+    assert_eq!(driver.packs[1].members.len(), 4);
 }

@@ -749,6 +749,7 @@ pub async fn run(
                         &mut world,
                         &mut net,
                         &mut adult_driver,
+                        &mut child_driver,
                         &to_clients,
                         &mut processed_interactions,
                         tick,
@@ -1114,6 +1115,7 @@ pub async fn run(
                 &mut world,
                 &mut net,
                 &mut adult_driver,
+                &mut child_driver,
                 &to_clients,
                 &to_clients_voice,
                 &mut processed_interactions,
@@ -1734,6 +1736,7 @@ pub async fn run(
                     &mut world,
                     &mut net,
                     &mut adult_driver,
+                    &mut child_driver,
                     &to_clients,
                     &to_clients_voice,
                     &mut processed_interactions,
@@ -1755,6 +1758,7 @@ pub async fn run(
                     &mut world,
                     &mut net,
                     &mut adult_driver,
+                    &mut child_driver,
                     &to_clients,
                     &to_clients_voice,
                     &mut processed_interactions,
@@ -1944,8 +1948,9 @@ async fn handle_network_event(
     world: &mut World,
     net: &mut NetworkManager,
     // ADR-094 E1b: a PvP hit landing on a faceling routes here, host-local — see
-    // `process_pvp_hit_candidate_host`.
+    // `process_pvp_hit_candidate_host`. Both species, both drivers.
     adult_driver: &mut AdultDriver,
+    child_driver: &mut ChildDriver,
     to_clients: &broadcast::Sender<ServerMessage>,
     // ADR-046 — voice out to Unity. Deliberately NOT `to_clients`: that channel evicts its
     // OLDEST messages on overflow, `player_died` among them.
@@ -2737,6 +2742,7 @@ async fn handle_network_event(
                 player,
                 net,
                 adult_driver,
+                child_driver,
                 to_clients,
                 tick,
             )
@@ -3309,6 +3315,7 @@ async fn handle_action(
     // ADR-094 E1b: same reason as `handle_network_event`'s — the host-self PvP path runs through
     // here (host's own Unity reports the hit directly, not via a network packet).
     adult_driver: &mut AdultDriver,
+    child_driver: &mut ChildDriver,
     to_clients: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
     tick: u64,
@@ -4319,6 +4326,7 @@ async fn handle_action(
                     player,
                     net,
                     adult_driver,
+                    child_driver,
                     to_clients,
                     tick,
                 )
@@ -4655,8 +4663,10 @@ async fn process_pvp_hit_candidate_host(
     player: &mut Player,
     net: &mut NetworkManager,
     // ADR-094 E1b: a faceling has no real backend behind it, so a hit on one is applied HERE,
-    // host-local, instead of taking the `PvpDamageGrant` network hop below.
+    // host-local, instead of taking the `PvpDamageGrant` network hop below. BOTH drivers, because
+    // `net.is_faceling` covers both species and only the owning driver can resolve the id.
     adult_driver: &mut AdultDriver,
+    child_driver: &mut ChildDriver,
     to_clients: &broadcast::Sender<ServerMessage>,
     tick: u64,
 ) {
@@ -4773,7 +4783,31 @@ async fn process_pvp_hit_candidate_host(
                 // Applied HERE instead, host-local, mirror image of `PhantomAttackGrant`'s own
                 // direction (creature → player instead of player → creature).
                 let attacker_id = peer_id_from_u32(candidate.attacker_id).unwrap_or(net.local_id);
-                adult_driver.apply_damage(net, victim_id, attacker_id, clamped_damage);
+                // Routed by SPECIES, not by "try one then the other": the two drivers keep
+                // disjoint rosters, and a miss in both is a real inconsistency worth a log line
+                // rather than a silent no-op — which is exactly what a hit on a child did before
+                // `ChildDriver::apply_damage` existed (it fell into the adults' `position()`
+                // lookup, found nothing, and returned `false` without a word).
+                let species = net.peers.get(&victim_id).map(|p| p.species).unwrap_or(0);
+                let handled = match species {
+                    2 => child_driver.apply_damage(
+                        net,
+                        victim_id,
+                        attacker_id,
+                        clamped_damage,
+                        player.position,
+                    ),
+                    _ => adult_driver.apply_damage(net, victim_id, attacker_id, clamped_damage),
+                };
+                if !handled && !net.peers.contains_key(&victim_id) {
+                    // Not "it survived" (that also returns false) — the peer is GONE, so the id
+                    // was in `faceling_ids` with nothing behind it. Cheap to log, and the only
+                    // way this desync ever surfaces.
+                    warn!(
+                        "MPTRACE step=FL_DMG event=faceling_damage_unroutable faceling_id={} species={}",
+                        victim_id, species
+                    );
+                }
             } else if let Some(victim_peer) = peer_id_from_u32(candidate.victim_id) {
                 let grant = PacketPayload::PvpDamageGrant {
                     request_id: candidate.request_id,

@@ -59,6 +59,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             {
                 HideDefaultBody(instance);
                 NestFacelingBody(instance, bodyPrefab);
+                RetargetLocomotionFeeders(instance);
                 DisableRevealHook(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
@@ -118,6 +119,46 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                     Debug.LogError("[FacelingAdultAvatarBuilder] No proxy controller found — " +
                         "the faceling WILL T-pose.");
                 }
+            }
+        }
+
+        // BUG FIX (Joel, 2026-08-24): the clone INHERITS `basePrefab`'s own `ProxyLocomotionFeeder`/
+        // `ProxyJumpFeeder` on the root (wired there by RemoteAvatarPrefabBuilder.WireLocomotionFeeder
+        // for the vendor human body) — but their serialized `_animator` reference still points at
+        // that ORIGINAL body's Animator, which `HideDefaultBody` just disabled. The feeder keeps
+        // driving MovementSpeed into a mesh nobody sees, while the faceling's OWN body — right here,
+        // freshly nested — never gets a single frame of it. Not a missing component, a misdirected
+        // one: adding a SECOND feeder would just fight this one over the same root-position delta.
+        private static void RetargetLocomotionFeeders(GameObject root)
+        {
+            var bodyTransform = root.transform.Find(BodyChildName);
+            var bodyAnimator = bodyTransform != null ? bodyTransform.GetComponentInChildren<Animator>(true) : null;
+            if (bodyAnimator == null)
+            {
+                Debug.LogError("[FacelingAdultAvatarBuilder] No Animator found on the nested body — " +
+                    "locomotion feeders left pointing at the old (disabled) body; the faceling WILL " +
+                    "look frozen.");
+                return;
+            }
+
+            var locomotion = root.GetComponent<ProxyLocomotionFeeder>();
+            if (locomotion != null)
+            {
+                var so = new SerializedObject(locomotion);
+                var prop = so.FindProperty("_animator");
+                if (prop != null)
+                    prop.objectReferenceValue = bodyAnimator;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            var jump = root.GetComponent<ProxyJumpFeeder>();
+            if (jump != null)
+            {
+                var so = new SerializedObject(jump);
+                var prop = so.FindProperty("_animator");
+                if (prop != null)
+                    prop.objectReferenceValue = bodyAnimator;
+                so.ApplyModifiedPropertiesWithoutUndo();
             }
         }
 
