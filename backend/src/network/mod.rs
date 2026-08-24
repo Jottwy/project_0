@@ -6,6 +6,7 @@
 //! reliability layer, and produces `NetworkEvent`s for the game loop.
 
 mod events;
+mod faceling;
 mod handlers;
 pub mod peer;
 mod phantom;
@@ -37,6 +38,12 @@ pub type PeerId = u16;
 /// NET_IDs = 1000 + pid%60000 ∈ [1000, 60999] (`NetworkInitializer.GenerateDebugNetId`).
 /// 0xF000 (61440) clears that range with room to spare in the u16 id space.
 const PHANTOM_ID_BASE: PeerId = 0xF000;
+
+/// ADR-094: base id for injected faceling peers (adultos y niños). Same real-id ceiling as
+/// `PHANTOM_ID_BASE` (60999), placed BELOW it with room to spare — collision-freedom in
+/// practice comes from `allocate_faceling_id`'s probe-and-skip against `self.peers` (the same
+/// guarantee `allocate_phantom_id` relies on), not from the two ranges never touching.
+const FACELING_ID_BASE: PeerId = 61000;
 
 /// ADR-016/ADR-079: the inert, non-routable address stamped on peers nobody may send to — the
 /// host stamps it on injected phantoms at spawn, and a joiner stamps it on `relay_only` PeerList
@@ -330,6 +337,12 @@ pub struct NetworkManager {
     /// it is not in `PeerInfo` (P2P) nor `RemotePlayerState` (IPC); pure host-side state. A
     /// joiner therefore cannot tell a phantom from a real peer (and its own set stays empty).
     pub phantom_ids: std::collections::HashSet<PeerId>,
+    /// ADR-094 (host-only, backend-only): ids of injected "faceling" peers (adultos y niños de
+    /// oficina). Same shape and same reason as `phantom_ids` above — never crosses the wire,
+    /// used only to identify a synthetic peer for heartbeat refresh and PvP damage routing.
+    /// `PeerConnection::relay_only` (not this set) is what every send/count/roster site already
+    /// gates on, so a faceling needs no changes there — see `network::faceling`.
+    pub faceling_ids: std::collections::HashSet<PeerId>,
     /// ADR-050 point 9 — victims who reported struggling out of a grab this tick, drained by
     /// `PhantomDriver::tick_grab`.
     ///
@@ -475,6 +488,7 @@ impl NetworkManager {
             next_phantom_attack_request_id: 1,
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
+            faceling_ids: std::collections::HashSet::new(),
             pending_struggles: std::collections::HashSet::new(),
             voice_echo: std::collections::HashMap::new(),
             voice_echo_seq: 0,

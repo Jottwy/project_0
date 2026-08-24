@@ -1,0 +1,380 @@
+//! ADR-094 E1a — Faceling adultos: Working/Commute/Regard. Sin Enforce todavía (ese es E1b,
+//! junto al carril de daño) y sin niños (E2+). Entra "casi inerte" en el sentido de ADR-093: se
+//! ve, camina y gira cabeza sincronizada, pero no puede hacerte daño ni recibirlo.
+//!
+//! Reutiliza infraestructura del robapieles a propósito (ADR-094 punto 1: "toda la
+//! infraestructura de criatura construida para el robapieles es reutilizable tal cual"), pero
+//! como funciones libres y un driver PROPIO — no como variantes nuevas de `PhantomState`/
+//! `PhantomMover`. Las dos especies no comparten ni un solo campo de comportamiento (el
+//! robapieles tiene hambre, cono de percepción, intercepción; un adulto no percibe nada salvo
+//! "hay alguien cerca" y "me han pegado") y forzarlas al mismo enum habría significado un
+//! `match` exhaustivo por todo `phantom.rs` decidiendo combinaciones que nunca ocurren.
+
+use super::*;
+
+use std::collections::HashSet;
+
+use crate::world::faceling_spawn;
+use crate::world::grid_gen::{is_walkable_grid_gen, steer_around_walls, CELL_SIZE_M, CHUNK_CELLS};
+
+/// Same cadence as `PHANTOM_POPULATION_SYNC_INTERVAL` — no reason to reconcile more often than
+/// once a second for a population this cheap to scan.
+const FACELING_POPULATION_SYNC_INTERVAL: f32 = 1.0;
+
+/// v1 PLACEHOLDER, unmeasured — ADR-094 point 5 flags density/radii as "por medir con sonda"
+/// exactly like ADR-043's own table did before ITS measurement pass. An office chunk is 50 m
+/// (`CELL_SIZE_M * CHUNK_CELLS`) on a side, so 70 m from a player already reaches one from an
+/// adjacent hallway before they round the corner.
+const FACELING_ACTIVATE_RADIUS: f32 = 70.0;
+/// Hysteresis gap above `FACELING_ACTIVATE_RADIUS`, same shape as `PHANTOM_DEACTIVATE_RADIUS`.
+const FACELING_DEACTIVATE_RADIUS: f32 = 100.0;
+/// A floor as well as a ceiling, same reason as `PHANTOM_MIN_SPAWN_DISTANCE`: nothing should
+/// pop into a player's face. Smaller than the robapieles' 35 m — an adult is not a threat.
+const FACELING_MIN_SPAWN_DISTANCE: f32 = 10.0;
+/// Cap on simultaneously-simulated adults. v1 PLACEHOLDER.
+const FACELING_ACTIVE_CAP: usize = 32;
+
+/// ADR-094 point 2: "un jugador entra en radio ⇒ TODOS los adultos de la sala paran A LA VEZ".
+const FACELING_REGARD_RADIUS: f32 = 12.0;
+const FACELING_REGARD_MIN_S: f32 = 2.0;
+const FACELING_REGARD_MAX_S: f32 = 4.0;
+
+const FACELING_WALK_SPEED: f32 = 1.0;
+const FACELING_ARRIVE_EPS: f32 = 0.4;
+const FACELING_COMMUTE_MIN_S: f32 = 20.0;
+const FACELING_COMMUTE_MAX_S: f32 = 45.0;
+/// A chunk with no walkable cell found this attempt (rare — office floors are mostly open) tries
+/// again soon rather than camping `Working` forever on a fluke.
+const FACELING_PUESTO_RETRY_S: f32 = 5.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AdultState {
+    Working,
+    Commute,
+    Regard,
+}
+
+pub(super) struct AdultMover {
+    pub(super) id: PeerId,
+    pub(super) home_chunk: (i32, i32),
+    pub(super) layer: u8,
+    pub(super) state: AdultState,
+    pub(super) heading: f32,
+    pub(super) commute_target: Vec3,
+    /// `Regard`: seconds left staring. `Working`: seconds until the next `Commute` roll.
+    pub(super) state_timer: f32,
+}
+
+pub(super) struct AdultDriver {
+    pub(super) grid_cache: GridGenChunkCache,
+    pub(super) movers: Vec<AdultMover>,
+    pub(super) density_scale: f32,
+    population_sync_in: f32,
+}
+
+/// World-space bounds of chunk `(cx, cz)`, in the XZ plane. The leash boundary — `Commute` never
+/// samples and never steps outside it, which is what makes the office the zone (ADR-094 point 2,
+/// rejected alternative D).
+pub(super) fn chunk_bounds(chunk: (i32, i32)) -> (f32, f32, f32, f32) {
+    let size = CELL_SIZE_M * CHUNK_CELLS as f32;
+    (
+        chunk.0 as f32 * size,
+        (chunk.0 + 1) as f32 * size,
+        chunk.1 as f32 * size,
+        (chunk.1 + 1) as f32 * size,
+    )
+}
+
+pub(super) fn pos_in_chunk(pos: Vec3, chunk: (i32, i32)) -> bool {
+    let (x0, x1, z0, z1) = chunk_bounds(chunk);
+    pos.x >= x0 && pos.x < x1 && pos.z >= z0 && pos.z < z1
+}
+
+/// Picks a walkable "puesto" inside `chunk` — plain uniform sampling, not
+/// `phantom.rs::pick_lurk_spot`'s deterministic bearings: nothing here needs to be re-derived
+/// (unlike a hiding spot, an office desk has no observer to stay consistent for), so a few random
+/// tries and a `None` on bad luck (retried next reconcile) is simpler and just as correct.
+fn pick_puesto(cache: &mut GridGenChunkCache, chunk: (i32, i32), layer: u8) -> Option<Vec3> {
+    let (x0, x1, z0, z1) = chunk_bounds(chunk);
+    let y = crate::world::grid_gen::grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y;
+    for _ in 0..12 {
+        let x = x0 + rand::random::<f32>() * (x1 - x0);
+        let z = z0 + rand::random::<f32>() * (z1 - z0);
+        let candidate = Vec3::new(x, y, z);
+        if is_walkable_grid_gen(cache, candidate, layer) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+impl AdultDriver {
+    pub(super) fn new(world_seed: u64) -> Self {
+        Self {
+            grid_cache: GridGenChunkCache::with_rules(
+                world_seed,
+                crate::world::zone_density::rules_for,
+            ),
+            movers: Vec::new(),
+            density_scale: 1.0,
+            population_sync_in: 0.0, // reconcile on the very first entity tick
+        }
+    }
+
+    /// ADR-043-shaped reconcile, gated to `ZONE_OFFICE` chunks via `faceling_spawn`. Same
+    /// retire/wake shape as `PhantomDriver::sync_population`, scoped to CHUNKS instead of 200 m
+    /// blocks — see `faceling_spawn`'s module doc for why an office chunk needs no coarser unit.
+    pub(super) fn sync_population(
+        &mut self,
+        net: &mut NetworkManager,
+        host_player_pos: Vec3,
+        dt: f32,
+    ) {
+        self.population_sync_in -= dt;
+        if self.population_sync_in > 0.0 {
+            return;
+        }
+        self.population_sync_in = FACELING_POPULATION_SYNC_INTERVAL;
+
+        let players: Vec<Vec3> = std::iter::once(host_player_pos)
+            .chain(
+                net.peers
+                    .iter()
+                    .filter(|(id, p)| {
+                        !net.is_phantom(**id) && !net.is_faceling(**id) && !p.relay_only
+                    })
+                    .map(|(_, p)| Vec3::from_array(p.position)),
+            )
+            .collect();
+
+        // ── Put away the ones nobody is near any more ──
+        let mut retired: Vec<PeerId> = Vec::new();
+        for m in &self.movers {
+            let Some(peer) = net.peers.get(&m.id) else {
+                continue;
+            };
+            let here = Vec3::from_array(peer.position);
+            let far = players.iter().all(|p| {
+                world_pos_to_layer(p.y) != m.layer
+                    || p.distance_xz(here) > FACELING_DEACTIVATE_RADIUS
+            });
+            if far {
+                retired.push(m.id);
+            }
+        }
+        for id in &retired {
+            net.despawn_faceling(*id);
+        }
+        self.movers.retain(|m| !retired.contains(&m.id));
+
+        // ── Wake up the ones somebody walked near ──
+        if self.movers.len() >= FACELING_ACTIVE_CAP {
+            return;
+        }
+        let taken: HashSet<(i32, i32)> = self.movers.iter().map(|m| m.home_chunk).collect();
+        let mut seen_chunks: HashSet<((i32, i32), u8)> = HashSet::new();
+        let mut drawn: Vec<[f32; 3]> = Vec::new();
+
+        for p in &players {
+            let layer = world_pos_to_layer(p.y);
+            let cell = CELL_SIZE_M * CHUNK_CELLS as f32;
+            let cx0 = ((p.x - FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+            let cx1 = ((p.x + FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+            let cz0 = ((p.z - FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+            let cz1 = ((p.z + FACELING_ACTIVATE_RADIUS) / cell).floor() as i32;
+            for cx in cx0..=cx1 {
+                for cz in cz0..=cz1 {
+                    if taken.contains(&(cx, cz)) || !seen_chunks.insert(((cx, cz), layer)) {
+                        continue;
+                    }
+                    faceling_spawn::draw_adults_into(
+                        net.world_seed,
+                        cx,
+                        cz,
+                        layer,
+                        self.density_scale,
+                        &mut drawn,
+                    );
+                    if drawn.is_empty() {
+                        continue;
+                    }
+                    // One office worth of adults wakes or sleeps AS A UNIT (ADR-094: the office is
+                    // the zone), so only the CLOSEST drawn spot needs the radius/min-distance
+                    // gate — if it qualifies, the whole chunk populates in one pass below.
+                    let closest = drawn
+                        .iter()
+                        .map(|pos| p.distance_xz(Vec3::from_array(*pos)))
+                        .fold(f32::INFINITY, f32::min);
+                    if closest > FACELING_ACTIVATE_RADIUS {
+                        continue;
+                    }
+                    if players.iter().any(|q| {
+                        q.distance_xz(Vec3::from_array(drawn[0])) < FACELING_MIN_SPAWN_DISTANCE
+                    }) {
+                        continue;
+                    }
+                    for pos in drawn.iter().copied() {
+                        if self.movers.len() >= FACELING_ACTIVE_CAP {
+                            break;
+                        }
+                        let id = net.spawn_faceling("Faceling", pos, 1);
+                        let spawn_pos = net
+                            .peers
+                            .get(&id)
+                            .map(|p| Vec3::from_array(p.position))
+                            .unwrap_or_else(|| Vec3::from_array(pos));
+                        self.movers.push(AdultMover {
+                            id,
+                            home_chunk: (cx, cz),
+                            layer,
+                            state: AdultState::Working,
+                            heading: rand::random::<f32>() * std::f32::consts::TAU,
+                            commute_target: spawn_pos,
+                            state_timer: FACELING_COMMUTE_MIN_S
+                                + rand::random::<f32>()
+                                    * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S),
+                        });
+                        info!(
+                            "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
+                            id, cx, cz, layer
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// One entity tick for every active adult. No perception cone, no sound, no light (ADR-094
+    /// point 2: "no perciben crouch, luz ni ruido") — the only two inputs are "is anyone within
+    /// `FACELING_REGARD_RADIUS`" (this method) and "did anyone hit me" (E1b, not yet wired).
+    pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32, host_player_pos: Vec3) {
+        let players: Vec<Vec3> = std::iter::once(host_player_pos)
+            .chain(
+                net.peers
+                    .iter()
+                    .filter(|(id, p)| {
+                        !net.is_phantom(**id) && !net.is_faceling(**id) && !p.relay_only
+                    })
+                    .map(|(_, p)| Vec3::from_array(p.position)),
+            )
+            .collect();
+
+        // Pre-pass: which offices have somebody in Regard range THIS tick — computed once so
+        // every adult in the same room reacts on the same frame (ADR-094: "TODOS... A LA VEZ"),
+        // not one tick apart depending on iteration order.
+        let mut regarded: HashSet<(i32, i32)> = HashSet::new();
+        for m in &self.movers {
+            if regarded.contains(&m.home_chunk) {
+                continue;
+            }
+            let Some(peer) = net.peers.get(&m.id) else {
+                continue;
+            };
+            let here = Vec3::from_array(peer.position);
+            if players.iter().any(|p| {
+                world_pos_to_layer(p.y) == m.layer && p.distance_xz(here) <= FACELING_REGARD_RADIUS
+            }) {
+                regarded.insert(m.home_chunk);
+            }
+        }
+
+        for i in 0..self.movers.len() {
+            self.tick_mover(i, net, dt, &players, &regarded);
+        }
+    }
+
+    fn tick_mover(
+        &mut self,
+        i: usize,
+        net: &mut NetworkManager,
+        dt: f32,
+        players: &[Vec3],
+        regarded: &HashSet<(i32, i32)>,
+    ) {
+        let id = self.movers[i].id;
+        let Some(peer) = net.peers.get(&id) else {
+            return;
+        };
+        let from = Vec3::from_array(peer.position);
+        let layer = self.movers[i].layer;
+        let home = self.movers[i].home_chunk;
+        let should_regard = regarded.contains(&home);
+
+        if should_regard && self.movers[i].state != AdultState::Regard {
+            self.movers[i].state = AdultState::Regard;
+            self.movers[i].state_timer = FACELING_REGARD_MIN_S
+                + rand::random::<f32>() * (FACELING_REGARD_MAX_S - FACELING_REGARD_MIN_S);
+        }
+
+        let anim = match self.movers[i].state {
+            AdultState::Regard => {
+                self.movers[i].state_timer -= dt;
+                if self.movers[i].state_timer <= 0.0 {
+                    self.movers[i].state = AdultState::Working;
+                    self.movers[i].state_timer = FACELING_COMMUTE_MIN_S
+                        + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S);
+                } else if let Some(target) = players
+                    .iter()
+                    .filter(|p| world_pos_to_layer(p.y) == layer)
+                    .min_by(|a, b| a.distance_xz(from).total_cmp(&b.distance_xz(from)))
+                {
+                    self.movers[i].heading = (target.x - from.x).atan2(target.z - from.z);
+                }
+                "idle"
+            }
+            AdultState::Working => {
+                self.movers[i].state_timer -= dt;
+                if self.movers[i].state_timer <= 0.0 {
+                    match pick_puesto(&mut self.grid_cache, home, layer) {
+                        Some(target) => {
+                            self.movers[i].commute_target = target;
+                            self.movers[i].state = AdultState::Commute;
+                        }
+                        None => self.movers[i].state_timer = FACELING_PUESTO_RETRY_S,
+                    }
+                }
+                "idle"
+            }
+            AdultState::Commute => {
+                let target = self.movers[i].commute_target;
+                if from.distance_xz(target) <= FACELING_ARRIVE_EPS {
+                    self.movers[i].state = AdultState::Working;
+                    self.movers[i].state_timer = FACELING_COMMUTE_MIN_S
+                        + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S);
+                    "idle"
+                } else {
+                    let raw_heading = (target.x - from.x).atan2(target.z - from.z);
+                    let heading =
+                        steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
+                    let step = FACELING_WALK_SPEED * dt;
+                    let next = Vec3::new(
+                        from.x + heading.sin() * step,
+                        from.y,
+                        from.z + heading.cos() * step,
+                    );
+                    // The leash (ADR-094 rejected alternative D): a step that would leave the home
+                    // chunk, or land somewhere grid_gen calls solid, simply does not happen — the
+                    // adult stands one tick and re-steers from its current heading next time,
+                    // exactly like `steer_around_walls`' own whisker deflection already does for
+                    // the robapieles.
+                    if pos_in_chunk(next, home)
+                        && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
+                    {
+                        self.movers[i].heading = heading;
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            let yaw = heading.to_degrees().rem_euclid(360.0);
+                            peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                        }
+                        return;
+                    }
+                    "walk_slow"
+                }
+            }
+        };
+
+        if let Some(peer) = net.peers.get_mut(&id) {
+            let yaw = self.movers[i].heading.to_degrees().rem_euclid(360.0);
+            peer.update_player_state(from.to_array(), yaw, anim.into());
+        }
+    }
+}

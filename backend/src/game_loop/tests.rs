@@ -3,6 +3,9 @@ use super::*;
 // `use super::*` de arriba) porque el padre solo re-importa la superficie que él consume, y estas
 // pruebas ejercitan los internos: `PhantomMover`, `PhantomState`, las constantes de tuning.
 use super::phantom::*;
+// ADR-094 — mismo motivo: la IA de los facelings vive en `game_loop::faceling`, y estas pruebas
+// ejercitan sus internos (`AdultMover`, `AdultState`, las constantes de tuning).
+use super::faceling::*;
 
 /// Sin re-siembra, tras cargar una partida los cuatro asignadores arrancan en su base y el
 /// primer `place` reacuña un id que YA existe en el roster. Como `process_stp_demolish`
@@ -7731,4 +7734,140 @@ async fn a_player_walking_into_the_lurk_is_stalked_at_once() {
     let player = Vec3::new(here.x + 5.0, 1.8, here.z);
     driver.step(&mut net, 0.1, player, 0.0, false, false, 0, false, 0);
     assert_eq!(driver.movers[0].state, PhantomState::Stalk);
+}
+
+// ─── ADR-094 E1a: faceling adultos ───
+
+/// First `ZONE_OFFICE` chunk on `seed`, scanning outward from the origin. Small grid — offices
+/// are common enough (`faceling_spawn`'s own test found several per 50×50 grid) that this never
+/// needs to go far, and a test that cannot find one should fail loudly rather than hang.
+fn find_office_chunk(seed: u64) -> (i32, i32) {
+    for r in 0..30i32 {
+        for cx in -r..=r {
+            for cz in -r..=r {
+                if cx.abs() != r && cz.abs() != r {
+                    continue; // only the new ring each radius, avoid re-scanning the inside
+                }
+                if crate::world::zone_density::zone_kind_for(seed, cx, cz, 0)
+                    == crate::world::chunk::ZONE_OFFICE
+                {
+                    return (cx, cz);
+                }
+            }
+        }
+    }
+    panic!("no ZONE_OFFICE chunk found within 30 chunks of the origin for seed {seed}");
+}
+
+/// The gate `faceling_spawn` enforces as a pure function, exercised through the actual driver:
+/// every peer `AdultDriver::sync_population` creates is species 1, `relay_only`, tracked in
+/// `faceling_ids`, and anchored to a home chunk that really is `ZONE_OFFICE`.
+#[tokio::test]
+async fn adult_population_marks_species_relay_only_and_only_wakes_in_zone_office() {
+    let seed = 42;
+    let (ox, oz) = find_office_chunk(seed);
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut driver = AdultDriver::new(seed);
+    driver.density_scale = 8.0; // v1 density is low; scale up so the office reliably populates
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let center = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+    driver.sync_population(&mut net, center, 0.1);
+
+    assert!(
+        !driver.movers.is_empty(),
+        "office chunk ({ox},{oz}) at density_scale 8.0 populated nobody"
+    );
+    for m in &driver.movers {
+        assert_eq!(
+            m.home_chunk,
+            (ox, oz),
+            "the only chunk within range was ({ox},{oz})"
+        );
+        let peer = &net.peers[&m.id];
+        assert_eq!(peer.species, 1, "adult must report species 1");
+        assert!(peer.relay_only, "a faceling has no real backend behind it");
+        assert!(net.is_faceling(m.id));
+        assert!(!net.is_phantom(m.id), "an adult is not the robapieles");
+    }
+}
+
+/// The zone leash (ADR-094 point 2, rejected alternative D): even with a `Commute` target
+/// planted OUTSIDE the office on purpose, the mover never steps past its home chunk's bounds.
+#[tokio::test]
+async fn adult_never_leaves_its_office_chunk_even_when_aimed_outside_it() {
+    let seed = 42;
+    let (ox, oz) = find_office_chunk(seed);
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut driver = AdultDriver::new(seed);
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let center = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+    let id = net.spawn_faceling("Faceling_Test", center.to_array(), 1);
+    let start = Vec3::from_array(net.peers[&id].position);
+    driver.movers.push(AdultMover {
+        id,
+        home_chunk: (ox, oz),
+        layer: 0,
+        state: AdultState::Commute,
+        heading: 0.0,
+        // Two full chunk-widths past the boundary: any leak shows up immediately.
+        commute_target: Vec3::new(x1 + 100.0, start.y, start.z),
+        state_timer: 999.0,
+    });
+
+    for _ in 0..200 {
+        driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
+    }
+
+    let here = Vec3::from_array(net.peers[&id].position);
+    assert!(
+        pos_in_chunk(here, (ox, oz)),
+        "adult at {here:?} left its office chunk bounds {:?}",
+        chunk_bounds((ox, oz))
+    );
+}
+
+/// ADR-094 point 2: "un jugador entra en radio ⇒ TODOS los adultos de la sala paran A LA VEZ".
+/// Two adults share an office; the player stands within `FACELING_REGARD_RADIUS` of only ONE of
+/// them geometrically. Both must flip to `Regard` on the same `step`.
+#[tokio::test]
+async fn the_whole_office_regards_together_even_when_only_one_adult_is_in_range() {
+    let seed = 42;
+    let (ox, oz) = find_office_chunk(seed);
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut driver = AdultDriver::new(seed);
+    let (x0, _x1, z0, _z1) = chunk_bounds((ox, oz));
+    let near = Vec3::new(x0 + 5.0, stand_on(0), z0 + 5.0);
+    let far = Vec3::new(x0 + 5.0, stand_on(0), z0 + 40.0); // > FACELING_REGARD_RADIUS from `near`
+    let near_id = net.spawn_faceling("Faceling_Near", near.to_array(), 1);
+    let far_id = net.spawn_faceling("Faceling_Far", far.to_array(), 1);
+    for (id, pos) in [(near_id, near), (far_id, far)] {
+        driver.movers.push(AdultMover {
+            id,
+            home_chunk: (ox, oz),
+            layer: 0,
+            state: AdultState::Working,
+            heading: 0.0,
+            commute_target: pos,
+            state_timer: 999.0,
+        });
+    }
+
+    // The host player stands right on top of the NEAR adult; the FAR one is untouched
+    // geometrically and must still regard.
+    driver.step(&mut net, 0.1, near);
+
+    assert_eq!(
+        driver
+            .movers
+            .iter()
+            .find(|m| m.id == near_id)
+            .unwrap()
+            .state,
+        AdultState::Regard
+    );
+    assert_eq!(
+        driver.movers.iter().find(|m| m.id == far_id).unwrap().state,
+        AdultState::Regard,
+        "the far adult must regard too — the office reacts as a unit, not per-desk"
+    );
 }

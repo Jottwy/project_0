@@ -7,6 +7,8 @@ pub mod chunk;
 pub mod collision;
 pub mod corpse;
 pub mod entity;
+/// ADR-094 — deterministic, lazy draw of where the world's adult facelings live.
+pub mod faceling_spawn;
 pub mod generator;
 pub mod graph;
 pub mod grid_gen;
