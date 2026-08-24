@@ -12,6 +12,12 @@
 //! `match` exhaustivo por todo `phantom.rs` decidiendo combinaciones que nunca ocurren.
 
 use super::*;
+// ADR-094 E2b: the pieces `phantom.rs` built for the robapieles that are PURE free functions
+// (owe nothing to `PhantomMover`'s own shape) — `player_is_looking_at[_within]` (Statue's cone,
+// reused verbatim per the ADR), `intercept_point` (ADR-088), the two `PHANTOM_STATUE_*` cones.
+// `resolve_flank_goal` is NOT in this list on purpose: it is a `PhantomDriver` method tied to
+// `self.movers[i]`, so this module writes its own `child_flank_position` instead of importing it.
+use super::phantom::*;
 
 use std::collections::HashSet;
 
@@ -540,27 +546,92 @@ const FACELING_CHILD_ROAM_MIN_S: f32 = 8.0;
 const FACELING_CHILD_ROAM_MAX_S: f32 = 20.0;
 const FACELING_CHILD_ROAM_RETRY_S: f32 = 3.0;
 
+/// v1 PLACEHOLDER, unmeasured. A member's own forward-cone sighting radius — deliberately its
+/// own constant and not a reuse of any `PHANTOM_*` detection range: the robapieles hears and sees
+/// light, a child (ADR-094 point 3) only ever gets this one geometric check.
+const FACELING_CHILD_DETECT_RADIUS: f32 = 20.0;
+const FACELING_CHILD_DETECT_HALF_FOV_DEG: f32 = 60.0;
+/// Faster than `FACELING_CHILD_ROAM_SPEED` — this is the hunt, not the wander. Also the
+/// `closing_speed` fed to `intercept_point` for `Cut`.
+const FACELING_CHILD_CERCO_SPEED: f32 = 2.2;
+/// How far `Flank`/`Cut` try to stand from the target while converging — the radius of the ring
+/// the cerco reads as, not a hard stop distance (ADR-094 point 4's strike range is a separate,
+/// tighter constant added in E2c).
+const FACELING_CHILD_CERCO_BAND: f32 = 6.0;
+/// ADR-094 point 3 doesn't specify a give-up window for the cerco itself (only Enforce's ~45 s is
+/// named, for the adults) — this is a v1 PLACEHOLDER, deliberately shorter: a pack that lost the
+/// scent should let go sooner than an office defending itself.
+const FACELING_CHILD_GIVE_UP_S: f32 = 20.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChildState {
-    /// Ambient wander within `FACELING_CHILD_PATROL_RADIUS_M` of the pack's anchor. The only
-    /// state that exists yet — everything else is E2b/E2c.
+    /// Ambient wander within `FACELING_CHILD_PATROL_RADIUS_M` of the pack's anchor.
     PackRoam,
+    /// The cerco: `PackMind.target` is set, roles are assigned, everyone converges. Entered the
+    /// instant ANY member detects a player; left when `PackMind.lost_for` exceeds
+    /// `FACELING_CHILD_GIVE_UP_S`.
+    PackStalk,
 }
 
 pub(super) struct ChildMover {
     pub(super) id: PeerId,
     pub(super) heading: f32,
     pub(super) roam_target: Vec3,
-    /// Seconds until the next `PackRoam` target roll.
+    /// Seconds until the next `PackRoam` target roll. Unused in `PackStalk`.
     pub(super) state_timer: f32,
     pub(super) health: u8,
+    /// `None` in `PackRoam` — nothing to hold a side for. Assigned on entering `PackStalk`
+    /// (`assign_roles`) and re-rolled whenever the roster changes (a member dies).
+    pub(super) role: Option<ChildRole>,
+    /// `ChildRole::Flank`'s persisted side, same shape and same reason as
+    /// `phantom.rs::PhantomMover::flank_offset`: a member sitting dead-centre in the target's
+    /// view must not shuffle between two equally good exits every tick.
+    pub(super) flank_offset: f32,
 }
 
-/// The pack's shared knowledge — empty in E2a on purpose. `PackMind` is what makes the pack a
-/// hive rather than four independent movers: E2b adds `target`/`last_known_pos`/`last_known_vel`,
-/// written by whichever member perceives something and read by all four the SAME tick (ADR-094
-/// point 3: "no hay «avisar»; eso es exactamente lo inquietante").
-pub(super) struct PackMind {}
+/// The pack's shared knowledge. What makes the pack a hive rather than four independent movers:
+/// written by whichever member perceives something (`detect_for_pack`), read by all four THE
+/// SAME tick (ADR-094 point 3: "no hay «avisar»; eso es exactamente lo inquietante" — there is no
+/// per-member latency between one spotting the player and all four reacting).
+pub(super) struct PackMind {
+    pub(super) target: Option<PeerId>,
+    pub(super) last_known_pos: Option<Vec3>,
+    /// Planar velocity (x,z) of `target` as of the tick it was last actually seen — the input
+    /// `CUT` needs to intercept the RETREAT (ADR-094: "sobre la dirección DE VUELTA del
+    /// jugador"), not the approach.
+    pub(super) last_known_vel: (f32, f32),
+    /// Seconds since ANY member last had `target` in `FACELING_CHILD_DETECT_RADIUS`. The pack
+    /// gives up the cerco (back to `PackRoam`) past `FACELING_CHILD_GIVE_UP_S`, same shape as the
+    /// robapieles' own Search timeout.
+    pub(super) lost_for: f32,
+}
+
+impl PackMind {
+    pub(super) fn empty() -> Self {
+        Self {
+            target: None,
+            last_known_pos: None,
+            last_known_vel: (0.0, 0.0),
+            lost_for: 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChildRole {
+    /// Harasses head-on; the one whose connecting hit knocks down and steals (E2c/E2d, not yet
+    /// wired).
+    Press,
+    /// Orbits to a side out of the target's view cone — `resolve_child_flank_goal`, the
+    /// non-`&mut self` twin of `phantom.rs::resolve_flank_goal` (that one is a `PhantomDriver`
+    /// method, tied to `PhantomMover`; this reimplements the same geometry against a plain
+    /// `flank_offset: &mut f32` so it owes nothing to the robapieles' own mover shape).
+    Flank,
+    /// Goes to `intercept_point` on the target's RETREAT direction — the piece ADR-088 built for
+    /// the robapieles' own chase, reused verbatim (it only ever needed a cache/layer/positions/
+    /// velocity, never `PhantomMover` itself).
+    Cut,
+}
 
 pub(super) struct ChildPack {
     pub(super) home_chunk: (i32, i32),
@@ -569,6 +640,12 @@ pub(super) struct ChildPack {
     pub(super) anchor: Vec3,
     pub(super) state: ChildState,
     pub(super) mind: PackMind,
+    /// ADR-094 point 3: "si el jugador mira a CUALQUIER miembro, se congela el pack ENTERO" —
+    /// PACK-level, not per-member: entering needs only one member in ANYONE's tight look-cone,
+    /// releasing needs EVERY member out of EVERYONE's wide release-cone. A per-member latch would
+    /// let a flanker standing off to the side release on its own while the one being stared at is
+    /// still frozen, which is not "cuatro quietos" — it is three creeping away.
+    pub(super) frozen: bool,
     pub(super) members: Vec<ChildMover>,
 }
 
@@ -601,6 +678,72 @@ fn pick_roam_point(
         }
     }
     None
+}
+
+/// Is `target` within this member's own forward cone? ADR-094 point 3's ONLY detection input —
+/// no cone/sound/light stack like the robapieles, no crouch/light awareness like the adults have
+/// NEITHER of (this is its own third thing). Unity yaw convention throughout this module: 0 = +Z,
+/// forward = `(sin, cos)`.
+fn child_can_see(from: Vec3, heading: f32, target: Vec3) -> bool {
+    if from.distance_xz(target) > FACELING_CHILD_DETECT_RADIUS {
+        return false;
+    }
+    let dx = target.x - from.x;
+    let dz = target.z - from.z;
+    let len_sq = dx * dx + dz * dz;
+    if len_sq < 1e-6 {
+        return true; // standing on top of them
+    }
+    let len = len_sq.sqrt();
+    let dot = (heading.sin() * dx + heading.cos() * dz) / len;
+    dot >= FACELING_CHILD_DETECT_HALF_FOV_DEG.to_radians().cos()
+}
+
+/// `ChildRole::Flank`'s goal point: `side` (persisted per-member, ±1.0) FIXED at role assignment,
+/// not recomputed from the target's view cone — ADR-094 point 3 says "dos FLANK toman los lados
+/// OPUESTOS (forzados)", literally, not "whichever side reads as hidden". This is what makes the
+/// two flankers commit to opposite arcs regardless of the player's own facing.
+fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32) -> Vec3 {
+    let view = target_yaw_deg.to_radians();
+    let angle = view + side * std::f32::consts::FRAC_PI_2;
+    Vec3::new(
+        target.x + angle.sin() * band,
+        target.y,
+        target.z + angle.cos() * band,
+    )
+}
+
+/// Assigns roles by member index, matching ADR-094 point 3's roster for 4 (`Press`, two `Flank`
+/// with opposite `flank_offset`, `Cut`) and degrading gracefully for a pack already thinned by a
+/// death (3 drops the second `Flank`; 2 keeps `Press`+`Cut`, the two roles that do not depend on
+/// a partner; 1 never reaches here — `ChildDriver::step`'s lone-survivor check routes it to
+/// `ChildState::Flee` before this runs, once E2c wires it in).
+///
+/// Re-run every time the roster changes (a member dies), not just once at cerco start — "roles
+/// reasignados al morir un miembro" is ADR-094's own words for it.
+pub(super) fn assign_roles(members: &mut [ChildMover]) {
+    let roles: &[ChildRole] = match members.len() {
+        0 => &[],
+        1 => &[ChildRole::Press],
+        2 => &[ChildRole::Press, ChildRole::Cut],
+        3 => &[ChildRole::Press, ChildRole::Flank, ChildRole::Cut],
+        _ => &[
+            ChildRole::Press,
+            ChildRole::Flank,
+            ChildRole::Flank,
+            ChildRole::Cut,
+        ],
+    };
+    let mut next_flank_side = -1.0;
+    for (i, m) in members.iter_mut().enumerate() {
+        m.role = roles.get(i).copied();
+        if m.role == Some(ChildRole::Flank) {
+            m.flank_offset = next_flank_side;
+            next_flank_side = 1.0; // the second Flank, if any, takes the opposite side
+        } else {
+            m.flank_offset = 0.0;
+        }
+    }
 }
 
 impl ChildDriver {
@@ -729,6 +872,8 @@ impl ChildDriver {
                                 + rand::random::<f32>()
                                     * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S),
                             health: FACELING_CHILD_MAX_HEALTH,
+                            role: None,
+                            flank_offset: 0.0,
                         });
                     }
                     info!(
@@ -740,7 +885,8 @@ impl ChildDriver {
                         layer,
                         anchor,
                         state: ChildState::PackRoam,
-                        mind: PackMind {},
+                        mind: PackMind::empty(),
+                        frozen: false,
                         members,
                     });
                     if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
@@ -751,18 +897,155 @@ impl ChildDriver {
         }
     }
 
-    /// One entity tick for every active pack. E2a only ever runs `PackRoam` — each member wanders
-    /// independently within `FACELING_CHILD_PATROL_RADIUS_M` of the shared anchor, so the group
-    /// stays loosely together without an explicit cohesion rule.
-    pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32) {
+    /// One entity tick for every active pack. `detect_for_pack` runs first and writes the WHOLE
+    /// pack's `PackMind` before any member moves, which is the actual mechanism behind ADR-094's
+    /// "no hay «avisar»" — every member's movement this tick already sees whatever any member
+    /// perceived THIS tick, never last tick's picture.
+    pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32, host_player_pos: Vec3) {
+        let players: Vec<(PeerId, Vec3, f32)> = std::iter::once((
+            net.local_id,
+            host_player_pos,
+            0.0, // the host's own yaw is not read here (E2b never freezes/flanks off it — TODO E2c)
+        ))
+        .chain(net.peers.iter().filter_map(|(id, p)| {
+            if net.is_phantom(*id) || net.is_faceling(*id) || p.relay_only {
+                None
+            } else {
+                Some((*id, Vec3::from_array(p.position), p.rotation))
+            }
+        }))
+        .collect();
+
         for pi in 0..self.packs.len() {
+            self.detect_for_pack(pi, net, dt, &players);
+            self.update_freeze_for_pack(pi, net, &players);
             for mi in 0..self.packs[pi].members.len() {
-                self.tick_member(pi, mi, net, dt);
+                self.tick_member(pi, mi, net, dt, &players);
             }
         }
     }
 
-    fn tick_member(&mut self, pi: usize, mi: usize, net: &mut NetworkManager, dt: f32) {
+    /// Updates `PackMind` from every member's perception THIS tick, then the state transitions
+    /// that ride on it: `PackRoam` → `PackStalk` the instant anybody is spotted, `PackStalk` →
+    /// `PackRoam` after `FACELING_CHILD_GIVE_UP_S` with nobody in range of anybody.
+    fn detect_for_pack(
+        &mut self,
+        pi: usize,
+        net: &NetworkManager,
+        dt: f32,
+        players: &[(PeerId, Vec3, f32)],
+    ) {
+        let layer = self.packs[pi].layer;
+        let mut spotted: Option<(PeerId, Vec3)> = None;
+        'search: for m in &self.packs[pi].members {
+            let Some(peer) = net.peers.get(&m.id) else {
+                continue;
+            };
+            let from = Vec3::from_array(peer.position);
+            for &(pid, ppos, _) in players {
+                if world_pos_to_layer(ppos.y) == layer && child_can_see(from, m.heading, ppos) {
+                    spotted = Some((pid, ppos));
+                    break 'search;
+                }
+            }
+        }
+
+        if let Some((pid, ppos)) = spotted {
+            let mind = &mut self.packs[pi].mind;
+            let vel = match (mind.target, mind.last_known_pos) {
+                (Some(prev_id), Some(prev_pos)) if prev_id == pid && dt > 0.0 => {
+                    ((ppos.x - prev_pos.x) / dt, (ppos.z - prev_pos.z) / dt)
+                }
+                _ => (0.0, 0.0),
+            };
+            mind.target = Some(pid);
+            mind.last_known_pos = Some(ppos);
+            mind.last_known_vel = vel;
+            mind.lost_for = 0.0;
+            if self.packs[pi].state != ChildState::PackStalk {
+                self.packs[pi].state = ChildState::PackStalk;
+                assign_roles(&mut self.packs[pi].members);
+                info!(
+                    "MPTRACE step=FL_PACK event=faceling_pack_cerco_started chunk=({},{}) target={}",
+                    self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1, pid
+                );
+            }
+        } else if self.packs[pi].state == ChildState::PackStalk {
+            self.packs[pi].mind.lost_for += dt;
+            if self.packs[pi].mind.lost_for > FACELING_CHILD_GIVE_UP_S {
+                self.packs[pi].state = ChildState::PackRoam;
+                self.packs[pi].mind = PackMind::empty();
+                self.packs[pi].frozen = false;
+                for m in &mut self.packs[pi].members {
+                    m.role = None;
+                    m.flank_offset = 0.0;
+                }
+            }
+        }
+    }
+
+    /// ADR-094 point 3: "si el jugador mira a CUALQUIER miembro, se congela el pack ENTERO ...
+    /// miras a otro lado: pasitos". PACK-level, not per-member — see `ChildPack::frozen`'s own
+    /// doc for why a per-member latch would be wrong. Entering needs only one member in ANY
+    /// player's tight cone; releasing needs EVERY member out of EVERY player's wide cone (the
+    /// same enter/release hysteresis pair ADR-094 names explicitly: "la histéresis de cono de
+    /// Statue se reutiliza tal cual").
+    fn update_freeze_for_pack(
+        &mut self,
+        pi: usize,
+        net: &NetworkManager,
+        players: &[(PeerId, Vec3, f32)],
+    ) {
+        if self.packs[pi].state != ChildState::PackStalk {
+            return;
+        }
+        let layer = self.packs[pi].layer;
+        let member_positions: Vec<Vec3> = self.packs[pi]
+            .members
+            .iter()
+            .filter_map(|m| net.peers.get(&m.id))
+            .map(|p| Vec3::from_array(p.position))
+            .collect();
+
+        if !self.packs[pi].frozen {
+            let any_entered = member_positions.iter().any(|&mpos| {
+                players.iter().any(|&(_, ppos, pyaw)| {
+                    world_pos_to_layer(ppos.y) == layer && player_is_looking_at(ppos, pyaw, mpos)
+                })
+            });
+            if any_entered {
+                self.packs[pi].frozen = true;
+                info!(
+                    "MPTRACE step=FL_PACK event=faceling_pack_frozen chunk=({},{})",
+                    self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1
+                );
+            }
+        } else {
+            let all_released = member_positions.iter().all(|&mpos| {
+                players.iter().all(|&(_, ppos, pyaw)| {
+                    world_pos_to_layer(ppos.y) != layer
+                        || !player_is_looking_at_within(
+                            ppos,
+                            pyaw,
+                            mpos,
+                            PHANTOM_STATUE_RELEASE_HALF_FOV,
+                        )
+                })
+            });
+            if all_released {
+                self.packs[pi].frozen = false;
+            }
+        }
+    }
+
+    fn tick_member(
+        &mut self,
+        pi: usize,
+        mi: usize,
+        net: &mut NetworkManager,
+        dt: f32,
+        players: &[(PeerId, Vec3, f32)],
+    ) {
         let id = self.packs[pi].members[mi].id;
         let Some(peer) = net.peers.get(&id) else {
             return;
@@ -771,7 +1054,73 @@ impl ChildDriver {
         let layer = self.packs[pi].layer;
         let anchor = self.packs[pi].anchor;
 
+        if self.packs[pi].frozen {
+            if let Some(peer) = net.peers.get_mut(&id) {
+                let yaw = self.packs[pi].members[mi]
+                    .heading
+                    .to_degrees()
+                    .rem_euclid(360.0);
+                peer.update_player_state(from.to_array(), yaw, "idle".into());
+            }
+            return;
+        }
+
         match self.packs[pi].state {
+            ChildState::PackStalk => {
+                let Some(target) = self.packs[pi].mind.last_known_pos else {
+                    return; // detect_for_pack already reset the state if this were stale
+                };
+                let role = self.packs[pi].members[mi].role;
+                let goal = match role {
+                    Some(ChildRole::Press) | None => target,
+                    Some(ChildRole::Flank) => {
+                        let target_yaw = players
+                            .iter()
+                            .find(|&&(pid, _, _)| Some(pid) == self.packs[pi].mind.target)
+                            .map(|&(_, _, yaw)| yaw)
+                            .unwrap_or(0.0);
+                        child_flank_position(
+                            target,
+                            target_yaw,
+                            self.packs[pi].members[mi].flank_offset,
+                            FACELING_CHILD_CERCO_BAND,
+                        )
+                    }
+                    Some(ChildRole::Cut) => {
+                        let vel = self.packs[pi].mind.last_known_vel;
+                        let retreat_vel = (-vel.0, -vel.1);
+                        intercept_point(
+                            &mut self.grid_cache,
+                            layer,
+                            from,
+                            target,
+                            retreat_vel,
+                            FACELING_CHILD_CERCO_SPEED,
+                        )
+                        .unwrap_or(target)
+                    }
+                };
+                let raw_heading = (goal.x - from.x).atan2(goal.z - from.z);
+                let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
+                let step = FACELING_CHILD_CERCO_SPEED * dt;
+                let next = Vec3::new(
+                    from.x + heading.sin() * step,
+                    from.y,
+                    from.z + heading.cos() * step,
+                );
+                if is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                    self.packs[pi].members[mi].heading = heading;
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        let yaw = heading.to_degrees().rem_euclid(360.0);
+                        peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                    }
+                    return;
+                }
+                if let Some(peer) = net.peers.get_mut(&id) {
+                    let yaw = heading.to_degrees().rem_euclid(360.0);
+                    peer.update_player_state(from.to_array(), yaw, "walk_slow".into());
+                }
+            }
             ChildState::PackRoam => {
                 let target = self.packs[pi].members[mi].roam_target;
                 if from.distance_xz(target) <= FACELING_CHILD_ARRIVE_EPS {

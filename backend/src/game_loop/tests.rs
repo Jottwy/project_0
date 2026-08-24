@@ -8156,7 +8156,8 @@ async fn a_child_never_roams_past_its_patrol_radius() {
         layer: 0,
         anchor,
         state: ChildState::PackRoam,
-        mind: PackMind {},
+        mind: PackMind::empty(),
+        frozen: false,
         members: vec![ChildMover {
             id,
             heading: 0.0,
@@ -8164,11 +8165,15 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             roam_target: Vec3::new(anchor.x + 400.0, anchor.y, anchor.z),
             state_timer: 999.0,
             health: 15,
+            role: None,
+            flank_offset: 0.0,
         }],
     });
 
     for _ in 0..200 {
-        driver.step(&mut net, 0.1);
+        // Far away host position: this pack must stay in PackRoam the whole test, not get
+        // detected into PackStalk and chase toward the leash boundary instead of wandering it.
+        driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0));
     }
 
     let here = Vec3::from_array(net.peers[&id].position);
@@ -8178,4 +8183,164 @@ async fn a_child_never_roams_past_its_patrol_radius() {
         here.distance_xz(anchor),
         FACELING_CHILD_PATROL_RADIUS_M
     );
+}
+
+/// Builds a 4-member pack, each spawned at `anchor` and facing +Z (heading 0.0), for the E2b
+/// cerco tests below — they exercise the state machine, not the population draw.
+async fn four_member_pack(
+    net: &mut NetworkManager,
+    home_chunk: (i32, i32),
+    layer: u8,
+    anchor: Vec3,
+) -> ChildPack {
+    let mut members = Vec::with_capacity(4);
+    for _ in 0..4 {
+        let id = net.spawn_faceling("Faceling_Child_Test", anchor.to_array(), 2);
+        members.push(ChildMover {
+            id,
+            heading: 0.0,
+            roam_target: anchor,
+            state_timer: 999.0,
+            health: 15,
+            role: None,
+            flank_offset: 0.0,
+        });
+    }
+    ChildPack {
+        home_chunk,
+        layer,
+        anchor,
+        state: ChildState::PackRoam,
+        mind: PackMind::empty(),
+        frozen: false,
+        members,
+    }
+}
+
+/// ADR-094 point 3, the core hive rule: ONE member's perception (here, member 0's — the others
+/// face away and would never spot the player on their own) puts the WHOLE pack into `PackStalk`
+/// with roles assigned, on the SAME `step`.
+#[tokio::test]
+async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    // Member 0 faces +Z (default); the other three face directly AWAY from the player, so only
+    // member 0 can possibly detect it — proving the pack-wide reaction is not just "everyone
+    // happened to see it".
+    for m in pack.members.iter_mut().skip(1) {
+        m.heading = std::f32::consts::PI; // facing -Z
+    }
+    let player_pos = Vec3::new(0.0, stand_on(0), 10.0); // in front of member 0 only
+    let host_far_away = Vec3::new(-9999.0, stand_on(0), -9999.0);
+    // Plant a real peer at player_pos so `step`'s player list includes it (the host itself is
+    // parked far away on purpose — this must be the PEER's sighting that trips it).
+    net.peers.insert(
+        2,
+        crate::network::peer::PeerConnection::new(
+            2,
+            "Watcher".into(),
+            "127.0.0.1:9001".parse().unwrap(),
+        ),
+    );
+    net.peers.get_mut(&2).unwrap().position = player_pos.to_array();
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.step(&mut net, 0.1, host_far_away);
+
+    assert_eq!(driver.packs[0].state, ChildState::PackStalk);
+    assert_eq!(driver.packs[0].mind.target, Some(2));
+    let roles: Vec<Option<ChildRole>> = driver.packs[0].members.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![
+            Some(ChildRole::Press),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Cut)
+        ]
+    );
+    // "Lados opuestos forzados": the two Flank members must NOT share a side.
+    let flank_sides: Vec<f32> = driver.packs[0]
+        .members
+        .iter()
+        .filter(|m| m.role == Some(ChildRole::Flank))
+        .map(|m| m.flank_offset)
+        .collect();
+    assert_eq!(flank_sides.len(), 2);
+    assert!(
+        (flank_sides[0] - flank_sides[1]).abs() > 1.0,
+        "both Flank members took the same side: {flank_sides:?}"
+    );
+}
+
+/// ADR-094 point 3: "si el jugador mira a CUALQUIER miembro, se congela el pack ENTERO". Player
+/// looks straight at member 0 only; all four must hold position this tick, not just member 0.
+#[tokio::test]
+async fn looking_at_any_single_member_freezes_the_whole_pack() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(1); // the host
+    pack.mind.last_known_pos = Some(Vec3::new(0.0, stand_on(0), -10.0));
+    assign_roles(&mut pack.members);
+    // Scatter the members so a naive "everyone converges toward roughly the same spot" pass
+    // could not be mistaken for "frozen" by accident.
+    for (i, m) in pack.members.iter_mut().enumerate() {
+        let pos = Vec3::new(i as f32 * 5.0, stand_on(0), 0.0);
+        net.peers.get_mut(&m.id).unwrap().position = pos.to_array();
+    }
+    let before: Vec<[f32; 3]> = pack
+        .members
+        .iter()
+        .map(|m| net.peers[&m.id].position)
+        .collect();
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    // The host stands directly behind member 0 (at x=0), facing it (yaw 0 = +Z looks toward +Z;
+    // member 0 sits at z=0 same as the host here — placed so the host's forward cone hits ONLY
+    // member 0's position, not the others at x=5/10/15).
+    let host_pos = Vec3::new(0.0, stand_on(0), -5.0);
+    for _ in 0..5 {
+        driver.step(&mut net, 0.1, host_pos);
+    }
+
+    assert!(driver.packs[0].frozen, "the pack never froze");
+    let after: Vec<[f32; 3]> = driver.packs[0]
+        .members
+        .iter()
+        .map(|m| net.peers[&m.id].position)
+        .collect();
+    assert_eq!(before, after, "a frozen pack must not move at all");
+}
+
+/// The cerco gives up (back to `PackRoam`, roles cleared) after `FACELING_CHILD_GIVE_UP_S` with
+/// the target out of every member's sight — it does not chase forever on a stale `last_known_pos`.
+#[tokio::test]
+async fn the_pack_gives_up_the_cerco_after_losing_the_target_long_enough() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+    pack.mind.last_known_pos = Some(Vec3::new(500.0, stand_on(0), 500.0)); // nowhere near anybody
+    pack.mind.lost_for = 0.0;
+    assign_roles(&mut pack.members);
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    let host_far_away = Vec3::new(-9999.0, stand_on(0), -9999.0);
+    // FACELING_CHILD_GIVE_UP_S at 0.1 s/tick: comfortably past it in 250 ticks (25 s).
+    for _ in 0..250 {
+        driver.step(&mut net, 0.1, host_far_away);
+    }
+
+    assert_eq!(driver.packs[0].state, ChildState::PackRoam);
+    assert_eq!(driver.packs[0].mind.target, None);
+    for m in &driver.packs[0].members {
+        assert_eq!(m.role, None);
+    }
 }

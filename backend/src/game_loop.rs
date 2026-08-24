@@ -1360,7 +1360,7 @@ pub async fn run(
                 // ADR-094 E2a: same shape, the child packs — `PackRoam` only for now, no
                 // detection/cerco/attacks yet (E2b/E2c).
                 child_driver.sync_population(&mut net, player.position, entity_dt);
-                child_driver.step(&mut net, entity_dt);
+                child_driver.step(&mut net, entity_dt, player.position);
                 // ADR-047 D5: a noise reported this tick may wake sleepers near its SOURCE, which
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
