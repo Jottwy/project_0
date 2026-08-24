@@ -27,6 +27,11 @@
   para ejecutarse tal cual: qué está hecho y verificado, qué se puede tocar sin ADR y qué no, el
   techo del sistema, y las trampas que ya costaron tiempo. Empieza aquí antes de tocar salas.
 
+## Level 4 (incursiones)
+- [LEVEL4-ROADMAP.md](LEVEL4-ROADMAP.md) — plan troceado de ADR-093 (2026-08-24): región de
+  incursión acotada, generador de grafo rasterizado, puertas con enlace inestable y epochs.
+  Etapas E0–E6 ≤300 líneas con anclajes file:line verificados; wire se toca una sola vez (E2).
+
 ## Farmeo y almacenaje (Alpha 1)
 - [FARMING-ROADMAP.md](FARMING-ROADMAP.md) — cierre mínimo del farmeo de metal y la estantería
   metálica construible (2026-08-22): decisiones tomadas (sin stacks, slots fijos 12–16, 4 Metal,
