@@ -12,6 +12,11 @@ namespace BackroomsSurvival.Net
         [Tooltip("If null, a default capsule is created at runtime.")]
         public GameObject remotePlayerPrefab;
 
+        [Tooltip("ADR-094: prefab for a species==1 (adult faceling) peer. If null, falls back to " +
+                 "remotePlayerPrefab — the same peer just looks like a default player until this " +
+                 "is built (Backrooms ▸ Facelings ▸ Build Adult Avatar Prefab).")]
+        public GameObject facelingAdultPrefab;
+
         [Header("Interpolation")]
         [Min(0f)] public float positionSmoothing = 22f;
 
@@ -135,7 +140,7 @@ namespace BackroomsSurvival.Net
                     Debug.Log(
                         $"MPTRACE step=PVP event=remote_proxy_create_begin remote_id={rp.id} name={rp.name} " +
                         $"pos=({groundedPosition.x:F2},{groundedPosition.y:F2},{groundedPosition.z:F2})");
-                    view = Acquire(rp.id, rp.name);
+                    view = Acquire(rp.id, rp.name, rp.species);
                     _active[rp.id] = view;
                     if (view.root != null)
                     {
@@ -186,7 +191,8 @@ namespace BackroomsSurvival.Net
                 }
                 view.lastSeenTime = Time.unscaledTime;
 
-                string nameTagText = FormatNameTag(rp.id, rp.name);
+                // ADR-094: "los facelings no llevan nombre de disfraz (nametag vacío)".
+                string nameTagText = rp.species == 0 ? FormatNameTag(rp.id, rp.name) : string.Empty;
                 if (view.nameTag != null && view.nameTag.text != nameTagText)
                     view.nameTag.text = nameTagText;
             }
@@ -285,23 +291,33 @@ namespace BackroomsSurvival.Net
             }
         }
 
-        private RemotePlayerView Acquire(int id, string playerName)
+        private RemotePlayerView Acquire(int id, string playerName, int species)
         {
-            RemotePlayerView view;
+            RemotePlayerView view = null;
 
-            if (_pool.Count > 0)
+            // ADR-094: species picks a DIFFERENT prefab/hierarchy, so a pooled view can only be
+            // reused for the species it was BUILT for — scanned rather than a straight Dequeue
+            // because the pool mixes species once any faceling proxy has ever been released.
+            // Pools here are small (remote peer count), so a linear scan-and-requeue costs
+            // nothing that matters. A dead entry (root destroyed somehow) is dropped rather than
+            // requeued, matching the original single-Dequeue fallback.
+            int toScan = _pool.Count;
+            for (int i = 0; i < toScan; i++)
             {
-                view = _pool.Dequeue();
-
-                if (view.root != null)
+                var candidate = _pool.Dequeue();
+                if (candidate.root == null)
+                    continue;
+                if (candidate.builtSpecies == species)
+                {
+                    view = candidate;
                     view.root.gameObject.SetActive(true);
-                else
-                    view = CreateView();
+                    break;
+                }
+                _pool.Enqueue(candidate); // right shape, wrong species right now — keep for later
             }
-            else
-            {
-                view = CreateView();
-            }
+
+            if (view == null)
+                view = CreateView(species);
 
             view.id = id;
             view.targetPosition = view.root != null ? view.root.position : Vector3.zero;
@@ -321,7 +337,8 @@ namespace BackroomsSurvival.Net
                 RemotePvpHitbox.Install(view.root.gameObject, id);
             }
 
-            ConfigureNameText(view.nameTag, FormatNameTag(id, playerName));
+            // ADR-094: "los facelings no llevan nombre de disfraz (nametag vacío)".
+            ConfigureNameText(view.nameTag, species == 0 ? FormatNameTag(id, playerName) : string.Empty);
 
             return view;
         }
@@ -380,12 +397,19 @@ namespace BackroomsSurvival.Net
             view.species = 0; // ADR-094: no stale faceling species on a recycled proxy
         }
 
-        private RemotePlayerView CreateView()
+        private RemotePlayerView CreateView(int species)
         {
             GameObject go;
+            // ADR-094: species==1 gets its own prefab if one has been built; falls back to the
+            // default player avatar otherwise (a faceling with no baked body just looks like a
+            // player until "Backrooms ▸ Facelings ▸ Build Adult Avatar Prefab" has been run —
+            // never a missing-reference error).
+            GameObject prefab = species == 1 && facelingAdultPrefab != null
+                ? facelingAdultPrefab
+                : remotePlayerPrefab;
 
-            if (remotePlayerPrefab != null)
-                go = Instantiate(remotePlayerPrefab);
+            if (prefab != null)
+                go = Instantiate(prefab);
             else
                 go = CreateDefaultAvatar();
 
@@ -399,7 +423,8 @@ namespace BackroomsSurvival.Net
                 nameTag = CreateNameTag(go.transform),
                 targetPosition = go.transform.position,
                 targetRotation = go.transform.eulerAngles.y,
-                animationState = "idle"
+                animationState = "idle",
+                builtSpecies = species
             };
 
             return view;
@@ -643,6 +668,12 @@ namespace BackroomsSurvival.Net
         // ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño). Always 0
         // for a real player — the client picks model/animator/audio banks by this value.
         public int species;
+        // ADR-094: which species `CreateView` actually built `root` FOR — structural, not
+        // cosmetic, so it is NEVER touched by `ResetCosmetics`. `Acquire`'s pool scan reads this
+        // to decide whether a pooled view can be reused as-is (its prefab already matches) or a
+        // fresh one has to be built; `species` above is the field the relay writes every tick and
+        // can legitimately disagree with this while a peer is mid-reassignment.
+        public int builtSpecies;
         public float lastSeenTime;
     }
 

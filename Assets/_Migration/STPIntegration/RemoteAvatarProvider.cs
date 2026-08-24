@@ -27,11 +27,20 @@ namespace BackroomsSurvival.Migration.STPIntegration
         /// <summary>Resources path (no extension) of the MTP_PlayerViewer-based avatar prefab.</summary>
         public const string ResourcePath = "RemotePlayerAvatar";
 
+        /// <summary>ADR-094: Resources path of the adult faceling's own proxy prefab. Absent until
+        /// "Backrooms ▸ Facelings ▸ Build Adult Avatar Prefab" has been run — species==1 peers fall
+        /// back to <see cref="ResourcePath"/> until then (RemotePlayerManager.CreateView). Lives in
+        /// a "Facelings" subfolder of the SAME Resources dir as the default avatar (still has to be
+        /// under a literal "Resources" folder for Resources.Load to find it at all).</summary>
+        public const string FacelingAdultResourcePath = "Facelings/FacelingAdultAvatar";
+
         // Distinct, bright colour; unlit so the dim Backrooms can never hide the fallback.
         private static readonly Color AvatarColor = new Color(0.20f, 0.85f, 1f, 1f);
 
         private static RemoteAvatarProvider _instance;
         private static GameObject _sharedTemplate;
+        private static GameObject _sharedFacelingAdultTemplate;
+        private static bool _facelingAdultLogged;
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Bootstrap()
@@ -65,6 +74,32 @@ namespace BackroomsSurvival.Migration.STPIntegration
             return _sharedTemplate;
         }
 
+        /// <summary>
+        /// ADR-094: the adult faceling's own template, or null if it has not been built yet. UNLIKE
+        /// <see cref="EnsureTemplate"/> this has NO capsule fallback — a faceling with no baked body
+        /// should read as "a player" (RemotePlayerManager.CreateView's own fallback), not as a
+        /// bright cyan capsule, which would look like a bug rather than a pending asset.
+        /// </summary>
+        public static GameObject EnsureFacelingAdultTemplate()
+        {
+            if (_sharedFacelingAdultTemplate != null)
+                return _sharedFacelingAdultTemplate;
+
+            _sharedFacelingAdultTemplate = Resources.Load<GameObject>(FacelingAdultResourcePath);
+
+            if (!_facelingAdultLogged)
+            {
+                _facelingAdultLogged = true;
+                Debug.Log(_sharedFacelingAdultTemplate != null
+                    ? $"[RemoteAvatarProvider] Using faceling adult prefab Resources/{FacelingAdultResourcePath}."
+                    : $"[RemoteAvatarProvider] Resources/{FacelingAdultResourcePath} not found; species==1 " +
+                      "peers fall back to the default avatar. Run 'Backrooms ▸ Facelings ▸ Build Adult Avatar " +
+                      "Prefab' to generate it.");
+            }
+
+            return _sharedFacelingAdultTemplate;
+        }
+
         private void Update()
         {
             // Fallback assignment for a manager created outside the guarantor (e.g. GameBootstrap).
@@ -75,6 +110,10 @@ namespace BackroomsSurvival.Migration.STPIntegration
             var template = EnsureTemplate();
             if (rpm.remotePlayerPrefab != template)
                 rpm.remotePlayerPrefab = template;
+
+            var facelingTemplate = EnsureFacelingAdultTemplate();
+            if (facelingTemplate != null && rpm.facelingAdultPrefab != facelingTemplate)
+                rpm.facelingAdultPrefab = facelingTemplate;
         }
 
         // ─── Capsule fallback (used only when the STP prefab asset is absent) ───
