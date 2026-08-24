@@ -37,6 +37,8 @@ namespace BackroomsSurvival.Gameplay
         private const string GrabReleaseEvent = "phantom_grab_release";
         // ADR-076: the disguised ambush connecting.
         private const string KnockdownEvent = "phantom_knockdown";
+        // ADR-094 Enmienda 7: a faceling child has you from behind.
+        private const string SeizeEvent = "faceling_seize";
 
         // Death fade timing (presentation only — the backend respawn is instant).
         private const float FadeInTime = 0.5f;
@@ -128,6 +130,41 @@ namespace BackroomsSurvival.Gameplay
         // grab above).
         private const float KnockdownHeight = 0.6f;
         private const float KnockdownFallTime = 0.25f;
+
+        // ── The seizure (ADR-094 Enmienda 7) ────────────────────────────────────────────────────
+        // A child caught you from behind: it spins you round, holds your face against its own and
+        // screams, then throws you off.
+        //
+        // SHORT — under a second and a half all in. The grab above is a death and can afford 0.9 s
+        // of recognition; this one you SURVIVE, and a scare you survive has to give control back
+        // before it stops being a scare and starts being a cutscene you are waiting out. What is
+        // meant to linger is the daze afterwards, not the hold itself.
+        private const float SeizeTurnTime = 0.18f;  // the wrench round — near-instant, deliberately
+        private const float SeizeHoldTime = 0.85f;  // face to face
+        private const float SeizeTotalTime = SeizeTurnTime + SeizeHoldTime;
+        // How fast the view is wrenched onto it. MUCH harder than `GrabLookLerp` (9): that one is a
+        // dying man's head lolling round, this is being physically turned by something behind you.
+        private const float SeizeTurnLerp = 26f;
+        // How close it gets pulled to your face. Tighter than the grab's 1.3 — the whole point Joel
+        // asked for is "muy cerca de su cara".
+        private const float SeizeFaceDistance = 0.85f;
+        private const float SeizePullSpeed = 6.0f;
+        // Aim higher up the body than the grab's 1.6: a child is short, and a camera pointed at
+        // chest height on a 1.95 m model is pointed at its chest — on this one it is the face.
+        private const float SeizeFaceHeight = 1.5f;
+        // The tremor while it screams at you. Bigger than the grab's, and it does NOT grow: this
+        // is a shorter, louder moment, so it opens at full intensity instead of winding up.
+        private const float SeizeShake = 3.1f;
+        // The throw-off at the end.
+        private const float SeizeShoveSpeed = 7.5f;
+
+        // Locomotion suspended while it has you. Crouch included, same reasoning as the knockdown:
+        // a player being held by the shoulders is not ducking out of it.
+        private static readonly MovementStateType[] SeizeBlockedStates =
+        {
+            MovementStateType.Walk, MovementStateType.Run, MovementStateType.Jump,
+            MovementStateType.Crouch
+        };
         private const float KnockdownRiseTime = 0.35f;
         // Camera tilt while down (degrees). Applied relative to the rotation cached at the start
         // of the knockdown, never accumulated — see EndKnockdown for why an un-restored roll is a
@@ -176,6 +213,14 @@ namespace BackroomsSurvival.Gameplay
         private IMovementControllerCC _kdBlock;
         private Transform _kdCam;
         private Quaternion _kdCamRestore;
+
+        // Seizure (ADR-094 Enmienda 7).
+        private bool _seized;
+        private float _seizeTimer;
+        private Transform _seizer;
+        private IMovementControllerCC _seizeBlock;
+        private Transform _seizeCam;
+        private Quaternion _seizeCamRestore;
 
         /// <summary>
         /// The proxy currently holding the local player, or null. Read by <c>ProxyGrabHook</c>,
@@ -270,6 +315,11 @@ namespace BackroomsSurvival.Gameplay
                 TickGrab();
             else if (_dying)
                 TickDeath();
+            // ADR-094 Enmienda 7 — above the knockdown and below the three above, for the same
+            // reason each of those sits where it does: it owns the camera while it runs, and
+            // anything that outranks it calls EndSeizure() on the way in.
+            else if (_seized)
+                TickSeizure();
             // ADR-076: lowest priority of the four — death and the grab both own the camera and
             // both call EndKnockdown() on entry (below), so by the time either is active a
             // knockdown in progress has already been unwound.
@@ -318,6 +368,13 @@ namespace BackroomsSurvival.Gameplay
                 case KnockdownEvent:
                     var k = ev.data as Dictionary<string, object>;
                     StartKnockdown(IPCParse.F(k, "seconds"), IPCParse.F(k, "dx"), IPCParse.F(k, "dz"));
+                    break;
+
+                // ADR-094 Enmienda 7. Carries no payload at all: every duration and distance in
+                // the seizure is presentation this side owns, and WHICH child has you is resolved
+                // here too (ADR-016 §1 keeps its id off the wire).
+                case SeizeEvent:
+                    StartSeizure();
                     break;
             }
         }
@@ -896,6 +953,145 @@ namespace BackroomsSurvival.Gameplay
                     _kdBlock.RemoveStateBlocker(this, KnockdownBlockedStates[i]);
                 _kdBlock = null;
             }
+        }
+
+        // ── The seizure (ADR-094 Enmienda 7) ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// A faceling child has you from behind. Wrenches the view onto it, drags it to your face
+        /// while it screams, then throws you off dazed.
+        ///
+        /// WHICH child is decided HERE, not by the backend, and that is deliberate: ADR-016 §1
+        /// keeps a creature's id off the wire entirely, so the cue arrives anonymous. The nearest
+        /// one is the right answer anyway — it is the same geometry the backend used to pick the
+        /// attacker in the first place.
+        /// </summary>
+        private void StartSeizure()
+        {
+            // Death and the live grab both outrank this outright, same order the knockdown obeys:
+            // two sequences driving one camera is the bug this file's own history already paid for.
+            if (_dying || _heldAlive)
+                return;
+
+            // Re-entrancy: refresh rather than stack a second set of blockers under the same key.
+            // The grab learned this the hard way (a player who respawned unable to walk).
+            if (_seized)
+            {
+                _seizeTimer = SeizeTotalTime;
+                return;
+            }
+
+            // A knockdown underneath would be fighting for the same camera and collider height.
+            EndKnockdown();
+
+            _seizer = ResolveGrabber(); // same nearest-creature search the grab uses
+            if (_seizer == null)
+                return; // nothing to hold your face against; the Hit that rode along still landed
+
+            _seized = true;
+            _seizeTimer = SeizeTotalTime;
+
+            var cam = ResolveCam();
+            if (cam != null)
+            {
+                // Cache BEFORE touching anything — the lesson the grab's camera-roll bug paid for.
+                _seizeCam = cam.transform;
+                _seizeCamRestore = _seizeCam.localRotation;
+            }
+
+            var movement = ResolveMovement();
+            if (movement != null)
+            {
+                for (int i = 0; i < SeizeBlockedStates.Length; i++)
+                    movement.AddStateBlocker(this, SeizeBlockedStates[i]);
+                _seizeBlock = movement;
+            }
+
+            FacelingDazeEffect.Begin();
+        }
+
+        private void TickSeizure()
+        {
+            _seizeTimer -= Time.unscaledDeltaTime;
+
+            // It died or despawned mid-hold. Give control back immediately rather than holding a
+            // camera on nothing.
+            if (_seizer == null || _seizeTimer <= 0f)
+            {
+                EndSeizure();
+                return;
+            }
+
+            var cam = ResolveCam();
+            if (cam != null)
+            {
+                var focus = _seizer.position + Vector3.up * SeizeFaceHeight;
+                var to = focus - cam.transform.position;
+                if (to.sqrMagnitude > 1e-4f)
+                {
+                    cam.transform.rotation = Quaternion.Slerp(
+                        cam.transform.rotation,
+                        Quaternion.LookRotation(to.normalized, Vector3.up),
+                        1f - Mathf.Exp(-SeizeTurnLerp * Time.unscaledDeltaTime));
+                }
+
+                // Full-intensity tremor from the first frame — see `SeizeShake`.
+                cam.transform.rotation *= Quaternion.Euler(
+                    Random.Range(-SeizeShake, SeizeShake),
+                    Random.Range(-SeizeShake, SeizeShake),
+                    Random.Range(-SeizeShake, SeizeShake) * 0.5f);
+            }
+
+            // Pulled in to face distance, through the motor (ADR-009 again: a transform write is
+            // overwritten by the next motor step).
+            var motor = ResolveMotor();
+            if (motor != null)
+            {
+                var flat = _seizer.position - motor.transform.position;
+                flat.y = 0f;
+                float d = flat.magnitude;
+                motor.SetVelocity(d > SeizeFaceDistance && d > 1e-3f
+                    ? flat / d * SeizePullSpeed
+                    : Vector3.zero);
+            }
+        }
+
+        /// <summary>Throws you off and gives control back. Idempotent.</summary>
+        private void EndSeizure()
+        {
+            if (!_seized)
+                return;
+            _seized = false;
+
+            // THE SHOVE. Away from it, through the motor. This is the "luego te empujan" half —
+            // the backend sends no impulse for the seizure precisely so that the throw lines up
+            // with the end of the animation rather than with the packet that started it.
+            var motor = ResolveMotor();
+            if (motor != null && _seizer != null)
+            {
+                var away = motor.transform.position - _seizer.position;
+                away.y = 0f;
+                if (away.sqrMagnitude > 1e-4f)
+                    motor.SetVelocity(away.normalized * SeizeShoveSpeed);
+            }
+
+            // Give the camera back exactly as it was. The grab's own bug comment explains why this
+            // is not optional: nothing else in the game ever writes camera roll, so a tilt left on
+            // survives the respawn and the rest of the session.
+            if (_seizeCam != null)
+            {
+                _seizeCam.localRotation = _seizeCamRestore;
+                _seizeCam = null;
+            }
+
+            if (_seizeBlock != null)
+            {
+                for (int i = 0; i < SeizeBlockedStates.Length; i++)
+                    _seizeBlock.RemoveStateBlocker(this, SeizeBlockedStates[i]);
+                _seizeBlock = null;
+            }
+
+            _seizer = null;
         }
 
         // ── Resolvers (local player only; remote avatars are excluded) ─────────────────────────────

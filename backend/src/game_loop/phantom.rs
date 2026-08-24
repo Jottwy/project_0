@@ -1257,6 +1257,25 @@ pub(super) enum PhantomAttackKind {
     /// carrier `Knockback` already uses. ZERO health damage — this is the one strike kind that
     /// never touches `player.stats`, by design (ADR-076 point 3: "solo aturde").
     Knockdown(f32, f32, f32),
+    /// ADR-094 Enmienda 7 — THE SEIZURE. A faceling child has you from behind: it turns you to
+    /// face it, holds the camera on its face while it screams, shoves you off and leaves you
+    /// deafened and slowed.
+    ///
+    /// Carries NOTHING, and that is the design. Every part of it — how long the turn takes, how
+    /// close the face comes, how long your ears ring, how much slower you move — is presentation
+    /// the client owns and Joel calibrates in play-test, exactly like ADR-042's light values and
+    /// ADR-048's voice curves. The backend's job is the one thing only it can decide: WHETHER it
+    /// happens, from a geometry no client can be trusted with.
+    ///
+    /// WHICH child grabs you is not carried either, and cannot be: ADR-016 §1 keeps the creature's
+    /// id off the wire entirely. The client already knows where every faceling is (they are peers),
+    /// so it picks the nearest one itself — which is the right answer anyway, since "the nearest
+    /// one behind me" is exactly what the backend used to choose the attacker.
+    ///
+    /// Zero damage in this variant on purpose: the 10 the play-test asked for rides along as a
+    /// separate `Hit`, so a peer too old to know kind 6 degrades to "took a hit from something"
+    /// rather than to a silent no-op or, worse, to reading a duration as damage.
+    Seize,
 }
 
 /// ADR-047 — THE single gate every noise passes through, whichever door it came in by: the local
@@ -1286,6 +1305,7 @@ pub(super) fn phantom_attack_kind_name(kind: PhantomAttackKind) -> &'static str 
         PhantomAttackKind::GrabStart(_) => "grab_start",
         PhantomAttackKind::GrabRelease => "grab_release",
         PhantomAttackKind::Knockdown(_, _, _) => "knockdown",
+        PhantomAttackKind::Seize => "seize",
     }
 }
 

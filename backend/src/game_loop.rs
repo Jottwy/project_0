@@ -1603,6 +1603,12 @@ pub async fn run(
                             PhantomAttackKind::Knockdown(seconds, dx, dz) => {
                                 (5u8, seconds, [dx, dz])
                             }
+                            // ADR-094 Enmienda 7. Carries nothing — every duration and distance
+                            // in the seizure is presentation the client owns. A peer too old to
+                            // know kind 6 falls into the forward-compat `_` arm and applies
+                            // `damage`, which is 0 here: it takes nothing rather than reading
+                            // some other field as health.
+                            PhantomAttackKind::Seize => (6u8, 0.0, [0.0, 0.0]),
                         };
                         let grant = PacketPayload::PhantomAttackGrant {
                             request_id,
@@ -1676,6 +1682,15 @@ pub async fn run(
                             let _ = to_clients.send(ServerMessage::Event(GameEvent {
                                 event_type: "phantom_knockdown".into(),
                                 data: serde_json::json!({ "seconds": seconds, "dx": dx, "dz": dz }),
+                            }));
+                        }
+                        // ADR-094 Enmienda 7 — the seizure. Zero health touch here too: the 10
+                        // damage the play-test asked for rides along as its own `Hit`, so this
+                        // arm stays purely the cue for the client's cinematic.
+                        PhantomAttackKind::Seize => {
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "faceling_seize".into(),
+                                data: serde_json::json!({}),
                             }));
                         }
                     }
@@ -3090,6 +3105,18 @@ async fn handle_network_event(
                     let _ = to_clients.send(ServerMessage::Event(GameEvent {
                         event_type: "phantom_knockdown".into(),
                         data: serde_json::json!({ "seconds": damage, "dx": impulse[0], "dz": impulse[1] }),
+                    }));
+                }
+                // ADR-094 Enmienda 7. Own arm for the same reason as kinds 3 and 5: the `_` arm
+                // below reads `damage` as health, and although this kind sends 0 there, relying on
+                // that would make the safety depend on the SENDER rather than on this match.
+                6 => {
+                    info!(
+                        "MPTRACE step=PH_ATTACK event=phantom_attack_applied kind=seize request_id={request_id}"
+                    );
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "faceling_seize".into(),
+                        data: serde_json::json!({}),
                     }));
                 }
                 _ => {

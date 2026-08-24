@@ -818,7 +818,8 @@ const FACELING_CHILD_SHOVE_FORCE: f32 = 1.6;
 /// would take turns and it would become a mechanic instead of a moment.
 const FACELING_CHILD_SCREAMER_REACH: f32 = 2.0;
 const FACELING_CHILD_SCREAMER_DAMAGE: f32 = 10.0;
-const FACELING_CHILD_SCREAMER_FORCE: f32 = 5.0;
+// (Enmienda 7 moved the shove itself to the client: it now lands at the END of the seizure
+// animation rather than on the packet that starts it, so there is no impulse to send from here.)
 /// Pack-wide, and long. This is the beat the whole encounter builds toward; twice in ten seconds
 /// would spend it.
 const FACELING_CHILD_SCREAMER_COOLDOWN_S: f32 = 25.0;
@@ -2252,18 +2253,14 @@ impl ChildDriver {
                         self.packs[pi].screamer_cooldown = FACELING_CHILD_SCREAMER_COOLDOWN_S;
                         self.packs[pi].members[mi].strike_recover = FACELING_CHILD_STRIKE_RECOVERY;
                         self.packs[pi].members[mi].heading = dx.atan2(dz);
-                        // TWO attacks, deliberately: `PhantomAttackKind` has no variant that
-                        // carries damage AND an impulse, and inventing one would mean a new wire
-                        // kind plus a client handler for a combination the client can already
-                        // express as two events it has handled since ADR-047.
-                        let (ux, uz) =
-                            push_direction(from, tpos, self.packs[pi].members[mi].heading);
+                        // TWO attacks, deliberately. `Seize` is the cue for the whole cinematic —
+                        // the turn, the face, the scream, the shove and the daze all live in the
+                        // client, which owns how any of that looks. The damage rides separately so
+                        // that a peer too old to know kind 6 still takes the hit instead of
+                        // silently taking nothing.
                         self.attacks.push(PhantomAttack {
                             victim,
-                            kind: PhantomAttackKind::Knockback(
-                                ux * FACELING_CHILD_SCREAMER_FORCE,
-                                uz * FACELING_CHILD_SCREAMER_FORCE,
-                            ),
+                            kind: PhantomAttackKind::Seize,
                         });
                         self.attacks.push(PhantomAttack {
                             victim,

@@ -6182,3 +6182,57 @@ esquina suelta el botín en vez de quedarse ahí con tus cosas para siempre.
 pasan a colocarse ENTRE tú y él, a 3.5 m de ti sobre esa línea. No son más rápidos que tú; solo
 tienen que costarte los segundos que el ladrón necesita. Anula todos los roles mientras dure: cercar
 deja de ser el plan en cuanto hay algo que proteger.
+
+### Enmienda 7 a ADR-094 (2026-08-25) — la captura: te giran, te gritan en la cara y te dejan sordo
+
+Tercer y último trozo de la tanda del playtest. El screamer de Enmienda 3 ya tenía el disparador
+correcto (de espaldas + cerco cerrado + a bocajarro); esto es lo que pasa cuando salta.
+
+**D19 — `PhantomAttackKind::Seize`, kind 6. Bump 44 → 45.** Un kind nuevo es API pública, igual que
+lo fue el `Knockdown` de ADR-076, así que paga su bump y su espejo C# en el mismo commit.
+
+**No lleva NADA.** Ni duración, ni distancia, ni quién te agarró. Todo eso es presentación que el
+cliente posee y Joel calibra en playtest — mismo reparto que los valores de luz de ADR-042 y las
+curvas de voz de ADR-048. Lo único que el backend puede decidir, porque depende de una geometría en
+la que no se puede confiar al cliente, es SI ocurre.
+
+QUIÉN te agarra tampoco viaja, y no podría: ADR-016 §1 mantiene el id de la criatura fuera del wire
+por completo. El cliente ya sabe dónde está cada faceling (son peers), así que elige el más cercano
+él mismo — que además es la respuesta correcta, porque es la misma geometría con la que el backend
+eligió al atacante. Reutiliza el `ResolveGrabber` que el agarre del robapieles ya usaba.
+
+Los 10 de daño viajan aparte como un `Hit` normal, a propósito: un peer demasiado viejo para conocer
+el kind 6 degrada a "me ha pegado algo" en vez de a un no-op silencioso o, peor, a leer una duración
+como daño.
+
+**D20 — La secuencia, toda en cliente.** Giro casi instantáneo (0.18 s — el agarre del robapieles
+usa un lerp de 9 porque es la cabeza de un moribundo cayendo; esto es algo que te gira físicamente,
+y usa 26), cara a cara 0.85 s a 0.85 m con temblor a plena intensidad desde el primer frame (el del
+agarre CRECE porque es un forcejeo que se prolonga; este es corto y fuerte, así que abre arriba), y
+el empujón AL FINAL de la animación en vez de al recibir el paquete — que es justo por lo que el
+backend no manda impulso.
+
+Bajo segundo y medio en total. El agarre del robapieles es una muerte y puede permitirse su beat de
+reconocimiento; a esto SOBREVIVES, y un susto que sobrevives tiene que devolver el control antes de
+convertirse en una escena que estás esperando a que acabe. Lo que debe quedarse es el aturdimiento,
+no el agarre.
+
+**D21 — El aturdimiento, en componente aparte y por vidas distintas.** 7 s de sordera y de no poder
+correr. Está separado de la cinemática no por orden sino porque los tiempos no tienen nada que ver:
+la cinemática dura un segundo y posee la cámara, esto la sobrevive muchos segundos, tiene que
+aguantar que te alejes, respawnees o te vuelvan a agarrar a media resaca, y no toca nada de lo que
+la cinemática toca.
+
+La SORDERA es un `AudioLowPassFilter` añadido al listener en runtime, NO un parámetro del mixer. La
+ruta del mixer necesitaría exponer un parámetro nuevo en el asset, y este proyecto ya pagó eso una
+vez: un `SetFloat` contra un nombre inexistente logea un error CON stack trace en cada llamada
+(229k líneas en una sesión), y renombrar expuestos a mano en el YAML no llega al runtime. Un
+componente que se añade y se quita por código no tiene ninguno de los dos fallos y deja el asset
+intacto. Corte a 380 Hz: tapado, no sordo — tienes que seguir oyendo dónde está el pack o el efecto
+deja de dar miedo y pasa a ser un problema de accesibilidad (ciego Y sordo estando rodeado). Se
+recupera interpolando en espacio LOG, porque una rampa lineal entre 380 y 22000 se pasa casi todo el
+tiempo sonando ya recuperada.
+
+El TROMPICÓN bloquea solo `Run`, con el mismo `AddStateBlocker` que ya usan el agarre y el
+knockdown. Sigues andando y sigues apuntando; lo que pierdes es esprintar lejos de los otros cuatro,
+que es exactamente el precio que el momento debe tener.
