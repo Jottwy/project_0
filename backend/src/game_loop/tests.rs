@@ -7817,12 +7817,13 @@ async fn adult_population_marks_species_relay_only_and_only_wakes_in_zone_office
         !driver.movers.is_empty(),
         "office chunk ({ox},{oz}) at density_scale 8.0 populated nobody"
     );
+    // Enmienda 5: neighbouring chunks populate too (sparsely), so the home chunk is no longer
+    // forced to be the office one. What still has to hold is that the office DID populate.
+    assert!(
+        driver.movers.iter().any(|m| m.home_chunk == (ox, oz)),
+        "the office chunk ({ox},{oz}) itself populated nobody"
+    );
     for m in &driver.movers {
-        assert_eq!(
-            m.home_chunk,
-            (ox, oz),
-            "the only chunk within range was ({ox},{oz})"
-        );
         let peer = &net.peers[&m.id];
         assert_eq!(peer.species, 1, "adult must report species 1");
         assert!(peer.relay_only, "a faceling has no real backend behind it");
@@ -8240,11 +8241,16 @@ async fn child_pack_population_marks_species_relay_only_and_only_wakes_in_zone_o
         !driver.packs.is_empty(),
         "office chunk ({ox},{oz}) at density_scale 20.0 anchored no pack"
     );
-    let pack = &driver.packs[0];
-    assert_eq!(pack.home_chunk, (ox, oz));
+    // Enmienda 5: neighbouring chunks anchor packs too (sparsely), so pick the office's own
+    // rather than assuming it is the only one that woke up.
+    let pack = driver
+        .packs
+        .iter()
+        .find(|p| p.home_chunk == (ox, oz))
+        .unwrap_or_else(|| panic!("the office chunk ({ox},{oz}) itself anchored no pack"));
     assert!(
-        (3..=5).contains(&pack.members.len()),
-        "pack size {} outside 3..=5",
+        (3..=8).contains(&pack.members.len()),
+        "pack size {} outside 3..=8",
         pack.members.len()
     );
     for m in &pack.members {
@@ -8410,6 +8416,86 @@ async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
     assert!(
         (flank_sides[0] - flank_sides[1]).abs() > 1.0,
         "both Flank members took the same side: {flank_sides:?}"
+    );
+}
+
+/// Enmienda 5 — the sixth child and up go to the RING, not to the front. Everything else already
+/// converges, so another converger just joins the crowd you are already looking at.
+#[test]
+fn packs_past_five_send_the_extras_to_the_ring() {
+    let make = |n: usize| -> Vec<Option<ChildRole>> {
+        let mut members: Vec<ChildMover> = (0..n)
+            .map(|i| ChildMover {
+                id: 61000 + i as PeerId,
+                heading: 0.0,
+                roam_target: Vec3::ZERO,
+                state_timer: 0.0,
+                health: 15,
+                role: None,
+                frozen: false,
+                pending_vocal: None,
+                vocal_seq: 0,
+                vocal_kind: 0,
+                vocal_delay: None,
+                strike_recover: 0.0,
+                progress: ProgressWatch::new(),
+                loot: None,
+                flank_offset: 0.0,
+            })
+            .collect();
+        assign_roles(&mut members);
+        members.iter().map(|m| m.role).collect()
+    };
+
+    // Five: still no Ring — the fifth doubles the front (Enmienda 2).
+    assert!(!make(5).contains(&Some(ChildRole::Ring)));
+
+    for n in 6..=8 {
+        let roles = make(n);
+        let rings = roles
+            .iter()
+            .filter(|r| **r == Some(ChildRole::Ring))
+            .count();
+        assert_eq!(
+            rings,
+            n - 5,
+            "pack of {n} should send {} to the ring",
+            n - 5
+        );
+        // The core five must be untouched, so a death re-deals with minimal churn.
+        assert_eq!(
+            roles[..5],
+            make(5)[..],
+            "pack of {n} disturbed the core five"
+        );
+    }
+}
+
+/// A `Ring` aims BEHIND the player's shoulder — further round than a `Flank`, and out at its own
+/// wider band. If it ever landed in front, the role would just be a slow `Press`.
+#[test]
+fn a_ring_stands_behind_the_players_shoulder() {
+    let target = Vec3::new(0.0, 1.8, 0.0);
+    // Player facing +Z (yaw 0). "Behind" is therefore -Z.
+    for side in [-1.0f32, 1.0] {
+        let spot = child_ring_position(target, 0.0, side);
+        assert!(
+            spot.z < 0.0,
+            "a Ring on side {side} stood at z={:.2}, in front of the player",
+            spot.z
+        );
+        let dist = spot.distance_xz(target);
+        assert!(
+            (dist - FACELING_CHILD_RING_BAND).abs() < 0.01,
+            "a Ring should orbit at its own band, stood at {dist:.2} m"
+        );
+    }
+    // The two sides must be genuinely opposite, not both round the same shoulder.
+    let left = child_ring_position(target, 0.0, -1.0);
+    let right = child_ring_position(target, 0.0, 1.0);
+    assert!(
+        left.x * right.x < 0.0,
+        "both Ring sides ended up on the same side of the player"
     );
 }
 
@@ -8714,33 +8800,35 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
         driver.apply_damage(&mut net, *id, host, 99.0, anchor);
     }
 
-    // A pack at FACELING_CHILD_PACK_MAX (five since Enmienda 2), built by topping up a four.
+    // A pack at FACELING_CHILD_PACK_MAX (eight since Enmienda 5), built by topping up a four.
     let mut full = four_member_pack(&mut net, (1, 0), 0, Vec3::new(6.0, stand_on(0), 0.0)).await;
-    let fifth = net.spawn_faceling("Faceling_Child_Test", [6.0, stand_on(0), 0.0], 2);
-    full.members.push(ChildMover {
-        id: fifth,
-        heading: 0.0,
-        roam_target: Vec3::new(6.0, stand_on(0), 0.0),
-        state_timer: 999.0,
-        health: 15,
-        role: None,
-        frozen: false,
-        pending_vocal: None,
-        vocal_seq: 0,
-        vocal_kind: 0,
-        vocal_delay: None,
-        strike_recover: 0.0,
-        progress: ProgressWatch::new(),
-        loot: None,
-        flank_offset: 0.0,
-    });
+    while full.members.len() < 8 {
+        let extra = net.spawn_faceling("Faceling_Child_Test", [6.0, stand_on(0), 0.0], 2);
+        full.members.push(ChildMover {
+            id: extra,
+            heading: 0.0,
+            roam_target: Vec3::new(6.0, stand_on(0), 0.0),
+            state_timer: 999.0,
+            health: 15,
+            role: None,
+            frozen: false,
+            pending_vocal: None,
+            vocal_seq: 0,
+            vocal_kind: 0,
+            vocal_delay: None,
+            strike_recover: 0.0,
+            progress: ProgressWatch::new(),
+            loot: None,
+            flank_offset: 0.0,
+        });
+    }
     driver.packs.push(full);
 
     driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
 
     assert_eq!(driver.packs.len(), 2, "the straggler should still be alone");
     assert_eq!(driver.packs[0].members.len(), 1);
-    assert_eq!(driver.packs[1].members.len(), 5);
+    assert_eq!(driver.packs[1].members.len(), 8);
 }
 
 /// Places a 4-member pack in `PackStalk` against a peer at `target_pos`, with the `Press` member
@@ -9136,14 +9224,16 @@ fn a_pack_of_five_gets_a_second_press() {
     assign_roles(&mut members);
 
     let roles: Vec<Option<ChildRole>> = members.iter().map(|m| m.role).collect();
+    // The extra Press lands at the END, so indices 0..3 keep exactly the four-member roster —
+    // a death then re-deals with as few role changes as possible.
     assert_eq!(
         roles,
         vec![
             Some(ChildRole::Press),
-            Some(ChildRole::Press),
             Some(ChildRole::Flank),
             Some(ChildRole::Flank),
             Some(ChildRole::Cut),
+            Some(ChildRole::Press),
         ]
     );
     // The flank geometry that already worked must survive the extra member: still opposite sides.
@@ -9259,7 +9349,12 @@ async fn deactivating_a_pack_returns_carried_loot() {
     // Everybody far away: the reconcile retires the whole pack.
     driver.sync_population(&mut net, Vec3::new(-99999.0, stand_on(0), -99999.0), 99.0);
 
-    assert!(driver.packs.is_empty(), "the pack was not retired");
+    // Enmienda 5: the reconcile can also WAKE packs near wherever the player now is, so the
+    // roster is not necessarily empty — what must be gone is THIS pack.
+    assert!(
+        !driver.packs.iter().any(|p| p.home_chunk == (ox, oz)),
+        "the pack was not retired"
+    );
     assert_eq!(
         driver.dropped_loot.len(),
         1,

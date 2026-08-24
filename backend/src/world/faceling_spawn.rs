@@ -1,9 +1,10 @@
 //! ADR-094 — where the world's facelings live, adults and child packs alike. Mirrors `world::phantom_spawn` (ADR-043)
 //! almost verbatim — same PURE, LAZY draw, same determinism guarantee, same reason nothing here
-//! is persisted (see that module's doc for the full argument). ONE structural difference: gated
-//! to `zone_kind_for(..) == ZONE_OFFICE` BEFORE touching the RNG, and scoped per CHUNK rather
-//! than per 200 m block — an office chunk is already its own "planta" (`layout_grammars`: OFFICE
-//! stamps 4 sub-regions per chunk, ADR-087), so there is no coarser unit worth drawing over.
+//! is persisted (see that module's doc for the full argument). ONE structural difference: density
+//! is WEIGHTED by `zone_kind_for(..) == ZONE_OFFICE` (Enmienda 5 — it used to be a hard gate), and
+//! scoped per CHUNK rather than per 200 m block — an office chunk is already its own "planta"
+//! (`layout_grammars`: OFFICE stamps 4 sub-regions per chunk, ADR-087), so there is no coarser
+//! unit worth drawing over.
 //!
 //! The CLIENT never replicates this, same reason as `phantom_spawn`: facelings are
 //! host-authoritative synthetic peers (ADR-016's trick, ADR-094 point 1), and a second draw in
@@ -17,7 +18,8 @@ use crate::world::chunk::{ChunkLayer, ZONE_OFFICE};
 use crate::world::grid_gen::{grid_floor_y, CELL_SIZE_M, CHUNK_CELLS};
 use crate::world::zone_density::zone_kind_for;
 
-/// Expected adults per `ZONE_OFFICE` chunk, per layer. v1 PLACEHOLDER: ADR-094 point 5 flags
+/// Expected adults per `ZONE_OFFICE` chunk, per layer — scaled by `FACELING_OUTSIDE_DENSITY_FACTOR`
+/// anywhere else. v1 PLACEHOLDER: ADR-094 point 5 flags
 /// this "densidad por medir con sonda" exactly like ADR-043's own table did before its own
 /// measurement pass — layers 1-3 start at zero for the same reason theirs did (unreachable,
 /// `PHANTOM_LAYER_DENSITY`'s doc comment).
@@ -27,11 +29,21 @@ pub const FACELING_ADULT_LAYER_DENSITY: [f32; 4] = [2.0, 0.0, 0.0, 0.0];
 /// and same reason as `phantom_spawn::PHANTOM_DRAW_SALT`.
 const FACELING_ADULT_DRAW_SALT: u64 = 0xFACE_1105_ADD1_7000;
 
+/// Enmienda 5 — how much of the office density survives OUTSIDE an office chunk.
+///
+/// One in eight. Low enough that an office is still unmistakably where they live (ADR-094 point 5's
+/// "entrar en oficinas ES la decision de riesgo" survives as a matter of degree), high enough that
+/// the rest of the level is no longer guaranteed safe. It also bounds the cost: the population
+/// reconcile now considers every nearby chunk instead of only the office ones, and this factor is
+/// what keeps that from multiplying the active roster (the `FACELING_ACTIVE_CAP` /
+/// `FACELING_CHILD_PACK_ACTIVE_CAP` ceilings still backstop it).
+pub const FACELING_OUTSIDE_DENSITY_FACTOR: f32 = 0.125;
+
 /// Which adults does chunk `(cx, cz)` hold on `layer`? Appended to `out` (cleared first).
 ///
-/// Empty immediately, with the RNG never touched, when the chunk is not `ZONE_OFFICE` — same
-/// cheap-out shape as `phantom_spawn::draw_into`'s density-zero return, for the same reason
-/// (this runs over every nearby chunk, every population reconcile).
+/// Sparse but not empty outside an office (Enmienda 5). Still returns before touching the RNG when
+/// the resulting density is zero — same cheap-out shape as `phantom_spawn::draw_into`'s, and it
+/// still matters: this runs over every nearby chunk, every population reconcile.
 ///
 /// Positions are raw cell centres and may land inside a wall: snapping is
 /// `NetworkManager::spawn_faceling`'s job via `resolve_spawn_near`, exactly like `spawn_phantom`.
@@ -44,14 +56,23 @@ pub fn draw_adults_into(
     out: &mut Vec<[f32; 3]>,
 ) {
     out.clear();
-    if zone_kind_for(world_seed, cx, cz, layer) != ZONE_OFFICE {
-        return;
-    }
+    // Enmienda 5 (Joel, play-test 2026-08-24): they are no longer CONFINED to offices, they are
+    // CONCENTRATED there. ADR-094 point 5 kept them strictly inside `ZONE_OFFICE` so that walking
+    // in was the risk decision and the maze stayed the robapieles' territory; running into one in
+    // a corridor now costs a fraction of that, and the office is still where they live by a factor
+    // of `FACELING_OUTSIDE_DENSITY_FACTOR`. Both identities survive; the world stops feeling
+    // partitioned.
+    let in_office = zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE;
+    let zone_factor = match in_office {
+        true => 1.0,
+        false => FACELING_OUTSIDE_DENSITY_FACTOR,
+    };
     let expected = FACELING_ADULT_LAYER_DENSITY
         .get(layer as usize)
         .copied()
         .unwrap_or(0.0)
-        * density_scale.max(0.0);
+        * density_scale.max(0.0)
+        * zone_factor;
     if expected <= 0.0 {
         return;
     }
@@ -96,19 +117,20 @@ pub fn draw_adults(
     out
 }
 
-/// Probability a given `ZONE_OFFICE` chunk anchors a child pack. Unlike the adults' expected-COUNT
+/// Probability a `ZONE_OFFICE` chunk anchors a child pack — scaled by
+/// `FACELING_OUTSIDE_DENSITY_FACTOR` elsewhere. Unlike the adults' expected-COUNT
 /// table, a pack is atomic — a chunk holds exactly one pack or none, never a fractional or scaled
 /// count of packs — so this is a genuine [0,1] probability, not an "expected count" multiplier.
 /// v1 PLACEHOLDER, unmeasured, same as `FACELING_ADULT_LAYER_DENSITY`.
 pub const FACELING_CHILD_PACK_LAYER_PROBABILITY: [f32; 4] = [0.5, 0.0, 0.0, 0.0];
 
-/// ADR-094 point 3 said "packs de 3-4"; Enmienda 2 (play-test 2026-08-24) widens it to 3-5, with
-/// `assign_roles` giving the fifth a second `Press`. Salt of its own so the pack roll and the adult
-/// roll (and the robapieles') never share a stream — same reasoning as `PHANTOM_DRAW_SALT`.
+/// ADR-094 point 3 said "packs de 3-4"; Enmienda 2 widened it to 3-5 and Enmienda 5 to 3-8, with
+/// `assign_roles` sending everyone past the fifth to the `Ring`. Salt of its own so the pack roll
+/// and the adult roll (and the robapieles') never share a stream — as `PHANTOM_DRAW_SALT`.
 const FACELING_CHILD_DRAW_SALT: u64 = 0xFACE_C41D_0000_7EEE;
 
 /// Does chunk `(cx, cz)` anchor a child pack on `layer`, and where does each member start? Appended
-/// to `out` (cleared first) — 3 to 5 positions, or none. Same `ZONE_OFFICE` cheap-out as
+/// to `out` (cleared first) — 3 to 8 positions, or none. Same office-weighting as
 /// `draw_adults_into`, same reason.
 ///
 /// Members are scattered a few cells apart (not stacked on one point) so `AdultDriver`-style
@@ -122,14 +144,18 @@ pub fn draw_child_pack_into(
     out: &mut Vec<[f32; 3]>,
 ) {
     out.clear();
-    if zone_kind_for(world_seed, cx, cz, layer) != ZONE_OFFICE {
-        return;
-    }
+    // Same office-dense / elsewhere-sparse split as the adults — see `draw_adults_into`.
+    let in_office = zone_kind_for(world_seed, cx, cz, layer) == ZONE_OFFICE;
+    let zone_factor = match in_office {
+        true => 1.0,
+        false => FACELING_OUTSIDE_DENSITY_FACTOR,
+    };
     let chance = FACELING_CHILD_PACK_LAYER_PROBABILITY
         .get(layer as usize)
         .copied()
         .unwrap_or(0.0)
-        * density_scale.max(0.0);
+        * density_scale.max(0.0)
+        * zone_factor;
     if chance <= 0.0 {
         return;
     }
@@ -145,7 +171,7 @@ pub fn draw_child_pack_into(
     if rng.gen::<f32>() >= chance.min(1.0) {
         return;
     }
-    let size = 3 + rng.gen_range(0..3u32); // 3, 4 or 5 (Enmienda 2)
+    let size = 3 + rng.gen_range(0..6u32); // 3..=8 (Enmienda 5)
 
     for _ in 0..size {
         let cell_x = rng.gen_range(0..CHUNK_CELLS as i32);
@@ -209,28 +235,43 @@ mod tests {
     /// `ZONE_OFFICE`. Checked as an implication over a wide grid rather than by hand-picking one
     /// known office chunk, because which chunks roll OFFICE is itself seed-derived.
     #[test]
-    fn adults_never_populate_outside_zone_office() {
-        let mut any_populated = false;
+    fn adults_are_dense_in_offices_and_sparse_outside() {
+        // Enmienda 5 replaced the hard `ZONE_OFFICE` gate with a density RATIO, so the invariant
+        // worth pinning is no longer "never outside" — it is that an office is still where they
+        // live by a wide margin. A regression that flattened the two would pass any "some appear
+        // outside" check, so this measures both sides and compares them.
+        let mut office_chunks = 0usize;
+        let mut office_adults = 0usize;
+        let mut other_chunks = 0usize;
+        let mut other_adults = 0usize;
+
         for seed in SEEDS {
             for cx in -25..25 {
                 for cz in -25..25 {
-                    let drawn = draw_adults(seed, cx, cz, 0, 1.0);
-                    if drawn.is_empty() {
-                        continue;
+                    let n = draw_adults(seed, cx, cz, 0, 1.0).len();
+                    if zone_kind_for(seed, cx, cz, 0) == ZONE_OFFICE {
+                        office_chunks += 1;
+                        office_adults += n;
+                    } else {
+                        other_chunks += 1;
+                        other_adults += n;
                     }
-                    any_populated = true;
-                    assert_eq!(
-                        zone_kind_for(seed, cx, cz, 0),
-                        ZONE_OFFICE,
-                        "seed {seed} chunk ({cx},{cz}) populated adults outside ZONE_OFFICE"
-                    );
                 }
             }
         }
+
+        assert!(office_chunks > 0 && other_chunks > 0, "degenerate sample");
+        assert!(office_adults > 0, "offices populated nobody at all");
         assert!(
-            any_populated,
-            "no office chunk populated in a 50x50 grid across {} seeds — gate is rejecting everything",
-            SEEDS.len()
+            other_adults > 0,
+            "nothing spawned outside an office — the corridors are still empty"
+        );
+
+        let office_rate = office_adults as f32 / office_chunks as f32;
+        let other_rate = other_adults as f32 / other_chunks as f32;
+        assert!(
+            office_rate > other_rate * 3.0,
+            "offices ({office_rate:.3}/chunk) are not meaningfully denser than everywhere else              ({other_rate:.3}/chunk) — the office has stopped meaning anything"
         );
     }
 
@@ -263,7 +304,16 @@ mod tests {
         };
         let (one, four) = (at(1.0), at(4.0));
         assert!(one > 0, "no adults drawn at scale 1.0 in a 50x50 grid");
-        assert_eq!(four, one * 4);
+        // Enmienda 5: exact 4x proportionality no longer holds, and the reason is worth stating.
+        // Outside an office the expected count is scaled to a FRACTION, and a fractional expected
+        // spends one RNG draw deciding whether to round up — so those chunks contribute a
+        // probabilistic count rather than a multiplied one. Inside offices it is still exactly
+        // linear; across the mix it lands close to 4x, not on it.
+        let ratio = four as f32 / one as f32;
+        assert!(
+            (3.5..=4.5).contains(&ratio),
+            "scale 4.0 drew {four} against {one} at 1.0 (x{ratio:.2}) — density_scale should still              be a count multiplier"
+        );
         assert_eq!(at(0.0), 0);
     }
 
@@ -317,35 +367,48 @@ mod tests {
     }
 
     #[test]
-    fn child_packs_never_populate_outside_zone_office() {
-        let mut any_populated = false;
+    fn child_packs_are_dense_in_offices_and_sparse_outside() {
+        // Same shape as the adults' — Enmienda 5 turned the hard gate into a ratio, so what is
+        // worth pinning is the RATIO, not the absence.
+        let mut office_chunks = 0usize;
+        let mut office_packs = 0usize;
+        let mut other_chunks = 0usize;
+        let mut other_packs = 0usize;
+
         for seed in SEEDS {
             for cx in -25..25 {
                 for cz in -25..25 {
-                    let drawn = draw_child_pack(seed, cx, cz, 0, 1.0);
-                    if drawn.is_empty() {
-                        continue;
+                    let anchored = usize::from(!draw_child_pack(seed, cx, cz, 0, 1.0).is_empty());
+                    if zone_kind_for(seed, cx, cz, 0) == ZONE_OFFICE {
+                        office_chunks += 1;
+                        office_packs += anchored;
+                    } else {
+                        other_chunks += 1;
+                        other_packs += anchored;
                     }
-                    any_populated = true;
-                    assert_eq!(
-                        zone_kind_for(seed, cx, cz, 0),
-                        ZONE_OFFICE,
-                        "seed {seed} chunk ({cx},{cz}) anchored a pack outside ZONE_OFFICE"
-                    );
                 }
             }
         }
+
+        assert!(office_chunks > 0 && other_chunks > 0, "degenerate sample");
+        assert!(office_packs > 0, "offices anchored no packs at all");
         assert!(
-            any_populated,
-            "no office chunk anchored a pack in a 50x50 grid across {} seeds",
-            SEEDS.len()
+            other_packs > 0,
+            "no pack anchored outside an office — the corridors are still empty"
+        );
+
+        let office_rate = office_packs as f32 / office_chunks as f32;
+        let other_rate = other_packs as f32 / other_chunks as f32;
+        assert!(
+            office_rate > other_rate * 3.0,
+            "offices ({office_rate:.3}/chunk) are not meaningfully denser than everywhere else              ({other_rate:.3}/chunk)"
         );
     }
 
-    /// ADR-094 point 3 + Enmienda 2: "packs de 3-5" — never fewer, never more, and never a
-    /// fractional roster (unlike the adults' count, this is atomic per chunk).
+    /// ADR-094 point 3, as widened by Enmiendas 2 and 5: "packs de 3-8" — never fewer, never more,
+    /// and never a fractional roster (unlike the adults' count, this is atomic per chunk).
     #[test]
-    fn a_pack_is_always_three_to_five() {
+    fn a_pack_is_always_three_to_eight() {
         let mut sizes_seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for seed in SEEDS {
             for cx in -25..25 {
@@ -355,7 +418,7 @@ mod tests {
                         continue;
                     }
                     assert!(
-                        (3..=5).contains(&n),
+                        (3..=8).contains(&n),
                         "seed {seed} chunk ({cx},{cz}) drew a pack of size {n}"
                     );
                     sizes_seen.insert(n);
@@ -364,8 +427,8 @@ mod tests {
         }
         assert_eq!(
             sizes_seen,
-            std::collections::HashSet::from([3, 4, 5]),
-            "all three pack sizes should show up across this many chunks"
+            std::collections::HashSet::from([3, 4, 5, 6, 7, 8]),
+            "every pack size should show up across this many chunks"
         );
     }
 

@@ -727,7 +727,7 @@ const FACELING_CHILD_CERCO_SPEED_SEEN: f32 = 1.8;
 /// crossed half the room. Deliberately BELOW a running player (~5 m/s): they never out-sprint you
 /// in a straight line, they only take everything you give them by stopping, turning or hesitating.
 /// "Corriendo pero a paso de niño, no una velocidad de locos."
-const FACELING_CHILD_CERCO_SPEED_UNSEEN: f32 = 3.4;
+const FACELING_CHILD_CERCO_SPEED_UNSEEN: f32 = 4.2;
 /// What `intercept_point` assumes when projecting where to cut you off. The UNSEEN figure on
 /// purpose: a `Cut` that plans at walking pace aims at a point you have already passed.
 const FACELING_CHILD_CERCO_SPEED: f32 = FACELING_CHILD_CERCO_SPEED_UNSEEN;
@@ -782,7 +782,7 @@ const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
 /// A pack at this size does not accept a straggler. Five since the 2026-08-24 play-test (ADR-094
 /// Enmienda 2): `assign_roles` has a roster for it, and beyond five the extra members fall through
 /// to `Press | None`, which is a silent degradation rather than a decision.
-const FACELING_CHILD_PACK_MAX: usize = 5;
+const FACELING_CHILD_PACK_MAX: usize = 8;
 
 /// E2c — the `Press` role's blow. Shorter than the adults' 2.4 m: a child's arms are shorter, and
 /// the tighter reach is also what forces the cerco to actually CLOSE before anything lands.
@@ -952,6 +952,15 @@ pub(super) enum ChildRole {
     /// the robapieles' own chase, reused verbatim (it only ever needed a cache/layer/positions/
     /// velocity, never `PhantomMover` itself).
     Cut,
+    /// Enmienda 5 — THE RING. Does not come for you at all: it orbits at
+    /// `FACELING_CHILD_RING_BAND` and keeps working around to whichever side you are NOT facing.
+    ///
+    /// This is the role that makes a big pack feel like a pack instead of a queue. `Press`,
+    /// `Flank` and `Cut` all converge, so past four or five bodies they arrive together and you
+    /// fight a crowd in front of you. A `Ring` deliberately stays out of reach and spends the whole
+    /// encounter behind your shoulder, so the danger stops being "what is in front of me" and
+    /// becomes "how many are back there now".
+    Ring,
 }
 
 pub(super) struct ChildPack {
@@ -1092,15 +1101,53 @@ fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32)
     )
 }
 
+/// Enmienda 5 — how far out a `Ring` orbits. Beyond the strike and shove reaches on purpose: this
+/// role is not supposed to be able to touch you, it is supposed to be BEHIND you.
+pub(super) const FACELING_CHILD_RING_BAND: f32 = 10.0;
+/// How far past the target's shoulder a `Ring` aims. Further round than a `Flank`'s 125°: a
+/// flanker still wants an angle it can close from, a ring wants your back.
+const FACELING_CHILD_RING_ANGLE_DEG: f32 = 155.0;
+
+/// Where a `Ring` wants to stand: behind the shoulder you are NOT turning toward.
+///
+/// Recomputed against your CURRENT facing every tick, which is what makes it feel like it is
+/// working around you rather than standing on a fixed mark — turn toward it and its goal slides
+/// round to the other shoulder, so it is always heading for the side you just stopped watching.
+pub(super) fn child_ring_position(target: Vec3, target_yaw_deg: f32, side: f32) -> Vec3 {
+    let view = target_yaw_deg.to_radians();
+    let angle = view + side * FACELING_CHILD_RING_ANGLE_DEG.to_radians();
+    Vec3::new(
+        target.x + angle.sin() * FACELING_CHILD_RING_BAND,
+        target.y,
+        target.z + angle.cos() * FACELING_CHILD_RING_BAND,
+    )
+}
+
+/// Enmienda 5 — a per-child constant in 0..1 that keeps them from moving like one animal.
+///
+/// Deterministic from the id, same trick and same reason as the robapieles' `derive_hunger`: a
+/// play-test has to be repeatable, and `rand` here would mean the same pack never behaves the same
+/// way twice. Low is timid (hangs back, slower), high is pushy (closes tighter, faster).
+///
+/// The variation is deliberately small. Enough that five children stop arriving in formation like
+/// a marching band, not so much that one of them reads as a different creature.
+fn child_nerve(id: PeerId) -> f32 {
+    let mut z = (id as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^= z >> 31;
+    (z >> 11) as f32 / (1u64 << 53) as f32
+}
+
 /// Enmienda 4 — how far a child will steer off its goal to avoid standing on a packmate.
 ///
 /// Without this every role computes its point independently and nothing stops two of them
 /// occupying it: the pack collapses into a clump you can see, and shoot, all at once. A clump is
 /// also strictly worse at its own job — a cerco is only a cerco if there is angle between them.
-const FACELING_CHILD_SEPARATION_RADIUS: f32 = 2.4;
+const FACELING_CHILD_SEPARATION_RADIUS: f32 = 3.2;
 /// How hard the push-apart pulls versus the goal. Below 1.0 so converging always wins in the end:
 /// they spread out on the way in, they do not orbit forever refusing to close.
-const FACELING_CHILD_SEPARATION_WEIGHT: f32 = 0.75;
+const FACELING_CHILD_SEPARATION_WEIGHT: f32 = 0.95;
 
 /// The offset that keeps packmates off each other, as a world-space nudge to add to a goal.
 ///
@@ -1160,12 +1207,43 @@ pub(super) fn assign_roles(members: &mut [ChildMover]) {
         // flanks on opposite sides, one cut on the retreat — and the new pressure lands where the
         // player is already looking. Two coming straight at you reads as "they are committing",
         // where a third flanker would just be one more figure in the corner of the eye.
-        _ => &[
-            ChildRole::Press,
+        5 => &[
             ChildRole::Press,
             ChildRole::Flank,
             ChildRole::Flank,
             ChildRole::Cut,
+            ChildRole::Press,
+        ],
+        // Enmienda 5 — SIX AND UP GO TO THE RING, not to the front. Everything above already
+        // converges, so a sixth converger just joins the crowd you are looking at. The extra
+        // bodies orbit instead: they never close, they just keep taking the angle you are not
+        // watching, which is what turns "a group of enemies" into "how many are behind me".
+        6 => &[
+            ChildRole::Press,
+            ChildRole::Flank,
+            ChildRole::Flank,
+            ChildRole::Cut,
+            ChildRole::Press,
+            ChildRole::Ring,
+        ],
+        7 => &[
+            ChildRole::Press,
+            ChildRole::Flank,
+            ChildRole::Flank,
+            ChildRole::Cut,
+            ChildRole::Press,
+            ChildRole::Ring,
+            ChildRole::Ring,
+        ],
+        _ => &[
+            ChildRole::Press,
+            ChildRole::Flank,
+            ChildRole::Flank,
+            ChildRole::Cut,
+            ChildRole::Press,
+            ChildRole::Ring,
+            ChildRole::Ring,
+            ChildRole::Ring,
         ],
     };
     let mut next_flank_side = -1.0;
@@ -2217,20 +2295,38 @@ impl ChildDriver {
                     }
                 }
 
+                // Enmienda 5 — this child's own temperament, 0..1. Shifts how tight it is willing
+                // to stand and how fast it moves, by a little. The point is only that five of them
+                // stop arriving in formation like a marching band.
+                let nerve = child_nerve(id);
+                let target_yaw = players
+                    .iter()
+                    .find(|&&(pid, _, _)| Some(pid) == self.packs[pi].mind.target)
+                    .map(|&(_, _, yaw)| yaw)
+                    .unwrap_or(0.0);
+
                 let goal = match role {
                     Some(ChildRole::Press) | None => target,
                     Some(ChildRole::Flank) => {
-                        let target_yaw = players
-                            .iter()
-                            .find(|&&(pid, _, _)| Some(pid) == self.packs[pi].mind.target)
-                            .map(|&(_, _, yaw)| yaw)
-                            .unwrap_or(0.0);
+                        // Timid ones hang a metre or so further out than pushy ones.
+                        let band = FACELING_CHILD_CERCO_BAND * (1.15 - nerve * 0.3);
                         child_flank_position(
                             target,
                             target_yaw,
                             self.packs[pi].members[mi].flank_offset,
-                            FACELING_CHILD_CERCO_BAND,
+                            band,
                         )
+                    }
+                    // Enmienda 5 — never closes, just keeps taking the shoulder you are not
+                    // watching. `flank_offset` is 0.0 for this role out of `assign_roles`, so the
+                    // side comes off the member index: adjacent Rings work opposite shoulders
+                    // instead of stacking on one.
+                    Some(ChildRole::Ring) => {
+                        let side = match mi.is_multiple_of(2) {
+                            true => 1.0,
+                            false => -1.0,
+                        };
+                        child_ring_position(target, target_yaw, side)
                     }
                     Some(ChildRole::Cut) => {
                         let vel = self.packs[pi].mind.last_known_vel;
@@ -2263,7 +2359,8 @@ impl ChildDriver {
 
                 let raw_heading = (goal.x - from.x).atan2(goal.z - from.z);
                 let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-                let step = child_gear_speed(from, players, layer) * dt;
+                // ±10% by temperament, so a pack does not advance as one rigid line.
+                let step = child_gear_speed(from, players, layer) * (0.9 + nerve * 0.2) * dt;
                 let next = Vec3::new(
                     from.x + heading.sin() * step,
                     from.y,

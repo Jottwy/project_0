@@ -6120,3 +6120,38 @@ converger siga ganando al final — se separan de camino, no orbitan negándose 
 El caso degenerado tiene su propia salida: dos exactamente superpuestos dan una repulsión de
 longitud cero, que los soldaría para siempre. `separation_offset` cae a un rumbo derivado del
 índice del miembro por el ángulo áureo, para que los dos de la pareja no elijan la misma salida.
+
+### Enmienda 5 a ADR-094 (2026-08-24) — el rodeo: packs de ocho, un rol que no ataca, y el mundo entero
+
+Sigue el mismo playtest. Cuatro cambios, uno de ellos sobre el punto 5, que es el que más pesa.
+
+**D12 — ROL `Ring`: el que NO va a por ti.** `Press`, `Flank` y `Cut` convergen los tres, así que
+pasados cuatro o cinco cuerpos llegan juntos y peleas contra un grupo que tienes delante. El `Ring`
+orbita a 10 m y se planta a 155° de tu mirada — recalculado cada tick, así que girarte hacia él
+desliza su destino al otro hombro. Nunca cierra, nunca golpea: su trabajo es que el peligro deje de
+ser "lo que tengo delante" y pase a ser "cuántos hay ya detrás". Es lo que hace que un pack grande
+se sienta pack y no cola.
+
+**D13 — Packs de 3 a 8; del sexto en adelante, todos al `Ring`.** Un sexto convergedor solo
+engrosaría el grupo que ya estás mirando. Los cinco primeros conservan EXACTAMENTE el roster de
+Enmienda 2 (y el quinto `Press` pasa al final del array por eso: así los índices 0..3 siguen siendo
+el roster de cuatro y una muerte re-reparte con el mínimo trasiego de roles).
+
+**D14 — Variedad individual.** `child_nerve(id)`, determinista por id igual que `derive_hunger` del
+robapieles y por la misma razón (un playtest tiene que ser repetible). Mueve la banda del flanqueo
+±15 % y la velocidad ±10 %. Deliberadamente poco: lo justo para que cinco dejen de llegar en
+formación de banda de música, no tanto como para que uno parezca otro bicho.
+
+**D15 — SPAWN POR TODO EL MAPA, ponderado.** El punto 5 los encerraba en `ZONE_OFFICE` con un
+argumento explícito: "entrar en oficinas ES la decisión de riesgo; el robapieles sigue siendo el
+dueño del laberinto". Se sustituye la puerta dura por una RAZÓN de densidad: fuera de oficina cae a
+`FACELING_OUTSIDE_DENSITY_FACTOR` = 1/8. Cruzarte uno en un pasillo pasa a ser posible y raro; la
+oficina sigue siendo suya por un factor de ocho, así que las dos identidades sobreviven y el mundo
+deja de sentirse partido en dos. El factor también acota el coste — el reconcile ahora mira todos
+los chunks cercanos y no solo los de oficina — con los topes de activación existentes de backstop.
+
+Los tests de "nunca fuera de la oficina" se reescriben a lo que ahora importa: no que no aparezcan
+fuera, sino que la oficina siga siendo MUCHO más densa (se mide y se compara). Y `density_scale`
+deja de ser exactamente lineal a través de la mezcla, porque fuera de oficina la cuenta esperada es
+fraccionaria y una fracción se gasta un sorteo decidiendo si redondea hacia arriba; dentro sigue
+siendo lineal exacto. El test lo dice en vez de asumirlo.
