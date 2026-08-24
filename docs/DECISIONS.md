@@ -5996,3 +5996,42 @@ salidas (ladrón muerto, ladrón que escapa al nido, desactivación por lejanía
 la misma función de soltado contra el camino de drop existente. Y el precedente de ADR-047 D1 se
 copia literal: si la víctima no tiene canal, el robo NO OCURRE — no se manda el comando, no se marca
 carry, no se inventa un botín. Un robo que no se puede entregar es un robo que no pasó.
+
+### Enmienda 2 a ADR-094 (2026-08-24) — el playtest: marchas, packs de cinco, y voz de prueba
+
+Tres cambios salidos de jugarlo, decididos por Joel en sesión. Dos contradicen texto del ADR
+original y por eso están aquí y no en un comentario.
+
+**D3 — Tres marchas, y la de correr solo cuando no miras.** El punto 6 dejaba "locomoción de niño
+con paso ligero/saltitos" como pendiente y sin números. Se fija: paseo 1.2 m/s en `PackRoam`, avance
+contenido 1.8 m/s en cerco **mientras el jugador los tiene de cara**, y carrera 3.4 m/s **en cuanto
+les da la espalda**. La discriminación reutiliza el cono ANCHO de liberación de Statue, no el
+estrecho de congelación, y el hueco entre los dos es justo el mecanismo: hay una banda donde los
+miras lo bastante para que anden pero no para que se paren. Giras un poco más y se congelan; te giras
+del todo y corren. El jugador no ve un número, aprende que mirar es lo que los frena.
+
+3.4 m/s está deliberadamente POR DEBAJO de un jugador corriendo (~5 m/s): no te ganan en línea recta,
+solo se cobran lo que les regalas al pararte, girarte o dudar. "Corriendo pero a paso de niño, no una
+velocidad de locos" (Joel). El `Cut` sigue proyectando su intercepción con la cifra de correr, porque
+un corte planificado a paso de andar apunta a un punto por el que ya pasaste.
+
+**D4 — Packs de 3 a 5, y el quinto es un segundo `Press`.** El punto 3 decía "packs de 3-4". Se
+amplía a 3-5 para probar cómo se siente el cerco con uno más. El quinto DOBLA EL FRENTE en vez de
+añadir un tercer `Flank` o un segundo `Cut`: la geometría que ya funciona (dos flancos opuestos, un
+corte a la retirada) se queda intacta y la presión nueva aparece donde el jugador ya está mirando.
+Dos viniendo de frente se lee como que el pack se ha comprometido; un tercer flanqueador sería una
+figura más en el rabillo del ojo. Cinco es el tope real, no arbitrario: más allá, `assign_roles` deja
+a los sobrantes cayendo al brazo `Press | None`, que es degradación silenciosa en vez de decisión.
+
+**D5 — Bancos de voz sintéticos, contra el propio consejo del punto 6.** El punto 6 dice que las
+risas de niño por DSP son "el cringe casi garantizado" y rechaza generarlas. Joel las autoriza IGUAL
+como placeholder de playtest, con ese riesgo aceptado por escrito: sin nada que sonar no se puede
+evaluar si el timing de la convergencia funciona, y el timing es la mitad de la mecánica. Se generan
+risitas, gritos y llamadas (`tools/` — script de síntesis en el scratchpad de la sesión, WAV
+commiteados) más pasos que el mismo punto 6 ya declaraba sintetizables sin reparos ("es mecánico").
+Se borran en cuanto haya audio real; el cableado por prefijo no cambia.
+
+La cadencia de pisada sí es definitiva aunque los clips no lo sean: zancada 0.48/0.72 m frente a los
+0.85/1.35 del prefab adulto, y alcance 15 m frente a 22. Los clips siguen siendo los de superficie de
+STP —ese camino ya funciona— y lo que convierte el sonido en el de un crío es la FRECUENCIA de los
+pasos, no su timbre.

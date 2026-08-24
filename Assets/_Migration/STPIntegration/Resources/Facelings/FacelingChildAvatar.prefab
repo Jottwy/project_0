@@ -28,6 +28,18 @@ PrefabInstance:
       propertyPath: _animator
       value: 
       objectReference: {fileID: 1570986512267558764}
+    - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _runStride
+      value: 0.72
+      objectReference: {fileID: 0}
+    - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _walkStride
+      value: 0.48
+      objectReference: {fileID: 0}
+    - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _maxDistance
+      value: 15
+      objectReference: {fileID: 0}
     - target: {fileID: 5285979793911601847, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: m_IsActive
       value: 0
@@ -42,16 +54,48 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[0].Clips.Array.size
-      value: 0
-      objectReference: {fileID: 0}
-    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
-      propertyPath: _voices.Array.data[1].Clips.Array.size
-      value: 0
+      value: 4
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[2].Clips.Array.size
-      value: 0
+      value: 2
       objectReference: {fileID: 0}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[0].Clips.Array.data[0]'
+      value: 
+      objectReference: {fileID: 8300000, guid: a41f923342495864ca6016bf4a9da8b7, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[0].Clips.Array.data[1]'
+      value: 
+      objectReference: {fileID: 8300000, guid: d13123c5dc892b648be16fae6c42d05e, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[0].Clips.Array.data[2]'
+      value: 
+      objectReference: {fileID: 8300000, guid: 5675dd76690fc20419b8136aff7f8e97, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[0].Clips.Array.data[3]'
+      value: 
+      objectReference: {fileID: 8300000, guid: 39cdfd75c8f4d7a499101085f4691062, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[1].Clips.Array.data[0]'
+      value: 
+      objectReference: {fileID: 8300000, guid: c1f342b90242af14b9400b1b349626b2, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[1].Clips.Array.data[1]'
+      value: 
+      objectReference: {fileID: 8300000, guid: a0d7c6507f508d44a83e37cc1dc1b227, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[1].Clips.Array.data[2]'
+      value: 
+      objectReference: {fileID: 8300000, guid: 6af6329d1f1c49848a027f838432822c, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[2].Clips.Array.data[0]'
+      value: 
+      objectReference: {fileID: 8300000, guid: fad0f4757ce962a4ab7be07f9004f43b, type: 3}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: '_voices.Array.data[2].Clips.Array.data[1]'
+      value: 
+      objectReference: {fileID: 8300000, guid: 79df4fa9333dc1f40b5ae90baa3e31fe, type: 3}
     - target: {fileID: 9019069102963433204, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: m_LocalPosition.x
       value: 0

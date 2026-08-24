@@ -102,12 +102,13 @@ pub fn draw_adults(
 /// v1 PLACEHOLDER, unmeasured, same as `FACELING_ADULT_LAYER_DENSITY`.
 pub const FACELING_CHILD_PACK_LAYER_PROBABILITY: [f32; 4] = [0.5, 0.0, 0.0, 0.0];
 
-/// ADR-094 point 3: "packs de 3-4". Salt of its own so the pack roll and the adult roll (and the
-/// robapieles') never share a stream — same reasoning as `PHANTOM_DRAW_SALT`.
+/// ADR-094 point 3 said "packs de 3-4"; Enmienda 2 (play-test 2026-08-24) widens it to 3-5, with
+/// `assign_roles` giving the fifth a second `Press`. Salt of its own so the pack roll and the adult
+/// roll (and the robapieles') never share a stream — same reasoning as `PHANTOM_DRAW_SALT`.
 const FACELING_CHILD_DRAW_SALT: u64 = 0xFACE_C41D_0000_7EEE;
 
 /// Does chunk `(cx, cz)` anchor a child pack on `layer`, and where does each member start? Appended
-/// to `out` (cleared first) — 3 or 4 positions, or none. Same `ZONE_OFFICE` cheap-out as
+/// to `out` (cleared first) — 3 to 5 positions, or none. Same `ZONE_OFFICE` cheap-out as
 /// `draw_adults_into`, same reason.
 ///
 /// Members are scattered a few cells apart (not stacked on one point) so `AdultDriver`-style
@@ -144,7 +145,7 @@ pub fn draw_child_pack_into(
     if rng.gen::<f32>() >= chance.min(1.0) {
         return;
     }
-    let size = 3 + rng.gen_range(0..2u32); // 3 or 4
+    let size = 3 + rng.gen_range(0..3u32); // 3, 4 or 5 (Enmienda 2)
 
     for _ in 0..size {
         let cell_x = rng.gen_range(0..CHUNK_CELLS as i32);
@@ -341,10 +342,10 @@ mod tests {
         );
     }
 
-    /// ADR-094 point 3: "packs de 3-4" — never fewer, never more, and never a fractional roster
-    /// (unlike the adults' count, this is atomic per chunk).
+    /// ADR-094 point 3 + Enmienda 2: "packs de 3-5" — never fewer, never more, and never a
+    /// fractional roster (unlike the adults' count, this is atomic per chunk).
     #[test]
-    fn a_pack_is_always_three_or_four() {
+    fn a_pack_is_always_three_to_five() {
         let mut sizes_seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for seed in SEEDS {
             for cx in -25..25 {
@@ -354,7 +355,7 @@ mod tests {
                         continue;
                     }
                     assert!(
-                        (3..=4).contains(&n),
+                        (3..=5).contains(&n),
                         "seed {seed} chunk ({cx},{cz}) drew a pack of size {n}"
                     );
                     sizes_seen.insert(n);
@@ -363,8 +364,8 @@ mod tests {
         }
         assert_eq!(
             sizes_seen,
-            std::collections::HashSet::from([3, 4]),
-            "both pack sizes should show up across this many chunks"
+            std::collections::HashSet::from([3, 4, 5]),
+            "all three pack sizes should show up across this many chunks"
         );
     }
 

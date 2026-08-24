@@ -704,7 +704,9 @@ const FACELING_CHILD_MIN_SPAWN_DISTANCE: f32 = 15.0;
 const FACELING_CHILD_PACK_ACTIVE_CAP: usize = 8;
 
 const FACELING_CHILD_MAX_HEALTH: u8 = 15;
-const FACELING_CHILD_ROAM_SPEED: f32 = 1.6;
+/// The idle wander. Slowest of the three — a child that is not hunting you is not in a hurry, and
+/// the contrast is what makes the other two register as gear changes.
+const FACELING_CHILD_ROAM_SPEED: f32 = 1.2;
 const FACELING_CHILD_ARRIVE_EPS: f32 = 0.4;
 const FACELING_CHILD_ROAM_MIN_S: f32 = 8.0;
 const FACELING_CHILD_ROAM_MAX_S: f32 = 20.0;
@@ -715,9 +717,20 @@ const FACELING_CHILD_ROAM_RETRY_S: f32 = 3.0;
 /// light, a child (ADR-094 point 3) only ever gets this one geometric check.
 const FACELING_CHILD_DETECT_RADIUS: f32 = 20.0;
 const FACELING_CHILD_DETECT_HALF_FOV_DEG: f32 = 60.0;
-/// Faster than `FACELING_CHILD_ROAM_SPEED` — this is the hunt, not the wander. Also the
-/// `closing_speed` fed to `intercept_point` for `Cut`.
-const FACELING_CHILD_CERCO_SPEED: f32 = 2.2;
+/// THE GEAR CHANGE (play-test, Joel 2026-08-24): a child in the cerco moves at one of two speeds
+/// depending on whether you can see it coming.
+///
+/// SEEN — you are facing its general direction, but not squarely enough to trigger the freeze.
+/// A contained advance: it is closing, and you can watch it close.
+const FACELING_CHILD_CERCO_SPEED_SEEN: f32 = 1.8;
+/// UNSEEN — your back is turned. THIS is the scare: turn away for two seconds and they have
+/// crossed half the room. Deliberately BELOW a running player (~5 m/s): they never out-sprint you
+/// in a straight line, they only take everything you give them by stopping, turning or hesitating.
+/// "Corriendo pero a paso de niño, no una velocidad de locos."
+const FACELING_CHILD_CERCO_SPEED_UNSEEN: f32 = 3.4;
+/// What `intercept_point` assumes when projecting where to cut you off. The UNSEEN figure on
+/// purpose: a `Cut` that plans at walking pace aims at a point you have already passed.
+const FACELING_CHILD_CERCO_SPEED: f32 = FACELING_CHILD_CERCO_SPEED_UNSEEN;
 /// How far `Flank`/`Cut` try to stand from the target while converging — the radius of the ring
 /// the cerco reads as, not a hard stop distance (ADR-094 point 4's strike range is a separate,
 /// tighter constant added in E2c).
@@ -755,9 +768,10 @@ const FACELING_CHILD_CALL_INTERVAL_S: f32 = 4.0;
 /// purpose — a straggler that never finds anybody is a straggler that stays a permanent free kill,
 /// which is the opposite of what "reagruparse" is for.
 const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
-/// A pack at this size does not accept a straggler — keeps ADR-094 point 3's own "packs de 3-4"
-/// invariant intact rather than growing a 5-child pack `assign_roles` has no roster for.
-const FACELING_CHILD_PACK_MAX: usize = 4;
+/// A pack at this size does not accept a straggler. Five since the 2026-08-24 play-test (ADR-094
+/// Enmienda 2): `assign_roles` has a roster for it, and beyond five the extra members fall through
+/// to `Press | None`, which is a silent degradation rather than a decision.
+const FACELING_CHILD_PACK_MAX: usize = 5;
 
 /// E2c — the `Press` role's blow. Shorter than the adults' 2.4 m: a child's arms are shorter, and
 /// the tighter reach is also what forces the cerco to actually CLOSE before anything lands.
@@ -976,6 +990,26 @@ fn child_can_see(from: Vec3, heading: f32, target: Vec3) -> bool {
     dot >= FACELING_CHILD_DETECT_HALF_FOV_DEG.to_radians().cos()
 }
 
+/// Which gear this child is in — the whole "corren cuando estás de espaldas" mechanic, in one
+/// function.
+///
+/// Uses the RELEASE cone (the wide one), not the tight freeze cone, and the gap between the two is
+/// the point: there is a band where you are facing them enough to keep them at a walk but not
+/// enough to stop them dead. Turn a little further and they freeze; turn away and they run. The
+/// player never sees a number, they just learn that looking is what slows them down.
+///
+/// Same-layer only, like every other perception check here.
+fn child_gear_speed(from: Vec3, players: &[(PeerId, Vec3, f32)], layer: u8) -> f32 {
+    let watched = players.iter().any(|&(_, ppos, pyaw)| {
+        world_pos_to_layer(ppos.y) == layer
+            && player_is_looking_at_within(ppos, pyaw, from, PHANTOM_STATUE_RELEASE_HALF_FOV)
+    });
+    match watched {
+        true => FACELING_CHILD_CERCO_SPEED_SEEN,
+        false => FACELING_CHILD_CERCO_SPEED_UNSEEN,
+    }
+}
+
 /// `ChildRole::Flank`'s goal point: `side` (persisted per-member, ±1.0) FIXED at role assignment,
 /// not recomputed from the target's view cone — ADR-094 point 3 says "dos FLANK toman los lados
 /// OPUESTOS (forzados)", literally, not "whichever side reads as hidden". This is what makes the
@@ -1004,7 +1038,19 @@ pub(super) fn assign_roles(members: &mut [ChildMover]) {
         1 => &[ChildRole::Press],
         2 => &[ChildRole::Press, ChildRole::Cut],
         3 => &[ChildRole::Press, ChildRole::Flank, ChildRole::Cut],
+        4 => &[
+            ChildRole::Press,
+            ChildRole::Flank,
+            ChildRole::Flank,
+            ChildRole::Cut,
+        ],
+        // Five (play-test, Joel 2026-08-24): the extra child DOUBLES THE FRONT rather than adding
+        // a third flank or a second cut. The geometry that already works is left untouched — two
+        // flanks on opposite sides, one cut on the retreat — and the new pressure lands where the
+        // player is already looking. Two coming straight at you reads as "they are committing",
+        // where a third flanker would just be one more figure in the corner of the eye.
         _ => &[
+            ChildRole::Press,
             ChildRole::Press,
             ChildRole::Flank,
             ChildRole::Flank,
@@ -1927,7 +1973,7 @@ impl ChildDriver {
                 };
                 let raw_heading = (goal.x - from.x).atan2(goal.z - from.z);
                 let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-                let step = FACELING_CHILD_CERCO_SPEED * dt;
+                let step = child_gear_speed(from, players, layer) * dt;
                 let next = Vec3::new(
                     from.x + heading.sin() * step,
                     from.y,

@@ -8243,8 +8243,8 @@ async fn child_pack_population_marks_species_relay_only_and_only_wakes_in_zone_o
     let pack = &driver.packs[0];
     assert_eq!(pack.home_chunk, (ox, oz));
     assert!(
-        (3..=4).contains(&pack.members.len()),
-        "pack size {} outside 3..=4",
+        (3..=5).contains(&pack.members.len()),
+        "pack size {} outside 3..=5",
         pack.members.len()
     );
     for m in &pack.members {
@@ -8669,14 +8669,32 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
         driver.apply_damage(&mut net, *id, host, 99.0, anchor);
     }
 
-    let full = four_member_pack(&mut net, (1, 0), 0, Vec3::new(6.0, stand_on(0), 0.0)).await;
+    // A pack at FACELING_CHILD_PACK_MAX (five since Enmienda 2), built by topping up a four.
+    let mut full = four_member_pack(&mut net, (1, 0), 0, Vec3::new(6.0, stand_on(0), 0.0)).await;
+    let fifth = net.spawn_faceling("Faceling_Child_Test", [6.0, stand_on(0), 0.0], 2);
+    full.members.push(ChildMover {
+        id: fifth,
+        heading: 0.0,
+        roam_target: Vec3::new(6.0, stand_on(0), 0.0),
+        state_timer: 999.0,
+        health: 15,
+        role: None,
+        pending_vocal: None,
+        vocal_seq: 0,
+        vocal_kind: 0,
+        vocal_delay: None,
+        strike_recover: 0.0,
+        progress: ProgressWatch::new(),
+        loot: None,
+        flank_offset: 0.0,
+    });
     driver.packs.push(full);
 
     driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
 
     assert_eq!(driver.packs.len(), 2, "the straggler should still be alone");
     assert_eq!(driver.packs[0].members.len(), 1);
-    assert_eq!(driver.packs[1].members.len(), 4);
+    assert_eq!(driver.packs[1].members.len(), 5);
 }
 
 /// Places a 4-member pack in `PackStalk` against a peer at `target_pos`, with the `Press` member
@@ -8888,6 +8906,108 @@ async fn the_freeze_reads_the_hosts_real_yaw() {
     assert!(
         !driver.packs[0].frozen,
         "the pack stayed frozen after the host turned around"
+    );
+}
+
+/// THE GEAR CHANGE (Joel, play-test 2026-08-24): "corren cuando estás de espaldas". Same pack,
+/// same tick count, two facings — the one that cannot see them must lose more ground.
+#[tokio::test]
+async fn a_pack_closes_faster_on_a_player_who_is_looking_away() {
+    // Helper: run a cerco for N ticks with the player at a fixed yaw, return distance closed.
+    async fn closed_distance(yaw: f32) -> f32 {
+        let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+        let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+        let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+        pack.members.truncate(1);
+        pack.state = ChildState::PackStalk;
+
+        let here = Vec3::from_array(net.peers[&pack.members[0].id].position);
+        // Target 30 m along +Z: far enough that neither the cerco band nor the freeze/closed-ring
+        // logic interferes, so the ONLY difference between the two runs is the gear.
+        let target = Vec3::new(here.x, here.y, here.z + 30.0);
+        let peer_id: PeerId = 2;
+        net.peers.insert(
+            peer_id,
+            crate::network::peer::PeerConnection::new(
+                peer_id,
+                "Watcher".into(),
+                "127.0.0.1:9001".parse().unwrap(),
+            ),
+        );
+        {
+            let p = net.peers.get_mut(&peer_id).unwrap();
+            p.position = target.to_array();
+            p.rotation = yaw;
+        }
+        pack.mind.target = Some(peer_id);
+        pack.mind.last_known_pos = Some(target);
+        assign_roles(&mut pack.members);
+
+        let mut driver = ChildDriver::new(42);
+        driver.packs.push(pack);
+        let start = Vec3::from_array(net.peers[&driver.packs[0].members[0].id].position);
+        for _ in 0..20 {
+            driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+        }
+        let end = Vec3::from_array(net.peers[&driver.packs[0].members[0].id].position);
+        end.distance_xz(start)
+    }
+
+    // Yaw 180 = facing -Z, i.e. straight AT the child approaching from -Z. Yaw 0 = facing away.
+    let watched = closed_distance(180.0).await;
+    let unwatched = closed_distance(0.0).await;
+
+    assert!(
+        unwatched > watched * 1.3,
+        "turning your back barely changed anything: watched={watched:.2} m, unwatched={unwatched:.2} m"
+    );
+}
+
+/// Enmienda 2: the fifth child doubles the FRONT, it does not add a third flank or a second cut.
+#[test]
+fn a_pack_of_five_gets_a_second_press() {
+    let mut members: Vec<ChildMover> = (0..5)
+        .map(|i| ChildMover {
+            id: 61000 + i as PeerId,
+            heading: 0.0,
+            roam_target: Vec3::ZERO,
+            state_timer: 0.0,
+            health: 15,
+            role: None,
+            pending_vocal: None,
+            vocal_seq: 0,
+            vocal_kind: 0,
+            vocal_delay: None,
+            strike_recover: 0.0,
+            progress: ProgressWatch::new(),
+            loot: None,
+            flank_offset: 0.0,
+        })
+        .collect();
+
+    assign_roles(&mut members);
+
+    let roles: Vec<Option<ChildRole>> = members.iter().map(|m| m.role).collect();
+    assert_eq!(
+        roles,
+        vec![
+            Some(ChildRole::Press),
+            Some(ChildRole::Press),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Flank),
+            Some(ChildRole::Cut),
+        ]
+    );
+    // The flank geometry that already worked must survive the extra member: still opposite sides.
+    let sides: Vec<f32> = members
+        .iter()
+        .filter(|m| m.role == Some(ChildRole::Flank))
+        .map(|m| m.flank_offset)
+        .collect();
+    assert_eq!(sides.len(), 2);
+    assert!(
+        (sides[0] - sides[1]).abs() > 1.0,
+        "the two Flanks share a side in a pack of five: {sides:?}"
     );
 }
 

@@ -52,6 +52,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 RetargetLocomotionFeeders(instance);
                 DisableRevealHook(instance);
                 WireVocalHook(instance);
+                TightenFootsteps(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -204,6 +205,36 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             }
 
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>
+        /// ADR-094 punto 6 — "footsteps ligeros y rápidos". The clips themselves stay STP's
+        /// surface-driven ones (that path already works and is the reason a child audibly walks at
+        /// all); what makes it read as a CHILD is the CADENCE. Stride is the distance between
+        /// footfalls, so shortening it makes the same speed produce more, closer-together steps —
+        /// which is exactly the difference between an adult's walk and a kid's scurry.
+        ///
+        /// Range is tightened too. A child is small and light: hearing one from as far as you hear
+        /// a grown peer would give away a pack that is supposed to arrive before you notice it.
+        /// </summary>
+        private static void TightenFootsteps(GameObject root)
+        {
+            var hook = root.GetComponent<ProxyFootstepHook>();
+            if (hook == null)
+                return;
+
+            var so = new SerializedObject(hook);
+            SetHookFloat(so, "_walkStride", 0.48f); // vs the adult prefab's 0.85
+            SetHookFloat(so, "_runStride", 0.72f);  // vs 1.35
+            SetHookFloat(so, "_maxDistance", 15f);  // vs 22
+            so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        private static void SetHookFloat(SerializedObject so, string field, float value)
+        {
+            var prop = so.FindProperty(field);
+            if (prop != null)
+                prop.floatValue = value;
         }
 
         private static AudioClip[] LoadVoiceClips(string prefix)
