@@ -1,6 +1,7 @@
-//! ADR-094 E1a — Faceling adultos: Working/Commute/Regard. Sin Enforce todavía (ese es E1b,
-//! junto al carril de daño) y sin niños (E2+). Entra "casi inerte" en el sentido de ADR-093: se
-//! ve, camina y gira cabeza sincronizada, pero no puede hacerte daño ni recibirlo.
+//! ADR-094 E1a+E1b — Faceling adultos: Working/Commute/Regard/Enforce, y el carril de daño (el
+//! branch en `process_pvp_hit_candidate_host`, `game_loop.rs`) que lo alimenta. Sin niños (E2+),
+//! sin que el adulto devuelva el golpe todavía (E1c) y sin modelo (E5, pendiente de los Meshy de
+//! Joel) — entra inerte del lado visual, como ADR-093 E0/E1.
 //!
 //! Reutiliza infraestructura del robapieles a propósito (ADR-094 punto 1: "toda la
 //! infraestructura de criatura construida para el robapieles es reutilizable tal cual"), pero
@@ -47,11 +48,23 @@ const FACELING_COMMUTE_MAX_S: f32 = 45.0;
 /// again soon rather than camping `Working` forever on a fluke.
 const FACELING_PUESTO_RETRY_S: f32 = 5.0;
 
+/// v1 PLACEHOLDER, unmeasured. An adult is atrezzo first, threat second — low on purpose so a
+/// couple of solid hits already ends the encounter one way or the other.
+const FACELING_ADULT_MAX_HEALTH: u8 = 30;
+/// ADR-094 point 2: "convergen... a paso lento" — brisker than the ambient `Commute` walk (this
+/// is the office coming for you), still not a sprint.
+const FACELING_ENFORCE_SPEED: f32 = 1.8;
+/// ADR-094 point 2: "a los ~45 s sin verlo vuelven a Working". Counts down while the aggressor is
+/// out of `FACELING_REGARD_RADIUS` of the converging adult; refreshed to this value every tick it
+/// is back in range, so a fight that keeps you close never times out mid-swing.
+const FACELING_ENFORCE_COOLOFF_S: f32 = 45.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AdultState {
     Working,
     Commute,
     Regard,
+    Enforce,
 }
 
 pub(super) struct AdultMover {
@@ -62,7 +75,13 @@ pub(super) struct AdultMover {
     pub(super) heading: f32,
     pub(super) commute_target: Vec3,
     /// `Regard`: seconds left staring. `Working`: seconds until the next `Commute` roll.
+    /// `Enforce`: seconds left since the aggressor was last within regard range (ADR-094's
+    /// "~45 s sin verlo").
     pub(super) state_timer: f32,
+    pub(super) health: u8,
+    /// Set on entering `Enforce`, cleared on leaving it. `None` in every other state — never
+    /// stale, because nothing reads it outside the arm that owns it.
+    pub(super) enforce_target: Option<PeerId>,
 }
 
 pub(super) struct AdultDriver {
@@ -233,6 +252,8 @@ impl AdultDriver {
                             state_timer: FACELING_COMMUTE_MIN_S
                                 + rand::random::<f32>()
                                     * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S),
+                            health: FACELING_ADULT_MAX_HEALTH,
+                            enforce_target: None,
                         });
                         info!(
                             "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
@@ -246,7 +267,8 @@ impl AdultDriver {
 
     /// One entity tick for every active adult. No perception cone, no sound, no light (ADR-094
     /// point 2: "no perciben crouch, luz ni ruido") — the only two inputs are "is anyone within
-    /// `FACELING_REGARD_RADIUS`" (this method) and "did anyone hit me" (E1b, not yet wired).
+    /// `FACELING_REGARD_RADIUS`" (this method) and "did anyone hit me" (`apply_damage`, called
+    /// from the game loop's PvP handling, not from here).
     pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32, host_player_pos: Vec3) {
         let players: Vec<Vec3> = std::iter::once(host_player_pos)
             .chain(
@@ -279,8 +301,52 @@ impl AdultDriver {
         }
 
         for i in 0..self.movers.len() {
-            self.tick_mover(i, net, dt, &players, &regarded);
+            self.tick_mover(i, net, dt, host_player_pos, &players, &regarded);
         }
+    }
+
+    /// ADR-094 E1b: a hit landed on `victim_id`. Applies damage to that ONE adult's health, then
+    /// — if it survives — sets EVERY adult sharing its `home_chunk` to `Enforce` against
+    /// `attacker_id` ("todos los adultos de la sala convergen sobre el agresor"), including the
+    /// one that was actually hit. Returns whether the adult died.
+    ///
+    /// Called from the SAME branch of `process_pvp_hit_candidate_host` that would otherwise send
+    /// a `PvpDamageGrant` over the wire — a faceling has no real backend on the other end, so the
+    /// damage is host-local, mirror image of `PhantomAttackGrant`'s own direction.
+    pub(super) fn apply_damage(
+        &mut self,
+        net: &mut NetworkManager,
+        victim_id: PeerId,
+        attacker_id: PeerId,
+        damage: f32,
+    ) -> bool {
+        let Some(idx) = self.movers.iter().position(|m| m.id == victim_id) else {
+            return false;
+        };
+        let dealt = damage.max(0.0).round() as u8;
+        self.movers[idx].health = self.movers[idx].health.saturating_sub(dealt);
+        info!(
+            "MPTRACE step=FL_DMG event=faceling_adult_damaged faceling_id={} attacker_id={} damage={} health={}",
+            victim_id, attacker_id, dealt, self.movers[idx].health
+        );
+        if self.movers[idx].health == 0 {
+            let home = self.movers[idx].home_chunk;
+            net.despawn_faceling(victim_id);
+            self.movers.remove(idx);
+            info!(
+                "MPTRACE step=FL_DMG event=faceling_adult_killed faceling_id={} chunk=({},{})",
+                victim_id, home.0, home.1
+            );
+            return true;
+        }
+
+        let home = self.movers[idx].home_chunk;
+        for m in self.movers.iter_mut().filter(|m| m.home_chunk == home) {
+            m.state = AdultState::Enforce;
+            m.state_timer = FACELING_ENFORCE_COOLOFF_S;
+            m.enforce_target = Some(attacker_id);
+        }
+        false
     }
 
     fn tick_mover(
@@ -288,6 +354,7 @@ impl AdultDriver {
         i: usize,
         net: &mut NetworkManager,
         dt: f32,
+        host_player_pos: Vec3,
         players: &[Vec3],
         regarded: &HashSet<(i32, i32)>,
     ) {
@@ -300,13 +367,75 @@ impl AdultDriver {
         let home = self.movers[i].home_chunk;
         let should_regard = regarded.contains(&home);
 
-        if should_regard && self.movers[i].state != AdultState::Regard {
+        if should_regard
+            && !matches!(
+                self.movers[i].state,
+                AdultState::Regard | AdultState::Enforce
+            )
+        {
             self.movers[i].state = AdultState::Regard;
             self.movers[i].state_timer = FACELING_REGARD_MIN_S
                 + rand::random::<f32>() * (FACELING_REGARD_MAX_S - FACELING_REGARD_MIN_S);
         }
 
         let anim = match self.movers[i].state {
+            AdultState::Enforce => {
+                let target_pos = self.movers[i].enforce_target.and_then(|tid| {
+                    if tid == net.local_id {
+                        Some(host_player_pos)
+                    } else {
+                        net.peers.get(&tid).map(|p| Vec3::from_array(p.position))
+                    }
+                });
+                let in_range = target_pos.is_some_and(|target| {
+                    world_pos_to_layer(target.y) == layer
+                        && target.distance_xz(from) <= FACELING_REGARD_RADIUS
+                });
+                // Refreshed while close (ADR-094: "sin verlo" — a fight that stays in your face
+                // never times out mid-swing), otherwise ticking down toward the give-up.
+                if in_range {
+                    self.movers[i].state_timer = FACELING_ENFORCE_COOLOFF_S;
+                } else {
+                    self.movers[i].state_timer -= dt;
+                }
+                if self.movers[i].state_timer <= 0.0 {
+                    self.movers[i].state = AdultState::Working;
+                    self.movers[i].enforce_target = None;
+                    self.movers[i].state_timer = FACELING_COMMUTE_MIN_S
+                        + rand::random::<f32>() * (FACELING_COMMUTE_MAX_S - FACELING_COMMUTE_MIN_S);
+                    "idle"
+                } else if let Some(target) =
+                    target_pos.filter(|target| world_pos_to_layer(target.y) == layer)
+                {
+                    let raw_heading = (target.x - from.x).atan2(target.z - from.z);
+                    let heading =
+                        steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
+                    let step = FACELING_ENFORCE_SPEED * dt;
+                    let next = Vec3::new(
+                        from.x + heading.sin() * step,
+                        from.y,
+                        from.z + heading.cos() * step,
+                    );
+                    // Same leash as `Commute`: the office is the cage even while it is angry.
+                    // Hitting the boundary or a wall just holds position — still converging as
+                    // far as it is allowed to.
+                    if pos_in_chunk(next, home)
+                        && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
+                    {
+                        self.movers[i].heading = heading;
+                        if let Some(peer) = net.peers.get_mut(&id) {
+                            let yaw = heading.to_degrees().rem_euclid(360.0);
+                            peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                        }
+                        return;
+                    }
+                    "walk_slow"
+                } else {
+                    // Target disconnected or changed layer: nothing to converge on, just let the
+                    // cooloff clock (already ticking above) run out.
+                    "idle"
+                }
+            }
             AdultState::Regard => {
                 self.movers[i].state_timer -= dt;
                 if self.movers[i].state_timer <= 0.0 {

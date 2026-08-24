@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 // ADR-016 — la IA del robapieles se mudó a `game_loop::phantom`. Glob explícito (y no solo el
 // `use super::*` de arriba) porque el padre solo re-importa la superficie que él consume, y estas
 // pruebas ejercitan los internos: `PhantomMover`, `PhantomState`, las constantes de tuning.
@@ -803,11 +803,13 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         action_type: "report_inventory".into(),
         data: serde_json::json!({ "items": items }),
     };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &mut processed,
         0,
@@ -829,11 +831,13 @@ async fn report_inventory_updates_player_stp_inventory_with_hygiene() {
         action_type: "report_inventory".into(),
         data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
     };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &mut processed,
         0,
@@ -866,11 +870,13 @@ async fn report_inventory_with_container_and_slot_also_populates_inventory_v2() 
             { "item_id": 999, "quantity": 1 }, // legacy shape, no container/slot
         ] }),
     };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &mut processed,
         0,
@@ -906,11 +912,13 @@ async fn report_inventory_legacy_only_leaves_inventory_v2_empty() {
         action_type: "report_inventory".into(),
         data: serde_json::json!({ "items": [{ "item_id": 42, "quantity": 3 }] }),
     };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &mut processed,
         0,
@@ -6134,11 +6142,13 @@ async fn stp_demolish_of_the_bed_clears_the_respawn_point() {
         action_type: "stp_demolish".into(),
         data: serde_json::json!({ "demolish_id": 903, "building_id": bed_id }),
     };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &mut processed,
         0,
@@ -6173,11 +6183,13 @@ async fn stp_demolish_of_another_bed_keeps_the_respawn_point() {
         action_type: "stp_demolish".into(),
         data: serde_json::json!({ "demolish_id": 904, "building_id": doomed_id }),
     };
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_action(
         &action,
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &mut processed,
         0,
@@ -6226,6 +6238,7 @@ async fn host_departure_saves_the_player_and_announces_session_ended() {
     net.host_peer_id = Some(host_id);
     let path = scratch_player_path("host_departure");
 
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: host_id,
@@ -6234,6 +6247,7 @@ async fn host_departure_saves_the_player_and_announces_session_ended() {
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &tx,
         &mut processed,
@@ -6277,6 +6291,7 @@ async fn a_non_host_peer_leaving_does_not_end_the_session() {
     net.host_peer_id = Some(1);
     let path = scratch_player_path("non_host_departure");
 
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: 5,
@@ -6285,6 +6300,7 @@ async fn a_non_host_peer_leaving_does_not_end_the_session() {
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &tx,
         &mut processed,
@@ -6321,6 +6337,7 @@ async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
 
     assert!(net.host_peer_id.is_none(), "precondition: this IS the host");
 
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: 2,
@@ -6329,6 +6346,7 @@ async fn the_host_never_ends_its_own_session_when_a_peer_leaves() {
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &tx,
         &mut processed,
@@ -6355,6 +6373,7 @@ async fn session_ended_carries_the_disconnect_reason() {
     let mut processed: BoundedDedupeSet<(u16, u64)> = BoundedDedupeSet::with_capacity(DEDUPE_CAP);
     net.host_peer_id = Some(1);
 
+    let mut adult_driver = AdultDriver::new(net.world_seed);
     handle_network_event(
         NetworkEvent::PeerDisconnected {
             id: 1,
@@ -6363,6 +6382,7 @@ async fn session_ended_carries_the_disconnect_reason() {
         &mut player,
         &mut world,
         &mut net,
+        &mut adult_driver,
         &tx,
         &tx,
         &mut processed,
@@ -7812,6 +7832,8 @@ async fn adult_never_leaves_its_office_chunk_even_when_aimed_outside_it() {
         // Two full chunk-widths past the boundary: any leak shows up immediately.
         commute_target: Vec3::new(x1 + 100.0, start.y, start.z),
         state_timer: 999.0,
+        health: 30,
+        enforce_target: None,
     });
 
     for _ in 0..200 {
@@ -7849,6 +7871,8 @@ async fn the_whole_office_regards_together_even_when_only_one_adult_is_in_range(
             heading: 0.0,
             commute_target: pos,
             state_timer: 999.0,
+            health: 30,
+            enforce_target: None,
         });
     }
 
@@ -7870,4 +7894,95 @@ async fn the_whole_office_regards_together_even_when_only_one_adult_is_in_range(
         AdultState::Regard,
         "the far adult must regard too — the office reacts as a unit, not per-desk"
     );
+}
+
+/// The E1b wiring end to end: a real `PvpHitCandidate` against a faceling goes through
+/// `process_pvp_hit_candidate_host` exactly like a hit on a real player, but lands on
+/// `AdultDriver::apply_damage` instead of a `PvpDamageGrant` over the wire (there is nobody on
+/// the other end). Also covers ADR-094's "toda la oficina converge", not just the one hit.
+#[tokio::test]
+async fn pvp_hit_on_a_faceling_applies_damage_locally_and_alerts_the_whole_office() {
+    let seed = 42;
+    let (ox, oz) = find_office_chunk(seed);
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut player = Player::new(net.local_id, "Host");
+    let mut adult_driver = AdultDriver::new(seed);
+    let (x0, _x1, z0, _z1) = chunk_bounds((ox, oz));
+    let pos_a = Vec3::new(x0 + 5.0, stand_on(0), z0 + 5.0);
+    let pos_b = Vec3::new(x0 + 5.0, stand_on(0), z0 + 40.0); // far from A, same office
+    let id_a = net.spawn_faceling("Faceling_A", pos_a.to_array(), 1);
+    let id_b = net.spawn_faceling("Faceling_B", pos_b.to_array(), 1);
+    for (id, pos) in [(id_a, pos_a), (id_b, pos_b)] {
+        adult_driver.movers.push(AdultMover {
+            id,
+            home_chunk: (ox, oz),
+            layer: 0,
+            state: AdultState::Working,
+            heading: 0.0,
+            commute_target: pos,
+            state_timer: 999.0,
+            health: 30,
+            enforce_target: None,
+        });
+    }
+    player.position = Vec3::new(x0 + 5.0, 1.8, z0 + 5.0);
+
+    let (tx, _rx) = broadcast::channel(16);
+    process_pvp_hit_candidate_host(
+        PvpCandidateFields {
+            request_id: 1,
+            attacker_id: net.local_id as u32,
+            victim_id: id_a as u32,
+            weapon_id: 9692212, // STP_Marlin 336: max_damage=45, max_range=100
+            damage: 20.0,
+            direction: [0.0, 0.0, 1.0],
+        },
+        &mut player,
+        &mut net,
+        &mut adult_driver,
+        &tx,
+        0,
+    )
+    .await;
+
+    let a = adult_driver.movers.iter().find(|m| m.id == id_a).unwrap();
+    assert_eq!(a.health, 10, "30 - 20 damage");
+    assert_eq!(a.state, AdultState::Enforce);
+    assert_eq!(a.enforce_target, Some(net.local_id));
+
+    let b = adult_driver.movers.iter().find(|m| m.id == id_b).unwrap();
+    assert_eq!(
+        b.state,
+        AdultState::Enforce,
+        "the whole office converges, not just the one hit"
+    );
+}
+
+/// The invariant `Entity::take_damage` already established for world NPCs, now for a synthetic
+/// peer: health reaching zero removes it, not just zeroes a counter on something that keeps
+/// walking around.
+#[tokio::test]
+async fn a_faceling_reduced_to_zero_health_is_despawned() {
+    let seed = 42;
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut adult_driver = AdultDriver::new(seed);
+    let id = net.spawn_faceling("Faceling_Test", [0.0, 1.8, 0.0], 1);
+    adult_driver.movers.push(AdultMover {
+        id,
+        home_chunk: (0, 0),
+        layer: 0,
+        state: AdultState::Working,
+        heading: 0.0,
+        commute_target: Vec3::ZERO,
+        state_timer: 999.0,
+        health: 10,
+        enforce_target: None,
+    });
+
+    let died = adult_driver.apply_damage(&mut net, id, 1, 999.0);
+
+    assert!(died);
+    assert!(adult_driver.movers.is_empty());
+    assert!(!net.peers.contains_key(&id), "the peer must be gone too");
+    assert!(!net.is_faceling(id));
 }

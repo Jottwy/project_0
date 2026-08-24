@@ -745,6 +745,7 @@ pub async fn run(
                         &mut player,
                         &mut world,
                         &mut net,
+                        &mut adult_driver,
                         &to_clients,
                         &mut processed_interactions,
                         tick,
@@ -1100,6 +1101,7 @@ pub async fn run(
                 &mut player,
                 &mut world,
                 &mut net,
+                &mut adult_driver,
                 &to_clients,
                 &to_clients_voice,
                 &mut processed_interactions,
@@ -1708,6 +1710,7 @@ pub async fn run(
                     &mut player,
                     &mut world,
                     &mut net,
+                    &mut adult_driver,
                     &to_clients,
                     &to_clients_voice,
                     &mut processed_interactions,
@@ -1728,6 +1731,7 @@ pub async fn run(
                     &mut player,
                     &mut world,
                     &mut net,
+                    &mut adult_driver,
                     &to_clients,
                     &to_clients_voice,
                     &mut processed_interactions,
@@ -1842,6 +1846,9 @@ async fn handle_network_event(
     player: &mut Player,
     world: &mut World,
     net: &mut NetworkManager,
+    // ADR-094 E1b: a PvP hit landing on a faceling routes here, host-local — see
+    // `process_pvp_hit_candidate_host`.
+    adult_driver: &mut AdultDriver,
     to_clients: &broadcast::Sender<ServerMessage>,
     // ADR-046 — voice out to Unity. Deliberately NOT `to_clients`: that channel evicts its
     // OLDEST messages on overflow, `player_died` among them.
@@ -2626,6 +2633,7 @@ async fn handle_network_event(
                 },
                 player,
                 net,
+                adult_driver,
                 to_clients,
                 tick,
             )
@@ -3187,11 +3195,17 @@ static RESOLVE_MOVE_CALLS_DIAG: std::sync::atomic::AtomicU32 = std::sync::atomic
 static RESOLVE_MOVE_BLOCKED_DIAG: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(0);
 
+// ADR-094 E1b added `adult_driver` (needed by the PvP-hit action arm, same reason as
+// `handle_network_event`'s own allow above it). Same criterion, not grouped into a struct.
+#[allow(clippy::too_many_arguments)]
 async fn handle_action(
     action: &PlayerAction,
     player: &mut Player,
     world: &mut World,
     net: &mut NetworkManager,
+    // ADR-094 E1b: same reason as `handle_network_event`'s — the host-self PvP path runs through
+    // here (host's own Unity reports the hit directly, not via a network packet).
+    adult_driver: &mut AdultDriver,
     to_clients: &broadcast::Sender<ServerMessage>,
     processed_interactions: &mut BoundedDedupeSet<(u16, u64)>,
     tick: u64,
@@ -4201,6 +4215,7 @@ async fn handle_action(
                     },
                     player,
                     net,
+                    adult_driver,
                     to_clients,
                     tick,
                 )
@@ -4536,6 +4551,9 @@ async fn process_pvp_hit_candidate_host(
     candidate: PvpCandidateFields,
     player: &mut Player,
     net: &mut NetworkManager,
+    // ADR-094 E1b: a faceling has no real backend behind it, so a hit on one is applied HERE,
+    // host-local, instead of taking the `PvpDamageGrant` network hop below.
+    adult_driver: &mut AdultDriver,
     to_clients: &broadcast::Sender<ServerMessage>,
     tick: u64,
 ) {
@@ -4643,6 +4661,16 @@ async fn process_pvp_hit_candidate_host(
                         );
                     }
                 }
+            } else if let Some(victim_id) =
+                peer_id_from_u32(candidate.victim_id).filter(|id| net.is_faceling(*id))
+            {
+                // ADR-094 E1b: a faceling has no real backend on the other end of the wire — the
+                // generic `PvpDamageGrant` branch below would silently no-op it via the
+                // `relay_only` send guard (ADR-079), same as it always has for the robapieles.
+                // Applied HERE instead, host-local, mirror image of `PhantomAttackGrant`'s own
+                // direction (creature → player instead of player → creature).
+                let attacker_id = peer_id_from_u32(candidate.attacker_id).unwrap_or(net.local_id);
+                adult_driver.apply_damage(net, victim_id, attacker_id, clamped_damage);
             } else if let Some(victim_peer) = peer_id_from_u32(candidate.victim_id) {
                 let grant = PacketPayload::PvpDamageGrant {
                     request_id: candidate.request_id,
