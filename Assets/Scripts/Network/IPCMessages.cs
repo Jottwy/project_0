@@ -141,6 +141,9 @@ namespace BackroomsSurvival.Net
         // rebuilds its visuals when either value changes, never on a delta.
         public int carryDef;
         public int carryCount;
+        // ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño). The
+        // client picks model/animator/audio banks by this value; a real peer is always 0.
+        public int species;
 
         public static RemotePlayerMsg Parse(MsgPackReader reader)
         {
@@ -169,6 +172,7 @@ namespace BackroomsSurvival.Net
                 else if (MsgPackReader.Is(k, "vocal_kind")) r.vocalKind = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "carry_def")) r.carryDef = (int)reader.ReadInt();
                 else if (MsgPackReader.Is(k, "carry_count")) r.carryCount = (int)reader.ReadInt();
+                else if (MsgPackReader.Is(k, "species")) r.species = (int)reader.ReadInt();
                 else reader.Skip();
             }
             return r;

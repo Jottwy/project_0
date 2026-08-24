@@ -510,6 +510,7 @@ impl NetworkManager {
                 vocal_kind,
                 carry_def,
                 carry_count,
+                species,
             } => {
                 if let Some(peer) = self.peers.get_mut(&sender_id) {
                     peer.update_player_state(position, rotation, animation.clone());
@@ -528,6 +529,7 @@ impl NetworkManager {
                     peer.vocal_kind = vocal_kind; // ADR-048: which voice the last bump was
                     peer.carry_def = carry_def; // ADR-049: cosmetic carry state, alongside the pose
                     peer.carry_count = carry_count; // ADR-049: plain assignments, not a struct literal — a dropped line relays 0 forever
+                    peer.species = species; // ADR-094: cosmetic species tag, alongside the pose
                 }
                 let should_log = self
                     .last_transform_trace_at
@@ -578,6 +580,7 @@ impl NetworkManager {
                     vocal_kind,
                     carry_def,
                     carry_count,
+                    species,
                 })
             }
 

@@ -1,7 +1,7 @@
-# IPC wire schema — changelog v2 → v42
+# IPC wire schema — changelog v2 → v43
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **42**). Este documento es el changelog, no la versión. Al
+> `WIRE_SCHEMA_VERSION` (hoy **43**). Este documento es el changelog, no la versión. Al
 > bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**. (El
 > título quedó desactualizado en v34→v41 por deuda de proceso ajena — ver nota antes de v42.)
 >
@@ -625,3 +625,20 @@ puerta física existe todavía para mandarlo — eso es E3. Degradación: un pee
 los tres opcodes nuevos y simplemente nunca ve región ni puertas, que es exactamente el estado
 actual de todo el mundo. `WireSchema.Expected` (C#) a 42 en el mismo commit — el test de
 `cargo test` (`7532876`) que compara ambos como texto lo vigila.
+
+## v43 — ADR-094 E0: `species` en la pose (2026-08-24)
+
+Un campo nuevo en `PacketPayload::PlayerUpdate`/`ipc::RemotePlayerState` (**por qué bumpea**: "campo
+nuevo en la pose bumpea", regla de cabecera de este documento):
+
+- **`species: u8`** (`#[serde(default)]` = 0). 0 = humano (y el robapieles disfrazado, ADR-016 —
+  su indistinguibilidad queda intacta: su campo vale 0 igual que el de cualquier jugador); 1 =
+  faceling adulto; 2 = faceling niño. Sellado por el driver que posea el peer, junto a `revealed`
+  (regla `pose-relay-wire-rust.md`, nunca en `update_player_state`) — un jugador real nunca lo
+  varía. El cliente elige modelo/animador/bancos de audio por este valor.
+
+Entra **inerte**: ningún driver escribe todavía un valor distinto de 0 (ni `PhantomDriver`, que
+mantiene su indistinguibilidad, ni ningún faceling — esos aún no existen en código). Degradación:
+un peer viejo no decodifica el campo y decodifica 0 (humano), que es el único valor que circula
+hoy — cero cambio visible hasta E1/E2. `WireSchema.Expected` (C#) a 43 en el mismo commit —
+`the_csharp_mirror_declares_the_same_wire_schema_version` lo vigila.

@@ -469,6 +469,10 @@ pub struct RemotePlayerState {
     /// no counterpart in `PlayerInput`, so no client can set it.
     #[serde(default)]
     pub revealed: bool,
+    /// ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño), host-relayed.
+    /// The client picks model/animator/audio banks by this value.
+    #[serde(default)]
+    pub species: u8,
     /// ADR-048: monotonic vocalisation counter (backend→Unity). `ProxyVocalHook` fires on a change.
     #[serde(default)]
     pub vocal_seq: u8,

@@ -39,6 +39,8 @@ pub enum NetworkEvent {
         /// ADR-049: cosmetic carry state — definition id being hauled and how many units.
         carry_def: i32,
         carry_count: u8,
+        /// ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño).
+        species: u8,
     },
     WorldInteractRequest {
         requester_id: PeerId,

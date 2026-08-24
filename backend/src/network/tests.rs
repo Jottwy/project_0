@@ -456,6 +456,7 @@ async fn player_update_round_trip() {
         melee_seq: 0,
         carry_def: 0,
         carry_count: 0,
+        species: 0,
     };
     host.broadcast_unreliable(&payload).await;
 
@@ -661,6 +662,7 @@ async fn pose_relay_cost() {
         melee_seq: 4,
         carry_def: -111,
         carry_count: 2,
+        species: 0,
     };
     // +12 B de cabecera de paquete (ver el doc de ROSTER_PAGE_BUDGET_BYTES).
     let bytes = rmp_serde::to_vec_named(&pose).unwrap().len() + 12;
@@ -1044,6 +1046,7 @@ async fn player_update_carries_carry_state_to_the_peer() {
             melee_seq: 0,
             carry_def: -1208217892,
             carry_count: 3,
+            species: 0,
         },
     };
     net.handle_packet(packet).await;
@@ -1098,6 +1101,7 @@ async fn relayed_packet_does_not_steal_the_relays_address() {
             melee_seq: 0,
             carry_def: 0,
             carry_count: 0,
+            species: 0,
         },
     };
     net.handle_packet(relayed).await;

@@ -203,6 +203,10 @@ pub async fn broadcast_player_update(net: &NetworkManager, player: &Player) {
         // ADR-049: client-reported carry state, sealed in the game loop next to `melee_seq`.
         carry_def: player.carry_def,
         carry_count: player.carry_count,
+        // ADR-094: always 0 here — a real player is never a faceling. The only non-zero values
+        // are sealed by a faceling driver onto a `PeerConnection` and travel via
+        // `broadcast_peer_poses`, not this path.
+        species: player.species,
     };
     // Both lines are on the same once-a-second window now. This runs at the full tick rate, so
     // unthrottled it was the single noisiest line in the backend log â€” it formatted three floats
@@ -503,6 +507,7 @@ pub async fn broadcast_peer_poses(net: &mut NetworkManager) {
                     melee_seq: p.melee_seq,
                     carry_def: p.carry_def,
                     carry_count: p.carry_count,
+                    species: p.species,
                 },
             )
         })
@@ -1616,6 +1621,7 @@ mod chunk_broadcast_tests {
             melee_seq: 4,
             carry_def: 55,
             carry_count: 2,
+            species: 0,
         };
 
         // Un solo encode reutilizado para tres destinos distintos...
@@ -2154,6 +2160,7 @@ mod uplink_probe {
             melee_seq: 0,
             carry_def: 0,
             carry_count: 0,
+            species: 0,
         }
     }
 

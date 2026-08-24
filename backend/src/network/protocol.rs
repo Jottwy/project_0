@@ -703,6 +703,12 @@ pub enum PacketPayload {
         carry_def: i32,
         #[serde(default)]
         carry_count: u8,
+        /// ADR-094: cosmetic species tag — 0 human (and the disguised robapieles, ADR-016), 1
+        /// faceling adulto, 2 faceling niño. Sealed by whichever driver owns the peer, alongside
+        /// `revealed`; a real player never varies it. Appended last + serde(default) → a v42 peer
+        /// that omits it decodes to 0 (human); wire-compat across the v42→v43 schema bump.
+        #[serde(default)]
+        species: u8,
     },
     ChunkState {
         data: ChunkSyncData,
@@ -1233,6 +1239,7 @@ mod tests {
             vocal_kind: 2,
             carry_def: -1208217892,
             carry_count: 3,
+            species: 2,
         };
         let header = PacketHeader::new(payload.type_code(), 3, 100, 5000);
         let data = encode_packet(&header, &payload);
@@ -1258,6 +1265,7 @@ mod tests {
                 vocal_kind,
                 carry_def,
                 carry_count,
+                species,
             } => {
                 assert_eq!(position, [10.0, 1.8, 20.0]);
                 assert_eq!(rotation, 90.0);
@@ -1282,6 +1290,8 @@ mod tests {
                 // only ever saw small positives would not catch a width or sign mistake on the wire.
                 assert_eq!(carry_def, -1208217892);
                 assert_eq!(carry_count, 3);
+                // ADR-094: non-default on both sides, same discipline as `vocal_seq`/`vocal_kind`.
+                assert_eq!(species, 2);
             }
             _ => panic!("wrong variant"),
         }

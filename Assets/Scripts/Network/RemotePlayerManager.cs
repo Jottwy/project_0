@@ -174,6 +174,7 @@ namespace BackroomsSurvival.Net
                 view.vocalKind = rp.vocalKind; // ADR-048
                 view.carryDef = rp.carryDef; // ADR-049
                 view.carryCount = rp.carryCount; // ADR-049
+                view.species = rp.species; // ADR-094
                 // ADR-028 post-E3: hide the standing proxy while its owner is dead (the corpse
                 // is the visible body); it reappears at the respawn position on dead→false.
                 // Change-detected so SetActive only fires on the edge.
@@ -376,6 +377,7 @@ namespace BackroomsSurvival.Net
             view.meleeSeq = 0; // ADR-044: no stale swing counter (hook re-arms its sentinel)
             view.carryDef = 0; // ADR-049: a recycled proxy must not inherit the last owner's planks
             view.carryCount = 0; // ADR-049
+            view.species = 0; // ADR-094: no stale faceling species on a recycled proxy
         }
 
         private RemotePlayerView CreateView()
@@ -638,6 +640,9 @@ namespace BackroomsSurvival.Net
         // changes, so unlike the counters above there is no sentinel and no delta.
         public int carryDef;
         public int carryCount;
+        // ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño). Always 0
+        // for a real player — the client picks model/animator/audio banks by this value.
+        public int species;
         public float lastSeenTime;
     }
 

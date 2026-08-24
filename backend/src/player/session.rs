@@ -74,6 +74,12 @@ pub struct Player {
     /// ever `true` lives on a `PeerConnection` written by the phantom driver.
     #[serde(default)]
     pub revealed: bool,
+    /// ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño). Same shape
+    /// and same reason as `revealed` above — never written for a real player, absent from
+    /// `ipc::PlayerInput` by design, and only ever non-zero on a `PeerConnection` written by a
+    /// faceling driver.
+    #[serde(default)]
+    pub species: u8,
     /// ADR-048: monotonic vocalisation counter. Same shape and same reason as `revealed` above —
     /// never written for a real player, absent from `ipc::PlayerInput` by design, and only ever
     /// non-zero on a `PeerConnection` written by the phantom driver.
@@ -182,6 +188,7 @@ impl Player {
             held_item: 0,
             hit_seq: 0,
             revealed: false,
+            species: 0,
             vocal_seq: 0,
             vocal_kind: 0,
             light_on: false,

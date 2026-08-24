@@ -88,6 +88,10 @@ pub struct PeerConnection {
     /// see the same thing. `update_player_state` stays untouched, like the fields above — the
     /// driver writes this one next to its `update_player_state` call, not inside it.
     pub revealed: bool,
+    /// ADR-094: cosmetic species tag (0 human, 1 faceling adulto, 2 faceling niño), written by
+    /// a faceling driver (host) and by `handle_packet` from a relayed PlayerUpdate (joiner),
+    /// exactly like `revealed`. A REAL peer never bumps it, so it stays 0.
+    pub species: u8,
     /// ADR-048: monotonic vocalisation counter, written by `PhantomDriver` (host) and by
     /// `handle_packet` from a relayed PlayerUpdate (joiner), exactly like `revealed`. A REAL peer
     /// never bumps it, so it stays 0 and its proxy never makes a sound.
@@ -143,6 +147,7 @@ impl PeerConnection {
             hit_seq: 0,
             dead: false,
             revealed: false,
+            species: 0,
             vocal_seq: 0,
             vocal_kind: 0,
             light_on: false,

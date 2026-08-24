@@ -1943,10 +1943,11 @@ async fn handle_network_event(
             vocal_kind,
             carry_def,
             carry_count,
+            species,
         } => {
             debug!(
-                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}, vocal_seq={}, vocal_kind={}, carry={}x{}",
-                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq, vocal_seq, vocal_kind, carry_count, carry_def
+                "Remote player received: id={}, pos=({:.2}, {:.2}, {:.2}), rot={:.1}, anim={}, crouch={}, pitch={}, equipment={:?}, held_item={}, hit_seq={}, dead={}, revealed={}, light_on={}, fire_seq={}, buttons={:#06b}, melee_seq={}, vocal_seq={}, vocal_kind={}, carry={}x{}, species={}",
+                id, position[0], position[1], position[2], rotation, animation, crouch, pitch, equipment, held_item, hit_seq, dead, revealed, light_on, fire_seq, buttons, melee_seq, vocal_seq, vocal_kind, carry_count, carry_def, species
             );
             // Player state is tracked in PeerConnection; WorldState builder reads it.
         }
@@ -5925,6 +5926,7 @@ fn build_world_state(
             melee_seq: p.melee_seq,
             carry_def: p.carry_def,
             carry_count: p.carry_count,
+            species: p.species,
         });
     }
 
