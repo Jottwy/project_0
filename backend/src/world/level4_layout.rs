@@ -417,6 +417,40 @@ impl Level4RegionState {
     }
 }
 
+// ─── ADR-093 E5: reglas de zona — densidad de fantasmas por epoch ───
+
+/// Multiplicador de `density_scale` por epoch transcurrido: la presión sube con el tiempo que
+/// la región lleva mutando, saturada en `DENSITY_SCALE_CAP` para que un epoch muy alto no
+/// dispare la densidad sin límite. Valores de arranque para E6 (tuning); tocarlos no cambia
+/// forma de wire ni de protocolo — son puro parámetro de `phantom_spawn::draw_into`.
+pub const DENSITY_SCALE_PER_EPOCH: f32 = 0.5;
+pub const DENSITY_SCALE_CAP: f32 = 4.0;
+
+/// El factor de densidad vigente para un epoch dado. Epoch 0 (región recién abierta, o nadie
+/// dentro) ⇒ 1.0, densidad normal.
+pub fn density_scale_for_epoch(epoch: u32) -> f32 {
+    (1.0 + epoch as f32 * DENSITY_SCALE_PER_EPOCH).min(DENSITY_SCALE_CAP)
+}
+
+/// ADR-093 (E5): ¿el bloque de sorteo de fantasmas (`phantom_spawn::block_of`, 200×200 m) cae
+/// dentro de la reserva del Level 4? La reserva (3×3 chunks, 150×150 m) cabe ENTERA en un solo
+/// bloque de sorteo (4×4 chunks, 200×200 m) porque `REGION_ORIGIN_CHUNK` está alineado a bloque
+/// por construcción (2000 = 500 × `BLOCK_CHUNKS`) — no hace falta manejar solapamiento parcial
+/// entre bloque y reserva, con comprobar el chunk de origen del bloque basta.
+pub fn block_is_in_region(block: (i32, i32)) -> bool {
+    let chunk = (
+        block.0 * crate::world::phantom_spawn::BLOCK_CHUNKS,
+        block.1 * crate::world::phantom_spawn::BLOCK_CHUNKS,
+    );
+    level4::region_chunk_local(chunk).is_some()
+}
+
+// El invariante que hace correcto `block_is_in_region` sin manejar solapamiento parcial: la
+// reserva tiene que caber en un bloque. Comprobación en tiempo de COMPILACIÓN — si alguien
+// agranda `REGION_CHUNKS` más allá de `BLOCK_CHUNKS` algún día, esto deja de compilar en vez de
+// fallar en silencio en el sorteo de fantasmas.
+const _: () = assert!(level4::REGION_CHUNKS <= crate::world::phantom_spawn::BLOCK_CHUNKS);
+
 #[cfg(test)]
 mod region_state_tests {
     use super::*;
@@ -579,6 +613,57 @@ mod region_state_tests {
             state.current_epoch(now + EPOCH_DURATION * 3 + Duration::from_secs(1)),
             3,
             "3 epochs y pico -> 3, no 4: el pico no cuenta hasta completar el siguiente"
+        );
+    }
+}
+
+// ─── E5 ───
+
+#[cfg(test)]
+mod zone_rule_tests {
+    use super::*;
+
+    #[test]
+    fn density_scale_starts_at_one_and_grows_with_epoch() {
+        assert_eq!(density_scale_for_epoch(0), 1.0);
+        assert_eq!(density_scale_for_epoch(1), 1.0 + DENSITY_SCALE_PER_EPOCH);
+        assert_eq!(
+            density_scale_for_epoch(2),
+            1.0 + 2.0 * DENSITY_SCALE_PER_EPOCH
+        );
+    }
+
+    #[test]
+    fn density_scale_saturates_at_the_cap() {
+        assert_eq!(density_scale_for_epoch(1_000_000), DENSITY_SCALE_CAP);
+        assert!(density_scale_for_epoch(u32::MAX) <= DENSITY_SCALE_CAP);
+    }
+
+    #[test]
+    fn only_the_regions_own_block_is_flagged() {
+        use crate::world::phantom_spawn::BLOCK_CHUNKS;
+        use level4::REGION_ORIGIN_CHUNK;
+
+        let region_block = (
+            REGION_ORIGIN_CHUNK.0 / BLOCK_CHUNKS,
+            REGION_ORIGIN_CHUNK.1 / BLOCK_CHUNKS,
+        );
+        // El invariante REGION_CHUNKS <= BLOCK_CHUNKS (la reserva cabe en un bloque) lo fija un
+        // `const _: ()` junto a `block_is_in_region`, no un assert aquí — clippy tiene razón en
+        // que assertar dos constantes en tiempo de ejecución no comprueba nada que el compilador
+        // no comprobara ya mejor.
+        assert!(
+            block_is_in_region(region_block),
+            "el bloque que contiene el origen de la reserva debe marcarse"
+        );
+
+        assert!(
+            !block_is_in_region((0, 0)),
+            "el origen de Level 0 no es la reserva"
+        );
+        assert!(
+            !block_is_in_region((region_block.0 + 1, region_block.1)),
+            "el bloque vecino no es la reserva"
         );
     }
 }

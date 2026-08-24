@@ -1892,6 +1892,17 @@ struct MoverTick {
     target: Option<(PeerId, Vec3, f32, f32)>,
 }
 
+/// ADR-093 (E5): `base` tal cual fuera del Level 4; escalado por epoch cuando `block` cae
+/// dentro de la reserva. Vive fuera del `impl` porque es pura (no necesita `&self`) y los dos
+/// call-sites de `phantom_spawn::draw_into` la comparten sin duplicar la comprobación.
+pub(super) fn level4_scaled_density(base: f32, block: (i32, i32), level4_epoch: u32) -> f32 {
+    if crate::world::level4_layout::block_is_in_region(block) {
+        base * crate::world::level4_layout::density_scale_for_epoch(level4_epoch)
+    } else {
+        base
+    }
+}
+
 impl PhantomDriver {
     pub(super) fn new(world_seed: u64) -> Self {
         Self {
@@ -2055,7 +2066,7 @@ impl PhantomDriver {
                         net.world_seed,
                         (bx, bz),
                         layer,
-                        self.density_scale,
+                        level4_scaled_density(self.density_scale, (bx, bz), net.level4.epoch),
                         &mut drawn,
                     );
                     for (index, pos) in drawn.iter().copied().enumerate() {
@@ -2172,7 +2183,7 @@ impl PhantomDriver {
                         net.world_seed,
                         (bx, bz),
                         layer,
-                        self.density_scale,
+                        level4_scaled_density(self.density_scale, (bx, bz), net.level4.epoch),
                         &mut drawn,
                     );
                     for (index, pos) in drawn.iter().copied().enumerate() {

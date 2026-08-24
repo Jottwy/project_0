@@ -8048,6 +8048,57 @@ fn level4_room_among_is_none_when_nobody_is_in_the_region() {
     assert_eq!(level4_room_among(42, 0, &candidates), None);
 }
 
+// ─── ADR-093 E5: reglas de zona ───
+
+#[test]
+fn position_is_buildable_denies_the_level4_reserve_regardless_of_the_build_room_roll() {
+    use crate::world::grid_gen::level4::REGION_ORIGIN_CHUNK;
+
+    // Un punto bien dentro de la reserva, en varios seeds — si el sorteo de habitación
+    // construible ACERTARA por coincidencia de coordenadas para alguno, la puerta de zona
+    // tiene que tumbarlo igual.
+    let inside = [
+        REGION_ORIGIN_CHUNK.0 as f32 * 50.0 + 25.0,
+        1.0,
+        REGION_ORIGIN_CHUNK.1 as f32 * 50.0 + 25.0,
+    ];
+    for seed in [1u64, 42, 7778, 999_999] {
+        assert!(
+            !position_is_buildable(seed, inside),
+            "seed {seed}: la reserva del Level 4 nunca debe ser construible"
+        );
+    }
+
+    // Fuera de la reserva, la regla de zona no debe activarse (el resultado depende del
+    // sorteo normal, así que solo se comprueba que ESTE punto no colisione con la reserva).
+    assert!(
+        crate::world::grid_gen::level4::world_pos_to_region_cell([0.0, 1.0, 0.0]).is_none(),
+        "sanity: el origen de Level 0 no debe leerse como parte de la reserva"
+    );
+}
+
+#[test]
+fn level4_scaled_density_only_applies_inside_the_regions_block() {
+    use crate::world::grid_gen::level4::REGION_ORIGIN_CHUNK;
+    use crate::world::phantom_spawn::BLOCK_CHUNKS;
+
+    let region_block = (
+        REGION_ORIGIN_CHUNK.0 / BLOCK_CHUNKS,
+        REGION_ORIGIN_CHUNK.1 / BLOCK_CHUNKS,
+    );
+
+    assert_eq!(level4_scaled_density(2.0, region_block, 0), 2.0);
+    assert_eq!(
+        level4_scaled_density(2.0, region_block, 2),
+        2.0 * crate::world::level4_layout::density_scale_for_epoch(2)
+    );
+    assert_eq!(
+        level4_scaled_density(2.0, (0, 0), 5),
+        2.0,
+        "fuera de la reserva, el epoch no debe tocar la densidad"
+    );
+}
+
 // ─── ADR-094 E2a: faceling niños (packs) ───
 
 /// The gate `faceling_spawn::draw_child_pack_into` enforces as a pure function, exercised through

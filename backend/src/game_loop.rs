@@ -805,9 +805,18 @@ pub async fn run(
                     // cliente ya estaba pidiendo. Es el MISMO resolutor que la talla, asi que lo
                     // que el cliente pinta de material propio no puede caer en otro sitio que la
                     // sala que se genero.
+                    //
+                    // ADR-093 E5: EXCEPTO en la reserva del Level 4 — sus chunks nunca pasan por
+                    // el carvado normal (`generate_region_chunk` los rasteriza aparte), así que
+                    // `room_in_chunk` podría acertar por coincidencia de coordenadas y mandar un
+                    // fantasma de sala construible que no existe en la geometría real.
                     let build_room =
-                        crate::world::grid_gen::room_in_chunk(net.world_seed, cx, cz, layer)
-                            .map(|plan| [plan.tile_x as u8, plan.tile_z as u8, plan.door_side]);
+                        if crate::world::grid_gen::level4::region_chunk_local((cx, cz)).is_some() {
+                            None
+                        } else {
+                            crate::world::grid_gen::room_in_chunk(net.world_seed, cx, cz, layer)
+                                .map(|plan| [plan.tile_x as u8, plan.tile_z as u8, plan.door_side])
+                        };
                     // ADR-083 enmienda 1: la sala autorada, por el MISMO resolutor puro que la talla
                     // en las dos representaciones del mundo. Re-derivarla aquí en vez de arrastrarla
                     // desde la generación es lo que garantiza que lo que el cliente instancia caiga
@@ -5252,6 +5261,13 @@ fn claim_owner_at(
 /// generado nunca. Y es LA MISMA función que decide dónde se talla la habitación, así que la regla
 /// no puede desalinearse de la geometría: si se mueve una, se mueve la otra.
 fn position_is_buildable(world_seed: u64, position: [f32; 3]) -> bool {
+    // ADR-093 E5: la reserva del Level 4 NUNCA es construible, sea lo que sea que diga el sorteo
+    // de habitación construible para ese chunk — es una regla de ZONA por encima del sorteo, no
+    // parte de él. `room_in_chunk` no sabe nada de la reserva (sortea por seed+coordenada sin
+    // mirar dónde vive el Level 4) y podría decir que sí por pura coincidencia de coordenadas.
+    if crate::world::grid_gen::level4::world_pos_to_region_cell(position).is_some() {
+        return false;
+    }
     crate::world::grid_gen::position_in_build_room(world_seed, position[0], position[2])
 }
 

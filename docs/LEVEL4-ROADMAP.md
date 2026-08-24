@@ -275,6 +275,36 @@ enmienda al formato de E2 si excede, decidir al medir).
 - Facelings: NO existen como entidad; fuera de este roadmap (nota en ADR ya lo cubre).
 - ~250 líneas.
 
+### Nota de ejecución E5 (2026-08-24) — desviaciones reales
+
+- **Construcción denegada: la puerta vive en `position_is_buildable`, no en `process_stp_place`
+  directamente** — esa función YA es el único punto de entrada de la comprobación de zona (`if
+  !position_is_buildable(...) { return; }` al principio de `process_stp_place`), así que bastó con
+  un guard adicional ahí: si la posición cae dentro de la reserva del Level 4
+  (`grid_gen::level4::world_pos_to_region_cell(...).is_some()`), deniega ANTES de mirar el sorteo
+  de habitación construible — necesario porque ese sorteo es puro por `(seed, cx, cz)` y podría
+  decir que sí por pura coincidencia de coordenadas en el chunk (2000,2000).
+- **Fantasma de sala construible en el chunk data:** se encontró que el handler de `RequestChunk`
+  computa `build_room` llamando a `room_in_chunk` de forma INDEPENDIENTE (no deriva del chunk que
+  `generate_region_chunk` en realidad rasterizó), así que sin guard el CLIENTE podría recibir un
+  hueco de sala construible fantasma dentro de la reserva. Mismo guard, mismo criterio.
+- **C#: CERO cambios.** `BuildPermission.Explain` ya consulta `BuildRoomRegistry.Contains`, que se
+  llena SOLO cuando el backend manda un `build_room` — con el guard de arriba, la reserva nunca
+  manda uno, así que el cliente ya rechaza sin ninguna línea nueva. El roadmap original apuntaba a
+  `BuildPermission.CanPlaceAt:42` como sitio a tocar; no hizo falta.
+- **Densidad de fantasmas: NO es `resolve_phantom_density_scale`** (esa es la reconciliación de
+  sesión guardado-vs-lanzamiento, un valor de PROCESO ENTERO, no por bloque) sino
+  `phantom_spawn::draw_into`'s parámetro `density_scale`, que SÍ es puro y por-bloque. Un
+  multiplicador nuevo (`level4_layout::density_scale_for_epoch`, saturado en ×4) se aplica en los
+  DOS call-sites de `draw_into` (`sync_population` y `wake_for_noises`) SOLO cuando el bloque cae
+  en la reserva — la región cabe entera en un único bloque de sorteo (150 m dentro de 200 m)
+  porque `REGION_ORIGIN_CHUNK` está alineado a bloque por construcción.
+- **Bloqueo de puertas y Facelings: confirmado sin código**, tal como preveía el borrador.
+- **Loot: DIFERIDO, no implementado.** Los ítems v1 (chunk scatter) están APAGADOS en todo el
+  proyecto (`generator.rs`: `let items = Vec::new()`, a petición) — parametrizar por región un
+  sistema que hoy no genera nada en NINGÚN sitio del mundo sería trabajo fuera del alcance de este
+  ADR (reactivarlo es una decisión propia, no de Level 4). Queda anotado para cuando vuelva.
+
 ## E6 — Contenido + señales diegéticas + tuning (sin lógica nueva)
 
 Pool de salas oficina adicional (hornear 4-6 piezas, cero código — el 80 % del retorno, lección de
@@ -282,6 +312,28 @@ ROOMS-ROADMAP); luz/ambience por epoch (listas dispersas estilo ADR-059/066); se
 epoch (parpadeo, zumbido — audio por mixer SFX/ambiente, niveles ~0.05, lección conocida); tuning de
 N minutos, radio de deriva, tamaño de región. Playtest de incursión completa: entrar, saquear, salir
 tarde, aparecer lejos, volver a base, sin desync (verificación en juego del ADR).
+
+### Nota de ejecución E6 (2026-08-24) — alcance recortado a lo que un pase sin editor puede dar
+
+- **Tuning: YA ESTÁ HECHO, sin código nuevo.** Cada parámetro que este bullet pedía ya es una
+  constante nombrada y editable en un solo sitio, subproducto de E2-E5: `EPOCH_DURATION` (N
+  minutos), `DRIFT_RADIUS_PER_MINUTE_M`/`WINDOW_DURATION` (radio de deriva), `REGION_CHUNKS`
+  (tamaño de región), `DENSITY_SCALE_PER_EPOCH`/`DENSITY_SCALE_CAP` (presión de fantasmas). Tocar
+  cualquiera es una línea, sin tocar protocolo.
+- **Pool de salas, luz/ambience, señales diegéticas: NO hechas, y no por elección.** Las tres
+  necesitan el EDITOR de Unity con feedback visual (hornear mallas, ajustar exposición/mixer
+  mirando el resultado) — exactamente el tipo de trabajo que este pase, sin poder abrir el editor
+  y ver la escena, no puede hacer con confianza. Forzarlo a ciegas sería peor que no tocarlo:
+  valores de luz/audio puestos sin verlos son el tipo de "trabajo" que ADR-090 y las memorias del
+  proyecto avisan que cuesta 2-3 commits arreglar después.
+- **La puerta de vuelta placeholder de E3** (anclada al centro geométrico de la reserva, sin sala
+  real detrás) sigue siendo el bloqueador de fondo para "señales diegéticas atadas a una sala": no
+  hay accesorios (lámparas, altavoces) que atar hasta que exista contenido autorado.
+- **Recomendación para el playtest de Joel:** cruzar la puerta Entry `(3,1,0)` cerca del spawn,
+  confirmar que aparece dentro de la reserva y que el epoch avanza pasados los 10 min (o bajar
+  `EPOCH_DURATION` a un valor de prueba, p. ej. 30 s, para verlo antes); cruzar Return y confirmar
+  que vuelve cerca de donde entró dentro de la ventana de 5 min. Con eso en verde, el resto de E6
+  (arte, ambiente) tiene sentido abordarlo con el editor abierto y la reserva ya visitada.
 
 ## Reglas transversales
 
