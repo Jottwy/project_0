@@ -56,6 +56,9 @@ namespace BackroomsSurvival.Net
         // ("position" key) but a DISTINCT type: RespawnRequester must NOT force the native
         // respawn chain for a session load — only this applier consumes it (position snap only).
         private const string RestoredEvent = "session_restored";
+        // ADR-093 (E3): the host's verdict for a Level 4 door crossing (entry or return) — the
+        // same "authoritative reposition" shape as player_respawned, just a different source.
+        private const string Level4DoorEvent = "level4_door_resolved";
 
         private static AuthoritativePoseApplier _instance;
 
@@ -215,15 +218,19 @@ namespace BackroomsSurvival.Net
         private void OnGameEvent(GameEventMsg ev)
         {
             if (ev == null ||
-                (ev.eventType != DiedEvent && ev.eventType != RespawnedEvent && ev.eventType != RestoredEvent))
+                (ev.eventType != DiedEvent && ev.eventType != RespawnedEvent &&
+                 ev.eventType != RestoredEvent && ev.eventType != Level4DoorEvent))
                 return;
 
-            // The backend froze (death) or repositioned (respawn) the local player's authoritative
-            // pose this tick — and the event CARRIES that position. Snap to it immediately instead
-            // of racing the (possibly stale) queued delta stream; the armed window then lets
-            // near-target deltas refine while the _expectedPos filter discards the stale ones.
+            // The backend froze (death) or repositioned (respawn / Level 4 door) the local
+            // player's authoritative pose this tick — and the event CARRIES that position. Snap
+            // to it immediately instead of racing the (possibly stale) queued delta stream; the
+            // armed window then lets near-target deltas refine while the _expectedPos filter
+            // discards the stale ones.
             var d = ev.data as Dictionary<string, object>;
-            string posKey = ev.eventType == DiedEvent ? "death_pos" : "position";
+            string posKey = ev.eventType == DiedEvent ? "death_pos"
+                : ev.eventType == Level4DoorEvent ? "dest"
+                : "position";
             Vector3 eventPos = d != null && d.TryGetValue(posKey, out var rawPos)
                 ? IPCParse.Vec3(rawPos)
                 : Vector3.zero;

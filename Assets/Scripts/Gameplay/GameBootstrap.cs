@@ -64,12 +64,41 @@ namespace BackroomsSurvival.Gameplay
             EnsureComponent<GameBootGateBinder>();
             EnsureComponent<RemotePlayerManager>();
             EnsureComponent<JoinSessionUI>();
+            SpawnLevel4Doors();
         }
 
         private void EnsureComponent<T>() where T : Component
         {
             if (FindFirstObjectByType<T>() == null)
                 gameObject.AddComponent<T>();
+        }
+
+        /// <summary>
+        /// ADR-093 E3: the two Level 4 door triggers. Instantiated (never scene/prefab-authored)
+        /// so this file is still the single place that wires the game up. Fixed, hand-picked
+        /// anchors, not seed-sorted placement (that is E3's own documented simplification —
+        /// see docs/LEVEL4-ROADMAP.md "Nota de ejecución E3"): the Entry anchor sits inside the
+        /// flat, always-open starter cluster (Phase 2.6 guarantees no verticality within two
+        /// chunks of spawn); the Return anchor is the world-space CENTER of the Level 4 reserve
+        /// (`grid_gen::level4::REGION_ORIGIN_CHUNK`/`REGION_CHUNKS`, chunk size 50 m —
+        /// (2000,2000)..(2003,2003) chunks ⇒ world (100000,100000)..(100150,100150), center
+        /// (100075,100075)) — a placeholder until authored room content (E6) gives the region
+        /// something to hang a real door off.
+        /// </summary>
+        private void SpawnLevel4Doors()
+        {
+            if (FindFirstObjectByType<Level4DoorTrigger>() != null)
+                return; // domain reload / re-entry into the same scene
+
+            const float doorRadius = 2f;
+
+            var entryGo = new GameObject("Level4EntryDoor (ADR-093, placeholder)");
+            entryGo.transform.position = new Vector3(3f, 1f, 0f);
+            entryGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Entry, doorRadius);
+
+            var returnGo = new GameObject("Level4ReturnDoor (ADR-093, placeholder)");
+            returnGo.transform.position = new Vector3(100075f, 1f, 100075f);
+            returnGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Return, doorRadius);
         }
     }
 }

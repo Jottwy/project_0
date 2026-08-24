@@ -1046,6 +1046,22 @@ namespace BackroomsSurvival.Net
         }
 
         /// <summary>
+        /// ADR-093 E3: cross a Level 4 door. <paramref name="door"/> is
+        /// <see cref="Level4Door.Entry"/> or <see cref="Level4Door.Return"/>. `requestId` is
+        /// caller-generated (a simple per-session counter is enough — no dedupe on the backend,
+        /// `process_door` is idempotent either way) and correlates the eventual
+        /// `level4_door_resolved` event with whatever UI is waiting on it.
+        /// </summary>
+        public void SendLevel4Door(Level4Door door, long requestId)
+        {
+            SendActionFrame(ProtocolActionTypes.Level4Door, 2, w =>
+            {
+                w.WriteString("request_id"); w.WriteInt(requestId);
+                w.WriteString("door"); w.WriteInt((byte)door);
+            });
+        }
+
+        /// <summary>
         /// ADR-028 Fase B: report the death-loot snapshot at the local death edge. The server
         /// (gated on its own is_dead + per-death dedupe) spawns the authoritative corpse at the
         /// frozen death position. Trust-the-client, same level as position/equipment/held_item —

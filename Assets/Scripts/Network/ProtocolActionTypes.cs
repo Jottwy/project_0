@@ -70,5 +70,9 @@ namespace BackroomsSurvival.Net
         /// PlayerIdentity), sent to its own backend so it can resolve which player file to
         /// load/write. IPC only, never P2P — the backend never relays this to peers.</summary>
         public const string SetIdentity = "set_identity";
+
+        /// <summary>ADR-093 E3: cross a Level 4 door (entry or return). IPC-only, no wire
+        /// bump — same additive-data pattern as bed_constructed/report_noise.</summary>
+        public const string Level4Door = "level4_door";
     }
 }

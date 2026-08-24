@@ -2545,9 +2545,9 @@ async fn handle_network_event(
             if !net.is_host {
                 return;
             }
-            // E2 no tiene aún puerta física: nada legítimo dispara esto todavía (E3 la añade).
-            // El host SÍ responde ya — es lo que dice el ADR — así que la ruta entera queda
-            // ejercitada y verde antes de que exista nada que la use en juego.
+            // ADR-093 E3: la puerta física ya envía esto desde el otro backend.
+            // `requester_pos` sale del roster host-autoritativo (la posición YA CONOCIDA de ese
+            // peer), nunca del payload — mismo criterio que el resto de esta familia.
             let Some(requester_pos) = net.peers.get(&requester_id).map(|p| p.position) else {
                 info!(
                     "MPTRACE step=L4 event=level4_door_unknown_requester requester_id={} request_id={}",
@@ -2556,13 +2556,9 @@ async fn handle_network_event(
                 return;
             };
             let now = std::time::Instant::now();
-            let dest = match door {
-                crate::world::level4_layout::DOOR_ENTRY => {
-                    net.level4.process_entry(world.seed, requester_pos, now);
-                    requester_pos
-                }
-                _ => net.level4.process_return(requester_pos, now),
-            };
+            let dest = net
+                .level4
+                .process_door(world.seed, requester_pos, door, now);
             info!(
                 "MPTRACE step=L4 event=level4_door_resolved requester_id={} request_id={} door={} dest=({:.2},{:.2},{:.2})",
                 requester_id, request_id, door, dest[0], dest[1], dest[2]
@@ -3839,6 +3835,46 @@ async fn handle_action(
                     group_id,
                     is_group,
                 };
+                net.send_reliable(1, &payload).await;
+            }
+        }
+        // ADR-093 E3: a player crosses a Level 4 door. IPC-only send (no new wire, same pattern
+        // as `bed_constructed`/`report_noise`) — `door`/`request_id` travel as free JSON, same
+        // as `place_id` etc. above. `request_id` is CLIENT-generated (correlates the eventual
+        // `level4_door_resolved` IPC event with whatever Unity showed while waiting); nothing
+        // here dedupes it because `process_door` is idempotent either way.
+        "level4_door" => {
+            let request_id = action
+                .data
+                .get("request_id")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            let door = action
+                .data
+                .get("door")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as u8;
+            if net.is_host {
+                // ADR-093: el host cruza en su propio nombre — su posición autoritativa es
+                // `player.position` (no hay entrada en `net.peers` para uno mismo). Sin salto
+                // P2P: se resuelve y se avisa a la propia Unity directamente, mismo criterio
+                // que `process_stp_place` arriba.
+                let dest = net.level4.process_door(
+                    world.seed,
+                    player.position.to_array(),
+                    door,
+                    std::time::Instant::now(),
+                );
+                let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                    event_type: "level4_door_resolved".into(),
+                    data: serde_json::json!({
+                        "request_id": request_id,
+                        "dest": dest,
+                    }),
+                }));
+            } else {
+                let payload =
+                    crate::network::protocol::PacketPayload::Level4DoorRequest { request_id, door };
                 net.send_reliable(1, &payload).await;
             }
         }

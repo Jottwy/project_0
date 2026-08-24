@@ -366,11 +366,50 @@ impl Level4RegionState {
         self.refresh_return_dest(now);
         self.return_dest
     }
+
+    /// ADR-093 (E3): punto único que procesa un cruce, sea `DOOR_ENTRY` o `DOOR_RETURN`. Los
+    /// dos sitios que reciben un cruce — la petición host-directa del propio host (acción IPC)
+    /// y la petición P2P de un joiner (`NetworkEvent::Level4DoorRequest`) — llaman a ESTA
+    /// función, para que la rama de decisión (qué hacer con cada valor de `door`) exista en un
+    /// solo lugar y no pueda divergir entre las dos rutas.
+    pub fn process_door(
+        &mut self,
+        world_seed: u64,
+        requester_pos: [f32; 3],
+        door: u8,
+        now: Instant,
+    ) -> [f32; 3] {
+        if door == DOOR_ENTRY {
+            self.process_entry(world_seed, requester_pos, now);
+            requester_pos
+        } else {
+            self.process_return(requester_pos, now)
+        }
+    }
 }
 
 #[cfg(test)]
 mod region_state_tests {
     use super::*;
+
+    #[test]
+    fn process_door_dispatches_entry_and_treats_anything_else_as_return() {
+        let now = Instant::now();
+        let mut state = Level4RegionState::default();
+
+        let entry_dest = state.process_door(42, [5.0, 0.0, 5.0], DOOR_ENTRY, now);
+        assert_eq!(entry_dest, [5.0, 0.0, 5.0]);
+        assert!(state.window_open);
+
+        // Dentro de la ventana: vuelve al punto de entrada exacto.
+        let return_dest = state.process_door(42, [1.0, 0.0, 1.0], DOOR_RETURN, now);
+        assert_eq!(return_dest, [5.0, 0.0, 5.0]);
+
+        // Cualquier valor que no sea DOOR_ENTRY colapsa a Return — mismo criterio que
+        // `CellType::kind()` con un byte desconocido: el lado seguro, no un pánico.
+        let unknown_dest = state.process_door(42, [1.0, 0.0, 1.0], 255, now);
+        assert_eq!(unknown_dest, [5.0, 0.0, 5.0]);
+    }
 
     #[test]
     fn entry_opens_the_window_once_and_ignores_later_entries() {

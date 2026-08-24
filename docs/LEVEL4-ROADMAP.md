@@ -143,6 +143,34 @@ overstay.
 - Riesgo: pop-in de chunks al teleportar (~carga inicial); aceptable v1, anotar medida.
 - ~300 líneas (prefab aparte, sin contar assets).
 
+### Nota de ejecución E3 (2026-08-24) — desviaciones reales
+
+- **Sin wire nuevo.** El envío Unity→su propio backend usa el canal `PlayerAction` genérico
+  (acción IPC `level4_door`, patrón `bed_constructed`/`report_noise`) en vez de un mensaje IPC
+  dedicado — cero bump de `WIRE_SCHEMA_VERSION`, cero cambio de esquema. El salto P2P
+  joiner→host sigue siendo el `Level4DoorRequest`/`Verdict` que E2 ya dejó listo y probado;
+  E3 solo le añade el disparador.
+- **`Level4RegionState::process_door` centraliza la rama Entry/Return**, usada por las DOS
+  rutas que pueden recibir un cruce (acción IPC host-directa y `NetworkEvent::Level4DoorRequest`
+  P2P) — evita que la decisión "qué hacer con cada valor de `door`" viva por duplicado.
+- **`request_id` es CLIENT-generado** (un contador simple por trigger), no un contador del
+  backend — mismo patrón que `place_id`/`add_id` de STP, no el de `next_corpse_request_id`.
+  Sin dedupe: `process_door` es idempotente en las dos ramas.
+- **Puertas: dos `GameObject` instanciados por `GameBootstrap`, sin prefab ni edición de
+  escena** (`Level4DoorTrigger`, poll de proximidad contra el motor LOCAL — no colisión física,
+  para no depender de si un avatar remoto lleva collider). Anclas FIJAS a mano, NO sorteadas
+  por seed (eso queda fuera de alcance de E3, es trabajo de autorado/worldgen mayor): Entry a
+  `(3, 1, 0)` dentro del starter cluster (garantizado plano por Fase 2.6); Return al CENTRO
+  del rect de la reserva del Level 4, `(100075, 1, 100075)` — derivado a mano de
+  `REGION_ORIGIN_CHUNK=(2000,2000)` × `REGION_CHUNKS=3` × 50 m/chunk. **Placeholder explícito**:
+  sin contenido autorado (E6) la puerta de vuelta no tiene una sala real donde vivir; se
+  reposicionará cuando la haya.
+- **Verificación**: unitaria completa (backend 914/0, C# 0 errores en las 4 asambleas) y
+  símbolos confirmados en el binario release recién compilado
+  (`grep -aoc level4_door backrooms_server.exe` → 7 apariciones). **NO se ha hecho playtest
+  real en juego** (cruzar de verdad, ver el teletransporte, medir el pop-in de chunks) —
+  pendiente, próximo paso antes de dar la etapa por visualmente cerrada.
+
 ## E4 — Epochs (backend + C#)
 
 Host avanza `epoch` cada N min (constante, propuesta 10) desde `window_open`. Al avanzar: broadcast
