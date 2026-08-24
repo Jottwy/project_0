@@ -1,8 +1,9 @@
-# IPC wire schema — changelog v2 → v34
+# IPC wire schema — changelog v2 → v42
 
 > **La autoridad sobre el número es el CÓDIGO**: `backend/src/ipc/server.rs`, constante
-> `WIRE_SCHEMA_VERSION` (hoy **34**). Este documento es el changelog, no la versión. Al
-> bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**.
+> `WIRE_SCHEMA_VERSION` (hoy **42**). Este documento es el changelog, no la versión. Al
+> bumpear la constante, añade aquí la entrada correspondiente **en el mismo commit**. (El
+> título quedó desactualizado en v34→v41 por deuda de proceso ajena — ver nota antes de v42.)
 >
 > Fuente de la decisión: [`../DECISIONS.md`](../DECISIONS.md) — cada entrada cita su ADR.
 > Bumpear `WIRE_SCHEMA_VERSION` SIEMPRE requiere ADR nuevo (regla dura #7 de `CLAUDE.md`:
@@ -592,3 +593,35 @@ esta enmienda la habitación es el ÚNICO sitio construible, ese cliente pinta e
 todas partes y no manda ni una colocación — no puede construir en absoluto, y además la sala se
 renderiza con el material del pasillo y con luces de techo. Roto de forma visible, no silenciosa,
 pero roto: por eso bumpea. `WireSchema.Expected` (C#) a 37 en el mismo commit.
+
+> **Hueco v38–v41 sin registrar aquí.** El código (`WIRE_SCHEMA_VERSION`) avanzó a 41 en sesiones
+> posteriores (salas multi-chunk ADR-084, altura de sala ADR-085) sin que este changelog se
+> actualizara — deuda de proceso ajena a esta entrada, no corregida aquí para no mezclar
+> conceptos. El código sigue siendo la autoridad (regla de cabecera de este documento).
+
+## v42 — ADR-093: el estado del Level 4 y el cruce de puerta (2026-08-24)
+
+Tres `PacketPayload` nuevos (**por qué bumpea**: "añadir un `PacketPayload` bumpea", regla de
+cabecera de este documento — ninguno reusa un campo existente):
+
+- **`Level4State`** (`0x57`, host→peers, self-healing a 10 Hz, **fuera** de `is_reliable` — mismo
+  trato que `CorpseList`): `epoch`, `window_open`, `return_dest`. El único estado que un joiner
+  necesita mirroriza; el resto (punto de entrada, rumbo de deriva, instante de apertura) es
+  host-only y nunca sale del proceso.
+- **`Level4DoorRequest`** (`0x58`, peer→host, **fiable**) / **`Level4DoorVerdict`** (`0x59`,
+  host→requester, **fiable**): la pareja petición/veredicto de cruzar una puerta.
+  `Level4DoorRequest` NO lleva `requester_id` en el payload — sale de la CABECERA del paquete,
+  mismo criterio que `SprayPlaceRequest` (ADR-068) y `StpPlaceRequest` (ADR-081): el host resuelve
+  el destino contra la posición YA CONOCIDA de ese peer, y el payload no puede votar quién cruza.
+
+`0x55`/`0x56` se dejan libres a propósito: el borrador de ADR-094 (Facelings, propuesta
+concurrente sin código) los cita textualmente para su propio par petición/veredicto. El código es
+la autoridad (precedente ADR-046/047 en este mismo documento) — quien implemente primero se queda
+el número, pero saltarse estos dos evita que la otra implementación copie un opcode ya tomado.
+
+E2 de `docs/LEVEL4-ROADMAP.md` (ADR-093) entra **inerte**: el host procesa `Level4DoorRequest` de
+verdad (abre la ventana, resuelve el destino con deriva proporcional al overstay), pero ninguna
+puerta física existe todavía para mandarlo — eso es E3. Degradación: un peer viejo no decodifica
+los tres opcodes nuevos y simplemente nunca ve región ni puertas, que es exactamente el estado
+actual de todo el mundo. `WireSchema.Expected` (C#) a 42 en el mismo commit — el test de
+`cargo test` (`7532876`) que compara ambos como texto lo vigila.

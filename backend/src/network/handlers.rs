@@ -315,6 +315,30 @@ impl NetworkManager {
                 Some(NetworkEvent::SprayPlacedReceived { spray })
             }
 
+            // ADR-093 (E2): `Level4State` se renombra a `*Received` — mismo motivo que
+            // `CorpseList` -> `CorpseListReceived`: es un roster que se mirroriza, no una
+            // petición que este backend haya hecho.
+            PacketPayload::Level4State {
+                epoch,
+                window_open,
+                return_dest,
+            } => Some(NetworkEvent::Level4StateReceived {
+                epoch,
+                window_open,
+                return_dest,
+            }),
+
+            // ADR-093 (E2): igual que `SprayPlaceRequest`, `requester_id` sale de la CABECERA —
+            // el host resuelve el destino contra la posición YA CONOCIDA de ese peer, nunca
+            // contra nada que el payload pudiera decir.
+            PacketPayload::Level4DoorRequest { request_id, door } => {
+                Some(NetworkEvent::Level4DoorRequest {
+                    requester_id: sender_id,
+                    request_id,
+                    door,
+                })
+            }
+
             // ADR-078: el `painter_id` sale de la CABECERA por el mismo motivo que en
             // `SprayPlaceRequest` — el host reparte copias por distancia a ESE peer, y dejar que
             // el payload dijera quién pinta permitiría dibujar en nombre de otro.
@@ -463,6 +487,7 @@ impl NetworkManager {
         [
             StpPickupGranted { item_id, def_id, count },
             StpDropRequest { drop_id, def_id, count, position, rotation, velocity },
+            Level4DoorVerdict { request_id, dest },
         ]
         {
 

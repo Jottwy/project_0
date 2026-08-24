@@ -95,6 +95,37 @@ efectos). Host: estado en `game_loop`, ventana cerrada por defecto.
   ~100 m/min); estado llega al joiner en join.
 - ~250 líneas.
 
+### Nota de ejecución E2 (2026-08-24) — desviaciones reales
+
+- **Opcodes reales: `0x57` (`Level4State`), `0x58` (`Level4DoorRequest`), `0x59`
+  (`Level4DoorVerdict`)** — `0x55`/`0x56` se dejan libres a propósito porque el borrador de
+  ADR-094 (Facelings, sesión concurrente, sin código aún) los cita textualmente. Wire
+  `41 → 42`.
+- **Punto de entrada = posición del jugador al cruzar, NO una posición de puerta sorteada.**
+  Evita inventar en E2 la placement logic que el roadmap ya asignaba a E3 (sorteo de la
+  puerta por seed): el host simplemente recuerda dónde estaba quien cruzó Entry. E3 no
+  necesita tocar esta función — solo hacer que un prefab de puerta dispare la petición.
+  `Level4DoorRequest` lleva `request_id: u64` (generado por el cliente) para correlar con el
+  veredicto; no hace falta un set de dedupe porque `process_entry`/`process_return` son
+  ambas puras/idempotentes.
+- **`Level4RegionState` vive en `NetworkManager` (`net.level4`)**, host-autoritativo, mismo
+  reparto que `stp_buildings`. Los campos host-only (`entry_point`, `direction`, `opened_at`,
+  `window_count`) nunca cruzan el wire — solo `epoch`/`window_open`/`return_dest`, mismo
+  reparto que `SettlingItem` frente a `StpItemInfo`.
+- **Ventana y cierre de ventana: semántica mínima, decisión pendiente para E4/E5.** E2 abre la
+  ventana en el primer Entry y no la cierra nunca sola (persiste hasta que algo externo la
+  reabra a mano); qué la cierra —¿la región vacía?, ¿el avance de epoch?— es responsabilidad
+  de E4 (que además decide si el epoch invalida la reserva por clave de caché o por purga
+  explícita, nota pendiente de E1).
+- **C# de este stage: SOLO el bump de `WireSchema.Expected`.** Nada cruza el límite IPC
+  Unity↔backend todavía (el cambio es P2P backend↔backend puro) — el patrón "un cambio
+  solo-P2P también bumpea, sin código C# de feature" tiene precedente extenso en
+  `ipc-wire-schema.md`. La idea original de un `Level4Client` en C# se descarta: no hay nada
+  que consuma el estado hasta que exista un prefab de puerta (E3).
+  `NetworkEvent::Level4DoorVerdict` SÍ reenvía un evento IPC genérico
+  (`level4_door_resolved`) a la propia Unity del solicitante, completando el round-trip sin
+  necesitar una clase C# nueva — E3 solo añade el listener.
+
 ## E3 — Puertas + teleport (C# + backend)
 
 Puerta de ida en Level 0: posición determinista por seed (sorteo estilo salas autoradas, a distancia

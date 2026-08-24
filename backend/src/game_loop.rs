@@ -1654,6 +1654,9 @@ pub async fn run(
                 sync::broadcast_stp_harvestables(&mut net).await;
                 // ADR-028 Fase E: full corpse roster (host-authoritative, self-healing).
                 sync::broadcast_corpses(&mut net, &world).await;
+                // ADR-093 (E2): Level 4 region state — inerte hasta que E3 dé de alta la
+                // primera puerta, pero real y en verde desde ya.
+                sync::broadcast_level4_state(&mut net).await;
             }
         }
 
@@ -2516,6 +2519,72 @@ async fn handle_network_event(
             if !net.is_host {
                 world.corpses = corpses.into_iter().map(|c| (c.id, c)).collect();
             }
+        }
+
+        // ─── ADR-093 (E2): Level 4 door protocol ───
+        NetworkEvent::Level4StateReceived {
+            epoch,
+            window_open,
+            return_dest,
+        } => {
+            // Joiner: mirror verbatim, like CorpseListReceived. The host never receives this
+            // (it doesn't broadcast to itself) — its own `net.level4` is the source of truth.
+            if !net.is_host {
+                net.level4.epoch = epoch;
+                net.level4.window_open = window_open;
+                net.level4.return_dest = return_dest;
+            }
+        }
+
+        NetworkEvent::Level4DoorRequest {
+            requester_id,
+            request_id,
+            door,
+        } => {
+            if !net.is_host {
+                return;
+            }
+            // E2 no tiene aún puerta física: nada legítimo dispara esto todavía (E3 la añade).
+            // El host SÍ responde ya — es lo que dice el ADR — así que la ruta entera queda
+            // ejercitada y verde antes de que exista nada que la use en juego.
+            let Some(requester_pos) = net.peers.get(&requester_id).map(|p| p.position) else {
+                info!(
+                    "MPTRACE step=L4 event=level4_door_unknown_requester requester_id={} request_id={}",
+                    requester_id, request_id
+                );
+                return;
+            };
+            let now = std::time::Instant::now();
+            let dest = match door {
+                crate::world::level4_layout::DOOR_ENTRY => {
+                    net.level4.process_entry(world.seed, requester_pos, now);
+                    requester_pos
+                }
+                _ => net.level4.process_return(requester_pos, now),
+            };
+            info!(
+                "MPTRACE step=L4 event=level4_door_resolved requester_id={} request_id={} door={} dest=({:.2},{:.2},{:.2})",
+                requester_id, request_id, door, dest[0], dest[1], dest[2]
+            );
+            net.send_verdict(
+                requester_id,
+                &PacketPayload::Level4DoorVerdict { request_id, dest },
+            )
+            .await;
+        }
+
+        NetworkEvent::Level4DoorVerdict { request_id, dest } => {
+            // We are the requester's own backend (host-self or joiner) — surface the verdict
+            // to OUR Unity through the generic event bridge, same as CorpseTakeResult. Nothing
+            // in Unity listens for "level4_door_resolved" yet (E3 adds the consumer); this just
+            // completes the round trip so E3 only has to add a listener, not new plumbing.
+            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                event_type: "level4_door_resolved".into(),
+                data: serde_json::json!({
+                    "request_id": request_id,
+                    "dest": dest,
+                }),
+            }));
         }
 
         // ─── ADR-029 V0: PvP relay (host-authoritative validation, victim-applied damage) ───

@@ -678,6 +678,37 @@ pub async fn broadcast_corpses(net: &mut NetworkManager, world: &World) {
     }
 }
 
+/// ADR-093 (E2): host-as-server relay of the Level 4 region state. Self-healing at 10 Hz
+/// like `broadcast_corpses` — a lost round is replaced by the next one, so no reliability is
+/// spent on it (`Level4State` is deliberately absent from `is_reliable`).
+///
+/// Refreshes `return_dest` from the elapsed time BEFORE building the payload — the same
+/// formula `process_return` uses — so a joiner watching the broadcast sees the destination
+/// drift live, not just at the moment someone actually requests a Return.
+pub async fn broadcast_level4_state(net: &mut NetworkManager) {
+    if net.peers.is_empty() {
+        return;
+    }
+    net.level4.refresh_return_dest(std::time::Instant::now());
+    // `Level4RegionState` carries a non-serializable `Option<Instant>` (host-only, never on the
+    // wire) — `roster_gate_open` needs `Serialize`, so the gate hashes just the three wire
+    // fields, as a tuple, instead of the whole struct.
+    let wire_fields = [(
+        net.level4.epoch,
+        net.level4.window_open,
+        net.level4.return_dest,
+    )];
+    if !roster_gate_open(&mut net.roster_gates.level4, &wire_fields, net.peers.len()) {
+        return;
+    }
+    let payload = PacketPayload::Level4State {
+        epoch: net.level4.epoch,
+        window_open: net.level4.window_open,
+        return_dest: net.level4.return_dest,
+    };
+    net.broadcast_unreliable(&payload).await;
+}
+
 /// Host-as-server relay of the STP building roster: the host broadcasts its full
 /// authoritative building list so every joiner spawns the same pieces (Phase B1).
 pub async fn broadcast_stp_buildings(net: &mut NetworkManager) {

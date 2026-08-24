@@ -190,6 +190,27 @@ pub enum NetworkEvent {
     CorpseListReceived {
         corpses: Vec<crate::world::corpse::CorpseData>,
     },
+    /// ADR-093 (E2): the host's periodic Level 4 region broadcast — a joiner mirrors it
+    /// verbatim into `net.level4`, same trust as the other rosters above.
+    Level4StateReceived {
+        epoch: u32,
+        window_open: bool,
+        return_dest: [f32; 3],
+    },
+    /// ADR-093 (E2): a peer asks to cross a Level 4 door. `requester_id` comes from the packet
+    /// HEADER, not the payload — same reason as `StpPlaceRequest.requester_id` (ADR-081): the
+    /// host resolves the destination against THAT peer's own known position, and the payload
+    /// must not get a vote in who is crossing.
+    Level4DoorRequest {
+        requester_id: PeerId,
+        request_id: u64,
+        door: u8,
+    },
+    /// ADR-093 (E2): the host's verdict for OUR `Level4DoorRequest` — where we land.
+    Level4DoorVerdict {
+        request_id: u64,
+        dest: [f32; 3],
+    },
     /// ADR-029 V0: a remote peer's backend forwarded a PvP hit candidate to us (the host) for
     /// validation. All authority logic (dedupe, the 11-step validation order, grant/reject
     /// dispatch) lives in game_loop.rs, same split as the corpse relay above.

@@ -141,6 +141,8 @@ pub struct RosterGates {
     pub carryables: crate::network::roster::RosterGate,
     pub harvestables: crate::network::roster::RosterGate,
     pub corpses: crate::network::roster::RosterGate,
+    /// ADR-093 (E2): gate del broadcast de `Level4State`.
+    pub level4: crate::network::roster::RosterGate,
 }
 
 /// ADR-070: the host-only simulation state of ONE falling item. Pairs with the `StpItemInfo` of
@@ -284,6 +286,10 @@ pub struct NetworkManager {
     /// our Unity, so a reliable retransmit of the verdict never double-fires the IPC event
     /// (a duplicated corpse_item_taken would double-shift CorpseLootSync's index mirror).
     pub processed_corpse_results: BoundedDedupeSet<u64>,
+    /// ADR-093 (E2): host-authoritative Level 4 region state (epoch, ventana, destino de
+    /// vuelta). Host-authoritative como `stp_buildings`; un joiner mirroriza el broadcast
+    /// verbatim (`Level4StateReceived`), sin procesar puertas él mismo.
+    pub level4: crate::world::level4_layout::Level4RegionState,
     /// ADR-060 (joiner-only en la práctica): completitud del goteo de snapshot de mundo.
     /// El gate de spawn del joiner consulta `is_complete()`; el host nunca la toca (resuelve
     /// su spawn en el bootstrap, antes del loop).
@@ -459,6 +465,7 @@ impl NetworkManager {
             processed_stp_pickup_grants: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
             processed_corpse_requests: std::collections::HashSet::with_capacity(64),
             processed_corpse_results: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            level4: crate::world::level4_layout::Level4RegionState::default(),
             world_sync_progress: sync::WorldSyncProgress::default(),
             roster_assemblers: RosterAssemblers::default(),
             next_corpse_request_id: 1,

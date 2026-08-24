@@ -138,6 +138,18 @@ pub enum PacketType {
     /// son ~10 paquetes por segundo mientras dura el trazo y no pueden ocupar la ventana de 32
     /// huecos, igual que el `NoiseReport` de 0x4E.
     SprayDraft = 0x54,
+    // ADR-093 (Level 4): 0x55/0x56 se DEJAN LIBRES a propósito — el borrador de ADR-094
+    // (Facelings, propuesta concurrente sin código aún) los cita textualmente para
+    // StealCommand/StealReport. El código es la autoridad (ver ipc-wire-schema.md, precedente
+    // ADR-046/047): quien aterrice primero se queda su número, pero saltarse estos dos evita
+    // que la implementación de ADR-094 copie un opcode ya tomado sin mirar.
+    //
+    // 0x57 el broadcast periódico de estado de región (self-healing, NO fiable — mismo trato
+    // que los demás rosters). 0x58/0x59 son la pareja petición/veredicto de cruzar una puerta;
+    // las dos SÍ fiables (perder cualquiera deja al jugador sin saber si cruzó).
+    Level4State = 0x57,
+    Level4DoorRequest = 0x58,
+    Level4DoorVerdict = 0x59,
     // Reliability (0xF0-0xFF)
     Ack = 0xF0,
     Nack = 0xF1,
@@ -220,6 +232,9 @@ impl PacketType {
             0x52 => Some(Self::SprayPlaced),
             0x53 => Some(Self::SprayChunkRequest),
             0x54 => Some(Self::SprayDraft),
+            0x57 => Some(Self::Level4State),
+            0x58 => Some(Self::Level4DoorRequest),
+            0x59 => Some(Self::Level4DoorVerdict),
             0xF0 => Some(Self::Ack),
             0xF1 => Some(Self::Nack),
             0xF2 => Some(Self::Ping),
@@ -954,6 +969,27 @@ pub enum PacketPayload {
     },
 
     // Reliability
+    /// ADR-093 (E2): broadcast periódico del estado de región del Level 4, self-healing como
+    /// los demás rosters (NO en `is_reliable` — una ronda perdida se repone en la siguiente).
+    Level4State {
+        epoch: u32,
+        window_open: bool,
+        return_dest: [f32; 3],
+    },
+    /// ADR-093 (E2): un peer pide cruzar una puerta. `door` es `level4_layout::DOOR_ENTRY` o
+    /// `DOOR_RETURN`. Sin `requester_id`: sale de la CABECERA, mismo patrón que
+    /// `SprayPlaceRequest` (ADR-068) — el payload no puede decidir quién cruza.
+    Level4DoorRequest {
+        request_id: u64,
+        door: u8,
+    },
+    /// ADR-093 (E2): el veredicto del host para NUESTRA `Level4DoorRequest` — a dónde
+    /// aparecemos. Mismo campo `request_id` para correlar, mismo carril fiable que
+    /// `CorpseTakeResult` (perder un veredicto deja al cliente sin saber si cruzó).
+    Level4DoorVerdict {
+        request_id: u64,
+        dest: [f32; 3],
+    },
     Ack {
         acked_sequence: u32,
     },
@@ -1025,6 +1061,9 @@ impl PacketPayload {
             Self::NoiseReport { .. } => PacketType::NoiseReport as u16,
             Self::StruggleReport => PacketType::StruggleReport as u16,
             Self::VoiceFrame { .. } => PacketType::VoiceFrame as u16,
+            Self::Level4State { .. } => PacketType::Level4State as u16,
+            Self::Level4DoorRequest { .. } => PacketType::Level4DoorRequest as u16,
+            Self::Level4DoorVerdict { .. } => PacketType::Level4DoorVerdict as u16,
             Self::Ack { .. } => PacketType::Ack as u16,
             Self::Nack { .. } => PacketType::Nack as u16,
             Self::Ping { .. } => PacketType::Ping as u16,
@@ -1450,6 +1489,62 @@ mod tests {
         let (_, p2) = decode_packet(&data).unwrap();
         match p2 {
             PacketPayload::Ack { acked_sequence } => assert_eq!(acked_sequence, 42),
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// ADR-093 (E2): los tres payloads nuevos cruzan el wire intactos, incluida una posición
+    /// con componentes negativas (el destino de vuelta puede derivar hacia cualquier cuadrante).
+    #[test]
+    fn level4_payloads_round_trip() {
+        let state = PacketPayload::Level4State {
+            epoch: 3,
+            window_open: true,
+            return_dest: [-12.5, 0.0, 340.25],
+        };
+        assert_eq!(state.type_code(), PacketType::Level4State as u16);
+        let header = PacketHeader::new(state.type_code(), 1, 0, 0);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &state)).unwrap();
+        match decoded {
+            PacketPayload::Level4State {
+                epoch,
+                window_open,
+                return_dest,
+            } => {
+                assert_eq!(epoch, 3);
+                assert!(window_open);
+                assert_eq!(return_dest, [-12.5, 0.0, 340.25]);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let req = PacketPayload::Level4DoorRequest {
+            request_id: 9001,
+            door: 1,
+        };
+        assert_eq!(req.type_code(), PacketType::Level4DoorRequest as u16);
+        let header = PacketHeader::new(req.type_code(), 1, 0, 0);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &req)).unwrap();
+        match decoded {
+            PacketPayload::Level4DoorRequest { request_id, door } => {
+                assert_eq!(request_id, 9001);
+                assert_eq!(door, 1);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let verdict = PacketPayload::Level4DoorVerdict {
+            request_id: 9001,
+            dest: [100.0, 0.0, -250.0],
+        };
+        assert_eq!(verdict.type_code(), PacketType::Level4DoorVerdict as u16);
+        let header = PacketHeader::new(verdict.type_code(), 2, 0, 0);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &verdict)).unwrap();
+        match decoded {
+            PacketPayload::Level4DoorVerdict { request_id, dest } => {
+                assert_eq!(request_id, 9001);
+                assert_eq!(dest, [100.0, 0.0, -250.0]);
+            }
             _ => panic!("wrong variant"),
         }
     }

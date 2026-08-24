@@ -54,6 +54,8 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x4B          // PvpDamageGrant            (ADR-029)
         | 0x4C          // PvpHitRejected            (ADR-029)
         | 0x4D          // PhantomAttackGrant        (ADR-047)
+        | 0x58          // Level4DoorRequest         (ADR-093)
+        | 0x59          // Level4DoorVerdict         (ADR-093)
         // ADR-068: una pintada perdida no se auto-cura como un ruido — no hay reintento que la
         // vuelva a mandar, y el jugador se queda mirando una pared que para los demas SI esta
         // pintada. Las dos direcciones viajan fiables.
@@ -79,9 +81,9 @@ mod tests {
     /// Los 16 tipos que ADR-039 incorporó. La lista se derivó cruzando los sitios de
     /// `send_reliable`/`broadcast_reliable` (18 en `game_loop.rs`/`sync.rs`) contra lo que esta
     /// función reconocía. Al añadir un envío fiable de un tipo nuevo, va aquí Y en `is_reliable`.
-    const GAMEPLAY_REQUEST_FAMILY: [u16; 17] = [
+    const GAMEPLAY_REQUEST_FAMILY: [u16; 19] = [
         0x17, 0x18, 0x19, 0x1B, 0x1C, 0x1D, 0x41, 0x42, 0x43, 0x45, 0x47, 0x48, 0x49, 0x4A, 0x4B,
-        0x4C, 0x4D,
+        0x4C, 0x4D, 0x58, 0x59,
     ];
 
     /// Los cinco rosters completos. Van a 10 Hz, son idempotentes y se auto-curan: hacerlos
@@ -122,6 +124,20 @@ mod tests {
                 "0x{code:02x} se emite por la cola fiable (ADR-060) y el receptor debe ACKearlo"
             );
         }
+    }
+
+    /// ADR-093: `Level4State` (0x57) es un roster self-healing a 10 Hz, como `CorpseList` —
+    /// una ronda perdida se repone en la siguiente. `Level4DoorRequest`/`Verdict` (0x58/0x59)
+    /// SÍ son fiables: son la pareja petición/veredicto de la familia de gameplay, y perder
+    /// cualquiera de las dos deja al cliente sin saber si cruzó la puerta.
+    #[test]
+    fn level4_state_stays_unreliable_but_the_door_pair_is_reliable() {
+        assert!(
+            !is_reliable(0x57),
+            "0x57 Level4State es un roster self-healing (ADR-093), no la familia de gameplay"
+        );
+        assert!(is_reliable(0x58), "0x58 Level4DoorRequest debe ser fiable");
+        assert!(is_reliable(0x59), "0x59 Level4DoorVerdict debe ser fiable");
     }
 
     /// Lo que ya era fiable antes de ADR-039 debe seguir siendolo: el cambio es aditivo.
