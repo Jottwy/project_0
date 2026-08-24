@@ -1676,15 +1676,7 @@ pub async fn run(
                 // aquí es el global de `grid_gen::level4` (que las funciones de generación
                 // leen) y la caché de chunks de la región — nunca Level 0.
                 let level4_epoch_now = net.level4.current_epoch(std::time::Instant::now());
-                if level4_epoch_now != net.level4.epoch {
-                    net.level4.epoch = level4_epoch_now;
-                    crate::world::grid_gen::level4::set_current_epoch(level4_epoch_now);
-                    world.purge_level4_region_cache();
-                    info!(
-                        "MPTRACE step=L4 event=level4_epoch_advanced epoch={}",
-                        level4_epoch_now
-                    );
-                }
+                apply_level4_epoch(&mut net, &mut world, &player, level4_epoch_now);
                 // ADR-093 (E2): Level 4 region state — inerte hasta que E3 dé de alta la
                 // primera puerta, pero real y en verde desde ya.
                 sync::broadcast_level4_state(&mut net).await;
@@ -1849,6 +1841,80 @@ fn env_tuning<T: std::str::FromStr + std::fmt::Display>(name: &str, default: T) 
             }
         },
     }
+}
+
+/// ADR-093 E4(b): qué sala del layout SALIENTE (`old_epoch`, con la preservación que YA
+/// estuviera vigente para él — `grid_gen::level4::preserved_room()` sin tocar todavía) hay que
+/// conservar al avanzar epoch. La sala del PRIMER jugador (por `PeerId`, orden determinista) que
+/// esté físicamente dentro de la reserva; `None` si nadie está.
+///
+/// Host y joiner llegan aquí con las MISMAS posiciones (el pose relay ya las replica a todos),
+/// así que los dos convergen en la MISMA elección sin que el wire tenga que decir nada al
+/// respecto — es la pieza que evita reabrir el protocolo que E2/E3 ya cerraron.
+fn level4_room_to_preserve(
+    world_seed: u64,
+    old_epoch: u32,
+    player: &Player,
+    net: &NetworkManager,
+) -> Option<crate::world::grid_gen::level4::PlacedRoom> {
+    let mut candidates: Vec<(PeerId, [f32; 3])> =
+        net.peers.values().map(|p| (p.id, p.position)).collect();
+    candidates.push((net.local_id, player.position.to_array()));
+    level4_room_among(world_seed, old_epoch, &candidates)
+}
+
+/// Núcleo PURO de `level4_room_to_preserve`, separado para poder testearlo sin construir un
+/// `NetworkManager` real (bind de socket + tarea de tokio). `candidates` no necesita venir
+/// ordenado: esta función ordena por `PeerId` ella misma, que es lo que garantiza que host y
+/// joiner —cada uno con su propio orden de iteración de `net.peers`, un `HashMap`— converjan en
+/// la MISMA sala sin coordinarse.
+fn level4_room_among(
+    world_seed: u64,
+    old_epoch: u32,
+    candidates: &[(PeerId, [f32; 3])],
+) -> Option<crate::world::grid_gen::level4::PlacedRoom> {
+    let old_layout = crate::world::grid_gen::level4::generate_with_preserved(
+        world_seed,
+        old_epoch,
+        crate::world::grid_gen::level4::preserved_room(),
+    );
+
+    let mut sorted = candidates.to_vec();
+    sorted.sort_unstable_by_key(|(id, _)| *id);
+
+    sorted.iter().find_map(|(_, pos)| {
+        crate::world::grid_gen::level4::world_pos_to_region_cell(*pos)
+            .and_then(|cell| old_layout.room_containing(cell))
+    })
+}
+
+/// ADR-093 E4: aplica un avance de epoch — calcula la sala a preservar del layout SALIENTE,
+/// fija los dos globales de sesión (epoch + sala preservada) y purga la caché. Llamada por las
+/// DOS rutas que pueden decidir que el epoch cambió: el host (lo calcula de
+/// `Level4RegionState::current_epoch`, en el tick de 10 Hz) y el joiner (lo recibe crudo en
+/// `Level4StateReceived`) — antes de esta función, SOLO el host purgaba de verdad; un joiner
+/// recibía el número nuevo pero seguía rasterizando y colisionando contra el epoch viejo para
+/// siempre. No-op si `new_epoch` no difiere del vigente.
+fn apply_level4_epoch(
+    net: &mut NetworkManager,
+    world: &mut World,
+    player: &Player,
+    new_epoch: u32,
+) {
+    let old_epoch = net.level4.epoch;
+    if new_epoch == old_epoch {
+        return;
+    }
+    let preserved = level4_room_to_preserve(world.seed, old_epoch, player, net);
+    crate::world::grid_gen::level4::set_preserved_room(preserved);
+    net.level4.epoch = new_epoch;
+    crate::world::grid_gen::level4::set_current_epoch(new_epoch);
+    world.purge_level4_region_cache();
+    info!(
+        "MPTRACE step=L4 event=level4_epoch_advanced epoch={} preserved_room={}",
+        new_epoch,
+        preserved.is_some()
+    );
 }
 
 // El octavo parámetro es el canal de voz de ADR-046, que existe precisamente para NO ir
@@ -2568,8 +2634,14 @@ async fn handle_network_event(
         } => {
             // Joiner: mirror verbatim, like CorpseListReceived. The host never receives this
             // (it doesn't broadcast to itself) — its own `net.level4` is the source of truth.
+            //
+            // ADR-093 E4: el epoch pasa por `apply_level4_epoch`, NO una asignación directa —
+            // sin esto un joiner se enteraba del número nuevo pero seguía rasterizando y
+            // colisionando contra el epoch VIEJO para siempre (su caché nunca se purgaba, su
+            // global de `grid_gen::level4` nunca avanzaba). `window_open`/`return_dest` sí son
+            // mirror directo: no llevan lógica propia, solo se muestran.
             if !net.is_host {
-                net.level4.epoch = epoch;
+                apply_level4_epoch(net, world, player, epoch);
                 net.level4.window_open = window_open;
                 net.level4.return_dest = return_dest;
             }

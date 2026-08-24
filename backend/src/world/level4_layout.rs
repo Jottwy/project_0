@@ -31,8 +31,13 @@ pub fn generate_region_chunk(
     let grid = LAYOUT_GRID_SIZE as usize;
     // ADR-093 E4: epoch VIGENTE, no la constante de sesión — el llamador (`World`, vía
     // `purge_level4_region_cache`) ya se aseguró de que este chunk se pida de nuevo cuando el
-    // epoch cambia, así que aquí toca leer el mismo global que la rejilla fina.
-    let layout_l4 = level4::generate(world_seed, level4::current_epoch());
+    // epoch cambia, así que aquí toca leer el mismo global que la rejilla fina. Igual con la
+    // sala preservada (E4b): mismo global, misma razón.
+    let layout_l4 = level4::generate_with_preserved(
+        world_seed,
+        level4::current_epoch(),
+        level4::preserved_room(),
+    );
 
     // Tile de 5 m (tx,tz) del chunk local → celda fina (2tx, 2tz) en coordenadas de
     // REGIÓN. Con paridad par, esa celda representa el tile entero.

@@ -21,11 +21,12 @@
 //! entropía externa (mismo contrato que `Level0Builder`).
 
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
 
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
-use super::{Cell, CellType, LayerGrid, LayerOutput, CHUNK_CELLS};
+use super::{Cell, CellType, LayerGrid, LayerOutput, CELL_SIZE_M, CHUNK_CELLS};
 
 /// Esquina de menor coordenada de la reserva de región, en chunks. Lejos de toda
 /// deriva jugable del Level 0 (≈100 km del origen): el único acceso práctico es el
@@ -72,6 +73,47 @@ pub fn current_epoch() -> u32 {
 /// `Level4RegionState::current_epoch` avanza); los tests lo usan para fijar un valor conocido.
 pub fn set_current_epoch(epoch: u32) {
     CURRENT_EPOCH.store(epoch, Ordering::Relaxed);
+}
+
+/// ADR-093 (E4b): la sala a preservar en el PRÓXIMO sorteo (`current_epoch()` ya avanzado).
+/// `Mutex` y no un puñado de `Atomic*` sueltos a propósito: `PlacedRoom` son cinco campos que
+/// tienen que leerse/escribirse como UNA unidad, o una lectura a medio escribir devolvería una
+/// sala que nunca existió. Mismo tipo de global de sesión que `CURRENT_EPOCH`, mismo motivo
+/// (ver su doc): `generate_with_preserved` la necesitan `ensure_chunk_layer` y el intercept de
+/// `chunk_tile_walls`, ninguno con hueco para un parámetro de sesión.
+static PRESERVED_ROOM: Mutex<Option<PlacedRoom>> = Mutex::new(None);
+
+/// Fija la sala a preservar en el próximo sorteo (o `None` para no preservar ninguna).
+/// `game_loop::level4_room_to_preserve` la calcula ANTES de avanzar `set_current_epoch`.
+pub fn set_preserved_room(room: Option<PlacedRoom>) {
+    *PRESERVED_ROOM.lock().unwrap_or_else(|e| e.into_inner()) = room;
+}
+
+/// La sala a preservar vigente. Recuperación de lock envenenado (`unwrap_or_else`) porque un
+/// panic en OTRO test que la tocara no debe tumbar la generación de todos los que vienen
+/// después en el mismo binario.
+pub fn preserved_room() -> Option<PlacedRoom> {
+    *PRESERVED_ROOM.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// ADR-093 (E4b): convierte una posición de MUNDO en la celda de REGIÓN (2,5 m) que ocupa, o
+/// `None` si cae fuera de la reserva. Mismas constantes que rasterizan la región, así que "estar
+/// en tal celda" significa lo mismo aquí que en `generate_region_chunk`.
+pub fn world_pos_to_region_cell(pos: [f32; 3]) -> Option<(i32, i32)> {
+    let chunk_size_m = CHUNK_CELLS as f32 * CELL_SIZE_M;
+    let local_x = pos[0] - REGION_ORIGIN_CHUNK.0 as f32 * chunk_size_m;
+    let local_z = pos[2] - REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m;
+    if local_x < 0.0 || local_z < 0.0 {
+        return None;
+    }
+    let cell = (
+        (local_x / CELL_SIZE_M) as i32,
+        (local_z / CELL_SIZE_M) as i32,
+    );
+    if cell.0 >= REGION_CELLS || cell.1 >= REGION_CELLS {
+        return None;
+    }
+    Some(cell)
 }
 
 /// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
@@ -170,6 +212,13 @@ impl Level4Layout {
     pub fn cell_in_room(&self, cell: (i32, i32)) -> bool {
         self.rooms.iter().any(|r| r.rect.contains(cell))
     }
+
+    /// ADR-093 (E4b): la sala (si alguna) que contiene esta celda. `Copy` de vuelta a
+    /// propósito — `PlacedRoom` es diminuto y el llamador (elección de sala a preservar) lo
+    /// quiere desacoplado del `Level4Layout` saliente, que se descarta acto seguido.
+    pub fn room_containing(&self, cell: (i32, i32)) -> Option<PlacedRoom> {
+        self.rooms.iter().find(|r| r.rect.contains(cell)).copied()
+    }
 }
 
 /// SplitMix64 — misma difusión que `grid_gen::generator` (ADR-019), local para no
@@ -191,9 +240,23 @@ fn derive_seed(seed_base: u64, epoch: u32) -> u64 {
 
 /// Genera el layout de la región. Determinista: misma entrada ⇒ misma salida.
 pub fn generate(seed_base: u64, epoch: u32) -> Level4Layout {
+    generate_with_preserved(seed_base, epoch, None)
+}
+
+/// ADR-093 (E4b): igual que `generate`, pero con una sala YA FIJADA — la que un jugador
+/// ocupaba en el layout saliente al avanzar epoch (ver `game_loop::level4_room_to_preserve`).
+/// `preserved` entra en el sorteo como si fuera la primera sala colocada: el resto se sortea
+/// respetando su hueco (mismo chequeo de separación que cualquier otra) y `connect_rooms` la
+/// conecta con el mismo árbol de vecino-más-cercano — no hace falta reconexión especial,
+/// termina enganchada a la red de pasillos como cualquier sala nueva.
+pub fn generate_with_preserved(
+    seed_base: u64,
+    epoch: u32,
+    preserved: Option<PlacedRoom>,
+) -> Level4Layout {
     let mut rng = StdRng::seed_from_u64(derive_seed(seed_base, epoch));
 
-    let rooms = place_rooms(&mut rng);
+    let rooms = place_rooms(&mut rng, preserved);
     let corridors = connect_rooms(&mut rng, &rooms);
 
     Level4Layout {
@@ -203,8 +266,11 @@ pub fn generate(seed_base: u64, epoch: u32) -> Level4Layout {
     }
 }
 
-fn place_rooms(rng: &mut StdRng) -> Vec<PlacedRoom> {
+fn place_rooms(rng: &mut StdRng, preserved: Option<PlacedRoom>) -> Vec<PlacedRoom> {
     let mut rooms: Vec<PlacedRoom> = Vec::new();
+    if let Some(room) = preserved {
+        rooms.push(room);
+    }
     for _ in 0..PLACEMENT_ATTEMPTS {
         if rooms.len() >= ROOM_TARGET {
             break;
@@ -229,10 +295,22 @@ fn place_rooms(rng: &mut StdRng) -> Vec<PlacedRoom> {
         if rooms.iter().any(|r| r.rect.overlaps(&padded)) {
             continue;
         }
+        // `is_return_room` se decide DESPUÉS del sorteo entero (abajo): si `preserved` ya
+        // ocupa el índice 0, marcarla aquí por "es la primera" sería incorrecto cuando la
+        // sala preservada NO era la de la puerta de vuelta.
         rooms.push(PlacedRoom {
             rect,
-            is_return_room: rooms.is_empty(),
+            is_return_room: false,
         });
+    }
+    // Invariante de `exactly_one_return_room`: exactamente una `true`. `preserved` conserva
+    // el valor que traía (si ERA la sala de la puerta, sigue siéndolo); si nadie la trae,
+    // la primera sala del vector se lleva la marca — mismo criterio que el sorteo original
+    // sin preservar nada.
+    if !rooms.iter().any(|r| r.is_return_room) {
+        if let Some(first) = rooms.first_mut() {
+            first.is_return_room = true;
+        }
     }
     rooms
 }
@@ -325,7 +403,9 @@ pub fn generate_region_layer(
 ) -> LayerOutput {
     let mut grid = LayerGrid::new_solid();
     if layer_index == 0 {
-        let layout = generate(world_seed, epoch);
+        // ADR-093 E4b: honra la sala preservada vigente (`None` en el caso normal — los tests
+        // de este módulo no la tocan, así que su comportamiento no cambia).
+        let layout = generate_with_preserved(world_seed, epoch, preserved_room());
         let base = (
             local_chunk.0 * CHUNK_CELLS as i32,
             local_chunk.1 * CHUNK_CELLS as i32,
@@ -584,5 +664,144 @@ mod tests {
                 "capa {layer} con celdas transitables en la región"
             );
         }
+    }
+
+    // ─── E4b: sala preservada ───
+    //
+    // Todos estos tests pasan `preserved` como parámetro EXPLÍCITO de `generate_with_preserved`
+    // — no tocan el global `PRESERVED_ROOM`, así que no necesitan guard de limpieza (a
+    // diferencia de un test que sí lo tocara).
+
+    fn some_room_from(seed: u64, epoch: u32) -> PlacedRoom {
+        generate(seed, epoch).rooms[0]
+    }
+
+    #[test]
+    fn preserved_room_appears_verbatim_in_the_new_layout() {
+        let preserved = some_room_from(42, 0);
+        let layout = generate_with_preserved(42, 1, Some(preserved));
+        assert!(
+            layout.rooms.iter().any(|r| r.rect == preserved.rect),
+            "la sala preservada debe aparecer con el MISMO rect en el layout entrante"
+        );
+    }
+
+    #[test]
+    fn preserved_room_keeps_separation_from_every_new_room() {
+        for draw in 0..50u32 {
+            let preserved = some_room_from(u64::from(draw), 0);
+            let layout = generate_with_preserved(u64::from(draw), 1, Some(preserved));
+            let preserved_padded = preserved.rect.inflated(ROOM_SEPARATION);
+            for room in &layout.rooms {
+                if room.rect == preserved.rect {
+                    continue;
+                }
+                assert!(
+                    !preserved_padded.overlaps(&room.rect),
+                    "sorteo {draw}: una sala nueva invade el hueco de la preservada"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preserved_room_stays_fully_connected() {
+        // Mismo chequeo que `full_connectivity_100_draws`, pero con una sala inyectada — la
+        // garantía de conectividad de `connect_rooms` no distingue "preservada" de "nueva".
+        for draw in 0..50u32 {
+            let preserved = some_room_from(u64::from(draw).wrapping_mul(7919), 0);
+            let layout = generate_with_preserved(u64::from(draw), draw % 5, Some(preserved));
+            let cells = walkable(&layout);
+            let start = layout.rooms[0].rect.center_even();
+            let seen = reachable_from(&cells, start);
+            for (i, room) in layout.rooms.iter().enumerate() {
+                assert!(
+                    seen.contains(&room.rect.center_even()),
+                    "sorteo {draw}: sala {i} incomunicada con una sala preservada en juego"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exactly_one_return_room_regardless_of_whether_the_preserved_one_was_it() {
+        for draw in 0..30u32 {
+            let seed = u64::from(draw) ^ 0xC0FF_EE00;
+            let old = generate(seed, 0);
+            for preserved in [old.rooms[0], *old.rooms.last().unwrap()] {
+                let layout = generate_with_preserved(seed, 1, Some(preserved));
+                let returns = layout.rooms.iter().filter(|r| r.is_return_room).count();
+                assert_eq!(
+                    returns, 1,
+                    "sorteo {draw}: {returns} salas de retorno con preservada.is_return_room={}",
+                    preserved.is_return_room
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn world_pos_to_region_cell_maps_inside_and_rejects_outside() {
+        let chunk_size_m = CHUNK_CELLS as f32 * CELL_SIZE_M;
+        let origin = (
+            REGION_ORIGIN_CHUNK.0 as f32 * chunk_size_m,
+            REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m,
+        );
+
+        // Esquina exacta de la reserva -> celda (0,0).
+        assert_eq!(
+            world_pos_to_region_cell([origin.0, 1.0, origin.1]),
+            Some((0, 0))
+        );
+
+        // Un punto a media celda del origen -> celda (1,1) (2,5 m por celda).
+        assert_eq!(
+            world_pos_to_region_cell([origin.0 + 3.0, 1.0, origin.1 + 3.0]),
+            Some((1, 1))
+        );
+
+        // Antes del origen (en Level 0, a kilómetros de distancia): fuera.
+        assert_eq!(world_pos_to_region_cell([0.0, 1.0, 0.0]), None);
+
+        // Justo en el borde exterior (== REGION_CELLS * CELL_SIZE_M): fuera, exclusivo.
+        let region_extent = REGION_CELLS as f32 * CELL_SIZE_M;
+        assert_eq!(
+            world_pos_to_region_cell([origin.0 + region_extent, 1.0, origin.1]),
+            None
+        );
+    }
+
+    #[test]
+    fn room_containing_finds_the_room_and_nothing_else() {
+        let layout = generate(42, 0);
+        let room = layout.rooms[0];
+        assert_eq!(
+            layout.room_containing(room.rect.min),
+            Some(room),
+            "la esquina de la sala debe resolver a ella misma"
+        );
+
+        // Un punto bien lejos de toda sala/pasillo (fuera de la región entera): ninguna sala.
+        assert_eq!(layout.room_containing((-100, -100)), None);
+    }
+
+    #[test]
+    fn preserved_room_global_round_trips_and_defaults_to_none() {
+        struct ResetOnDrop;
+        impl Drop for ResetOnDrop {
+            fn drop(&mut self) {
+                set_preserved_room(None);
+            }
+        }
+        let _guard = ResetOnDrop;
+
+        assert_eq!(preserved_room(), None, "sin fijar, debe ser None");
+
+        let room = some_room_from(42, 0);
+        set_preserved_room(Some(room));
+        assert_eq!(preserved_room(), Some(room));
+
+        set_preserved_room(None);
+        assert_eq!(preserved_room(), None);
     }
 }

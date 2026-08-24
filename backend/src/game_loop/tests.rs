@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 // ADR-016 — la IA del robapieles se mudó a `game_loop::phantom`. Glob explícito (y no solo el
 // `use super::*` de arriba) porque el padre solo re-importa la superficie que él consume, y estas
 // pruebas ejercitan los internos: `PhantomMover`, `PhantomState`, las constantes de tuning.
@@ -7985,4 +7985,141 @@ async fn a_faceling_reduced_to_zero_health_is_despawned() {
     assert!(adult_driver.movers.is_empty());
     assert!(!net.peers.contains_key(&id), "the peer must be gone too");
     assert!(!net.is_faceling(id));
+}
+
+// ─── ADR-093 E4b: level4_room_among ───
+//
+// `level4_room_among` lee el global `preserved_room()` (para reconstruir el layout SALIENTE
+// exactamente como salió generado). Se fija a `None` con guard `Drop` en cada test para que la
+// reconstrucción sea un `generate()` liso, sin depender del orden de ejecución con otros tests.
+
+struct ResetLevel4PreservedOnDrop;
+impl Drop for ResetLevel4PreservedOnDrop {
+    fn drop(&mut self) {
+        crate::world::grid_gen::level4::set_preserved_room(None);
+    }
+}
+
+#[test]
+fn level4_room_among_picks_the_room_of_the_lowest_peer_id_present() {
+    let _guard = ResetLevel4PreservedOnDrop;
+    crate::world::grid_gen::level4::set_preserved_room(None);
+
+    let seed = 42u64;
+    let old_layout = crate::world::grid_gen::level4::generate(seed, 0);
+    let room_a = old_layout.rooms[0];
+    let room_b = old_layout.rooms[1];
+    let pos_in = |room: crate::world::grid_gen::level4::PlacedRoom| {
+        let chunk_size_m = 20.0 * crate::world::grid_gen::CELL_SIZE_M; // CHUNK_CELLS=20
+        let origin = (
+            crate::world::grid_gen::level4::REGION_ORIGIN_CHUNK.0 as f32 * chunk_size_m,
+            crate::world::grid_gen::level4::REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m,
+        );
+        [
+            origin.0 + room.rect.min.0 as f32 * crate::world::grid_gen::CELL_SIZE_M + 0.5,
+            1.0,
+            origin.1 + room.rect.min.1 as f32 * crate::world::grid_gen::CELL_SIZE_M + 0.5,
+        ]
+    };
+
+    // Dos peers, cada uno en una sala distinta. El de PeerId MENOR gana, sin importar el orden
+    // en que aparezcan en `candidates` — es lo que hace que host y joiner converjan igual con
+    // un HashMap cuyo orden de iteración no está garantizado.
+    let candidates = vec![(7u16, pos_in(room_b)), (2u16, pos_in(room_a))];
+    let chosen = level4_room_among(seed, 0, &candidates).expect("alguien está dentro");
+    assert_eq!(chosen.rect, room_a.rect, "PeerId 2 < 7 debe ganar");
+
+    // Orden inverso en el vector de entrada: mismo resultado.
+    let candidates_reversed = vec![(2u16, pos_in(room_a)), (7u16, pos_in(room_b))];
+    let chosen_reversed =
+        level4_room_among(seed, 0, &candidates_reversed).expect("alguien está dentro");
+    assert_eq!(
+        chosen_reversed.rect, room_a.rect,
+        "el orden de entrada no debe importar"
+    );
+}
+
+#[test]
+fn level4_room_among_is_none_when_nobody_is_in_the_region() {
+    let _guard = ResetLevel4PreservedOnDrop;
+    crate::world::grid_gen::level4::set_preserved_room(None);
+
+    let candidates = vec![(1u16, [0.0, 1.8, 0.0]), (2u16, [50.0, 1.8, 50.0])];
+    assert_eq!(level4_room_among(42, 0, &candidates), None);
+}
+
+// ─── ADR-094 E2a: faceling niños (packs) ───
+
+/// The gate `faceling_spawn::draw_child_pack_into` enforces as a pure function, exercised through
+/// the actual driver: a woken pack has 3 or 4 members, all species 2, all `relay_only`, all
+/// tracked in `faceling_ids`, and anchored to a chunk that really is `ZONE_OFFICE`.
+#[tokio::test]
+async fn child_pack_population_marks_species_relay_only_and_only_wakes_in_zone_office() {
+    let seed = 42;
+    let (ox, oz) = find_office_chunk(seed);
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut driver = ChildDriver::new(seed);
+    driver.density_scale = 20.0; // v1 probability is low; scale up so the office reliably rolls
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let center = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+    driver.sync_population(&mut net, center, 0.1);
+
+    assert!(
+        !driver.packs.is_empty(),
+        "office chunk ({ox},{oz}) at density_scale 20.0 anchored no pack"
+    );
+    let pack = &driver.packs[0];
+    assert_eq!(pack.home_chunk, (ox, oz));
+    assert!(
+        (3..=4).contains(&pack.members.len()),
+        "pack size {} outside 3..=4",
+        pack.members.len()
+    );
+    for m in &pack.members {
+        let peer = &net.peers[&m.id];
+        assert_eq!(peer.species, 2, "child must report species 2");
+        assert!(peer.relay_only, "a faceling has no real backend behind it");
+        assert!(net.is_faceling(m.id));
+    }
+}
+
+/// The patrol leash (ADR-094 point 5: "rondando su perímetro ~2 chunks"): even with a roam
+/// target planted well past `FACELING_CHILD_PATROL_RADIUS_M` on purpose, a member never steps
+/// outside the circle around the pack's anchor.
+#[tokio::test]
+async fn a_child_never_roams_past_its_patrol_radius() {
+    let seed = 42;
+    let (ox, oz) = find_office_chunk(seed);
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let mut driver = ChildDriver::new(seed);
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let anchor = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+    let id = net.spawn_faceling("Faceling_Child_Test", anchor.to_array(), 2);
+    driver.packs.push(ChildPack {
+        home_chunk: (ox, oz),
+        layer: 0,
+        anchor,
+        state: ChildState::PackRoam,
+        mind: PackMind {},
+        members: vec![ChildMover {
+            id,
+            heading: 0.0,
+            // Three full patrol radii past the boundary: any leak shows up immediately.
+            roam_target: Vec3::new(anchor.x + 400.0, anchor.y, anchor.z),
+            state_timer: 999.0,
+            health: 15,
+        }],
+    });
+
+    for _ in 0..200 {
+        driver.step(&mut net, 0.1);
+    }
+
+    let here = Vec3::from_array(net.peers[&id].position);
+    assert!(
+        here.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M + 0.5,
+        "child at {here:?} strayed {:.1} m from anchor, past the {} m patrol radius",
+        here.distance_xz(anchor),
+        FACELING_CHILD_PATROL_RADIUS_M
+    );
 }

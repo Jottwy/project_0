@@ -223,6 +223,43 @@ enmienda al formato de E2 si excede, decidir al medir).
 - **(b) — conservación de sala ocupada: NO hecha en este commit**, tal como preveía el propio
   párrafo de arriba. Sigue pendiente como una etapa separada.
 
+### Nota de ejecución E4(b) (2026-08-24) — decisión de diseño y desviaciones reales
+
+- **Decisión de diseño (consultada con Joel antes de tocar código, regla dura #9): la sala
+  preservada se DERIVA en cada backend, no viaja por wire.** El borrador original decía "viaja en
+  `Level4State` como lista de rects conservados". Se descarta: host y joiners YA reciben la
+  posición de todos los peers por el pose relay existente, así que cada backend puede calcular
+  por sí mismo "qué sala ocupa cada jugador" en el layout SALIENTE y llegar a la MISMA respuesta
+  sin que el host tenga que decírselo. Cero wire nuevo, cero ADR de protocolo — mantiene cerrado
+  lo que E2/E3 ya cerraron. Riesgo aceptado: si dos backends ven posiciones ligeramente
+  desincronizadas justo en el instante exacto del avance, podrían preservar salas distintas por
+  UN epoch — ventana muy estrecha, se autocorrige solo en el siguiente avance.
+- **Empate entre varios jugadores en salas distintas: gana el `PeerId` menor.** Determinista y
+  barato; host y joiner ordenan sus candidatos igual aunque `net.peers` (un `HashMap`) itere en
+  orden distinto en cada proceso.
+- **`generate_with_preserved(seed, epoch, Option<PlacedRoom>)` inyecta la sala preservada como
+  si fuera la primera colocada** — el resto del sorteo respeta su hueco (mismo chequeo de
+  separación que cualquier sala) y `connect_rooms` la conecta con el MISMO árbol de
+  vecino-más-cercano que usa para todas las demás. **Sin lógica de reconexión especial**: salió
+  gratis de cómo ya estaba escrito el conector, no hizo falta diseñar nada nuevo para esa parte.
+- **`is_return_room` no se decide hasta DESPUÉS de colocar todas las salas** (antes se marcaba
+  `true` a la PRIMERA colocada, en el momento de colocarla) — con una sala preservada en el
+  índice 0 que quizá no sea la de la puerta, decidirlo en el momento viejo la habría marcado mal.
+  Ahora: la preservada conserva el valor que ya traía: si ERA la de la puerta sigue siéndolo, si
+  no, la primera sala del vector (preservada o no) se lleva la marca como fallback — sigue
+  garantizando exactamente una `true`, invariante ya cubierto por test desde E0.
+- **BUG encontrado y corregido de paso, no parte de (b) pero bloqueante para que (b) tuviera
+  sentido: un JOINER nunca purgaba de verdad.** `NetworkEvent::Level4StateReceived` (E2) solo
+  copiaba `net.level4.epoch` — nunca llamaba a `grid_gen::level4::set_current_epoch` ni a
+  `World::purge_level4_region_cache`. Un joiner habría recibido el número de epoch nuevo pero
+  seguido rasterizando y colisionando contra epoch 0 para siempre. Las dos rutas (tick de host,
+  `Level4StateReceived` del joiner) ahora pasan por `apply_level4_epoch`, una función compartida.
+- **Globals de sesión: dos, no uno.** `PRESERVED_ROOM` (`Mutex<Option<PlacedRoom>>`, no un puñado
+  de `Atomic*` sueltos — un `PlacedRoom` son varios campos que tienen que leerse/escribirse como
+  UNA unidad) se suma a `CURRENT_EPOCH`. Mismo precedente (`room_manifest::active_manifest`),
+  mismo riesgo de contaminación entre tests documentado y mitigado igual (guard `Drop` que
+  resetea a `None`/`0` al salir) — probado en 5 corridas seguidas de `cargo test` sin flakiness.
+
 ## E5 — Reglas de zona (backend + C#)
 
 - Construcción denegada: guarda por región en `process_stp_place` (`game_loop.rs:5021`) — servidor
