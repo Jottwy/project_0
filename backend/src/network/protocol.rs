@@ -138,11 +138,13 @@ pub enum PacketType {
     /// son ~10 paquetes por segundo mientras dura el trazo y no pueden ocupar la ventana de 32
     /// huecos, igual que el `NoiseReport` de 0x4E.
     SprayDraft = 0x54,
-    // ADR-093 (Level 4): 0x55/0x56 se DEJAN LIBRES a propósito — el borrador de ADR-094
-    // (Facelings, propuesta concurrente sin código aún) los cita textualmente para
-    // StealCommand/StealReport. El código es la autoridad (ver ipc-wire-schema.md, precedente
-    // ADR-046/047): quien aterrice primero se queda su número, pero saltarse estos dos evita
-    // que la implementación de ADR-094 copie un opcode ya tomado sin mirar.
+    // ADR-094 punto 4 — el robo de los niños faceling, ocupando por fin los dos huecos que
+    // ADR-093 dejó reservados justo para esto. Reparto de autoridad de ADR-047: el HOST decide
+    // que hay robo y a quién (nace de un golpe que solo él simula), la VÍCTIMA decide qué pierde
+    // (su backend es el dueño del inventario, ADR-045). Las dos fiables: perder el comando es un
+    // robo que no ocurre, y perder el reporte es un item que se esfuma.
+    StealCommand = 0x55,
+    StealReport = 0x56,
     //
     // 0x57 el broadcast periódico de estado de región (self-healing, NO fiable — mismo trato
     // que los demás rosters). 0x58/0x59 son la pareja petición/veredicto de cruzar una puerta;
@@ -232,6 +234,8 @@ impl PacketType {
             0x52 => Some(Self::SprayPlaced),
             0x53 => Some(Self::SprayChunkRequest),
             0x54 => Some(Self::SprayDraft),
+            0x55 => Some(Self::StealCommand),
+            0x56 => Some(Self::StealReport),
             0x57 => Some(Self::Level4State),
             0x58 => Some(Self::Level4DoorRequest),
             0x59 => Some(Self::Level4DoorVerdict),
@@ -863,6 +867,33 @@ pub enum PacketPayload {
         reason: String,
     },
 
+    /// ADR-094 punto 4 — host → víctima (fiable): "un niño te ha robado, elige qué pierdes".
+    ///
+    /// Deliberadamente NO dice qué item: el host no puede saberlo. El inventario real vive en el
+    /// STP del cliente de la víctima y el backend del host solo tendría un espejo de un espejo.
+    /// Mismo reparto que el daño de ADR-047 — quien tiene la autoridad decide, quien tiene el
+    /// contexto pide.
+    ///
+    /// `thief_id` viaja para que la víctima pueda ignorar un comando cuyo ladrón ya no existe, y
+    /// para la telemetría: sin él, un robo en el log no se puede atribuir a un faceling concreto.
+    StealCommand {
+        request_id: u64,
+        victim_id: u32,
+        thief_id: u32,
+    },
+    /// ADR-094 punto 4 — víctima → host (fiable): qué se llevó, o nada.
+    ///
+    /// `def_id: 0` / `count: 0` significa "no había nada robable" (inventario vacío, o todo lo que
+    /// hay está puesto — ver Enmienda 1 D1). El host lo trata como robo fallido y NO marca carry:
+    /// un niño cargando un botín que no existe es peor que un niño que falló el hurto.
+    StealReport {
+        request_id: u64,
+        victim_id: u32,
+        thief_id: u32,
+        def_id: i32,
+        count: u16,
+    },
+
     // ADR-029 V0: PvP hit candidate -> host validation -> victim-applied damage. The health
     // mutation itself never crosses this enum — only the candidate report, the validated
     // grant, and the rejection travel P2P; `PlayerStats::take_damage` runs locally on
@@ -1067,6 +1098,8 @@ impl PacketPayload {
             Self::NoiseReport { .. } => PacketType::NoiseReport as u16,
             Self::StruggleReport => PacketType::StruggleReport as u16,
             Self::VoiceFrame { .. } => PacketType::VoiceFrame as u16,
+            Self::StealCommand { .. } => PacketType::StealCommand as u16,
+            Self::StealReport { .. } => PacketType::StealReport as u16,
             Self::Level4State { .. } => PacketType::Level4State as u16,
             Self::Level4DoorRequest { .. } => PacketType::Level4DoorRequest as u16,
             Self::Level4DoorVerdict { .. } => PacketType::Level4DoorVerdict as u16,
@@ -1554,6 +1587,60 @@ mod tests {
             PacketPayload::Level4DoorVerdict { request_id, dest } => {
                 assert_eq!(request_id, 9001);
                 assert_eq!(dest, [100.0, 0.0, -250.0]);
+            }
+            _ => panic!("wrong variant"),
+        }
+    }
+
+    /// ADR-094 punto 4. Every field non-default on purpose: a round-trip that ships zeroes proves
+    /// nothing about a field that is never written, and `def_id` in particular is signed because
+    /// STP's `DataIdReference` really can be negative.
+    #[test]
+    fn steal_pair_round_trip() {
+        let command = PacketPayload::StealCommand {
+            request_id: 8801,
+            victim_id: 7,
+            thief_id: 61003,
+        };
+        assert_eq!(command.type_code(), PacketType::StealCommand as u16);
+        let header = PacketHeader::new(command.type_code(), 1, 0, 0);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &command)).unwrap();
+        match decoded {
+            PacketPayload::StealCommand {
+                request_id,
+                victim_id,
+                thief_id,
+            } => {
+                assert_eq!(request_id, 8801);
+                assert_eq!(victim_id, 7);
+                assert_eq!(thief_id, 61003);
+            }
+            _ => panic!("wrong variant"),
+        }
+
+        let report = PacketPayload::StealReport {
+            request_id: 8801,
+            victim_id: 7,
+            thief_id: 61003,
+            def_id: -4242,
+            count: 9,
+        };
+        assert_eq!(report.type_code(), PacketType::StealReport as u16);
+        let header = PacketHeader::new(report.type_code(), 2, 0, 0);
+        let (_, decoded) = decode_packet(&encode_packet(&header, &report)).unwrap();
+        match decoded {
+            PacketPayload::StealReport {
+                request_id,
+                victim_id,
+                thief_id,
+                def_id,
+                count,
+            } => {
+                assert_eq!(request_id, 8801);
+                assert_eq!(victim_id, 7);
+                assert_eq!(thief_id, 61003);
+                assert_eq!(def_id, -4242);
+                assert_eq!(count, 9);
             }
             _ => panic!("wrong variant"),
         }

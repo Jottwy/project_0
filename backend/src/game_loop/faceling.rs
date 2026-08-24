@@ -836,6 +836,13 @@ pub(super) struct ChildMover {
     pub(super) strike_recover: f32,
     /// Anti-wedge watchdog for `PackRoam` — see `ProgressWatch`.
     pub(super) progress: ProgressWatch,
+    /// ADR-094 punto 4 — the loot this child is carrying, `(def_id, count)`. `None` until a
+    /// `StealReport` comes back naming something real; a child NEVER carries on the strength of
+    /// its own blow, because the victim is the one who decides whether anything was taken.
+    ///
+    /// Mirrored into `peer.carry_def`/`carry_count` by `seal_vocals` so the theft is VISIBLE —
+    /// "se le VE llevándose lo tuyo, que es la mitad de la rabia".
+    pub(super) loot: Option<(i32, u16)>,
     /// `ChildRole::Flank`'s persisted side, same shape and same reason as
     /// `phantom.rs::PhantomMover::flank_offset`: a member sitting dead-centre in the target's
     /// view must not shuffle between two equally good exits every tick.
@@ -916,6 +923,14 @@ pub(super) struct ChildDriver {
     population_sync_in: f32,
     /// E2c — same channel and same reasoning as `AdultDriver::attacks`.
     pub(super) attacks: Vec<PhantomAttack>,
+    /// ADR-094 punto 4 — `(thief, victim)` pairs whose blow connected this tick and who are not
+    /// already carrying. Drained by `step`'s caller, which owns the sockets: the driver decides
+    /// THAT a theft happens, the game loop asks the victim WHAT is lost.
+    pub(super) thefts: Vec<(PeerId, PeerId)>,
+    /// ADR-094 punto 4 — loot dropped back into the world this tick, `(def_id, count, position)`.
+    /// The non-destruction invariant runs through here: a thief that dies, escapes home or is
+    /// deactivated all end up pushing to this one list, and the caller mints the world item.
+    pub(super) dropped_loot: Vec<(i32, u16, Vec3)>,
 }
 
 /// Picks a walkable point within `radius` of `center` — the circular counterpart of
@@ -1019,6 +1034,8 @@ impl ChildDriver {
             density_scale: 1.0,
             population_sync_in: 0.0,
             attacks: Vec::new(),
+            thefts: Vec::new(),
+            dropped_loot: Vec::new(),
         }
     }
 
@@ -1060,6 +1077,16 @@ impl ChildDriver {
             }
         }
         for &pi in retired_packs.iter().rev() {
+            // ADR-094 punto 4, tercera salida del invariante: "desactivación por lejanía ⇒ suelta
+            // donde estaba". Staged BEFORE the despawn loop, which is what erases the positions.
+            for mi in 0..self.packs[pi].members.len() {
+                let at = net
+                    .peers
+                    .get(&self.packs[pi].members[mi].id)
+                    .map(|p| Vec3::from_array(p.position))
+                    .unwrap_or(self.packs[pi].anchor);
+                self.stage_loot_drop(pi, mi, at);
+            }
             for m in &self.packs[pi].members {
                 net.despawn_faceling(m.id);
             }
@@ -1142,6 +1169,7 @@ impl ChildDriver {
                             vocal_delay: None,
                             strike_recover: 0.0,
                             progress: ProgressWatch::new(),
+                            loot: None,
                             flank_offset: 0.0,
                         });
                     }
@@ -1249,6 +1277,15 @@ impl ChildDriver {
             }
             return false;
         }
+
+        // ADR-094 punto 4, primera salida del invariante: "muerto el ladrón ⇒ el host acuña un
+        // item de mundo en el sitio". Leída ANTES del despawn, que es lo que borra el peer.
+        let died_at = net
+            .peers
+            .get(&victim_id)
+            .map(|p| Vec3::from_array(p.position))
+            .unwrap_or(host_player_pos);
+        self.stage_loot_drop(pi, mi, died_at);
 
         net.despawn_faceling(victim_id);
         self.packs[pi].members.remove(mi);
@@ -1379,6 +1416,7 @@ impl ChildDriver {
         host_player_rot: f32,
     ) -> &[PhantomAttack] {
         self.attacks.clear();
+        self.thefts.clear();
         let players: Vec<(PeerId, Vec3, f32)> = std::iter::once((
             net.local_id,
             host_player_pos,
@@ -1485,7 +1523,45 @@ impl ChildDriver {
                 if let Some(peer) = net.peers.get_mut(&m.id) {
                     peer.vocal_seq = m.vocal_seq;
                     peer.vocal_kind = m.vocal_kind;
+                    // ADR-094 punto 4 — the loot, sealed HERE for the same reason the voice is:
+                    // `update_player_state` is deliberately left alone (see
+                    // `.claude/rules/pose-relay-wire-rust.md` step 6), so every carry write has to
+                    // happen in one pass after the movement arms, or an early exit loses it.
+                    let (def, count) = m.loot.unwrap_or((0, 0));
+                    peer.carry_def = def;
+                    peer.carry_count = count.min(u8::MAX as u16) as u8;
                 }
+            }
+        }
+    }
+
+    /// ADR-094 punto 4 — the victim answered: this is what the thief actually got. Called from the
+    /// game loop's `StealReport` arm.
+    ///
+    /// Returns false when the thief is already gone (died or was deactivated between the blow and
+    /// the answer). That is NOT a silent drop: the caller mints the world item at the victim's own
+    /// position instead, because the item has already left the victim's bag and the invariant says
+    /// it must exist somewhere.
+    pub(super) fn grant_loot(&mut self, thief_id: PeerId, def_id: i32, count: u16) -> bool {
+        for pack in &mut self.packs {
+            for m in &mut pack.members {
+                if m.id == thief_id {
+                    m.loot = Some((def_id, count));
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Stages a carrying child's loot for the world, at `at`. The single funnel for all three
+    /// exits ADR-094 punto 4 names — died, escaped home, deactivated — so the invariant cannot be
+    /// half-implemented: any path that removes a child has to come through here or the item is
+    /// destroyed, which the ADR forbids in capitals.
+    fn stage_loot_drop(&mut self, pi: usize, mi: usize, at: Vec3) {
+        if let Some((def, count)) = self.packs[pi].members[mi].loot.take() {
+            if count > 0 {
+                self.dropped_loot.push((def, count, at));
             }
         }
     }
@@ -1774,6 +1850,14 @@ impl ChildDriver {
                             let from_behind = !player_is_looking_at(tpos, tyaw, from);
 
                             if surrounded || from_behind {
+                                // ADR-094 punto 4: the connecting blow knocks down AND steals. Only
+                                // if this child's hands are empty — one child, one item. Without
+                                // that guard a pack that keeps you down farms your whole bag while
+                                // still only ever SHOWING one thing carried, and the carry is the
+                                // point ("se le VE llevándose lo tuyo").
+                                if self.packs[pi].members[mi].loot.is_none() {
+                                    self.thefts.push((id, victim));
+                                }
                                 let dx = tpos.x - from.x;
                                 let dz = tpos.z - from.z;
                                 let len = (dx * dx + dz * dz).sqrt().max(0.0001);
@@ -1863,6 +1947,20 @@ impl ChildDriver {
                 }
             }
             ChildState::PackRoam => {
+                // ADR-094 punto 4, segunda salida del invariante: "ladrón que escapa ⇒ lleva el
+                // botín a un punto-nido de su territorio y lo SUELTA allí". The nest is the pack's
+                // anchor, and "escaped" is precisely this: back in `PackRoam`, cerco over, still
+                // holding something. Robbing it back in their own den is level design for free.
+                if self.packs[pi].members[mi].loot.is_some() {
+                    if from.distance_xz(anchor) <= FACELING_CHILD_ARRIVE_EPS {
+                        self.stage_loot_drop(pi, mi, from);
+                    } else {
+                        // Overrides whatever it was wandering toward: carrying loot HOME is the
+                        // errand now. The wedge watchdog below still applies, so a nest it cannot
+                        // reach cannot trap it either.
+                        self.packs[pi].members[mi].roam_target = anchor;
+                    }
+                }
                 let target = self.packs[pi].members[mi].roam_target;
                 if from.distance_xz(target) <= FACELING_CHILD_ARRIVE_EPS {
                     self.packs[pi].members[mi].state_timer -= dt;

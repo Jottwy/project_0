@@ -188,6 +188,22 @@ pub enum NetworkEvent {
         corpse_empty: bool,
         reason: String,
     },
+    /// ADR-094 punto 4: the host tells us a faceling child robbed us. WE pick what is lost — the
+    /// host cannot know, it only mirrors a mirror of our inventory (ADR-045).
+    StealCommand {
+        request_id: u64,
+        victim_id: u32,
+        thief_id: u32,
+    },
+    /// ADR-094 punto 4: our victim answered a StealCommand with what it actually lost. Only the
+    /// host ever sees this — it is the half that lets the thief carry the loot and, later, drop it.
+    StealReport {
+        request_id: u64,
+        victim_id: u32,
+        thief_id: u32,
+        def_id: i32,
+        count: u16,
+    },
     /// ADR-028 Fase E: the host's full corpse roster (10 Hz) — mirror it into world.corpses.
     CorpseListReceived {
         corpses: Vec<crate::world::corpse::CorpseData>,

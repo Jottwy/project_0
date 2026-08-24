@@ -1370,6 +1370,87 @@ pub async fn run(
                 let child_attacks: Vec<_> = child_driver
                     .step(&mut net, entity_dt, player.position, player.rotation)
                     .to_vec();
+
+                // ADR-094 punto 4 — the thefts those blows earned. The driver only says WHO robbed
+                // WHOM; what is actually lost is the victim's call, so this either asks over the
+                // wire or, for the host's own player, resolves it right here.
+                let thefts: Vec<_> = std::mem::take(&mut child_driver.thefts);
+                for (thief_id, victim_id) in thefts {
+                    let request_id = net.next_steal_request_id;
+                    net.next_steal_request_id = net.next_steal_request_id.wrapping_add(1);
+
+                    if victim_id == net.local_id {
+                        // The host's own player: no wire, exactly like `PhantomAttackGrant`'s
+                        // local branch. Same two steps in the same order as the remote path.
+                        if let Some((def_id, count)) = pick_stealable_stack(&player) {
+                            remove_stack_from_mirror(&mut player, def_id, count);
+                            let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                                event_type: "item_stolen".into(),
+                                data: serde_json::json!({
+                                    "def_id": def_id,
+                                    "count": count,
+                                    "thief_id": thief_id,
+                                }),
+                            }));
+                            if !child_driver.grant_loot(thief_id, def_id, count) {
+                                process_stp_drop(
+                                    0,
+                                    def_id,
+                                    count,
+                                    [player.position.x, player.position.y, player.position.z],
+                                    0.0,
+                                    [0.0, 0.0, 0.0],
+                                    &mut net,
+                                );
+                            }
+                            info!(
+                                "MPTRACE step=FL_STEAL event=steal_served_local thief_id={} def_id={} count={}",
+                                thief_id, def_id, count
+                            );
+                        } else {
+                            info!(
+                                "MPTRACE step=FL_STEAL event=steal_found_nothing_local thief_id={thief_id}"
+                            );
+                        }
+                        continue;
+                    }
+
+                    // ADR-047 D1, copied literally: checked HERE and not left to `send_reliable`,
+                    // which returns in silence for a peer that is gone. No channel to the victim
+                    // means the theft DID NOT HAPPEN — no command, no carry, no invented loot.
+                    if !net.peers.contains_key(&victim_id) {
+                        warn!(
+                            "MPTRACE step=FL_STEAL event=steal_undeliverable victim_id={} thief_id={} reason=victim_has_no_channel",
+                            victim_id, thief_id
+                        );
+                        continue;
+                    }
+                    let command = PacketPayload::StealCommand {
+                        request_id,
+                        victim_id: victim_id as u32,
+                        thief_id: thief_id as u32,
+                    };
+                    net.send_verdict(victim_id, &command).await;
+                }
+
+                // The non-destruction invariant's other end: whatever any exit staged this tick
+                // (thief died, reached its nest, or was deactivated) becomes a real world item.
+                let dropped: Vec<_> = std::mem::take(&mut child_driver.dropped_loot);
+                for (def_id, count, at) in dropped {
+                    process_stp_drop(
+                        0,
+                        def_id,
+                        count,
+                        [at.x, at.y, at.z],
+                        0.0,
+                        [0.0, 0.0, 0.0],
+                        &mut net,
+                    );
+                    info!(
+                        "MPTRACE step=FL_STEAL event=steal_loot_returned def_id={} count={} pos=({:.2},{:.2},{:.2})",
+                        def_id, count, at.x, at.y, at.z
+                    );
+                }
                 // ADR-047 D5: a noise reported this tick may wake sleepers near its SOURCE, which
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.
@@ -2812,6 +2893,118 @@ async fn handle_network_event(
         }
 
         // ─── ADR-047: the robapieles reaches across backends ───
+        // ADR-094 punto 4 — WE are the victim: the host says a faceling child robbed us, and we
+        // are the only backend that can say what was in the bag (ADR-045). Same authority split as
+        // the PvP damage of ADR-047: the side with the context asks, the side with the authority
+        // decides.
+        NetworkEvent::StealCommand {
+            request_id,
+            victim_id,
+            thief_id,
+        } => {
+            if victim_id != net.local_id as u32 {
+                warn!(
+                    "MPTRACE step=FL_STEAL event=steal_command_victim_mismatch self_id={} got_victim={} request_id={}",
+                    net.local_id, victim_id, request_id
+                );
+                return;
+            }
+            // Dedupe FIRST and hard. These are reliable and retransmitted, and unlike a repeated
+            // cosmetic a repeated theft takes a SECOND item out of the player's bag.
+            if !net.processed_steal_commands.insert(request_id) {
+                info!(
+                    "MPTRACE step=FL_STEAL event=steal_command_duplicate request_id={request_id}"
+                );
+                return;
+            }
+
+            let taken = pick_stealable_stack(player);
+            match taken {
+                Some((def_id, count)) => {
+                    remove_stack_from_mirror(player, def_id, count);
+                    info!(
+                        "MPTRACE step=FL_STEAL event=steal_served request_id={} thief_id={} def_id={} count={}",
+                        request_id, thief_id, def_id, count
+                    );
+                    // The client's STP is the real inventory — our `inventory_v2` is only a mirror
+                    // it reports, so without this event the very next `report_inventory` undoes
+                    // the theft (ADR-094 Enmienda 1, D2).
+                    let _ = to_clients.send(ServerMessage::Event(GameEvent {
+                        event_type: "item_stolen".into(),
+                        data: serde_json::json!({
+                            "def_id": def_id,
+                            "count": count,
+                            "thief_id": thief_id,
+                        }),
+                    }));
+                }
+                None => {
+                    info!(
+                        "MPTRACE step=FL_STEAL event=steal_found_nothing request_id={request_id} thief_id={thief_id}"
+                    );
+                }
+            }
+
+            // Answered either way, INCLUDING the empty-handed case: silence would leave the host
+            // waiting forever and the thief holding a phantom item.
+            let (def_id, count) = taken.unwrap_or((0, 0));
+            let report = PacketPayload::StealReport {
+                request_id,
+                victim_id,
+                thief_id,
+                def_id,
+                count,
+            };
+            net.send_reliable(1, &report).await; // 1 = host, the only minter of these
+        }
+
+        // ADR-094 punto 4 — WE are the host: the victim has answered with what it lost. This is
+        // the only place a child ever starts carrying, because until now nobody knew if the theft
+        // took anything at all.
+        NetworkEvent::StealReport {
+            request_id,
+            victim_id,
+            thief_id,
+            def_id,
+            count,
+        } => {
+            if !net.is_host {
+                return;
+            }
+            if !net.processed_steal_reports.insert(request_id) {
+                return;
+            }
+            if def_id == 0 || count == 0 {
+                info!(
+                    "MPTRACE step=FL_STEAL event=steal_report_empty request_id={request_id} victim_id={victim_id}"
+                );
+                return;
+            }
+            let thief = thief_id as PeerId;
+            if !child_driver.grant_loot(thief, def_id, count) {
+                // The thief died or was deactivated between the blow and this answer. The item has
+                // ALREADY left the victim's bag, so it has to exist somewhere: mint it where the
+                // thief last was, or failing that where the victim is. The invariant is that it is
+                // never destroyed — not that it lands somewhere convenient.
+                let at = net
+                    .peers
+                    .get(&thief)
+                    .map(|p| p.position)
+                    .or_else(|| net.peers.get(&(victim_id as PeerId)).map(|p| p.position))
+                    .unwrap_or([player.position.x, player.position.y, player.position.z]);
+                process_stp_drop(0, def_id, count, at, 0.0, [0.0, 0.0, 0.0], net);
+                warn!(
+                    "MPTRACE step=FL_STEAL event=steal_loot_orphaned_dropped thief_id={} def_id={} count={}",
+                    thief_id, def_id, count
+                );
+                return;
+            }
+            info!(
+                "MPTRACE step=FL_STEAL event=steal_loot_carried thief_id={} def_id={} count={}",
+                thief_id, def_id, count
+            );
+        }
+
         NetworkEvent::PhantomAttackGrant {
             request_id,
             victim_id,
@@ -4645,6 +4838,71 @@ fn apply_pvp_damage_grant(
 ///
 /// The re-checks are not paranoia about the host — they are the only place these can happen at
 /// all. `invuln_until_tick` is never relayed, so the host could not have consulted ours.
+/// ADR-094 punto 4 + Enmienda 1 (D1) — picks the stack a faceling child makes off with, or `None`
+/// when there is nothing it is allowed to take.
+///
+/// "Nunca lo equipado ni la ropa", implemented the only way this backend can: by ITEM ID. The
+/// `container` byte in `inventory_v2` is the raw index of the client's own loop over its
+/// containers, with no semantics attached, so there is no "this is the clothing container" to test
+/// against. What the backend does hold is `equipment[0..4]` (the four worn ids) and `held_item`
+/// (the wieldable in hand), and excluding those ids covers exactly what the rule is protecting.
+///
+/// The known cost, accepted in the amendment: two identical garments — one worn, one in the bag —
+/// are both spared. That is the safe direction to be wrong in. The failure is "they did not take
+/// something they could have", never "they took what you were wearing".
+fn pick_stealable_stack(player: &Player) -> Option<(i32, u16)> {
+    let protected: Vec<i32> = player
+        .equipment
+        .iter()
+        .copied()
+        .chain(std::iter::once(player.held_item))
+        .filter(|id| *id != 0)
+        .collect();
+
+    let candidates: Vec<(i32, u16)> = player
+        .inventory_v2
+        .iter()
+        .filter(|s| s.quantity > 0 && !protected.contains(&s.item_id))
+        .map(|s| (s.item_id, s.quantity.clamp(0, u16::MAX as i32) as u16))
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+    let pick = (rand::random::<u64>() % candidates.len() as u64) as usize;
+    Some(candidates[pick])
+}
+
+/// Removes what `pick_stealable_stack` chose from BOTH mirrors the backend keeps.
+///
+/// These are mirrors, not the inventory — the real one is the client's STP, and the `item_stolen`
+/// IPC event is what actually takes it. Keeping them in step anyway matters for the window before
+/// the client's next `report_inventory`: a death in that window writes a corpse from
+/// `stp_inventory`, and a stale mirror would duplicate the stolen stack into the loot.
+fn remove_stack_from_mirror(player: &mut Player, def_id: i32, count: u16) {
+    let mut left = count as i32;
+    player.inventory_v2.retain_mut(|s| {
+        if left <= 0 || s.item_id != def_id {
+            return true;
+        }
+        let take = left.min(s.quantity);
+        s.quantity -= take;
+        left -= take;
+        s.quantity > 0
+    });
+
+    let mut left = count;
+    player.stp_inventory.retain_mut(|s| {
+        if left == 0 || s.item_id != def_id {
+            return true;
+        }
+        let take = left.min(s.quantity);
+        s.quantity -= take;
+        left -= take;
+        s.quantity > 0
+    });
+}
+
 fn accept_phantom_attack_grant(
     stats: &crate::player::stats::PlayerStats,
     dedupe: &mut BoundedDedupeSet<u64>,

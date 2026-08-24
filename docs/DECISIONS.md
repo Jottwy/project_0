@@ -5956,3 +5956,43 @@ cerco), ADR-043 (poblado determinista), ADR-045/047 (autoridad de inventario y r
 host↔víctima), ADR-048/049 (vocales y carry cosmético), ADR-050/076 (knockdown), ADR-058/086/087
 (las oficinas que esto puebla), ADR-080 (head-tracking, flanqueo, retardos de coro), ADR-089 (los
 claims no son santuario), ADR-039/062 (familia fiable y qué pasa si el veredicto no llega).
+
+### Enmienda 1 a ADR-094 (2026-08-24) — el robo, al implementarlo
+
+El punto 4 se implementa tal cual se decidió. Esta enmienda registra el **bump real** y las dos
+decisiones que el ADR original no podía tomar porque solo aparecen al abrir el código.
+
+**Bump 43 → 44, no 41 → 42.** El ADR se escribió contra el wire 41; entre su redacción y esta
+implementación otros ADRs lo subieron a 43. Los opcodes son los mismos que el punto 4 nombra
+(`0x55 StealCommand`, `0x56 StealReport`), y seguían libres y reservados por escrito en
+`protocol.rs`. Regla dura #7 pagada aquí, con el espejo C# (`WireSchema.Expected`) en el mismo
+commit — la desincronía de ese par no da warning, deja el juego inarrancable.
+
+**D1 — Qué cuenta como "inventario general", sin poder preguntarlo.** El punto 4 dice "nunca lo
+equipado ni la ropa". El backend NO PUEDE distinguirlos: `container` viaja como el índice crudo del
+bucle del cliente sobre sus contenedores (`InventoryReporter`), un `u8` sin ninguna semántica, y no
+hay nada más en el espejo que diga qué es qué. Dos salidas: (a) enriquecer `report_inventory` con un
+`container_kind`, (b) filtrar por los ids que el backend YA tiene marcados como puestos —
+`player.equipment[0..4]` (las cuatro prendas) y `player.held_item` (el wieldable en mano).
+
+Se elige **(b)**. (a) es más exacta pero cambia el contrato de un reporte que hoy funciona y obliga a
+tocar el cliente para una distinción que el robo v1 puede aproximar bien. El precio de (b) está
+medido y es aceptable: excluye por ITEM_ID, así que dos prendas idénticas —una puesta, otra en la
+mochila— quedan ambas a salvo. Ese falso negativo es el lado correcto en el que equivocarse: el
+fallo es "no te robaron algo que podían", nunca "te quitaron lo que llevabas puesto". Si algún día
+el robo necesita precisión de contenedor, (a) sigue disponible sin deshacer nada de esto.
+
+**D2 — Evento IPC nuevo `item_stolen { def_id, count }`.** No existía NINGÚN camino para quitarle un
+item al cliente: `inventory_restored` es hidratación one-shot y el cliente lo aplica BORRANDO todos
+los contenedores y rellenando, que no es un robo puntual sino un trasplante. Y el camino corto —que
+el backend retire el stack de su propio espejo y ya— no funciona en absoluto: `inventory_v2` es un
+ESPEJO que el cliente reporta, así que el siguiente `report_inventory` deshace el robo. El inventario
+real vive en STP, en el cliente; el robo tiene que llegar hasta allí o no ha ocurrido. De ahí el
+evento y su consumidor en Unity, en el mismo slice.
+
+**Lo que NO cambia.** El reparto de autoridad del punto 4 se mantiene exacto: el host decide QUE se
+roba y a quién, la víctima decide QUÉ pierde. El invariante de no-destrucción también, en sus tres
+salidas (ladrón muerto, ladrón que escapa al nido, desactivación por lejanía), las tres resueltas por
+la misma función de soltado contra el camino de drop existente. Y el precedente de ADR-047 D1 se
+copia literal: si la víctima no tiene canal, el robo NO OCURRE — no se manda el comando, no se marca
+carry, no se inventa un botín. Un robo que no se puede entregar es un robo que no pasó.

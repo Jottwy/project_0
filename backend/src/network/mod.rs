@@ -325,6 +325,16 @@ pub struct NetworkManager {
     /// ADR-047 (host-only): monotonic minter for the `request_id` above. Never reset — a restart
     /// gets a fresh backend and a fresh dedupe set, so the two stay consistent.
     pub next_phantom_attack_request_id: u64,
+    /// ADR-094 punto 4 (victim-side): `request_id`s of `StealCommand` already served. Load-bearing
+    /// in a way the other dedupe sets are not — these are RELIABLE and retransmitted, and serving
+    /// one twice does not repeat a cosmetic, it takes a SECOND item out of the player's bag.
+    pub processed_steal_commands: BoundedDedupeSet<u64>,
+    /// ADR-094 punto 4 (host-side): `request_id`s of `StealReport` already applied, so a
+    /// retransmitted report never hands the same loot to the thief twice.
+    pub processed_steal_reports: BoundedDedupeSet<u64>,
+    /// ADR-094 punto 4 (host-only): minter for the pair above. Same shape and same reasoning as
+    /// `next_phantom_attack_request_id` — the host is the sole minter, so a bare `u64` is unique.
+    pub next_steal_request_id: u64,
     /// ADR-014 (host-only): reserved pickups awaiting their deferred removal.
     /// item_id → (requester_id, remove_at). The item stays in `stp_items` (visible) until
     /// remove_at, but a second request for a reserved item is rejected — the reservation is the
@@ -486,6 +496,9 @@ impl NetworkManager {
             processed_pvp_grants: BoundedDedupeSet::with_capacity(512),
             processed_phantom_grants: BoundedDedupeSet::with_capacity(512),
             next_phantom_attack_request_id: 1,
+            processed_steal_commands: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            processed_steal_reports: BoundedDedupeSet::with_capacity(DEDUPE_CAP),
+            next_steal_request_id: 1,
             pending_pickups: std::collections::HashMap::new(),
             phantom_ids: std::collections::HashSet::new(),
             faceling_ids: std::collections::HashSet::new(),

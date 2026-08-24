@@ -54,6 +54,12 @@ pub fn is_reliable(packet_type: u16) -> bool {
         | 0x4B          // PvpDamageGrant            (ADR-029)
         | 0x4C          // PvpHitRejected            (ADR-029)
         | 0x4D          // PhantomAttackGrant        (ADR-047)
+        // ADR-094 punto 4. Las dos, y por razones distintas: perder el comando es un robo que
+        // simplemente no ocurre (recuperable, pero el jugador ya vio el golpe), y perder el
+        // reporte deja al host creyendo que no hubo botin mientras la victima ya ha perdido el
+        // item — el unico camino por el que este sistema puede DESTRUIR algo.
+        | 0x55          // StealCommand              (ADR-094)
+        | 0x56          // StealReport               (ADR-094)
         | 0x58          // Level4DoorRequest         (ADR-093)
         | 0x59          // Level4DoorVerdict         (ADR-093)
         // ADR-068: una pintada perdida no se auto-cura como un ruido — no hay reintento que la
@@ -81,9 +87,9 @@ mod tests {
     /// Los 16 tipos que ADR-039 incorporó. La lista se derivó cruzando los sitios de
     /// `send_reliable`/`broadcast_reliable` (18 en `game_loop.rs`/`sync.rs`) contra lo que esta
     /// función reconocía. Al añadir un envío fiable de un tipo nuevo, va aquí Y en `is_reliable`.
-    const GAMEPLAY_REQUEST_FAMILY: [u16; 19] = [
+    const GAMEPLAY_REQUEST_FAMILY: [u16; 21] = [
         0x17, 0x18, 0x19, 0x1B, 0x1C, 0x1D, 0x41, 0x42, 0x43, 0x45, 0x47, 0x48, 0x49, 0x4A, 0x4B,
-        0x4C, 0x4D, 0x58, 0x59,
+        0x4C, 0x4D, 0x55, 0x56, 0x58, 0x59,
     ];
 
     /// Los cinco rosters completos. Van a 10 Hz, son idempotentes y se auto-curan: hacerlos

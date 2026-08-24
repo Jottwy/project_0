@@ -8288,6 +8288,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             vocal_delay: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            loot: None,
             flank_offset: 0.0,
         }],
         giggle_timer: 999.0,
@@ -8333,6 +8334,7 @@ async fn four_member_pack(
             vocal_delay: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            loot: None,
             flank_offset: 0.0,
         });
     }
@@ -8887,6 +8889,154 @@ async fn the_freeze_reads_the_hosts_real_yaw() {
         !driver.packs[0].frozen,
         "the pack stayed frozen after the host turned around"
     );
+}
+
+/// ADR-094 punto 4: the connecting `Press` blow does not only knock you down, it stages a theft.
+/// The driver only names WHO robbed WHOM — what is lost is the victim's call.
+#[tokio::test]
+async fn a_connecting_press_blow_stages_a_theft() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, victim, _target) = pack_pressing(&mut net, 90.0, 1.0).await;
+    let thief = driver.packs[0].members[0].id;
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+
+    assert_eq!(
+        driver.thefts,
+        vec![(thief, victim)],
+        "the Press blow did not stage a theft"
+    );
+}
+
+/// One child, one item. A pack that keeps you down must not farm the whole bag — and the carry is
+/// the point of the mechanic, so a second theft would be loot nobody can see.
+#[tokio::test]
+async fn a_child_already_carrying_does_not_steal_again() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, _victim, _target) = pack_pressing(&mut net, 90.0, 1.0).await;
+    let thief = driver.packs[0].members[0].id;
+    assert!(
+        driver.grant_loot(thief, 4242, 3),
+        "grant_loot missed the thief"
+    );
+
+    // Clear the strike cooldown so ONLY the carry guard can be what stops it.
+    driver.packs[0].members[0].strike_recover = 0.0;
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+
+    assert!(
+        driver.thefts.is_empty(),
+        "a child carrying loot stole a second time: {:?}",
+        driver.thefts
+    );
+}
+
+/// The loot is VISIBLE — "se le VE llevándose lo tuyo, que es la mitad de la rabia". Sealed onto
+/// the peer's cosmetic carry fields (ADR-049) by the same pass that seals the voice.
+#[tokio::test]
+async fn carried_loot_is_sealed_onto_the_peers_carry_fields() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, _victim, _target) = pack_pressing(&mut net, 90.0, 1.0).await;
+    let thief = driver.packs[0].members[0].id;
+    driver.grant_loot(thief, 4242, 3);
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+
+    assert_eq!(net.peers[&thief].carry_def, 4242);
+    assert_eq!(net.peers[&thief].carry_count, 3);
+}
+
+/// THE INVARIANT, first exit: "muerto el ladrón ⇒ el host acuña un item de mundo en el sitio".
+/// ADR-094 puts "el item nunca se destruye" in capitals, and killing the carrier is the exit the
+/// whole "razón para perseguirlos" rests on.
+#[tokio::test]
+async fn killing_a_carrying_thief_returns_the_loot_to_the_world() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let thief = pack.members[0].id;
+    let host = net.local_id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.grant_loot(thief, 777, 5);
+    let died_at = Vec3::from_array(net.peers[&thief].position);
+
+    let died = driver.apply_damage(&mut net, thief, host, 99.0, anchor);
+
+    assert!(died);
+    assert_eq!(driver.dropped_loot.len(), 1, "the loot was destroyed");
+    let (def, count, at) = driver.dropped_loot[0];
+    assert_eq!((def, count), (777, 5));
+    assert!(
+        at.distance_xz(died_at) < 0.01,
+        "the loot did not drop where the thief fell: {at:?} vs {died_at:?}"
+    );
+}
+
+/// THE INVARIANT, third exit: "desactivación por lejanía ⇒ suelta donde estaba". The pack being
+/// put away for being far from everyone must not take the player's item with it.
+#[tokio::test]
+async fn deactivating_a_pack_returns_carried_loot() {
+    let seed = 42;
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let (ox, oz) = find_office_chunk(seed);
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let anchor = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+    let pack = four_member_pack(&mut net, (ox, oz), 0, anchor).await;
+    let thief = pack.members[0].id;
+    let mut driver = ChildDriver::new(seed);
+    driver.packs.push(pack);
+    driver.grant_loot(thief, 555, 2);
+
+    // Everybody far away: the reconcile retires the whole pack.
+    driver.sync_population(&mut net, Vec3::new(-99999.0, stand_on(0), -99999.0), 99.0);
+
+    assert!(driver.packs.is_empty(), "the pack was not retired");
+    assert_eq!(
+        driver.dropped_loot.len(),
+        1,
+        "a deactivated pack walked off with the loot"
+    );
+    assert_eq!(
+        (driver.dropped_loot[0].0, driver.dropped_loot[0].1),
+        (555, 2)
+    );
+}
+
+/// THE INVARIANT, second exit: "ladrón que escapa ⇒ lleva el botín a un punto-nido de su
+/// territorio y lo SUELTA allí" — robbing it back in their den is level design for free.
+#[tokio::test]
+async fn an_escaping_thief_carries_the_loot_home_and_drops_it() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.members.truncate(1);
+    // The nest is the anchor, and the pack spawned on it — so the carrier is already home and the
+    // drop is the very next thing that happens in `PackRoam`.
+    let nest = Vec3::from_array(net.peers[&pack.members[0].id].position);
+    pack.anchor = nest;
+    let thief = pack.members[0].id;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.grant_loot(thief, 999, 1);
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+
+    assert_eq!(
+        driver.dropped_loot.len(),
+        1,
+        "the thief did not leave the loot at its nest"
+    );
+    assert_eq!(
+        (driver.dropped_loot[0].0, driver.dropped_loot[0].1),
+        (999, 1)
+    );
+    assert_eq!(
+        driver.packs[0].members[0].loot, None,
+        "the thief is still carrying what it just dropped"
+    );
+    // And the carry must go dark in the same tick it stops carrying.
+    assert_eq!(net.peers[&thief].carry_def, 0);
 }
 
 /// `spawn_faceling` must snap to a walkable cell. `faceling_spawn`'s own doc promised this

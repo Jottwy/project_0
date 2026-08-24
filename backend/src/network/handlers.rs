@@ -433,6 +433,10 @@ impl NetworkManager {
                 requester_pos },
             CorpseTakeResult { request_id, accepted, corpse_id, item_index, item_id, quantity,
                 corpse_empty, reason },
+            // ADR-094 punto 4. Ambos 1:1 puros: la decisión (qué se pierde, quién carga el botín)
+            // vive en game_loop, que es quien tiene el inventario y los drivers.
+            StealCommand { request_id, victim_id, thief_id },
+            StealReport { request_id, victim_id, thief_id, def_id, count },
         ]
         {
 
