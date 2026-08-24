@@ -1,4 +1,4 @@
-//! ADR-094 — where the world's adult facelings live. Mirrors `world::phantom_spawn` (ADR-043)
+//! ADR-094 — where the world's facelings live, adults and child packs alike. Mirrors `world::phantom_spawn` (ADR-043)
 //! almost verbatim — same PURE, LAZY draw, same determinism guarantee, same reason nothing here
 //! is persisted (see that module's doc for the full argument). ONE structural difference: gated
 //! to `zone_kind_for(..) == ZONE_OFFICE` BEFORE touching the RNG, and scoped per CHUNK rather
@@ -93,6 +93,83 @@ pub fn draw_adults(
 ) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
     draw_adults_into(world_seed, cx, cz, layer, density_scale, &mut out);
+    out
+}
+
+/// Probability a given `ZONE_OFFICE` chunk anchors a child pack. Unlike the adults' expected-COUNT
+/// table, a pack is atomic — a chunk holds exactly one pack or none, never a fractional or scaled
+/// count of packs — so this is a genuine [0,1] probability, not an "expected count" multiplier.
+/// v1 PLACEHOLDER, unmeasured, same as `FACELING_ADULT_LAYER_DENSITY`.
+pub const FACELING_CHILD_PACK_LAYER_PROBABILITY: [f32; 4] = [0.5, 0.0, 0.0, 0.0];
+
+/// ADR-094 point 3: "packs de 3-4". Salt of its own so the pack roll and the adult roll (and the
+/// robapieles') never share a stream — same reasoning as `PHANTOM_DRAW_SALT`.
+const FACELING_CHILD_DRAW_SALT: u64 = 0xFACE_C41D_0000_7EEE;
+
+/// Does chunk `(cx, cz)` anchor a child pack on `layer`, and where does each member start? Appended
+/// to `out` (cleared first) — 3 or 4 positions, or none. Same `ZONE_OFFICE` cheap-out as
+/// `draw_adults_into`, same reason.
+///
+/// Members are scattered a few cells apart (not stacked on one point) so `AdultDriver`-style
+/// per-member snapping never needs to shove more than one of them off the same spot.
+pub fn draw_child_pack_into(
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    layer: u8,
+    density_scale: f32,
+    out: &mut Vec<[f32; 3]>,
+) {
+    out.clear();
+    if zone_kind_for(world_seed, cx, cz, layer) != ZONE_OFFICE {
+        return;
+    }
+    let chance = FACELING_CHILD_PACK_LAYER_PROBABILITY
+        .get(layer as usize)
+        .copied()
+        .unwrap_or(0.0)
+        * density_scale.max(0.0);
+    if chance <= 0.0 {
+        return;
+    }
+
+    let mut rng = StdRng::seed_from_u64(chunk_seed_layer(
+        world_seed ^ FACELING_CHILD_DRAW_SALT,
+        (cx, cz),
+        layer as ChunkLayer,
+    ));
+    // The roll is settled BEFORE the size, and the size before any position — same "count first"
+    // discipline `phantom_spawn::draw_into` uses, so raising `density_scale` never relocates a
+    // pack that already existed at a lower scale.
+    if rng.gen::<f32>() >= chance.min(1.0) {
+        return;
+    }
+    let size = 3 + rng.gen_range(0..2u32); // 3 or 4
+
+    for _ in 0..size {
+        let cell_x = rng.gen_range(0..CHUNK_CELLS as i32);
+        let cell_z = rng.gen_range(0..CHUNK_CELLS as i32);
+        let gx = cx * CHUNK_CELLS as i32 + cell_x;
+        let gz = cz * CHUNK_CELLS as i32 + cell_z;
+        out.push([
+            (gx as f32 + 0.5) * CELL_SIZE_M,
+            grid_floor_y(layer) + crate::world::collision::PLAYER_BASE_Y,
+            (gz as f32 + 0.5) * CELL_SIZE_M,
+        ]);
+    }
+}
+
+/// `draw_child_pack_into` for callers that want one chunk's worth as a value (tests, one-off
+/// queries).
+pub fn draw_child_pack(
+    world_seed: u64,
+    cx: i32,
+    cz: i32,
+    layer: u8,
+    density_scale: f32,
+) -> Vec<[f32; 3]> {
+    let mut out = Vec::new();
+    draw_child_pack_into(world_seed, cx, cz, layer, density_scale, &mut out);
     out
 }
 
@@ -204,6 +281,108 @@ mod tests {
                             ),
                             (cx, cz),
                             "seed {seed}: chunk ({cx},{cz}) drew a position in another chunk"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // ─── draw_child_pack_into ───
+
+    #[test]
+    fn child_pack_draw_is_deterministic_and_seed_dependent() {
+        for seed in SEEDS {
+            for chunk in [(0, 0), (3, -7), (-40, 91)] {
+                assert_eq!(
+                    draw_child_pack(seed, chunk.0, chunk.1, 0, 1.0),
+                    draw_child_pack(seed, chunk.0, chunk.1, 0, 1.0),
+                    "seed {seed} chunk {chunk:?} is not reproducible"
+                );
+            }
+        }
+        let chunks: Vec<(i32, i32)> = (-30..30)
+            .flat_map(|x| (-30..30).map(move |z| (x, z)))
+            .collect();
+        let a: Vec<_> = chunks
+            .iter()
+            .map(|c| draw_child_pack(42, c.0, c.1, 0, 1.0))
+            .collect();
+        let b: Vec<_> = chunks
+            .iter()
+            .map(|c| draw_child_pack(7778, c.0, c.1, 0, 1.0))
+            .collect();
+        assert_ne!(a, b, "two seeds produced an identical pack population");
+    }
+
+    #[test]
+    fn child_packs_never_populate_outside_zone_office() {
+        let mut any_populated = false;
+        for seed in SEEDS {
+            for cx in -25..25 {
+                for cz in -25..25 {
+                    let drawn = draw_child_pack(seed, cx, cz, 0, 1.0);
+                    if drawn.is_empty() {
+                        continue;
+                    }
+                    any_populated = true;
+                    assert_eq!(
+                        zone_kind_for(seed, cx, cz, 0),
+                        ZONE_OFFICE,
+                        "seed {seed} chunk ({cx},{cz}) anchored a pack outside ZONE_OFFICE"
+                    );
+                }
+            }
+        }
+        assert!(
+            any_populated,
+            "no office chunk anchored a pack in a 50x50 grid across {} seeds",
+            SEEDS.len()
+        );
+    }
+
+    /// ADR-094 point 3: "packs de 3-4" — never fewer, never more, and never a fractional roster
+    /// (unlike the adults' count, this is atomic per chunk).
+    #[test]
+    fn a_pack_is_always_three_or_four() {
+        let mut sizes_seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for seed in SEEDS {
+            for cx in -25..25 {
+                for cz in -25..25 {
+                    let n = draw_child_pack(seed, cx, cz, 0, 1.0).len();
+                    if n == 0 {
+                        continue;
+                    }
+                    assert!(
+                        (3..=4).contains(&n),
+                        "seed {seed} chunk ({cx},{cz}) drew a pack of size {n}"
+                    );
+                    sizes_seen.insert(n);
+                }
+            }
+        }
+        assert_eq!(
+            sizes_seen,
+            std::collections::HashSet::from([3, 4]),
+            "both pack sizes should show up across this many chunks"
+        );
+    }
+
+    #[test]
+    fn child_pack_positions_land_inside_their_own_chunk() {
+        for seed in SEEDS {
+            for cx in -15..15 {
+                for cz in -15..15 {
+                    for p in draw_child_pack(seed, cx, cz, 0, 3.0) {
+                        let gx = (p[0] / CELL_SIZE_M).floor() as i32;
+                        let gz = (p[2] / CELL_SIZE_M).floor() as i32;
+                        assert_eq!(
+                            (
+                                gx.div_euclid(CHUNK_CELLS as i32),
+                                gz.div_euclid(CHUNK_CELLS as i32)
+                            ),
+                            (cx, cz),
+                            "seed {seed}: chunk ({cx},{cz}) drew a pack member in another chunk"
                         );
                     }
                 }

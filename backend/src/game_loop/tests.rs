@@ -8062,7 +8062,12 @@ async fn child_pack_population_marks_species_relay_only_and_only_wakes_in_zone_o
     driver.density_scale = 20.0; // v1 probability is low; scale up so the office reliably rolls
     let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
     let center = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
-    driver.sync_population(&mut net, center, 0.1);
+    // Offset from the chunk centre, not standing on it: a member can land anywhere in the 50 m
+    // chunk, and `FACELING_CHILD_MIN_SPAWN_DISTANCE` (15 m) would legitimately veto a draw that
+    // happened to land near the player — this places the player within `FACELING_CHILD_ACTIVATE_
+    // RADIUS` (90 m) of the anchor but far enough that no point in the chunk is within 15 m of it.
+    let watcher = Vec3::new(center.x, center.y, center.z + 70.0);
+    driver.sync_population(&mut net, watcher, 0.1);
 
     assert!(
         !driver.packs.is_empty(),

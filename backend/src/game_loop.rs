@@ -38,7 +38,7 @@ use phantom::{
 /// ADR-094 — the faceling adults AI (E1a: Working/Commute/Regard, no Enforce/damage yet). Same
 /// split-module shape as `phantom` above, and for the same reason: a whole system, not a helper.
 mod faceling;
-use faceling::AdultDriver;
+use faceling::{AdultDriver, ChildDriver};
 
 const TICK_HZ: u64 = 60;
 const TICK_DURATION: Duration = Duration::from_nanos(1_000_000_000 / TICK_HZ);
@@ -553,6 +553,9 @@ pub async fn run(
     // cache (not shared with `phantom_driver`'s) — see `game_loop::faceling`'s module doc for
     // why the two species stay separate types.
     let mut adult_driver = AdultDriver::new(net.world_seed);
+    // ADR-094 E2a: host-only driver that walks the office child PACKS. Own grid cache, own
+    // population unit (the pack, not the individual) — see `game_loop::faceling`'s module doc.
+    let mut child_driver = ChildDriver::new(net.world_seed);
     // ADR-032 (snap de sesión restaurada): armed by the hydration branch below. The
     // "session_restored" event CANNOT be emitted at hydration time — Unity's IPC client hasn't
     // connected yet (broadcast to zero receivers = dropped) — so it is deferred until the first
@@ -1340,11 +1343,15 @@ pub async fn run(
                 // them, so one that just woke up gets a full tick instead of standing still for
                 // 100 ms at the edge of view — the frame a player is most likely to be looking.
                 phantom_driver.sync_population(&mut net, player.position, entity_dt);
-                // ADR-094 E1a: same 1 Hz reconcile shape as the robapieles', own driver, own
-                // grid cache — walks/reconciles the office adults. No attacks to collect yet
-                // (E1b).
+                // ADR-094 E1a/E1b: same 1 Hz reconcile shape as the robapieles', own driver, own
+                // grid cache — walks/reconciles the office adults; `apply_damage` (PvP branch)
+                // is the only other entry point.
                 adult_driver.sync_population(&mut net, player.position, entity_dt);
                 adult_driver.step(&mut net, entity_dt, player.position);
+                // ADR-094 E2a: same shape, the child packs — `PackRoam` only for now, no
+                // detection/cerco/attacks yet (E2b/E2c).
+                child_driver.sync_population(&mut net, player.position, entity_dt);
+                child_driver.step(&mut net, entity_dt);
                 // ADR-047 D5: a noise reported this tick may wake sleepers near its SOURCE, which
                 // is what makes ADR-041's long-distance travel reachable at all. Must run every
                 // tick (not on the 1 Hz reconcile) because `step` drains the queue immediately.

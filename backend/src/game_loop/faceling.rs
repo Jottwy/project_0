@@ -507,3 +507,331 @@ impl AdultDriver {
         }
     }
 }
+
+// ─── ADR-094 E2a — Faceling niños: población y `PackRoam` ambiental ───
+//
+// Sin detección, sin `PackMind` compartido, sin cerco, sin congelación, sin robo (E2b/E2c) y sin
+// voz (banco vacío de todos modos — se cablea junto al timing del coro en E2b/E2c, no antes).
+// Entra silencioso y sin combate, igual que ADR-094 E1a para los adultos: se ve el pack rondando
+// su territorio, nada más todavía.
+//
+// `ChildDriver` es un tipo PROPIO, no una extensión de `AdultDriver`: un pack no es "un adulto
+// más" — la unidad de simulación es el PACK (`ChildPack`, con sus 3-4 `ChildMover`), no la
+// criatura individual, y esa diferencia se nota ya en la población (`sync_population` recluta y
+// retira PACKS enteros) y se notará más en E2b (una sola percepción escribe en el `PackMind` y
+// los cuatro actúan sobre él el mismo tick).
+
+/// v1 PLACEHOLDER, unmeasured. "Packs anclados a un chunk de oficina y rondando su perímetro (~2
+/// chunks)" — ADR-094 punto 5. 2 chunks de 50 m ⇒ 100 m desde el ancla.
+pub(super) const FACELING_CHILD_PATROL_RADIUS_M: f32 = 100.0;
+/// Radio de activación de un pack: igual criterio que `FACELING_ACTIVATE_RADIUS`, pero medido
+/// contra el ANCLA (centro del chunk), no contra un miembro individual — la población recluta o
+/// retira el pack como unidad.
+const FACELING_CHILD_ACTIVATE_RADIUS: f32 = 90.0;
+const FACELING_CHILD_DEACTIVATE_RADIUS: f32 = 130.0;
+const FACELING_CHILD_MIN_SPAWN_DISTANCE: f32 = 15.0;
+/// Cap en PACKS simultáneamente simulados (no en niños individuales). v1 PLACEHOLDER.
+const FACELING_CHILD_PACK_ACTIVE_CAP: usize = 8;
+
+const FACELING_CHILD_MAX_HEALTH: u8 = 15;
+const FACELING_CHILD_ROAM_SPEED: f32 = 1.6;
+const FACELING_CHILD_ARRIVE_EPS: f32 = 0.4;
+const FACELING_CHILD_ROAM_MIN_S: f32 = 8.0;
+const FACELING_CHILD_ROAM_MAX_S: f32 = 20.0;
+const FACELING_CHILD_ROAM_RETRY_S: f32 = 3.0;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChildState {
+    /// Ambient wander within `FACELING_CHILD_PATROL_RADIUS_M` of the pack's anchor. The only
+    /// state that exists yet — everything else is E2b/E2c.
+    PackRoam,
+}
+
+pub(super) struct ChildMover {
+    pub(super) id: PeerId,
+    pub(super) heading: f32,
+    pub(super) roam_target: Vec3,
+    /// Seconds until the next `PackRoam` target roll.
+    pub(super) state_timer: f32,
+    pub(super) health: u8,
+}
+
+/// The pack's shared knowledge — empty in E2a on purpose. `PackMind` is what makes the pack a
+/// hive rather than four independent movers: E2b adds `target`/`last_known_pos`/`last_known_vel`,
+/// written by whichever member perceives something and read by all four the SAME tick (ADR-094
+/// point 3: "no hay «avisar»; eso es exactamente lo inquietante").
+pub(super) struct PackMind {}
+
+pub(super) struct ChildPack {
+    pub(super) home_chunk: (i32, i32),
+    pub(super) layer: u8,
+    /// World-space centre of `home_chunk` — the patrol reference point, fixed at spawn.
+    pub(super) anchor: Vec3,
+    pub(super) state: ChildState,
+    pub(super) mind: PackMind,
+    pub(super) members: Vec<ChildMover>,
+}
+
+pub(super) struct ChildDriver {
+    pub(super) grid_cache: GridGenChunkCache,
+    pub(super) packs: Vec<ChildPack>,
+    pub(super) density_scale: f32,
+    population_sync_in: f32,
+}
+
+/// Picks a walkable point within `radius` of `center` — the circular counterpart of
+/// `pick_puesto`'s chunk-box sampling, for a pack whose patrol area is a radius around an anchor
+/// rather than a single chunk's bounds.
+fn pick_roam_point(
+    cache: &mut GridGenChunkCache,
+    center: Vec3,
+    radius: f32,
+    layer: u8,
+) -> Option<Vec3> {
+    for _ in 0..12 {
+        let angle = rand::random::<f32>() * std::f32::consts::TAU;
+        let r = rand::random::<f32>() * radius;
+        let candidate = Vec3::new(
+            center.x + angle.sin() * r,
+            center.y,
+            center.z + angle.cos() * r,
+        );
+        if is_walkable_grid_gen(cache, candidate, layer) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+impl ChildDriver {
+    pub(super) fn new(world_seed: u64) -> Self {
+        Self {
+            grid_cache: GridGenChunkCache::with_rules(
+                world_seed,
+                crate::world::zone_density::rules_for,
+            ),
+            packs: Vec::new(),
+            density_scale: 1.0,
+            population_sync_in: 0.0,
+        }
+    }
+
+    /// Same ADR-043-shaped reconcile as `AdultDriver::sync_population`, but the unit is the PACK:
+    /// `faceling_spawn::draw_child_pack_into` returns either nothing or a whole 3-4-member roster
+    /// for a chunk, and retire/wake acts on that roster as one thing, never a partial pack.
+    pub(super) fn sync_population(
+        &mut self,
+        net: &mut NetworkManager,
+        host_player_pos: Vec3,
+        dt: f32,
+    ) {
+        self.population_sync_in -= dt;
+        if self.population_sync_in > 0.0 {
+            return;
+        }
+        self.population_sync_in = FACELING_POPULATION_SYNC_INTERVAL;
+
+        let players: Vec<Vec3> = std::iter::once(host_player_pos)
+            .chain(
+                net.peers
+                    .iter()
+                    .filter(|(id, p)| {
+                        !net.is_phantom(**id) && !net.is_faceling(**id) && !p.relay_only
+                    })
+                    .map(|(_, p)| Vec3::from_array(p.position)),
+            )
+            .collect();
+
+        // ── Put away the packs nobody is near any more ──
+        let mut retired_packs: Vec<usize> = Vec::new();
+        for (pi, pack) in self.packs.iter().enumerate() {
+            let far = players.iter().all(|p| {
+                world_pos_to_layer(p.y) != pack.layer
+                    || p.distance_xz(pack.anchor) > FACELING_CHILD_DEACTIVATE_RADIUS
+            });
+            if far {
+                retired_packs.push(pi);
+            }
+        }
+        for &pi in retired_packs.iter().rev() {
+            for m in &self.packs[pi].members {
+                net.despawn_faceling(m.id);
+            }
+            self.packs.remove(pi);
+        }
+
+        // ── Wake up packs somebody walked near ──
+        if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
+            return;
+        }
+        let taken: HashSet<(i32, i32)> = self.packs.iter().map(|p| p.home_chunk).collect();
+        let mut seen_chunks: HashSet<((i32, i32), u8)> = HashSet::new();
+        let mut drawn: Vec<[f32; 3]> = Vec::new();
+
+        for p in &players {
+            let layer = world_pos_to_layer(p.y);
+            let cell = CELL_SIZE_M * CHUNK_CELLS as f32;
+            let cx0 = ((p.x - FACELING_CHILD_ACTIVATE_RADIUS) / cell).floor() as i32;
+            let cx1 = ((p.x + FACELING_CHILD_ACTIVATE_RADIUS) / cell).floor() as i32;
+            let cz0 = ((p.z - FACELING_CHILD_ACTIVATE_RADIUS) / cell).floor() as i32;
+            let cz1 = ((p.z + FACELING_CHILD_ACTIVATE_RADIUS) / cell).floor() as i32;
+            for cx in cx0..=cx1 {
+                for cz in cz0..=cz1 {
+                    if taken.contains(&(cx, cz)) || !seen_chunks.insert(((cx, cz), layer)) {
+                        continue;
+                    }
+                    faceling_spawn::draw_child_pack_into(
+                        net.world_seed,
+                        cx,
+                        cz,
+                        layer,
+                        self.density_scale,
+                        &mut drawn,
+                    );
+                    if drawn.is_empty() {
+                        continue;
+                    }
+                    let anchor = {
+                        let (x0, x1, z0, z1) = chunk_bounds((cx, cz));
+                        Vec3::new(
+                            (x0 + x1) / 2.0,
+                            crate::world::grid_gen::grid_floor_y(layer)
+                                + crate::world::collision::PLAYER_BASE_Y,
+                            (z0 + z1) / 2.0,
+                        )
+                    };
+                    if p.distance_xz(anchor) > FACELING_CHILD_ACTIVATE_RADIUS {
+                        continue;
+                    }
+                    // Measured against the actual drawn spot, not the anchor — same reasoning as
+                    // `AdultDriver::sync_population`: the anchor is just the leash centre, and a
+                    // member can land anywhere in the chunk, including right next to a player who
+                    // is standing nowhere near the geometric centre.
+                    if players.iter().any(|q| {
+                        q.distance_xz(Vec3::from_array(drawn[0]))
+                            < FACELING_CHILD_MIN_SPAWN_DISTANCE
+                    }) {
+                        continue;
+                    }
+                    let mut members = Vec::with_capacity(drawn.len());
+                    for pos in drawn.iter().copied() {
+                        let id = net.spawn_faceling("Faceling_Child", pos, 2);
+                        let spawn_pos = net
+                            .peers
+                            .get(&id)
+                            .map(|pp| Vec3::from_array(pp.position))
+                            .unwrap_or_else(|| Vec3::from_array(pos));
+                        members.push(ChildMover {
+                            id,
+                            heading: rand::random::<f32>() * std::f32::consts::TAU,
+                            roam_target: spawn_pos,
+                            state_timer: FACELING_CHILD_ROAM_MIN_S
+                                + rand::random::<f32>()
+                                    * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S),
+                            health: FACELING_CHILD_MAX_HEALTH,
+                        });
+                    }
+                    info!(
+                        "MPTRACE step=FL_POP event=faceling_pack_spawned chunk=({},{}) layer={} size={}",
+                        cx, cz, layer, members.len()
+                    );
+                    self.packs.push(ChildPack {
+                        home_chunk: (cx, cz),
+                        layer,
+                        anchor,
+                        state: ChildState::PackRoam,
+                        mind: PackMind {},
+                        members,
+                    });
+                    if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    /// One entity tick for every active pack. E2a only ever runs `PackRoam` — each member wanders
+    /// independently within `FACELING_CHILD_PATROL_RADIUS_M` of the shared anchor, so the group
+    /// stays loosely together without an explicit cohesion rule.
+    pub(super) fn step(&mut self, net: &mut NetworkManager, dt: f32) {
+        for pi in 0..self.packs.len() {
+            for mi in 0..self.packs[pi].members.len() {
+                self.tick_member(pi, mi, net, dt);
+            }
+        }
+    }
+
+    fn tick_member(&mut self, pi: usize, mi: usize, net: &mut NetworkManager, dt: f32) {
+        let id = self.packs[pi].members[mi].id;
+        let Some(peer) = net.peers.get(&id) else {
+            return;
+        };
+        let from = Vec3::from_array(peer.position);
+        let layer = self.packs[pi].layer;
+        let anchor = self.packs[pi].anchor;
+
+        match self.packs[pi].state {
+            ChildState::PackRoam => {
+                let target = self.packs[pi].members[mi].roam_target;
+                if from.distance_xz(target) <= FACELING_CHILD_ARRIVE_EPS {
+                    self.packs[pi].members[mi].state_timer -= dt;
+                    if self.packs[pi].members[mi].state_timer <= 0.0 {
+                        match pick_roam_point(
+                            &mut self.grid_cache,
+                            anchor,
+                            FACELING_CHILD_PATROL_RADIUS_M,
+                            layer,
+                        ) {
+                            Some(next_target) => {
+                                self.packs[pi].members[mi].roam_target = next_target;
+                                self.packs[pi].members[mi].state_timer = FACELING_CHILD_ROAM_MIN_S
+                                    + rand::random::<f32>()
+                                        * (FACELING_CHILD_ROAM_MAX_S - FACELING_CHILD_ROAM_MIN_S);
+                            }
+                            None => {
+                                self.packs[pi].members[mi].state_timer = FACELING_CHILD_ROAM_RETRY_S
+                            }
+                        }
+                    }
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        let yaw = self.packs[pi].members[mi]
+                            .heading
+                            .to_degrees()
+                            .rem_euclid(360.0);
+                        peer.update_player_state(from.to_array(), yaw, "idle".into());
+                    }
+                    return;
+                }
+                let raw_heading = (target.x - from.x).atan2(target.z - from.z);
+                let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
+                let step = FACELING_CHILD_ROAM_SPEED * dt;
+                let next = Vec3::new(
+                    from.x + heading.sin() * step,
+                    from.y,
+                    from.z + heading.cos() * step,
+                );
+                // Same leash SHAPE as the adults' `Commute`, radius instead of chunk-box: a step
+                // that would leave the patrol circle, or land somewhere solid, just does not
+                // happen — hold and re-steer next tick.
+                if next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
+                    && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
+                {
+                    self.packs[pi].members[mi].heading = heading;
+                    if let Some(peer) = net.peers.get_mut(&id) {
+                        let yaw = heading.to_degrees().rem_euclid(360.0);
+                        peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                    }
+                    return;
+                }
+                if let Some(peer) = net.peers.get_mut(&id) {
+                    let yaw = self.packs[pi].members[mi]
+                        .heading
+                        .to_degrees()
+                        .rem_euclid(360.0);
+                    peer.update_player_state(from.to_array(), yaw, "walk_slow".into());
+                }
+            }
+        }
+    }
+}
