@@ -486,11 +486,12 @@ impl AdultDriver {
     }
 
     /// Adult twin of `ChildDriver::note_step`.
-    fn note_step(&mut self, i: usize, moved: bool) {
+    fn note_step(&mut self, i: usize, outcome: StepOutcome) {
         let b = &mut self.movers[i].nav_blocked;
-        *b = match moved {
-            true => b.saturating_sub(1),
-            false => (*b + 2).min(FACELING_WEDGE_MAX),
+        *b = match outcome {
+            StepOutcome::Clear => b.saturating_sub(1),
+            StepOutcome::Deflected => (*b + 1).min(FACELING_WEDGE_MAX),
+            StepOutcome::Blocked => (*b + 2).min(FACELING_WEDGE_MAX),
         };
     }
 
@@ -509,8 +510,11 @@ impl AdultDriver {
                 .rem_euclid(std::f32::consts::TAU)
         };
 
-        // Same gate as the children's — see `FACELING_WEDGE_ENTER`.
-        if self.movers[i].nav_blocked < FACELING_WEDGE_ENTER {
+        // Same gate as the children's — see `wants_routing`.
+        if !wants_routing(
+            self.movers[i].nav_blocked,
+            !self.movers[i].nav_waypoints.is_empty(),
+        ) {
             if !self.movers[i].nav_waypoints.is_empty() {
                 self.movers[i].nav_waypoints.clear();
                 self.movers[i].nav_cursor = 0;
@@ -701,7 +705,7 @@ impl AdultDriver {
                     if pos_in_chunk(next, home)
                         && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
                     {
-                        self.note_step(i, true);
+                        self.note_step(i, StepOutcome::from(true, ok));
                         self.movers[i].heading = heading;
                         if let Some(peer) = net.peers.get_mut(&id) {
                             let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -709,7 +713,7 @@ impl AdultDriver {
                         }
                         return;
                     }
-                    self.note_step(i, false);
+                    self.note_step(i, StepOutcome::Blocked);
                     "walk_slow"
                 } else {
                     // Target disconnected or changed layer: nothing to converge on, just let the
@@ -784,7 +788,7 @@ impl AdultDriver {
                     if pos_in_chunk(next, home)
                         && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
                     {
-                        self.note_step(i, true);
+                        self.note_step(i, StepOutcome::from(true, ok));
                         self.movers[i].heading = heading;
                         if let Some(peer) = net.peers.get_mut(&id) {
                             let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -792,7 +796,7 @@ impl AdultDriver {
                         }
                         return;
                     }
-                    self.note_step(i, false);
+                    self.note_step(i, StepOutcome::Blocked);
                     "walk_slow"
                 }
             }
@@ -1467,8 +1471,66 @@ const FACELING_WAYPOINT_ARRIVE: f32 = 1.25;
 /// Blocked steps add 2, clear steps take 1 back, so entering costs two bad ticks and leaving takes
 /// several good ones. The asymmetry is the hysteresis — a mover scraping along a wall must not
 /// flip between modes every other tick.
-const FACELING_WEDGE_ENTER: u8 = 4;
+pub(super) const FACELING_WEDGE_ENTER: u8 = 4;
 const FACELING_WEDGE_MAX: u8 = 12;
+
+/// Enmienda 12 — routing is LATCHED. `FACELING_WEDGE_ENTER` opens it; only falling all the way
+/// back to zero closes it again.
+///
+/// Without the latch the gate was a bare threshold, so the first clean step after a plan was
+/// made dropped `nav_blocked` from 4 to 3, threw the whole route away and went back to whiskers —
+/// straight into the same wall, one tick later. The mover oscillated between "planning" and
+/// "scraping" and never followed a plan far enough to get anywhere.
+///
+/// A plan is worth finishing. Committing to it costs at most a few metres of slightly indirect
+/// walking; abandoning it mid-corner costs the corner.
+#[cfg(test)]
+pub(super) fn wants_routing_for_test(nav_blocked: u8, has_plan: bool) -> bool {
+    wants_routing(nav_blocked, has_plan)
+}
+
+fn wants_routing(nav_blocked: u8, has_plan: bool) -> bool {
+    match has_plan {
+        true => nav_blocked > 0,
+        false => nav_blocked >= FACELING_WEDGE_ENTER,
+    }
+}
+
+/// Enmienda 12 — what a single movement step actually achieved. THE BUG THIS FIXES:
+///
+/// Play-test (Joel, 2026-08-25): *"se quedan como intentando atravesar una pared... no reconocen
+/// las paredes aún"* — after Enmienda 8 gave them a pathfinder. The pathfinder was fine; it was
+/// never being ASKED for.
+///
+/// `note_step` took a bool, and every movement site computed it as "did the step land". But a
+/// step that the whiskers had already bent 8° off a wall (ADR-082) also lands — that is the whole
+/// point of whiskers. So a faceling sliding along a wall reported success on every tick,
+/// `nav_blocked` decayed to zero, the routing gate (`FACELING_WEDGE_ENTER`) never opened, and it
+/// scraped along the wall for ever at 8° a tick. The one case the pathfinder exists for was
+/// precisely the case that could not reach it.
+///
+/// Three outcomes, not two. `advance_step` already reported the difference in its third return
+/// value; nothing consumed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StepOutcome {
+    /// The straight bearing was walkable and taken. Real progress.
+    Clear,
+    /// The straight bearing was NOT walkable; a whisker-deflected one was. The mover advanced,
+    /// but a wall is in its way — which is the state the router needs to know about.
+    Deflected,
+    /// Nothing was walkable. Stood still.
+    Blocked,
+}
+
+impl StepOutcome {
+    pub(super) fn from(deflected_ok: bool, straight_ok: bool) -> Self {
+        match (straight_ok, deflected_ok) {
+            (true, _) => StepOutcome::Clear,
+            (false, true) => StepOutcome::Deflected,
+            (false, false) => StepOutcome::Blocked,
+        }
+    }
+}
 
 /// Enmienda 6 — THE BOLT. How fast a child runs once it has your property.
 ///
@@ -2113,13 +2175,15 @@ impl ChildDriver {
         &self.attacks
     }
 
-    /// Records whether this child's step landed. Two forward, one back: entering the routed mode
-    /// costs two refused ticks, leaving it takes several clean ones (see `FACELING_WEDGE_ENTER`).
-    fn note_step(&mut self, pi: usize, mi: usize, moved: bool) {
+    /// Records what this child's step achieved. Blocked counts double, deflected counts single,
+    /// clear counts back down — so scraping along a wall ACCUMULATES instead of cancelling out,
+    /// which is the whole of Enmienda 12. See `StepOutcome`.
+    fn note_step(&mut self, pi: usize, mi: usize, outcome: StepOutcome) {
         let b = &mut self.packs[pi].members[mi].nav_blocked;
-        *b = match moved {
-            true => b.saturating_sub(1),
-            false => (*b + 2).min(FACELING_WEDGE_MAX),
+        *b = match outcome {
+            StepOutcome::Clear => b.saturating_sub(1),
+            StepOutcome::Deflected => (*b + 1).min(FACELING_WEDGE_MAX),
+            StepOutcome::Blocked => (*b + 2).min(FACELING_WEDGE_MAX),
         };
     }
 
@@ -2153,7 +2217,10 @@ impl ChildDriver {
         // THE GATE (see `FACELING_WEDGE_ENTER`). A mover that is walking freely pays one `atan2`
         // and nothing else — no probes, no plan, no state. Measured: routing everyone cost 7.9 ms
         // per step against a 2 ms ceiling, and 2.5 ms of that was the line check alone.
-        if self.packs[pi].members[mi].nav_blocked < FACELING_WEDGE_ENTER {
+        if !wants_routing(
+            self.packs[pi].members[mi].nav_blocked,
+            !self.packs[pi].members[mi].nav_waypoints.is_empty(),
+        ) {
             let m = &mut self.packs[pi].members[mi];
             if !m.nav_waypoints.is_empty() {
                 m.nav_waypoints.clear();
@@ -2801,7 +2868,7 @@ impl ChildDriver {
             // No patrol leash while bolting: it is running TO the anchor, so it can only end up
             // further inside its own territory.
             if ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
-                self.note_step(pi, mi, true);
+                self.note_step(pi, mi, StepOutcome::from(true, ok));
                 self.packs[pi].members[mi].heading = heading;
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -2809,7 +2876,7 @@ impl ChildDriver {
                 }
                 return;
             }
-            self.note_step(pi, mi, false);
+            self.note_step(pi, mi, StepOutcome::Blocked);
             // Wedged mid-escape: the same watchdog everything else uses, so a thief cannot end up
             // pinned against a corner holding your item forever.
             if self.packs[pi].members[mi].progress.note(from, anchor, dt) {
@@ -3180,7 +3247,7 @@ impl ChildDriver {
                 let (next, heading, ok) =
                     advance_step(&mut self.grid_cache, layer, from, raw_heading, step, wedged);
                 if ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
-                    self.note_step(pi, mi, true);
+                    self.note_step(pi, mi, StepOutcome::from(true, ok));
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
                         let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -3188,7 +3255,7 @@ impl ChildDriver {
                     }
                     return;
                 }
-                self.note_step(pi, mi, false);
+                self.note_step(pi, mi, StepOutcome::Blocked);
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = heading.to_degrees().rem_euclid(360.0);
                     peer.update_player_state(from.to_array(), yaw, "walk_slow".into());
@@ -3228,7 +3295,7 @@ impl ChildDriver {
                     }
                     return;
                 }
-                self.note_step(pi, mi, false);
+                self.note_step(pi, mi, StepOutcome::Blocked);
 
                 // Not getting closer for `FACELING_WEDGED_GIVE_UP_S`? Draw somewhere else.
                 // `PackRoam`'s own re-roll lives behind the ARRIVE check above, so without this a
@@ -3278,7 +3345,7 @@ impl ChildDriver {
                 if next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
                     && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
                 {
-                    self.note_step(pi, mi, true);
+                    self.note_step(pi, mi, StepOutcome::from(true, ok));
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
                         let yaw = heading.to_degrees().rem_euclid(360.0);

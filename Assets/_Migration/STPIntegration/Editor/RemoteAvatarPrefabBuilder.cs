@@ -606,12 +606,42 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 "PhantomVoice_Miss",     // 9 the swing that did not land
             };
 
+            // ADR-094 Enmienda 13 — BANCOS SILENCIADOS.
+            //
+            // Play-test (Joel, 2026-08-25): "cuando alguien grita o dispara suena en todos lados
+            // un sonido del robapieles... no es nada agradable al final".
+            //
+            // Bank 4 is ADR-048's answer roar, and it has TWO triggers, which is most of why it
+            // wore out: a distant gunshot (you fire, something replies from out there), and
+            // `chorus_pending` in phantom.rs, where every other creature on the level answers a
+            // creature that screamed. On a 500 m curve at 1.7× volume, the second one means any
+            // scream anywhere is heard everywhere, by several mouths at once.
+            //
+            // Muted in the CLIENT rather than by cutting the trigger in Rust. An empty bank is
+            // already the documented "silent" state and costs one length check; the backend keeps
+            // emitting the kind, so nothing about the wire, the counter or the tests changes, and
+            // turning it back on is deleting a number from this array plus a re-bake.
+            //
+            // If it ever comes back it should come back WITHOUT the chorus — one distant answer
+            // to your own gunshot is the mechanic ADR-048 describes and it works; a level-wide
+            // call-and-response between every creature is what turned it into noise.
+            var SilencedBanks = new[] { 4 };
+
             for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)
             {
-                var found = LoadVoiceClips(banks[bank]);
                 var clips = voices.GetArrayElementAtIndex(bank).FindPropertyRelative("Clips");
                 if (clips == null)
                     continue;
+
+                if (System.Array.IndexOf(SilencedBanks, bank) >= 0)
+                {
+                    // Deliberately muted — see SilencedBanks. Emptied on every bake so dropping a
+                    // matching clip into the folder cannot quietly switch it back on.
+                    clips.arraySize = 0;
+                    continue;
+                }
+
+                var found = LoadVoiceClips(banks[bank]);
 
                 // An unauthored bank is left EMPTY rather than filled with something approximate:
                 // an empty bank is silent, and silence is honest. A wrong sound is not.
