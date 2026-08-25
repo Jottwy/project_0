@@ -146,6 +146,49 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         private readonly HashSet<(int, int, int)> _desired = new HashSet<(int, int, int)>();
         private readonly List<(int, int, int)> _drainScratch = new List<(int, int, int)>();
 
+        /// <summary>
+        /// ADR-093 — chunks que se mantienen cargados AUNQUE estén fuera del anillo del jugador.
+        ///
+        /// Existe por el portal de las puertas del Level 4: para enseñar el otro lado hace falta
+        /// que el otro lado ESTÉ, y con <see cref="viewRadius"/> = 1 el cliente sólo tiene 9
+        /// chunks (150 m) alrededor de sí mismo — la reserva está a 10 km, así que una cámara
+        /// puesta allí renderizaría el vacío. Fijar chunks es lo único que hace existir un
+        /// segundo islote de mundo.
+        ///
+        /// Se unen a `_desired` y por tanto quedan cubiertos por la reconciliación existente:
+        /// `ReconcileQueues` ya rescata una clave que vuelve a estar deseada, así que fijar un
+        /// chunk que estaba en cola de descarga lo salva sin código nuevo.
+        ///
+        /// NO es gratis: cada chunk fijado es geometría construida y viva. Quien los fije se
+        /// encarga de soltarlos (<see cref="UnpinAll"/>), y conviene fijar sólo mientras haga
+        /// falta de verdad — cerca de la puerta, no toda la partida.
+        /// </summary>
+        private static readonly HashSet<(int, int, int)> _pinned = new HashSet<(int, int, int)>();
+
+        /// <summary>Reemplaza el conjunto fijado por <paramref name="keys"/>. No-op si no cambia
+        /// nada, para no forzar una reconciliación por frame.</summary>
+        public static void SetPinned(IEnumerable<(int, int, int)> keys)
+        {
+            var next = new HashSet<(int, int, int)>(keys);
+            if (next.SetEquals(_pinned))
+                return;
+            _pinned.Clear();
+            _pinned.UnionWith(next);
+            // Forzar: `UpdateChunks` sólo recalcula al CRUZAR de chunk, así que fijar estando
+            // quieto delante de una puerta no haría nada hasta el siguiente paso.
+            if (Instance != null)
+                Instance.UpdateChunks(force: true);
+        }
+
+        public static void UnpinAll() => SetPinned(System.Array.Empty<(int, int, int)>());
+
+        // Con "Enter Play Mode Options" desactivando la recarga de dominio, los estáticos
+        // SOBREVIVEN entre sesiones de Play: sin esto, los chunks fijados de la partida anterior
+        // se reclamarían nada más arrancar la siguiente, con coordenadas de un mundo que quizá ni
+        // existe ya. Mismo motivo y mismo sitio que en IPCClient/AuthoritativePoseApplier.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetPinnedStatics() => _pinned.Clear();
+
         // Chunk side in metres (50 m). Same quantity as GridChunkBuilder's
         // `float span = Tiles * Ts;` (GridChunkBuilder.cs:949): 10 tiles × 5 m. Both
         // derive from GridConstants, which mirrors backend/src/world/grid_gen/cell.rs,
@@ -247,6 +290,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
 
             _desired.Clear();
             BuildDesiredSet(cx, cz, viewRadius, layerCount, _desired);
+            // ADR-093: los fijados entran en el mismo conjunto que el anillo, así que toda la
+            // maquinaria de abajo (rescate, orden por distancia, presupuesto por frame) los trata
+            // igual que a cualquier otro chunk deseado, sin una ruta paralela que mantener.
+            _desired.UnionWith(_pinned);
             ReconcileQueues(_desired, _loaded.Keys, _buildQueue, _unloadQueue);
             // Fase 4.1: ReconcileQueues re-adds every desired-not-loaded key, including
             // chunks already requested and awaiting a reply. Drop those so we never

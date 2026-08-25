@@ -104,13 +104,24 @@ namespace BackroomsSurvival.Gameplay
 
             var facing = new Vector3(0f, 0f, -1f);
 
+            // Centro del tile (0,2) del chunk (0,0): ese tile forma con (0,1) y (0,3) un tramo
+            // norte-sur continuo, así que el marco exento se cruza por los DOS lados. El ancla
+            // vieja (3,0,0) caía en un fondo de saco con pared al norte, este y oeste — media
+            // puerta daba contra roca. Medido con la sonda de `walls`, no deducido.
             var entryGo = new GameObject("Level4EntryDoor (ADR-093, placeholder)");
-            entryGo.transform.position = new Vector3(3f, 0f, 0f);
-            entryGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Entry, facing);
+            entryGo.transform.position = new Vector3(2.5f, 0f, 12.5f);
+            var entry = entryGo.AddComponent<Level4DoorTrigger>();
+            entry.Configure(Level4Door.Entry, facing);
 
             var returnGo = new GameObject("Level4ReturnDoor (ADR-093, placeholder)");
             returnGo.transform.position = new Vector3(10075f, 0f, 70f);
-            returnGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Return, facing);
+            var back = returnGo.AddComponent<Level4DoorTrigger>();
+            back.Configure(Level4Door.Return, facing);
+
+            // El par: cada puerta enseña por su hueco lo que hay al otro lado de la otra. Se
+            // empareja aquí y no en Configure porque hasta esta línea no existen las dos.
+            entry.PairWith(back);
+            back.PairWith(entry);
         }
     }
 }

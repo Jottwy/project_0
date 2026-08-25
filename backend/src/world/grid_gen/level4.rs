@@ -192,8 +192,33 @@ pub fn return_door_world_pos() -> [f32; 3] {
     [hall[0], region_floor_y(), hall[2] - RETURN_DOOR_OFFSET_M]
 }
 
-/// Cuánto se separa la puerta de vuelta del punto de aterrizaje, en metros.
+/// Cuánto se separa una puerta de su punto de aterrizaje, en metros.
 pub const RETURN_DOOR_OFFSET_M: f32 = 5.0;
+
+/// Ancla de la puerta de ENTRADA, en Level 0. Espejo de lo que planta `GameBootstrap`.
+///
+/// Está en el CENTRO del tile (0,2) del chunk (0,0), y el sitio no es arbitrario: ese tile forma
+/// con (0,1) y (0,3) un tramo norte-sur continuo, así que un marco exento ahí se puede cruzar por
+/// los DOS lados. El ancla anterior, (3,0,0), caía en el tile (0,0) — un fondo de saco con pared
+/// al norte, este y oeste, donde media puerta daba contra roca. Medido con la sonda de `walls`,
+/// no deducido. A ~8 m del spawn por defecto (5,0,5).
+pub const ENTRY_DOOR_WORLD_POS: [f32; 3] = [2.5, 0.0, 12.5];
+
+/// Dónde aparece quien VUELVE al Level 0: delante de la puerta de entrada, en +Z y con el mismo
+/// offset que usa el vestíbulo, de modo que los dos aterrizajes del par son simétricos — siempre
+/// en la cara +Z de la puerta de destino, siempre a la misma distancia, nunca dentro de su plano.
+///
+/// La Y es la del suelo de LEVEL 0 (cero) más la altura de ojos — NO `region_floor_y()`, que es
+/// la de la reserva. Hoy coinciden porque `REGION_LAYER` es 0, y ese es justo el motivo de no
+/// escribirlo con la de la reserva: el día que la región suba de capa, esta cuenta seguiría
+/// siendo correcta sola.
+pub fn entry_door_arrival_pos() -> [f32; 3] {
+    [
+        ENTRY_DOOR_WORLD_POS[0],
+        1.8,
+        ENTRY_DOOR_WORLD_POS[2] + RETURN_DOOR_OFFSET_M,
+    ]
+}
 
 /// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
 const REGION_CEILING_UNITS: u8 = 2;
@@ -953,6 +978,23 @@ mod tests {
         assert!(
             return_door_world_pos()[1] < entry_hall_world_pos()[1],
             "la puerta se planta en el suelo; el punto de aterrizaje va a altura de ojos"
+        );
+        // La de ENTRADA, en Level 0. Su sitio no es cosmético: el tile tiene que dejar hueco a
+        // los DOS lados o el marco exento sólo se cruza por uno.
+        assert_eq!(
+            ENTRY_DOOR_WORLD_POS,
+            [2.5, 0.0, 12.5],
+            "mueve también el ancla de entrada de GameBootstrap.SpawnLevel4Doors"
+        );
+        // Los dos aterrizajes del par son simétricos: cara +Z de la puerta de destino, mismo
+        // offset. Romper la simetría es lo que devuelve el rebote en uno de los dos sentidos.
+        assert_eq!(
+            entry_door_arrival_pos()[2] - ENTRY_DOOR_WORLD_POS[2],
+            RETURN_DOOR_OFFSET_M
+        );
+        assert_eq!(
+            entry_hall_world_pos()[2] - return_door_world_pos()[2],
+            RETURN_DOOR_OFFSET_M
         );
     }
 

@@ -313,6 +313,18 @@ fn drift_direction(world_seed: u64, window_count: u32) -> (f32, f32) {
     (angle.cos(), angle.sin())
 }
 
+/// TEMPORAL, a petición de Joel (2026-08-25): la vuelta aterriza SIEMPRE delante de la puerta de
+/// entrada, sin deriva y sin depender de por dónde entraste.
+///
+/// Apaga a sabiendas la inestabilidad del enlace de ADR-093, que es una mecánica central — por eso
+/// es una constante con nombre y no código borrado: `resolve_return_dest` y todos sus tests siguen
+/// vivos y en verde, y volver a encenderla es cambiar este `true` por `false`.
+///
+/// No es solo comodidad de pruebas: el PORTAL (ver el otro lado al abrir la puerta) necesita saber
+/// a dónde apuntar la cámara, y un destino que deriva con el tiempo no da un punto fijo al que
+/// mirar. Mientras el portal exista en esta forma, el par de puertas tiene que ser fijo.
+pub const RETURN_TO_FIXED_DOOR: bool = true;
+
 /// Destino de vuelta puro: dentro de la ventana, el punto de entrada exacto; vencida, un punto
 /// a radio proporcional al overstay en la dirección ya sorteada de esa ventana.
 fn resolve_return_dest(
@@ -393,6 +405,12 @@ impl Level4RegionState {
             return requester_pos;
         }
         self.refresh_return_dest(now);
+        if RETURN_TO_FIXED_DOOR {
+            // La ventana y la deriva se siguen calculando arriba (`refresh_return_dest`) para que
+            // el estado que viaja al joiner y el que se guarda no cambien de significado mientras
+            // este modo esté puesto: lo único que se ignora es el resultado.
+            return level4::entry_door_arrival_pos();
+        }
         self.return_dest
     }
 
@@ -535,15 +553,45 @@ mod region_state_tests {
         );
         assert!(state.window_open);
 
-        // Dentro de la ventana: vuelve al punto de entrada exacto (el de Level 0, no el
-        // vestíbulo — `entry_point` guarda de dónde VENÍAS).
+        // La vuelta aterriza delante de la puerta de entrada (`RETURN_TO_FIXED_DOOR`), no en la
+        // posición de quien pide ni en la de quien entró.
         let return_dest = state.process_door(42, [1.0, 0.0, 1.0], DOOR_RETURN, now);
-        assert_eq!(return_dest, standing_in_level0);
+        assert_eq!(return_dest, level4::entry_door_arrival_pos());
 
         // Cualquier valor que no sea DOOR_ENTRY colapsa a Return — mismo criterio que
         // `CellType::kind()` con un byte desconocido: el lado seguro, no un pánico.
         let unknown_dest = state.process_door(42, [1.0, 0.0, 1.0], 255, now);
-        assert_eq!(unknown_dest, standing_in_level0);
+        assert_eq!(unknown_dest, level4::entry_door_arrival_pos());
+    }
+
+    /// El modo fijo hace lo que dice: mismo destino entres por donde entres, pidas desde donde
+    /// pidas y hayas tardado lo que hayas tardado. Es lo que permite que el portal tenga un punto
+    /// al que apuntar la cámara.
+    #[test]
+    fn the_fixed_return_lands_at_the_entry_door_whatever_happened() {
+        assert!(
+            RETURN_TO_FIXED_DOOR,
+            "este test describe el modo fijo; con la deriva encendida el que manda es \
+             resolve_return_dest y sus propios tests"
+        );
+        let now = Instant::now();
+        let expected = level4::entry_door_arrival_pos();
+
+        for entered_at in [[10.0, 0.0, 20.0], [-500.0, 0.0, 900.0], [0.0; 3]] {
+            let mut state = Level4RegionState::default();
+            state.process_entry(42, entered_at, now);
+            // Dentro de la ventana, y muy pasada: el mismo punto en los dos casos.
+            for elapsed in [
+                Duration::from_secs(1),
+                WINDOW_DURATION + Duration::from_secs(600),
+            ] {
+                assert_eq!(
+                    state.process_return([1.0, 0.0, 1.0], now + elapsed),
+                    expected,
+                    "entrada {entered_at:?} tras {elapsed:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -572,17 +620,21 @@ mod region_state_tests {
         );
     }
 
+    // Los tres de abajo prueban la DERIVA de ADR-093, que sigue implementada y viva aunque
+    // `RETURN_TO_FIXED_DOOR` la deje fuera del camino de `process_return`. Van contra
+    // `resolve_return_dest`/`refresh_return_dest`, que es donde vive la mecánica: así el modo
+    // fijo se puede apagar mañana con la certeza de que lo que hay debajo nunca dejó de
+    // comprobarse. Ir contra `process_return` los habría convertido en tests del modo, no de la
+    // deriva.
+
     #[test]
     fn return_inside_the_window_goes_to_the_exact_entry_point() {
         let now = Instant::now();
         let mut state = Level4RegionState::default();
         state.process_entry(42, [10.0, 0.0, 20.0], now);
 
-        let dest = state.process_return(
-            [1.0, 0.0, 1.0],
-            now + WINDOW_DURATION - Duration::from_secs(1),
-        );
-        assert_eq!(dest, [10.0, 0.0, 20.0]);
+        state.refresh_return_dest(now + WINDOW_DURATION - Duration::from_secs(1));
+        assert_eq!(state.return_dest, [10.0, 0.0, 20.0]);
     }
 
     #[test]
@@ -591,16 +643,16 @@ mod region_state_tests {
         let mut state = Level4RegionState::default();
         state.process_entry(42, [0.0, 0.0, 0.0], now);
 
-        let at_1min_over =
-            state.process_return([0.0; 3], now + WINDOW_DURATION + Duration::from_secs(60));
+        state.refresh_return_dest(now + WINDOW_DURATION + Duration::from_secs(60));
+        let at_1min_over = state.return_dest;
         let dist_1min = (at_1min_over[0].powi(2) + at_1min_over[2].powi(2)).sqrt();
         assert!(
             (dist_1min - DRIFT_RADIUS_PER_MINUTE_M).abs() < 0.01,
             "1 min de overstay debe derivar ~{DRIFT_RADIUS_PER_MINUTE_M} m, dio {dist_1min}"
         );
 
-        let at_5min_over =
-            state.process_return([0.0; 3], now + WINDOW_DURATION + Duration::from_secs(300));
+        state.refresh_return_dest(now + WINDOW_DURATION + Duration::from_secs(300));
+        let at_5min_over = state.return_dest;
         let dist_5min = (at_5min_over[0].powi(2) + at_5min_over[2].powi(2)).sqrt();
         assert!(
             (dist_5min - 5.0 * DRIFT_RADIUS_PER_MINUTE_M).abs() < 0.01,
@@ -632,16 +684,15 @@ mod region_state_tests {
         let mut state = Level4RegionState::default();
         state.process_entry(1, [0.0; 3], now);
         let overstay = now + WINDOW_DURATION + Duration::from_secs(180);
-        let first_dest = state.process_return([0.0; 3], overstay);
+        state.refresh_return_dest(overstay);
+        let first_dest = state.return_dest;
 
         // Cierra la primera ventana a mano (E4 lo hará de verdad) y abre otra con el mismo
         // punto de entrada: el CONTADOR cambia, así que el rumbo debe cambiar con él.
         state.window_open = false;
         state.process_entry(1, [0.0; 3], overstay);
-        let second_dest = state.process_return(
-            [0.0; 3],
-            overstay + WINDOW_DURATION + Duration::from_secs(180),
-        );
+        state.refresh_return_dest(overstay + WINDOW_DURATION + Duration::from_secs(180));
+        let second_dest = state.return_dest;
 
         assert_ne!(
             first_dest, second_dest,

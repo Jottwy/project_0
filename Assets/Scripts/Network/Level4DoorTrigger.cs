@@ -66,6 +66,25 @@ namespace BackroomsSurvival.Net
 
         public bool IsOpen => _open;
 
+        /// <summary>
+        /// ADR-093 — empareja esta puerta con su gemela y le pone al hueco la vista del otro
+        /// lado (<see cref="Level4Portal"/>). Se llama DESPUÉS de <see cref="Configure"/> y desde
+        /// fuera, porque hasta que existen las dos puertas no hay par que formar.
+        ///
+        /// Las medidas del vano salen de aquí y no del portal: el que sabe cómo de grande es el
+        /// hueco es quien lo construyó, y duplicar las constantes sería la clase de desfase que
+        /// se ve como un marco con la vista descuadrada dentro.
+        /// </summary>
+        public void PairWith(Level4DoorTrigger other)
+        {
+            if (other == null || other == this)
+                return;
+            var mine = GetComponent<Level4Portal>() ?? gameObject.AddComponent<Level4Portal>();
+            var theirs = other.GetComponent<Level4Portal>()
+                         ?? other.gameObject.AddComponent<Level4Portal>();
+            mine.Bind(theirs, DoorWidth, DoorHeight);
+        }
+
         public void Configure(Level4Door door, Vector3 facing)
         {
             _door = door;
