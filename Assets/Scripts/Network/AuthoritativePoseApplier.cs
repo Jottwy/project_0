@@ -241,6 +241,14 @@ namespace BackroomsSurvival.Net
             _snapWindowRemaining = SnapWindow;
             _snappedThisWindow = false;
 
+            // Only for the door: it is the one arming event whose whole visible effect IS the
+            // reposition (death/respawn have a fade and a UI to prove they happened), so a
+            // silent failure here reads to the player as "the door does nothing". Rare enough
+            // — two crossings per incursion — to log unconditionally.
+            if (ev.eventType == Level4DoorEvent)
+                Debug.Log($"[AuthPoseApplier] MPTRACE step=L4 event=door_verdict_received dest={eventPos} " +
+                          $"parsed={_hasExpectedPos}");
+
             if (_hasExpectedPos)
                 SnapTo(eventPos);
         }

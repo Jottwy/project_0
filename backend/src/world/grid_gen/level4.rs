@@ -481,7 +481,8 @@ pub fn region_floor_y() -> f32 {
 /// rasterizan el MISMO layout global de región — el mismo argumento de determinismo
 /// que sostiene las salas multi-chunk de ADR-084. Un chunk vecino FUERA de la reserva
 /// puede abrir su apertura de costura contra nuestro perímetro macizo y quedarse con un
-/// fondo de saco decorativo; 400 m por encima del techo jugable, nadie lo verá jamás.
+/// fondo de saco decorativo; a 10 km del spawn y sin ruta a pie que nadie vaya a andar,
+/// nadie lo verá jamás.
 pub fn generate_region_layer(
     world_seed: u64,
     epoch: u32,

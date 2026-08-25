@@ -293,6 +293,7 @@ namespace BackroomsSurvival.Net
             }
 
             Debug.Log($"[NetworkInitializer] MPTRACE step=RUBIK event=unity_backend_exe_path path={exePath}");
+            WarnIfBackendIsStale(exePath);
 
             var psi = new ProcessStartInfo
             {
@@ -417,6 +418,59 @@ namespace BackroomsSurvival.Net
             else
             {
                 StatusMessage = $"Connecting... ({_startupTimer:0.0}s)";
+            }
+        }
+
+        /// <summary>
+        /// Shout when the exe about to be launched is OLDER than the Rust sources it was built
+        /// from. Editor-only, log-only — it never blocks the launch.
+        ///
+        /// This exists because a stale binary is INVISIBLE at runtime and cost three straight
+        /// play-tests (2026-08-25): the ADR-093 door fix was committed, `cargo test` was green
+        /// 1004/0, and the game still did nothing — because `cargo test` builds the TEST binary
+        /// and never relinks `target/release/backrooms_server.exe`. Nothing in the wire schema
+        /// changes when only behaviour changes, so <see cref="WireSchema"/>'s version gate
+        /// cannot catch this class of drift; a file timestamp can.
+        ///
+        /// Deliberately compares against `backend/src`, not the whole crate: `Cargo.lock` and
+        /// `target/` churn for reasons that do not change the binary's behaviour.
+        /// </summary>
+        [System.Diagnostics.Conditional("UNITY_EDITOR")]
+        private static void WarnIfBackendIsStale(string exePath)
+        {
+            try
+            {
+                string srcDir = Path.Combine(ResolveProjectRoot(Application.dataPath), "backend", "src");
+                if (!Directory.Exists(srcDir) || !File.Exists(exePath))
+                    return; // a packaged build with no sources alongside it — nothing to compare
+
+                DateTime exeTime = File.GetLastWriteTimeUtc(exePath);
+                string newest = null;
+                DateTime newestTime = DateTime.MinValue;
+                foreach (string rs in Directory.EnumerateFiles(srcDir, "*.rs", SearchOption.AllDirectories))
+                {
+                    DateTime t = File.GetLastWriteTimeUtc(rs);
+                    if (t > newestTime)
+                    {
+                        newestTime = t;
+                        newest = rs;
+                    }
+                }
+
+                if (newest == null || newestTime <= exeTime)
+                    return;
+
+                Debug.LogError(
+                    "[NetworkInitializer] STALE BACKEND: the exe about to run predates the Rust sources — " +
+                    $"you are play-testing OLD server behaviour.\n  exe   {exePath} ({exeTime:u})\n" +
+                    $"  newer {newest} ({newestTime:u})\n" +
+                    "  Fix: cargo build --release && tools/dev/CopyReleaseBackendToBuild.ps1 " +
+                    "(cargo test does NOT relink the release exe).");
+            }
+            catch (Exception e)
+            {
+                // A freshness check must never be the reason the game fails to start.
+                Debug.LogWarning($"[NetworkInitializer] backend freshness check skipped: {e.Message}");
             }
         }
 

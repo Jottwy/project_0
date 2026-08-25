@@ -10777,3 +10777,52 @@ async fn two_stragglers_merging_on_one_tick_land_in_the_right_packs() {
         );
     }
 }
+
+// ─── ADR-093 E3: la reposición autoritativa de un cruce ───
+
+/// Un cruce no es solo un evento para Unity. Si el backend no mueve su PROPIO jugador, la
+/// colisión —que valida el punto destino contra `world.chunks`, donde un chunk ausente
+/// BLOQUEA— rechaza cada pose que el cliente reporte desde la región, y esos chunks no van a
+/// cargarse nunca porque la carga la manda `player.position`. Cliente y servidor se quedan en
+/// sitios distintos para siempre: sin entidades en la región y con la partida guardándose
+/// anclada al Level 0.
+#[test]
+fn crossing_a_door_repositions_the_backends_own_player() {
+    let mut world = World::new(42);
+    let mut player = Player::new(1, String::from("Host"));
+    player.position = Vec3::new(5.0, 0.0, 5.0);
+
+    let dest = crate::world::grid_gen::level4::entry_hall_world_pos();
+    apply_level4_reposition(&mut player, &mut world, dest, 123);
+
+    assert_eq!(
+        player.position.to_array(),
+        dest,
+        "el backend tiene que creerse la reposición, no solo anunciarla"
+    );
+    assert_eq!(
+        player.last_reposition_tick,
+        Some(123),
+        "el sello de reposición es lo que separa un teleport legítimo de un rubber-band en la \
+         auditoría de TPs"
+    );
+}
+
+/// El destino del cruce de entrada tiene que ser el vestíbulo, no la posición desde la que se
+/// cruzó. Devolver `requester_pos` es "teletranspórtate a donde ya estás", que es exactamente
+/// lo que el binario desplegado siguió haciendo tres playtests seguidos (2026-08-25) porque
+/// `cargo test` compila el binario de TEST y nunca relinka el exe de release.
+#[test]
+fn the_entry_door_resolves_to_the_hall_and_never_to_where_you_stood() {
+    let mut state = crate::world::level4_layout::Level4RegionState::default();
+    let stood_at = [5.0f32, 0.0, 5.0];
+    let now = std::time::Instant::now();
+
+    let dest = state.process_door(42, stood_at, crate::world::level4_layout::DOOR_ENTRY, now);
+
+    assert_ne!(
+        dest, stood_at,
+        "cruzar la entrada no puede dejarte donde ya estabas"
+    );
+    assert_eq!(dest, crate::world::grid_gen::level4::entry_hall_world_pos());
+}

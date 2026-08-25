@@ -2050,6 +2050,28 @@ fn apply_level4_epoch(
     );
 }
 
+/// ADR-093 E3: sella en el estado AUTORITATIVO la reposición que un cruce acaba de resolver.
+///
+/// Sin esto el cruce movía únicamente el transform de Unity. El backend seguía creyendo al
+/// jugador en el Level 0, y eso no se corrige solo: `Level0Collision::resolve_move` valida el
+/// punto DESTINO contra `world.chunks` y un chunk ausente BLOQUEA, así que cada pose que el
+/// cliente reportaba desde dentro de la región se rechazaba contra un mundo que además nunca
+/// iba a cargarse — la carga de chunks del backend la manda `player.position`, justo lo que
+/// no se movía. El resultado era un desacuerdo permanente: ninguna entidad transmitida en la
+/// región, y la partida guardándose anclada al Level 0.
+///
+/// Mismo trío que `respawn_request`, la otra reposición autoritativa del juego: posición,
+/// sello de diagnóstico y ownership. Compartida por las dos rutas que pueden repositionar por
+/// una puerta —el host resolviendo su propio cruce y un joiner recibiendo el veredicto— para
+/// que no puedan divergir, mismo criterio que `apply_level4_epoch`.
+fn apply_level4_reposition(player: &mut Player, world: &mut World, dest: [f32; 3], tick: u64) {
+    player.position = Vec3::from_array(dest);
+    // TEMP DIAG (TP attribution audit; REMOVE after diagnosis): see
+    // Player::last_reposition_tick doc comment.
+    player.last_reposition_tick = Some(tick);
+    world.update_ownership(player.position, player.id);
+}
+
 // El octavo parámetro es el canal de voz de ADR-046, que existe precisamente para NO ir
 // mezclado con `to_clients`. Agruparlos en un struct desharía esa separación en la firma justo
 // donde importa que se lea. Mismo criterio que los `too_many_arguments` ya presentes en
@@ -2815,6 +2837,11 @@ async fn handle_network_event(
         }
 
         NetworkEvent::Level4DoorVerdict { request_id, dest } => {
+            // El veredicto del host ES la reposición: sin sellarla aquí, el joiner cruzaría en
+            // pantalla y su propio backend seguiría creyéndolo en el Level 0 — ver
+            // `apply_level4_reposition`. El host no pasa por esta rama (resuelve su cruce en
+            // línea, en la acción IPC), así que no hay doble aplicación.
+            apply_level4_reposition(player, world, dest, tick);
             // We are the requester's own backend (host-self or joiner) — surface the verdict
             // to OUR Unity through the generic event bridge, same as CorpseTakeResult. Nothing
             // in Unity listens for "level4_door_resolved" yet (E3 adds the consumer); this just
@@ -4242,6 +4269,7 @@ async fn handle_action(
                     door,
                     std::time::Instant::now(),
                 );
+                apply_level4_reposition(player, world, dest, tick);
                 let _ = to_clients.send(ServerMessage::Event(GameEvent {
                     event_type: "level4_door_resolved".into(),
                     data: serde_json::json!({

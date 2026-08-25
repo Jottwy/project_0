@@ -55,6 +55,12 @@ namespace BackroomsSurvival.Net
             _door = door;
             _radius = radius;
             SpawnMarker(door, radius);
+            // One line per door per session. Absent this, a crossing that does nothing is
+            // indistinguishable from a door that never spawned, a door spawned somewhere the
+            // player never walked, and a backend that ignored the request — the ambiguity that
+            // burned three play-tests (2026-08-25). Cheap enough to keep forever.
+            Debug.Log($"[Level4Door] MPTRACE step=L4 event=door_spawned door={door} " +
+                      $"pos={transform.position} radius={radius}");
         }
 
         private void SpawnMarker(Level4Door door, float radius)
@@ -110,7 +116,17 @@ namespace BackroomsSurvival.Net
 
             if (inside && !_playerInside)
             {
-                IPCClient.Instance?.SendLevel4Door(_door, _nextRequestId++);
+                long requestId = _nextRequestId++;
+                var ipc = IPCClient.Instance;
+                // The null case is the interesting one: it means the crossing was DROPPED, and
+                // the player sees exactly what a broken backend looks like. Say so.
+                if (ipc == null)
+                    Debug.LogWarning($"[Level4Door] MPTRACE step=L4 event=cross_dropped door={_door} " +
+                                     "reason=no_ipc_client");
+                else
+                    Debug.Log($"[Level4Door] MPTRACE step=L4 event=cross_sent door={_door} " +
+                              $"request_id={requestId} from={_motor.transform.position}");
+                ipc?.SendLevel4Door(_door, requestId);
                 _lastCrossTime = Time.time;
             }
             _playerInside = inside;
