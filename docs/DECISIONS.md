@@ -6591,3 +6591,123 @@ Lo que esto NO arregla, y queda anotado: el golpe del niño y el del adulto sigu
 `segment_is_clear` hasta el JUGADOR en vez de hasta el `contact_stance` de ADR-082, así que pegado
 a una pared sigues siendo intocable para ellos; `Flee` no navega ni tiene watchdog; y el `Enforce`
 del adulto puede moler contra la correa de su chunk indefinidamente. Los tres son suyos propios.
+
+---
+
+## ADR-093 — Enmienda 1: la reserva del Level 4 acepta salas del pool autorado
+
+**Fecha:** 2026-08-25. **Estado:** aceptada. **Decide:** Joel.
+
+### Qué se enmienda
+
+E1 dejó escrito, y así está implementado, que la reserva se genera **«sin cosido, sin salas
+construibles ni autoradas: la reserva es un mapa cerrado propio»** (`grid_gen::stitching`,
+`generate_chunk_layer`, el intercept ocurre ANTES de `plan_authored_rooms`). Esta enmienda levanta
+la mitad autorada de esa exclusión: **los rects de sala del grafo de región pueden vestirse con
+piezas del pool de ADR-083/084.** El cosido y las salas construibles siguen excluidos, y por las
+razones que E1 y E5 ya dieron — un mapa cerrado no cose con el laberinto, y en la reserva no se
+construye.
+
+### Por qué
+
+El propio ADR-093 nació de «aprovechando el sistema de generacion de las rooms», y el generador de
+región acabó sorteando rects vacíos porque era lo que E0 podía dar sin depender del pool. El
+resultado medido es una planta de oficinas de 12 salas sin una sola pieza autorada dentro, que es
+justo lo que ROOMS-ROADMAP identifica como el 80 % del retorno de todo este sistema: **hornear
+piezas no cuesta líneas de código, y es lo único que convierte la reserva en un sitio y no en un
+plano**.
+
+### Forma acordada: mixto, pool primero y relleno procedural
+
+El grafo sortea **igual que hoy** — mismos rects, mismos pasillos, mismo `(seed, epoch)`. Lo único
+que cambia es que, al rasterizar, un rect que admita una pieza del pool se talla como sala autorada
+(footprint reservado, interior del prefab, vanos reales) y se anuncia al cliente por
+`authored_rooms`; el rect que no encuentre pieza sigue saliendo como hoy, hueco.
+
+Tres consecuencias buscadas, y las tres son la razón de elegir esta forma frente a «solo autoradas»:
+
+1. **Con UNA pieza horneada ya se ve el efecto.** No hay un umbral de contenido por debajo del cual
+   la feature no existe.
+2. **La reserva nunca queda coja** mientras se autora el resto: los huecos sin pieza son salas
+   normales, no agujeros.
+3. **El re-sorteo por epoch sobrevive**, que es el corazón del ADR. Se descartó por eso la variante
+   «tú decides qué pieza va en qué hueco»: fijar el emplazamiento mata la mutación.
+
+### Alcance de wire: NINGUNO
+
+`GridChunkData.authored_rooms: Vec<[i32; 6]>` existe desde wire 41 (ADR-084 T5) y hoy va vacío en
+los chunks de la reserva. Empezar a rellenarlo **no cambia el formato de chunk**, así que la regla
+dura #7 no pide ADR nuevo — por eso esto es una enmienda y no un ADR. El cliente ya sabe
+instanciar el prefab y suprimir suelo/techo/paredes donde hay sala autorada; no necesita código
+nuevo para verlas dentro de la reserva.
+
+### Determinismo
+
+El manifiesto viaja en el build, no por la conexión (ADR-083 enmienda 1, punto 8), así que dos
+peers de la misma versión tienen el mismo pool y colocan lo mismo. Un backend **sin** manifiesto
+(CI, test, build sin pool horneado) genera la reserva entera procedural: mismo estado válido y
+mismo argumento que el laberinto ya asume, con la diferencia de que aquí la geometría de pasillos
+y rects es idéntica en los dos casos — el pool solo decide el relleno.
+
+### Lo que esta enmienda NO resuelve, y es lo siguiente
+
+**El loot de las salas no entra aquí.** `RoomMarker` se hornea y no lo lee nadie (§B1 de
+ROOMS-ROADMAP, «lo más serio de lo pendiente»): en cuanto un prop tenga contenido deja de ser
+decorado y pasa a ser estado del mundo — qué hay dentro lo tira el servidor, si ya se saqueó es
+estado persistente por chunk, y dos jugadores abriendo a la vez piden la guarda de «una petición en
+vuelo» que ya hizo falta para los cadáveres. Eso **sí** es API pública nueva y pide **ADR propio**,
+y sirve a todo el juego, no solo al Level 4. Queda declarado aquí para que no se cuele por la
+puerta de atrás dentro de esta enmienda.
+
+Hasta que ese ADR exista, el botín de la reserva sigue siendo el que `ChunkLootManager` reparte por
+columna. Medido hoy: el perfil de `ZONE_OFFICE` da `itemCacheChance` 0,06, que sobre los 9 chunks
+de la reserva son **0,54 cachés esperadas en la incursión entera**, con el catálogo recortado a
+`Spray Can` desde la prueba de escasez del 2026-08-17. Es decir: la reserva es hoy jugable como
+sitio y no como saqueo, y se acepta a sabiendas mientras se autora el contenido.
+
+---
+
+### ADR-094 — Enmienda 15: el golpe pegado a la pared (ADR-082 pieza 1(b), portada) (2026-08-25)
+
+Lo primero de la lista que la Enmienda 14 dejó abierto. No es diseño nuevo: es aplicar a los
+facelings una decisión que ADR-082 ya tomó, validó y play-testeó para el robapieles, y que al
+escribir las dos especies nuevas nadie portó.
+
+**D27 — LA LÍNEA VA AL CONTACTO, LA DISTANCIA SIGUE YENDO A TI.** Las tres pruebas de golpe
+—el `Hit` del adulto en `Enforce`, el knockdown del `Press`, y el `clear` que comparten el empujón
+y el screamer— exigían `segment_is_clear` hasta la posición del JUGADOR. Pero el jugador colisiona
+contra el laberinto legacy, no contra `grid_gen` (divergencia declarada en ADR-033 y todavía
+abierta), así que al pegarte a una pared tu propia posición cuantiza dentro de una celda que la IA
+considera sólida: esa línea NUNCA está limpia. Resultado: **abrazarte a un muro era inmunidad total
+frente a las dos especies** — ni golpe, ni robo, ni empujón, ni screamer. Es palabra por palabra el
+síntoma que ADR-082 cerró para el robapieles (*"sigue sin atacar cuando te pegas a una pared"*).
+
+Se copia la política de `phantom.rs` tal cual, incluido el fallback: `contact_stance(...)
+.unwrap_or(tpos)`, de modo que donde no hay postura de contacto todo degrada exactamente al
+comportamiento anterior. Y se respeta la prohibición que ADR-082 escribe en mayúsculas: **el
+contacto NO se usa para medir la distancia**, que se sigue midiendo contra el jugador — usarlo ahí
+regalaría alcance gratis. El brazo cruza el resto.
+
+**UN TEST QUE PASABA SOLO Y FALLABA ACOMPAÑADO, y por qué importa más que el arreglo.** La primera
+versión de estos tests BUSCABA el escenario en el mundo real de la seed 42, siguiendo la regla de
+§5 del roadmap de no autorar coordenadas a mano. Pasaban en la suite completa y fallaban al correr
+solos — y después al revés. La causa es la trampa del manifiesto de salas vista desde el otro
+extremo: `active_manifest()` es un `OnceLock` **del proceso**, así que el primer test que lo toca
+cambia el mundo que generan todos los demás, y con `--test-threads 4` eso pasa a mitad de otro
+test. Encima, cualquier consumidor de `get_or_generate` llama `enforce_cap` (ADR-040 D-COTA), que
+puede EVICTAR el chunk autorado; al regenerarse vuelve como diga el mundo, no como lo dejó el test.
+
+La regla que sale de esto, y que vale para cualquier test futuro de percepción o de golpe: **para
+geometría que el test necesita CONTROLAR, autórala con `insert_for_test` y reinstálala justo antes
+de la llamada bajo prueba**, con aserciones de precondición que distingan "el escenario se
+contaminó" de "el arreglo no funciona". Buscar en el mundo real sigue siendo lo correcto cuando lo
+que se quiere es geometría REPRESENTATIVA (la percepción de la Enmienda 14); no lo es cuando el
+test depende de que una celda concreta sea sólida.
+
+Verificado como la Enmienda 14: los dos tests fallan con el port revertido (`staged: []`, es decir,
+la criatura a 1,6 m no hace nada) y pasan con él, y la suite completa se corrió **ocho veces
+seguidas en verde** —1007/1007— porque un test que depende del orden de ejecución no se demuestra
+con una sola pasada.
+
+Sigue abierto de la lista de la Enmienda 14: `Flee` sin navegación ni watchdog, y el `Enforce` del
+adulto moliendo contra la correa de su chunk.

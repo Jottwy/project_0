@@ -10530,6 +10530,80 @@ fn sightline_pair(seed: u64, min_d: f32, max_d: f32, want_clear: bool) -> (Vec3,
     );
 }
 
+/// A creature on open floor and a player pressed into the SOLID CELL beside it, `gap` metres apart,
+/// on a hand-authored grid installed into `cache`.
+///
+/// AUTHORED, not searched, and that distinction cost a debugging pass: an earlier version of this
+/// hunted the real seed-42 world for the scenario and passed in a full suite run while failing when
+/// its two tests ran alone. `active_manifest()` is a per-PROCESS `OnceLock`, so whichever test
+/// touches the room manifest first changes the world every later test generates — the trap already
+/// written up for the room probes, here reached from the other end. Geometry this test OWNS cannot
+/// drift with the run order.
+///
+/// The scenario itself is the one ADR-082 was written for and it is not exotic: the player collides
+/// against the legacy maze, not `grid_gen` (divergence declared in ADR-033, still open), so backing
+/// into a wall routinely puts your own position inside a cell the AI calls solid.
+fn author_wall_hugging_pair(
+    cache: &mut crate::world::grid_gen::GridGenChunkCache,
+    gap: f32,
+) -> (Vec3, Vec3) {
+    use crate::world::grid_gen::{cell_center, Cell, CellType, LayerGrid};
+    let mut g = LayerGrid::new_solid();
+    for x in 0..20 {
+        for z in 0..20 {
+            g.set(x, z, Cell::new(CellType::Open, 2, 0));
+        }
+    }
+    // ONE solid cell for the player to be inside of, with open floor all around the creature so the
+    // body radius has somewhere to stand (`contact_stance` needs a spot where the 0.5 m disc fits).
+    g.set(10, 10, Cell::new(CellType::Wall, 2, 0));
+    cache.insert_for_test((0, 0, 0), g);
+
+    let from = cell_center((9, 10), stand_on(0)); // creature, on open floor
+    let tpos = Vec3::new(from.x + gap, from.y, from.z); // player, past the boundary and inside (10,10)
+    (from, tpos)
+}
+
+/// Re-installs [`author_wall_hugging_pair`]'s grid and asserts the scenario is actually in place.
+///
+/// CALL THIS IMMEDIATELY BEFORE THE `step` UNDER TEST. Spawning peers walks the cache and every
+/// `get_or_generate` consumer calls `enforce_cap` (ADR-040 D-COTA), which can evict the authored
+/// chunk — and a regenerated chunk comes back as whatever the world says, which under a full-suite
+/// run means whatever the room manifest's process-wide `OnceLock` happens to have been set to by a
+/// test running in another thread. That made these two tests pass alone and flake in the suite.
+/// Re-inserting right before the call under test removes the window; the asserts turn any remaining
+/// contamination into "the scenario is wrong" instead of "the fix does not work".
+fn assert_wall_hugging_scenario(
+    cache: &mut crate::world::grid_gen::GridGenChunkCache,
+    gap: f32,
+    from: Vec3,
+    tpos: Vec3,
+) {
+    use crate::world::grid_gen::{
+        contact_stance, is_walkable_grid_gen, segment_is_clear, PHANTOM_BODY_RADIUS,
+    };
+    let (f2, t2) = author_wall_hugging_pair(cache, gap);
+    assert_eq!((f2, t2), (from, tpos), "the authored scenario moved");
+    assert!(
+        is_walkable_grid_gen(cache, from, 0),
+        "the creature must stand on open floor"
+    );
+    assert!(
+        !is_walkable_grid_gen(cache, tpos, 0),
+        "the player must be INSIDE a cell grid_gen calls solid — that is the whole scenario"
+    );
+    assert!(
+        !segment_is_clear(cache, 0, from, tpos),
+        "the pre-fix predicate must fail here, or there is no bug to catch"
+    );
+    let contact = contact_stance(cache, 0, from, tpos, PHANTOM_BODY_RADIUS)
+        .expect("a contact stance must exist, or the fix cannot apply");
+    assert!(
+        segment_is_clear(cache, 0, from, contact),
+        "the post-fix predicate must pass here"
+    );
+}
+
 /// Finds a walkable spot on layer 0 of the REAL world (seed 42) with open floor around it, plus a
 /// target it can walk to in a straight line. `with_rules`, never `new` — a probe on the other world
 /// lies about walls (Enmienda 10's harness bug), and (0,0,0) is a wall cell.
@@ -10761,6 +10835,110 @@ async fn a_frozen_child_thaws_when_the_pack_gives_up() {
     assert!(
         !driver.packs[0].members[0].frozen,
         "the pack gave up but the child is still frozen — it will never move again"
+    );
+}
+
+/// ADR-082 pieza 1(b), PORTADA A LOS FACELINGS. The strike tests demanded a clear line all the way
+/// to the PLAYER, and your own position quantizes into a cell `grid_gen` calls solid the moment you
+/// press yourself against a wall — so hugging geometry was perfect immunity from the whole pack: no
+/// knockdown, no theft, no shove, no screamer. It is the same defect ADR-082 closed for the
+/// robapieles ("sigue sin atacar cuando te pegas a una pared"); the facelings simply never got the
+/// port.
+#[tokio::test]
+async fn a_pack_can_knock_down_a_player_pressed_into_a_wall() {
+    let mut driver = ChildDriver::new(42);
+    // Inside the child's reach, and inside the wall cell.
+    let (child_at, player_at) =
+        author_wall_hugging_pair(&mut driver.grid_cache, FACELING_CHILD_ATTACK_REACH - 0.2);
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, child_at).await;
+    pack.members.truncate(1);
+    pack.anchor = child_at;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+    pack.mind.last_known_pos = Some(player_at);
+    assign_roles(&mut pack.members); // one member ⇒ Press, the role that swings
+    let id = pack.members[0].id;
+    net.peers.get_mut(&id).unwrap().position = child_at.to_array();
+
+    // Facing AWAY from the child, so the "por la espalda" half of ADR-094 point 4 is satisfied
+    // without needing three more bodies to close a ring.
+    let player_yaw = (child_at.x - player_at.x)
+        .atan2(child_at.z - player_at.z)
+        .to_degrees()
+        + 180.0;
+
+    driver.packs.push(pack);
+    assert_wall_hugging_scenario(
+        &mut driver.grid_cache,
+        FACELING_CHILD_ATTACK_REACH - 0.2,
+        child_at,
+        player_at,
+    );
+    driver.step(&mut net, 0.1, player_at, player_yaw);
+
+    assert!(
+        driver
+            .attacks
+            .iter()
+            .any(|a| matches!(a.kind, PhantomAttackKind::Knockdown(..))),
+        "a player {:.1} m away with their back to a wall must be reachable; staged: {:?}",
+        child_at.distance_xz(player_at),
+        driver.attacks.iter().map(|a| a.kind).collect::<Vec<_>>()
+    );
+}
+
+/// The adult half of the same port. Its leash makes this worse, not better: pinned to its own
+/// chunk it cannot step around to find an angle the way the robapieles can.
+#[tokio::test]
+async fn an_adult_can_strike_a_player_pressed_into_a_wall() {
+    let mut driver = AdultDriver::new(42);
+    // The CHILD's reach, deliberately: it is inside the adult's too, and the contact stance only
+    // resolves within a short window — a gap near the adult's full 2.4 m leaves no stance to find.
+    assert!(FACELING_CHILD_ATTACK_REACH < FACELING_ADULT_ATTACK_REACH);
+    let (adult_at, player_at) =
+        author_wall_hugging_pair(&mut driver.grid_cache, FACELING_CHILD_ATTACK_REACH - 0.2);
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let id = net.spawn_faceling("Faceling_Adult_Test", adult_at.to_array(), 1);
+    net.peers.get_mut(&id).unwrap().position = adult_at.to_array();
+    let home = (0, 0); // the authored chunk
+
+    driver.movers.push(AdultMover {
+        id,
+        home_chunk: home,
+        layer: 0,
+        // Already angry at the host player: ADR-094 point 2 only ever swings in `Enforce`.
+        state: AdultState::Enforce,
+        heading: 0.0,
+        commute_target: adult_at,
+        state_timer: 999.0,
+        health: 30,
+        enforce_target: Some(net.local_id),
+        strike_recover: 0.0,
+        progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
+    });
+
+    assert_wall_hugging_scenario(
+        &mut driver.grid_cache,
+        FACELING_CHILD_ATTACK_REACH - 0.2,
+        adult_at,
+        player_at,
+    );
+    driver.step(&mut net, 0.1, player_at);
+
+    assert!(
+        driver
+            .attacks
+            .iter()
+            .any(|a| matches!(a.kind, PhantomAttackKind::Hit(_))),
+        "an adult must reach a player {:.1} m away pressed into a wall; staged: {:?}",
+        adult_at.distance_xz(player_at),
+        driver.attacks.iter().map(|a| a.kind).collect::<Vec<_>>()
     );
 }
 

@@ -23,7 +23,7 @@ use std::collections::HashSet;
 
 use crate::world::faceling_spawn;
 use crate::world::grid_gen::{
-    cell_center, cell_of, find_path, is_walkable_grid_gen, segment_is_clear,
+    cell_center, cell_of, contact_stance, find_path, is_walkable_grid_gen, segment_is_clear,
     segment_is_clear_for_body, steer_around_walls, string_pull, CellCoord, NavScratch, CELL_SIZE_M,
     CHUNK_CELLS, PHANTOM_BODY_RADIUS,
 };
@@ -141,7 +141,7 @@ const FACELING_ENFORCE_COOLOFF_S: f32 = 45.0;
 
 /// E1c — the blow itself. Same reach as `PHANTOM_ATTACK_REACH`: both are human-scale bodies at
 /// arm's length, and a different number here would be a number with no reason behind it.
-const FACELING_ADULT_ATTACK_REACH: f32 = 2.4;
+pub(super) const FACELING_ADULT_ATTACK_REACH: f32 = 2.4;
 /// Deliberately far below the robapieles' 35. ADR-094 point 2 makes the adult "atrezzo primero,
 /// amenaza segundo" — at this rate a full-health player has some twenty seconds of being cornered
 /// before it matters, which is long enough to read as a warning rather than an execution. The
@@ -646,12 +646,27 @@ impl AdultDriver {
                 // (ADR-082): reach alone would let an adult pinned against a partition wall bleed
                 // whoever walks down the corridor on the other side, 12 a swing, unseeable and
                 // unanswerable. Its leash makes that worse, not better — it cannot step around.
+                //
+                // ADR-082 piece 1(b), ported: the line runs to the CONTACT STANCE, not to you. Your
+                // own position quantizes into a cell grid_gen calls solid whenever you press
+                // yourself against a wall (the collision divergence ADR-082 documents), so the line
+                // to it is never clear and the adult simply never swung — hugging a wall was
+                // perfect immunity from both species. Distance is still measured against YOU: using
+                // the contact for that would hand out free reach, which the ADR forbids in capitals.
                 let strike_target = match self.movers[i].strike_recover <= 0.0 {
                     false => None,
                     true => target_pos.filter(|target| {
+                        let line_to = contact_stance(
+                            &mut self.grid_cache,
+                            layer,
+                            from,
+                            *target,
+                            PHANTOM_BODY_RADIUS,
+                        )
+                        .unwrap_or(*target);
                         world_pos_to_layer(target.y) == layer
                             && target.distance_xz(from) <= FACELING_ADULT_ATTACK_REACH
-                            && segment_is_clear(&mut self.grid_cache, layer, from, *target)
+                            && segment_is_clear(&mut self.grid_cache, layer, from, line_to)
                     }),
                 };
                 if let (Some(target), Some(victim)) = (strike_target, self.movers[i].enforce_target)
@@ -971,7 +986,7 @@ pub(super) const FACELING_CHILD_PACK_MAX: usize = 8;
 
 /// E2c — the `Press` role's blow. Shorter than the adults' 2.4 m: a child's arms are shorter, and
 /// the tighter reach is also what forces the cerco to actually CLOSE before anything lands.
-const FACELING_CHILD_ATTACK_REACH: f32 = 1.8;
+pub(super) const FACELING_CHILD_ATTACK_REACH: f32 = 1.8;
 /// Longer than the adults' 2.5 s. The knockdown is a much heavier event than a plain hit (ADR-076
 /// takes control away for `PHANTOM_KNOCKDOWN_SECONDS`), so it has to be rare enough that a cerco
 /// reads as one nasty moment and a scramble out, not as a stun-lock with no way back.
@@ -3059,8 +3074,20 @@ impl ChildDriver {
                     let dist = tpos.distance_xz(from);
                     let same_layer = world_pos_to_layer(tpos.y) == layer;
                     let facing_away = !player_is_looking_at(tpos, tyaw, from);
+                    // ADR-082 piece 1(b), ported: to the CONTACT STANCE, not to you — see the
+                    // adult's own strike test. Backed into a wall you were untouchable by the whole
+                    // pack: no shove, no screamer, no knockdown, because the line to a cell
+                    // grid_gen calls solid is never clear. `dist` above still measures against YOU.
+                    let line_to = contact_stance(
+                        &mut self.grid_cache,
+                        layer,
+                        from,
+                        tpos,
+                        PHANTOM_BODY_RADIUS,
+                    )
+                    .unwrap_or(tpos);
                     let clear =
-                        same_layer && segment_is_clear(&mut self.grid_cache, layer, from, tpos);
+                        same_layer && segment_is_clear(&mut self.grid_cache, layer, from, line_to);
                     let dx = tpos.x - from.x;
                     let dz = tpos.z - from.z;
 
@@ -3181,10 +3208,20 @@ impl ChildDriver {
                     if let Some((victim, tpos, tyaw)) = live {
                         // Reach AND a clear line, same as the adult's and for the same reason
                         // (ADR-082): without the segment test the pack knocks you down through
-                        // the partition it is standing behind.
+                        // the partition it is standing behind. And, ported with it, the line goes
+                        // to the CONTACT STANCE — otherwise the one blow the whole cerco exists to
+                        // land is the one that a wall at your back makes impossible.
+                        let line_to = contact_stance(
+                            &mut self.grid_cache,
+                            layer,
+                            from,
+                            tpos,
+                            PHANTOM_BODY_RADIUS,
+                        )
+                        .unwrap_or(tpos);
                         if world_pos_to_layer(tpos.y) == layer
                             && tpos.distance_xz(from) <= FACELING_CHILD_ATTACK_REACH
-                            && segment_is_clear(&mut self.grid_cache, layer, from, tpos)
+                            && segment_is_clear(&mut self.grid_cache, layer, from, line_to)
                         {
                             // The SAME predicate that switches the freeze off — see
                             // `cerco_is_closed`'s own doc for why the two must not drift apart.
