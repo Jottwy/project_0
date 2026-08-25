@@ -1835,11 +1835,21 @@ unitarios que `sed -i` se llevó. `one_members_sighting_commits_the_whole_pack_t
 que rehacerlo: plantaba el pack en `(0,0,0)`, que es celda de PARED. Ningún test de percepción
 autora ya coordenadas — `sightline_pair` busca el escenario en el mundo real. **1001/1001.**
 
+### El golpe pegado a la pared — CERRADO (Enmienda 15, commit `ab4059f7`)
+Las tres pruebas de golpe (el `Hit` del adulto, el knockdown del `Press`, y el `clear` que comparten
+empujón y screamer) exigían línea limpia hasta el JUGADOR, cuya posición cuantiza dentro de una
+celda sólida en cuanto te pegas a un muro: **abrazarte a una pared era inmunidad total ante las dos
+especies**. Portada la pieza 1(b) de ADR-082 con su fallback; la distancia se sigue midiendo contra
+el jugador (prohibición del ADR intacta).
+
+Y una lección de arnés que vale para el próximo test: estos dos pasaban solos y fallaban
+acompañados —y luego al revés— porque `active_manifest()` es un `OnceLock` **del proceso** y
+`enforce_cap` puede evictar un chunk autorado. Para geometría que el test necesita CONTROLAR:
+`insert_for_test` **reinstalado justo antes de la llamada bajo prueba**, con aserciones de
+precondición. Suite corrida **ocho veces** en verde (1007/1007), que es como se demuestra un test
+sensible al orden.
+
 ### Lo que sigue abierto (todo con camino de código en la auditoría)
-- **El golpe pegado a la pared.** El del niño y el del adulto exigen `segment_is_clear` hasta el
-  JUGADOR en vez de hasta el `contact_stance` de ADR-082 — la pieza (b) nunca se portó a los
-  facelings, así que abrazado a un muro eres intocable para ellos. Es el mismo bug que ADR-082
-  cerró para el robapieles.
 - **`Flee` no navega ni tiene watchdog** (rumbo directo + bisagras): un superviviente en trampa
   cóncava se queda ahí, porque del estado solo se sale LLEGANDO al ancla.
 - **`Enforce` del adulto** puede moler contra la correa de su chunk indefinidamente: el A* no
