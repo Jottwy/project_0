@@ -1764,3 +1764,42 @@ Petición de Joel: apuntar un objeto interactuable lo teñía entero de beige am
 - **`STP_PlacementAllowed.asset` y `STP_PlacementDenied.asset` son configs SEPARADOS**, con materiales propios y `_addMode: 1` (Override). El preview verde/rojo de construcción no depende de `FPS_Outline.asset` y no se vio afectado.
 - **El prompt de interacción es UI aparte** (`GenericInteractionPromptUI` / `InteractablePromptsControllerUI`), no tiene relación con `MaterialEffect`.
 - `FPS_Outline.mat` y `Outline.shadergraph` quedan intactos: si alguna vez se quiere recuperar un resaltado, basta con devolver `ReplacementMaterial` a su material original y ajustar `_Color`/`_Float` (las ÚNICAS dos props que el shader lee).
+
+## Estado actual — Facelings: voz, oclusión y navegación (2026-08-25)
+
+Sesión larga de playtest sobre ADR-094. Cinco enmiendas (9-13), cuatro commits, 993/993 en verde.
+El detalle y el POR QUÉ están en `docs/DECISIONS.md`; lo que falta, en `docs/FACELING-ROADMAP.md`.
+
+**La voz dejó de ser ruido.** El pack tenía UN beat de 5 s y daba voz a TODOS los miembros en
+cada uno, en cualquier estado, hubiera o no alguien cerca: ocho niños = 1.6 sonidos/segundo para
+siempre ("parecen cotorras"). Ahora hay bandas por distancia — mudo >55 m, canto >22 m con UNA
+voz cada 14 s, risitas de media plantilla cada 6.5 s, susurro de todos cada 3.5 s con el cerco
+cerrado — más cooldown de 9 s por boca y silencios de 2.6 s armados al cerrarse el anillo y tras
+cada evento. El corte del sonido ES el aviso.
+
+**Los bancos son audio real**, cortados de una grabación con `tools/dev/GenFacelingChildVoices.py`
+(segmentación en dos pasadas, clasificación por periodicidad y ataque, reverb de convolución con
+decaimiento por frecuencia). 38 clips. La síntesis anterior se retiró y su script se borró para
+que nadie la reejecute encima.
+
+**La distancia dejó de ser solo volumen.** Paso-bajo por distancia (absorción de aire) y spread,
+sobre el mismo eje normalizado que el rolloff, así que no cuestan nada por frame. Encendido solo
+en el niño; el robapieles no cambia.
+
+**Mezcla balanceada.** Ningún hook tocaba `AudioSource.priority`, así que la charla ambiental
+competía por voces con los disparos. Ambiente 205-215, eventos 105-115, y los pasos del pack a
+230/0.45 (ocho niños a zancada de 0.48 m son ~70 sonidos por segundo).
+
+**Se acabó el wallhack de la mirada.** El freeze era una prueba de ÁNGULO pura: apuntar a una
+pared congelaba a todo el que hubiera detrás. Ahora exige línea de visión real. `player_is_looking_at`
+NO se tocó — ADR-016 lo fija sin oclusión para el robapieles.
+
+**Silenciado el rugido de respuesta del robapieles** (banco 4). Tenía dos disparadores, y el
+segundo era un coro a escala de nivel: cualquier grito se oía en todas partes por varias bocas.
+
+### Lo que NO está cerrado
+- **El atasco en paredes.** La Enmienda 12 arregló una causa real (un paso desviado por las
+  bisagras contaba como progreso, así que el pathfinder nunca se llamaba), pero NO se logró un
+  test que fallara con el bug puesto. Puede haber más causas. Ver §2.1 del roadmap.
+- **Tres tests de la Enmienda 12 se perdieron** cuando `sed -i` corrompió `tests.rs`. Ver §2.2.
+- Densidades y radios siguen siendo PLACEHOLDER v1, sin medir.
