@@ -1798,8 +1798,61 @@ NO se tocó — ADR-016 lo fija sin oclusión para el robapieles.
 segundo era un coro a escala de nivel: cualquier grito se oía en todas partes por varias bocas.
 
 ### Lo que NO está cerrado
-- **El atasco en paredes.** La Enmienda 12 arregló una causa real (un paso desviado por las
-  bisagras contaba como progreso, así que el pathfinder nunca se llamaba), pero NO se logró un
-  test que fallara con el bug puesto. Puede haber más causas. Ver §2.1 del roadmap.
-- **Tres tests de la Enmienda 12 se perdieron** cuando `sed -i` corrompió `tests.rs`. Ver §2.2.
 - Densidades y radios siguen siendo PLACEHOLDER v1, sin medir.
+
+---
+
+## Estado actual — Facelings: la auditoría de la IA y el atasco, cerrado (2026-08-25, 2ª sesión)
+
+Playtest tras la Enmienda 12: **"sigue sin funcionar"**. Auditoría completa de las dos criaturas
+(`faceling.rs`, `phantom.rs`, `nav.rs`, `faceling_spawn.rs`, hooks de proxy) y **Enmienda 14**:
+eran CINCO causas y el pathfinder no era ninguna. Commit `6d731660`.
+
+**La principal: la detección veía a través de las paredes.** Cono + radio y nada más, así que el
+pack te fijaba tras un muro, convergía sobre un objetivo que el A* no podía alcanzar, y el mismo
+test ciego refrescaba `lost_for` cada tick — la rendición de 20 s tampoco corría NUNCA. Ahora ver
+exige línea, y oír (8 m, sin cono ni línea) es el agujero deliberado que impide que un tabique sea
+inmunidad; escribe la CELDA, no tu pose.
+
+**Las otras tres del backend:** el latch de congelación no se limpiaba al rendirse el pack (estatua
+permanente — el freeze no tiene límite de distancia y la detección sí, mirar desde 25 m lo dejaba
+clavado para siempre); `advance_step` conflaba dos preguntas en un bool y **anulaba la Enmienda 12
+entera** (un mover encajado no podía volver a anotar un `Clear`, así que planificaba un A* de por
+vida); y `regroup_lone_survivors` podía meter un miembro en el pack equivocado o **panic del host**
+con dos fusiones el mismo tick.
+
+**Y una del cliente: el `Seize` estaba MUERTO.** `ResolveGrabber` filtra por `revealed`, que ningún
+faceling tiene, así que la Enmienda 7 entera (giro, cara a cara, sordera, bloqueo de correr) era
+código muerto en su único caso de uso.
+
+**Rendimiento medido en RELEASE** (8 packs × 8 niños, `faceling_pathfinding_cost`): cerco 0,259 →
+**0,168 ms**, vagabundeo 0,235 → **0,089 ms**, contra el techo de 2 ms de ADR-040. El arreglo del
+trinquete DEVUELVE rendimiento: los 64 estaban pagando navegación que no necesitaban.
+
+**Los tests ya discriminan, y está probado uno a uno.** Cada arreglo tiene un test que FALLA con su
+bug reinstalado, verificado en un worktree limpio (seis mutantes, seis rojos). Recuperados los dos
+unitarios que `sed -i` se llevó. `one_members_sighting_commits_the_whole_pack_to_the_cerco` hubo
+que rehacerlo: plantaba el pack en `(0,0,0)`, que es celda de PARED. Ningún test de percepción
+autora ya coordenadas — `sightline_pair` busca el escenario en el mundo real. **1001/1001.**
+
+### Lo que sigue abierto (todo con camino de código en la auditoría)
+- **El golpe pegado a la pared.** El del niño y el del adulto exigen `segment_is_clear` hasta el
+  JUGADOR en vez de hasta el `contact_stance` de ADR-082 — la pieza (b) nunca se portó a los
+  facelings, así que abrazado a un muro eres intocable para ellos. Es el mismo bug que ADR-082
+  cerró para el robapieles.
+- **`Flee` no navega ni tiene watchdog** (rumbo directo + bisagras): un superviviente en trampa
+  cóncava se queda ahí, porque del estado solo se sale LLEGANDO al ancla.
+- **`Enforce` del adulto** puede moler contra la correa de su chunk indefinidamente: el A* no
+  conoce la correa y el timer se refresca a <12 m sin exigir línea ni alcanzabilidad.
+- **Robapieles, 7 hallazgos confirmados**, el peor: `wake_for_noises` no aplica
+  `PHANTOM_MIN_SPAWN_DISTANCE`, así que un disparo materializa la criatura en tu cara (reabre el
+  bug de ADR-050 por la puerta del ruido). También: `search_fallback` obsoleto entre cazas, ambush
+  con el jugador mirando (contra ADR-076), `strike_recover` que no frena el re-sprint que su doc
+  promete, ambush sin `contact_stance`, y `tick_grab` sin la salida "la víctima se va".
+- **Población:** histéresis del adulto rota (despawn+respawn en el mismo reconcile ⇒ parpadeo y
+  **salud restaurada gratis**), gate de distancia mínima que solo mira `drawn[0]`, y cap no
+  determinista por orden de `HashMap`.
+- **Cliente:** el botín robado nunca se ve (`carry_def` es un `ItemDefinition` y `ProxyCarryHook`
+  lo resuelve contra `CarryableDefinition`), y morir durante el seize deja la cinemática congelada
+  que RESUCITA tras el respawn.
+- **Enmiendas 12 y 13 no están en `DECISIONS.md`** — viven solo en el commit `294c96df`.

@@ -43,31 +43,36 @@ ese uno y te cuesta los otros.
 
 Esto es deuda, no ideas.
 
-### 2.1 El atasco en paredes — arreglado a medias, sin demostrar
+### 2.1 El atasco en paredes — CERRADO por la Enmienda 14 (2026-08-25, 2ª sesión)
 
-Playtest 2026-08-25: *"se quedan como intentando atravesar una pared... no reconocen las paredes"*.
+Playtest 2026-08-25: *"se quedan como intentando atravesar una pared"*, y después de la Enmienda
+12, *"sigue sin funcionar"*. La auditoría encontró **cinco causas, y el pathfinder no era ninguna**.
 
-La Enmienda 12 encontró y arregló una causa REAL: `note_step` contaba como progreso un paso que
-las bisagras ya habían doblado 8° contra la pared, así que `nav_blocked` decaía a cero y el
-pathfinder **nunca llegaba a llamarse**. Más la puerta, que tiraba la ruta al primer paso limpio.
+La que mandaba: **la detección era un test de ángulo sin oclusión**, así que el pack te fijaba a
+través de una pared, convergía sobre un objetivo inalcanzable para el A*, y el mismo test ciego
+refrescaba `lost_for` cada tick — la rendición de 20 s tampoco corría nunca. Más la estatua
+permanente (el latch de congelación no se limpiaba al rendirse el pack), el trinquete de
+`advance_step` que anulaba la Enmienda 12 entera, el `note_step` incondicional de `PackRoam`, y
+—fuera del atasco— el panic de `regroup_lone_survivors` y el `Seize` muerto en cliente.
 
-**Pero no se demostró.** Se escribió un test end-to-end, se reinstaló el bug a propósito para
-comprobar que lo cazaba, y pasó igualmente — la geometría que el test encontraba era resoluble
-por las bisagras. Un test que no falla ante el bug que dice cubrir es peor que ninguno, así que
-no se commiteó.
+Detalle y por qué de cada uno: **ADR-094 Enmienda 14** en `docs/DECISIONS.md`. Commit `6d731660`.
 
-**Puede haber más causas.** Lo siguiente es reproducir el atasco en un escenario controlado:
-esquina en L, columna suelta, vano de puerta. Y un test que SÍ falle sin el arreglo.
+Sigue abierto, y es lo próximo si el atasco reaparece: **el golpe no usa `contact_stance`** (pegado
+a una pared eres intocable para ellos, ADR-082 pieza (b) sin portar), **`Flee` no navega ni tiene
+watchdog**, y **`Enforce` puede moler contra la correa de su chunk**.
 
-### 2.2 Tests perdidos de la Enmienda 12
+### 2.2 Tests perdidos de la Enmienda 12 — RECUPERADOS
 
-`sed -i` corrompió `backend/src/game_loop/tests.rs` (431 KB de bytes nulos). Se recuperó del
-commit, pero se perdieron tres tests que había que reescribir:
-- `a_deflected_step_is_not_progress` — unitario sobre `StepOutcome::from`.
-- `a_route_is_not_abandoned_after_one_clean_step` — unitario sobre `wants_routing`.
-- el end-to-end de rodear la pared (el que no discriminaba; hay que rehacerlo mejor).
+`sed -i` corrompió `backend/src/game_loop/tests.rs` (431 KB de bytes nulos). Los tres tests se
+reescribieron en la Enmienda 14: los dos unitarios (`a_deflected_step_is_not_progress`,
+`a_route_is_not_abandoned_after_one_clean_step`) y, en lugar del end-to-end que no discriminaba,
+cinco tests de conducta que SÍ fallan con su bug reinstalado — comprobado mutante a mutante en un
+worktree limpio.
 
-Los dos primeros son triviales y sí discriminan. Ver la memoria `sed-i-destroys-source-files`.
+**La lección, que es lo reutilizable:** el end-to-end original no discriminaba porque buscaba un
+fallo de NAVEGACIÓN cuando la causa era de PERCEPCIÓN. Y ningún test de percepción debe autorar
+coordenadas a mano — `sightline_pair` busca el escenario en el mundo real con `with_rules`. Ver la
+memoria `sed-i-destroys-source-files`.
 
 ### 2.3 Densidades y radios siguen siendo PLACEHOLDER v1
 
