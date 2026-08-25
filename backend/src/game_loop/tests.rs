@@ -8235,15 +8235,60 @@ fn level4_scaled_density_only_applies_inside_the_regions_block() {
     );
 
     let rl = crate::world::grid_gen::level4::REGION_LAYER as u8;
-    assert_eq!(level4_scaled_density(2.0, region_block, rl, 0), 2.0);
+    let mult = crate::world::level4_layout::REGION_PHANTOM_DENSITY_MULT;
+    // Epoch 0 NO es "densidad normal" dentro de la reserva: el multiplicador de zona se aplica
+    // igualmente, y el epoch solo lo escala encima. Heredar la cifra del laberinto dejaba UN
+    // robapieles en los 150 m enteros.
+    assert_eq!(level4_scaled_density(2.0, region_block, rl, 0), 2.0 * mult);
     assert_eq!(
         level4_scaled_density(2.0, region_block, rl, 2),
-        2.0 * crate::world::level4_layout::density_scale_for_epoch(2)
+        2.0 * mult * crate::world::level4_layout::density_scale_for_epoch(2)
     );
     assert_eq!(
         level4_scaled_density(2.0, (0, 0), 0, 5),
         2.0,
-        "fuera de la reserva, el epoch no debe tocar la densidad"
+        "fuera de la reserva, ni el epoch ni el multiplicador de zona deben tocar la densidad"
+    );
+}
+
+/// El sorteo reparte sobre el BLOQUE (4×4 chunks) y la reserva ocupa 9 de esos 16. Sin este
+/// descarte, subir `REGION_PHANTOM_DENSITY_MULT` siembra robapieles en el laberinto vecino, a
+/// 10 km del spawn y al otro lado de un perímetro macizo: IA pagada por criaturas que ningún
+/// jugador puede encontrarse, y una constante que ya no dice "cuántos hay en la zona".
+#[test]
+fn only_spots_inside_the_reserve_wake_up_within_the_regions_block() {
+    use crate::world::grid_gen::level4::{entry_hall_world_pos, REGION_LAYER, REGION_ORIGIN_CHUNK};
+    use crate::world::phantom_spawn::BLOCK_CHUNKS;
+
+    let region_block = (
+        REGION_ORIGIN_CHUNK.0 / BLOCK_CHUNKS,
+        REGION_ORIGIN_CHUNK.1 / BLOCK_CHUNKS,
+    );
+    let rl = REGION_LAYER as u8;
+
+    assert!(
+        level4_spot_is_usable(region_block, rl, entry_hall_world_pos()),
+        "el vestíbulo está dentro de la reserva y tiene que despertar"
+    );
+
+    // Mismo bloque, pero en el cuarto de chunks que la reserva NO ocupa (la reserva son 3×3 de
+    // los 4×4 del bloque, así que el chunk de índice 3 queda fuera por construcción).
+    let chunk_size_m = 50.0f32;
+    let outside = [
+        (REGION_ORIGIN_CHUNK.0 + 3) as f32 * chunk_size_m + 25.0,
+        entry_hall_world_pos()[1],
+        (REGION_ORIGIN_CHUNK.1 + 3) as f32 * chunk_size_m + 25.0,
+    ];
+    assert!(
+        !level4_spot_is_usable(region_block, rl, outside),
+        "un punto del bloque que cae fuera de la reserva es inalcanzable: no debe despertar"
+    );
+
+    // Fuera del bloque de la reserva el laberinto no tiene dentro ni fuera — todo vale, o se
+    // habría apagado el sorteo de robapieles del mundo entero.
+    assert!(
+        level4_spot_is_usable((0, 0), 0, [12.5, 0.9, 12.5]),
+        "en Level 0 no se descarta nada"
     );
 }
 

@@ -453,6 +453,38 @@ pub fn density_scale_for_epoch(epoch: u32) -> f32 {
     (1.0 + epoch as f32 * DENSITY_SCALE_PER_EPOCH).min(DENSITY_SCALE_CAP)
 }
 
+/// Cuántos robapieles vale la reserva frente a un trozo cualquiera de laberinto, ANTES del
+/// escalado por epoch.
+///
+/// `PHANTOM_LAYER_DENSITY[0] = 1.0` es la densidad del LABERINTO: uno esperado por bloque de
+/// 200 m, medido para un mundo por el que se camina horas. La reserva es lo contrario — 150 m
+/// cerrados que se visitan en incursiones de minutos con una ventana de vuelta corriendo — y
+/// heredar esa cifra dejaba UN robapieles en el mapa entero (medido, `level4_population_probe`).
+/// Con los facelings de ADR-093 neutrales dentro, ese único robapieles es LA amenaza de la
+/// zona: la incursión no tiene tensión ninguna si hay uno y se le esquiva.
+///
+/// DILUCIÓN, que hay que tener presente al tocar este número: el sorteo reparte sobre el BLOQUE
+/// entero (4×4 chunks) y la reserva solo ocupa 9 de esos 16, así que ~56 % de lo sorteado cae
+/// dentro y el resto va a parar al laberinto vecino, a 10 km de cualquier jugador. La sonda
+/// imprime las dos cuentas por separado justo para que este valor se elija mirando la de dentro.
+///
+/// No toca `PHANTOM_LAYER_DENSITY`: el laberinto no cambia, esto es un multiplicador local.
+///
+/// El 8 sale del barrido de la sonda sobre TRES semillas, no de una (con cuentas de un dígito la
+/// suerte del sorteo pesa más que el propio valor: a 5, el epoch 0 daba 1 robapieles con la
+/// semilla 42 y 3 con la 7778). Lo que produce, contando solo lo que cae dentro:
+///   epoch 0 → 3-5    entras y hay uno cada dos o tres salas: presente, esquivable
+///   epoch 2 → 7-8    ya cuesta cruzar la planta sin encontrarse a uno
+///   epoch 8 → 15-17  el techo (`DENSITY_SCALE_CAP`), que se lee como "vete"
+///
+/// TECHO QUE NO SE VE EN ESOS NÚMEROS: `PHANTOM_ACTIVE_CAP` = 6 limita cuántos se SIMULAN a la
+/// vez, así que a partir de epoch ~1 el sorteo produce más candidatos de los que llegan a
+/// existir. La progresión no se pierde, cambia de forma: lo que sube no es cuántos hay delante
+/// sino lo CERCA que aparecen y lo rápido que se repone otro al alejarte del anterior. Subir ese
+/// tope es una decisión aparte y con medida propia — la zancada del planificador de IA está
+/// dimensionada contra ese 6 (ver `faceling.rs`, nota de `PHANTOM_ACTIVE_CAP`).
+pub const REGION_PHANTOM_DENSITY_MULT: f32 = 8.0;
+
 /// ADR-093 (E5): ¿el bloque de sorteo de fantasmas (`phantom_spawn::block_of`, 200×200 m) cae
 /// dentro de la reserva del Level 4? La reserva (3×3 chunks, 150×150 m) cabe ENTERA en un solo
 /// bloque de sorteo (4×4 chunks, 200×200 m) porque `REGION_ORIGIN_CHUNK` está alineado a bloque
@@ -704,6 +736,95 @@ mod zone_rule_tests {
         assert!(
             !block_is_in_region((region_block.0 + 1, region_block.1), REGION_LAYER as u8),
             "el bloque vecino no es la reserva"
+        );
+    }
+
+    /// SONDA (no aserción): cuánta vida hay HOY dentro de la reserva, chunk a chunk, contra la
+    /// que hay en un trozo equivalente de Level 0. Es el número que decide si "repartir
+    /// entidades" necesita constantes nuevas o solo alinear la zona.
+    ///
+    /// `#[ignore]` con motivo, como las otras sondas del proyecto: imprime, no comprueba.
+    /// Lanzar sola:
+    /// `cargo test --manifest-path backend/Cargo.toml level4_population_probe -- --ignored --nocapture`
+    #[test]
+    #[ignore = "sonda de medición: imprime la población de la reserva, no comprueba nada"]
+    fn level4_population_probe() {
+        use crate::world::chunk::ZONE_OFFICE;
+        use crate::world::faceling_spawn::{draw_adults, draw_child_pack};
+        use crate::world::phantom_spawn::{draw_all, BLOCK_CHUNKS};
+        use crate::world::zone_density::zone_kind_for;
+        use level4::{REGION_CHUNKS, REGION_LAYER, REGION_ORIGIN_CHUNK};
+
+        let seed = 42u64;
+        let layer = REGION_LAYER as u8;
+
+        let mut adults = 0usize;
+        let mut packs = 0usize;
+        let mut office_chunks = 0usize;
+        println!("--- reserva Level 4 (seed {seed}) ---");
+        for dz in 0..REGION_CHUNKS {
+            for dx in 0..REGION_CHUNKS {
+                let (cx, cz) = (REGION_ORIGIN_CHUNK.0 + dx, REGION_ORIGIN_CHUNK.1 + dz);
+                let zone = zone_kind_for(seed, cx, cz, layer);
+                let a = draw_adults(seed, cx, cz, layer, 1.0).len();
+                let p = draw_child_pack(seed, cx, cz, layer, 1.0).len();
+                office_chunks += usize::from(zone == ZONE_OFFICE);
+                adults += a;
+                packs += usize::from(p > 0);
+                println!(
+                    "  chunk ({cx},{cz}) zone_kind={zone} office={} adultos={a} crias={p}",
+                    zone == ZONE_OFFICE
+                );
+            }
+        }
+        let block = (
+            REGION_ORIGIN_CHUNK.0 / BLOCK_CHUNKS,
+            REGION_ORIGIN_CHUNK.1 / BLOCK_CHUNKS,
+        );
+        // Los sorteos caen sobre el BLOQUE (4×4 chunks) y la reserva son 9 de esos 16, así que
+        // solo cuenta lo que aterriza dentro — es lo que `phantom::level4_spot_is_usable`
+        // despierta y lo único que un jugador puede encontrarse.
+        let inside_count = |seed: u64, scale: f32| -> usize {
+            draw_all(seed, block, layer, scale)
+                .iter()
+                .filter(|p| level4::world_pos_to_region_cell(**p).is_some())
+                .count()
+        };
+        // Multiplicador vigente primero, y luego el barrido: elegir esta constante mirando UNA
+        // semilla es elegirla por suerte del sorteo, que con cuentas de un dígito manda más que
+        // el propio valor.
+        let seeds = [42u64, 7778, 9_999_999];
+        for mult in [REGION_PHANTOM_DENSITY_MULT, 8.0, 12.0, 16.0] {
+            print!("  mult {mult:>5}: ");
+            for epoch in [0u32, 1, 2, 4, 8] {
+                // Exactamente lo que `phantom::level4_scaled_density` calcula, con el `base` de
+                // sesión a 1.0. Si esa función cambia, este número deja de medir lo que corre
+                // en el juego — única duplicación de la sonda, a propósito.
+                let scale = mult * density_scale_for_epoch(epoch);
+                let per_seed: Vec<usize> = seeds.iter().map(|&s| inside_count(s, scale)).collect();
+                print!("epoch{epoch}={per_seed:?} ");
+            }
+            println!();
+        }
+        println!(
+            "  TOTAL reserva: {adults} adultos, {packs} packs de crias, \
+             {office_chunks}/{} chunks vistos como ZONE_OFFICE por zone_kind_for",
+            REGION_CHUNKS * REGION_CHUNKS
+        );
+
+        // Control: el mismo tamaño de trozo en Level 0, para leer los de arriba con escala.
+        let mut l0_adults = 0usize;
+        let mut l0_office = 0usize;
+        for dz in 0..REGION_CHUNKS {
+            for dx in 0..REGION_CHUNKS {
+                l0_adults += draw_adults(seed, dx, dz, 0, 1.0).len();
+                l0_office += usize::from(zone_kind_for(seed, dx, dz, 0) == ZONE_OFFICE);
+            }
+        }
+        println!(
+            "--- control Level 0, mismo area: {l0_adults} adultos, \
+             {l0_office}/{} chunks ZONE_OFFICE ---",
+            REGION_CHUNKS * REGION_CHUNKS
         );
     }
 }

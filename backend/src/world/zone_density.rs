@@ -64,6 +64,27 @@ pub fn rules_for(world_seed: u64, cx: i32, cz: i32, layer: u8) -> LayerRules {
 /// a la de su estructura — exactamente la clase de error silencioso del bug de
 /// capa 0 de `ZoneRegistry`, y otra vez justo en la zona más visible del juego.
 pub fn zone_kind_for(world_seed: u64, cx: i32, cz: i32, layer: u8) -> u8 {
+    // ADR-093: la reserva del Level 4 ES una planta de oficinas, y su chunk ya nace con
+    // `zone_kind = ZONE_OFFICE` (`level4_layout::generate_region_chunk`). Esta función, en
+    // cambio, re-deriva del seed y no sabía que la reserva existía: devolvía la zona del
+    // sorteo de plantilla de unas coordenadas que ese sorteo nunca llega a generar.
+    //
+    // La divergencia NO era cosmética. `faceling_spawn` pesa su densidad por
+    // `zone_kind_for(..) == ZONE_OFFICE`, así que la única planta de oficinas de verdad del
+    // juego cobraba el factor de FUERA de oficina (un octavo): medido con
+    // `level4_population_probe`, 2 adultos y 1 pack en 150×150 m — MENOS vida que un trozo
+    // cualquiera de laberinto (3 adultos en la misma área). Es el modo de fallo que el
+    // comentario de abajo ya avisa para el cluster de spawn, repetido en la otra punta.
+    //
+    // Va PRIMERO, antes incluso que las estructuras iniciales: la reserva está a 10 km y no
+    // puede solaparse con ninguna, así que el orden entre ambas es indiferente, y ponerlo
+    // arriba deja la respuesta a la vista sin leerse el resto. Inofensivo para la geometría:
+    // `rules_for` sale de aquí, pero `generate_chunk_layer` intercepta la reserva ANTES de
+    // mirar las reglas (`grid_gen::stitching`), así que ese `LayerRules` no lo consume nadie.
+    if crate::world::grid_gen::level4::region_chunk_local((cx, cz), layer as i32).is_some() {
+        return ZONE_OFFICE;
+    }
+
     let chunk_layer = layer as ChunkLayer;
     if let Some(&zone) = structure_zones(world_seed).get(&(cx, cz, chunk_layer)) {
         return zone;

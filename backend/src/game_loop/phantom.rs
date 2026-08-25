@@ -1912,9 +1912,14 @@ struct MoverTick {
     target: Option<(PeerId, Vec3, f32, f32)>,
 }
 
-/// ADR-093 (E5): `base` tal cual fuera del Level 4; escalado por epoch cuando `block` cae
-/// dentro de la reserva. Vive fuera del `impl` porque es pura (no necesita `&self`) y los dos
-/// call-sites de `phantom_spawn::draw_into` la comparten sin duplicar la comprobación.
+/// ADR-093 (E5): `base` tal cual fuera del Level 4; dentro de la reserva, la densidad PROPIA de
+/// la zona (`REGION_PHANTOM_DENSITY_MULT`) escalada además por el epoch. Vive fuera del `impl`
+/// porque es pura (no necesita `&self`) y los dos call-sites de `phantom_spawn::draw_into` la
+/// comparten sin duplicar la comprobación.
+///
+/// Los dos factores responden a preguntas distintas y por eso son dos constantes y no una: el
+/// multiplicador dice cuánto vale la reserva frente al laberinto y no cambia nunca; el escalado
+/// por epoch dice cuánto se ha torcido la región desde que se abrió la puerta.
 pub(super) fn level4_scaled_density(
     base: f32,
     block: (i32, i32),
@@ -1922,10 +1927,31 @@ pub(super) fn level4_scaled_density(
     level4_epoch: u32,
 ) -> f32 {
     if crate::world::level4_layout::block_is_in_region(block, layer) {
-        base * crate::world::level4_layout::density_scale_for_epoch(level4_epoch)
+        base * crate::world::level4_layout::REGION_PHANTOM_DENSITY_MULT
+            * crate::world::level4_layout::density_scale_for_epoch(level4_epoch)
     } else {
         base
     }
+}
+
+/// ADR-093: ¿sirve este punto sorteado, o cayó fuera de la reserva?
+///
+/// El sorteo reparte sobre el BLOQUE entero (4×4 chunks) y la reserva ocupa 9 de esos 16, así
+/// que ~44 % de lo que sale del bombo aterriza en el laberinto vecino — a 10 km del spawn, al
+/// otro lado de un perímetro macizo, donde ningún jugador va a estar nunca. Sin este descarte,
+/// subir `REGION_PHANTOM_DENSITY_MULT` paga IA por criaturas inalcanzables y la constante deja
+/// de significar "cuántos hay en la zona".
+///
+/// Se descarta en el BUCLE, nunca filtrando el vector: la identidad de cada criatura es
+/// `(bloque, capa, ÍNDICE en el sorteo)`, y compactar la lista renumeraría a todas las
+/// siguientes — el mismo robapieles cambiaría de identidad entre dos escaneos.
+///
+/// Fuera de la reserva devuelve siempre `true`: el laberinto no tiene dentro ni fuera.
+pub(super) fn level4_spot_is_usable(block: (i32, i32), layer: u8, pos: [f32; 3]) -> bool {
+    if !crate::world::level4_layout::block_is_in_region(block, layer) {
+        return true;
+    }
+    crate::world::grid_gen::level4::world_pos_to_region_cell(pos).is_some()
 }
 
 impl PhantomDriver {
@@ -2100,6 +2126,9 @@ impl PhantomDriver {
                         &mut drawn,
                     );
                     for (index, pos) in drawn.iter().copied().enumerate() {
+                        if !level4_spot_is_usable((bx, bz), layer, pos) {
+                            continue; // sorteado fuera de la reserva — inalcanzable, no despertar
+                        }
                         let key = ((bx, bz), layer, index as u8);
                         if taken.contains(&key) {
                             continue; // this one is already awake
@@ -2222,6 +2251,9 @@ impl PhantomDriver {
                         &mut drawn,
                     );
                     for (index, pos) in drawn.iter().copied().enumerate() {
+                        if !level4_spot_is_usable((bx, bz), layer, pos) {
+                            continue; // sorteado fuera de la reserva — inalcanzable, no despertar
+                        }
                         let key = ((bx, bz), layer, index as u8);
                         if taken.contains(&key) {
                             continue; // already awake, or already claimed by an earlier noise
