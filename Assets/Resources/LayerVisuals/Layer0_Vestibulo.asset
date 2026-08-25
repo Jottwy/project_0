@@ -434,11 +434,11 @@ MonoBehaviour:
   - zoneKind: 12
     anyZoneKind: 0
     overrideAmbientLight: 1
-    ambientLight: {r: 0.048, g: 0.052, b: 0.048, a: 1}
+    ambientLight: {r: 0.26, g: 0.28, b: 0.26, a: 1}
     overrideFogDensity: 1
     fogDensity: 0.024
     overrideFogColor: 1
-    fogColor: {r: 0.077, g: 0.083, b: 0.077, a: 1}
+    fogColor: {r: 0.2, g: 0.22, b: 0.2, a: 1}
     overrideReverb: 1
     reverbDecay: 0.6
     reverbRoom: -2600
