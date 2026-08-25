@@ -30,25 +30,32 @@ use super::{Cell, CellType, LayerGrid, LayerOutput, CELL_SIZE_M, CHUNK_CELLS};
 
 /// Esquina de menor coordenada de la reserva de región, en chunks.
 ///
-/// (0,0) — el MISMO XZ que el spawn, a propósito (decisión de Joel, 2026-08-24). La separación
-/// es VERTICAL (`REGION_LAYER`), no horizontal. Antes estaba en (2000,2000), o sea mundo
-/// (100 000, 100 000), y eso era un error: ahí un `f32` tiene ULP ≈ 8 mm, que en primera persona
-/// es tembleque visible de cámara y física. A XZ 0 y Y 400 la precisión es de micras.
+/// Chunk (200, 0) = **mundo (10 000, 0)**. Separación HORIZONTAL, en la capa 0, y el porqué de
+/// las dos cosas está medido, no elegido a ojo:
 ///
-/// **CONSECUENCIA CRÍTICA:** la reserva ya NO se distingue por XZ. Toda comprobación de
-/// pertenencia tiene que mirar la CAPA además de la coordenada — `region_chunk_local`,
-/// `world_pos_to_region_cell` y `level4_layout::block_is_in_region` la exigen. Olvidarlo trata
-/// el área de spawn como Level 4: sin construir y con densidad de fantasmas escalada.
-pub const REGION_ORIGIN_CHUNK: (i32, i32) = (0, 0);
+/// · **Por qué no (2000, 2000), como estuvo primero.** Mundo (100 000, 100 000): ahí un `f32`
+///   tiene ULP ≈ 8 mm, o sea tembleque visible de cámara y física en primera persona. A 10 000 m
+///   el ULP es ≈ 1 mm — imperceptible.
+/// · **Por qué no en altura, que es lo que se intentó después.** El streamer de Unity
+///   (`ProceduralWorldGenerator`) solo pide capas `0..layerCount-1` con `layerCount = 4`, y
+///   clampa la capa del jugador a ese rango. Una reserva en la capa 100 NUNCA se pide: el
+///   jugador aterriza en un vacío sin suelo ni paredes aunque el backend tenga la geometría —
+///   que es exactamente lo que pasó en el playtest del 2026-08-24. Subirla exige operar el
+///   streaming del cliente (más `layerVisuals[4]` y la niebla por capa) y, para pasar de 508 m,
+///   `ChunkLayer` `i8`→`i16`, que viaja en `ChunkSyncData` ⇒ ADR nuevo (regla dura #7).
+///   Pendiente como tarea propia; ver `docs/LEVEL4-ROADMAP.md`.
+/// · **Por qué 10 000 y no menos.** A pie son ~33 min en línea recta en la dirección exacta:
+///   inalcanzable en la práctica sin cerrar la puerta a acercarla si algún día conviene.
+pub const REGION_ORIGIN_CHUNK: (i32, i32) = (200, 0);
 
-/// Capa de la reserva. 100 × `LAYER_HEIGHT_M` (4 m) = **Y 400 m**, doce veces por encima del
-/// techo de la pila jugable del Level 0 (±8 capas = ±32 m), así que nada del mundo normal la
-/// alcanza ni por caída ni por escalera.
+/// Capa de la reserva: la 0, la única que el cliente sabe pedir hoy (ver `REGION_ORIGIN_CHUNK`).
 ///
-/// Tope de hoy: `ChunkLayer` es `i8`, o sea capa 127 = 508 m. Subirlo (Joel pidió 10 000 m)
-/// exige `i8`→`i16`, y ese tipo viaja en `ChunkSyncData` ⇒ formato de chunk ⇒ ADR nuevo antes
-/// de tocarlo (regla dura #7). Queda pendiente como ADR aparte.
-pub const REGION_LAYER: i32 = 100;
+/// Sigue siendo parte de la identidad de la región y toda comprobación de pertenencia la mira
+/// (`region_chunk_local`, `world_pos_to_region_cell`, `level4_layout::block_is_in_region`): eso
+/// entró cuando la reserva compartía XZ con el spawn y se conserva a propósito, porque es lo que
+/// hace que mover la región —aquí o a la altura, el día que el cliente lo soporte— sea cambiar
+/// estas dos constantes y nada más.
+pub const REGION_LAYER: i32 = 0;
 
 /// Lado de la reserva, en chunks.
 pub const REGION_CHUNKS: i32 = 3;
@@ -693,18 +700,23 @@ mod tests {
         assert_eq!(region_chunk_local((5, 5), l), None);
     }
 
-    /// EL test de esta mudanza: la reserva comparte XZ con el spawn, así que el MISMO chunk
-    /// (0,0) tiene que ser región en `REGION_LAYER` y Level 0 en la capa 0. Sin la capa en la
-    /// comprobación, el área de arranque del juego se trataría como Level 4.
+    /// La capa es parte de la identidad de la reserva, no solo el XZ. Hoy los separa también la
+    /// coordenada horizontal, pero la comprobación de capa se conserva a propósito: es lo que
+    /// permitirá mover la región a la altura (cuando el streamer del cliente sepa pedir esa
+    /// capa) cambiando solo las dos constantes.
     #[test]
-    fn the_spawn_chunk_is_only_the_reserve_on_the_regions_own_layer() {
-        assert!(region_chunk_local((0, 0), REGION_LAYER).is_some());
-        for other in [0, 1, -1, 8, REGION_LAYER - 1, REGION_LAYER + 1] {
+    fn the_reserve_is_only_itself_on_its_own_layer() {
+        assert!(region_chunk_local(REGION_ORIGIN_CHUNK, REGION_LAYER).is_some());
+        for other in [REGION_LAYER - 1, REGION_LAYER + 1, REGION_LAYER + 8] {
             assert_eq!(
-                region_chunk_local((0, 0), other),
+                region_chunk_local(REGION_ORIGIN_CHUNK, other),
                 None,
-                "capa {other}: el chunk de spawn NO es la reserva"
+                "capa {other}: no es la capa de la reserva"
             );
+        }
+        // Y el chunk de spawn no es la reserva en NINGUNA capa.
+        for layer in [REGION_LAYER, REGION_LAYER + 1, 3] {
+            assert_eq!(region_chunk_local((0, 0), layer), None);
         }
     }
 
@@ -758,7 +770,7 @@ mod tests {
 
     #[test]
     fn layers_other_than_the_regions_own_are_solid() {
-        for layer in [-1i32, 0, 1, 2, REGION_LAYER - 1, REGION_LAYER + 1] {
+        for layer in [REGION_LAYER - 1, REGION_LAYER + 1, REGION_LAYER + 2] {
             let out = generate_region_layer(42, EPOCH_V1, (1, 1), layer);
             assert!(
                 out.grid.cells().iter().all(|c| !c.is_walkable()),
@@ -870,25 +882,44 @@ mod tests {
         );
     }
 
-    /// La mitad de la comprobación que la mudanza a XZ (0,0) hizo imprescindible: el MISMO XZ
-    /// es reserva a la altura de la región y Level 0 a ras de suelo. Sin la banda de Y,
-    /// `position_is_buildable` prohibiría construir en el spawn.
+    /// El área de SPAWN nunca es la reserva. Con la región en (200,0) los separa el XZ; la
+    /// comprobación de altura sigue puesta y activa (se conserva de cuando compartían XZ), así
+    /// que se afirman las dos cosas: ni el spawn a ras de suelo, ni el spawn a la altura de la
+    /// región, ni la región a una altura que no es la suya.
     #[test]
-    fn the_same_xz_is_the_reserve_only_at_the_regions_height() {
-        let inside = [30.0, region_floor_y() + 1.8, 30.0];
-        assert!(world_pos_to_region_cell(inside).is_some());
+    fn the_spawn_area_is_never_the_reserve() {
+        let inside = entry_hall_world_pos();
+        assert!(
+            world_pos_to_region_cell(inside).is_some(),
+            "el vestíbulo tiene que caer dentro de la reserva"
+        );
 
-        for y_level0 in [0.0, 1.8, 4.0, 20.0, 32.0] {
+        for y in [0.0, 1.8, 4.0, 20.0, 32.0, 400.0] {
             assert_eq!(
-                world_pos_to_region_cell([30.0, y_level0, 30.0]),
+                world_pos_to_region_cell([0.0, y, 0.0]),
                 None,
-                "Y={y_level0} es Level 0, no la reserva"
+                "el spawn (0,{y},0) no es la reserva"
             );
         }
-        // Y muy por encima de la región tampoco cuenta.
+
+        // Mismo XZ que el vestíbulo pero muy por encima: fuera de la banda de altura.
         assert_eq!(
-            world_pos_to_region_cell([30.0, region_floor_y() + 100.0, 30.0]),
+            world_pos_to_region_cell([inside[0], inside[1] + 100.0, inside[2]]),
             None
+        );
+    }
+
+    /// ESPEJO CON C#: `GameBootstrap.SpawnLevel4Doors` ancla la puerta de vuelta a estas
+    /// coordenadas escritas a mano (Unity no puede llamar a esta función). Si alguien mueve la
+    /// región y solo toca el lado Rust, la puerta de vuelta se queda en mitad de la nada y el
+    /// jugador se queda encerrado — así que el número vive también aquí, y este test es quien
+    /// avisa. Al cambiarlo, cambiar `GameBootstrap.cs` en el MISMO commit.
+    #[test]
+    fn the_entry_hall_matches_the_hardcoded_csharp_door_anchor() {
+        assert_eq!(
+            entry_hall_world_pos(),
+            [10075.0, 1.8, 75.0],
+            "mueve también el ancla de GameBootstrap.SpawnLevel4Doors (Assets/Scripts/Gameplay)"
         );
     }
 

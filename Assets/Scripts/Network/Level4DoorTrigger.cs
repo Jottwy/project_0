@@ -26,6 +26,22 @@ namespace BackroomsSurvival.Net
     /// </summary>
     public sealed class Level4DoorTrigger : MonoBehaviour
     {
+        /// <summary>
+        /// Seconds after ANY crossing during which no door fires, shared by every trigger.
+        ///
+        /// Crossing lands you ON a door: entering drops you at the entry hall, which is exactly
+        /// where the Return trigger sits, and returning drops you at the spot you crossed from,
+        /// which is inside the Entry trigger. Without this the arrival frame reads as a fresh
+        /// enter-edge and bounces you straight back — an infinite ping-pong between levels.
+        ///
+        /// Static because the two triggers must silence EACH OTHER, not just themselves.
+        /// </summary>
+        private const float CrossCooldown = 3f;
+        private static float _lastCrossTime = float.NegativeInfinity;
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics() => _lastCrossTime = float.NegativeInfinity;
+
         private Level4Door _door;
         private float _radius;
         private long _nextRequestId = 1;
@@ -83,9 +99,19 @@ namespace BackroomsSurvival.Net
             float sqrDist = delta.x * delta.x + delta.z * delta.z;
             bool inside = sqrDist <= _radius * _radius;
 
+            // During the cooldown the state is still TRACKED but never fires. That is what makes
+            // "you arrived standing on a door" settle as already-inside: once the cooldown ends
+            // there is no pending edge, so you have to walk out and back in to cross again.
+            if (Time.time - _lastCrossTime < CrossCooldown)
+            {
+                _playerInside = inside;
+                return;
+            }
+
             if (inside && !_playerInside)
             {
                 IPCClient.Instance?.SendLevel4Door(_door, _nextRequestId++);
+                _lastCrossTime = Time.time;
             }
             _playerInside = inside;
         }

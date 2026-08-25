@@ -82,11 +82,12 @@ namespace BackroomsSurvival.Gameplay
         ///
         /// The Return anchor is the centre of the region's ENTRY HALL — the fixed 8×8-cell room
         /// (`grid_gen::level4::ENTRY_HALL`) that every epoch's layout contains verbatim, which is
-        /// also where crossing the Entry door drops you. Mirrors
-        /// `level4::entry_hall_world_pos()`: region origin chunk (0,0) ⇒ world 0, hall centre at
-        /// cell (30,30) ⇒ 30 × 2.5 m = 75 m, floor at layer 100 × 4 m = 400 m plus eye height.
-        /// It replaced the reserve's GEOMETRIC centre, which the room draw could leave solid —
-        /// an exit door buried inside rock.
+        /// also where crossing the Entry door drops you. It replaced the reserve's GEOMETRIC
+        /// centre, which the room draw could leave solid — an exit door buried inside rock.
+        ///
+        /// MIRROR of `level4::entry_hall_world_pos()`, and the arithmetic has to stay in step:
+        /// region origin chunk (200, 0) × 50 m = world (10000, 0); hall centre at cell (30, 30)
+        /// × 2.5 m = +75 m each way; region layer 0 ⇒ floor at Y 0, plus 1.8 m of eye height.
         /// </summary>
         private void SpawnLevel4Doors()
         {
@@ -100,7 +101,7 @@ namespace BackroomsSurvival.Gameplay
             entryGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Entry, doorRadius);
 
             var returnGo = new GameObject("Level4ReturnDoor (ADR-093, placeholder)");
-            returnGo.transform.position = new Vector3(75f, 401.8f, 75f);
+            returnGo.transform.position = new Vector3(10075f, 1.8f, 75f);
             returnGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Return, doorRadius);
         }
     }
