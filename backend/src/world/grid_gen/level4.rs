@@ -204,9 +204,15 @@ pub const RETURN_DOOR_OFFSET_M: f32 = 5.0;
 /// no deducido. A ~8 m del spawn por defecto (5,0,5).
 pub const ENTRY_DOOR_WORLD_POS: [f32; 3] = [2.5, 0.0, 12.5];
 
-/// Dónde aparece quien VUELVE al Level 0: delante de la puerta de entrada, en +Z y con el mismo
-/// offset que usa el vestíbulo, de modo que los dos aterrizajes del par son simétricos — siempre
-/// en la cara +Z de la puerta de destino, siempre a la misma distancia, nunca dentro de su plano.
+/// Dónde aparece quien VUELVE al Level 0: delante de la puerta de entrada, en su CARA FRONTAL.
+///
+/// La cara frontal de la de entrada es −Z (mira hacia el spawn, que es por donde se llega a ella);
+/// la de la de vuelta es +Z (mira al centro del vestíbulo, que es por donde se sale). De ahí que
+/// los dos offsets tengan signo distinto aunque sean el mismo número: cada aterrizaje cae en la
+/// cara frontal de SU puerta, no en un +Z absoluto.
+///
+/// No es cosmético. El portal enseña justamente lo que hay delante de la cara frontal de la
+/// gemela, así que si el aterrizaje cayera del otro lado verías un sitio y aparecerías en otro.
 ///
 /// La Y es la del suelo de LEVEL 0 (cero) más la altura de ojos — NO `region_floor_y()`, que es
 /// la de la reserva. Hoy coinciden porque `REGION_LAYER` es 0, y ese es justo el motivo de no
@@ -216,7 +222,7 @@ pub fn entry_door_arrival_pos() -> [f32; 3] {
     [
         ENTRY_DOOR_WORLD_POS[0],
         1.8,
-        ENTRY_DOOR_WORLD_POS[2] + RETURN_DOOR_OFFSET_M,
+        ENTRY_DOOR_WORLD_POS[2] - RETURN_DOOR_OFFSET_M,
     ]
 }
 
@@ -986,15 +992,19 @@ mod tests {
             [2.5, 0.0, 12.5],
             "mueve también el ancla de entrada de GameBootstrap.SpawnLevel4Doors"
         );
-        // Los dos aterrizajes del par son simétricos: cara +Z de la puerta de destino, mismo
-        // offset. Romper la simetría es lo que devuelve el rebote en uno de los dos sentidos.
+        // Cada aterrizaje cae en la CARA FRONTAL de su puerta, a la misma distancia. Los signos
+        // difieren porque las caras frontales miran a lados opuestos: la de entrada hacia el
+        // spawn (−Z), la de vuelta hacia el centro del vestíbulo (+Z). Romper esto no da un
+        // rebote: da un portal que enseña un sitio y te suelta en otro.
         assert_eq!(
-            entry_door_arrival_pos()[2] - ENTRY_DOOR_WORLD_POS[2],
-            RETURN_DOOR_OFFSET_M
+            ENTRY_DOOR_WORLD_POS[2] - entry_door_arrival_pos()[2],
+            RETURN_DOOR_OFFSET_M,
+            "se vuelve a la cara −Z de la puerta de entrada"
         );
         assert_eq!(
             entry_hall_world_pos()[2] - return_door_world_pos()[2],
-            RETURN_DOOR_OFFSET_M
+            RETURN_DOOR_OFFSET_M,
+            "se entra a la cara +Z de la puerta de vuelta"
         );
     }
 

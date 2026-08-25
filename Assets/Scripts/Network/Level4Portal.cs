@@ -15,9 +15,11 @@ namespace BackroomsSurvival.Net
     /// encuadre correcto, el quad sólo la recorta: te asomas y la vista se mueve contigo, que es
     /// lo que separa un portal de una televisión colgada.
     ///
-    /// La matriz es `gemela.localToWorld * esta.worldToLocal`, general: hoy las dos puertas miran
-    /// igual y eso la reduce a una traslación, pero escrita así sigue siendo correcta el día que
-    /// una rote.
+    /// La matriz es `gemela.localToWorld * giro180 * esta.worldToLocal`. El giro de media vuelta
+    /// NO es decoración: atravesar un portal te saca por su cara OPUESTA, así que sin él la cámara
+    /// se planta DELANTE de la gemela mirándola de frente y el hueco enseña el marco de la otra
+    /// puerta en vez de lo que hay al cruzarla. Escrita como matriz general sigue siendo correcta
+    /// el día que una de las dos rote.
     ///
     /// POR QUÉ HACE FALTA FIJAR CHUNKS. Con `viewRadius` = 1 el cliente tiene 9 chunks alrededor
     /// del jugador y nada más; la gemela está a 10 km, así que sin
@@ -33,9 +35,6 @@ namespace BackroomsSurvival.Net
     [RequireComponent(typeof(Level4DoorTrigger))]
     public sealed class Level4Portal : MonoBehaviour
     {
-        /// Resolución del render del portal. Deliberadamente baja: es una ventana de 1,6 × 2,4 m
-        /// vista de lejos, y esto es un segundo render del mundo por frame.
-        private const int RtSize = 512;
         /// A qué distancia se empieza a fijar el otro lado. Más que el alcance de uso, para que
         /// los chunks lleguen ANTES de que el jugador pueda abrir la puerta.
         private const float PinRadiusM = 18f;
@@ -103,14 +102,7 @@ namespace BackroomsSurvival.Net
                 return;
             }
 
-            _rt = new RenderTexture(RtSize, RtSize, 24, RenderTextureFormat.Default)
-            {
-                name = $"Level4PortalRT_{name}",
-            };
-            _rt.Create();
-
             _mat = new Material(shader);
-            _mat.SetTexture("_MainTex", _rt);
 
             var quad = GameObject.CreatePrimitive(PrimitiveType.Quad);
             quad.name = "PortalSurface";
@@ -129,7 +121,6 @@ namespace BackroomsSurvival.Net
             var camGo = new GameObject($"PortalCam_{name}");
             camGo.transform.SetParent(transform, false);
             _cam = camGo.AddComponent<Camera>();
-            _cam.targetTexture = _rt;
             _cam.enabled = false; // se enciende sólo cuando hay algo que enseñar
             var data = camGo.AddComponent<UniversalAdditionalCameraData>();
             data.renderShadows = false;
@@ -155,17 +146,69 @@ namespace BackroomsSurvival.Net
             if (!show)
                 return;
 
-            // La cámara gemela: misma pose relativa respecto a la OTRA puerta que la del jugador
-            // respecto a ésta.
-            Matrix4x4 m = _twin.transform.localToWorldMatrix * transform.worldToLocalMatrix;
+            EnsureRenderTexture();
+
+            // LA CÁMARA VIRTUAL, con el giro de media vuelta que es TODO el asunto.
+            //
+            // Sin ese `Rotate(0,180,0)` la cámara aterriza DELANTE de la gemela mirándola de
+            // frente, así que el portal enseñaba el marco de la otra puerta en vez de lo que hay
+            // al cruzarla. Atravesar un portal te saca por su cara OPUESTA: la media vuelta es
+            // exactamente eso, y es lo que pone la cámara detrás de la gemela mirando hacia
+            // fuera. Es la misma composición que usa Portal.
+            Matrix4x4 flip = Matrix4x4.Rotate(Quaternion.Euler(0f, 180f, 0f));
+            Matrix4x4 m = _twin.transform.localToWorldMatrix * flip * transform.worldToLocalMatrix;
             _cam.transform.SetPositionAndRotation(
                 m.MultiplyPoint(playerCam.transform.position),
                 m.rotation * playerCam.transform.rotation);
-            _cam.fieldOfView = playerCam.fieldOfView;
-            // El plano lejano tiene que cubrir el islote fijado; el cercano se queda corto para
-            // no recortar lo que hay pegado al otro lado del vano.
-            _cam.nearClipPlane = 0.05f;
+
+            // Proyección HEREDADA del jugador y no un `fieldOfView` propio: así el encuadre
+            // coincide exactamente con el suyo (FOV y aspecto), que es lo que el muestreo en
+            // coordenadas de pantalla da por hecho. Con proyección propia la vista sale
+            // desalineada del hueco por mucho que la pose sea correcta.
+            _cam.projectionMatrix = playerCam.projectionMatrix;
+
+            // RECORTE OBLICUO: el plano cercano se dobla para que coincida con el plano de la
+            // gemela. Sin esto la cámara está literalmente dentro de la pared que hay detrás de
+            // la otra puerta y renderiza su interior — se ve el reverso de la geometría flotando
+            // delante de lo que se quería enseñar. Es el otro requisito clásico de un portal, y
+            // el que hace que la vista empiece EXACTAMENTE en el vano.
+            Vector4 clip = CameraSpacePlane(_cam, _twin.transform.position, _twin.transform.forward);
+            _cam.projectionMatrix = _cam.CalculateObliqueMatrix(clip);
+
+            // El plano lejano tiene que cubrir el islote fijado.
             _cam.farClipPlane = Mathf.Max(playerCam.farClipPlane, ChunkSide * (PinChunkRadius + 2));
+        }
+
+        /// El plano de la gemela expresado en espacio de cámara, como lo quiere
+        /// <see cref="Camera.CalculateObliqueMatrix"/>. Patrón estándar de espejos/portales.
+        private static Vector4 CameraSpacePlane(Camera cam, Vector3 pos, Vector3 normal)
+        {
+            Matrix4x4 w2c = cam.worldToCameraMatrix;
+            Vector3 cpos = w2c.MultiplyPoint(pos);
+            Vector3 cnormal = w2c.MultiplyVector(normal).normalized;
+            return new Vector4(cnormal.x, cnormal.y, cnormal.z, -Vector3.Dot(cpos, cnormal));
+        }
+
+        /// La render texture tiene que llevar el ASPECTO DE LA PANTALLA, no ser cuadrada: el
+        /// shader la muestrea en coordenadas de pantalla, así que una textura 1:1 en un monitor
+        /// 16:9 sale estirada. A media resolución, que es una ventana de 1,6 × 2,4 m.
+        private void EnsureRenderTexture()
+        {
+            int w = Mathf.Max(256, Screen.width / 2);
+            int h = Mathf.Max(144, Screen.height / 2);
+            if (_rt != null && _rt.width == w && _rt.height == h)
+                return;
+            if (_rt != null)
+                _rt.Release();
+            _rt = new RenderTexture(w, h, 24, RenderTextureFormat.Default)
+            {
+                name = $"Level4PortalRT_{name}",
+            };
+            _rt.Create();
+            if (_cam != null)
+                _cam.targetTexture = _rt;
+            if (_mat != null)
+                _mat.SetTexture("_MainTex", _rt);
         }
 
         /// Fija (o suelta) el islote de chunks alrededor de la gemela. El conjunto se construye
@@ -199,25 +242,52 @@ namespace BackroomsSurvival.Net
             Debug.Log($"[Level4Portal] MPTRACE step=L4 event=portal_pin chunks={keys.Count}");
         }
 
-        // Ninguna cámara de portal debe ver una superficie de portal — ni la suya ni la de la
-        // gemela. Se apagan todas mientras renderiza y se restauran después; hacerlo con capas
-        // exigiría reservar una layer del proyecto, que es un recurso escaso y compartido.
+        // Lo que una cámara de portal NO puede ver, y son dos cosas distintas:
+        //
+        //  1. LA PUERTA GEMELA ENTERA — marco, hoja y umbral. La cámara está justo detrás de ella
+        //     mirando hacia fuera, así que su marco le tapa el centro del encuadre: era
+        //     literalmente "el portal enseña la otra puerta" en vez de lo que hay al cruzarla.
+        //     En Portal el portal de destino tampoco se dibuja desde su propia cámara.
+        //  2. CUALQUIER superficie de portal, incluida la suya — si no, un portal se ve a sí mismo
+        //     a través del otro y la imagen se realimenta hasta el infinito.
+        //
+        // Se apaga por renderers y no por capas porque una layer es un recurso escaso y global del
+        // proyecto, y esto necesita exactamente dos objetos apagados durante exactamente un
+        // render. Se guarda lo que había para restaurarlo: dar por hecho "estaba encendido" deja
+        // la puerta invisible en la vista normal el frame que alguien la apague por otro motivo.
+        private static readonly List<Renderer> _hidden = new List<Renderer>();
+
         private void OnBeginCamera(ScriptableRenderContext ctx, Camera cam)
         {
             if (_cam == null || cam != _cam)
                 return;
+
+            _hidden.Clear();
+            // La gemela al completo: es la que está delante de esta cámara.
+            if (_twin != null)
+                foreach (var r in _twin.GetComponentsInChildren<Renderer>(includeInactive: false))
+                    if (r.enabled)
+                    {
+                        r.enabled = false;
+                        _hidden.Add(r);
+                    }
+            // Y las superficies de portal que queden encendidas, la propia incluida.
             foreach (var p in _all)
-                if (p._surface != null)
+                if (p._surface != null && p._surface.enabled)
+                {
                     p._surface.enabled = false;
+                    _hidden.Add(p._surface);
+                }
         }
 
         private void OnEndCamera(ScriptableRenderContext ctx, Camera cam)
         {
             if (_cam == null || cam != _cam)
                 return;
-            foreach (var p in _all)
-                if (p._surface != null)
-                    p._surface.enabled = p._door != null && p._door.IsOpen;
+            foreach (var r in _hidden)
+                if (r != null)
+                    r.enabled = true;
+            _hidden.Clear();
         }
     }
 }

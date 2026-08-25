@@ -90,19 +90,23 @@ namespace BackroomsSurvival.Gameplay
         /// = +75 m por lado; capa 0 ⇒ suelo en Y 0. El desparejo lo caza un test en Rust
         /// (`the_entry_hall_matches_the_hardcoded_csharp_door_anchor`), no la buena suerte.
         ///
-        /// La de VUELTA no va en el punto de aterrizaje sino 5 m al norte
-        /// (`level4::return_door_world_pos`, `RETURN_DOOR_OFFSET_M`): plantarla justo donde
+        /// Ninguna de las dos va EN su punto de aterrizaje, sino `RETURN_DOOR_OFFSET_M` detrás
+        /// (`level4::return_door_world_pos` / `entry_door_arrival_pos`): plantarla justo donde
         /// apareces te deja dentro de su plano el frame de llegada, que es lo que obligaba al
         /// enfriamiento de 3 s que la detección por cruce ya no necesita.
         ///
-        /// Las dos miran al SUR (−Z), o sea: aterrizas mirando la de vuelta de frente.
+        /// ORIENTACIONES OPUESTAS, y es lo que hace funcionar el portal. Cada puerta mira hacia
+        /// su CARA FRONTAL: la de entrada hacia el spawn (−Z), porque es por donde se llega a
+        /// ella; la de vuelta hacia el centro del vestíbulo (+Z), porque es por donde se sale.
+        /// La cámara del portal se coloca detrás de la gemela mirando hacia SU cara frontal, así
+        /// que orientar las dos igual hace que enseñe la pared del fondo en vez del sitio al que
+        /// vas. Cada punto de aterrizaje cae en la cara frontal de su puerta, y un test en Rust
+        /// ata las dos cosas.
         /// </summary>
         private void SpawnLevel4Doors()
         {
             if (FindFirstObjectByType<Level4DoorTrigger>() != null)
                 return; // domain reload / re-entry into the same scene
-
-            var facing = new Vector3(0f, 0f, -1f);
 
             // Centro del tile (0,2) del chunk (0,0): ese tile forma con (0,1) y (0,3) un tramo
             // norte-sur continuo, así que el marco exento se cruza por los DOS lados. El ancla
@@ -111,12 +115,12 @@ namespace BackroomsSurvival.Gameplay
             var entryGo = new GameObject("Level4EntryDoor (ADR-093, placeholder)");
             entryGo.transform.position = new Vector3(2.5f, 0f, 12.5f);
             var entry = entryGo.AddComponent<Level4DoorTrigger>();
-            entry.Configure(Level4Door.Entry, facing);
+            entry.Configure(Level4Door.Entry, new Vector3(0f, 0f, -1f));
 
             var returnGo = new GameObject("Level4ReturnDoor (ADR-093, placeholder)");
             returnGo.transform.position = new Vector3(10075f, 0f, 70f);
             var back = returnGo.AddComponent<Level4DoorTrigger>();
-            back.Configure(Level4Door.Return, facing);
+            back.Configure(Level4Door.Return, new Vector3(0f, 0f, 1f));
 
             // El par: cada puerta enseña por su hueco lo que hay al otro lado de la otra. Se
             // empareja aquí y no en Configure porque hasta esta línea no existen las dos.
