@@ -38,14 +38,7 @@ namespace BackroomsSurvival.Net
         private const float DoorWidth = 1.6f;
         private const float DoorHeight = 2.4f;
         private const float FrameThickness = 0.18f;
-        /// Grosor de la banda alrededor del plano en la que se muestrea el signo. Sin ella, un
-        /// frame lento (o un teleport ajeno) puede saltarse el plano entero sin verlo.
-        ///
-        /// TIENE QUE SER MENOR que `level4::PORTAL_EXIT_M` (1,5 m), que es a qué distancia del
-        /// plano te deja el backend al salir: si aterrizases DENTRO de la banda, el primer paso en
-        /// cualquier dirección volvería a leerse como cruce. A 10 m/s y 60 fps un frame avanza
-        /// 17 cm, así que 1 m cubre de sobra el caso que la banda existe para cubrir.
-        private const float CrossBandM = 1.0f;
+
         /// Cuánto gira la hoja al abrir, y en cuánto tiempo.
         private const float OpenAngle = 95f;
         private const float SwingSeconds = 0.55f;
@@ -73,9 +66,17 @@ namespace BackroomsSurvival.Net
         private Collider _leafCollider;
         private float _swing;          // 0 = cerrada, 1 = abierta
         private bool _open;
-        /// Signo de la distancia al plano en el frame anterior. 0 = todavía no se ha muestreado
-        /// (primer frame, o el jugador estaba fuera de la banda).
-        private int _lastSide;
+        /// Posición del jugador en el espacio de la puerta el frame anterior. Es el otro extremo
+        /// del segmento que se prueba contra el plano.
+        private Vector3 _prevLocal;
+        private bool _hasPrevLocal;
+        /// Longitud de segmento a partir de la cual el movimiento no puede ser andar, sino una
+        /// recolocación. Generoso (6 m ≈ 20 m/s a 30 fps) para no descartar un frame malo de
+        /// verdad, y muy por debajo de cualquier teleport real.
+        private const float TeleportSegmentM = 6f;
+        /// El motor con el que se tomó `_prevLocal`. Si el rig se recrea (respawn), la posición
+        /// anterior es de OTRO objeto y el segmento entre ambas no significa nada.
+        private CharacterControllerMotor _prevMotor;
 
         public bool IsOpen => _open;
 
@@ -184,6 +185,11 @@ namespace BackroomsSurvival.Net
             ResolveMotor();
             if (_motor == null)
                 return;
+            if (!ReferenceEquals(_motor, _prevMotor))
+            {
+                _prevMotor = _motor;
+                _hasPrevLocal = false; // rig nuevo: la posición anterior era de otro cuerpo
+            }
 
             TryToggleFromInput();
             TrackCrossing(_motor.transform.position);
@@ -231,29 +237,62 @@ namespace BackroomsSurvival.Net
             Debug.Log($"[Level4Door] MPTRACE step=L4 event=door_toggled door={_door} open={_open}");
         }
 
-        /// El cruce: cambio de signo de la distancia al plano de la puerta, dentro de la banda,
-        /// dentro del ancho del vano, y con la hoja abierta.
+        /// El cruce, por BARRIDO DEL SEGMENTO recorrido este frame — no por muestreo de una banda.
+        ///
+        /// La versión de banda necesitaba que la banda fuese ancha (para que un frame lento no se
+        /// saltara el plano entero) y eso obligaba a salir LEJOS del plano al otro lado, o el
+        /// aterrizaje caía dentro de la banda y el primer paso volvía a contar como cruce. Esa
+        /// distancia de salida es justo lo que hace que el salto se note.
+        ///
+        /// Comprobando el segmento (posición anterior → actual) contra el plano no hay banda que
+        /// dimensionar: un frame de 200 ms a velocidad de sprint se detecta igual que uno de 5 ms,
+        /// y el punto de cruce se interpola, así que "¿pasó por el hueco?" se responde donde
+        /// realmente cruzó y no donde estaba al final del frame. Con eso la salida puede quedar a
+        /// centímetros del plano y el cruce deja de sentirse como un salto.
         private void TrackCrossing(Vector3 playerPos)
         {
             Vector3 local = transform.InverseTransformPoint(playerPos);
-            // Fuera de la banda no se muestrea: así el signo no queda "armado" desde el otro
-            // extremo de la sala, que convertiría un rodeo cualquiera en un cruce.
-            if (Mathf.Abs(local.z) > CrossBandM)
+            if (!_hasPrevLocal)
             {
-                _lastSide = 0;
+                _prevLocal = local;
+                _hasPrevLocal = true;
                 return;
             }
+            Vector3 previous = _prevLocal;
+            _prevLocal = local;
 
-            int side = local.z >= 0f ? 1 : -1;
-            int previous = _lastSide;
-            _lastSide = side;
+            // UN TELEPORT AJENO NO ES UN CRUCE. Comparar contra el frame anterior significa que
+            // CUALQUIER recolocación —respawn, `session_restored` al cargar partida, un rig
+            // recreado, el propio snap de la otra puerta— produce un segmento que atraviesa este
+            // plano y dispararía un cruce que nadie hizo: morir junto a la puerta te mandaría al
+            // Level 4. Y no vale con enumerar las causas conocidas, porque la siguiente no estará
+            // en la lista.
+            //
+            // El discriminante es la LONGITUD: andando, incluso esprintando y con un frame malo,
+            // no se recorren metros entre dos frames; teleportarse sí. Un segmento así se descarta
+            // y se re-arma el muestreo desde la posición nueva.
+            if ((local - previous).sqrMagnitude > TeleportSegmentM * TeleportSegmentM)
+                return;
 
-            if (previous == 0 || previous == side)
-                return; // primer muestreo dentro de la banda, o no ha cambiado de lado
+            // Mismo lado ⇒ no cruzó. `>= 0` en los dos para que quedarse EXACTAMENTE en el plano
+            // no cuente como cruce cada frame.
+            bool wasFront = previous.z >= 0f;
+            bool isFront = local.z >= 0f;
+            if (wasFront == isFront)
+                return;
 
-            // Cruzó el plano. ¿Por el hueco, y con la puerta abierta?
-            if (Mathf.Abs(local.x) > DoorWidth * 0.5f)
-                return; // pasó por al lado del marco, no por la puerta
+            // Punto de cruce interpolado sobre el plano: es dónde pasó de verdad, no dónde acabó.
+            float span = previous.z - local.z;
+            float tCross = Mathf.Approximately(span, 0f) ? 0f : previous.z / span;
+            float crossX = Mathf.Lerp(previous.x, local.x, tCross);
+            float crossY = Mathf.Lerp(previous.y, local.y, tCross);
+
+            // ¿Por el hueco? Ancho y ALTO: pasar por encima del dintel saltando no es cruzar una
+            // puerta, y antes contaba.
+            if (Mathf.Abs(crossX) > DoorWidth * 0.5f)
+                return;
+            if (crossY < -0.5f || crossY > DoorHeight)
+                return;
             if (!_open)
             {
                 Debug.Log($"[Level4Door] MPTRACE step=L4 event=cross_ignored door={_door} reason=closed");
@@ -287,7 +326,7 @@ namespace BackroomsSurvival.Net
             // Desarmar el muestreo en TODAS las puertas hace que el primer frame tras el salto
             // sea "primera lectura" y no un flanco, aquí y en la de destino.
             foreach (var d in FindObjectsByType<Level4DoorTrigger>(FindObjectsSortMode.None))
-                d._lastSide = 0;
+                d._hasPrevLocal = false;
         }
 
         /// <summary>Mirror of AuthoritativePoseApplier.ResolveMotor — Unity's overloaded ==

@@ -47,6 +47,10 @@ namespace BackroomsSurvival.Net
         /// Radio en chunks del islote fijado al otro lado. 1 = 3×3, lo mismo que ve el jugador.
         private const int PinChunkRadius = 1;
         private const float ChunkSide = GridConstants.ChunkCells * GridConstants.CellSize;
+        /// Capas que nunca forman parte de "lo que hay al otro lado". Por nombre y no por índice
+        /// para que reordenar TagManager no las desalinee en silencio.
+        private static readonly int ExcludedFromPortal =
+            LayerMask.GetMask("ViewModel", "UI", "PostProcessing");
 
         private Level4DoorTrigger _door;
         private Level4Portal _twin;
@@ -91,8 +95,19 @@ namespace BackroomsSurvival.Net
             _all.Remove(this);
             if (_rt != null)
                 _rt.Release();
+            // `new Material(...)` crea una INSTANCIA que hay que destruir a mano. Sin esto se fuga
+            // una por portal y por sesión de Play — y con la recarga de dominio desactivada, las
+            // sesiones se acumulan. Es la misma fuga que la auditoría del 2026-08-18 encontró en
+            // BuildZoneSign y VerticalShaftChunk.
+            if (_mat != null)
+                Destroy(_mat);
+            // Y NO `UnpinAll`: eso soltaba también el islote del OTRO portal. Se retira sólo lo
+            // propio y se recalcula el conjunto con quien quede.
             if (_pinning)
-                ChunkStreamer.UnpinAll();
+            {
+                _pinning = false;
+                RepinAll();
+            }
         }
 
         private void BuildSurface(float width, float height)
@@ -132,10 +147,10 @@ namespace BackroomsSurvival.Net
             camGo.transform.SetParent(transform, false);
             _cam = camGo.AddComponent<Camera>();
             _cam.enabled = false; // se enciende sólo cuando hay algo que enseñar
-            var data = camGo.AddComponent<UniversalAdditionalCameraData>();
-            data.renderShadows = false;
-            data.requiresColorOption = CameraOverrideOption.Off;
-            data.requiresDepthOption = CameraOverrideOption.Off;
+            // La configuración de VISTA (post, sombras, HDR, capas) la copia cada frame
+            // `MirrorCameraSettings` de la cámara del jugador; aquí sólo se asegura de que el
+            // componente exista.
+            camGo.AddComponent<UniversalAdditionalCameraData>();
         }
 
         private void LateUpdate()
@@ -163,7 +178,8 @@ namespace BackroomsSurvival.Net
             if (!show)
                 return;
 
-            EnsureRenderTexture();
+            EnsureRenderTexture(playerCam);
+            MirrorCameraSettings(playerCam);
             // La RT conserva el último frame renderizado. Al volver a encender la cámara tras un
             // rato apagada, ese frame viejo es de otro sitio del mundo y asoma durante un frame
             // como un destello. Descartarlo cuesta nada y lo quita.
@@ -210,26 +226,69 @@ namespace BackroomsSurvival.Net
             return new Vector4(cnormal.x, cnormal.y, cnormal.z, -Vector3.Dot(cpos, cnormal));
         }
 
-        /// La render texture tiene que llevar el ASPECTO DE LA PANTALLA, no ser cuadrada: el
-        /// shader la muestrea en coordenadas de pantalla, así que una textura 1:1 en un monitor
-        /// 16:9 sale estirada. A media resolución, que es una ventana de 1,6 × 2,4 m.
-        private void EnsureRenderTexture()
+        /// La render texture tiene que llevar el ASPECTO Y LA RESOLUCIÓN DE LA PANTALLA: el shader
+        /// la muestrea en coordenadas de pantalla, así que una textura 1:1 en un monitor 16:9 sale
+        /// estirada, y una a media resolución hace que cada píxel del portal tome medio píxel de
+        /// la textura — borroso justo en la parte que el jugador está mirando de cerca. Estuvo a
+        /// media resolución y se veía exactamente así.
+        ///
+        /// HDR heredado de la cámara del jugador: con el proyecto en HDR, una RT LDR recorta el
+        /// rango antes del tonemapping y el portal sale con otros colores que el resto de la
+        /// pantalla.
+        private void EnsureRenderTexture(Camera playerCam)
         {
-            int w = Mathf.Max(256, Screen.width / 2);
-            int h = Mathf.Max(144, Screen.height / 2);
-            if (_rt != null && _rt.width == w && _rt.height == h)
+            int w = Mathf.Max(320, Screen.width);
+            int h = Mathf.Max(180, Screen.height);
+            var format = playerCam.allowHDR
+                ? RenderTextureFormat.DefaultHDR
+                : RenderTextureFormat.Default;
+            if (_rt != null && _rt.width == w && _rt.height == h && _rt.format == format)
                 return;
             if (_rt != null)
                 _rt.Release();
-            _rt = new RenderTexture(w, h, 24, RenderTextureFormat.Default)
+            _rt = new RenderTexture(w, h, 24, format)
             {
                 name = $"Level4PortalRT_{name}",
+                filterMode = FilterMode.Bilinear,
+                antiAliasing = 1,
             };
             _rt.Create();
             if (_cam != null)
                 _cam.targetTexture = _rt;
             if (_mat != null)
                 _mat.SetTexture("_MainTex", _rt);
+        }
+
+        /// Copia de la cámara del jugador lo que decide cómo se VE una imagen, no dónde apunta.
+        ///
+        /// Sin esto la vista del portal se renderiza con otro tratamiento que el resto de la
+        /// pantalla —sin tonemapping ni color grading, sin niebla, con otra máscara de capas— y
+        /// el resultado no es "otro sitio": es el mismo mundo pintado peor, que es como se veía.
+        /// El post-proceso es el que más se nota: URP lo aplica por cámara, y una cámara nueva
+        /// nace sin él.
+        private void MirrorCameraSettings(Camera playerCam)
+        {
+            // MENOS las capas que no pertenecen a "el mundo al otro lado". La de VIEWMODEL es la
+            // que se ve: la cámara del jugador la incluye para dibujar el arma en primera persona,
+            // y copiada tal cual el portal renderizaba TU PROPIA ARMA flotando dentro de la vista
+            // del otro lado. UI y PostProcessing entran por el mismo motivo — son capas de
+            // presentación de ESTA pantalla, no geometría de allí.
+            _cam.cullingMask = playerCam.cullingMask & ~ExcludedFromPortal;
+            _cam.clearFlags = playerCam.clearFlags;
+            _cam.backgroundColor = playerCam.backgroundColor;
+            _cam.allowHDR = playerCam.allowHDR;
+            _cam.allowMSAA = playerCam.allowMSAA;
+            _cam.depthTextureMode = playerCam.depthTextureMode;
+
+            var mine = _cam.GetUniversalAdditionalCameraData();
+            var theirs = playerCam.GetUniversalAdditionalCameraData();
+            if (mine == null || theirs == null)
+                return;
+            mine.renderPostProcessing = theirs.renderPostProcessing;
+            mine.antialiasing = theirs.antialiasing;
+            mine.antialiasingQuality = theirs.antialiasingQuality;
+            mine.volumeLayerMask = theirs.volumeLayerMask;
+            mine.renderShadows = theirs.renderShadows;
         }
 
         /// Fija (o suelta) el islote de chunks alrededor de la gemela. El conjunto se construye

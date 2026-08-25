@@ -213,10 +213,15 @@ pub fn entry_door_arrival_pos() -> [f32; 3] {
 
 /// Cuánto delante de la cara transitable de la puerta de destino se aparece, en metros.
 ///
-/// Tiene que ser MAYOR que la banda de muestreo del cruce del cliente (`CrossBandM`, 1 m) o
-/// aterrizarías dentro de la banda de la puerta por la que acabas de salir, y el primer paso en
-/// cualquier dirección volvería a contar como cruce.
-pub const PORTAL_EXIT_M: f32 = 1.5;
+/// 40 cm: lo justo para no nacer dentro del plano ni del marco, y poco bastante como para que
+/// atravesar no se sienta como un salto. Estuvo en 1,5 m mientras el cliente detectaba el cruce
+/// por BANDA — una banda ancha obliga a salir fuera de ella o el primer paso vuelve a contar como
+/// cruce — y ese metro y medio era justo lo que se notaba. Con la detección por barrido del
+/// segmento (`Level4DoorTrigger.TrackCrossing`) no hay banda que respetar y esto puede ser corto.
+///
+/// Bajarlo a cero NO es la respuesta: nacer en el plano exacto deja al jugador a merced del signo
+/// de un float, y medio marco de puerta ocupa unos centímetros por delante.
+pub const PORTAL_EXIT_M: f32 = 0.4;
 
 /// Holgura sobre el suelo al aparecer. Cero exacto arranca dentro del propio suelo; 1,8 (la altura
 /// de ojos) es una CAÍDA de 1,8 m en cada cruce, que es lo que se sentía como "te lanza un poco".
@@ -1035,10 +1040,13 @@ mod tests {
         // difieren porque esas caras miran a lados opuestos: la de entrada hacia el spawn (−Z),
         // la de vuelta hacia el centro del vestíbulo (+Z). Romper esto no da un rebote: da un
         // portal que enseña un sitio y te suelta en otro, contra la pared.
-        assert_eq!(
-            ENTRY_DOOR_WORLD_POS[2] - entry_door_arrival_pos()[2],
-            PORTAL_EXIT_M,
-            "se vuelve a la cara −Z de la puerta de entrada"
+        // Con tolerancia y no `assert_eq!`: 12,5 − 12,1 no da exactamente 0,4 en `f32`, y un test
+        // que compara restas de flotantes por igualdad exacta falla el día que se ajusta la
+        // constante, no el día que se rompe la propiedad.
+        assert!(
+            (ENTRY_DOOR_WORLD_POS[2] - entry_door_arrival_pos()[2] - PORTAL_EXIT_M).abs() < 0.001,
+            "se vuelve a la cara −Z de la puerta de entrada, a PORTAL_EXIT_M: {:?}",
+            entry_door_arrival_pos()
         );
         // `RETURN_DOOR_OFFSET_M` es otra cosa y sigue siéndolo: cuánto se separa la puerta de
         // vuelta del CENTRO del vestíbulo, que es lo que la deja a la vista al llegar.

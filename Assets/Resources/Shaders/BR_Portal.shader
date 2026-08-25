@@ -56,7 +56,6 @@ Shader "Backrooms/Portal"
             struct Varyings
             {
                 float4 positionHCS : SV_POSITION;
-                float4 screenPos   : TEXCOORD0;
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -66,13 +65,21 @@ Shader "Backrooms/Portal"
                 UNITY_SETUP_INSTANCE_ID(IN);
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(OUT);
                 OUT.positionHCS = TransformObjectToHClip(IN.positionOS.xyz);
-                OUT.screenPos = ComputeScreenPos(OUT.positionHCS);
                 return OUT;
             }
 
             half4 frag(Varyings IN) : SV_Target
             {
-                float2 uv = IN.screenPos.xy / max(IN.screenPos.w, 1e-5);
+                // UV desde la posición de PÍXEL (`SV_POSITION` en el fragment ya viene en
+                // coordenadas de pantalla) dividida por el tamaño real del target.
+                //
+                // Deliberadamente NO se usa `ComputeScreenPos`: al renderizar la vista a una
+                // render texture, `_ProjectionParams.x` cambia de signo y en las plataformas donde
+                // el origen de UV está arriba la imagen sale VOLTEADA en vertical — un portal del
+                // revés, que es de los fallos que sólo se ven ejecutando y cuesta atribuir. Esta
+                // forma no depende de la plataforma ni de si el destino es pantalla o textura, y
+                // es la recomendada en URP para efectos en espacio de pantalla.
+                float2 uv = IN.positionHCS.xy / _ScaledScreenParams.xy;
                 return SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, uv) * _Tint;
             }
             ENDHLSL

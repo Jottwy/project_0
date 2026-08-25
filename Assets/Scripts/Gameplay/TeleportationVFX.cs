@@ -69,11 +69,15 @@ namespace BackroomsSurvival.Gameplay
 
         private void OnGameEvent(GameEventMsg ev)
         {
-            // `chunk_teleported` es el consumidor histórico (desplazamiento de chunk).
-            // `level4_door_resolved` (ADR-093) es una reposición autoritativa igual de brusca: sin
-            // esto, cruzar la puerta era un corte seco de un sitio a otro sin un solo frame que
-            // dijera que había pasado algo.
-            if (ev.eventType == "chunk_teleported" || ev.eventType == "level4_door_resolved")
+            // SOLO `chunk_teleported` (desplazamiento de chunk), que es una anomalía del mundo y
+            // debe anunciarse.
+            //
+            // El cruce de una puerta del Level 4 NO entra aquí, y fue un error meterlo: un flash
+            // blanco y estática de televisión son exactamente "acabas de teletransportarte", que
+            // es lo contrario de lo que una puerta tiene que sentirse. Atravesar un marco se
+            // parece a atravesar un marco; el trabajo de que no se note lo hace la continuidad de
+            // la posición, no un efecto que tape el corte.
+            if (ev.eventType == "chunk_teleported")
                 Trigger();
         }
 
