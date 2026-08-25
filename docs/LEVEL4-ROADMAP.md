@@ -335,6 +335,79 @@ tarde, aparecer lejos, volver a base, sin desync (verificación en juego del ADR
   que vuelve cerca de donde entró dentro de la ventana de 5 min. Con eso en verde, el resto de E6
   (arte, ambiente) tiene sentido abordarlo con el editor abierto y la reserva ya visitada.
 
+## R — Salas del pool dentro de la reserva (ADR-093 enmienda 1, 2026-08-25)
+
+> Decidido con Joel: **mixto, pool primero y relleno procedural**. Enmienda ya apendizada a
+> `DECISIONS.md`. Sin alcance de wire: `authored_rooms` existe desde el 41 y hoy va vacío en la
+> reserva.
+
+### Estado de partida, MEDIDO (no supuesto) el 2026-08-25
+
+| Qué | Antes | Después de `e0901f33` |
+|---|---|---|
+| Facelings adultos en la reserva | 2 | **18** |
+| Packs de crías | 1 | **3** |
+| Robapieles (epoch 0 → techo) | 1 → 3 | **3-5 → 15-17** |
+| Chunks vistos como `ZONE_OFFICE` por `zone_kind_for` | 0/9 | **9/9** |
+| Cachés de loot esperadas en la incursión entera | 0,54 | 0,54 (sin tocar) |
+
+Control de Level 0, misma área: 3 adultos. La reserva tenía MENOS vida que un pasillo cualquiera.
+
+### El problema de diseño que R1 tiene que resolver, y no es de fontanería
+
+Las piezas del pool traen **sus propios vanos** (`ManifestRoom.doorways`). El conector de la región
+(`level4::connect_rooms`) tira pasillos al **centro** del rect por el árbol de vecino-más-cercano.
+Colocar una pieza ocupando el rect sin más hace que sus paredes tapen justo por donde entra el
+pasillo: **la sala nace sellada**. Es el modo de fallo que ROOMS-ROADMAP ya midió en el laberinto
+(una sala grande con un solo vano nace incomunicada 6 de 55 veces), y aquí sería peor, porque la
+reserva es un mapa cerrado del que no hay ruta alternativa.
+
+Tampoco vale copiar el anillo `SealedWall` del laberinto: allí existe para que el maze no perfore
+la sala, y aquí sellaría la pieza de sus propios pasillos.
+
+### R1 — el conector apunta a los VANOS, no al centro
+
+Único tramo con riesgo de conectividad, y por eso va solo y primero.
+
+1. Al colocar cada `PlacedRoom`, elegir determinísticamente por `(seed, epoch, índice de sala)` una
+   pieza del pool cuyo footprint girado quepa en el rect (4 giros candidatos; footprint en tiles
+   × 2 = celdas). Sin pieza elegible ⇒ el rect se queda hueco como hoy.
+2. Guardar en `PlacedRoom` la pieza elegida (`entry`, `quarter`) y **los vanos en coordenadas de
+   REGIÓN**.
+3. `connect_rooms` usa esos puntos como destino del pasillo en vez del centro del rect. Una sala
+   autorada con N vanos ofrece N destinos; el conector elige el más cercano al vecino.
+4. Invariante nuevo, con test: **toda sala colocada tiene al menos un vano alcanzable desde el
+   grafo**. Sonda sobre ≥50 sorteos, cero selladas — el mismo listón que ADR-084 se puso.
+
+Paridad: los rects de la región ya son PARES en celdas por invariante de E0, así que el origen de
+la pieza hereda la paridad y cada tile de 5 m sale uniforme. Es la trampa de ADR-083 enmienda 3;
+comprobarla con assert, no darla por hecha.
+
+### R2 — anunciar la sala al cliente
+
+Rellenar `GridChunkData.authored_rooms` para los chunks de la reserva con los planes de R1, en la
+misma forma que `game_loop.rs:829` ya usa para el laberinto (`[tile_x, tile_z, entry, quarter,
+anchor_cx, anchor_cz]`, tile relativo al chunk ANCLA). El cliente no necesita **ni una línea**: ya
+sabe instanciar el prefab y suprimir suelo/techo/paredes donde hay sala autorada.
+
+Ojo al re-sorteo por epoch: al purgar la reserva, los prefabs instanciados tienen que morir con
+ella. `AuthoredRoomInstances` lleva refcount desde ADR-084 T5 — verificar que el purgado lo
+decrementa, o cada epoch deja una capa de salas fantasma encima de la anterior.
+
+### R3 — que Joel autore
+
+Cero código. Hornear piezas de oficina ≤ 6×6 tiles con **≥ 2 vanos** (regla de autorado de
+ADR-084: con uno solo nacen incomunicadas), exportar manifiesto SIEMPRE, y **reiniciar la sesión**
+— el backend lo lee una vez, en un `OnceLock`.
+
+### Fuera de alcance, declarado: el loot de las salas
+
+`RoomMarker` se hornea y no lo lee nadie (§B1 de ROOMS-ROADMAP). Pide **ADR propio** y sirve a todo
+el juego: contenido tirado por el servidor, saqueo como estado persistente por chunk, y guarda de
+petición-en-vuelo para dos jugadores abriendo a la vez. Hasta entonces el botín de la reserva es el
+que `ChunkLootManager` reparte por columna: 0,54 cachés esperadas, catálogo recortado a `Spray Can`
+desde la prueba de escasez del 2026-08-17.
+
 ## Reglas transversales
 
 - Cada etapa: `cargo test` + clippy `-D warnings` + fmt + `CompileCheckClient.sh` en verde antes de
