@@ -108,7 +108,10 @@ namespace BackroomsSurvival.Net
             hinge.transform.localPosition = new Vector3(-halfW, 0f, 0f);
             _leaf = hinge.transform;
 
-            var leafMat = MaterialHelper.MakeEmissive(tint * 0.35f, 0.25f);
+            // Alpha explícito a 1: `tint * 0.35f` multiplica TAMBIÉN el alfa, y una hoja de puerta
+            // medio transparente por accidente es justo lo contrario de lo que se quiere ver.
+            var leafTint = new Color(tint.r * 0.35f, tint.g * 0.35f, tint.b * 0.35f, 1f);
+            var leafMat = MaterialHelper.MakeEmissive(leafTint, 0.25f);
             var leaf = AddBox("Leaf", new Vector3(halfW, DoorHeight * 0.5f, 0f),
                 new Vector3(DoorWidth, DoorHeight, FrameThickness * 0.6f), leafMat, true);
             leaf.transform.SetParent(hinge.transform, false);
