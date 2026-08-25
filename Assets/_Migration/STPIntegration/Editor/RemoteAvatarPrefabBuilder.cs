@@ -112,6 +112,7 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 WireStanceHook(instance);
                 WireLeanHook(instance);
                 WireSprayHook(instance);
+                FreezeRagdollBodies(instance);
 
                 PrefabUtility.SaveAsPrefabAsset(instance, OutputPath, out bool ok);
                 if (ok)
@@ -434,6 +435,38 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 Debug.LogWarning("[RemoteAvatarPrefabBuilder] CharacterClothing._attachToCharacter not found; " +
                     "the proxy may attempt an inventory bind (potential NRE).");
             }
+        }
+
+        /// <summary>
+        /// Pins every ragdoll bone to kinematic on the variant.
+        ///
+        /// THE BUG THIS EXISTS TO STOP COMING BACK. The base rig ships its ragdoll bodies NON
+        /// kinematic — they are meant to be woken by `CharacterRagdoll` on death. A remote proxy is
+        /// never alive in that sense: it is a puppet driven entirely by relayed poses, so those
+        /// eleven rigidbodies just fall under gravity the moment one is instantiated and the avatar
+        /// comes apart on screen. The overrides that held them still lived ONLY in the asset, put
+        /// there by hand, and `SaveAsPrefabAsset` rebuilds the variant from the base — so the
+        /// 2026-08-25 re-bake (which only meant to empty a vocal bank) silently dropped all eleven
+        /// and every remote avatar started collapsing. The robapieles wears this exact prefab as its
+        /// disguise (ADR-016), so what the play-test saw was the skinstealer losing its skin.
+        ///
+        /// Written by the builder now, not by hand, which is the only version of this that survives
+        /// the next re-bake.
+        /// </summary>
+        private static void FreezeRagdollBodies(GameObject instance)
+        {
+            int frozen = 0;
+            foreach (var rb in instance.GetComponentsInChildren<Rigidbody>(true))
+            {
+                if (rb == null || rb.isKinematic)
+                    continue;
+                rb.isKinematic = true;
+                // Inherited from the base prefab, so the override has to be force-recorded or
+                // SaveAsPrefabAsset drops it (same reason as WireClothingHook's).
+                PrefabUtility.RecordPrefabInstancePropertyModifications(rb);
+                frozen++;
+            }
+            Debug.Log($"[RemoteAvatarPrefabBuilder] Ragdoll bodies pinned kinematic: {frozen}.");
         }
 
         // ADR-023: adds the held-item hook (instantiates the held wieldable's pickup mesh under
