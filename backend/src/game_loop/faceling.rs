@@ -23,9 +23,9 @@ use std::collections::HashSet;
 
 use crate::world::faceling_spawn;
 use crate::world::grid_gen::{
-    cell_of, find_path, is_walkable_grid_gen, segment_is_clear, segment_is_clear_for_body,
-    steer_around_walls, string_pull, CellCoord, NavScratch, CELL_SIZE_M, CHUNK_CELLS,
-    PHANTOM_BODY_RADIUS,
+    cell_center, cell_of, find_path, is_walkable_grid_gen, segment_is_clear,
+    segment_is_clear_for_body, steer_around_walls, string_pull, CellCoord, NavScratch, CELL_SIZE_M,
+    CHUNK_CELLS, PHANTOM_BODY_RADIUS,
 };
 
 /// Same cadence as `PHANTOM_POPULATION_SYNC_INTERVAL` — no reason to reconcile more often than
@@ -691,7 +691,7 @@ impl AdultDriver {
                 {
                     let raw_heading = self.route_heading(i, layer, from, target, dt);
                     let wedged = self.movers[i].nav_blocked > 0;
-                    let (next, heading, ok) = advance_step(
+                    let step = advance_step(
                         &mut self.grid_cache,
                         layer,
                         from,
@@ -702,14 +702,15 @@ impl AdultDriver {
                     // Same leash as `Commute`: the office is the cage even while it is angry.
                     // Hitting the boundary or a wall just holds position — still converging as
                     // far as it is allowed to.
-                    if pos_in_chunk(next, home)
-                        && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
+                    if pos_in_chunk(step.next, home)
+                        && (step.next_ok
+                            || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer))
                     {
-                        self.note_step(i, StepOutcome::from(true, ok));
-                        self.movers[i].heading = heading;
+                        self.note_step(i, StepOutcome::from(true, step.straight_ok));
+                        self.movers[i].heading = step.heading;
                         if let Some(peer) = net.peers.get_mut(&id) {
-                            let yaw = heading.to_degrees().rem_euclid(360.0);
-                            peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                            let yaw = step.heading.to_degrees().rem_euclid(360.0);
+                            peer.update_player_state(step.next.to_array(), yaw, "walk_slow".into());
                         }
                         return;
                     }
@@ -772,7 +773,7 @@ impl AdultDriver {
                 } else {
                     let raw_heading = self.route_heading(i, layer, from, target, dt);
                     let wedged = self.movers[i].nav_blocked > 0;
-                    let (next, heading, ok) = advance_step(
+                    let step = advance_step(
                         &mut self.grid_cache,
                         layer,
                         from,
@@ -785,14 +786,15 @@ impl AdultDriver {
                     // adult stands one tick and re-steers from its current heading next time,
                     // exactly like `steer_around_walls`' own whisker deflection already does for
                     // the robapieles. The watchdog above is what stops that from being forever.
-                    if pos_in_chunk(next, home)
-                        && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
+                    if pos_in_chunk(step.next, home)
+                        && (step.next_ok
+                            || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer))
                     {
-                        self.note_step(i, StepOutcome::from(true, ok));
-                        self.movers[i].heading = heading;
+                        self.note_step(i, StepOutcome::from(true, step.straight_ok));
+                        self.movers[i].heading = step.heading;
                         if let Some(peer) = net.peers.get_mut(&id) {
-                            let yaw = heading.to_degrees().rem_euclid(360.0);
-                            peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                            let yaw = step.heading.to_degrees().rem_euclid(360.0);
+                            peer.update_player_state(step.next.to_array(), yaw, "walk_slow".into());
                         }
                         return;
                     }
@@ -846,8 +848,15 @@ const FACELING_CHILD_ROAM_RETRY_S: f32 = 3.0;
 /// v1 PLACEHOLDER, unmeasured. A member's own forward-cone sighting radius — deliberately its
 /// own constant and not a reuse of any `PHANTOM_*` detection range: the robapieles hears and sees
 /// light, a child (ADR-094 point 3) only ever gets this one geometric check.
-const FACELING_CHILD_DETECT_RADIUS: f32 = 20.0;
+pub(super) const FACELING_CHILD_DETECT_RADIUS: f32 = 20.0;
 const FACELING_CHILD_DETECT_HALF_FOV_DEG: f32 = 60.0;
+/// Enmienda 14 — how close a player has to be for a child to hear one THROUGH geometry.
+///
+/// Sight now needs a clear line, so this is the deliberate hole in it: right behind the partition
+/// you are still found, which is what keeps hiding a decision about DISTANCE rather than a wall you
+/// stand behind for ever. Short by design — a whole floor's worth of hearing would just reinstate
+/// the wallhack under another name.
+pub(super) const FACELING_CHILD_HEAR_RADIUS: f32 = 8.0;
 /// THE GEAR CHANGE (play-test, Joel 2026-08-24): a child in the cerco moves at one of two speeds
 /// depending on whether you can see it coming.
 ///
@@ -876,7 +885,7 @@ const FACELING_CHILD_CERCO_BAND: f32 = 6.0;
 /// ADR-094 point 3 doesn't specify a give-up window for the cerco itself (only Enforce's ~45 s is
 /// named, for the adults) — this is a v1 PLACEHOLDER, deliberately shorter: a pack that lost the
 /// scent should let go sooner than an office defending itself.
-const FACELING_CHILD_GIVE_UP_S: f32 = 20.0;
+pub(super) const FACELING_CHILD_GIVE_UP_S: f32 = 20.0;
 
 /// ADR-094 point 3/6 — the child pack's OWN vocal kind space, read by the CHILD's own
 /// `ProxyVocalHook` instance/bank array (`FacelingChildAvatarBuilder`'s own wiring), independent
@@ -954,7 +963,7 @@ const FACELING_CHILD_CALL_INTERVAL_S: f32 = 4.0;
 /// How close a lone survivor has to get to another pack of its own layer to join it. Generous on
 /// purpose — a straggler that never finds anybody is a straggler that stays a permanent free kill,
 /// which is the opposite of what "reagruparse" is for.
-const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
+pub(super) const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
 /// A pack at this size does not accept a straggler. Five since the 2026-08-24 play-test (ADR-094
 /// Enmienda 2): `assign_roles` has a roster for it, and beyond five the extra members fall through
 /// to `Press | None`, which is a silent degradation rather than a decision.
@@ -1323,10 +1332,12 @@ fn pick_roam_point(
     None
 }
 
-/// Is `target` within this member's own forward cone? ADR-094 point 3's ONLY detection input —
-/// no cone/sound/light stack like the robapieles, no crouch/light awareness like the adults have
-/// NEITHER of (this is its own third thing). Unity yaw convention throughout this module: 0 = +Z,
-/// forward = `(sin, cos)`.
+/// Is `target` within this member's own forward cone? Unity yaw convention throughout this module:
+/// 0 = +Z, forward = `(sin, cos)`.
+///
+/// ANGLE ONLY — occlusion is the caller's job (`detect_for_pack`), for the same reason
+/// `update_freeze_for_pack` splits them: the cone is two multiplies and the line is a grid
+/// raycast, so only the children actually pointed at a player pay for the second one.
 fn child_can_see(from: Vec3, heading: f32, target: Vec3) -> bool {
     if from.distance_xz(target) > FACELING_CHILD_DETECT_RADIUS {
         return false;
@@ -1412,9 +1423,25 @@ fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32)
 /// clear but one side tight it nudges 8° off the wall (ADR-082's fix for "se bugea en la pared"),
 /// and that nudge is invisible to a walkability test on the next step alone. A mover already
 /// having trouble is precisely the one that must keep it.
-/// Returns `(next, heading, already_walkable)`. The third value is not a convenience: without it
-/// every caller re-tests the very cell the fast path just tested, which at 64 movers is 64 wasted
-/// lookups a step.
+///
+/// THE RATCHET THIS RETURN SHAPE FIXES. The old signature returned ONE bool for two different
+/// questions — "is `next` already known walkable?" (so the caller skips a lookup) and "was the
+/// STRAIGHT bearing clear?" (which is what `StepOutcome` grades). They coincide only on the fast
+/// path. Under `wedged` the fast path is skipped, so that bool was `false` forever, every caller
+/// fed it to `StepOutcome::from` as "not clear", and `nav_blocked` could no longer come DOWN:
+/// `wedged` is itself `nav_blocked > 0`, so the first deflection latched a mover into permanent
+/// routing. Enmienda 12's hysteresis ("leaving takes several good ones") had no way to ever leave.
+/// Two fields, asked separately, and the straight probe is now paid on every step — one lookup,
+/// which is what the fast path was already paying anyway.
+struct Step {
+    next: Vec3,
+    heading: f32,
+    /// `next` has been verified walkable here; the caller must not re-test it.
+    next_ok: bool,
+    /// The UNDEFLECTED bearing was walkable. This, and only this, is what grades the step.
+    straight_ok: bool,
+}
+
 fn advance_step(
     cache: &mut GridGenChunkCache,
     layer: u8,
@@ -1422,22 +1449,32 @@ fn advance_step(
     raw_heading: f32,
     step: f32,
     wedged: bool,
-) -> (Vec3, f32, bool) {
+) -> Step {
     let straight = Vec3::new(
         from.x + raw_heading.sin() * step,
         from.y,
         from.z + raw_heading.cos() * step,
     );
-    if !wedged && is_walkable_grid_gen(cache, straight, layer) {
-        return (straight, raw_heading, true);
+    let straight_ok = is_walkable_grid_gen(cache, straight, layer);
+    if !wedged && straight_ok {
+        return Step {
+            next: straight,
+            heading: raw_heading,
+            next_ok: true,
+            straight_ok: true,
+        };
     }
     let heading = steer_around_walls(cache, layer, from, raw_heading);
-    let next = Vec3::new(
-        from.x + heading.sin() * step,
-        from.y,
-        from.z + heading.cos() * step,
-    );
-    (next, heading, false)
+    Step {
+        next: Vec3::new(
+            from.x + heading.sin() * step,
+            from.y,
+            from.z + heading.cos() * step,
+        ),
+        heading,
+        next_ok: false,
+        straight_ok,
+    }
 }
 
 /// Enmienda 8 — how often a child may re-run the A* while it has a plan. Matches the robapieles'
@@ -2040,6 +2077,10 @@ impl ChildDriver {
                 let survivor = &mut self.packs[pi].members[0];
                 survivor.role = None;
                 survivor.flank_offset = 0.0;
+                // Same latch as the give-up above: `Flee` never runs the freeze pass either, so a
+                // survivor that was frozen when its last packmate died would stand there for good
+                // instead of running for the anchor.
+                survivor.frozen = false;
                 survivor.state_timer = FACELING_CHILD_CALL_INTERVAL_S;
                 info!(
                     "MPTRACE step=FL_PACK event=faceling_pack_lone_survivor chunk=({},{}) faceling_id={}",
@@ -2090,20 +2131,22 @@ impl ChildDriver {
             }
         }
 
-        // Highest index first: removing a pack shifts everything after it, and a host index
-        // recorded before the removal would then point at the wrong pack.
-        merges.sort_unstable_by_key(|(si, _)| std::cmp::Reverse(*si));
+        // NOTHING IS REMOVED INSIDE THIS LOOP, and that is the fix rather than a style choice. The
+        // old version removed each straggler as it merged and then corrected the host index by one
+        // (`if hi > si { hi - 1 }`) — which only accounts for THIS removal, not for the ones
+        // earlier iterations already did. With two stragglers merging on the same tick and a host
+        // sitting after both, the second merge pushed the member into the wrong pack, or indexed
+        // past the end and panicked the host outright. Emptying the straggler in place keeps every
+        // recorded index valid for the whole pass; the empties are swept afterwards.
         let mut merged: HashSet<usize> = HashSet::new();
         for (si, hi) in merges {
-            // One straggler can be claimed by one host only, and a host that was ITSELF removed
+            // One straggler can be claimed by one host only, and a host that was ITSELF emptied
             // as a straggler this pass is no longer a place to merge into.
             if merged.contains(&si) || merged.contains(&hi) {
                 continue;
             }
             merged.insert(si);
-            let mut pack = self.packs.remove(si);
-            let hi = if hi > si { hi - 1 } else { hi };
-            let Some(mut member) = pack.members.pop() else {
+            let Some(mut member) = self.packs[si].members.pop() else {
                 continue;
             };
             let id = member.id;
@@ -2128,6 +2171,9 @@ impl ChildDriver {
                 self.packs[hi].members.len()
             );
         }
+        // The swept empties: a pack whose only member walked into another one. Done once, after
+        // every index has finished being used.
+        self.packs.retain(|p| !p.members.is_empty());
     }
 
     /// E2c: returns the `Press` blows staged this tick — same channel as `AdultDriver::step`'s.
@@ -2598,24 +2644,58 @@ impl ChildDriver {
             return;
         }
         let layer = self.packs[pi].layer;
-        let mut spotted: Option<(PeerId, Vec3)> = None;
-        'search: for m in &self.packs[pi].members {
-            let Some(peer) = net.peers.get(&m.id) else {
-                continue;
-            };
-            let from = Vec3::from_array(peer.position);
+        // Collected first so the occlusion probes below can borrow the grid cache mutably. Eight
+        // members at most — this is a stack-sized copy, not a scan.
+        let eyes: Vec<(Vec3, f32)> = self.packs[pi]
+            .members
+            .iter()
+            .filter_map(|m| net.peers.get(&m.id).map(|p| (p, m.heading)))
+            .map(|(p, heading)| (Vec3::from_array(p.position), heading))
+            .collect();
+
+        // Enmienda 14 — `saw` distinguishes the two senses, and it is not bookkeeping: EYES give a
+        // real position and a real velocity, EARS give a cell.
+        let mut spotted: Option<(PeerId, Vec3, bool)> = None;
+        'search: for (from, heading) in eyes {
             for &(pid, ppos, _) in players {
-                if world_pos_to_layer(ppos.y) == layer && child_can_see(from, m.heading, ppos) {
-                    spotted = Some((pid, ppos));
+                if world_pos_to_layer(ppos.y) != layer {
+                    continue;
+                }
+                // ── SIGHT, and it now needs a LINE ──
+                //
+                // The cone alone is an angle test, so a pack found you through walls: it locked on,
+                // converged on a target the A* could not reach, and — because the same wall-blind
+                // check kept refreshing `lost_for` every tick — the 20 s give-up never ran either.
+                // What the player saw was children pressed against a wall for ever, and no amount
+                // of pathfinder was ever going to fix it, because the goal was unreachable rather
+                // than badly routed. Enmienda 10 already made this exact call for the freeze
+                // ("que no haya wallhack"); the detection was the half that got left behind.
+                if child_can_see(from, heading, ppos)
+                    && segment_is_clear(&mut self.grid_cache, layer, from, ppos)
+                {
+                    spotted = Some((pid, ppos, true));
                     break 'search;
+                }
+                // ── HEARING, which does NOT need one ──
+                //
+                // No cone (you hear behind you) and no line (that is the point), but short. Keeps
+                // the wall a decision about how far you are willing to back off rather than an
+                // exploit you park behind, and it is the same principle as ADR-041's noise: what
+                // travels is a PLACE, not your coordinates. Eyes win — a member that actually sees
+                // you overwrites this on the spot.
+                if from.distance_xz(ppos) <= FACELING_CHILD_HEAR_RADIUS {
+                    spotted = Some((pid, cell_center(cell_of(ppos), ppos.y), false));
                 }
             }
         }
 
-        if let Some((pid, ppos)) = spotted {
+        if let Some((pid, ppos, saw)) = spotted {
             let mind = &mut self.packs[pi].mind;
+            // Velocity only from EYES: a heard player has no direction, and feeding `Cut` a
+            // velocity derived from two quantised cell centres would have it intercept a retreat
+            // the player never made.
             let vel = match (mind.target, mind.last_known_pos) {
-                (Some(prev_id), Some(prev_pos)) if prev_id == pid && dt > 0.0 => {
+                (Some(prev_id), Some(prev_pos)) if saw && prev_id == pid && dt > 0.0 => {
                     ((ppos.x - prev_pos.x) / dt, (ppos.z - prev_pos.z) / dt)
                 }
                 _ => (0.0, 0.0),
@@ -2653,6 +2733,14 @@ impl ChildDriver {
                 for m in &mut self.packs[pi].members {
                     m.role = None;
                     m.flank_offset = 0.0;
+                    // THE STATUE THAT NEVER WOKE UP. `update_freeze_for_pack` is the only thing
+                    // that clears a member's own latch, and it returns immediately unless the pack
+                    // is in `PackStalk` — so a child frozen at the moment the pack gives up stayed
+                    // frozen FOREVER, in a state that never looks at the flag again. `tick_member`
+                    // returns before every movement arm on it, so what the player sees is a child
+                    // standing against a wall for the rest of the session: half of "se quedan como
+                    // intentando atravesar una pared" was this, not the pathfinder.
+                    m.frozen = false;
                 }
             }
         }
@@ -2857,7 +2945,7 @@ impl ChildDriver {
                 false => routed,
             };
             let wedged = self.packs[pi].members[mi].nav_blocked > 0;
-            let (next, heading, ok) = advance_step(
+            let step = advance_step(
                 &mut self.grid_cache,
                 layer,
                 from,
@@ -2865,14 +2953,15 @@ impl ChildDriver {
                 FACELING_CHILD_BOLT_SPEED * dt,
                 wedged,
             );
+            let heading = step.heading;
             // No patrol leash while bolting: it is running TO the anchor, so it can only end up
             // further inside its own territory.
-            if ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
-                self.note_step(pi, mi, StepOutcome::from(true, ok));
+            if step.next_ok || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer) {
+                self.note_step(pi, mi, StepOutcome::from(true, step.straight_ok));
                 self.packs[pi].members[mi].heading = heading;
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = heading.to_degrees().rem_euclid(360.0);
-                    peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                    peer.update_player_state(step.next.to_array(), yaw, "walk_slow".into());
                 }
                 return;
             }
@@ -3242,16 +3331,23 @@ impl ChildDriver {
                 // goes around the corner instead of into it.
                 let raw_heading = self.route_heading(pi, mi, layer, from, goal, dt);
                 // ±10% by temperament, so a pack does not advance as one rigid line.
-                let step = child_gear_speed(from, players, layer) * (0.9 + nerve * 0.2) * dt;
+                let advance = child_gear_speed(from, players, layer) * (0.9 + nerve * 0.2) * dt;
                 let wedged = self.packs[pi].members[mi].nav_blocked > 0;
-                let (next, heading, ok) =
-                    advance_step(&mut self.grid_cache, layer, from, raw_heading, step, wedged);
-                if ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
-                    self.note_step(pi, mi, StepOutcome::from(true, ok));
+                let step = advance_step(
+                    &mut self.grid_cache,
+                    layer,
+                    from,
+                    raw_heading,
+                    advance,
+                    wedged,
+                );
+                let heading = step.heading;
+                if step.next_ok || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer) {
+                    self.note_step(pi, mi, StepOutcome::from(true, step.straight_ok));
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
                         let yaw = heading.to_degrees().rem_euclid(360.0);
-                        peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                        peer.update_player_state(step.next.to_array(), yaw, "walk_slow".into());
                     }
                     return;
                 }
@@ -3295,8 +3391,6 @@ impl ChildDriver {
                     }
                     return;
                 }
-                self.note_step(pi, mi, StepOutcome::Blocked);
-
                 // Not getting closer for `FACELING_WEDGED_GIVE_UP_S`? Draw somewhere else.
                 // `PackRoam`'s own re-roll lives behind the ARRIVE check above, so without this a
                 // child that can never arrive never re-rolls — and "never arrives" covers walking
@@ -3331,7 +3425,7 @@ impl ChildDriver {
 
                 let raw_heading = self.route_heading(pi, mi, layer, from, target, dt);
                 let wedged = self.packs[pi].members[mi].nav_blocked > 0;
-                let (next, heading, ok) = advance_step(
+                let step = advance_step(
                     &mut self.grid_cache,
                     layer,
                     from,
@@ -3342,18 +3436,25 @@ impl ChildDriver {
                 // Same leash SHAPE as the adults' `Commute`, radius instead of chunk-box: a step
                 // that would leave the patrol circle, or land somewhere solid, just does not
                 // happen — hold and re-steer next tick.
-                if next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
-                    && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
+                if step.next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
+                    && (step.next_ok
+                        || is_walkable_grid_gen(&mut self.grid_cache, step.next, layer))
                 {
-                    self.note_step(pi, mi, StepOutcome::from(true, ok));
-                    self.packs[pi].members[mi].heading = heading;
+                    self.note_step(pi, mi, StepOutcome::from(true, step.straight_ok));
+                    self.packs[pi].members[mi].heading = step.heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
-                        let yaw = heading.to_degrees().rem_euclid(360.0);
-                        peer.update_player_state(next.to_array(), yaw, "walk_slow".into());
+                        let yaw = step.heading.to_degrees().rem_euclid(360.0);
+                        peer.update_player_state(step.next.to_array(), yaw, "walk_slow".into());
                     }
                     return;
                 }
 
+                // Graded ONLY here, on the rejection. This used to fire unconditionally at the top
+                // of the arm, before the step was even attempted, so every roaming child banked +2
+                // a tick across open floor: two ticks in and the whole census was permanently
+                // "wedged", paying for an A* and a body-radius line probe for the rest of its life.
+                // The adults' `Commute` had it right all along — only a refused step is a bad one.
+                self.note_step(pi, mi, StepOutcome::Blocked);
                 let anim = "walk_slow";
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = self.packs[pi].members[mi]

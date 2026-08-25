@@ -6500,3 +6500,94 @@ suman una pared.
 Nada de esto toca el mixer: `RouteToSfx` ya enrutaba correctamente por el canal Sfx (esa parte
 funcionaba, y es lo que hace que el slider de efectos del jugador siga mandando). Lo que faltaba
 era el balance DENTRO de ese canal.
+
+---
+
+### ADR-094 — Enmienda 14: el atasco en paredes, las cuatro causas que quedaban (2026-08-25)
+
+Playtest, después de la Enmienda 12: **"sigue sin funcionar"**. La Enmienda 12 arregló una causa
+real y no la principal, y lo dijo por escrito ("puede que esta no sea la única causa"). Auditoría
+de la IA entera: eran cinco, y el pathfinder no era ninguna de ellas.
+
+**NOTA DE REGISTRO: las Enmiendas 12 y 13 nunca se apendizaron aquí.** Viven solo en el mensaje del
+commit `294c96df`, y el roadmap las cita como si fueran ley. Queda anotado; no se reescriben a
+posteriori desde una sesión que no las tomó.
+
+**D22 — VER EXIGE LÍNEA; OÍR NO, PERO ES CORTO.** Ésta es la causa principal y contradice el punto
+3, así que es la única que necesitaba decisión y no solo arreglo.
+
+`child_can_see` era cono + radio y NADA más. Un pack te fijaba a través de una pared, convergía
+sobre un objetivo que el A* no podía alcanzar, y —porque el mismo test ciego refrescaba `lost_for`
+cada tick— **la rendición de 20 s tampoco llegaba a correr nunca**. Lo que se ve es a los niños
+empujando un muro para siempre, y ninguna cantidad de pathfinder lo arregla: el objetivo era
+INALCANZABLE, no estaba mal ruteado. La Enmienda 10 ya tomó exactamente esta decisión para la
+congelación ("que no haya wallhack"); la detección fue la mitad que se quedó atrás.
+
+La vista pasa a exigir `segment_is_clear`, después del cono y por la misma razón de coste que la
+Enmienda 10 da: el cono son dos multiplicaciones y esto es un raycast de rejilla.
+
+Y se le abre un agujero deliberado: **el oído, a 8 m, sin cono y sin línea**. Sin él, esconderse
+tras un tabique sería inmunidad, y el encuentro pasaría a resolverse por geometría en vez de por
+distancia. Con él, la pared te compra segundos, no seguridad. Lo que escribe en el `PackMind` es
+**la CELDA, no tu pose** — mismo principio que ADR-041 ("lo que se transporta es un RUIDO EN UN
+SITIO"): sabe dónde estás aproximadamente, no dónde estás. Y `last_known_vel` se queda a cero
+cuando la fuente es el oído: un jugador oído no tiene dirección, y darle una a `Cut` sería
+interceptar una retirada que nadie ha visto.
+
+**D23 — LA ESTATUA PERMANENTE.** `update_freeze_for_pack` es lo único que limpia el latch de un
+miembro, y retorna en seco si el pack no está en `PackStalk`. El freeze NO tiene límite de
+distancia (es cono + línea) y la detección sí (20 m): quédate mirando desde 25 m y el niño se
+congela cada tick mientras la memoria del pack se agota sola. En el tick de la rendición el pack
+sale de `PackStalk` — y ese miembro se queda `frozen` PARA SIEMPRE, con `tick_member` retornando
+antes de todos los brazos de movimiento. Un niño de pie contra una pared el resto de la partida.
+Se limpia en las dos salidas del estado (rendición y `Flee`).
+
+**D24 — EL TRINQUETE QUE ANULABA LA ENMIENDA 12.** `advance_step` devolvía UN bool para dos
+preguntas: "¿`next` ya se sabe transitable?" (para que el llamante no repita el lookup) y "¿el
+rumbo RECTO estaba limpio?" (que es lo que gradúa `StepOutcome`). Coinciden solo en el camino
+rápido. Con `wedged` ese camino se salta, así que el bool era `false` para siempre, los cinco
+llamantes se lo pasaban a `StepOutcome::from` como "no limpio", y un mover encajado **ya no podía
+anotar un `Clear` jamás**: `nav_blocked` solo subía, y como `wedged` ES `nav_blocked > 0`, la
+primera desviación lo dejaba planificando un A* de por vida. La histéresis que la Enmienda 12
+introdujo ("salir exige caer hasta cero") no tenía por dónde salir. Dos campos, preguntados por
+separado.
+
+Su gemelo: `PackRoam` anotaba `Blocked` (+2) incondicionalmente ARRIBA del brazo, antes de intentar
+el paso, así que un niño cruzando suelo abierto acumulaba deuda solo por caminar — dos ticks y el
+censo entero quedaba "encajado". El `Commute` de los adultos lo tenía bien desde el principio: solo
+un paso RECHAZADO es un paso malo.
+
+Medido en release con `faceling_pathfinding_cost`, 8 packs × 8 niños: **cerco 0,259 → 0,168 ms y
+vagabundeo 0,235 → 0,089 ms** por step, contra el techo de 2 ms de ADR-040. El arreglo no cuesta
+rendimiento: la devuelve, porque el trinquete tenía a los 64 pagando navegación que no necesitaban.
+
+**D25 — `regroup_lone_survivors` podía tumbar el host.** Quitaba cada straggler según lo fusionaba y
+corregía el índice del anfitrión en uno (`if hi > si { hi - 1 }`), lo que solo contabiliza ESA
+remoción y no las que ya hicieron las iteraciones anteriores. Dos supervivientes solitarios
+fusionando en el mismo tick metían un miembro en el pack equivocado; con el anfitrión al final de
+la lista, indexaban fuera de rango y **panic del proceso host**. Ahora no se quita nada dentro del
+bucle: el straggler se vacía en su sitio y los vacíos se barren al final, así que todo índice
+registrado sigue siendo válido durante la pasada entera.
+
+**D26 — El `Seize` estaba MUERTO en el cliente** (Enmienda 7 entera). `ResolveGrabber` filtra por
+`view.revealed`, que es la forma real del robapieles (ADR-038) y que **ningún faceling tiene nunca**
+— `spawn_faceling` deja el default y nadie lo sella. Así que `StartSeizure` no encontraba a nadie y
+retornaba antes del giro, de la cara a cara, del aturdimiento y del bloqueo de correr: solo
+aterrizaba el `Hit` de 10 que viaja aparte. Y cuando SÍ encontraba algo era peor — un robapieles
+revelado cerca se llevaba la cámara en lugar del niño que te está gritando en la cara. El resolutor
+acepta ahora `species == 2` bajo un flag explícito, y el agarre de MUERTE se queda como estaba a
+propósito: ahí el asesino sí es un robapieles revelado.
+
+Verificación, y es el punto que la tanda anterior no pudo dar: **cada arreglo tiene un test que
+FALLA con su bug reinstalado**, comprobado uno a uno en un worktree limpio (los seis mutantes caen,
+cada uno en su test). Incluye los dos unitarios que `sed -i` se llevó (`a_deflected_step_is_not_progress`,
+`a_route_is_not_abandoned_after_one_clean_step`). El escenario de
+`one_members_sighting_commits_the_whole_pack_to_the_cerco` hubo que rehacerlo: plantaba el pack en
+`(0,0,0)`, que es celda de PARED, y solo funcionaba porque la detección era un test de ángulo puro.
+Ningún test de percepción autora ya coordenadas a mano: `sightline_pair` BUSCA el escenario en el
+mundo real con `with_rules`. 1001/1001 en verde.
+
+Lo que esto NO arregla, y queda anotado: el golpe del niño y el del adulto siguen exigiendo
+`segment_is_clear` hasta el JUGADOR en vez de hasta el `contact_stance` de ADR-082, así que pegado
+a una pared sigues siendo intocable para ellos; `Flee` no navega ni tiene watchdog; y el `Enforce`
+del adulto puede moler contra la correa de su chunk indefinidamente. Los tres son suyos propios.

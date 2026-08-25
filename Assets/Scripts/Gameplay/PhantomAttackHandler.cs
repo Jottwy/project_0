@@ -708,8 +708,14 @@ namespace BackroomsSurvival.Gameplay
         /// The nearest REVEALED remote avatar within reach — i.e. the only thing on screen that can
         /// have killed you. A revealed proxy is a robapieles mid-lunge by construction (ADR-038),
         /// and a real player is never revealed, so this can never mistake a teammate for the killer.
+        ///
+        /// <paramref name="includeFacelings"/> widens it to child facelings (ADR-094 `species` 2),
+        /// which are never revealed and are the ONLY thing that sends a `Seize`. It stays OFF for
+        /// the death grab on purpose: there the killer really is a revealed robapieles, and letting
+        /// a child of the pack milling around your corpse win the search would point the last
+        /// second of the round at the wrong creature.
         /// </summary>
-        private Transform ResolveGrabber()
+        private Transform ResolveGrabber(bool includeFacelings = false)
         {
             var managers = FindObjectsByType<RemotePlayerManager>(
                 FindObjectsInactive.Exclude, FindObjectsSortMode.None);
@@ -723,7 +729,13 @@ namespace BackroomsSurvival.Gameplay
                 foreach (var kvp in managers[m].ActivePlayers)
                 {
                     var view = kvp.Value;
-                    if (view == null || !view.revealed || view.root == null)
+                    if (view == null || view.root == null)
+                        continue;
+                    // FacelingChild == 2 (ADR-094). Cosmetic elsewhere; here it is only ever used to
+                    // answer "is this thing a creature rather than a teammate", which is the same
+                    // question `revealed` answers for the robapieles.
+                    bool eligible = view.revealed || (includeFacelings && view.species == 2);
+                    if (!eligible)
                         continue;
                     float sq = (view.root.position - origin).sqrMagnitude;
                     if (sq < bestSq)
@@ -984,7 +996,13 @@ namespace BackroomsSurvival.Gameplay
             // A knockdown underneath would be fighting for the same camera and collider height.
             EndKnockdown();
 
-            _seizer = ResolveGrabber(); // same nearest-creature search the grab uses
+            // ADR-094 Enmienda 7 sends kind 6 from a CHILD FACELING, which is never `revealed` —
+            // that flag is the robapieles' real form (ADR-038) and nothing sets it on a faceling.
+            // So the grab's own search found nobody, this returned here, and the entire seizure —
+            // the turn, the face, the daze, the Run block — was dead code in the only case it
+            // exists for. Worse when it did find something: a revealed robapieles standing nearby
+            // got the camera instead of the child actually screaming in your face.
+            _seizer = ResolveGrabber(includeFacelings: true);
             if (_seizer == null)
                 return; // nothing to hold your face against; the Hit that rode along still landed
 

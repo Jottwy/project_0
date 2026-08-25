@@ -8420,15 +8420,25 @@ async fn four_member_pack(
 #[tokio::test]
 async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    // Enmienda 14 — a REAL sightline, found in the world rather than hand-authored. This used to
+    // stand the pack on (0,0,0) and the player 10 m up +Z, which worked only because detection was
+    // a pure angle test: (0,0,0) is a wall cell, so once sight needed a clear line the scenario was
+    // asserting the wrong thing. Past the hearing radius too, so this still tests the EYES.
+    let (anchor, player_pos) = sightline_pair(
+        42,
+        FACELING_CHILD_HEAR_RADIUS + 2.0,
+        FACELING_CHILD_DETECT_RADIUS - 1.0,
+        true,
+    );
     let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
-    // Member 0 faces +Z (default); the other three face directly AWAY from the player, so only
-    // member 0 can possibly detect it — proving the pack-wide reaction is not just "everyone
-    // happened to see it".
+    // Member 0 looks at the player; the other three face directly AWAY from it, so only member 0
+    // can possibly detect it — proving the pack-wide reaction is not just "everyone happened to
+    // see it".
+    let toward = (player_pos.x - anchor.x).atan2(player_pos.z - anchor.z);
+    pack.members[0].heading = toward;
     for m in pack.members.iter_mut().skip(1) {
-        m.heading = std::f32::consts::PI; // facing -Z
+        m.heading = toward + std::f32::consts::PI;
     }
-    let player_pos = Vec3::new(0.0, stand_on(0), 10.0); // in front of member 0 only
     let host_far_away = Vec3::new(-9999.0, stand_on(0), -9999.0);
     // Plant a real peer at player_pos so `step`'s player list includes it (the host itself is
     // parked far away on purpose — this must be the PEER's sighting that trips it).
@@ -10395,6 +10405,375 @@ fn pack_temper_is_stable_per_chunk_and_mixed_across_them() {
         assert!(
             n * 10 > total / 2,
             "{kind} came up {n}/{total} times — the split has collapsed"
+        );
+    }
+}
+
+// ─── ADR-094 Enmienda 14 — el atasco en paredes, las causas que quedaban ───
+//
+// Los dos primeros son los unitarios que `sed -i` se llevó (§2.2 del roadmap) y que la Enmienda 12
+// nunca llegó a commitear. Los demás son nuevos y cada uno falla con SU bug reinstalado — que es la
+// prueba que la tanda anterior no consiguió dar.
+
+/// Enmienda 12, unitario perdido. A step the whiskers bent 8° off a wall LANDED, and grading it by
+/// "did it land" is what let a faceling scrape along a wall for ever while reporting success.
+#[test]
+fn a_deflected_step_is_not_progress() {
+    // straight clear ⇒ real progress, whatever the deflected probe said.
+    assert_eq!(StepOutcome::from(true, true), StepOutcome::Clear);
+    assert_eq!(StepOutcome::from(false, true), StepOutcome::Clear);
+    // Straight blocked but the deflection landed: advanced, yet a wall is in the way. THE case.
+    assert_eq!(StepOutcome::from(true, false), StepOutcome::Deflected);
+    assert_eq!(StepOutcome::from(false, false), StepOutcome::Blocked);
+}
+
+/// Enmienda 12, unitario perdido. The gate is LATCHED: crossing `FACELING_WEDGE_ENTER` opens it and
+/// only falling all the way to zero closes it. As a bare threshold, the first clean step after a
+/// plan dropped the counter under the line and threw the route away — into the same wall, one tick
+/// later.
+#[test]
+fn a_route_is_not_abandoned_after_one_clean_step() {
+    // No plan yet: nothing below the entry threshold may start a search.
+    assert!(!wants_routing_for_test(FACELING_WEDGE_ENTER - 1, false));
+    assert!(wants_routing_for_test(FACELING_WEDGE_ENTER, false));
+    // Holding a plan: one good step must NOT hand the mover back to the whiskers.
+    assert!(wants_routing_for_test(FACELING_WEDGE_ENTER - 1, true));
+    assert!(wants_routing_for_test(1, true));
+    // Only a fully paid-off debt closes it.
+    assert!(!wants_routing_for_test(0, true));
+}
+
+/// Two walkable spots on layer 0 of the REAL world whose straight line is CLEAR (`want_clear`) or
+/// BLOCKED, with their distance inside `[min_d, max_d]`.
+///
+/// Every faceling perception test needs one of these and none of them may hand-author coordinates:
+/// `(0,0,0)` is a wall cell, and a probe built with `GridGenChunkCache::new` generates a DIFFERENT
+/// world from the drivers' `with_rules` — both are §5 traps that have already cost this project
+/// time. Search the real world for the scenario instead of assuming it.
+fn sightline_pair(seed: u64, min_d: f32, max_d: f32, want_clear: bool) -> (Vec3, Vec3) {
+    use crate::world::grid_gen::{
+        cell_center, is_walkable_grid_gen, segment_is_clear, GridGenChunkCache,
+    };
+    let mut probe = GridGenChunkCache::with_rules(seed, crate::world::zone_density::rules_for);
+    let reach = (max_d / crate::world::grid_gen::CELL_SIZE_M).ceil() as i32 + 1;
+    for ax in 1..40i32 {
+        for az in 1..40i32 {
+            let a = cell_center((ax, az), stand_on(0));
+            if !is_walkable_grid_gen(&mut probe, a, 0) {
+                continue;
+            }
+            for dx in -reach..=reach {
+                for dz in -reach..=reach {
+                    let b = cell_center((ax + dx, az + dz), stand_on(0));
+                    let d = a.distance_xz(b);
+                    if d < min_d || d > max_d || !is_walkable_grid_gen(&mut probe, b, 0) {
+                        continue;
+                    }
+                    if segment_is_clear(&mut probe, 0, a, b) == want_clear {
+                        return (a, b);
+                    }
+                }
+            }
+        }
+    }
+    panic!(
+        "seed {seed} must contain a {} pair {min_d}-{max_d} m apart near the origin",
+        match want_clear {
+            true => "sightline",
+            false => "wall-separated",
+        }
+    );
+}
+
+/// Finds a walkable spot on layer 0 of the REAL world (seed 42) with open floor around it, plus a
+/// target it can walk to in a straight line. `with_rules`, never `new` — a probe on the other world
+/// lies about walls (Enmienda 10's harness bug), and (0,0,0) is a wall cell.
+fn open_floor_and_target(seed: u64) -> (Vec3, Vec3) {
+    use crate::world::grid_gen::{
+        cell_center, is_walkable_grid_gen, segment_is_clear_for_body, GridGenChunkCache,
+        PHANTOM_BODY_RADIUS,
+    };
+    let mut probe = GridGenChunkCache::with_rules(seed, crate::world::zone_density::rules_for);
+    for ax in 1..40i32 {
+        for az in 1..40i32 {
+            let a = cell_center((ax, az), stand_on(0));
+            if !is_walkable_grid_gen(&mut probe, a, 0) {
+                continue;
+            }
+            // A target a few cells off whose whole corridor admits a body: this has to be a walk
+            // with nothing to dodge, or the test would be measuring the whiskers instead.
+            for (dx, dz) in [(3, 0), (0, 3), (-3, 0), (0, -3)] {
+                let b = cell_center((ax + dx, az + dz), stand_on(0));
+                if is_walkable_grid_gen(&mut probe, b, 0)
+                    && segment_is_clear_for_body(&mut probe, 0, a, b, PHANTOM_BODY_RADIUS)
+                {
+                    return (a, b);
+                }
+            }
+        }
+    }
+    panic!("seed {seed} must contain open floor with a clear short walk near the origin");
+}
+
+/// THE RATCHET. `advance_step` returned ONE bool for "next is already known walkable" and "the
+/// straight bearing was clear", and under `wedged` the fast path is skipped so it read `false`
+/// forever. Every caller fed that to `StepOutcome::from`, so a wedged mover could never bank a
+/// `Clear` — `nav_blocked` only ever went UP, and since `wedged` IS `nav_blocked > 0`, the first
+/// deflection latched the mover into paying for an A* for the rest of its life. Enmienda 12's
+/// hysteresis had no way out.
+#[tokio::test]
+async fn a_wedged_child_comes_unwedged_walking_on_open_ground() {
+    let (from, target) = open_floor_and_target(42);
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, from).await;
+    pack.members.truncate(1);
+    pack.state = ChildState::PackRoam;
+    pack.anchor = from;
+    pack.members[0].roam_target = target;
+    // Arrive wedged, as if it had just scraped its way out of a corner.
+    pack.members[0].nav_blocked = FACELING_WEDGE_ENTER;
+    let id = pack.members[0].id;
+    net.peers.get_mut(&id).unwrap().position = from.to_array();
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    // Comfortably more ticks than the debt: each clean step pays off exactly one.
+    for _ in 0..(FACELING_WEDGE_ENTER as usize + 4) {
+        driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+    }
+
+    assert_eq!(
+        driver.packs[0].members[0].nav_blocked, 0,
+        "a child walking freely must pay off its wedge debt; it is stuck at {} \
+         (the gate is latched open and it is planning an A* every step)",
+        driver.packs[0].members[0].nav_blocked
+    );
+}
+
+/// The companion defect: `PackRoam` banked `Blocked` (+2) unconditionally at the TOP of the arm,
+/// before the step was even attempted, so a child crossing open floor accumulated wedge debt just
+/// by walking. Two ticks in, the entire census was permanently "wedged" — the adults' `Commute`
+/// only ever graded a REFUSED step, and it was right.
+#[tokio::test]
+async fn a_roaming_child_on_open_floor_banks_no_wedge_debt() {
+    let (from, target) = open_floor_and_target(42);
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, from).await;
+    pack.members.truncate(1);
+    pack.state = ChildState::PackRoam;
+    pack.anchor = from;
+    pack.members[0].roam_target = target;
+    pack.members[0].nav_blocked = 0;
+    let id = pack.members[0].id;
+    net.peers.get_mut(&id).unwrap().position = from.to_array();
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    for _ in 0..10 {
+        driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+        assert_eq!(
+            driver.packs[0].members[0].nav_blocked, 0,
+            "walking across open floor must not count as being stuck"
+        );
+    }
+}
+
+/// Enmienda 14 — THE WALLHACK THAT KEPT THEM PINNED. `child_can_see` is an angle test, so a pack
+/// locked onto a player through a wall, converged on a goal the A* could not reach, and — because
+/// the same wall-blind check refreshed `lost_for` every tick — never ran its 20 s give-up either.
+/// That is the play-test report ("se quedan como intentando atravesar una pared"), and no amount of
+/// pathfinder addresses it: the goal was unreachable, not badly routed.
+#[tokio::test]
+async fn a_pack_does_not_hunt_you_through_a_wall() {
+    // Far enough apart that HEARING cannot explain the result, and inside the detection radius so
+    // sight is the only candidate left.
+    let (child_at, player_at) = sightline_pair(
+        42,
+        FACELING_CHILD_HEAR_RADIUS + 2.0,
+        FACELING_CHILD_DETECT_RADIUS - 1.0,
+        false,
+    );
+
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, child_at).await;
+    pack.members.truncate(1);
+    pack.anchor = child_at;
+    let id = pack.members[0].id;
+    net.peers.get_mut(&id).unwrap().position = child_at.to_array();
+    // Staring straight at the player, through the wall: the cone test passes by construction, so
+    // the ONLY thing that can refuse this sighting is the occlusion check.
+    pack.members[0].heading = (player_at.x - child_at.x).atan2(player_at.z - child_at.z);
+    pack.members[0].roam_target = child_at;
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.step(&mut net, 0.1, player_at, 0.0);
+
+    assert_eq!(
+        driver.packs[0].state,
+        ChildState::PackRoam,
+        "a pack must not lock onto a player it cannot see, at {:.1} m through a wall",
+        child_at.distance_xz(player_at)
+    );
+    assert_eq!(driver.packs[0].mind.target, None);
+}
+
+/// The deliberate hole in the rule above: hearing has no cone and no line, so backing up against
+/// the other side of a partition does not make you safe — it only buys you distance. And what it
+/// writes is a PLACE, not your coordinates (ADR-041's principle): the cell, never the exact pose.
+#[tokio::test]
+async fn a_pack_hears_you_through_a_wall_up_close() {
+    use crate::world::grid_gen::{cell_center, cell_of};
+    let (child_at, player_at) = sightline_pair(42, 2.0, FACELING_CHILD_HEAR_RADIUS, false);
+
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, child_at).await;
+    pack.members.truncate(1);
+    pack.anchor = child_at;
+    let id = pack.members[0].id;
+    net.peers.get_mut(&id).unwrap().position = child_at.to_array();
+    // Facing AWAY: no cone, so this can only be the ears.
+    pack.members[0].heading = (child_at.x - player_at.x).atan2(child_at.z - player_at.z);
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.step(&mut net, 0.1, player_at, 0.0);
+
+    assert_eq!(
+        driver.packs[0].state,
+        ChildState::PackStalk,
+        "a player {:.1} m away behind a partition must still be heard",
+        child_at.distance_xz(player_at)
+    );
+    let known = driver.packs[0]
+        .mind
+        .last_known_pos
+        .expect("heard a position");
+    assert_eq!(
+        known,
+        cell_center(cell_of(player_at), player_at.y),
+        "hearing must place you in a CELL, not hand over your exact pose"
+    );
+    assert_eq!(
+        driver.packs[0].mind.last_known_vel,
+        (0.0, 0.0),
+        "a heard player has no direction — `Cut` must not intercept a retreat it never saw"
+    );
+}
+
+/// THE PERMANENT STATUE, and the gap that produces it: the FREEZE has no distance limit (it is a
+/// cone plus a line) while DETECTION stops at 20 m. Stand past that radius and keep looking, and
+/// the child stays frozen every tick while the pack's memory of you runs out. On the give-up tick
+/// `detect_for_pack` leaves `PackStalk` — and `update_freeze_for_pack`, the only thing that clears
+/// a member's own latch, returns immediately for any state that is not `PackStalk`.
+///
+/// So the child stayed frozen for the rest of the session, with `tick_member` returning before
+/// every movement arm: a child standing against a wall for ever, which is a good half of what the
+/// play-test was describing.
+#[tokio::test]
+async fn a_frozen_child_thaws_when_the_pack_gives_up() {
+    // Watching from BEYOND the detection radius with a clear line: near enough to freeze, too far
+    // to be detected, which is exactly the combination that latches the statue.
+    let (child_at, watcher_at) = sightline_pair(
+        42,
+        FACELING_CHILD_DETECT_RADIUS + 1.0,
+        FACELING_CHILD_DETECT_RADIUS + 12.0,
+        true,
+    );
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, child_at).await;
+    pack.members.truncate(1);
+    pack.anchor = child_at;
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+    pack.mind.last_known_pos = Some(child_at);
+    let id = pack.members[0].id;
+    net.peers.get_mut(&id).unwrap().position = child_at.to_array();
+
+    // The host player, staring straight at the child from out of detection range.
+    let watcher_yaw = (child_at.x - watcher_at.x)
+        .atan2(child_at.z - watcher_at.z)
+        .to_degrees();
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    driver.step(&mut net, 0.1, watcher_at, watcher_yaw);
+    assert!(
+        driver.packs[0].members[0].frozen,
+        "the stare must freeze it in the first place, or this test proves nothing"
+    );
+
+    let ticks = (FACELING_CHILD_GIVE_UP_S / 0.1) as usize + 5;
+    for _ in 0..ticks {
+        driver.step(&mut net, 0.1, watcher_at, watcher_yaw);
+    }
+
+    assert_eq!(
+        driver.packs[0].state,
+        ChildState::PackRoam,
+        "out of detection range, the pack must time out"
+    );
+    assert!(
+        !driver.packs[0].members[0].frozen,
+        "the pack gave up but the child is still frozen — it will never move again"
+    );
+}
+
+/// `regroup_lone_survivors` removed each straggler as it merged and corrected the host index by
+/// ONE, which only accounts for that removal and not for the ones earlier iterations already did.
+/// Two stragglers on the same tick therefore pushed a member into the wrong pack — or, with the
+/// host last in the list, indexed past the end and panicked the host process.
+#[tokio::test]
+async fn two_stragglers_merging_on_one_tick_land_in_the_right_packs() {
+    let (spot_a, _) = open_floor_and_target(42);
+    // Far enough that each straggler can only reach ITS OWN host: two merges that must land in two
+    // different packs is the whole point, and a shared host would pass either way.
+    let spot_b = Vec3::new(
+        spot_a.x + FACELING_CHILD_REGROUP_RADIUS * 4.0,
+        spot_a.y,
+        spot_a.z,
+    );
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let mut driver = ChildDriver::new(42);
+
+    // Both lone survivors first, then the two packs they will join — the index order that made the
+    // old arithmetic drift (the second merge corrected its host index by one removal, not two).
+    for (chunk, spot) in [((10, 10), spot_a), ((11, 11), spot_b)] {
+        let mut straggler = four_member_pack(&mut net, chunk, 0, spot).await;
+        straggler.members.truncate(1);
+        straggler.state = ChildState::Flee;
+        straggler.anchor = spot;
+        let id = straggler.members[0].id;
+        net.peers.get_mut(&id).unwrap().position = spot.to_array();
+        driver.packs.push(straggler);
+    }
+    for (chunk, spot) in [((20, 20), spot_a), ((21, 21), spot_b)] {
+        let mut host = four_member_pack(&mut net, chunk, 0, spot).await;
+        host.members.truncate(2);
+        host.state = ChildState::PackRoam;
+        host.anchor = spot;
+        for m in &host.members {
+            net.peers.get_mut(&m.id).unwrap().position = spot.to_array();
+        }
+        driver.packs.push(host);
+    }
+
+    driver.step(&mut net, 0.1, Vec3::new(-9999.0, stand_on(0), -9999.0), 0.0);
+
+    // Both stragglers are gone and each host grew by exactly one. The old code put both members
+    // into the SAME pack (2 + 4 instead of 3 + 3) once the indices had drifted.
+    assert_eq!(
+        driver.packs.len(),
+        2,
+        "both stragglers must have merged away"
+    );
+    for pack in &driver.packs {
+        assert_eq!(
+            pack.members.len(),
+            3,
+            "pack {:?} ended with {} members — a straggler landed in the wrong one",
+            pack.home_chunk,
+            pack.members.len()
         );
     }
 }
