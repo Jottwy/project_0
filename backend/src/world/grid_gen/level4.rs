@@ -195,6 +195,46 @@ pub fn return_door_world_pos() -> [f32; 3] {
 /// Cuánto se separa una puerta de su punto de aterrizaje, en metros.
 pub const RETURN_DOOR_OFFSET_M: f32 = 5.0;
 
+/// El salto de una puerta a su gemela, como DESPLAZAMIENTO aplicado a la posición del jugador.
+///
+/// Cruzar deja de ser "aparece en tal punto" y pasa a ser "aparece en el punto EQUIVALENTE al
+/// otro lado": si cruzas a 10 cm del plano, sales a 10 cm del plano de la otra, con tu mismo
+/// desplazamiento lateral y tu misma altura. La marcha continúa en la dirección en que ibas y te
+/// ALEJA de la puerta de salida, que es lo que hace que no haga falta enfriamiento ninguno — y lo
+/// que hace que el salto no se note, que era lo pedido.
+///
+/// PRECONDICIÓN, y es la que permite que esto sea una resta y no una matriz: las dos puertas
+/// están orientadas OPUESTAS sobre el eje Z (entrada mirando −Z, vuelta mirando +Z; ver
+/// `GameBootstrap.SpawnLevel4Doors`). Con esa disposición la transformación de portal
+/// —`gemela.localToWorld · giro180 · esta.worldToLocal`— se reduce exactamente a esta traslación.
+/// Rotar una de las dos rompe la equivalencia y obliga a escribir la matriz entera con su yaw.
+///
+/// No depende de la ventana ni de por dónde entraste, así que la vuelta funciona SIEMPRE — hasta
+/// tras reiniciar el backend, que es cuando dejaba al jugador encerrado en la reserva.
+pub fn portal_delta(door_is_entry: bool) -> [f32; 3] {
+    let from = if door_is_entry {
+        ENTRY_DOOR_WORLD_POS
+    } else {
+        return_door_world_pos()
+    };
+    let to = if door_is_entry {
+        return_door_world_pos()
+    } else {
+        ENTRY_DOOR_WORLD_POS
+    };
+    [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
+}
+
+/// La posición de salida de un cruce: la de quien cruza, desplazada al otro lado.
+pub fn portal_exit(requester_pos: [f32; 3], door_is_entry: bool) -> [f32; 3] {
+    let d = portal_delta(door_is_entry);
+    [
+        requester_pos[0] + d[0],
+        requester_pos[1] + d[1],
+        requester_pos[2] + d[2],
+    ]
+}
+
 /// Ancla de la puerta de ENTRADA, en Level 0. Espejo de lo que planta `GameBootstrap`.
 ///
 /// Está en el CENTRO del tile (0,2) del chunk (0,0), y el sitio no es arbitrario: ese tile forma

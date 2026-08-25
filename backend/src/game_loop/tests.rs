@@ -11031,14 +11031,17 @@ fn crossing_a_door_repositions_the_backends_own_player() {
     );
 }
 
-/// El destino del cruce de entrada tiene que ser el vestíbulo, no la posición desde la que se
-/// cruzó. Devolver `requester_pos` es "teletranspórtate a donde ya estás", que es exactamente
-/// lo que el binario desplegado siguió haciendo tres playtests seguidos (2026-08-25) porque
-/// `cargo test` compila el binario de TEST y nunca relinka el exe de release.
+/// Cruzar la entrada tiene que meterte DENTRO de la reserva. Devolver `requester_pos` es
+/// "teletranspórtate a donde ya estás", que es exactamente lo que el binario desplegado siguió
+/// haciendo tres playtests seguidos (2026-08-25) porque `cargo test` compila el binario de TEST
+/// y nunca relinka el exe de release.
 #[test]
-fn the_entry_door_resolves_to_the_hall_and_never_to_where_you_stood() {
+fn the_entry_door_puts_you_inside_the_reserve_and_never_where_you_stood() {
+    use crate::world::grid_gen::level4;
     let mut state = crate::world::level4_layout::Level4RegionState::default();
-    let stood_at = [5.0f32, 0.0, 5.0];
+    // Junto al umbral de la puerta de entrada, que es de donde se cruza de verdad.
+    let door = level4::ENTRY_DOOR_WORLD_POS;
+    let stood_at = [door[0], 0.0, door[2] + 0.1];
     let now = std::time::Instant::now();
 
     let dest = state.process_door(42, stood_at, crate::world::level4_layout::DOOR_ENTRY, now);
@@ -11047,5 +11050,13 @@ fn the_entry_door_resolves_to_the_hall_and_never_to_where_you_stood() {
         dest, stood_at,
         "cruzar la entrada no puede dejarte donde ya estabas"
     );
-    assert_eq!(dest, crate::world::grid_gen::level4::entry_hall_world_pos());
+    assert!(
+        level4::world_pos_to_region_cell(dest).is_some(),
+        "cruzar la entrada tiene que meterte en la reserva: {dest:?}"
+    );
+    assert_eq!(
+        dest,
+        level4::portal_exit(stood_at, true),
+        "sales por el punto equivalente al otro lado, con tu mismo offset al umbral"
+    );
 }

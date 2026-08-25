@@ -252,6 +252,15 @@ namespace BackroomsSurvival.Net
                 Debug.Log($"[Level4Door] MPTRACE step=L4 event=cross_sent door={_door} " +
                           $"request_id={requestId} from={playerPos}");
             ipc?.SendLevel4Door(_door, requestId);
+
+            // Un teleport NO es andar. El snap que llega en respuesta mueve al jugador varios
+            // metros —y le sube la Y de los pies a la de los ojos— y esa recolocación volvía a
+            // leerse como un cruce: en el log del playtest se ven `request_id` 1, 2 y 3 en menos
+            // de medio segundo, cada uno disparado por el reposicionamiento del anterior.
+            // Desarmar el muestreo en TODAS las puertas hace que el primer frame tras el salto
+            // sea "primera lectura" y no un flanco, aquí y en la de destino.
+            foreach (var d in FindObjectsByType<Level4DoorTrigger>(FindObjectsSortMode.None))
+                d._lastSide = 0;
         }
 
         /// <summary>Mirror of AuthoritativePoseApplier.ResolveMotor — Unity's overloaded ==

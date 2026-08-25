@@ -401,15 +401,20 @@ impl Level4RegionState {
     /// "la puerta de vuelta SIEMPRE funciona" del ADR: ni con estado a medio inicializar
     /// produce un destino sin sentido.
     pub fn process_return(&mut self, requester_pos: [f32; 3], now: Instant) -> [f32; 3] {
-        if !self.window_open {
-            return requester_pos;
+        // Sin ventana abierta la deriva no tiene de dónde salir, pero la VUELTA sí: el destino de
+        // portal es puramente geométrico. Devolver `requester_pos` aquí, como se hacía antes, no
+        // era el "no-op seguro" que decía el comentario — dejaba al jugador ENCERRADO en la
+        // reserva en cuanto reiniciaba el backend, porque la posición se persiste y la ventana no
+        // (visto en el log del playtest del 2026-08-25: la puerta devolvía su propia posición una
+        // y otra vez). Que la vuelta funcione siempre es la garantía que ADR-093 promete.
+        if self.window_open {
+            self.refresh_return_dest(now);
         }
-        self.refresh_return_dest(now);
-        if RETURN_TO_FIXED_DOOR {
-            // La ventana y la deriva se siguen calculando arriba (`refresh_return_dest`) para que
-            // el estado que viaja al joiner y el que se guarda no cambien de significado mientras
-            // este modo esté puesto: lo único que se ignora es el resultado.
-            return level4::entry_door_arrival_pos();
+        if RETURN_TO_FIXED_DOOR || !self.window_open {
+            // La ventana y la deriva se siguen calculando arriba para que el estado que viaja al
+            // joiner y el que se guarda no cambien de significado mientras este modo esté puesto:
+            // lo único que se ignora es el resultado.
+            return level4::portal_exit(requester_pos, false);
         }
         self.return_dest
     }
@@ -428,14 +433,14 @@ impl Level4RegionState {
     ) -> [f32; 3] {
         if door == DOOR_ENTRY {
             self.process_entry(world_seed, requester_pos, now);
-            // ADR-093 E3-fix: el VESTÍBULO de la región, no `requester_pos`.
+            // El punto EQUIVALENTE al otro lado, no un punto fijo del vestíbulo: sales a la
+            // misma distancia del plano a la que entraste, con tu mismo desplazamiento lateral,
+            // andando en la misma dirección. Es lo que hace que el salto no se note y lo que
+            // evita reaparecer encima de la puerta de salida (`portal_exit`).
             //
-            // Este era el bug que hacía que cruzar la puerta no hiciera nada visible: devolver
-            // `requester_pos` es "teletranspórtate a donde ya estás". La entrada nunca tuvo
-            // destino dentro de la región — E2 solo abría la ventana, y E3 dio por hecho que el
-            // destino ya existía. El vestíbulo es fijo en todos los epochs, así que este punto
-            // es siempre suelo hueco.
-            level4::entry_hall_world_pos()
+            // Antes esto devolvía `requester_pos` —"teletranspórtate a donde ya estás"— y ese fue
+            // el bug que hizo que cruzar no hiciera nada visible durante tres playtests.
+            level4::portal_exit(requester_pos, true)
         } else {
             self.process_return(requester_pos, now)
         }
@@ -544,8 +549,8 @@ mod region_state_tests {
         );
         assert_eq!(
             entry_dest,
-            level4::entry_hall_world_pos(),
-            "se aterriza en el vestíbulo, que es hueco en todos los epochs"
+            level4::portal_exit(standing_in_level0, true),
+            "se sale por el punto EQUIVALENTE al otro lado, no por un punto fijo"
         );
         assert!(
             level4::world_pos_to_region_cell(entry_dest).is_some(),
@@ -553,15 +558,21 @@ mod region_state_tests {
         );
         assert!(state.window_open);
 
-        // La vuelta aterriza delante de la puerta de entrada (`RETURN_TO_FIXED_DOOR`), no en la
-        // posición de quien pide ni en la de quien entró.
-        let return_dest = state.process_door(42, [1.0, 0.0, 1.0], DOOR_RETURN, now);
-        assert_eq!(return_dest, level4::entry_door_arrival_pos());
+        // Y la vuelta deshace el salto exactamente: cruzar de vuelta desde el punto de llegada
+        // devuelve al punto de partida. Que la ida y la vuelta sean inversas es lo que hace que
+        // el par se sienta como una puerta y no como dos teleports sueltos.
+        let back = state.process_door(42, entry_dest, DOOR_RETURN, now);
+        for i in 0..3 {
+            assert!(
+                (back[i] - standing_in_level0[i]).abs() < 0.001,
+                "ida y vuelta no son inversas en el eje {i}: {back:?} vs {standing_in_level0:?}"
+            );
+        }
 
         // Cualquier valor que no sea DOOR_ENTRY colapsa a Return — mismo criterio que
         // `CellType::kind()` con un byte desconocido: el lado seguro, no un pánico.
         let unknown_dest = state.process_door(42, [1.0, 0.0, 1.0], 255, now);
-        assert_eq!(unknown_dest, level4::entry_door_arrival_pos());
+        assert_eq!(unknown_dest, level4::portal_exit([1.0, 0.0, 1.0], false));
     }
 
     /// El modo fijo hace lo que dice: mismo destino entres por donde entres, pidas desde donde
@@ -575,18 +586,20 @@ mod region_state_tests {
              resolve_return_dest y sus propios tests"
         );
         let now = Instant::now();
-        let expected = level4::entry_door_arrival_pos();
+        let asking_from = [1.0, 0.0, 1.0];
+        let expected = level4::portal_exit(asking_from, false);
 
         for entered_at in [[10.0, 0.0, 20.0], [-500.0, 0.0, 900.0], [0.0; 3]] {
             let mut state = Level4RegionState::default();
             state.process_entry(42, entered_at, now);
-            // Dentro de la ventana, y muy pasada: el mismo punto en los dos casos.
+            // Dentro de la ventana, y muy pasada: el mismo punto en los dos casos. Lo que ya NO
+            // interviene es por dónde entraste ni cuánto tardaste — sólo dónde cruzas.
             for elapsed in [
                 Duration::from_secs(1),
                 WINDOW_DURATION + Duration::from_secs(600),
             ] {
                 assert_eq!(
-                    state.process_return([1.0, 0.0, 1.0], now + elapsed),
+                    state.process_return(asking_from, now + elapsed),
                     expected,
                     "entrada {entered_at:?} tras {elapsed:?}"
                 );
@@ -609,14 +622,18 @@ mod region_state_tests {
         assert_eq!(state.window_count, 1);
     }
 
+    /// Sin ventana abierta la vuelta TIENE que seguir funcionando. Devolver `requester_pos`
+    /// —lo que se hacía antes, llamándolo "no-op seguro"— dejaba al jugador encerrado en la
+    /// reserva en cuanto reiniciaba el backend: la posición se persiste, la ventana no.
     #[test]
-    fn return_with_no_window_open_is_a_safe_no_op() {
+    fn return_without_a_window_still_gets_you_out() {
         let mut state = Level4RegionState::default();
-        let dest = state.process_return([5.0, 0.0, 5.0], Instant::now());
-        assert_eq!(
-            dest,
-            [5.0, 0.0, 5.0],
-            "sin ventana, el jugador se queda donde está"
+        let inside = level4::entry_hall_world_pos();
+        let dest = state.process_return(inside, Instant::now());
+        assert_ne!(dest, inside, "la puerta de vuelta no puede ser un no-op");
+        assert!(
+            level4::world_pos_to_region_cell(dest).is_none(),
+            "sin ventana o con ella, volver saca de la reserva: {dest:?}"
         );
     }
 
@@ -662,20 +679,35 @@ mod region_state_tests {
     }
 
     #[test]
-    fn all_returns_in_the_same_window_share_the_same_destination() {
-        // Verificación (c) de ADR-093: dos peers que vuelven en la MISMA ventana ven el MISMO
-        // destino, sea cual sea SU propia posición al pedir la vuelta.
+    fn everyone_leaves_through_the_same_door_however_long_they_stayed() {
+        // Verificación (c) de ADR-093, releída para el modo fijo: la propiedad que importa es que
+        // todos salgan POR LA MISMA PUERTA, no que aterricen en el mismo píxel. Con la traslación
+        // de portal el destino conserva el offset de cada uno respecto al umbral —que es lo que
+        // hace que el salto no se note y lo que evita que dos peers cruzando a la vez se
+        // incrusten uno en otro— así que dos que cruzan a un metro salen a un metro.
+        //
+        // Cuando `RETURN_TO_FIXED_DOOR` se apague, el destino compartido exacto vuelve a ser cosa
+        // de `resolve_return_dest`, que tiene sus propios tests.
         let now = Instant::now();
         let mut state = Level4RegionState::default();
         state.process_entry(7, [3.0, 0.0, 4.0], now);
         let overstay_instant = now + WINDOW_DURATION + Duration::from_secs(120);
 
-        let dest_a = state.process_return([1.0, 0.0, 1.0], overstay_instant);
-        let dest_b = state.process_return([-50.0, 0.0, 900.0], overstay_instant);
-        assert_eq!(
-            dest_a, dest_b,
-            "misma ventana, mismo instante -> mismo destino"
+        let door = level4::return_door_world_pos();
+        let a = state.process_return([door[0] - 0.5, 0.0, door[2] - 0.1], overstay_instant);
+        let b = state.process_return([door[0] + 0.5, 0.0, door[2] - 0.1], overstay_instant);
+
+        let apart = ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+        assert!(
+            apart < 2.0,
+            "dos que cruzan el mismo umbral salen juntos; salieron a {apart} m"
         );
+        for dest in [a, b] {
+            assert!(
+                level4::world_pos_to_region_cell(dest).is_none(),
+                "volver saca de la reserva: {dest:?}"
+            );
+        }
     }
 
     #[test]
