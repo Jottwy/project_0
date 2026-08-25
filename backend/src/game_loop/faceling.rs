@@ -686,19 +686,20 @@ impl AdultDriver {
                     target_pos.filter(|target| world_pos_to_layer(target.y) == layer)
                 {
                     let raw_heading = self.route_heading(i, layer, from, target, dt);
-                    let heading =
-                        steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-                    let step = FACELING_ENFORCE_SPEED * dt;
-                    let next = Vec3::new(
-                        from.x + heading.sin() * step,
-                        from.y,
-                        from.z + heading.cos() * step,
+                    let wedged = self.movers[i].nav_blocked > 0;
+                    let (next, heading, ok) = advance_step(
+                        &mut self.grid_cache,
+                        layer,
+                        from,
+                        raw_heading,
+                        FACELING_ENFORCE_SPEED * dt,
+                        wedged,
                     );
                     // Same leash as `Commute`: the office is the cage even while it is angry.
                     // Hitting the boundary or a wall just holds position — still converging as
                     // far as it is allowed to.
                     if pos_in_chunk(next, home)
-                        && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
+                        && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
                     {
                         self.note_step(i, true);
                         self.movers[i].heading = heading;
@@ -766,13 +767,14 @@ impl AdultDriver {
                     "idle"
                 } else {
                     let raw_heading = self.route_heading(i, layer, from, target, dt);
-                    let heading =
-                        steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-                    let step = FACELING_WALK_SPEED * dt;
-                    let next = Vec3::new(
-                        from.x + heading.sin() * step,
-                        from.y,
-                        from.z + heading.cos() * step,
+                    let wedged = self.movers[i].nav_blocked > 0;
+                    let (next, heading, ok) = advance_step(
+                        &mut self.grid_cache,
+                        layer,
+                        from,
+                        raw_heading,
+                        FACELING_WALK_SPEED * dt,
+                        wedged,
                     );
                     // The leash (ADR-094 rejected alternative D): a step that would leave the home
                     // chunk, or land somewhere grid_gen calls solid, simply does not happen — the
@@ -780,7 +782,7 @@ impl AdultDriver {
                     // exactly like `steer_around_walls`' own whisker deflection already does for
                     // the robapieles. The watchdog above is what stops that from being forever.
                     if pos_in_chunk(next, home)
-                        && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
+                        && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
                     {
                         self.note_step(i, true);
                         self.movers[i].heading = heading;
@@ -826,7 +828,7 @@ const FACELING_CHILD_ACTIVATE_RADIUS: f32 = 90.0;
 const FACELING_CHILD_DEACTIVATE_RADIUS: f32 = 130.0;
 const FACELING_CHILD_MIN_SPAWN_DISTANCE: f32 = 15.0;
 /// Cap en PACKS simultáneamente simulados (no en niños individuales). v1 PLACEHOLDER.
-const FACELING_CHILD_PACK_ACTIVE_CAP: usize = 8;
+pub(super) const FACELING_CHILD_PACK_ACTIVE_CAP: usize = 8;
 
 const FACELING_CHILD_MAX_HEALTH: u8 = 15;
 /// The idle wander. Slowest of the three — a child that is not hunting you is not in a hurry, and
@@ -907,7 +909,7 @@ const FACELING_CHILD_REGROUP_RADIUS: f32 = 25.0;
 /// A pack at this size does not accept a straggler. Five since the 2026-08-24 play-test (ADR-094
 /// Enmienda 2): `assign_roles` has a roster for it, and beyond five the extra members fall through
 /// to `Press | None`, which is a silent degradation rather than a decision.
-const FACELING_CHILD_PACK_MAX: usize = 8;
+pub(super) const FACELING_CHILD_PACK_MAX: usize = 8;
 
 /// E2c — the `Press` role's blow. Shorter than the adults' 2.4 m: a child's arms are shorter, and
 /// the tighter reach is also what forces the cerco to actually CLOSE before anything lands.
@@ -1243,6 +1245,50 @@ fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32)
         target.y,
         target.z + angle.cos() * band,
     )
+}
+
+/// Enmienda 9 — one step of local movement, paying for obstacle avoidance ONLY when the straight
+/// step is not already clear.
+///
+/// The order used to be: deflect with the whiskers, then check whether the result is walkable.
+/// That meant every mover paid `steer_around_walls`' 3-5 probes on every step of its life, and
+/// each probe is a `segment_is_clear_for_body` — a sub-step per metre, three sampled rails each.
+/// Measured across 64 children that came to ~30-60 walkability lookups per mover per step, in open
+/// floor where the answer was always "straight ahead is fine".
+///
+/// Now the straight step is tried first: ONE lookup, and in open floor that is the whole cost.
+/// The whiskers still run whenever it fails — which is exactly the situation they exist for.
+///
+/// `wedged` forces the full path anyway. `steer_around_walls` does more than dodge: with the front
+/// clear but one side tight it nudges 8° off the wall (ADR-082's fix for "se bugea en la pared"),
+/// and that nudge is invisible to a walkability test on the next step alone. A mover already
+/// having trouble is precisely the one that must keep it.
+/// Returns `(next, heading, already_walkable)`. The third value is not a convenience: without it
+/// every caller re-tests the very cell the fast path just tested, which at 64 movers is 64 wasted
+/// lookups a step.
+fn advance_step(
+    cache: &mut GridGenChunkCache,
+    layer: u8,
+    from: Vec3,
+    raw_heading: f32,
+    step: f32,
+    wedged: bool,
+) -> (Vec3, f32, bool) {
+    let straight = Vec3::new(
+        from.x + raw_heading.sin() * step,
+        from.y,
+        from.z + raw_heading.cos() * step,
+    );
+    if !wedged && is_walkable_grid_gen(cache, straight, layer) {
+        return (straight, raw_heading, true);
+    }
+    let heading = steer_around_walls(cache, layer, from, raw_heading);
+    let next = Vec3::new(
+        from.x + heading.sin() * step,
+        from.y,
+        from.z + heading.cos() * step,
+    );
+    (next, heading, false)
 }
 
 /// Enmienda 8 — how often a child may re-run the A* while it has a plan. Matches the robapieles'
@@ -2456,16 +2502,18 @@ impl ChildDriver {
                 }
                 false => routed,
             };
-            let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-            let step = FACELING_CHILD_BOLT_SPEED * dt;
-            let next = Vec3::new(
-                from.x + heading.sin() * step,
-                from.y,
-                from.z + heading.cos() * step,
+            let wedged = self.packs[pi].members[mi].nav_blocked > 0;
+            let (next, heading, ok) = advance_step(
+                &mut self.grid_cache,
+                layer,
+                from,
+                raw_heading,
+                FACELING_CHILD_BOLT_SPEED * dt,
+                wedged,
             );
             // No patrol leash while bolting: it is running TO the anchor, so it can only end up
             // further inside its own territory.
-            if is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+            if ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
                 self.note_step(pi, mi, true);
                 self.packs[pi].members[mi].heading = heading;
                 if let Some(peer) = net.peers.get_mut(&id) {
@@ -2830,15 +2878,12 @@ impl ChildDriver {
                 // word on local avoidance); what changes is that the bearing handed to them now
                 // goes around the corner instead of into it.
                 let raw_heading = self.route_heading(pi, mi, layer, from, goal, dt);
-                let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                 // ±10% by temperament, so a pack does not advance as one rigid line.
                 let step = child_gear_speed(from, players, layer) * (0.9 + nerve * 0.2) * dt;
-                let next = Vec3::new(
-                    from.x + heading.sin() * step,
-                    from.y,
-                    from.z + heading.cos() * step,
-                );
-                if is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                let wedged = self.packs[pi].members[mi].nav_blocked > 0;
+                let (next, heading, ok) =
+                    advance_step(&mut self.grid_cache, layer, from, raw_heading, step, wedged);
+                if ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
                     self.note_step(pi, mi, true);
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
@@ -2922,18 +2967,20 @@ impl ChildDriver {
                 }
 
                 let raw_heading = self.route_heading(pi, mi, layer, from, target, dt);
-                let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
-                let step = FACELING_CHILD_ROAM_SPEED * dt;
-                let next = Vec3::new(
-                    from.x + heading.sin() * step,
-                    from.y,
-                    from.z + heading.cos() * step,
+                let wedged = self.packs[pi].members[mi].nav_blocked > 0;
+                let (next, heading, ok) = advance_step(
+                    &mut self.grid_cache,
+                    layer,
+                    from,
+                    raw_heading,
+                    FACELING_CHILD_ROAM_SPEED * dt,
+                    wedged,
                 );
                 // Same leash SHAPE as the adults' `Commute`, radius instead of chunk-box: a step
                 // that would leave the patrol circle, or land somewhere solid, just does not
                 // happen — hold and re-steer next tick.
                 if next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
-                    && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
+                    && (ok || is_walkable_grid_gen(&mut self.grid_cache, next, layer))
                 {
                     self.note_step(pi, mi, true);
                     self.packs[pi].members[mi].heading = heading;

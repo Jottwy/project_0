@@ -8464,9 +8464,15 @@ async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
 /// children, and `docs/systems/perf-baseline.md` explicitly does not measure the game-loop tick,
 /// so that number does not exist for this load. It does now.
 ///
+/// RUN IT IN RELEASE, and the probe says so loudly if you do not. Measured in debug this reports
+/// 1.5-2.5 ms and in release 0.15-0.37 ms — a 10x gap, and ADR-040's 2 ms ceiling is a release
+/// number. Reading a debug figure against it nearly cost this project a population cap it did not
+/// need to cut.
+///   cargo test --release faceling_pathfinding_cost -- --ignored --nocapture
+///
 /// Prints, does not assert: a wall-clock threshold in CI is a flaky test on a busy machine (the
-/// same reasoning `roster_relay_cost` gives). Run it by hand when the population caps change:
-///   cargo test faceling_pathfinding_cost -- --ignored --nocapture
+/// same reasoning `roster_relay_cost` gives). Note the run-to-run spread is ±25% even in one
+/// build, so only differences of that order mean anything.
 #[tokio::test]
 #[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
 async fn faceling_pathfinding_cost() {
@@ -8477,11 +8483,13 @@ async fn faceling_pathfinding_cost() {
     let centre = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
 
     let mut driver = ChildDriver::new(seed);
-    // Worst case by construction rather than by luck: fill to the pack cap, each at the member cap.
-    for p in 0..8 {
+    // Worst case by construction rather than by luck: fill to the pack cap, each at the member
+    // cap. Reads the REAL constants so the probe re-measures whatever the caps happen to be —
+    // a hard-coded 8 here would quietly keep reporting the old population after they change.
+    for p in 0..FACELING_CHILD_PACK_ACTIVE_CAP as i32 {
         let anchor = Vec3::new(centre.x + p as f32 * 12.0, centre.y, centre.z);
         let mut pack = four_member_pack(&mut net, (ox + p, oz), 0, anchor).await;
-        while pack.members.len() < 8 {
+        while pack.members.len() < FACELING_CHILD_PACK_MAX {
             let extra = net.spawn_faceling("Faceling_Child_Probe", anchor.to_array(), 2);
             pack.members.push(ChildMover {
                 id: extra,
@@ -8529,8 +8537,12 @@ async fn faceling_pathfinding_cost() {
     let per_step_ms = started.elapsed().as_secs_f64() * 1000.0 / STEPS as f64;
     let generated_after = driver.grid_cache.generated_count();
 
+    let build = match cfg!(debug_assertions) {
+        true => "DEBUG (÷10 for release; ADR-040's ceiling is a release number)",
+        false => "release",
+    };
     println!(
-        "FACELING_NAV_COST children={total} packs={} per_step_ms={per_step_ms:.3} budget_ms=2.000",
+        "FACELING_NAV_COST children={total} packs={} per_step_ms={per_step_ms:.3} budget_ms=2.000 build={build}",
         driver.packs.len()
     );
     // If this keeps climbing after the warm-up, the cache is thrashing — ADR-043's mutual-eviction
