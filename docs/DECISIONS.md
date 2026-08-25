@@ -6236,3 +6236,110 @@ tiempo sonando ya recuperada.
 El TROMPICÓN bloquea solo `Run`, con el mismo `AddStateBlocker` que ya usan el agarre y el
 knockdown. Sigues andando y sigues apuntando; lo que pierdes es esprintar lejos de los otros cuatro,
 que es exactamente el precio que el momento debe tener.
+
+---
+
+### ADR-094 — Enmienda 8: los facelings navegan (2026-08-25)
+
+El punto 3 dejaba a los niños y a los adultos moviéndose por rumbo directo más `steer_around_walls`
+(ADR-082). Las bisagras (whiskers) sesgan el rumbo 8° y sacan a un mover de una pared, pero no
+resuelven una L: el mover se pega al muro, la desvía, se vuelve a pegar, y el jugador ve un niño
+frotándose contra una esquina indefinidamente. ADR-040 D-NAV ya rechazó explícitamente las bisagras
+COMO SUSTITUTO del pathfinder y las aceptó como COMPLEMENTO; esto es la otra mitad.
+
+Se conecta el A* que ya existe (`nav.rs::find_path` + `string_pull`, ventana ±24 celdas, tope de
+3000 expansiones, cero allocs) a los dos drivers, con la MISMA forma de cuatro campos que lleva el
+robapieles: la ruta, el cursor, hacia QUÉ se planificó (un objetivo que deriva invalida el plan) y
+su edad. El scratch del A* y su búfer de celdas los posee el DRIVER y se prestan a cada mover, que
+es lo que mantiene el cero-allocs con ocho packs vivos.
+
+NO SE PLANIFICA SIEMPRE, y esa es la decisión de coste. `route_heading` tiene cuatro puertas en
+orden: (1) la puerta de atasco — un mover que no está encajado no paga navegación en absoluto;
+(2) el atajo de línea de vista — si el tramo hasta el objetivo está limpio, rumbo directo; (3) el
+escalonado por antigüedad, para que ocho packs no repianifiquen el mismo tick; y solo entonces
+(4) un A*.
+
+EL ATASCO SE MIDE POR PROGRESO, no por pasos rechazados. La primera versión contaba pasos
+denegados y no disparó nunca: `steer_around_walls` desvía de lado, así que los pasos se ACEPTAN
+mientras la distancia al objetivo no baja jamás. `ProgressWatch` guarda la mejor distancia lograda
+hacia el objetivo actual y cuenta el tiempo sin mejorarla; eso sí detecta la L.
+
+EL ATAJO DE MOVIMIENTO (`advance_step`). Un mover no encajado prueba primero el paso recto y, si
+la celda es transitable, lo toma sin consultar las bisagras — que son cuatro sondas de rejilla por
+mover y por tick. Las cinco llamadas de movimiento (Enforce y Commute del adulto; cerco, huida y
+roam del niño) pasan por ahí.
+
+EL COSTE, y una corrección. Medí 6.67 ms por tick con la población al tope y se lo presenté a Joel
+como el dilema "recortamos el tope de packs o subimos el techo de 2 ms de ADR-040". El dilema no
+existía: 6.67 ms era una medición en DEBUG contra un techo que ADR-040 fija en RELEASE. En release
+la misma sonda da 0.15-0.37 ms, entre 6 y 13 veces por debajo del techo. El tope de packs se queda
+en 8 y el techo de ADR-040 no se toca. La sonda `faceling_pathfinding_cost` ahora imprime con qué
+perfil corre y avisa del factor 10 entre ambos, para que nadie repita la comparación.
+
+---
+
+### ADR-094 — Enmienda 9: la voz por distancia, y los silencios (2026-08-25)
+
+Playtest de Joel, 2026-08-25: **"ahora siempre hacen como cotorras"**. El código le daba la razón.
+
+`update_giggles_for_pack` tenía UN beat de 5 s y daba voz a TODOS los miembros en CADA beat, en
+cualquier estado, hubiera o no un jugador a cien metros. Ocho niños en ese horario emiten 1.6
+sonidos por segundo, para siempre. Eso no es la telemetría que pedía el punto 3; es un muro de
+ruido, y un ruido que no varía deja de informar, porque la información es la parte que cambia. La
+distancia solo movía el SPREAD (cuánto se juntaban las voces), nunca cuántas eran ni cuáles.
+
+**LAS BANDAS.** La voz pasa a leerse por distancia, y cada banda mueve tres diales a la vez —
+qué dicen, cada cuánto, y CUÁNTOS DE ELLOS lo dicen. El tercero es el que hace el trabajo: una voz
+lejana y ocho encima son la diferencia entre "algo vive en esta planta" y "los tengo alrededor", y
+ningún volumen dice eso tan claro como el recuento.
+
+| Banda | Cuándo | Voz | Beat | Bocas |
+|---|---|---|---|---|
+| `Mute` | nadie a <55 m, o huyendo, o en hush | — | — | 0 |
+| `Chant` | >22 m | canto (banco 4, NUEVO) | 14 s | **1** |
+| `Giggle` | ≤22 m, cerco abierto | risita | 6.5 s | mitad |
+| `Whisper` | cerco cerrado | susurro | 3.5 s | todas |
+
+DOS distancias distintas responden dos preguntas distintas, y confundirlas era parte del problema:
+el ANILLO se mide contra el OBJETIVO, porque es sobre él que se cerró; todo lo demás se mide contra
+el OYENTE más cercano, lo sea o no — un pack que no te ha visto tiene que oírse igual desde el otro
+extremo de la planta, y uno charlando en un nivel vacío no debe oírse en absoluto.
+
+**EL CANTO** (kind 4) no es una risita más floja. La risita es una reacción A TI; esto no lo es.
+Es a qué suena la planta cuando está habitada y todavía no te ha visto, así que tiene que aguantar
+oírse durante una hora sin volverse mobiliario, y tiene que sobrevivir a una caída de 80 m: por eso
+va grave y sostenido, y por eso una sola boca (un coro a cuarenta metros es ruido de multitud).
+
+**EL COOLDOWN POR BOCA** (9 s). El intervalo de banda dice cada cuánto habla el PACK; esto dice
+cada cuánto habla un niño concreto, y es lo que hace que ocho se lean como ocho individuos
+turnándose en vez de como una fuente de ruido con ocho altavoces. Los EVENTOS (grito de carga,
+muerte, llamada de reagrupamiento, screamer) lo ignoran y lo gastan: meter un estertor detrás de un
+temporizador de charla silenciaría justo el sonido que sí había que oír.
+
+**EL SILENCIO**, que es lo que Joel pidió con "o que no hagan sonido y luego gritos". 2.6 s de
+mutismo total del pack, armados en los momentos donde la ausencia dice más que el sonido: el tick
+en que el anillo se cierra, el grito de carga, la muerte de un miembro, el knockdown y el screamer.
+
+El del anillo es el importante. Llevas un minuto oyendo risitas acercarse y de golpe PARAN — ese
+corte es el único aviso que el cerco cerrado va a darte, y es mejor aviso que un ruido más fuerte,
+porque tienes que deducir tú lo que significa. Se arma en el FLANCO, nunca en el nivel: mantener un
+cerco treinta segundos no puede significar treinta segundos de silencio, o el susurro (todo el
+premio de estar rodeado) no llegaría a sonar nunca. Y lo encolado se DESCARTA, no se pausa: un hush
+que deja pasar tres risitas ya programadas no es un silencio, es un tropiezo.
+
+**LOS RANGOS, en el cliente.** El backend decide qué sonido y cada cuánto; el cliente decide hasta
+dónde llega cada uno. `ProxyVocalHook` gana un override de curva POR BANCO (opcional; vacío = el
+comportamiento de siempre, así que el robapieles no cambia en nada). Los facelings necesitan algo
+que el robapieles nunca necesitó: la misma criatura haciendo sonidos que pertenecen a rangos
+completamente distintos. Con una sola curva, un susurro que se oye a cuarenta metros no es un
+susurro. Niño: risita 4/34, grito 8/60, llamada 10/70, susurro 1.5/11, canto 14/80 a pitch 0.88.
+
+**UN BUG DE PASO.** `screamer_cooldown` se decrementaba DESPUÉS del early-return de `Flee`, así que
+un pack que huía congelaba su cooldown a media cuenta y se llevaba el resto entero al siguiente
+encuentro — podía quedar sin screamer durante un minuto por una razón que el jugador no podía
+observar. Ahora todos los cooldowns envejecen primero e incondicionalmente.
+
+Banco de canto sintetizado y reproducible en `tools/dev/GenFacelingChildChant.py` (los bancos
+originales del niño los generó un script que nunca se commiteó — mismo pecado que los
+`PhantomScream_*` de ADR-048, y esta vez no se repite). Sigue siendo un PLACEHOLDER: audio autorado
+de verdad lo sustituye sin tocar código.

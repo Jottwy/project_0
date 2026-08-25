@@ -8323,6 +8323,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_delay: None,
+            vocal_cooldown: 0.0,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
             nav_waypoints: Vec::new(),
@@ -8335,6 +8336,10 @@ async fn a_child_never_roams_past_its_patrol_radius() {
         }],
         giggle_timer: 999.0,
         giggle_round: 0,
+        vocal_band: VocalBand::Mute,
+        hush_timer: 0.0,
+        ring_was_shut: false,
+        vocal_cursor: 0,
         screamer_cooldown: 0.0,
     });
 
@@ -8376,6 +8381,7 @@ async fn four_member_pack(
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_delay: None,
+            vocal_cooldown: 0.0,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
             nav_waypoints: Vec::new(),
@@ -8397,6 +8403,10 @@ async fn four_member_pack(
         members,
         giggle_timer: 999.0,
         giggle_round: 0,
+        vocal_band: VocalBand::Mute,
+        hush_timer: 0.0,
+        ring_was_shut: false,
+        vocal_cursor: 0,
         screamer_cooldown: 0.0,
     }
 }
@@ -8503,6 +8513,7 @@ async fn faceling_pathfinding_cost() {
                 vocal_seq: 0,
                 vocal_kind: 0,
                 vocal_delay: None,
+                vocal_cooldown: 0.0,
                 strike_recover: 0.0,
                 progress: ProgressWatch::new(),
                 nav_waypoints: Vec::new(),
@@ -8692,6 +8703,7 @@ fn packs_past_five_send_the_extras_to_the_ring() {
                 vocal_seq: 0,
                 vocal_kind: 0,
                 vocal_delay: None,
+                vocal_cooldown: 0.0,
                 strike_recover: 0.0,
                 progress: ProgressWatch::new(),
                 nav_waypoints: Vec::new(),
@@ -9076,6 +9088,7 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_delay: None,
+            vocal_cooldown: 0.0,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
             nav_waypoints: Vec::new(),
@@ -9479,6 +9492,7 @@ fn a_pack_of_five_gets_a_second_press() {
             vocal_seq: 0,
             vocal_kind: 0,
             vocal_delay: None,
+            vocal_cooldown: 0.0,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
             nav_waypoints: Vec::new(),
@@ -9812,5 +9826,289 @@ async fn the_press_does_not_strike_a_remembered_position() {
     assert!(
         attacks.is_empty(),
         "the pack struck a position the player had already left: {attacks:?}"
+    );
+}
+
+// ── ADR-094 Enmienda 9 — LA VOZ POR DISTANCIA ────────────────────────────────────────────────
+//
+// The 2026-08-25 play-test called the pack "cotorras", and the code agreed with it: one 5 s beat,
+// every member voiced on every beat, in every state, whether or not a player was within a hundred
+// metres. Eight children on that schedule emit 1.6 sounds a second forever. These tests pin the
+// three things that replaced it — the bands, the per-mouth cooldown, and the silences.
+
+/// Records every sound each mouth ACTUALLY emits, by watching the wire counter the client's
+/// `ProxyVocalHook` watches. Deliberately not an inspection of the scheduler's internals: what
+/// matters is what a player would hear, and `vocal_seq` is exactly that.
+///
+/// Returns `(seconds, faceling, kind)` per sound, in order.
+fn record_pack_voice(
+    driver: &mut ChildDriver,
+    net: &mut NetworkManager,
+    host: Vec3,
+    steps: usize,
+    dt: f32,
+) -> Vec<(f32, PeerId, u8)> {
+    let ids: Vec<PeerId> = driver
+        .packs
+        .iter()
+        .flat_map(|p| p.members.iter().map(|m| m.id))
+        .collect();
+    let mut last: std::collections::HashMap<PeerId, u8> = ids
+        .iter()
+        .filter_map(|id| net.peers.get(id).map(|p| (*id, p.vocal_seq)))
+        .collect();
+
+    let mut out = Vec::new();
+    for i in 0..steps {
+        driver.step(net, dt, host, 0.0);
+        for id in &ids {
+            let Some(peer) = net.peers.get(id) else {
+                continue;
+            };
+            let seen = last.get(id).copied().unwrap_or(0);
+            if peer.vocal_seq != seen {
+                last.insert(*id, peer.vocal_seq);
+                out.push((i as f32 * dt, *id, peer.vocal_kind));
+            }
+        }
+    }
+    out
+}
+
+/// THE headline fix. A pack with no player anywhere near it used to chatter into an empty
+/// corridor forever — sound nobody could hear, paid for on every tick, and the reason a level
+/// full of packs read as a bird cage.
+#[tokio::test]
+async fn a_pack_with_nobody_near_it_says_nothing_at_all() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    // `four_member_pack` parks the beat at 999 s so the behaviour tests stay quiet. These tests
+    // are about the voice, so arm it — a silent pack must be silent because the BAND said so, not
+    // because the beat never came round.
+    driver.packs[0].giggle_timer = 0.0;
+
+    let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
+    let heard = record_pack_voice(&mut driver, &mut net, far, 900, 0.1);
+
+    assert!(
+        heard.is_empty(),
+        "a pack alone on the floor made {} sounds in 90 s",
+        heard.len()
+    );
+    assert_eq!(driver.packs[0].vocal_band, VocalBand::Mute);
+}
+
+/// Far but audible: the CHANT band. The point of this one is not the bank, it is the COUNT — one
+/// voice at a time. A chorus at forty metres is crowd noise; what this band has to sound like is
+/// one child singing somewhere on the floor.
+#[tokio::test]
+async fn a_distant_pack_chants_with_one_voice_at_a_time() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    // `four_member_pack` parks the beat at 999 s so the behaviour tests stay quiet. These tests
+    // are about the voice, so arm it — a silent pack must be silent because the BAND said so, not
+    // because the beat never came round.
+    driver.packs[0].giggle_timer = 0.0;
+
+    // Past `FACELING_CHILD_DETECT_RADIUS` (20 m), so the pack never notices the listener and
+    // stays in `PackRoam` — this is the sound of a pack that has NOT seen you.
+    let host = Vec3::new(anchor.x + 35.0, anchor.y, anchor.z);
+    let heard = record_pack_voice(&mut driver, &mut net, host, 900, 0.1);
+
+    assert_eq!(driver.packs[0].vocal_band, VocalBand::Chant);
+    assert!(!heard.is_empty(), "a pack 35 m away went silent");
+    assert!(
+        heard
+            .iter()
+            .all(|&(_, _, k)| k == FACELING_CHILD_VOCAL_CHANT),
+        "the distant band played something other than the chant: {heard:?}"
+    );
+
+    // One mouth per beat: no two sounds share a tick, and none of them pile up inside a second.
+    for w in heard.windows(2) {
+        assert!(
+            w[1].0 - w[0].0 >= 1.0,
+            "two distant voices {:.1} s apart — that is a chorus, not one child",
+            w[1].0 - w[0].0
+        );
+    }
+    // ~14 s apart over 90 s. Generous bounds: what is being pinned is the ORDER of magnitude,
+    // because the exact count depends on where the roam walk happens to be standing.
+    assert!(
+        (2..=10).contains(&heard.len()),
+        "{} chants in 90 s is not the every-14-s cadence",
+        heard.len()
+    );
+}
+
+/// A pack with the ring genuinely SHUT and nothing able to swing — the ambient whisper band with
+/// no events on top of it.
+///
+/// `pack_pressing` is the wrong scenario for a voice test: its Press lands a knockdown every
+/// `FACELING_CHILD_STRIKE_RECOVERY` seconds, and a knockdown screams, spends every mouth's
+/// cooldown and re-arms the hush. What you would be measuring is the interruptions.
+///
+/// `strike_recover` parked high blocks the screamer, the shove and the blow by construction —
+/// all three read that one field — without having to depend on the freeze cone or on geometry
+/// that a different seed might place inside a wall.
+async fn pack_ringed_without_swinging(net: &mut NetworkManager) -> (ChildDriver, PeerId) {
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(net, (0, 0), 0, anchor).await;
+    let centre = Vec3::from_array(net.peers[&pack.members[0].id].position);
+
+    let victim: PeerId = 2;
+    net.peers.insert(
+        victim,
+        crate::network::peer::PeerConnection::new(
+            victim,
+            "Victim".into(),
+            "127.0.0.1:9001".parse().unwrap(),
+        ),
+    );
+    {
+        let p = net.peers.get_mut(&victim).unwrap();
+        // Inside `FACELING_CHILD_CERCO_CLOSED_RADIUS` (7 m), so the ring counts as shut from the
+        // first tick, and the pack does not have to walk anywhere for it to be true.
+        p.position = [centre.x, centre.y, centre.z + 5.0];
+        p.rotation = 180.0;
+    }
+
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(victim);
+    pack.mind.last_known_pos = Some(Vec3::new(centre.x, centre.y, centre.z + 5.0));
+    assign_roles(&mut pack.members);
+    for m in &mut pack.members {
+        m.strike_recover = 999.0;
+    }
+    pack.giggle_timer = 0.0;
+
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+    (driver, victim)
+}
+
+/// The ring shuts and the sound CHANGES — not just gets nearer. Same counter, different bank,
+/// faster beat, every mouth: "risa a coro = el cerco está cerrado".
+#[tokio::test]
+async fn a_closed_ring_whispers_where_it_used_to_giggle() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, _victim) = pack_ringed_without_swinging(&mut net).await;
+    let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
+
+    // Well past the hush the shutting ring arms, so what is left is the steady state.
+    let heard = record_pack_voice(&mut driver, &mut net, far, 200, 0.1);
+
+    assert_eq!(driver.packs[0].vocal_band, VocalBand::Whisper);
+    let ambient: Vec<u8> = heard
+        .iter()
+        .map(|&(_, _, k)| k)
+        .filter(|&k| k != FACELING_CHILD_VOCAL_SCREAM)
+        .collect();
+    assert!(!ambient.is_empty(), "a closed ring made no ambient sound");
+    assert!(
+        ambient.iter().all(|&k| k == FACELING_CHILD_VOCAL_WHISPER),
+        "a closed ring was still giggling: {ambient:?}"
+    );
+}
+
+/// EL SILENCIO. The tick the ring shuts, the pack stops dead for a couple of seconds — and that
+/// stop is the only warning a closed cerco ever gets. Anything already queued is DROPPED, not
+/// paused: a hush that lets three scheduled giggles through is a stagger, not a silence.
+#[tokio::test]
+async fn the_ring_shutting_stops_the_pack_dead_for_a_moment() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, _victim) = pack_ringed_without_swinging(&mut net).await;
+    let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
+
+    // The beat is armed and the band is Whisper from tick one, so without the hush this window
+    // would be full of sound. Stops short of `FACELING_CHILD_HUSH_S`.
+    let heard = record_pack_voice(&mut driver, &mut net, far, 20, 0.1);
+
+    assert!(
+        driver.packs[0].hush_timer > 0.0,
+        "the ring shut and nothing hushed"
+    );
+    let ambient: Vec<&(f32, PeerId, u8)> = heard
+        .iter()
+        .filter(|&&(_, _, k)| k != FACELING_CHILD_VOCAL_SCREAM)
+        .collect();
+    assert!(
+        ambient.is_empty(),
+        "the pack kept chattering through its own hush: {ambient:?}"
+    );
+}
+
+/// The per-mouth floor. The band interval says how often the PACK speaks; this says how often any
+/// one child does, and it is what makes eight of them read as eight individuals taking turns
+/// rather than as one noise source with eight speakers.
+///
+/// Events are excluded on purpose: a scream, a death rattle and a regroup call all ignore this
+/// cooldown by design, because gating a death behind a chatter timer would silence the one sound
+/// that actually had to be heard.
+#[tokio::test]
+async fn no_child_makes_two_ambient_sounds_inside_its_own_cooldown() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    // `four_member_pack` parks the beat at 999 s so the behaviour tests stay quiet. These tests
+    // are about the voice, so arm it — a silent pack must be silent because the BAND said so, not
+    // because the beat never came round.
+    driver.packs[0].giggle_timer = 0.0;
+
+    // Inside the chant radius: the busiest band a pack that has not seen you can be in.
+    let host = Vec3::new(anchor.x + 15.0, anchor.y, anchor.z);
+    let heard = record_pack_voice(&mut driver, &mut net, host, 1200, 0.1);
+
+    let mut last: std::collections::HashMap<PeerId, f32> = std::collections::HashMap::new();
+    for &(t, id, kind) in &heard {
+        if kind == FACELING_CHILD_VOCAL_SCREAM || kind == FACELING_CHILD_VOCAL_CALL {
+            continue; // events, exempt by design
+        }
+        if let Some(prev) = last.insert(id, t) {
+            assert!(
+                t - prev >= FACELING_CHILD_VOCAL_COOLDOWN_S - 0.2,
+                "faceling {id} spoke twice {:.1} s apart, inside its {} s cooldown",
+                t - prev,
+                FACELING_CHILD_VOCAL_COOLDOWN_S
+            );
+        }
+    }
+    assert!(!heard.is_empty(), "the near band produced nothing to check");
+}
+
+/// Enmienda 9 also fixed a real freeze: `screamer_cooldown` used to be aged AFTER the early
+/// return for `Flee`, so a pack that ran away froze its cooldown mid-count and carried the whole
+/// remainder into its next encounter — a pack could be un-screamable for a minute for no reason
+/// the player could ever observe.
+#[tokio::test]
+async fn a_fleeing_pack_still_burns_down_its_screamer_cooldown() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.state = ChildState::Flee;
+    pack.screamer_cooldown = 10.0;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
+    for _ in 0..50 {
+        driver.step(&mut net, 0.1, far, 0.0);
+    }
+
+    let left = driver.packs[0].screamer_cooldown;
+    assert!(
+        (left - 5.0).abs() < 0.3,
+        "5 s of fleeing burned {:.2} s of a 10 s screamer cooldown",
+        10.0 - left
     );
 }

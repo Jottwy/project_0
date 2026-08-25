@@ -119,12 +119,30 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private struct VoiceBank
         {
             public AudioClip[] Clips;
+
+            /// <summary>
+            /// ADR-094 Enmienda 9 — OPTIONAL per-kind falloff. Left off (the default), a bank
+            /// plays on whichever of the three shared curves above the creature's state selects,
+            /// which is what every robapieles voice has always done and still does.
+            ///
+            /// The facelings need something the robapieles never did: the SAME creature making
+            /// sounds that belong at completely different ranges. Its distant chant has to carry
+            /// across the floor and its whisper must die a few metres away, and no single curve
+            /// can be both. A per-kind override is the smallest way to say that without giving
+            /// the two species different hooks — an override left empty costs one bool test.
+            /// </summary>
+            public bool OverrideRange;
+            public float MinDistance;
+            public float MaxDistance;
+            public float Volume;
+            public float Pitch;
         }
 
         private RemotePlayerManager _manager;
         private AudioSource _source;
         private int _lastSeq = NoSample;
         private RangeMode _rangeMode = RangeMode.Normal;
+        private float _kindMin, _kindMax;
 
         // Re-arm for pool reuse: a recycled proxy must not scream for its previous occupant, and
         // must not inherit its counter either.
@@ -175,14 +193,28 @@ namespace BackroomsSurvival.Migration.STPIntegration
             if (clip == null)
                 return;
 
-            // Revealed, it carries further, hits harder and sits lower. Resolved at PLAY time, which
-            // is rare — the per-frame path above never asks.
-            bool revealed = ResolveRevealed();
             var src = EnsureSource();
 
             float pitch = _pitchVariation > 0f
                 ? 1f + Random.Range(-_pitchVariation, _pitchVariation)
                 : 1f;
+
+            // ADR-094 Enmienda 9 — a bank carrying its own range wins outright, and deliberately
+            // does not consult `revealed`: the kinds that use this are a faceling's, and a
+            // faceling has no disguise to drop. Checked before the reveal lookup so the override
+            // path costs nothing extra.
+            var bank = _voices[kind];
+            if (bank.OverrideRange)
+            {
+                ApplyExplicitRange(bank.MinDistance, bank.MaxDistance);
+                src.pitch = pitch * (bank.Pitch > 0f ? bank.Pitch : 1f);
+                src.PlayOneShot(clip, bank.Volume > 0f ? bank.Volume : 1f);
+                return;
+            }
+
+            // Revealed, it carries further, hits harder and sits lower. Resolved at PLAY time, which
+            // is rare — the per-frame path above never asks.
+            bool revealed = ResolveRevealed();
 
             // The answer roar ignores `revealed` entirely: it is emitted BY a creature that is still
             // wearing a stolen face, from far enough away that you will never see which player it
@@ -201,7 +233,24 @@ namespace BackroomsSurvival.Migration.STPIntegration
             src.PlayOneShot(clip, revealed ? _revealedVolume : 1f);
         }
 
-        private enum RangeMode { Normal, Revealed, Answer }
+        private enum RangeMode { Normal, Revealed, Answer, PerKind }
+
+        /// <summary>
+        /// ADR-094 Enmienda 9 — applies a bank's own curve. Unlike <see cref="ApplyRange"/> this
+        /// cannot skip on an unchanged mode, because two different kinds both land on
+        /// <c>PerKind</c> with different numbers; it compares the numbers instead.
+        /// </summary>
+        private void ApplyExplicitRange(float min, float max)
+        {
+            if (_rangeMode == RangeMode.PerKind && _source != null
+                && Mathf.Approximately(_kindMin, min) && Mathf.Approximately(_kindMax, max))
+                return;
+
+            _rangeMode = RangeMode.PerKind;
+            _kindMin = min;
+            _kindMax = max;
+            ProxyAudioCurves.ApplyHardCutoff(_source, min, max);
+        }
 
         /// <summary>Swap the distance curve, and only on a change — see ProxyFootstepHook.</summary>
         private void ApplyRange(RangeMode mode)

@@ -878,25 +878,70 @@ const FACELING_CHILD_GIVE_UP_S: f32 = 20.0;
 /// `ProxyVocalHook` instance/bank array (`FacelingChildAvatarBuilder`'s own wiring), independent
 /// of `phantom.rs`'s `VOCAL_*` constants even though both ride the same generic
 /// `peer.vocal_seq`/`vocal_kind` wire fields (ADR-094 pays for that bump once, for both species).
-const FACELING_CHILD_VOCAL_GIGGLE: u8 = 0;
-const FACELING_CHILD_VOCAL_SCREAM: u8 = 1;
+pub(super) const FACELING_CHILD_VOCAL_GIGGLE: u8 = 0;
+pub(super) const FACELING_CHILD_VOCAL_SCREAM: u8 = 1;
 /// The lone survivor's regroup call ("grita para reagruparse con otro pack"), emitted from
 /// `ChildState::Flee`. Client bank ships wired but unauthored, same convention as `phantom.rs`'s
 /// own silent banks.
-const FACELING_CHILD_VOCAL_CALL: u8 = 2;
+pub(super) const FACELING_CHILD_VOCAL_CALL: u8 = 2;
 /// Enmienda 3 — the close-quarters whisper/chant. Takes over from the giggle once the ring is
 /// shut: the giggles are what you hear while they are still coming, this is what you hear when
 /// they are already on you. Different sound, different distance, same counter.
-const FACELING_CHILD_VOCAL_WHISPER: u8 = 3;
+pub(super) const FACELING_CHILD_VOCAL_WHISPER: u8 = 3;
+/// Enmienda 9 — the DISTANT CHANT. What a pack sounds like from across the level: a slow,
+/// sung, one-voice-at-a-time thing that tells you the floor is inhabited without telling you
+/// from how near. It is not a quieter giggle — the giggle is a reaction to YOU and this is not,
+/// which is why it needs its own bank and its own (much wider) distance curve on the client.
+pub(super) const FACELING_CHILD_VOCAL_CHANT: u8 = 4;
 
-/// How often the pack schedules one giggle "beat" (`ChildDriver::update_giggles_for_pack`).
-const FACELING_CHILD_GIGGLE_INTERVAL_S: f32 = 5.0;
+/// Enmienda 9 — THE CADENCE, and the fix for the thing the 2026-08-25 play-test called "cotorras".
+///
+/// The old model had one beat (5 s) and gave a voice to EVERY member on every beat, in every
+/// state, whether or not anybody was near enough to hear it. A pack of eight was therefore
+/// emitting 1.6 sounds per second, forever. That is not telemetry, that is a wall of noise —
+/// and a sound that never stops carries no information, because information is what changes.
+///
+/// So the voice now has BANDS, and every band differs in three ways at once: what they say, how
+/// often, and HOW MANY OF THEM say it. That last one matters most; the number of mouths is what
+/// separates "something is out there" from "they are all around me".
+/// Past this from the nearest listener, nobody could meaningfully hear the pack anyway, so it
+/// says nothing at all. The old code chattered into empty corridors for free.
+const FACELING_CHILD_VOCAL_AUDIBLE_RADIUS: f32 = 55.0;
+/// Inside `AUDIBLE` but outside this: the chant band. Roughly twice the detect radius, so the
+/// chant is what you hear BEFORE the pack has any idea you exist.
+const FACELING_CHILD_CHANT_RADIUS: f32 = 22.0;
+
+/// One chant every quarter of a minute. Long on purpose: this is the sound that has to survive
+/// being heard for an hour without becoming furniture.
+const FACELING_CHILD_CHANT_INTERVAL_S: f32 = 14.0;
+/// How often the pack schedules one giggle "beat" (`ChildDriver::update_pack_voice`).
+const FACELING_CHILD_GIGGLE_INTERVAL_S: f32 = 6.5;
+/// The whisper is the fastest beat — they are on top of you and it should feel constant. It is
+/// also the quietest and shortest-range bank, so "constant" costs nothing until you are inside it.
+const FACELING_CHILD_WHISPER_INTERVAL_S: f32 = 3.5;
+
 /// Widest per-member offset off the beat: `PackRoam`, or `PackStalk` at the edge of detection —
 /// spread out, reads as ambient, not a chorus.
 const FACELING_CHILD_GIGGLE_SPREAD_MAX_S: f32 = 2.2;
 /// Narrowest offset, reached once the nearest member has closed to `FACELING_CHILD_CERCO_BAND` —
 /// ADR-094 point 3: "risa a coro = el cerco está cerrado".
 const FACELING_CHILD_GIGGLE_SPREAD_MIN_S: f32 = 0.15;
+
+/// Enmienda 9 — per-member floor between two sounds out of the SAME mouth. The band interval
+/// controls how often the pack speaks; this controls how often any one child does, and it is
+/// what makes eight of them read as eight individuals taking turns rather than as one noise.
+/// Comfortably longer than every beat, so the pack is always rotating voices, never cycling one.
+pub(super) const FACELING_CHILD_VOCAL_COOLDOWN_S: f32 = 9.0;
+
+/// Enmienda 9 — EL SILENCIO. Seconds of total pack mutism, armed at the two moments where the
+/// absence of sound says more than sound would: the tick the ring shuts, and right after a
+/// screamer.
+///
+/// The first is the important one. You have been listening to giggles get closer for a minute,
+/// and then they STOP — that stop is the only warning the closed cerco ever gets, and it is a
+/// better one than a louder noise, because you have to work out for yourself what it means. The
+/// second exists so the scream lands in a hole instead of into more chatter.
+pub(super) const FACELING_CHILD_HUSH_S: f32 = 2.6;
 
 /// v1 PLACEHOLDER. Faster than the cerco: this is panic, not hunting.
 const FACELING_CHILD_FLEE_SPEED: f32 = 3.0;
@@ -974,6 +1019,21 @@ fn cerco_is_closed(member_positions: &[Vec3], target: Vec3) -> bool {
         >= FACELING_CHILD_CERCO_CLOSED_MIN
 }
 
+/// Enmienda 9 — which voice a pack is currently in. Not a state (the pack's own `ChildState`
+/// decides behaviour); a READING of the pack's situation, recomputed once per tick and used only
+/// to pick a bank, a beat and a number of mouths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VocalBand {
+    /// Nobody near enough to hear, or fleeing (which has its own voice), or holding its breath.
+    Mute,
+    /// Far. One voice, rarely, carrying a long way.
+    Chant,
+    /// Near, but the ring is not shut. Half the pack, taking turns.
+    Giggle,
+    /// The ring is shut. Everyone, close to simultaneous, right next to you.
+    Whisper,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ChildState {
     /// Ambient wander within `FACELING_CHILD_PATROL_RADIUS_M` of the pack's anchor.
@@ -1017,8 +1077,15 @@ pub(super) struct ChildMover {
     pub(super) vocal_seq: u8,
     pub(super) vocal_kind: u8,
     /// Countdown to this member's own queued giggle, in flight from
-    /// `ChildDriver::update_giggles_for_pack`. `None` when nothing is queued.
+    /// `ChildDriver::update_pack_voice`. `None` when nothing is queued.
     pub(super) vocal_delay: Option<f32>,
+    /// Enmienda 9 — seconds before THIS mouth may make another ambient sound. See
+    /// `FACELING_CHILD_VOCAL_COOLDOWN_S`.
+    ///
+    /// Only the ambient bands honour it. A scream, a regroup call and the screamer all ignore it
+    /// and clear it, because those are events: gating a death rattle behind a chatter cooldown
+    /// would silence the one sound that actually had to be heard.
+    pub(super) vocal_cooldown: f32,
     /// E2c — seconds before this child may swing again. Only `Press` ever swings, but the field
     /// lives on every member because roles are re-dealt on every death: a `Flank` promoted to
     /// `Press` mid-fight must inherit a cooldown, not a clean slate.
@@ -1112,10 +1179,24 @@ pub(super) struct ChildPack {
     /// that reports it; the live gate is `cerco_is_closed` against the target's current position.
     pub(super) frozen: bool,
     pub(super) members: Vec<ChildMover>,
-    /// Seconds to the next giggle "beat" (`ChildDriver::update_giggles_for_pack`). Pack-level,
-    /// not per-member: the beat fires once and every member queues its own offset off it —
+    /// Seconds to the next voice "beat" (`ChildDriver::update_pack_voice`). Pack-level, not
+    /// per-member: the beat fires once and the members it picks queue their own offsets off it —
     /// that offset, not this timer, is what spreads or converges the chorus.
     pub(super) giggle_timer: f32,
+    /// Enmienda 9 — this tick's voice band, resolved once by `update_pack_voice` and read by
+    /// every member's own beat. Cached rather than recomputed per member: it costs a scan over
+    /// the roster and the player list, and eight members asking the same question eight times a
+    /// tick was the shape the old `pack_beat_vocal` had.
+    pub(super) vocal_band: VocalBand,
+    /// Enmienda 9 — seconds of pack-wide mutism still owed. See `FACELING_CHILD_HUSH_S`.
+    pub(super) hush_timer: f32,
+    /// Enmienda 9 — was the ring shut on the previous tick? Only the EDGE arms the hush: holding
+    /// the cerco closed for thirty seconds must not mean thirty seconds of silence, or the
+    /// whisper band (the whole point of being surrounded) would never get to play.
+    pub(super) ring_was_shut: bool,
+    /// Enmienda 9 — which member spoke last, so the chant and the giggle rotate mouths instead of
+    /// re-rolling and landing on the same child twice. Wraps; only ever used modulo the roster.
+    pub(super) vocal_cursor: usize,
     /// Bumped every beat, folded into each member's `chorus_delay_fraction` key so two beats
     /// never reuse the same per-member offset (same reason `phantom.rs` keys on `vocal_seq`).
     pub(super) giggle_round: u32,
@@ -1666,6 +1747,7 @@ impl ChildDriver {
                             vocal_seq: 0,
                             vocal_kind: 0,
                             vocal_delay: None,
+                            vocal_cooldown: 0.0,
                             strike_recover: 0.0,
                             progress: ProgressWatch::new(),
                             nav_waypoints: Vec::new(),
@@ -1691,6 +1773,10 @@ impl ChildDriver {
                         members,
                         giggle_timer: FACELING_CHILD_GIGGLE_INTERVAL_S,
                         giggle_round: 0,
+                        vocal_band: VocalBand::Mute,
+                        hush_timer: 0.0,
+                        ring_was_shut: false,
+                        vocal_cursor: 0,
                         screamer_cooldown: 0.0,
                     });
                     if self.packs.len() >= FACELING_CHILD_PACK_ACTIVE_CAP {
@@ -1773,7 +1859,10 @@ impl ChildDriver {
                     assign_roles(&mut self.packs[pi].members);
                     for m in &mut self.packs[pi].members {
                         m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
+                        m.vocal_delay = None;
+                        m.vocal_cooldown = FACELING_CHILD_VOCAL_COOLDOWN_S;
                     }
+                    self.packs[pi].hush_timer = FACELING_CHILD_HUSH_S;
                     info!(
                         "MPTRACE step=FL_PACK event=faceling_pack_cerco_started chunk=({},{}) target={} cause=retaliation",
                         self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1, attacker_id
@@ -1809,7 +1898,9 @@ impl ChildDriver {
         for m in &mut self.packs[pi].members {
             m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
             m.vocal_delay = None;
+            m.vocal_cooldown = FACELING_CHILD_VOCAL_COOLDOWN_S;
         }
+        self.packs[pi].hush_timer = FACELING_CHILD_HUSH_S;
 
         match self.packs[pi].members.len() {
             0 => {
@@ -1944,7 +2035,7 @@ impl ChildDriver {
         for pi in 0..self.packs.len() {
             self.detect_for_pack(pi, net, dt, &players);
             self.update_freeze_for_pack(pi, net, &players);
-            self.update_giggles_for_pack(pi, net, dt);
+            self.update_pack_voice(pi, net, &players, dt);
             for mi in 0..self.packs[pi].members.len() {
                 // Every member, every state: see `ChildMover::strike_recover`.
                 self.packs[pi].members[mi].strike_recover =
@@ -2098,94 +2189,199 @@ impl ChildDriver {
         }
     }
 
-    /// ADR-094 point 3 — schedules one giggle "beat" per pack every
-    /// `FACELING_CHILD_GIGGLE_INTERVAL_S` and gives each member its own offset off that beat
-    /// (`chorus_delay_fraction`, same determinism reasoning as `phantom.rs`'s own chorus: a
-    /// play-test has to be repeatable). The offset's CEILING is what does the storytelling: wide
-    /// in `PackRoam` or at the edge of `PackStalk` detection, narrowing toward simultaneous as the
-    /// nearest member closes on the target — "risa a coro = el cerco está cerrado".
-    fn update_giggles_for_pack(&mut self, pi: usize, net: &NetworkManager, dt: f32) {
-        // A child running for its life is not giggling — `Flee` has its own voice
-        // (`FACELING_CHILD_VOCAL_CALL`, driven per-member from `tick_member`).
-        if self.packs[pi].state == ChildState::Flee {
+    /// Enmienda 9 — THE PACK VOICE: what it says, how often, and how many of them say it.
+    ///
+    /// Replaces the old `update_giggles_for_pack`, which had one beat and gave a voice to EVERY
+    /// member on EVERY beat regardless of state or of whether a player was within a hundred
+    /// metres. Eight children on a five-second beat is 1.6 sounds a second, forever — the
+    /// 2026-08-25 play-test called them "cotorras" and it was right. A noise that never varies
+    /// stops carrying information, because information is the part that changes.
+    ///
+    /// So the band (`resolve_vocal_band`) moves three dials at once, and the third is the one
+    /// that does the work: the NUMBER OF MOUTHS. One distant voice and eight close ones are the
+    /// difference between "something lives on this floor" and "they are around me", and no
+    /// amount of volume says that as clearly as the count does.
+    fn update_pack_voice(
+        &mut self,
+        pi: usize,
+        net: &NetworkManager,
+        players: &[(PeerId, Vec3, f32)],
+        dt: f32,
+    ) {
+        // Every cooldown ages FIRST and unconditionally. The old version aged `screamer_cooldown`
+        // after an early return for `Flee`, so a pack that fled froze its screamer cooldown and
+        // carried it whole into the next encounter.
+        self.packs[pi].screamer_cooldown = (self.packs[pi].screamer_cooldown - dt).max(0.0);
+        self.packs[pi].hush_timer = (self.packs[pi].hush_timer - dt).max(0.0);
+        for m in &mut self.packs[pi].members {
+            m.vocal_cooldown = (m.vocal_cooldown - dt).max(0.0);
+        }
+
+        let (band, nearest) = self.resolve_vocal_band(pi, net, players);
+        self.packs[pi].vocal_band = band;
+
+        // ── EL SILENCIO ──
+        // Armed on the EDGE of the ring shutting, never on the level. Holding a cerco for thirty
+        // seconds must not mean thirty seconds of silence, or the whisper — the entire payoff of
+        // being surrounded — would never get to play.
+        let shut = band == VocalBand::Whisper;
+        if shut && !self.packs[pi].ring_was_shut {
+            self.packs[pi].hush_timer = FACELING_CHILD_HUSH_S;
+        }
+        self.packs[pi].ring_was_shut = shut;
+
+        if band == VocalBand::Mute || self.packs[pi].hush_timer > 0.0 {
+            // Queued beats are DROPPED, not paused. A hush that lets three already-scheduled
+            // giggles through is not a hush, it is a stagger — and the whole effect depends on
+            // the sound stopping dead.
+            for m in &mut self.packs[pi].members {
+                m.vocal_delay = None;
+            }
             return;
         }
-        self.packs[pi].screamer_cooldown = (self.packs[pi].screamer_cooldown - dt).max(0.0);
 
         self.packs[pi].giggle_timer -= dt;
         if self.packs[pi].giggle_timer > 0.0 {
             return;
         }
-        self.packs[pi].giggle_timer = FACELING_CHILD_GIGGLE_INTERVAL_S;
+        self.packs[pi].giggle_timer = match band {
+            VocalBand::Chant => FACELING_CHILD_CHANT_INTERVAL_S,
+            VocalBand::Whisper => FACELING_CHILD_WHISPER_INTERVAL_S,
+            _ => FACELING_CHILD_GIGGLE_INTERVAL_S,
+        };
 
-        let spread = match (self.packs[pi].state, self.packs[pi].mind.last_known_pos) {
-            (ChildState::PackStalk, Some(target)) => {
-                let nearest = self.packs[pi]
-                    .members
-                    .iter()
-                    .filter_map(|m| net.peers.get(&m.id))
-                    .map(|p| Vec3::from_array(p.position).distance_xz(target))
-                    .fold(f32::MAX, f32::min);
-                // Normalised against `FACELING_CHILD_CERCO_CLOSED_RADIUS`, the radius that
-                // actually ends the stare's protection — NOT against `CERCO_BAND`, which is only
-                // where the flankers aim. The whole job of this sound is to hit one voice at the
-                // exact moment you stop being safe; measuring it from a different distance than
-                // `cerco_is_closed` uses would put the tell a metre off the thing it announces.
+        let len = self.packs[pi].members.len();
+        if len == 0 {
+            return;
+        }
+
+        // How many mouths this beat. Chant is ONE by construction — a chorus at forty metres is
+        // a crowd noise, and what this band has to sound like is one child singing somewhere.
+        let voices = match band {
+            VocalBand::Chant => 1,
+            VocalBand::Giggle => len.div_ceil(2),
+            _ => len,
+        };
+
+        // The offset ceiling, i.e. how much of a chorus it is. Unchanged in spirit from the old
+        // code: wide while they are still coming, near-simultaneous once they are on you.
+        let spread = match band {
+            // Nothing to spread when only one of them speaks; a lone voice with a random delay
+            // is just a lone voice that arrives late.
+            VocalBand::Chant => 0.0,
+            VocalBand::Whisper => FACELING_CHILD_GIGGLE_SPREAD_MIN_S,
+            _ => {
                 let t = ((nearest - FACELING_CHILD_CERCO_CLOSED_RADIUS)
                     / (FACELING_CHILD_DETECT_RADIUS - FACELING_CHILD_CERCO_CLOSED_RADIUS))
                     .clamp(0.0, 1.0);
                 FACELING_CHILD_GIGGLE_SPREAD_MIN_S
                     + t * (FACELING_CHILD_GIGGLE_SPREAD_MAX_S - FACELING_CHILD_GIGGLE_SPREAD_MIN_S)
             }
-            _ => FACELING_CHILD_GIGGLE_SPREAD_MAX_S,
         };
 
         let round = self.packs[pi].giggle_round;
         self.packs[pi].giggle_round = round.wrapping_add(1);
         let (cx, cz) = self.packs[pi].home_chunk;
-        for (mi, m) in self.packs[pi].members.iter_mut().enumerate() {
-            if m.vocal_delay.is_some() {
-                continue; // this member already has a giggle in flight; do not stack
+        let start = self.packs[pi].vocal_cursor % len;
+
+        // Walk the roster from the cursor rather than re-rolling: rotating mouths is what makes
+        // eight children read as eight individuals taking turns instead of one noise source.
+        let mut picked = 0usize;
+        for off in 0..len {
+            if picked >= voices {
+                break;
+            }
+            let mi = (start + off) % len;
+            let m = &mut self.packs[pi].members[mi];
+            // The per-member floor. Set when the beat is QUEUED, not when it fires — otherwise a
+            // long offset would leave the same child eligible again before it had spoken at all.
+            if m.vocal_cooldown > 0.0 || m.vocal_delay.is_some() {
+                continue;
             }
             let key =
                 ((cx as u64) << 40) ^ ((cz as u64) << 16) ^ ((mi as u64) << 8) ^ (round as u64);
             m.vocal_delay = Some(chorus_delay_fraction(key) * spread);
+            m.vocal_cooldown = FACELING_CHILD_VOCAL_COOLDOWN_S;
+            picked += 1;
         }
+        self.packs[pi].vocal_cursor = (start + picked.max(1)) % len;
     }
 
-    /// Enmienda 3 — which voice this beat is. The giggle is what you hear while they are STILL
-    /// COMING; once the ring is shut and they are on top of you it turns into the whisper.
+    /// Enmienda 9 — reads the pack's situation into a voice band. Called once per pack per tick.
+    /// Returns the distance that decided it, which the caller reuses for the chorus spread.
     ///
-    /// Same counter, same beat, same spread — only the bank changes. That is what makes the
-    /// transition land as one continuous thing getting closer rather than two separate sounds:
-    /// the rhythm you have been listening to for the last minute does not break, it just drops to
-    /// a whisper next to your ear.
-    fn pack_beat_vocal(
+    /// TWO different distances answer two different questions, and conflating them was part of
+    /// the old noise problem:
+    ///   * the RING is measured against the TARGET, because that is who it closed on;
+    ///   * every other band is measured against the nearest LISTENER, target or not — a pack that
+    ///     has not noticed you still has to be audible across the floor, and one chattering into
+    ///     an empty level should not be audible at all.
+    fn resolve_vocal_band(
         &self,
         pi: usize,
         net: &NetworkManager,
         players: &[(PeerId, Vec3, f32)],
-    ) -> u8 {
-        if self.packs[pi].state != ChildState::PackStalk {
-            return FACELING_CHILD_VOCAL_GIGGLE;
+    ) -> (VocalBand, f32) {
+        // A child running for its life is not giggling — `Flee` has its own voice
+        // (`FACELING_CHILD_VOCAL_CALL`, driven per-member from `tick_member`).
+        if self.packs[pi].state == ChildState::Flee {
+            return (VocalBand::Mute, f32::MAX);
         }
-        let Some(target) = self.packs[pi].mind.target.and_then(|tid| {
-            players
-                .iter()
-                .find(|&&(pid, _, _)| pid == tid)
-                .map(|&(_, ppos, _)| ppos)
-        }) else {
-            return FACELING_CHILD_VOCAL_GIGGLE;
-        };
+
         let member_positions: Vec<Vec3> = self.packs[pi]
             .members
             .iter()
             .filter_map(|m| net.peers.get(&m.id))
             .map(|p| Vec3::from_array(p.position))
             .collect();
-        match cerco_is_closed(&member_positions, target) {
-            true => FACELING_CHILD_VOCAL_WHISPER,
-            false => FACELING_CHILD_VOCAL_GIGGLE,
+        if member_positions.is_empty() {
+            return (VocalBand::Mute, f32::MAX);
+        }
+
+        if self.packs[pi].state == ChildState::PackStalk {
+            if let Some(tpos) = self.packs[pi].mind.target.and_then(|tid| {
+                players
+                    .iter()
+                    .find(|&&(pid, _, _)| pid == tid)
+                    .map(|&(_, ppos, _)| ppos)
+            }) {
+                if cerco_is_closed(&member_positions, tpos) {
+                    let nearest = member_positions
+                        .iter()
+                        .map(|p| p.distance_xz(tpos))
+                        .fold(f32::MAX, f32::min);
+                    return (VocalBand::Whisper, nearest);
+                }
+            }
+        }
+
+        let mut nearest = f32::MAX;
+        for &(_, ppos, _) in players {
+            for mp in &member_positions {
+                nearest = nearest.min(mp.distance_xz(ppos));
+            }
+        }
+
+        if nearest > FACELING_CHILD_VOCAL_AUDIBLE_RADIUS {
+            (VocalBand::Mute, nearest)
+        } else if nearest > FACELING_CHILD_CHANT_RADIUS {
+            (VocalBand::Chant, nearest)
+        } else {
+            (VocalBand::Giggle, nearest)
+        }
+    }
+
+    /// Enmienda 9 — which bank this beat plays, read off the band the tick resolved.
+    ///
+    /// Still asked at FIRING time rather than at queue time (the reason the old code gave, and it
+    /// still holds): a ring that shuts during a member's offset turns that queued giggle into the
+    /// whisper it should have been. What changed is that the answer is now a field read instead
+    /// of a roster scan repeated once per member.
+    fn pack_beat_vocal(&self, pi: usize) -> u8 {
+        match self.packs[pi].vocal_band {
+            VocalBand::Whisper => FACELING_CHILD_VOCAL_WHISPER,
+            VocalBand::Chant => FACELING_CHILD_VOCAL_CHANT,
+            _ => FACELING_CHILD_VOCAL_GIGGLE,
         }
     }
 
@@ -2303,7 +2499,13 @@ impl ChildDriver {
                 // tick; a scream always wins (mirrors `phantom.rs`'s one-slot `pending_vocal`).
                 for m in &mut self.packs[pi].members {
                     m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
+                    m.vocal_delay = None;
+                    m.vocal_cooldown = FACELING_CHILD_VOCAL_COOLDOWN_S;
                 }
+                // Enmienda 9 — the charge scream, and then a beat of nothing before the giggles
+                // start closing in. The pack announcing itself and the pack arriving are two
+                // separate sounds; without the gap they run together into one noise.
+                self.packs[pi].hush_timer = FACELING_CHILD_HUSH_S;
                 info!(
                     "MPTRACE step=FL_PACK event=faceling_pack_cerco_started chunk=({},{}) target={}",
                     self.packs[pi].home_chunk.0, self.packs[pi].home_chunk.1, pid
@@ -2434,7 +2636,7 @@ impl ChildDriver {
                 // Enmienda 3: the bank is chosen HERE, when the beat actually fires, not when it
                 // was queued — so a ring that shuts during the delay turns that queued giggle into
                 // the whisper it should have been.
-                let kind = self.pack_beat_vocal(pi, net, players);
+                let kind = self.pack_beat_vocal(pi);
                 self.packs[pi].members[mi].vocal_delay = None;
                 self.packs[pi].members[mi].pending_vocal = Some(kind);
             } else {
@@ -2662,6 +2864,13 @@ impl ChildDriver {
                         self.packs[pi].members[mi].pending_vocal =
                             Some(FACELING_CHILD_VOCAL_SCREAM);
                         self.packs[pi].members[mi].vocal_delay = None;
+                        self.packs[pi].members[mi].vocal_cooldown = FACELING_CHILD_VOCAL_COOLDOWN_S;
+                        // Enmienda 9 — and then NOTHING, for a few seconds. The scream lands in a
+                        // hole instead of into more chatter, and the hole is also where the daze
+                        // (`FacelingDazeEffect`, 7 s of muffled hearing) does its work: coming
+                        // back from being deafened into silence is worse than coming back into
+                        // giggling, because you cannot tell whether they left.
+                        self.packs[pi].hush_timer = FACELING_CHILD_HUSH_S;
                         info!(
                             "MPTRACE step=FL_ATK event=faceling_child_screamer faceling_id={} victim_id={} dist={:.2}",
                             id, victim, dist
@@ -2777,7 +2986,9 @@ impl ChildDriver {
                                 for m in &mut self.packs[pi].members {
                                     m.pending_vocal = Some(FACELING_CHILD_VOCAL_SCREAM);
                                     m.vocal_delay = None;
+                                    m.vocal_cooldown = FACELING_CHILD_VOCAL_COOLDOWN_S;
                                 }
+                                self.packs[pi].hush_timer = FACELING_CHILD_HUSH_S;
                                 info!(
                                     "MPTRACE step=FL_ATK event=faceling_child_knockdown faceling_id={} victim_id={} surrounded={} from_behind={}",
                                     id, victim, surrounded, from_behind

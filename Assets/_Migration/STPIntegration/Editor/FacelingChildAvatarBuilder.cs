@@ -172,8 +172,8 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             if (voices == null)
                 return;
 
-            if (voices.arraySize < 4)
-                voices.arraySize = 4;
+            if (voices.arraySize < 5)
+                voices.arraySize = 5;
 
             var banks = new[]
             {
@@ -184,6 +184,27 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 // rather than a quieter giggle — the point is that the sound CHANGES when they
                 // reach you, not just that it gets nearer.
                 "FacelingChild_Whisper", // 3 — close-quarters whisper/chant
+                // Enmienda 9: the distant chant. One voice at a time, every ~14 s, carrying much
+                // further than anything else the child has.
+                "FacelingChild_Chant",   // 4 — the far band
+            };
+
+            // ADR-094 Enmienda 9 — THE RANGES, per bank. This is the half of the fix that lives
+            // on the client: the backend decides WHICH sound and how often, and these decide how
+            // far each one reaches. Without them all five play on one curve, and a whisper you
+            // can hear from forty metres is not a whisper.
+            //
+            //                          min    max   vol   pitch
+            var ranges = new[,]
+            {
+                { 4f,  34f, 1.0f, 1.0f },   // 0 Giggle  — near, ordinary
+                { 8f,  60f, 1.0f, 1.0f },   // 1 Scream  — an event; it should carry
+                { 10f, 70f, 1.0f, 0.95f },  // 2 Call    — a cry FOR other packs, so widest but one
+                { 1.5f, 11f, 1.0f, 1.0f },  // 3 Whisper — next to your ear or nowhere
+                // The chant reaches nearly as far as the robapieles' answer roar and sits lower:
+                // low frequencies are what actually survive distance, and the drop also stops it
+                // reading as the same child that giggles at you from six metres.
+                { 14f, 80f, 1.15f, 0.88f }, // 4 Chant
             };
 
             if (!Directory.Exists(AudioDir))
@@ -194,8 +215,18 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
 
             for (int bank = 0; bank < banks.Length && bank < voices.arraySize; bank++)
             {
+                var element = voices.GetArrayElementAtIndex(bank);
                 var found = LoadVoiceClips(banks[bank]);
-                var clips = voices.GetArrayElementAtIndex(bank).FindPropertyRelative("Clips");
+
+                SetBankFloat(element, "MinDistance", ranges[bank, 0]);
+                SetBankFloat(element, "MaxDistance", ranges[bank, 1]);
+                SetBankFloat(element, "Volume", ranges[bank, 2]);
+                SetBankFloat(element, "Pitch", ranges[bank, 3]);
+                var over = element.FindPropertyRelative("OverrideRange");
+                if (over != null)
+                    over.boolValue = true;
+
+                var clips = element.FindPropertyRelative("Clips");
                 if (clips == null)
                     continue;
 
@@ -209,6 +240,14 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             }
 
             so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        /// <summary>Writes one float on a serialized <c>VoiceBank</c> element, if it has it.</summary>
+        private static void SetBankFloat(SerializedProperty element, string name, float value)
+        {
+            var prop = element.FindPropertyRelative(name);
+            if (prop != null)
+                prop.floatValue = value;
         }
 
         /// <summary>
