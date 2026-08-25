@@ -6453,3 +6453,50 @@ son 100 m, así que un pack cruza una frontera de banda a media prueba — los t
 ahora fijan las posiciones.
 
 993/993 en verde.
+
+---
+
+### ADR-094 — Enmienda 11: el balance de mezcla del pack (2026-08-25)
+
+Playtest, mismo día: *"igual hay que bajarles el sonido, parecen muy altas con mucha prioridad y
+esas cosas, balancear el sonido"*. Las dos mitades de esa frase eran literalmente ciertas.
+
+**LA PRIORIDAD, en el sentido de Unity.** Ningún hook de proxy tocaba nunca
+`AudioSource.priority`, así que todos se quedaban en el 128 por defecto del motor: la charla
+ambiental de un pack competía por voces **en igualdad con los disparos y con los propios pasos del
+jugador**, y ocho niños susurrando a la vez podían desalojarlos. El ambiente debe PERDER esa pelea
+— existe para colorear un espacio, y si la mezcla tiene que soltar algo, es esto. Los eventos
+(grito, llamada) van por encima del defecto en vez de por debajo.
+
+**EL VOLUMEN.** Los cinco bancos sonaban a 1.0, que trata a un niño canturreando por un pasillo
+como un efecto de acción. Los clips siguen MASTERIZADOS cerca del pico — ahí vive la relación
+señal-ruido, y bajar los ficheros tiraría rango dinámico a la basura — y el nivel se toma en la
+REPRODUCCIÓN. Joel ya ha tenido que pedir dos veces en este proyecto que el audio ambiental baje
+un orden de magnitud respecto a los SFX, así que los bancos ambientales arrancan bajos y se suben
+si hace falta, y no al revés.
+
+| Banco | Volumen | Prioridad | |
+|---|---|---|---|
+| Grito | 0.85 | 105 | evento: tiene que llevar, y tiene que ganar |
+| Llamada | 0.55 | 115 | evento |
+| Risita | 0.30 | 205 | ambiente |
+| Canto | 0.26 | 215 | ambiente; el sonido que se oye durante una hora |
+| Susurro | 0.22 | 210 | ambiente, y **suenan las ocho bocas a la vez** |
+
+El susurro parece anómalamente bajo para algo que está en tu oído, y no lo es: es la única banda
+donde TODOS los miembros disparan en el mismo beat, así que ocho se suman. Su presencia viene del
+recuento y de estar sin filtrar de cerca, no de la ganancia.
+
+**LOS PASOS, que eran el culpable mayor.** La cadencia que hace que un niño se lea como un niño
+(zancada de 0.48 m, ADR-094 punto 6) es también lo que hace ensordecedor a un PACK: a 4.2 m/s eso
+es un paso cada ~11 ms POR MIEMBRO, y ocho de ellos rondan los setenta sonidos por segundo. Con la
+prioridad por defecto, esa tormenta competía por voces con todo lo demás del juego.
+
+`ProxyFootstepHook` gana `_priority` y `_volumeScale`, ambos con defectos NEUTROS (128 y 1.0) para
+que el robapieles no cambie en nada, y el builder del niño los pone a 230 y 0.45. Con el corte a
+15 m que ya tenía, un niño suelto se oye igual que antes de cerca; lo que cambia es que ocho ya no
+suman una pared.
+
+Nada de esto toca el mixer: `RouteToSfx` ya enrutaba correctamente por el canal Sfx (esa parte
+funcionaba, y es lo que hace que el slider de efectos del jugador siga mandando). Lo que faltaba
+era el balance DENTRO de ese canal.

@@ -206,17 +206,36 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             // far each one reaches. Without them all five play on one curve, and a whisper you
             // can hear from forty metres is not a whisper.
             //
-            //                          min    max   vol   pitch
+            // ADR-094 Enmienda 11 — THE BALANCE. Play-test (Joel, 2026-08-25): "parecen muy altas
+            // con mucha prioridad". Both halves of that were literally true.
+            //
+            // VOLUME. Every bank played at 1.0, which treats a child humming down a corridor as
+            // an action sound effect. The clips are still MASTERED near peak — that is where the
+            // signal-to-noise lives, and pulling the files down would throw dynamic range away —
+            // and the level is taken here, at playback, instead. Joel has now had to ask twice on
+            // this project for ambient audio to be dropped roughly an order of magnitude below
+            // SFX, so the ambient banks start low and can be raised, rather than the reverse.
+            //
+            // The whisper looks anomalously quiet for something at your ear, and is not: it is
+            // the one band where EVERY member fires on the same beat, so eight of them sum. Its
+            // loudness comes from the count and from being unfiltered up close, not from gain.
+            //
+            // PRIORITY (0 = never dropped, 256 = dropped first; engine default 128). Nothing set
+            // this, so ambient chatter competed for voices on equal terms with gunshots. Ambient
+            // should LOSE that fight; the scream and the call are events and sit above default.
+            //
+            //                          min    max   vol   pitch  priority
             var ranges = new[,]
             {
-                { 4f,  34f, 1.0f, 1.0f },   // 0 Giggle  — near, ordinary
-                { 8f,  60f, 1.0f, 1.0f },   // 1 Scream  — an event; it should carry
-                { 10f, 70f, 1.0f, 0.95f },  // 2 Call    — a cry FOR other packs, so widest but one
-                { 1.5f, 11f, 1.0f, 1.0f },  // 3 Whisper — next to your ear or nowhere
+                { 4f,  34f, 0.30f, 1.0f,  205f }, // 0 Giggle  — near, ordinary
+                { 8f,  60f, 0.85f, 1.0f,  105f }, // 1 Scream  — an event; it should carry, and win
+                { 10f, 70f, 0.55f, 0.95f, 115f }, // 2 Call    — a cry FOR other packs
+                { 1.5f, 11f, 0.22f, 1.0f, 210f }, // 3 Whisper — eight at once; see above
                 // The chant reaches nearly as far as the robapieles' answer roar and sits lower:
                 // low frequencies are what actually survive distance, and the drop also stops it
-                // reading as the same child that giggles at you from six metres.
-                { 14f, 80f, 1.15f, 0.88f }, // 4 Chant
+                // reading as the same child that giggles at you from six metres. Quietest of the
+                // lot on purpose — it is the sound you hear for an hour.
+                { 14f, 80f, 0.26f, 0.88f, 215f }, // 4 Chant
             };
 
             if (!Directory.Exists(AudioDir))
@@ -234,6 +253,9 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 SetBankFloat(element, "MaxDistance", ranges[bank, 1]);
                 SetBankFloat(element, "Volume", ranges[bank, 2]);
                 SetBankFloat(element, "Pitch", ranges[bank, 3]);
+                var prio = element.FindPropertyRelative("Priority");
+                if (prio != null)
+                    prio.intValue = Mathf.RoundToInt(ranges[bank, 4]);
                 var over = element.FindPropertyRelative("OverrideRange");
                 if (over != null)
                     over.boolValue = true;
@@ -282,6 +304,20 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
             SetHookFloat(so, "_walkStride", 0.48f); // vs the adult prefab's 0.85
             SetHookFloat(so, "_runStride", 0.72f);  // vs 1.35
             SetHookFloat(so, "_maxDistance", 15f);  // vs 22
+
+            // ADR-094 Enmienda 11 — and the cadence that makes a child read as a child is also
+            // what makes a PACK deafening. At a 0.48 m stride and 4.2 m/s that is a step every
+            // ~11 ms per member; eight of them is on the order of seventy sounds a second, all
+            // competing for voices with gunshots and the player's own feet.
+            //
+            // So the pack's feet get quiet and get the lowest priority in the game. Together with
+            // the 15 m cutoff a single child still reads exactly as before up close; what changes
+            // is that eight of them no longer add up to a wall.
+            SetHookFloat(so, "_volumeScale", 0.45f);
+            var prio = so.FindProperty("_priority");
+            if (prio != null)
+                prio.intValue = 230;
+
             so.ApplyModifiedPropertiesWithoutUndo();
         }
 

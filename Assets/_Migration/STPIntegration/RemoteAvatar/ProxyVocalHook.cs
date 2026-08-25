@@ -66,6 +66,9 @@ namespace BackroomsSurvival.Migration.STPIntegration
         // No counter can hold this, so the first sample is always "no change" and never a trigger.
         private const int NoSample = int.MinValue;
 
+        /// <summary>Unity's own default, restored explicitly rather than assumed.</summary>
+        private const int DefaultPriority = 128;
+
         [Header("Voices (index = vocal_kind)")]
         [Tooltip("0 = reveal scream, 1 = search shriek, 2 = noise grunt, 3 = stalking breath. " +
                  "One clip is picked at random from the bank for that kind. An empty bank is silent.")]
@@ -147,6 +150,21 @@ namespace BackroomsSurvival.Migration.STPIntegration
             public float MaxDistance;
             public float Volume;
             public float Pitch;
+
+            /// <summary>
+            /// ADR-094 Enmienda 11 — Unity voice priority for this bank (0 = never dropped,
+            /// 256 = dropped first; the engine default is 128). 0 here means "leave the default".
+            ///
+            /// Play-test (Joel, 2026-08-25): "parecen muy altas con mucha prioridad". It was
+            /// literally true — nothing ever set this, so a pack's ambient chatter competed for
+            /// voices on equal terms with gunshots and the player's own footsteps, and eight
+            /// children whispering at once could evict them.
+            ///
+            /// AMBIENT SHOULD LOSE. The chant, the giggle and the whisper exist to colour a
+            /// space; if the mixer has to drop something, they are what it should drop. The
+            /// scream and the regroup call are events and sit above the default instead.
+            /// </summary>
+            public int Priority;
         }
 
         private RemotePlayerManager _manager;
@@ -219,6 +237,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             {
                 ApplyExplicitRange(bank.MinDistance, bank.MaxDistance);
                 src.pitch = pitch * (bank.Pitch > 0f ? bank.Pitch : 1f);
+                src.priority = bank.Priority > 0 ? bank.Priority : DefaultPriority;
                 src.PlayOneShot(clip, bank.Volume > 0f ? bank.Volume : 1f);
                 return;
             }

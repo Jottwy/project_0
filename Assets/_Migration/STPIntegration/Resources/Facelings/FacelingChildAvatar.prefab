@@ -29,6 +29,10 @@ PrefabInstance:
       value: 
       objectReference: {fileID: 1570986512267558764}
     - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _priority
+      value: 230
+      objectReference: {fileID: 0}
+    - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _runStride
       value: 0.72
       objectReference: {fileID: 0}
@@ -39,6 +43,10 @@ PrefabInstance:
     - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _maxDistance
       value: 15
+      objectReference: {fileID: 0}
+    - target: {fileID: 4336350721642035510, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _volumeScale
+      value: 0.45
       objectReference: {fileID: 0}
     - target: {fileID: 5285979793911601847, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: m_IsActive
@@ -78,23 +86,43 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[0].Volume
-      value: 1
+      value: 0.3
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[1].Volume
-      value: 1
+      value: 0.85
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[2].Volume
-      value: 1
+      value: 0.55
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[3].Volume
-      value: 1
+      value: 0.22
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[4].Volume
-      value: 1.15
+      value: 0.26
+      objectReference: {fileID: 0}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _voices.Array.data[0].Priority
+      value: 205
+      objectReference: {fileID: 0}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _voices.Array.data[1].Priority
+      value: 105
+      objectReference: {fileID: 0}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _voices.Array.data[2].Priority
+      value: 115
+      objectReference: {fileID: 0}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _voices.Array.data[3].Priority
+      value: 210
+      objectReference: {fileID: 0}
+    - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
+      propertyPath: _voices.Array.data[4].Priority
+      value: 215
       objectReference: {fileID: 0}
     - target: {fileID: 8481799145628359163, guid: 9b11dc05c742df543aa6f76eac114647, type: 3}
       propertyPath: _voices.Array.data[0].MaxDistance

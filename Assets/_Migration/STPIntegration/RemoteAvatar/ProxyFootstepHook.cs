@@ -87,6 +87,18 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [Tooltip("Fallback rolloff when Hard Cutoff is off.")]
         [SerializeField] private AudioRolloffMode _rolloff = AudioRolloffMode.Logarithmic;
 
+        [Header("Mix (ADR-094 Enmienda 11)")]
+        [Tooltip("ADR-094 Enmienda 11. Unity voice priority (0 = never dropped, 256 = dropped " +
+                 "first). 128 is the engine default and changes nothing; the faceling children " +
+                 "are baked well above it. A pack of eight at a 0.48 m stride and 4.2 m/s emits " +
+                 "a step every ~11 ms EACH — roughly seventy sounds a second between them — so " +
+                 "if the mixer has to evict something, this is what it should be.")]
+        [SerializeField, Range(0, 256)] private int _priority = 128;
+
+        [Tooltip("Scales every step this hook plays. 1 leaves the vendor's own surface volumes " +
+                 "exactly as authored, which is what the robapieles uses.")]
+        [SerializeField, Range(0f, 2f)] private float _volumeScale = 1f;
+
         [Header("Fall impact (ADR-044, mirrors FootstepsController.PlayFallImpactEffects)")]
         [Tooltip("Downward speed (m/s) below which a landing is silent — stepping off a kerb should " +
                  "not thud.")]
@@ -266,6 +278,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 impact / Mathf.Max(0.01f, _maxFallImpactSpeed - _minFallImpactSpeed));
             volume *= data.AudioEffect.Volume;
 
+            volume *= _volumeScale;
+
             var src = EnsureSource();
             if (resource is AudioClip clip)
                 src.PlayOneShot(clip, volume);
@@ -311,7 +325,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 // NOT clamped to 1: the clips are mastered at ~0.55 peak precisely so this multiply
                 // has headroom. Clamping here would have silently cancelled the whole boost at run
                 // speed, where `heavyVol` is already 1.
-                heavySrc.PlayOneShot(heavy, heavyVol * _revealedVolume);
+                heavySrc.PlayOneShot(heavy, heavyVol * _revealedVolume * _volumeScale);
                 return;
             }
 
@@ -334,6 +348,8 @@ namespace BackroomsSurvival.Migration.STPIntegration
             float volume = Mathf.Clamp(speed, _minSpeedForVolume, _maxSpeedForVolume)
                            / Mathf.Max(0.01f, _maxSpeedForVolume);
             volume *= effectData.AudioEffect.Volume; // keep the surface's own authored level
+
+            volume *= _volumeScale;
 
             var src = EnsureSource();
             if (resource is AudioClip clip)
@@ -395,6 +411,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             ProxyAudioSourceFactory.ApplyRolloff(_source, _hardCutoff, _rolloff,
                 _minDistance, _maxDistance);
             ProxyAudioSourceFactory.RouteToSfx(_source);
+            _source.priority = _priority;
             return _source;
         }
 
