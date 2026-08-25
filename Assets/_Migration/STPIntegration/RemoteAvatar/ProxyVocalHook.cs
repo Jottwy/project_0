@@ -72,6 +72,17 @@ namespace BackroomsSurvival.Migration.STPIntegration
         [SerializeField] private VoiceBank[] _voices = new VoiceBank[KindCount];
 
         [Header("Falloff")]
+        [Tooltip("ADR-094 Enmienda 10. Off, distance is only a volume change, which reads as a " +
+                 "near sound turned down rather than as a far one — the flatness the 2026-08-25 " +
+                 "play-test reported. On, the voice also loses treble and widens with distance, " +
+                 "the way air and a corridor actually treat a sound. OFF by default so the " +
+                 "robapieles, whose mix is already signed off, does not change under anyone.")]
+        [SerializeField] private bool _distanceColour;
+
+        [Tooltip("How wide the source reads at maximum distance, in degrees. Well short of 360 " +
+                 "on purpose: the pack has to stay LOCATABLE.")]
+        [SerializeField, Range(0f, 120f)] private float _maxSpread = 45f;
+
         [Tooltip("Metres of full volume before the voice starts falling off.")]
         [SerializeField, Min(0f)] private float _minDistance = 4f;
 
@@ -250,6 +261,22 @@ namespace BackroomsSurvival.Migration.STPIntegration
             _kindMin = min;
             _kindMax = max;
             ProxyAudioCurves.ApplyHardCutoff(_source, min, max);
+            ApplyDistanceColour(max);
+        }
+
+        /// <summary>
+        /// ADR-094 Enmienda 10 — re-derives the air-absorption cutoff for the range now in force.
+        ///
+        /// It has to follow the range rather than be set once, because the same source plays
+        /// banks that carry eleven metres and banks that carry eighty, and the amount of air a
+        /// sound crosses is the whole input to how dark it should get.
+        /// </summary>
+        private void ApplyDistanceColour(float maxDistance)
+        {
+            if (!_distanceColour || _source == null)
+                return;
+
+            ProxyAudioCurves.ApplyDistanceColour(_source, maxDistance, _maxSpread);
         }
 
         /// <summary>Swap the distance curve, and only on a change — see ProxyFootstepHook.</summary>
@@ -264,6 +291,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
             else if (mode == RangeMode.Answer) { min = _answerMinDistance; max = _answerMaxDistance; }
 
             ProxyAudioCurves.ApplyHardCutoff(_source, min, max);
+            ApplyDistanceColour(max);
         }
 
         /// <summary>Is this proxy showing its real form? Own lookup, so the hook stays removable.</summary>

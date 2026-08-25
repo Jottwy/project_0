@@ -6343,3 +6343,113 @@ Banco de canto sintetizado y reproducible en `tools/dev/GenFacelingChildChant.py
 originales del niño los generó un script que nunca se commiteó — mismo pecado que los
 `PhantomScream_*` de ADR-048, y esta vez no se repite). Sigue siendo un PLACEHOLDER: audio autorado
 de verdad lo sustituye sin tocar código.
+
+---
+
+### ADR-094 — Enmienda 10: audio real, distancia audible, y los packs mudos (2026-08-25)
+
+Joel aportó una grabación real de risas infantiles y tres correcciones de playtest en el mismo
+mensaje. La enmienda cubre las tres más el bug que salió buscándolas.
+
+**1. LOS BANCOS SON AUDIO REAL.** La síntesis de la Enmienda 9 ya se declaró placeholder en su
+propio texto y se cumplió el pronóstico: una voz generada se lee como generada por bien colocados
+que estén los formantes, porque una laringe real tiene una irregularidad que ningún juego de
+parámetros reproduce. `tools/dev/GenFacelingChildVoices.py` corta los cinco bancos de una
+grabación, en cinco fases y ninguna decorativa:
+
+1. **Segmentar** por envolvente, dos veces. La primera encuentra "escenas" (tolerancia de hueco de
+   220 ms); la segunda parte cada escena en risas sueltas con 75 ms y un umbral LOCAL a esa escena
+   — las escenas de la fuente se llevan ~20 dB entre sí y una puerta global o funde las fuertes o
+   se pierde las flojas.
+2. **Medir**: duración, centroide, rolloff 85 %, pitch por autocorrelación, PERIODICIDAD (cuán
+   sonora: el aliento y el siseo puntúan bajo, una nota cantada alto) y dureza de ATAQUE (un
+   chillido salta, un lamento crece). Esas dos últimas son las que de verdad separan una risita de
+   un grito; la duración y el volumen no.
+3. **Clasificar** por esos rasgos, no a mano, para que otra grabación dé un reparto sensato sola.
+4. **Procesar por banco**, que es la mitad que responde al "no se siente distanciado" (punto 2).
+5. **Pitch por clip**, por remuestreo — que mueve formantes y duración a la vez, exactamente como
+   difiere un niño más pequeño. Ocho clips de cuatro fuentes son ocho niños, no cuatro repetidos.
+
+Los tres IRs se generan ahí con **decaimiento dependiente de frecuencia**: una cola cuyas bandas
+mueren al mismo ritmo se lee como un efecto, mientras que una sala real se come los agudos mucho
+antes que los graves. El del pasillo lleva además FLUTTER — reflexiones tempranas equiespaciadas,
+que es lo que dos paredes duras paralelas le hacen a un sonido, y los Backrooms no son otra cosa.
+
+**2. LA DISTANCIA NO ES EL VOLUMEN.** Playtest: *"la curva de sonido... ahora siento muy plano, no
+se siente distanciado"*. El rolloff de ADR-042 era correcto y nunca fue el problema. Un sonido a
+cuarenta metros ha perdido los agudos por el camino: el aire absorbe alta frecuencia mucho más
+rápido que baja, y por eso un trueno lejano retumba y uno cercano restalla. Atenuar solo el nivel
+da un sonido cercano bajado de volumen, que es literalmente la planitud descrita.
+
+`ProxyAudioCurves` gana dos curvas nuevas sobre el MISMO eje normalizado que el rolloff, así que
+no cuestan nada por frame (nadie sondea; las lee el motor): un `AudioLowPassFilter` cuyo corte cae
+con la distancia, y un `spread` que se abre. El corte en el máximo se DERIVA de esa distancia en
+vez de autorarse — un banco que solo llega a once metros apenas tiene aire donde perder agudos, y
+uno que llega a ochenta tiene muchísimo. La misma regla da al susurro una curva casi plana y al
+canto una muy oscura sin afinar ninguna a mano. Interpolado en espacio LOG, misma razón que
+`FacelingDazeEffect`. El spread se queda muy por debajo del 360° que Unity permite: el pack tiene
+que seguir siendo LOCALIZABLE, que es de lo que va el encuentro entero.
+
+Va **apagado por defecto** en el componente y encendido por el builder del niño. El robapieles
+tiene su mezcla dada por buena y no cambia bajo nadie.
+
+**3. LOS CORTES.** Playtest: *"algunos clips se cortan muy rápido, duran un microsegundo... así
+forzado"*. Tres causas, no una:
+
+- La puerta terminaba un corte en cuanto la energía bajaba del umbral, y dentro de una risa esa
+  bajada es una respiración. Ahora hay un SUELO de duración por banco, y por debajo el corte se
+  EXTIENDE sobre el audio que sigue en vez de descartarse: es el mismo niño en la misma sala, así
+  que la extensión es material, no relleno.
+- El final se busca (`settle_point`) en el valle real de los 450 ms siguientes, no se toma de la
+  puerta.
+- El fundido de salida pasa de 12 ms a hasta 220 ms, y sobre un coseno en vez de una recta —
+  una rampa lineal todavía tiene una esquina, y el oído oye las esquinas como clics.
+
+Y la causa de fondo, que estaba en TODOS los clips: **`afir` produce exactamente tantas muestras
+como recibe**, así que la cola del reverb se guillotinaba en la última muestra de la fuente. Un
+borde duro en cada clip, enmascarado por el fundido porque el fundido se aplica a la señal seca,
+antes de que la cola exista. Se rellena por la longitud del propio IR y luego se recorta el aire
+muerto que sobra (si no, la llamada de reagrupamiento duraría 8 s con tres de silencio digital, y
+se emite cada 4 s).
+
+**4. NO SE CONGELAN A TRAVÉS DE UNA PARED.** Playtest: *"que si hay pared por medio los niños sí
+puedan moverse, que no haya wallhack"*. El freeze era una prueba de ÁNGULO pura, así que apuntar a
+una pared congelaba a todos los niños que hubiera detrás: congelación gratis sobre cosas que no
+ves, y repartida justo donde su movimiento daba más miedo. El jugador wallhackeando al pack, no al
+revés.
+
+`player_is_looking_at` NO se toca. ADR-016 lo fija sin oclusión para la estatua del robapieles
+(D1=(a)) y ahí sigue; la oclusión pertenece al freeze del faceling, que es pieza propia. Se
+comprueba DESPUÉS del cono a propósito: el cono son dos multiplicaciones y esto es un raycast de
+rejilla, así que solo pagan los niños a los que de verdad estás apuntando.
+
+**5. LOS PACKS MUDOS.** Playtest: *"a veces mola el hecho de que no hagan sonidos y que cuando te
+los encuentres de cara te puedan pegar el screamer... de todo silencio"*.
+
+Las bandas de la Enmienda 9 son legibles A PROPÓSITO — es lo que quitó el ruido sin significado.
+Pero legibles siempre significa nunca sorprendentes: en cuanto sabes que las risitas son veinte
+metros, el audio desarma a cada pack antes de verlo. `PackTemper` es el contrapeso, tirado una vez
+al nacer el pack y fijo de por vida, determinista por chunk (mismo pasillo, mismo tipo de pack, un
+susto que funcionó se puede volver a estudiar):
+
+| Temper | Reparto | Qué suena |
+|---|---|---|
+| `Loud` | 50 % | todas las bandas, como la Enmienda 9 |
+| `Quiet` | 33 % | nada hasta que el cerco se cierra; entonces, susurro al oído |
+| `Silent` | 17 % | NADA ambiental, a ninguna distancia. Su primer sonido es el grito |
+
+Nada de su comportamiento cambia: acechan, rodean y roban igual, solo llegan sin banda sonora. El
+temper se aplica a la BANDA, en un único sitio, así que el beat, el cooldown por boca y el hush
+siguen siendo los mismos. Los eventos quedan intactos sin código extra, porque nunca pasan por la
+banda — de ahí sale gratis el "silencio total y de pronto un grito en la cara".
+
+**UN BUG DE ARNÉS que costó una hora.** Los drivers construyen su caché con
+`GridGenChunkCache::with_rules(seed, zone_density::rules_for)`; una sonda de test con
+`GridGenChunkCache::new(seed)` genera OTRO MUNDO — mismo seed, distintas paredes. Una línea de
+visión encontrada ahí no existe donde está el pack, y `segment_is_clear` devolvía `true` y `false`
+con argumentos idénticos. El resto del archivo ya usaba `with_rules`; el fallo era de los dos
+probes nuevos. Y un test de voz que deja al pack vagabundear no mide la voz: el radio de patrulla
+son 100 m, así que un pack cruza una frontera de banda a media prueba — los tests de distancia
+ahora fijan las posiciones.
+
+993/993 en verde.

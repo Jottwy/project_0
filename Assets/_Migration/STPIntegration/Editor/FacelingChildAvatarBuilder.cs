@@ -168,6 +168,18 @@ namespace BackroomsSurvival.Migration.STPIntegration.EditorTools
                 hook = root.AddComponent<ProxyVocalHook>();
 
             var so = new SerializedObject(hook);
+
+            // ADR-094 Enmienda 10 — the children get distance COLOUR, not just distance volume.
+            // Off by default on the component so the robapieles' signed-off mix is untouched;
+            // switched on here because the child is the creature whose whole voice design is
+            // built out of bands that live at different distances.
+            var colour = so.FindProperty("_distanceColour");
+            if (colour != null)
+                colour.boolValue = true;
+            var spread = so.FindProperty("_maxSpread");
+            if (spread != null)
+                spread.floatValue = 45f;
+
             var voices = so.FindProperty("_voices");
             if (voices == null)
                 return;

@@ -8337,6 +8337,7 @@ async fn a_child_never_roams_past_its_patrol_radius() {
         giggle_timer: 999.0,
         giggle_round: 0,
         vocal_band: VocalBand::Mute,
+        temper: PackTemper::Loud,
         hush_timer: 0.0,
         ring_was_shut: false,
         vocal_cursor: 0,
@@ -8404,6 +8405,7 @@ async fn four_member_pack(
         giggle_timer: 999.0,
         giggle_round: 0,
         vocal_band: VocalBand::Mute,
+        temper: PackTemper::Loud,
         hush_timer: 0.0,
         ring_was_shut: false,
         vocal_cursor: 0,
@@ -9295,35 +9297,82 @@ async fn a_closed_cerco_breaks_the_freeze_but_an_open_one_does_not() {
     );
 }
 
+/// Enmienda 10 — a spot with a GENUINE clear line to `from`, found rather than assumed.
+///
+/// The freeze now requires line of sight, so a test that places a watcher at hand-picked
+/// coordinates is really testing whichever wall happens to be there. `(0, 0, 0)` in particular is
+/// a wall cell in this world, which is exactly what broke two tests the moment occlusion landed.
+///
+/// Sweeps bearings at decreasing range and returns the FURTHEST clear, walkable spot within
+/// `max_dist` — so a caller that needs distance gets as much as the geometry allows, and one that
+/// only needs a line gets one too.
+fn clear_watch_spot(from: Vec3, max_dist: f32) -> Option<(Vec3, f32)> {
+    use crate::world::grid_gen::{is_walkable_grid_gen, segment_is_clear, GridGenChunkCache};
+    // `with_rules`, NOT `new`. The drivers build their cache with the zone rules, and a probe
+    // without them generates a DIFFERENT WORLD — same seed, different walls. A sightline found
+    // in that world is a sightline that does not exist in the one the pack is standing in.
+    let mut probe = GridGenChunkCache::with_rules(42, crate::world::zone_density::rules_for);
+
+    let mut best: Option<(Vec3, f32)> = None;
+    let mut d = max_dist;
+    while d >= 3.0 {
+        for step in 0..48 {
+            let ang = step as f32 * std::f32::consts::TAU / 48.0;
+            let p = Vec3::new(from.x + ang.sin() * d, from.y, from.z + ang.cos() * d);
+            if is_walkable_grid_gen(&mut probe, p, 0) && segment_is_clear(&mut probe, 0, p, from) {
+                best = Some((p, d));
+                break;
+            }
+        }
+        if best.is_some() {
+            break;
+        }
+        d -= 1.5;
+    }
+    best
+}
+
 /// The host's own yaw reaches the pack. E2b hard-coded 0.0 with a TODO, which meant the freeze —
 /// the pack's headline mechanic — silently did nothing in a solo session, where the host is the
 /// only player there is.
 #[tokio::test]
 async fn the_freeze_reads_the_hosts_real_yaw() {
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-    let host_pos = Vec3::new(0.0, stand_on(0), 0.0);
-    // One member, 5 m along +Z, and a pack too small to ever close a cerco — so the ONLY thing
-    // that can freeze it is the stare itself.
-    let mut pack = four_member_pack(&mut net, (0, 0), 0, host_pos).await;
+    let (ox, oz) = find_office_chunk(42);
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let centre = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+
+    // One member, and a pack too small to ever close a cerco — so the ONLY thing that can freeze
+    // it is the stare itself.
+    let mut pack = four_member_pack(&mut net, (ox, oz), 0, centre).await;
     pack.members.truncate(1);
     pack.state = ChildState::PackStalk;
     pack.mind.target = Some(net.local_id);
-    pack.mind.last_known_pos = Some(host_pos);
+
+    // Enmienda 10: the stare only freezes what it can actually SEE, so the watching spot has to
+    // be found, not picked. Measured from the child's SNAPPED position, not from the anchor.
     let member = pack.members[0].id;
-    net.peers.get_mut(&member).unwrap().position = [0.0, stand_on(0), 5.0];
+    let mpos = Vec3::from_array(net.peers[&member].position);
+    let (host_pos, _) = clear_watch_spot(mpos, 6.0).expect("no clear sightline in this office");
+    pack.mind.last_known_pos = Some(host_pos);
+
     let mut driver = ChildDriver::new(42);
     driver.packs.push(pack);
 
-    // Yaw 0 = facing +Z, straight at it.
-    driver.step(&mut net, 0.1, host_pos, 0.0);
+    // Straight at it.
+    let toward = (mpos.x - host_pos.x)
+        .atan2(mpos.z - host_pos.z)
+        .to_degrees();
+    driver.step(&mut net, 0.1, host_pos, toward);
     assert!(
         driver.packs[0].members[0].frozen,
         "the host looking right at a child did not freeze it"
     );
 
     // Yaw 180 = facing away. It must come loose again.
+    // Facing away. It must come loose again — measured against the same real bearing.
     for _ in 0..3 {
-        driver.step(&mut net, 0.1, host_pos, 180.0);
+        driver.step(&mut net, 0.1, host_pos, toward + 180.0);
     }
     assert!(
         !driver.packs[0].members[0].frozen,
@@ -9427,17 +9476,24 @@ async fn only_one_screamer_lands_per_pack_cooldown() {
 #[tokio::test]
 async fn a_pack_closes_faster_on_a_player_who_is_looking_away() {
     // Helper: run a cerco for N ticks with the player at a fixed yaw, return distance closed.
-    async fn closed_distance(yaw: f32) -> f32 {
+    async fn closed_distance(watching: bool) -> f32 {
         let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
-        let anchor = Vec3::new(0.0, stand_on(0), 0.0);
-        let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+        let (ox, oz) = find_office_chunk(42);
+        let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+        let anchor = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+        let mut pack = four_member_pack(&mut net, (ox, oz), 0, anchor).await;
         pack.members.truncate(1);
         pack.state = ChildState::PackStalk;
 
         let here = Vec3::from_array(net.peers[&pack.members[0].id].position);
-        // Target 30 m along +Z: far enough that neither the cerco band nor the freeze/closed-ring
-        // logic interferes, so the ONLY difference between the two runs is the gear.
-        let target = Vec3::new(here.x, here.y, here.z + 30.0);
+        // As far off as the geometry allows: far enough that neither the cerco band nor the
+        // closed-ring logic interferes, so the ONLY difference between the two runs is the gear.
+        // Enmienda 10: the freeze needs a real sightline, so the watcher stands at the furthest
+        // spot that actually HAS one rather than at a hand-picked offset through a wall.
+        let (target, _) = clear_watch_spot(here, 30.0).expect("no clear sightline in this office");
+        // Bearing derived from where the sightline actually put the watcher, never assumed.
+        let toward = (here.x - target.x).atan2(here.z - target.z).to_degrees();
+        let yaw = if watching { toward } else { toward + 180.0 };
         let peer_id: PeerId = 2;
         net.peers.insert(
             peer_id,
@@ -9466,9 +9522,9 @@ async fn a_pack_closes_faster_on_a_player_who_is_looking_away() {
         end.distance_xz(start)
     }
 
-    // Yaw 180 = facing -Z, i.e. straight AT the child approaching from -Z. Yaw 0 = facing away.
-    let watched = closed_distance(180.0).await;
-    let unwatched = closed_distance(0.0).await;
+    // The bearings are computed inside, from where the sightline actually put the watcher.
+    let watched = closed_distance(true).await;
+    let unwatched = closed_distance(false).await;
 
     assert!(
         unwatched > watched * 1.3,
@@ -9841,12 +9897,17 @@ async fn the_press_does_not_strike_a_remembered_position() {
 /// matters is what a player would hear, and `vocal_seq` is exactly that.
 ///
 /// Returns `(seconds, faceling, kind)` per sound, in order.
+/// `pin` holds every member at its starting position between ticks. The patrol radius is 100 m,
+/// so a roaming pack can wander clean across a band boundary mid-test — a voice test that lets it
+/// is really a test of where the random walk went. Pass true whenever the DISTANCE is the thing
+/// under test, false when the movement is.
 fn record_pack_voice(
     driver: &mut ChildDriver,
     net: &mut NetworkManager,
     host: Vec3,
     steps: usize,
     dt: f32,
+    pin: bool,
 ) -> Vec<(f32, PeerId, u8)> {
     let ids: Vec<PeerId> = driver
         .packs
@@ -9858,9 +9919,21 @@ fn record_pack_voice(
         .filter_map(|id| net.peers.get(id).map(|p| (*id, p.vocal_seq)))
         .collect();
 
+    let pinned: Vec<(PeerId, [f32; 3])> = ids
+        .iter()
+        .filter_map(|id| net.peers.get(id).map(|p| (*id, p.position)))
+        .collect();
+
     let mut out = Vec::new();
     for i in 0..steps {
         driver.step(net, dt, host, 0.0);
+        if pin {
+            for (id, pos) in &pinned {
+                if let Some(peer) = net.peers.get_mut(id) {
+                    peer.position = *pos;
+                }
+            }
+        }
         for id in &ids {
             let Some(peer) = net.peers.get(id) else {
                 continue;
@@ -9891,7 +9964,7 @@ async fn a_pack_with_nobody_near_it_says_nothing_at_all() {
     driver.packs[0].giggle_timer = 0.0;
 
     let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
-    let heard = record_pack_voice(&mut driver, &mut net, far, 900, 0.1);
+    let heard = record_pack_voice(&mut driver, &mut net, far, 900, 0.1, true);
 
     assert!(
         heard.is_empty(),
@@ -9920,7 +9993,7 @@ async fn a_distant_pack_chants_with_one_voice_at_a_time() {
     // Past `FACELING_CHILD_DETECT_RADIUS` (20 m), so the pack never notices the listener and
     // stays in `PackRoam` — this is the sound of a pack that has NOT seen you.
     let host = Vec3::new(anchor.x + 35.0, anchor.y, anchor.z);
-    let heard = record_pack_voice(&mut driver, &mut net, host, 900, 0.1);
+    let heard = record_pack_voice(&mut driver, &mut net, host, 900, 0.1, true);
 
     assert_eq!(driver.packs[0].vocal_band, VocalBand::Chant);
     assert!(!heard.is_empty(), "a pack 35 m away went silent");
@@ -10003,7 +10076,7 @@ async fn a_closed_ring_whispers_where_it_used_to_giggle() {
     let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
 
     // Well past the hush the shutting ring arms, so what is left is the steady state.
-    let heard = record_pack_voice(&mut driver, &mut net, far, 200, 0.1);
+    let heard = record_pack_voice(&mut driver, &mut net, far, 200, 0.1, true);
 
     assert_eq!(driver.packs[0].vocal_band, VocalBand::Whisper);
     let ambient: Vec<u8> = heard
@@ -10029,7 +10102,7 @@ async fn the_ring_shutting_stops_the_pack_dead_for_a_moment() {
 
     // The beat is armed and the band is Whisper from tick one, so without the hush this window
     // would be full of sound. Stops short of `FACELING_CHILD_HUSH_S`.
-    let heard = record_pack_voice(&mut driver, &mut net, far, 20, 0.1);
+    let heard = record_pack_voice(&mut driver, &mut net, far, 20, 0.1, true);
 
     assert!(
         driver.packs[0].hush_timer > 0.0,
@@ -10067,7 +10140,7 @@ async fn no_child_makes_two_ambient_sounds_inside_its_own_cooldown() {
 
     // Inside the chant radius: the busiest band a pack that has not seen you can be in.
     let host = Vec3::new(anchor.x + 15.0, anchor.y, anchor.z);
-    let heard = record_pack_voice(&mut driver, &mut net, host, 1200, 0.1);
+    let heard = record_pack_voice(&mut driver, &mut net, host, 1200, 0.1, true);
 
     let mut last: std::collections::HashMap<PeerId, f32> = std::collections::HashMap::new();
     for &(t, id, kind) in &heard {
@@ -10111,4 +10184,216 @@ async fn a_fleeing_pack_still_burns_down_its_screamer_cooldown() {
         "5 s of fleeing burned {:.2} s of a 10 s screamer cooldown",
         10.0 - left
     );
+}
+
+/// ADR-094 Enmienda 10 — NO WALLHACK. Play-test (Joel, 2026-08-25): "que si hay pared por medio
+/// los niños sí puedan moverse, que no haya wallhack".
+///
+/// The freeze used to be a pure ANGLE test, so pointing at a wall froze every child standing
+/// behind it: a free freeze on things you cannot see, handed out precisely where their movement
+/// would have been most frightening. This is the same stare, from the same distance, with and
+/// without something solid in between.
+#[tokio::test]
+async fn the_stare_does_not_freeze_a_child_through_a_wall() {
+    use crate::world::grid_gen::{is_walkable_grid_gen, segment_is_clear, GridGenChunkCache};
+
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (ox, oz) = find_office_chunk(42);
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let centre = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+
+    let mut pack = four_member_pack(&mut net, (ox, oz), 0, centre).await;
+    pack.members.truncate(1);
+    pack.state = ChildState::PackStalk;
+    pack.mind.target = Some(net.local_id);
+    let member = pack.members[0].id;
+    let mpos = Vec3::from_array(net.peers[&member].position);
+
+    // Two spots at comparable range: one the child can be seen from, one it cannot. BOTH are
+    // searched for rather than picked, because which cells hold walls is world-gen's business.
+    // `with_rules`: same world the driver generates. See `clear_watch_spot`.
+    let mut probe = GridGenChunkCache::with_rules(42, crate::world::zone_density::rules_for);
+    let mut seen_from = None;
+    let mut blind_from = None;
+    for step in 0..72 {
+        let ang = step as f32 * std::f32::consts::TAU / 72.0;
+        for r in [7.0f32, 9.0, 11.0, 13.0] {
+            let p = Vec3::new(mpos.x + ang.sin() * r, mpos.y, mpos.z + ang.cos() * r);
+            if !is_walkable_grid_gen(&mut probe, p, 0) {
+                continue;
+            }
+            if segment_is_clear(&mut probe, 0, p, mpos) {
+                seen_from.get_or_insert(p);
+            } else {
+                blind_from.get_or_insert(p);
+            }
+        }
+    }
+    let seen_from = seen_from.expect("no clear sightline anywhere around the child");
+    let blind_from = blind_from.expect("no occluded standpoint anywhere around the child");
+
+    pack.mind.last_known_pos = Some(seen_from);
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    // Staring at it with nothing in between: frozen, exactly as before.
+    let toward_seen = (mpos.x - seen_from.x)
+        .atan2(mpos.z - seen_from.z)
+        .to_degrees();
+    driver.step(&mut net, 0.1, seen_from, toward_seen);
+    assert!(
+        driver.packs[0].members[0].frozen,
+        "a child in plain sight did not freeze — the stare itself is broken, not the occlusion"
+    );
+
+    // Same stare, same range, a wall in the way. It must be free to move.
+    //
+    // ONE tick, and that is not laziness. Freed, the child immediately starts working around the
+    // wall toward the watcher — which is the whole point of the change — and a few ticks later it
+    // can genuinely come into view, at which point freezing is CORRECT. Running this longer
+    // measures the child's pathing, not the occlusion. (The first version ran three ticks and
+    // failed for exactly that reason.)
+    let toward_blind = (mpos.x - blind_from.x)
+        .atan2(mpos.z - blind_from.z)
+        .to_degrees();
+    driver.step(&mut net, 0.1, blind_from, toward_blind);
+    assert!(
+        !driver.packs[0].members[0].frozen,
+        "the stare froze a child through a wall at {blind_from:?} — that is the wallhack"
+    );
+}
+
+// ── ADR-094 Enmienda 10 — LOS PACKS MUDOS ────────────────────────────────────────────────────
+//
+// Play-test (Joel, 2026-08-25): "a veces mola el hecho de que no hagan sonidos y que cuando te
+// los encuentres de cara te puedan pegar el screamer... de todo silencio".
+//
+// Enmienda 9's bands are legible ON PURPOSE — that is what stopped the noise being meaningless.
+// But legible everywhere means never surprising: once you know giggles mean twenty metres, the
+// audio disarms every pack in the game before you see it. The temper is the counterweight.
+
+/// A `Silent` pack makes no ambient sound at ANY distance — not the chant it would be entitled
+/// to at forty metres, not the giggle at fifteen, not even the whisper with the ring shut.
+#[tokio::test]
+async fn a_silent_pack_never_makes_an_ambient_sound() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+    let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+    pack.temper = PackTemper::Silent;
+    pack.giggle_timer = 0.0;
+    let mut driver = ChildDriver::new(42);
+    driver.packs.push(pack);
+
+    // Walked in from the chant band right down to arm's length: every band, one run.
+    let mut heard = Vec::new();
+    for metres in [40.0f32, 25.0, 15.0, 8.0, 3.0] {
+        let host = Vec3::new(anchor.x + metres, anchor.y, anchor.z);
+        heard.extend(record_pack_voice(
+            &mut driver,
+            &mut net,
+            host,
+            200,
+            0.1,
+            true,
+        ));
+    }
+
+    let ambient: Vec<u8> = heard
+        .iter()
+        .map(|&(_, _, k)| k)
+        .filter(|&k| k != FACELING_CHILD_VOCAL_SCREAM)
+        .collect();
+    assert!(
+        ambient.is_empty(),
+        "a silent pack made {} ambient sounds: {ambient:?}",
+        ambient.len()
+    );
+}
+
+/// A `Quiet` pack is silent while it approaches and finds its voice only once it is ON you —
+/// which is the specific shape Joel asked for: "que no hagan sonido hasta estar muy cerca".
+#[tokio::test]
+async fn a_quiet_pack_says_nothing_until_the_ring_shuts() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+
+    // Far: entitled to the chant, and must not take it.
+    {
+        let anchor = Vec3::new(0.0, stand_on(0), 0.0);
+        let mut pack = four_member_pack(&mut net, (0, 0), 0, anchor).await;
+        pack.temper = PackTemper::Quiet;
+        pack.giggle_timer = 0.0;
+        let mut driver = ChildDriver::new(42);
+        driver.packs.push(pack);
+
+        let host = Vec3::new(anchor.x + 35.0, anchor.y, anchor.z);
+        let heard = record_pack_voice(&mut driver, &mut net, host, 600, 0.1, true);
+        assert!(
+            heard.is_empty(),
+            "a quiet pack chanted from 35 m: {heard:?}"
+        );
+        assert_eq!(driver.packs[0].vocal_band, VocalBand::Mute);
+    }
+
+    // Ring shut: now it speaks, and what it says is the whisper.
+    let (mut driver, _victim) = pack_ringed_without_swinging(&mut net).await;
+    driver.packs[0].temper = PackTemper::Quiet;
+    let far = Vec3::new(-9999.0, stand_on(0), -9999.0);
+    let heard = record_pack_voice(&mut driver, &mut net, far, 200, 0.1, true);
+
+    let ambient: Vec<u8> = heard
+        .iter()
+        .map(|&(_, _, k)| k)
+        .filter(|&k| k != FACELING_CHILD_VOCAL_SCREAM)
+        .collect();
+    assert!(
+        !ambient.is_empty() && ambient.iter().all(|&k| k == FACELING_CHILD_VOCAL_WHISPER),
+        "a quiet pack with the ring shut should whisper and nothing else: {ambient:?}"
+    );
+}
+
+/// The temper never gates an EVENT. A silent pack that charges, kills or screams still makes the
+/// noise — that is the entire payoff of it having been silent, and it falls out of events never
+/// going through the band rather than out of a special case.
+#[tokio::test]
+async fn even_a_silent_pack_screams_when_it_charges() {
+    let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
+    let (mut driver, _victim) = pack_ringed_without_swinging(&mut net).await;
+    driver.packs[0].temper = PackTemper::Silent;
+    // Back to Roam so the next detection is a fresh charge rather than an ongoing cerco.
+    driver.packs[0].state = ChildState::PackRoam;
+    driver.packs[0].mind = PackMind::empty();
+
+    let target = Vec3::from_array(net.peers[&2].position);
+    let heard = record_pack_voice(&mut driver, &mut net, target, 60, 0.1, true);
+
+    assert!(
+        heard
+            .iter()
+            .any(|&(_, _, k)| k == FACELING_CHILD_VOCAL_SCREAM),
+        "a silent pack charged without a sound — the silence is supposed to END, not be total"
+    );
+}
+
+/// The temper is DETERMINISTIC per chunk: the same corridor always holds the same kind of pack,
+/// so a scare that worked can be gone back to. And the split is a mix — if every chunk rolled the
+/// same way the feature would be either off or total.
+#[test]
+fn pack_temper_is_stable_per_chunk_and_mixed_across_them() {
+    let mut counts = std::collections::HashMap::new();
+    for cx in -30..30 {
+        for cz in -30..30 {
+            let a = PackTemper::roll_for_test(cx, cz);
+            let b = PackTemper::roll_for_test(cx, cz);
+            assert_eq!(a, b, "chunk ({cx},{cz}) rolled two different tempers");
+            *counts.entry(format!("{a:?}")).or_insert(0usize) += 1;
+        }
+    }
+    let total: usize = counts.values().sum();
+    for kind in ["Loud", "Quiet", "Silent"] {
+        let n = counts.get(kind).copied().unwrap_or(0);
+        assert!(
+            n * 10 > total / 2,
+            "{kind} came up {n}/{total} times — the split has collapsed"
+        );
+    }
 }

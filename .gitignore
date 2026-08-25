@@ -69,3 +69,6 @@ Assets/TripoModels.meta
 
 # Backup local pre-migracion URP (commit 2/8, no versionado)
 backup_birp/
+
+# Scratch for tools/dev/GenFacelingChildVoices.py (decoded source, IRs, per-clip cuts).
+tools/dev/_voicetmp/

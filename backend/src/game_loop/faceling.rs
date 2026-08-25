@@ -1019,6 +1019,68 @@ fn cerco_is_closed(member_positions: &[Vec3], target: Vec3) -> bool {
         >= FACELING_CHILD_CERCO_CLOSED_MIN
 }
 
+/// Enmienda 10 — HOW TALKATIVE a pack is. Rolled once when the pack spawns and fixed for its
+/// whole life, so a given corridor always holds the same kind of pack and a play-test repeats.
+///
+/// Play-test (Joel, 2026-08-25): "a veces mola el hecho de que no hagan sonidos y que cuando te
+/// los encuentres de cara te puedan pegar el screamer... de todo silencio".
+///
+/// Enmienda 9 gave the pack a voice that reads its distance, which is what stopped them being
+/// "cotorras" — but it also made every pack legible in the same way. Once you know the giggles
+/// mean twenty metres, no pack can ever surprise you again, because the audio always announces
+/// them. This is the counterweight: SOME PACKS DO NOT ANNOUNCE THEMSELVES. Nothing about their
+/// behaviour changes — they stalk, circle and steal exactly the same — they simply arrive
+/// without a soundtrack, and the first thing you hear out of them is the one at your shoulder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PackTemper {
+    /// Every band. What every pack was before this.
+    Loud,
+    /// No chant and no giggle: nothing at all until the ring shuts, and then a whisper in your
+    /// ear. You meet this one without having heard it coming.
+    Quiet,
+    /// NOTHING ambient, ever, at any distance. Its first sound is the scream — the charge, the
+    /// screamer, or one of them dying. The pack you walk into.
+    Silent,
+}
+
+impl PackTemper {
+    /// The last word over whatever the distance decided. Applied to the BAND rather than to the
+    /// scheduler, so a quiet pack is quiet in exactly one place and every other rule — the beat,
+    /// the per-mouth cooldown, the hush — stays as it is.
+    ///
+    /// Events are untouched by design: they never go through the band at all (they stage
+    /// `pending_vocal` directly), which is what makes "silence, and then a scream in your face"
+    /// fall out of this rather than need its own machinery.
+    fn gate(self, band: VocalBand) -> VocalBand {
+        match (self, band) {
+            (PackTemper::Silent, _) => VocalBand::Mute,
+            (PackTemper::Quiet, VocalBand::Chant | VocalBand::Giggle) => VocalBand::Mute,
+            (_, b) => b,
+        }
+    }
+
+    /// `roll` for the test module, which cannot reach a private associated fn but does need to
+    /// pin the determinism — the whole value of a fixed temper is that a play-test repeats.
+    #[cfg(test)]
+    pub(super) fn roll_for_test(cx: i32, cz: i32) -> Self {
+        Self::roll(cx, cz)
+    }
+
+    /// Deterministic from the home chunk — same world, same corridor, same temper, so a scare
+    /// that worked once can be gone back to and studied. `chorus_delay_fraction` is reused purely
+    /// as the project's existing hash-to-[0,1) (see `phantom.rs`); nothing about delays is meant.
+    fn roll(cx: i32, cz: i32) -> Self {
+        let key = ((cx as u64) << 32) ^ (cz as u64) ^ 0x9E37_79B9_7F4A_7C15;
+        match chorus_delay_fraction(key) {
+            // Half still behave as Enmienda 9 built them: the bands only tell you anything
+            // because they are usually true.
+            t if t < 0.50 => PackTemper::Loud,
+            t if t < 0.83 => PackTemper::Quiet,
+            _ => PackTemper::Silent,
+        }
+    }
+}
+
 /// Enmienda 9 — which voice a pack is currently in. Not a state (the pack's own `ChildState`
 /// decides behaviour); a READING of the pack's situation, recomputed once per tick and used only
 /// to pick a bank, a beat and a number of mouths.
@@ -1183,6 +1245,8 @@ pub(super) struct ChildPack {
     /// per-member: the beat fires once and the members it picks queue their own offsets off it —
     /// that offset, not this timer, is what spreads or converges the chorus.
     pub(super) giggle_timer: f32,
+    /// Enmienda 10 — how talkative this pack is. See `PackTemper`.
+    pub(super) temper: PackTemper,
     /// Enmienda 9 — this tick's voice band, resolved once by `update_pack_voice` and read by
     /// every member's own beat. Cached rather than recomputed per member: it costs a scan over
     /// the roster and the player list, and eight members asking the same question eight times a
@@ -1760,8 +1824,8 @@ impl ChildDriver {
                         });
                     }
                     info!(
-                        "MPTRACE step=FL_POP event=faceling_pack_spawned chunk=({},{}) layer={} size={}",
-                        cx, cz, layer, members.len()
+                        "MPTRACE step=FL_POP event=faceling_pack_spawned chunk=({},{}) layer={} size={} temper={:?}",
+                        cx, cz, layer, members.len(), PackTemper::roll(cx, cz)
                     );
                     self.packs.push(ChildPack {
                         home_chunk: (cx, cz),
@@ -1773,6 +1837,7 @@ impl ChildDriver {
                         members,
                         giggle_timer: FACELING_CHILD_GIGGLE_INTERVAL_S,
                         giggle_round: 0,
+                        temper: PackTemper::roll(cx, cz),
                         vocal_band: VocalBand::Mute,
                         hush_timer: 0.0,
                         ring_was_shut: false,
@@ -2350,7 +2415,7 @@ impl ChildDriver {
                         .iter()
                         .map(|p| p.distance_xz(tpos))
                         .fold(f32::MAX, f32::min);
-                    return (VocalBand::Whisper, nearest);
+                    return (self.packs[pi].temper.gate(VocalBand::Whisper), nearest);
                 }
             }
         }
@@ -2362,13 +2427,14 @@ impl ChildDriver {
             }
         }
 
-        if nearest > FACELING_CHILD_VOCAL_AUDIBLE_RADIUS {
-            (VocalBand::Mute, nearest)
+        let band = if nearest > FACELING_CHILD_VOCAL_AUDIBLE_RADIUS {
+            VocalBand::Mute
         } else if nearest > FACELING_CHILD_CHANT_RADIUS {
-            (VocalBand::Chant, nearest)
+            VocalBand::Chant
         } else {
-            (VocalBand::Giggle, nearest)
-        }
+            VocalBand::Giggle
+        };
+        (self.packs[pi].temper.gate(band), nearest)
     }
 
     /// Enmienda 9 — which bank this beat plays, read off the band the tick resolved.
@@ -2591,23 +2657,42 @@ impl ChildDriver {
                 continue;
             };
             let was = self.packs[pi].members[mi].frozen;
-            let now = match was {
-                // Tight cone to latch on...
-                false => players.iter().any(|&(_, ppos, pyaw)| {
-                    world_pos_to_layer(ppos.y) == layer && player_is_looking_at(ppos, pyaw, mpos)
-                }),
-                // ...wide cone to let go, so a child at the edge of vision does not flicker
-                // between statue and stride every tick.
-                true => players.iter().any(|&(_, ppos, pyaw)| {
-                    world_pos_to_layer(ppos.y) == layer
-                        && player_is_looking_at_within(
-                            ppos,
-                            pyaw,
-                            mpos,
-                            PHANTOM_STATUE_RELEASE_HALF_FOV,
-                        )
-                }),
+            // Tight cone to latch on, wide cone to let go, so a child at the edge of vision does
+            // not flicker between statue and stride every tick.
+            let half_fov = match was {
+                false => PHANTOM_STATUE_LOOK_HALF_FOV,
+                true => PHANTOM_STATUE_RELEASE_HALF_FOV,
             };
+
+            let mut now = false;
+            for &(_, ppos, pyaw) in players {
+                if world_pos_to_layer(ppos.y) != layer {
+                    continue;
+                }
+                if !player_is_looking_at_within(ppos, pyaw, mpos, half_fov) {
+                    continue;
+                }
+                // ── Enmienda 10 — NO SE CONGELAN A TRAVÉS DE UNA PARED ──
+                //
+                // Play-test (Joel, 2026-08-25): "que si hay pared por medio los niños sí puedan
+                // moverse, que no haya wallhack". The cone test alone is an ANGLE test, so
+                // aiming at a wall froze every child standing behind it — a free freeze on things
+                // you cannot see, which is the player wallhacking the pack rather than the other
+                // way round. And it froze them precisely where their movement would have been
+                // most frightening: out of sight.
+                //
+                // `player_is_looking_at` itself is NOT touched. ADR-016 fixes it as occlusion-free
+                // for the robapieles' statue (D1=(a)) and that stays exactly as it is; the
+                // occlusion belongs to the faceling's freeze, which is its own piece.
+                //
+                // Checked AFTER the cone on purpose: the cone is two multiplies and this is a
+                // grid raycast, so only the children you are actually pointing at pay for it.
+                if !segment_is_clear(&mut self.grid_cache, layer, ppos, mpos) {
+                    continue;
+                }
+                now = true;
+                break;
+            }
             self.packs[pi].members[mi].frozen = now;
         }
     }
