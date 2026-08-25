@@ -811,13 +811,17 @@ pub async fn run(
                     // el carvado normal (`generate_region_chunk` los rasteriza aparte), así que
                     // `room_in_chunk` podría acertar por coincidencia de coordenadas y mandar un
                     // fantasma de sala construible que no existe en la geometría real.
-                    let build_room =
-                        if crate::world::grid_gen::level4::region_chunk_local((cx, cz)).is_some() {
-                            None
-                        } else {
-                            crate::world::grid_gen::room_in_chunk(net.world_seed, cx, cz, layer)
-                                .map(|plan| [plan.tile_x as u8, plan.tile_z as u8, plan.door_side])
-                        };
+                    let build_room = if crate::world::grid_gen::level4::region_chunk_local(
+                        (cx, cz),
+                        layer as i32,
+                    )
+                    .is_some()
+                    {
+                        None
+                    } else {
+                        crate::world::grid_gen::room_in_chunk(net.world_seed, cx, cz, layer)
+                            .map(|plan| [plan.tile_x as u8, plan.tile_z as u8, plan.door_side])
+                    };
                     // ADR-083 enmienda 1: la sala autorada, por el MISMO resolutor puro que la talla
                     // en las dos representaciones del mundo. Re-derivarla aquí en vez de arrastrarla
                     // desde la generación es lo que garantiza que lo que el cliente instancia caiga

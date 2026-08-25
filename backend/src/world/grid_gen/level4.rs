@@ -28,10 +28,27 @@ use rand::{Rng, SeedableRng};
 
 use super::{Cell, CellType, LayerGrid, LayerOutput, CELL_SIZE_M, CHUNK_CELLS};
 
-/// Esquina de menor coordenada de la reserva de región, en chunks. Lejos de toda
-/// deriva jugable del Level 0 (≈100 km del origen): el único acceso práctico es el
-/// teleport de E3.
-pub const REGION_ORIGIN_CHUNK: (i32, i32) = (2000, 2000);
+/// Esquina de menor coordenada de la reserva de región, en chunks.
+///
+/// (0,0) — el MISMO XZ que el spawn, a propósito (decisión de Joel, 2026-08-24). La separación
+/// es VERTICAL (`REGION_LAYER`), no horizontal. Antes estaba en (2000,2000), o sea mundo
+/// (100 000, 100 000), y eso era un error: ahí un `f32` tiene ULP ≈ 8 mm, que en primera persona
+/// es tembleque visible de cámara y física. A XZ 0 y Y 400 la precisión es de micras.
+///
+/// **CONSECUENCIA CRÍTICA:** la reserva ya NO se distingue por XZ. Toda comprobación de
+/// pertenencia tiene que mirar la CAPA además de la coordenada — `region_chunk_local`,
+/// `world_pos_to_region_cell` y `level4_layout::block_is_in_region` la exigen. Olvidarlo trata
+/// el área de spawn como Level 4: sin construir y con densidad de fantasmas escalada.
+pub const REGION_ORIGIN_CHUNK: (i32, i32) = (0, 0);
+
+/// Capa de la reserva. 100 × `LAYER_HEIGHT_M` (4 m) = **Y 400 m**, doce veces por encima del
+/// techo de la pila jugable del Level 0 (±8 capas = ±32 m), así que nada del mundo normal la
+/// alcanza ni por caída ni por escalera.
+///
+/// Tope de hoy: `ChunkLayer` es `i8`, o sea capa 127 = 508 m. Subirlo (Joel pidió 10 000 m)
+/// exige `i8`→`i16`, y ese tipo viaja en `ChunkSyncData` ⇒ formato de chunk ⇒ ADR nuevo antes
+/// de tocarlo (regla dura #7). Queda pendiente como ADR aparte.
+pub const REGION_LAYER: i32 = 100;
 
 /// Lado de la reserva, en chunks.
 pub const REGION_CHUNKS: i32 = 3;
@@ -99,7 +116,20 @@ pub fn preserved_room() -> Option<PlacedRoom> {
 /// ADR-093 (E4b): convierte una posición de MUNDO en la celda de REGIÓN (2,5 m) que ocupa, o
 /// `None` si cae fuera de la reserva. Mismas constantes que rasterizan la región, así que "estar
 /// en tal celda" significa lo mismo aquí que en `generate_region_chunk`.
+///
+/// **Comprueba la Y**, y no es opcional: con la reserva en XZ (0,0) un jugador parado en el
+/// spawn tiene exactamente el mismo XZ que un jugador dentro de la región. Sin la banda de
+/// altura, `position_is_buildable` prohibiría construir en el spawn y el sorteo de fantasmas
+/// escalaría su densidad ahí.
 pub fn world_pos_to_region_cell(pos: [f32; 3]) -> Option<(i32, i32)> {
+    // Banda de una capa completa alrededor del suelo de la reserva: el jugador está de pie
+    // sobre él (ojos a ~1,8 m) y el techo interior son 5 m, así que media capa por abajo y una
+    // entera por arriba cubre estar dentro sin invadir capas vecinas (que además son macizas).
+    let floor = region_floor_y();
+    if pos[1] < floor - super::LAYER_HEIGHT_M * 0.5 || pos[1] > floor + super::LAYER_HEIGHT_M * 1.5
+    {
+        return None;
+    }
     let chunk_size_m = CHUNK_CELLS as f32 * CELL_SIZE_M;
     let local_x = pos[0] - REGION_ORIGIN_CHUNK.0 as f32 * chunk_size_m;
     let local_z = pos[2] - REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m;
@@ -114,6 +144,29 @@ pub fn world_pos_to_region_cell(pos: [f32; 3]) -> Option<(i32, i32)> {
         return None;
     }
     Some(cell)
+}
+
+/// ADR-093 (E3-fix): el VESTÍBULO — la sala fija por la que se entra y se sale.
+///
+/// Rect CONSTANTE en coordenadas de región, idéntico en todos los epochs: 8×8 celdas (20×20 m)
+/// centrado en la reserva (60 celdas de lado ⇒ 26..34 centra en 30). Paridad par como toda sala
+/// (ver el invariante de PARIDAD del módulo).
+pub const ENTRY_HALL: CellRect = CellRect {
+    min: (26, 26),
+    size: (8, 8),
+};
+
+/// Centro del vestíbulo en coordenadas de MUNDO — dónde aterriza quien cruza la puerta de
+/// entrada, y dónde se ancla la puerta de vuelta. Y = suelo de la reserva + la altura de ojos
+/// que usa el resto del proyecto (`PLAYER_BASE_Y`, 1,8 m).
+pub fn entry_hall_world_pos() -> [f32; 3] {
+    let chunk_size_m = CHUNK_CELLS as f32 * CELL_SIZE_M;
+    let (cx, cz) = ENTRY_HALL.center();
+    [
+        REGION_ORIGIN_CHUNK.0 as f32 * chunk_size_m + cx as f32 * CELL_SIZE_M,
+        region_floor_y() + 1.8,
+        REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m + cz as f32 * CELL_SIZE_M,
+    ]
 }
 
 /// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
@@ -267,9 +320,24 @@ pub fn generate_with_preserved(
 }
 
 fn place_rooms(rng: &mut StdRng, preserved: Option<PlacedRoom>) -> Vec<PlacedRoom> {
-    let mut rooms: Vec<PlacedRoom> = Vec::new();
+    // ADR-093 E3-fix: el VESTÍBULO va primero y siempre, en el mismo rect en TODOS los epochs.
+    // Es lo que hace cierto el "las puertas están ancladas, lo que cambia es el espacio detrás"
+    // del ADR: aterrizas aquí al entrar, y aquí está la puerta de vuelta, mientras el resto de
+    // la planta se re-sortea a tu alrededor. Antes la puerta de vuelta se anclaba al centro
+    // GEOMÉTRICO de la reserva, que el sorteo podía dejar macizo — salida dentro de la roca.
+    let mut rooms: Vec<PlacedRoom> = vec![PlacedRoom {
+        rect: ENTRY_HALL,
+        is_return_room: true,
+    }];
+    // La sala preservada (E4b) entra después y solo si no pisa el vestíbulo: el vestíbulo no es
+    // negociable, y una preservada que lo solapara dejaría dos salas encajadas.
     if let Some(room) = preserved {
-        rooms.push(room);
+        if !ENTRY_HALL.inflated(ROOM_SEPARATION).overlaps(&room.rect) {
+            rooms.push(PlacedRoom {
+                rect: room.rect,
+                is_return_room: false,
+            });
+        }
     }
     for _ in 0..PLACEMENT_ATTEMPTS {
         if rooms.len() >= ROOM_TARGET {
@@ -295,18 +363,16 @@ fn place_rooms(rng: &mut StdRng, preserved: Option<PlacedRoom>) -> Vec<PlacedRoo
         if rooms.iter().any(|r| r.rect.overlaps(&padded)) {
             continue;
         }
-        // `is_return_room` se decide DESPUÉS del sorteo entero (abajo): si `preserved` ya
-        // ocupa el índice 0, marcarla aquí por "es la primera" sería incorrecto cuando la
-        // sala preservada NO era la de la puerta de vuelta.
+        // La marca de sala de retorno la lleva SIEMPRE el vestíbulo (índice 0), nunca una
+        // sorteada: es el ancla fija de la puerta de vuelta.
         rooms.push(PlacedRoom {
             rect,
             is_return_room: false,
         });
     }
-    // Invariante de `exactly_one_return_room`: exactamente una `true`. `preserved` conserva
-    // el valor que traía (si ERA la sala de la puerta, sigue siéndolo); si nadie la trae,
-    // la primera sala del vector se lleva la marca — mismo criterio que el sorteo original
-    // sin preservar nada.
+    // Invariante de `exactly_one_return_room`: el vestíbulo se empuja con la marca puesta y
+    // nadie más la lleva, así que esto es una red de seguridad para un futuro en el que el
+    // vestíbulo dejara de ser el índice 0 — no una rama que hoy se tome.
     if !rooms.iter().any(|r| r.is_return_room) {
         if let Some(first) = rooms.first_mut() {
             first.is_return_room = true;
@@ -380,21 +446,35 @@ fn push_axis_segment(out: &mut Vec<CellRect>, a: (i32, i32), b: (i32, i32)) {
 // ─── E1: reserva de región y rasterización de la rejilla fina ────────────────
 
 /// Si el chunk cae en la reserva de región, devuelve su índice LOCAL (0..REGION_CHUNKS).
-pub fn region_chunk_local(chunk: (i32, i32)) -> Option<(i32, i32)> {
+///
+/// **La capa es parte de la identidad, no un adorno.** Desde que la reserva vive en XZ (0,0)
+/// —el mismo del spawn— comprobar solo la coordenada horizontal diría que sí para el chunk de
+/// arranque del Level 0. Ver el doc-comment de `REGION_ORIGIN_CHUNK`.
+pub fn region_chunk_local(chunk: (i32, i32), layer: i32) -> Option<(i32, i32)> {
+    if layer != REGION_LAYER {
+        return None;
+    }
     let lx = chunk.0 - REGION_ORIGIN_CHUNK.0;
     let lz = chunk.1 - REGION_ORIGIN_CHUNK.1;
     ((0..REGION_CHUNKS).contains(&lx) && (0..REGION_CHUNKS).contains(&lz)).then_some((lx, lz))
 }
 
+/// Y del suelo de la reserva, en metros de mundo. Es lo que `layer_y` daría para
+/// `REGION_LAYER` con el paso de `grid_gen` (4 m), y lo que el teleport de entrada usa como
+/// altura de aterrizaje.
+pub fn region_floor_y() -> f32 {
+    REGION_LAYER as f32 * super::LAYER_HEIGHT_M
+}
+
 /// Rasteriza un chunk de la reserva a la rejilla fina de 2,5 m.
 ///
-/// Solo la capa 0 tiene interior; cualquier otra capa sale maciza (la región es un
+/// Solo `REGION_LAYER` tiene interior; cualquier otra capa sale maciza (la región es un
 /// mapa cerrado de una planta). No se cose (`stitch_edges`) a propósito: los pasillos
 /// que cruzan de chunk salen coherentes POR CONSTRUCCIÓN, porque los dos chunks
 /// rasterizan el MISMO layout global de región — el mismo argumento de determinismo
 /// que sostiene las salas multi-chunk de ADR-084. Un chunk vecino FUERA de la reserva
-/// puede abrir su apertura de costura contra nuestro perímetro macizo y quedarse con
-/// un fondo de saco decorativo; a 2000 chunks del origen, nadie lo verá jamás.
+/// puede abrir su apertura de costura contra nuestro perímetro macizo y quedarse con un
+/// fondo de saco decorativo; 400 m por encima del techo jugable, nadie lo verá jamás.
 pub fn generate_region_layer(
     world_seed: u64,
     epoch: u32,
@@ -402,7 +482,7 @@ pub fn generate_region_layer(
     layer_index: i32,
 ) -> LayerOutput {
     let mut grid = LayerGrid::new_solid();
-    if layer_index == 0 {
+    if layer_index == REGION_LAYER {
         // ADR-093 E4b: honra la sala preservada vigente (`None` en el caso normal — los tests
         // de este módulo no la tocan, así que su comportamiento no cambia).
         let layout = generate_with_preserved(world_seed, epoch, preserved_room());
@@ -587,24 +667,45 @@ mod tests {
 
     #[test]
     fn region_chunk_local_maps_the_reserve_and_nothing_else() {
-        assert_eq!(region_chunk_local(REGION_ORIGIN_CHUNK), Some((0, 0)));
+        let l = REGION_LAYER;
+        assert_eq!(region_chunk_local(REGION_ORIGIN_CHUNK, l), Some((0, 0)));
         assert_eq!(
-            region_chunk_local((
-                REGION_ORIGIN_CHUNK.0 + REGION_CHUNKS - 1,
-                REGION_ORIGIN_CHUNK.1 + REGION_CHUNKS - 1
-            )),
+            region_chunk_local(
+                (
+                    REGION_ORIGIN_CHUNK.0 + REGION_CHUNKS - 1,
+                    REGION_ORIGIN_CHUNK.1 + REGION_CHUNKS - 1
+                ),
+                l
+            ),
             Some((REGION_CHUNKS - 1, REGION_CHUNKS - 1))
         );
         assert_eq!(
-            region_chunk_local((REGION_ORIGIN_CHUNK.0 - 1, REGION_ORIGIN_CHUNK.1)),
+            region_chunk_local((REGION_ORIGIN_CHUNK.0 - 1, REGION_ORIGIN_CHUNK.1), l),
             None
         );
         assert_eq!(
-            region_chunk_local((REGION_ORIGIN_CHUNK.0 + REGION_CHUNKS, REGION_ORIGIN_CHUNK.1)),
+            region_chunk_local(
+                (REGION_ORIGIN_CHUNK.0 + REGION_CHUNKS, REGION_ORIGIN_CHUNK.1),
+                l
+            ),
             None
         );
-        assert_eq!(region_chunk_local((0, 0)), None);
-        assert_eq!(region_chunk_local((5, 5)), None);
+        assert_eq!(region_chunk_local((5, 5), l), None);
+    }
+
+    /// EL test de esta mudanza: la reserva comparte XZ con el spawn, así que el MISMO chunk
+    /// (0,0) tiene que ser región en `REGION_LAYER` y Level 0 en la capa 0. Sin la capa en la
+    /// comprobación, el área de arranque del juego se trataría como Level 4.
+    #[test]
+    fn the_spawn_chunk_is_only_the_reserve_on_the_regions_own_layer() {
+        assert!(region_chunk_local((0, 0), REGION_LAYER).is_some());
+        for other in [0, 1, -1, 8, REGION_LAYER - 1, REGION_LAYER + 1] {
+            assert_eq!(
+                region_chunk_local((0, 0), other),
+                None,
+                "capa {other}: el chunk de spawn NO es la reserva"
+            );
+        }
     }
 
     #[test]
@@ -613,7 +714,7 @@ mod tests {
             let layout = generate(seed, EPOCH_V1);
             for lx in 0..REGION_CHUNKS {
                 for lz in 0..REGION_CHUNKS {
-                    let out = generate_region_layer(seed, EPOCH_V1, (lx, lz), 0);
+                    let out = generate_region_layer(seed, EPOCH_V1, (lx, lz), REGION_LAYER);
                     for x in 0..CHUNK_CELLS {
                         for z in 0..CHUNK_CELLS {
                             let cell = (
@@ -639,12 +740,12 @@ mod tests {
         // coherente por construcción: la columna 19 de (0,0) y la columna 0 de (1,0)
         // describen celdas ADYACENTES del mismo layout global, así que un pasillo que
         // cruza no puede morir en el borde.
-        let a1 = generate_region_layer(42, EPOCH_V1, (0, 0), 0);
-        let a2 = generate_region_layer(42, EPOCH_V1, (0, 0), 0);
+        let a1 = generate_region_layer(42, EPOCH_V1, (0, 0), REGION_LAYER);
+        let a2 = generate_region_layer(42, EPOCH_V1, (0, 0), REGION_LAYER);
         assert_eq!(a1.grid.cells(), a2.grid.cells());
 
         let layout = generate(42, EPOCH_V1);
-        let right = generate_region_layer(42, EPOCH_V1, (1, 0), 0);
+        let right = generate_region_layer(42, EPOCH_V1, (1, 0), REGION_LAYER);
         for z in 0..CHUNK_CELLS {
             let global = (CHUNK_CELLS as i32, z as i32);
             assert_eq!(
@@ -656,8 +757,8 @@ mod tests {
     }
 
     #[test]
-    fn non_zero_layers_are_solid() {
-        for layer in [-1i32, 1, 2] {
+    fn layers_other_than_the_regions_own_are_solid() {
+        for layer in [-1i32, 0, 1, 2, REGION_LAYER - 1, REGION_LAYER + 1] {
             let out = generate_region_layer(42, EPOCH_V1, (1, 1), layer);
             assert!(
                 out.grid.cells().iter().all(|c| !c.is_walkable()),
@@ -747,26 +848,46 @@ mod tests {
             REGION_ORIGIN_CHUNK.0 as f32 * chunk_size_m,
             REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m,
         );
+        let y = region_floor_y() + 1.8;
 
         // Esquina exacta de la reserva -> celda (0,0).
         assert_eq!(
-            world_pos_to_region_cell([origin.0, 1.0, origin.1]),
+            world_pos_to_region_cell([origin.0, y, origin.1]),
             Some((0, 0))
         );
 
         // Un punto a media celda del origen -> celda (1,1) (2,5 m por celda).
         assert_eq!(
-            world_pos_to_region_cell([origin.0 + 3.0, 1.0, origin.1 + 3.0]),
+            world_pos_to_region_cell([origin.0 + 3.0, y, origin.1 + 3.0]),
             Some((1, 1))
         );
-
-        // Antes del origen (en Level 0, a kilómetros de distancia): fuera.
-        assert_eq!(world_pos_to_region_cell([0.0, 1.0, 0.0]), None);
 
         // Justo en el borde exterior (== REGION_CELLS * CELL_SIZE_M): fuera, exclusivo.
         let region_extent = REGION_CELLS as f32 * CELL_SIZE_M;
         assert_eq!(
-            world_pos_to_region_cell([origin.0 + region_extent, 1.0, origin.1]),
+            world_pos_to_region_cell([origin.0 + region_extent, y, origin.1]),
+            None
+        );
+    }
+
+    /// La mitad de la comprobación que la mudanza a XZ (0,0) hizo imprescindible: el MISMO XZ
+    /// es reserva a la altura de la región y Level 0 a ras de suelo. Sin la banda de Y,
+    /// `position_is_buildable` prohibiría construir en el spawn.
+    #[test]
+    fn the_same_xz_is_the_reserve_only_at_the_regions_height() {
+        let inside = [30.0, region_floor_y() + 1.8, 30.0];
+        assert!(world_pos_to_region_cell(inside).is_some());
+
+        for y_level0 in [0.0, 1.8, 4.0, 20.0, 32.0] {
+            assert_eq!(
+                world_pos_to_region_cell([30.0, y_level0, 30.0]),
+                None,
+                "Y={y_level0} es Level 0, no la reserva"
+            );
+        }
+        // Y muy por encima de la región tampoco cuenta.
+        assert_eq!(
+            world_pos_to_region_cell([30.0, region_floor_y() + 100.0, 30.0]),
             None
         );
     }

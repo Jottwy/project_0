@@ -147,9 +147,12 @@ fn chunk_is_v30a(chunk: &Chunk) -> bool {
 /// Same pitch as `collision::layer_from_player_y` (grid_gen's 4 m, not the volumetric 7 m) — the
 /// chunks this keys into are grid_gen chunks. See that function for why.
 fn player_layer_from_y(y: f32) -> ChunkLayer {
+    // ADR-093 (E3-fix): mismo ensanche y mismo motivo que `collision::layer_from_player_y` — con
+    // el tope en ±8, la clave de chunk de un jugador dentro de la reserva (capa 100) apuntaba a
+    // la capa 8, así que los chunks de la región no se cargaban NUNCA para él.
     ((y - 1.8) / grid_gen::LAYER_HEIGHT_M)
         .round()
-        .clamp(-8.0, 8.0) as ChunkLayer
+        .clamp(ChunkLayer::MIN as f32, ChunkLayer::MAX as f32) as ChunkLayer
 }
 
 fn chunk_key_for_player_pos(pos: Vec3) -> LayeredChunkPos {
@@ -262,11 +265,15 @@ impl World {
     /// Capas ≠ 0 de la reserva no se purgan a propósito: son macizas siempre, epoch o no
     /// (`level4_layout::generate_region_chunk`), así que quedarse con la vieja no cambia nada.
     pub fn purge_level4_region_cache(&mut self) {
-        use grid_gen::level4::{REGION_CHUNKS, REGION_ORIGIN_CHUNK};
+        use grid_gen::level4::{REGION_CHUNKS, REGION_LAYER, REGION_ORIGIN_CHUNK};
+        // La capa es `REGION_LAYER`, NO 0. Desde que la reserva comparte XZ con el spawn (ver
+        // `REGION_ORIGIN_CHUNK`), purgar la capa 0 aquí borraría los chunks del área de arranque
+        // del Level 0 en cada avance de epoch.
         for lx in 0..REGION_CHUNKS {
             for lz in 0..REGION_CHUNKS {
                 let pos = (REGION_ORIGIN_CHUNK.0 + lx, REGION_ORIGIN_CHUNK.1 + lz);
-                self.chunks.remove(&layered_chunk_pos(pos, 0));
+                self.chunks
+                    .remove(&layered_chunk_pos(pos, REGION_LAYER as ChunkLayer));
             }
         }
     }

@@ -42,7 +42,7 @@ pub fn generate_region_chunk(
     // Tile de 5 m (tx,tz) del chunk local → celda fina (2tx, 2tz) en coordenadas de
     // REGIÓN. Con paridad par, esa celda representa el tile entero.
     let open_at = |tx: i32, tz: i32| -> bool {
-        if layer != 0 {
+        if layer as i32 != level4::REGION_LAYER {
             return false;
         }
         let cell = (
@@ -113,7 +113,12 @@ pub fn generate_region_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::world::grid_gen::level4::{region_chunk_local, REGION_CHUNKS, REGION_ORIGIN_CHUNK};
+    use crate::world::grid_gen::level4::{
+        region_chunk_local, REGION_CHUNKS, REGION_LAYER, REGION_ORIGIN_CHUNK,
+    };
+
+    /// Capa de la reserva como `ChunkLayer` — los helpers de chunk la piden en el tipo estrecho.
+    const RL: ChunkLayer = REGION_LAYER as ChunkLayer;
 
     fn region_pos(lx: i32, lz: i32) -> ChunkPos {
         (REGION_ORIGIN_CHUNK.0 + lx, REGION_ORIGIN_CHUNK.1 + lz)
@@ -129,13 +134,13 @@ mod tests {
             for lx in 0..REGION_CHUNKS {
                 for lz in 0..REGION_CHUNKS {
                     let pos = region_pos(lx, lz);
-                    let local = region_chunk_local(pos).unwrap();
-                    let chunk = generate_region_chunk(seed, pos, 0, local);
+                    let local = region_chunk_local(pos, REGION_LAYER).unwrap();
+                    let chunk = generate_region_chunk(seed, pos, RL, local);
                     let fine = crate::world::grid_gen::level4::generate_region_layer(
                         seed,
                         crate::world::grid_gen::level4::EPOCH_V1,
                         local,
-                        0,
+                        REGION_LAYER,
                     );
                     let grid = LAYOUT_GRID_SIZE as usize;
                     for tx in 0..grid {
@@ -158,9 +163,9 @@ mod tests {
     #[test]
     fn region_chunks_are_deterministic_and_displacement_proof() {
         let pos = region_pos(1, 1);
-        let local = region_chunk_local(pos).unwrap();
-        let a = generate_region_chunk(42, pos, 0, local);
-        let b = generate_region_chunk(42, pos, 0, local);
+        let local = region_chunk_local(pos, REGION_LAYER).unwrap();
+        let a = generate_region_chunk(42, pos, RL, local);
+        let b = generate_region_chunk(42, pos, RL, local);
         assert_eq!(a.layout, b.layout);
         assert!(
             matches!(
@@ -187,13 +192,17 @@ mod tests {
             for lz in 0..REGION_CHUNKS {
                 let left_pos = region_pos(0, lz);
                 let right_pos = region_pos(1, lz);
-                let left =
-                    generate_region_chunk(seed, left_pos, 0, region_chunk_local(left_pos).unwrap());
+                let left = generate_region_chunk(
+                    seed,
+                    left_pos,
+                    RL,
+                    region_chunk_local(left_pos, REGION_LAYER).unwrap(),
+                );
                 let right = generate_region_chunk(
                     seed,
                     right_pos,
-                    0,
-                    region_chunk_local(right_pos).unwrap(),
+                    RL,
+                    region_chunk_local(right_pos, REGION_LAYER).unwrap(),
                 );
                 for tz in 0..grid {
                     let a = (grid as i32 * 2 - 2, lz * grid as i32 * 2 + tz as i32 * 2);
@@ -220,7 +229,12 @@ mod tests {
             // Perímetro exterior oeste de la reserva: tabicado entero.
             for lz in 0..REGION_CHUNKS {
                 let pos = region_pos(0, lz);
-                let chunk = generate_region_chunk(seed, pos, 0, region_chunk_local(pos).unwrap());
+                let chunk = generate_region_chunk(
+                    seed,
+                    pos,
+                    RL,
+                    region_chunk_local(pos, REGION_LAYER).unwrap(),
+                );
                 for tz in 0..grid {
                     assert_eq!(
                         chunk.layout.edge_v(0, tz),
@@ -235,7 +249,7 @@ mod tests {
     #[test]
     fn non_zero_layers_have_no_walkable_tiles() {
         let pos = region_pos(2, 0);
-        let local = region_chunk_local(pos).unwrap();
+        let local = region_chunk_local(pos, REGION_LAYER).unwrap();
         for layer in [-1, 1] {
             let chunk = generate_region_chunk(42, pos, layer, local);
             let grid = LAYOUT_GRID_SIZE as usize;
@@ -396,7 +410,14 @@ impl Level4RegionState {
     ) -> [f32; 3] {
         if door == DOOR_ENTRY {
             self.process_entry(world_seed, requester_pos, now);
-            requester_pos
+            // ADR-093 E3-fix: el VESTÍBULO de la región, no `requester_pos`.
+            //
+            // Este era el bug que hacía que cruzar la puerta no hiciera nada visible: devolver
+            // `requester_pos` es "teletranspórtate a donde ya estás". La entrada nunca tuvo
+            // destino dentro de la región — E2 solo abría la ventana, y E3 dio por hecho que el
+            // destino ya existía. El vestíbulo es fijo en todos los epochs, así que este punto
+            // es siempre suelo hueco.
+            level4::entry_hall_world_pos()
         } else {
             self.process_return(requester_pos, now)
         }
@@ -437,12 +458,12 @@ pub fn density_scale_for_epoch(epoch: u32) -> f32 {
 /// bloque de sorteo (4×4 chunks, 200×200 m) porque `REGION_ORIGIN_CHUNK` está alineado a bloque
 /// por construcción (2000 = 500 × `BLOCK_CHUNKS`) — no hace falta manejar solapamiento parcial
 /// entre bloque y reserva, con comprobar el chunk de origen del bloque basta.
-pub fn block_is_in_region(block: (i32, i32)) -> bool {
+pub fn block_is_in_region(block: (i32, i32), layer: u8) -> bool {
     let chunk = (
         block.0 * crate::world::phantom_spawn::BLOCK_CHUNKS,
         block.1 * crate::world::phantom_spawn::BLOCK_CHUNKS,
     );
-    level4::region_chunk_local(chunk).is_some()
+    level4::region_chunk_local(chunk, layer as i32).is_some()
 }
 
 // El invariante que hace correcto `block_is_in_region` sin manejar solapamiento parcial: la
@@ -455,23 +476,42 @@ const _: () = assert!(level4::REGION_CHUNKS <= crate::world::phantom_spawn::BLOC
 mod region_state_tests {
     use super::*;
 
+    /// EL test del bug de E3: cruzar la puerta de entrada tiene que DEJARTE DENTRO de la
+    /// región. La versión anterior de este test afirmaba `entry_dest == requester_pos` — es
+    /// decir, daba por bueno "teletranspórtate a donde ya estás", que es exactamente por lo que
+    /// el playtest no hacía nada. Un test puede fijar un fallo tan bien como una garantía.
     #[test]
-    fn process_door_dispatches_entry_and_treats_anything_else_as_return() {
+    fn crossing_the_entry_door_lands_you_inside_the_region_not_where_you_stood() {
         let now = Instant::now();
         let mut state = Level4RegionState::default();
 
-        let entry_dest = state.process_door(42, [5.0, 0.0, 5.0], DOOR_ENTRY, now);
-        assert_eq!(entry_dest, [5.0, 0.0, 5.0]);
+        let standing_in_level0 = [5.0, 0.0, 5.0];
+        let entry_dest = state.process_door(42, standing_in_level0, DOOR_ENTRY, now);
+
+        assert_ne!(
+            entry_dest, standing_in_level0,
+            "la entrada no puede devolverte tu propia posición"
+        );
+        assert_eq!(
+            entry_dest,
+            level4::entry_hall_world_pos(),
+            "se aterriza en el vestíbulo, que es hueco en todos los epochs"
+        );
+        assert!(
+            level4::world_pos_to_region_cell(entry_dest).is_some(),
+            "el destino de entrada tiene que caer dentro de la reserva"
+        );
         assert!(state.window_open);
 
-        // Dentro de la ventana: vuelve al punto de entrada exacto.
+        // Dentro de la ventana: vuelve al punto de entrada exacto (el de Level 0, no el
+        // vestíbulo — `entry_point` guarda de dónde VENÍAS).
         let return_dest = state.process_door(42, [1.0, 0.0, 1.0], DOOR_RETURN, now);
-        assert_eq!(return_dest, [5.0, 0.0, 5.0]);
+        assert_eq!(return_dest, standing_in_level0);
 
         // Cualquier valor que no sea DOOR_ENTRY colapsa a Return — mismo criterio que
         // `CellType::kind()` con un byte desconocido: el lado seguro, no un pánico.
         let unknown_dest = state.process_door(42, [1.0, 0.0, 1.0], 255, now);
-        assert_eq!(unknown_dest, [5.0, 0.0, 5.0]);
+        assert_eq!(unknown_dest, standing_in_level0);
     }
 
     #[test]
@@ -642,7 +682,7 @@ mod zone_rule_tests {
     #[test]
     fn only_the_regions_own_block_is_flagged() {
         use crate::world::phantom_spawn::BLOCK_CHUNKS;
-        use level4::REGION_ORIGIN_CHUNK;
+        use level4::{REGION_LAYER, REGION_ORIGIN_CHUNK};
 
         let region_block = (
             REGION_ORIGIN_CHUNK.0 / BLOCK_CHUNKS,
@@ -653,16 +693,16 @@ mod zone_rule_tests {
         // que assertar dos constantes en tiempo de ejecución no comprueba nada que el compilador
         // no comprobara ya mejor.
         assert!(
-            block_is_in_region(region_block),
+            block_is_in_region(region_block, REGION_LAYER as u8),
             "el bloque que contiene el origen de la reserva debe marcarse"
         );
 
         assert!(
-            !block_is_in_region((0, 0)),
+            !block_is_in_region((0, 0), 0),
             "el origen de Level 0 no es la reserva"
         );
         assert!(
-            !block_is_in_region((region_block.0 + 1, region_block.1)),
+            !block_is_in_region((region_block.0 + 1, region_block.1), REGION_LAYER as u8),
             "el bloque vecino no es la reserva"
         );
     }

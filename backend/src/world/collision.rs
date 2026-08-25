@@ -399,9 +399,13 @@ fn log_spawn_resolved(res: &SpawnResolution) {
 /// agreed with the client only on layers 0 and 1 (`round(4/7) == 1` by luck); a player standing on
 /// layer 2 (y = 9.8) classified as layer 1 and collided against a different maze.
 fn layer_from_player_y(y: f32) -> ChunkLayer {
+    // ADR-093 (E3-fix): el tope era ±8 —la pila jugable del Level 0— y con él un jugador dentro
+    // de la reserva del Level 4 (capa 100, Y 400 m) se clasificaba como capa 8: colisionaba
+    // contra geometría de Level 0 que allí arriba no existe, o sea contra nada. El rango pasa a
+    // ser el del propio `ChunkLayer` (`i8`), que es el techo real del sistema de capas.
     ((y - PLAYER_BASE_Y) / crate::world::grid_gen::LAYER_HEIGHT_M)
         .round()
-        .clamp(-8.0, 8.0) as ChunkLayer
+        .clamp(ChunkLayer::MIN as f32, ChunkLayer::MAX as f32) as ChunkLayer
 }
 
 fn chunk_key_at(pos: Vec3) -> LayeredChunkPos {

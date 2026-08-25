@@ -75,15 +75,18 @@ namespace BackroomsSurvival.Gameplay
 
         /// <summary>
         /// ADR-093 E3: the two Level 4 door triggers. Instantiated (never scene/prefab-authored)
-        /// so this file is still the single place that wires the game up. Fixed, hand-picked
-        /// anchors, not seed-sorted placement (that is E3's own documented simplification —
-        /// see docs/LEVEL4-ROADMAP.md "Nota de ejecución E3"): the Entry anchor sits inside the
-        /// flat, always-open starter cluster (Phase 2.6 guarantees no verticality within two
-        /// chunks of spawn); the Return anchor is the world-space CENTER of the Level 4 reserve
-        /// (`grid_gen::level4::REGION_ORIGIN_CHUNK`/`REGION_CHUNKS`, chunk size 50 m —
-        /// (2000,2000)..(2003,2003) chunks ⇒ world (100000,100000)..(100150,100150), center
-        /// (100075,100075)) — a placeholder until authored room content (E6) gives the region
-        /// something to hang a real door off.
+        /// so this file is still the single place that wires the game up.
+        ///
+        /// The Entry anchor sits inside the flat, always-open starter cluster (Phase 2.6
+        /// guarantees no verticality within two chunks of spawn).
+        ///
+        /// The Return anchor is the centre of the region's ENTRY HALL — the fixed 8×8-cell room
+        /// (`grid_gen::level4::ENTRY_HALL`) that every epoch's layout contains verbatim, which is
+        /// also where crossing the Entry door drops you. Mirrors
+        /// `level4::entry_hall_world_pos()`: region origin chunk (0,0) ⇒ world 0, hall centre at
+        /// cell (30,30) ⇒ 30 × 2.5 m = 75 m, floor at layer 100 × 4 m = 400 m plus eye height.
+        /// It replaced the reserve's GEOMETRIC centre, which the room draw could leave solid —
+        /// an exit door buried inside rock.
         /// </summary>
         private void SpawnLevel4Doors()
         {
@@ -97,7 +100,7 @@ namespace BackroomsSurvival.Gameplay
             entryGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Entry, doorRadius);
 
             var returnGo = new GameObject("Level4ReturnDoor (ADR-093, placeholder)");
-            returnGo.transform.position = new Vector3(100075f, 1f, 100075f);
+            returnGo.transform.position = new Vector3(75f, 401.8f, 75f);
             returnGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Return, doorRadius);
         }
     }

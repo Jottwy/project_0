@@ -8164,7 +8164,7 @@ fn level4_room_among_picks_the_room_of_the_lowest_peer_id_present() {
         );
         [
             origin.0 + room.rect.min.0 as f32 * crate::world::grid_gen::CELL_SIZE_M + 0.5,
-            1.0,
+            crate::world::grid_gen::level4::region_floor_y() + 1.8,
             origin.1 + room.rect.min.1 as f32 * crate::world::grid_gen::CELL_SIZE_M + 0.5,
         ]
     };
@@ -8234,13 +8234,14 @@ fn level4_scaled_density_only_applies_inside_the_regions_block() {
         REGION_ORIGIN_CHUNK.1 / BLOCK_CHUNKS,
     );
 
-    assert_eq!(level4_scaled_density(2.0, region_block, 0), 2.0);
+    let rl = crate::world::grid_gen::level4::REGION_LAYER as u8;
+    assert_eq!(level4_scaled_density(2.0, region_block, rl, 0), 2.0);
     assert_eq!(
-        level4_scaled_density(2.0, region_block, 2),
+        level4_scaled_density(2.0, region_block, rl, 2),
         2.0 * crate::world::level4_layout::density_scale_for_epoch(2)
     );
     assert_eq!(
-        level4_scaled_density(2.0, (0, 0), 5),
+        level4_scaled_density(2.0, (0, 0), 0, 5),
         2.0,
         "fuera de la reserva, el epoch no debe tocar la densidad"
     );

@@ -832,7 +832,10 @@ fn world_graph_has_valid_level0_region_graph() {
 /// contaminar tests que corran después en el mismo binario.
 #[test]
 fn purging_the_region_cache_makes_a_stale_chunk_regenerate_at_the_new_epoch() {
-    use grid_gen::level4::{region_chunk_local, set_current_epoch, REGION_ORIGIN_CHUNK};
+    use grid_gen::level4::{
+        region_chunk_local, set_current_epoch, REGION_LAYER, REGION_ORIGIN_CHUNK,
+    };
+    let rl = REGION_LAYER as ChunkLayer;
 
     struct ResetEpochOnDrop;
     impl Drop for ResetEpochOnDrop {
@@ -845,11 +848,12 @@ fn purging_the_region_cache_makes_a_stale_chunk_regenerate_at_the_new_epoch() {
     let seed = 42u64;
     let mut world = World::new(seed);
     let pos = REGION_ORIGIN_CHUNK;
-    let local = region_chunk_local(pos).expect("origen de la reserva debe mapear a local (0,0)");
+    let local = region_chunk_local(pos, REGION_LAYER)
+        .expect("origen de la reserva debe mapear a local (0,0)");
 
     set_current_epoch(0);
-    let cached_epoch0 = world.ensure_chunk_layer(pos, 0).layout.clone();
-    let expected_epoch0 = level4_layout::generate_region_chunk(seed, pos, 0, local).layout;
+    let cached_epoch0 = world.ensure_chunk_layer(pos, rl).layout.clone();
+    let expected_epoch0 = level4_layout::generate_region_chunk(seed, pos, rl, local).layout;
     assert_eq!(
         cached_epoch0, expected_epoch0,
         "sanity: epoch 0 coincide antes de avanzar nada"
@@ -858,15 +862,15 @@ fn purging_the_region_cache_makes_a_stale_chunk_regenerate_at_the_new_epoch() {
     // Avanza el epoch SIN purgar: la caché debe seguir sirviendo el layout viejo — es la
     // staleness que `purge_level4_region_cache` existe para cerrar.
     set_current_epoch(1);
-    let still_cached = world.ensure_chunk_layer(pos, 0).layout.clone();
+    let still_cached = world.ensure_chunk_layer(pos, rl).layout.clone();
     assert_eq!(
         still_cached, expected_epoch0,
         "sin purgar, la caché debe seguir devolviendo el layout del epoch anterior"
     );
 
     world.purge_level4_region_cache();
-    let after_purge = world.ensure_chunk_layer(pos, 0).layout.clone();
-    let expected_epoch1 = level4_layout::generate_region_chunk(seed, pos, 0, local).layout;
+    let after_purge = world.ensure_chunk_layer(pos, rl).layout.clone();
+    let expected_epoch1 = level4_layout::generate_region_chunk(seed, pos, rl, local).layout;
     assert_eq!(
         after_purge, expected_epoch1,
         "tras purgar, el chunk regenerado debe reflejar el epoch VIGENTE (1)"

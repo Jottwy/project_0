@@ -83,7 +83,7 @@ pub fn generate_chunk_layer(world_seed: u64, pos: ChunkPos, layer: ChunkLayer) -
     // rasterizar el MISMO layout de región que la rejilla fina (el intercept espejo
     // vive en `grid_gen::stitching`). Ninguna otra ruta llega a estos chunks: la
     // reserva está a 2000 chunks del origen y las estructuras iniciales no la tocan.
-    if let Some(local) = crate::world::grid_gen::level4::region_chunk_local(pos) {
+    if let Some(local) = crate::world::grid_gen::level4::region_chunk_local(pos, layer as i32) {
         return crate::world::level4_layout::generate_region_chunk(world_seed, pos, layer, local);
     }
 
