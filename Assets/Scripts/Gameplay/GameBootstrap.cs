@@ -85,24 +85,32 @@ namespace BackroomsSurvival.Gameplay
         /// also where crossing the Entry door drops you. It replaced the reserve's GEOMETRIC
         /// centre, which the room draw could leave solid — an exit door buried inside rock.
         ///
-        /// MIRROR of `level4::entry_hall_world_pos()`, and the arithmetic has to stay in step:
-        /// region origin chunk (200, 0) × 50 m = world (10000, 0); hall centre at cell (30, 30)
-        /// × 2.5 m = +75 m each way; region layer 0 ⇒ floor at Y 0, plus 1.8 m of eye height.
+        /// MIRRORS de `grid_gen::level4`, y la aritmética tiene que ir en paso: chunk de origen
+        /// (200, 0) × 50 m = mundo (10000, 0); centro del vestíbulo en la celda (30, 30) × 2,5 m
+        /// = +75 m por lado; capa 0 ⇒ suelo en Y 0. El desparejo lo caza un test en Rust
+        /// (`the_entry_hall_matches_the_hardcoded_csharp_door_anchor`), no la buena suerte.
+        ///
+        /// La de VUELTA no va en el punto de aterrizaje sino 5 m al norte
+        /// (`level4::return_door_world_pos`, `RETURN_DOOR_OFFSET_M`): plantarla justo donde
+        /// apareces te deja dentro de su plano el frame de llegada, que es lo que obligaba al
+        /// enfriamiento de 3 s que la detección por cruce ya no necesita.
+        ///
+        /// Las dos miran al SUR (−Z), o sea: aterrizas mirando la de vuelta de frente.
         /// </summary>
         private void SpawnLevel4Doors()
         {
             if (FindFirstObjectByType<Level4DoorTrigger>() != null)
                 return; // domain reload / re-entry into the same scene
 
-            const float doorRadius = 2f;
+            var facing = new Vector3(0f, 0f, -1f);
 
             var entryGo = new GameObject("Level4EntryDoor (ADR-093, placeholder)");
-            entryGo.transform.position = new Vector3(3f, 1f, 0f);
-            entryGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Entry, doorRadius);
+            entryGo.transform.position = new Vector3(3f, 0f, 0f);
+            entryGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Entry, facing);
 
             var returnGo = new GameObject("Level4ReturnDoor (ADR-093, placeholder)");
-            returnGo.transform.position = new Vector3(10075f, 1.8f, 75f);
-            returnGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Return, doorRadius);
+            returnGo.transform.position = new Vector3(10075f, 0f, 70f);
+            returnGo.AddComponent<Level4DoorTrigger>().Configure(Level4Door.Return, facing);
         }
     }
 }

@@ -164,8 +164,8 @@ pub const ENTRY_HALL: CellRect = CellRect {
 };
 
 /// Centro del vestíbulo en coordenadas de MUNDO — dónde aterriza quien cruza la puerta de
-/// entrada, y dónde se ancla la puerta de vuelta. Y = suelo de la reserva + la altura de ojos
-/// que usa el resto del proyecto (`PLAYER_BASE_Y`, 1,8 m).
+/// entrada. Y = suelo de la reserva + la altura de ojos que usa el resto del proyecto
+/// (`PLAYER_BASE_Y`, 1,8 m).
 pub fn entry_hall_world_pos() -> [f32; 3] {
     let chunk_size_m = CHUNK_CELLS as f32 * CELL_SIZE_M;
     let (cx, cz) = ENTRY_HALL.center();
@@ -175,6 +175,25 @@ pub fn entry_hall_world_pos() -> [f32; 3] {
         REGION_ORIGIN_CHUNK.1 as f32 * chunk_size_m + cz as f32 * CELL_SIZE_M,
     ]
 }
+
+/// Dónde se planta la PUERTA DE VUELTA dentro del vestíbulo, en coordenadas de mundo.
+///
+/// Separada del punto de aterrizaje a propósito, y es lo que arregla el rebote que hasta ahora
+/// tapaba un enfriamiento de 3 s: si la puerta está EXACTAMENTE donde apareces, el frame de
+/// llegada ya te tiene encima de ella. `RETURN_DOOR_OFFSET_M` al norte del centro deja la puerta
+/// a la vista nada más aterrizar —el vestíbulo mide 20 m, así que 5 m sigue holgadamente dentro—
+/// y a ti fuera de su plano, que es lo único que la detección por cruce necesita para no
+/// dispararse sola.
+///
+/// La Y es la del SUELO, no la de los ojos: aquí se planta un marco, no se teletransporta a
+/// nadie. Confundirlas dejaría la puerta flotando 1,8 m en el aire.
+pub fn return_door_world_pos() -> [f32; 3] {
+    let hall = entry_hall_world_pos();
+    [hall[0], region_floor_y(), hall[2] - RETURN_DOOR_OFFSET_M]
+}
+
+/// Cuánto se separa la puerta de vuelta del punto de aterrizaje, en metros.
+pub const RETURN_DOOR_OFFSET_M: f32 = 5.0;
 
 /// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
 const REGION_CEILING_UNITS: u8 = 2;
@@ -921,6 +940,19 @@ mod tests {
             entry_hall_world_pos(),
             [10075.0, 1.8, 75.0],
             "mueve también el ancla de GameBootstrap.SpawnLevel4Doors (Assets/Scripts/Gameplay)"
+        );
+        // La puerta de vuelta NO va donde aterrizas: `RETURN_DOOR_OFFSET_M` al norte y a ras de
+        // SUELO, no a altura de ojos. Las dos cosas son errores plausibles y silenciosos —
+        // plantarla en el punto de llegada devuelve el rebote que la detección por cruce quitó,
+        // y heredar la Y de los ojos la deja flotando 1,8 m en el aire.
+        assert_eq!(
+            return_door_world_pos(),
+            [10075.0, 0.0, 70.0],
+            "mueve también el ancla de vuelta de GameBootstrap.SpawnLevel4Doors"
+        );
+        assert!(
+            return_door_world_pos()[1] < entry_hall_world_pos()[1],
+            "la puerta se planta en el suelo; el punto de aterrizaje va a altura de ojos"
         );
     }
 

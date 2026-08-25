@@ -51,26 +51,40 @@ namespace BackroomsSurvival.Gameplay
             return img;
         }
 
-        private void OnEnable()
-        {
-            if (IPCClient.TryGetInstance(out var ipc))
-                ipc.AddEventListener(OnGameEvent);
-        }
+        // Suscripción DIFERIDA, no en OnEnable. Este componente lo añade GameBootstrap.Awake y el
+        // IPCClient no existe hasta que NetworkInitializer lo crea en Start: engancharse en
+        // OnEnable era pedirle el listener a un singleton que todavía no estaba, así que la
+        // suscripción no llegaba a ocurrir NUNCA y este efecto llevaba muerto desde que existe.
+        // Mismo patrón que AuthoritativePoseApplier, y por el mismo motivo.
+        private IPCClient _ipc;
 
         private void OnDisable()
         {
-            if (IPCClient.TryGetInstance(out var ipc))
-                ipc.RemoveEventListener(OnGameEvent);
+            if (_ipc != null)
+            {
+                _ipc.RemoveEventListener(OnGameEvent);
+                _ipc = null;
+            }
         }
 
         private void OnGameEvent(GameEventMsg ev)
         {
-            if (ev.eventType == "chunk_teleported")
+            // `chunk_teleported` es el consumidor histórico (desplazamiento de chunk).
+            // `level4_door_resolved` (ADR-093) es una reposición autoritativa igual de brusca: sin
+            // esto, cruzar la puerta era un corte seco de un sitio a otro sin un solo frame que
+            // dijera que había pasado algo.
+            if (ev.eventType == "chunk_teleported" || ev.eventType == "level4_door_resolved")
                 Trigger();
         }
 
         private void Update()
         {
+            if (_ipc == null && IPCClient.TryGetInstance(out var ipc))
+            {
+                _ipc = ipc;
+                _ipc.AddEventListener(OnGameEvent);
+            }
+
             if (!_active) return;
 
             // Flash phase.
