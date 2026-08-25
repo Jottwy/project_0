@@ -23,7 +23,9 @@ use std::collections::HashSet;
 
 use crate::world::faceling_spawn;
 use crate::world::grid_gen::{
-    is_walkable_grid_gen, segment_is_clear, steer_around_walls, CELL_SIZE_M, CHUNK_CELLS,
+    cell_of, find_path, is_walkable_grid_gen, segment_is_clear, segment_is_clear_for_body,
+    steer_around_walls, string_pull, CellCoord, NavScratch, CELL_SIZE_M, CHUNK_CELLS,
+    PHANTOM_BODY_RADIUS,
 };
 
 /// Same cadence as `PHANTOM_POPULATION_SYNC_INTERVAL` — no reason to reconcile more often than
@@ -177,6 +179,13 @@ pub(super) struct AdultMover {
     pub(super) strike_recover: f32,
     /// Anti-wedge watchdog for `Commute` — see `ProgressWatch`.
     pub(super) progress: ProgressWatch,
+    /// Enmienda 8 — the A* plan, same four fields and same meanings as the children's.
+    pub(super) nav_waypoints: Vec<Vec3>,
+    pub(super) nav_cursor: usize,
+    pub(super) nav_goal: Option<Vec3>,
+    pub(super) nav_age: f32,
+    /// Enmienda 8 — see `FACELING_WEDGE_ENTER`.
+    pub(super) nav_blocked: u8,
 }
 
 pub(super) struct AdultDriver {
@@ -184,6 +193,11 @@ pub(super) struct AdultDriver {
     pub(super) movers: Vec<AdultMover>,
     pub(super) density_scale: f32,
     population_sync_in: f32,
+    /// Enmienda 8 — A* scratch and cell buffer, lent to each search. One set per driver, never
+    /// per mover: see the same field on `ChildDriver` for why.
+    pub(super) nav_scratch: NavScratch,
+    pub(super) nav_cells: Vec<CellCoord>,
+    pub(super) step_counter: u64,
     /// E1c — blows staged this tick, drained by `step`'s caller. Reuses `PhantomAttack` rather
     /// than minting a parallel type: `game_loop.rs`'s routing loop never reads WHO struck (ADR-016
     /// §1 keeps the creature's id off the wire entirely), so it already works for any attacker.
@@ -237,6 +251,9 @@ impl AdultDriver {
             density_scale: 1.0,
             population_sync_in: 0.0, // reconcile on the very first entity tick
             attacks: Vec::new(),
+            nav_scratch: NavScratch::default(),
+            nav_cells: Vec::new(),
+            step_counter: 0,
         }
     }
 
@@ -356,6 +373,11 @@ impl AdultDriver {
                             enforce_target: None,
                             strike_recover: 0.0,
                             progress: ProgressWatch::new(),
+                            nav_waypoints: Vec::new(),
+                            nav_cursor: 0,
+                            nav_goal: None,
+                            nav_age: 0.0,
+                            nav_blocked: 0,
                         });
                         info!(
                             "MPTRACE step=FL_POP event=faceling_adult_spawned faceling_id={} chunk=({},{}) layer={}",
@@ -410,6 +432,7 @@ impl AdultDriver {
             }
         }
 
+        self.step_counter = self.step_counter.wrapping_add(1);
         for i in 0..self.movers.len() {
             // Every adult, every state: see `AdultMover::strike_recover`.
             self.movers[i].strike_recover = (self.movers[i].strike_recover - dt).max(0.0);
@@ -460,6 +483,104 @@ impl AdultDriver {
             m.enforce_target = Some(attacker_id);
         }
         false
+    }
+
+    /// Adult twin of `ChildDriver::note_step`.
+    fn note_step(&mut self, i: usize, moved: bool) {
+        let b = &mut self.movers[i].nav_blocked;
+        *b = match moved {
+            true => b.saturating_sub(1),
+            false => (*b + 2).min(FACELING_WEDGE_MAX),
+        };
+    }
+
+    /// Enmienda 8 — the adults' route. Same policy as `ChildDriver::route_heading`; see that one
+    /// for why each gate is in the order it is.
+    ///
+    /// It matters LESS here and is still worth having: an adult is leashed to one chunk, so its
+    /// journeys are short and its line of travel is usually clear. But an office is exactly the
+    /// shape whiskers lose in — desks and partitions make concave pockets — and an adult that
+    /// converges on you through a cubicle wall for forty-five seconds is the same wedge the
+    /// watchdog papers over rather than solves.
+    fn route_heading(&mut self, i: usize, layer: u8, from: Vec3, target: Vec3, dt: f32) -> f32 {
+        let straight = |to: Vec3| {
+            (to.x - from.x)
+                .atan2(to.z - from.z)
+                .rem_euclid(std::f32::consts::TAU)
+        };
+
+        // Same gate as the children's — see `FACELING_WEDGE_ENTER`.
+        if self.movers[i].nav_blocked < FACELING_WEDGE_ENTER {
+            if !self.movers[i].nav_waypoints.is_empty() {
+                self.movers[i].nav_waypoints.clear();
+                self.movers[i].nav_cursor = 0;
+                self.movers[i].nav_goal = None;
+            }
+            return straight(target);
+        }
+
+        self.movers[i].nav_age += dt;
+
+        if segment_is_clear_for_body(
+            &mut self.grid_cache,
+            layer,
+            from,
+            target,
+            PHANTOM_BODY_RADIUS,
+        ) {
+            self.movers[i].nav_waypoints.clear();
+            self.movers[i].nav_cursor = 0;
+            self.movers[i].nav_goal = None;
+            return straight(target);
+        }
+
+        let may_replan = (self.step_counter + i as u64).is_multiple_of(FACELING_REPLAN_STRIDE);
+        let stale = may_replan
+            && (self.movers[i].nav_waypoints.is_empty()
+                || self.movers[i].nav_cursor >= self.movers[i].nav_waypoints.len()
+                || self.movers[i].nav_age >= FACELING_REPLAN_INTERVAL
+                || self.movers[i]
+                    .nav_goal
+                    .is_none_or(|g| g.distance_xz(target) > FACELING_REPLAN_GOAL_DRIFT));
+
+        if stale {
+            // No long-range sub-goal here, unlike the children's: an adult never plans past its
+            // own chunk (50 m), which is inside the A* window by construction.
+            let mut cells = std::mem::take(&mut self.nav_cells);
+            let mut scratch = std::mem::take(&mut self.nav_scratch);
+            find_path(
+                &mut self.grid_cache,
+                layer,
+                cell_of(from),
+                cell_of(target),
+                &mut scratch,
+                &mut cells,
+            );
+            let mut waypoints = std::mem::take(&mut self.movers[i].nav_waypoints);
+            string_pull(&mut self.grid_cache, layer, from.y, &cells, &mut waypoints);
+            self.nav_cells = cells;
+            self.nav_scratch = scratch;
+            self.movers[i].nav_waypoints = waypoints;
+            self.movers[i].nav_cursor = 0;
+            self.movers[i].nav_goal = Some(target);
+            self.movers[i].nav_age = 0.0;
+        }
+
+        loop {
+            let m = &self.movers[i];
+            match m.nav_waypoints.get(m.nav_cursor) {
+                Some(wp) if from.distance_xz(*wp) <= FACELING_WAYPOINT_ARRIVE => {
+                    self.movers[i].nav_cursor += 1;
+                }
+                _ => break,
+            }
+        }
+
+        let m = &self.movers[i];
+        match m.nav_waypoints.get(m.nav_cursor) {
+            Some(wp) => straight(*wp),
+            None => straight(target),
+        }
     }
 
     fn tick_mover(
@@ -564,7 +685,7 @@ impl AdultDriver {
                 } else if let Some(target) =
                     target_pos.filter(|target| world_pos_to_layer(target.y) == layer)
                 {
-                    let raw_heading = (target.x - from.x).atan2(target.z - from.z);
+                    let raw_heading = self.route_heading(i, layer, from, target, dt);
                     let heading =
                         steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                     let step = FACELING_ENFORCE_SPEED * dt;
@@ -579,6 +700,7 @@ impl AdultDriver {
                     if pos_in_chunk(next, home)
                         && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
                     {
+                        self.note_step(i, true);
                         self.movers[i].heading = heading;
                         if let Some(peer) = net.peers.get_mut(&id) {
                             let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -586,6 +708,7 @@ impl AdultDriver {
                         }
                         return;
                     }
+                    self.note_step(i, false);
                     "walk_slow"
                 } else {
                     // Target disconnected or changed layer: nothing to converge on, just let the
@@ -642,7 +765,7 @@ impl AdultDriver {
                     );
                     "idle"
                 } else {
-                    let raw_heading = (target.x - from.x).atan2(target.z - from.z);
+                    let raw_heading = self.route_heading(i, layer, from, target, dt);
                     let heading =
                         steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                     let step = FACELING_WALK_SPEED * dt;
@@ -659,6 +782,7 @@ impl AdultDriver {
                     if pos_in_chunk(next, home)
                         && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
                     {
+                        self.note_step(i, true);
                         self.movers[i].heading = heading;
                         if let Some(peer) = net.peers.get_mut(&id) {
                             let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -666,6 +790,7 @@ impl AdultDriver {
                         }
                         return;
                     }
+                    self.note_step(i, false);
                     "walk_slow"
                 }
             }
@@ -898,6 +1023,16 @@ pub(super) struct ChildMover {
     pub(super) strike_recover: f32,
     /// Anti-wedge watchdog for `PackRoam` — see `ProgressWatch`.
     pub(super) progress: ProgressWatch,
+    /// Enmienda 8 — this child's current A* plan, in world space, and how far along it is. Same
+    /// four fields the robapieles carries (`phantom.rs`), same meanings: the route, the cursor,
+    /// what it was planned TOWARD (so a drifting goal invalidates it), and its age.
+    pub(super) nav_waypoints: Vec<Vec3>,
+    pub(super) nav_cursor: usize,
+    pub(super) nav_goal: Option<Vec3>,
+    pub(super) nav_age: f32,
+    /// Enmienda 8 — how wedged this mover is, and therefore whether it pays for navigation at all.
+    /// See `FACELING_WEDGE_ENTER`.
+    pub(super) nav_blocked: u8,
     /// ADR-094 punto 4 — the loot this child is carrying, `(def_id, count)`. `None` until a
     /// `StealReport` comes back naming something real; a child NEVER carries on the strength of
     /// its own blow, because the victim is the one who decides whether anything was taken.
@@ -995,6 +1130,14 @@ pub(super) struct ChildDriver {
     population_sync_in: f32,
     /// E2c — same channel and same reasoning as `AdultDriver::attacks`.
     pub(super) attacks: Vec<PhantomAttack>,
+    /// Enmienda 8 — the A*'s scratch and its cell buffer, owned by the DRIVER and lent to each
+    /// search. One set for the whole pack roster, not one per child: ADR-040's "cero asignaciones
+    /// por búsqueda" only holds if the buffers are reused, and with up to 64 children a per-mover
+    /// scratch would also be ~15 KB each.
+    pub(super) nav_scratch: NavScratch,
+    pub(super) nav_cells: Vec<CellCoord>,
+    /// Counts steps so `FACELING_REPLAN_STRIDE` can offset each mover's turn.
+    pub(super) step_counter: u64,
     /// ADR-094 punto 4 — `(thief, victim)` pairs whose blow connected this tick and who are not
     /// already carrying. Drained by `step`'s caller, which owns the sockets: the driver decides
     /// THAT a theft happens, the game loop asks the victim WHAT is lost.
@@ -1101,6 +1244,40 @@ fn child_flank_position(target: Vec3, target_yaw_deg: f32, side: f32, band: f32)
         target.z + angle.cos() * band,
     )
 }
+
+/// Enmienda 8 — how often a child may re-run the A* while it has a plan. Matches the robapieles'
+/// `PHANTOM_REPLAN_INTERVAL`: 0.6 s is short enough that a route stays honest about a moving target
+/// and long enough that the search is not the per-tick cost.
+const FACELING_REPLAN_INTERVAL: f32 = 0.6;
+/// How far the goal may drift before the plan is thrown away regardless of age.
+const FACELING_REPLAN_GOAL_DRIFT: f32 = 4.0;
+/// Spreads the searches across steps so movers that woke together do not all come due on the same
+/// one. MUCH wider than the robapieles' 3, and that is the whole reason this constant is not
+/// simply borrowed: that stride was dimensioned for `PHANTOM_ACTIVE_CAP` = 6, and the worst case
+/// here is 8 packs × 8 children = 64 plus 32 adults. The burst is ceil(N / stride), so the same
+/// stride would let 21 searches land in one 100 ms slot.
+const FACELING_REPLAN_STRIDE: u64 = 11;
+/// How close counts as having reached a waypoint. Same as the robapieles'.
+const FACELING_WAYPOINT_ARRIVE: f32 = 1.25;
+
+/// Enmienda 8 — THE WEDGE GATE, and the reason it is not optional.
+///
+/// Measured with the cost probe (`faceling_pathfinding_cost`) at the worst case of 8 packs × 8
+/// children: routing EVERY mover every step cost **7.9 ms per step against ADR-040's 2 ms
+/// ceiling**, and disabling the searches entirely still left **2.5 ms** — because the "is the line
+/// clear?" shortcut is itself expensive (three probe rails × a sub-step per metre) and it ran 64
+/// times a step whether anyone needed it or not.
+///
+/// So navigation is now something a faceling EARNS by being stuck. A mover walking freely pays
+/// exactly what it paid before this amendment — one `atan2` — and only one that has had steps
+/// refused starts probing and planning. That is also what ADR-082 always said the split was:
+/// whiskers are the default and the pathfinder is what rescues them from concave traps.
+///
+/// Blocked steps add 2, clear steps take 1 back, so entering costs two bad ticks and leaving takes
+/// several good ones. The asymmetry is the hysteresis — a mover scraping along a wall must not
+/// flip between modes every other tick.
+const FACELING_WEDGE_ENTER: u8 = 4;
+const FACELING_WEDGE_MAX: u8 = 12;
 
 /// Enmienda 6 — THE BOLT. How fast a child runs once it has your property.
 ///
@@ -1308,6 +1485,9 @@ impl ChildDriver {
             attacks: Vec::new(),
             thefts: Vec::new(),
             dropped_loot: Vec::new(),
+            nav_scratch: NavScratch::default(),
+            nav_cells: Vec::new(),
+            step_counter: 0,
         }
     }
 
@@ -1442,6 +1622,11 @@ impl ChildDriver {
                             vocal_delay: None,
                             strike_recover: 0.0,
                             progress: ProgressWatch::new(),
+                            nav_waypoints: Vec::new(),
+                            nav_cursor: 0,
+                            nav_goal: None,
+                            nav_age: 0.0,
+                            nav_blocked: 0,
                             loot: None,
                             flank_offset: 0.0,
                         });
@@ -1709,6 +1894,7 @@ impl ChildDriver {
         }))
         .collect();
 
+        self.step_counter = self.step_counter.wrapping_add(1);
         for pi in 0..self.packs.len() {
             self.detect_for_pack(pi, net, dt, &players);
             self.update_freeze_for_pack(pi, net, &players);
@@ -1723,6 +1909,147 @@ impl ChildDriver {
         self.regroup_lone_survivors(net);
         self.seal_vocals(net);
         &self.attacks
+    }
+
+    /// Records whether this child's step landed. Two forward, one back: entering the routed mode
+    /// costs two refused ticks, leaving it takes several clean ones (see `FACELING_WEDGE_ENTER`).
+    fn note_step(&mut self, pi: usize, mi: usize, moved: bool) {
+        let b = &mut self.packs[pi].members[mi].nav_blocked;
+        *b = match moved {
+            true => b.saturating_sub(1),
+            false => (*b + 2).min(FACELING_WEDGE_MAX),
+        };
+    }
+
+    /// Enmienda 8 — THE ROUTE. Heading from `from` toward `target`, around corners this time.
+    ///
+    /// Straight lines and whiskers do not converge in concave traps, and ADR-040's rejected
+    /// alternative (C) says so in as many words: whiskers were "RECHAZADA como sustituto; ACEPTADA
+    /// como complemento". The facelings shipped with only the complement — this connects the A*
+    /// that has existed since ADR-040 and that the robapieles has been using all along.
+    ///
+    /// The policy is `phantom.rs::steer_heading_raw`'s, deliberately, down to the order of the
+    /// gates: LINE FIRST (a pathfinder must never come between a creature and somewhere it can
+    /// already walk straight to), then a staggered staleness check, then one search at most.
+    /// Everything it returns still goes through `steer_around_walls` at the call site, because
+    /// ADR-082 makes the whiskers the last word on local avoidance and this does not change that.
+    fn route_heading(
+        &mut self,
+        pi: usize,
+        mi: usize,
+        layer: u8,
+        from: Vec3,
+        target: Vec3,
+        dt: f32,
+    ) -> f32 {
+        let straight = |to: Vec3| {
+            (to.x - from.x)
+                .atan2(to.z - from.z)
+                .rem_euclid(std::f32::consts::TAU)
+        };
+
+        // THE GATE (see `FACELING_WEDGE_ENTER`). A mover that is walking freely pays one `atan2`
+        // and nothing else — no probes, no plan, no state. Measured: routing everyone cost 7.9 ms
+        // per step against a 2 ms ceiling, and 2.5 ms of that was the line check alone.
+        if self.packs[pi].members[mi].nav_blocked < FACELING_WEDGE_ENTER {
+            let m = &mut self.packs[pi].members[mi];
+            if !m.nav_waypoints.is_empty() {
+                m.nav_waypoints.clear();
+                m.nav_cursor = 0;
+                m.nav_goal = None;
+            }
+            return straight(target);
+        }
+
+        self.packs[pi].members[mi].nav_age += dt;
+
+        // LINE OF TRAVEL FIRST. A pathfinder must never come between a creature and somewhere it
+        // can already walk straight to — and now that only wedged movers get here, the check is
+        // also what lets one notice it has come free.
+        if segment_is_clear_for_body(
+            &mut self.grid_cache,
+            layer,
+            from,
+            target,
+            PHANTOM_BODY_RADIUS,
+        ) {
+            let m = &mut self.packs[pi].members[mi];
+            m.nav_waypoints.clear();
+            m.nav_cursor = 0;
+            m.nav_goal = None;
+            return straight(target);
+        }
+
+        // Offset by the member's own index so packs that woke together do not all come due on the
+        // same step — the cost is not the average, it is N searches in one 100 ms slot.
+        let may_replan =
+            (self.step_counter + pi as u64 + mi as u64).is_multiple_of(FACELING_REPLAN_STRIDE);
+        let stale = may_replan && {
+            let m = &self.packs[pi].members[mi];
+            m.nav_waypoints.is_empty()
+                || m.nav_cursor >= m.nav_waypoints.len()
+                || m.nav_age >= FACELING_REPLAN_INTERVAL
+                || m.nav_goal
+                    .is_none_or(|g| g.distance_xz(target) > FACELING_REPLAN_GOAL_DRIFT)
+        };
+
+        if stale {
+            // ADR-041's long-range trick: the A* window is ±24 cells, so a goal outside it is
+            // aimed at a sub-goal ON THE BEARING just inside the edge. Same machinery, same cost,
+            // and the trip keeps real obstacle avoidance instead of degrading to a blind line.
+            let reach = (crate::world::grid_gen::NAV_WINDOW_CELLS - 2) as f32 * CELL_SIZE_M;
+            let far = from.distance_xz(target);
+            let nav_target = match far > reach {
+                true => Vec3::new(
+                    from.x + (target.x - from.x) / far * reach,
+                    from.y,
+                    from.z + (target.z - from.z) / far * reach,
+                ),
+                false => target,
+            };
+
+            let mut cells = std::mem::take(&mut self.nav_cells);
+            let mut scratch = std::mem::take(&mut self.nav_scratch);
+            find_path(
+                &mut self.grid_cache,
+                layer,
+                cell_of(from),
+                cell_of(nav_target),
+                &mut scratch,
+                &mut cells,
+            );
+            let mut waypoints = std::mem::take(&mut self.packs[pi].members[mi].nav_waypoints);
+            string_pull(&mut self.grid_cache, layer, from.y, &cells, &mut waypoints);
+            // Every buffer goes back where it came from: ADR-040's "cero asignaciones por
+            // búsqueda" is an invariant of this call, not an accident of it.
+            self.nav_cells = cells;
+            self.nav_scratch = scratch;
+            let m = &mut self.packs[pi].members[mi];
+            m.nav_waypoints = waypoints;
+            m.nav_cursor = 0;
+            m.nav_goal = Some(target);
+            m.nav_age = 0.0;
+        }
+
+        // Consume waypoints already reached — AFTER a possible replan, so a fresh plan whose first
+        // waypoint is underfoot does not waste a tick standing on it.
+        loop {
+            let m = &self.packs[pi].members[mi];
+            match m.nav_waypoints.get(m.nav_cursor) {
+                Some(wp) if from.distance_xz(*wp) <= FACELING_WAYPOINT_ARRIVE => {
+                    self.packs[pi].members[mi].nav_cursor += 1;
+                }
+                _ => break,
+            }
+        }
+
+        let m = &self.packs[pi].members[mi];
+        match m.nav_waypoints.get(m.nav_cursor) {
+            Some(wp) => straight(*wp),
+            // No plan, or plan exhausted: the straight bearing, i.e. exactly the behaviour this
+            // whole method replaced. A faceling never navigates WORSE than it did before.
+            None => straight(target),
+        }
     }
 
     /// ADR-094 point 3 — schedules one giggle "beat" per pack every
@@ -2115,7 +2442,20 @@ impl ChildDriver {
                 hz += dz / d * w;
             }
 
-            let raw_heading = hx.atan2(hz);
+            // Enmienda 8 — the escape is ROUTED now, which is the half of "que sepan escapar
+            // conociendo el mapa" that the evasion bias alone could never give: the bias bends a
+            // straight line away from you, a route actually goes round the wall between it and
+            // its nest. The bias is still added on top, so a thief with a clear run home still
+            // curves away from whoever is chasing it.
+            let routed = self.route_heading(pi, mi, layer, from, anchor, dt);
+            let raw_heading = match (hx.abs() + hz.abs()) > 1.05 {
+                // The evasion terms actually pulled: blend them into the routed bearing.
+                true => {
+                    let (rx, rz) = (routed.sin(), routed.cos());
+                    (rx + hx * 0.6).atan2(rz + hz * 0.6)
+                }
+                false => routed,
+            };
             let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
             let step = FACELING_CHILD_BOLT_SPEED * dt;
             let next = Vec3::new(
@@ -2126,6 +2466,7 @@ impl ChildDriver {
             // No patrol leash while bolting: it is running TO the anchor, so it can only end up
             // further inside its own territory.
             if is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                self.note_step(pi, mi, true);
                 self.packs[pi].members[mi].heading = heading;
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -2133,6 +2474,7 @@ impl ChildDriver {
                 }
                 return;
             }
+            self.note_step(pi, mi, false);
             // Wedged mid-escape: the same watchdog everything else uses, so a thief cannot end up
             // pinned against a corner holding your item forever.
             if self.packs[pi].members[mi].progress.note(from, anchor, dt) {
@@ -2484,7 +2826,10 @@ impl ChildDriver {
                 let (sx, sz) = separation_offset(from, mi, &others);
                 let goal = Vec3::new(goal.x + sx, goal.y, goal.z + sz);
 
-                let raw_heading = (goal.x - from.x).atan2(goal.z - from.z);
+                // Enmienda 8 — routed. The whiskers still wrap it (ADR-082 keeps them the last
+                // word on local avoidance); what changes is that the bearing handed to them now
+                // goes around the corner instead of into it.
+                let raw_heading = self.route_heading(pi, mi, layer, from, goal, dt);
                 let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                 // ±10% by temperament, so a pack does not advance as one rigid line.
                 let step = child_gear_speed(from, players, layer) * (0.9 + nerve * 0.2) * dt;
@@ -2494,6 +2839,7 @@ impl ChildDriver {
                     from.z + heading.cos() * step,
                 );
                 if is_walkable_grid_gen(&mut self.grid_cache, next, layer) {
+                    self.note_step(pi, mi, true);
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
                         let yaw = heading.to_degrees().rem_euclid(360.0);
@@ -2501,6 +2847,7 @@ impl ChildDriver {
                     }
                     return;
                 }
+                self.note_step(pi, mi, false);
                 if let Some(peer) = net.peers.get_mut(&id) {
                     let yaw = heading.to_degrees().rem_euclid(360.0);
                     peer.update_player_state(from.to_array(), yaw, "walk_slow".into());
@@ -2540,6 +2887,8 @@ impl ChildDriver {
                     }
                     return;
                 }
+                self.note_step(pi, mi, false);
+
                 // Not getting closer for `FACELING_WEDGED_GIVE_UP_S`? Draw somewhere else.
                 // `PackRoam`'s own re-roll lives behind the ARRIVE check above, so without this a
                 // child that can never arrive never re-rolls — and "never arrives" covers walking
@@ -2572,7 +2921,7 @@ impl ChildDriver {
                     return;
                 }
 
-                let raw_heading = (target.x - from.x).atan2(target.z - from.z);
+                let raw_heading = self.route_heading(pi, mi, layer, from, target, dt);
                 let heading = steer_around_walls(&mut self.grid_cache, layer, from, raw_heading);
                 let step = FACELING_CHILD_ROAM_SPEED * dt;
                 let next = Vec3::new(
@@ -2586,6 +2935,7 @@ impl ChildDriver {
                 if next.distance_xz(anchor) <= FACELING_CHILD_PATROL_RADIUS_M
                     && is_walkable_grid_gen(&mut self.grid_cache, next, layer)
                 {
+                    self.note_step(pi, mi, true);
                     self.packs[pi].members[mi].heading = heading;
                     if let Some(peer) = net.peers.get_mut(&id) {
                         let yaw = heading.to_degrees().rem_euclid(360.0);

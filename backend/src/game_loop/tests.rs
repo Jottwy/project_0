@@ -7857,6 +7857,11 @@ async fn adult_never_leaves_its_office_chunk_even_when_aimed_outside_it() {
         enforce_target: None,
         strike_recover: 0.0,
         progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
     });
 
     for _ in 0..200 {
@@ -7898,6 +7903,11 @@ async fn the_whole_office_regards_together_even_when_only_one_adult_is_in_range(
             enforce_target: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
+            nav_blocked: 0,
         });
     }
 
@@ -7951,6 +7961,11 @@ async fn pvp_hit_on_a_faceling_applies_damage_locally_and_alerts_the_whole_offic
             enforce_target: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
+            nav_blocked: 0,
         });
     }
     player.position = Vec3::new(x0 + 5.0, 1.8, z0 + 5.0);
@@ -8008,6 +8023,11 @@ async fn a_faceling_reduced_to_zero_health_is_despawned() {
         enforce_target: None,
         strike_recover: 0.0,
         progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
     });
 
     let died = adult_driver.apply_damage(&mut net, id, 1, 999.0);
@@ -8043,6 +8063,11 @@ async fn an_enforcing_adult_in_reach_actually_strikes() {
         enforce_target: Some(host),
         strike_recover: 0.0,
         progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
     });
 
     // 1 m away: same cell, so the segment between them is clear, and well inside the 2.4 m reach.
@@ -8092,6 +8117,11 @@ async fn an_enforcing_adult_out_of_reach_does_not_strike() {
         enforce_target: Some(host),
         strike_recover: 0.0,
         progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
     });
 
     // 8 m away: inside the regard/converge radius, far outside striking distance.
@@ -8295,6 +8325,11 @@ async fn a_child_never_roams_past_its_patrol_radius() {
             vocal_delay: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
+            nav_blocked: 0,
             loot: None,
             flank_offset: 0.0,
         }],
@@ -8343,6 +8378,11 @@ async fn four_member_pack(
             vocal_delay: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
+            nav_blocked: 0,
             loot: None,
             flank_offset: 0.0,
         });
@@ -8417,6 +8457,115 @@ async fn one_members_sighting_commits_the_whole_pack_to_the_cerco() {
         (flank_sides[0] - flank_sides[1]).abs() > 1.0,
         "both Flank members took the same side: {flank_sides:?}"
     );
+}
+
+/// Enmienda 8 — THE COST PROBE. ADR-040 fixed a ceiling of 2 ms per `step()` at 10 Hz and measured
+/// 0.83 ms — but for SIX robapieles. This wires the same A* into a worst case of 8 packs × 8
+/// children, and `docs/systems/perf-baseline.md` explicitly does not measure the game-loop tick,
+/// so that number does not exist for this load. It does now.
+///
+/// Prints, does not assert: a wall-clock threshold in CI is a flaky test on a busy machine (the
+/// same reasoning `roster_relay_cost` gives). Run it by hand when the population caps change:
+///   cargo test faceling_pathfinding_cost -- --ignored --nocapture
+#[tokio::test]
+#[ignore = "sonda: imprime, no afirma; correr con -- --ignored --nocapture"]
+async fn faceling_pathfinding_cost() {
+    let seed = 42;
+    let mut net = NetworkManager::bind(0, 1, seed, true).await.unwrap();
+    let (ox, oz) = find_office_chunk(seed);
+    let (x0, x1, z0, z1) = chunk_bounds((ox, oz));
+    let centre = Vec3::new((x0 + x1) / 2.0, stand_on(0), (z0 + z1) / 2.0);
+
+    let mut driver = ChildDriver::new(seed);
+    // Worst case by construction rather than by luck: fill to the pack cap, each at the member cap.
+    for p in 0..8 {
+        let anchor = Vec3::new(centre.x + p as f32 * 12.0, centre.y, centre.z);
+        let mut pack = four_member_pack(&mut net, (ox + p, oz), 0, anchor).await;
+        while pack.members.len() < 8 {
+            let extra = net.spawn_faceling("Faceling_Child_Probe", anchor.to_array(), 2);
+            pack.members.push(ChildMover {
+                id: extra,
+                heading: 0.0,
+                roam_target: anchor,
+                state_timer: 999.0,
+                health: 15,
+                role: None,
+                frozen: false,
+                pending_vocal: None,
+                vocal_seq: 0,
+                vocal_kind: 0,
+                vocal_delay: None,
+                strike_recover: 0.0,
+                progress: ProgressWatch::new(),
+                nav_waypoints: Vec::new(),
+                nav_cursor: 0,
+                nav_goal: None,
+                nav_age: 0.0,
+                nav_blocked: 0,
+                loot: None,
+                flank_offset: 0.0,
+            });
+        }
+        pack.state = ChildState::PackStalk;
+        pack.mind.target = Some(net.local_id);
+        pack.mind.last_known_pos = Some(centre);
+        assign_roles(&mut pack.members);
+        driver.packs.push(pack);
+    }
+    let total: usize = driver.packs.iter().map(|p| p.members.len()).sum();
+
+    // Warm the chunk cache first: the first steps pay ~23.5 µs per chunk-layer generated, which is
+    // world-gen cost and not what this is measuring.
+    for _ in 0..20 {
+        driver.step(&mut net, 0.1, centre, 0.0);
+    }
+    let warm = driver.grid_cache.generated_count();
+
+    let started = std::time::Instant::now();
+    const STEPS: u32 = 100;
+    for _ in 0..STEPS {
+        driver.step(&mut net, 0.1, centre, 0.0);
+    }
+    let per_step_ms = started.elapsed().as_secs_f64() * 1000.0 / STEPS as f64;
+    let generated_after = driver.grid_cache.generated_count();
+
+    println!(
+        "FACELING_NAV_COST children={total} packs={} per_step_ms={per_step_ms:.3} budget_ms=2.000",
+        driver.packs.len()
+    );
+    // If this keeps climbing after the warm-up, the cache is thrashing — ADR-043's mutual-eviction
+    // failure, which is the specific risk of raising the activation caps without raising
+    // `GRID_CACHE_MAX_CHUNKS`. A flat number here is the evidence that it is not happening.
+    println!(
+        "FACELING_NAV_CACHE generated_warm={warm} generated_after={generated_after} delta={}",
+        generated_after - warm
+    );
+
+    // THE SAME POPULATION, WANDERING. Measured because the "worst case" above turns out NOT to be
+    // the expensive one, which is worth knowing and was not obvious: in a closed cerco a good half
+    // of the pack is FROZEN staring at you, and a frozen child returns early from `tick_member`.
+    // Wandering, nobody freezes, so every one of the 64 pays for a full move every step. The
+    // ambient case is the costly one.
+    for (i, pack) in driver.packs.iter_mut().enumerate() {
+        if i == 0 {
+            continue; // leave one hunting
+        }
+        pack.state = ChildState::PackRoam;
+        pack.mind = PackMind::empty();
+        for m in pack.members.iter_mut() {
+            m.role = None;
+            m.roam_target = pack.anchor;
+        }
+    }
+    for _ in 0..20 {
+        driver.step(&mut net, 0.1, centre, 0.0);
+    }
+    let started = std::time::Instant::now();
+    for _ in 0..STEPS {
+        driver.step(&mut net, 0.1, centre, 0.0);
+    }
+    let wandering_ms = started.elapsed().as_secs_f64() * 1000.0 / STEPS as f64;
+    println!("FACELING_NAV_COST_WANDERING per_step_ms={wandering_ms:.3}");
 }
 
 /// Enmienda 6 — A THIEF IGNORES THE STARE. Everything else in the pack obeys it, so the one that
@@ -8533,6 +8682,11 @@ fn packs_past_five_send_the_extras_to_the_ring() {
                 vocal_delay: None,
                 strike_recover: 0.0,
                 progress: ProgressWatch::new(),
+                nav_waypoints: Vec::new(),
+                nav_cursor: 0,
+                nav_goal: None,
+                nav_age: 0.0,
+                nav_blocked: 0,
                 loot: None,
                 flank_offset: 0.0,
             })
@@ -8912,6 +9066,11 @@ async fn a_lone_survivor_does_not_overfill_a_full_pack() {
             vocal_delay: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
+            nav_blocked: 0,
             loot: None,
             flank_offset: 0.0,
         });
@@ -9310,6 +9469,11 @@ fn a_pack_of_five_gets_a_second_press() {
             vocal_delay: None,
             strike_recover: 0.0,
             progress: ProgressWatch::new(),
+            nav_waypoints: Vec::new(),
+            nav_cursor: 0,
+            nav_goal: None,
+            nav_age: 0.0,
+            nav_blocked: 0,
             loot: None,
             flank_offset: 0.0,
         })
@@ -9554,6 +9718,11 @@ async fn a_wedged_adult_gives_up_its_puesto_instead_of_pushing_forever() {
         enforce_target: None,
         strike_recover: 0.0,
         progress: ProgressWatch::new(),
+        nav_waypoints: Vec::new(),
+        nav_cursor: 0,
+        nav_goal: None,
+        nav_age: 0.0,
+        nav_blocked: 0,
     });
 
     // Long enough to cover the LEGITIMATE part of the walk first: heading for a point past the
