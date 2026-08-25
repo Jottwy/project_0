@@ -38,6 +38,12 @@ namespace BackroomsSurvival.Net
         /// A qué distancia se empieza a fijar el otro lado. Más que el alcance de uso, para que
         /// los chunks lleguen ANTES de que el jugador pueda abrir la puerta.
         private const float PinRadiusM = 18f;
+        /// Y a cuál se suelta. HISTÉRESIS, no el mismo número: cruzar cambia de golpe la distancia
+        /// a las dos puertas, y con un solo umbral el conjunto fijado parpadeaba en cada salto —
+        /// en el log del playtest se ve `chunks 9 → 0 → 9 → 18 → 9` por cruce, y ese 0 SUELTA el
+        /// islote que se acababa de construir. Reconstruirlo es exactamente el "le cuesta cargar
+        /// el chunk" que se sentía al llegar.
+        private const float UnpinRadiusM = 34f;
         /// Radio en chunks del islote fijado al otro lado. 1 = 3×3, lo mismo que ve el jugador.
         private const int PinChunkRadius = 1;
         private const float ChunkSide = GridConstants.ChunkCells * GridConstants.CellSize;
@@ -57,7 +63,11 @@ namespace BackroomsSurvival.Net
         private static readonly List<Level4Portal> _all = new List<Level4Portal>();
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
-        private static void ResetStatics() => _all.Clear();
+        private static void ResetStatics()
+        {
+            _all.Clear();
+            _repinDirty = false;
+        }
 
         public void Bind(Level4Portal twin, float width, float height)
         {
@@ -135,7 +145,8 @@ namespace BackroomsSurvival.Net
                 return;
 
             float dist = Vector3.Distance(playerCam.transform.position, transform.position);
-            UpdatePinning(dist <= PinRadiusM);
+            UpdatePinning(dist);
+            ApplyPendingRepin();
 
             bool show = _door != null && _door.IsOpen && dist <= PinRadiusM;
             if (_surface != null)
@@ -214,11 +225,29 @@ namespace BackroomsSurvival.Net
         /// Fija (o suelta) el islote de chunks alrededor de la gemela. El conjunto se construye
         /// entre TODOS los portales que lo pidan, porque `SetPinned` reemplaza — si cada uno
         /// llamara con lo suyo, el segundo borraría lo del primero.
-        private void UpdatePinning(bool wanted)
+        ///
+        /// Con histéresis y COALESCIDO a una sola aplicación por frame: los dos portales cambian
+        /// de estado en el mismo salto pero en llamadas distintas, así que aplicar al vuelo
+        /// publicaba el estado intermedio (un portal ya soltó, el otro aún no fijó) y el streamer
+        /// destruía chunks para reconstruirlos acto seguido.
+        private void UpdatePinning(float dist)
         {
+            bool wanted = _pinning ? dist <= UnpinRadiusM : dist <= PinRadiusM;
             if (wanted == _pinning)
                 return;
             _pinning = wanted;
+            _repinDirty = true;
+        }
+
+        private static bool _repinDirty;
+
+        /// Aplica el conjunto fijado UNA vez por frame, después de que todos los portales hayan
+        /// decidido. Lo hace el primero de la lista para que haya exactamente un responsable.
+        private void ApplyPendingRepin()
+        {
+            if (!_repinDirty || _all.Count == 0 || _all[0] != this)
+                return;
+            _repinDirty = false;
             RepinAll();
         }
 

@@ -195,46 +195,6 @@ pub fn return_door_world_pos() -> [f32; 3] {
 /// Cuánto se separa una puerta de su punto de aterrizaje, en metros.
 pub const RETURN_DOOR_OFFSET_M: f32 = 5.0;
 
-/// El salto de una puerta a su gemela, como DESPLAZAMIENTO aplicado a la posición del jugador.
-///
-/// Cruzar deja de ser "aparece en tal punto" y pasa a ser "aparece en el punto EQUIVALENTE al
-/// otro lado": si cruzas a 10 cm del plano, sales a 10 cm del plano de la otra, con tu mismo
-/// desplazamiento lateral y tu misma altura. La marcha continúa en la dirección en que ibas y te
-/// ALEJA de la puerta de salida, que es lo que hace que no haga falta enfriamiento ninguno — y lo
-/// que hace que el salto no se note, que era lo pedido.
-///
-/// PRECONDICIÓN, y es la que permite que esto sea una resta y no una matriz: las dos puertas
-/// están orientadas OPUESTAS sobre el eje Z (entrada mirando −Z, vuelta mirando +Z; ver
-/// `GameBootstrap.SpawnLevel4Doors`). Con esa disposición la transformación de portal
-/// —`gemela.localToWorld · giro180 · esta.worldToLocal`— se reduce exactamente a esta traslación.
-/// Rotar una de las dos rompe la equivalencia y obliga a escribir la matriz entera con su yaw.
-///
-/// No depende de la ventana ni de por dónde entraste, así que la vuelta funciona SIEMPRE — hasta
-/// tras reiniciar el backend, que es cuando dejaba al jugador encerrado en la reserva.
-pub fn portal_delta(door_is_entry: bool) -> [f32; 3] {
-    let from = if door_is_entry {
-        ENTRY_DOOR_WORLD_POS
-    } else {
-        return_door_world_pos()
-    };
-    let to = if door_is_entry {
-        return_door_world_pos()
-    } else {
-        ENTRY_DOOR_WORLD_POS
-    };
-    [to[0] - from[0], to[1] - from[1], to[2] - from[2]]
-}
-
-/// La posición de salida de un cruce: la de quien cruza, desplazada al otro lado.
-pub fn portal_exit(requester_pos: [f32; 3], door_is_entry: bool) -> [f32; 3] {
-    let d = portal_delta(door_is_entry);
-    [
-        requester_pos[0] + d[0],
-        requester_pos[1] + d[1],
-        requester_pos[2] + d[2],
-    ]
-}
-
 /// Ancla de la puerta de ENTRADA, en Level 0. Espejo de lo que planta `GameBootstrap`.
 ///
 /// Está en el CENTRO del tile (0,2) del chunk (0,0), y el sitio no es arbitrario: ese tile forma
@@ -244,27 +204,66 @@ pub fn portal_exit(requester_pos: [f32; 3], door_is_entry: bool) -> [f32; 3] {
 /// no deducido. A ~8 m del spawn por defecto (5,0,5).
 pub const ENTRY_DOOR_WORLD_POS: [f32; 3] = [2.5, 0.0, 12.5];
 
-/// Dónde aparece quien VUELVE al Level 0: delante de la puerta de entrada, en su CARA FRONTAL.
-///
-/// La cara frontal de la de entrada es −Z (mira hacia el spawn, que es por donde se llega a ella);
-/// la de la de vuelta es +Z (mira al centro del vestíbulo, que es por donde se sale). De ahí que
-/// los dos offsets tengan signo distinto aunque sean el mismo número: cada aterrizaje cae en la
-/// cara frontal de SU puerta, no en un +Z absoluto.
-///
-/// No es cosmético. El portal enseña justamente lo que hay delante de la cara frontal de la
-/// gemela, así que si el aterrizaje cayera del otro lado verías un sitio y aparecerías en otro.
-///
-/// La Y es la del suelo de LEVEL 0 (cero) más la altura de ojos — NO `region_floor_y()`, que es
-/// la de la reserva. Hoy coinciden porque `REGION_LAYER` es 0, y ese es justo el motivo de no
-/// escribirlo con la de la reserva: el día que la región suba de capa, esta cuenta seguiría
-/// siendo correcta sola.
+/// Dónde aparece quien VUELVE al Level 0. Ahora lo resuelve `portal_exit`, que además blinda el
+/// caso de una posición desincronizada; esto se conserva como el punto CANÓNICO de llegada para
+/// quien necesite uno sin cruzar (tests, y el mirror con `GameBootstrap`).
 pub fn entry_door_arrival_pos() -> [f32; 3] {
+    portal_exit(ENTRY_DOOR_WORLD_POS, false)
+}
+
+/// Cuánto delante de la cara transitable de la puerta de destino se aparece, en metros.
+///
+/// Tiene que ser MAYOR que la banda de muestreo del cruce del cliente (`CrossBandM`, 1 m) o
+/// aterrizarías dentro de la banda de la puerta por la que acabas de salir, y el primer paso en
+/// cualquier dirección volvería a contar como cruce.
+pub const PORTAL_EXIT_M: f32 = 1.5;
+
+/// Holgura sobre el suelo al aparecer. Cero exacto arranca dentro del propio suelo; 1,8 (la altura
+/// de ojos) es una CAÍDA de 1,8 m en cada cruce, que es lo que se sentía como "te lanza un poco".
+const PORTAL_EXIT_CLEARANCE_M: f32 = 0.1;
+
+/// Dónde sale quien cruza una puerta.
+///
+/// TRES DECISIONES, y las tres salen de bugs vistos en el log del playtest del 2026-08-25:
+///
+/// 1. **El eje de cruce es FIJO, no relativo.** Antes esto era una traslación pura
+///    (`pos + (destino − origen)`), que conserva de qué lado del plano estás. Suena bien y es lo
+///    que hace Portal, pero Portal tiene los portales EN PAREDES y solo se cruzan por delante:
+///    estos marcos son exentos y se cruzan por los dos lados, así que cruzar "al revés" te
+///    escupía por la cara NO transitable de la gemela — contra la pared, y del lado de "todavía
+///    no he cruzado", con lo que el primer paso te devolvía. En el log: tres cruces en 340 ms.
+///    Ahora sales SIEMPRE por la cara transitable, cruces por donde cruces.
+/// 2. **La Y es la del SUELO, no la del jugador.** El backend ignora la Y que reporta el cliente
+///    (`resolve_move` fuerza la suya), así que arrastraba un 1,9 heredado y cada cruce acababa en
+///    una caída de 1,8 m.
+/// 3. **El desplazamiento LATERAL sí se conserva**, recortado al ancho del vano. Es lo que hace
+///    que el salto no se note: sales por donde entraste, no recentrado de golpe. Y es el único
+///    eje donde una posición ligeramente desincronizada no puede hacer daño — a diferencia del
+///    eje de cruce, donde heredar un error mandaba el destino a 57 m de distancia (el
+///    `dest z=127.49` del log, con el backend creyendo al jugador dentro del vestíbulo).
+pub fn portal_exit(requester_pos: [f32; 3], door_is_entry: bool) -> [f32; 3] {
+    let (from_door, to_door) = if door_is_entry {
+        (ENTRY_DOOR_WORLD_POS, return_door_world_pos())
+    } else {
+        (return_door_world_pos(), ENTRY_DOOR_WORLD_POS)
+    };
+    // Las dos puertas son perpendiculares a Z, así que "lateral" es X y la cara transitable es un
+    // signo conocido: la de vuelta da al vestíbulo (+Z), la de entrada al lado del spawn (−Z).
+    // Rotarlas obliga a generalizar esto con su yaw — misma precondición que documenta
+    // `GameBootstrap.SpawnLevel4Doors`.
+    let lateral =
+        (requester_pos[0] - from_door[0]).clamp(-PORTAL_HALF_WIDTH_M, PORTAL_HALF_WIDTH_M);
+    let exit_sign = if door_is_entry { 1.0 } else { -1.0 };
     [
-        ENTRY_DOOR_WORLD_POS[0],
-        1.8,
-        ENTRY_DOOR_WORLD_POS[2] - RETURN_DOOR_OFFSET_M,
+        to_door[0] + lateral,
+        to_door[1] + PORTAL_EXIT_CLEARANCE_M,
+        to_door[2] + exit_sign * PORTAL_EXIT_M,
     ]
 }
+
+/// Medio ancho del vano. Espejo de `Level4DoorTrigger.DoorWidth / 2`: recortar aquí evita que un
+/// jugador que cruce rozando la jamba salga incrustado en el marco de la otra.
+pub const PORTAL_HALF_WIDTH_M: f32 = 0.8;
 
 /// Altura de techo del interior, en unidades de 2,5 m (2 = 5 m de oficina).
 const REGION_CEILING_UNITS: u8 = 2;
@@ -1032,19 +1031,21 @@ mod tests {
             [2.5, 0.0, 12.5],
             "mueve también el ancla de entrada de GameBootstrap.SpawnLevel4Doors"
         );
-        // Cada aterrizaje cae en la CARA FRONTAL de su puerta, a la misma distancia. Los signos
-        // difieren porque las caras frontales miran a lados opuestos: la de entrada hacia el
-        // spawn (−Z), la de vuelta hacia el centro del vestíbulo (+Z). Romper esto no da un
-        // rebote: da un portal que enseña un sitio y te suelta en otro.
+        // Cada aterrizaje cae en la CARA TRANSITABLE de su puerta, a `PORTAL_EXIT_M`. Los signos
+        // difieren porque esas caras miran a lados opuestos: la de entrada hacia el spawn (−Z),
+        // la de vuelta hacia el centro del vestíbulo (+Z). Romper esto no da un rebote: da un
+        // portal que enseña un sitio y te suelta en otro, contra la pared.
         assert_eq!(
             ENTRY_DOOR_WORLD_POS[2] - entry_door_arrival_pos()[2],
-            RETURN_DOOR_OFFSET_M,
+            PORTAL_EXIT_M,
             "se vuelve a la cara −Z de la puerta de entrada"
         );
+        // `RETURN_DOOR_OFFSET_M` es otra cosa y sigue siéndolo: cuánto se separa la puerta de
+        // vuelta del CENTRO del vestíbulo, que es lo que la deja a la vista al llegar.
         assert_eq!(
             entry_hall_world_pos()[2] - return_door_world_pos()[2],
             RETURN_DOOR_OFFSET_M,
-            "se entra a la cara +Z de la puerta de vuelta"
+            "la puerta de vuelta se planta a la vista del centro del vestíbulo"
         );
     }
 

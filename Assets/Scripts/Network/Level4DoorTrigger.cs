@@ -40,7 +40,12 @@ namespace BackroomsSurvival.Net
         private const float FrameThickness = 0.18f;
         /// Grosor de la banda alrededor del plano en la que se muestrea el signo. Sin ella, un
         /// frame lento (o un teleport ajeno) puede saltarse el plano entero sin verlo.
-        private const float CrossBandM = 2.5f;
+        ///
+        /// TIENE QUE SER MENOR que `level4::PORTAL_EXIT_M` (1,5 m), que es a qué distancia del
+        /// plano te deja el backend al salir: si aterrizases DENTRO de la banda, el primer paso en
+        /// cualquier dirección volvería a leerse como cruce. A 10 m/s y 60 fps un frame avanza
+        /// 17 cm, así que 1 m cubre de sobra el caso que la banda existe para cubrir.
+        private const float CrossBandM = 1.0f;
         /// Cuánto gira la hoja al abrir, y en cuánto tiempo.
         private const float OpenAngle = 95f;
         private const float SwingSeconds = 0.55f;
@@ -51,6 +56,14 @@ namespace BackroomsSurvival.Net
         /// son ~9°, así que un cono estrecho obligaría a centrar el retículo en una hoja que
         /// además puede estar abierta y fuera del hueco.
         private const float AimConeDegrees = 35f;
+        /// RED DE SEGURIDAD, no el mecanismo. La geometría ya impide el rebote —sales a
+        /// `PORTAL_EXIT_M` (1,5 m), fuera de la banda de 1 m, por la cara transitable— así que
+        /// esto no debería dispararse nunca en juego normal. Existe para lo que la geometría no
+        /// cubre: un veredicto que llega tarde por lag, un snap que se solapa con otro, o un
+        /// empujón de física en el frame del salto. Corto a propósito: si fuera largo taparía un
+        /// bug de verdad en vez de acotarlo, que es como se llegó a los 3 s de la primera versión.
+        private const float ChainGuardSeconds = 0.4f;
+        private static float _lastCrossTime = float.NegativeInfinity;
 
         private Level4Door _door;
         private long _nextRequestId = 1;
@@ -84,6 +97,12 @@ namespace BackroomsSurvival.Net
                          ?? other.gameObject.AddComponent<Level4Portal>();
             mine.Bind(theirs, DoorWidth, DoorHeight);
         }
+
+        // Con la recarga de dominio desactivada los estáticos sobreviven entre sesiones de Play:
+        // sin esto, el primer cruce de la siguiente partida podría comerse la guarda de la
+        // anterior.
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        private static void ResetStatics() => _lastCrossTime = float.NegativeInfinity;
 
         public void Configure(Level4Door door, Vector3 facing)
         {
@@ -240,6 +259,14 @@ namespace BackroomsSurvival.Net
                 Debug.Log($"[Level4Door] MPTRACE step=L4 event=cross_ignored door={_door} reason=closed");
                 return;
             }
+
+            if (Time.time - _lastCrossTime < ChainGuardSeconds)
+            {
+                Debug.Log($"[Level4Door] MPTRACE step=L4 event=cross_ignored door={_door} " +
+                          "reason=chain_guard");
+                return;
+            }
+            _lastCrossTime = Time.time;
 
             long requestId = _nextRequestId++;
             var ipc = IPCClient.Instance;

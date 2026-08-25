@@ -558,16 +558,21 @@ mod region_state_tests {
         );
         assert!(state.window_open);
 
-        // Y la vuelta deshace el salto exactamente: cruzar de vuelta desde el punto de llegada
-        // devuelve al punto de partida. Que la ida y la vuelta sean inversas es lo que hace que
-        // el par se sienta como una puerta y no como dos teleports sueltos.
+        // Y la vuelta te devuelve junto a la puerta por la que entraste. Ya NO es la inversa
+        // exacta —el eje de cruce se fija a la puerta a propósito, ver `portal_exit`— pero sí
+        // conserva el lateral, así que sales por donde entraste y no recentrado de golpe.
         let back = state.process_door(42, entry_dest, DOOR_RETURN, now);
-        for i in 0..3 {
-            assert!(
-                (back[i] - standing_in_level0[i]).abs() < 0.001,
-                "ida y vuelta no son inversas en el eje {i}: {back:?} vs {standing_in_level0:?}"
-            );
-        }
+        assert!(
+            level4::world_pos_to_region_cell(back).is_none(),
+            "volver saca de la reserva: {back:?}"
+        );
+        let from_door = ((back[0] - level4::ENTRY_DOOR_WORLD_POS[0]).powi(2)
+            + (back[2] - level4::ENTRY_DOOR_WORLD_POS[2]).powi(2))
+        .sqrt();
+        assert!(
+            from_door < 2.0,
+            "se vuelve junto a la puerta de entrada, no a cualquier sitio: {from_door} m"
+        );
 
         // Cualquier valor que no sea DOOR_ENTRY colapsa a Return — mismo criterio que
         // `CellType::kind()` con un byte desconocido: el lado seguro, no un pánico.
@@ -620,6 +625,81 @@ mod region_state_tests {
         state.process_entry(42, [999.0, 0.0, 999.0], now + Duration::from_secs(30));
         assert_eq!(state.entry_point, [10.0, 0.0, 20.0]);
         assert_eq!(state.window_count, 1);
+    }
+
+    /// BLINDAJE (playtest 2026-08-25): el destino NO puede depender de que la posición de quien
+    /// cruza sea correcta en el eje de cruce.
+    ///
+    /// En el log apareció `dest z=127.49` — 57,5 m de más — porque el backend creía al jugador
+    /// DENTRO del vestíbulo mientras el cliente cruzaba la puerta de Level 0, y la traslación
+    /// heredó el error entero. Con el eje de cruce fijado a la puerta, una posición desincronizada
+    /// (o directamente absurda) sólo puede mover el resultado dentro del ancho del vano.
+    #[test]
+    fn a_desynced_position_cannot_throw_the_exit_off_the_door() {
+        use level4::{PORTAL_EXIT_M, PORTAL_HALF_WIDTH_M};
+
+        for entry in [true, false] {
+            let door = if entry {
+                level4::return_door_world_pos()
+            } else {
+                level4::ENTRY_DOOR_WORLD_POS
+            };
+            // Posiciones que un backend desincronizado podría traer: el otro nivel, muy lejos en
+            // el eje de cruce, y el propio vestíbulo.
+            for bogus in [
+                [10075.0f32, 1.9, 70.0],
+                [2.5, 0.0, -900.0],
+                [-4000.0, 50.0, 4000.0],
+            ] {
+                let exit = level4::portal_exit(bogus, entry);
+                assert!(
+                    (exit[0] - door[0]).abs() <= PORTAL_HALF_WIDTH_M + 0.001,
+                    "salida fuera del ancho del vano: {exit:?} para {bogus:?}"
+                );
+                assert!(
+                    (exit[2] - door[2]).abs() - PORTAL_EXIT_M < 0.001,
+                    "el eje de cruce tiene que ser fijo: {exit:?}"
+                );
+                assert!(
+                    exit[1] < 1.0,
+                    "se sale a ras de suelo, no a altura de ojos: una caída por cruce es el                      micro-salto que se sentía"
+                );
+            }
+        }
+    }
+
+    /// Cruzar por CUALQUIERA de los dos lados tiene que dejarte en la cara transitable de la
+    /// gemela. Un marco exento se cruza en los dos sentidos, y la traslación pura anterior
+    /// escupía por la cara equivocada la mitad de las veces — contra la pared y del lado de
+    /// "todavía no he cruzado", con lo que el primer paso te devolvía: tres cruces en 340 ms.
+    #[test]
+    fn crossing_from_either_side_lands_on_the_walkable_face() {
+        let hall = level4::return_door_world_pos();
+        let entry = level4::ENTRY_DOOR_WORLD_POS;
+
+        for delta in [-0.1f32, 0.1] {
+            // Entrar, viniendo de cada lado de la puerta de entrada.
+            let exit = level4::portal_exit([entry[0], 0.0, entry[2] + delta], true);
+            assert!(
+                exit[2] > hall[2],
+                "entrar deja siempre del lado del vestíbulo (+Z): {exit:?}"
+            );
+            assert!(
+                level4::world_pos_to_region_cell(exit).is_some(),
+                "y dentro de la reserva: {exit:?}"
+            );
+
+            // Y volver, desde cada lado de la de vuelta.
+            let back = level4::portal_exit([hall[0], 0.0, hall[2] + delta], false);
+            assert!(
+                back[2] < entry[2],
+                "volver deja siempre del lado del spawn (−Z): {back:?}"
+            );
+            assert!(
+                level4::world_pos_to_region_cell(back).is_none(),
+                "y fuera de la reserva: {back:?}"
+            );
+        }
     }
 
     /// Sin ventana abierta la vuelta TIENE que seguir funcionando. Devolver `requester_pos`
