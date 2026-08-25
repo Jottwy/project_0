@@ -580,16 +580,17 @@ mod region_state_tests {
         assert_eq!(unknown_dest, level4::portal_exit([1.0, 0.0, 1.0], false));
     }
 
+    // Comprobado en tiempo de COMPILACIÓN y no con un `assert!` dentro del test: assertar una
+    // constante en runtime no comprueba nada que el compilador no comprobara mejor
+    // (clippy::assertions_on_constants). Con la deriva encendida quien manda es
+    // `resolve_return_dest`, que tiene sus propios tests.
+    const _: () = assert!(RETURN_TO_FIXED_DOOR);
+
     /// El modo fijo hace lo que dice: mismo destino entres por donde entres, pidas desde donde
     /// pidas y hayas tardado lo que hayas tardado. Es lo que permite que el portal tenga un punto
     /// al que apuntar la cámara.
     #[test]
     fn the_fixed_return_lands_at_the_entry_door_whatever_happened() {
-        assert!(
-            RETURN_TO_FIXED_DOOR,
-            "este test describe el modo fijo; con la deriva encendida el que manda es \
-             resolve_return_dest y sus propios tests"
-        );
         let now = Instant::now();
         let asking_from = [1.0, 0.0, 1.0];
         let expected = level4::portal_exit(asking_from, false);
@@ -625,6 +626,35 @@ mod region_state_tests {
         state.process_entry(42, [999.0, 0.0, 999.0], now + Duration::from_secs(30));
         assert_eq!(state.entry_point, [10.0, 0.0, 20.0]);
         assert_eq!(state.window_count, 1);
+    }
+
+    /// ADR-093 punto 4 — la reserva es zona NEUTRAL para los facelings, y el criterio que lo
+    /// decide tiene que coincidir con el que decide dónde están: si divergieran, habría una
+    /// franja donde una cría te ve como presa mientras el juego te cree dentro de la incursión.
+    ///
+    /// El test vive aquí, junto a la geometría, y no en `faceling.rs`: lo que se comprueba es que
+    /// el mismo predicado de pertenencia sirve a las dos preguntas.
+    #[test]
+    fn the_reserve_reads_as_neutral_ground_wherever_it_is_asked() {
+        let hall = level4::entry_hall_world_pos();
+        assert!(
+            level4::world_pos_to_region_cell(hall).is_some(),
+            "el vestíbulo es zona neutral"
+        );
+        // Y el punto al que se sale al volver NO lo es: cruzar de vuelta te devuelve al mundo
+        // donde los cara-culos sí muerden.
+        let outside = level4::entry_door_arrival_pos();
+        assert!(
+            level4::world_pos_to_region_cell(outside).is_none(),
+            "salir de la reserva devuelve a terreno hostil: {outside:?}"
+        );
+        // La banda de altura importa: mismo XZ, otra capa ⇒ fuera. Sin esto, con la reserva
+        // compartiendo XZ con algo, medio mundo se volvería neutral.
+        let high_above = [hall[0], hall[1] + 400.0, hall[2]];
+        assert!(
+            level4::world_pos_to_region_cell(high_above).is_none(),
+            "la pertenencia mira la Y, no sólo el XZ"
+        );
     }
 
     /// BLINDAJE (playtest 2026-08-25): el destino NO puede depender de que la posición de quien

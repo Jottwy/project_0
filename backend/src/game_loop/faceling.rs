@@ -158,6 +158,22 @@ pub(super) enum AdultState {
     Enforce,
 }
 
+/// ADR-093 punto 4 — dentro de la reserva del Level 4 los facelings son NEUTRALES.
+///
+/// Regla del ADR, no un ajuste: la reserva se puebla A PROPÓSITO de cara-culos como AMBIENTE —18
+/// adultos y 3 manadas de crías en 150 m tras alinear la zona en `e0901f33`— y la amenaza de esa
+/// zona es el robapieles, cuya densidad sube con el epoch. Sin esto, cruzar la puerta es entrar en
+/// una carnicería de treinta criaturas, que no es la incursión que el ADR describe.
+///
+/// Cada llamador pasa la posición que TIENE a mano —la criatura golpeada, el atacante, o el
+/// jugador avistado— y las tres son equivalentes aquí: con la reserva a 10 km de cualquier otra
+/// cosa, que uno de los implicados esté dentro implica que la escena entera ocurre dentro. No hay
+/// caso en que una criatura de Level 0 pueda ver a alguien de la reserva ni al revés. (Ni el
+/// adulto ni la cría guardan su propia posición: viven como peers en `net.peers`.)
+fn level4_is_neutral(target: Vec3) -> bool {
+    crate::world::grid_gen::level4::world_pos_to_region_cell(target.to_array()).is_some()
+}
+
 pub(super) struct AdultMover {
     pub(super) id: PeerId,
     pub(super) home_chunk: (i32, i32),
@@ -474,6 +490,19 @@ impl AdultDriver {
                 victim_id, home.0, home.1
             );
             return true;
+        }
+
+        // ADR-093: en la reserva del Level 4, ni siquiera la represalia. El adulto ya era neutral
+        // por diseño —solo entra en `Enforce` si le pegan— así que esto cierra la única puerta que
+        // le quedaba a que la incursión acabe en pelea con el decorado.
+        // Se mira dónde está el ADULTO golpeado, no quién le pegó: es un peer, así que su
+        // posición sí está a mano aquí, y es la que dice dónde ocurre la escena.
+        let struck_at = net
+            .peers
+            .get(&victim_id)
+            .map(|p| Vec3::from_array(p.position));
+        if struck_at.is_some_and(level4_is_neutral) {
+            return false;
         }
 
         let home = self.movers[idx].home_chunk;
@@ -2031,8 +2060,11 @@ impl ChildDriver {
                     mind.last_known_pos = Some(pos);
                 }
                 mind.lost_for = 0.0;
+                // ADR-093: dentro de la reserva del Level 4 la manada no monta el cerco. Ver
+                // `level4_is_neutral` — la amenaza de esa zona es el robapieles, no los cara-culos.
                 if self.packs[pi].state != ChildState::PackStalk
                     && self.packs[pi].mind.last_known_pos.is_some()
+                    && !attacker_pos.is_some_and(level4_is_neutral)
                 {
                     self.packs[pi].state = ChildState::PackStalk;
                     assign_roles(&mut self.packs[pi].members);
@@ -2719,7 +2751,10 @@ impl ChildDriver {
             mind.last_known_pos = Some(ppos);
             mind.last_known_vel = vel;
             mind.lost_for = 0.0;
-            if self.packs[pi].state != ChildState::PackStalk {
+            // ADR-093, y esta es la ruta que importa: el cerco de las crías se abre por
+            // AVISTAMIENTO, sin que nadie las provoque. Los adultos ya eran reactivos, así que
+            // esto era lo único de la especie que convertía la reserva en una carnicería.
+            if self.packs[pi].state != ChildState::PackStalk && !level4_is_neutral(ppos) {
                 self.packs[pi].state = ChildState::PackStalk;
                 assign_roles(&mut self.packs[pi].members);
                 // ADR-094 point 3: "Grito: al cargar" — the whole pack, the instant the cerco

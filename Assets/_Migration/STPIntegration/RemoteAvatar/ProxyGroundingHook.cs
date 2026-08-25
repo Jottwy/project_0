@@ -58,6 +58,12 @@ namespace BackroomsSurvival.Migration.STPIntegration
         private bool _hasRig;
         private float _offset;    // smoothed world-Y shift applied to Pelvis this frame
         private float _offsetVel; // SmoothDamp state
+        // Posición del frame anterior, para distinguir andar de que te recoloquen.
+        private Vector3 _prevPos;
+        private bool _hasPrevPos;
+        /// Salto por frame a partir del cual el movimiento no puede ser locomoción. Generoso para
+        /// no confundirse con un frame malo esprintando, y muy por debajo de cualquier teleport.
+        private const float DiscontinuityM = 6f;
 
         [Header("Diagnostics — invisible-mesh hunt (2026-08-01), TEMPORARY")]
         [Tooltip("Logs Pelvis drift + cull state ~2x/s. It exists to answer ONE open question: does " +
@@ -98,6 +104,7 @@ namespace BackroomsSurvival.Migration.STPIntegration
         {
             _offset = 0f;
             _offsetVel = 0f;
+            _hasPrevPos = false; // proxy reciclado: la posición anterior era de otro cuerpo
             // Clothing toggles at runtime (ProxyClothingHook), so which renderer is the "body" can
             // change between pool reuses. Re-resolve rather than trust the Awake-time pick.
             _sampleRenderer = ResolveBodyRenderer();
@@ -110,6 +117,30 @@ namespace BackroomsSurvival.Migration.STPIntegration
                 return;
 
             float target = ResolveOffset();
+
+            // DISCONTINUIDAD ≠ MOVIMIENTO. Este suavizado existe para que el cuerpo asiente sobre
+            // rampas y escalones sin dar tirones, y da por hecho que el proxy se MUEVE de forma
+            // continua. Deja de ser cierto en cuanto algo lo recoloca de golpe: un peer que se
+            // teletransporta, y sobre todo el jugador cruzando una puerta del Level 4 (ADR-093),
+            // que cambia el mundo entero bajo los pies de todos los proxies a la vez.
+            //
+            // Ahí el suelo bajo cada proxy APARECE Y DESAPARECE mientras los chunks del destino se
+            // construyen, así que el objetivo salta entre 0 y el hueco real varias veces. El
+            // `SmoothDamp` lo persigue con velocidad acumulada y desplaza la pelvis — y mover un
+            // hueso de una malla skinned no la mueve: la ESTIRA. Es la deformación que se veía al
+            // cruzar.
+            //
+            // Ante un salto, se adopta el objetivo de golpe y se tira la velocidad: no hay nada
+            // que suavizar entre dos posiciones que no son continuas.
+            Vector3 here = transform.position;
+            if (_hasPrevPos && (here - _prevPos).sqrMagnitude > DiscontinuityM * DiscontinuityM)
+            {
+                _offset = target;
+                _offsetVel = 0f;
+            }
+            _prevPos = here;
+            _hasPrevPos = true;
+
             _offset = Mathf.SmoothDamp(_offset, target, ref _offsetVel, _smoothTime);
 
             if (!Mathf.Approximately(_offset, 0f))

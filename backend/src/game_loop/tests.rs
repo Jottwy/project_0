@@ -10895,7 +10895,7 @@ async fn an_adult_can_strike_a_player_pressed_into_a_wall() {
     let mut driver = AdultDriver::new(42);
     // The CHILD's reach, deliberately: it is inside the adult's too, and the contact stance only
     // resolves within a short window — a gap near the adult's full 2.4 m leaves no stance to find.
-    assert!(FACELING_CHILD_ATTACK_REACH < FACELING_ADULT_ATTACK_REACH);
+    const { assert!(FACELING_CHILD_ATTACK_REACH < FACELING_ADULT_ATTACK_REACH) };
     let (adult_at, player_at) =
         author_wall_hugging_pair(&mut driver.grid_cache, FACELING_CHILD_ATTACK_REACH - 0.2);
     let mut net = NetworkManager::bind(0, 1, 42, true).await.unwrap();
