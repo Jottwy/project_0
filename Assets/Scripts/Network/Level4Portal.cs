@@ -148,7 +148,13 @@ namespace BackroomsSurvival.Net
             UpdatePinning(dist);
             ApplyPendingRepin();
 
-            bool show = _door != null && _door.IsOpen && dist <= PinRadiusM;
+            // SÓLO DESDE LA CARA FRONTAL. El quad lleva `Cull Off` para que el hueco no
+            // desaparezca visto de canto, pero eso hacía que desde DETRÁS del marco enseñara la
+            // misma vista que desde delante — y desde atrás lo que corresponde ver es el otro
+            // lado, no el mismo. Un portal de una cara es además lo que hace Portal, y aquí
+            // encaja: la cara frontal de cada puerta es por donde se llega a ella.
+            bool inFront = transform.InverseTransformPoint(playerCam.transform.position).z >= 0f;
+            bool show = _door != null && _door.IsOpen && inFront && dist <= PinRadiusM;
             if (_surface != null)
                 _surface.enabled = show;
             if (_cam == null)
@@ -158,6 +164,10 @@ namespace BackroomsSurvival.Net
                 return;
 
             EnsureRenderTexture();
+            // La RT conserva el último frame renderizado. Al volver a encender la cámara tras un
+            // rato apagada, ese frame viejo es de otro sitio del mundo y asoma durante un frame
+            // como un destello. Descartarlo cuesta nada y lo quita.
+            _rt.DiscardContents();
 
             // LA CÁMARA VIRTUAL, con el giro de media vuelta que es TODO el asunto.
             //
