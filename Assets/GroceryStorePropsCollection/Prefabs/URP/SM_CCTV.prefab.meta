@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000009162974499857303161
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_CCTV.prefab
+  uploadId: 733046

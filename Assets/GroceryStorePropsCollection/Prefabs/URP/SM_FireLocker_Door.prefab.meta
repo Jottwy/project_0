@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000009638841784476316512
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_FireLocker_Door.prefab
+  uploadId: 733046

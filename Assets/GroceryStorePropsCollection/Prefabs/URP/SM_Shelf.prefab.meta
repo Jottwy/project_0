@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000004257449022764763079
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_Shelf.prefab
+  uploadId: 733046

@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000016523008489324476767
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_Freezer_3_RightDoor.prefab
+  uploadId: 733046

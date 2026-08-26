@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000000303845953442652154
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_Freezer_4_Door.prefab
+  uploadId: 733046

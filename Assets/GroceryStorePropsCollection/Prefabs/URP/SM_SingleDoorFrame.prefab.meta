@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000013010882944564630720
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_SingleDoorFrame.prefab
+  uploadId: 733046

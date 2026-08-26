@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000009426380198978776121
+NativeFormatImporter:
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Materials/URP/MainMaterials/URP_M_Furniture2.mat
+  uploadId: 733046

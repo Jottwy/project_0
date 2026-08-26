@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000016083202920898962328
+PrefabImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Prefabs/URP/SM_OfficeBox.prefab
+  uploadId: 733046

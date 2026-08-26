@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: abc00000000015019475760117854908
+NativeFormatImporter:
+  mainObjectFileID: 2100000
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 310865
+  packageName: Grocery store props collection
+  packageVersion: 1.0
+  assetPath: Assets/GroceryStorePropsCollection/Materials/URP/Glass/URP_M_Glass.mat
+  uploadId: 733046
