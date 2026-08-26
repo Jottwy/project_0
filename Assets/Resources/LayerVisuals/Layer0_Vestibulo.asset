@@ -551,6 +551,8 @@ MonoBehaviour:
     densityScale: 2.2
     maxPropsPerChunk: 96
     propsPerTile: 1
+    rowCoherentProps: 1
+    wallOnlyProps: 1
   floorTintVariants: []
   wallTintVariants: []
   ceilingTintVariants: []

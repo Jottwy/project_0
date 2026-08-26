@@ -54,6 +54,7 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 case "boxes":     return Boxes(mat, hA);
                 case "plant":     return Plant(mat);
                 case "whiteboard": return Whiteboard(mat);
+                case "meeting":   return Meeting(mat);
                 case "paper":   return Paper(mat);
                 case "cable":   return Cable(mat, hA);
                 case "stain":   return Stain(mat);
@@ -169,6 +170,36 @@ namespace BackroomsSurvival.Gameplay.GridWorld
         /// <summary>ZONE_OFFICE — pizarra. Va SIN collider y a altura de pared a propósito:
         /// es decoración vertical, y un bloque sólido a 1.5 m en mitad de una sub-celda sería
         /// un obstáculo invisible de leer.</summary>
+        /// <summary>
+        /// ADR-036 enm. 1 - Mesa de reunion con dos sillas. Existe para que el tipo
+        /// `meeting` que usa el catalogo de ZONE_OFFICE tenga primitiva propia: sin ella
+        /// caeria en el fallback de tipo desconocido y amueblaria la reunion con un
+        /// armario, que es justo lo que vigila EveryOfficePlaceholderTypeBuildsSomething.
+        /// </summary>
+        private static GameObject Meeting(Material mat)
+        {
+            var root = new GameObject("Prop_meeting");
+            Box(root.transform, mat, Wood, new Vector3(0f, 0.73f, 0f),
+                new Vector3(1.8f, 0.06f, 0.9f), keepCollider: true);
+            for (int i = 0; i < 4; i++)
+            {
+                float sx = (i % 2 == 0) ? -1f : 1f;
+                float sz = (i < 2) ? -1f : 1f;
+                Box(root.transform, mat, Wood,
+                    new Vector3(sx * 0.80f, 0.35f, sz * 0.38f),
+                    new Vector3(0.06f, 0.70f, 0.06f), keepCollider: false);
+            }
+            for (int i = 0; i < 2; i++)
+            {
+                float sz = (i == 0) ? -1f : 1f;
+                Box(root.transform, mat, SeatWood, new Vector3(sz * 0.35f, 0.45f, sz * 0.95f),
+                    new Vector3(0.45f, 0.08f, 0.45f), keepCollider: true);
+                Box(root.transform, mat, SeatWood, new Vector3(sz * 0.35f, 0.70f, sz * 1.15f),
+                    new Vector3(0.45f, 0.50f, 0.05f), keepCollider: false);
+            }
+            return root;
+        }
+
         private static GameObject Whiteboard(Material mat)
         {
             var root = new GameObject("Prop_whiteboard");

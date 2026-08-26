@@ -246,20 +246,44 @@ namespace BackroomsSurvival.Tests
         }
 
         [Test]
-        public void Layer0PacksMoreThanOnePropPerTileInOffices()
+        public void Layer0BreaksTheFiveMetreGridInOffices()
         {
-            // El techo real que destapó el playtest: con densidad ~1 en sala sellada, cada
-            // tile elegible YA tenía su objeto, así que un despacho de 10×10 m son 4 tiles y
-            // 4 objetos. Subir el tope no lo arregla; hay que romper la retícula de 5 m.
+            // Este test asertaba propsPerTile > 1. El playtest con mobiliario REAL lo
+            // invirtio: tres props por tile a +-1,25 m, y como el arrimo a pared solo se
+            // aplica al slot 0, dos de cada tres muebles de 2,3 m quedaban plantados en
+            // mitad de la sala. Con cubos se leia como escombro; con muebles, no.
+            //
+            // Lo que este test defiende NO cambia: que un despacho no se quede en cuatro
+            // objetos sueltos, o sea que la oficina rompa la reticula de 5 m. Lo que
+            // cambia es que ahora hay dos vias validas y vale cualquiera:
+            //   (1) varios props por tile, la de siempre, o
+            //   (2) props compuestos: un tile trae un puesto de trabajo entero.
             var layer0 = Resources.Load<LayerVisualConfig>("LayerVisuals/Layer0_Vestibulo");
             Assert.IsTrue(layer0.TryGetZonePropSet(ZoneOffice, out var office));
-            Assert.Greater(office.propsPerTile, 1,
-                "OFFICE sigue a un prop por tile: los despachos no pueden pasar de 4 objetos");
-            Assert.GreaterOrEqual(office.maxPropsPerChunk, office.propsPerTile * 12,
-                "el tope por chunk no da para los slots autorados; el cupo de tiles se " +
-                "dividiría entre ellos y saldrían MENOS tiles amueblados que antes");
-        }
 
+            if (office.propsPerTile > 1)
+            {
+                Assert.GreaterOrEqual(office.maxPropsPerChunk, office.propsPerTile * 12,
+                    "el tope por chunk no da para los slots autorados; el cupo de tiles se " +
+                    "dividiria entre ellos y saldrian MENOS tiles amueblados que antes");
+                return;
+            }
+
+            // Via 2. Un prefab con 3 hijos o mas es una escena montada a mano, no una
+            // pieza suelta: BR_Prop_Workstation son 5 y BR_Prop_DeskIsland 8. Una silla o
+            // una maceta que vengan de un pack traen 0 o 1.
+            float total = 0f, compuesto = 0f;
+            foreach (var e in office.props)
+            {
+                float w = Mathf.Max(0f, e.spawnWeight);
+                total += w;
+                if (e.prefab != null && e.prefab.transform.childCount >= 3) compuesto += w;
+            }
+            Assert.Greater(total, 0f, "el catalogo de OFFICE no tiene peso");
+            Assert.Greater(compuesto / total, 0.5f,
+                "con un prop por tile, casi todo el peso tiene que caer en props " +
+                "compuestos o el despacho vuelve a ser cuatro objetos sueltos");
+        }
         [Test]
         public void EveryOfficePlaceholderTypeBuildsSomething()
         {

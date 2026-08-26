@@ -585,6 +585,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                  "que la retícula de 5 m está saturada.")]
         public int propsPerTile;
 
+        [Tooltip("ADR-036 enm. 1 - Un prop arrimado a pared elige su entrada hasheando la " +
+                 "FILA (coordenada fija de esa pared + lado + chunk) en vez de hacerlo " +
+                 "sobre el tile, asi que tiles contiguos contra la misma pared sacan el " +
+                 "MISMO mueble. Apagado = el comportamiento de siempre, hash por tile.")]
+        public bool rowCoherentProps;
+
+        [Tooltip("ADR-036 enm. 1 - Un tile sin ningun lado con pared deja de ser " +
+                 "candidato, o sea el mobiliario se pega al perimetro y el centro de la " +
+                 "sala queda libre. Apagado = el comportamiento de siempre.")]
+        public bool wallOnlyProps;
+
         /// <summary>True si este set aplica a <paramref name="zoneKindQuery"/>. Un −1 ("zona aún
         /// desconocida") no casa con ningún set específico, porque −1 no es un zone_kind válido;
         /// uno marcado <c>anyZoneKind</c> sí.</summary>

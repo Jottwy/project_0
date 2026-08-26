@@ -6711,3 +6711,87 @@ con una sola pasada.
 
 Sigue abierto de la lista de la Enmienda 14: `Flee` sin navegación ni watchdog, y el `Enforce` del
 adulto moliendo contra la correa de su chunk.
+
+---
+
+## ADR-036 — Enmienda 1: coherencia de fila y perimetro, ambas OPCIONALES por zona
+Fecha: 2026-08-26
+Estado: **PROPUESTA E IMPLEMENTADA** en la misma sesion, a peticion explicita de Joel tras el
+playtest. Cliente puro — el wire NO cambia. Enmienda a ADR-036.
+
+### Por que es enmienda y no un cambio de valores
+
+El cuerpo de ADR-036 se comprometio por escrito: *"Nada mas cambia: el catalogo, la seleccion
+ponderada (`PickProp`), el sesgo de cluster, el pegado a pared (Pieza E), el tope por chunk y los
+salts quedan intactos. Lo unico que se toca es el umbral"*. Esta enmienda toca **la seleccion** y
+**el gate de candidatos**. Sin este documento seria exactamente el tipo de cambio que la regla dura
+2 prohibe.
+
+### Problema
+
+Los props dejaron de ser primitivas. Con cubos, la eleccion independiente por tile se leia como
+escombro y funcionaba. Con mobiliario real de 2,3 m, la misma pureza produce un escritorio, al lado
+un armario, al lado una maceta, cada uno mirando a un sitio: **nada indica que alguien trabajara
+ahi**. El playtest lo dijo en cuatro palabras: "esta todo muy muy desorganizado".
+
+Una oficina no es una coleccion de muebles independientes. Es **repeticion** (una fila de mesas
+iguales contra la misma pared) y **perimetro** (el centro se deja libre para pasar).
+
+### Decision
+
+Dos banderas nuevas en `ZonePropSet`, **las dos con default `false`**, de modo que cualquier capa o
+zona que no las autorice se comporta byte a byte como antes de esta enmienda:
+
+1. **`rowCoherentProps`.** Para un prop que se arrima a pared, la eleccion de `PropEntry` deja de
+   hashearse sobre el TILE y pasa a hashearse sobre la **FILA**: la coordenada fija perpendicular a
+   esa pared, el lado, y el chunk. Tiles contiguos apoyados en la misma pared sacan **el mismo
+   mueble**. Un tile sin ningun lado con pared cae al comportamiento de siempre.
+
+   El lado se elige ANTES que el prop, con el mismo `PropSaltSide` y la misma cuenta de bits que ya
+   usaba el pegado a pared, asi que el lado que sale es el mismo que habria salido despues. No hay
+   dos criterios que mantener en fase.
+
+   La fila se acota **por chunk** (`side + chunkX * 4`, o `chunkZ` segun el eje). Sin eso, una fila
+   seria una linea de mundo infinita y todo el nivel a esa coordenada sacaria el mismo mueble.
+
+2. **`wallOnlyProps`.** Un tile sin ningun lado con pared (`walls[tx,tz] & 0x0F == 0`) deja de ser
+   candidato. El mobiliario se pega al perimetro y el centro de la sala queda despejado.
+
+Se autorizan **solo en `ZONE_OFFICE`** (`zoneKind 12`, `Layer0_Vestibulo`). Ninguna otra zona ni
+capa las lleva.
+
+### Lo que esta enmienda NO hace
+
+- **No toca `PropDensityMultiplier`, ni el tope, ni `densityScale`, ni los pesos.** La densidad de
+  ADR-036 sigue exactamente como la dejo su cuerpo.
+- **No reordena hashes con las banderas apagadas.** El camino sin autorizar es el literal de antes:
+  mismo salt, mismo orden de extraccion, mismos tiles.
+- **No alinea filas ENTRE chunks.** Una fila muere en el borde de su chunk. Es el precio de que el
+  emplazamiento siga siendo puro y sin mirar al vecino, que es la invariante que sostiene el
+  worldgen entero.
+- **No decide contenido.** Un prop sigue siendo decoracion; `RoomMarker` y el loot siguen sin dueno
+  (ROOMS-ROADMAP B1).
+
+### Alternativas rechazadas
+
+- **(A) Reglas de planta a mano** (mesas en filas al eje largo, pasillo central calculado). Pide
+  conocer la forma de la sala dentro de `PlaceProps`, que hoy solo ve un tile y su bitmask. Es el
+  Nivel 3 de la conversacion, y su sitio es el trazado (ADR-087 paso 2), no el mobiliario.
+- **(B) Coherencia por cluster 2x2** reusando `PropSaltCoarse`. Mas barato, pero agrupa en manchas
+  cuadradas, no en filas: da "monton de mesas", no "hilera de puestos".
+- **(C) Hacerlo global sin bandera.** Cambiaria los props de las cuatro capas y de las trece zonas
+  de golpe, incluido todo lo que Joel ya dio por bueno. Es exactamente lo que la nota
+  "no tocar valores ya validados" existe para impedir.
+
+### Verificacion
+
+- (a) Con las dos banderas apagadas, una zona elige LOS MISMOS tiles y LOS MISMOS props que antes de
+  la enmienda — no la misma cantidad, los mismos.
+- (b) Con `rowCoherentProps`, dos tiles contiguos apoyados en la misma pared y en el mismo chunk
+  sacan la misma entrada de catalogo.
+- (c) Con `wallOnlyProps`, ningun tile con `walls & 0x0F == 0` recibe prop.
+- (d) Un tile sin paredes con `rowCoherentProps` encendido y `wallOnlyProps` apagado sigue eligiendo
+  como antes.
+- (e) En juego: que una pared de la oficina se lea como una hilera y no como un rastrillo.
+
+La (e) es la unica que importa de verdad y la unica que no puede contestar un test.

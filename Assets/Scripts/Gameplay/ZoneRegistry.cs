@@ -65,6 +65,16 @@ namespace BackroomsSurvival.Gameplay
         /// </summary>
         public static void ResetForNewSession() => _zoneByChunk.Clear();
 
+        /// <summary>
+        /// Siembra la zona de un chunk desde un test EditMode. Este proyecto NO usa
+        /// <c>InternalsVisibleTo</c> a proposito (el chequeo headless construye la asamblea
+        /// con sufijo <c>_check</c> y nunca casaria), asi que la costura es publica y con
+        /// nombre que grita para que no se use en produccion, igual que
+        /// <c>BuildRoomRegistry.Clear_EditorTestsOnly</c>.
+        /// </summary>
+        public static void SetZone_EditorTestsOnly(int cx, int cz, byte zoneKind) =>
+            _zoneByChunk[(cx, cz)] = zoneKind;
+
         internal static void Refresh(WorldStateMsg state)
         {
             if (state?.visibleChunks == null)

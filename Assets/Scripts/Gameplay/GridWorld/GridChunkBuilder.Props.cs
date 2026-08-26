@@ -56,6 +56,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             // `densityScale` multiplica ANTES del Clamp01 de propDensity para que una zona
             // pueda subir de verdad; 0 = sin autorar ⇒ 1, sin cambio.
             float zoneScale = hasZoneSet && zoneSet.densityScale > 0f ? zoneSet.densityScale : 1f;
+            // ADR-036 enm. 1 - opt-in por zona. Apagadas (el default) el camino es el
+            // literal de antes: mismos tiles, mismo salt, misma entrada elegida.
+            bool rowCoherent = hasZoneSet && zoneSet.rowCoherentProps;
+            bool wallOnly    = hasZoneSet && zoneSet.wallOnlyProps;
             float baseDensity = Mathf.Clamp01(cfg.propDensity * zoneScale);
             float bias    = Mathf.Clamp01(cfg.propClusterBias);
             int center    = Tiles / 2;
@@ -88,6 +92,10 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                     // TileCenter (whole-tile granularity), which would clip inside
                     // the column regardless of which of the 4 sub-cells it occupies.
                     if ((walls[tx, tz] & PillarMask) != 0) continue;
+                    // ADR-036 enm. 1 - wallOnlyProps: sin una pared donde apoyarse, este
+                    // tile no amuebla. Es un gate puro sobre el bitmask y va ANTES de
+                    // extraer ningun hash, asi que no desplaza la decision de los demas.
+                    if (wallOnly && (walls[tx, tz] & 0x0F) == 0) continue;
 
                     int gx = chunkX * Tiles + tx, gz = chunkZ * Tiles + tz;
                     float fine   = Hash01(gx, gz, PropSaltFine);
@@ -134,7 +142,17 @@ namespace BackroomsSurvival.Gameplay.GridWorld
                 // El slot 0 usa los salts TAL CUAL, así que una capa sin `propsPerTile`
                 // reproduce prop por prop lo que colocaba antes de esta pieza; los slots
                 // extra sacan sus decisiones de salts derivados.
-                PropEntry e = PickProp(props, Hash01(gx, gz, SlotSalt(PropSaltPick, slot)) * totalWeight);
+                // ADR-036 enm. 1 - rowCoherentProps: la entrada se hashea sobre la FILA y no
+                // sobre el tile, para que una pared se lea como hilera y no como rastrillo.
+                // El lado se elige con el MISMO hash que usara el pegado a pared mas abajo,
+                // asi que no hay dos criterios que mantener en fase. La fila se acota por
+                // chunk: sin eso seria una linea de mundo infinita con el mismo mueble.
+                int rowSide = rowCoherent ? PickWallSide(walls[tx, tz], gx, gz, slot) : -1;
+                PropEntry e = rowSide < 0
+                    ? PickProp(props, Hash01(gx, gz, SlotSalt(PropSaltPick, slot)) * totalWeight)
+                    : PickProp(props, Hash01(rowSide <= 1 ? gz : gx,
+                                             rowSide + (rowSide <= 1 ? chunkX : chunkZ) * 4,
+                                             SlotSalt(PropSaltPick, slot)) * totalWeight);
                 string type = e.placeholderType;
 
                 // Instantiating straight under `parent` avoids the scene-root spawn + reparent
@@ -231,6 +249,29 @@ namespace BackroomsSurvival.Gameplay.GridWorld
             slot == 0 ? salt : salt ^ (uint)(slot * 0x9E3779B1u);
 
         /// <summary>Weighted pick by cumulative spawnWeight; <paramref name="r"/> ∈ [0,total).</summary>
+        /// <summary>
+        /// ADR-036 enm. 1 - Elige el lado con pared EXACTAMENTE igual que lo hace el pegado
+        /// a pared en <c>PlaceProps</c>: mismo <c>PropSaltSide</c>, misma cuenta de bits,
+        /// mismo recorrido. Devuelve -1 si el tile no tiene ningun lado con pared.
+        /// </summary>
+        private static int PickWallSide(byte tileWalls, int gx, int gz, int slot)
+        {
+            byte sides = (byte)(tileWalls & 0x0F);
+            if (sides == 0) return -1;
+            int count = 0;
+            for (int b = 0; b < 4; b++)
+                if ((sides & (1 << b)) != 0) count++;
+            int pick = Mathf.Clamp(
+                (int)(Hash01(gx, gz, SlotSalt(PropSaltSide, slot)) * count), 0, count - 1);
+            for (int b = 0; b < 4; b++)
+            {
+                if ((sides & (1 << b)) == 0) continue;
+                if (pick-- > 0) continue;
+                return b;
+            }
+            return -1;
+        }
+
         private static PropEntry PickProp(PropEntry[] props, float r)
         {
             float acc = 0f;
