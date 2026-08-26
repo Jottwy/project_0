@@ -238,6 +238,13 @@ MonoBehaviour:
   fogDensity: 0.035
   fogColor: {r: 0.78, g: 0.71, b: 0.59, a: 1}
   ambientLight: {r: 0.28, g: 0.24, b: 0.16, a: 1}
+  reverbRoom: -10000
+  reverbDecay: 1
+  reverbRoomHF: -1500
+  reverbLevel: 0
+  reverbReflect: -10000
+  reverbWallMetres: 3.4
+  reverbDry: 0
   zoneAmbienceSets:
   - zoneKind: 0
     anyZoneKind: 0
@@ -285,7 +292,7 @@ MonoBehaviour:
     reverbRoomHF: -2200
     reverbLevel: 0
     reverbReflect: -600
-    reverbWallMetres: 2.0
+    reverbWallMetres: 2
     reverbDry: 0
   - zoneKind: 3
     anyZoneKind: 0
@@ -301,7 +308,7 @@ MonoBehaviour:
     reverbRoomHF: -600
     reverbLevel: 200
     reverbReflect: -1400
-    reverbWallMetres: 5.0
+    reverbWallMetres: 5
     reverbDry: 0
   - zoneKind: 4
     anyZoneKind: 0
@@ -344,12 +351,12 @@ MonoBehaviour:
     overrideFogColor: 1
     fogColor: {r: 0.048, g: 0.058, b: 0.058, a: 1}
     overrideReverb: 1
-    reverbDecay: 2.0
+    reverbDecay: 2
     reverbRoom: -1000
     reverbRoomHF: -300
     reverbLevel: 200
     reverbReflect: -700
-    reverbWallMetres: 3.0
+    reverbWallMetres: 3
     reverbDry: 0
   - zoneKind: 7
     anyZoneKind: 0
@@ -376,7 +383,7 @@ MonoBehaviour:
     overrideFogColor: 1
     fogColor: {r: 0.08, g: 0.07, b: 0.045, a: 1}
     overrideReverb: 1
-    reverbDecay: 1.0
+    reverbDecay: 1
     reverbRoom: -2000
     reverbRoomHF: -2000
     reverbLevel: 0
@@ -429,7 +436,7 @@ MonoBehaviour:
     reverbRoomHF: -1200
     reverbLevel: 400
     reverbReflect: -10000
-    reverbWallMetres: 13.0
+    reverbWallMetres: 13
     reverbDry: -400
   - zoneKind: 12
     anyZoneKind: 0
@@ -447,6 +454,8 @@ MonoBehaviour:
     reverbReflect: -900
     reverbWallMetres: 2.2
     reverbDry: 0
+  floorSurfaceName: FPS_Dirt
+  wallSurfaceName: FPS_Concrete
   props:
   - prefab: {fileID: 0}
     placeholderType: desk
@@ -494,42 +503,42 @@ MonoBehaviour:
       spawnWeight: 5
       canBeRotated: 0
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 3545486553697239275, guid: 6aafd553f68da4346abc95b9f8537ec6, type: 3}
       placeholderType: filecab
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 3488471378554155623, guid: a2fa35ce8a966db41aa1253b18fdd426, type: 3}
       placeholderType: desk
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 2000420125523736556, guid: 92162c258f5135e428817b64aa040b78, type: 3}
       placeholderType: chair
       spawnWeight: 2
       canBeRotated: 1
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 4218327434642138713, guid: f60892355c8e881408866f7609198565, type: 3}
       placeholderType: paper
       spawnWeight: 2
       canBeRotated: 1
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 8447669046186738967, guid: 1e2e30c6175d6ee428def9aecd3cd9e0, type: 3}
       placeholderType: monitor
       spawnWeight: 4
       canBeRotated: 0
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 4849472495293709905, guid: 804c9286a82807f438df9e84c3beeaf8, type: 3}
       placeholderType: boxes
       spawnWeight: 3
       canBeRotated: 1
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 5666458164133390239, guid: c9fd1ec49a3797046955d7035b7f0136, type: 3}
       placeholderType: plant
       spawnWeight: 2
       canBeRotated: 1
       floorOnly: 1
-    - prefab: {fileID: 0}
+    - prefab: {fileID: 3530015438775303862, guid: fbbda32f4b2bcab49b1a7f5bef86fcd4, type: 3}
       placeholderType: whiteboard
       spawnWeight: 1
       canBeRotated: 0

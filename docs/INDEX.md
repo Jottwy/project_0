@@ -70,6 +70,7 @@
   bloqueados. Misma regla: el comportamiento observable no cambia.
 
 ## Otros documentos de referencia
+- [reference/asset-packs.md](reference/asset-packs.md) — los dos packs de arte (Business Office, 147 prefabs; Grocery Store Props, 406), importados y **arreglados** el 2026-08-26: todo a URP/Lit, 552 de 553 con colisión en la raíz, 698 MB de huérfanos purgados, y el catálogo con tamaños reales contra el tile de 2,5 m. La sección 2 cuenta lo que venía roto de fábrica — shader Built-in y shaders portados de Unreal sin `_BaseColor` — porque vuelve a pasar con el siguiente pack que se compre.
 - [STRUCTURES.md](STRUCTURES.md)
 - [REMOTEPLAYERS_GATE.md](REMOTEPLAYERS_GATE.md)
 
