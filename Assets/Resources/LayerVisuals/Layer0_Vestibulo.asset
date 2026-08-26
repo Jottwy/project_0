@@ -503,13 +503,23 @@ MonoBehaviour:
       spawnWeight: 5
       canBeRotated: 0
       floorOnly: 1
-    - prefab: {fileID: 3545486553697239275, guid: 6aafd553f68da4346abc95b9f8537ec6, type: 3}
+    - prefab: {fileID: 3265363405077278364, guid: 47d7ec7f02e54cb43b3d215210b446d6, type: 3}
+      placeholderType: monitor
+      spawnWeight: 4
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 1777938545306116330, guid: edbaab5f0eeddf94e8b7226d4d5d0e9a, type: 3}
+      placeholderType: desk
+      spawnWeight: 3
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 5080495160986350093, guid: b84edd9490d4318409a564450ded5d2c, type: 3}
       placeholderType: filecab
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
-    - prefab: {fileID: 3488471378554155623, guid: a2fa35ce8a966db41aa1253b18fdd426, type: 3}
-      placeholderType: desk
+    - prefab: {fileID: 4849472495293709905, guid: 804c9286a82807f438df9e84c3beeaf8, type: 3}
+      placeholderType: boxes
       spawnWeight: 3
       canBeRotated: 0
       floorOnly: 1
@@ -523,20 +533,15 @@ MonoBehaviour:
       spawnWeight: 2
       canBeRotated: 1
       floorOnly: 1
-    - prefab: {fileID: 8447669046186738967, guid: 1e2e30c6175d6ee428def9aecd3cd9e0, type: 3}
-      placeholderType: monitor
-      spawnWeight: 4
-      canBeRotated: 0
-      floorOnly: 1
-    - prefab: {fileID: 4849472495293709905, guid: 804c9286a82807f438df9e84c3beeaf8, type: 3}
-      placeholderType: boxes
-      spawnWeight: 3
-      canBeRotated: 1
-      floorOnly: 1
     - prefab: {fileID: 5666458164133390239, guid: c9fd1ec49a3797046955d7035b7f0136, type: 3}
       placeholderType: plant
       spawnWeight: 2
-      canBeRotated: 1
+      canBeRotated: 0
+      floorOnly: 1
+    - prefab: {fileID: 2369638434688564725, guid: 0aba2d60184e6944e87b5aaac09a0f18, type: 3}
+      placeholderType: meeting
+      spawnWeight: 1
+      canBeRotated: 0
       floorOnly: 1
     - prefab: {fileID: 3530015438775303862, guid: fbbda32f4b2bcab49b1a7f5bef86fcd4, type: 3}
       placeholderType: whiteboard
@@ -545,7 +550,7 @@ MonoBehaviour:
       floorOnly: 1
     densityScale: 2.2
     maxPropsPerChunk: 96
-    propsPerTile: 3
+    propsPerTile: 1
   floorTintVariants: []
   wallTintVariants: []
   ceilingTintVariants: []
